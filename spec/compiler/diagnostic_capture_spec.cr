@@ -20,6 +20,24 @@ describe Iyi::DiagnosticPathSnapshot do
     snapshot.sha256.should eq(::Crystal::Digest::SHA256.hexdigest(original))
   end
 
+  it "owns input and returned snapshot bytes instead of sharing strings" do
+    source = String.new("Root::Thing".to_slice)
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/path_capture.cr"
+    parser.diagnostic_source_file = "/spec/path_capture.cr"
+    parser.diagnostic_capture = true
+    input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
+      nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
+    path = parser.parse.as(Iyi::Path)
+    snapshot = Iyi::DiagnosticPathSnapshot.new(path, input)
+    expected = snapshot.bytes
+    source.to_unsafe[0] = 'X'.ord.to_u8
+    input.input.should eq("Root::Thing")
+    working = snapshot.bytes
+    working.to_unsafe[0] = 'X'.ord.to_u8
+    snapshot.bytes.should eq(expected)
+  end
+
   it "refuses a path whose actual name has lost its evidence" do
     source = "Root::Thing"
     parser = Iyi::Parser.new(source)
@@ -33,6 +51,69 @@ describe Iyi::DiagnosticPathSnapshot do
     expect_raises(ArgumentError, /does not cover all segments/) do
       Iyi::DiagnosticPathSnapshot.new(path, input)
     end
+  end
+
+  it "rejects missing evidence for an actual path segment" do
+    source = "Root::Thing"
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/path_capture.cr"
+    parser.diagnostic_source_file = "/spec/path_capture.cr"
+    parser.diagnostic_capture = true
+    input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
+      nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
+    path = parser.parse.as(Iyi::Path)
+    checker = Iyi::DiagnosticRecordedEvidenceInputCheck.new(input)
+    checker.verify!(path)
+    slots = path.diagnostic_name_slots
+    slots.delete(Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::PathSegment, 1))
+    path.diagnostic_name_slots = slots
+    expect_raises(ArgumentError, /missing source evidence/) { checker.verify!(path) }
+  end
+
+  it "binds an implicit external argument name to the recorded internal name" do
+    source = "def f(arg); end"
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/path_capture.cr"
+    parser.diagnostic_source_file = "/spec/path_capture.cr"
+    parser.diagnostic_capture = true
+    input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
+      nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
+    definition = parser.parse.as(Iyi::Def)
+    definition.args.first.diagnostic_external_explicit.should be_false
+    checker = Iyi::DiagnosticRecordedEvidenceInputCheck.new(input)
+    checker.verify!(definition)
+    definition.args.first.external_name = "changed"
+    expect_raises(ArgumentError, /invalid implicit external-name observation/) { checker.verify!(definition) }
+  end
+
+  it "binds a forall bound-map key to its declared free variable" do
+    source = "def f(x : T) forall T : Show\nend"
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/path_capture.iyi"
+    parser.diagnostic_source_file = "/spec/path_capture.iyi"
+    parser.diagnostic_capture = true
+    input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
+      nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
+    definition = parser.parse.as(Iyi::Def)
+    checker = Iyi::DiagnosticRecordedEvidenceInputCheck.new(input)
+    checker.verify!(definition)
+    definition.free_var_bounds.not_nil!["Unknown"] = Iyi::Path.new("Show")
+    expect_raises(ArgumentError, /bound lacks original declaration/) { checker.verify!(definition) }
+  end
+
+  it "rejects a trait associated-type summary that differs from its body" do
+    source = "trait Sequence\n  type Item\nend"
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/path_capture.iyi"
+    parser.diagnostic_source_file = "/spec/path_capture.iyi"
+    parser.diagnostic_capture = true
+    input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
+      nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
+    trait = parser.parse.as(Iyi::TraitDef)
+    checker = Iyi::DiagnosticRecordedEvidenceInputCheck.new(input)
+    checker.verify!(trait)
+    trait.assoc_types.not_nil![0] = "Other"
+    expect_raises(ArgumentError, /trait associated-type projection mismatch/) { checker.verify!(trait) }
   end
 end
 

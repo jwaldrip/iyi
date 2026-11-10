@@ -68,17 +68,17 @@ module Iyi
       if @kind.source_file? && (@original_file.nil? || @original_file.not_nil!.empty?)
         raise ArgumentError.new("source capture requires original file identity")
       end
-      @input = input.dup
+      @input = String.new(input.to_slice)
       @input_sha256 = ::Crystal::Digest::SHA256.hexdigest(@input)
-      @scopes = scopes.map(&.dup)
+      @scopes = scopes.map { |scope| scope.map { |name| String.new(name.to_slice) } }
     end
 
     def input : String
-      @input.dup
+      String.new(@input.to_slice)
     end
 
     def scopes : Array(Array(String))
-      @scopes.map(&.dup)
+      @scopes.map { |scope| scope.map { |name| String.new(name.to_slice) } }
     end
 
     # This compares only the candidate's recorded fields, not the complete
@@ -186,7 +186,7 @@ module Iyi
     end
 
     def bytes : String
-      @bytes.dup
+      String.new(@bytes.to_slice)
     end
 
     private def write_flags(json : JSON::Builder, flags : ParseDefFlags) : Nil
@@ -234,7 +234,7 @@ module Iyi
     end
 
     def bytes : String
-      @bytes.dup
+      String.new(@bytes.to_slice)
     end
 
     private def charge_graph(bytes : UInt64) : Nil
@@ -403,7 +403,7 @@ module Iyi
     end
 
     def bytes : String
-      @bytes.dup
+      String.new(@bytes.to_slice)
     end
 
     private def write_ref(json : JSON::Builder, ref : DiagnosticCaptureFieldRef) : Nil
@@ -545,7 +545,7 @@ module Iyi
     end
 
     def bytes : String
-      @bytes.dup
+      String.new(@bytes.to_slice)
     end
 
     private def write_location(json : JSON::Builder, location : Location?) : Nil
@@ -595,6 +595,9 @@ module Iyi
       when "location", "end_location", "diagnostic_origin", "diagnostic_macro_lineage",
            "diagnostic_name_slots", "diagnostic_literal_names", "diagnostic_literal_productions"
         return DiagnosticAstFieldClass::OriginEvidence if SUPPORTED.includes?(kind)
+      when "diagnostic_external_explicit"
+        return DiagnosticAstFieldClass::OriginEvidence if kind == "Arg"
+        return DiagnosticAstFieldClass::Infrastructure if SUPPORTED.includes?(kind)
       when "diagnostic_capture_ref", "diagnostic_percent_witnesses"
         return DiagnosticAstFieldClass::Infrastructure if SUPPORTED.includes?(kind)
       when "dependencies", "observers", "enclosing_call", "dirty", "type"
@@ -1815,7 +1818,7 @@ module Iyi
     end
 
     def bytes : String
-      @bytes.dup
+      String.new(@bytes.to_slice)
     end
 
     # Resolves only the inventory's own name bytes. It cannot establish source
@@ -1851,6 +1854,9 @@ module Iyi
       raise ArgumentError.new("cyclic AST inventory") unless @active.add?(id)
       begin
         DiagnosticAstFieldSchema.validate_node_fields(node)
+        if !node.is_a?(Arg) && node.diagnostic_external_explicit
+          raise ArgumentError.new("external-name observation on non-argument node")
+        end
         json.object do
           json.field "kind", node.class.name
           json.field("presence") { write_presence(json, node) }
@@ -1863,6 +1869,7 @@ module Iyi
           end
           json.field "origin", node.diagnostic_origin
           json.field "macro_lineage", node.diagnostic_macro_lineage.to_s
+          json.field "external_name_explicit", node.diagnostic_external_explicit
           json.field("name_slots") { write_name_slots(json, node, depth) }
           json.field("literal_names") { write_literal_names(json, node, depth) }
           json.field("literal_productions") { write_literal_productions(json, node) }
@@ -2525,6 +2532,10 @@ module Iyi
       raise ArgumentError.new("cyclic recorded evidence graph") unless @active.add?(id)
       begin
         charge(256_u64)
+        DiagnosticAstFieldSchema.validate_node_fields(node)
+        if !node.is_a?(Arg) && node.diagnostic_external_explicit
+          raise ArgumentError.new("external-name observation on non-argument node")
+        end
         count = node.diagnostic_name_slots_count || 0
         charge(count.to_u64 * 64_u64)
         raise ArgumentError.new("recorded name evidence exceeds graph limit") if node.diagnostic_name_slots_graph_bytes > @remaining
@@ -2551,10 +2562,206 @@ module Iyi
           end
         end
         validate_literals(node)
+        verify_core_name_coverage!(node)
         DiagnosticDirectChildFields.each(node) { |_, _, _, child| visit(child, depth + 1) }
       ensure
         @active.delete(id)
       end
+    end
+
+    # Actual field values drive this check. This deliberately refuses fields
+    # whose source-to-field mapping has not been classified here.
+    private def verify_core_name_coverage!(node : ASTNode) : Nil
+      slot_count = node.diagnostic_name_slots_count || 0
+      literal_count = node.diagnostic_literal_names_count || 0
+      charge(slot_count.to_u64 * 64_u64 + literal_count.to_u64 * 64_u64)
+      slots = {} of DiagnosticNameSlot => Indexable(DiagnosticNameValue)
+      literal_keys = Set({String, Int32}).new
+      used_slots = Set(DiagnosticNameSlot).new
+      node.each_diagnostic_name_slot { |slot, values| slots[slot] = values }
+      node.each_diagnostic_literal_name { |key, _| literal_keys.add(key) }
+      bound_indices = {} of String => Int32
+      variables = case node
+                  when Def     then node.free_vars
+                  when ImplDef then node.type_vars
+                  else              nil
+                  end
+      if variables
+        charge(variables.size.to_u64 * 64_u64)
+        variables.each_with_index do |name, index|
+          raise ArgumentError.new("duplicate bound-variable identity") if bound_indices.has_key?(name)
+          bound_indices[name] = index
+        end
+      end
+      has_assoc_projection = validate_assoc_projection!(node)
+      where_index = 0
+      DiagnosticDirectNameFields.each(node) do |field, index, key, expected|
+        slot : DiagnosticNameSlot? = nil
+        literal_key : {String, Int32}? = nil
+        reuse_slot = false
+        case node
+        when Path
+          slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, index.not_nil!) if field == "names"
+        when NamedArgument
+          if field == "name"
+            literal_key = {"name", 0}
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry)
+          end
+        when NamedTupleLiteral
+          if field == "entries.key"
+            literal_key = {"entries.key", index.not_nil!}
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index.not_nil!)
+          end
+        when Arg
+          if field == "name"
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+          elsif field == "external_name"
+            if !node.diagnostic_external_explicit
+              primary = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+              external = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
+              if expected != node.name || slots.has_key?(external) || literal_keys.includes?({"external_name", 0})
+                raise ArgumentError.new("invalid implicit external-name observation")
+              end
+              values = slots[primary]? || raise ArgumentError.new("implicit external name lacks internal evidence")
+              verify_slot_value!(values, expected)
+              next
+            end
+            literal_key = {"external_name", 0}
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
+          end
+        when SymbolLiteral
+          literal_key = {"value", 0} if field == "value"
+        when Def
+          if field == "name"
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+          elsif field == "free_vars"
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index.not_nil!)
+          elsif field == "free_var_bounds.key"
+            variable_index = bound_indices[key.not_nil!]? || raise ArgumentError.new("free-variable bound lacks original declaration")
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, variable_index)
+            reuse_slot = true
+          elsif field == "where_bounds.key"
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::WhereVariable, where_index)
+            where_index += 1
+          end
+        when ModuleHeader
+          slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ModuleSegment, index.not_nil!) if field == "path"
+        when ClassDef, ModuleDef
+          slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index.not_nil!) if field == "type_vars"
+        when TraitDef
+          if field == "type_vars"
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index.not_nil!)
+          elsif field == "assoc_types" && has_assoc_projection
+            next
+          end
+        when ImplDef
+          if field == "type_vars"
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index.not_nil!)
+          elsif field == "type_var_bounds.key"
+            variable_index = bound_indices[key.not_nil!]? || raise ArgumentError.new("impl bound lacks original declaration")
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, variable_index)
+            reuse_slot = true
+          elsif field == "assoc_types.key" && has_assoc_projection
+            next
+          end
+        when Var, InstanceVar, ClassVar, Global, ReadInstanceVar, Call, Macro, RespondsTo,
+             ProcPointer, TypeDef, CStructOrUnionDef, MacroVar
+          slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary) if field == "name"
+        when AssocTypeDecl
+          slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter) if field == "name"
+        when OpAssign
+          slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary) if field == "op"
+        end
+        if literal_key && literal_keys.includes?(literal_key)
+          raise ArgumentError.new("ambiguous literal and token name evidence") if slot && slots.has_key?(slot)
+          next
+        end
+        unless slot
+          raise ArgumentError.new("unclassified source-to-name mapping #{node.class}.#{field}")
+        end
+        values = slots[slot]? || raise ArgumentError.new("missing source evidence for #{node.class}.#{field}")
+        if reuse_slot
+          raise ArgumentError.new("bound name lacks prior declaration evidence") unless used_slots.includes?(slot)
+        else
+          raise ArgumentError.new("name source evidence reused across fields") unless used_slots.add?(slot)
+        end
+        verify_slot_value!(values, expected)
+      end
+      slots.each_key do |slot|
+        raise ArgumentError.new("unbound name evidence slot #{slot.kind}:#{slot.index}") unless used_slots.includes?(slot)
+      end
+    end
+
+    # The parser derives these summaries only from direct body declarations,
+    # preserving declaration order and, for impls, the exact value node.
+    private def validate_assoc_projection!(node : ASTNode) : Bool
+      body = case node
+             when TraitDef then node.body
+             when ImplDef  then node.body
+             else               return false
+             end
+      declarations = [] of AssocTypeDecl
+      case body
+      when AssocTypeDecl
+        charge(128_u64)
+        declarations << body
+      when Expressions
+        body.expressions.each do |child|
+          next unless child.is_a?(AssocTypeDecl)
+          charge(128_u64)
+          declarations << child
+        end
+      end
+      if declarations.empty?
+        case node
+        when TraitDef, ImplDef
+          raise ArgumentError.new("unexpected empty associated-type projection") unless node.assoc_types.nil?
+        else
+          raise ArgumentError.new("unclassified associated-type owner")
+        end
+        return false
+      end
+      names = Set(String).new
+      declarations.each do |declaration|
+        raise ArgumentError.new("associated type not recorded in body") unless declaration.in_type_body?
+        raise ArgumentError.new("duplicate associated type") unless names.add?(declaration.name)
+      end
+      case node
+      when TraitDef
+        projected = node.assoc_types || raise ArgumentError.new("trait associated-type projection missing")
+        raise ArgumentError.new("trait associated-type projection size mismatch") unless projected.size == declarations.size
+        declarations.each_with_index do |declaration, index|
+          unless declaration.value.nil? && projected[index] == declaration.name
+            raise ArgumentError.new("trait associated-type projection mismatch")
+          end
+        end
+      when ImplDef
+        projected = node.assoc_types || raise ArgumentError.new("impl associated-type projection missing")
+        raise ArgumentError.new("impl associated-type projection size mismatch") unless projected.size == declarations.size
+        index = 0
+        projected.each do |name, value|
+          declaration = declarations[index]
+          unless name == declaration.name && (source = declaration.value) && value.same?(source)
+            raise ArgumentError.new("impl associated-type projection mismatch")
+          end
+          index += 1
+        end
+      end
+      true
+    end
+
+    private def verify_slot_value!(values : Indexable(DiagnosticNameValue), expected : String) : Nil
+      raise ArgumentError.new("empty name evidence") if values.empty?
+      bytes = expected.to_slice
+      offset = 0
+      values.each do |value|
+        part = value.rendered_text.to_slice
+        if part.size > bytes.size - offset || bytes[offset, part.size] != part
+          raise ArgumentError.new("name field differs from source evidence")
+        end
+        offset += part.size
+      end
+      raise ArgumentError.new("name field differs from source evidence") unless offset == bytes.size
     end
 
     private def validate_literals(node : ASTNode) : Nil
