@@ -1009,6 +1009,26 @@ def test_composed_origin_controls():
                 "capture_descriptor": {"proc_type": proc, "is_closure": False, "environment": None},
                 "displayed_source_location": {"file": "example.iyi", "line": 1, "column": 1}}
     baseline = frames.emission_identity(emission)
+    name_source = source(20)
+    name_source["raw_text"] = "empty"
+    name_source["input_end"] = 25
+    name_source["binding_origin"] = {"kind": "Synthetic", "parent_origin": copy.deepcopy(name_source["lexical_origin"]),
+                                     "synthesis_kind": "local_binding", "structural_slot": "assignment"}
+    class_name = copy.deepcopy(invocation)
+    class_name.update({"generated_byte_offset": 38, "generated_byte_end": 45, "token_kind": "CLASS_VAR",
+                       "token_text": "@@empty", "anchor_kind": "Name", "role": "class_variable",
+                       "name_context": "class_variable",
+                       "emission_parts": [{"kind": "Generated", "start_offset": 38, "end_offset": 40,
+                                           "emitter_origin": None, "producer": "MacroTemplate"},
+                                          {"kind": "NameSplice", "start_offset": 40, "end_offset": 45,
+                                           "emitter_origin": None, "source_token": name_source,
+                                           "slice_start": 0, "slice_end": 5, "projection": "Whole"}]})
+    assert frames.checked_origin(class_name) == ("Name", "class_variable")
+    without_prefix = copy.deepcopy(class_name)
+    without_prefix["emission_parts"].pop(0)
+    try: frames.checked_origin(without_prefix)
+    except ValueError: pass
+    else: raise AssertionError("missing generated name prefix accepted")
     for mutation in ("file", "offset", "digest", "binding", "emitter", "order"):
         changed = copy.deepcopy(emission)
         parts = changed["origin"]["invocation_origin"]["emission_parts"]
@@ -1026,7 +1046,7 @@ def test_composed_origin_controls():
         assert frames.emission_identity(changed) != baseline, mutation
 
     for mutation in ("missing", "overlap", "short", "source_role", "input_bound", "slice", "projection",
-                     "utf8", "unknown_part", "unknown_context", "unknown_mode", "unknown_token", "old_shape"):
+                     "utf8", "unknown_part", "unknown_context", "unknown_mode", "unknown_token", "token_text", "old_shape"):
         changed = copy.deepcopy(emission)
         node = changed["origin"]["invocation_origin"]
         parts = node["emission_parts"]
@@ -1043,10 +1063,23 @@ def test_composed_origin_controls():
         elif mutation == "unknown_context": node["name_context"] = "unknown"
         elif mutation == "unknown_mode": token["lexical_mode"] = "unknown"
         elif mutation == "unknown_token": token["token_kind"] = "unknown"
+        elif mutation == "token_text": token["token_kind"] = "CONST"
         else: node["spliced_origin"] = None
         try: frames.emission_identity(changed)
         except (ValueError, UnicodeError, TypeError, KeyError): pass
         else: raise AssertionError("accepted malformed composition: " + mutation)
+
+    for kind, raw, mode, context, expected in (
+            ("CLASS_VAR", "@@empty", "Crystal", "class_variable", True),
+            ("IDENT", "éclair?", "Crystal", "method_name", True),
+            ("IDENT", "name!", "Crystal", "method_name", True),
+            ("IDENT", "name!", "Iyi", "method_name", False),
+            ("IDENT", "1name", "Crystal", "method_name", False),
+            ("IDENT", "@name", "Crystal", "method_name", False),
+            ("CONST", "name", "Crystal", "path_segment", False),
+            ("INSTANCE_VAR", "@@name", "Crystal", "instance_variable", False),
+            ("IDENT", "name", "Crystal", "class_variable", False)):
+        assert frames.name_token(kind, raw, mode, context) == expected, (kind, raw, context)
 
 
 def run_all_tests() -> int:

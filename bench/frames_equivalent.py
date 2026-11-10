@@ -168,6 +168,38 @@ def token_fields(value):
     if value["lexical_mode"] not in ("Crystal", "Iyi") or value["token_kind"] not in TOKEN_KINDS:
         raise ValueError("invalid token classification")
 
+NAME_OPERATORS = frozenset("! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~".split())
+CONTEXT_KINDS = {
+    "method_name": frozenset(("IDENT",)) | NAME_OPERATORS,
+    "definition_name": frozenset(("IDENT",)) | NAME_OPERATORS,
+    "macro_name": frozenset(("IDENT",)),
+    "local_reference": frozenset(("IDENT",)),
+    "instance_variable": frozenset(("INSTANCE_VAR",)),
+    "class_variable": frozenset(("CLASS_VAR",)),
+    "parameter": frozenset(("IDENT", "INSTANCE_VAR", "CLASS_VAR")),
+    "path_segment": frozenset(("CONST",)),
+    "type_parameter": frozenset(("CONST",)),
+    "named_entry": frozenset(("IDENT", "CONST")),
+}
+
+
+def name_token(kind, raw, mode, context):
+    if kind not in CONTEXT_KINDS[context]: return False
+    if kind in NAME_OPERATORS: return raw == kind
+    prefix = {"INSTANCE_VAR": "@", "CLASS_VAR": "@@"}.get(kind, "")
+    if not raw.startswith(prefix): return False
+    name = raw[len(prefix):]
+    if kind == "IDENT" and name.endswith(("?", "!")):
+        if mode == "Iyi" and name.endswith("!"): return False
+        name = name[:-1]
+    def start(char):
+        return char == "_" or "a" <= char <= "z" or "A" <= char <= "Z" or ord(char) > 0x9f
+    if not name or not start(name[0]) or any(not (start(c) or "0" <= c <= "9") for c in name[1:]):
+        return False
+    if kind == "IDENT" and (name[0].isupper() or name[0].istitle()): return False
+    if kind == "CONST" and not (name[0].isupper() or name[0].istitle()): return False
+    return not (kind == "IDENT" and raw == "_")
+
 
 def source_name(value, depth):
     fields(value, "lexical_origin binding_origin context input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text")
@@ -187,6 +219,8 @@ def source_name(value, depth):
     for key in ("input_bytesize", "input_start", "input_end"): number(value[key])
     token_fields(value)
     text(value["raw_text"])
+    if not name_token(value["token_kind"], value["raw_text"], value["lexical_mode"], context):
+        raise ValueError("source token disagrees with name context")
     raw = value["raw_text"].encode("utf-8")
     start, end = value["input_start"], value["input_end"]
     if not 0 <= start < end <= value["input_bytesize"] or end - start != len(raw):
@@ -239,9 +273,12 @@ def origin(value, depth=0):
         start, finish = value["generated_byte_offset"], value["generated_byte_end"]
         if finish <= start or finish - start != len(output): raise ValueError("invalid generated token span")
         context = value["name_context"]
+        if value["anchor_kind"] == "Name" and context is None: raise ValueError("missing name context")
         if context is not None and context not in NAME_CONTEXTS: raise ValueError("unknown name context")
         if context is not None and (value["anchor_kind"], value["role"]) not in (("Name", context), ("Call", "method")):
             raise ValueError("name context on structural anchor")
+        if context is not None and not name_token(value["token_kind"], value["token_text"], value["lexical_mode"], context):
+            raise ValueError("receiving token disagrees with name context")
         parts = value["emission_parts"]
         if not isinstance(parts, list) or not parts: raise ValueError("missing emission parts")
         end = start

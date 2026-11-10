@@ -170,6 +170,47 @@ module Iyi::DiagnosticProvenance
 
   NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter named_entry)
   MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter)
+  NAME_OPERATORS = %w(! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~)
+
+  private def self.name_token?(kind : String, raw : String, mode : String, context : String) : Bool
+    allowed = case context
+              when "method_name", "definition_name"
+                kind == "IDENT" || NAME_OPERATORS.includes?(kind)
+              when "macro_name", "local_reference"
+                kind == "IDENT"
+              when "instance_variable"
+                kind == "INSTANCE_VAR"
+              when "class_variable"
+                kind == "CLASS_VAR"
+              when "parameter"
+                kind == "IDENT" || kind == "INSTANCE_VAR" || kind == "CLASS_VAR"
+              when "path_segment", "type_parameter"
+                kind == "CONST"
+              when "named_entry"
+                kind == "IDENT" || kind == "CONST"
+              else
+                false
+              end
+    return false unless allowed
+    return raw == kind if NAME_OPERATORS.includes?(kind)
+    prefix = kind == "INSTANCE_VAR" ? "@" : (kind == "CLASS_VAR" ? "@@" : "")
+    return false unless raw.starts_with?(prefix)
+    name = raw.byte_slice(prefix.bytesize, raw.bytesize - prefix.bytesize)
+    if kind == "IDENT" && (name.ends_with?("?") || name.ends_with?("!"))
+      return false if mode == "Iyi" && name.ends_with?("!")
+      name = name.byte_slice(0, name.bytesize - 1)
+    end
+    first = name[0]? || return false
+    return false if kind == "IDENT" && (first.uppercase? || first.titlecase?)
+    return false if kind == "CONST" && !(first.uppercase? || first.titlecase?)
+    return false if kind == "IDENT" && raw == "_"
+    name.each_char_with_index do |char, index|
+      initial = char.ascii_letter? || char == '_' || char.ord > 0x9f
+      return false unless initial || (index > 0 && char.ascii_number?)
+    end
+    true
+  end
+
 
   private def self.origin_schema4!(value : JSON::Any, depth : Int32 = 0) : Nil
     raise "diagnostic origin nesting too deep" if depth > 128
@@ -196,11 +237,13 @@ module Iyi::DiagnosticProvenance
       last = expansion["generated_byte_end"].as_i64
       raise "invalid token extent" unless first >= 0 && last <= Int32::MAX && last - first == token.bytesize && last > first
       context = expansion["name_context"]
+      raise "missing name context" if expansion["anchor_kind"].as_s == "Name" && context.raw.nil?
       unless context.raw.nil?
         name = context.as_s
         raise "unknown name context" unless NAME_CONTEXTS.includes?(name)
         kind, role = expansion["anchor_kind"].as_s, expansion["role"].as_s
         raise "invalid receiving name role" unless (kind == "Name" && role == name) || (kind == "Call" && role == "method")
+        raise "invalid receiving name token" unless name_token?(expansion["token_kind"].as_s, token, mode, name)
       end
       parts = expansion["emission_parts"].as_a
       raise "expanded origin has no emission parts" if parts.empty?
@@ -271,6 +314,7 @@ module Iyi::DiagnosticProvenance
     raise "unknown token kind" unless Iyi::Token::Kind.values.any? { |kind| kind.to_s == source["token_kind"].as_s }
     raw = source["raw_text"].as_s
     raise "invalid source token text" if raw.empty? || !raw.valid_encoding?
+    raise "invalid source name token" unless name_token?(source["token_kind"].as_s, raw, mode, context)
     size, first, last = source["input_bytesize"].as_i64, source["input_start"].as_i64, source["input_end"].as_i64
     raise "invalid source token span" unless first >= 0 && last > first && last <= size && size <= Int32::MAX && last - first == raw.bytesize
     case lexical.as_h["kind"].as_s
