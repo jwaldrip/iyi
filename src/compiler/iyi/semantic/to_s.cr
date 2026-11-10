@@ -51,11 +51,11 @@ module Iyi
     end
 
     def visit(node : MetaVar)
-      if !@diagnostic_name_fragments && !@diagnostic_anchors && !@diagnostic_generated_text
+      if !@diagnostic_name_fragments && !@diagnostic_fragment && !@diagnostic_generated_text
         @str << node.name
       elsif node.diagnostic_name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
         diagnostic_name(node, node.name, node.name == "$~" || node.name == "$?" ? "special_global" : "local_reference")
-      elsif node.diagnostic_origin && (@diagnostic_name_fragments || @diagnostic_anchors)
+      elsif node.diagnostic_origin && (@diagnostic_name_fragments || @diagnostic_fragment)
         raise ArgumentError.new("semantic variable lacks preserved name evidence")
       else
         diagnostic_raw(node, DiagnosticMacroProducer::SemanticPrinter) { @str << node.name }

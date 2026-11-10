@@ -1,4 +1,6 @@
 require "json"
+require "set"
+require "crystal/digest/sha256"
 
 module Iyi
   class DiagnosticAnchor
@@ -50,12 +52,13 @@ module Iyi
     TypeParameter
     NamedEntry
     EnumMember
+    WhereVariable
   end
 
   record DiagnosticNameSlot, kind : DiagnosticNameSlotKind, index : Int32 = 0 do
     def initialize(@kind : DiagnosticNameSlotKind, @index : Int32 = 0)
       raise ArgumentError.new("negative diagnostic name slot index") if @index < 0
-      if @index != 0 && !@kind.path_segment? && !@kind.type_parameter? && !@kind.named_entry?
+      if @index != 0 && !@kind.path_segment? && !@kind.type_parameter? && !@kind.named_entry? && !@kind.where_variable?
         raise ArgumentError.new("diagnostic name slot is not indexed")
       end
     end
@@ -84,7 +87,7 @@ module Iyi
                 when "instance_variable"             then kind == "INSTANCE_VAR"
                 when "class_variable"                then kind == "CLASS_VAR"
                 when "parameter"                     then {"IDENT", "INSTANCE_VAR", "CLASS_VAR"}.includes?(kind)
-                when "path_segment", "type_parameter" then kind == "CONST"
+                when "path_segment", "type_parameter", "where_variable" then kind == "CONST"
                 when "named_entry"                   then {"IDENT", "CONST"}.includes?(kind)
                 when "enum_member"                   then kind == "CONST"
                 when "special_global"                then {"$~", "$?"}.includes?(kind)
@@ -125,7 +128,7 @@ module Iyi
                    @lexical_mode : String, @token_kind : String, @raw_text : String)
       unless {"method_name", "definition_name", "macro_name", "local_reference", "instance_variable",
               "class_variable", "parameter", "path_segment", "type_parameter", "named_entry",
-              "enum_member", "special_global", "regex_match_index"}.includes?(@context)
+              "enum_member", "special_global", "regex_match_index", "where_variable"}.includes?(@context)
         raise ArgumentError.new("invalid diagnostic name context")
       end
       unless @input_sha256.bytesize == 64 && @input_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) }
@@ -155,7 +158,10 @@ module Iyi
       when DiagnosticOrigin::Written
         raise ArgumentError.new("name token origin offset mismatch") unless lexical_origin.input_byte_offset == @input_start
       when DiagnosticOrigin::Expanded
-        unless lexical_origin.token_event.input_start == @input_start && lexical_origin.expansion_guard == "sha256:#{@input_sha256}"
+        event = lexical_origin.token_event
+        unless event.input_start == @input_start && event.input_end == @input_end &&
+               event.selection.whole? && event.token_kind == @token_kind && event.token_text == @raw_text &&
+               event.lexical_mode == @lexical_mode && lexical_origin.expansion_guard == "sha256:#{@input_sha256}"
           raise ArgumentError.new("name token expansion input mismatch")
         end
       else
@@ -236,7 +242,10 @@ module Iyi
       when DiagnosticOrigin::Written
         raise ArgumentError.new("type-syntax token offset mismatch") unless origin.input_byte_offset == @input_start
       when DiagnosticOrigin::Expanded
-        unless origin.token_event.input_start == @input_start && origin.expansion_guard == "sha256:#{@input_sha256}"
+        event = origin.token_event
+        unless event.input_start == @input_start && event.input_end == @input_end &&
+               event.selection.whole? && event.token_kind == @token_kind && event.token_text == @raw_text &&
+               event.lexical_mode == @lexical_mode && origin.expansion_guard == "sha256:#{@input_sha256}"
           raise ArgumentError.new("type-syntax expansion mismatch")
         end
       else
@@ -400,6 +409,7 @@ module Iyi
     MacroVerbatim
     YieldWrapper
     SemanticPrinter
+    StructuredSyntax
   end
 
   enum DiagnosticTokenSelection : UInt8
@@ -491,7 +501,8 @@ module Iyi
         raise ArgumentError.new("invalid diagnostic token event")
       end
       if @selection.signed_number_sign?
-        unless @token_kind == "NUMBER" && (@token_text.starts_with?("+") || @token_text.starts_with?("-")) && @token_text.bytesize > 1
+        unless @token_kind == "NUMBER" && (@token_text.starts_with?("+") || @token_text.starts_with?("-")) &&
+               @token_text.bytesize > 1 && (48_u8..57_u8).includes?(@token_text.byte_at(1))
           raise ArgumentError.new("invalid signed-number token selection")
         end
       end
@@ -597,7 +608,10 @@ module Iyi
     class Constructed < DiagnosticAnchorEvidence
       getter producer : DiagnosticMacroProducer
       def initialize(@producer : DiagnosticMacroProducer)
-        raise ArgumentError.new("invalid constructed anchor producer") unless @producer == DiagnosticMacroProducer::ConstructedAst
+        unless {DiagnosticMacroProducer::ConstructedAst, DiagnosticMacroProducer::EmptyTupleProjection,
+                DiagnosticMacroProducer::EmptyNamedTupleProjection}.includes?(@producer)
+          raise ArgumentError.new("invalid constructed anchor producer")
+        end
       end
       def_equals_and_hash @producer
     end
@@ -654,11 +668,13 @@ module Iyi
           json.field "rule", self.rule.to_s
           json.field "evidence", self.evidence
           json.field "head", self.head
+          json.field "emitter_origin", self.emitter_origin
         when PayloadOf
           json.field "kind", "PayloadOf"
           json.field "rule", self.rule.to_s
           json.field "evidence", self.evidence
           json.field "owner_origin", self.owner_origin
+          json.field "emitter_origin", self.emitter_origin
         end
       end
     end
@@ -669,31 +685,112 @@ module Iyi
       getter rule : DiagnosticHeadRule
       getter evidence : DiagnosticAnchorEvidence
       getter head : DiagnosticHead
-      def initialize(@rule : DiagnosticHeadRule, @evidence : DiagnosticAnchorEvidence, @head : DiagnosticHead)
+      getter emitter_origin : DiagnosticOrigin?
+      def initialize(@rule : DiagnosticHeadRule, @evidence : DiagnosticAnchorEvidence, @head : DiagnosticHead, @emitter_origin : DiagnosticOrigin?)
         raise ArgumentError.new("invalid head evidence") if @evidence.is_a?(DiagnosticAnchorEvidence::DerivedFromOwner)
+        if (constructed = @evidence.as?(DiagnosticAnchorEvidence::Constructed)) && constructed.producer != DiagnosticMacroProducer::ConstructedAst
+          raise ArgumentError.new("invalid head constructed producer")
+        end
+        DiagnosticAnchorUse.validate_emitter(@emitter_origin, @evidence)
       end
-      def_equals_and_hash @rule, @evidence, @head
+      def_equals_and_hash @rule, @evidence, @head, @emitter_origin
     end
     class PayloadOf < DiagnosticAnchorUse
       getter rule : DiagnosticPayloadRule
       getter evidence : DiagnosticAnchorEvidence
       getter owner_origin : DiagnosticOrigin::Expanded
-      def initialize(@rule : DiagnosticPayloadRule, @evidence : DiagnosticAnchorEvidence, @owner_origin : DiagnosticOrigin::Expanded)
+      getter emitter_origin : DiagnosticOrigin?
+      def initialize(@rule : DiagnosticPayloadRule, @evidence : DiagnosticAnchorEvidence, @owner_origin : DiagnosticOrigin::Expanded, @emitter_origin : DiagnosticOrigin?)
         raise ArgumentError.new("invalid payload evidence") if @evidence.is_a?(DiagnosticAnchorEvidence::RawSyntax)
+        if (constructed = @evidence.as?(DiagnosticAnchorEvidence::Constructed)) && constructed.producer != DiagnosticMacroProducer::ConstructedAst
+          raise ArgumentError.new("invalid payload constructed producer")
+        end
+        DiagnosticAnchorUse.validate_emitter(@emitter_origin, @evidence)
       end
-      def_equals_and_hash @rule, @evidence, @owner_origin
+      def_equals_and_hash @rule, @evidence, @owner_origin, @emitter_origin
+    end
+
+    def self.validate_emitter(emitter : DiagnosticOrigin?, evidence : DiagnosticAnchorEvidence) : Nil
+      if emitter
+        unless emitter.valid_for_anchor?("MacroDirective", "expression") || emitter.valid_for_anchor?("MacroDirective", "control")
+          raise ArgumentError.new("invalid attachment emitter")
+        end
+      end
+      if (evidence.is_a?(DiagnosticAnchorEvidence::RawSyntax) || evidence.is_a?(DiagnosticAnchorEvidence::DerivedFromOwner)) && emitter
+        raise ArgumentError.new("raw attachment must not have an emitter")
+      end
+    end
+  end
+
+  enum DiagnosticRenderedLexContext : UInt8
+    Operand = 1
+    Operator = 2
+    DefOrMacroName = 3
+    TypeName = 4
+  end
+
+  record DiagnosticRenderedToken, input_start : Int32, input_end : Int32,
+    token_kind : String, token_text : String, lexical_mode : String
+
+  module DiagnosticRenderedTokens
+    def self.observe_one(input : String, start : Int32, finish : Int32, lexical_mode : String,
+                         context : DiagnosticRenderedLexContext) : DiagnosticRenderedToken
+      base = input.starts_with?('\uFEFF') ? 3 : 0
+      unless input.valid_encoding? && start >= base && finish > start && finish <= input.bytesize &&
+             {"Crystal", "Iyi"}.includes?(lexical_mode)
+        raise ArgumentError.new("invalid rendered token input")
+      end
+      lexer = Lexer.new(input)
+      lexer.iyi = lexical_mode == "Iyi"
+      lexer.current_pos = start - base
+      lexer.slash_is_regex = context == DiagnosticRenderedLexContext::Operand
+      lexer.wants_regex = context == DiagnosticRenderedLexContext::Operand
+      lexer.wants_def_or_macro_name = context == DiagnosticRenderedLexContext::DefOrMacroName
+      begin
+        lexer.next_token
+      rescue ex : SyntaxException
+        raise DiagnosticDestinationSyntaxError.new(lexical_mode, ex.message || "lexer rejected destination syntax", start, finish)
+      end
+      token = lexer.token
+      unless token.input_offset == start && token.input_end == finish
+        raise DiagnosticDestinationSyntaxError.new(lexical_mode, "rendered token does not match measured writer extent", start, finish)
+      end
+      DiagnosticRenderedToken.new(start, finish, token.type.to_s, input.byte_slice(start, finish - start), lexical_mode)
     end
   end
 
   class DiagnosticFragmentBuilder
     @events = [] of DiagnosticTokenEvent
     @anchors = [] of DiagnosticAnchor
+    getter lexical_mode : String
+
+    def initialize(@lexical_mode : String)
+      raise ArgumentError.new("invalid fragment lexical mode") unless {"Crystal", "Iyi"}.includes?(@lexical_mode)
+    end
+
+    def event_count : Int32; @events.size; end
+    def anchor_count : Int32; @anchors.size; end
+    def event_at(index : Int32) : DiagnosticTokenEvent; @events[index]; end
+    def anchor_at(index : Int32) : DiagnosticAnchor; @anchors[index]; end
+
+    def add_written_syntax(start_offset : Int32, end_offset : Int32, rendered : String,
+                           context : DiagnosticRenderedLexContext, producer : DiagnosticMacroProducer) : Int32
+      observed = DiagnosticRenderedTokens.observe_one(rendered, start_offset, end_offset, @lexical_mode, context)
+      part = DiagnosticEmissionPart::Generated.new(start_offset, end_offset, nil, producer)
+      event = DiagnosticTokenEvent.new(start_offset, end_offset, observed.token_kind, observed.token_text,
+        @lexical_mode, DiagnosticTokenSelection::Whole, [part] of DiagnosticEmissionPart)
+      add_event(event)
+    end
 
     def add_event(event : DiagnosticTokenEvent) : Int32
+      raise ArgumentError.new("fragment event lexical mode mismatch") unless event.lexical_mode == @lexical_mode
       @events.each_with_index do |existing, index|
         if existing.selected_start == event.selected_start && existing.selected_end == event.selected_end
           raise ArgumentError.new("conflicting fragment token events") unless existing == event
           return index
+        end
+        if existing.selected_start < event.selected_end && event.selected_start < existing.selected_end
+          raise ArgumentError.new("overlapping fragment token events")
         end
       end
       @events << event
@@ -711,18 +808,40 @@ module Iyi
       @anchors.size - 1
     end
 
-    def finish(key : String, text : String) : IyiMod::DiagnosticFragment
-      raise ArgumentError.new("invalid fragment text") unless text.valid_encoding?
+    # Observe the complete output, since an isolated slice can change lexer state
+    # or silently strip a BOM that was not at the beginning of the input.
+    def add_written_anchor(start_offset : Int32, end_offset : Int32, rendered : String, context : DiagnosticRenderedLexContext,
+                           kind : String, role : String, origin : DiagnosticOrigin,
+                           name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue))) : Int32
+      raise ArgumentError.new("invalid measured fragment origin") unless origin.valid_for_anchor?(kind, role)
+      observed = DiagnosticRenderedTokens.observe_one(rendered, start_offset, end_offset, @lexical_mode, context)
+      bytes = observed.token_text
+      part = if name_slots.empty?
+               DiagnosticEmissionPart::AstAnchor.new(start_offset, end_offset, nil, origin).as(DiagnosticEmissionPart)
+             else
+               raise ArgumentError.new("fragment name anchor has multiple slots") unless name_slots.size == 1
+               names = name_slots.values.first
+               raise ArgumentError.new("fragment name anchor has multiple values") unless names.size == 1
+               name = names.first
+               unless name.rendered_text == bytes && name.artifact_origin == origin
+                 raise ArgumentError.new("fragment name differs from measured bytes")
+               end
+               DiagnosticEmissionPart::NameSplice.new(start_offset, end_offset, nil, name).as(DiagnosticEmissionPart)
+             end
+      event = DiagnosticTokenEvent.new(start_offset, end_offset, observed.token_kind, bytes, @lexical_mode,
+        DiagnosticTokenSelection::Whole, [part] of DiagnosticEmissionPart)
+      event_index = add_event(event)
+      add_anchor(DiagnosticAnchor.new(start_offset, kind, role, origin, name_slots,
+        event_index, DiagnosticFragmentAttachment::Direct.new))
+    end
+
+    def canonicalize : {Array(DiagnosticTokenEvent), Array(DiagnosticAnchor)}
       events_with_index = @events.each_with_index.to_a
       events_with_index.sort_by! do |event, _|
         {event.selected_start, event.selected_end, event.selection.value, event.token_kind, event.token_text, event.lexical_mode}
       end
       event_remap = Array(Int32).new(@events.size, 0)
       events = events_with_index.map_with_index do |(event, old_index), new_index|
-        unless event.input_end <= text.bytesize &&
-               text.byte_slice(event.input_start, event.input_end - event.input_start) == event.token_text
-          raise ArgumentError.new("fragment token bytes do not match text")
-        end
         event_remap[old_index] = new_index
         event
       end
@@ -769,18 +888,285 @@ module Iyi
         anchors << original.copy_with(event_index: event_remap[original.event_index], attachment: attachment)
         remaining.delete(index)
       end
-      IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(text), events, anchors)
+      {events, anchors}
+    end
+
+    def finish_data(text : String) : DiagnosticFragmentData
+      events, anchors = canonicalize
+      DiagnosticFragmentData.new(text, events, anchors)
+    end
+
+    def finish(key : String, text : String) : IyiMod::DiagnosticFragment
+      finish_data(text).to_fragment(key)
     end
   end
 
-  record DiagnosticMacroAnchor, offset : Int32, end_offset : Int32, kind : String, role : String,
-    emitter_origin : DiagnosticOrigin?, source_origin : DiagnosticOrigin?, producer : DiagnosticMacroProducer?
+  module DiagnosticFragmentValidation
+    def self.canonicalize(events : Array(DiagnosticTokenEvent), anchors : Array(DiagnosticAnchor)) : {Array(DiagnosticTokenEvent), Array(DiagnosticAnchor)}
+      if events.empty?
+        raise ArgumentError.new("anchors without fragment events") unless anchors.empty?
+        return {[] of DiagnosticTokenEvent, [] of DiagnosticAnchor}
+      end
+      builder = DiagnosticFragmentBuilder.new(events.first.lexical_mode)
+      events.each_with_index do |event, index|
+        raise ArgumentError.new("duplicate fragment token event") unless builder.add_event(event) == index
+      end
+      anchors.each { |anchor| builder.add_anchor(anchor) }
+      builder.canonicalize
+    end
+
+    def self.validate_canonical!(events : Array(DiagnosticTokenEvent), anchors : Array(DiagnosticAnchor)) : Nil
+      ordered_events, ordered_anchors = canonicalize(events, anchors)
+      unless ordered_events == events && ordered_anchors == anchors
+        raise ArgumentError.new("noncanonical fragment diagnostics")
+      end
+      used = Set(Int32).new
+      direct = Set(Int32).new
+      anchors.each_with_index do |anchor, index|
+        event = events[anchor.event_index]? || raise ArgumentError.new("missing fragment event")
+        raise ArgumentError.new("fragment anchor offset mismatch") unless anchor.offset == event.selected_start
+        raise ArgumentError.new("fragment anchor lacks matching origin") unless anchor.origin.try(&.valid_for_anchor?(anchor.kind, anchor.role))
+        used << anchor.event_index
+        case attachment = anchor.attachment
+        when DiagnosticFragmentAttachment::Direct
+          raise ArgumentError.new("duplicate direct fragment writer") unless direct.add?(anchor.event_index)
+        when DiagnosticFragmentAttachment::HeadOf
+          expected = case attachment.rule
+                     when DiagnosticHeadRule::NamedArrayHead then {"Literal", "array"}
+                     when DiagnosticHeadRule::NamedHashHead then {"Literal", "hash"}
+                     when DiagnosticHeadRule::ConstantAssignHead, DiagnosticHeadRule::ConstantTypeHead then {"Assign", "constant"}
+                     when DiagnosticHeadRule::MultiAssignHead then {"Literal", "multiassign"}
+                     else raise ArgumentError.new("unknown fragment head rule")
+                     end
+          raise ArgumentError.new("fragment head role mismatch") unless {anchor.kind, anchor.role} == expected
+          case head = attachment.head
+          when DiagnosticFragmentHead::Anchor
+            child = anchors[head.anchor_index]? || raise ArgumentError.new("missing fragment head")
+            unless head.anchor_index < index && child.event_index == anchor.event_index
+              raise ArgumentError.new("fragment head event mismatch")
+            end
+            allowed = if attachment.rule == DiagnosticHeadRule::MultiAssignHead
+                        (child.kind == "Name" && {"path_segment", "local_reference", "instance_variable", "class_variable", "special_global"}.includes?(child.role)) ||
+                          (child.kind == "Call" && child.role == "method") ||
+                          (child.kind == "Literal" && {"array", "hash", "regex", "interpolation", "range", "case", "select"}.includes?(child.role)) ||
+                          ({"ProcLiteral", "ProcPointer"}.includes?(child.kind) && child.role == "arrow") ||
+                          (child.kind == "Cast" && child.role == "keyword")
+                      else
+                        child.kind == "Name" && child.role == "path_segment"
+                      end
+            unless allowed && child.attachment.is_a?(DiagnosticFragmentAttachment::Direct)
+              raise ArgumentError.new("invalid fragment head child role")
+            end
+          when DiagnosticFragmentHead::Syntax
+            text = case head.form
+                   when DiagnosticHeadSyntax::GlobalPathPrefix then "::"
+                   when DiagnosticHeadSyntax::FirstSplat then "*"
+                   when DiagnosticHeadSyntax::FirstUnderscore then "_"
+                   when DiagnosticHeadSyntax::ParenthesizedFirstTarget then "("
+                   else raise ArgumentError.new("unknown fragment syntax head")
+                   end
+            unless event.selection.whole? && event.token_kind == text && event.token_text == text
+              raise ArgumentError.new("fragment syntax head mismatch")
+            end
+            if adjacent_index = head.adjacent_anchor_index
+              child = anchors[adjacent_index]? || raise ArgumentError.new("missing adjacent fragment name")
+              child_event = events[child.event_index]
+              unless adjacent_index < index && child.kind == "Name" && child.role == "path_segment" &&
+                     child.attachment.is_a?(DiagnosticFragmentAttachment::Direct) && child_event.token_kind == "CONST" &&
+                     child_event.lexical_mode == event.lexical_mode && child_event.selected_start == event.selected_end
+                raise ArgumentError.new("invalid fragment head adjacency")
+              end
+            elsif head.form != DiagnosticHeadSyntax::GlobalPathPrefix && attachment.rule != DiagnosticHeadRule::MultiAssignHead
+              raise ArgumentError.new("invalid punctuation head rule")
+            end
+          end
+        when DiagnosticFragmentAttachment::PayloadOf
+          owner = anchors[attachment.owner_anchor_index]? || raise ArgumentError.new("missing fragment payload owner")
+          expected = attachment.rule == DiagnosticPayloadRule::RegexInterpolationPayload ? {"Literal", "regex"} : {"Call", "method"}
+          unless attachment.owner_anchor_index < index && {anchor.kind, anchor.role} == {"Literal", "interpolation"} &&
+                 {owner.kind, owner.role} == expected && owner.event_index == anchor.event_index &&
+                 owner.attachment.is_a?(DiagnosticFragmentAttachment::Direct)
+            raise ArgumentError.new("invalid fragment payload relationship")
+          end
+          openers = attachment.rule == DiagnosticPayloadRule::RegexInterpolationPayload ?
+            {"/", "%r(", "%r<", "%r[", "%r{", "%r|"} : {"`", "%x(", "%x<", "%x[", "%x{", "%x|"}
+          unless event.selection.whole? && event.token_kind == "DELIMITER_START" && openers.includes?(event.token_text)
+            raise ArgumentError.new("invalid fragment payload opener")
+          end
+        else
+          raise ArgumentError.new("unknown fragment attachment")
+        end
+      end
+      raise ArgumentError.new("unconsumed fragment token event") unless used.size == events.size
+    end
+
+    def self.validate_text!(text : String, events : Array(DiagnosticTokenEvent), anchors : Array(DiagnosticAnchor)) : Nil
+      raise ArgumentError.new("invalid fragment text") unless text.valid_encoding?
+      validate_canonical!(events, anchors)
+      events.each do |event|
+        unless event.input_end <= text.bytesize &&
+               text.byte_slice(event.input_start, event.input_end - event.input_start) == event.token_text
+          raise ArgumentError.new("fragment token bytes do not match text")
+        end
+      end
+    end
+  end
+
+  class DiagnosticDestinationSyntaxError < Exception
+    getter lexical_mode : String
+    getter detail : String
+    getter start_offset : Int32?
+    getter end_offset : Int32?
+    def initialize(@lexical_mode : String, @detail : String, @start_offset : Int32? = nil, @end_offset : Int32? = nil)
+      raise ArgumentError.new("invalid destination failure mode") unless {"Crystal", "Iyi"}.includes?(@lexical_mode)
+      super("#{@lexical_mode}: #{@detail}")
+    end
+    def_equals_and_hash @lexical_mode, @detail, @start_offset, @end_offset
+  end
+
+  class DiagnosticFragmentData
+    getter text_sha256 : String
+    @events : Array(DiagnosticTokenEvent)
+    @anchors : Array(DiagnosticAnchor)
+    def initialize(text : String, events : Array(DiagnosticTokenEvent), anchors : Array(DiagnosticAnchor))
+      DiagnosticFragmentValidation.validate_text!(text, events, anchors)
+      @text_sha256 = ::Crystal::Digest::SHA256.hexdigest(text)
+      @events = events.dup
+      @anchors = anchors.dup
+    end
+    def events : Array(DiagnosticTokenEvent); @events.dup; end
+    def anchors : Array(DiagnosticAnchor); @anchors.dup; end
+    def to_fragment(key : String) : IyiMod::DiagnosticFragment
+      IyiMod::DiagnosticFragment.new(key, @text_sha256, @events.dup, @anchors.dup)
+    end
+    def_equals_and_hash @text_sha256, @events, @anchors
+  end
+
+  abstract class DiagnosticModeCaptureResult
+    class Success < DiagnosticModeCaptureResult
+      getter data : DiagnosticFragmentData
+      def initialize(@data : DiagnosticFragmentData); end
+      def_equals_and_hash @data
+    end
+    class Failure < DiagnosticModeCaptureResult
+      getter error : DiagnosticDestinationSyntaxError
+      def initialize(@error : DiagnosticDestinationSyntaxError); end
+      def_equals_and_hash @error
+    end
+  end
+
+  class DiagnosticModeCaptures
+    getter text : String
+    getter crystal : DiagnosticModeCaptureResult
+    getter iyi : DiagnosticModeCaptureResult
+    @positions : Array(IyiMod::SourcePosition)
+
+    def initialize(@text : String, positions : Array(IyiMod::SourcePosition), @crystal : DiagnosticModeCaptureResult,
+                   @iyi : DiagnosticModeCaptureResult)
+      @positions = positions.dup
+      digest = ::Crystal::Digest::SHA256.hexdigest(@text)
+      {"Crystal", "Iyi"}.zip({@crystal, @iyi}).each do |mode, outcome|
+        case outcome
+        when DiagnosticModeCaptureResult::Success
+          unless outcome.data.text_sha256 == digest && outcome.data.events.all? { |event| event.lexical_mode == mode }
+            raise ArgumentError.new("destination capture differs from authoritative text or mode")
+          end
+        when DiagnosticModeCaptureResult::Failure
+          raise ArgumentError.new("destination failure mode mismatch") unless outcome.error.lexical_mode == mode
+        else
+          raise ArgumentError.new("invalid destination capture outcome")
+        end
+      end
+    end
+
+    def positions : Array(IyiMod::SourcePosition); @positions.dup; end
+
+    def self.capture(text : String, positions : Array(IyiMod::SourcePosition),
+                     &block : String -> {String, Array(IyiMod::SourcePosition), DiagnosticFragmentBuilder}) : DiagnosticModeCaptures
+      results = ["Crystal", "Iyi"].map do |mode|
+        begin
+          rendered, actual_positions, builder = yield mode
+          unless rendered == text && actual_positions == positions && builder.lexical_mode == mode
+            raise ArgumentError.new("destination capture changed authoritative rendering")
+          end
+          DiagnosticModeCaptureResult::Success.new(builder.finish_data(rendered)).as(DiagnosticModeCaptureResult)
+        rescue ex : DiagnosticDestinationSyntaxError
+          raise ex unless ex.lexical_mode == mode
+          DiagnosticModeCaptureResult::Failure.new(ex).as(DiagnosticModeCaptureResult)
+        end
+      end
+      new(text, positions, results[0], results[1])
+    end
+
+    def data(mode : String) : DiagnosticFragmentData
+      result = case mode
+               when "Crystal" then @crystal
+               when "Iyi" then @iyi
+               else raise ArgumentError.new("invalid destination mode")
+               end
+      case result
+      when DiagnosticModeCaptureResult::Success then result.data
+      when DiagnosticModeCaptureResult::Failure then raise result.error
+      else raise ArgumentError.new("invalid destination capture outcome")
+      end
+    end
+    def fragment(key : String, mode : String) : IyiMod::DiagnosticFragment
+      data(mode).to_fragment(key)
+    end
+    def_equals_and_hash @text, @positions, @crystal, @iyi
+  end
+
+  record DiagnosticWriterRef, start_offset : Int32, end_offset : Int32
+  record DiagnosticMacroClaimKey, writer : DiagnosticWriterRef, kind : String, role : String
+
+  abstract class DiagnosticMacroHead
+    class Anchor < DiagnosticMacroHead
+      getter writer : DiagnosticWriterRef
+      def initialize(@writer : DiagnosticWriterRef); end
+      def_equals_and_hash @writer
+    end
+    class Syntax < DiagnosticMacroHead
+      getter form : DiagnosticHeadSyntax
+      getter writer : DiagnosticWriterRef
+      getter adjacent_name_writer : DiagnosticWriterRef?
+      def initialize(@form : DiagnosticHeadSyntax, @writer : DiagnosticWriterRef, @adjacent_name_writer : DiagnosticWriterRef?); end
+      def_equals_and_hash @form, @writer, @adjacent_name_writer
+    end
+  end
+
+  abstract class DiagnosticMacroAttachment
+    class Direct < DiagnosticMacroAttachment
+      getter writer : DiagnosticWriterRef
+      def initialize(@writer : DiagnosticWriterRef); end
+      def_equals_and_hash @writer
+    end
+    class HeadOf < DiagnosticMacroAttachment
+      getter rule : DiagnosticHeadRule
+      getter head : DiagnosticMacroHead
+      def initialize(@rule : DiagnosticHeadRule, @head : DiagnosticMacroHead); end
+      def_equals_and_hash @rule, @head
+    end
+    class PayloadOf < DiagnosticMacroAttachment
+      getter rule : DiagnosticPayloadRule
+      getter owner_key : DiagnosticMacroClaimKey
+      def initialize(@rule : DiagnosticPayloadRule, @owner_key : DiagnosticMacroClaimKey); end
+      def_equals_and_hash @rule, @owner_key
+    end
+  end
+
+  record DiagnosticMacroClaim, key : DiagnosticMacroClaimKey, evidence : DiagnosticAnchorEvidence,
+    attachment : DiagnosticMacroAttachment, emitter_origin : DiagnosticOrigin?
+
 
   record DiagnosticGeneratedText, start_offset : Int32, end_offset : Int32,
     emitter_origin : DiagnosticOrigin?, producer : DiagnosticMacroProducer
 
   record DiagnosticMacroNameFragment, start_offset : Int32, end_offset : Int32,
-    emitter_origin : DiagnosticOrigin?, source_name : DiagnosticNameValue
+    emitter_origin : DiagnosticOrigin?, source_name : DiagnosticNameValue do
+    def writer : DiagnosticWriterRef
+      DiagnosticWriterRef.new(start_offset, end_offset)
+    end
+  end
 
   # Provenance is independent of Location, which remains the source of
   # human-facing positions. These records contain no process-local identity.
@@ -901,37 +1287,14 @@ module Iyi
         Written.new(source["module"].as_s, source["file"].as_s,
           object["input_byte_offset"].as_i, object["anchor_kind"].as_s, object["role"].as_s)
       when "Expanded"
-        expected_keys(object, %w(kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset generated_byte_end token_kind token_text lexical_mode anchor_kind role name_context emission_parts))
-        %w(expansion_guard token_kind token_text lexical_mode anchor_kind role).each { |key| budget.text(object[key].as_s) }
+        expected_keys(object, %w(kind invocation_origin macro_definition_origin expansion_guard anchor_kind role name_context token_event anchor_use))
+        %w(expansion_guard anchor_kind role).each { |key| budget.text(object[key].as_s) }
         budget.text(object["name_context"].as_s) unless object["name_context"].raw.nil?
-        budget.consume(object["emission_parts"].as_a.size.to_u64 * 1024_u64)
-        parts = object["emission_parts"].as_a.map do |part|
-          fields = part.as_h
-          emitter = fields["emitter_origin"]
-          emitter_origin = emitter.raw.nil? ? nil : from_json(emitter, depth + 1, budget)
-          start = fields["start_offset"].as_i
-          finish = fields["end_offset"].as_i
-          case fields["kind"].as_s
-          when "Generated"
-            expected_keys(fields, %w(kind start_offset end_offset emitter_origin producer))
-            budget.text(fields["producer"].as_s)
-            DiagnosticEmissionPart::Generated.new(start, finish, emitter_origin, DiagnosticMacroProducer.parse(fields["producer"].as_s)).as(DiagnosticEmissionPart)
-          when "AstAnchor"
-            expected_keys(fields, %w(kind start_offset end_offset emitter_origin source_origin))
-            DiagnosticEmissionPart::AstAnchor.new(start, finish, emitter_origin, from_json(fields["source_origin"], depth + 1, budget)).as(DiagnosticEmissionPart)
-          when "NameSplice"
-            expected_keys(fields, %w(kind start_offset end_offset emitter_origin source_name))
-            DiagnosticEmissionPart::NameSplice.new(start, finish, emitter_origin,
-              name_value_from_json(fields["source_name"], depth + 1, budget)).as(DiagnosticEmissionPart)
-          else
-            raise ArgumentError.new("unknown diagnostic emission part")
-          end
-        end
         Expanded.new(from_json(object["invocation_origin"], depth + 1, budget),
-          from_json(object["macro_definition_origin"], depth + 1, budget),
-          object["expansion_guard"].as_s, object["generated_byte_offset"].as_i, object["generated_byte_end"].as_i,
-          object["token_kind"].as_s, object["token_text"].as_s, object["lexical_mode"].as_s,
-          object["anchor_kind"].as_s, object["role"].as_s, object["name_context"].as_s?, parts)
+          from_json(object["macro_definition_origin"], depth + 1, budget), object["expansion_guard"].as_s,
+          object["anchor_kind"].as_s, object["role"].as_s, object["name_context"].as_s?,
+          token_event_from_json(object["token_event"], depth + 1, budget),
+          anchor_use_from_json(object["anchor_use"], depth + 1, budget))
       when "DerivedName"
         case object["derivation_kind"].as_s
         when "ParameterLowering"
@@ -945,6 +1308,19 @@ module Iyi
           expected_keys(object, %w(kind derivation_kind source_token result))
           budget.text(object["result"].as_s)
           DerivedName.regex_match_index(source_token_from_json(object["source_token"], depth + 1, budget), object["result"].as_s)
+        when "TypeSugar"
+          expected_keys(object, %w(kind derivation_kind production witnesses result lowering_index))
+          budget.consume(object["witnesses"].as_a.size.to_u64 * 512_u64)
+          witnesses = object["witnesses"].as_a.map do |value|
+            token = value.as_h
+            expected_keys(token, %w(lexical_origin input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text))
+            %w(input_sha256 lexical_mode token_kind raw_text).each { |key| budget.text(token[key].as_s) }
+            DiagnosticSourceSyntaxToken.new(from_json(token["lexical_origin"], depth + 1, budget),
+              token["input_sha256"].as_s, token["input_bytesize"].as_i, token["input_start"].as_i,
+              token["input_end"].as_i, token["lexical_mode"].as_s, token["token_kind"].as_s, token["raw_text"].as_s)
+          end
+          DerivedName.type_sugar(DiagnosticTypeSugar.parse(object["production"].as_s), witnesses,
+            DiagnosticTypeSugarResult.parse(object["result"].as_s), object["lowering_index"].as_i)
         else
           raise ArgumentError.new("unknown diagnostic name derivation")
         end
@@ -956,6 +1332,98 @@ module Iyi
           object["synthesis_kind"].as_s, object["structural_slot"].as_s)
       else
         raise ArgumentError.new("unknown diagnostic origin kind #{kind}")
+      end
+    end
+
+    private def self.token_event_from_json(value : JSON::Any, depth : Int32, budget : DecodeBudget) : DiagnosticTokenEvent
+      event = value.as_h
+      expected_keys(event, %w(input_start input_end token_kind token_text lexical_mode selection byte_parts))
+      %w(token_kind token_text lexical_mode selection).each { |key| budget.text(event[key].as_s) }
+      budget.consume(event["byte_parts"].as_a.size.to_u64 * 1024_u64)
+      parts = event["byte_parts"].as_a.map do |part|
+        fields = part.as_h
+        emitter = fields["emitter_origin"]
+        emitter_origin = emitter.raw.nil? ? nil : from_json(emitter, depth + 1, budget)
+        start = fields["start_offset"].as_i
+        finish = fields["end_offset"].as_i
+        case fields["kind"].as_s
+        when "Generated"
+          expected_keys(fields, %w(kind start_offset end_offset emitter_origin producer))
+          DiagnosticEmissionPart::Generated.new(start, finish, emitter_origin, DiagnosticMacroProducer.parse(fields["producer"].as_s)).as(DiagnosticEmissionPart)
+        when "AstAnchor"
+          expected_keys(fields, %w(kind start_offset end_offset emitter_origin source_origin))
+          DiagnosticEmissionPart::AstAnchor.new(start, finish, emitter_origin, from_json(fields["source_origin"], depth + 1, budget)).as(DiagnosticEmissionPart)
+        when "NameSplice"
+          expected_keys(fields, %w(kind start_offset end_offset emitter_origin source_name))
+          DiagnosticEmissionPart::NameSplice.new(start, finish, emitter_origin, name_value_from_json(fields["source_name"], depth + 1, budget)).as(DiagnosticEmissionPart)
+        else
+          raise ArgumentError.new("unknown diagnostic emission part")
+        end
+      end
+      DiagnosticTokenEvent.new(event["input_start"].as_i, event["input_end"].as_i, event["token_kind"].as_s,
+        event["token_text"].as_s, event["lexical_mode"].as_s, DiagnosticTokenSelection.parse(event["selection"].as_s), parts)
+    end
+
+    private def self.anchor_evidence_from_json(value : JSON::Any, depth : Int32, budget : DecodeBudget) : DiagnosticAnchorEvidence
+      fields = value.as_h
+      case fields["kind"].as_s
+      when "Spliced"
+        expected_keys(fields, %w(kind source_origin))
+        DiagnosticAnchorEvidence::Spliced.new(from_json(fields["source_origin"], depth + 1, budget))
+      when "Constructed"
+        expected_keys(fields, %w(kind producer))
+        DiagnosticAnchorEvidence::Constructed.new(DiagnosticMacroProducer.parse(fields["producer"].as_s))
+      when "RawSyntax"
+        expected_keys(fields, %w(kind witnesses))
+        budget.consume(fields["witnesses"].as_a.size.to_u64 * 512_u64)
+        witnesses = fields["witnesses"].as_a.map do |item|
+          witness = item.as_h
+          expected_keys(witness, %w(role event))
+          DiagnosticSyntaxWitness.new(DiagnosticWitnessRole.parse(witness["role"].as_s), token_event_from_json(witness["event"], depth + 1, budget))
+        end
+        DiagnosticAnchorEvidence::RawSyntax.new(witnesses)
+      when "DerivedFromOwner"
+        expected_keys(fields, %w(kind))
+        DiagnosticAnchorEvidence::DerivedFromOwner.new
+      else
+        raise ArgumentError.new("unknown diagnostic anchor evidence")
+      end
+    end
+
+    private def self.anchor_use_from_json(value : JSON::Any, depth : Int32, budget : DecodeBudget) : DiagnosticAnchorUse
+      fields = value.as_h
+      case fields["kind"].as_s
+      when "Direct"
+        expected_keys(fields, %w(kind))
+        DiagnosticAnchorUse::Direct.new
+      when "HeadOf"
+        expected_keys(fields, %w(kind rule evidence head emitter_origin))
+        head_data = fields["head"].as_h
+        head = case head_data["kind"].as_s
+               when "Anchor"
+                 expected_keys(head_data, %w(kind origin))
+                 DiagnosticHead::Anchor.new(from_json(head_data["origin"], depth + 1, budget).as(Expanded)).as(DiagnosticHead)
+               when "Syntax"
+                 expected_keys(head_data, %w(kind form adjacent_name_origin))
+                 adjacent = head_data["adjacent_name_origin"]
+                 DiagnosticHead::Syntax.new(DiagnosticHeadSyntax.parse(head_data["form"].as_s),
+                   adjacent.raw.nil? ? nil : from_json(adjacent, depth + 1, budget).as(Expanded)).as(DiagnosticHead)
+               else
+                 raise ArgumentError.new("unknown diagnostic head")
+               end
+        emitter = fields["emitter_origin"]
+        DiagnosticAnchorUse::HeadOf.new(DiagnosticHeadRule.parse(fields["rule"].as_s),
+          anchor_evidence_from_json(fields["evidence"], depth + 1, budget), head,
+          emitter.raw.nil? ? nil : from_json(emitter, depth + 1, budget))
+      when "PayloadOf"
+        expected_keys(fields, %w(kind rule evidence owner_origin emitter_origin))
+        emitter = fields["emitter_origin"]
+        DiagnosticAnchorUse::PayloadOf.new(DiagnosticPayloadRule.parse(fields["rule"].as_s),
+          anchor_evidence_from_json(fields["evidence"], depth + 1, budget),
+          from_json(fields["owner_origin"], depth + 1, budget).as(Expanded),
+          emitter.raw.nil? ? nil : from_json(emitter, depth + 1, budget))
+      else
+        raise ArgumentError.new("unknown diagnostic anchor use")
       end
     end
 
@@ -1131,10 +1599,9 @@ module Iyi
           when DiagnosticTypeSugar::NilPredicate then {["nil?"], [DiagnosticTypeSugarResult::Nil], [0]}
           else raise ArgumentError.new("unknown type-sugar production")
         end
-        unless @witnesses.map(&.raw_text) == expected && allowed_results.includes?(result) && allowed_indices.includes?(@lowering_index)
+        unless @witnesses.map(&.raw_text) == expected && allowed_results.includes?(result) && allowed_indices.includes?(@lowering_index.not_nil!)
           raise ArgumentError.new("invalid type-sugar derivation")
         end
-        first = @witnesses.first
         @witnesses.each_cons_pair do |left, right|
           unless left.input_sha256 == right.input_sha256 && left.input_bytesize == right.input_bytesize &&
                  left.lexical_mode == right.lexical_mode && left.input_end <= right.input_start
@@ -1143,6 +1610,21 @@ module Iyi
         end
         parents = @witnesses.map(&.lexical_origin)
         set_graph_bounds!(1024_u64 + @witnesses.sum { |w| w.raw_text.bytesize.to_u64 * 6 + 256_u64 }, parents)
+        @witnesses.each_cons_pair do |left, right|
+          same_input = case left_origin = left.lexical_origin
+                       when Written
+                         right_origin = right.lexical_origin.as?(Written)
+                         right_origin && left_origin.source_module == right_origin.source_module && left_origin.source_file == right_origin.source_file
+                       when Expanded
+                         right_origin = right.lexical_origin.as?(Expanded)
+                         right_origin && left_origin.invocation_origin == right_origin.invocation_origin &&
+                           left_origin.macro_definition_origin == right_origin.macro_definition_origin &&
+                           left_origin.expansion_guard == right_origin.expansion_guard
+                       else
+                         false
+                       end
+          raise ArgumentError.new("type-sugar witnesses use different inputs") unless same_input
+        end
       end
 
       def valid_for_anchor?(kind : String, role : String) : Bool
@@ -1280,6 +1762,7 @@ module Iyi
             end
           end
         when DiagnosticAnchorUse::HeadOf
+          use.emitter_origin.try { |emitter| parents << emitter }
           expected = case use.rule
                      when DiagnosticHeadRule::NamedArrayHead then {"Literal", "array"}
                      when DiagnosticHeadRule::NamedHashHead then {"Literal", "hash"}
@@ -1294,7 +1777,47 @@ module Iyi
             parents << evidence.source_origin
           when DiagnosticAnchorEvidence::Constructed
           when DiagnosticAnchorEvidence::RawSyntax
-            raise ArgumentError.new("raw syntax witness validation unavailable")
+            expected_witnesses = case use.rule
+                                 when DiagnosticHeadRule::NamedArrayHead, DiagnosticHeadRule::NamedHashHead
+                                   [{DiagnosticWitnessRole::Open, "{"}]
+                                 when DiagnosticHeadRule::ConstantAssignHead
+                                   [{DiagnosticWitnessRole::Equals, "="}]
+                                 when DiagnosticHeadRule::ConstantTypeHead
+                                   [{DiagnosticWitnessRole::Colon, ":"}, {DiagnosticWitnessRole::Equals, "="}]
+                                 when DiagnosticHeadRule::MultiAssignHead
+                                   if (head = use.head).is_a?(DiagnosticHead::Syntax) && head.form == DiagnosticHeadSyntax::FirstSplat
+                                     [{DiagnosticWitnessRole::Splat, "*"}, {DiagnosticWitnessRole::Equals, "="}]
+                                   else
+                                     [{DiagnosticWitnessRole::Comma, ","}, {DiagnosticWitnessRole::Equals, "="}]
+                                   end
+                                 else
+                                   raise ArgumentError.new("unknown raw witness rule")
+                                 end
+            witnesses = evidence.witnesses
+            raise ArgumentError.new("wrong raw witness count") unless witnesses.size == expected_witnesses.size
+            cursor = @token_event.selected_end
+            witnesses.each_with_index do |witness, index|
+              event = witness.event
+              role, spelling = expected_witnesses[index]
+              first_splat = index == 0 && role == DiagnosticWitnessRole::Splat &&
+                            event == @token_event
+              unless witness.role == role && event.selection.whole? && event.token_kind == spelling &&
+                     event.token_text == spelling && event.lexical_mode == @token_event.lexical_mode &&
+                     (first_splat || event.selected_start >= cursor)
+                raise ArgumentError.new("invalid raw syntax witness")
+              end
+              unless event.byte_parts.all? { |part|
+                part.is_a?(DiagnosticEmissionPart::Generated) &&
+                  {DiagnosticMacroProducer::MacroTemplate, DiagnosticMacroProducer::MacroId,
+                   DiagnosticMacroProducer::MacroVar, DiagnosticMacroProducer::MacroVerbatim,
+                   DiagnosticMacroProducer::YieldWrapper, DiagnosticMacroProducer::SemanticPrinter}.includes?(part.producer)
+              }
+                raise ArgumentError.new("raw syntax witness lacks raw producer")
+              end
+              own += event.graph_bytes
+              raise ArgumentError.new("raw witness graph exceeds depth limit") if event.graph_depth + 1 > MAX_DEPTH
+              cursor = event.selected_end
+            end
           else
             raise ArgumentError.new("invalid head evidence")
           end
@@ -1306,6 +1829,7 @@ module Iyi
             parents << head.adjacent_name_origin.not_nil! if head.adjacent_name_origin
           end
         when DiagnosticAnchorUse::PayloadOf
+          use.emitter_origin.try { |emitter| parents << emitter }
           raise ArgumentError.new("payload role mismatch") unless @anchor_kind == "Literal" && @role == "interpolation" && @name_context.nil?
           owner = use.owner_origin.as?(Expanded) || raise ArgumentError.new("payload owner is not expanded")
           owner_role = use.rule == DiagnosticPayloadRule::RegexInterpolationPayload ? {"Literal", "regex"} : {"Call", "method"}
@@ -1331,6 +1855,18 @@ module Iyi
                    child.expansion_guard == @expansion_guard && child.token_event == @token_event
               raise ArgumentError.new("head event mismatch")
             end
+            allowed = if use.rule == DiagnosticHeadRule::MultiAssignHead
+                        (child.anchor_kind == "Name" && {"path_segment", "local_reference", "instance_variable", "class_variable", "special_global"}.includes?(child.role)) ||
+                          (child.anchor_kind == "Call" && child.role == "method") ||
+                          (child.anchor_kind == "Literal" && {"array", "hash", "regex", "interpolation", "range", "case", "select"}.includes?(child.role)) ||
+                          ({"ProcLiteral", "ProcPointer"}.includes?(child.anchor_kind) && child.role == "arrow") ||
+                          (child.anchor_kind == "Cast" && child.role == "keyword")
+                      else
+                        child.anchor_kind == "Name" && child.role == "path_segment"
+                      end
+            unless allowed && child.anchor_use.is_a?(DiagnosticAnchorUse::Direct)
+              raise ArgumentError.new("invalid head child role")
+            end
           when DiagnosticHead::Syntax
             expected_text = case head.form
                             when DiagnosticHeadSyntax::GlobalPathPrefix then "::"
@@ -1339,13 +1875,46 @@ module Iyi
                             when DiagnosticHeadSyntax::ParenthesizedFirstTarget then "("
                             else raise ArgumentError.new("invalid syntax head")
                             end
-            raise ArgumentError.new("syntax head token mismatch") unless @token_event.selected_text == expected_text
+            unless @token_event.selection.whole? && @token_event.token_kind == expected_text && @token_event.token_text == expected_text
+              raise ArgumentError.new("syntax head token mismatch")
+            end
+            if head.form == DiagnosticHeadSyntax::GlobalPathPrefix
+              adjacent = head.adjacent_name_origin.not_nil!
+              unless adjacent.anchor_use.is_a?(DiagnosticAnchorUse::Direct) &&
+                     adjacent.valid_for_anchor?("Name", "path_segment") && adjacent.token_event.token_kind == "CONST" &&
+                     adjacent.token_event.selected_start == @token_event.selected_end &&
+                     adjacent.token_event.lexical_mode == @token_event.lexical_mode &&
+                     adjacent.invocation_origin == @invocation_origin && adjacent.macro_definition_origin == @macro_definition_origin &&
+                     adjacent.expansion_guard == @expansion_guard
+                raise ArgumentError.new("invalid global prefix adjacency")
+              end
+            elsif use.rule != DiagnosticHeadRule::MultiAssignHead
+              raise ArgumentError.new("invalid punctuation head rule")
+            end
           end
         when DiagnosticAnchorUse::PayloadOf
           owner = use.owner_origin.as(Expanded)
           unless owner.invocation_origin == @invocation_origin && owner.macro_definition_origin == @macro_definition_origin &&
                  owner.expansion_guard == @expansion_guard && owner.token_event == @token_event
             raise ArgumentError.new("payload event mismatch")
+          end
+          unless owner.anchor_use.is_a?(DiagnosticAnchorUse::Direct) && @token_event.selection.whole? && @token_event.token_kind == "DELIMITER_START"
+            raise ArgumentError.new("invalid payload owner event")
+          end
+          openers = if use.rule == DiagnosticPayloadRule::RegexInterpolationPayload
+                      {"/", "%r(", "%r<", "%r[", "%r{", "%r|"}
+                    else
+                      {"`", "%x(", "%x<", "%x[", "%x{", "%x|"}
+                    end
+          raise ArgumentError.new("invalid payload opener") unless openers.includes?(@token_event.token_text)
+          if use.evidence.is_a?(DiagnosticAnchorEvidence::DerivedFromOwner)
+            unless @token_event.byte_parts.all? { |part|
+              part.is_a?(DiagnosticEmissionPart::Generated) &&
+                {DiagnosticMacroProducer::MacroTemplate, DiagnosticMacroProducer::MacroId, DiagnosticMacroProducer::MacroVar,
+                 DiagnosticMacroProducer::MacroVerbatim, DiagnosticMacroProducer::YieldWrapper, DiagnosticMacroProducer::SemanticPrinter}.includes?(part.producer)
+            }
+              raise ArgumentError.new("derived payload lacks raw owner")
+            end
           end
         end
       end

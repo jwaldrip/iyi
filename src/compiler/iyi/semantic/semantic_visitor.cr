@@ -1451,13 +1451,12 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # separately whether any runnable code is somewhere this cannot reach —
     # which is what a consumer has to be refused over rather than given a
     # module that half sets itself up.
-    source, positions, diagnostic_anchors = iyi_initialiser_source(parsed_nodes)
+    source, positions, diagnostic_fragment = iyi_initialiser_source(parsed_nodes, filename)
     unless source.empty?
       @program.iyi_module_initialiser_source[filename] = source
       @program.iyi_module_initialiser_positions[filename] = positions
-      if diagnostic_anchors
-        @program.iyi_initialiser_diagnostics[filename] = IyiMod::DiagnosticFragment.new(
-          "initialiser", ::Crystal::Digest::SHA256.hexdigest(source), diagnostic_anchors)
+      if diagnostic_fragment
+        @program.iyi_initialiser_diagnostics[filename] = diagnostic_fragment.finish("initialiser", source)
       end
     end
     @program.iyi_module_initialisers << filename if iyi_uncarried_initialiser?(parsed_nodes)
@@ -1591,11 +1590,11 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   #
   # In text order, because that is the order III.5 gives a module's own code.
   # With where each node of it was written (`IyiMod::SourcePosition`).
-  private def iyi_initialiser_source(node : ASTNode) : {String, Array(IyiMod::SourcePosition), Array(DiagnosticAnchor)?}
+  private def iyi_initialiser_source(node : ASTNode, artifact_path : String) : {String, Array(IyiMod::SourcePosition), DiagnosticFragmentBuilder?}
     statements = [] of ASTNode
     iyi_collect_initialiser node, statements
     if @program.diagnostic_capture
-      IyiMod.diagnostic_located_source(statements)
+      IyiMod.diagnostic_located_source(statements, @program.diagnostic_artifact_lexical_mode(artifact_path))
     else
       source, positions = IyiMod.located_source(statements)
       {source, positions, nil}

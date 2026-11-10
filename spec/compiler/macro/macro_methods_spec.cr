@@ -96,7 +96,7 @@ module Iyi
       source = global.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)].first
       derived = source.as(DiagnosticNameValue::Derived).origin
       derived.result.should eq("MatchData")
-      derived.source_token.raw_text.should eq("$1?")
+      derived.source_token.not_nil!.raw_text.should eq("$1?")
       derived.rendered_text.should eq("$~")
       io = IO::Memory.new
       anchors = [] of DiagnosticAnchor
@@ -113,7 +113,7 @@ module Iyi
       definition = parser.parse.as(Def)
       slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
       argument = definition.args.first.diagnostic_name_slots[slot].first.as(DiagnosticNameValue::Derived).origin
-      token = argument.source_token
+      token = argument.source_token.not_nil!
       owner = definition.diagnostic_origin.not_nil!
       expect_raises(ArgumentError) do
         DiagnosticOrigin::DerivedName.new(token, owner, "positional", 0, "Target", "StripVariablePrefix", nil)

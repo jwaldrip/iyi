@@ -179,7 +179,7 @@ module Iyi
 
       if node.output?
         splice_start = @program.diagnostic_capture ? @str.pos.to_i32 : 0
-        diagnostic_anchors = @program.diagnostic_capture ? [] of DiagnosticMacroAnchor : nil
+        diagnostic_claims = @program.diagnostic_capture ? [] of DiagnosticMacroClaim : nil
         diagnostic_generated = @program.diagnostic_capture ? [] of DiagnosticGeneratedText : nil
         diagnostic_names = @program.diagnostic_capture ? [] of DiagnosticMacroNameFragment : nil
         diagnostic_emitter = node.diagnostic_origin
@@ -193,7 +193,7 @@ module Iyi
             diagnostic_generated.try(&.<< DiagnosticGeneratedText.new(yield_start, @str.pos.to_i32, diagnostic_emitter, DiagnosticMacroProducer::YieldWrapper))
           end
           @last.to_s(@str, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: true,
-            diagnostic_emissions: diagnostic_anchors,
+            diagnostic_claims: diagnostic_claims,
             diagnostic_generated_text: diagnostic_generated,
             diagnostic_emitter: diagnostic_emitter, diagnostic_name_fragments: diagnostic_names)
           if is_yield
@@ -204,15 +204,15 @@ module Iyi
           (macro_expansion_pragmas[@str.pos.to_i32] ||= [] of Lexer::LocPragma) << Lexer::LocPopPragma.new
         else
           @last.to_s(@str, emit_location_pragmas: !!@program.interpreted_node_hook,
-            diagnostic_emissions: diagnostic_anchors,
+            diagnostic_claims: diagnostic_claims,
             diagnostic_generated_text: diagnostic_generated,
             diagnostic_emitter: diagnostic_emitter, diagnostic_name_fragments: diagnostic_names)
         end
-        if diagnostic_anchors && diagnostic_generated && diagnostic_names
+        if diagnostic_claims && diagnostic_generated && diagnostic_names
           pragmas = @macro_expansion_pragmas ||= {} of Int32 => Array(Lexer::LocPragma)
           (pragmas[splice_start] ||= [] of Lexer::LocPragma) << Lexer::LocDiagnosticEmission.new(
             @str.pos.to_i32,
-            diagnostic_anchors,
+            diagnostic_claims,
             diagnostic_generated,
             diagnostic_names
           )
@@ -239,7 +239,7 @@ module Iyi
           pragmas = @macro_expansion_pragmas ||= {} of Int32 => Array(Lexer::LocPragma)
           (pragmas[start] ||= [] of Lexer::LocPragma) << Lexer::LocDiagnosticEmission.new(
             finish,
-            [] of DiagnosticMacroAnchor,
+            [] of DiagnosticMacroClaim,
             [DiagnosticGeneratedText.new(start, finish, nil, DiagnosticMacroProducer::MacroTemplate)]
           )
           @macro_expansion_pragmas = pragmas.to_a.sort_by!(&.[0]).to_h
@@ -254,27 +254,27 @@ module Iyi
       exp = node.exp
       if @program.diagnostic_capture
         splice_start = @str.pos.to_i32
-        diagnostic_anchors = [] of DiagnosticMacroAnchor
+        diagnostic_claims = [] of DiagnosticMacroClaim
         diagnostic_generated = [] of DiagnosticGeneratedText
         diagnostic_names = [] of DiagnosticMacroNameFragment
         diagnostic_emitter = node.diagnostic_origin
         if exp.is_a?(Expressions)
           exp.expressions.each do |subexp|
             subexp.to_s(@str, emit_location_pragmas: !!@program.interpreted_node_hook,
-              diagnostic_emissions: diagnostic_anchors,
+              diagnostic_claims: diagnostic_claims,
               diagnostic_generated_text: diagnostic_generated,
               diagnostic_emitter: diagnostic_emitter, diagnostic_name_fragments: diagnostic_names)
           end
         else
           exp.to_s(@str, emit_location_pragmas: !!@program.interpreted_node_hook,
-            diagnostic_emissions: diagnostic_anchors,
+            diagnostic_claims: diagnostic_claims,
             diagnostic_generated_text: diagnostic_generated,
             diagnostic_emitter: diagnostic_emitter, diagnostic_name_fragments: diagnostic_names)
         end
         pragmas = @macro_expansion_pragmas ||= {} of Int32 => Array(Lexer::LocPragma)
         (pragmas[splice_start] ||= [] of Lexer::LocPragma) << Lexer::LocDiagnosticEmission.new(
           @str.pos.to_i32,
-          diagnostic_anchors,
+          diagnostic_claims,
           diagnostic_generated,
           diagnostic_names
         )
@@ -481,7 +481,7 @@ module Iyi
           pragmas = @macro_expansion_pragmas ||= {} of Int32 => Array(Lexer::LocPragma)
           (pragmas[start] ||= [] of Lexer::LocPragma) << Lexer::LocDiagnosticEmission.new(
             finish,
-            [] of DiagnosticMacroAnchor,
+            [] of DiagnosticMacroClaim,
             [DiagnosticGeneratedText.new(start, finish, nil, DiagnosticMacroProducer::MacroVar)]
           )
           @macro_expansion_pragmas = pragmas.to_a.sort_by!(&.[0]).to_h

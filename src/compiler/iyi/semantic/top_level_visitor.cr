@@ -872,8 +872,8 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
         ordinal = impl_methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
         key = IyiMod.mono_body_key(container, signature, ordinal)
         if @program.diagnostic_capture
-          text, positions, anchors = IyiMod.diagnostic_located_source(a_def.body)
-          @program.record_mono_body_diagnostic(file, key, container, signature, text, anchors)
+          text, positions, fragment = IyiMod.diagnostic_located_source(a_def.body, @program.diagnostic_artifact_lexical_mode(file))
+          @program.record_mono_body_diagnostic(file, key, container, signature, text, fragment)
         else
           text, positions = IyiMod.located_source(a_def.body)
         end
@@ -1660,10 +1660,14 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       end
     end
     if @program.diagnostic_capture && (origin = node.diagnostic_origin)
-      io = IO::Memory.new
-      anchors = [] of DiagnosticAnchor
-      node.body.to_s(io, diagnostic_anchors: anchors)
-      @program.record_diagnostic_def_body(origin, io.to_s, anchors)
+      source = node.body.to_s
+      captures = DiagnosticModeCaptures.capture(source, [] of IyiMod::SourcePosition) do |mode|
+        io = IO::Memory.new
+        builder = DiagnosticFragmentBuilder.new(mode)
+        node.body.to_s(io, diagnostic_fragment: builder)
+        {io.to_s, [] of IyiMod::SourcePosition, builder}
+      end
+      @program.record_diagnostic_def_body(origin, source, captures)
     end
 
     annotations = read_annotations
@@ -2578,11 +2582,13 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     # iyi: here, because here is the only place the value is still what the
     # shard wrote. See `Const#iyi_value_source`.
     if @program.diagnostic_capture
-      io = IO::Memory.new
-      anchors = [] of DiagnosticAnchor
-      value.to_s(io, diagnostic_anchors: anchors)
-      const.iyi_value_source = io.to_s
-      const.iyi_value_anchors = anchors
+      const.iyi_value_source = value.to_s
+      const.iyi_value_fragment = DiagnosticModeCaptures.capture(const.iyi_value_source, [] of IyiMod::SourcePosition) do |mode|
+        io = IO::Memory.new
+        fragment = DiagnosticFragmentBuilder.new(mode)
+        value.to_s(io, diagnostic_fragment: fragment)
+        {io.to_s, [] of IyiMod::SourcePosition, fragment}
+      end
     else
       const.iyi_value_source = value.to_s
     end

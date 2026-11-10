@@ -4,14 +4,14 @@ require "./visitor"
 module Iyi
   class ASTNode
     def to_s(io : IO, macro_expansion_pragmas = nil, emit_doc = false, emit_location_pragmas : Bool = false,
-             diagnostic_anchors : Array(DiagnosticAnchor)? = nil,
-             diagnostic_emissions : Array(DiagnosticMacroAnchor)? = nil,
+             diagnostic_fragment : DiagnosticFragmentBuilder? = nil,
+             diagnostic_claims : Array(DiagnosticMacroClaim)? = nil,
              diagnostic_generated_text : Array(DiagnosticGeneratedText)? = nil,
              diagnostic_emitter : DiagnosticOrigin? = nil,
              diagnostic_name_fragments : Array(DiagnosticMacroNameFragment)? = nil) : Nil
       visitor = ToSVisitor.new(io, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: emit_doc,
-        emit_location_pragmas: emit_location_pragmas, diagnostic_anchors: diagnostic_anchors,
-        diagnostic_emissions: diagnostic_emissions, diagnostic_generated_text: diagnostic_generated_text,
+        emit_location_pragmas: emit_location_pragmas, diagnostic_fragment: diagnostic_fragment,
+        diagnostic_claims: diagnostic_claims, diagnostic_generated_text: diagnostic_generated_text,
         diagnostic_emitter: diagnostic_emitter, diagnostic_name_fragments: diagnostic_name_fragments)
       self.accept visitor
     end
@@ -22,6 +22,7 @@ module Iyi
     @macro_expansion_pragmas : Hash(Int32, Array(Lexer::LocPragma))?
     @current_arg_type : DefArgType = :none
     @inside_enum_member = false
+    @diagnostic_head_offsets = [] of Int32
 
     # Represents the root level `Expressions` instance within a `MacroExpression`.
     @root_level_macro_expressions : Expressions? = nil
@@ -41,8 +42,8 @@ module Iyi
     end
 
     def initialize(@str = IO::Memory.new, @macro_expansion_pragmas = nil, @emit_doc = false, @emit_location_pragmas : Bool = false,
-                   @diagnostic_anchors : Array(DiagnosticAnchor)? = nil,
-                   @diagnostic_emissions : Array(DiagnosticMacroAnchor)? = nil,
+                   @diagnostic_fragment : DiagnosticFragmentBuilder? = nil,
+                   @diagnostic_claims : Array(DiagnosticMacroClaim)? = nil,
                    @diagnostic_generated_text : Array(DiagnosticGeneratedText)? = nil,
                    @diagnostic_emitter : DiagnosticOrigin? = nil,
                    @diagnostic_name_fragments : Array(DiagnosticMacroNameFragment)? = nil)
@@ -51,36 +52,189 @@ module Iyi
     end
 
     private def diagnostic_anchor(node : ASTNode, kind : String, role : String, name_splice = false) : Nil
-      if anchors = @diagnostic_anchors
-        slots = kind == "Call" && role == "method" ? node.diagnostic_name_slots : ({} of DiagnosticNameSlot => Array(DiagnosticNameValue))
-        anchors << DiagnosticAnchor.new(@str.pos.to_i32, kind, role, node.diagnostic_origin, slots)
-      end
-      if @diagnostic_emissions && !(name_splice && @diagnostic_name_fragments)
+      if (@diagnostic_claims || @diagnostic_fragment) && !name_splice
         raise ArgumentError.new("structural macro anchor lacks a measured writer extent for #{kind}:#{role}")
       end
     end
 
     private def diagnostic_anchor(node : ASTNode, kind : String, role : String, &)
-      if anchors = @diagnostic_anchors
-        slots = kind == "Call" && role == "method" ? node.diagnostic_name_slots : ({} of DiagnosticNameSlot => Array(DiagnosticNameValue))
-        anchors << DiagnosticAnchor.new(@str.pos.to_i32, kind, role, node.diagnostic_origin, slots)
-      end
-      start = @str.pos.to_i32 if @diagnostic_emissions
+      start = @str.pos.to_i32 if @diagnostic_claims || @diagnostic_fragment
       yield
-      if emissions = @diagnostic_emissions
+      if @diagnostic_claims || @diagnostic_fragment
         finish = @str.pos.to_i32
         first = start.not_nil!
         raise ArgumentError.new("empty structural macro anchor") unless finish > first
-        case node.diagnostic_macro_lineage
-        when .preserved?
-          origin = node.diagnostic_origin || raise ArgumentError.new("preserved macro node lacks origin")
-          raise ArgumentError.new("preserved macro node origin mismatch") unless origin.valid_for_anchor?(kind, role)
-          emissions << DiagnosticMacroAnchor.new(first, finish, kind, role, @diagnostic_emitter, origin, nil)
-        when .constructed?
-          emissions << DiagnosticMacroAnchor.new(first, finish, kind, role, @diagnostic_emitter, nil, DiagnosticMacroProducer::ConstructedAst)
-        else
-          raise ArgumentError.new("unclassified macro node at #{first} for #{kind}:#{role}")
+        if fragment = @diagnostic_fragment
+          io = @str.as?(IO::Memory) || raise ArgumentError.new("fragment capture requires a readable output buffer")
+          origin = node.diagnostic_origin || raise ArgumentError.new("artifact structural anchor lacks origin")
+          lex_context = kind == "Call" ? DiagnosticRenderedLexContext::Operator : DiagnosticRenderedLexContext::Operand
+          fragment.add_written_anchor(first, finish, io.to_s, lex_context, kind, role, origin,
+            {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
         end
+        if claims = @diagnostic_claims
+          evidence = case node.diagnostic_macro_lineage
+                     when .preserved?
+                       origin = node.diagnostic_origin || raise ArgumentError.new("preserved macro node lacks origin")
+                       raise ArgumentError.new("preserved macro node origin mismatch") unless origin.valid_for_anchor?(kind, role)
+                       DiagnosticAnchorEvidence::Spliced.new(origin).as(DiagnosticAnchorEvidence)
+                     when .constructed?
+                       DiagnosticAnchorEvidence::Constructed.new(DiagnosticMacroProducer::ConstructedAst).as(DiagnosticAnchorEvidence)
+                     else
+                       raise ArgumentError.new("unclassified macro node at #{first} for #{kind}:#{role}")
+                     end
+          writer = DiagnosticWriterRef.new(first, finish)
+          key = DiagnosticMacroClaimKey.new(writer, kind, role)
+          claims << DiagnosticMacroClaim.new(key, evidence, DiagnosticMacroAttachment::Direct.new(writer), @diagnostic_emitter)
+        end
+      end
+    end
+
+    private def diagnostic_head_anchor(node : ASTNode, kind : String, role : String, rule : DiagnosticHeadRule, &)
+      unless @diagnostic_fragment || @diagnostic_claims
+        yield
+        return
+      end
+      start = @str.pos.to_i32
+      event_start = @diagnostic_fragment.try(&.event_count) || 0
+      anchor_start = @diagnostic_fragment.try(&.anchor_count) || 0
+      claim_start = @diagnostic_claims.try(&.size) || 0
+      name_start = @diagnostic_name_fragments.try(&.size) || 0
+      generated_start = @diagnostic_generated_text.try(&.size) || 0
+      @diagnostic_head_offsets << start
+      begin
+        yield
+      ensure
+        @diagnostic_head_offsets.pop
+      end
+      if fragment = @diagnostic_fragment
+        event_index = (event_start...fragment.event_count).find { |index| fragment.event_at(index).selected_start == start } ||
+          raise ArgumentError.new("head has no measured fragment writer")
+        event = fragment.event_at(event_index)
+        child_index = (anchor_start...fragment.anchor_count).find { |index| fragment.anchor_at(index).event_index == event_index }
+        head = if child_index
+                 DiagnosticFragmentHead::Anchor.new(child_index).as(DiagnosticFragmentHead)
+               elsif event.selected_text == "::"
+                 adjacent = (anchor_start...fragment.anchor_count).find do |index|
+                   child = fragment.anchor_at(index)
+                   child.kind == "Name" && child.role == "path_segment" && child.offset == event.selected_end
+                 end || raise ArgumentError.new("global head lacks adjacent path name")
+                 DiagnosticFragmentHead::Syntax.new(DiagnosticHeadSyntax::GlobalPathPrefix, adjacent).as(DiagnosticFragmentHead)
+               elsif rule == DiagnosticHeadRule::MultiAssignHead
+                 form = case event.selected_text
+                        when "*" then DiagnosticHeadSyntax::FirstSplat
+                        when "_" then DiagnosticHeadSyntax::FirstUnderscore
+                        when "(" then DiagnosticHeadSyntax::ParenthesizedFirstTarget
+                        else raise ArgumentError.new("unrecorded fragment syntax head")
+                        end
+                 DiagnosticFragmentHead::Syntax.new(form, nil).as(DiagnosticFragmentHead)
+               else
+                 raise ArgumentError.new("unrecorded fragment syntax head")
+               end
+        origin = node.diagnostic_origin || raise ArgumentError.new("artifact head lacks origin")
+        fragment.add_anchor(DiagnosticAnchor.new(start, kind, role, origin, {} of DiagnosticNameSlot => Array(DiagnosticNameValue),
+          event_index, DiagnosticFragmentAttachment::HeadOf.new(rule, head)))
+      end
+      if claims = @diagnostic_claims
+        direct = claims[claim_start..].find { |claim| claim.attachment.is_a?(DiagnosticMacroAttachment::Direct) && claim.key.writer.start_offset == start }
+        name = @diagnostic_name_fragments.try { |items| items[name_start..].find { |item| item.start_offset == start } }
+        generated = @diagnostic_generated_text.try { |items| items[generated_start..].find { |item| item.start_offset == start } }
+        head = if direct
+                 DiagnosticMacroHead::Anchor.new(direct.key.writer).as(DiagnosticMacroHead)
+               elsif name
+                 DiagnosticMacroHead::Anchor.new(DiagnosticWriterRef.new(name.start_offset, name.end_offset)).as(DiagnosticMacroHead)
+               elsif generated
+                 io = @str.as?(IO::Memory) || raise ArgumentError.new("macro capture requires a readable output buffer")
+                 text = io.to_s.byte_slice(generated.start_offset, generated.end_offset - generated.start_offset)
+                 writer = DiagnosticWriterRef.new(generated.start_offset, generated.end_offset)
+                 case text
+                 when "::"
+                   adjacent = @diagnostic_name_fragments.try { |items| items[name_start..].find { |item| item.start_offset == generated.end_offset } } ||
+                     raise ArgumentError.new("global head lacks adjacent macro name")
+                   next_writer = DiagnosticWriterRef.new(adjacent.start_offset, adjacent.end_offset)
+                   DiagnosticMacroHead::Syntax.new(DiagnosticHeadSyntax::GlobalPathPrefix, writer, next_writer).as(DiagnosticMacroHead)
+                 when "*", "_", "("
+                   raise ArgumentError.new("invalid punctuation head rule") unless rule == DiagnosticHeadRule::MultiAssignHead
+                   form = text == "*" ? DiagnosticHeadSyntax::FirstSplat : (text == "_" ? DiagnosticHeadSyntax::FirstUnderscore : DiagnosticHeadSyntax::ParenthesizedFirstTarget)
+                   DiagnosticMacroHead::Syntax.new(form, writer, nil).as(DiagnosticMacroHead)
+                 else
+                   raise ArgumentError.new("unrecorded macro syntax head")
+                 end
+               else
+                 raise ArgumentError.new("head has no measured macro writer")
+               end
+        writer = head.is_a?(DiagnosticMacroHead::Anchor) ? head.writer : head.as(DiagnosticMacroHead::Syntax).writer
+        evidence = case node.diagnostic_macro_lineage
+                   when .preserved?
+                     origin = node.diagnostic_origin || raise ArgumentError.new("head lacks preserved origin")
+                     raise ArgumentError.new("head origin role mismatch") unless origin.valid_for_anchor?(kind, role)
+                     DiagnosticAnchorEvidence::Spliced.new(origin).as(DiagnosticAnchorEvidence)
+                   when .constructed?
+                     DiagnosticAnchorEvidence::Constructed.new(DiagnosticMacroProducer::ConstructedAst).as(DiagnosticAnchorEvidence)
+                   else
+                     raise ArgumentError.new("unclassified head producer")
+                   end
+        claims << DiagnosticMacroClaim.new(DiagnosticMacroClaimKey.new(writer, kind, role), evidence,
+          DiagnosticMacroAttachment::HeadOf.new(rule, head), @diagnostic_emitter)
+      end
+    end
+
+    private def diagnostic_payload_owner(owner : ASTNode, child : ASTNode, kind : String, role : String,
+                                         rule : DiagnosticPayloadRule, &)
+      unless @diagnostic_fragment || @diagnostic_claims
+        yield
+        return
+      end
+      first = @str.pos.to_i32
+      anchor_start = @diagnostic_fragment.try(&.anchor_count) || 0
+      claim_start = @diagnostic_claims.try(&.size) || 0
+      diagnostic_anchor(owner, kind, role) { yield }
+      if fragment = @diagnostic_fragment
+        owner_index = (anchor_start...fragment.anchor_count).find do |index|
+          item = fragment.anchor_at(index)
+          item.offset == first && item.kind == kind && item.role == role
+        end || raise ArgumentError.new("payload owner lacks fragment anchor")
+        owner_anchor = fragment.anchor_at(owner_index)
+        origin = child.diagnostic_origin || raise ArgumentError.new("payload lacks preserved origin")
+        unless origin.valid_for_anchor?("Literal", "interpolation")
+          raise ArgumentError.new("payload origin role mismatch")
+        end
+        fragment.add_anchor(DiagnosticAnchor.new(first, "Literal", "interpolation", origin,
+          {} of DiagnosticNameSlot => Array(DiagnosticNameValue), owner_anchor.event_index,
+          DiagnosticFragmentAttachment::PayloadOf.new(rule, owner_index)))
+      end
+      if claims = @diagnostic_claims
+        owner_claim = claims[claim_start..].find do |claim|
+          claim.key.writer.start_offset == first && claim.key.kind == kind && claim.key.role == role
+        end || raise ArgumentError.new("payload owner lacks macro claim")
+        evidence = case child.diagnostic_macro_lineage
+                   when .preserved?
+                     origin = child.diagnostic_origin || raise ArgumentError.new("payload lacks preserved origin")
+                     raise ArgumentError.new("payload origin role mismatch") unless origin.valid_for_anchor?("Literal", "interpolation")
+                     DiagnosticAnchorEvidence::Spliced.new(origin).as(DiagnosticAnchorEvidence)
+                   when .constructed?
+                     DiagnosticAnchorEvidence::Constructed.new(DiagnosticMacroProducer::ConstructedAst).as(DiagnosticAnchorEvidence)
+                   else
+                     raise ArgumentError.new("unclassified payload producer")
+                   end
+        key = DiagnosticMacroClaimKey.new(owner_claim.key.writer, "Literal", "interpolation")
+        claims << DiagnosticMacroClaim.new(key, evidence, DiagnosticMacroAttachment::PayloadOf.new(rule, owner_claim.key), @diagnostic_emitter)
+      end
+    end
+
+    private def diagnostic_head_syntax(text : String) : Nil
+      unless (@diagnostic_fragment || @diagnostic_claims) && @diagnostic_head_offsets.last? == @str.pos.to_i32
+        @str << text
+        return
+      end
+      start = @str.pos.to_i32
+      @str << text
+      finish = @str.pos.to_i32
+      if generated = @diagnostic_generated_text
+        generated << DiagnosticGeneratedText.new(start, finish, @diagnostic_emitter, DiagnosticMacroProducer::StructuredSyntax)
+      end
+      if fragment = @diagnostic_fragment
+        io = @str.as?(IO::Memory) || raise ArgumentError.new("fragment capture requires a readable output buffer")
+        fragment.add_written_syntax(start, finish, io.to_s, DiagnosticRenderedLexContext::Operator, DiagnosticMacroProducer::StructuredSyntax)
       end
     end
 
@@ -96,7 +250,7 @@ module Iyi
     private def diagnostic_name(node : ASTNode, text : String, context : String,
                                 slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary),
                                 artifact_anchor = true) : Nil
-      unless @diagnostic_name_fragments || @diagnostic_anchors
+      unless @diagnostic_name_fragments || @diagnostic_fragment
         @str << text
         return
       end
@@ -121,28 +275,37 @@ module Iyi
         end
         tokens.each do |token|
           start = @str.pos.to_i32
-          if (anchors = @diagnostic_anchors) && artifact_anchor
-            origin = token.artifact_origin
-            if origin.valid_for_anchor?("Name", context)
-              anchors << DiagnosticAnchor.new(start, "Name", context, origin, {slot => [token]})
-            elsif origin.valid_for_anchor?("Call", "method")
-              anchors << DiagnosticAnchor.new(start, "Call", "method", origin, {slot => [token]})
-            else
-              raise ArgumentError.new("diagnostic name lacks an artifact anchor for #{context}")
-            end
-          end
           @str << token.rendered_text
-          @diagnostic_name_fragments.try &.<< DiagnosticMacroNameFragment.new(start, @str.pos.to_i32, @diagnostic_emitter, token)
+          finish = @str.pos.to_i32
+          if (fragment = @diagnostic_fragment) && artifact_anchor
+            origin = token.artifact_origin
+            kind, role = if origin.valid_for_anchor?("Name", context)
+                           {"Name", context}
+                         elsif origin.valid_for_anchor?("Call", "method")
+                           {"Call", "method"}
+                         else
+                           raise ArgumentError.new("diagnostic name lacks an artifact anchor for #{context}")
+                         end
+            io = @str.as?(IO::Memory) || raise ArgumentError.new("fragment capture requires a readable output buffer")
+            lex_context = case context
+                          when "definition_name", "macro_name", "method_name" then DiagnosticRenderedLexContext::DefOrMacroName
+                          when "path_segment", "type_parameter", "where_variable", "enum_member" then DiagnosticRenderedLexContext::TypeName
+                          else DiagnosticRenderedLexContext::Operand
+                          end
+            fragment.add_written_anchor(start, finish, io.to_s, lex_context,
+              kind, role, origin, {slot => [token] of DiagnosticNameValue})
+          end
+          @diagnostic_name_fragments.try &.<< DiagnosticMacroNameFragment.new(start, finish, @diagnostic_emitter, token)
         end
       elsif node.diagnostic_macro_lineage.constructed?
         diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { @str << text }
       else
-        raise ArgumentError.new("name lacks token evidence for #{context}: node=#{node.class}, text=#{text.inspect}, rendered=#{node}, location=#{node.location}, lineage=#{node.diagnostic_macro_lineage}, slots=#{node.diagnostic_name_slots.keys}")
+        raise ArgumentError.new("name lacks token evidence for #{context}")
       end
     end
 
     private def diagnostic_named_entry(node : ASTNode, name : String, slot : DiagnosticNameSlot) : Nil
-      if !@diagnostic_name_fragments && !@diagnostic_anchors
+      if !@diagnostic_name_fragments && !@diagnostic_fragment
         visit_named_arg_name(name)
       elsif node.diagnostic_name_slots[slot]?
         rendered = String.build { |io| Symbol.quote_for_named_argument(io, name) }
@@ -160,7 +323,7 @@ module Iyi
     end
 
     private def diagnostic_arg_name(node : Arg, name : String, enum_member : Bool) : Nil
-      unless @diagnostic_name_fragments || @diagnostic_anchors
+      unless @diagnostic_name_fragments || @diagnostic_fragment
         @str << name
         return
       end
@@ -301,10 +464,9 @@ module Iyi
     end
 
     def visit(node : ArrayLiteral)
-      diagnostic_anchor(node, "Literal", "array") if node.name
       name = node.name
       if name
-        name.accept self
+        diagnostic_head_anchor(node, "Literal", "array", DiagnosticHeadRule::NamedArrayHead) { name.accept self }
         @str << " {"
       else
         diagnostic_anchor(node, "Literal", "array") { @str << '[' }
@@ -326,9 +488,8 @@ module Iyi
     end
 
     def visit(node : HashLiteral)
-      diagnostic_anchor(node, "Literal", "hash") if node.name
       if name = node.name
-        name.accept self
+        diagnostic_head_anchor(node, "Literal", "hash", DiagnosticHeadRule::NamedHashHead) { name.accept self }
         @str << ' '
       end
 
@@ -364,12 +525,15 @@ module Iyi
     def visit(node : NamedTupleLiteral)
       # short-circuit to handle empty named tuple context
       if node.entries.empty?
-        start = @str.pos.to_i32 if @diagnostic_emissions || @diagnostic_generated_text
+        start = @str.pos.to_i32 if @diagnostic_claims || @diagnostic_generated_text
         @str << "::NamedTuple."
-        method_start = @str.pos.to_i32 if @diagnostic_emissions
+        method_start = @str.pos.to_i32 if @diagnostic_claims
         @str << "new"
-        if emissions = @diagnostic_emissions
-          emissions << DiagnosticMacroAnchor.new(method_start.not_nil!, @str.pos.to_i32, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyNamedTupleProjection)
+        if claims = @diagnostic_claims
+          writer = DiagnosticWriterRef.new(method_start.not_nil!, @str.pos.to_i32)
+          claims << DiagnosticMacroClaim.new(DiagnosticMacroClaimKey.new(writer, "Call", "method"),
+            DiagnosticAnchorEvidence::Constructed.new(DiagnosticMacroProducer::EmptyNamedTupleProjection),
+            DiagnosticMacroAttachment::Direct.new(writer), @diagnostic_emitter)
         end
         if generated = @diagnostic_generated_text
           generated << DiagnosticGeneratedText.new(start.not_nil!, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyNamedTupleProjection)
@@ -834,12 +998,12 @@ module Iyi
         end
         if Lexer.setter?(node.name)
           diagnostic_anchor(node, "Call", "method", name_splice: true)
-          diagnostic_name(node, node.name.rchop, "method_name", artifact_anchor: false)
+          diagnostic_name(node, node.name.rchop, "method_name")
           @str << " = "
           node.args.join(@str, ", ") { |arg| accept_as_expression arg }
         else
           diagnostic_anchor(node, "Call", "method", name_splice: true)
-          diagnostic_name(node, node.name, "method_name", artifact_anchor: false)
+          diagnostic_name(node, node.name, "method_name")
           in_parenthesis(node.has_parentheses? || !node.args.empty? || node.block_arg || node.named_args || short_block_call) do
             visit_args(node)
 
@@ -920,7 +1084,7 @@ module Iyi
     end
 
     def in_parenthesis(need_parens, is_multiline = false, &)
-      @str << '(' if need_parens
+      diagnostic_head_syntax("(") if need_parens
 
       if is_multiline
         newline
@@ -1011,7 +1175,9 @@ module Iyi
     end
 
     def visit_backtick(exp, call : Call? = nil)
-      if call
+      if call && exp.is_a?(StringInterpolation)
+        diagnostic_payload_owner(call, exp, "Call", "method", DiagnosticPayloadRule::CommandInterpolationPayload) { @str << '`' }
+      elsif call
         diagnostic_anchor(call, "Call", "method") { @str << '`' }
       else
         @str << '`'
@@ -1020,7 +1186,6 @@ module Iyi
       when StringLiteral
         @str << exp.value.inspect_unquoted.gsub('`', "\\`")
       when StringInterpolation
-        diagnostic_anchor(exp, "Literal", "interpolation")
         visit_interpolation exp, &.inspect_unquoted.gsub('`', "\\`")
       else
         # This branch can be reached after the literal expander has expanded
@@ -1040,8 +1205,11 @@ module Iyi
       # to be in the text (R-2, SPEC.md IV.2).
       target = node.target
       @str << "pub " if target.is_a?(Path) && target.exported?
-      diagnostic_anchor(node, "Assign", "constant") if target.is_a?(Path)
-      node.target.accept self
+      if target.is_a?(Path)
+        diagnostic_head_anchor(node, "Assign", "constant", DiagnosticHeadRule::ConstantAssignHead) { target.accept self }
+      else
+        target.accept self
+      end
       @str << " = "
 
       accept_as_expression node.value
@@ -1059,9 +1227,13 @@ module Iyi
     end
 
     def visit(node : MultiAssign)
-      diagnostic_anchor(node, "Literal", "multiassign")
-      node.targets.join(@str, ", ") do |target|
-        target.accept self
+      node.targets.each_with_index do |target, index|
+        @str << ", " if index > 0
+        if index == 0
+          diagnostic_head_anchor(node, "Literal", "multiassign", DiagnosticHeadRule::MultiAssignHead) { target.accept self }
+        else
+          target.accept self
+        end
       end
       @str << " = "
       node.values.join(@str, ", ") { |value| accept_as_expression value }
@@ -1182,7 +1354,10 @@ module Iyi
 
       if free_vars = node.free_vars
         @str << " forall "
-        free_vars.join(@str, ", ")
+        free_vars.each_with_index do |name, index|
+          @str << ", " if index > 0
+          diagnostic_name(node, name.to_s, "type_parameter", DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index))
+        end
       end
 
       newline
@@ -1457,7 +1632,13 @@ module Iyi
     end
 
     def visit(node : Path)
-      @str << "::" if node.global?
+      if node.global?
+        if !@diagnostic_head_offsets.empty?
+          diagnostic_head_syntax("::")
+        else
+          diagnostic_raw(node, DiagnosticMacroProducer::StructuredSyntax) { @str << "::" }
+        end
+      end
       node.names.each_with_index do |name, index|
         @str << "::" if index > 0
         diagnostic_name(node, name, "path_segment", DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, index))
@@ -1495,12 +1676,12 @@ module Iyi
     end
 
     def visit(node : Underscore)
-      @str << '_'
+      diagnostic_head_syntax("_")
       false
     end
 
     def visit(node : Splat)
-      @str << '*'
+      diagnostic_head_syntax("*")
       accept_as_expression node.exp
       false
     end
@@ -1597,13 +1778,16 @@ module Iyi
         diagnostic_anchor(node, "Literal", "regex") { @str << "%r(" }
         @str << ')'
       else
-        diagnostic_anchor(node, "Literal", "regex") { @str << '/' }
+        if (payload = node.value).is_a?(StringInterpolation)
+          diagnostic_payload_owner(node, payload, "Literal", "regex", DiagnosticPayloadRule::RegexInterpolationPayload) { @str << '/' }
+        else
+          diagnostic_anchor(node, "Literal", "regex") { @str << '/' }
+        end
         case exp = node.value
         when StringLiteral
           @str << '\\' if exp.value[0]?.try &.ascii_whitespace?
           append_regex_source exp.value, @str
         when StringInterpolation
-          diagnostic_anchor(exp, "Literal", "interpolation")
           @str << '\\' if exp.expressions.first?.as?(StringLiteral).try &.value[0]?.try &.ascii_whitespace?
           visit_interpolation(exp) { |s| append_regex_source s, @str }
         else
@@ -1641,12 +1825,15 @@ module Iyi
     def visit(node : TupleLiteral)
       first = node.elements.first?
       unless first
-        start = @str.pos.to_i32 if @diagnostic_emissions || @diagnostic_generated_text
+        start = @str.pos.to_i32 if @diagnostic_claims || @diagnostic_generated_text
         @str << "::Tuple."
-        method_start = @str.pos.to_i32 if @diagnostic_emissions
+        method_start = @str.pos.to_i32 if @diagnostic_claims
         @str << "new"
-        if emissions = @diagnostic_emissions
-          emissions << DiagnosticMacroAnchor.new(method_start.not_nil!, @str.pos.to_i32, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyTupleProjection)
+        if claims = @diagnostic_claims
+          writer = DiagnosticWriterRef.new(method_start.not_nil!, @str.pos.to_i32)
+          claims << DiagnosticMacroClaim.new(DiagnosticMacroClaimKey.new(writer, "Call", "method"),
+            DiagnosticAnchorEvidence::Constructed.new(DiagnosticMacroProducer::EmptyTupleProjection),
+            DiagnosticMacroAttachment::Direct.new(writer), @diagnostic_emitter)
         end
         if generated = @diagnostic_generated_text
           generated << DiagnosticGeneratedText.new(start.not_nil!, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyTupleProjection)
@@ -1665,8 +1852,11 @@ module Iyi
     end
 
     def visit(node : TypeDeclaration)
-      diagnostic_anchor(node, "Assign", "constant") if node.var.is_a?(Path)
-      node.var.accept self
+      if node.var.is_a?(Path)
+        diagnostic_head_anchor(node, "Assign", "constant", DiagnosticHeadRule::ConstantTypeHead) { node.var.accept self }
+      else
+        node.var.accept self
+      end
       @str << " : "
       node.declared_type.accept self
       if value = node.value
