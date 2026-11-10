@@ -341,7 +341,12 @@ module Iyi::IyiMod
     key : String,
     text_sha256 : String,
     events : Array(DiagnosticTokenEvent),
-    anchors : Array(DiagnosticAnchor)
+    anchors : Array(DiagnosticAnchor) do
+    def initialize(@key : String, @text_sha256 : String, @events : Array(DiagnosticTokenEvent),
+                   @anchors : Array(DiagnosticAnchor))
+      DiagnosticFragmentValidation.validate_canonical!(@events, @anchors)
+    end
+  end
 
   # Shared origins in the diagnostic section are emitted parent-first.
   # Indices are structural, never object identity or a digest.
@@ -365,6 +370,15 @@ module Iyi::IyiMod
         origin.source_token.try { |token| intern_source_token(token) }
         origin.witnesses.each { |token| intern(token.lexical_origin) }
         origin.definition_origin.try { |definition| intern(definition) }
+        origin.source_names.try { |names| names.each { |source| intern_name_value(source.name) } }
+        if producer = origin.producer
+          case producer
+          when DiagnosticBoundProducer::SemanticSignatureType, DiagnosticBoundProducer::ConstantAccessor
+            intern(producer.definition_origin)
+          when DiagnosticBoundProducer::UninitializedClassVar
+            intern(producer.declaration_origin)
+          end
+        end
       end
       index = @entries.size.to_u32
       @entries << origin
@@ -379,7 +393,7 @@ module Iyi::IyiMod
     TOKEN_MODES = %w(Crystal Iyi)
     TOKEN_SELECTIONS = %w(Whole SignedNumberSign)
     TYPE_SUGARS = %w(Pointer DoublePointer NilableType NilableExpression SelfNilableType StaticArray Tuple NamedTuple NilPredicate)
-    TYPE_SUGAR_RESULTS = %w(Pointer Union Nil StaticArray Tuple NamedTuple)
+    TYPE_SUGAR_RESULTS = %w(Pointer Union Nil StaticArray Tuple NamedTuple Self)
 
     def intern_token_event(event : DiagnosticTokenEvent) : Nil
       event.byte_parts.each do |part|
@@ -472,6 +486,68 @@ module Iyi::IyiMod
         DiagnosticNameValue::Derived.new(derived)
       else
         raise ArgumentError.new("unknown diagnostic name value tag")
+      end
+    end
+
+    def write_bound_producer(io : IO, producer : DiagnosticBoundProducer) : Nil
+      case producer
+      when DiagnosticBoundProducer::StripRoot
+        io.write_byte 1_u8
+        DiagnosticOrigins.write_string(io, producer.root)
+      when DiagnosticBoundProducer::ForeignType
+        io.write_byte 2_u8
+        {producer.module_name, producer.source_name, producer.qualified_name}.each { |text| DiagnosticOrigins.write_string(io, text) }
+      when DiagnosticBoundProducer::AliasType
+        io.write_byte 3_u8
+        {producer.owner, producer.name, producer.resolved_type}.each { |text| DiagnosticOrigins.write_string(io, text) }
+      when DiagnosticBoundProducer::SelfReturn
+        io.write_byte 4_u8
+        {producer.owner_type, producer.method_name, producer.receiver}.each { |text| DiagnosticOrigins.write_string(io, text) }
+      when DiagnosticBoundProducer::SemanticSignatureType
+        io.write_byte 5_u8
+        io.write_bytes @indices[producer.definition_origin], FORMAT
+        DiagnosticOrigins.write_string(io, producer.field)
+        io.write_bytes(producer.parameter_index.try(&.to_u32) || UInt32::MAX, FORMAT)
+        DiagnosticOrigins.write_string(io, producer.semantic_type)
+      when DiagnosticBoundProducer::UninitializedClassVar
+        io.write_byte 6_u8
+        io.write_bytes @indices[producer.declaration_origin], FORMAT
+        {producer.owner_type, producer.variable_name, producer.semantic_type}.each { |text| DiagnosticOrigins.write_string(io, text) }
+      when DiagnosticBoundProducer::ConstantAccessor
+        io.write_byte 7_u8
+        io.write_bytes @indices[producer.definition_origin], FORMAT
+        {producer.prefix, producer.constant_name, producer.part}.each { |text| DiagnosticOrigins.write_string(io, text) }
+      else
+        raise ArgumentError.new("unknown diagnostic bound producer")
+      end
+    end
+
+    def read_bound_producer(io : IO) : DiagnosticBoundProducer
+      case io.read_byte
+      when 1_u8
+        DiagnosticBoundProducer::StripRoot.new(DiagnosticOrigins.read_string(io))
+      when 2_u8
+        DiagnosticBoundProducer::ForeignType.new(DiagnosticOrigins.read_string(io), DiagnosticOrigins.read_string(io), DiagnosticOrigins.read_string(io))
+      when 3_u8
+        DiagnosticBoundProducer::AliasType.new(DiagnosticOrigins.read_string(io), DiagnosticOrigins.read_string(io), DiagnosticOrigins.read_string(io))
+      when 4_u8
+        DiagnosticBoundProducer::SelfReturn.new(DiagnosticOrigins.read_string(io), DiagnosticOrigins.read_string(io), DiagnosticOrigins.read_string(io))
+      when 5_u8
+        definition = parent(io.read_bytes(UInt32, FORMAT))
+        field = DiagnosticOrigins.read_string(io)
+        index = io.read_bytes(UInt32, FORMAT)
+        DiagnosticBoundProducer::SemanticSignatureType.new(definition, field,
+          index == UInt32::MAX ? nil : index.to_i32, DiagnosticOrigins.read_string(io))
+      when 6_u8
+        declaration = parent(io.read_bytes(UInt32, FORMAT))
+        DiagnosticBoundProducer::UninitializedClassVar.new(declaration, DiagnosticOrigins.read_string(io),
+          DiagnosticOrigins.read_string(io), DiagnosticOrigins.read_string(io))
+      when 7_u8
+        definition = parent(io.read_bytes(UInt32, FORMAT))
+        DiagnosticBoundProducer::ConstantAccessor.new(definition, DiagnosticOrigins.read_string(io),
+          DiagnosticOrigins.read_string(io), DiagnosticOrigins.read_string(io))
+      else
+        raise ArgumentError.new("unknown diagnostic bound producer tag")
       end
     end
 
@@ -832,6 +908,24 @@ module Iyi::IyiMod
             origin.witnesses.each { |token| write_source_syntax_token(io, token) }
             DiagnosticOrigins.write_choice(io, origin.sugar_result.not_nil!.to_s, TYPE_SUGAR_RESULTS)
             io.write_bytes origin.lowering_index.not_nil!.to_u32, FORMAT
+          when "BoundProjection"
+            io.write_byte 4_u8
+            write_bound_producer(io, origin.producer.not_nil!)
+            DiagnosticOrigins.write_string(io, origin.source_fragment_sha256.not_nil!)
+            DiagnosticOrigins.write_string(io, origin.source_text.not_nil!)
+            names = origin.source_names.not_nil!
+            io.write_bytes names.size.to_u32, FORMAT
+            names.each do |name|
+              io.write_bytes name.start_offset.to_u32, FORMAT
+              io.write_bytes name.end_offset.to_u32, FORMAT
+              write_name_value(io, name.name)
+            end
+            DiagnosticOrigins.write_string(io, origin.output_text.not_nil!)
+            DiagnosticOrigins.write_string(io, origin.lexical_mode.not_nil!)
+            io.write_bytes origin.result_start.not_nil!.to_u32, FORMAT
+            io.write_bytes origin.result_end.not_nil!.to_u32, FORMAT
+            DiagnosticOrigins.write_string(io, origin.token_kind.not_nil!)
+            DiagnosticOrigins.write_string(io, origin.context.not_nil!)
           else
             raise ArgumentError.new("unknown diagnostic name derivation")
           end
@@ -902,6 +996,26 @@ module Iyi::IyiMod
                               raise ArgumentError.new("unknown diagnostic type sugar result")
                      index = io.read_bytes(UInt32, FORMAT).to_i32
                      DiagnosticOrigin::DerivedName.type_sugar(production, witnesses, result, index)
+                   when 4_u8
+                     producer = table.read_bound_producer(io)
+                     guard = read_string(io)
+                     source = read_string(io)
+                     count = io.read_bytes(UInt32, FORMAT)
+                     if io.is_a?(IO::Memory) && count.to_u64 > ((io.size - io.pos) // 13).to_u64
+                       raise ArgumentError.new("diagnostic bound names exceed remaining bytes")
+                     end
+                     names = Array(DiagnosticBoundNameSource).new(count) do
+                       first = io.read_bytes(UInt32, FORMAT).to_i32
+                       last = io.read_bytes(UInt32, FORMAT).to_i32
+                       DiagnosticBoundNameSource.new(first, last, table.read_name_value(io))
+                     end
+                     output = read_string(io)
+                     mode = read_string(io)
+                     first = io.read_bytes(UInt32, FORMAT).to_i32
+                     last = io.read_bytes(UInt32, FORMAT).to_i32
+                     kind = read_string(io)
+                     context = read_string(io)
+                     DiagnosticOrigin::DerivedName.bound_projection(producer, guard, source, names, output, mode, first, last, kind, context)
                    else
                      raise ArgumentError.new("unknown diagnostic name derivation tag")
                    end
@@ -1008,6 +1122,7 @@ module Iyi::IyiMod
       raise ArgumentError.new("duplicate diagnostic fragment") if @fragments.has_key?(fragment.key)
       raise ArgumentError.new("invalid diagnostic fragment key") if fragment.key.empty? || !fragment.key.valid_encoding?
       check_digest(fragment.text_sha256)
+      DiagnosticFragmentValidation.validate_canonical!(fragment.events, fragment.anchors)
       seen = Set({Int32, String, String}).new
       fragment.anchors.each do |anchor|
         origin = anchor.origin || raise ArgumentError.new("missing diagnostic fragment origin")
@@ -1252,25 +1367,25 @@ module Iyi::IyiMod
     {io.to_s, positions}
   end
 
-  def self.diagnostic_located_source(node : ASTNode) : {String, Array(SourcePosition), Array(DiagnosticAnchor)}
-    diagnostic_located_source([node] of ASTNode)
+  def self.diagnostic_located_source(node : ASTNode, lexical_mode : String) : {String, Array(SourcePosition), DiagnosticFragmentBuilder}
+    diagnostic_located_source([node] of ASTNode, lexical_mode)
   end
 
-  def self.diagnostic_located_source(nodes : Array(ASTNode)) : {String, Array(SourcePosition), Array(DiagnosticAnchor)}
+  def self.diagnostic_located_source(nodes : Array(ASTNode), lexical_mode : String) : {String, Array(SourcePosition), DiagnosticFragmentBuilder}
     io = IO::Memory.new
     positions = [] of SourcePosition
-    anchors = [] of DiagnosticAnchor
+    builder = DiagnosticFragmentBuilder.new(lexical_mode)
     nodes.each_with_index do |node, index|
       io << '\n' if index > 0
-      node.accept PositionWriter.new(io, positions, anchors)
+      node.accept PositionWriter.new(io, positions, builder)
     end
-    {io.to_s, positions, anchors}
+    {io.to_s, positions, builder}
   end
 
   # `ToSVisitor`, noting where each node starts as it writes it.
   private class PositionWriter < ToSVisitor
-    def initialize(@memory : IO::Memory, @positions : Array(SourcePosition), anchors : Array(DiagnosticAnchor)? = nil)
-      super(@memory, diagnostic_anchors: anchors)
+    def initialize(@memory : IO::Memory, @positions : Array(SourcePosition), builder : DiagnosticFragmentBuilder? = nil)
+      super(@memory, diagnostic_fragment: builder)
     end
 
     def visit_any(node)
@@ -1377,15 +1492,9 @@ module Iyi::IyiMod
       insertion = source[0, doc_chars].bytesize
       expected = source.byte_slice(0, insertion) + "pub " + source.byte_slice(insertion, source.bytesize - insertion)
       raise ArgumentError.new("unknown macro export transformation") unless rendered == expected
-      adjusted = fragment.anchors.map do |anchor|
-        origin = anchor.origin || raise ArgumentError.new("missing macro anchor origin")
-        unless anchor.offset >= 0 && anchor.offset < source.bytesize && origin.valid_for_anchor?(anchor.kind, anchor.role)
-          raise ArgumentError.new("invalid macro anchor")
-        end
-        offset = anchor.offset >= insertion ? anchor.offset + 4 : anchor.offset
-        DiagnosticAnchor.new(offset, anchor.kind, anchor.role, origin, anchor.name_slots)
+      transformed = remap_fragment(fragment, source, rendered) do |offset|
+        offset >= insertion ? offset + 4 : offset
       end
-      transformed = DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(rendered), adjusted)
       memory = io.as?(IO::Memory) || raise ArgumentError.new("diagnostic rendering requires an in-memory input")
       regions << write_diagnostic(memory, rendered, NO_POSITIONS, transformed, prefix, lines)
     end
@@ -1395,7 +1504,7 @@ module Iyi::IyiMod
       raise ArgumentError.new("duplicate diagnostic fragment use #{key}") unless @diagnostic_seen.not_nil!.add?(key)
       section = @artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
       fragment = section.fragments[key]? || raise ArgumentError.new("missing diagnostic fragment #{key}")
-      unless fragment.anchors.empty? && fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(text)
+      unless fragment.events.empty? && fragment.anchors.empty? && fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(text)
         raise ArgumentError.new("invalid empty diagnostic fragment #{key}")
       end
     end
@@ -1439,6 +1548,43 @@ module Iyi::IyiMod
       (pragmas[memory.pos.to_i32] ||= [] of Lexer::LocPragma) << Lexer::LocPopPragma.new if index > 0
     end
 
+    private def rebase_event(event : DiagnosticTokenEvent, new_start : Int32) : DiagnosticTokenEvent
+      delta = new_start - event.input_start
+      parts = event.byte_parts.map do |part|
+        first = part.start_offset + delta
+        last = part.end_offset + delta
+        case part
+        when DiagnosticEmissionPart::Generated
+          DiagnosticEmissionPart::Generated.new(first, last, part.emitter_origin, part.producer).as(DiagnosticEmissionPart)
+        when DiagnosticEmissionPart::AstAnchor
+          DiagnosticEmissionPart::AstAnchor.new(first, last, part.emitter_origin, part.source_origin).as(DiagnosticEmissionPart)
+        when DiagnosticEmissionPart::NameSplice
+          DiagnosticEmissionPart::NameSplice.new(first, last, part.emitter_origin, part.source_name).as(DiagnosticEmissionPart)
+        else
+          raise ArgumentError.new("unknown diagnostic token writer")
+        end
+      end
+      DiagnosticTokenEvent.new(new_start, new_start + event.token_text.bytesize, event.token_kind,
+        event.token_text, event.lexical_mode, event.selection, parts)
+    end
+
+    private def remap_fragment(fragment : DiagnosticFragment, source : String, rendered : String,
+                               &map : Int32 -> Int32) : DiagnosticFragment
+      unless ::Crystal::Digest::SHA256.hexdigest(source) == fragment.text_sha256
+        raise ArgumentError.new("diagnostic fragment text guard mismatch")
+      end
+      DiagnosticFragmentValidation.validate_text!(source, fragment.events, fragment.anchors)
+      lexical_mode = Lexer.iyi_source?(@artifact.source_path) ? "Iyi" : "Crystal"
+      builder = DiagnosticFragmentBuilder.new(lexical_mode)
+      event_indices = fragment.events.map do |event|
+        builder.add_event(rebase_event(event, yield event.input_start))
+      end
+      fragment.anchors.each do |anchor|
+        builder.add_anchor(anchor.copy_with(offset: yield(anchor.offset), event_index: event_indices[anchor.event_index]))
+      end
+      builder.finish(fragment.key, rendered)
+    end
+
     # Render a guarded fragment through the existing location path, then map
     # its syntactic anchors into the exact bytes the consumer will parse.
     def write_diagnostic(io : IO::Memory, text : String, positions : Array(SourcePosition),
@@ -1447,43 +1593,34 @@ module Iyi::IyiMod
       unless ::Crystal::Digest::SHA256.hexdigest(text) == fragment.text_sha256
         raise ArgumentError.new("diagnostic fragment text guard mismatch")
       end
-      anchors = fragment.anchors.sort_by { |anchor| {anchor.offset, anchor.kind, anchor.role} }
-      seen = Set({Int32, String, String}).new
-      anchors.each do |anchor|
-        unless anchor.offset >= 0 && anchor.offset < text.bytesize && (origin = anchor.origin) &&
-               origin.valid_for_anchor?(anchor.kind, anchor.role)
-          raise ArgumentError.new("invalid diagnostic fragment anchor")
-        end
-        raise ArgumentError.new("duplicate diagnostic fragment anchor") unless seen.add?({anchor.offset, anchor.kind, anchor.role})
-      end
-
+      DiagnosticFragmentValidation.validate_text!(text, fragment.events, fragment.anchors)
       start = io.pos.to_i32
       write(io, text, positions, prefix, lines)
       finish = io.pos.to_i32
-      mapped = [] of DiagnosticAnchor
+      rendered = String.new(io.to_slice[start, finish - start])
+      segments = [] of Tuple(Int32, Int32, Int32)
       if lines
         source_start = 0
-        output_start = start
-        index = 0
+        output_start = 0
         text.each_line(chomp: false) do |raw|
           line = raw.chomp
-          while (anchor = anchors[index]?) && anchor.offset < source_start + raw.bytesize
-            within = anchor.offset - source_start
-            raise ArgumentError.new("diagnostic anchor on a removed line ending") if within >= line.bytesize
-            mapped << DiagnosticAnchor.new(output_start + prefix.bytesize + within, anchor.kind, anchor.role, anchor.origin, anchor.name_slots)
-            index += 1
-          end
+          segments << {source_start, source_start + line.bytesize, output_start + prefix.bytesize}
           source_start += raw.bytesize
           output_start += prefix.bytesize + line.bytesize + 1
         end
-        raise ArgumentError.new("unmapped diagnostic fragment anchor") unless index == anchors.size
-      else
-        anchors.each do |anchor|
-          mapped << DiagnosticAnchor.new(start + anchor.offset, anchor.kind, anchor.role, anchor.origin, anchor.name_slots)
+      end
+      mapped = remap_fragment(fragment, text, rendered) do |offset|
+        if lines
+          segment = segments.find { |first, last, _| offset >= first && offset < last } ||
+                    raise ArgumentError.new("diagnostic event on a removed line ending")
+          segment[2] + offset - segment[0]
+        else
+          offset
         end
       end
-      rendered = io.to_slice[start, finish - start]
-      DiagnosticRegion.new(start, finish, ::Crystal::Digest::SHA256.hexdigest(rendered), mapped)
+      events = mapped.events.map { |event| rebase_event(event, event.input_start + start) }
+      anchors = mapped.anchors.map { |anchor| anchor.copy_with(offset: anchor.offset + start) }
+      DiagnosticRegion.new(start, finish, ::Crystal::Digest::SHA256.hexdigest(rendered), events, anchors)
     end
 
     private def place(pragmas, at : Int32, position : SourcePosition, index : Int32,
@@ -1566,14 +1703,23 @@ module Iyi::IyiMod
     "top-fun:#{source}"
   end
 
-  def self.diagnostic_macro_source(a_macro : Macro) : {String, Array(DiagnosticAnchor)}
-    io = IO::Memory.new
+  def self.diagnostic_macro_source_modes(a_macro : Macro) : {String, DiagnosticModeCaptures}
+    authoritative = IO::Memory.new
     if (doc = a_macro.doc) && !doc.empty?
-      write_doc io, doc, ""
+      write_doc authoritative, doc, ""
     end
-    anchors = [] of DiagnosticAnchor
-    a_macro.to_s(io, diagnostic_anchors: anchors)
-    {io.to_s, anchors}
+    a_macro.to_s(authoritative)
+    source = authoritative.to_s
+    captures = DiagnosticModeCaptures.capture(source, [] of SourcePosition) do |mode|
+      io = IO::Memory.new
+      if (doc = a_macro.doc) && !doc.empty?
+        write_doc io, doc, ""
+      end
+      builder = DiagnosticFragmentBuilder.new(mode)
+      a_macro.to_s(io, diagnostic_fragment: builder)
+      {io.to_s, [] of SourcePosition, builder}
+    end
+    {source, captures}
   end
 
   # A carried macro's first line, `pub macro twice(x)`, past its doc.
@@ -4828,74 +4974,75 @@ module Iyi::IyiMod
     end
   end
 
-  def self.diagnostic_signature_annotations(container : String, a_def : Def, signature : Signature) : Array(DiagnosticFragment)
+  def self.diagnostic_signature_annotations(container : String, a_def : Def, signature : Signature, lexical_mode : String) : Array(DiagnosticFragment)
     annotations = a_def.all_annotations || [] of Annotation
     raise ArgumentError.new("signature annotation count differs from source") unless annotations.size == signature.annotations.size
     annotations.map_with_index do |annotation_node, index|
       io = IO::Memory.new
-      anchors = [] of DiagnosticAnchor
-      annotation_node.to_s(io, diagnostic_anchors: anchors)
+      builder = DiagnosticFragmentBuilder.new(lexical_mode)
+      annotation_node.to_s(io, diagnostic_fragment: builder)
       source = io.to_s
       raise ArgumentError.new("signature annotation text differs from source") unless source == signature.annotations[index]
-      DiagnosticFragment.new(signature_annotation_fragment_key(container, signature, index),
-        ::Crystal::Digest::SHA256.hexdigest(source), anchors)
+      builder.finish(signature_annotation_fragment_key(container, signature, index), source)
     end
   end
 
   # Replays the exact signature renderer while recording each AST anchor
   # inside parameter defaults, restrictions and bounds. A disagreement with
   # the authoritative renderer is an error, not a nearest-token guess.
-  def self.diagnostic_signature_fragment(container : String, a_def : Def, signature : Signature) : DiagnosticFragment
+  def self.diagnostic_signature_fragment(container : String, a_def : Def, signature : Signature, lexical_mode : String) : DiagnosticFragment
     origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no diagnostic origin")
     unless origin == a_def.diagnostic_origin && origin.valid_for_anchor?("Def", "keyword")
       raise ArgumentError.new("signature origin differs from definition")
     end
     io = IO::Memory.new
-    anchors = [] of DiagnosticAnchor
+    builder = DiagnosticFragmentBuilder.new(lexical_mode)
     io << signature.visibility << ' ' unless signature.visibility.empty?
     io << "abstract " if signature.required
-    anchors << DiagnosticAnchor.new(io.pos.to_i32, "Def", "keyword", a_def.diagnostic_origin, a_def.diagnostic_name_slots)
-    io << "def "
+    builder.write_anchor_token(io, "Def", "keyword", origin, DiagnosticRenderedLexContext::Operand) { io << "def" }
+    io << ' '
     if receiver = a_def.receiver
-      receiver.to_s(io, diagnostic_anchors: anchors)
+      receiver.to_s(io, diagnostic_fragment: builder)
       io << '.'
     end
-    io << signature.name
+    write_diagnostic_signature_name(io, builder, a_def, DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary),
+      signature.name)
     unless signature.parameters.empty? && signature.block_parameter.empty?
       io << '('
       printed = false
       a_def.args.each_with_index do |arg, index|
         io << ", " if printed
         io << '*' if a_def.splat_index == index
-        arg.to_s(io, diagnostic_anchors: anchors)
+        arg.to_s(io, diagnostic_fragment: builder)
         printed = true
       end
       if arg = a_def.double_splat
         io << ", " if printed
         io << "**"
-        arg.to_s(io, diagnostic_anchors: anchors)
+        arg.to_s(io, diagnostic_fragment: builder)
         printed = true
       end
       if arg = a_def.block_arg
         io << ", " if printed
         io << '&'
-        arg.to_s(io, diagnostic_anchors: anchors)
+        arg.to_s(io, diagnostic_fragment: builder)
       end
       io << ')'
     end
     if result = a_def.return_type
       io << " : "
-      result.to_s(io, diagnostic_anchors: anchors)
+      result.to_s(io, diagnostic_fragment: builder)
     end
     unless signature.free_variables.empty?
       io << " forall "
       signature.free_variables.each_with_index do |name, index|
         io << ", " if index > 0
-        io << name
+        write_diagnostic_signature_name(io, builder, a_def,
+          DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index), name)
         if signature.free_variable_bounds.any? { |pair| pair[0] == name }
           bound = a_def.free_var_bounds.try(&.[name]?) || raise ArgumentError.new("missing free-variable bound AST")
           io << " : "
-          bound.to_s(io, diagnostic_anchors: anchors)
+          bound.to_s(io, diagnostic_fragment: builder)
         end
       end
     end
@@ -4904,13 +5051,27 @@ module Iyi::IyiMod
       signature.where_bounds.each_with_index do |(name, _), index|
         io << ", " if index > 0
         bound = a_def.where_bounds.try(&.[name]?) || raise ArgumentError.new("missing where-bound AST")
-        io << name << " : "
-        bound.to_s(io, diagnostic_anchors: anchors)
+        write_diagnostic_signature_name(io, builder, a_def,
+          DiagnosticNameSlot.new(DiagnosticNameSlotKind::WhereVariable, index), name)
+        io << " : "
+        bound.to_s(io, diagnostic_fragment: builder)
       end
     end
     text = io.to_s
     raise ArgumentError.new("diagnostic signature rendering differs from carried signature") unless text == render_signature(signature)
-    DiagnosticFragment.new(signature_fragment_key(container, signature), ::Crystal::Digest::SHA256.hexdigest(text), anchors)
+    builder.finish(signature_fragment_key(container, signature), text)
+  end
+
+  private def self.write_diagnostic_signature_name(io : IO::Memory, builder : DiagnosticFragmentBuilder,
+                                                   owner : Def, slot : DiagnosticNameSlot, expected : String) : Nil
+    values = owner.diagnostic_name_slots[slot]? || raise ArgumentError.new("missing signature name evidence")
+    start = io.pos.to_i32
+    values.each do |value|
+      builder.write_name(io, value, value.producer_context, slot)
+    end
+    unless io.to_s.byte_slice(start, io.pos.to_i32 - start) == expected
+      raise ArgumentError.new("signature name differs from recorded evidence")
+    end
   end
 
   private def self.encode_header(artifact : Artifact) : Bytes

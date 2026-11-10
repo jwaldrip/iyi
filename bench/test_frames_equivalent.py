@@ -917,13 +917,16 @@ def test_strict_manifest_synthetic_controls():
         def resolve(self, symbol):
             return ((self.value, identity["specialization"], identity["capture_descriptor"], identity["displayed_source_location"]), symbol)
 
-    for change in ("directive", "part", "splice", "occurrence", "nested"):
+    for change in ("directive", "part", "renderer", "splice", "occurrence", "nested"):
         altered = copy.deepcopy(expanded)
         event = altered["token_event"]
         if change == "directive": event["byte_parts"][0]["emitter_origin"]["input_byte_offset"] += 1
         elif change == "part":
             event["byte_parts"][0] = {"kind": "Generated", "start_offset": 8, "end_offset": 10,
                                        "emitter_origin": emitter, "producer": "MacroTemplate"}
+        elif change == "renderer":
+            event["byte_parts"][0] = {"kind": "Generated", "start_offset": 8, "end_offset": 10,
+                                       "emitter_origin": emitter, "producer": "ArtifactSemanticRenderer"}
         elif change == "splice": event["byte_parts"][0]["source_origin"]["input_byte_offset"] += 1
         elif change == "occurrence":
             event["input_start"] += 2
@@ -931,7 +934,9 @@ def test_strict_manifest_synthetic_controls():
             event["byte_parts"][0]["start_offset"] += 2
             event["byte_parts"][0]["end_offset"] += 2
         else:
-            event["byte_parts"][0]["source_origin"] = copy.deepcopy(expanded)
+            nested = copy.deepcopy(expanded)
+            nested["expansion_guard"] = "sha256:" + "f" * 64
+            event["byte_parts"][0]["source_origin"] = nested
         frames.checked_origin(altered)
         assert not frames.compare_functions(left_symbol.encode(), left_symbol.encode(), (IdentityMap(expanded), IdentityMap(altered))), change
     binding = {"name": "x", "binding_origin": {"kind": "Synthetic", "parent_origin": written("Call", "method", 30),
@@ -1044,9 +1049,30 @@ def test_composed_origin_controls():
                                   "evidence": {"kind": "Spliced", "source_origin": written("Literal", "array", 50)},
                                   "head": {"kind": "Anchor", "origin": child}}})
     assert frames.checked_origin(parent) == ("Literal", "array")
+    emitted_parent = copy.deepcopy(parent)
+    emitted_parent["anchor_use"]["emitter_origin"] = written("MacroDirective", "expression", 60)
+    assert frames.checked_origin(emitted_parent) == ("Literal", "array")
+    class UseMap:
+        def __init__(self, value): self.value = value
+        def resolve(self, symbol): return ((self.value,), symbol)
+    assert not frames.compare_functions(b"~proc", b"~proc", (UseMap(parent), UseMap(emitted_parent)))
     constructed = copy.deepcopy(parent)
     constructed["anchor_use"]["evidence"] = {"kind": "Constructed", "producer": "ConstructedAst"}
     assert frames.checked_origin(constructed) == ("Literal", "array")
+    adjacent = copy.deepcopy(child)
+    adjacent["token_event"].update({"input_start": 12, "input_end": 13, "byte_parts": [contribution(12, path_source)]})
+    global_parent = copy.deepcopy(parent)
+    global_parent["token_event"] = {"input_start": 10, "input_end": 12, "token_kind": "::", "token_text": "::",
+                                    "lexical_mode": "Crystal", "selection": "Whole",
+                                    "byte_parts": [{"kind": "Generated", "start_offset": 10, "end_offset": 12,
+                                                    "emitter_origin": None, "producer": "StructuredSyntax"}]}
+    global_parent["anchor_use"]["head"] = {"kind": "Syntax", "form": "GlobalPathPrefix", "adjacent_name_origin": adjacent}
+    assert frames.checked_origin(global_parent) == ("Literal", "array")
+    bad_global = copy.deepcopy(global_parent)
+    bad_global["anchor_use"]["head"]["adjacent_name_origin"]["expansion_guard"] = "sha256:" + "f" * 64
+    try: frames.checked_origin(bad_global)
+    except ValueError: pass
+    else: raise AssertionError("unrelated global-path head accepted")
     witness_event = {"input_start": 12, "input_end": 13, "token_kind": "{", "token_text": "{",
                      "lexical_mode": "Crystal", "selection": "Whole",
                      "byte_parts": [{"kind": "Generated", "start_offset": 12, "end_offset": 13,
@@ -1054,9 +1080,28 @@ def test_composed_origin_controls():
     raw_parent = copy.deepcopy(parent)
     raw_parent["anchor_use"]["evidence"] = {"kind": "RawSyntax", "witnesses": [{"role": "Open", "event": witness_event}]}
     assert frames.checked_origin(raw_parent) == ("Literal", "array")
+    splat = copy.deepcopy(witness_event)
+    splat.update({"input_start": 10, "input_end": 11, "token_kind": "*", "token_text": "*",
+                  "byte_parts": [{"kind": "Generated", "start_offset": 10, "end_offset": 11,
+                                  "emitter_origin": None, "producer": "MacroTemplate"}]})
+    equals = copy.deepcopy(witness_event)
+    equals.update({"token_kind": "=", "token_text": "="})
+    multi = copy.deepcopy(parent)
+    multi.update({"role": "multiassign", "token_event": splat,
+                  "anchor_use": {"kind": "HeadOf", "rule": "MultiAssignHead", "emitter_origin": None,
+                                 "head": {"kind": "Syntax", "form": "FirstSplat", "adjacent_name_origin": None},
+                                 "evidence": {"kind": "RawSyntax", "witnesses": [
+                                     {"role": "Splat", "event": copy.deepcopy(splat)},
+                                     {"role": "Equals", "event": equals}]}}})
+    assert frames.checked_origin(multi) == ("Literal", "multiassign")
+    bad_splat = copy.deepcopy(multi)
+    bad_splat["anchor_use"]["evidence"]["witnesses"][0]["event"]["byte_parts"][0]["producer"] = "MacroId"
+    try: frames.checked_origin(bad_splat)
+    except ValueError: pass
+    else: raise AssertionError("different same-offset splat witness accepted")
     owner = copy.deepcopy(parent)
     owner.update({"anchor_kind": "Literal", "role": "regex", "anchor_use": {"kind": "Direct"},
-                  "token_event": {"input_start": 1, "input_end": 2, "token_kind": "/", "token_text": "/",
+                  "token_event": {"input_start": 1, "input_end": 2, "token_kind": "DELIMITER_START", "token_text": "/",
                                   "lexical_mode": "Crystal", "selection": "Whole",
                                   "byte_parts": [{"kind": "Generated", "start_offset": 1, "end_offset": 2,
                                                   "emitter_origin": None, "producer": "MacroTemplate"}]}})
@@ -1065,16 +1110,50 @@ def test_composed_origin_controls():
                     "anchor_use": {"kind": "PayloadOf", "rule": "RegexInterpolationPayload", "emitter_origin": None,
                                    "evidence": {"kind": "DerivedFromOwner"}, "owner_origin": owner}})
     assert frames.checked_origin(payload) == ("Literal", "interpolation")
-    for mutation in ("missing_use", "wrong_parent", "wrong_child", "event_mismatch", "bad_rule",
-                     "bad_producer", "bad_witness", "wrong_owner", "payload_position", "missing_bytes"):
-        node = copy.deepcopy(raw_parent if mutation in ("bad_producer", "bad_witness") else
+    for opener, owner_kind, owner_role, rule in (("%r[", "Literal", "regex", "RegexInterpolationPayload"),
+                                                  ("%x{", "Call", "method", "CommandInterpolationPayload")):
+        other_owner = copy.deepcopy(owner)
+        other_owner.update({"anchor_kind": owner_kind, "role": owner_role})
+        other_owner["token_event"].update({"input_end": 4, "token_text": opener,
+                                            "byte_parts": [{"kind": "Generated", "start_offset": 1, "end_offset": 4,
+                                                            "emitter_origin": None, "producer": "MacroTemplate"}]})
+        other_payload = copy.deepcopy(other_owner)
+        other_payload.update({"anchor_kind": "Literal", "role": "interpolation",
+                              "anchor_use": {"kind": "PayloadOf", "rule": rule, "emitter_origin": None,
+                                             "evidence": {"kind": "DerivedFromOwner"}, "owner_origin": other_owner}})
+        assert frames.checked_origin(other_payload) == ("Literal", "interpolation")
+        wrong_kind = copy.deepcopy(other_payload)
+        wrong_kind["token_event"]["token_kind"] = "IDENT"
+        wrong_kind["anchor_use"]["owner_origin"]["token_event"]["token_kind"] = "IDENT"
+        try: frames.checked_origin(wrong_kind)
+        except ValueError: pass
+        else: raise AssertionError("forged payload delimiter accepted")
+    signed = copy.deepcopy(invocation)
+    signed.update({"name_context": None, "token_event": {"input_start": 70, "input_end": 72, "token_kind": "NUMBER",
+                  "token_text": "+2", "lexical_mode": "Crystal", "selection": "SignedNumberSign",
+                  "byte_parts": [{"kind": "AstAnchor", "start_offset": 70, "end_offset": 71, "emitter_origin": None,
+                                  "source_origin": written("Call", "method", 20)}]}})
+    assert frames.checked_origin(signed) == ("Call", "method")
+    invalid_signed = copy.deepcopy(signed)
+    invalid_signed["token_event"]["token_text"] = "a2"
+    try: frames.checked_origin(invalid_signed)
+    except ValueError: pass
+    else: raise AssertionError("forged signed number accepted")
+    for mutation in ("missing_use", "missing_emitter", "wrong_emitter", "raw_emitter", "wrong_parent", "wrong_child", "event_mismatch", "bad_rule",
+                     "bad_producer", "structured_producer", "renderer_producer", "bad_witness", "wrong_owner", "payload_position", "missing_bytes"):
+        node = copy.deepcopy(raw_parent if mutation in ("bad_producer", "structured_producer", "renderer_producer", "bad_witness", "raw_emitter") else
                              payload if mutation in ("wrong_owner", "payload_position") else parent)
         if mutation == "missing_use": del node["anchor_use"]
+        elif mutation == "missing_emitter": del node["anchor_use"]["emitter_origin"]
+        elif mutation == "wrong_emitter": node["anchor_use"]["emitter_origin"] = written("Call", "method", 6)
+        elif mutation == "raw_emitter": node["anchor_use"]["emitter_origin"] = written("MacroDirective", "expression", 6)
         elif mutation == "wrong_parent": node["anchor_use"]["evidence"]["source_origin"]["role"] = "hash"
         elif mutation == "wrong_child": node["anchor_use"]["head"]["origin"]["role"] = "method_name"
         elif mutation == "event_mismatch": node["anchor_use"]["head"]["origin"]["token_event"]["byte_parts"][0]["source_name"]["source_token"]["input_sha256"] = "c" * 64
         elif mutation == "bad_rule": node["anchor_use"]["rule"] = "Unrelated"
         elif mutation == "bad_producer": node["anchor_use"]["evidence"]["witnesses"][0]["event"]["byte_parts"][0]["producer"] = "ConstructedAst"
+        elif mutation == "structured_producer": node["anchor_use"]["evidence"]["witnesses"][0]["event"]["byte_parts"][0]["producer"] = "StructuredSyntax"
+        elif mutation == "renderer_producer": node["anchor_use"]["evidence"]["witnesses"][0]["event"]["byte_parts"][0]["producer"] = "ArtifactSemanticRenderer"
         elif mutation == "bad_witness": node["anchor_use"]["evidence"]["witnesses"][0]["role"] = "Equals"
         elif mutation == "wrong_owner": node["anchor_use"]["owner_origin"]["role"] = "array"
         elif mutation == "payload_position": node["token_event"]["input_start"] = 2
@@ -1202,13 +1281,13 @@ def test_composed_origin_controls():
     for production, result, index, spelling in (
             ("Pointer", "Pointer", 0, ["*"]), ("DoublePointer", "Pointer", 1, ["**"]),
             ("NilableType", "Nil", 0, ["?"]), ("NilableExpression", "Union", 0, ["?"]),
-            ("SelfNilableType", "Nil", 0, ["self?"]), ("StaticArray", "StaticArray", 0, ["[", "]"]),
+            ("SelfNilableType", "Nil", 0, ["self?"]), ("SelfNilableType", "Self", 0, ["self?"]), ("StaticArray", "StaticArray", 0, ["[", "]"]),
             ("Tuple", "Tuple", 0, ["{", "}"]), ("NamedTuple", "NamedTuple", 0, ["{", "}"]),
             ("NilPredicate", "Nil", 0, ["nil?"])):
         valid = sugar(production, result, index, spelling)
-        assert frames.checked_origin(valid) == ("Name", "path_segment")
-        assert frames.derived_name(valid, 0)[1] == result.encode()
-    for mutation in ("production", "result", "index", "reversed", "duplicate", "guard", "source_role", "wrong_token"):
+        assert frames.checked_origin(valid) == ("Name", "type_self" if result == "Self" else "path_segment")
+        assert frames.derived_name(valid, 0)[1] == (b"self" if result == "Self" else result.encode())
+    for mutation in ("production", "result", "index", "reversed", "duplicate", "guard", "source_file", "source_role", "wrong_token"):
         bad = sugar("StaticArray", "StaticArray", 0, ["[", "]"])
         if mutation == "production": bad["production"] = "Unknown"
         elif mutation == "result": bad["result"] = "Pointer"
@@ -1216,13 +1295,14 @@ def test_composed_origin_controls():
         elif mutation == "reversed": bad["witnesses"].reverse()
         elif mutation == "duplicate": bad["witnesses"][1] = copy.deepcopy(bad["witnesses"][0])
         elif mutation == "guard": bad["witnesses"][1]["input_sha256"] = "b" * 64
+        elif mutation == "source_file": bad["witnesses"][1]["lexical_origin"]["source_identity"]["file"] = "other.iyi"
         elif mutation == "source_role": bad["witnesses"][0]["lexical_origin"]["role"] = "keyword"
         else: bad["witnesses"][0]["token_kind"] = "IDENT"
         try: frames.checked_origin(bad)
         except (ValueError, KeyError, TypeError): pass
         else: raise AssertionError("invalid type sugar accepted: " + mutation)
 
-    for context, kind, raw in (("enum_member", "CONST", "Member"),
+    for context, kind, raw in (("enum_member", "CONST", "Member"), ("where_variable", "CONST", "T"),
                                ("special_global", "$~", "$~"), ("special_global", "$?", "$?")):
         token = {"lexical_origin": written("Name", context, 20), "binding_origin": None,
                  "context": context, "input_sha256": "a" * 64, "input_bytesize": 100,
@@ -1234,6 +1314,11 @@ def test_composed_origin_controls():
         try: frames.source_name(forged, 0)
         except ValueError: pass
         else: raise AssertionError("generic call authorized " + context)
+        if context == "where_variable":
+            forged["lexical_origin"] = written("Name", "type_parameter", 20)
+            try: frames.source_name(forged, 0)
+            except ValueError: pass
+            else: raise AssertionError("forall origin authorized where variable")
     for mutation in ("file", "offset", "digest", "binding", "emitter", "order"):
         changed = copy.deepcopy(emission)
         parts = changed["origin"]["invocation_origin"]["token_event"]["byte_parts"]
@@ -1283,6 +1368,10 @@ def test_composed_origin_controls():
             ("`", "`", "Crystal", "macro_name", True),
             ("!", "!", "Crystal", "macro_name", False),
             ("CONST", "Member", "Crystal", "enum_member", True),
+            ("CONST", "T", "Crystal", "where_variable", True),
+            ("IDENT", "t", "Crystal", "where_variable", False),
+            ("IDENT", "self", "Crystal", "type_self", True),
+            ("IDENT", "other", "Crystal", "type_self", False),
             ("IDENT", "member", "Crystal", "enum_member", False),
             ("CONST", "Member", "Crystal", "parameter", False),
             ("$~", "$~", "Crystal", "special_global", True),

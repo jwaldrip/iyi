@@ -150,8 +150,8 @@ def number(value):
         raise ValueError("invalid provenance integer")
 
 
-NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter named_entry enum_member special_global regex_match_index".split())
-PRODUCERS = frozenset("ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter".split())
+NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self".split())
+PRODUCERS = frozenset("ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer".split())
 TOKEN_KINDS = frozenset(("EOF SPACE NEWLINE IDENT CONST INSTANCE_VAR CLASS_VAR CHAR STRING SYMBOL NUMBER _ COMMENT "
     "DELIMITER_START DELIMITER_END STRING_ARRAY_START INTERPOLATION_START SYMBOL_ARRAY_START STRING_ARRAY_END "
     "GLOBAL GLOBAL_MATCH_DATA_INDEX __DIR__ __END_LINE__ __FILE__ __LINE__ MACRO_LITERAL MACRO_EXPRESSION_START "
@@ -179,6 +179,8 @@ CONTEXT_KINDS = {
     "parameter": frozenset(("IDENT", "INSTANCE_VAR", "CLASS_VAR")),
     "path_segment": frozenset(("CONST",)),
     "type_parameter": frozenset(("CONST",)),
+    "where_variable": frozenset(("CONST",)),
+    "type_self": frozenset(("IDENT",)),
     "named_entry": frozenset(("IDENT", "CONST")),
     "enum_member": frozenset(("CONST",)),
     "special_global": frozenset(("$~", "$?")),
@@ -188,6 +190,7 @@ CONTEXT_KINDS = {
 
 def name_token(kind, raw, mode, context):
     if kind not in CONTEXT_KINDS[context]: return False
+    if context == "type_self": return raw == "self"
     if context == "special_global": return raw == kind
     if context == "regex_match_index":
         if not re.fullmatch(r"\$(?:0|[1-9][0-9]*\??)", raw): return False
@@ -239,7 +242,8 @@ def source_name(value, depth):
         event = lexical["token_event"]
         if (event["input_start"] != start or event["input_end"] != end or
                 lexical["expansion_guard"] != "sha256:" + value["input_sha256"] or
-                event["token_text"] != value["raw_text"] or event["selection"] != "Whole"):
+                event["token_text"] != value["raw_text"] or event["token_kind"] != value["token_kind"] or
+                event["lexical_mode"] != value["lexical_mode"] or event["selection"] != "Whole"):
             raise ValueError("expanded source token mismatch")
     else:
         raise ValueError("invalid lexical name origin")
@@ -256,7 +260,7 @@ def derived_name(value, depth):
             "DoublePointer": (("**",), {("Pointer", 0), ("Pointer", 1)}),
             "NilableType": (("?",), {("Nil", 0)}),
             "NilableExpression": (("?",), {("Union", 0), ("Nil", 0)}),
-            "SelfNilableType": (("self?",), {("Nil", 0)}),
+            "SelfNilableType": (("self?",), {("Nil", 0), ("Self", 0)}),
             "StaticArray": (("[", "]"), {("StaticArray", 0)}),
             "Tuple": (("{", "}"), {("Tuple", 0)}),
             "NamedTuple": (("{", "}"), {("NamedTuple", 0)}),
@@ -292,10 +296,12 @@ def derived_name(value, depth):
                         event["lexical_mode"] != witness["lexical_mode"]):
                     raise ValueError("expanded type syntax mismatch")
             else: raise ValueError("invalid type syntax source")
-            identity = (witness["input_sha256"], witness["input_bytesize"], witness["lexical_mode"])
+            source_identity = (lexical["kind"], lexical["source_identity"]) if lexical["kind"] == "Written" else (
+                lexical["kind"], lexical["invocation_origin"], lexical["macro_definition_origin"], lexical["expansion_guard"])
+            identity = (witness["input_sha256"], witness["input_bytesize"], witness["lexical_mode"], source_identity)
             if common is not None and common != identity: raise ValueError("type syntax input mismatch")
             common, previous = identity, witness["input_end"]
-        return (("Name", "path_segment"), value["result"].encode("utf-8"))
+        return (("Name", "type_self" if value["result"] == "Self" else "path_segment"), b"self" if value["result"] == "Self" else value["result"].encode("utf-8"))
     if value.get("derivation_kind") == "RegexMatchIndex":
         fields(value, "kind derivation_kind source_token result")
         source = value["source_token"]
@@ -415,7 +421,7 @@ def anchor_use(value, depth):
             fields(head, "kind form adjacent_name_origin")
             form = head["form"]
             allowed = {"GlobalPathPrefix": "::", "FirstSplat": "*", "FirstUnderscore": "_", "ParenthesizedFirstTarget": "("}
-            if form not in allowed or event["token_text"] != allowed[form] or event["selection"] != "Whole":
+            if form not in allowed or event["token_kind"] != allowed[form] or event["token_text"] != allowed[form] or event["selection"] != "Whole":
                 raise ValueError("invalid syntax head")
             adjacent = head["adjacent_name_origin"]
             if form == "GlobalPathPrefix":
@@ -437,10 +443,12 @@ def anchor_use(value, depth):
                 owner.get("kind") != "Expanded" or owner["anchor_use"] != {"kind": "Direct"} or
                 not shared_scope(value, owner) or owner["token_event"] != event):
             raise ValueError("invalid payload owner")
+        opener = event["token_text"]
+        if event["token_kind"] != "DELIMITER_START" or event["selection"] != "Whole": raise ValueError("invalid payload delimiter")
         if rule == "RegexInterpolationPayload":
-            if owner_role != ("Literal", "regex") or event["token_text"] not in ("/", "%r("): raise ValueError("invalid regex owner")
+            if owner_role != ("Literal", "regex") or not (opener == "/" or (len(opener) == 3 and opener[:2] == "%r" and opener[2] in "(<[{|")): raise ValueError("invalid regex owner")
         elif rule == "CommandInterpolationPayload":
-            if owner_role != ("Call", "method") or event["token_text"] != "`": raise ValueError("invalid command owner")
+            if owner_role != ("Call", "method") or not (opener == "`" or (len(opener) == 3 and opener[:2] == "%x" and opener[2] in "(<[{|")): raise ValueError("invalid command owner")
         else: raise ValueError("unknown payload rule")
     else: raise ValueError("unknown anchor use")
     evidence = use["evidence"]
@@ -471,9 +479,11 @@ def anchor_use(value, depth):
             forms = (("Splat", "*"), ("Equals", "=")) if use["head"].get("form") == "FirstSplat" else (("Comma", ","), ("Equals", "="))
         if forms is None or len(witnesses) != len(forms): raise ValueError("missing raw syntax witnesses")
         last = event["input_end"]
-        for witness, (role, spelling) in zip(witnesses, forms):
+        for index, (witness, (role, spelling)) in enumerate(zip(witnesses, forms)):
             fields(witness, "role event")
-            if witness["role"] != role or witness["event"]["input_start"] < last:
+            same_splat = rule == "MultiAssignHead" and role == "Splat" and index == 0
+            if (witness["role"] != role or
+                    (witness["event"] != event if same_splat else witness["event"]["input_start"] < last)):
                 raise ValueError("invalid witness order")
             raw_event(witness["event"], spelling, event["lexical_mode"], depth)
             last = witness["event"]["input_end"]
@@ -502,6 +512,49 @@ def origin(value, depth=0):
         if ((key == ("literal_expansion_node", "regex:interpolation") and parent == ("Literal", "regex")) or
                 (key == ("literal_expansion_node", "command:interpolation") and parent == ("Call", "method"))):
             return ("Literal", "interpolation")
+        synth, slot = key
+        index = lambda value: bool(re.fullmatch(r"0|[1-9][0-9]*", value)) and (len(value) < 10 or (len(value) == 10 and value <= "2147483647"))
+        if synth == "select_cast" and parent == ("Literal", "select") and slot.startswith("arm:") and index(slot[4:]):
+            return ("Cast", "keyword")
+        if key == ("cast_error_interpolation", "message") and parent == ("Cast", "keyword"):
+            return ("Literal", "interpolation")
+        if synth == "literal_expansion_node":
+            fixed = {("derive:fields", ("Call", "method")): ("Literal", "array"),
+                     ("select:multiassign", ("Literal", "select")): ("Literal", "multiassign"),
+                     ("select:case", ("Literal", "select")): ("Literal", "case")}
+            if (slot, parent) in fixed: return fixed[(slot, parent)]
+            pieces = slot.split(":")
+            if len(pieces) == 3 and pieces[:2] == ["array", "interpolation"] and index(pieces[2]) and parent == ("Literal", "array"):
+                return ("Literal", "interpolation")
+            if len(pieces) >= 2 and pieces[0] == "block_unpack" and all(index(part) for part in pieces[1:]) and parent in (("Block", "opener"), ("Block", "ampersand")):
+                return ("Literal", "multiassign")
+            if len(pieces) == 3 and pieces[:2] == ["multiassign", "range"] and index(pieces[2]) and parent == ("Literal", "multiassign"):
+                return ("Literal", "range")
+        if synth == "literal_expansion":
+            pieces = slot.split(":")
+            if len(pieces) == 3 and pieces[:2] == ["array", "block"] and index(pieces[2]) and parent == ("Literal", "array"):
+                return ("Block", "opener")
+            if len(pieces) >= 2 and parent == ("Literal", pieces[0]):
+                fixed = {"array": {"constructor", "buffer"}, "hash": {"constructor"}, "range": {"constructor"},
+                         "regex": {"constructor", "options", "compile"}, "interpolation": {"call"},
+                         "select": {"select", "invalid"}, "multiassign": {"size", "compare", "error", "raise"}}
+                indexed = {"array": {"concat", "append", "store", "element_type", "each", "each_body"},
+                           "hash": {"store"}, "multiassign": {"index"}}
+                if len(pieces) == 2 and pieces[1] in fixed.get(pieces[0], set()): return ("Call", "method")
+                if len(pieces) == 3 and pieces[1] in indexed.get(pieces[0], set()) and index(pieces[2]): return ("Call", "method")
+                if len(pieces) == 5 and pieces[:2] == ["case", "compare"] and all(index(part) for part in pieces[2:]): return ("Call", "method")
+        if ((key == ("proc_pointer_invoke", "call") and parent == ("ProcPointer", "arrow")) or
+                (synth == "recover_panic" and slot in ("message", "raise") and parent == ("Call", "method")) or
+                (synth == "defer_runtime" and slot in ("push", "pop") and parent == ("Defer", "keyword")) or
+                (synth == "compound_assignment" and slot in ("getter", "setter") and parent == ("Call", "method"))):
+            return ("Call", "method")
+        if synth == "group_lowering" and parent == ("Call", "method"):
+            if slot in ("join", "first_failure"): return ("Call", "method")
+            pieces = slot.split(":")
+            if len(pieces) == 2 and pieces[0] in ("value", "fiber", "object_id", "compare") and index(pieces[1]):
+                return ("Call", "method")
+        if key == ("constant_accessor", "getter") and parent == ("Assign", "constant"):
+            return ("Def", "keyword")
         return ("Synthetic", value["synthesis_kind"])
     elif kind == "DerivedName":
         return derived_name(value, depth)[0]
@@ -560,7 +613,7 @@ def origin(value, depth=0):
             elif tag == "NameSplice":
                 fields(part, "kind start_offset end_offset emitter_origin source_name")
                 if direct and context is None: raise ValueError("name contribution without receiving context")
-                raw = name_value(part["source_name"], depth + 1)
+                raw = name_value(part["source_name"], depth)
             else:
                 raise ValueError("unknown emission part")
             number(part["start_offset"]); number(part["end_offset"])
@@ -606,12 +659,16 @@ def checked_origin(value):
         node = stack.pop()
         if isinstance(node, dict):
             if node.get("kind") == "Expanded":
-                event = node["token_event"]
                 scope = json.dumps([node[k] for k in SCOPE_KEYS], sort_keys=True, separators=(",", ":"))
-                key = (scope, event["input_start"])
-                if key in events and events[key] != event:
-                    raise ValueError("conflicting token event identity")
-                events[key] = event
+                associated = [node["token_event"]]
+                use = node["anchor_use"]
+                if use["kind"] == "HeadOf" and use["evidence"]["kind"] == "RawSyntax":
+                    associated.extend(witness["event"] for witness in use["evidence"]["witnesses"])
+                for event in associated:
+                    key = (scope, event["input_start"])
+                    if key in events and events[key] != event:
+                        raise ValueError("conflicting token event identity")
+                    events[key] = event
             stack.extend(node.values())
         elif isinstance(node, list):
             stack.extend(node)

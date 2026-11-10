@@ -20,6 +20,41 @@ private class NonPositionableDiagnosticIO < IO
   end
 end
 
+private def diagnostic_arrow_fragment(key : String, text : String, origin : Iyi::DiagnosticOrigin,
+                                      mode : String = "Crystal") : Iyi::IyiMod::DiagnosticFragment
+  raise ArgumentError.new("arrow fixture does not start with an arrow") unless text.starts_with?("->")
+  event = Iyi::DiagnosticTokenEvent.new(0, 2, "->", "->", mode, Iyi::DiagnosticTokenSelection::Whole,
+    [Iyi::DiagnosticEmissionPart::AstAnchor.new(0, 2, nil, origin)] of Iyi::DiagnosticEmissionPart)
+  anchor = Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin,
+    {} of Iyi::DiagnosticNameSlot => Array(Iyi::DiagnosticNameValue), 0, Iyi::DiagnosticFragmentAttachment::Direct.new)
+  Iyi::IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(text), [event], [anchor])
+end
+
+private def captured_diagnostic_def(source : String, file : String, mode : String) : Iyi::Def
+  parser = Iyi::Parser.new(source)
+  parser.filename = file
+  parser.diagnostic_source_file = file
+  parser.iyi = mode == "Iyi"
+  parser.diagnostic_capture = true
+  parser.parse.as(Iyi::Def)
+end
+
+private def captured_diagnostic_macro(source : String, file : String) : Iyi::Macro
+  parser = Iyi::Parser.new(source)
+  parser.filename = file
+  parser.diagnostic_source_file = file
+  parser.diagnostic_capture = true
+  parser.parse.as(Iyi::Macro)
+end
+
+private def diagnostic_macro_claim(first : Int32, last : Int32, kind : String, role : String,
+                                   evidence : Iyi::DiagnosticAnchorEvidence,
+                                   emitter : Iyi::DiagnosticOrigin?) : Iyi::DiagnosticMacroClaim
+  writer = Iyi::DiagnosticWriterRef.new(first, last)
+  key = Iyi::DiagnosticMacroClaimKey.new(writer, kind, role)
+  Iyi::DiagnosticMacroClaim.new(key, evidence, Iyi::DiagnosticMacroAttachment::Direct.new(writer), emitter)
+end
+
 describe "diagnostic token input offsets" do
   it "tracks byte offsets through skipped comments and lookahead" do
     lexer = Iyi::Lexer.new("# é\n  x")
@@ -100,11 +135,12 @@ describe Iyi::DiagnosticOrigin do
 
       io = IO::Memory.new
       io << "prefix "
-      emissions = [] of Iyi::DiagnosticMacroAnchor
+      emissions = [] of Iyi::DiagnosticMacroClaim
       generated = [] of Iyi::DiagnosticGeneratedText
-      node.to_s(io, diagnostic_emissions: emissions, diagnostic_generated_text: generated)
+      node.to_s(io, diagnostic_claims: emissions, diagnostic_generated_text: generated)
       io.to_s.should eq("prefix " + expected)
-      emissions.should eq([Iyi::DiagnosticMacroAnchor.new(7 + method_offset, 10 + method_offset, "Call", "method", nil, nil, producer)])
+      emissions.should eq([diagnostic_macro_claim(7 + method_offset, 10 + method_offset, "Call", "method",
+        Iyi::DiagnosticAnchorEvidence::Constructed.new(producer), nil)])
       generated.should eq([Iyi::DiagnosticGeneratedText.new(7, 7 + expected.bytesize, nil, producer)])
     end
   end
@@ -129,25 +165,26 @@ describe Iyi::DiagnosticOrigin do
       origin.valid_for_anchor?(kind, "keyword").should be_true
 
       io = IO::Memory.new
-      anchors = [] of Iyi::DiagnosticAnchor
-      node.to_s(io, diagnostic_anchors: anchors)
+      builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      node.to_s(io, diagnostic_fragment: builder)
       text = io.to_s
+      fragment = builder.finish("fixture", text)
+      anchors = fragment.anchors
       anchor = anchors.find { |item| item.kind == kind && item.role == "keyword" }.not_nil!
       text.byte_slice(anchor.offset, keyword.bytesize).should eq(keyword)
       anchor.origin.should eq(origin)
       restored = Iyi::Parser.new(text)
-      restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
-        ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+      restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, anchors)]
       restored.parse.diagnostic_origin.should eq(origin)
 
       missing = Iyi::Parser.new(text)
-      missing.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
-        ::Crystal::Digest::SHA256.hexdigest(text), anchors.reject { |item| item == anchor })]
-      expect_raises(ArgumentError) { missing.parse }
+      expect_raises(ArgumentError) do
+        missing.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, anchors.reject { |item| item == anchor })]
+        missing.parse
+      end
       changed = Iyi::Parser.new(text + " ")
       expect_raises(ArgumentError) do
-        changed.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize + 1,
-          ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+        changed.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize + 1, fragment.text_sha256, fragment.events, anchors)]
       end
     end
   end
@@ -160,15 +197,15 @@ describe Iyi::DiagnosticOrigin do
     binding = assignment.target.as(Iyi::Var).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic)
     emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.cr", 20, "MacroDirective", "expression")
     io = IO::Memory.new
-    anchors = [] of Iyi::DiagnosticMacroAnchor
+    anchors = [] of Iyi::DiagnosticMacroClaim
     generated = [] of Iyi::DiagnosticGeneratedText
     names = [] of Iyi::DiagnosticMacroNameFragment
-    assignment.to_s(io, diagnostic_emissions: anchors, diagnostic_generated_text: generated,
+    assignment.to_s(io, diagnostic_claims: anchors, diagnostic_generated_text: generated,
       diagnostic_name_fragments: names, diagnostic_emitter: emitter)
     name_only = IO::Memory.new
-    name_anchors = [] of Iyi::DiagnosticMacroAnchor
+    name_anchors = [] of Iyi::DiagnosticMacroClaim
     name_fragments = [] of Iyi::DiagnosticMacroNameFragment
-    assignment.target.to_s(name_only, diagnostic_emissions: name_anchors,
+    assignment.target.to_s(name_only, diagnostic_claims: name_anchors,
       diagnostic_name_fragments: name_fragments, diagnostic_emitter: emitter)
     name_only.to_s.should eq("evloop")
     name_anchors.should be_empty
@@ -191,7 +228,7 @@ describe Iyi::DiagnosticOrigin do
 
     missing = Iyi::Parser.new(text)
     missing.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
-      {0 => [Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroAnchor, generated)] of Iyi::Lexer::LocPragma})
+      {0 => [Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroClaim, generated, [] of Iyi::DiagnosticMacroNameFragment)] of Iyi::Lexer::LocPragma})
     expect_raises(ArgumentError) { missing.parse }
   end
 
@@ -258,9 +295,9 @@ describe Iyi::DiagnosticOrigin do
     literal.diagnostic_origin = origin
     io = IO::Memory.new
     io << "prefix "
-    anchors = [] of Iyi::DiagnosticAnchor
-    literal.accept Iyi::ToSVisitor.new(io, diagnostic_anchors: anchors)
-    anchor = anchors.find { |item| item.kind == "ProcLiteral" }.not_nil!
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    literal.accept Iyi::ToSVisitor.new(io, diagnostic_fragment: builder)
+    anchor = builder.finish("fixture", io.to_s).anchors.find { |item| item.kind == "ProcLiteral" }.not_nil!
     anchor.offset.should eq(7)
     anchor.role.should eq("arrow")
     anchor.origin.should eq(origin)
@@ -276,14 +313,15 @@ describe Iyi::DiagnosticOrigin do
     origin = call.diagnostic_origin.as(Iyi::DiagnosticOrigin::Written)
     origin.input_byte_offset.should eq(2)
     io = IO::Memory.new
-    anchors = [] of Iyi::DiagnosticAnchor
-    call.to_s(io, diagnostic_anchors: anchors)
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    call.to_s(io, diagnostic_fragment: builder)
     text = io.to_s
+    fragment = builder.finish("fixture", text)
+    anchors = fragment.anchors
     anchors.size.should eq(1)
     text.byte_slice(anchors.first.offset, 1).should eq("+")
     restored = Iyi::Parser.new(text)
-    restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
-      ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+    restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, anchors)]
     restored.parse.as(Iyi::Call).diagnostic_origin.should eq(origin)
   end
 
@@ -296,12 +334,12 @@ describe Iyi::DiagnosticOrigin do
     origin = assignment.diagnostic_origin.as(Iyi::DiagnosticOrigin::Written)
     origin.input_byte_offset.should eq(3)
     io = IO::Memory.new
-    anchors = [] of Iyi::DiagnosticAnchor
-    assignment.to_s(io, diagnostic_anchors: anchors)
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    assignment.to_s(io, diagnostic_fragment: builder)
     text = io.to_s
+    fragment = builder.finish("fixture", text)
     restored = Iyi::Parser.new(text)
-    restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
-      ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+    restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
     restored.parse.as(Iyi::OpAssign).diagnostic_origin.should eq(origin)
     lowered = Iyi::Program.new.normalize(assignment).as(Iyi::Assign)
     lowered.value.as(Iyi::Call).diagnostic_origin.should eq(origin)
@@ -519,13 +557,15 @@ describe Iyi::DiagnosticOrigin do
       node = parser.parse
       origin = node.diagnostic_origin.not_nil!
       origin.valid_for_anchor?("Literal", role).should be_true
-      text, _, anchors = Iyi::IyiMod.diagnostic_located_source(node)
+      text, _, builder = Iyi::IyiMod.diagnostic_located_source(node, "Crystal")
+      fragment = builder.finish("literal", text)
+      anchors = fragment.anchors
       if role == "multiassign"
         anchors.any? { |anchor| anchor.offset == 0 && anchor.kind == "Call" && anchor.role == "method" }.should be_true
       end
       restored = Iyi::Parser.new(text)
       restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
-        ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+        fragment.text_sha256, fragment.events, anchors)]
       restored.parse.diagnostic_origin.should eq(origin)
     end
   end
@@ -537,9 +577,9 @@ describe Iyi::DiagnosticOrigin do
     block.diagnostic_origin = block_origin
     call = Iyi::Call.new(nil, "map", [] of Iyi::ASTNode, block)
     io = IO::Memory.new
-    anchors = [] of Iyi::DiagnosticAnchor
-    call.accept Iyi::ToSVisitor.new(io, diagnostic_anchors: anchors)
-    anchor = anchors.find { |item| item.kind == "Block" }.not_nil!
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    call.accept Iyi::ToSVisitor.new(io, diagnostic_fragment: builder)
+    anchor = builder.finish("fixture", io.to_s).anchors.find { |item| item.kind == "Block" }.not_nil!
     anchor.role.should eq("ampersand")
     anchor.origin.should eq(block_origin)
     io.to_s.byte_slice(anchor.offset, 2).should eq("&.")
@@ -548,9 +588,10 @@ describe Iyi::DiagnosticOrigin do
   it "restores a guarded parser anchor and rejects changed or incomplete text" do
     text = "-> { 1 }"
     origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 41, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin)
-    digest = ::Crystal::Digest::SHA256.hexdigest(text)
-    region = Iyi::DiagnosticRegion.new(0, text.bytesize, digest, [anchor])
+    fragment = diagnostic_arrow_fragment("body:f", text, origin)
+    anchor = fragment.anchors.first
+    digest = fragment.text_sha256
+    region = Iyi::DiagnosticRegion.new(0, text.bytesize, digest, fragment.events, [anchor])
     parser = Iyi::Parser.new(text)
     parser.diagnostic_regions = [region]
     parser.parse.diagnostic_origin.should eq(origin)
@@ -558,24 +599,27 @@ describe Iyi::DiagnosticOrigin do
     changed = Iyi::Parser.new("-> { 2 }")
     expect_raises(ArgumentError) { changed.diagnostic_regions = [region] }
     missing = Iyi::Parser.new(text)
-    missing.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, digest, [] of Iyi::DiagnosticAnchor)]
-    expect_raises(ArgumentError) { missing.parse }
+    expect_raises(ArgumentError) do
+      missing.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, digest, fragment.events, [] of Iyi::DiagnosticAnchor)]
+      missing.parse
+    end
 
     duplicate = Iyi::Parser.new(text)
     expect_raises(ArgumentError) do
-      duplicate.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, digest, [anchor, anchor])]
+      duplicate.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, digest, fragment.events, [anchor, anchor])]
     end
     wrong_offset = Iyi::Parser.new(text)
-    bad_anchor = Iyi::DiagnosticAnchor.new(1, "ProcLiteral", "arrow", origin)
-    wrong_offset.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, digest, [bad_anchor])]
-    expect_raises(ArgumentError) { wrong_offset.parse }
+    bad_anchor = anchor.copy_with(offset: 1)
+    expect_raises(ArgumentError) do
+      wrong_offset.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, digest, fragment.events, [bad_anchor])]
+      wrong_offset.parse
+    end
   end
 
   it "maps anchored bytes through indented artifact body rendering" do
     text = "-> do\n  1\nend"
     origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 41, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin)
-    fragment = Iyi::IyiMod::DiagnosticFragment.new("body:f", ::Crystal::Digest::SHA256.hexdigest(text), [anchor])
+    fragment = diagnostic_arrow_fragment("body:f", text, origin)
     io = IO::Memory.new
     bodies = Iyi::IyiMod::Bodies.new(sample_artifact)
     region = bodies.write_diagnostic(io, text, [] of Iyi::IyiMod::SourcePosition, fragment, "  ")
@@ -585,8 +629,7 @@ describe Iyi::DiagnosticOrigin do
   end
 
   it "restores a carried mono body at its exact rendered anchor" do
-    original_def = Iyi::Def.new("f")
-    original_def.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 4, "Def", "keyword")
+    original_def = captured_diagnostic_def("def f\nend", "/absent/greeter.iyi", "Iyi")
     sig = signature("f")
     sig.diagnostic_origin = original_def.diagnostic_origin
     artifact = sample_artifact(exports: [sig])
@@ -595,9 +638,8 @@ describe Iyi::DiagnosticOrigin do
     artifact.mono_bodies[key] = text
     origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 15, "ProcLiteral", "arrow")
     section = Iyi::IyiMod::DiagnosticSection.new
-    section.add_fragment(Iyi::IyiMod.diagnostic_signature_fragment(artifact.module_name, original_def, sig))
-    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, sig),
-      ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin)]))
+    section.add_fragment(Iyi::IyiMod.diagnostic_signature_fragment(artifact.module_name, original_def, sig, "Iyi"))
+    section.add_fragment(diagnostic_arrow_fragment(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, sig), text, origin, "Iyi"))
     artifact.diagnostic_provenance = section
     io = IO::Memory.new
     pragmas = {} of Int32 => Array(Iyi::Lexer::LocPragma)
@@ -614,16 +656,13 @@ describe Iyi::DiagnosticOrigin do
   end
 
   it "restores a definition and a closure in its parameter default" do
-    literal = Iyi::ProcLiteral.new(Iyi::Def.new("->", [] of Iyi::Arg, Iyi::NumberLiteral.new(1)))
-    proc_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 20, "ProcLiteral", "arrow")
-    literal.diagnostic_origin = proc_origin
-    definition = Iyi::Def.new("f", [Iyi::Arg.new("x", literal)])
-    def_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 4, "Def", "keyword")
-    definition.diagnostic_origin = def_origin
+    definition = captured_diagnostic_def("def f(x = -> { 1 })\nend", "/absent/greeter.cr", "Crystal")
+    def_origin = definition.diagnostic_origin.not_nil!
+    proc_origin = definition.args.first.default_value.not_nil!.diagnostic_origin.not_nil!
     sig = Iyi::IyiMod.signature(definition, check_block: false)
-    fragment = Iyi::IyiMod.diagnostic_signature_fragment("app/greeter", definition, sig)
+    fragment = Iyi::IyiMod.diagnostic_signature_fragment("app/greeter", definition, sig, "Crystal")
     header = Iyi::IyiMod.render_signature(sig)
-    region = Iyi::DiagnosticRegion.new(0, header.bytesize, fragment.text_sha256, fragment.anchors)
+    region = Iyi::DiagnosticRegion.new(0, header.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)
     parser = Iyi::Parser.new("#{header}\nend")
     parser.diagnostic_regions = [region]
     restored = parser.parse.as(Iyi::Def)
@@ -632,21 +671,10 @@ describe Iyi::DiagnosticOrigin do
   end
 
   it "round-trips same-header definitions and their distinct closure origins without source" do
-    defaults = [
-      Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 8, "ProcLiteral", "arrow"),
-      Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 44, "ProcLiteral", "arrow"),
-    ]
-    literals = defaults.map do |origin|
-      literal = Iyi::ProcLiteral.new(Iyi::Def.new("->", [] of Iyi::Arg, Iyi::NumberLiteral.new(1)))
-      literal.diagnostic_origin = origin
-      literal
-    end
-    first = Iyi::Def.new("f", [Iyi::Arg.new("x", literals[0], Iyi::Parser.parse("Proc(Int32)"))])
-    second = Iyi::Def.new("f", [Iyi::Arg.new("x", literals[1], Iyi::Parser.parse("Proc(Int32)"))])
-    first.return_type = Iyi::Parser.parse("Proc(Int32)")
-    second.return_type = Iyi::Parser.parse("Proc(Int32)")
-    first.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 4, "Def", "keyword")
-    second.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 40, "Def", "keyword")
+    definition_source = "def f(x : Proc(Int32) = -> { 1 }) : Proc(Int32)\nend"
+    first = captured_diagnostic_def(definition_source, "/absent/first.iyi", "Iyi")
+    second = captured_diagnostic_def(definition_source, "/absent/second.iyi", "Iyi")
+    defaults = [first, second].map { |definition| definition.args.first.default_value.not_nil!.diagnostic_origin.not_nil! }
     signatures = [Iyi::IyiMod.signature(first), Iyi::IyiMod.signature(second)]
     artifact = sample_artifact(exports: signatures)
     section = Iyi::IyiMod::DiagnosticSection.new
@@ -658,9 +686,8 @@ describe Iyi::DiagnosticOrigin do
       sig = signatures[index]
       text = "-> { #{index + 1} }"
       artifact.mono_bodies[Iyi::IyiMod.mono_body_key(artifact.module_name, sig, index)] = text
-      section.add_fragment(Iyi::IyiMod.diagnostic_signature_fragment(artifact.module_name, definition, sig))
-      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, sig),
-        ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", closures[index])]))
+      section.add_fragment(Iyi::IyiMod.diagnostic_signature_fragment(artifact.module_name, definition, sig, "Iyi"))
+      section.add_fragment(diagnostic_arrow_fragment(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, sig), text, closures[index], "Iyi"))
     end
     artifact.diagnostic_provenance = section
     with_temporary_file do |path|
@@ -686,14 +713,12 @@ describe Iyi::DiagnosticOrigin do
       reemitted_section = Iyi::IyiMod::DiagnosticSection.new
       definitions.each_with_index do |definition, index|
         sig = emitted_signatures[index]
-        text, positions, anchors = Iyi::IyiMod.diagnostic_located_source(definition.body)
+        text, positions, builder = Iyi::IyiMod.diagnostic_located_source(definition.body, "Iyi")
         body_key = Iyi::IyiMod.mono_body_key(reemitted.module_name, sig, index)
         reemitted.mono_bodies[body_key] = text
         reemitted.body_positions[body_key] = positions
-        reemitted_section.add_fragment(Iyi::IyiMod.diagnostic_signature_fragment(reemitted.module_name, definition, sig))
-        reemitted_section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(
-          Iyi::IyiMod.signature_body_fragment_key(reemitted.module_name, sig),
-          ::Crystal::Digest::SHA256.hexdigest(text), anchors))
+        reemitted_section.add_fragment(Iyi::IyiMod.diagnostic_signature_fragment(reemitted.module_name, definition, sig, "Iyi"))
+        reemitted_section.add_fragment(builder.finish(Iyi::IyiMod.signature_body_fragment_key(reemitted.module_name, sig), text))
       end
       reemitted.diagnostic_provenance = reemitted_section
       Iyi::IyiMod.write reemitted, path
@@ -715,8 +740,7 @@ describe Iyi::DiagnosticOrigin do
     artifact.exports.class_vars << Iyi::IyiMod::ClassVarDecl.new(name, "Proc(Int32)", text)
     origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 22, "ProcLiteral", "arrow")
     section = Iyi::IyiMod::DiagnosticSection.new
-    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.class_var_fragment_key(Iyi::IyiMod::DIAGNOSTIC_ROOT_CONTAINER, name),
-      ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin)]))
+    section.add_fragment(diagnostic_arrow_fragment(Iyi::IyiMod.class_var_fragment_key(Iyi::IyiMod::DIAGNOSTIC_ROOT_CONTAINER, name), text, origin, "Iyi"))
     artifact.diagnostic_provenance = section
     io = IO::Memory.new
     pragmas = {} of Int32 => Array(Iyi::Lexer::LocPragma)
@@ -738,8 +762,7 @@ describe Iyi::DiagnosticOrigin do
     declaration = type_declaration("Box", "class", fields: [{"@factory", "Proc(Int32)", text}])
     artifact = sample_artifact(types: [declaration])
     section = Iyi::IyiMod::DiagnosticSection.new
-    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.field_fragment_key("Box", "@factory"),
-      ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin)]))
+    section.add_fragment(diagnostic_arrow_fragment(Iyi::IyiMod.field_fragment_key("Box", "@factory"), text, origin, "Iyi"))
     artifact.diagnostic_provenance = section
     with_temporary_file do |path|
       Iyi::IyiMod.write artifact, path
@@ -758,17 +781,15 @@ describe Iyi::DiagnosticOrigin do
   end
 
   it "maps macro anchors across the bound-shard public marker" do
-    macro_node = Iyi::Macro.new("example")
+    macro_node = captured_diagnostic_macro("macro example\nend", "/absent/greeter.cr")
     macro_node.doc = "é documentation"
-    origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.cr", 11, "Macro", "keyword")
-    macro_node.diagnostic_origin = origin
-    source, anchors = Iyi::IyiMod.diagnostic_macro_source(macro_node)
+    origin = macro_node.diagnostic_origin.not_nil!
+    source, captures = Iyi::IyiMod.diagnostic_macro_source_modes(macro_node)
     artifact = sample_artifact
     artifact.crystal_library = true
     artifact.macro_bodies << source
     section = Iyi::IyiMod::DiagnosticSection.new
-    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.macro_fragment_key(Iyi::IyiMod::DIAGNOSTIC_ROOT_CONTAINER, source),
-      ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+    section.add_fragment(captures.fragment(Iyi::IyiMod.macro_fragment_key(Iyi::IyiMod::DIAGNOSTIC_ROOT_CONTAINER, source), "Iyi"))
     artifact.diagnostic_provenance = section
     io = IO::Memory.new
     regions = [] of Iyi::DiagnosticRegion
@@ -812,15 +833,12 @@ describe Iyi::DiagnosticOrigin do
       proc_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 20 + index, "ProcLiteral", "arrow")
       text = "-> { 1 }"
       decl.class_vars << Iyi::IyiMod::ClassVarDecl.new("@@x", "Proc(Int32)", text)
-      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.class_var_fragment_key(decl.name, "@@x"),
-        ::Crystal::Digest::SHA256.hexdigest(text), [Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", proc_origin)]))
-      macro_origin = Iyi::DiagnosticOrigin::Written.new("app/greeter", "/absent/greeter.iyi", 40 + index, "Macro", "keyword")
-      macro_node = Iyi::Macro.new("same")
-      macro_node.diagnostic_origin = macro_origin
-      source, anchors = Iyi::IyiMod.diagnostic_macro_source(macro_node)
+      section.add_fragment(diagnostic_arrow_fragment(Iyi::IyiMod.class_var_fragment_key(decl.name, "@@x"), text, proc_origin, "Iyi"))
+      macro_node = captured_diagnostic_macro("macro same\nend", "/absent/macro#{index}.cr")
+      macro_origin = macro_node.diagnostic_origin.not_nil!
+      source, captures = Iyi::IyiMod.diagnostic_macro_source_modes(macro_node)
       decl.macros << source
-      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.macro_fragment_key(decl.name, source),
-        ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+      section.add_fragment(captures.fragment(Iyi::IyiMod.macro_fragment_key(decl.name, source), "Iyi"))
       expected << macro_origin << proc_origin
     end
     artifact.diagnostic_provenance = section
@@ -849,10 +867,11 @@ describe Iyi::DiagnosticOrigin do
     wrong = Iyi::DiagnosticOrigin::Synthetic.new(origin, "constant_accessor", "other")
     wrong.valid_for_anchor?("Def", "keyword").should be_false
     text = IO::Memory.new
-    anchors = [] of Iyi::DiagnosticAnchor
-    assignment.to_s(text, diagnostic_anchors: anchors)
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    assignment.to_s(text, diagnostic_fragment: builder)
     source = text.to_s
-    region = Iyi::DiagnosticRegion.new(0, source.bytesize, ::Crystal::Digest::SHA256.hexdigest(source), anchors)
+    fragment = builder.finish("fixture", source)
+    region = Iyi::DiagnosticRegion.new(0, source.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)
     restored_parser = Iyi::Parser.new(source)
     restored_parser.diagnostic_regions = [region]
     restored_parser.parse.as(Iyi::Assign).diagnostic_origin.should eq(origin)
@@ -867,12 +886,12 @@ describe Iyi::DiagnosticOrigin do
     origin = declaration.diagnostic_origin.not_nil!
     origin.as(Iyi::DiagnosticOrigin::Written).input_byte_offset.should eq(0)
     text = IO::Memory.new
-    anchors = [] of Iyi::DiagnosticAnchor
-    declaration.to_s(text, diagnostic_anchors: anchors)
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    declaration.to_s(text, diagnostic_fragment: builder)
     source = text.to_s
+    fragment = builder.finish("fixture", source)
     parser = Iyi::Parser.new(source)
-    parser.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, source.bytesize,
-      ::Crystal::Digest::SHA256.hexdigest(source), anchors)]
+    parser.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, source.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
     parser.parse.as(Iyi::TypeDeclaration).diagnostic_origin.should eq(origin)
   end
 
@@ -916,8 +935,8 @@ describe Iyi::DiagnosticOrigin do
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
     original = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticMacroAnchor.new(0, 2, "ProcLiteral", "arrow", emitter, original, nil)
-    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [] of Iyi::DiagnosticGeneratedText)
+    anchor = diagnostic_macro_claim(0, 2, "ProcLiteral", "arrow", Iyi::DiagnosticAnchorEvidence::Spliced.new(original), emitter)
+    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [] of Iyi::DiagnosticGeneratedText, [] of Iyi::DiagnosticMacroNameFragment)
     pragmas = {0 => [emission] of Iyi::Lexer::LocPragma}
     parser = Iyi::Parser.new(text)
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
@@ -934,7 +953,7 @@ describe Iyi::DiagnosticOrigin do
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
     generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, emitter, Iyi::DiagnosticMacroProducer::MacroId)
-    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroAnchor, [generated])
+    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroClaim, [generated], [] of Iyi::DiagnosticMacroNameFragment)
     parser = Iyi::Parser.new(text)
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
@@ -952,7 +971,7 @@ describe Iyi::DiagnosticOrigin do
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
     generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, emitter, Iyi::DiagnosticMacroProducer::MacroId)
-    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroAnchor, [generated])
+    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroClaim, [generated], [] of Iyi::DiagnosticMacroNameFragment)
     parser = Iyi::Parser.new(text)
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
@@ -967,9 +986,9 @@ describe Iyi::DiagnosticOrigin do
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
     original = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticMacroAnchor.new(0, 2, "ProcLiteral", "arrow", emitter, original, nil)
+    anchor = diagnostic_macro_claim(0, 2, "ProcLiteral", "arrow", Iyi::DiagnosticAnchorEvidence::Spliced.new(original), emitter)
     generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, emitter, Iyi::DiagnosticMacroProducer::MacroId)
-    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [generated])
+    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [generated], [] of Iyi::DiagnosticMacroNameFragment)
     parser = Iyi::Parser.new(text)
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
@@ -1005,14 +1024,16 @@ describe Iyi::DiagnosticOrigin do
     closure_origin.token_event.byte_parts.first.emitter_origin.should_not be_nil
 
     fragment_io = IO::Memory.new
-    anchors = [] of Iyi::DiagnosticAnchor
-    array.to_s(fragment_io, diagnostic_anchors: anchors)
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    array.to_s(fragment_io, diagnostic_fragment: builder)
     fragment_text = fragment_io.to_s
+    captured = builder.finish("fixture", fragment_text)
+    anchors = captured.anchors
     key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
     declaration = type_declaration("Box", "class", fields: [{"@factory", "Array", fragment_text}])
-    artifact = sample_artifact(types: [declaration])
+    artifact = sample_artifact(types: [declaration], source_path: "/absent/array.cr")
     section = Iyi::IyiMod::DiagnosticSection.new
-    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(fragment_text), anchors))
+    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, captured.text_sha256, captured.events, anchors))
     artifact.diagnostic_provenance = section
     with_temporary_file do |path|
       Iyi::IyiMod.write artifact, path
@@ -1020,15 +1041,15 @@ describe Iyi::DiagnosticOrigin do
       carried_text = restored.exports.types.first.fields.first[2]
       fragment = restored.diagnostic_provenance.not_nil!.fragments[key]
       consumer = Iyi::Parser.new(carried_text)
-      consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried_text.bytesize, fragment.text_sha256, fragment.anchors)]
+      consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried_text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
       carried = consumer.parse.as(Iyi::ArrayLiteral)
       carried.diagnostic_origin.should eq(array_origin)
       carried.elements.first.diagnostic_origin.should eq(closure_origin)
       reemitted_io = IO::Memory.new
-      reemitted_anchors = [] of Iyi::DiagnosticAnchor
-      carried.to_s(reemitted_io, diagnostic_anchors: reemitted_anchors)
+      rebuilder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      carried.to_s(reemitted_io, diagnostic_fragment: rebuilder)
       reemitted_io.to_s.should eq(carried_text)
-      reemitted_anchors.should eq(anchors)
+      rebuilder.finish("fixture", reemitted_io.to_s).should eq(captured)
       Iyi::IyiMod.write restored, path
       Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
     end
@@ -1143,9 +1164,11 @@ describe Iyi::DiagnosticOrigin do
     composed_token = Iyi::DiagnosticSourceNameToken.new(expanded, nil, "class_variable",
       ::Crystal::Digest::SHA256.hexdigest("@@empty"), 7, 0, 7, "Crystal", "CLASS_VAR", "@@empty")
     slots = {slot => [Iyi::DiagnosticNameValue::Observed.new(composed_token)] of Iyi::DiagnosticNameValue}
-    anchor = Iyi::DiagnosticAnchor.new(0, "Name", "class_variable", expanded, slots)
+    output_event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@empty", "Crystal", Iyi::DiagnosticTokenSelection::Whole,
+      [Iyi::DiagnosticEmissionPart::NameSplice.new(0, 7, nil, Iyi::DiagnosticNameValue::Observed.new(composed_token))] of Iyi::DiagnosticEmissionPart)
+    anchor = Iyi::DiagnosticAnchor.new(0, "Name", "class_variable", expanded, slots, 0, Iyi::DiagnosticFragmentAttachment::Direct.new)
     fragment = Iyi::IyiMod::DiagnosticFragment.new("body:composed",
-      ::Crystal::Digest::SHA256.hexdigest("@@empty"), [anchor])
+      ::Crystal::Digest::SHA256.hexdigest("@@empty"), [output_event], [anchor])
     section = Iyi::IyiMod::DiagnosticSection.new
     section.add_fragment(fragment)
     bytes = section.encode
@@ -1158,9 +1181,9 @@ describe Iyi::DiagnosticOrigin do
 
     key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
     declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", "@@empty"}])
-    artifact = sample_artifact(types: [declaration])
+    artifact = sample_artifact(types: [declaration], source_path: "/absent/composed.cr")
     artifact_section = Iyi::IyiMod::DiagnosticSection.new
-    artifact_section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, fragment.text_sha256, [anchor]))
+    artifact_section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, fragment.text_sha256, fragment.events, [anchor]))
     artifact.diagnostic_provenance = artifact_section
     with_temporary_file do |path|
       Iyi::IyiMod.write artifact, path
@@ -1168,14 +1191,14 @@ describe Iyi::DiagnosticOrigin do
       carried_text = imported.exports.types.first.fields.first[2]
       carried_fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
       parser = Iyi::Parser.new(carried_text)
-      parser.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried_text.bytesize, carried_fragment.text_sha256, carried_fragment.anchors)]
+      parser.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried_text.bytesize, carried_fragment.text_sha256, carried_fragment.events, carried_fragment.anchors)]
       node = parser.parse
       parser.diagnostic_check_consumed
       emitted = IO::Memory.new
-      emitted_anchors = [] of Iyi::DiagnosticAnchor
-      node.to_s(emitted, diagnostic_anchors: emitted_anchors)
+      rebuilder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      node.to_s(emitted, diagnostic_fragment: rebuilder)
       emitted.to_s.should eq(carried_text)
-      emitted_anchors.should eq([anchor])
+      rebuilder.finish("body:composed", emitted.to_s).should eq(fragment)
       Iyi::IyiMod.write imported, path
       Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq([anchor])
     end
@@ -1202,9 +1225,9 @@ describe Iyi::DiagnosticOrigin do
     end
     expect_raises(ArgumentError) do
       bad_slots = {slot => [] of Iyi::DiagnosticNameValue}
-      bad_anchor = Iyi::DiagnosticAnchor.new(0, "Name", "class_variable", expanded, bad_slots)
+      bad_anchor = Iyi::DiagnosticAnchor.new(0, "Name", "class_variable", expanded, bad_slots, 0, Iyi::DiagnosticFragmentAttachment::Direct.new)
       Iyi::IyiMod::DiagnosticSection.new.add_fragment(
-        Iyi::IyiMod::DiagnosticFragment.new("body:bad", fragment.text_sha256, [bad_anchor]))
+        Iyi::IyiMod::DiagnosticFragment.new("body:bad", fragment.text_sha256, fragment.events, [bad_anchor]))
     end
     expect_raises(ArgumentError) do
       Iyi::DiagnosticSourceNameToken.new(lexical, binding, "method_name", "0" * 64, 4, 0, 5, "Crystal", "IDENT", "empty")
@@ -1219,13 +1242,14 @@ describe Iyi::DiagnosticOrigin do
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/main.cr", 0, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/absent/macro.cr", 0, "Macro", "keyword")
     source = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/source.cr", 0, "Literal", "array")
+    emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/absent/macro.cr", 9, "MacroDirective", "expression")
     guard = "sha256:" + ::Crystal::Digest::SHA256.hexdigest("Set")
     event = Iyi::DiagnosticTokenEvent.new(0, 3, "CONST", "Set", "Crystal", Iyi::DiagnosticTokenSelection::Whole,
       [Iyi::DiagnosticEmissionPart::Generated.new(0, 3, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart)
     child = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, guard,
       "Name", "path_segment", "path_segment", event, Iyi::DiagnosticAnchorUse::Direct.new)
     use = Iyi::DiagnosticAnchorUse::HeadOf.new(Iyi::DiagnosticHeadRule::NamedArrayHead,
-      Iyi::DiagnosticAnchorEvidence::Spliced.new(source), Iyi::DiagnosticHead::Anchor.new(child), nil)
+      Iyi::DiagnosticAnchorEvidence::Spliced.new(source), Iyi::DiagnosticHead::Anchor.new(child), emitter)
     parent = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, guard,
       "Literal", "array", nil, event, use)
 
@@ -1248,7 +1272,70 @@ describe Iyi::DiagnosticOrigin do
     decoded.parent(parent_index).should eq(parent)
     decoded.parent(payload_index).should eq(payload)
     decoded.parent(parent_index).as(Iyi::DiagnosticOrigin::Expanded).anchor_use.should eq(use)
+    decoded.parent(parent_index).as(Iyi::DiagnosticOrigin::Expanded).anchor_use.as(Iyi::DiagnosticAnchorUse::HeadOf).emitter_origin.should eq(emitter)
     decoded.parent(payload_index).as(Iyi::DiagnosticOrigin::Expanded).anchor_use.should eq(payload_use)
+  end
+
+  it "round trips type-sugar source syntax witnesses without inventing identifier tokens" do
+    text = "Int32*"
+    source = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/types.cr", 5, "TypeSyntax", "token")
+    witness = Iyi::DiagnosticSourceSyntaxToken.new(source, ::Crystal::Digest::SHA256.hexdigest(text),
+      text.bytesize, 5, 6, "Crystal", "*", "*")
+    origin = Iyi::DiagnosticOrigin::DerivedName.type_sugar(Iyi::DiagnosticTypeSugar::Pointer, [witness],
+      Iyi::DiagnosticTypeSugarResult::Pointer, 0)
+    table = Iyi::IyiMod::DiagnosticOrigins.new
+    index = table.intern(origin)
+    io = IO::Memory.new
+    table.write(io)
+    io.rewind
+    restored = Iyi::IyiMod::DiagnosticOrigins.read(io).parent(index).as(Iyi::DiagnosticOrigin::DerivedName)
+    restored.should eq(origin)
+    restored.witnesses.should eq([witness])
+    restored.production.should eq(Iyi::DiagnosticTypeSugar::Pointer)
+    expect_raises(ArgumentError) do
+      Iyi::DiagnosticOrigin::DerivedName.type_sugar(Iyi::DiagnosticTypeSugar::Pointer, [witness],
+        Iyi::DiagnosticTypeSugarResult::Union, 0)
+    end
+  end
+
+  it "restores type-sugar witnesses after a source-absent artifact roundtrip" do
+    source = "def f(x : Int32*)\n  nil\nend"
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/absent/types.cr"
+    parser.diagnostic_source_file = "/absent/types.cr"
+    parser.diagnostic_capture = true
+    definition = parser.parse.as(Iyi::Def)
+    io = IO::Memory.new
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    definition.to_s(io, diagnostic_fragment: builder)
+    text = io.to_s
+    recorded = builder.finish("recorded", text)
+    sugar = recorded.anchors.compact_map { |anchor| anchor.origin.as?(Iyi::DiagnosticOrigin::DerivedName) }
+      .find { |origin| origin.derivation_kind == "TypeSugar" }.not_nil!
+    sugar.witnesses.first.raw_text.should eq("*")
+    sugar.witnesses.first.input_sha256.should eq(::Crystal::Digest::SHA256.hexdigest(source))
+    key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
+    declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", text}])
+    artifact = sample_artifact(types: [declaration], source_path: "/absent/types.cr")
+    section = Iyi::IyiMod::DiagnosticSection.new
+    section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, recorded.text_sha256, recorded.events, recorded.anchors))
+    artifact.diagnostic_provenance = section
+    with_temporary_file do |path|
+      Iyi::IyiMod.write artifact, path
+      imported = Iyi::IyiMod.read(path)
+      fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
+      carried = imported.exports.types.first.fields.first[2]
+      consumer = Iyi::Parser.new(carried)
+      consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
+      restored = consumer.parse
+      consumer.diagnostic_check_consumed
+      output = IO::Memory.new
+      rebuilder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      restored.to_s(output, diagnostic_fragment: rebuilder)
+      rebuilder.finish("recorded", output.to_s).should eq(recorded)
+      Iyi::IyiMod.write imported, path
+      Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].should eq(fragment)
+    end
   end
 
   it "interns derived names before macro compositions and rejects forged derivations" do
@@ -1312,9 +1399,11 @@ describe Iyi::DiagnosticOrigin do
       producer.diagnostic_capture = true
       definition = producer.parse.as(Iyi::Def)
       printed = IO::Memory.new
-      anchors = [] of Iyi::DiagnosticAnchor
-      definition.to_s(printed, diagnostic_anchors: anchors)
+      builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      definition.to_s(printed, diagnostic_fragment: builder)
       text = printed.to_s
+      recorded = builder.finish("recorded", text)
+      anchors = recorded.anchors
       derived = anchors.compact_map { |anchor| anchor.origin.as?(Iyi::DiagnosticOrigin::DerivedName) }
       derived.map(&.result).should contain("Argument")
       derived.map(&.result).should contain("Target")
@@ -1333,10 +1422,9 @@ describe Iyi::DiagnosticOrigin do
 
       key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
       declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", text}])
-      artifact = sample_artifact(types: [declaration])
+      artifact = sample_artifact(types: [declaration], source_path: "/absent/parameter.cr")
       section = Iyi::IyiMod::DiagnosticSection.new
-      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key,
-        ::Crystal::Digest::SHA256.hexdigest(text), anchors))
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, recorded.text_sha256, recorded.events, anchors))
       artifact.diagnostic_provenance = section
       with_temporary_file do |path|
         Iyi::IyiMod.write artifact, path
@@ -1344,21 +1432,21 @@ describe Iyi::DiagnosticOrigin do
         fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
         carried = imported.exports.types.first.fields.first[2]
         consumer = Iyi::Parser.new(carried)
-        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.anchors)]
+        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
         restored = consumer.parse.as(Iyi::Def)
         consumer.diagnostic_check_consumed
         reprinted = IO::Memory.new
-        reanchors = [] of Iyi::DiagnosticAnchor
-        restored.to_s(reprinted, diagnostic_anchors: reanchors)
+        rebuilder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+        restored.to_s(reprinted, diagnostic_fragment: rebuilder)
         reprinted.to_s.should eq(text)
-        reanchors.should eq(anchors)
+        rebuilder.finish("recorded", reprinted.to_s).should eq(recorded)
         Iyi::IyiMod.write imported, path
         Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
 
         missing = fragment.anchors.reject { |anchor| anchor.origin.is_a?(Iyi::DiagnosticOrigin::DerivedName) }
         broken = Iyi::Parser.new(carried)
-        broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, missing)]
         expect_raises(ArgumentError) do
+          broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.events, missing)]
           broken.parse
           broken.diagnostic_check_consumed
         end
@@ -1374,16 +1462,17 @@ describe Iyi::DiagnosticOrigin do
       producer.diagnostic_capture = true
       original = producer.parse
       printed = IO::Memory.new
-      anchors = [] of Iyi::DiagnosticAnchor
-      original.to_s(printed, diagnostic_anchors: anchors)
+      builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      original.to_s(printed, diagnostic_fragment: builder)
       text = printed.to_s
+      recorded = builder.finish("recorded", text)
+      anchors = recorded.anchors
       Iyi::Parser.new(source).parse.to_s.should eq(text)
       key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
       declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", text}])
-      artifact = sample_artifact(types: [declaration])
+      artifact = sample_artifact(types: [declaration], source_path: "/absent/special.cr")
       section = Iyi::IyiMod::DiagnosticSection.new
-      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key,
-        ::Crystal::Digest::SHA256.hexdigest(text), anchors))
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, recorded.text_sha256, recorded.events, anchors))
       artifact.diagnostic_provenance = section
       with_temporary_file do |path|
         Iyi::IyiMod.write artifact, path
@@ -1391,7 +1480,7 @@ describe Iyi::DiagnosticOrigin do
         fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
         carried = imported.exports.types.first.fields.first[2]
         consumer = Iyi::Parser.new(carried)
-        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.anchors)]
+        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
         restored = consumer.parse
         consumer.diagnostic_check_consumed
         if source.starts_with?("enum")
@@ -1426,10 +1515,10 @@ describe Iyi::DiagnosticOrigin do
           match.source_token.should eq(lookup.source_token)
         end
         reprinted = IO::Memory.new
-        reanchors = [] of Iyi::DiagnosticAnchor
-        restored.to_s(reprinted, diagnostic_anchors: reanchors)
+        rebuilder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+        restored.to_s(reprinted, diagnostic_fragment: rebuilder)
         reprinted.to_s.should eq(text)
-        reanchors.should eq(anchors)
+        rebuilder.finish("recorded", reprinted.to_s).should eq(recorded)
         Iyi::IyiMod.write imported, path
         Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
         required = if source.starts_with?("enum")
@@ -1441,8 +1530,8 @@ describe Iyi::DiagnosticOrigin do
                    end.not_nil!
         missing = fragment.anchors.reject { |anchor| anchor == required }
         broken = Iyi::Parser.new(carried)
-        broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, missing)]
         expect_raises(ArgumentError) do
+          broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.events, missing)]
           broken.parse
           broken.diagnostic_check_consumed
         end
@@ -1459,19 +1548,20 @@ describe Iyi::DiagnosticOrigin do
       producer.diagnostic_capture = true
       original = producer.parse
       printed = IO::Memory.new
-      anchors = [] of Iyi::DiagnosticAnchor
-      original.to_s(printed, diagnostic_anchors: anchors)
+      builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      original.to_s(printed, diagnostic_fragment: builder)
       text = printed.to_s
+      recorded = builder.finish("recorded", text)
+      anchors = recorded.anchors
       Iyi::Parser.new(source).parse.to_s.should eq(text)
       parent = anchors.find { |anchor| {"Literal", "Assign"}.includes?(anchor.kind) }.not_nil!
       child = anchors.find { |anchor| anchor.offset == parent.offset && anchor != parent }.not_nil!
       parent.origin.should_not eq(child.origin)
       key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
       declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", text}])
-      artifact = sample_artifact(types: [declaration])
+      artifact = sample_artifact(types: [declaration], source_path: "/absent/shared.cr")
       section = Iyi::IyiMod::DiagnosticSection.new
-      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key,
-        ::Crystal::Digest::SHA256.hexdigest(text), anchors))
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, recorded.text_sha256, recorded.events, anchors))
       artifact.diagnostic_provenance = section
       with_temporary_file do |path|
         Iyi::IyiMod.write artifact, path
@@ -1479,22 +1569,22 @@ describe Iyi::DiagnosticOrigin do
         fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
         carried = imported.exports.types.first.fields.first[2]
         consumer = Iyi::Parser.new(carried)
-        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.anchors)]
+        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
         restored = consumer.parse
         consumer.diagnostic_check_consumed
         reprinted = IO::Memory.new
-        reanchors = [] of Iyi::DiagnosticAnchor
-        restored.to_s(reprinted, diagnostic_anchors: reanchors)
+        rebuilder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+        restored.to_s(reprinted, diagnostic_fragment: rebuilder)
         reprinted.to_s.should eq(text)
-        reanchors.should eq(anchors)
+        rebuilder.finish("recorded", reprinted.to_s).should eq(recorded)
         Iyi::IyiMod.write imported, path
         Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
 
         {parent, child}.each do |removed|
           incomplete = fragment.anchors.reject { |anchor| anchor == removed }
           broken = Iyi::Parser.new(carried)
-          broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, incomplete)]
           expect_raises(ArgumentError) do
+            broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.events, incomplete)]
             broken.parse
             broken.diagnostic_check_consumed
           end
@@ -1511,9 +1601,11 @@ describe Iyi::DiagnosticOrigin do
       producer.diagnostic_capture = true
       original = producer.parse
       printed = IO::Memory.new
-      anchors = [] of Iyi::DiagnosticAnchor
-      original.to_s(printed, diagnostic_anchors: anchors)
+      builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      original.to_s(printed, diagnostic_fragment: builder)
       text = printed.to_s
+      recorded = builder.finish("recorded", text)
+      anchors = recorded.anchors
       Iyi::Parser.new(source).parse.to_s.should eq(text)
       owner = anchors.find { |anchor| anchor.offset == 0 && anchor.role != "interpolation" }.not_nil!
       payload = anchors.find { |anchor| anchor.kind == "Literal" && anchor.role == "interpolation" }.not_nil!
@@ -1521,10 +1613,9 @@ describe Iyi::DiagnosticOrigin do
       payload.origin.should_not eq(owner.origin)
       key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
       declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", text}])
-      artifact = sample_artifact(types: [declaration])
+      artifact = sample_artifact(types: [declaration], source_path: "/absent/payload.cr")
       section = Iyi::IyiMod::DiagnosticSection.new
-      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key,
-        ::Crystal::Digest::SHA256.hexdigest(text), anchors))
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, recorded.text_sha256, recorded.events, anchors))
       artifact.diagnostic_provenance = section
       with_temporary_file do |path|
         Iyi::IyiMod.write artifact, path
@@ -1532,22 +1623,22 @@ describe Iyi::DiagnosticOrigin do
         fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
         carried = imported.exports.types.first.fields.first[2]
         consumer = Iyi::Parser.new(carried)
-        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.anchors)]
+        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
         restored = consumer.parse
         consumer.diagnostic_check_consumed
         reprinted = IO::Memory.new
-        reanchors = [] of Iyi::DiagnosticAnchor
-        restored.to_s(reprinted, diagnostic_anchors: reanchors)
+        rebuilder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+        restored.to_s(reprinted, diagnostic_fragment: rebuilder)
         reprinted.to_s.should eq(text)
-        reanchors.should eq(anchors)
+        rebuilder.finish("recorded", reprinted.to_s).should eq(recorded)
         Iyi::IyiMod.write imported, path
         Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
         nested = fragment.anchors.find { |anchor| anchor.kind == "Call" && anchor.role == "method" && anchor.offset != owner.offset }.not_nil!
         {owner, payload, nested}.each do |removed|
           incomplete = fragment.anchors.reject { |anchor| anchor == removed }
           broken = Iyi::Parser.new(carried)
-          broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, incomplete)]
           expect_raises(ArgumentError) do
+            broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.events, incomplete)]
             broken.parse
             broken.diagnostic_check_consumed
           end
@@ -1559,8 +1650,7 @@ describe Iyi::DiagnosticOrigin do
   it "round trips diagnostic fragments and binds object records to their bytes" do
     source = "-> { 1 }"
     origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 8, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticAnchor.new(0, "ProcLiteral", "arrow", origin)
-    fragment = Iyi::IyiMod::DiagnosticFragment.new("mono:f", ::Crystal::Digest::SHA256.hexdigest(source), [anchor])
+    fragment = diagnostic_arrow_fragment("mono:f", source, origin)
     object = sample_object_unit
     digest = ::Crystal::Digest::SHA256.hexdigest(object.code)
     section = Iyi::IyiMod::DiagnosticSection.new
@@ -1678,10 +1768,11 @@ private def sample_artifact(imports = [] of String,
                             types = [] of Iyi::IyiMod::TypeDecl,
                             impls = [] of Iyi::IyiMod::ImplRecord,
                             object_code = [] of Iyi::IyiMod::ObjectUnit,
-                            layouts = [] of {String, Iyi::IyiMod::TypeLayout})
+                            layouts = [] of {String, Iyi::IyiMod::TypeLayout},
+                            source_path = "/src/app/greeter.iyi")
   Iyi::IyiMod::Artifact.new(
     module_name: "app/greeter",
-    source_path: "/src/app/greeter.iyi",
+    source_path: source_path,
     compiler_version: "1.22.0-dev+abc1234",
     target_triple: "x86_64-pc-linux-gnu",
     flags: ["bits64", "linux"],
@@ -1860,8 +1951,11 @@ describe Iyi::IyiMod do
       key = Iyi::IyiMod.signature_fragment_key(artifact.module_name, method)
       header = Iyi::IyiMod.render_signature(method)
       section = Iyi::IyiMod::DiagnosticSection.new
-      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(header),
-        [Iyi::DiagnosticAnchor.new(0, "Def", "keyword", origin)]))
+      event = Iyi::DiagnosticTokenEvent.new(0, 3, "IDENT", "def", "Iyi", Iyi::DiagnosticTokenSelection::Whole,
+        [Iyi::DiagnosticEmissionPart::AstAnchor.new(0, 3, nil, origin)] of Iyi::DiagnosticEmissionPart)
+      anchor = Iyi::DiagnosticAnchor.new(0, "Def", "keyword", origin,
+        {} of Iyi::DiagnosticNameSlot => Array(Iyi::DiagnosticNameValue), 0, Iyi::DiagnosticFragmentAttachment::Direct.new)
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(header), [event], [anchor]))
       artifact.diagnostic_provenance = section
       Iyi::IyiMod.write artifact, path
       decoded = Iyi::IyiMod.read(path)

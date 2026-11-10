@@ -168,8 +168,8 @@ module Iyi::DiagnosticProvenance
     end
   end
 
-  NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter named_entry enum_member special_global regex_match_index)
-  MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter)
+  NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self)
+  MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer)
   NAME_OPERATORS = %w(! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~)
   INVALID_PARAMETER_NAMES = %w(begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof)
 
@@ -189,10 +189,12 @@ module Iyi::DiagnosticProvenance
                 kind == "CLASS_VAR"
               when "parameter"
                 kind == "IDENT" || kind == "INSTANCE_VAR" || kind == "CLASS_VAR"
-              when "path_segment", "type_parameter", "enum_member"
+              when "path_segment", "type_parameter", "where_variable", "enum_member"
                 kind == "CONST"
               when "named_entry"
                 kind == "IDENT" || kind == "CONST"
+              when "type_self"
+                kind == "IDENT"
               when "special_global"
                 kind == "$~" || kind == "$?"
               when "regex_match_index"
@@ -201,6 +203,7 @@ module Iyi::DiagnosticProvenance
                 false
               end
     return false unless allowed
+    return raw == "self" if context == "type_self"
     return raw == kind if context == "special_global"
     if context == "regex_match_index"
       return false unless raw.matches?(/\A\$(?:0|[1-9][0-9]*\??)\z/)
@@ -398,7 +401,7 @@ module Iyi::DiagnosticProvenance
                    when "ParenthesizedFirstTarget" then "("
                    else raise "unknown syntax head"
                    end
-        raise "invalid syntax head" unless event["token_text"].as_s == spelling && event["selection"].as_s == "Whole"
+        raise "invalid syntax head" unless event["token_kind"].as_s == spelling && event["token_text"].as_s == spelling && event["selection"].as_s == "Whole"
         adjacent = head["adjacent_name_origin"]
         if form == "GlobalPathPrefix"
           origin_schema4!(adjacent, depth + 1)
@@ -427,11 +430,15 @@ module Iyi::DiagnosticProvenance
              owner["kind"].as_s == "Expanded" && owner["anchor_use"].as_h["kind"].as_s == "Direct" && same_scope?(expanded, owner) && owner["token_event"] == expanded["token_event"]
         raise "invalid payload owner"
       end
+      raise "invalid payload delimiter" unless event["token_kind"].as_s == "DELIMITER_START" && event["selection"].as_s == "Whole"
+      opener = event["token_text"].as_s
       case rule
       when "RegexInterpolationPayload"
-        raise "invalid regex owner" unless origin.valid_for_anchor?("Literal", "regex") && {"/", "%r("}.includes?(event["token_text"].as_s)
+        valid_opener = opener == "/" || (opener.bytesize == 3 && opener.starts_with?("%r") && "(<[{|".includes?(opener[2]))
+        raise "invalid regex owner" unless origin.valid_for_anchor?("Literal", "regex") && valid_opener
       when "CommandInterpolationPayload"
-        raise "invalid command owner" unless origin.valid_for_anchor?("Call", "method") && event["token_text"].as_s == "`"
+        valid_opener = opener == "`" || (opener.bytesize == 3 && opener.starts_with?("%x") && "(<[{|".includes?(opener[2]))
+        raise "invalid command owner" unless origin.valid_for_anchor?("Call", "method") && valid_opener
       else raise "unknown payload rule"
       end
     else
@@ -481,7 +488,9 @@ module Iyi::DiagnosticProvenance
         item = fields(witness, %w(role event))
         role, spelling = forms[index]
         witness_event = item["event"].as_h
-        raise "invalid witness order" unless item["role"].as_s == role && witness_event["input_start"].as_i64 >= last
+        same_splat = rule == "MultiAssignHead" && role == "Splat" && index == 0
+        ordered = same_splat ? item["event"] == expanded["token_event"] : witness_event["input_start"].as_i64 >= last
+        raise "invalid witness order" unless item["role"].as_s == role && ordered
         raw_witness_schema4!(item["event"], spelling, event["lexical_mode"].as_s, depth)
         last = witness_event["input_end"].as_i64
       end
@@ -499,7 +508,7 @@ module Iyi::DiagnosticProvenance
                          when "DoublePointer" then {["**"], result == "Pointer" && (index == 0 || index == 1)}
                          when "NilableType" then {["?"], result == "Nil" && index == 0}
                          when "NilableExpression" then {["?"], {"Union", "Nil"}.includes?(result) && index == 0}
-                         when "SelfNilableType" then {["self?"], result == "Nil" && index == 0}
+                         when "SelfNilableType" then {["self?"], {"Nil", "Self"}.includes?(result) && index == 0}
                          when "StaticArray" then {["[", "]"], result == "StaticArray" && index == 0}
                          when "Tuple" then {["{", "}"], result == "Tuple" && index == 0}
                          when "NamedTuple" then {["{", "}"], result == "NamedTuple" && index == 0}
@@ -513,6 +522,7 @@ module Iyi::DiagnosticProvenance
     common_digest = nil.as(String?)
     common_size = -1_i64
     common_mode = nil.as(String?)
+    common_origin = nil.as(JSON::Any?)
     witnesses.each_with_index do |value_token, ordinal|
       token = fields(value_token, %w(lexical_origin input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text))
       lexical = token["lexical_origin"]
@@ -541,12 +551,18 @@ module Iyi::DiagnosticProvenance
       else
         raise "invalid type syntax source"
       end
-      if ordinal > 0 && (common_digest != digest || common_size != size || common_mode != mode)
-        raise "type syntax input mismatch"
+      if ordinal > 0
+        prior = common_origin.not_nil!.as_h
+        same_source = prior["kind"] == source["kind"] && case source["kind"].as_s
+                      when "Written" then prior["source_identity"] == source["source_identity"]
+                      when "Expanded" then same_scope?(prior, source)
+                      else false
+                      end
+        raise "type syntax input mismatch" unless common_digest == digest && common_size == size && common_mode == mode && same_source
       end
-      common_digest, common_size, common_mode, previous = digest, size, mode, last
+      common_digest, common_size, common_mode, previous, common_origin = digest, size, mode, last, lexical
     end
-    {"path_segment", result}
+    {result == "Self" ? "type_self" : "path_segment", result == "Self" ? "self" : result}
   end
 
   private def self.derived_name_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
@@ -615,7 +631,7 @@ module Iyi::DiagnosticProvenance
       item["source_token"].as_h["raw_text"].as_s
     when "Derived"
       item = fields(value, %w(kind origin))
-      derived_name_schema4!(item["origin"], depth + 1)[1]
+      derived_name_schema4!(item["origin"], depth)[1]
     else
       raise "unknown name value"
     end
@@ -651,7 +667,7 @@ module Iyi::DiagnosticProvenance
     when "Expanded"
       expanded = lexical.as_h
       event = expanded["token_event"].as_h
-      raise "expanded source mismatch" unless event["input_start"].as_i64 == first && event["input_end"].as_i64 == last && expanded["expansion_guard"].as_s == "sha256:#{digest}" && event["token_text"].as_s == raw && event["selection"].as_s == "Whole"
+      raise "expanded source mismatch" unless event["input_start"].as_i64 == first && event["input_end"].as_i64 == last && expanded["expansion_guard"].as_s == "sha256:#{digest}" && event["token_text"].as_s == raw && event["token_kind"] == source["token_kind"] && event["lexical_mode"] == source["lexical_mode"] && event["selection"].as_s == "Whole"
     else
       raise "invalid source lexical origin"
     end
@@ -669,13 +685,19 @@ module Iyi::DiagnosticProvenance
         raw.each { |child| pending << child }
       when Hash
         if raw["kind"]?.try(&.as_s) == "Expanded"
-          event = raw["token_event"]
-          key = {raw["invocation_origin"].to_json, raw["macro_definition_origin"].to_json,
-                 raw["expansion_guard"].as_s, event.as_h["input_start"].as_i64}
-          if previous = events[key]?
-            raise "conflicting token event identity" unless previous == event
-          else
-            events[key] = event
+          associated = [raw["token_event"]]
+          use = raw["anchor_use"].as_h
+          if use["kind"].as_s == "HeadOf" && use["evidence"].as_h["kind"].as_s == "RawSyntax"
+            use["evidence"].as_h["witnesses"].as_a.each { |witness| associated << witness.as_h["event"] }
+          end
+          associated.each do |event|
+            key = {raw["invocation_origin"].to_json, raw["macro_definition_origin"].to_json,
+                   raw["expansion_guard"].as_s, event.as_h["input_start"].as_i64}
+            if previous = events[key]?
+              raise "conflicting token event identity" unless previous == event
+            else
+              events[key] = event
+            end
           end
         end
         raw.each_value { |child| pending << child }
