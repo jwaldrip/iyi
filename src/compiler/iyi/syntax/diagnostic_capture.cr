@@ -11,6 +11,7 @@ module Iyi
 
   enum DiagnosticCaptureParseEntry
     Parse
+    ParseMode
     ParseToDef
   end
 
@@ -77,6 +78,228 @@ module Iyi
 
     def scopes : Array(Array(String))
       @scopes.map(&.dup)
+    end
+
+    # This compares only the candidate's recorded fields, not the complete
+    # parser contract, which must be checked separately before acceptance.
+    def same_candidate?(other : AcceptedCaptureInput, source : String) : Bool
+      @input == source && @input == other.stored_input &&
+        @kind == other.kind && @logical_module == other.logical_module &&
+        @package == other.package && @original_file == other.original_file &&
+        @lexical_mode == other.lexical_mode && @entry == other.entry &&
+        @mode == other.mode && @module_extends_written == other.module_extends_written &&
+        @source_only == other.source_only && @visibility == other.visibility &&
+        @def_nest == other.def_nest && @fun_nest == other.fun_nest &&
+        @type_nest == other.type_nest && @wants_doc == other.wants_doc &&
+        @scopes == other.stored_scopes
+    end
+
+    protected def stored_input : String
+      @input
+    end
+
+    protected def stored_scopes : Array(Array(String))
+      @scopes
+    end
+  end
+
+  private class DiagnosticCaptureOutput < IO
+    @buffer = IO::Memory.new
+    @written : Int64 = 0_i64
+
+    def initialize(@limit : Int64)
+    end
+
+    def read(slice : Bytes) : Int32
+      raise IO::Error.new("capture output is write-only")
+    end
+
+    def write(slice : Bytes) : Nil
+      raise ArgumentError.new("capture snapshot exceeds size limit") if slice.size.to_i64 > @limit - @written
+      @buffer.write(slice)
+      @written += slice.size
+    end
+
+    def snapshot : String
+      @buffer.to_s
+    end
+  end
+
+  # Frozen ordered pragma input, not an authenticated parse or registry.
+  class DiagnosticPragmaSnapshot
+    MAX_BYTES = 64_i64 * 1024 * 1024
+    getter sha256 : String
+    @bytes : String
+    @graph_budget : UInt64 = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+
+    def initialize(pragmas : Hash(Int32, Array(Lexer::LocPragma))?)
+      output = DiagnosticCaptureOutput.new(MAX_BYTES)
+      json = JSON::Builder.new(output)
+      json.object do
+        json.field "present", !pragmas.nil?
+        json.field "entries" do
+          json.array do
+            if entries = pragmas
+              entries.each do |offset, list|
+                raise ArgumentError.new("negative pragma offset") if offset < 0
+                json.object do
+                  json.field "offset", offset
+                  json.field("pragmas") { json.array { list.each { |pragma| write_pragma(json, pragma) } } }
+                end
+              end
+            end
+          end
+        end
+      end
+      @bytes = output.snapshot
+      @sha256 = ::Crystal::Digest::SHA256.hexdigest(@bytes)
+    end
+
+    def bytes : String
+      @bytes.dup
+    end
+
+    private def charge_graph(bytes : UInt64) : Nil
+      raise ArgumentError.new("pragma graph exceeds size limit") if bytes > @graph_budget
+      @graph_budget -= bytes
+    end
+
+    private def charge_origin(origin : DiagnosticOrigin?) : Nil
+      return unless origin
+      raise ArgumentError.new("pragma origin exceeds depth limit") if origin.graph_depth > DiagnosticOrigin::MAX_DEPTH
+      charge_graph(origin.graph_bytes)
+    end
+
+    private def write_writer(json : JSON::Builder, writer : DiagnosticWriterRef) : Nil
+      raise ArgumentError.new("invalid pragma writer extent") if writer.start_offset < 0 || writer.end_offset < writer.start_offset
+      json.object do
+        json.field "start", writer.start_offset
+        json.field "end", writer.end_offset
+      end
+    end
+
+    private def write_key(json : JSON::Builder, key : DiagnosticMacroClaimKey) : Nil
+      json.object do
+        json.field("writer") { write_writer(json, key.writer) }
+        json.field "kind", key.kind
+        json.field "role", key.role
+      end
+    end
+
+    private def write_attachment(json : JSON::Builder, attachment : DiagnosticMacroAttachment) : Nil
+      json.object do
+        case attachment
+        when DiagnosticMacroAttachment::Direct
+          json.field "kind", "Direct"
+          json.field("writer") { write_writer(json, attachment.writer) }
+        when DiagnosticMacroAttachment::HeadOf
+          json.field "kind", "HeadOf"
+          json.field "rule", attachment.rule.to_s
+          json.field "head" do
+            json.object do
+              case head = attachment.head
+              when DiagnosticMacroHead::Anchor
+                json.field "kind", "Anchor"
+                json.field("writer") { write_writer(json, head.writer) }
+              when DiagnosticMacroHead::Syntax
+                json.field "kind", "Syntax"
+                json.field "form", head.form.to_s
+                json.field("writer") { write_writer(json, head.writer) }
+                json.field "adjacent_name_writer" do
+                  if adjacent = head.adjacent_name_writer
+                    write_writer(json, adjacent)
+                  else
+                    json.null
+                  end
+                end
+              else
+                raise ArgumentError.new("unclassified pragma macro head")
+              end
+            end
+          end
+        when DiagnosticMacroAttachment::PayloadOf
+          json.field "kind", "PayloadOf"
+          json.field "rule", attachment.rule.to_s
+          json.field("owner_key") { write_key(json, attachment.owner_key) }
+        else
+          raise ArgumentError.new("unclassified pragma macro attachment")
+        end
+      end
+    end
+
+    private def write_claim(json : JSON::Builder, claim : DiagnosticMacroClaim) : Nil
+      charge_origin(claim.emitter_origin)
+      case evidence = claim.evidence
+      when DiagnosticAnchorEvidence::Spliced
+        charge_origin(evidence.source_origin)
+      when DiagnosticAnchorEvidence::Constructed, DiagnosticAnchorEvidence::DerivedFromOwner
+      when DiagnosticAnchorEvidence::RawSyntax
+        evidence.witnesses.each do |witness|
+          raise ArgumentError.new("pragma witness exceeds depth limit") if witness.event.graph_depth > DiagnosticOrigin::MAX_DEPTH
+          charge_graph(witness.event.graph_bytes)
+        end
+      else
+        raise ArgumentError.new("unclassified pragma anchor evidence")
+      end
+      json.object do
+        json.field("key") { write_key(json, claim.key) }
+        json.field "evidence", claim.evidence
+        json.field("attachment") { write_attachment(json, claim.attachment) }
+        json.field "emitter_origin", claim.emitter_origin
+      end
+    end
+
+    private def write_pragma(json : JSON::Builder, pragma : Lexer::LocPragma) : Nil
+      json.object do
+        case pragma
+        when Lexer::LocSetPragma
+          json.field "kind", "Set"
+          json.field "filename", pragma.filename
+          json.field "line", pragma.line_number
+          json.field "column", pragma.column_number
+          json.field "artifact", pragma.artifact
+        when Lexer::LocPushPragma
+          json.field "kind", "Push"
+        when Lexer::LocPopPragma
+          json.field "kind", "Pop"
+        when Lexer::LocOriginPragma
+          json.field "kind", "Origin"
+          json.field "line", pragma.line_number
+        when Lexer::LocDiagnosticEmission
+          json.field "kind", "DiagnosticEmission"
+          json.field "end", pragma.end_offset
+          json.field("claims") { json.array { pragma.claims.each { |claim| write_claim(json, claim) } } }
+          json.field "generated_text" do
+            json.array do
+              pragma.generated_text.each do |generated|
+                charge_origin(generated.emitter_origin)
+                json.object do
+                  json.field "start", generated.start_offset
+                  json.field "end", generated.end_offset
+                  json.field "emitter_origin", generated.emitter_origin
+                  json.field "producer", generated.producer.to_s
+                end
+              end
+            end
+          end
+          json.field "name_fragments" do
+            json.array do
+              pragma.name_fragments.each do |fragment|
+                charge_origin(fragment.emitter_origin)
+                charge_graph(fragment.source_name.graph_bytes)
+                json.object do
+                  json.field "start", fragment.start_offset
+                  json.field "end", fragment.end_offset
+                  json.field "emitter_origin", fragment.emitter_origin
+                  json.field "source_name", fragment.source_name
+                end
+              end
+            end
+          end
+        else
+          raise ArgumentError.new("unclassified pragma variant")
+        end
+      end
     end
   end
 
