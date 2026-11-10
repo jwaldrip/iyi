@@ -246,121 +246,6 @@ describe "Code gen: sizeof" do
       CODE
   end
 
-  describe "folded sizeof matches the codegen stride" do
-    it "doesn't fold sizeof of a tuple holding a module" do
-      both_modes_true?(folded_sizeof_program("{Int32, Base}", "", "early.to_u64 == stride")).should be_true
-    end
-
-    it "keeps copied array elements of a tuple holding a module" do
-      both_modes_true?(folded_sizeof_program("{Int32, Base}", "copy = [{1, bar.as(Base)}].dup", "copy[0][1].is_a?(Bar) && copy[0][1].same?(bar) && early.to_u64 == stride")).should be_true
-    end
-
-    it "doesn't fold sizeof of a named tuple holding a module" do
-      both_modes_true?(folded_sizeof_program("NamedTuple(x: Int32, b: Base)", "", "early.to_u64 == stride")).should be_true
-    end
-
-    it "doesn't fold sizeof of a union holding a module" do
-      both_modes_true?(folded_sizeof_program("Base | Int32", "", "early.to_u64 == stride")).should be_true
-    end
-
-    it "doesn't fold sizeof of a static array of a module" do
-      both_modes_true?(folded_sizeof_program("StaticArray(Base, 2)", "", "early.to_u64 == stride")).should be_true
-    end
-
-    it "doesn't fold sizeof of a struct with a module field" do
-      extra = <<-EXTRA
-        struct Holder
-          def initialize(@b : Base)
-          end
-        end
-
-        holder = Holder.new(bar.as(Base))
-        EXTRA
-      both_modes_true?(folded_sizeof_program("Holder", extra, "holder.b.is_a?(Bar) && early.to_u64 == stride")).should be_true
-    end
-
-    it "doesn't fold sizeof of an alias of a tuple holding a module" do
-      both_modes_true?(folded_sizeof_program("Pair", "alias Pair = {Int32, Base}", "early.to_u64 == stride")).should be_true
-    end
-
-    it "still folds sizeof of a recursive struct held through a pointer" do
-      extra = <<-EXTRA
-        struct Node
-          def initialize(@next : Pointer(Node))
-          end
-        end
-
-        node = Node.new(Pointer(Node).null)
-        EXTRA
-      both_modes_true?(folded_sizeof_program("Node", extra, "early.to_u64 == stride")).should be_true
-    end
-
-    it "still folds sizeof of a class holding a module, which is a pointer" do
-      both_modes_true?(folded_sizeof_program("Bar", "", "early.to_u64 == stride")).should be_true
-    end
-
-    it "takes offsetof of a field whose preceding fields are settled" do
-      run(<<-CODE).to_i.should eq(0)
-        module Base
-        end
-
-        class Bar
-          include Base
-        end
-
-        struct Pair
-          def initialize(@a : Int32, @b : Base)
-          end
-        end
-
-        Pair.new(1, Bar.new.as(Base))
-        offsetof(Pair, @a)
-        CODE
-    end
-
-    it "refuses offsetof of a field after an unsettled module field" do
-      expect_raises(Iyi::TypeException, /layout is not settled yet/) do
-        run(<<-CODE)
-          module Base
-          end
-
-          class Bar
-            include Base
-          end
-
-          struct Pair
-            def initialize(@a : Int32, @b : Base)
-            end
-          end
-
-          Pair.new(1, Bar.new.as(Base))
-          offsetof(Pair, @b)
-          CODE
-      end
-    end
-  end
-
-  describe "instance_sizeof with an unsettled field" do
-    it "compiles and runs a class holding a module field" do
-      run(<<-CODE).to_b.should be_true
-        module Base
-        end
-
-        class Bar
-          include Base
-        end
-
-        class Holder
-          def initialize(@b : Base)
-          end
-        end
-
-        holder = Holder.new(Bar.new.as(Base))
-        instance_sizeof(Holder) > 0
-        CODE
-    end
-  end
-
   describe "alignof" do
     it "gets alignof primitive types" do
       run("alignof(Int32)").to_i.should eq(4)
@@ -473,33 +358,172 @@ describe "Code gen: sizeof" do
   end
 end
 
-private def folded_sizeof_program(type : String, extra : String, check : String) : String
+describe "Code gen: sizeof settled folds" do
+  # Each program grows `M` after a fold, which makes the fold stale. A stale
+  # expression is settled to the built layout (Q1 b). A stale type argument
+  # cannot be corrected without changing its type, so it is refused (Q2 b).
+  it "corrects a folded sizeof of a tuple whose module grew after the fold" do
+    run(settled_fold_program(<<-CODE)).to_i.should eq(32)
+      a = G(Int8).new(1_i8).as(M)
+      s1 = sizeof({Int32, M})
+      b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
+      s1
+      CODE
+  end
+
+  it "gives the corrected sizeof the codegen stride of the grown tuple" do
+    run(settled_fold_program(<<-CODE)).to_b.should be_true
+      a = G(Int8).new(1_i8).as(M)
+      s1 = sizeof({Int32, M})
+      b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
+      (Pointer({Int32, M}).null + 1).address == s1
+      CODE
+  end
+
+  it "keeps a folded sizeof when the module never grows" do
+    run(settled_fold_program(<<-CODE)).to_i.should eq(8)
+      a = G(Int8).new(1_i8).as(M)
+      s1 = sizeof({Int32, M})
+      s1
+      CODE
+  end
+
+  it "refuses a type argument built from a layout that grows later" do
+    expect_raises(Iyi::TypeException, /when it was used as a type argument, but/) do
+      run(settled_fold_program(<<-CODE))
+        a = G(Int8).new(1_i8).as(M)
+        buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+        b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
+        buf.size
+        CODE
+    end
+  end
+
+  it "keeps the value of a type argument when the module never grows" do
+    run(settled_fold_program(<<-CODE)).to_i.should eq(8)
+      a = G(Int8).new(1_i8).as(M)
+      buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+      buf.size
+      CODE
+  end
+
+  it "gives a type argument sized after the final growth its final value" do
+    run(settled_fold_program(<<-CODE)).to_i.should eq(32)
+      a = G(Int8).new(1_i8).as(M)
+      b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
+      buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+      buf.size
+      CODE
+  end
+
+  it "refuses a type argument built from a recursive generic that grows" do
+    expect_raises(Iyi::TypeException, /when it was used as a type argument, but/) do
+      run(<<-CODE)
+        module M
+        end
+
+        struct G(N)
+          include M
+
+          def initialize
+            @buf = StaticArray(UInt8, N).new(0_u8)
+          end
+
+          def n
+            N
+          end
+        end
+
+        x = G(1).new.as(M)
+        y = G(2).new.as(M)
+        z = G(sizeof({M})).new
+        z.n
+        CODE
+    end
+  end
+
+  it "corrects an offsetof that precedes a grown module field" do
+    run(settled_fold_p4("off\n")).to_i.should eq(24)
+  end
+
+  it "reads the field back at the corrected offset" do
+    run(settled_fold_p4("(pointerof(s).as(UInt8*) + sizeof(typeof(s.@a))).as(Int32*).value\n")).to_i.should eq(7)
+  end
+
+  it "agrees the corrected offsetof with the size of the module field" do
+    run(settled_fold_p4("off == sizeof(typeof(s.@a))\n")).to_b.should be_true
+  end
+
+  it "corrects a macro-expanded sizeof of a class" do
+    run(<<-CODE).to_i.should eq(8)
+      class C
+        def initialize(@a : Int64, @b : Int64)
+        end
+      end
+
+      {% begin %}
+        X = {{ sizeof(C) }}
+      {% end %}
+      c = C.new(1, 2)
+      X
+      CODE
+  end
+
+  it "keeps the corrected instance_sizeof of the same class" do
+    run(<<-CODE).to_i.should eq(24)
+      class C
+        def initialize(@a : Int64, @b : Int64)
+        end
+      end
+
+      {% begin %}
+        X = {{ sizeof(C) }}
+      {% end %}
+      c = C.new(1, 2)
+      instance_sizeof(C)
+      CODE
+  end
+
+  it "corrects a constant sizeof of a class" do
+    run(<<-CODE).to_i.should eq(8)
+      class C
+        def initialize(@a : Int64, @b : Int64)
+        end
+      end
+
+      X = {{ sizeof(C) }}
+      c = C.new(1, 2)
+      X
+      CODE
+  end
+end
+
+private def settled_fold_program(body : String) : String
   <<-CODE
-    module Base
+    module M
     end
 
-    class Bar
-      include Base
-    end
+    struct G(T)
+      include M
 
-    struct Foo(T)
-      include Base
-
-      def initialize(@x : T)
+      def initialize(@v : T)
       end
     end
 
-    bar = Bar.new
-    #{extra}
-    early = sizeof(#{type})
-    Foo({Int32, Int32, Int32, Int32}).new({1, 2, 3, 4})
-    stride = (Pointer(#{type}).null + 1).address
-    #{check}
+    #{body}
     CODE
 end
 
-# Runs the program through the JIT and through the prelude-compiled executable.
-private def both_modes_true?(code : String) : Bool
-  run(code).to_b && run(%(require "prelude"\n#{code})).to_b
-end
+private def settled_fold_p4(last : String) : String
+  body = <<-CODE
+    struct S
+      def initialize(@a : M, @b : Int32)
+      end
+    end
 
+    x = G(Int8).new(1_i8).as(M)
+    off = offsetof(S, @b)
+    s = S.new(G({Int64, Int64}).new({1_i64, 2_i64}), 7)
+    CODE
+  settled_fold_program(body + last)
+end
