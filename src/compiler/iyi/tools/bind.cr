@@ -189,7 +189,8 @@ module Iyi
       # The restriction only. `&block : Int32 -> Int32` names one type and one
       # parameter, and reading the parameter as a type made every annotated
       # block look like it mentioned something nobody declared.
-      types << written_block.split(" : ", 2).last unless written_block.empty?
+      restriction_parts = written_block.split(" : ", 2)
+      types << restriction_parts.last if restriction_parts.size == 2
       types
     end
 
@@ -2956,8 +2957,11 @@ module Iyi
       unless signature.block_parameter.empty?
         offset += 2 unless signature.parameters.empty?
         if block = definition.block_arg
-          target = signature.block_parameter.lchop('&')
-          append_bound_node_anchors(block, target, offset + 1, anchors)
+          # The bound block is its annotations, then `&`, then its name and restriction. The node's own
+          # text has no `&`, so the target drops that `&`, and the anchor base is the annotations' start.
+          lead = ToSVisitor.bound_annotation_prefix(block)
+          target = lead + signature.block_parameter.lchop(lead + "&")
+          append_bound_node_anchors(block, target, lead.empty? ? offset + 1 : offset, anchors)
         end
         offset += signature.block_parameter.bytesize
       end
@@ -5779,14 +5783,14 @@ module Iyi
     parameter_recipes = owner.program.diagnostic_capture ? [] of IyiMod::DiagnosticSignatureParameterRecipe : nil
     block_recipe = nil.as(IyiMod::DiagnosticSignatureParameterRecipe?)
     written_block = if argument = a_def.block_arg
-                      name = "&#{argument.name}"
+                      name = ToSVisitor.bound_parameter_name(argument, "&")
                       restriction = argument.restriction
                       if restriction
                         if owner.program.diagnostic_capture
                           resolved, projections = resolve_block_restriction_recipe(owner, restriction)
                           block_recipe = IyiMod::DiagnosticSignatureParameterRecipe.new(argument,
                             IyiMod::DiagnosticSignatureParameterKind::Block, name, resolved, nil,
-                            projections, [] of DiagnosticBoundProducer, false)
+                            projections, [] of DiagnosticBoundProducer, true)
                         else
                           resolved = resolve_block_restriction(owner, restriction)
                         end
@@ -5795,7 +5799,7 @@ module Iyi
                         if owner.program.diagnostic_capture
                           block_recipe = IyiMod::DiagnosticSignatureParameterRecipe.new(argument,
                             IyiMod::DiagnosticSignatureParameterKind::Block, name, nil, nil,
-                            [] of DiagnosticBoundProducer, [] of DiagnosticBoundProducer, false)
+                            [] of DiagnosticBoundProducer, [] of DiagnosticBoundProducer, true)
                         end
                         name
                       end
@@ -6001,8 +6005,8 @@ module Iyi
       # different method: `no overload matches 'DB::Database#query_one' with
       # types String, Int32, as: String.class`, with three overloads listed and
       # every one of them naming the parameter `type`.
-      written = arg.external_name == arg.name ? arg.name : "#{arg.external_name} #{arg.name}"
-      name = index == a_def.splat_index ? "*#{written}" : written
+      prefix = index == a_def.splat_index ? "*" : ""
+      name = ToSVisitor.bound_parameter_name(arg, prefix)
       restriction, projections = if recipes
                                    resolve_restriction_recipe(owner, arg.restriction)
                                  else
@@ -6016,13 +6020,13 @@ module Iyi
                  IyiMod::DiagnosticSignatureParameterKind::Normal
                end
         recipes << IyiMod::DiagnosticSignatureParameterRecipe.new(arg, kind, name,
-          restriction == "?" ? nil : restriction, default.empty? ? nil : default, projections.not_nil!, [] of DiagnosticBoundProducer, false)
+          restriction == "?" ? nil : restriction, default.empty? ? nil : default, projections.not_nil!, [] of DiagnosticBoundProducer, true)
       end
       {name, restriction || "?", default}
     end
 
     if double_splat = a_def.double_splat
-      name = "**#{double_splat.name}"
+      name = ToSVisitor.bound_parameter_name(double_splat, "**")
       restriction, projections = if recipes
                                    resolve_restriction_recipe(owner, double_splat.restriction)
                                  else
@@ -6031,7 +6035,7 @@ module Iyi
       if recipes
         recipes << IyiMod::DiagnosticSignatureParameterRecipe.new(double_splat,
           IyiMod::DiagnosticSignatureParameterKind::DoubleSplat, name, restriction == "?" ? nil : restriction, nil,
-          projections.not_nil!, [] of DiagnosticBoundProducer, false)
+          projections.not_nil!, [] of DiagnosticBoundProducer, true)
       end
       params << {name, restriction || "?", ""}
     end

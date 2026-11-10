@@ -2365,23 +2365,23 @@ module Iyi::IyiMod
                         else
                           DiagnosticSignatureParameterKind::Normal
                         end
-        unless recipe.argument.same?(argument) && recipe.kind == expected_kind && recipe.include_annotations == source
+        unless recipe.argument.same?(argument) && recipe.kind == expected_kind
           raise ArgumentError.new("signature recipe parameter identity mismatch")
         end
-        validate_parameter!(recipe, signature.parameters[index])
+        validate_parameter!(recipe, signature.parameters[index], source)
       end
       if argument = definition.block_arg
         recipe = block || raise ArgumentError.new("missing signature block recipe")
-        unless recipe.argument.same?(argument) && recipe.kind.block? && recipe.include_annotations == source
+        unless recipe.argument.same?(argument) && recipe.kind.block?
           raise ArgumentError.new("signature block recipe identity mismatch")
         end
-        validate_parameter!(recipe, signature.block_parameter)
+        validate_parameter!(recipe, signature.block_parameter, source)
       elsif block || !signature.block_parameter.empty?
         raise ArgumentError.new("unexpected signature block recipe")
       end
     end
 
-    private def self.validate_parameter!(recipe : DiagnosticSignatureParameterRecipe, expected : String) : Nil
+    private def self.validate_parameter!(recipe : DiagnosticSignatureParameterRecipe, expected : String, source : Bool) : Nil
       argument = recipe.argument
       rendered_name = IO::Memory.new
       prefix = case recipe.kind
@@ -2390,11 +2390,16 @@ module Iyi::IyiMod
                when DiagnosticSignatureParameterKind::Block then "&"
                else ""
                end
-      ToSVisitor.write_arg_name(rendered_name, argument, recipe.include_annotations, prefix)
       if !recipe.include_annotations && argument.parsed_annotations.try { |annotations| !annotations.empty? }
         raise ArgumentError.new("bound parameter removes annotations without a projection")
       end
-      unless rendered_name.to_s == recipe.name_text
+      spelled = if source
+                   ToSVisitor.write_arg_name(rendered_name, argument, recipe.include_annotations, prefix)
+                   rendered_name.to_s
+                 else
+                   ToSVisitor.bound_parameter_name(argument, prefix)
+                 end
+      unless spelled == recipe.name_text
         raise ArgumentError.new("signature recipe name differs from source")
       end
       # A bare splat's name text is its `*` after any annotations, and only a bare splat has one.

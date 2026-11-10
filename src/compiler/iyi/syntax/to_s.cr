@@ -440,8 +440,36 @@ module Iyi
 
     # A bare splat is the `*` of a parameter with neither a name nor an external name.
     # It has no name evidence to print, so its `*` is the only token written for it.
-    private def bare_splat?(node : Arg, prefix : String) : Bool
+    def self.bare_splat?(node : Arg, prefix : String) : Bool
       prefix == "*" && node.name.empty? && node.external_name.empty?
+    end
+
+    # The annotations a parameter carries, exactly as the printer writes them: each one
+    # followed by a space. They are the source's own text, so a bound declaration keeps them.
+    def self.bound_annotation_prefix(node : Arg) : String
+      String.build do |io|
+        (node.parsed_annotations || [] of Annotation).each do |ann|
+          ann.to_s(io)
+          io << ' '
+        end
+      end
+    end
+
+    # The text a bound declaration writes for one parameter: its annotations, its prefix
+    # (`*`, `**`, `&`, or none), then its external name where it differs and its name. A bare
+    # splat has no name, so it is its prefix alone. The writer's prefix order holds, but an
+    # external name keeps the spelling the source wrote: the printer quotes names that need it
+    # (`_`, `é`), and that would change valid bound text such as `_ x` into `"_" x`.
+    def self.bound_parameter_name(node : Arg, prefix : String) : String
+      unless {"", "*", "**", "&"}.includes?(prefix)
+        raise ArgumentError.new("invalid bound parameter prefix")
+      end
+      String.build do |io|
+        io << bound_annotation_prefix(node)
+        io << prefix
+        io << node.external_name << ' ' unless node.external_name == node.name
+        io << node.name
+      end
     end
 
     private def bare_splat_index(args : Array(Arg), splat_index : Int32?) : Int32?
@@ -472,7 +500,7 @@ module Iyi
           @str << ' '
         end
       end
-      if bare_splat?(node, prefix)
+      if ToSVisitor.bare_splat?(node, prefix)
         diagnostic_structured_syntax("*")
         return
       end
