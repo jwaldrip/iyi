@@ -1667,6 +1667,38 @@ def test_bound_projection_source_gate():
     else:
         raise AssertionError("source-bearing bound projection accepted without authority")
 
+def test_bare_splat_structural_controls() -> None:
+    """Plan C through the frames entry point: a keyword-anchored bare splat binds only to its own owner."""
+    def anchor(kind, role, offset):
+        return {"kind": "Written", "source_identity": {"module": "sample/identity", "file": "sample.iyi"},
+                "input_byte_offset": offset, "anchor_kind": kind, "role": role}
+
+    def bare(production, source, kind, star):
+        witnesses = [{"input_start": star, "input_end": star + 1, "token_kind": "*", "raw_text": "*",
+                      "selection": "Whole", "event": None},
+                     {"input_start": star + 1, "input_end": star + 2, "token_kind": ",", "raw_text": ",",
+                      "selection": "Whole", "event": None}]
+        return {"kind": "DerivedName", "derivation_kind": "StructuralName", "production": production,
+                "anchor_origin": anchor(kind, "keyword", 0),
+                "input_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                "input_bytesize": len(source.encode("utf-8")), "lexical_mode": "Crystal", "witnesses": witnesses,
+                "fresh_index": None, "rendered_text": "", "producer_context": "parameter"}
+
+    assert frames.derived_name(bare("BareSplatParameter", "def f(*, y)", "Def", 6), 0) == (("Name", "parameter"), b"")
+    assert frames.derived_name(bare("MacroBareSplatParameter", "macro f(*, y)", "Macro", 8), 0) == (("Name", "parameter"), b"")
+    wrong_owner = bare("BareSplatParameter", "def f(*, y)", "Macro", 6)
+    fresh = bare("BareSplatParameter", "def f(*, y)", "Def", 6)
+    fresh["fresh_index"] = 3
+    rendered = bare("BareSplatParameter", "def f(*, y)", "Def", 6)
+    rendered["rendered_text"] = "x"
+    for value, message in ((wrong_owner, "invalid structural anchor"), (fresh, "structural witness differs"),
+                           (rendered, "derived structural rendering differs")):
+        try:
+            frames.derived_name(value, 0)
+        except ValueError as error:
+            assert str(error) == message, (message, str(error))
+        else:
+            raise AssertionError("bare splat accepted: " + message)
 
 
 def run_all_tests() -> int:
@@ -1687,6 +1719,7 @@ def run_all_tests() -> int:
         ("test_darwin_backward_compatibility", test_darwin_backward_compatibility),
         ("test_captured_darwin_proc_and_collisions", test_captured_darwin_proc_and_collisions),
         ("test_cross_format_mismatch", test_cross_format_mismatch),
+        ("test_bare_splat_structural_controls", test_bare_splat_structural_controls),
     ]
     failed = 0
     for name, test in tests:

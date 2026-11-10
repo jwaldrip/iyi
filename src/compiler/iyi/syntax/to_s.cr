@@ -438,6 +438,28 @@ module Iyi
       end
     end
 
+    # A bare splat is the `*` of a parameter with neither a name nor an external name.
+    # It has no name evidence to print, so its `*` is the only token written for it.
+    private def bare_splat?(node : Arg, prefix : String) : Bool
+      prefix == "*" && node.name.empty? && node.external_name.empty?
+    end
+
+    private def bare_splat_index(args : Array(Arg), splat_index : Int32?) : Int32?
+      index = splat_index
+      index if index && args[index].name.empty?
+    end
+
+    # The comma after a bare splat is the parser's witness for that splat, so it is
+    # written as StructuredSyntax like the star. Every other separator stays plain text.
+    private def write_parameter_separator(after_bare_splat : Bool) : Nil
+      if after_bare_splat
+        diagnostic_structured_syntax(",")
+        @str << ' '
+      else
+        @str << ", "
+      end
+    end
+
     # The same writer is used by full Arg printing and by signature recipes.
     # Prefix is written after annotations, matching the language printer.
     def write_arg_name(node : Arg, include_annotations : Bool, prefix : String, enum_member : Bool = false) : Nil
@@ -449,6 +471,10 @@ module Iyi
           ann.accept self
           @str << ' '
         end
+      end
+      if bare_splat?(node, prefix)
+        diagnostic_structured_syntax("*")
+        return
       end
       @str << prefix
       if node.external_name != node.name
@@ -465,6 +491,16 @@ module Iyi
     def self.write_arg_name(io : IO, node : Arg, include_annotations : Bool, prefix : String,
                             diagnostic_fragment : DiagnosticFragmentBuilder? = nil) : Nil
       new(io, diagnostic_fragment: diagnostic_fragment).write_arg_name(node, include_annotations, prefix)
+    end
+
+    def self.write_parameter(io : IO, node : Arg, prefix : String,
+                             diagnostic_fragment : DiagnosticFragmentBuilder? = nil) : Nil
+      new(io, diagnostic_fragment: diagnostic_fragment).write_parameter(node, prefix)
+    end
+
+    # The printed text of one parameter, as a signature stores it.
+    def self.parameter_text(node : Arg, prefix : String) : String
+      String.build { |io| write_parameter(io, node, prefix) }
     end
 
     def visit_any(node)
@@ -1483,24 +1519,28 @@ module Iyi
       if node.args.size > 0 || node.block_arity || node.double_splat
         @str << '('
         printed_arg = false
+        bare_splat = bare_splat_index(node.args, node.splat_index)
+        last_bare = false
         node.args.each_with_index do |arg, i|
-          @str << ", " if printed_arg
+          write_parameter_separator(last_bare) if printed_arg
           @current_arg_type = :splat if node.splat_index == i
           drop_parens_for_proc_notation(arg, &.accept(self))
           printed_arg = true
+          last_bare = bare_splat == i
         end
         if double_splat = node.double_splat
+          write_parameter_separator(last_bare) if printed_arg
           @current_arg_type = :double_splat
-          @str << ", " if printed_arg
           drop_parens_for_proc_notation(double_splat, &.accept(self))
           printed_arg = true
+          last_bare = false
         end
         if block_arg = node.block_arg
+          write_parameter_separator(last_bare) if printed_arg
           @current_arg_type = :block_arg
-          @str << ", " if printed_arg
           drop_parens_for_proc_notation(block_arg, &.accept(self))
         elsif node.block_arity
-          @str << ", " if printed_arg
+          write_parameter_separator(last_bare) if printed_arg
           @str << '&'
         end
         @str << ')'
@@ -1540,20 +1580,24 @@ module Iyi
         printed_arg = false
         # NOTE: `drop_parens_for_proc_notation` needed here if macros support
         # restrictions
+        bare_splat = bare_splat_index(node.args, node.splat_index)
+        last_bare = false
         node.args.each_with_index do |arg, i|
-          @str << ", " if printed_arg
+          write_parameter_separator(last_bare) if printed_arg
           @current_arg_type = :splat if i == node.splat_index
           arg.accept self
           printed_arg = true
+          last_bare = bare_splat == i
         end
         if double_splat = node.double_splat
-          @str << ", " if printed_arg
+          write_parameter_separator(last_bare) if printed_arg
           @current_arg_type = :double_splat
           double_splat.accept self
           printed_arg = true
+          last_bare = false
         end
         if block_arg = node.block_arg
-          @str << ", " if printed_arg
+          write_parameter_separator(last_bare) if printed_arg
           @current_arg_type = :block_arg
           block_arg.accept self
         end
@@ -1734,6 +1778,17 @@ module Iyi
                when .block_arg? then "&"
                else ""
                end
+      write_parameter(node, prefix, enum_member)
+      false
+    ensure
+      @inside_enum_member = enum_member || false
+      @current_arg_type = :none
+    end
+
+    # One parameter as a list element writes it: annotations, prefix, name, then the
+    # restriction and default. Signature recipes and capture call this with their own
+    # prefix, so the printed bytes and the stored signature text come from one writer.
+    def write_parameter(node : Arg, prefix : String, enum_member : Bool = false) : Nil
       write_arg_name(node, true, prefix, enum_member)
       if restriction = node.restriction
         @str << " : "
@@ -1743,10 +1798,6 @@ module Iyi
         @str << " = "
         default_value.accept self
       end
-      false
-    ensure
-      @inside_enum_member = enum_member || false
-      @current_arg_type = :none
     end
 
     def visit(node : ProcNotation)

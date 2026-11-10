@@ -53,3 +53,54 @@ describe "parameter name provenance" do
     end
   end
 end
+
+# A fresh replay parser over one declaration, with the journal and capture the binder reads from.
+def bare_splat_spec_parser(source : String, iyi : Bool = false) : Iyi::Parser
+  parser = Iyi::Parser.new(source)
+  parser.iyi = iyi
+  parser.filename = "/spec/bare_splat.cr"
+  parser.diagnostic_source_file = "/spec/bare_splat.cr"
+  parser.enable_diagnostic_observations
+  parser.diagnostic_capture = true
+  parser
+end
+
+describe "bare splat parameter observation" do
+  it "observes the declaration keyword, star, and comma of a bare splat in both modes" do
+    ["def f(*, y); end", "macro f(*, y); end"].each do |source|
+      [false, true].each do |iyi|
+        parser = bare_splat_spec_parser(source, iyi)
+        node = parser.parse
+        observations = parser.diagnostic_bare_splat_observations
+        observations.size.should eq(1)
+        observation = observations.first
+        observation.owner.same?(node).should eq(true)
+        observation.index.should eq(0)
+        observation.argument.name.should eq("")
+        journal = parser.diagnostic_lexical_observations
+        journal[observation.keyword.ordinal].token_text.should eq(source.split(' ').first)
+        journal[observation.star.ordinal].token_text.should eq("*")
+        journal[observation.comma.ordinal].token_text.should eq(",")
+        primary = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)
+        value = observation.argument.diagnostic_name_slots[primary].first.as(Iyi::DiagnosticNameValue::Derived)
+        expected = source.starts_with?("macro") ? Iyi::DiagnosticStructuralProduction::MacroBareSplatParameter : Iyi::DiagnosticStructuralProduction::BareSplatParameter
+        value.origin.structural_production.should eq(expected)
+        value.rendered_text.should eq("")
+      end
+    end
+  end
+
+  it "records nothing for an ordinary parse, a named splat, or a rolled-back lookahead" do
+    ordinary = Iyi::Parser.new("def f(*, y); end")
+    ordinary.parse
+    ordinary.diagnostic_bare_splat_observations.should eq([] of Iyi::DiagnosticBareSplatObservation)
+
+    named = bare_splat_spec_parser("def f(*xs, y); end")
+    named.parse
+    named.diagnostic_bare_splat_observations.should eq([] of Iyi::DiagnosticBareSplatObservation)
+
+    rolled = bare_splat_spec_parser("def f(*, y); end")
+    rolled.lookahead { rolled.parse; nil }
+    rolled.diagnostic_bare_splat_observations.should eq([] of Iyi::DiagnosticBareSplatObservation)
+  end
+end

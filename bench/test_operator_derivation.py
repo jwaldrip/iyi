@@ -1070,5 +1070,177 @@ class FreshIndexOrderTests(unittest.TestCase):
 
 
 
+BARE_KEYWORDS = {"BareSplatParameter": ("def", "Def"), "MacroBareSplatParameter": ("macro", "Macro")}
+
+
+def bare_written(source="def f(*, y)", production="BareSplatParameter"):
+    """Written declaration: the keyword precedes the star, and neither witness carries an event."""
+    _, kind = BARE_KEYWORDS[production]
+    star = source.index("*")
+    witnesses = [(star, "*", "*", "Whole"), (star + 1, ",", ",", "Whole")]
+    return structural_value(production, source, witnesses, None, written(0, kind, "keyword"), "", "parameter")
+
+
+def bare_expanded(source="def f(*, y)", production="BareSplatParameter"):
+    """Expanded declaration: the keyword is the anchor, and each witness carries its own Generated event."""
+    keyword, kind = BARE_KEYWORDS[production]
+    value = bare_written(source, production)
+    value["anchor_origin"] = {"kind": "Expanded", "invocation_origin": written(0),
+                              "macro_definition_origin": written(0, "Macro", "keyword"),
+                              "expansion_guard": "sha256:" + value["input_sha256"], "anchor_kind": kind,
+                              "role": "keyword", "name_context": None,
+                              "token_event": token_event(0, keyword, "IDENT"), "anchor_use": {"kind": "Direct"}}
+    for witness in value["witnesses"]:
+        witness["event"] = token_event(witness["input_start"], witness["raw_text"], witness["token_kind"], "Whole")
+    return value
+
+
+class BareSplatStructuralTests(unittest.TestCase):
+    """Plan C: BareSplatParameter and MacroBareSplatParameter.
+
+    The shape is the fixed `*`, `,` pair anchored on its declaration keyword, with each witness's E2 event
+    attributed independently. Strict occurrence binding is a separate authority and is not claimed here.
+    """
+
+    def assertRejected(self, value, message, depth=0):
+        with self.assertRaises(ValueError) as caught:
+            frames.derived_name(value, depth)
+        self.assertEqual(str(caught.exception), message)
+
+    def test_written_def_bare_splat_is_accepted(self):
+        self.assertEqual(frames.derived_name(bare_written("def f(*, y)"), 0), (("Name", "parameter"), b""))
+
+    def test_written_def_bare_splat_after_a_positional_is_accepted(self):
+        self.assertEqual(frames.derived_name(bare_written("def f(x, *, y)"), 0), (("Name", "parameter"), b""))
+
+    def test_written_macro_bare_splat_is_accepted(self):
+        value = bare_written("macro f(*, y)", "MacroBareSplatParameter")
+        self.assertEqual(frames.derived_name(value, 0), (("Name", "parameter"), b""))
+
+    def test_expanded_def_bare_splat_with_own_events_is_accepted(self):
+        self.assertEqual(frames.derived_name(bare_expanded(), 0), (("Name", "parameter"), b""))
+
+    def test_expanded_macro_bare_splat_is_accepted(self):
+        value = bare_expanded("macro f(*, y)", "MacroBareSplatParameter")
+        self.assertEqual(frames.derived_name(value, 0), (("Name", "parameter"), b""))
+
+    def test_expanded_bare_splat_with_mixed_producers_across_both_witnesses_is_accepted(self):
+        value = bare_expanded()
+        value["witnesses"][0]["event"]["byte_parts"] = [generated(6, 7, "MacroTemplate")]
+        value["witnesses"][1]["event"]["byte_parts"] = [generated(7, 8, "MacroVar")]
+        self.assertEqual(frames.derived_name(value, 0), (("Name", "parameter"), b""))
+
+    def test_bare_splat_reaches_origin_name_value_and_checked_origin(self):
+        self.assertEqual(frames.origin(bare_written()), ("Name", "parameter"))
+        self.assertEqual(frames.name_value({"kind": "Derived", "origin": bare_written()}, 0), b"")
+        self.assertEqual(frames.checked_origin(bare_expanded()), ("Name", "parameter"))
+
+    def test_fresh_index_on_a_bare_splat_is_refused(self):
+        value = bare_written()
+        value["fresh_index"] = 3
+        self.assertRejected(value, "structural witness differs")
+
+    def test_bare_star_without_a_following_comma_is_refused(self):
+        value = bare_written("def f(*)")
+        value["witnesses"] = value["witnesses"][:1]
+        self.assertRejected(value, "structural witness differs")
+
+    def test_named_splat_relabelled_as_bare_is_refused(self):
+        value = structural_value("BareSplatParameter", "def f(*xs)",
+                                 [(6, "*", "*", "Whole"), (7, "xs", "IDENT", "Whole")], None,
+                                 written(0, "Def", "keyword"), "", "parameter")
+        self.assertRejected(value, "structural witness differs")
+
+    def test_star_whose_token_kind_is_an_identifier_is_refused(self):
+        value = bare_written()
+        value["witnesses"][0]["token_kind"] = "IDENT"
+        self.assertRejected(value, "structural witness differs")
+
+    def test_comma_whose_token_kind_is_an_identifier_is_refused(self):
+        value = bare_written()
+        value["witnesses"][1]["token_kind"] = "IDENT"
+        self.assertRejected(value, "structural witness differs")
+
+    def test_partial_selection_on_the_star_is_refused(self):
+        value = bare_written()
+        value["witnesses"][0]["selection"] = "SignedNumberSign"
+        self.assertRejected(value, "structural witness differs")
+
+    def test_bare_splat_anchored_on_fun_is_refused(self):
+        value = bare_written()
+        value["anchor_origin"] = written(0, "FunDef", "keyword")
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_macro_bare_splat_anchored_on_def_is_refused(self):
+        value = bare_written("macro f(*, y)", "MacroBareSplatParameter")
+        value["anchor_origin"] = written(0, "Def", "keyword")
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_def_bare_splat_anchored_on_macro_is_refused(self):
+        value = bare_written()
+        value["anchor_origin"] = written(0, "Macro", "keyword")
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_written_anchor_must_precede_the_star(self):
+        value = bare_written()
+        value["anchor_origin"] = written(6, "Def", "keyword")
+        self.assertRejected(value, "anchor does not precede witnesses")
+
+    def test_written_bare_splat_refuses_token_events(self):
+        value = bare_written()
+        value["witnesses"][0]["event"] = token_event(6, "*", "*")
+        self.assertRejected(value, "structural witness has a token event for written source")
+
+    def test_expanded_bare_splat_keyword_must_be_def(self):
+        value = bare_expanded()
+        value["anchor_origin"]["token_event"] = token_event(0, "fun", "IDENT")
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_expanded_macro_bare_splat_keyword_must_be_macro(self):
+        value = bare_expanded("macro f(*, y)", "MacroBareSplatParameter")
+        value["anchor_origin"]["token_event"] = token_event(0, "def", "IDENT")
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_expanded_bare_splat_keyword_after_the_star_is_refused(self):
+        value = bare_expanded()
+        value["anchor_origin"]["token_event"] = token_event(6, "def", "IDENT")
+        self.assertRejected(value, "anchor does not precede witnesses")
+
+    def test_expanded_bare_splat_keyword_in_another_mode_is_refused(self):
+        value = bare_expanded()
+        value["anchor_origin"]["token_event"]["lexical_mode"] = "Iyi"
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_expanded_bare_splat_guard_from_another_input_is_refused(self):
+        value = bare_expanded()
+        value["anchor_origin"]["expansion_guard"] = "sha256:" + "0" * 64
+        self.assertRejected(value, "structural witnesses use different inputs")
+
+    def test_expanded_bare_star_without_its_own_event_is_refused(self):
+        value = bare_expanded()
+        value["witnesses"][0]["event"] = None
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_bare_comma_without_its_own_event_is_refused(self):
+        value = bare_expanded()
+        value["witnesses"][1]["event"] = None
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_bare_comma_claim_writer_is_refused(self):
+        value = bare_expanded()
+        value["witnesses"][1]["event"]["byte_parts"] = [astanchor(7, 8, written(0, "Def", "keyword"))]
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_rendered_text_of_a_bare_splat_must_be_empty(self):
+        value = bare_written()
+        value["rendered_text"] = "x"
+        self.assertRejected(value, "derived structural rendering differs")
+
+    def test_producer_context_of_a_bare_splat_must_be_parameter(self):
+        value = bare_written()
+        value["producer_context"] = "local_reference"
+        self.assertRejected(value, "derived structural rendering differs")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

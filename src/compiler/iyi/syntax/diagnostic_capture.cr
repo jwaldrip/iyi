@@ -3273,11 +3273,19 @@ module Iyi
   # (DiagnosticCaptureBinding.bind!). Legacy callers keep the byte-level mode.
   class DiagnosticRecordedEvidenceInputCheck
     MAX_DEPTH = 128
+    # A bare `*` has its own production, so the structural collector never claims it.
+    def self.bare_splat_origin?(origin : DiagnosticOrigin::DerivedName) : Bool
+      production = origin.structural_production
+      production == DiagnosticStructuralProduction::BareSplatParameter ||
+        production == DiagnosticStructuralProduction::MacroBareSplatParameter
+    end
     # The derivation a sugar child carries, as its owner registered it.
     record SugarSlot, production : DiagnosticTypeSugar, result : DiagnosticTypeSugarResult, index : Int32
     @active = Set(UInt64).new
     @remaining : UInt64 = DiagnosticOrigin::MAX_UNFOLDED_BYTES
     @source : String
+    @bare_splat_claims = Set(Int32).new
+    @arg_occurrence : Tuple(UInt64, Int32, UInt64)? = nil
 
     def initialize(@input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal? = nil,
                    @identity : DiagnosticModuleIdentity? = nil, structural : Set(UInt64)? = nil,
@@ -3312,6 +3320,9 @@ module Iyi
       end
       verify_lib_order!(root, @input.input_bytesize, 0)
       visit(root, 0)
+      if (bundle = @literal_bundle) && @bare_splat_claims.size != bundle.bare_splats.size
+        raise ArgumentError.new("bare splat association unclaimed")
+      end
     end
 
     # D4, the order of lib funs. A fun's `fun` anchor lies after its own lib's name
@@ -3465,7 +3476,19 @@ module Iyi
     end
 
     private def visit_children(node : ASTNode, depth : Int32) : Nil
-      DiagnosticDirectChildFields.each(node) { |_, _, _, child| visit(child, depth + 1) }
+      DiagnosticDirectChildFields.each(node) do |field, index, _, child|
+        if (node.is_a?(Def) || node.is_a?(Macro)) && field == "args"
+          # The traversal edge a bare splat must occupy: this owner's args[index], nothing else.
+          @arg_occurrence = {node.object_id, index || raise(ArgumentError.new("argument has no index")), child.object_id}
+          begin
+            visit(child, depth + 1)
+          ensure
+            @arg_occurrence = nil
+          end
+        else
+          visit(child, depth + 1)
+        end
+      end
     end
 
     private def check_structural_origin!(node : ASTNode, origin : DiagnosticOrigin, depth : Int32) : Nil
@@ -3540,7 +3563,11 @@ module Iyi
       when "ModuleHeaderPath"   then verify_module_header_path!(origin, identity)
       when "ImplicitModuleSelf" then verify_implicit_module_self!(origin, identity)
       when "StructuralName"
-        raise ArgumentError.new("structural witness is not verified") unless @structural.includes?(origin.object_id)
+        if DiagnosticRecordedEvidenceInputCheck.bare_splat_origin?(origin)
+          bound_bare_splat!(node, slot, values, origin)
+        else
+          raise ArgumentError.new("structural witness is not verified") unless @structural.includes?(origin.object_id)
+        end
       when "OperatorName"      then bound_operator!(node, slot, values, origin)
       when "TypeSugar"         then bound_type_sugar!(node, slot, values, origin)
       when "RegexMatchIndex"   then bound_regex!(node, slot, values, origin)
@@ -3659,6 +3686,85 @@ module Iyi
           raise ArgumentError.new("regex match index differs from backreference token")
         end
       end
+    end
+
+    # Bare `*`, produced by BareSplatParameter on Def or MacroBareSplatParameter on Macro.
+    # The Arg must be the single occurrence the fresh parser recorded: its association's
+    # owner is frozen, the traversal reaches that owner's args[index], and its keyword,
+    # star and comma resolve to exact journal entries. A shape, an origin's bytes, or a
+    # claimed owner alone never authorizes it.
+    private def bound_bare_splat!(node : ASTNode, slot : DiagnosticNameSlot, values : Indexable(DiagnosticNameValue),
+                                  origin : DiagnosticOrigin::DerivedName) : Nil
+      raise ArgumentError.new("derived name shares its slot with other evidence") unless values.size == 1
+      raise ArgumentError.new("derived name production does not fit field") unless slot == DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      arg = node.as?(Arg) || raise ArgumentError.new("bare splat evidence outside its parameter")
+      bundle = @literal_bundle || raise ArgumentError.new("bare splat requires parser replay association")
+      journal = @journal || raise ArgumentError.new("bare splat requires parser replay association")
+      mode = @input.lexical_mode
+
+      matches = bundle.bare_splats.select { |item| item.argument.same?(arg) }
+      raise ArgumentError.new("bare splat requires parser replay association") if matches.empty?
+      raise ArgumentError.new("bare splat association is duplicated") unless matches.size == 1
+      observed = matches[0]
+      owner = observed.owner
+      macro_owner = origin.structural_production == DiagnosticStructuralProduction::MacroBareSplatParameter
+      owner_kind = macro_owner ? "Macro" : "Def"
+      keyword = macro_owner ? "macro" : "def"
+      fits = macro_owner ? owner.is_a?(Macro) : owner.is_a?(Def)
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless fits && bundle.frozen?(owner)
+
+      index = observed.index
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless index >= 0
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless owner.args[index]?.try(&.same?(arg))
+      occurrence = @arg_occurrence || raise ArgumentError.new("bare splat evidence outside its parameter")
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless occurrence == {owner.object_id, index, arg.object_id}
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless bundle.frozen_edge?(owner, "args", index, arg)
+
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless owner.splat_index == index && index + 1 < owner.args.size
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless arg.name.empty? && arg.external_name.empty?
+      raise ArgumentError.new("bare splat evidence outside its parameter") if arg.diagnostic_external_explicit
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless arg.restriction.nil? && arg.default_value.nil?
+      external = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
+      raise ArgumentError.new("bare splat evidence outside its parameter") if arg.diagnostic_name_slots.has_key?(external)
+      unless (arg.diagnostic_literal_names_count || 0) == 0 && (arg.diagnostic_literal_productions_count || 0) == 0
+        raise ArgumentError.new("bare splat evidence outside its parameter")
+      end
+
+      anchor = origin.structural_anchor || raise ArgumentError.new("invalid structural anchor")
+      raise ArgumentError.new("expanded bare splat requires resolved expansion ancestry (contract X)") if anchor.is_a?(DiagnosticOrigin::Expanded)
+      written = anchor.as?(DiagnosticOrigin::Written) || raise ArgumentError.new("invalid structural anchor")
+      raise ArgumentError.new("invalid structural anchor") unless written_identity_ok?(written) && written.valid_for_anchor?(owner_kind, "keyword")
+      owner_origin = owner.diagnostic_origin
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless owner_origin && written == owner_origin
+      start = written.input_byte_offset
+      raise ArgumentError.new("invalid structural anchor") unless journal.scanned_span?(start, start + keyword.size, "IDENT", keyword, mode)
+      keyword_entry = journal.entry!(observed.keyword)
+      unless keyword_entry.input_start == start && keyword_entry.input_end == start + keyword.size &&
+             keyword_entry.token_text == keyword && keyword_entry.token_kind == "IDENT"
+        raise ArgumentError.new("bare splat witness differs from replay")
+      end
+
+      unless origin.structural_input_sha256 == @input.input_sha256 &&
+             origin.structural_input_bytesize == @input.input_bytesize && origin.structural_lexical_mode == mode
+        raise ArgumentError.new("structural witnesses use different inputs")
+      end
+      witnesses = origin.structural_witnesses
+      raise ArgumentError.new("bare splat witness differs from replay") unless witnesses.size == 2 && origin.structural_fresh_index.nil?
+      star = journal.entry!(observed.star)
+      comma = journal.entry!(observed.comma)
+      unless bare_splat_witness?(witnesses[0], star, "*", mode) && bare_splat_witness?(witnesses[1], comma, ",", mode)
+        raise ArgumentError.new("bare splat witness differs from replay")
+      end
+      raise ArgumentError.new("anchor does not precede witnesses") unless start < star.input_start && star.input_start < comma.input_start
+      journal.literal_trivia!(star.input_end, comma.input_start, mode, false)
+      raise ArgumentError.new("bare splat association consumed twice") unless @bare_splat_claims.add?(star.input_start)
+    end
+
+    private def bare_splat_witness?(witness : DiagnosticOperatorWitness, entry : DiagnosticRenderedToken,
+                                    text : String, mode : String) : Bool
+      witness.event.nil? && witness.selection.whole? && witness.raw_text == text && entry.token_text == text &&
+        witness.input_start == entry.input_start && witness.input_end == entry.input_end &&
+        witness.token_kind == entry.token_kind && entry.lexical_mode == mode
     end
 
     private def bound_parameter!(node : ASTNode, slot : DiagnosticNameSlot, values : Indexable(DiagnosticNameValue),
@@ -3880,6 +3986,8 @@ module Iyi
       @sugar_expected.clear
       @regex_globals.clear
       @def_stack.clear
+      @bare_splat_claims.clear
+      @arg_occurrence = nil
     end
 
     # Accepts a regex `$n` Lookup only on its own Call: the Call's Primary slot holds this
@@ -4511,6 +4619,7 @@ module Iyi
     @percent_elements : Array(DiagnosticPercentElementObservation)
     @payloads : Array(DiagnosticLiteralPayloadObservation)
     @regex_options : Array(DiagnosticRegexOptionsObservation)
+    @bare_splats : Array(DiagnosticBareSplatObservation)
     @graph : Hash(UInt64, NodeEdges)
     @coordinates : Hash(UInt64, String)
     @path : Array(DiagnosticCaptureRefs::Step)
@@ -4534,6 +4643,7 @@ module Iyi
       @percent_elements = parser.diagnostic_percent_element_observations
       @payloads = parser.diagnostic_literal_payload_observations
       @regex_options = parser.diagnostic_regex_options_observations
+      @bare_splats = parser.diagnostic_bare_splat_observations.dup
       @graph = {} of UInt64 => NodeEdges
       @coordinates = {} of UInt64 => String
       @path = [] of DiagnosticCaptureRefs::Step
@@ -4599,6 +4709,17 @@ module Iyi
 
     def macro_literals : Array(DiagnosticMacroLiteralObservation)
       @macro_literals.dup
+    end
+
+    def bare_splats : Array(DiagnosticBareSplatObservation)
+      @bare_splats.dup
+    end
+
+    # True only when the frozen edge of `owner` carries this exact field, index and child.
+    def frozen_edge?(owner : ASTNode, field : String, index : Int32?, child : ASTNode) : Bool
+      snapshot = @graph[owner.object_id]? || return false
+      return false unless snapshot.owner.same?(owner)
+      snapshot.edges.any? { |edge| edge.field == field && edge.index == index && edge.child.same?(child) }
     end
 
     # True only when the frozen snapshot holds this exact object, not an equal one.
@@ -6318,6 +6439,7 @@ module Iyi
       node.each_diagnostic_name_slot do |_, values|
         values.each do |value|
           next unless value.is_a?(DiagnosticNameValue::Derived) && value.origin.derivation_kind == "StructuralName"
+          next if DiagnosticRecordedEvidenceInputCheck.bare_splat_origin?(value.origin)
           fundef, index, owner_lib = @owners[node.object_id]? || raise ArgumentError.new("structural witness differs")
           @candidates << Candidate.new(value.origin, fundef, index, owner_lib)
         end

@@ -59,6 +59,13 @@ module Iyi
   record DiagnosticSignedNumberObservation, call : Call,
     signed : DiagnosticReplayTokenRef, unsigned : DiagnosticReplayTokenRef
   record DiagnosticMacroLiteralObservation, owner : MacroLiteral, token : DiagnosticReplayTokenRef
+  # A bare `*` parameter of a completed Def or Macro: the declaration keyword, the parameter and its splat index, and the
+  # star and comma as the fresh parser read them. The binder checks each against the replay journal.
+  record DiagnosticBareSplatObservation, owner : Def | Macro, argument : Arg, index : Int32,
+    keyword : DiagnosticReplayTokenRef, star : DiagnosticReplayTokenRef, comma : DiagnosticReplayTokenRef
+  # The star and comma of a bare splat. The refs are nil outside a fresh replay, where only the derivation is built.
+  record DiagnosticBareSplatTokens, star : ParsedOperatorToken, star_ref : DiagnosticReplayTokenRef?,
+    comma : ParsedOperatorToken, comma_ref : DiagnosticReplayTokenRef?
 
   # A raw token a derived operator name is built from: its start, the parser's
   # snapshot of it (nil outside diagnostic modes), and the selection it keeps.
@@ -317,6 +324,7 @@ module Iyi
     @diagnostic_signed_number_observations = [] of DiagnosticSignedNumberObservation
     @diagnostic_macro_literal_observations = [] of DiagnosticMacroLiteralObservation
     @diagnostic_last_literal_close : DiagnosticReplayTokenRef? = nil
+    @diagnostic_bare_splat_observations : Array(DiagnosticBareSplatObservation)? = nil
 
     def diagnostic_scalar_grammar_observations : Array(DiagnosticScalarGrammarObservation)
       @diagnostic_scalar_grammar_observations.dup
@@ -374,6 +382,10 @@ module Iyi
       @diagnostic_macro_literal_observations.dup
     end
 
+    def diagnostic_bare_splat_observations : Array(DiagnosticBareSplatObservation)
+      @diagnostic_bare_splat_observations.try(&.dup) || [] of DiagnosticBareSplatObservation
+    end
+
     def diagnostic_signed_number_observations : Array(DiagnosticSignedNumberObservation)
       @diagnostic_signed_number_observations.dup
     end
@@ -425,6 +437,7 @@ module Iyi
       number_count = @diagnostic_number_observations.size
       macro_literal_count = @diagnostic_macro_literal_observations.size
       signed_number_count = @diagnostic_signed_number_observations.size
+      bare_splat_count = @diagnostic_bare_splat_observations.try(&.size) || 0
       heredoc_openers = @diagnostic_lexical_observations ? @diagnostic_heredoc_openers.dup : nil
       literal_snapshot = @diagnostic_lexical_observations ? @diagnostic_literal_owner_observations.dup : nil
       literal_close = @diagnostic_last_literal_close
@@ -444,6 +457,9 @@ module Iyi
         @diagnostic_number_observations.pop(@diagnostic_number_observations.size - number_count)
         @diagnostic_macro_literal_observations.pop(@diagnostic_macro_literal_observations.size - macro_literal_count)
         @diagnostic_signed_number_observations.pop(@diagnostic_signed_number_observations.size - signed_number_count)
+        if bare_splat_observations = @diagnostic_bare_splat_observations
+          bare_splat_observations.pop(bare_splat_observations.size - bare_splat_count)
+        end
         @diagnostic_heredoc_openers = heredoc_openers if heredoc_openers
         @diagnostic_literal_owner_observations = literal_snapshot if literal_snapshot
         @diagnostic_last_literal_close = literal_close
@@ -541,6 +557,7 @@ module Iyi
                         @iyi_else_if.nil? && @iyi_impl_trait.nil? && @iyi_def_lookalike.nil? &&
                         @iyi_for_lookalike.nil? && @iyi_match_lookalike.nil? &&
                         (@diagnostic_lexical_observations.nil? || @diagnostic_lexical_observations.not_nil!.empty?) &&
+                        (@diagnostic_bare_splat_observations.nil? || @diagnostic_bare_splat_observations.not_nil!.empty?) &&
                         @line_number == 1 && @column_number == 1 &&
                         @delimiter_state_stack.empty? && !@stacked && @unclosed_stack.empty? &&
                         @call_args_start_locations.empty? && @assigned_vars.empty? &&
@@ -1086,6 +1103,24 @@ module Iyi
       origin = DiagnosticOrigin::DerivedName.structural_name(DiagnosticStructuralProduction::UnnamedFunParameter,
         fun_origin, digest, bytesize, diagnostic_lexical_mode, witnesses, nil)
       diagnostic_attach_primary(arg, origin)
+    end
+
+    # A bare `*` parameter of a completed Def or Macro, witnessed by the star and the comma after it. Its anchor is the
+    # declaration keyword, and each witness takes its own E2 event in an expansion. The derivation is attached only
+    # after the declaration's grammar has passed. The fresh association is recorded only with the derivation it authorizes.
+    private def diagnostic_bare_splat(owner : Def | Macro, anchor : DiagnosticOrigin?, keyword : DiagnosticReplayTokenRef?,
+                                      params : Array(Arg), index : Int32, tokens : DiagnosticBareSplatTokens) : Nil
+      return unless anchor
+      argument = params[index]
+      witnesses = diagnostic_witness_list(anchor, [tokens.star, tokens.comma])
+      return unless witnesses
+      digest, bytesize = diagnostic_source_identity
+      production = owner.is_a?(Macro) ? DiagnosticStructuralProduction::MacroBareSplatParameter : DiagnosticStructuralProduction::BareSplatParameter
+      origin = DiagnosticOrigin::DerivedName.structural_name(production, anchor, digest, bytesize, diagnostic_lexical_mode, witnesses, nil)
+      diagnostic_attach_primary(argument, origin)
+      return unless keyword && (star_ref = tokens.star_ref) && (comma_ref = tokens.comma_ref)
+      (@diagnostic_bare_splat_observations ||= [] of DiagnosticBareSplatObservation) <<
+        DiagnosticBareSplatObservation.new(owner, argument, index, keyword, star_ref, comma_ref)
     end
 
     # E2: the event of a witness that is not the anchor token, attributed from the expansion's emission records.
@@ -6828,11 +6863,12 @@ module Iyi
 
     def parse_def(is_abstract = false, is_macro_def = false, doc = nil)
       origin = diagnostic_anchor("Def", "keyword", @token.input_offset)
+      keyword_ref = diagnostic_replay_token_ref
       doc ||= @token.doc
 
       prepare_parse_def
       a_def = with_isolated_var_scope do
-        parse_def_helper is_abstract: is_abstract, definition_origin: origin
+        parse_def_helper is_abstract: is_abstract, definition_origin: origin, definition_keyword: keyword_ref
       end
 
       a_def.calls_super = @calls_super
@@ -6864,6 +6900,7 @@ module Iyi
 
     def parse_macro
       origin = diagnostic_anchor("Macro", "keyword", @token.input_offset)
+      keyword_ref = diagnostic_replay_token_ref
       doc = @token.doc
 
       # Force lexer return if possible a def or macro name
@@ -6901,6 +6938,7 @@ module Iyi
         found_double_splat = nil
 
         splat_index = nil
+        bare_splat = nil
         double_splat = nil
         index = 0
 
@@ -6914,6 +6952,7 @@ module Iyi
               found_default_value: found_default_value,
               found_splat: found_splat,
               found_double_splat: found_double_splat,
+              definition_origin: origin,
               allow_restrictions: false)
             if !found_default_value && extras.default_value
               found_default_value = true
@@ -6922,6 +6961,7 @@ module Iyi
               splat_index = index
               found_splat = true
             end
+            bare_splat = extras.bare_splat if extras.bare_splat
             if extras.double_splat
               double_splat = params.pop
               found_double_splat = double_splat
@@ -6972,6 +7012,7 @@ module Iyi
         node.doc = doc
         node.end_location = end_location
         node.diagnostic_origin = origin
+        diagnostic_bare_splat(node, origin, keyword_ref, params, splat_index, bare_splat) if bare_splat && splat_index
         diagnostic_name(node, name_offset, "macro_name", token_snapshot: name_snapshot)
         diagnostic_name(node, name_equals_offset, "macro_name", append: true, token_snapshot: name_equals_snapshot) if name_equals_offset
         set_visibility node
@@ -7343,7 +7384,7 @@ module Iyi
       :OP_AMP_PLUS, :OP_AMP_MINUS, :OP_AMP_STAR, :OP_AMP_STAR_STAR,
     ] of Token::Kind
 
-    def parse_def_helper(is_abstract = false, definition_origin : DiagnosticOrigin? = nil)
+    def parse_def_helper(is_abstract = false, definition_origin : DiagnosticOrigin? = nil, definition_keyword : DiagnosticReplayTokenRef? = nil)
       def_location = @token.location
       @doc_enabled = false
       @def_nest += 1
@@ -7453,6 +7494,7 @@ module Iyi
 
       index = 0
       splat_index = nil
+      bare_splat = nil
       double_splat = nil
 
       case @token.type
@@ -7475,6 +7517,7 @@ module Iyi
             splat_index = index
             found_splat = true
           end
+          bare_splat = extras.bare_splat if extras.bare_splat
           if extras.double_splat
             double_splat = params.pop
             found_double_splat = double_splat
@@ -7604,6 +7647,7 @@ module Iyi
       node = Def.new name, params, body, receiver, block_param, return_type, @is_macro_def, @block_arity, is_abstract, splat_index, double_splat: double_splat, free_vars: free_vars
       node.free_var_bounds = free_var_bounds
       node.where_bounds = where_bounds
+      diagnostic_bare_splat(node, definition_origin, definition_keyword, params, splat_index, bare_splat) if bare_splat && splat_index
       if observations = free_var_observations
         observations.each_with_index do |observation, index|
           diagnostic_name(node, observation[0], "type_parameter", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index), token_snapshot: observation[1])
@@ -7940,7 +7984,8 @@ module Iyi
       block_arg : Arg?,
       default_value : Bool,
       splat : Bool,
-      double_splat : Bool
+      double_splat : Bool,
+      bare_splat : DiagnosticBareSplatTokens? = nil
 
     record DiagnosticLoweredParameter,
       source : DiagnosticSourceNameToken,
@@ -8010,6 +8055,9 @@ module Iyi
       double_splat = false
       param_location = @token.location
       allow_external_name = true
+      bare_star = nil
+      bare_star_ref = nil
+      bare_splat = nil
 
       case @token.type
       when .op_star?
@@ -8019,6 +8067,8 @@ module Iyi
 
         splat = true
         allow_external_name = false
+        bare_star = diagnostic_operator_token
+        bare_star_ref = diagnostic_replay_token_ref
         next_token_skip_space
       when .op_star_star?
         double_splat = true
@@ -8039,6 +8089,11 @@ module Iyi
       if splat && (@token.type.op_comma? || @token.type.op_rparen?)
         param_name = ""
         allow_restrictions = false
+        if @token.type.op_comma? && bare_star
+          if comma = diagnostic_operator_token
+            bare_splat = DiagnosticBareSplatTokens.new(bare_star, bare_star_ref, comma, diagnostic_replay_token_ref)
+          end
+        end
       else
         param_location = @token.location
         param_name, external_name, found_space, _uses_param, param_offset, external_offset, param_snapshot, external_snapshot, lowered, external_literal = parse_param_name(param_location, extra_assigns, allow_external_name: allow_external_name)
@@ -8138,7 +8193,7 @@ module Iyi
       params << param
       push_var param
 
-      ArgExtras.new(nil, !!default_value, splat, !!double_splat)
+      ArgExtras.new(nil, !!default_value, splat, !!double_splat, bare_splat)
     end
 
     def parse_def_block_param(extra_assigns, annotations : Array(Annotation)?, definition_origin : DiagnosticOrigin?)

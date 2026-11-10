@@ -1022,6 +1022,8 @@ module Iyi
   enum DiagnosticStructuralProduction : UInt8
     UnnamedFunParameter = 1
     ShortBlockArgument = 2
+    BareSplatParameter = 3
+    MacroBareSplatParameter = 4
   end
 
   record DiagnosticOperatorWitness, input_start : Int32, input_end : Int32, token_kind : String,
@@ -2686,6 +2688,8 @@ module Iyi
                     kinds.size == 2 && {"(", ","}.includes?(kinds[0]) && kinds[1] != "IDENT"
                   when DiagnosticStructuralProduction::ShortBlockArgument
                     kinds == ["&", "."]
+                  when DiagnosticStructuralProduction::BareSplatParameter, DiagnosticStructuralProduction::MacroBareSplatParameter
+                    kinds == ["*", ","]
                   else
                     false
                   end
@@ -2779,6 +2783,9 @@ module Iyi
           if anchor.is_a?(Written) && anchor.input_byte_offset != witnesses[0].input_start
             raise ArgumentError.new("structural anchor offset mismatch")
           end
+        when DiagnosticStructuralProduction::BareSplatParameter, DiagnosticStructuralProduction::MacroBareSplatParameter
+          check_bare_splat_anchor!(production, anchor, witnesses, input_sha256, lexical_mode)
+          return
         else
           raise ArgumentError.new("invalid structural production")
         end
@@ -2800,6 +2807,33 @@ module Iyi
         end
         raise ArgumentError.new("structural witnesses use different inputs") unless anchor.expansion_guard == "sha256:#{input_sha256}"
         witnesses.each { |witness| check_later_witness!(witness, lexical_mode, "structural") }
+      end
+
+      # Bare splat parameters (BareSplatParameter, MacroBareSplatParameter). The anchor is the declaration keyword,
+      # which precedes both witnesses and is not one of them. It must spell the production's own declaration. An
+      # expansion's witnesses each carry their own E2 event, checked by check_later_witness!.
+      def self.check_bare_splat_anchor!(production : DiagnosticStructuralProduction, anchor : DiagnosticOrigin,
+                                        witnesses : Array(DiagnosticOperatorWitness),
+                                        input_sha256 : String, lexical_mode : String) : Nil
+        keyword_text = production == DiagnosticStructuralProduction::MacroBareSplatParameter ? "macro" : "def"
+        case anchor
+        when Written
+          raise ArgumentError.new("anchor does not precede witnesses") if anchor.input_byte_offset >= witnesses[0].input_start
+          if witnesses.any? { |witness| !witness.event.nil? }
+            raise ArgumentError.new("structural witness has a token event for written source")
+          end
+        when Expanded
+          keyword = anchor.token_event
+          unless keyword.token_kind == "IDENT" && keyword.token_text == keyword_text && keyword.selection.whole? &&
+                 keyword.lexical_mode == lexical_mode
+            raise ArgumentError.new("invalid structural anchor")
+          end
+          raise ArgumentError.new("anchor does not precede witnesses") if keyword.input_end > witnesses[0].input_start
+          raise ArgumentError.new("structural witnesses use different inputs") unless anchor.expansion_guard == "sha256:#{input_sha256}"
+          witnesses.each { |witness| check_later_witness!(witness, lexical_mode, "structural") }
+        else
+          raise ArgumentError.new("invalid structural anchor")
+        end
       end
 
       # Shape and spelling per structural production. Returns {rendered text, producer context}.
@@ -2824,6 +2858,10 @@ module Iyi
           index = fresh_index
           raise ArgumentError.new("invalid short block fresh index") if index.nil? || index < 0
           {"__arg#{index.not_nil!}", "local_reference"}
+        when DiagnosticStructuralProduction::BareSplatParameter, DiagnosticStructuralProduction::MacroBareSplatParameter
+          raise ArgumentError.new("structural witness differs") unless witnesses.size == 2 && fresh_index.nil?
+          raise ArgumentError.new("structural witness differs") unless witnesses.map(&.raw_text) == ["*", ","]
+          {"", "parameter"}
         else
           raise ArgumentError.new("invalid structural production")
         end
@@ -2874,6 +2912,8 @@ module Iyi
         role = case production
                when DiagnosticStructuralProduction::UnnamedFunParameter then {"FunDef", "keyword"}
                when DiagnosticStructuralProduction::ShortBlockArgument then {"Block", "ampersand"}
+               when DiagnosticStructuralProduction::BareSplatParameter then {"Def", "keyword"}
+               when DiagnosticStructuralProduction::MacroBareSplatParameter then {"Macro", "keyword"}
                else raise ArgumentError.new("invalid structural production")
                end
         raise ArgumentError.new("invalid structural anchor") unless anchor_origin.valid_for_anchor?(role[0], role[1])

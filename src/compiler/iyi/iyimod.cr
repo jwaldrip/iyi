@@ -2343,8 +2343,7 @@ module Iyi::IyiMod
                else ""
                end
       io = IO::Memory.new
-      io << prefix
-      ToSVisitor.write_arg_name(io, argument, true, "")
+      ToSVisitor.write_arg_name(io, argument, true, prefix)
       DiagnosticSignatureParameterRecipe.new(argument, kind, io.to_s, argument.restriction.try(&.to_s),
         argument.default_value.try(&.to_s), [] of DiagnosticBoundProducer, [] of DiagnosticBoundProducer, true)
     end
@@ -2391,15 +2390,15 @@ module Iyi::IyiMod
                when DiagnosticSignatureParameterKind::Block then "&"
                else ""
                end
-      rendered_name << prefix
-      ToSVisitor.write_arg_name(rendered_name, argument, recipe.include_annotations, "")
+      ToSVisitor.write_arg_name(rendered_name, argument, recipe.include_annotations, prefix)
       if !recipe.include_annotations && argument.parsed_annotations.try { |annotations| !annotations.empty? }
         raise ArgumentError.new("bound parameter removes annotations without a projection")
       end
       unless rendered_name.to_s == recipe.name_text
         raise ArgumentError.new("signature recipe name differs from source")
       end
-      if recipe.kind.bare_splat? && recipe.name_text != "*"
+      # A bare splat's name text is its `*` after any annotations, and only a bare splat has one.
+      if recipe.kind.bare_splat? && (!argument.name.empty? || !recipe.name_text.ends_with?("*"))
         raise ArgumentError.new("invalid bare splat recipe")
       end
       source_restriction = argument.restriction.try(&.to_s)
@@ -4332,17 +4331,17 @@ module Iyi::IyiMod
     end
 
     parameters = a_def.args.map_with_index do |arg, index|
-      a_def.splat_index == index ? "*#{arg}" : arg.to_s
+      ToSVisitor.parameter_text(arg, a_def.splat_index == index ? "*" : "")
     end
     if double_splat = a_def.double_splat
-      parameters << "**#{double_splat}"
+      parameters << ToSVisitor.parameter_text(double_splat, "**")
     end
 
     signature = Signature.new(
       name: a_def.name,
       receiver: a_def.receiver.try(&.to_s) || "",
       parameters: parameters,
-      block_parameter: a_def.block_arg.try { |arg| "&#{arg}" } || "",
+      block_parameter: a_def.block_arg.try { |arg| ToSVisitor.parameter_text(arg, "&") } || "",
       return_type: a_def.return_type.try(&.to_s) || "",
       free_variables: a_def.free_vars || [] of String,
       required: a_def.abstract?,
@@ -5498,38 +5497,38 @@ module Iyi::IyiMod
         capture_diagnostic_signature_name(builder, text, field, a_def, DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
       when DiagnosticSignatureFieldKind::Receiver
         receiver = a_def.receiver || raise ArgumentError.new("missing signature receiver AST")
-        capture_diagnostic_signature_node(builder, text, field, receiver, "", lexical_mode)
+        capture_diagnostic_signature_node(builder, text, field, receiver, lexical_mode)
       when DiagnosticSignatureFieldKind::Parameter
         index = field.index
         if index < a_def.args.size
-          prefix = a_def.splat_index == index ? "*" : ""
-          capture_diagnostic_signature_node(builder, text, field, a_def.args[index], prefix, lexical_mode)
+          capture_diagnostic_signature_parameter(builder, text, field, a_def.args[index],
+                                                 a_def.splat_index == index ? "*" : "", lexical_mode)
         elsif index == a_def.args.size
           argument = a_def.double_splat || raise ArgumentError.new("missing signature double-splat AST")
-          capture_diagnostic_signature_node(builder, text, field, argument, "**", lexical_mode)
+          capture_diagnostic_signature_parameter(builder, text, field, argument, "**", lexical_mode)
         else
           raise ArgumentError.new("missing signature parameter AST")
         end
       when DiagnosticSignatureFieldKind::BlockParameter
         argument = a_def.block_arg || raise ArgumentError.new("missing signature block parameter AST")
-        capture_diagnostic_signature_node(builder, text, field, argument, "&", lexical_mode)
+        capture_diagnostic_signature_parameter(builder, text, field, argument, "&", lexical_mode)
       when DiagnosticSignatureFieldKind::ReturnType
         result = a_def.return_type || raise ArgumentError.new("missing signature return type AST")
-        capture_diagnostic_signature_node(builder, text, field, result, "", lexical_mode)
+        capture_diagnostic_signature_node(builder, text, field, result, lexical_mode)
       when DiagnosticSignatureFieldKind::ForallName
         capture_diagnostic_signature_name(builder, text, field, a_def,
           DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, field.index))
       when DiagnosticSignatureFieldKind::ForallBound
         name = signature.free_variables[field.index]
         bound = a_def.free_var_bounds.try(&.[name]?) || raise ArgumentError.new("missing free-variable bound AST")
-        capture_diagnostic_signature_node(builder, text, field, bound, "", lexical_mode)
+        capture_diagnostic_signature_node(builder, text, field, bound, lexical_mode)
       when DiagnosticSignatureFieldKind::WhereName
         capture_diagnostic_signature_name(builder, text, field, a_def,
           DiagnosticNameSlot.new(DiagnosticNameSlotKind::WhereVariable, field.index))
       when DiagnosticSignatureFieldKind::WhereBound
         name = signature.where_bounds[field.index][0]
         bound = a_def.where_bounds.try(&.[name]?) || raise ArgumentError.new("missing where-bound AST")
-        capture_diagnostic_signature_node(builder, text, field, bound, "", lexical_mode)
+        capture_diagnostic_signature_node(builder, text, field, bound, lexical_mode)
       end
     end
     builder.finish(signature_fragment_key(container, signature), text)
@@ -5553,11 +5552,23 @@ module Iyi::IyiMod
 
   private def self.capture_diagnostic_signature_node(builder : DiagnosticFragmentBuilder, header : String,
                                                       field : DiagnosticSignatureFieldWrite, node : ASTNode,
-                                                      prefix : String, lexical_mode : String) : Nil
+                                                      lexical_mode : String) : Nil
     io = IO::Memory.new
-    io << prefix
     field_builder = DiagnosticFragmentBuilder.new(lexical_mode)
     node.to_s(io, diagnostic_fragment: field_builder)
+    source = io.to_s
+    raise ArgumentError.new("signature field differs from source AST") unless source == field.text
+    builder.attach_fragment(header, source, field_builder.finish_data(source), field.start_offset)
+  end
+
+  # A parameter is printed by the writer that owns its prefix, so a bare splat is
+  # recognised where its `*` is written and no name is captured for it.
+  private def self.capture_diagnostic_signature_parameter(builder : DiagnosticFragmentBuilder, header : String,
+                                                          field : DiagnosticSignatureFieldWrite, node : Arg, prefix : String,
+                                                          lexical_mode : String) : Nil
+    io = IO::Memory.new
+    field_builder = DiagnosticFragmentBuilder.new(lexical_mode)
+    ToSVisitor.write_parameter(io, node, prefix, field_builder)
     source = io.to_s
     raise ArgumentError.new("signature field differs from source AST") unless source == field.text
     builder.attach_fragment(header, source, field_builder.finish_data(source), field.start_offset)

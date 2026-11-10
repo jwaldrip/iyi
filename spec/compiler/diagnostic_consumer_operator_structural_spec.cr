@@ -330,6 +330,44 @@ describe "Iyi::DiagnosticProvenance derived name consumer" do
       dcn_validate(dcn_structural_json("ShortBlockArgument", "list.map &.to_s", anchor, witnesses, "2", "__arg2", "local_reference"))
         .should eq({"local_reference", "__arg2"})
     end
+
+    it "renders a written BareSplatParameter before a keyword name" do
+      dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "Def", "keyword"),
+        [dcn_witness(6, "*", "*"), dcn_witness(7, ",", ",")], "null", "", "parameter"))
+        .should eq({"parameter", ""})
+    end
+
+    it "renders a written BareSplatParameter after a positional parameter" do
+      dcn_validate(dcn_structural_json("BareSplatParameter", "def f(x, *, y)", dcn_written(0, "Def", "keyword"),
+        [dcn_witness(9, "*", "*"), dcn_witness(10, ",", ",")], "null", "", "parameter"))
+        .should eq({"parameter", ""})
+    end
+
+    it "renders a written MacroBareSplatParameter" do
+      dcn_validate(dcn_structural_json("MacroBareSplatParameter", "macro f(*, y)", dcn_written(0, "Macro", "keyword"),
+        [dcn_witness(8, "*", "*"), dcn_witness(9, ",", ",")], "null", "", "parameter"))
+        .should eq({"parameter", ""})
+    end
+
+    it "accepts an expanded BareSplatParameter whose witnesses carry their own events from mixed producers" do
+      anchor = dcn_expanded(dcn_whole(0, "def", "IDENT"), "Def", "keyword")
+      witnesses = [
+        dcn_witness(6, "*", "*", "Whole", dcn_whole(6, "*", "*", "MacroTemplate")),
+        dcn_witness(7, ",", ",", "Whole", dcn_whole(7, ",", ",", "MacroVar")),
+      ]
+      dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", anchor, witnesses, "null", "", "parameter"))
+        .should eq({"parameter", ""})
+    end
+
+    it "accepts an expanded MacroBareSplatParameter" do
+      anchor = dcn_expanded(dcn_whole(0, "macro", "IDENT"), "Macro", "keyword")
+      witnesses = [
+        dcn_witness(8, "*", "*", "Whole", dcn_whole(8, "*", "*")),
+        dcn_witness(9, ",", ",", "Whole", dcn_whole(9, ",", ",")),
+      ]
+      dcn_validate(dcn_structural_json("MacroBareSplatParameter", "macro f(*, y)", anchor, witnesses, "null", "", "parameter"))
+        .should eq({"parameter", ""})
+    end
   end
 
   describe "StructuralName refuses adversarial derivations with exact messages" do
@@ -497,6 +535,162 @@ describe "Iyi::DiagnosticProvenance derived name consumer" do
       ]
       expect_raises(Exception, "invalid structural witness provenance") do
         dcn_validate(dcn_structural_json("UnnamedFunParameter", "fun g(Int32) : Void", anchor, witnesses, "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a fresh index on BareSplatParameter" do
+      expect_raises(Exception, "structural witness differs") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(6, "*", "*"), dcn_witness(7, ",", ",")], "3", "", "parameter"))
+      end
+    end
+
+    it "refuses a bare star with no following list comma" do
+      expect_raises(Exception, "structural witness differs") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(6, "*", "*")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a named splat relabelled as bare" do
+      expect_raises(Exception, "structural witness differs") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*xs)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(6, "*", "*"), dcn_witness(7, "xs", "IDENT")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a star whose token kind is an identifier" do
+      expect_raises(Exception, "structural witness differs") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(6, "*", "IDENT"), dcn_witness(7, ",", ",")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a comma whose token kind is an identifier" do
+      expect_raises(Exception, "structural witness differs") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(6, "*", "*"), dcn_witness(7, ",", "IDENT")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a partial selection on the star" do
+      expect_raises(Exception, "structural witness differs") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(6, "*", "*", "SignedNumberSign"), dcn_witness(7, ",", ",")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a bare star anchored on a fun keyword" do
+      expect_raises(Exception, "invalid structural anchor") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "FunDef", "keyword"),
+          [dcn_witness(6, "*", "*"), dcn_witness(7, ",", ",")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a macro bare star anchored on a def keyword" do
+      expect_raises(Exception, "invalid structural anchor") do
+        dcn_validate(dcn_structural_json("MacroBareSplatParameter", "macro f(*, y)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(8, "*", "*"), dcn_witness(9, ",", ",")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a def bare star anchored on a macro keyword" do
+      expect_raises(Exception, "invalid structural anchor") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "Macro", "keyword"),
+          [dcn_witness(6, "*", "*"), dcn_witness(7, ",", ",")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a written def anchor that does not precede the star" do
+      expect_raises(Exception, "anchor does not precede witnesses") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(6, "Def", "keyword"),
+          [dcn_witness(6, "*", "*"), dcn_witness(7, ",", ",")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a written bare splat that carries a token event" do
+      expect_raises(Exception, "structural witness has a token event for written source") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(6, "*", "*", "Whole", dcn_whole(6, "*", "*")), dcn_witness(7, ",", ",")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses an expanded bare splat whose keyword is fun" do
+      expect_raises(Exception, "invalid structural anchor") do
+        anchor = dcn_expanded(dcn_whole(0, "fun", "IDENT"), "Def", "keyword")
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", anchor,
+          [dcn_witness(6, "*", "*", "Whole", dcn_whole(6, "*", "*")), dcn_witness(7, ",", ",", "Whole", dcn_whole(7, ",", ","))], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses an expanded macro bare splat whose keyword is def" do
+      expect_raises(Exception, "invalid structural anchor") do
+        anchor = dcn_expanded(dcn_whole(0, "def", "IDENT"), "Macro", "keyword")
+        dcn_validate(dcn_structural_json("MacroBareSplatParameter", "macro f(*, y)", anchor,
+          [dcn_witness(8, "*", "*", "Whole", dcn_whole(8, "*", "*")), dcn_witness(9, ",", ",", "Whole", dcn_whole(9, ",", ","))], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses an expanded bare splat whose keyword follows its star" do
+      expect_raises(Exception, "anchor does not precede witnesses") do
+        anchor = dcn_expanded(dcn_whole(6, "def", "IDENT"), "Def", "keyword")
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", anchor,
+          [dcn_witness(6, "*", "*", "Whole", dcn_whole(6, "*", "*")), dcn_witness(7, ",", ",", "Whole", dcn_whole(7, ",", ","))], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses an expanded bare splat keyword in another lexical mode" do
+      expect_raises(Exception, "invalid structural anchor") do
+        anchor = dcn_expanded(dcn_event(0, "def", "IDENT", [dcn_part(0, 3)], "Whole", "Iyi"), "Def", "keyword")
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", anchor,
+          [dcn_witness(6, "*", "*", "Whole", dcn_whole(6, "*", "*")), dcn_witness(7, ",", ",", "Whole", dcn_whole(7, ",", ","))], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses an expanded bare splat guard from another input" do
+      expect_raises(Exception, "structural witnesses use different inputs") do
+        anchor = dcn_expanded(dcn_whole(0, "def", "IDENT"), "Def", "keyword", DCN_OTHER_GUARD)
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", anchor,
+          [dcn_witness(6, "*", "*", "Whole", dcn_whole(6, "*", "*")), dcn_witness(7, ",", ",", "Whole", dcn_whole(7, ",", ","))], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses an expanded bare splat whose star has no event of its own" do
+      expect_raises(Exception, "invalid structural witness provenance") do
+        anchor = dcn_expanded(dcn_whole(0, "def", "IDENT"), "Def", "keyword")
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", anchor,
+          [dcn_witness(6, "*", "*"), dcn_witness(7, ",", ",", "Whole", dcn_whole(7, ",", ","))], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses an expanded bare splat whose comma has no event of its own" do
+      expect_raises(Exception, "invalid structural witness provenance") do
+        anchor = dcn_expanded(dcn_whole(0, "def", "IDENT"), "Def", "keyword")
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", anchor,
+          [dcn_witness(6, "*", "*", "Whole", dcn_whole(6, "*", "*")), dcn_witness(7, ",", ",")], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a claim writer standing in for the comma event" do
+      expect_raises(Exception, "invalid structural witness provenance") do
+        anchor = dcn_expanded(dcn_whole(0, "def", "IDENT"), "Def", "keyword")
+        claim = %({"kind":"AstAnchor","start_offset":7,"end_offset":8,"emitter_origin":null,"source_origin":#{dcn_written(0, "Def", "keyword")}})
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", anchor,
+          [dcn_witness(6, "*", "*", "Whole", dcn_whole(6, "*", "*")), dcn_witness(7, ",", ",", "Whole", dcn_event(7, ",", ",", [claim]))], "null", "", "parameter"))
+      end
+    end
+
+    it "refuses a rendered bare splat name that is not empty" do
+      expect_raises(Exception, "derived structural rendering differs") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(6, "*", "*"), dcn_witness(7, ",", ",")], "null", "x", "parameter"))
+      end
+    end
+
+    it "refuses a bare splat whose producer context is not parameter" do
+      expect_raises(Exception, "derived structural rendering differs") do
+        dcn_validate(dcn_structural_json("BareSplatParameter", "def f(*, y)", dcn_written(0, "Def", "keyword"),
+          [dcn_witness(6, "*", "*"), dcn_witness(7, ",", ",")], "null", "", "local_reference"))
       end
     end
   end

@@ -2501,6 +2501,70 @@ describe Iyi::IyiMod do
     end
   end
 
+  it "captures bare splat recipes in the order the printer writes them" do
+    definition = captured_diagnostic_def("def f(@[Foo] *, y : Int32 = 1)\nend", "/absent/bare.cr", "Crystal")
+    signature = Iyi::IyiMod.signature(definition, check_block: false)
+    signature.parameters.should eq(["@[Foo] *", "y : Int32 = 1"])
+    recipe = Iyi::IyiMod::DiagnosticSignatureRecipe.from_def(definition, signature)
+    recipe.parameters.map(&.kind).should eq([Iyi::IyiMod::DiagnosticSignatureParameterKind::BareSplat,
+                                             Iyi::IyiMod::DiagnosticSignatureParameterKind::Normal])
+    recipe.parameters.map(&.name_text).should eq(["@[Foo] *", "y"])
+    recipe.parameters.last.restriction_text.should eq("Int32")
+    fragment = Iyi::IyiMod.diagnostic_signature_fragment("app", definition, signature, "Crystal")
+    fragment.text_sha256.should eq(::Crystal::Digest::SHA256.hexdigest(Iyi::IyiMod.render_signature(signature)))
+  end
+
+  it "writes annotated named splats with the annotation before the prefix" do
+    definition = captured_diagnostic_def("def f(@[Foo] *xs, @[Bar] **opts)\nend", "/absent/annotated.cr", "Crystal")
+    signature = Iyi::IyiMod.signature(definition, check_block: false)
+    signature.parameters.should eq(["@[Foo] *xs", "@[Bar] **opts"])
+    Iyi::IyiMod::DiagnosticSignatureRecipe.from_def(definition, signature).parameters.map(&.name_text)
+      .should eq(["@[Foo] *xs", "@[Bar] **opts"])
+  end
+
+  it "refuses bare splat recipes that do not match the source parameter" do
+    star = captured_diagnostic_def("def f(*, y)\nend", "/absent/bare_neg.cr", "Crystal")
+    star_signature = Iyi::IyiMod.signature(star, check_block: false)
+    star_arg = star.args.first
+    y_arg = star.args.last
+    y_recipe = Iyi::IyiMod::DiagnosticSignatureParameterRecipe.new(y_arg,
+      Iyi::IyiMod::DiagnosticSignatureParameterKind::Normal, "y", nil, nil,
+      [] of Iyi::DiagnosticBoundProducer, [] of Iyi::DiagnosticBoundProducer, false)
+    bare = Iyi::IyiMod::DiagnosticSignatureParameterRecipe.new(star_arg,
+      Iyi::IyiMod::DiagnosticSignatureParameterKind::BareSplat, "*", nil, nil,
+      [] of Iyi::DiagnosticBoundProducer, [] of Iyi::DiagnosticBoundProducer, false)
+    splat = Iyi::IyiMod::DiagnosticSignatureParameterRecipe.new(star_arg,
+      Iyi::IyiMod::DiagnosticSignatureParameterKind::Splat, "*", nil, nil,
+      [] of Iyi::DiagnosticBoundProducer, [] of Iyi::DiagnosticBoundProducer, false)
+    misnamed = Iyi::IyiMod::DiagnosticSignatureParameterRecipe.new(star_arg,
+      Iyi::IyiMod::DiagnosticSignatureParameterKind::BareSplat, "*x", nil, nil,
+      [] of Iyi::DiagnosticBoundProducer, [] of Iyi::DiagnosticBoundProducer, false)
+
+    Iyi::IyiMod::DiagnosticSignatureRecipe.from_bind(star, star_signature, [bare, y_recipe], nil,
+      [] of Iyi::DiagnosticBoundProducer).parameters.map(&.name_text).should eq(["*", "y"])
+    expect_raises(ArgumentError, /parameter identity mismatch/) do
+      Iyi::IyiMod::DiagnosticSignatureRecipe.from_bind(star, star_signature, [splat, y_recipe], nil,
+        [] of Iyi::DiagnosticBoundProducer)
+    end
+    expect_raises(ArgumentError, /name differs from source/) do
+      Iyi::IyiMod::DiagnosticSignatureRecipe.from_bind(star, star_signature, [misnamed, y_recipe], nil,
+        [] of Iyi::DiagnosticBoundProducer)
+    end
+
+    named = captured_diagnostic_def("def f(*xs, y)\nend", "/absent/bare_named.cr", "Crystal")
+    named_signature = Iyi::IyiMod.signature(named, check_block: false)
+    named_bare = Iyi::IyiMod::DiagnosticSignatureParameterRecipe.new(named.args.first,
+      Iyi::IyiMod::DiagnosticSignatureParameterKind::BareSplat, "*xs", nil, nil,
+      [] of Iyi::DiagnosticBoundProducer, [] of Iyi::DiagnosticBoundProducer, false)
+    named_y = Iyi::IyiMod::DiagnosticSignatureParameterRecipe.new(named.args.last,
+      Iyi::IyiMod::DiagnosticSignatureParameterKind::Normal, "y", nil, nil,
+      [] of Iyi::DiagnosticBoundProducer, [] of Iyi::DiagnosticBoundProducer, false)
+    expect_raises(ArgumentError, /parameter identity mismatch/) do
+      Iyi::IyiMod::DiagnosticSignatureRecipe.from_bind(named, named_signature, [named_bare, named_y], nil,
+        [] of Iyi::DiagnosticBoundProducer)
+    end
+  end
+
   it "dumps a def's header the way it was written" do
     io = IO::Memory.new
     Iyi::IyiMod.dump sample_artifact(exports: [
@@ -2529,6 +2593,15 @@ describe Iyi::IyiMod do
     text.should contain "  def polite(name : String) : String"
     # No empty parens for a function that takes nothing.
     text.should contain "  def title : String"
+  end
+
+  it "dumps a bare splat header with its star and no name" do
+    io = IO::Memory.new
+    Iyi::IyiMod.dump sample_artifact(exports: [
+      signature("pair", ["*", "y : Int32"], "Nil"),
+    ]), io
+
+    io.to_s.should contain "  def pair(*, y : Int32) : Nil"
   end
 
   # The format still stops short of what codegen needs, and a reader has no way

@@ -433,7 +433,10 @@ def operator_name(value, depth):
     return ("Name", context), rendered.encode("utf-8")
 
 
-STRUCTURAL_ROLES = {"UnnamedFunParameter": ("FunDef", "keyword"), "ShortBlockArgument": ("Block", "ampersand")}
+STRUCTURAL_ROLES = {"UnnamedFunParameter": ("FunDef", "keyword"), "ShortBlockArgument": ("Block", "ampersand"),
+                    "BareSplatParameter": ("Def", "keyword"), "MacroBareSplatParameter": ("Macro", "keyword")}
+# Keyword token anchoring each keyword-anchored structural production (plan C).
+KEYWORD_ANCHORS = {"UnnamedFunParameter": "fun", "BareSplatParameter": "def", "MacroBareSplatParameter": "macro"}
 
 
 def witness_sequence(witnesses, expected):
@@ -461,6 +464,10 @@ def structural_rendering(production, witnesses, fresh_index):
         if type(fresh_index) is not int or not 0 <= fresh_index <= 0x7FFFFFFF:
             raise ValueError("invalid short block fresh index")
         return "__arg" + str(fresh_index), "local_reference"
+    if production in ("BareSplatParameter", "MacroBareSplatParameter"):
+        if fresh_index is not None or not witness_sequence(witnesses, ("*", ",")):
+            raise ValueError("structural witness differs")
+        return "", "parameter"
     raise ValueError("invalid structural production")
 
 
@@ -477,10 +484,10 @@ def structural_spans(witnesses, input_bytesize):
         previous = end
 
 
-def unnamed_anchor(anchor, witnesses, value, mode):
-    """U1 and U2 for an Expanded UnnamedFunParameter: the fun keyword is the FunDef anchor and precedes both witnesses."""
+def keyword_anchor(keyword, anchor, witnesses, value, mode):
+    """U1 and U2 for an Expanded keyword-anchored production: the keyword token anchors and precedes both witnesses."""
     event = anchor["token_event"]
-    if event["token_kind"] != "IDENT" or event["token_text"] != "fun" or event["selection"] != "Whole" or event["lexical_mode"] != mode:
+    if event["token_kind"] != "IDENT" or event["token_text"] != keyword or event["selection"] != "Whole" or event["lexical_mode"] != mode:
         raise ValueError("invalid structural anchor")
     if event["input_end"] > witnesses[0]["input_start"]:
         raise ValueError("anchor does not precede witnesses")
@@ -491,8 +498,9 @@ def unnamed_anchor(anchor, witnesses, value, mode):
 def structural_anchor(production, anchor, witnesses, value, mode, depth):
     """Anchor rules per production. No source association is claimed: the journal and pragma replay own that."""
     head = witnesses[0]
+    keyword = KEYWORD_ANCHORS.get(production)
     if anchor["kind"] == "Written":
-        if production == "UnnamedFunParameter":
+        if keyword is not None:
             if anchor["input_byte_offset"] >= head["input_start"]:
                 raise ValueError("anchor does not precede witnesses")
         elif anchor["input_byte_offset"] != head["input_start"]:
@@ -501,8 +509,8 @@ def structural_anchor(production, anchor, witnesses, value, mode, depth):
             raise ValueError("structural witness has a token event for written source")
         return
     event = anchor["token_event"]
-    if production == "UnnamedFunParameter":
-        unnamed_anchor(anchor, witnesses, value, mode)
+    if keyword is not None:
+        keyword_anchor(keyword, anchor, witnesses, value, mode)
         for witness in witnesses:
             witness_event(witness, mode, depth, "structural")
         return

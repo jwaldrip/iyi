@@ -8,6 +8,18 @@ class Iyi::DiagnosticRecordedEvidenceInputCheck
     origin = values[0].as(Iyi::DiagnosticNameValue::Derived).origin
     bound_derived!(node, slot, values, origin)
   end
+
+  # Binds a bare splat occurrence the way the walk does: its Arg is the traversal occurrence
+  # of owner.args[index], then the bare-splat guard runs on it directly.
+  def spec_bind_bare_splat!(arg : Iyi::ASTNode, owner : Iyi::ASTNode, index : Int32) : Nil
+    @arg_occurrence = {owner.object_id, index, arg.object_id}
+    slot = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)
+    values = arg.diagnostic_name_slots[slot]
+    origin = values[0].as(Iyi::DiagnosticNameValue::Derived).origin
+    bound_bare_splat!(arg, slot, values, origin)
+  ensure
+    @arg_occurrence = nil
+  end
 end
 
 
@@ -437,6 +449,147 @@ describe "derived name binding unchanged-message controls" do
       var = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Var) && node.name == "y" }.as(Iyi::Var)
       var.name = "zz"
       nil
+    })
+  end
+end
+
+# The index of a parameter within its owner, by identity.
+private def derived_name_arg_index(owner : Iyi::ASTNode, arg : Iyi::ASTNode) : Int32
+  args = owner.is_a?(Iyi::Def) ? owner.args : owner.as(Iyi::Macro).args
+  args.index { |item| item.same?(arg) } || raise "argument is not a parameter of its owner"
+end
+
+# Replays the source, applies a graph-changing mutation, then proves the full walk refuses at
+# its graph boundary before the bare-splat guard runs directly on the mutated occurrence.
+private def derived_name_bare_splat_walk(source : String, suffix : String, mutate : Proc(Iyi::ASTNode, Array(Iyi::ASTNode))) : Nil
+  path = File.tempname("derived-name-bare-splat", suffix)
+  File.write(path, source)
+  begin
+    parser = Iyi::Parser.new(source, nil, [Set(String).new], Iyi::WarningCollection.new)
+    parser.filename = path
+    ledger = Iyi::DiagnosticCaptureLedger.new
+    _, claim, authority = Iyi::DiagnosticCaptureAuthority.record_source(ledger, parser)
+    ledger.freeze!
+    replay = claim.replay_parser
+    replay.enable_diagnostic_observations
+    root = claim.replay_entry(replay)
+    Iyi::DiagnosticCaptureRefs.stamp!(root, authority.capture_key)
+    journal = Iyi::DiagnosticReplayJournal.new(replay.diagnostic_lexical_observations)
+    identity = Iyi::DiagnosticModuleIdentity.from(root, claim, journal)
+    structural = Iyi::DiagnosticUnnamedParamBinder.new(claim, journal).verify!(root)
+    bundle = Iyi::DiagnosticLiteralReplayAssociations.new(claim, journal, replay, root)
+    pair = mutate.call(root)
+    arg = pair[0]
+    owner = pair[1]
+    checker = Iyi::DiagnosticRecordedEvidenceInputCheck.new(claim, journal, identity, structural, bundle)
+    expect_raises(ArgumentError, "literal replay graph differs") { checker.verify!(root) }
+    checker.spec_bind_bare_splat!(arg, owner, derived_name_arg_index(owner, arg))
+  ensure
+    File.delete(path) if File.file?(path)
+  end
+end
+
+private def derived_name_bare_splat_reject(source : String, message : String, mutate : Proc(Iyi::ASTNode, Array(Iyi::ASTNode)))
+  [".cr", ".iyi"].each do |suffix|
+    expect_raises(ArgumentError, message) { derived_name_bare_splat_walk(source, suffix, mutate) }
+  end
+end
+
+describe "bare splat binding positives" do
+  it "binds a bare splat in a Def followed by another parameter in both modes" do
+    derived_name_accept("def f(*, y)\nend\n")
+    derived_name_accept("def f(x, *, y)\nend\n")
+    derived_name_accept("def f(*, y : Int32)\nend\n")
+    derived_name_accept("def f(*, foo @x)\n  @x\nend\n")
+    derived_name_accept("def f(*, @x, y)\nend\n")
+  end
+
+  it "binds a bare splat in a Macro declaration in both modes" do
+    derived_name_accept("macro f(*, y)\nend\n")
+    derived_name_accept("macro f(x, *, y)\nend\n")
+  end
+
+  it "keeps a named splat on its own evidence in both modes" do
+    derived_name_accept("def f(*xs, y)\nend\n")
+  end
+end
+
+describe "bare splat binding controls" do
+  it "refuses bare splat evidence copied onto another parameter" do
+    derived_name_reject("def f(*, y)\nend\n", "bare splat requires parser replay association", ->(root : Iyi::ASTNode) {
+      nodes = derived_name_nodes(root)
+      star = nodes.find { |node| node.is_a?(Iyi::Arg) && node.name.empty? }.as(Iyi::Arg)
+      other = nodes.find { |node| node.is_a?(Iyi::Arg) && node.name == "y" }.as(Iyi::Arg)
+      other.diagnostic_name_slots = {derived_name_primary => star.diagnostic_name_slots[derived_name_primary]}
+      nil
+    })
+  end
+
+  it "refuses bare splat evidence on a parameter renamed to a named splat" do
+    derived_name_reject("def f(*, y)\nend\n", "bare splat evidence outside its parameter", ->(root : Iyi::ASTNode) {
+      star = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Arg) && node.name.empty? }.as(Iyi::Arg)
+      star.name = "xs"
+      nil
+    })
+  end
+
+  it "refuses an explicit external name on a bare splat" do
+    derived_name_reject("def f(*, y)\nend\n", "bare splat evidence outside its parameter", ->(root : Iyi::ASTNode) {
+      star = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Arg) && node.name.empty? }.as(Iyi::Arg)
+      star.diagnostic_external_explicit = true
+      nil
+    })
+  end
+
+  it "refuses a changed external name on a bare splat" do
+    derived_name_reject("def f(*, y)\nend\n", "bare splat evidence outside its parameter", ->(root : Iyi::ASTNode) {
+      star = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Arg) && node.name.empty? }.as(Iyi::Arg)
+      star.external_name = "x"
+      nil
+    })
+  end
+
+  it "refuses a bare splat whose declaration lost its splat index" do
+    derived_name_reject("def f(*, y)\nend\n", "bare splat evidence outside its parameter", ->(root : Iyi::ASTNode) {
+      definition = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Def) }.as(Iyi::Def)
+      definition.splat_index = nil
+      nil
+    })
+  end
+
+  it "refuses bare splat evidence reused by a second declaration" do
+    derived_name_reject("def f(*, y)\nend\ndef g(*, z)\nend\n", "bare splat evidence outside its parameter", ->(root : Iyi::ASTNode) {
+      stars = derived_name_nodes(root).select { |node| node.is_a?(Iyi::Arg) && node.name.empty? }
+      second = stars[1].as(Iyi::Arg)
+      second.diagnostic_name_slots = {derived_name_primary => stars[0].as(Iyi::Arg).diagnostic_name_slots[derived_name_primary]}
+      nil
+    })
+  end
+
+  it "refuses a bare splat moved into another declaration" do
+    derived_name_bare_splat_reject("def f(*, y)\nend\ndef g(*, z)\nend\n", "bare splat evidence outside its parameter", ->(root : Iyi::ASTNode) {
+      defs = derived_name_nodes(root).select { |node| node.is_a?(Iyi::Def) }.map(&.as(Iyi::Def))
+      star = defs[0].args[0]
+      defs[1].args = [star, defs[1].args[1]] of Iyi::Arg
+      [star, defs[1]] of Iyi::ASTNode
+    })
+  end
+
+  it "refuses a bare splat that gains a restriction" do
+    derived_name_bare_splat_reject("def f(*, y)\nend\n", "bare splat evidence outside its parameter", ->(root : Iyi::ASTNode) {
+      definition = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Def) }.as(Iyi::Def)
+      star = definition.args[0]
+      star.restriction = Iyi::Path.global(["Int32"])
+      [star, definition] of Iyi::ASTNode
+    })
+  end
+
+  it "refuses a bare splat with no following parameter" do
+    derived_name_bare_splat_reject("def f(*, y)\nend\n", "bare splat evidence outside its parameter", ->(root : Iyi::ASTNode) {
+      definition = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Def) }.as(Iyi::Def)
+      star = definition.args[0]
+      definition.args = [star] of Iyi::Arg
+      [star, definition] of Iyi::ASTNode
     })
   end
 end

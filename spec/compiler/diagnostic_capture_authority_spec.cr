@@ -476,3 +476,30 @@ describe "CaptureAuthorityPlan slice A: evidence controls on replayed trees" do
     end
   end
 end
+
+describe "CaptureAuthorityPlan bare splat binding" do
+  it "BS1 binds a bare splat declaration through the public bind path in both modes" do
+    ["def f(*, y)\nend\n", "macro f(*, y)\nend\n"].each do |source|
+      [".cr", ".iyi"].each do |suffix|
+        authority_spec_with_file(source, "bare-splat", suffix) do |path|
+          bound = authority_spec_bind(authority_spec_parser(source, path))
+          bound.root.should_not be_nil
+        end
+      end
+    end
+  end
+
+  it "BS2 refuses a renamed bare splat on the replayed tree" do
+    source = "def f(*, y)\nend\n"
+    authority_spec_with_file(source, "bare-splat-rename") do |path|
+      _, claim, _ = authority_spec_recorded(authority_spec_parser(source, path))
+      root, journal, parser = authority_spec_replay(claim)
+      walk = AuthoritySpecWalk.new(claim, root, journal, parser)
+      walk.verify!
+      authority_spec_single(root).as(Iyi::Def).args[0].name = "xs"
+      expect_raises(ArgumentError, "bare splat evidence outside its parameter") do
+        walk.verify!
+      end
+    end
+  end
+end

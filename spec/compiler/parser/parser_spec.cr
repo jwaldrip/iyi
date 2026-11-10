@@ -631,6 +631,13 @@ module Iyi
     it_parses "def foo(x, *, y); 1; end", Def.new("foo", args: ["x".arg, "".arg, "y".arg], body: 1.int32, splat_index: 1)
     assert_syntax_error "def foo(x, *); 1; end", "named parameters must follow bare *"
     it_parses "def foo(x, *, y, &); 1; end", Def.new("foo", args: ["x".arg, "".arg, "y".arg], body: 1.int32, splat_index: 1, block_arg: Arg.new(""), block_arity: 0)
+    it_parses "def foo(*, y); 1; end", Def.new("foo", args: ["".arg, "y".arg], body: 1.int32, splat_index: 0)
+    it_parses "def foo(*, y : Int32); 1; end", Def.new("foo", args: ["".arg, Arg.new("y", restriction: "Int32".path)], body: 1.int32, splat_index: 0)
+    it_parses "macro foo(*, y); end", Macro.new("foo", ["".arg, "y".arg], body: Expressions.new, splat_index: 0)
+    assert_syntax_error "def foo(*); 1; end", "named parameters must follow bare *"
+    assert_syntax_error "def foo(*, &); 1; end", "named parameters must follow bare *"
+    assert_syntax_error "def foo(*, **opts); 1; end", "named parameters must follow bare *"
+    assert_syntax_error "macro foo(*); end", "named parameters must follow bare *"
 
     assert_syntax_error "def foo(var = 1 : Int32); end", "the syntax for a parameter with a default value V and type T is `param : T = V`"
     assert_syntax_error "def foo(var = x : Int); end", "the syntax for a parameter with a default value V and type T is `param : T = V`"

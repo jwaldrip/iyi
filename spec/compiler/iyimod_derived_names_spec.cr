@@ -335,3 +335,39 @@ describe "operator and structural name transport" do
     end
   end
 end
+
+describe "bare splat parameter transport" do
+  it "round-trips written bare splats on a Def and on a Macro" do
+    derived_names_assert_round_trip(derived_names_structural(Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+      derived_names_written(0, "Def", "keyword"),
+      [derived_names_witness(6, "*"), derived_names_witness(7, ",")], 11))
+    derived_names_assert_round_trip(derived_names_structural(Iyi::DiagnosticStructuralProduction::MacroBareSplatParameter,
+      derived_names_written(0, "Macro", "keyword"),
+      [derived_names_witness(8, "*"), derived_names_witness(9, ",")], 13))
+  end
+
+  it "round-trips an expanded bare splat whose star and comma each carry their own event" do
+    anchor = derived_names_expanded(derived_names_event(0, "def", "IDENT"), "Def", "keyword")
+    origin = derived_names_structural(Iyi::DiagnosticStructuralProduction::BareSplatParameter, anchor,
+      [derived_names_witness(6, "*", event: derived_names_event(6, "*", producer: Iyi::DiagnosticMacroProducer::StructuredSyntax)),
+       derived_names_witness(7, ",", event: derived_names_event(7, ",", producer: Iyi::DiagnosticMacroProducer::StructuredSyntax))], 11)
+    origin.rendered_text.should eq("")
+    origin.producer_context.should eq("parameter")
+    derived_names_assert_round_trip(origin)
+  end
+
+  it "refuses a bare splat table whose witness count is not exactly two" do
+    bytes, _ = derived_names_bytes(derived_names_structural(Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+      derived_names_written(0, "Def", "keyword"), [derived_names_witness(6, "*"), derived_names_witness(7, ",")], 11))
+    digest = derived_names_position(bytes, DERIVED_NAMES_DIGEST.to_slice)
+    # digest (64 bytes), input byte size (four bytes), the mode byte, then the witness count.
+    count_at = digest + 64 + 4 + 1
+    bytes[count_at].should eq(2_u8)
+
+    [1_u32, 3_u32].each do |count|
+      tampered = bytes.dup
+      derived_names_set_u32(tampered, count_at, count)
+      expect_raises(ArgumentError, /witness count is not permitted/) { derived_names_read(tampered) }
+    end
+  end
+end

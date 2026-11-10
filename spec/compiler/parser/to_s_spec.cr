@@ -111,6 +111,12 @@ describe "ASTNode#to_s" do
   expect_to_s "def foo(x, **args)\nend"
   expect_to_s "def foo(x, @[Foo] **args)\nend"
   expect_to_s "def foo(x, **args, &block)\nend"
+  expect_to_s "def foo(*, x)\nend"
+  expect_to_s "def foo(@[Foo] *, x)\nend"
+  expect_to_s "def foo(x, *, y : Int32 = 1, &block)\nend"
+  expect_to_s "def foo(*, x) : Nil\nend"
+  expect_to_s "macro foo(@[Foo] *, var)\nend"
+  expect_to_s "macro foo(x, *, var)\nend"
   expect_to_s "def foo(@[Foo] x, @[Bar] **args, @[Baz] &block)\nend"
   expect_to_s "{% [1, 2, 3].each { |v| pp(v) } %}", "{% [1, 2, 3].each do |v| pp(v) end %}"
   expect_to_s "{%\n  [1, 2, 3].each { |v| pp(v) }\n%}", "{%\n  [1, 2, 3].each do |v| pp(v) end\n%}"
@@ -993,4 +999,55 @@ describe "ASTNode#to_s" do
       end
     %}
     CODE
+end
+
+describe "bare splat printing" do
+  it "writes the bare star and the comma after it as structured syntax" do
+    node = Iyi::Parser.new("def foo(*, x)\nend").parse
+    io = IO::Memory.new
+    generated = [] of Iyi::DiagnosticGeneratedText
+    node.to_s(io, diagnostic_generated_text: generated)
+    io.to_s.should eq "def foo(*, x)\nend"
+    generated.map { |item| io.to_s.byte_slice(item.start_offset, item.end_offset - item.start_offset) }.should eq ["*", ","]
+    generated.map(&.producer).uniq.should eq [Iyi::DiagnosticMacroProducer::StructuredSyntax]
+    generated.none? { |item| item.start_offset == item.end_offset }.should be_true
+  end
+
+  it "prints a bare star without name evidence, and still refuses a named splat without it" do
+    io = IO::Memory.new
+    Iyi::ToSVisitor.write_parameter(io, Iyi::Arg.new(""), "*", Iyi::DiagnosticFragmentBuilder.new("Crystal"))
+    io.to_s.should eq "*"
+
+    expect_raises(ArgumentError, /name lacks token evidence/) do
+      Iyi::ToSVisitor.write_parameter(IO::Memory.new, Iyi::Arg.new("xs"), "*", Iyi::DiagnosticFragmentBuilder.new("Crystal"))
+    end
+  end
+
+  it "refuses a bare star whose external name has no evidence" do
+    expect_raises(ArgumentError, /named entry lacks token evidence/) do
+      Iyi::ToSVisitor.write_parameter(IO::Memory.new, Iyi::Arg.new("", external_name: "y"), "*",
+        Iyi::DiagnosticFragmentBuilder.new("Crystal"))
+    end
+  end
+
+  it "reparses its own output to the same bare splat structure" do
+    first = Iyi::Parser.new("def foo(@[Foo] *, x : Int32 = 1, &block)\nend").parse
+    io = IO::Memory.new
+    first.to_s(io)
+    io.to_s.should eq "def foo(@[Foo] *, x : Int32 = 1, &block)\nend"
+
+    second = Iyi::Parser.new(io.to_s).parse.as(Iyi::Def)
+    second.splat_index.should eq 0
+    second.args.first.name.should eq ""
+    second.args.first.external_name.should eq ""
+    second_io = IO::Memory.new
+    second.to_s(second_io)
+    second_io.to_s.should eq io.to_s
+  end
+
+  it "refuses a trailing bare star, which the printer never sees" do
+    expect_raises(Exception, /named parameters must follow bare \*/) do
+      Iyi::Parser.new("def foo(*)\nend").parse
+    end
+  end
 end

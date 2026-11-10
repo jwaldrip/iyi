@@ -176,7 +176,10 @@ module Iyi::DiagnosticProvenance
   OP_ASSIGN_OPERATORS = %w(+= -= *= /= //= %= |= &= ^= **= <<= >>= ||= &&= &+= &-= &*=)
   COMMAND_OPENERS = ["`", "%x(", "%x[", "%x{", "%x<", "%x|"]
   OPERATOR_CONTEXTS = {"OpAssign" => "op_assign_operator"}
-  STRUCTURAL_ROLES = {"UnnamedFunParameter" => {"FunDef", "keyword"}, "ShortBlockArgument" => {"Block", "ampersand"}}
+  STRUCTURAL_ROLES = {"UnnamedFunParameter" => {"FunDef", "keyword"}, "ShortBlockArgument" => {"Block", "ampersand"},
+                      "BareSplatParameter" => {"Def", "keyword"}, "MacroBareSplatParameter" => {"Macro", "keyword"}}
+  # Keyword token anchoring each keyword-anchored structural production (plan C).
+  KEYWORD_ANCHORS = {"UnnamedFunParameter" => "fun", "BareSplatParameter" => "def", "MacroBareSplatParameter" => "macro"}
 
   private def self.name_token?(kind : String, raw : String, mode : String, context : String) : Bool
     allowed = case context
@@ -975,6 +978,9 @@ module Iyi::DiagnosticProvenance
       index = fresh.as_i64? || raise "invalid short block fresh index"
       raise "invalid short block fresh index" unless index >= 0 && index <= Int32::MAX
       {"__arg#{index}", "local_reference"}
+    elsif production == "BareSplatParameter" || production == "MacroBareSplatParameter"
+      raise "structural witness differs" unless fresh.raw.nil? && witness_sequence?(witnesses, ["*", ","])
+      {"", "parameter"}
     else
       raise "invalid structural production"
     end
@@ -992,18 +998,19 @@ module Iyi::DiagnosticProvenance
     end
   end
 
-  # U1 to U2 for an Expanded UnnamedFunParameter: the fun keyword anchors and precedes both witnesses.
-  private def self.unnamed_anchor!(anchor : Hash(String, JSON::Any), event : Hash(String, JSON::Any), witnesses : Array(Hash(String, JSON::Any)), digest : String, mode : String) : Nil
-    raise "invalid structural anchor" unless event["token_kind"].as_s? == "IDENT" && event["token_text"].as_s? == "fun" && event["selection"].as_s? == "Whole" && event["lexical_mode"].as_s? == mode
+  # U1 to U2 for an Expanded keyword-anchored production: the keyword token anchors and precedes both witnesses.
+  private def self.keyword_anchor!(keyword : String, anchor : Hash(String, JSON::Any), event : Hash(String, JSON::Any), witnesses : Array(Hash(String, JSON::Any)), digest : String, mode : String) : Nil
+    raise "invalid structural anchor" unless event["token_kind"].as_s? == "IDENT" && event["token_text"].as_s? == keyword && event["selection"].as_s? == "Whole" && event["lexical_mode"].as_s? == mode
     raise "anchor does not precede witnesses" if derived_number!(event["input_end"]) > witnesses[0]["input_start"].as_i64
     raise "structural witnesses use different inputs" unless anchor["expansion_guard"].as_s? == "sha256:" + digest
   end
 
   private def self.structural_anchor!(production : String, anchor : Hash(String, JSON::Any), witnesses : Array(Hash(String, JSON::Any)), digest : String, mode : String, depth : Int32) : Nil
     head = witnesses[0]
+    keyword = KEYWORD_ANCHORS[production]?
     if anchor["kind"].as_s == "Written"
       offset = anchor["input_byte_offset"].as_i64
-      if production == "UnnamedFunParameter"
+      if keyword
         raise "anchor does not precede witnesses" if offset >= head["input_start"].as_i64
       else
         raise "structural anchor offset mismatch" unless offset == head["input_start"].as_i64
@@ -1012,8 +1019,8 @@ module Iyi::DiagnosticProvenance
       return
     end
     event = anchor["token_event"].as_h
-    if production == "UnnamedFunParameter"
-      unnamed_anchor!(anchor, event, witnesses, digest, mode)
+    if keyword
+      keyword_anchor!(keyword, anchor, event, witnesses, digest, mode)
       witnesses.each { |witness| derived_witness_event!(witness, mode, depth, "structural") }
       return
     end
