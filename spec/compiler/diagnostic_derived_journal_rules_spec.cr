@@ -43,6 +43,10 @@ end
 class DerivedRulesSpecCollector < Iyi::Visitor
   getter origins = [] of Iyi::DiagnosticOrigin::DerivedName
 
+  def visit(node)
+    true
+  end
+
   def visit_any(node)
     node.diagnostic_name_slots.each_value do |values|
       values.each do |value|
