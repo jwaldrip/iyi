@@ -2547,8 +2547,9 @@ module Iyi
         end
       end
 
-      # Full-source anchors carry no token events. Macro anchors carry one event per witness, and
-      # every later witness must satisfy amendment A1. Labels keep operator and structural messages apart.
+      # Full-source anchors carry no token events. A macro anchor's witness 0 is the anchor token (E1): it carries
+      # no event of its own (event nil) and the anchor's token_event must match it. Every other witness carries its
+      # own event (E2). These are constructor checks only. P3 (J2) recomputes each event from the pinned pragmas (E5).
       def self.check_witness_chain!(anchor : DiagnosticOrigin, witnesses : Array(DiagnosticOperatorWitness),
                                     input_sha256 : String, lexical_mode : String, label : String) : Nil
         first = witnesses[0]
@@ -2564,36 +2565,39 @@ module Iyi
           end
           raise ArgumentError.new("#{label} witnesses use different inputs") unless anchor.expansion_guard == "sha256:#{input_sha256}"
           raise ArgumentError.new("invalid #{label} witness provenance") unless first.event.nil?
-          first_claim = anchor_event.byte_parts.compact_map { |part| part.as?(DiagnosticEmissionPart::AstAnchor) }
           witnesses.each_with_index do |witness, index|
             next if index == 0
-            event = witness.event || raise ArgumentError.new("invalid #{label} witness provenance")
-            raise ArgumentError.new("#{label} witnesses use different inputs") unless event.lexical_mode == lexical_mode
-            unless event.input_start == witness.input_start && event.input_end == witness.input_end &&
-                   event.token_kind == witness.token_kind && event.token_text == witness.raw_text &&
-                   event.selection.whole?
-              raise ArgumentError.new("invalid #{label} witness provenance")
-            end
-            check_witness_provenance!(event, witness, first_claim, label)
+            check_later_witness!(witness, lexical_mode, label)
           end
         else
           raise ArgumentError.new("invalid #{label} anchor")
         end
       end
 
-      # Amendment A1: a later witness has raw-producer parts only, or exactly one AstAnchor part from
-      # the claim that covers it, sharing witness 0's claim source. Mixed parts are refused as mixed.
-      def self.check_witness_provenance!(event : DiagnosticTokenEvent, witness : DiagnosticOperatorWitness,
-                                         first_claim : Array(DiagnosticEmissionPart::AstAnchor), label : String) : Nil
-        parts = event.byte_parts
-        return if parts.all? { |part| part.is_a?(DiagnosticEmissionPart::Generated) && raw_producer?(part.producer) }
-        claims = parts.select(&.is_a?(DiagnosticEmissionPart::AstAnchor))
-        raise ArgumentError.new("mixed #{label} witness provenance") if !claims.empty? && claims.size != parts.size
-        claim = parts.size == 1 ? parts[0].as?(DiagnosticEmissionPart::AstAnchor) : nil
-        source = first_claim.size == 1 ? first_claim[0].source_origin : nil
-        unless claim && source && claim.source_origin == source &&
-               claim.start_offset <= witness.input_start && claim.end_offset >= witness.input_end
+      # E2/E3/E4: a non-anchor witness carries its own event. Its span, kind, text, mode and selection must equal
+      # the witness, and its parts are checked independently, so mixed generated and name-splice parts are valid.
+      def self.check_later_witness!(witness : DiagnosticOperatorWitness, lexical_mode : String, label : String) : Nil
+        event = witness.event || raise ArgumentError.new("invalid #{label} witness provenance")
+        raise ArgumentError.new("#{label} witnesses use different inputs") unless event.lexical_mode == lexical_mode
+        unless event.input_start == witness.input_start && event.input_end == witness.input_end &&
+               event.token_kind == witness.token_kind && event.token_text == witness.raw_text &&
+               event.selection.whole?
           raise ArgumentError.new("invalid #{label} witness provenance")
+        end
+        check_witness_provenance!(event, witness, label)
+      end
+
+      # Each part of a non-anchor witness event is either Generated (any producer, E2) or NameSplice, which is only
+      # allowed on a CONST or IDENT witness. A claim writer (AstAnchor) never attributes a non-anchor witness.
+      def self.check_witness_provenance!(event : DiagnosticTokenEvent, witness : DiagnosticOperatorWitness, label : String) : Nil
+        event.byte_parts.each do |part|
+          case part
+          when DiagnosticEmissionPart::Generated then nil
+          when DiagnosticEmissionPart::NameSplice
+            raise ArgumentError.new("name splice on non-name witness") unless {"CONST", "IDENT"}.includes?(witness.token_kind)
+          else
+            raise ArgumentError.new("invalid #{label} witness provenance")
+          end
         end
       end
 
@@ -2605,8 +2609,9 @@ module Iyi
         check_witness_chain!(anchor, witnesses, input_sha256, lexical_mode, "operator")
       end
 
-      # An unnamed parameter's anchor is the FunDef keyword, which precedes its separator. Written source
-      # carries no token events. An expansion anchors on the keyword token, and no witness is the anchor.
+      # An unnamed parameter's anchor is the FunDef keyword, which precedes its separator. Written source has no
+      # token events; its keyword IDENT check and list position are replay checks owned by P3. An expansion anchors
+      # on the keyword token, which carries its own event. Constructor checks here are structural only.
       def self.check_structural_anchor!(production : DiagnosticStructuralProduction, anchor : DiagnosticOrigin,
                                         witnesses : Array(DiagnosticOperatorWitness),
                                         input_sha256 : String, lexical_mode : String) : Nil
@@ -2617,7 +2622,7 @@ module Iyi
             return
           end
           if anchor.is_a?(Written) && anchor.input_byte_offset >= witnesses[0].input_start
-            raise ArgumentError.new("structural anchor offset mismatch")
+            raise ArgumentError.new("anchor does not precede witnesses")
           end
         when DiagnosticStructuralProduction::ShortBlockArgument
           if anchor.is_a?(Written) && anchor.input_byte_offset != witnesses[0].input_start
@@ -2629,30 +2634,21 @@ module Iyi
         check_witness_chain!(anchor, witnesses, input_sha256, lexical_mode, "structural")
       end
 
-      # Expanded unnamed parameter. The keyword is the anchor token: its text must be "fun", it must lie
-      # before the separator, and it must carry the expansion guard. Its AstAnchor claim is the reference
-      # for amendment A1. Every witness is a later witness and must carry its own event with that provenance.
+      # Expanded unnamed parameter (U1, U2, U6). The anchor is the keyword token: IDENT with text `fun`, Whole
+      # selection, and it ends before the separator starts. Both witnesses are later witnesses and each carries
+      # its own event (E2), checked by check_later_witness! without any same-source reference.
       def self.check_unnamed_expanded!(anchor : Expanded, witnesses : Array(DiagnosticOperatorWitness),
                                        input_sha256 : String, lexical_mode : String) : Nil
         keyword = anchor.token_event
-        unless keyword.token_text == "fun" && keyword.selection.whole? && keyword.lexical_mode == lexical_mode
-          raise ArgumentError.new("structural anchor event is not the fun keyword")
+        unless keyword.token_kind == "IDENT" && keyword.token_text == "fun" && keyword.selection.whole? &&
+               keyword.lexical_mode == lexical_mode
+          raise ArgumentError.new("invalid structural anchor")
         end
         if keyword.input_end > witnesses[0].input_start
-          raise ArgumentError.new("structural anchor follows its witnesses")
+          raise ArgumentError.new("anchor does not precede witnesses")
         end
         raise ArgumentError.new("structural witnesses use different inputs") unless anchor.expansion_guard == "sha256:#{input_sha256}"
-        first_claim = keyword.byte_parts.compact_map { |part| part.as?(DiagnosticEmissionPart::AstAnchor) }
-        witnesses.each do |witness|
-          event = witness.event || raise ArgumentError.new("invalid structural witness provenance")
-          raise ArgumentError.new("structural witnesses use different inputs") unless event.lexical_mode == lexical_mode
-          unless event.input_start == witness.input_start && event.input_end == witness.input_end &&
-                 event.token_kind == witness.token_kind && event.token_text == witness.raw_text &&
-                 event.selection.whole?
-            raise ArgumentError.new("invalid structural witness provenance")
-          end
-          check_witness_provenance!(event, witness, first_claim, "structural")
-        end
+        witnesses.each { |witness| check_later_witness!(witness, lexical_mode, "structural") }
       end
 
       # Shape and spelling per structural production. Returns {rendered text, producer context}.
@@ -2664,7 +2660,11 @@ module Iyi
           separator = witnesses[0]
           raise ArgumentError.new("structural witness differs") unless {"(", ","}.includes?(separator.raw_text) && operator_plain?(separator, separator.raw_text)
           type_head = witnesses[1]
-          unless type_head.token_kind != "IDENT" && !type_head.raw_text.empty? && type_head.selection.whole?
+          # U3: the head must not be an IDENT or `...`. Being the first type token after the separator is P3's check.
+          if type_head.token_kind == "IDENT" || type_head.raw_text == "..."
+            raise ArgumentError.new("unnamed parameter head is not the first type token")
+          end
+          unless !type_head.raw_text.empty? && type_head.selection.whole?
             raise ArgumentError.new("structural witness differs")
           end
           {"", "parameter"}
@@ -2690,12 +2690,6 @@ module Iyi
           end
         end
         {own, depth}
-      end
-
-      def self.raw_producer?(producer : DiagnosticMacroProducer) : Bool
-        {DiagnosticMacroProducer::MacroTemplate, DiagnosticMacroProducer::MacroId, DiagnosticMacroProducer::MacroVar,
-         DiagnosticMacroProducer::MacroVerbatim, DiagnosticMacroProducer::YieldWrapper,
-         DiagnosticMacroProducer::SemanticPrinter}.includes?(producer)
       end
 
       def self.structural_name(production : DiagnosticStructuralProduction, anchor_origin : DiagnosticOrigin,
@@ -2731,7 +2725,7 @@ module Iyi
                when DiagnosticStructuralProduction::ShortBlockArgument then {"Block", "ampersand"}
                else raise ArgumentError.new("invalid structural production")
                end
-        raise ArgumentError.new("invalid structural anchor role") unless anchor_origin.valid_for_anchor?(role[0], role[1])
+        raise ArgumentError.new("invalid structural anchor") unless anchor_origin.valid_for_anchor?(role[0], role[1])
         rendered_value, producer_value = DerivedName.structural_rendering(production, witnesses, fresh_index)
         DerivedName.check_witness_spans!(witnesses, input_bytesize, false, "structural")
         DerivedName.check_structural_anchor!(production, anchor_origin, witnesses, input_sha256, lexical_mode)
@@ -2758,12 +2752,12 @@ module Iyi
       @operator_witnesses : Array(DiagnosticOperatorWitness) = [] of DiagnosticOperatorWitness
       OPERATOR_OP_ASSIGNS = ["+=", "-=", "*=", "/=", "//=", "%=", "|=", "&=", "^=", "**=", "<<=", ">>=", "||=", "&&=", "&+=", "&-=", "&*="]
       OPERATOR_COMMAND_OPENERS = ["`", "%x(", "%x[", "%x{", "%x<", "%x|"]
-      @structural_production : DiagnosticStructuralProduction? = nil
+      getter structural_production : DiagnosticStructuralProduction? = nil
       @structural_witnesses : Array(DiagnosticOperatorWitness) = [] of DiagnosticOperatorWitness
       @structural_input_sha256 : String? = nil
       @structural_input_bytesize : Int32? = nil
       @structural_lexical_mode : String? = nil
-      @structural_anchor : DiagnosticOrigin? = nil
+      getter structural_anchor : DiagnosticOrigin? = nil
       @structural_fresh_index : Int32? = nil
 
       def operator_witnesses : Array(DiagnosticOperatorWitness); @operator_witnesses.dup; end

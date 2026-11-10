@@ -391,3 +391,77 @@ describe "DiagnosticCaptureBinding.bind!" do
     end
   end
 end
+
+# E2 and E3: witness events rebuilt from the pinned emission records.
+
+private def witness_spec_generated(start : Int32, finish : Int32, producer : Iyi::DiagnosticMacroProducer) : Iyi::DiagnosticGeneratedText
+  Iyi::DiagnosticGeneratedText.new(start, finish, nil, producer)
+end
+
+private def witness_spec_name(start : Int32, finish : Int32) : Iyi::DiagnosticMacroNameFragment
+  Iyi::DiagnosticMacroNameFragment.new(start, finish, nil, Iyi::DiagnosticNameValue::Observed.new(emission_spec_name_token))
+end
+
+describe "DiagnosticWitnessEventReplay" do
+  it "rebuilds an IDENT witness covered by a name splice" do
+    event = Iyi::DiagnosticWitnessEventReplay.expected_event(0, 3, "IDENT", "foo", "Iyi",
+      [] of Iyi::DiagnosticGeneratedText, [witness_spec_name(0, 3)])
+    event.byte_parts.size.should eq 1
+    event.byte_parts[0].should be_a(Iyi::DiagnosticEmissionPart::NameSplice)
+  end
+
+  it "accepts a recorded event that equals the rebuilt one" do
+    event = Iyi::DiagnosticWitnessEventReplay.expected_event(0, 3, "IDENT", "foo", "Iyi",
+      [] of Iyi::DiagnosticGeneratedText, [witness_spec_name(0, 3)])
+    witness = Iyi::DiagnosticOperatorWitness.new(0, 3, "IDENT", "foo", Iyi::DiagnosticTokenSelection::Whole, event)
+    Iyi::DiagnosticWitnessEventReplay.verify!(witness, "Iyi", [] of Iyi::DiagnosticGeneratedText, [witness_spec_name(0, 3)])
+  end
+
+  it "refuses a recorded Generated part where the emission has a NameSplice" do
+    recorded = Iyi::DiagnosticWitnessEventReplay.expected_event(0, 3, "IDENT", "foo", "Iyi",
+      [witness_spec_generated(0, 3, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticGeneratedText, [] of Iyi::DiagnosticMacroNameFragment)
+    witness = Iyi::DiagnosticOperatorWitness.new(0, 3, "IDENT", "foo", Iyi::DiagnosticTokenSelection::Whole, recorded)
+    expect_raises(ArgumentError, /witness event differs from macro emission/) do
+      Iyi::DiagnosticWitnessEventReplay.verify!(witness, "Iyi", [] of Iyi::DiagnosticGeneratedText, [witness_spec_name(0, 3)])
+    end
+  end
+
+  it "refuses a missing event where E2 requires one" do
+    witness = Iyi::DiagnosticOperatorWitness.new(0, 3, "IDENT", "foo", Iyi::DiagnosticTokenSelection::Whole, nil)
+    expect_raises(ArgumentError, /witness event differs from macro emission/) do
+      Iyi::DiagnosticWitnessEventReplay.verify!(witness, "Iyi", [] of Iyi::DiagnosticGeneratedText, [witness_spec_name(0, 3)])
+    end
+  end
+
+  it "refuses a witness byte that no emission record attributes" do
+    expect_raises(ArgumentError, /witness bytes not attributed by macro emission/) do
+      Iyi::DiagnosticWitnessEventReplay.expected_event(0, 3, "IDENT", "foo", "Iyi",
+        [] of Iyi::DiagnosticGeneratedText, [] of Iyi::DiagnosticMacroNameFragment)
+    end
+  end
+
+  it "refuses a name splice on a witness that is not CONST or IDENT" do
+    expect_raises(ArgumentError, /name splice requires a CONST or IDENT witness/) do
+      Iyi::DiagnosticWitnessEventReplay.expected_event(0, 3, "DELIMITER_START", "foo", "Iyi",
+        [] of Iyi::DiagnosticGeneratedText, [witness_spec_name(0, 3)])
+    end
+  end
+
+  it "refuses a witness whose selection is not whole" do
+    event = Iyi::DiagnosticWitnessEventReplay.expected_event(0, 3, "IDENT", "foo", "Iyi",
+      [] of Iyi::DiagnosticGeneratedText, [witness_spec_name(0, 3)])
+    witness = Iyi::DiagnosticOperatorWitness.new(0, 3, "IDENT", "foo", Iyi::DiagnosticTokenSelection::SignedNumberSign, event)
+    expect_raises(ArgumentError, /witness selection is not whole/) do
+      Iyi::DiagnosticWitnessEventReplay.verify!(witness, "Iyi", [] of Iyi::DiagnosticGeneratedText, [witness_spec_name(0, 3)])
+    end
+  end
+end
+
+describe "DiagnosticUnnamedParamBinder (Written chain)" do
+  it "binds a lib fun whose unnamed parameter witnesses are Written" do
+    source = "lib LibC\n  fun abs(Int32) : Int32\nend\n"
+    path = "/spec/binding/lib.iyi"
+    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    bound.should be_a(Iyi::DiagnosticBoundCapture)
+  end
+end

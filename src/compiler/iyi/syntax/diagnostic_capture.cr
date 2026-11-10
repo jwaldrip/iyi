@@ -3208,9 +3208,10 @@ module Iyi
     @source : String
 
     def initialize(@input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal? = nil,
-                   @identity : DiagnosticModuleIdentity? = nil)
+                   @identity : DiagnosticModuleIdentity? = nil, structural : Set(UInt64)? = nil)
       raise ArgumentError.new("bound evidence requires both a replay journal and module identity") unless @journal.nil? == @identity.nil?
       @source = @input.input
+      @structural = structural || Set(UInt64).new
     end
 
     def verify!(root : ASTNode) : Nil
@@ -3349,6 +3350,8 @@ module Iyi
       case origin.derivation_kind
       when "ModuleHeaderPath"   then verify_module_header_path!(origin, identity)
       when "ImplicitModuleSelf" then verify_implicit_module_self!(origin, identity)
+      when "StructuralName"
+        raise ArgumentError.new("structural witness is not verified") unless @structural.includes?(origin.object_id)
       else
         raise ArgumentError.new("derived name #{origin.derivation_kind} has no journal binding")
       end
@@ -3760,8 +3763,8 @@ module Iyi
   # identity bind. Literal and operator evidence stays refused until C-L and C-OPJ.
   class DiagnosticEvidenceBinding < DiagnosticRecordedEvidenceInputCheck
     def initialize(input : AcceptedCaptureInput, journal : DiagnosticReplayJournal,
-                   identity : DiagnosticModuleIdentity)
-      super(input, journal, identity)
+                   identity : DiagnosticModuleIdentity, structural : Set(UInt64))
+      super(input, journal, identity, structural)
     end
   end
 
@@ -3784,8 +3787,166 @@ module Iyi
       raise ArgumentError.new("replay AST digest differs") unless stream.ast_sha256 == ast_sha256
       journal = DiagnosticReplayJournal.new(parser.diagnostic_lexical_observations)
       identity = DiagnosticModuleIdentity.from(root, input, journal)
-      DiagnosticEvidenceBinding.new(input, journal, identity).verify!(root)
+      structural = DiagnosticUnnamedParamBinder.new(input, journal).verify!(root)
+      DiagnosticEvidenceBinding.new(input, journal, identity, structural).verify!(root)
       DiagnosticBoundCapture.new(input, ast_sha256, root, identity, journal)
+    end
+  end
+
+  # E2 and E3 (ruling): rebuilds the event of one witness span from the pinned
+  # emission records, and refuses any byte those records do not attribute. A
+  # recorded event must equal the rebuilt event exactly.
+  module DiagnosticWitnessEventReplay
+    def self.expected_event(start : Int32, finish : Int32, kind : String, raw : String, mode : String,
+                            generated : Array(DiagnosticGeneratedText),
+                            names : Array(DiagnosticMacroNameFragment)) : DiagnosticTokenEvent
+      raise ArgumentError.new("witness event span is empty") unless start >= 0 && finish > start
+      raise ArgumentError.new("witness event differs from macro emission") unless raw.bytesize == finish - start
+      parts = [] of DiagnosticEmissionPart
+      cursor = start
+      while cursor < finish
+        name = names.find { |fragment| fragment.start_offset == cursor && fragment.end_offset > cursor && fragment.end_offset <= finish }
+        if name
+          raise ArgumentError.new("name splice requires a CONST or IDENT witness") unless {"CONST", "IDENT"}.includes?(kind)
+          parts << DiagnosticEmissionPart::NameSplice.new(name.start_offset, name.end_offset, name.emitter_origin, name.source_name)
+          cursor = name.end_offset
+          next
+        end
+        covering = generated.find { |text| text.start_offset <= cursor && text.end_offset > cursor }
+        raise ArgumentError.new("witness bytes not attributed by macro emission") unless covering
+        piece_end = Math.min(covering.end_offset, finish)
+        last = parts.last?
+        if last.is_a?(DiagnosticEmissionPart::Generated) && last.end_offset == cursor &&
+           last.producer == covering.producer && last.emitter_origin == covering.emitter_origin
+          parts[parts.size - 1] = DiagnosticEmissionPart::Generated.new(last.start_offset, piece_end, last.emitter_origin, last.producer)
+        else
+          parts << DiagnosticEmissionPart::Generated.new(cursor, piece_end, covering.emitter_origin, covering.producer)
+        end
+        cursor = piece_end
+      end
+      DiagnosticTokenEvent.new(start, finish, kind, raw, mode, DiagnosticTokenSelection::Whole, parts)
+    end
+
+    def self.verify!(witness : DiagnosticOperatorWitness, mode : String,
+                     generated : Array(DiagnosticGeneratedText), names : Array(DiagnosticMacroNameFragment)) : Nil
+      raise ArgumentError.new("witness selection is not whole") unless witness.selection.whole?
+      expected = expected_event(witness.input_start, witness.input_end, witness.token_kind, witness.raw_text, mode, generated, names)
+      raise ArgumentError.new("witness event differs from macro emission") unless witness.event == expected
+    end
+  end
+
+  # Unnamed-parameter binder (ruling U1-U6). The Written chain is bound here, and
+  # every witness event is null (U6). An Expanded unnamed parameter needs the replayed
+  # expansion pragmas, with E1 substitution of the anchor's token event and E2 events
+  # on every non-anchor witness (contract X). Until that is wired it is held, and
+  # a ShortBlockArgument has no binding in this slice.
+  class DiagnosticUnnamedParamBinder
+    record Candidate, origin : DiagnosticOrigin::DerivedName, fundef : FunDef, index : Int32, lib : Bool
+
+    def initialize(@input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal)
+      @owners = {} of UInt64 => Tuple(FunDef, Int32, Bool)
+      @candidates = [] of Candidate
+      @ordered = @journal.entries.uniq.sort_by { |entry| {entry.input_start, entry.input_end} }
+    end
+
+    # Returns the object ids of every StructuralName origin this binder verified.
+    def verify!(root : ASTNode) : Set(UInt64)
+      collect(root, false, 0)
+      verified = Set(UInt64).new
+      @candidates.each do |candidate|
+        verify_candidate!(candidate)
+        verified << candidate.origin.object_id
+      end
+      verified
+    end
+
+    private def collect(node : ASTNode, lib : Bool, depth : Int32) : Nil
+      raise ArgumentError.new("recorded evidence exceeds depth limit") if depth > DiagnosticRecordedEvidenceInputCheck::MAX_DEPTH
+      if node.is_a?(FunDef)
+        node.args.each_with_index { |arg, index| @owners[arg.object_id] = {node, index, lib} }
+      end
+      node.each_diagnostic_name_slot do |_, values|
+        values.each do |value|
+          next unless value.is_a?(DiagnosticNameValue::Derived) && value.origin.derivation_kind == "StructuralName"
+          fundef, index, owner_lib = @owners[node.object_id]? || raise ArgumentError.new("structural witness differs")
+          @candidates << Candidate.new(value.origin, fundef, index, owner_lib)
+        end
+      end
+      child_lib = node.is_a?(LibDef) || (lib && node.is_a?(Expressions))
+      DiagnosticDirectChildFields.each(node) { |_, _, _, child| collect(child, child_lib, depth + 1) }
+    end
+
+    private def verify_candidate!(candidate : Candidate) : Nil
+      origin = candidate.origin
+      case origin.structural_production
+      when DiagnosticStructuralProduction::UnnamedFunParameter then nil
+      when DiagnosticStructuralProduction::ShortBlockArgument
+        raise ArgumentError.new("short block argument binding is held until the printer fix lands")
+      else
+        raise ArgumentError.new("invalid structural production")
+      end
+      anchor = origin.structural_anchor || raise ArgumentError.new("invalid structural anchor")
+      if anchor.is_a?(DiagnosticOrigin::Expanded)
+        raise ArgumentError.new("expanded unnamed parameter requires replayed expansion pragmas (contract X)")
+      end
+      raise ArgumentError.new("invalid structural anchor") unless anchor.is_a?(DiagnosticOrigin::Written)
+      raise ArgumentError.new("invalid structural anchor") unless anchor.valid_for_anchor?("FunDef", "keyword") && anchor == candidate.fundef.diagnostic_origin
+      raise ArgumentError.new("unnamed parameter outside lib fun") unless candidate.lib
+      mode = @input.lexical_mode
+      start = anchor.input_byte_offset
+      raise ArgumentError.new("invalid structural anchor") unless @journal.scanned_span?(start, start + 3, "IDENT", "fun", mode)
+
+      witnesses = origin.operator_witnesses
+      raise ArgumentError.new("structural witness differs") unless witnesses.size == 2 && origin.fresh_index.nil?
+      separator = witnesses[0]
+      head = witnesses[1]
+      witnesses.each do |witness|
+        raise ArgumentError.new("invalid structural witness provenance") unless witness.event.nil?
+        raise ArgumentError.new("structural witness is not a scanned token") unless @journal.scanned_span?(witness.input_start, witness.input_end, witness.token_kind, witness.raw_text, mode)
+      end
+      raise ArgumentError.new("anchor does not precede witnesses") unless start < separator.input_start && separator.input_start < head.input_start
+
+      # The list opener is the first "(" after the name and the optional "= real_name".
+      trivia = {"SPACE", "NEWLINE", "COMMENT", "EOF"}
+      tokens = @ordered.select { |entry| entry.input_start >= start + 3 && !trivia.includes?(entry.token_kind) }
+      tokens[0]? || raise ArgumentError.new("separator outside parameter list")
+      index = tokens[1]?.try(&.token_text) == "=" ? 3 : 1
+      opener = tokens[index]? || raise ArgumentError.new("separator outside parameter list")
+      raise ArgumentError.new("separator outside parameter list") unless opener.token_text == "("
+      depth = 0
+      separator_index = 0
+      found = -1
+      position = index
+      while position < tokens.size
+        token = tokens[position]
+        if token.input_start == separator.input_start
+          raise ArgumentError.new("structural witness differs") unless token.token_text == separator.raw_text && token.token_kind == separator.token_kind
+          raise ArgumentError.new("separator outside parameter list") unless position == index || (token.token_text == "," && depth == 1)
+          found = position
+          break
+        end
+        case token.token_text
+        when "(", "[", "{" then depth += 1
+        when ")", "]", "}"
+          depth -= 1
+          raise ArgumentError.new("separator outside parameter list") if depth <= 0
+        when "," then separator_index += 1 if depth == 1
+        end
+        position += 1
+      end
+      raise ArgumentError.new("separator outside parameter list") if found < 0
+
+      # The head is the first journal entry after the separator that is not SPACE or NEWLINE.
+      following = @ordered.find { |entry| entry.input_start >= separator.input_end && !{"SPACE", "NEWLINE"}.includes?(entry.token_kind) }
+      raise ArgumentError.new("unnamed parameter head is not the first type token") unless following && following.input_start == head.input_start
+      raise ArgumentError.new("structural witness differs") unless following.token_kind == head.token_kind && following.token_text == head.raw_text
+      raise ArgumentError.new("unnamed parameter head is not the first type token") if following.token_kind == "IDENT" || following.token_text == "..."
+
+      owner_arg = candidate.fundef.args[candidate.index]? || raise ArgumentError.new("structural witness differs")
+      raise ArgumentError.new("structural witness differs") unless separator_index == candidate.index && owner_arg.name.empty?
+      restriction = owner_arg.restriction || raise ArgumentError.new("structural witness differs")
+      restriction_origin = restriction.diagnostic_origin
+      raise ArgumentError.new("structural witness differs") unless restriction_origin.is_a?(DiagnosticOrigin::Written) && restriction_origin.input_byte_offset == head.input_start
     end
   end
 end

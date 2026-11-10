@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Behavioural and adversarial tests for the OperatorName derivation (contract C-OP).
+"""Behavioural and adversarial tests for the OperatorName and StructuralName derivations.
 
-Every production is checked in both anchor classes (Written and Expanded) through
-the comparator's own entry points: derived_name, origin, name_value and
-checked_origin. Tampered spans, kinds, rendered data, anchors, graph depth and
-macro byte parts must each be refused with its exact message.
+Covers contract C-OP and the structural contract S under the provenance ruling E1-E5 and U1-U6
+(local://unnamed-param-provenance-ruling.md). Each non-anchor witness event is built from its own
+emission records: Generated parts from recorded producers, NameSplice parts only for IDENT or CONST
+witnesses, and never a claim writer. Mixed provenance across witnesses is valid. Source association
+is not claimed here; the journal and pragma replay own it.
+
+Every mutation is checked through the comparator's own entry points (derived_name, origin, name_value,
+checked_origin) and must fail with its exact message.
 
 Run: python3 bench/test_operator_derivation.py
 """
@@ -63,16 +67,6 @@ def generated(start, end, producer="MacroVerbatim", emitter=None):
 def astanchor(start, end, source_origin, emitter=None):
     return {"kind": "AstAnchor", "start_offset": start, "end_offset": end,
             "emitter_origin": emitter, "source_origin": source_origin}
-
-
-def spliced_index(covering=(3, 4), claim=None):
-    """Expanded a[1] whose ] comes from one spliced claim (A1); the [ anchor carries the same claim."""
-    claim = written(0) if claim is None else claim
-    value = operator("Index", "a[1]", [(1, "[", "[", "Whole"), (3, "]", "]", "Whole")], "[]",
-                     "method_name", "expanded")
-    value["anchor_origin"]["token_event"]["byte_parts"] = [astanchor(1, 2, claim)]
-    value["witnesses"][1]["event"]["byte_parts"] = [astanchor(covering[0], covering[1], claim)]
-    return value
 
 
 def token_event(start, raw, kind, selection="Whole", mode=MODE, parts=None):
@@ -143,8 +137,78 @@ def index_assign(anchor="written"):
                     "[]=", "method_name", anchor)
 
 
+def spliced_index():
+    """Expanded a[1] whose anchor and later ] both carry one AstAnchor claim: claim writers are refused on witnesses."""
+    claim = written(0)
+    value = operator("Index", "a[1]", [(1, "[", "[", "Whole"), (3, "]", "]", "Whole")], "[]",
+                     "method_name", "expanded")
+    value["anchor_origin"]["token_event"]["byte_parts"] = [astanchor(1, 2, claim)]
+    value["witnesses"][1]["event"]["byte_parts"] = [astanchor(2, 5, claim)]
+    return value
+
+
+def name_splice(start, end, raw, digest, size, kind="CONST"):
+    """A NameSplice part whose Observed source token is a path segment of the same input."""
+    token = {"lexical_origin": written(start, "Name", "path_segment"), "binding_origin": None,
+             "context": "path_segment", "input_sha256": digest, "input_bytesize": size,
+             "input_start": start, "input_end": end, "lexical_mode": MODE, "token_kind": kind,
+             "raw_text": raw}
+    return {"kind": "NameSplice", "start_offset": start, "end_offset": end, "emitter_origin": None,
+            "source_name": {"kind": "Observed", "source_token": token}}
+
+
+def structural_value(production, source, witnesses, fresh_index, anchor_origin, rendered, context, mode=MODE):
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    nodes = [{"input_start": start, "input_end": start + len(raw.encode("utf-8")), "token_kind": kind,
+              "raw_text": raw, "selection": selection, "event": None}
+             for start, raw, kind, selection in witnesses]
+    return {"kind": "DerivedName", "derivation_kind": "StructuralName", "production": production,
+            "anchor_origin": anchor_origin, "input_sha256": digest,
+            "input_bytesize": len(source.encode("utf-8")), "lexical_mode": mode, "witnesses": nodes,
+            "fresh_index": fresh_index, "rendered_text": rendered, "producer_context": context}
+
+
+def unnamed_written(source="fun f(Int32)", witnesses=None):
+    witnesses = witnesses or [(5, "(", "(", "Whole"), (6, "Int32", "CONST", "Whole")]
+    return structural_value("UnnamedFunParameter", source, witnesses, None,
+                            written(0, "FunDef", "keyword"), "", "parameter")
+
+
+def unnamed_expanded(source="fun f(Int32)", witnesses=None):
+    """Expanded FunDef keyword anchor; every witness carries its own Generated event by default."""
+    value = unnamed_written(source, witnesses)
+    digest = value["input_sha256"]
+    value["anchor_origin"] = {"kind": "Expanded", "invocation_origin": written(0),
+                              "macro_definition_origin": written(0, "Macro", "keyword"),
+                              "expansion_guard": "sha256:" + digest, "anchor_kind": "FunDef",
+                              "role": "keyword", "name_context": None,
+                              "token_event": token_event(0, "fun", "IDENT"), "anchor_use": {"kind": "Direct"}}
+    for witness in value["witnesses"]:
+        witness["event"] = token_event(witness["input_start"], witness["raw_text"], witness["token_kind"], "Whole")
+    return value
+
+
+def short_written(fresh=0, source="x.map(&.foo)", witnesses=None):
+    witnesses = witnesses or [(6, "&", "&", "Whole"), (7, ".", ".", "Whole")]
+    rendered = "__arg" + str(fresh) if type(fresh) is int else ""
+    return structural_value("ShortBlockArgument", source, witnesses, fresh,
+                            written(6, "Block", "ampersand"), rendered, "local_reference")
+
+
+def short_expanded(fresh=0):
+    value = short_written(fresh)
+    digest = value["input_sha256"]
+    value["anchor_origin"] = {"kind": "Expanded", "invocation_origin": written(0),
+                              "macro_definition_origin": written(0, "Macro", "keyword"),
+                              "expansion_guard": "sha256:" + digest, "anchor_kind": "Block",
+                              "role": "ampersand", "name_context": None,
+                              "token_event": token_event(6, "&", "&"), "anchor_use": {"kind": "Direct"}}
+    value["witnesses"][1]["event"] = token_event(7, ".", ".", "Whole")
+    return value
+
+
 class ProductionTests(unittest.TestCase):
-    """Positive cases: every production in both anchor classes, through every entry point."""
+    """Positive cases: every OperatorName production in both anchor classes, through every entry point."""
 
     def test_every_production_renders_in_both_anchor_classes(self):
         for anchor in ("written", "expanded"):
@@ -179,8 +243,7 @@ class ProductionTests(unittest.TestCase):
                 self.assertEqual(frames.derived_name(value, 0)[1], b"`")
 
     def test_one_token_and_two_token_index_assignment_both_render(self):
-        two_token = index_assign()
-        self.assertEqual(frames.derived_name(two_token, 0)[1], b"[]=")
+        self.assertEqual(frames.derived_name(index_assign(), 0)[1], b"[]=")
         one_token = operator("IndexAssign", "a[] = 2", [(1, "[]", "[]", "Whole"), (4, "=", "=", "Whole")],
                              "[]=", "method_name", "expanded")
         self.assertEqual(frames.derived_name(one_token, 0)[1], b"[]=")
@@ -195,8 +258,20 @@ class ProductionTests(unittest.TestCase):
         self.assertEqual(frames.checked_origin(op_assign("expanded")), ("Name", "op_assign_operator"))
 
 
+class MixedProvenanceTests(unittest.TestCase):
+    """E4: no two witnesses need the same source; mixed provenance across witnesses is valid."""
+
+    def test_mixed_producers_across_later_witnesses_are_valid(self):
+        value = operator("IndexQuery", "a[1]?",
+                         [(1, "[", "[", "Whole"), (3, "]", "]", "Whole"), (4, "?", "?", "Whole")],
+                         "[]?", "method_name", "expanded")
+        value["witnesses"][1]["event"]["byte_parts"] = [generated(3, 4, "MacroTemplate")]
+        value["witnesses"][2]["event"]["byte_parts"] = [generated(4, 5, "MacroVar")]
+        self.assertEqual(frames.derived_name(value, 0)[1], b"[]?")
+
+
 class RejectionTests(unittest.TestCase):
-    """Adversarial cases: each mutation is refused with its exact message."""
+    """Adversarial OperatorName cases: each mutation is refused with its exact message."""
 
     def assertRejected(self, value, message, depth=0):
         with self.assertRaises(ValueError) as caught:
@@ -523,7 +598,7 @@ class RejectionTests(unittest.TestCase):
         value["witnesses"][0]["event"] = token_event(2, "+=", "+=")
         self.assertRejected(value, "invalid operator witness provenance")
 
-    # Later expanded witnesses: macro byte parts and event identity.
+    # Later expanded witnesses: event identity and recorded parts.
 
     def test_later_witness_without_an_event_is_refused(self):
         value = index_assign("expanded")
@@ -550,23 +625,15 @@ class RejectionTests(unittest.TestCase):
         value["witnesses"][2]["event"]["selection"] = "SignedNumberSign"
         self.assertRejected(value, "invalid operator witness provenance")
 
-    def test_later_witness_with_an_ast_anchor_part_is_refused(self):
+    def test_later_witness_with_a_non_recorded_producer_is_refused(self):
         value = index_assign("expanded")
-        value["witnesses"][2]["event"]["byte_parts"] = [
-            {"kind": "AstAnchor", "start_offset": 5, "end_offset": 6, "emitter_origin": None,
-             "source_origin": written(5)},
-        ]
+        value["witnesses"][2]["event"]["byte_parts"][0]["producer"] = "UnrecordedProducer"
         self.assertRejected(value, "invalid operator witness provenance")
 
-    def test_later_witness_with_a_non_raw_producer_is_refused(self):
-        value = index_assign("expanded")
-        value["witnesses"][2]["event"]["byte_parts"][0]["producer"] = "ArtifactSemanticRenderer"
-        self.assertRejected(value, "invalid operator witness provenance")
-
-    def test_later_witness_part_misplaced_from_the_span_is_refused(self):
+    def test_later_witness_part_not_attributed_by_macro_emission_is_refused(self):
         value = index_assign("expanded")
         value["witnesses"][2]["event"]["byte_parts"] = [generated(6, 7)]
-        self.assertRejected(value, "invalid operator witness provenance")
+        self.assertRejected(value, "witness bytes not attributed by macro emission")
 
     def test_later_witness_part_extending_past_the_span_is_refused(self):
         value = index_assign("expanded")
@@ -612,73 +679,373 @@ class RejectionTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "origin size limit exceeded")
 
 
-class SplicedWitnessTests(unittest.TestCase):
-    """Amendment A1: a later expanded witness may carry one spliced AstAnchor; mixed provenance is refused."""
+class ClaimWriterTests(unittest.TestCase):
+    """E2: claim writers are never used for non-anchor witnesses (the A1 same-source clause is withdrawn)."""
 
     def assertRejected(self, value, message):
         with self.assertRaises(ValueError) as caught:
             frames.derived_name(value, 0)
         self.assertEqual(str(caught.exception), message)
 
-    def test_spliced_witness_covering_its_token_exactly_is_accepted(self):
-        self.assertEqual(frames.derived_name(spliced_index((3, 4)), 0), (("Name", "method_name"), b"[]"))
+    def test_claim_writer_on_a_later_witness_is_refused(self):
+        value = index_assign("expanded")
+        value["witnesses"][2]["event"]["byte_parts"] = [astanchor(5, 6, written(0, "Call", "method"))]
+        self.assertRejected(value, "invalid operator witness provenance")
 
-    def test_spliced_witness_with_a_wider_covering_range_is_accepted(self):
-        self.assertEqual(frames.derived_name(spliced_index((2, 5)), 0)[1], b"[]")
+    def test_claim_writer_sharing_the_anchor_claim_is_still_refused(self):
+        self.assertRejected(spliced_index(), "invalid operator witness provenance")
 
-    def test_spliced_witness_may_carry_a_macro_directive_emitter(self):
-        value = spliced_index()
-        value["witnesses"][1]["event"]["byte_parts"][0]["emitter_origin"] = written(0, "MacroDirective", "expression")
-        self.assertEqual(frames.derived_name(value, 0)[1], b"[]")
-
-    def test_spliced_witness_reaches_origin_name_value_and_checked_origin(self):
-        value = spliced_index()
-        self.assertEqual(frames.origin(value), ("Name", "method_name"))
-        self.assertEqual(frames.name_value({"kind": "Derived", "origin": value}, 0), b"[]")
-        self.assertEqual(frames.checked_origin(spliced_index()), ("Name", "method_name"))
-
-    def test_generated_then_spliced_parts_are_mixed_and_refused(self):
-        value = spliced_index()
+    def test_claim_writer_mixed_with_generated_is_refused(self):
+        value = operator("Index", "a[1]", [(1, "[", "[", "Whole"), (3, "]", "]", "Whole")], "[]",
+                         "method_name", "expanded")
         value["witnesses"][1]["event"]["byte_parts"] = [generated(3, 4, "MacroTemplate"),
                                                         astanchor(3, 4, written(0))]
-        self.assertRejected(value, "mixed operator witness provenance")
-
-    def test_spliced_then_generated_parts_are_mixed_and_refused(self):
-        value = spliced_index()
-        value["witnesses"][1]["event"]["byte_parts"] = [astanchor(3, 4, written(0)),
-                                                        generated(3, 4, "MacroTemplate")]
-        self.assertRejected(value, "mixed operator witness provenance")
-
-    def test_two_spliced_claims_on_one_witness_are_refused(self):
-        value = spliced_index()
-        value["witnesses"][1]["event"]["byte_parts"] = [astanchor(3, 4, written(0)), astanchor(3, 4, written(0))]
         self.assertRejected(value, "invalid operator witness provenance")
 
-    def test_spliced_source_origin_other_than_witness_zero_is_refused(self):
-        value = spliced_index()
-        value["witnesses"][1]["event"]["byte_parts"] = [astanchor(3, 4, written(9))]
-        self.assertRejected(value, "invalid operator witness provenance")
 
-    def test_spliced_source_origin_differing_in_role_is_refused(self):
-        value = spliced_index()
-        value["witnesses"][1]["event"]["byte_parts"] = [astanchor(3, 4, written(0, "Name", "method_name"))]
-        self.assertRejected(value, "invalid operator witness provenance")
+class StructuralNameTests(unittest.TestCase):
+    """Contract S under U1 to U6 and E1 to E5: recomputed name and type, witnesses, anchor, forged events."""
 
-    def test_spliced_witness_needs_a_spliced_witness_zero(self):
-        value = spliced_index()
-        value["anchor_origin"]["token_event"]["byte_parts"] = [generated(1, 2, "MacroTemplate")]
-        self.assertRejected(value, "invalid operator witness provenance")
+    def assertRejected(self, value, message, depth=0):
+        with self.assertRaises(ValueError) as caught:
+            frames.derived_name(value, depth)
+        self.assertEqual(str(caught.exception), message)
 
-    def test_spliced_claim_not_covering_the_token_is_refused(self):
-        for covering in ((3, 3), (0, 3), (4, 6)):
-            with self.subTest(covering=covering):
-                self.assertRejected(spliced_index(covering), "invalid operator witness provenance")
+    # Written and accepted forms.
 
-    def test_spliced_witness_emitter_outside_macro_directive_is_refused(self):
-        value = spliced_index()
-        value["witnesses"][1]["event"]["byte_parts"][0]["emitter_origin"] = written(0, "Call", "method")
-        self.assertRejected(value, "invalid operator witness provenance")
+    def test_unnamed_parameter_renders_an_empty_name(self):
+        self.assertEqual(frames.derived_name(unnamed_written(), 0), (("Name", "parameter"), b""))
 
+    def test_unnamed_comma_separator_is_accepted(self):
+        value = unnamed_written("fun f,Int32", [(5, ",", ",", "Whole"), (6, "Int32", "CONST", "Whole")])
+        self.assertEqual(frames.derived_name(value, 0), (("Name", "parameter"), b""))
+
+    def test_short_block_written_renders_its_fresh_name(self):
+        self.assertEqual(frames.derived_name(short_written(0), 0), (("Name", "local_reference"), b"__arg0"))
+
+    def test_fresh_index_renders_its_decimal_value(self):
+        self.assertEqual(frames.derived_name(short_written(12), 0)[1], b"__arg12")
+
+    def test_short_block_expanded_generated_is_accepted(self):
+        self.assertEqual(frames.derived_name(short_expanded(), 0)[1], b"__arg0")
+
+    def test_structural_reaches_origin_name_value_and_checked_origin(self):
+        self.assertEqual(frames.origin(short_written()), ("Name", "local_reference"))
+        self.assertEqual(frames.name_value({"kind": "Derived", "origin": short_written()}, 0), b"__arg0")
+        self.assertEqual(frames.name_value({"kind": "Derived", "origin": unnamed_written()}, 0), b"")
+        self.assertEqual(frames.checked_origin(short_expanded()), ("Name", "local_reference"))
+
+    # Expanded UnnamedFunParameter (U1 to U6, E2 and E5 shape).
+
+    def test_expanded_unnamed_with_generated_events_is_accepted(self):
+        self.assertEqual(frames.derived_name(unnamed_expanded(), 0), (("Name", "parameter"), b""))
+
+    def test_expanded_unnamed_with_mixed_provenance_across_witnesses_is_accepted(self):
+        # PC-3 shape: separator from template text, head Int32 from a NameSplice of the spliced path.
+        value = unnamed_expanded()
+        digest, size = value["input_sha256"], value["input_bytesize"]
+        value["witnesses"][1]["event"]["byte_parts"] = [name_splice(6, 11, "Int32", digest, size)]
+        self.assertEqual(frames.derived_name(value, 0), (("Name", "parameter"), b""))
+
+    def test_expanded_unnamed_with_adjacent_different_producers_is_accepted(self):
+        value = unnamed_expanded()
+        value["witnesses"][1]["event"]["byte_parts"] = [generated(6, 8, "MacroTemplate"),
+                                                        generated(8, 11, "MacroVar")]
+        self.assertEqual(frames.derived_name(value, 0), (("Name", "parameter"), b""))
+
+    def test_expanded_unnamed_name_splice_on_the_separator_is_refused(self):
+        value = unnamed_expanded()
+        digest, size = value["input_sha256"], value["input_bytesize"]
+        value["witnesses"][0]["event"]["byte_parts"] = [name_splice(5, 6, "(", digest, size)]
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_unnamed_name_splice_with_forged_bytes_is_refused(self):
+        value = unnamed_expanded()
+        digest, size = value["input_sha256"], value["input_bytesize"]
+        value["witnesses"][1]["event"]["byte_parts"] = [name_splice(6, 11, "Int33", digest, size)]
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_unnamed_partial_name_splice_leaves_bytes_unattributed(self):
+        value = unnamed_expanded()
+        digest, size = value["input_sha256"], value["input_bytesize"]
+        value["witnesses"][1]["event"]["byte_parts"] = [name_splice(6, 10, "Int3", digest, size)]
+        self.assertRejected(value, "witness bytes not attributed by macro emission")
+
+    def test_expanded_unnamed_gap_before_a_part_is_unattributed(self):
+        value = unnamed_expanded()
+        value["witnesses"][1]["event"]["byte_parts"] = [generated(7, 11, "MacroTemplate")]
+        self.assertRejected(value, "witness bytes not attributed by macro emission")
+
+    def test_expanded_unnamed_claim_writer_on_a_witness_is_refused(self):
+        value = unnamed_expanded()
+        value["witnesses"][1]["event"]["byte_parts"] = [astanchor(6, 11, written(0, "FunDef", "keyword"))]
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_unnamed_unmerged_adjacent_generated_parts_are_refused(self):
+        value = unnamed_expanded()
+        value["witnesses"][1]["event"]["byte_parts"] = [generated(6, 8, "MacroTemplate"),
+                                                        generated(8, 11, "MacroTemplate")]
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_unnamed_anchor_that_is_not_fun_is_refused(self):
+        value = unnamed_expanded()
+        value["anchor_origin"]["token_event"] = token_event(0, "fn", "IDENT")
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_expanded_unnamed_anchor_in_another_mode_is_refused(self):
+        value = unnamed_expanded()
+        value["anchor_origin"]["token_event"]["lexical_mode"] = "Iyi"
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_expanded_unnamed_anchor_after_its_witnesses_is_refused(self):
+        value = unnamed_expanded()
+        value["anchor_origin"]["token_event"] = token_event(6, "fun", "IDENT")
+        self.assertRejected(value, "anchor does not precede witnesses")
+
+    def test_expanded_unnamed_guard_from_another_input_is_refused(self):
+        value = unnamed_expanded()
+        value["anchor_origin"]["expansion_guard"] = "sha256:" + "0" * 64
+        self.assertRejected(value, "structural witnesses use different inputs")
+
+    def test_expanded_unnamed_head_that_is_an_ellipsis_is_refused(self):
+        value = unnamed_expanded("fun f(...)", [(5, "(", "(", "Whole"), (6, "...", "...", "Whole")])
+        self.assertRejected(value, "unnamed parameter head is not the first type token")
+
+    def test_expanded_unnamed_head_that_is_an_identifier_is_refused(self):
+        value = unnamed_expanded("fun n(x)", [(5, "(", "(", "Whole"), (6, "x", "IDENT", "Whole")])
+        self.assertRejected(value, "structural witness differs")
+
+    def test_expanded_unnamed_missing_separator_event_is_refused(self):
+        value = unnamed_expanded()
+        value["witnesses"][0]["event"] = None
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_unnamed_with_a_written_separator_event_is_still_bound_by_u_rules(self):
+        # A Written-style null event on the head makes the Expanded chain incomplete.
+        value = unnamed_expanded()
+        value["witnesses"][1]["event"] = None
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    # Written unnamed anchors (U2 and journal-only U1).
+
+    def test_written_unnamed_anchor_must_precede_its_separator(self):
+        value = unnamed_written()
+        value["anchor_origin"] = written(5, "FunDef", "keyword")
+        self.assertRejected(value, "anchor does not precede witnesses")
+
+    def test_anchor_role_must_match_the_production(self):
+        value = unnamed_written()
+        value["anchor_origin"] = written(0, "Block", "ampersand")
+        self.assertRejected(value, "invalid structural anchor")
+        value = short_written()
+        value["anchor_origin"] = written(6, "FunDef", "keyword")
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_synthetic_anchor_is_refused(self):
+        value = short_written()
+        value["anchor_origin"] = {"kind": "Synthetic", "parent_origin": written(6, "Block", "ampersand"),
+                                  "synthesis_kind": "block_to_proc", "structural_slot": "proc"}
+        self.assertRejected(value, "invalid structural anchor")
+
+    def test_written_source_refuses_token_events(self):
+        value = unnamed_written()
+        value["witnesses"][0]["event"] = token_event(5, "(", "(")
+        self.assertRejected(value, "structural witness has a token event for written source")
+
+    def test_written_short_block_anchor_must_equal_the_ampersand_offset(self):
+        value = short_written()
+        value["anchor_origin"] = written(7, "Block", "ampersand")
+        self.assertRejected(value, "structural anchor offset mismatch")
+
+    # Production, input and witness shape.
+
+    def test_unknown_production_is_refused(self):
+        value = short_written()
+        value["production"] = "Splat"
+        self.assertRejected(value, "invalid structural production")
+
+    def test_non_string_production_is_refused(self):
+        value = short_written()
+        value["production"] = ["ShortBlockArgument"]
+        self.assertRejected(value, "invalid structural production")
+
+    def test_empty_input_is_refused(self):
+        value = short_written()
+        value["input_bytesize"] = 0
+        self.assertRejected(value, "invalid structural input")
+
+    def test_unknown_lexical_mode_is_refused(self):
+        value = short_written()
+        value["lexical_mode"] = "Ruby"
+        self.assertRejected(value, "invalid structural input")
+
+    def test_bad_input_guard_is_refused(self):
+        value = short_written()
+        value["input_sha256"] = "A" * 64
+        self.assertRejected(value, "invalid input guard")
+
+    def test_witness_count_is_fixed_at_two(self):
+        for witnesses in ([(5, "(", "(", "Whole")],
+                          [(5, "(", "(", "Whole"), (6, "Int32", "CONST", "Whole"), (11, ")", ")", "Whole")]):
+            with self.subTest(count=len(witnesses)):
+                self.assertRejected(unnamed_written(witnesses=witnesses), "structural witness differs")
+
+    def test_unnamed_separator_must_be_paren_or_comma(self):
+        value = unnamed_written(witnesses=[(5, "-", "-", "Whole"), (6, "Int32", "CONST", "Whole")])
+        self.assertRejected(value, "structural witness differs")
+
+    def test_unnamed_separator_kind_must_equal_its_spelling(self):
+        value = unnamed_written(witnesses=[(5, "(", "IDENT", "Whole"), (6, "Int32", "CONST", "Whole")])
+        self.assertRejected(value, "structural witness differs")
+
+    def test_unnamed_type_head_must_be_a_whole_token(self):
+        value = unnamed_written(witnesses=[(5, "(", "(", "Whole"), (6, "Int32", "CONST", "SignedNumberSign")])
+        self.assertRejected(value, "structural witness differs")
+
+    def test_unnamed_parameter_cannot_carry_a_fresh_index(self):
+        value = unnamed_written()
+        value["fresh_index"] = 0
+        self.assertRejected(value, "structural witness differs")
+
+    def test_short_block_requires_a_fresh_index(self):
+        self.assertRejected(short_written(None), "invalid short block fresh index")
+
+    def test_short_block_fresh_index_must_be_a_non_negative_integer(self):
+        for fresh in (-1, True, "0", 2 ** 31):
+            with self.subTest(fresh=fresh):
+                self.assertRejected(short_written(fresh), "invalid short block fresh index")
+
+    def test_short_block_requires_the_ampersand_dot_sequence(self):
+        value = short_written(witnesses=[(6, "&", "&", "Whole"), (7, ",", ",", "Whole")])
+        self.assertRejected(value, "structural witness differs")
+
+    def test_short_block_witnesses_must_be_whole(self):
+        value = short_written(witnesses=[(6, "&", "&", "SignedNumberSign"), (7, ".", ".", "Whole")])
+        self.assertRejected(value, "structural witness differs")
+
+    def test_forged_short_block_name_is_refused(self):
+        value = short_written(0)
+        value["rendered_text"] = "__arg1"
+        self.assertRejected(value, "derived structural rendering differs")
+
+    def test_forged_unnamed_rendering_and_context_are_refused(self):
+        value = unnamed_written()
+        value["rendered_text"] = "x"
+        self.assertRejected(value, "derived structural rendering differs")
+        value = unnamed_written()
+        value["producer_context"] = "local_reference"
+        self.assertRejected(value, "derived structural rendering differs")
+
+    def test_forged_short_block_context_is_refused(self):
+        value = short_written(0)
+        value["producer_context"] = "parameter"
+        self.assertRejected(value, "derived structural rendering differs")
+
+    def test_span_end_mismatch_is_refused(self):
+        value = short_written()
+        value["witnesses"][1]["input_end"] = 9
+        self.assertRejected(value, "invalid structural witness span")
+
+    def test_negative_offset_is_refused(self):
+        value = short_written()
+        value["witnesses"][0]["input_start"] = -1
+        self.assertRejected(value, "invalid provenance integer")
+
+    def test_span_past_the_input_is_refused(self):
+        value = short_written()
+        value["witnesses"][1]["input_start"] = 12
+        value["witnesses"][1]["input_end"] = 13
+        self.assertRejected(value, "invalid structural witness span")
+
+    def test_overlapping_witnesses_are_refused(self):
+        value = short_written(witnesses=[(6, "&", "&", "Whole"), (6, ".", ".", "Whole")])
+        self.assertRejected(value, "structural witnesses overlap or are out of order")
+
+    # Expanded ShortBlockArgument chain (E1 for witness 0, E2 and E3 for the rest).
+
+    def test_expanded_anchor_event_must_equal_the_first_witness(self):
+        value = short_expanded()
+        value["anchor_origin"]["token_event"] = token_event(0, "&", "&")
+        self.assertRejected(value, "structural anchor event differs from first witness")
+
+    def test_expanded_guard_from_another_input_is_refused(self):
+        value = short_expanded()
+        value["anchor_origin"]["expansion_guard"] = "sha256:" + "0" * 64
+        self.assertRejected(value, "structural witnesses use different inputs")
+
+    def test_expanded_first_witness_must_not_carry_an_event(self):
+        value = short_expanded()
+        value["witnesses"][0]["event"] = token_event(6, "&", "&")
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_later_witness_needs_an_event(self):
+        value = short_expanded()
+        value["witnesses"][1]["event"] = None
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_later_witness_in_another_mode_is_refused(self):
+        value = short_expanded()
+        value["witnesses"][1]["event"]["lexical_mode"] = "Iyi"
+        self.assertRejected(value, "structural witnesses use different inputs")
+
+    def test_expanded_later_event_must_match_its_own_fields(self):
+        value = short_expanded()
+        value["witnesses"][1]["event"]["token_text"] = "x"
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_claim_writer_on_a_later_witness_is_refused(self):
+        value = short_expanded()
+        value["witnesses"][1]["event"]["byte_parts"] = [astanchor(6, 8, written(0, "Block", "ampersand"))]
+        self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_expanded_mixed_generated_and_claim_writer_is_refused(self):
+        value = short_expanded()
+        value["witnesses"][1]["event"]["byte_parts"] = [generated(7, 8, "MacroTemplate"),
+                                                        astanchor(7, 8, written(0, "Block", "ampersand"))]
+        self.assertRejected(value, "invalid structural witness provenance")
+
+
+class StructuralBudgetTests(unittest.TestCase):
+    """Offsets and graph budgets for StructuralName, enforced by the shared origin bounds."""
+
+    def test_depth_bound_is_enforced(self):
+        with self.assertRaises(ValueError) as caught:
+            frames.origin(short_written(), depth=129)
+        self.assertEqual(str(caught.exception), "invalid origin depth")
+
+    def test_oversized_structural_graph_is_refused_before_validation(self):
+        value = short_expanded()
+        value["padding"] = "a" * (9 * 1024 * 1024)
+        with self.assertRaises(ValueError) as caught:
+            frames.checked_origin(value)
+        self.assertEqual(str(caught.exception), "origin size limit exceeded")
+
+
+class FreshIndexOrderTests(unittest.TestCase):
+    """Across one capture, fresh indices strictly increase with witness offset; gaps are allowed."""
+
+    def assertRefused(self, entries, message):
+        with self.assertRaises(ValueError) as caught:
+            frames.fresh_index_order(entries)
+        self.assertEqual(str(caught.exception), message)
+
+    def test_increasing_indices_with_gaps_are_accepted(self):
+        self.assertIsNone(frames.fresh_index_order([(6, 0), (20, 3), (30, 4)]))
+
+    def test_entries_are_ordered_by_offset_before_checking(self):
+        self.assertIsNone(frames.fresh_index_order([(20, 1), (6, 0)]))
+
+    def test_decreasing_indices_are_refused(self):
+        self.assertRefused([(6, 3), (20, 1)], "fresh index order differs")
+
+    def test_repeated_index_is_refused(self):
+        self.assertRefused([(6, 2), (20, 2)], "fresh index order differs")
+
+    def test_colliding_offsets_are_refused(self):
+        self.assertRefused([(6, 0), (6, 1)], "fresh index offsets collide")
+
+    def test_non_integer_entries_are_refused(self):
+        self.assertRefused([(6, "0")], "invalid provenance integer")
 
 
 if __name__ == "__main__":
