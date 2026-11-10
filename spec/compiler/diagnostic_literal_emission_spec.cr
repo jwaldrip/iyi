@@ -24,6 +24,10 @@ private class LiteralWitnessWalk < Iyi::Visitor
     @nodes << node
     true
   end
+
+  def visit(node)
+    true
+  end
 end
 
 private def literal_emission_literal_only?(node : Iyi::StringInterpolation) : Bool
@@ -203,13 +207,13 @@ end
 # printed bytes that generated text must cover ("" when there is none to check).
 private def literal_emission_splice_forms : Hash(String, {String, String})
   {
-    "string"           => {%(macro literal_form\n  {{ "a\\"b" }}\nend\n), %("a\\"b")},
-    "symbol"           => {%(macro literal_form\n  {{ :"x y" }}\nend\n), %(:"x y")},
-    "char"             => {%(macro literal_form\n  {{ 'c' }}\nend\n), %('c')},
-    "regex"            => {%(macro literal_form\n  {{ /a\\/b/i }}\nend\n), %(a\\/b)},
-    "percent regex"    => {%(macro literal_form\n  {{ %r() }}\nend\n), ""},
-    "command"          => {%(macro literal_form(value)\n  {{ value }}\nend\n), "ls"},
-    "interpolation"    => {%(macro literal_form\n  {{ "e\#{1}f" }}\nend\n), "e"},
+    "string"           => {"macro literal_form\n  {{ \"a\\\"b\" }}\nend\n", "\"a\\\"b\""},
+    "symbol"           => {"macro literal_form\n  {{ :\"x y\" }}\nend\n", ":\"x y\""},
+    "char"             => {"macro literal_form\n  {{ 'c' }}\nend\n", "'c'"},
+    "regex"            => {"macro literal_form\n  {{ /a\\/b/i }}\nend\n", "a\\/b"},
+    "percent regex"    => {"macro literal_form\n  {{ %r() }}\nend\n", ""},
+    "command"          => {"macro literal_form(value)\n  {{ value }}\nend\n", "ls"},
+    "interpolation"    => {"macro literal_form\n  {{ \"e\#{1}f\" }}\nend\n", "e"},
     "heredoc argument" => {"macro literal_form\n  {{ <<-EOS\n  a\n  EOS\n  }}\nend\n", %("a\\n")},
     "verbatim text"    => {"macro literal_form\nx = \"v\"\ny = :w\nz = 'c'\nend\n", %(x = "v")},
   }
