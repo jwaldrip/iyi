@@ -2601,6 +2601,7 @@ module Iyi
   # not authoritative until bound to an input and validated by the census.
   enum DiagnosticLiteralProduction
     Delimiter
+    StringPiece
     SymbolToken
     PercentSymbolElement
   end
@@ -2637,7 +2638,7 @@ module Iyi
                    witnesses : Array(DiagnosticLiteralWitness))
       raise ArgumentError.new("invalid literal production span") unless @start_offset >= 0 && @end_offset > @start_offset
       raise ArgumentError.new("literal production lacks witnesses") if witnesses.empty?
-      if @production.delimiter? || @production.percent_symbol_element?
+      if @production.delimiter? || @production.percent_symbol_element? || @production.string_piece?
         if @delimiter_kind.nil? || @nest.nil? || @end_delimiter.nil? || @allow_escapes.nil?
           raise ArgumentError.new("delimiter production lacks delimiter state")
         end
@@ -2850,6 +2851,9 @@ module Iyi
 
     private def self.verify_witnesses!(segment : DiagnosticLiteralProductionSegment, previous_end : Int32?,
                                        input_bytesize : Int32) : Nil
+      if segment.production.string_piece?
+        raise ArgumentError.new("string piece requires independent parser replay")
+      end
       if segment.production.symbol_token?
         count = 0
         segment.each_witness do |witness|

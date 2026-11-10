@@ -2362,6 +2362,8 @@ module Iyi
             name_offset = @token.input_offset
             name_snapshot = diagnostic_current_token_snapshot
             diagnostic_identifier = @token.type.ident? || @token.type.const?
+            # An operator method after `.` (`f.+(1)`) is named by its own observed token.
+            diagnostic_operator = !diagnostic_identifier && DiagnosticSourceNameToken::NAME_OPERATORS.includes?(name)
             end_location = token_end_location
 
             @wants_regex = false
@@ -2452,7 +2454,7 @@ module Iyi
             atomic.end_location = block.try(&.end_location) || call_args.try(&.end_location) || end_location
             atomic.at(location)
             atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
-            diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin, token_snapshot: name_snapshot) if diagnostic_identifier
+            diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin, token_snapshot: name_snapshot) if diagnostic_identifier || diagnostic_operator
             atomic
           end
         when .op_lsquare_rsquare?
@@ -2468,6 +2470,7 @@ module Iyi
           atomic.name_location = name_location
           atomic.end_location = end_location
           atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
+          diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin, token_snapshot: name_snapshot)
           atomic.name_size = 0 if atomic.is_a?(Call)
           atomic
         when .op_lsquare?
@@ -4946,14 +4949,28 @@ module Iyi
       pointer
     end
 
+    # A constituent of a delimited literal, in source order. The span and the
+    # delimiter state are the token's own, read as the token is scanned. A
+    # constituent without them carries no evidence, and the strict check refuses it.
     record Piece,
       value : String | ASTNode,
-      line_number : Int32
+      line_number : Int32,
+      location : Location? = nil,
+      input_start : Int32? = nil,
+      input_end : Int32? = nil,
+      delimiter_state : Token::DelimiterState? = nil,
+      literal_source : StringLiteral? = nil
+
+    # The parser input literal offsets index: the source, with the byte order
+    # mark restored when the lexer stripped it.
+    private def diagnostic_literal_input : String
+      @diagnostic_literal_input ||= @input_offset_base == 0 ? string : "\uFEFF#{string}"
+    end
 
     private def diagnostic_literal(node : ASTNode, decoded : String, ranges : Array({Int32, Int32}),
                                    productions : Array(DiagnosticLiteralProductionSegment)? = nil) : Nil
       return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
-      input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
+      input = diagnostic_literal_input
       ::raise ArgumentError.new("diagnostic literal input exceeds authority budget") if input.bytesize > 64 * 1024 * 1024
       segments = ranges.map do |range|
         start_offset, end_offset = range
@@ -4974,7 +4991,7 @@ module Iyi
     private def diagnostic_production(production : DiagnosticLiteralProduction, start_offset : Int32,
                                       end_offset : Int32, state : Token::DelimiterState?,
                                       witnesses : Array(DiagnosticLiteralWitness)) : DiagnosticLiteralProductionSegment
-      input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
+      input = diagnostic_literal_input
       unless start_offset >= 0 && end_offset > start_offset && end_offset <= input.bytesize
         ::raise ArgumentError.new("invalid diagnostic literal production")
       end
@@ -5114,9 +5131,36 @@ module Iyi
       else
         pieces.map do |piece|
           value = piece.value
-          value.is_a?(String) ? StringLiteral.new(value) : value
+          value.is_a?(String) ? diagnostic_piece_literal_node(piece) : value
         end
       end
+    end
+
+    # The node for one string constituent of an interpolated literal. Its value
+    # is the token's own. Its evidence binds the token's bytes and delimiter
+    # state, or, when the constituent was a folded constant, the evidence of the
+    # constant it was folded from.
+    private def diagnostic_piece_literal_node(piece : Piece) : StringLiteral
+      node = StringLiteral.new(piece.value.as(String)).at(piece.location)
+      if source = piece.literal_source
+        diagnostic_copy_literal(source, node, "value")
+      elsif (state = piece.delimiter_state) && (start_offset = piece.input_start) && (end_offset = piece.input_end)
+        diagnostic_string_piece(node, start_offset, end_offset, state)
+      end
+      node
+    end
+
+    # One constituent of a string literal, bound as a literal of its own. The
+    # span is the token's, so duplicate text binds to its own position and no
+    # text is searched. Only a string delimiter has a production the verifier
+    # accepts; every other lexical form stays unattested and is refused.
+    private def diagnostic_string_piece(node : StringLiteral, start_offset : Int32, end_offset : Int32,
+                                        state : Token::DelimiterState) : Nil
+      return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+      return unless state.kind.string? && start_offset >= 0 && end_offset > start_offset
+      witness = DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, start_offset, end_offset)
+      production = diagnostic_production(DiagnosticLiteralProduction::StringPiece, start_offset, end_offset, state, [witness])
+      diagnostic_literal(node, node.value, [{start_offset, end_offset}], [production])
     end
 
     private def combine_stringliteral_pieces(pieces, delimiter_state)
@@ -5136,7 +5180,8 @@ module Iyi
         case @token.type
         when .string?
           literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, @token.input_offset, @token.input_end))
-          pieces << Piece.new(@token.value.to_s, @token.line_number)
+          pieces << Piece.new(@token.value.to_s, @token.line_number, @token.location,
+            @token.input_offset, @token.input_end, @token.delimiter_state)
 
           next_string_token(delimiter_state)
           delimiter_state = @token.delimiter_state
@@ -5165,10 +5210,15 @@ module Iyi
           next_token_skip_space_or_newline
 
           line_number = @token.line_number
-          exp = consume_interpolation(delimiter_state)
+          exp = consume_interpolation_node(delimiter_state)
           literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationEnd, @token.input_offset, @token.input_end))
           next_string_token delimiter_state
-          pieces << Piece.new(exp, line_number)
+          if exp.is_a?(StringLiteral) && !delimiter_state.kind.heredoc?
+            # A folded constant keeps its own evidence, copied onto the piece.
+            pieces << Piece.new(exp.value, line_number, exp.location, literal_source: exp)
+          else
+            pieces << Piece.new(exp, line_number)
+          end
           delimiter_state = @token.delimiter_state
         end
       end
@@ -5177,6 +5227,20 @@ module Iyi
     end
 
     def consume_interpolation(delimiter_state)
+      exp = consume_interpolation_node(delimiter_state)
+
+      # We cannot reduce `StringLiteral` of interpolation inside heredoc into `String`
+      # because heredoc try to remove its indentation.
+      if exp.is_a?(StringLiteral) && !delimiter_state.kind.heredoc?
+        exp = exp.value
+      end
+
+      exp
+    end
+
+    # The interpolated expression as parsed, before a constant string is folded
+    # into its value, so a delimited literal can keep the node's evidence.
+    private def consume_interpolation_node(delimiter_state)
       old_inside_interpolation = @inside_interpolation
       @inside_interpolation = true
 
@@ -5189,13 +5253,6 @@ module Iyi
 
       @token.delimiter_state = delimiter_state
       @inside_interpolation = old_inside_interpolation
-
-      # We cannot reduce `StringLiteral` of interpolation inside heredoc into `String`
-      # because heredoc try to remove its indentation.
-      if exp.is_a?(StringLiteral) && !delimiter_state.kind.heredoc?
-        exp = exp.value
-      end
-
       exp
     end
 
@@ -5239,6 +5296,9 @@ module Iyi
 
       delimiter_state, _options, end_location = consume_delimiter pieces, delimiter_state
 
+      # iyi: heredoc constituents carry no evidence. The verifier has no heredoc
+      # production, so their StringLiterals stay unattested and the strict check
+      # refuses them.
       result = combine_pieces(pieces, delimiter_state)
       if result.is_a?(StringInterpolation)
         node.expressions.concat(result.expressions)
