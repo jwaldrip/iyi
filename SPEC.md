@@ -9548,7 +9548,7 @@ and no symbol defined by two of them. So "this module's own definitions" is a
 set of whole object files rather than a filter inside one, and carrying them is
 copying bytes rather than teaching codegen a second way to lay out a program.
 
-The opt-in closure-frame provenance proof uses frame-manifest schema 4. It
+The opt-in closure-frame provenance proof contract uses frame-manifest schema 5. It
 records the ordered sections and symbol table from the exact object and
 executable bytes, including symbol names as Base64-encoded bytes. It supports
 thin little-endian 64-bit Mach-O on arm64 and x86-64; unsupported containers,
@@ -9570,8 +9570,65 @@ private symbols and object bytes compared with older compilers. It does not
 change the public method ABI or closure calling convention. Older artifacts
 with colliding names still fail the strict proof.
 
-The `.iyimod` format remains 63, its diagnostic section schema remains 3,
-and the separate link-input proof remains schema 1.
+The `.iyimod` outer format remains 63, its diagnostic section uses schema 4,
+and the separate link-input proof remains schema 1. Earlier diagnostic and
+frame-manifest schemas are explicitly rejected, not interpreted as the new
+schema; artifacts carrying the earlier diagnostic schema must be rebuilt.
+
+**Source-name composition contract.** Macro expansion can place generated
+prefixes or suffixes beside names copied from source. A parsed name records
+the complete observed token and an ordered list of its contributions, rather
+than treating an interior source name as an independent AST node. For example,
+`@@{{name}}` can produce `@@empty`: generated `@@` and the copied `empty`
+both contribute to the class-variable name. The receiving parser determines
+the `class_variable` role; the contribution retains its original `Call:method`
+origin and, where present, its local-binding ancestry. The same source name
+used as a definition name has the receiving definition-name role instead.
+Nested expressions keep their own origins.
+
+Name metadata is capture-only and belongs to the AST field that owns the name,
+in a closed structural slot. It is captured from observed tokens, not inferred
+from matching text or a definition keyword. Each copied source token records
+its lexical origin and optional binding origin, context, original input SHA-256
+and byte size, half-open input byte bounds, lexical mode, token kind and raw
+text. Bounds refer to the complete input, including a stripped UTF-8 BOM; an
+artifact retains them rather than substituting its rendered coordinates.
+Names may span multiple tokens, and each token keeps its own input identity.
+
+An expanded occurrence records the invocation and macro definition origins,
+expansion guard, generated token bounds, kind, text, lexical mode, anchor kind,
+receiving role, name context when applicable, and ordered emission parts:
+`Generated`, `AstAnchor`, or `NameSplice`. A structural `AstAnchor` is the
+sole part for its complete anchor token and must match its exact kind and role.
+A `NameSplice` records its emitter, source token, selected byte slice and
+projection; its bytes must match exactly, and its source role is not rewritten.
+Name splices authorize name occurrences, not unrelated structural anchors such
+as proc arrows, block openers or definition keywords. Whole-token copying is
+the default; a substring requires a closed, implemented projection whose
+validator checks the actual transformation, not arbitrary recorded offsets.
+
+The receiving token must have complete, unambiguous coverage. Overlapping
+writers, missing bytes, fragments extending outside the token, duplicate
+structural keys, unconsumed events, unknown lineage, and structured children
+without their own evidence are rejected. Distinct roles at the same offset
+remain valid. Consumption occurs only after the grammar accepts the occurrence,
+not during lexer lookahead. Repeated and multi-input contributions remain
+ordered, and adjacent parts coalesce only when their complete attribution
+matches. Source and output text must be valid UTF-8, with selected slices on
+UTF-8 boundaries. The existing signed-number operator slice remains an
+operator slice, and the empty-tuple projection exception is limited to its
+existing producer, emitter and covering-range checks.
+
+All contribution fields and the complete lexical, binding and expansion
+ancestry participate in transport and strict comparison, including when an
+artifact is imported without source and emitted again. Parents are interned
+before their users; the 128-edge and 8 MiB graph limits include new text,
+parts and edges. Constructed `MacroId` values, stringification and calculated
+strings have generated attribution: copied location metadata does not prove
+character correspondence. Arbitrary string-transformation character maps are
+outside this contract. Capture must not change macro output, parser semantics,
+normalization, selected objects, linkage or runtime output, including under
+`--crystal`.
 
 A module's units are the module type itself, where its own `pub def`s are
 owned: plus every non-generic type declared under it, recursively.
