@@ -97,19 +97,22 @@ end
 
 describe "bound literal presence (D2 fail-closed)" do
   # A literal node with no replay evidence must not pass in bound mode by omission.
+  # The literal is the root of the walk, so no name-bearing parent can fail first.
   it "refuses a StringLiteral with no literal evidence" do
     input, root, journal = fun_name_spec_replay("value = 1\n", "/spec/binding/d2_string.iyi")
-    bare = Iyi::Assign.new(Iyi::Var.new("value"), Iyi::StringLiteral.new("abc"))
+    identity = Iyi::DiagnosticModuleIdentity.from(root, input, journal)
+    literal = Iyi::StringLiteral.new("abc")
     expect_raises(ArgumentError, "literal evidence requires journal literal binding") do
-      Iyi::DiagnosticEvidenceBinding.new(input, journal, Iyi::DiagnosticModuleIdentity.from(root, input, journal), Set(UInt64).new).verify!(bare)
+      Iyi::DiagnosticEvidenceBinding.new(input, journal, identity, Set(UInt64).new).verify!(literal)
     end
   end
 
   it "refuses a CharLiteral with no literal evidence" do
     input, root, journal = fun_name_spec_replay("value = 1\n", "/spec/binding/d2_char.iyi")
-    bare = Iyi::Assign.new(Iyi::Var.new("value"), Iyi::CharLiteral.new('a'))
+    identity = Iyi::DiagnosticModuleIdentity.from(root, input, journal)
+    literal = Iyi::CharLiteral.new('a')
     expect_raises(ArgumentError, "literal evidence requires journal literal binding") do
-      Iyi::DiagnosticEvidenceBinding.new(input, journal, Iyi::DiagnosticModuleIdentity.from(root, input, journal), Set(UInt64).new).verify!(bare)
+      Iyi::DiagnosticEvidenceBinding.new(input, journal, identity, Set(UInt64).new).verify!(literal)
     end
   end
 end
