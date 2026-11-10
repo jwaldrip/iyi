@@ -58,13 +58,13 @@ describe "literal form parser evidence" do
   it "retains evidence on scalar owners and annotation named arguments" do
     required = literal_forms_parse(%q(require "foo")).as(Iyi::Require)
     literal_forms_production(required, "string").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
-    asm = literal_forms_parse(%q(asm("nop" : "=r"(x) : : "memory" : "volatile"))).as(Iyi::Asm)
-    literal_forms_production(asm, "text").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
-    literal_forms_production(asm.outputs.not_nil!.first, "constraint").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
-    literal_forms_production(asm, "clobbers").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
-    literal_forms_production(asm, "options").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
-    annotation = literal_forms_parse(%q(@[Link("name": "c")])).as(Iyi::Annotation)
-    literal_forms_production(annotation.named_args.not_nil!.first, "name").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
+    asm_node = literal_forms_parse(%q(asm("nop" : "=r"(x) : : "memory" : "volatile"))).as(Iyi::Asm)
+    literal_forms_production(asm_node, "text").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
+    literal_forms_production(asm_node.outputs.not_nil!.first, "constraint").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
+    literal_forms_production(asm_node, "clobbers").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
+    literal_forms_production(asm_node, "options").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
+    annotation_node = literal_forms_parse(%q(@[Link("name": "c")])).as(Iyi::Annotation)
+    literal_forms_production(annotation_node.named_args.not_nil!.first, "name").production.should eq(Iyi::DiagnosticLiteralProduction::Delimiter)
   end
 
   it "keeps heredoc indentation output and records the opener and closer" do
@@ -133,11 +133,11 @@ describe "literal form parser evidence" do
     node = parser.parse.as(Iyi::Asm)
     observations = parser.diagnostic_scalar_grammar_observations
     journal = parser.diagnostic_lexical_observations
-    asm = observations.find { |item| item.owner.same?(node) }.not_nil!
+    asm_observation = observations.find { |item| item.owner.same?(node) }.not_nil!
     operand = observations.find { |item| item.owner.same?(node.outputs.not_nil!.first) }.not_nil!
-    journal[asm.first.ordinal].token_text.should eq("asm")
-    journal[asm.open.not_nil!.ordinal].token_text.should eq("(")
-    journal[asm.close.ordinal].token_text.should eq(")")
+    journal[asm_observation.first.ordinal].token_text.should eq("asm")
+    journal[asm_observation.open.not_nil!.ordinal].token_text.should eq("(")
+    journal[asm_observation.close.ordinal].token_text.should eq(")")
     journal[operand.first.ordinal].token_text.should eq("\"")
     journal[operand.open.not_nil!.ordinal].token_text.should eq("(")
     journal[operand.close.ordinal].token_text.should eq(")")
@@ -254,5 +254,23 @@ describe "literal form parser evidence" do
       node.should be(array.elements[index])
     end
     elements.size.should eq(2)
+  end
+  it "binds all-expression interpolation wrappers to their own delimiters and pieces" do
+    parser = Iyi::Parser.new(%q(["#{x}", "#{x}"]))
+    parser.filename = "/spec/literal_forms.cr"
+    parser.diagnostic_source_file = "/spec/literal_forms.cr"
+    parser.diagnostic_capture = true
+    nodes = parser.parse.as(Iyi::ArrayLiteral).elements
+    wrappers = parser.diagnostic_interpolation_wrapper_observations
+    pieces = parser.diagnostic_interpolation_piece_observations
+    wrappers.size.should eq(2)
+    wrappers.each_with_index do |wrapper, index|
+      wrapper.owner.should be(nodes[index])
+      wrapper.delimiters.size.should eq(1)
+      wrapper.expressions.size.should eq(1)
+      piece = pieces.find { |item| item.owner.same?(wrapper.owner) }.not_nil!
+      piece.expression.should be(wrapper.expressions.first)
+    end
+    wrappers[0].delimiters.first[0].ordinal.should_not eq(wrappers[1].delimiters.first[0].ordinal)
   end
 end

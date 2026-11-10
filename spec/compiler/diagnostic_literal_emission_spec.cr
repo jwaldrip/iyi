@@ -315,7 +315,7 @@ describe "literal emission in fragment mode" do
     node = literal_emission_parse(%({"a": 1}), "/spec/emit/quoted_tuple.iyi")
     text, fragment = literal_emission_fragment(node)
     text.should eq("{a: 1}")
-    expected = fragment.anchors.find { |anchor| anchor.kind == "Name" && anchor.role == "named_entry" }.not_nil!.origin
+    expected = fragment.anchors.find { |anchor| anchor.kind == "Name" && anchor.role == "named_entry" }.not_nil!.origin.not_nil!
     restored = Iyi::Parser.new(text)
     restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
     tuple = restored.parse.as(Iyi::NamedTupleLiteral)
@@ -328,7 +328,7 @@ describe "literal emission in fragment mode" do
     node = literal_emission_parse(%(def f("e" x)\nend\n), "/spec/emit/quoted_arg.iyi")
     text, fragment = literal_emission_fragment(node)
     text.should contain("e x")
-    expected = fragment.anchors.find { |anchor| anchor.origin.is_a?(Iyi::DiagnosticOrigin::DerivedName) }.not_nil!.origin
+    expected = fragment.anchors.find { |anchor| anchor.origin.is_a?(Iyi::DiagnosticOrigin::DerivedName) }.not_nil!.origin.not_nil!
     restored = Iyi::Parser.new(text)
     restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
     def_node = restored.parse.as(Iyi::Def)
@@ -341,7 +341,7 @@ describe "literal emission in fragment mode" do
     node = literal_emission_parse(%(lib LibC\n  fun f = "c" : Void\nend\n), "/spec/emit/fun_real.iyi")
     text, fragment = literal_emission_fragment(node)
     text.should contain("fun f = c")
-    expected = fragment.anchors.find { |anchor| anchor.role == "method_name" && anchor.origin.is_a?(Iyi::DiagnosticOrigin::DerivedName) }.not_nil!.origin
+    expected = fragment.anchors.find { |anchor| anchor.role == "method_name" && anchor.origin.is_a?(Iyi::DiagnosticOrigin::DerivedName) }.not_nil!.origin.not_nil!
     restored = Iyi::Parser.new(text)
     restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
     lib_def = restored.parse.as(Iyi::LibDef)

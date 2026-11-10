@@ -22,6 +22,10 @@ module Iyi
     close : DiagnosticReplayTokenRef, expression : StringLiteral
   record DiagnosticInterpolationObservation, open : DiagnosticReplayTokenRef,
     close : DiagnosticReplayTokenRef, expression_first : DiagnosticReplayTokenRef, expression : ASTNode
+  record DiagnosticInterpolationWrapperObservation, owner : StringInterpolation,
+    delimiters : Array({DiagnosticReplayTokenRef, DiagnosticReplayTokenRef}), expressions : Array(ASTNode)
+  record DiagnosticInterpolationPieceObservation, owner : StringInterpolation, index : Int32,
+    expression : ASTNode, first : DiagnosticReplayTokenRef, last : DiagnosticReplayTokenRef
   record DiagnosticRegexOptionsObservation, owner : RegexLiteral,
     opener : DiagnosticReplayTokenRef, close : DiagnosticReplayTokenRef,
     after : DiagnosticReplayTokenRef, modifiers : Array(DiagnosticReplayTokenRef)
@@ -282,6 +286,8 @@ module Iyi
     @diagnostic_scalar_grammar_observations = [] of DiagnosticScalarGrammarObservation
     @diagnostic_folded_string_observations = [] of DiagnosticFoldedStringObservation
     @diagnostic_interpolation_observations = [] of DiagnosticInterpolationObservation
+    @diagnostic_interpolation_wrapper_observations = [] of DiagnosticInterpolationWrapperObservation
+    @diagnostic_interpolation_piece_observations = [] of DiagnosticInterpolationPieceObservation
     @diagnostic_regex_options_observations = [] of DiagnosticRegexOptionsObservation
     @diagnostic_literal_owner_observations = [] of DiagnosticLiteralOwnerObservation
     @diagnostic_literal_transfer_observations = [] of DiagnosticLiteralTransferObservation
@@ -301,6 +307,16 @@ module Iyi
 
     def diagnostic_interpolation_observations : Array(DiagnosticInterpolationObservation)
       @diagnostic_interpolation_observations.dup
+    end
+
+    def diagnostic_interpolation_wrapper_observations : Array(DiagnosticInterpolationWrapperObservation)
+      @diagnostic_interpolation_wrapper_observations.map do |item|
+        DiagnosticInterpolationWrapperObservation.new(item.owner, item.delimiters.dup, item.expressions.dup)
+      end
+    end
+
+    def diagnostic_interpolation_piece_observations : Array(DiagnosticInterpolationPieceObservation)
+      @diagnostic_interpolation_piece_observations.dup
     end
 
     def diagnostic_regex_options_observations : Array(DiagnosticRegexOptionsObservation)
@@ -365,6 +381,8 @@ module Iyi
       scalar_count = @diagnostic_scalar_grammar_observations.size
       fold_count = @diagnostic_folded_string_observations.size
       interpolation_count = @diagnostic_interpolation_observations.size
+      wrapper_count = @diagnostic_interpolation_wrapper_observations.size
+      wrapper_piece_count = @diagnostic_interpolation_piece_observations.size
       regex_count = @diagnostic_regex_options_observations.size
       transfer_count = @diagnostic_literal_transfer_observations.size
       heredoc_count = @diagnostic_heredoc_group_observations.size
@@ -379,6 +397,8 @@ module Iyi
         @diagnostic_scalar_grammar_observations.pop(@diagnostic_scalar_grammar_observations.size - scalar_count)
         @diagnostic_folded_string_observations.pop(@diagnostic_folded_string_observations.size - fold_count)
         @diagnostic_interpolation_observations.pop(@diagnostic_interpolation_observations.size - interpolation_count)
+        @diagnostic_interpolation_wrapper_observations.pop(@diagnostic_interpolation_wrapper_observations.size - wrapper_count)
+        @diagnostic_interpolation_piece_observations.pop(@diagnostic_interpolation_piece_observations.size - wrapper_piece_count)
         @diagnostic_regex_options_observations.pop(@diagnostic_regex_options_observations.size - regex_count)
         @diagnostic_literal_transfer_observations.pop(@diagnostic_literal_transfer_observations.size - transfer_count)
         @diagnostic_heredoc_group_observations.pop(@diagnostic_heredoc_group_observations.size - heredoc_count)
@@ -5436,6 +5456,10 @@ module Iyi
       pieces = [] of Piece
 
       delimiter_state, options, end_location, literal_end, literal_close, regex_modifiers = consume_delimiter pieces, delimiter_state, literal_witnesses
+      wrapper_delimiters = @diagnostic_lexical_observations ? [] of {DiagnosticReplayTokenRef, DiagnosticReplayTokenRef} : nil
+      if wrapper_delimiters && regex_opener && literal_close
+        wrapper_delimiters << {regex_opener, literal_close}
+      end
       diagnostic_segments.try &.<<({diagnostic_start, literal_end})
       if (productions = diagnostic_productions) && (witnesses = literal_witnesses)
         productions << diagnostic_production(DiagnosticLiteralProduction::Delimiter, diagnostic_start, literal_end, initial_delimiter_state, witnesses)
@@ -5447,6 +5471,7 @@ module Iyi
           skip_space
 
           if passed_backslash_newline && @token.type.delimiter_start? && @token.delimiter_state.kind.string?
+            continuation_opener = diagnostic_replay_token_ref
             continuation_start = @token.input_offset
             if diagnostic_productions
               literal_witnesses = [] of DiagnosticLiteralWitness
@@ -5459,6 +5484,9 @@ module Iyi
             next_string_token(delimiter_state)
             delimiter_state = @token.delimiter_state
             delimiter_state, options, end_location, literal_end, literal_close, regex_modifiers = consume_delimiter pieces, delimiter_state, literal_witnesses
+            if wrapper_delimiters && continuation_opener && literal_close
+              wrapper_delimiters << {continuation_opener, literal_close}
+            end
             diagnostic_segments.try &.<<({continuation_start, literal_end})
             if (productions = diagnostic_productions) && (witnesses = literal_witnesses)
               productions << diagnostic_production(DiagnosticLiteralProduction::Delimiter, continuation_start, literal_end, initial_delimiter_state, witnesses)
@@ -5472,6 +5500,10 @@ module Iyi
 
       result = combine_pieces(pieces, delimiter_state).at(location).at_end(end_location)
       diagnostic_literal(result, result.value, diagnostic_segments, diagnostic_productions) if result.is_a?(StringLiteral) && diagnostic_segments
+      if result.is_a?(StringInterpolation) && wrapper_delimiters
+        diagnostic_record_interpolation_wrapper(result, pieces, wrapper_delimiters)
+      end
+
       payload = result
 
       case delimiter_state.kind
@@ -5513,6 +5545,32 @@ module Iyi
       end
 
       result
+    end
+
+    private def diagnostic_record_interpolation_wrapper(result : StringInterpolation, pieces : Array(Piece),
+                                                        delimiters : Array({DiagnosticReplayTokenRef, DiagnosticReplayTokenRef})) : Nil
+      @diagnostic_interpolation_wrapper_observations << DiagnosticInterpolationWrapperObservation.new(result,
+        delimiters.dup, result.expressions.dup)
+      pieces.each_with_index do |piece, index|
+        expression = result.expressions[index]
+        source = piece.literal_source || piece.value.as?(ASTNode)
+        if source
+          ordinal = @diagnostic_interpolation_observations.rindex { |item| item.expression.same?(source) } ||
+            ::raise ArgumentError.new("interpolation piece lacks replay observation")
+          occurrence = @diagnostic_interpolation_observations[ordinal]
+          first = occurrence.open
+          last = occurrence.close
+        else
+          start_offset = piece.input_start || ::raise ArgumentError.new("interpolation text lacks replay start")
+          end_offset = piece.input_end || ::raise ArgumentError.new("interpolation text lacks replay end")
+          journal = @diagnostic_lexical_observations.not_nil!
+          ordinal = journal.rindex { |token| token.input_start == start_offset && token.input_end == end_offset && token.token_kind == "STRING" } ||
+            ::raise ArgumentError.new("interpolation text is absent from replay journal")
+          first = DiagnosticReplayTokenRef.new(ordinal)
+          last = first
+        end
+        @diagnostic_interpolation_piece_observations << DiagnosticInterpolationPieceObservation.new(result, index, expression, first, last)
+      end
     end
 
     private def combine_pieces(pieces, delimiter_state)
@@ -5582,7 +5640,7 @@ module Iyi
         case @token.type
         when .string?
           literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, @token.input_offset, @token.input_end))
-          if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+          if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_lexical_observations
             pieces << Piece.new(@token.value.to_s, @token.line_number,
               @token.input_offset, @token.input_end, @token.delimiter_state)
           else
@@ -5625,7 +5683,7 @@ module Iyi
           next_string_token delimiter_state
           if exp.is_a?(StringLiteral) && !delimiter_state.kind.heredoc?
             # A folded constant keeps its own evidence, copied onto the piece.
-            if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+            if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_lexical_observations
               pieces << Piece.new(exp.value, line_number, literal_source: exp)
             else
               pieces << Piece.new(exp.value, line_number)
@@ -5783,8 +5841,11 @@ module Iyi
       opening_state = @token.delimiter_state
       opening = diagnostic_replay_token_ref
       opener = diagnostic_type_syntax_token
+      pending_wrappers = @diagnostic_lexical_observations ? [] of {StringInterpolation, Array(Piece)} : nil
       strings, end_location, closing_start, closing_end, close = parse_string_or_symbol_array_strings do |pieces|
-        combine_pieces(pieces, @token.delimiter_state)
+        element = combine_pieces(pieces, @token.delimiter_state)
+        pending_wrappers.try &.<<({element, pieces.dup}) if element.is_a?(StringInterpolation)
+        element
       end
       if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
         strings.each do |node|
@@ -5802,6 +5863,9 @@ module Iyi
       node = ArrayLiteral.new(strings, type).at_end(end_location)
       if opening && close
         @diagnostic_percent_group_observations << DiagnosticPercentGroupObservation.new(node, opening, close, strings.dup)
+        if pending = pending_wrappers
+          pending.each { |wrapper, pieces| diagnostic_record_interpolation_wrapper(wrapper, pieces, [{opening, close}]) }
+        end
       end
       node
     end
@@ -5878,7 +5942,7 @@ module Iyi
         case @token.type
         when .string?
           percent_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, @token.input_offset, @token.input_end))
-          if percent_witnesses
+          if percent_witnesses || @diagnostic_lexical_observations
             pieces << Piece.new(@token.value.to_s, @token.line_number, @token.input_offset, @token.input_end, delimiter_state)
           else
             pieces << Piece.new(@token.value.to_s, @token.line_number)
