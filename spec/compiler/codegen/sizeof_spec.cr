@@ -246,6 +246,121 @@ describe "Code gen: sizeof" do
       CODE
   end
 
+  describe "folded sizeof matches the codegen stride" do
+    it "doesn't fold sizeof of a tuple holding a module" do
+      both_modes_true?(folded_sizeof_program("{Int32, Base}", "", "early.to_u64 == stride")).should be_true
+    end
+
+    it "keeps copied array elements of a tuple holding a module" do
+      both_modes_true?(folded_sizeof_program("{Int32, Base}", "copy = [{1, bar.as(Base)}].dup", "copy[0][1].is_a?(Bar) && copy[0][1].same?(bar) && early.to_u64 == stride")).should be_true
+    end
+
+    it "doesn't fold sizeof of a named tuple holding a module" do
+      both_modes_true?(folded_sizeof_program("NamedTuple(x: Int32, b: Base)", "", "early.to_u64 == stride")).should be_true
+    end
+
+    it "doesn't fold sizeof of a union holding a module" do
+      both_modes_true?(folded_sizeof_program("Base | Int32", "", "early.to_u64 == stride")).should be_true
+    end
+
+    it "doesn't fold sizeof of a static array of a module" do
+      both_modes_true?(folded_sizeof_program("StaticArray(Base, 2)", "", "early.to_u64 == stride")).should be_true
+    end
+
+    it "doesn't fold sizeof of a struct with a module field" do
+      extra = <<-EXTRA
+        struct Holder
+          def initialize(@b : Base)
+          end
+        end
+
+        holder = Holder.new(bar.as(Base))
+        EXTRA
+      both_modes_true?(folded_sizeof_program("Holder", extra, "holder.b.is_a?(Bar) && early.to_u64 == stride")).should be_true
+    end
+
+    it "doesn't fold sizeof of an alias of a tuple holding a module" do
+      both_modes_true?(folded_sizeof_program("Pair", "alias Pair = {Int32, Base}", "early.to_u64 == stride")).should be_true
+    end
+
+    it "still folds sizeof of a recursive struct held through a pointer" do
+      extra = <<-EXTRA
+        struct Node
+          def initialize(@next : Pointer(Node))
+          end
+        end
+
+        node = Node.new(Pointer(Node).null)
+        EXTRA
+      both_modes_true?(folded_sizeof_program("Node", extra, "early.to_u64 == stride")).should be_true
+    end
+
+    it "still folds sizeof of a class holding a module, which is a pointer" do
+      both_modes_true?(folded_sizeof_program("Bar", "", "early.to_u64 == stride")).should be_true
+    end
+
+    it "takes offsetof of a field whose preceding fields are settled" do
+      run(<<-CODE).to_i.should eq(0)
+        module Base
+        end
+
+        class Bar
+          include Base
+        end
+
+        struct Pair
+          def initialize(@a : Int32, @b : Base)
+          end
+        end
+
+        Pair.new(1, Bar.new.as(Base))
+        offsetof(Pair, @a)
+        CODE
+    end
+
+    it "refuses offsetof of a field after an unsettled module field" do
+      expect_raises(Iyi::TypeException, /layout is not settled yet/) do
+        run(<<-CODE)
+          module Base
+          end
+
+          class Bar
+            include Base
+          end
+
+          struct Pair
+            def initialize(@a : Int32, @b : Base)
+            end
+          end
+
+          Pair.new(1, Bar.new.as(Base))
+          offsetof(Pair, @b)
+          CODE
+      end
+    end
+  end
+
+  describe "instance_sizeof with an unsettled field" do
+    it "compiles and runs a class holding a module field" do
+      run(<<-CODE).to_b.should be_true
+        module Base
+        end
+
+        class Bar
+          include Base
+        end
+
+        class Holder
+          def initialize(@b : Base)
+          end
+        end
+
+        holder = Holder.new(Bar.new.as(Base))
+        instance_sizeof(Holder) > 0
+        CODE
+    end
+  end
+
   describe "alignof" do
     it "gets alignof primitive types" do
       run("alignof(Int32)").to_i.should eq(4)
@@ -357,3 +472,34 @@ describe "Code gen: sizeof" do
     end
   end
 end
+
+private def folded_sizeof_program(type : String, extra : String, check : String) : String
+  <<-CODE
+    module Base
+    end
+
+    class Bar
+      include Base
+    end
+
+    struct Foo(T)
+      include Base
+
+      def initialize(@x : T)
+      end
+    end
+
+    bar = Bar.new
+    #{extra}
+    early = sizeof(#{type})
+    Foo({Int32, Int32, Int32, Int32}).new({1, 2, 3, 4})
+    stride = (Pointer(#{type}).null + 1).address
+    #{check}
+    CODE
+end
+
+# Runs the program through the JIT and through the prelude-compiled executable.
+private def both_modes_true?(code : String) : Bool
+  run(code).to_b && run(%(require "prelude"\n#{code})).to_b
+end
+

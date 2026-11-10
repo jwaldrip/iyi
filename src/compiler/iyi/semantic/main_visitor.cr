@@ -3228,8 +3228,7 @@ module Iyi
       # Try to resolve the node right now to a number literal
       # (useful for sizeof/alignof inside as a generic type argument, but also
       # to make it easier for LLVM to optimize things)
-      if type && !node.exp.is_a?(TypeOf) &&
-         !(type.module? || (type.abstract? && type.struct?))
+      if type && !node.exp.is_a?(TypeOf) && settled_layout?(type)
         expanded = NumberLiteral.new(yield(type).to_s, :i32)
         expanded.type = @program.int32
         node.expanded = expanded
@@ -3254,7 +3253,8 @@ module Iyi
       # Try to resolve the instance_sizeof right now to a number literal
       # (useful for instance_sizeof inside as a generic type argument, but also
       # to make it easier for LLVM to optimize things)
-      if type && type.devirtualize.class? && !type.metaclass? && !type.struct? && !node.exp.is_a?(TypeOf)
+      if type && type.devirtualize.class? && !type.metaclass? && !type.struct? &&
+         !node.exp.is_a?(TypeOf) && settled_instance_layout?(type)
         expanded = NumberLiteral.new(yield(type).to_s, :i32)
         expanded.type = @program.int32
         node.expanded = expanded
@@ -3275,6 +3275,79 @@ module Iyi
         "instance size"
       in InstanceAlignOf
         "instance alignment"
+      end
+    end
+
+    # A layout is open while its own shape can still change: a module gains
+    # implementors, and an abstract or virtual struct gains subtypes.
+    private def open_layout?(type : Type) : Bool
+      type.module? || (type.abstract? && type.struct?) ||
+        (type.is_a?(VirtualType) && type.base_type.struct?)
+    end
+
+    # Whether the size and alignment of a value of `type` are final, so folding
+    # them now is safe. Pointers, procs and classes have a fixed size whatever
+    # they hold, so the walk stops there. Tuples, unions, static arrays and
+    # struct fields are held by value, so the walk continues through them. A
+    # type already on the walk is decided by the check still running, so a
+    # cycle stops there.
+    private def settled_layout?(type : Type, visiting = Set(Type).new) : Bool
+      return true unless visiting.add?(type)
+      return false if open_layout?(type)
+
+      case type
+      when PointerInstanceType, ProcInstanceType
+        true
+      when TypeDefType
+        settled_layout?(type.typedef, visiting)
+      when AliasType
+        aliased = type.aliased_type?
+        !aliased.nil? && settled_layout?(aliased, visiting)
+      when UnionType
+        type.union_types.all? { |member| settled_layout?(member, visiting) }
+      when TupleInstanceType
+        type.tuple_types.all? { |element| settled_layout?(element, visiting) }
+      when NamedTupleInstanceType
+        type.entries.all? { |entry| settled_layout?(entry.type, visiting) }
+      when StaticArrayInstanceType
+        settled_layout?(type.element_type, visiting)
+      else
+        if type.struct? && type.is_a?(InstanceVarContainer)
+          layout_field_types(type).all? { |field| settled_layout?(field, visiting) }
+        else
+          true
+        end
+      end
+    end
+
+    # The field types of an instance of `type`, in layout order. A superclass's
+    # fields come first, as `index_of_instance_var` numbers them.
+    private def layout_field_types(type : Type) : Array(Type)
+      fields = [] of Type
+      if superclass = type.superclass
+        fields.concat layout_field_types(superclass)
+      end
+      if type.is_a?(InstanceVarContainer)
+        type.instance_vars.each_value { |var| fields << var.type }
+      end
+      fields
+    end
+
+    # The fields that make up a class's instance layout, which is what
+    # instance_sizeof and instance_alignof measure. A class value itself stays a
+    # pointer, so only its fields can make the instance layout move.
+    private def settled_instance_layout?(type : Type) : Bool
+      layout_field_types(type.devirtualize).all? { |field| settled_layout?(field) }
+    end
+
+    # An element's offset depends on the size and alignment of every field before
+    # it, and on the alignment of the field itself. offsetof has no codegen
+    # fallback, so an unsettled prefix is a compile error, never a guessed offset.
+    private def ensure_offset_settled(node : OffsetOf, type : Type, index)
+      fields = type.is_a?(TupleInstanceType) ? type.tuple_types : layout_field_types(type.devirtualize)
+      prefix = fields.first(index.not_nil! + 1)
+      if open_layout?(type) || !prefix.all? { |field| settled_layout?(field) }
+        node.offsetof_type.raise "can't take offsetof element of #{type}: its layout is not settled yet, because a field up to it may still change (a module, or an abstract or virtual struct)"
       end
     end
 
@@ -3310,8 +3383,10 @@ module Iyi
       end
 
       if type && (type.struct? || type.is_a?(TupleInstanceType))
+        ensure_offset_settled(node, type, ivar_index)
         offset = @program.offset_of(type.sizeof_type, ivar_index)
       elsif type && type.instance_type.devirtualize.class?
+        ensure_offset_settled(node, type, ivar_index)
         offset = @program.instance_offset_of(type.sizeof_type, ivar_index)
       else
         node.offsetof_type.raise "#{type} is neither a class, a struct nor a Tuple, it's a #{type.type_desc}"
