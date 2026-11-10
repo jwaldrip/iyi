@@ -364,18 +364,31 @@ module Iyi
       while current_char == '#'
         @token.input_offset = current_pos + @input_offset_base
         start = current_pos
+        trivia_line = @line_number
+        observation_count = @diagnostic_lexical_observations.try(&.size)
 
         # Check #<loc:...> pragma comment
         if char_sequence?('<', 'l', 'o', 'c', ':', column_increment: false)
           next_char_no_column_increment
           consume_loc_pragma
+          # The pragma's quoted filename is lexed internally, not returned as
+          # parser tokens. Replace those nested observations with the actual skip.
+          if (observations = @diagnostic_lexical_observations) && (count = observation_count)
+            observations.pop(observations.size - count)
+          end
+          diagnostic_append_observation("SKIPPED_LOC_PRAGMA", start + @input_offset_base,
+            current_pos + @input_offset_base, trivia_line, nil, nil, false, false)
         else
           if @doc_enabled && @comment_is_doc
             consume_doc
+            diagnostic_append_observation("SKIPPED_DOC_COMMENT", start + @input_offset_base,
+              current_pos + @input_offset_base, trivia_line, nil, nil, false, false)
           elsif @comments_enabled
             return consume_comment(start)
           else
             skip_comment
+            diagnostic_append_observation("SKIPPED_COMMENT", start + @input_offset_base,
+              current_pos + @input_offset_base, trivia_line, nil, nil, false, false)
           end
         end
       end

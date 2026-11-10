@@ -46,6 +46,22 @@ private def literal_delimiter(kind : String, nest : String, end_delimiter : Stri
   Iyi::DiagnosticRenderedDelimiter.new(kind, nest, end_delimiter, allow_escapes, heredoc_indent: 0)
 end
 
+private def trivia_token_stream(source : String, iyi : Bool, journal : Bool, docs : Bool, comments : Bool)
+  lexer = Iyi::Lexer.new(source)
+  lexer.iyi = iyi
+  lexer.doc_enabled = docs
+  lexer.comments_enabled = comments
+  lexer.enable_diagnostic_observations if journal
+  stream = [] of {String, String, Int32, Int32, Int32, Int32}
+  loop do
+    token = lexer.next_token
+    stream << {token.type.to_s, token.value.inspect, token.input_offset, token.input_end,
+               token.line_number, token.column_number}
+    break if token.type.eof?
+  end
+  stream
+end
+
 # The observations start at the source's first byte, end at its last, and each begins where the one before ends.
 private def expect_tiled(observations : Array(Iyi::DiagnosticRenderedToken), source : String) : Nil
   observations.first.input_start.should eq 0
@@ -150,6 +166,88 @@ describe "Iyi::Lexer literal journal" do
         lexer.next_string_token(state).type.string?.should be_true
         lexer.next_string_token(state).type.delimiter_end?.should be_true
         lexer.diagnostic_lexical_observations.map(&.token_kind).should eq ["DELIMITER_START", "STRING", "STRING_CONTINUATION", "STRING", "DELIMITER_END"]
+      end
+
+      it "records only actually skipped comments and exact byte spans" do
+        source = "x # héllo\r\n# last"
+        observations = lex_literal_journal(source, iyi)
+        skipped = observations.select { |entry| entry.token_kind == "SKIPPED_COMMENT" }
+        skipped.map(&.token_text).should eq ["# héllo\r", "# last"]
+        skipped.map(&.line).should eq [1, 2]
+        skipped.each do |entry|
+          source.byte_slice(entry.input_start, entry.input_end - entry.input_start).should eq entry.token_text
+          entry.lexical_mode.should eq mode
+          entry.value_base64.should be_nil
+          entry.delimiter.should be_nil
+        end
+
+        lexer = Iyi::Lexer.new("# visible\nx")
+        lexer.iyi = iyi
+        lexer.comments_enabled = true
+        lexer.enable_diagnostic_observations
+        lexer.next_token.type.comment?.should be_true
+        lexer.diagnostic_lexical_observations.map(&.token_kind).should eq ["COMMENT"]
+      end
+      it "uses absolute byte offsets for skipped trivia after a byte order mark" do
+        source = "\uFEFF# note\nx"
+        observations = lex_literal_journal(source, iyi)
+        comment = observations.find { |entry| entry.token_kind == "SKIPPED_COMMENT" }.not_nil!
+        comment.input_start.should eq 3
+        comment.input_end.should eq 9
+        comment.token_text.should eq "# note"
+        source.byte_slice(comment.input_start, comment.input_end - comment.input_start).should eq comment.token_text
+      end
+
+
+      it "distinguishes skipped doc comments and leaves returned token streams unchanged" do
+        source = "# doc\r\nx # ordinary\n"
+        lexer = Iyi::Lexer.new(source)
+        lexer.iyi = iyi
+        lexer.doc_enabled = true
+        lexer.enable_diagnostic_observations
+        loop { break if lexer.next_token.type.eof? }
+        observations = lexer.diagnostic_lexical_observations
+        skipped = observations.select { |entry| entry.token_kind.starts_with?("SKIPPED_") }
+        skipped.map(&.token_kind).should eq ["SKIPPED_DOC_COMMENT", "SKIPPED_COMMENT"]
+        skipped.map(&.token_text).should eq ["# doc\r", "# ordinary"]
+        skipped.each do |entry|
+          source.byte_slice(entry.input_start, entry.input_end - entry.input_start).should eq entry.token_text
+          entry.lexical_mode.should eq mode
+        end
+        [{false, false}, {true, false}, {false, true}, {true, true}].each do |docs, comments|
+          trivia_token_stream(source, iyi, false, docs, comments).should eq trivia_token_stream(source, iyi, true, docs, comments)
+        end
+      end
+
+      it "records a location pragma as a single skipped span, not its internal filename tokens" do
+        source = "#<loc:\"file.cr\",12,3>x"
+        observations = lex_literal_journal(source, iyi)
+        observations.map(&.token_kind).should eq ["SKIPPED_LOC_PRAGMA", "IDENT"]
+        pragma = observations.first
+        pragma.token_text.should eq "#<loc:\"file.cr\",12,3>"
+        pragma.input_start.should eq 0
+        pragma.input_end.should eq pragma.token_text.bytesize
+        pragma.line.should eq 1
+        pragma.lexical_mode.should eq mode
+        pragma.value_base64.should be_nil
+        pragma.delimiter.should be_nil
+        expect_tiled(observations, source)
+        trivia_token_stream(source, iyi, false, false, false).should eq trivia_token_stream(source, iyi, true, false, false)
+      end
+
+      it "rolls back skipped trivia and pragma internals on failed lookahead" do
+        source = "#<loc:\"file.cr\",12,3># note\nx"
+        lexer = Iyi::Lexer.new(source)
+        lexer.iyi = iyi
+        lexer.enable_diagnostic_observations
+        lexer.lookahead { lexer.next_token; false }.should be_false
+        lexer.diagnostic_lexical_observations.should be_empty
+        lexer.next_token
+        observations = lexer.diagnostic_lexical_observations
+        observations.map(&.token_kind).should eq ["SKIPPED_LOC_PRAGMA", "SKIPPED_COMMENT", "NEWLINE"]
+        observations[0].token_text.should eq "#<loc:\"file.cr\",12,3>"
+        observations[1].token_text.should eq "# note"
+        expect_tiled(observations, source.byte_slice(0, observations.last.input_end))
       end
 
       it "returns the same token stream with the journal on and off" do
