@@ -168,17 +168,20 @@ module Iyi::DiagnosticProvenance
     end
   end
 
-  NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter named_entry)
+  NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter named_entry enum_member special_global regex_match_index)
   MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter)
   NAME_OPERATORS = %w(! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~)
+  INVALID_PARAMETER_NAMES = %w(begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof)
 
   private def self.name_token?(kind : String, raw : String, mode : String, context : String) : Bool
     allowed = case context
               when "method_name"
                 kind == "IDENT" || kind == "CONST" || NAME_OPERATORS.includes?(kind)
               when "definition_name"
-                kind == "IDENT" || NAME_OPERATORS.includes?(kind)
-              when "macro_name", "local_reference"
+                kind == "IDENT" || (kind != "!" && NAME_OPERATORS.includes?(kind))
+              when "macro_name"
+                kind == "IDENT" || kind == "CONST" || (kind != "!" && NAME_OPERATORS.includes?(kind))
+              when "local_reference"
                 kind == "IDENT"
               when "instance_variable"
                 kind == "INSTANCE_VAR"
@@ -186,14 +189,25 @@ module Iyi::DiagnosticProvenance
                 kind == "CLASS_VAR"
               when "parameter"
                 kind == "IDENT" || kind == "INSTANCE_VAR" || kind == "CLASS_VAR"
-              when "path_segment", "type_parameter"
+              when "path_segment", "type_parameter", "enum_member"
                 kind == "CONST"
               when "named_entry"
                 kind == "IDENT" || kind == "CONST"
+              when "special_global"
+                kind == "$~" || kind == "$?"
+              when "regex_match_index"
+                kind == "GLOBAL_MATCH_DATA_INDEX"
               else
                 false
               end
     return false unless allowed
+    return raw == kind if context == "special_global"
+    if context == "regex_match_index"
+      return false unless raw.matches?(/\A\$(?:0|[1-9][0-9]*\??)\z/)
+      digits = raw.byte_slice(1, raw.bytesize - 1)
+      digits = digits.byte_slice(0, digits.bytesize - 1) if digits.ends_with?("?")
+      return digits.bytesize < 10 || (digits.bytesize == 10 && digits <= "2147483647")
+    end
     return raw == kind if NAME_OPERATORS.includes?(kind)
     prefix = kind == "INSTANCE_VAR" ? "@" : (kind == "CLASS_VAR" ? "@@" : "")
     return false unless raw.starts_with?(prefix)
@@ -224,6 +238,8 @@ module Iyi::DiagnosticProvenance
     when "Synthetic"
       synthetic = fields(value, %w(kind parent_origin synthesis_kind structural_slot))
       origin_schema4!(synthetic["parent_origin"], depth + 1)
+    when "DerivedName"
+      derived_name_schema4!(value, depth)
     when "Expanded"
       expansion = fields(value, %w(kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset generated_byte_end token_kind token_text lexical_mode anchor_kind role name_context emission_parts))
       origin_schema4!(expansion["invocation_origin"], depth + 1)
@@ -263,17 +279,13 @@ module Iyi::DiagnosticProvenance
           source = Iyi::DiagnosticOrigin.from_json(entry["source_origin"])
           raise "structural source role mismatch" unless source.valid_for_anchor?(expansion["anchor_kind"].as_s, expansion["role"].as_s)
         when "NameSplice"
-          fields(part, %w(kind start_offset end_offset emitter_origin source_token slice_start slice_end projection))
+          fields(part, %w(kind start_offset end_offset emitter_origin source_name))
           raise "name contribution without context" if context.raw.nil?
-          source_name_schema4!(entry["source_token"], depth + 1)
-          source = entry["source_token"].as_h
-          raw = source["raw_text"].as_s
-          lo, hi = entry["slice_start"].as_i64, entry["slice_end"].as_i64
-          raise "unsupported name projection" unless entry["projection"].as_s == "Whole" && lo == 0 && hi == raw.bytesize
+          selected = name_value_schema4!(entry["source_name"], depth + 1)
           offset = entry["start_offset"].as_i64 - first
           length = entry["end_offset"].as_i64 - entry["start_offset"].as_i64
-          raise "invalid name contribution" unless offset >= 0 && length == hi && offset + length <= token.bytesize
-          raise "name contribution differs" unless token.byte_slice(offset.to_i, length.to_i) == raw
+          raise "invalid name contribution" unless offset >= 0 && length == selected.bytesize && offset + length <= token.bytesize
+          raise "name contribution differs" unless token.byte_slice(offset.to_i, length.to_i) == selected
         else
           raise "unknown emission part"
         end
@@ -295,6 +307,77 @@ module Iyi::DiagnosticProvenance
     end
   end
 
+  private def self.derived_name_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
+    raise "diagnostic origin nesting too deep" if depth > 128
+    object = value.as_h
+    raise "invalid derived origin kind" unless object["kind"].as_s == "DerivedName"
+    if object["derivation_kind"].as_s == "RegexMatchIndex"
+      item = fields(value, %w(kind derivation_kind source_token result))
+      source_name_schema4!(item["source_token"], depth + 1)
+      source = item["source_token"].as_h
+      lexical = Iyi::DiagnosticOrigin.from_json(source["lexical_origin"])
+      raise "invalid regex derivation source" unless source["context"].as_s == "regex_match_index" && lexical.valid_for_anchor?("Name", "regex_match_index")
+      case item["result"].as_s
+      when "MatchData" then return {"special_global", "$~"}
+      when "Lookup"    then return {"method", source["raw_text"].as_s.ends_with?("?") ? "[]?" : "[]"}
+      else                   raise "invalid regex derivation result"
+      end
+    end
+    raise "unknown derived name operation" unless object["derivation_kind"].as_s == "ParameterLowering"
+    item = fields(value, %w(kind derivation_kind source_token definition_origin parameter_slot parameter_index result projection fresh_index))
+    source = item["source_token"].as_h
+    source_name_schema4!(item["source_token"], depth + 1)
+    lexical = Iyi::DiagnosticOrigin.from_json(source["lexical_origin"])
+    raise "invalid derived source role" unless source["context"].as_s == "parameter" && lexical.valid_for_anchor?("Name", "parameter")
+    prefix = case source["token_kind"].as_s
+             when "INSTANCE_VAR" then "@"
+             when "CLASS_VAR"    then "@@"
+             else                     ""
+             end
+    raw = source["raw_text"].as_s
+    raise "invalid variable prefix" if prefix.empty? || !raw.starts_with?(prefix)
+    definition = item["definition_origin"]
+    origin_schema4!(definition, depth + 1)
+    raise "invalid derived definition owner" unless Iyi::DiagnosticOrigin.from_json(definition).valid_for_anchor?("Def", "keyword")
+    slot = item["parameter_slot"].as_s
+    index = item["parameter_index"].as_i64
+    raise "invalid parameter slot" unless %w(positional double_splat block).includes?(slot)
+    raise "invalid parameter index" unless index >= 0 && index <= Int32::MAX && (slot == "positional" || index == 0)
+    stem = raw.byte_slice(prefix.bytesize, raw.bytesize - prefix.bytesize)
+    raise "invalid UTF-8 projection" unless stem.valid_encoding?
+    invalid_stem = INVALID_PARAMETER_NAMES.includes?(stem)
+    result, projection, fresh = item["result"].as_s, item["projection"].as_s, item["fresh_index"]
+    if result == "Target" && projection == "Whole" && fresh.raw.nil?
+      return {prefix == "@" ? "instance_variable" : "class_variable", raw}
+    elsif result == "DefaultExternal" && projection == "StripVariablePrefix" && fresh.raw.nil? && invalid_stem
+      return {"named_entry", stem}
+    elsif result == "Argument" || result == "LocalValue"
+      role = result == "Argument" ? "parameter" : "local_reference"
+      if projection == "StripVariablePrefix" && fresh.raw.nil? && !invalid_stem
+        return {role, stem}
+      elsif projection == "FreshParameterName" && invalid_stem
+        fresh_index = fresh.as_i64
+        raise "invalid fresh index" unless fresh_index >= 0 && fresh_index <= Int32::MAX
+        return {role, "__arg#{fresh_index}"}
+      end
+    end
+    raise "invalid derived name operation"
+  end
+
+  private def self.name_value_schema4!(value : JSON::Any, depth : Int32) : String
+    case value.as_h["kind"].as_s
+    when "Observed"
+      item = fields(value, %w(kind source_token))
+      source_name_schema4!(item["source_token"], depth)
+      item["source_token"].as_h["raw_text"].as_s
+    when "Derived"
+      item = fields(value, %w(kind origin))
+      derived_name_schema4!(item["origin"], depth + 1)[1]
+    else
+      raise "unknown name value"
+    end
+  end
+
   private def self.source_name_schema4!(value : JSON::Any, depth : Int32) : Nil
     source = fields(value, %w(lexical_origin binding_origin context input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text))
     context = source["context"].as_s
@@ -302,7 +385,7 @@ module Iyi::DiagnosticProvenance
     lexical = source["lexical_origin"]
     origin_schema4!(lexical, depth)
     origin = Iyi::DiagnosticOrigin.from_json(lexical)
-    raise "invalid source name role" unless origin.valid_for_anchor?("Call", "method") || origin.valid_for_anchor?("Name", context)
+    raise "invalid source name role" unless origin.valid_for_anchor?("Name", context) || (%w(method_name local_reference).includes?(context) && origin.valid_for_anchor?("Call", "method"))
     binding = source["binding_origin"]
     unless binding.raw.nil?
       origin_schema4!(binding, depth)

@@ -989,8 +989,7 @@ def test_composed_origin_controls():
 
     def contribution(start, source_token):
         return {"kind": "NameSplice", "start_offset": start, "end_offset": start + 1,
-                "emitter_origin": None, "source_token": source_token, "slice_start": 0,
-                "slice_end": 1, "projection": "Whole"}
+                "emitter_origin": None, "source_name": {"kind": "Observed", "source_token": source_token}}
 
     invocation = {"kind": "Expanded", "invocation_origin": written("Call", "method", 1),
                   "macro_definition_origin": written("Macro", "keyword", 2), "expansion_guard": "sha256:" + "b" * 64,
@@ -1021,18 +1020,133 @@ def test_composed_origin_controls():
                        "emission_parts": [{"kind": "Generated", "start_offset": 38, "end_offset": 40,
                                            "emitter_origin": None, "producer": "MacroTemplate"},
                                           {"kind": "NameSplice", "start_offset": 40, "end_offset": 45,
-                                           "emitter_origin": None, "source_token": name_source,
-                                           "slice_start": 0, "slice_end": 5, "projection": "Whole"}]})
+                                           "emitter_origin": None, "source_name": {"kind": "Observed", "source_token": name_source}}]})
     assert frames.checked_origin(class_name) == ("Name", "class_variable")
     without_prefix = copy.deepcopy(class_name)
     without_prefix["emission_parts"].pop(0)
     try: frames.checked_origin(without_prefix)
     except ValueError: pass
     else: raise AssertionError("missing generated name prefix accepted")
+    def derived(raw, token_kind, result="Argument", projection="StripVariablePrefix", fresh=None):
+        encoded = raw.encode("utf-8")
+        source_token = {"lexical_origin": written("Name", "parameter", 20), "binding_origin": None,
+                        "context": "parameter", "input_sha256": "e" * 64, "input_bytesize": 100,
+                        "input_start": 20, "input_end": 20 + len(encoded), "lexical_mode": "Crystal",
+                        "token_kind": token_kind, "raw_text": raw}
+        return {"kind": "DerivedName", "derivation_kind": "ParameterLowering", "source_token": source_token, "definition_origin": written("Def", "keyword", 9),
+                "parameter_slot": "positional", "parameter_index": 0, "result": result,
+                "projection": projection, "fresh_index": fresh}
+
+    for node, role, spelling in (
+            (derived("@x", "INSTANCE_VAR"), "parameter", b"x"),
+            (derived("@@éclair", "CLASS_VAR", "LocalValue"), "local_reference", "éclair".encode()),
+            (derived("@x", "INSTANCE_VAR", "Target", "Whole"), "instance_variable", b"@x"),
+            (derived("@@x", "CLASS_VAR", "Target", "Whole"), "class_variable", b"@@x"),
+            (derived("@select", "INSTANCE_VAR", "Argument", "FreshParameterName", 7), "parameter", b"__arg7"),
+            (derived("@select", "INSTANCE_VAR", "DefaultExternal"), "named_entry", b"select")):
+        assert frames.checked_origin(node) == ("Name", role)
+        assert frames.derived_name(node, 0)[1] == spelling
+    lowered = derived("@é", "INSTANCE_VAR")
+    part = {"kind": "NameSplice", "start_offset": 10, "end_offset": 12, "emitter_origin": None,
+            "source_name": {"kind": "Derived", "origin": lowered}}
+    composed = copy.deepcopy(invocation)
+    composed.update({"generated_byte_end": 12, "token_text": "é", "emission_parts": [part]})
+    assert frames.checked_origin(composed) == ("Call", "method")
+    for mutation in ("prefix", "kind", "source_context", "source_role", "definition", "slot", "index",
+                     "result", "projection", "fresh", "missing", "unknown_name", "bytes"):
+        invalid = copy.deepcopy(composed)
+        part = invalid["emission_parts"][0]
+        derivation = part["source_name"]["origin"]
+        token = derivation["source_token"]
+        if mutation == "prefix": token["raw_text"] = "$é"
+        elif mutation == "kind": token["token_kind"] = "CLASS_VAR"
+        elif mutation == "source_context": token["context"] = "instance_variable"
+        elif mutation == "source_role": token["lexical_origin"]["role"] = "instance_variable"
+        elif mutation == "definition": derivation["definition_origin"]["anchor_kind"] = "Macro"
+        elif mutation == "slot": derivation["parameter_slot"] = "unknown"
+        elif mutation == "index": derivation["parameter_index"] = -1
+        elif mutation == "result": derivation["result"] = "Target"
+        elif mutation == "projection": derivation["projection"] = "Whole"
+        elif mutation == "fresh": derivation["fresh_index"] = 1
+        elif mutation == "missing": del derivation["definition_origin"]
+        elif mutation == "unknown_name": part["source_name"]["kind"] = "Unknown"
+        else: invalid["token_text"] = "ê"
+        try: frames.checked_origin(invalid)
+        except (ValueError, UnicodeError, TypeError, KeyError): pass
+        else: raise AssertionError("invalid derived name accepted: " + mutation)
+    for bad in (
+            derived("@x", "INSTANCE_VAR", "Argument", "FreshParameterName", 1),
+            derived("@select", "INSTANCE_VAR", "Argument", "FreshParameterName", None),
+            derived("@select", "INSTANCE_VAR", "LocalValue", "StripVariablePrefix"),
+            derived("@x", "INSTANCE_VAR", "DefaultExternal"),
+            {**derived("@x", "INSTANCE_VAR"), "parameter_slot": "block", "parameter_index": 1},
+            {**derived("@x", "INSTANCE_VAR"), "parameter_slot": "double_splat", "parameter_index": 1}):
+        try: frames.checked_origin(bad)
+        except (ValueError, TypeError): pass
+        else: raise AssertionError("invalid parameter derivation accepted")
+    for change in ("parameter_index", "definition_origin", "source_token"):
+        changed = copy.deepcopy(lowered)
+        if change == "parameter_index": changed[change] = 1
+        elif change == "definition_origin": changed[change]["input_byte_offset"] += 1
+        else: changed[change]["input_sha256"] = "f" * 64
+        original_emission = copy.deepcopy(emission)
+        original_emission["origin"]["invocation_origin"] = copy.deepcopy(composed)
+        changed_emission = copy.deepcopy(original_emission)
+        changed_emission["origin"]["invocation_origin"]["emission_parts"][0]["source_name"]["origin"] = changed
+        assert frames.emission_identity(changed_emission) != frames.emission_identity(original_emission), change
+    def regex_derivation(raw, result):
+        encoded = raw.encode("utf-8")
+        source_token = {"lexical_origin": written("Name", "regex_match_index", 20), "binding_origin": None,
+                        "context": "regex_match_index", "input_sha256": "e" * 64, "input_bytesize": 100,
+                        "input_start": 20, "input_end": 20 + len(encoded), "lexical_mode": "Crystal",
+                        "token_kind": "GLOBAL_MATCH_DATA_INDEX", "raw_text": raw}
+        return {"kind": "DerivedName", "derivation_kind": "RegexMatchIndex", "source_token": source_token, "result": result}
+
+    for raw, result, role, spelling in (
+            ("$0", "MatchData", ("Name", "special_global"), b"$~"),
+            ("$1", "Lookup", ("Call", "method"), b"[]"),
+            ("$2147483647?", "Lookup", ("Call", "method"), b"[]?")):
+        node = regex_derivation(raw, result)
+        assert frames.checked_origin(node) == role
+        assert frames.derived_name(node, 0)[1] == spelling
+    for raw in ("$0?", "$01", "$foo", "$-1", "$2147483648", "$999999999999999999999"):
+        try: frames.checked_origin(regex_derivation(raw, "Lookup"))
+        except ValueError: pass
+        else: raise AssertionError("invalid regex source accepted: " + raw)
+    regex = regex_derivation("$1?", "Lookup")
+    wrong_lookup = copy.deepcopy(invocation)
+    wrong_lookup.update({"generated_byte_offset": 0, "generated_byte_end": 2, "token_kind": "[]",
+                         "token_text": "[]", "emission_parts": [{"kind": "NameSplice", "start_offset": 0,
+                         "end_offset": 2, "emitter_origin": None, "source_name": {"kind": "Derived", "origin": regex}}]})
+    try: frames.checked_origin(wrong_lookup)
+    except ValueError: pass
+    else: raise AssertionError("wrong regex lookup spelling accepted")
+    for change in ("wrong_source", "wrong_result", "extra", "wrong_parent"):
+        bad = copy.deepcopy(regex)
+        if change == "wrong_source": bad["source_token"]["context"] = "special_global"
+        elif change == "wrong_result": bad["result"] = "Unknown"
+        elif change == "extra": bad["projection"] = "Whole"
+        else: bad["source_token"]["lexical_origin"]["anchor_kind"] = "Call"
+        try: frames.checked_origin(bad)
+        except (ValueError, KeyError): pass
+        else: raise AssertionError("invalid regex derivation accepted: " + change)
+
+    for context, kind, raw in (("enum_member", "CONST", "Member"),
+                               ("special_global", "$~", "$~"), ("special_global", "$?", "$?")):
+        token = {"lexical_origin": written("Name", context, 20), "binding_origin": None,
+                 "context": context, "input_sha256": "a" * 64, "input_bytesize": 100,
+                 "input_start": 20, "input_end": 20 + len(raw.encode()), "lexical_mode": "Crystal",
+                 "token_kind": kind, "raw_text": raw}
+        assert frames.source_name(token, 0) == raw.encode()
+        forged = copy.deepcopy(token)
+        forged["lexical_origin"] = written("Call", "method", 20)
+        try: frames.source_name(forged, 0)
+        except ValueError: pass
+        else: raise AssertionError("generic call authorized " + context)
     for mutation in ("file", "offset", "digest", "binding", "emitter", "order"):
         changed = copy.deepcopy(emission)
         parts = changed["origin"]["invocation_origin"]["emission_parts"]
-        token = parts[0]["source_token"]
+        token = parts[0]["source_name"]["source_token"]
         if mutation == "file": token["lexical_origin"]["source_identity"]["file"] = "other.iyi"
         elif mutation == "offset":
             token["input_start"] += 1; token["input_end"] += 1
@@ -1042,7 +1156,7 @@ def test_composed_origin_controls():
             token["binding_origin"] = {"kind": "Synthetic", "parent_origin": copy.deepcopy(token["lexical_origin"]),
                                        "synthesis_kind": "local_binding", "structural_slot": "assignment"}
         elif mutation == "emitter": parts[0]["emitter_origin"] = written("MacroDirective", "expression", 50)
-        else: parts[0]["source_token"], parts[1]["source_token"] = parts[1]["source_token"], parts[0]["source_token"]
+        else: parts[0]["source_name"], parts[1]["source_name"] = parts[1]["source_name"], parts[0]["source_name"]
         assert frames.emission_identity(changed) != baseline, mutation
 
     for mutation in ("missing", "overlap", "short", "source_role", "input_bound", "slice", "projection",
@@ -1050,7 +1164,7 @@ def test_composed_origin_controls():
         changed = copy.deepcopy(emission)
         node = changed["origin"]["invocation_origin"]
         parts = node["emission_parts"]
-        token = parts[0]["source_token"]
+        token = parts[0]["source_name"]["source_token"]
         if mutation == "missing": parts.pop()
         elif mutation == "overlap": parts[1]["start_offset"] = 10
         elif mutation == "short": node["generated_byte_end"] = 11
@@ -1074,6 +1188,17 @@ def test_composed_origin_controls():
             ("CLASS_VAR", "@@empty", "Crystal", "class_variable", True),
             ("IDENT", "éclair?", "Crystal", "method_name", True),
             ("CONST", "Example", "Crystal", "method_name", True),
+            ("=", "=", "Crystal", "macro_name", True),
+            ("`", "`", "Crystal", "macro_name", True),
+            ("!", "!", "Crystal", "macro_name", False),
+            ("CONST", "Member", "Crystal", "enum_member", True),
+            ("IDENT", "member", "Crystal", "enum_member", False),
+            ("CONST", "Member", "Crystal", "parameter", False),
+            ("$~", "$~", "Crystal", "special_global", True),
+            ("$?", "$?", "Crystal", "special_global", True),
+            ("$?", "$~", "Crystal", "special_global", False),
+            ("IDENT", "$~", "Crystal", "special_global", False),
+            ("GLOBAL_MATCH_DATA_INDEX", "$0?", "Crystal", "regex_match_index", False),
             ("IDENT", "name!", "Crystal", "method_name", True),
             ("IDENT", "name!", "Iyi", "method_name", False),
             ("IDENT", "1name", "Crystal", "method_name", False),

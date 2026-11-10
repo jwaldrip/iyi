@@ -150,7 +150,7 @@ def number(value):
         raise ValueError("invalid provenance integer")
 
 
-NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter named_entry".split())
+NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter named_entry enum_member special_global regex_match_index".split())
 PRODUCERS = frozenset("ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter".split())
 TOKEN_KINDS = frozenset(("EOF SPACE NEWLINE IDENT CONST INSTANCE_VAR CLASS_VAR CHAR STRING SYMBOL NUMBER _ COMMENT "
     "DELIMITER_START DELIMITER_END STRING_ARRAY_START INTERPOLATION_START SYMBOL_ARRAY_START STRING_ARRAY_END "
@@ -171,8 +171,8 @@ def token_fields(value):
 NAME_OPERATORS = frozenset("! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~".split())
 CONTEXT_KINDS = {
     "method_name": frozenset(("IDENT", "CONST")) | NAME_OPERATORS,
-    "definition_name": frozenset(("IDENT",)) | NAME_OPERATORS,
-    "macro_name": frozenset(("IDENT",)),
+    "definition_name": frozenset(("IDENT",)) | (NAME_OPERATORS - {"!"}),
+    "macro_name": frozenset(("IDENT", "CONST")) | (NAME_OPERATORS - {"!"}),
     "local_reference": frozenset(("IDENT",)),
     "instance_variable": frozenset(("INSTANCE_VAR",)),
     "class_variable": frozenset(("CLASS_VAR",)),
@@ -180,11 +180,19 @@ CONTEXT_KINDS = {
     "path_segment": frozenset(("CONST",)),
     "type_parameter": frozenset(("CONST",)),
     "named_entry": frozenset(("IDENT", "CONST")),
+    "enum_member": frozenset(("CONST",)),
+    "special_global": frozenset(("$~", "$?")),
+    "regex_match_index": frozenset(("GLOBAL_MATCH_DATA_INDEX",)),
 }
 
 
 def name_token(kind, raw, mode, context):
     if kind not in CONTEXT_KINDS[context]: return False
+    if context == "special_global": return raw == kind
+    if context == "regex_match_index":
+        if not re.fullmatch(r"\$(?:0|[1-9][0-9]*\??)", raw): return False
+        digits = raw[1:].rstrip("?")
+        return len(digits) < 10 or (len(digits) == 10 and digits <= "2147483647")
     if kind in NAME_OPERATORS: return raw == kind
     prefix = {"INSTANCE_VAR": "@", "CLASS_VAR": "@@"}.get(kind, "")
     if not raw.startswith(prefix): return False
@@ -206,7 +214,7 @@ def source_name(value, depth):
     lexical = value["lexical_origin"]
     anchor = origin(lexical, depth + 1)
     context = value["context"]
-    if context not in NAME_CONTEXTS or anchor not in (("Call", "method"), ("Name", context)):
+    if context not in NAME_CONTEXTS or not (anchor == ("Name", context) or (context in ("method_name", "local_reference") and anchor == ("Call", "method"))):
         raise ValueError("invalid source name role")
     binding = value["binding_origin"]
     if binding is not None:
@@ -236,6 +244,64 @@ def source_name(value, depth):
         raise ValueError("invalid lexical name origin")
     return raw
 
+INVALID_PARAMETER_NAMES = frozenset("begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof".split())
+
+
+def derived_name(value, depth):
+    if value.get("derivation_kind") == "RegexMatchIndex":
+        fields(value, "kind derivation_kind source_token result")
+        source = value["source_token"]
+        raw = source_name(source, depth)
+        if source["context"] != "regex_match_index" or origin(source["lexical_origin"], depth + 1) != ("Name", "regex_match_index"):
+            raise ValueError("invalid regex derivation source")
+        if value["result"] == "MatchData": return (("Name", "special_global"), b"$~")
+        if value["result"] == "Lookup": return (("Call", "method"), b"[]?" if raw.endswith(b"?") else b"[]")
+        raise ValueError("invalid regex derivation result")
+    if value.get("derivation_kind") != "ParameterLowering": raise ValueError("unknown derived name operation")
+    fields(value, "kind derivation_kind source_token definition_origin parameter_slot parameter_index result projection fresh_index")
+    source = value["source_token"]
+    raw = source_name(source, depth)
+    if (source["context"] != "parameter" or
+            origin(source["lexical_origin"], depth + 1) != ("Name", "parameter")):
+        raise ValueError("invalid derived source role")
+    prefix = {"INSTANCE_VAR": b"@", "CLASS_VAR": b"@@"}.get(source["token_kind"])
+    if prefix is None or not raw.startswith(prefix): raise ValueError("invalid variable prefix")
+    if origin(value["definition_origin"], depth + 1) != ("Def", "keyword"):
+        raise ValueError("invalid derived definition owner")
+    if value["parameter_slot"] not in ("positional", "double_splat", "block"):
+        raise ValueError("invalid parameter slot")
+    number(value["parameter_index"])
+    if value["parameter_slot"] != "positional" and value["parameter_index"] != 0:
+        raise ValueError("noncanonical parameter index")
+    stem = raw[len(prefix):]
+    invalid_stem = stem.decode("utf-8") in INVALID_PARAMETER_NAMES
+    result, projection, fresh = value["result"], value["projection"], value["fresh_index"]
+    if result == "Target" and projection == "Whole" and fresh is None:
+        return (("Name", "instance_variable" if len(prefix) == 1 else "class_variable"), raw)
+    if result == "DefaultExternal" and projection == "StripVariablePrefix" and fresh is None and invalid_stem:
+        return (("Name", "named_entry"), stem)
+    if result in ("Argument", "LocalValue"):
+        role = "parameter" if result == "Argument" else "local_reference"
+        if projection == "StripVariablePrefix" and fresh is None and not invalid_stem:
+            return (("Name", role), stem)
+        if projection == "FreshParameterName" and invalid_stem:
+            number(fresh)
+            return (("Name", role), ("__arg" + str(fresh)).encode("utf-8"))
+    raise ValueError("invalid derived name operation")
+
+
+def name_value(value, depth):
+    if not isinstance(value, dict): raise ValueError("invalid name value")
+    if value.get("kind") == "Observed":
+        fields(value, "kind source_token")
+        return source_name(value["source_token"], depth)
+    if value.get("kind") == "Derived":
+        fields(value, "kind origin")
+        if not isinstance(value["origin"], dict) or value["origin"].get("kind") != "DerivedName":
+            raise ValueError("invalid derived name value")
+        return derived_name(value["origin"], depth + 1)[1]
+    raise ValueError("unknown name value")
+
 
 def origin(value, depth=0):
     if depth > 128 or not isinstance(value, dict):
@@ -257,6 +323,8 @@ def origin(value, depth=0):
         if key == ("inline_macro_definition", "macro") and parent in (("MacroDirective", "expression"), ("MacroDirective", "control")):
             return ("Macro", "keyword")
         return ("Synthetic", value["synthesis_kind"])
+    elif kind == "DerivedName":
+        return derived_name(value, depth)[0]
     elif kind == "Expanded":
         fields(value, "kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset generated_byte_end token_kind token_text lexical_mode anchor_kind role name_context emission_parts")
         invocation = origin(value["invocation_origin"], depth + 1)
@@ -294,15 +362,9 @@ def origin(value, depth=0):
                 if len(parts) != 1 or origin(part["source_origin"], depth + 1) != (value["anchor_kind"], value["role"]):
                     raise ValueError("invalid structural source")
             elif tag == "NameSplice":
-                fields(part, "kind start_offset end_offset emitter_origin source_token slice_start slice_end projection")
+                fields(part, "kind start_offset end_offset emitter_origin source_name")
                 if context is None: raise ValueError("name contribution without receiving context")
-                raw = source_name(part["source_token"], depth)
-                number(part["slice_start"]); number(part["slice_end"])
-                lo, hi = part["slice_start"], part["slice_end"]
-                if part["projection"] != "Whole" or lo != 0 or hi != len(raw):
-                    raise ValueError("unsupported name projection")
-                try: raw[lo:hi].decode("utf-8")
-                except UnicodeDecodeError as exc: raise ValueError("invalid UTF-8 slice") from exc
+                raw = name_value(part["source_name"], depth + 1)
             else:
                 raise ValueError("unknown emission part")
             number(part["start_offset"]); number(part["end_offset"])
@@ -313,7 +375,7 @@ def origin(value, depth=0):
             except UnicodeDecodeError as exc: raise ValueError("emission splits UTF-8") from exc
             if emitter is not None and origin(emitter, depth + 1) not in (("MacroDirective", "expression"), ("MacroDirective", "control")):
                 raise ValueError("invalid emitter")
-            if tag == "NameSplice" and output[end-start:part["end_offset"]-start] != raw[lo:hi]:
+            if tag == "NameSplice" and output[end-start:part["end_offset"]-start] != raw:
                 raise ValueError("name contribution bytes differ")
             end = part["end_offset"]
         if end != finish: raise ValueError("incomplete token coverage")
@@ -328,8 +390,8 @@ def checked_origin(value):
     stack, size = [(value, 0)], 0
     while stack:
         node, depth = stack.pop()
-        # Source-token parents add another container level to an origin edge.
-        if depth > 5 * 128 + 5: raise ValueError("origin nesting too deep")
+        # Tagged names add wrapper levels beyond an origin edge.
+        if depth > 8 * 128 + 8: raise ValueError("origin nesting too deep")
         if isinstance(node, dict):
             size += 2 + max(0, len(node) - 1)
             for key, child in node.items():
