@@ -252,7 +252,13 @@ module Iyi
     # an input envelope; it does not publish a census or establish acceptance.
     def diagnostic_capture_input(kind : DiagnosticCaptureInputKind, logical_module : String?,
                                  entry : DiagnosticCaptureParseEntry, mode : ParseMode) : AcceptedCaptureInput
-      raise ArgumentError.new("parser state is not eligible for capture") unless parse_ahead_contract
+      fresh_contract = parse_ahead_contract
+      raise ArgumentError.new("parser state is not eligible for capture") if fresh_contract.nil?
+      # The parser's actual warning policy, read from the collection it parses
+      # with. `nil` means this collection cannot be represented (a subclass or a
+      # non-UTF-8 path), so capture refuses rather than guessing a policy.
+      warning_policy = warnings.parse_ahead_snapshot
+      raise ArgumentError.new("warning policy is not representable for capture") if warning_policy.nil?
       raise ArgumentError.new("capture entry requires original Def context") unless entry.parse?
       capture_mode = case mode
                      when .normal?             then DiagnosticCaptureParseMode::Normal
@@ -267,7 +273,7 @@ module Iyi
       AcceptedCaptureInput.new(input, kind, logical_module, @iyi_package_name, original_file,
         iyi? ? "Iyi" : "Crystal", entry, capture_mode, @iyi_module_extends_written, @iyi_source_only,
         @visibility, @def_nest, @fun_nest, @type_nest, @wants_doc,
-        @var_scopes.map { |scope| scope.to_a.sort })
+        @var_scopes.map { |scope| scope.to_a.sort }, warning_policy, fresh_contract)
     end
 
     # Compare the original bytes, including a BOM stripped by Lexer#initialize.

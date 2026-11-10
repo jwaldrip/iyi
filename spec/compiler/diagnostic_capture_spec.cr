@@ -36,6 +36,24 @@ describe Iyi::DiagnosticPathSnapshot do
     working = snapshot.bytes
     working.to_unsafe[0] = 'X'.ord.to_u8
     snapshot.bytes.should eq(expected)
+    original_digest = snapshot.sha256
+    returned_digest = snapshot.sha256
+    returned_digest.to_unsafe[0] = 'z'.ord.to_u8
+    snapshot.sha256.should eq(original_digest)
+    original_file = input.original_file.not_nil!
+    returned_file = input.original_file.not_nil!
+    returned_file.to_unsafe[0] = 'X'.ord.to_u8
+    input.original_file.should eq(original_file)
+    original_policy = input.warning_policy_json
+    policy_copy = input.warning_policy_json
+    policy_copy.to_unsafe[0] = 'X'.ord.to_u8
+    parser.warnings.error_on_warnings = true
+    input.warning_policy_json.should eq(original_policy)
+    input.warning_policy.error_on_warnings?.should be_false
+    original_contract = input.fresh_parser_contract
+    contract_copy = input.fresh_parser_contract
+    contract_copy.to_unsafe[0] = 'X'.ord.to_u8
+    input.fresh_parser_contract.should eq(original_contract)
   end
 
   it "refuses a path whose actual name has lost its evidence" do
@@ -114,6 +132,18 @@ describe Iyi::DiagnosticPathSnapshot do
     checker.verify!(trait)
     trait.assoc_types.not_nil![0] = "Other"
     expect_raises(ArgumentError, /trait associated-type projection mismatch/) { checker.verify!(trait) }
+  end
+
+  it "checks imported path and selected-name observations on their owners" do
+    source = "import std/json::{Parser}"
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/path_capture.iyi"
+    parser.diagnostic_source_file = "/spec/path_capture.iyi"
+    parser.diagnostic_capture = true
+    input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
+      nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
+    root = parser.parse
+    Iyi::DiagnosticRecordedEvidenceInputCheck.new(input).verify!(root)
   end
 end
 
@@ -205,6 +235,14 @@ describe Iyi::DiagnosticAstInventorySnapshot do
     expect_raises(ArgumentError, /unknown inventory coordinate/) do
       capture.resolve_name(owner, Iyi::DiagnosticInventoryStep.new("names", 2, nil))
     end
+  end
+
+  it "records repeated references to the same AST node without losing identity" do
+    shared = Iyi::Path.new("Shared")
+    root = Iyi::Generic.new(shared, [shared] of Iyi::ASTNode)
+    inventory = JSON.parse(Iyi::DiagnosticAstInventorySnapshot.new(root).bytes)
+    children = inventory["children"].as_a
+    children[0]["node"]["owner_id"].should eq(children[1]["node"]["owner_id"])
   end
 
   it "rejects cycles instead of walking a back-reference indefinitely" do
@@ -317,5 +355,23 @@ describe Iyi::DiagnosticParseToDefEffectSnapshot do
     expect_raises(ArgumentError, /owner flags differ/) do
       Iyi::DiagnosticParseToDefEffectSnapshot.new(altered)
     end
+  end
+end
+
+describe Iyi::DiagnosticCaptureFieldRef do
+  it "owns its coordinate strings and does not expose its internal identity" do
+    capture_id = String.new(("a" * 64).to_slice)
+    owner_path = String.new("[]".to_slice)
+    field = String.new("name".to_slice)
+    ref = Iyi::DiagnosticCaptureFieldRef.new(capture_id, owner_path, field)
+    capture_id.to_unsafe[0] = 'b'.ord.to_u8
+    owner_path.to_unsafe[0] = 'X'.ord.to_u8
+    field.to_unsafe[0] = 'X'.ord.to_u8
+    ref.capture_id.should eq("a" * 64)
+    ref.owner_path_json.should eq("[]")
+    ref.field_tag.should eq("name")
+    copy = ref.capture_id
+    copy.to_unsafe[0] = 'b'.ord.to_u8
+    ref.capture_id.should eq("a" * 64)
   end
 end

@@ -28,12 +28,16 @@ module Iyi
   # state observed after it has mutated.
   class AcceptedCaptureInput
     MAX_INPUT_BYTES = 64 * 1024 * 1024
+    FRESH_CONTRACT_FIELDS = %w(entry_rule filename input_offset_base lexical_journal_enabled lexical_mode package
+      diagnostic_capture source_unit source_only reads_using module_extends_written visibility def_nest fun_nest
+      type_nest wants_doc doc_enabled comments_enabled count_whitespace wants_raw slash_is_regex wants_regex
+      wants_def_or_macro_name wants_symbol scopes)
 
     getter kind : DiagnosticCaptureInputKind
-    getter logical_module : String?
-    getter package : String?
-    getter original_file : String?
-    getter lexical_mode : String
+    @logical_module : String?
+    @package : String?
+    @original_file : String?
+    @lexical_mode : String
     getter entry : DiagnosticCaptureParseEntry
     getter mode : DiagnosticCaptureParseMode
     getter module_extends_written : Bool
@@ -43,9 +47,12 @@ module Iyi
     getter fun_nest : Int32
     getter type_nest : Int32
     getter wants_doc : Bool
-    getter input_sha256 : String
+    @input_sha256 : String
     @input : String
     @scopes : Array(Array(String))
+    @warning_policy : WarningCollection::ParseAheadPolicy
+    @warning_policy_json : String
+    @fresh_parser_contract : String
 
     def initialize(input : String, @kind : DiagnosticCaptureInputKind,
                    @logical_module : String?, @package : String?, @original_file : String?,
@@ -53,28 +60,101 @@ module Iyi
                    @mode : DiagnosticCaptureParseMode, @module_extends_written : Bool,
                    @source_only : Bool, @visibility : Visibility?, @def_nest : Int32,
                    @fun_nest : Int32, @type_nest : Int32, @wants_doc : Bool,
-                   scopes : Array(Array(String)))
+                   scopes : Array(Array(String)), warning_policy : WarningCollection::ParseAheadPolicy,
+                   fresh_parser_contract : String)
       raise ArgumentError.new("capture input exceeds 64 MiB") if input.bytesize > MAX_INPUT_BYTES
       raise ArgumentError.new("capture input is not UTF-8") unless input.valid_encoding?
       raise ArgumentError.new("unknown capture lexical mode") unless {"Iyi", "Crystal"}.includes?(@lexical_mode)
       raise ArgumentError.new("invalid capture nesting") if @def_nest < 0 || @fun_nest < 0 || @type_nest < 0
       raise ArgumentError.new("capture parser scopes missing") if scopes.empty?
+      raise ArgumentError.new("parser contract exceeds size limit") if fresh_parser_contract.bytesize.to_u64 > DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      scope_budget = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      raise ArgumentError.new("parser scopes exceed size limit") if scopes.size.to_u64 * 32_u64 > scope_budget
+      scope_budget -= scopes.size.to_u64 * 32_u64
+      scopes.each do |scope|
+        raise ArgumentError.new("parser scope exceeds size limit") if scope.size.to_u64 * 32_u64 > scope_budget
+        scope_budget -= scope.size.to_u64 * 32_u64
+        scope.each do |name|
+          raise ArgumentError.new("parser scope exceeds size limit") if name.bytesize.to_u64 > scope_budget
+          scope_budget -= name.bytesize.to_u64
+        end
+      end
       if @entry.parse_to_def?
         raise ArgumentError.new("parse_to_def capture requires its original Def context")
       end
       if @kind.macro_expansion?
         raise ArgumentError.new("macro capture requires expansion binding, parent lineage, and pragma inputs")
       end
+      unless @kind.source_file? || @kind.entry_buffer?
+        raise ArgumentError.new("unknown capture input kind")
+      end
+      unless @entry.parse? || @entry.parse_mode?
+        raise ArgumentError.new("unknown capture parse entry")
+      end
+      unless @mode.normal? || @mode.lib? || @mode.lib_struct_or_union? || @mode.enum?
+        raise ArgumentError.new("unknown capture parse mode")
+      end
       if @kind.source_file? && (@original_file.nil? || @original_file.not_nil!.empty?)
         raise ArgumentError.new("source capture requires original file identity")
       end
+      unless warning_policy.class == WarningCollection::ParseAheadPolicy &&
+             warning_policy.policy_bytes <= WarningCollection::ParseAheadPolicy::MAX_POLICY_BYTES &&
+             warning_policy.excluded_path_count <= WarningCollection::ParseAheadPolicy::MAX_EXCLUDED_PATHS
+        raise ArgumentError.new("unclassified or oversized warning policy")
+      end
+      policy_json = warning_policy.fingerprint
+      raise ArgumentError.new("serialized warning policy exceeds size limit") if policy_json.bytesize > MAX_INPUT_BYTES
+      @warning_policy = WarningCollection::ParseAheadPolicy.new(warning_policy.level,
+        warning_policy.excluded_paths, warning_policy.lib_path, warning_policy.explain_spawn,
+        warning_policy.error_on_warnings?)
+      @warning_policy_json = String.new(@warning_policy.fingerprint.to_slice)
+      raise ArgumentError.new("warning policy changed during snapshot") unless @warning_policy_json == policy_json
+      @logical_module = @logical_module.try { |value| String.new(value.to_slice) }
+      @package = @package.try { |value| String.new(value.to_slice) }
+      @original_file = @original_file.try { |value| String.new(value.to_slice) }
+      @lexical_mode = String.new(@lexical_mode.to_slice)
       @input = String.new(input.to_slice)
       @input_sha256 = ::Crystal::Digest::SHA256.hexdigest(@input)
       @scopes = scopes.map { |scope| scope.map { |name| String.new(name.to_slice) } }
+      @fresh_parser_contract = String.new(fresh_parser_contract.to_slice)
+      validate_fresh_parser_contract!
     end
 
     def input : String
       String.new(@input.to_slice)
+    end
+
+    def logical_module : String?
+      @logical_module.try { |value| String.new(value.to_slice) }
+    end
+
+    def package : String?
+      @package.try { |value| String.new(value.to_slice) }
+    end
+
+    def original_file : String?
+      @original_file.try { |value| String.new(value.to_slice) }
+    end
+
+    def lexical_mode : String
+      String.new(@lexical_mode.to_slice)
+    end
+
+    def input_sha256 : String
+      String.new(@input_sha256.to_slice)
+    end
+
+    def warning_policy_json : String
+      String.new(@warning_policy_json.to_slice)
+    end
+
+    def fresh_parser_contract : String
+      String.new(@fresh_parser_contract.to_slice)
+    end
+
+    def warning_policy : WarningCollection::ParseAheadPolicy
+      WarningCollection::ParseAheadPolicy.new(@warning_policy.level, @warning_policy.excluded_paths,
+        @warning_policy.lib_path, @warning_policy.explain_spawn, @warning_policy.error_on_warnings?)
     end
 
     def scopes : Array(Array(String))
@@ -85,14 +165,15 @@ module Iyi
     # parser contract, which must be checked separately before acceptance.
     def same_candidate?(other : AcceptedCaptureInput, source : String) : Bool
       @input == source && @input == other.stored_input &&
-        @kind == other.kind && @logical_module == other.logical_module &&
-        @package == other.package && @original_file == other.original_file &&
-        @lexical_mode == other.lexical_mode && @entry == other.entry &&
+        @kind == other.kind && @logical_module == other.stored_logical_module &&
+        @package == other.stored_package && @original_file == other.stored_original_file &&
+        @lexical_mode == other.stored_lexical_mode && @entry == other.entry &&
         @mode == other.mode && @module_extends_written == other.module_extends_written &&
         @source_only == other.source_only && @visibility == other.visibility &&
         @def_nest == other.def_nest && @fun_nest == other.fun_nest &&
         @type_nest == other.type_nest && @wants_doc == other.wants_doc &&
-        @scopes == other.stored_scopes
+        @scopes == other.stored_scopes && @warning_policy_json == other.stored_warning_policy_json &&
+        @fresh_parser_contract == other.stored_fresh_parser_contract
     end
 
     def matches_source_token?(token : DiagnosticSourceNameToken) : Bool
@@ -101,11 +182,16 @@ module Iyi
                           token.lexical_mode == @lexical_mode &&
                           token.input_start >= 0 && token.input_end <= @input.bytesize
       origin = token.lexical_origin.as?(DiagnosticOrigin::Written) || return false
+      return false unless matches_written_identity?(origin)
+      @input.to_slice[token.input_start, token.input_end - token.input_start] == token.raw_text.to_slice
+    end
+
+    def matches_written_identity?(origin : DiagnosticOrigin::Written) : Bool
       file = @original_file || return false
       return false unless origin.source_file == file
+      return false unless origin.input_byte_offset >= 0 && origin.input_byte_offset <= @input.bytesize
       expected_module = @logical_module || "source-file:#{file}"
-      return false unless origin.source_module == expected_module
-      @input.to_slice[token.input_start, token.input_end - token.input_start] == token.raw_text.to_slice
+      origin.source_module == expected_module
     end
 
     def input_bytesize : Int32
@@ -120,12 +206,79 @@ module Iyi
       Base64.strict_encode(span) == encoded
     end
 
+    private def validate_fresh_parser_contract! : Nil
+      parser = JSON::Parser.new(@fresh_parser_contract)
+      parser.max_nesting = 32
+      parsed = parser.parse
+      fields = parsed.as_h
+      unless fields.keys == FRESH_CONTRACT_FIELDS && parsed.to_json == @fresh_parser_contract
+        raise ArgumentError.new("noncanonical or unclassified fresh parser contract")
+      end
+      %w(package visibility).each do |field|
+        value = fields[field].raw
+        unless value.nil? || value.is_a?(String)
+          raise ArgumentError.new("invalid nullable parser contract field #{field}")
+        end
+      end
+      unless fields["entry_rule"].as_s == "parse" &&
+             fields["filename"].as_s == @original_file &&
+             fields["input_offset_base"].as_i == (@input.starts_with?('\uFEFF') ? 3 : 0) &&
+             fields["lexical_mode"].as_s == @lexical_mode &&
+             fields["package"].as_s? == @package &&
+             fields["source_only"].as_bool == @source_only &&
+             fields["module_extends_written"].as_bool == @module_extends_written &&
+             fields["visibility"].as_s? == @visibility.try(&.to_s) &&
+             fields["def_nest"].as_i == @def_nest && fields["fun_nest"].as_i == @fun_nest &&
+             fields["type_nest"].as_i == @type_nest && fields["wants_doc"].as_bool == @wants_doc &&
+             fields["diagnostic_capture"].as_bool && fields["lexical_journal_enabled"].as_bool
+        raise ArgumentError.new("fresh parser contract disagrees with captured input state")
+      end
+      %w(reads_using doc_enabled comments_enabled count_whitespace wants_raw slash_is_regex wants_regex
+         wants_def_or_macro_name wants_symbol).each { |field| fields[field].as_bool }
+      source_unit = fields["source_unit"].raw
+      raise ArgumentError.new("invalid parser source unit") unless source_unit.nil? || source_unit.is_a?(String)
+      scopes = fields["scopes"].as_a
+      raise ArgumentError.new("fresh parser scope count mismatch") unless scopes.size == @scopes.size
+      scopes.each_with_index do |scope, index|
+        entries = scope.as_a
+        expected = @scopes[index]
+        raise ArgumentError.new("fresh parser scope mismatch") unless entries.size == expected.size
+        entries.each_with_index do |entry, position|
+          raise ArgumentError.new("fresh parser scope mismatch") unless entry.as_s == expected[position]
+        end
+      end
+    end
+
     protected def stored_input : String
       @input
     end
 
     protected def stored_scopes : Array(Array(String))
       @scopes
+    end
+
+    protected def stored_logical_module : String?
+      @logical_module
+    end
+
+    protected def stored_package : String?
+      @package
+    end
+
+    protected def stored_original_file : String?
+      @original_file
+    end
+
+    protected def stored_lexical_mode : String
+      @lexical_mode
+    end
+
+    protected def stored_warning_policy_json : String
+      @warning_policy_json
+    end
+
+    protected def stored_fresh_parser_contract : String
+      @fresh_parser_contract
     end
   end
 
@@ -154,7 +307,7 @@ module Iyi
   # A value snapshot of the actual parser transition. It has no owner-graph
   # reference and therefore cannot serve as an adoption receipt or authority.
   class DiagnosticParseToDefEffectSnapshot
-    getter sha256 : String
+    @sha256 : String
     @bytes : String
 
     def initialize(effect : ParseToDefEffect)
@@ -189,6 +342,10 @@ module Iyi
       String.new(@bytes.to_slice)
     end
 
+    def sha256 : String
+      String.new(@sha256.to_slice)
+    end
+
     private def write_flags(json : JSON::Builder, flags : ParseDefFlags) : Nil
       json.object do
         json.field "calls_super", flags.calls_super
@@ -203,7 +360,7 @@ module Iyi
   # Frozen ordered pragma input, not an authenticated parse or registry.
   class DiagnosticPragmaSnapshot
     MAX_BYTES = 64_i64 * 1024 * 1024
-    getter sha256 : String
+    @sha256 : String
     @bytes : String
     @graph_budget : UInt64 = DiagnosticOrigin::MAX_UNFOLDED_BYTES
 
@@ -235,6 +392,10 @@ module Iyi
 
     def bytes : String
       String.new(@bytes.to_slice)
+    end
+
+    def sha256 : String
+      String.new(@sha256.to_slice)
     end
 
     private def charge_graph(bytes : UInt64) : Nil
@@ -387,7 +548,7 @@ module Iyi
   class DiagnosticFilenameSnapshot
     MAX_BYTES = 8_i64 * 1024 * 1024
     MAX_DEPTH = 128
-    getter sha256 : String
+    @sha256 : String
     @bytes : String
     @seen = Set(UInt64).new
 
@@ -406,13 +567,21 @@ module Iyi
       String.new(@bytes.to_slice)
     end
 
+    def sha256 : String
+      String.new(@sha256.to_slice)
+    end
+
     private def write_ref(json : JSON::Builder, ref : DiagnosticCaptureFieldRef) : Nil
       json.object do
         json.field "capture_id", ref.capture_id
         json.field "owner_path_json", ref.owner_path_json
         json.field "field_tag", ref.field_tag
         json.field "index", ref.index
-        json.field "map_key", ref.map_key
+        key = ref.map_key
+        if key && key.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
+          raise ArgumentError.new("filename owner map key exceeds size limit")
+        end
+        json.field "map_key_base64", key.try { |value| Base64.strict_encode(value.to_slice) }
       end
     end
 
@@ -473,7 +642,7 @@ module Iyi
   # Reads every Path.names element directly. This snapshot is an incremental
   # field encoder, not a complete AST census or a registry authority.
   class DiagnosticPathSnapshot
-    getter sha256 : String
+    @sha256 : String
     @bytes : String
 
     def initialize(path : Path, input : AcceptedCaptureInput)
@@ -546,6 +715,10 @@ module Iyi
 
     def bytes : String
       String.new(@bytes.to_slice)
+    end
+
+    def sha256 : String
+      String.new(@sha256.to_slice)
     end
 
     private def write_location(json : JSON::Builder, location : Location?) : Nil
@@ -1801,9 +1974,10 @@ module Iyi
   class DiagnosticAstInventorySnapshot
     MAX_BYTES = 8_i64 * 1024 * 1024
     MAX_DEPTH = 128
-    getter sha256 : String
+    @sha256 : String
     @bytes : String
     @active = Set(UInt64).new
+    @object_ids = {} of UInt64 => Int32
     @evidence_budget : UInt64 = DiagnosticOrigin::MAX_UNFOLDED_BYTES
 
     def initialize(root : ASTNode)
@@ -1819,6 +1993,10 @@ module Iyi
 
     def bytes : String
       String.new(@bytes.to_slice)
+    end
+
+    def sha256 : String
+      String.new(@sha256.to_slice)
     end
 
     # Resolves only the inventory's own name bytes. It cannot establish source
@@ -1853,11 +2031,18 @@ module Iyi
       id = node.object_id
       raise ArgumentError.new("cyclic AST inventory") unless @active.add?(id)
       begin
+        charge_evidence(64_u64, 0, depth)
+        owner_id = @object_ids[id]?
+        unless owner_id
+          owner_id = @object_ids.size
+          @object_ids[id] = owner_id
+        end
         DiagnosticAstFieldSchema.validate_node_fields(node)
         if !node.is_a?(Arg) && node.diagnostic_external_explicit
           raise ArgumentError.new("external-name observation on non-argument node")
         end
         json.object do
+          json.field "owner_id", owner_id
           json.field "kind", node.class.name
           json.field("presence") { write_presence(json, node) }
           json.field("scalars") { write_scalars(json, node) }
@@ -2533,6 +2718,9 @@ module Iyi
       begin
         charge(256_u64)
         DiagnosticAstFieldSchema.validate_node_fields(node)
+        if origin = node.diagnostic_origin
+          check_structural_origin!(origin, depth)
+        end
         if !node.is_a?(Arg) && node.diagnostic_external_explicit
           raise ArgumentError.new("external-name observation on non-argument node")
         end
@@ -2566,6 +2754,29 @@ module Iyi
         DiagnosticDirectChildFields.each(node) { |_, _, _, child| visit(child, depth + 1) }
       ensure
         @active.delete(id)
+      end
+    end
+
+    private def check_structural_origin!(origin : DiagnosticOrigin, depth : Int32) : Nil
+      if origin.graph_depth.to_i64 + depth > MAX_DEPTH
+        raise ArgumentError.new("structural origin exceeds depth limit")
+      end
+      charge(origin.graph_bytes)
+      current = origin
+      loop do
+        case current
+        when DiagnosticOrigin::Written
+          unless @input.matches_written_identity?(current)
+            raise ArgumentError.new("structural origin input identity mismatch")
+          end
+          return
+        when DiagnosticOrigin::Synthetic
+          current = current.parent_origin
+        when DiagnosticOrigin::Expanded
+          raise ArgumentError.new("expanded structural origin requires resolved expansion ancestry")
+        else
+          raise ArgumentError.new("unclassified structural origin ancestry")
+        end
       end
     end
 
@@ -2646,6 +2857,12 @@ module Iyi
           end
         when ModuleHeader
           slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ModuleSegment, index.not_nil!) if field == "path"
+        when ImportDecl, UsingDecl
+          if field == "path"
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ModuleSegment, index.not_nil!)
+          elsif field == "names"
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index.not_nil!)
+          end
         when ClassDef, ModuleDef
           slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index.not_nil!) if field == "type_vars"
         when TraitDef
@@ -2767,6 +2984,9 @@ module Iyi
     private def validate_literals(node : ASTNode) : Nil
       names_count = node.diagnostic_literal_names_count
       production_count = node.diagnostic_literal_productions_count
+      if (node.class == StringLiteral || node.class == SymbolLiteral) && names_count.nil?
+        raise ArgumentError.new("literal value lacks source or construction evidence")
+      end
       return if names_count.nil? && production_count.nil?
       unless names_count && production_count && names_count == production_count
         raise ArgumentError.new("literal observations and productions differ in presence or count")
@@ -2797,21 +3017,45 @@ module Iyi
   # A coordinate in one accepted parser input, not an assertion that the
   # coordinate resolves. Only the frozen capture registry can establish that.
   class DiagnosticCaptureFieldRef
-    getter capture_id : String
-    getter owner_path_json : String
-    getter field_tag : String
+    @capture_id : String
+    @owner_path_json : String
+    @field_tag : String
     getter index : Int32?
-    getter map_key : String?
+    @map_key : String?
 
     def initialize(@capture_id : String, @owner_path_json : String, @field_tag : String,
                    @index : Int32? = nil, @map_key : String? = nil)
       unless @capture_id.bytesize == 64 && @capture_id.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) }
         raise ArgumentError.new("invalid capture input identity")
       end
+      if @owner_path_json.bytesize.to_i64 + @field_tag.bytesize.to_i64 +
+         (@map_key.try(&.bytesize) || 0).to_i64 > DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i64
+        raise ArgumentError.new("capture field coordinate exceeds size limit")
+      end
       raise ArgumentError.new("empty capture field tag") if @field_tag.empty?
       raise ArgumentError.new("invalid capture field index") if @index.try { |i| i < 0 }
       raise ArgumentError.new("ambiguous capture field coordinate") if @index && @map_key
       raise ArgumentError.new("invalid capture owner path") unless JSON.parse(@owner_path_json).as_a?
+      @capture_id = String.new(@capture_id.to_slice)
+      @owner_path_json = String.new(@owner_path_json.to_slice)
+      @field_tag = String.new(@field_tag.to_slice)
+      @map_key = @map_key.try { |value| String.new(value.to_slice) }
+    end
+
+    def capture_id : String
+      String.new(@capture_id.to_slice)
+    end
+
+    def owner_path_json : String
+      String.new(@owner_path_json.to_slice)
+    end
+
+    def field_tag : String
+      String.new(@field_tag.to_slice)
+    end
+
+    def map_key : String?
+      @map_key.try { |value| String.new(value.to_slice) }
     end
 
     def_equals_and_hash @capture_id, @owner_path_json, @field_tag, @index, @map_key
