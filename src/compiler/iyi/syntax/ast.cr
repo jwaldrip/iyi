@@ -1,5 +1,6 @@
 require "./diagnostic_origin"
 require "./diagnostic_capture"
+require "./effect"
 
 # Helper for `#pretty_print` implementation. It describes the type.
 private def pp_type(pp, left, right, &) : Nil
@@ -1887,9 +1888,9 @@ module Iyi
     # annotations.
     property? iyi_share_block = false
     property? iyi_observer_wrapped = false
-    setter effect : Effect? = nil
+    setter effect : ::Iyi::Effect? = nil
 
-    def effect : Effect?
+    def effect : ::Iyi::Effect?
       @effect || iyi_origin.try(&.effect)
     end
 
