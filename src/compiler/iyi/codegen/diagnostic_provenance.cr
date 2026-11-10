@@ -169,7 +169,7 @@ module Iyi::DiagnosticProvenance
   end
 
   NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self module_segment)
-  MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer)
+  MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer LiteralValue)
   NAME_OPERATORS = %w(! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~)
   INVALID_PARAMETER_NAMES = %w(begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof)
 
@@ -502,6 +502,37 @@ module Iyi::DiagnosticProvenance
     end
   end
 
+  private def self.quote_free_name?(text : String) : Bool
+    text != "_" && text.matches?(/\A[A-Za-z_][A-Za-z0-9_]*\z/)
+  end
+
+  private def self.percent_array_opener?(kind : String, raw : String) : Bool
+    prefixes = case kind
+               when "STRING_ARRAY_START" then ["%w", "%W"]
+               when "SYMBOL_ARRAY_START" then ["%i"]
+               else return false
+               end
+    raw.bytesize == 3 && prefixes.includes?(raw.byte_slice(0, 2)) && ["(", "[", "{", "<", "|"].includes?(raw.byte_slice(2, 1))
+  end
+
+  private def self.quoted_name_schema4!(value : JSON::Any) : Tuple(String, String)
+    item = fields(value, %w(kind derivation_kind context input_sha256 input_bytesize lexical_mode literal_start literal_end rendered_text))
+    context, digest, mode = item["context"].as_s, item["input_sha256"].as_s, item["lexical_mode"].as_s
+    size, first, last = item["input_bytesize"].as_i64, item["literal_start"].as_i64, item["literal_end"].as_i64
+    rendered = item["rendered_text"].as_s
+    unless {"named_entry", "method_name"}.includes?(context) && digest.matches?(/\A[0-9a-f]{64}\z/) &&
+           {"Crystal", "Iyi"}.includes?(mode) && size >= 0 && size <= Int32::MAX &&
+           first >= 0 && last > first && last <= size && rendered.valid_encoding? && quote_free_name?(rendered)
+      raise "invalid quoted name"
+    end
+    kind = rendered.matches?(/\A[A-Z]/) ? "CONST" : "IDENT"
+    unless name_token?(kind, rendered, mode, context) && last - first >= rendered.bytesize + 2
+      raise "invalid quoted name"
+    end
+    {context, rendered}
+  end
+
+
   private def self.type_sugar_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
     item = fields(value, %w(kind derivation_kind production witnesses result lowering_index))
     production, result = item["production"].as_s, item["result"].as_s
@@ -516,6 +547,8 @@ module Iyi::DiagnosticProvenance
                          when "Tuple" then {["{", "}"], result == "Tuple" && index == 0}
                          when "NamedTuple" then {["{", "}"], result == "NamedTuple" && index == 0}
                          when "NilPredicate" then {["nil?"], result == "Nil" && index == 0}
+                         when "StringArray" then {["STRING_ARRAY_START"], result == "String" && index == 0}
+                         when "SymbolArray" then {["SYMBOL_ARRAY_START"], result == "Symbol" && index == 0}
                          else raise "unknown type sugar"
                          end
     raise "invalid type sugar result" unless allowed
@@ -535,9 +568,11 @@ module Iyi::DiagnosticProvenance
       raise "invalid type syntax input" unless digest.matches?(/\A[0-9a-f]{64}\z/) && (mode == "Crystal" || mode == "Iyi")
       size, first, last = token["input_bytesize"].as_i64, token["input_start"].as_i64, token["input_end"].as_i64
       spelling = spellings[ordinal]
+      raw = token["raw_text"].as_s
       expected_kind = {"self?", "nil?"}.includes?(spelling) ? "IDENT" : spelling
-      unless token["token_kind"].as_s == expected_kind && token["raw_text"].as_s == spelling &&
-             first >= 0 && first >= previous && size <= Int32::MAX && last <= size && last - first == spelling.bytesize
+      opener_ok = {"STRING_ARRAY_START", "SYMBOL_ARRAY_START"}.includes?(spelling) ? percent_array_opener?(spelling, raw) : raw == spelling
+      unless token["token_kind"].as_s == expected_kind && opener_ok &&
+             first >= 0 && first >= previous && size <= Int32::MAX && last <= size && last - first == raw.bytesize
         raise "invalid type syntax token"
       end
       source = lexical.as_h
@@ -548,7 +583,7 @@ module Iyi::DiagnosticProvenance
         event = source["token_event"].as_h
         unless source["expansion_guard"].as_s == "sha256:#{digest}" && event["selection"].as_s == "Whole" &&
                event["input_start"].as_i64 == first && event["input_end"].as_i64 == last &&
-               event["token_kind"].as_s == expected_kind && event["token_text"].as_s == spelling && event["lexical_mode"].as_s == mode
+               event["token_kind"].as_s == expected_kind && event["token_text"].as_s == raw && event["lexical_mode"].as_s == mode
           raise "expanded type syntax mismatch"
         end
       else
@@ -783,6 +818,9 @@ module Iyi::DiagnosticProvenance
       when "Lookup"    then return {"method", source["raw_text"].as_s.ends_with?("?") ? "[]?" : "[]"}
       else                   raise "invalid regex derivation result"
       end
+    end
+    if object["derivation_kind"].as_s == "QuotedName"
+      return quoted_name_schema4!(value)
     end
     raise "unknown derived name operation" unless object["derivation_kind"].as_s == "ParameterLowering"
     item = fields(value, %w(kind derivation_kind source_token definition_origin parameter_slot parameter_index result projection fresh_index))

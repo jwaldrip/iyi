@@ -6,6 +6,17 @@ require "base64"
 require "../warnings"
 
 module Iyi
+  # A capture-time journal bound was exceeded. Raised instead of recording partial evidence, so capture fails explicitly.
+  class DiagnosticLexicalBudgetError < Exception
+    getter budget : String
+    getter limit : UInt64
+    getter actual : UInt64
+
+    def initialize(@budget : String, @limit : UInt64, @actual : UInt64)
+      super("lexical journal budget exceeded: #{@budget} is #{@actual} bytes, limit #{@limit}")
+    end
+  end
+
   class Lexer
     property? doc_enabled : Bool
     property? comments_enabled : Bool
@@ -60,26 +71,69 @@ module Iyi
         heredoc_indent: state.heredoc_indent)
     end
 
+    # Whether the span `start...finish` of the input is one the journal can record.
+    private def diagnostic_span_recordable?(start : Int32, finish : Int32) : Bool
+      start >= @input_offset_base && finish >= start && finish <= string.bytesize + @input_offset_base
+    end
+
     private def diagnostic_record_observation : Nil
-      return unless observations = @diagnostic_lexical_observations
+      return unless @diagnostic_lexical_observations
       start = @token.input_offset
       finish = @token.input_end
-      return unless start >= @input_offset_base && finish >= start && finish <= string.bytesize + @input_offset_base
-      raw = string.byte_slice(start - @input_offset_base, finish - start)
+      return unless diagnostic_span_recordable?(start, finish)
       kind = @token.type
       # The lexer's own value, byte for byte: an escape such as `\xFF` stays as it is.
       value_base64 = nil
       if kind.string? || kind.symbol?
         value = @token.value
         value_base64 = Base64.strict_encode(value.to_slice) if value.is_a?(String)
+      elsif kind.char?
+        # The UTF-8 of the character the lexer decoded.
+        value = @token.value
+        value_base64 = Base64.strict_encode(value.to_s.to_slice) if value.is_a?(Char)
+      elsif kind.magic_file? || kind.magic_dir?
+        value_base64 = diagnostic_magic_value_base64(kind)
       end
       delimiter = nil
-      if kind.delimiter_start? || kind.string? || kind.delimiter_end? || kind.interpolation_start?
+      if kind.delimiter_start? || kind.string? || kind.delimiter_end? || kind.interpolation_start? ||
+         kind.string_array_start? || kind.symbol_array_start? || kind.string_array_end?
         delimiter = diagnostic_delimiter(@token.delimiter_state)
       end
-      observations << DiagnosticRenderedToken.new(start, finish, kind.to_s, raw, iyi? ? "Iyi" : "Crystal",
-        value_base64: value_base64, delimiter: delimiter, line: @token.line_number,
-        passed_backslash_newline: @token.passed_backslash_newline, invalid_escape: @token.invalid_escape)
+      diagnostic_append_observation(kind.to_s, start, finish, @token.line_number, value_base64, delimiter,
+        @token.passed_backslash_newline, @token.invalid_escape)
+    end
+
+    # The value a magic constant has at this token: the expansion the parser makes for the same location.
+    # The location is built from the token's fields, not through `Token#location`, so the token's memo is untouched.
+    # An expansion over the journal bound raises DiagnosticLexicalBudgetError: capture never records partial evidence.
+    private def diagnostic_magic_value_base64(kind : Token::Kind) : String?
+      location = Location.new(@token.filename, @token.line_number, @token.column_number, @token.artifact)
+      expanded = kind.magic_file? ? MagicConstant.expand_file(location) : MagicConstant.expand_dir(location)
+      limit = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      size = expanded.bytesize.to_u64
+      raise DiagnosticLexicalBudgetError.new("magic constant expansion", limit, size) if size > limit
+      Base64.strict_encode(expanded.to_slice)
+    end
+
+    # A journal entry for an absolute span of the input, which need not be the current token.
+    private def diagnostic_append_observation(kind : String, start : Int32, finish : Int32, line : Int32?,
+                                              value_base64 : String?, delimiter : DiagnosticRenderedDelimiter?,
+                                              passed_backslash_newline : Bool, invalid_escape : Bool) : Nil
+      observations = @diagnostic_lexical_observations
+      return unless observations && diagnostic_span_recordable?(start, finish)
+      raw = string.byte_slice(start - @input_offset_base, finish - start)
+      observations << DiagnosticRenderedToken.new(start, finish, kind, raw, iyi? ? "Iyi" : "Crystal",
+        value_base64: value_base64, delimiter: delimiter, line: line,
+        passed_backslash_newline: passed_backslash_newline, invalid_escape: invalid_escape)
+    end
+
+    # A line continuation in a string body: the backslash, the line break and the whitespace after it.
+    # It is observation only. It carries the enclosing delimiter, its line is the backslash's, and it has no value.
+    private def diagnostic_record_continuation(start : Int32, finish : Int32, line : Int32,
+                                               delimiter_state : Token::DelimiterState) : Nil
+      return unless @diagnostic_lexical_observations
+      diagnostic_append_observation("STRING_CONTINUATION", start, finish, line, nil,
+        diagnostic_delimiter(delimiter_state), false, false)
     end
 
     # This is an interface for storing data associated to a heredoc
@@ -1746,6 +1800,7 @@ module Iyi
                 {1, 0}
               end
             when '\r', '\n'
+              continuation_line = @line_number
               handle_slash_r_slash_n_or_slash_n
               incr_line_number
               @token.line_number = @line_number
@@ -1765,6 +1820,7 @@ module Iyi
                   break
                 end
               end
+              diagnostic_record_continuation(start + @input_offset_base, current_pos + @input_offset_base, continuation_line, delimiter_state)
               recorded_by_continuation = true
               next_string_token delimiter_state
             when '\0'

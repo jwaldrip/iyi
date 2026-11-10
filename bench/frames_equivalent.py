@@ -151,7 +151,7 @@ def number(value):
 
 
 NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self module_segment".split())
-PRODUCERS = frozenset("ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer".split())
+PRODUCERS = frozenset("ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer LiteralValue".split())
 TOKEN_KINDS = frozenset(("EOF SPACE NEWLINE IDENT CONST INSTANCE_VAR CLASS_VAR CHAR STRING SYMBOL NUMBER _ COMMENT "
     "DELIMITER_START DELIMITER_END STRING_ARRAY_START INTERPOLATION_START SYMBOL_ARRAY_START STRING_ARRAY_END "
     "GLOBAL GLOBAL_MATCH_DATA_INDEX __DIR__ __END_LINE__ __FILE__ __LINE__ MACRO_LITERAL MACRO_EXPRESSION_START "
@@ -564,6 +564,33 @@ def fresh_index_order(entries):
 
 
 
+def percent_opener(kind, raw):
+    """Mirror DiagnosticSourceSyntaxToken.percent_array_opener? (diagnostic_origin.cr): %w or %W for strings, %i for symbols, then one of ( [ { < |."""
+    prefixes = {"STRING_ARRAY_START": ("%w", "%W"), "SYMBOL_ARRAY_START": ("%i",)}.get(kind, ())
+    return len(raw.encode("utf-8")) == 3 and raw[:2] in prefixes and raw[2:] in ("(", "[", "{", "<", "|")
+
+
+def quote_free(text):
+    """Mirror Symbol.needs_quotes_for_named_argument? (src/symbol.cr:81-100): a name needs no quotes only when it is not "_" and holds ASCII letters, digits and underscores with no leading digit."""
+    return text != "_" and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text) is not None
+
+
+def quoted_name(value):
+    fields(value, "kind derivation_kind context input_sha256 input_bytesize lexical_mode literal_start literal_end rendered_text")
+    context, sha, mode = value["context"], value["input_sha256"], value["lexical_mode"]
+    size, start, end, rendered = value["input_bytesize"], value["literal_start"], value["literal_end"], value["rendered_text"]
+    ints = all(type(n) is int for n in (size, start, end))
+    if (context not in ("named_entry", "method_name") or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha) or
+            mode not in ("Crystal", "Iyi") or not ints or not 0 <= start < end <= size <= 0x7fffffff or
+            not isinstance(rendered, str) or not quote_free(rendered)):
+        raise ValueError("invalid quoted name")
+    kind = "CONST" if "A" <= rendered[0] <= "Z" else "IDENT"
+    if not name_token(kind, rendered, mode, context) or end - start < len(rendered.encode("utf-8")) + 2:
+        raise ValueError("invalid quoted name")
+    return ("Name", context), rendered.encode("utf-8")
+
+
+
 def derived_name(value, depth):
     if value.get("derivation_kind") == "BoundProjection":
         return bound_projection(value, depth)
@@ -612,6 +639,8 @@ def derived_name(value, depth):
                 origin(header, depth + 1) != ("ModuleHeader", "keyword")):
             raise ValueError("invalid implicit module self origin")
         return (("Name", "type_self"), b"self")
+    if value.get("derivation_kind") == "QuotedName":
+        return quoted_name(value)
     if value.get("derivation_kind") == "TypeSugar":
         fields(value, "kind derivation_kind production witnesses result lowering_index")
         matrix = {
@@ -624,6 +653,8 @@ def derived_name(value, depth):
             "Tuple": (("{", "}"), {("Tuple", 0)}),
             "NamedTuple": (("{", "}"), {("NamedTuple", 0)}),
             "NilPredicate": (("nil?",), {("Nil", 0)}),
+            "StringArray": ((("STRING_ARRAY_START",),), {("String", 0)}),
+            "SymbolArray": ((("SYMBOL_ARRAY_START",),), {("Symbol", 0)}),
         }
         production = value["production"]
         if production not in matrix: raise ValueError("unknown type sugar")
@@ -639,10 +670,15 @@ def derived_name(value, depth):
             guard(witness["input_sha256"])
             for key in ("input_bytesize", "input_start", "input_end"): number(witness[key])
             token_fields(witness); text(witness["raw_text"])
-            expected_kind = "IDENT" if spelling in ("self?", "nil?") else spelling
-            if (witness["token_kind"] != expected_kind or witness["raw_text"] != spelling or
+            kind, raw = witness["token_kind"], witness["raw_text"]
+            if isinstance(spelling, tuple):
+                expected_kind, opener_ok = spelling[0], percent_opener(spelling[0], raw)
+            else:
+                expected_kind = "IDENT" if spelling in ("self?", "nil?") else spelling
+                opener_ok = raw == spelling
+            if (kind != expected_kind or not opener_ok or
                     witness["input_start"] < previous or witness["input_end"] > witness["input_bytesize"] or
-                    witness["input_end"] - witness["input_start"] != len(spelling.encode("utf-8"))):
+                    witness["input_end"] - witness["input_start"] != len(raw.encode("utf-8"))):
                 raise ValueError("invalid type syntax token")
             lexical = witness["lexical_origin"]
             if lexical["kind"] == "Written":
@@ -651,7 +687,7 @@ def derived_name(value, depth):
                 event = lexical["token_event"]
                 if (lexical["expansion_guard"] != "sha256:" + witness["input_sha256"] or event["selection"] != "Whole" or
                         event["input_start"] != witness["input_start"] or event["input_end"] != witness["input_end"] or
-                        event["token_kind"] != witness["token_kind"] or event["token_text"] != spelling or
+                        event["token_kind"] != witness["token_kind"] or event["token_text"] != raw or
                         event["lexical_mode"] != witness["lexical_mode"]):
                     raise ValueError("expanded type syntax mismatch")
             else: raise ValueError("invalid type syntax source")

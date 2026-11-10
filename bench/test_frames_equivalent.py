@@ -1547,9 +1547,100 @@ def test_composed_origin_controls():
         assert frames.name_token(kind, raw, mode, context) == expected, (kind, raw, context)
 
 
+def s8_written(kind, role, offset):
+    return {"kind": "Written", "source_identity": {"module": "Example", "file": "example.iyi"},
+            "input_byte_offset": offset, "anchor_kind": kind, "role": role}
+
+
+def s8_quoted(context="named_entry", rendered="a_b", **changes):
+    value = {"kind": "DerivedName", "derivation_kind": "QuotedName", "context": context,
+             "input_sha256": "a" * 64, "input_bytesize": 40, "lexical_mode": "Crystal",
+             "literal_start": 10, "literal_end": 18, "rendered_text": rendered}
+    value.update(changes)
+    return value
+
+
+def s8_array_sugar(production, result, kind, raw):
+    offset = 20
+    witness = {"lexical_origin": s8_written("TypeSyntax", "token", offset), "input_sha256": "a" * 64,
+               "input_bytesize": 100, "input_start": offset, "input_end": offset + len(raw.encode()),
+               "lexical_mode": "Crystal", "token_kind": kind, "raw_text": raw}
+    return {"kind": "DerivedName", "derivation_kind": "TypeSugar", "production": production,
+            "witnesses": [witness], "result": result, "lowering_index": 0}
+
+
+def test_s8_literal_and_name_controls():
+    # LiteralValue is a macro producer and never a raw witness producer.
+    assert "LiteralValue" in frames.PRODUCERS and "LiteralValue" not in frames.RAW_PRODUCERS
+
+    def raw_event_with(producer):
+        return {"input_start": 5, "input_end": 6, "token_kind": "=", "token_text": "=",
+                "lexical_mode": "Crystal", "selection": "Whole",
+                "byte_parts": [{"kind": "Generated", "start_offset": 5, "end_offset": 6,
+                                "emitter_origin": None, "producer": producer}]}
+
+    frames.raw_event(raw_event_with("SemanticPrinter"), "=", "Crystal", 0)
+    try:
+        frames.raw_event(raw_event_with("LiteralValue"), "=", "Crystal", 0)
+    except ValueError as exc:
+        assert str(exc) == "invalid raw syntax producer", str(exc)
+    else:
+        raise AssertionError("LiteralValue accepted as a raw witness producer")
+
+    # QuotedName: exact shapes bind, and each refusal carries the same message.
+    assert frames.checked_origin(s8_quoted()) == ("Name", "named_entry")
+    assert frames.derived_name(s8_quoted(), 0)[1] == b"a_b"
+    assert frames.checked_origin(s8_quoted("method_name", "Foo")) == ("Name", "method_name")
+    for name, bad in (
+            ("needs_quotes", s8_quoted(rendered="a b")),
+            ("empty", s8_quoted(rendered="")),
+            ("underscore", s8_quoted(rendered="_")),
+            ("digit_start", s8_quoted(rendered="1a")),
+            ("wrong_context", s8_quoted(context="local_reference")),
+            ("short_span", s8_quoted(literal_end=13)),
+            ("span_past_input", s8_quoted(literal_end=41)),
+            ("uppercase_sha", s8_quoted(input_sha256="A" * 64)),
+            ("unknown_mode", s8_quoted(lexical_mode="Other")),
+            ("bool_size", s8_quoted(input_bytesize=True))):
+        try:
+            frames.checked_origin(bad)
+        except ValueError as exc:
+            assert str(exc) == "invalid quoted name", (name, str(exc))
+        else:
+            raise AssertionError("invalid quoted name accepted: " + name)
+
+    # Percent-array TypeSugar: the opener must be the production's own spelling.
+    for production, result, kind, raw in (
+            ("StringArray", "String", "STRING_ARRAY_START", "%w("),
+            ("StringArray", "String", "STRING_ARRAY_START", "%W["),
+            ("SymbolArray", "Symbol", "SYMBOL_ARRAY_START", "%i{")):
+        valid = s8_array_sugar(production, result, kind, raw)
+        assert frames.checked_origin(valid) == ("Name", "path_segment")
+        assert frames.derived_name(valid, 0)[1] == result.encode()
+    for production, result, index, kind, raw, message in (
+            ("StringArray", "String", 0, "STRING_ARRAY_START", "%i(", "invalid type syntax token"),
+            ("StringArray", "String", 0, "STRING_ARRAY_START", "%w!", "invalid type syntax token"),
+            ("StringArray", "String", 0, "STRING_ARRAY_START", "%x(", "invalid type syntax token"),
+            ("StringArray", "String", 0, "STRING_ARRAY_START", "%w", "invalid type syntax token"),
+            ("SymbolArray", "Symbol", 0, "SYMBOL_ARRAY_START", "%w(", "invalid type syntax token"),
+            ("SymbolArray", "Symbol", 0, "STRING_ARRAY_START", "%i(", "invalid type syntax token"),
+            ("StringArray", "Symbol", 0, "STRING_ARRAY_START", "%w(", "invalid type sugar result"),
+            ("StringArray", "String", 1, "STRING_ARRAY_START", "%w(", "invalid type sugar result")):
+        bad = s8_array_sugar(production, result, kind, raw)
+        bad["lowering_index"] = index
+        try:
+            frames.checked_origin(bad)
+        except ValueError as exc:
+            assert str(exc) == message, (raw, str(exc))
+        else:
+            raise AssertionError("invalid array type sugar accepted: " + raw)
+
+
+
 def run_all_tests() -> int:
     tests = [
         ("test_composed_origin_controls", test_composed_origin_controls),
+        ("test_s8_literal_and_name_controls", test_s8_literal_and_name_controls),
         ("test_capture_authority_pin_controls", test_capture_authority_pin_controls),
         ("test_macho_reader_controls", test_macho_reader_controls),
         ("test_strict_manifest_synthetic_controls", test_strict_manifest_synthetic_controls),
