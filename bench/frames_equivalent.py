@@ -447,7 +447,9 @@ def structural_rendering(production, witnesses, fresh_index):
         separator, type_head = witnesses
         if separator["raw_text"] not in ("(", ",") or separator["token_kind"] != separator["raw_text"] or separator["selection"] != "Whole":
             raise ValueError("structural witness differs")
-        if type_head["token_kind"] == "IDENT" or type_head["selection"] != "Whole":
+        if type_head["token_kind"] in ("IDENT", "...") or type_head["raw_text"] == "...":
+            raise ValueError("unnamed parameter head is not the first type token")
+        if not type_head["raw_text"] or type_head["selection"] != "Whole":
             raise ValueError("structural witness differs")
         return "", "parameter"
     if production == "ShortBlockArgument":
@@ -481,8 +483,6 @@ def unnamed_anchor(anchor, witnesses, value, mode):
         raise ValueError("anchor does not precede witnesses")
     if anchor["expansion_guard"] != "sha256:" + value["input_sha256"]:
         raise ValueError("structural witnesses use different inputs")
-    if witnesses[1]["raw_text"] == "...":
-        raise ValueError("unnamed parameter head is not the first type token")
 
 
 def structural_anchor(production, anchor, witnesses, value, mode, depth):

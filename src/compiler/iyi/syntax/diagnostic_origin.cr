@@ -892,13 +892,13 @@ module Iyi
       member = Token::DelimiterKind.parse?(@kind)
       raise ArgumentError.new("invalid rendered delimiter state") unless member
       raise ArgumentError.new("invalid rendered delimiter state") unless @kind.bytesize <= 32
-      raise ArgumentError.new("invalid rendered delimiter state") unless @nest.valid_encoding? && @end_delimiter.valid_encoding?
       unless @heredoc_indent >= 0 && @heredoc_indent <= DiagnosticOrigin::MAX_UNFOLDED_BYTES
         raise ArgumentError.new("invalid rendered heredoc indent")
       end
       if member.heredoc?
         DiagnosticRenderedDelimiter.check_heredoc_identifier!(@nest, @end_delimiter, @allow_escapes)
       else
+        raise ArgumentError.new("invalid rendered delimiter state") unless @nest.valid_encoding? && @end_delimiter.valid_encoding?
         raise ArgumentError.new("rendered heredoc indent on a non-heredoc delimiter") unless @heredoc_indent == 0
         unless @nest.size == 1 && @end_delimiter.size == 1 && @nest.bytesize <= 4 && @end_delimiter.bytesize <= 4
           raise ArgumentError.new("invalid rendered delimiter state")
@@ -2754,13 +2754,14 @@ module Iyi
       OPERATOR_COMMAND_OPENERS = ["`", "%x(", "%x[", "%x{", "%x<", "%x|"]
       getter structural_production : DiagnosticStructuralProduction? = nil
       @structural_witnesses : Array(DiagnosticOperatorWitness) = [] of DiagnosticOperatorWitness
-      @structural_input_sha256 : String? = nil
-      @structural_input_bytesize : Int32? = nil
-      @structural_lexical_mode : String? = nil
+      getter structural_input_sha256 : String? = nil
+      getter structural_input_bytesize : Int32? = nil
+      getter structural_lexical_mode : String? = nil
       getter structural_anchor : DiagnosticOrigin? = nil
-      @structural_fresh_index : Int32? = nil
+      getter structural_fresh_index : Int32? = nil
 
       def operator_witnesses : Array(DiagnosticOperatorWitness); @operator_witnesses.dup; end
+      def structural_witnesses : Array(DiagnosticOperatorWitness); @structural_witnesses.dup; end
       def self.type_sugar(production : DiagnosticTypeSugar, witnesses : Array(DiagnosticSourceSyntaxToken),
                           result : DiagnosticTypeSugarResult, lowering_index : Int32) : DerivedName
         new(production, witnesses, result, lowering_index)

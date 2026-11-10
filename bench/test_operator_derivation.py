@@ -813,7 +813,7 @@ class StructuralNameTests(unittest.TestCase):
 
     def test_expanded_unnamed_head_that_is_an_identifier_is_refused(self):
         value = unnamed_expanded("fun n(x)", [(5, "(", "(", "Whole"), (6, "x", "IDENT", "Whole")])
-        self.assertRejected(value, "structural witness differs")
+        self.assertRejected(value, "unnamed parameter head is not the first type token")
 
     def test_expanded_unnamed_missing_separator_event_is_refused(self):
         value = unnamed_expanded()
@@ -825,6 +825,14 @@ class StructuralNameTests(unittest.TestCase):
         value = unnamed_expanded()
         value["witnesses"][1]["event"] = None
         self.assertRejected(value, "invalid structural witness provenance")
+
+    def test_written_unnamed_head_that_is_an_ellipsis_is_refused(self):
+        value = unnamed_written("fun f(...)", [(5, "(", "(", "Whole"), (6, "...", "...", "Whole")])
+        self.assertRejected(value, "unnamed parameter head is not the first type token")
+
+    def test_written_unnamed_head_that_is_an_identifier_is_refused(self):
+        value = unnamed_written("fun n(x)", [(5, "(", "(", "Whole"), (6, "x", "IDENT", "Whole")])
+        self.assertRejected(value, "unnamed parameter head is not the first type token")
 
     # Written unnamed anchors (U2 and journal-only U1).
 
