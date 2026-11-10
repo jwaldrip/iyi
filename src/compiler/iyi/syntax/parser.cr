@@ -2605,6 +2605,7 @@ module Iyi
     StatementEnd = [:OP_SEMICOLON, :NEWLINE, :SPACE] of Token::Kind
 
     def parse_class_def(is_abstract = false, is_struct = false, doc = nil)
+      origin = diagnostic_anchor("ClassDef", "keyword", @token.input_offset)
       @type_nest += 1
 
       doc ||= @token.doc
@@ -2668,6 +2669,7 @@ module Iyi
 
       class_def = ClassDef.new name, body, superclass, type_vars, is_abstract, is_struct, splat_index
       class_def.doc = doc
+      class_def.diagnostic_origin = origin
       class_def.name_location = name_location
       class_def.end_location = end_location
       set_visibility class_def
@@ -4928,15 +4930,15 @@ module Iyi
     end
 
     def parse_include
-      parse_include_or_extend Include
+      parse_include_or_extend Include, "Include"
     end
 
     def parse_extend
-      parse_include_or_extend Extend
+      parse_include_or_extend Extend, "Extend"
     end
 
-    def parse_include_or_extend(klass)
-      location = @token.location
+    def parse_include_or_extend(klass, kind : String)
+      origin = diagnostic_anchor(kind, "keyword", @token.input_offset)
 
       next_token_skip_space_or_newline
 
@@ -4949,7 +4951,7 @@ module Iyi
         skip_space
       end
 
-      klass.new name
+      klass.new(name).tap { |node| node.diagnostic_origin = origin }
     end
 
     def parse_to_def(a_def)

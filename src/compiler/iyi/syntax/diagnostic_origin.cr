@@ -268,7 +268,12 @@ module Iyi
         set_graph_bounds!(own, parents)
         invocation_valid = @invocation_origin.valid_for_anchor?("Call", "method") ||
                            @invocation_origin.valid_for_anchor?("MacroDirective", "control") ||
-                           @invocation_origin.valid_for_anchor?("MacroDirective", "expression")
+                           @invocation_origin.valid_for_anchor?("MacroDirective", "expression") ||
+                           @invocation_origin.valid_for_anchor?("Include", "keyword") ||
+                           @invocation_origin.valid_for_anchor?("Extend", "keyword") ||
+                           @invocation_origin.valid_for_anchor?("ClassDef", "keyword") ||
+                           @invocation_origin.valid_for_anchor?("Def", "keyword") ||
+                           @invocation_origin.valid_for_anchor?("Macro", "keyword")
         unless invocation_valid && @macro_definition_origin.valid_for_anchor?("Macro", "keyword")
           raise ArgumentError.new("unsupported diagnostic macro invocation or definition origin")
         end

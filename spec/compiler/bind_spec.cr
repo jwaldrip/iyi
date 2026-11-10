@@ -124,7 +124,16 @@ describe "tool bind" do
     with_tempdir("bind_module_previous") do
       Dir.mkdir_p "mods"
       File.write "shard.cr", <<-CR
+        module CapturedHook
+          macro included
+            def from_hook : Int32
+              -> { 7 }.call
+            end
+          end
+        end
+
         module Chain
+          include CapturedHook
           extend self
 
           def apply(x : Int32, &block : Int32 -> Int32) : Int32
@@ -148,6 +157,12 @@ describe "tool bind" do
       second_origin = methods[1].diagnostic_origin.not_nil!
       first_origin.should_not eq(second_origin)
       section = artifact.diagnostic_provenance.not_nil!
+      hook_method = artifact.exports.functions.find { |method| method.name == "from_hook" }.not_nil!
+      hook_origin = hook_method.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
+      hook_origin.invocation_origin.valid_for_anchor?("Include", "keyword").should be_true
+      hook_fragment = section.fragments[Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, hook_method)]
+      hook_closure = hook_fragment.anchors.find { |anchor| anchor.kind == "ProcLiteral" && anchor.role == "arrow" }.not_nil!
+      hook_closure.origin.as(Iyi::DiagnosticOrigin::Expanded).invocation_origin.should eq(hook_origin.invocation_origin)
       section.fragments.has_key?(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, methods[0])).should be_true
       section.fragments.has_key?(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, methods[1])).should be_true
     end

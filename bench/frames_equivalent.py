@@ -174,7 +174,9 @@ def origin(value, depth=0):
         fields(value, "kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset anchor_kind role emission_parts spliced_origin")
         invocation = origin(value["invocation_origin"], depth + 1)
         definition = origin(value["macro_definition_origin"], depth + 1)
-        if invocation not in (("Call", "method"), ("MacroDirective", "expression"), ("MacroDirective", "control")) or definition != ("Macro", "keyword"):
+        if invocation not in (("Call", "method"), ("MacroDirective", "expression"), ("MacroDirective", "control"),
+                              ("Include", "keyword"), ("Extend", "keyword"), ("ClassDef", "keyword"),
+                              ("Def", "keyword"), ("Macro", "keyword")) or definition != ("Macro", "keyword"):
             raise ValueError("invalid macro ancestry")
         if not isinstance(value["expansion_guard"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["expansion_guard"]):
             raise ValueError("invalid expansion guard")

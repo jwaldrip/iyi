@@ -865,6 +865,23 @@ def test_strict_manifest_synthetic_controls():
                 "anchor_kind": "ProcLiteral", "role": "arrow", "spliced_origin": closure,
                 "emission_parts": [{"start_offset": 8, "end_offset": 10, "emitter_origin": emitter}]}
     assert frames.checked_origin(expanded) == ("ProcLiteral", "arrow")
+    for kind in ("Include", "Extend", "ClassDef", "Def", "Macro"):
+        hook = copy.deepcopy(expanded)
+        hook["invocation_origin"] = written(kind, "keyword", 2)
+        assert frames.checked_origin(hook) == ("ProcLiteral", "arrow")
+    for kind, role in (("Include", "method"), ("Extend", "control"), ("ClassDef", "method"),
+                       ("Def", "method"), ("Macro", "control"), ("Module", "keyword")):
+        invalid = copy.deepcopy(expanded)
+        invalid["invocation_origin"] = written(kind, role, 2)
+        try: frames.checked_origin(invalid)
+        except ValueError: pass
+        else: raise AssertionError("invalid hook ancestry accepted: " + kind + "/" + role)
+    invalid_definition = copy.deepcopy(expanded)
+    invalid_definition["invocation_origin"] = written("Include", "keyword", 2)
+    invalid_definition["macro_definition_origin"] = written("Def", "keyword", 4)
+    try: frames.checked_origin(invalid_definition)
+    except ValueError: pass
+    else: raise AssertionError("invalid hook macro definition accepted")
     for change in ("gap", "empty", "wrong-emitter", "v2"):
         invalid = copy.deepcopy(expanded)
         if change == "gap": invalid["emission_parts"][0]["start_offset"] = 9

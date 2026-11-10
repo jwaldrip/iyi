@@ -8,6 +8,18 @@ class Iyi::SemanticVisitor
   end
 end
 
+private class NonPositionableDiagnosticIO < IO
+  getter buffer = IO::Memory.new
+
+  def read(slice : Bytes)
+    0
+  end
+
+  def write(slice : Bytes) : Nil
+    @buffer.write(slice)
+  end
+end
+
 describe "diagnostic token input offsets" do
   it "tracks byte offsets through skipped comments and lookahead" do
     lexer = Iyi::Lexer.new("# é\n  x")
@@ -72,6 +84,163 @@ describe Iyi::DiagnosticOrigin do
     json["parent_origin"]["macro_definition_origin"]["input_byte_offset"].as_i.should eq(3)
     Iyi::DiagnosticOrigin.from_json(json).should eq(origin)
   end
+
+  it "prints empty tuple projections without seeking and retains captured offsets" do
+    cases = [
+      {Iyi::TupleLiteral.new([] of Iyi::ASTNode), "::Tuple.new", 8, Iyi::DiagnosticMacroProducer::EmptyTupleProjection},
+      {Iyi::NamedTupleLiteral.new([] of Iyi::NamedTupleLiteral::Entry), "::NamedTuple.new", 13, Iyi::DiagnosticMacroProducer::EmptyNamedTupleProjection},
+    ]
+    cases.each do |node, expected, method_offset, producer|
+      node.to_s.should eq(expected)
+      unseekable = NonPositionableDiagnosticIO.new
+      node.to_s(unseekable)
+      unseekable.buffer.to_s.should eq(expected)
+
+      io = IO::Memory.new
+      io << "prefix "
+      emissions = [] of Iyi::DiagnosticMacroAnchor
+      generated = [] of Iyi::DiagnosticGeneratedText
+      node.to_s(io, diagnostic_emissions: emissions, diagnostic_generated_text: generated)
+      io.to_s.should eq("prefix " + expected)
+      emissions.should eq([Iyi::DiagnosticMacroAnchor.new(7 + method_offset, "Call", "method", nil, nil, producer)])
+      generated.should eq([Iyi::DiagnosticGeneratedText.new(7, 7 + expected.bytesize, nil, producer)])
+    end
+  end
+
+  it "captures hook trigger keywords at their written and printed byte offsets" do
+    cases = [
+      {"include Feature", "Include", "include"},
+      {"extend Feature", "Extend", "extend"},
+      {"class Child\nend", "ClassDef", "class"},
+      {"struct Child\nend", "ClassDef", "struct"},
+      {"abstract class Child\nend", "ClassDef", "class"},
+      {"abstract struct Child\nend", "ClassDef", "struct"},
+    ]
+    cases.each do |source, kind, keyword|
+      parser = Iyi::Parser.new(source)
+      parser.filename = "/src/hooks.cr"
+      parser.diagnostic_source_file = "/src/hooks.cr"
+      parser.diagnostic_capture = true
+      node = parser.parse
+      origin = node.diagnostic_origin.as(Iyi::DiagnosticOrigin::Written)
+      origin.input_byte_offset.should eq(source.byte_index(keyword).not_nil!)
+      origin.valid_for_anchor?(kind, "keyword").should be_true
+
+      io = IO::Memory.new
+      anchors = [] of Iyi::DiagnosticAnchor
+      node.to_s(io, diagnostic_anchors: anchors)
+      text = io.to_s
+      anchor = anchors.find { |item| item.kind == kind && item.role == "keyword" }.not_nil!
+      text.byte_slice(anchor.offset, keyword.bytesize).should eq(keyword)
+      anchor.origin.should eq(origin)
+      restored = Iyi::Parser.new(text)
+      restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
+        ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+      restored.parse.diagnostic_origin.should eq(origin)
+
+      missing = Iyi::Parser.new(text)
+      missing.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize,
+        ::Crystal::Digest::SHA256.hexdigest(text), anchors.reject { |item| item == anchor })]
+      expect_raises(ArgumentError) { missing.parse }
+      changed = Iyi::Parser.new(text + " ")
+      expect_raises(ArgumentError) do
+        changed.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize + 1,
+          ::Crystal::Digest::SHA256.hexdigest(text), anchors)]
+      end
+    end
+  end
+  it "preserves a spliced local binding's call anchor when reparsing an assignment" do
+    source = Iyi::Parser.new("evloop = 1")
+    source.filename = "/src/fiber.cr"
+    source.diagnostic_source_file = "/src/fiber.cr"
+    source.diagnostic_capture = true
+    assignment = source.parse.as(Iyi::Assign)
+    binding = assignment.target.as(Iyi::Var).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic)
+    emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.cr", 20, "MacroDirective", "expression")
+    io = IO::Memory.new
+    anchors = [] of Iyi::DiagnosticMacroAnchor
+    generated = [] of Iyi::DiagnosticGeneratedText
+    assignment.to_s(io, diagnostic_emissions: anchors, diagnostic_generated_text: generated, diagnostic_emitter: emitter)
+    name_only = IO::Memory.new
+    name_anchors = [] of Iyi::DiagnosticMacroAnchor
+    assignment.target.to_s(name_only, diagnostic_emissions: name_anchors, diagnostic_generated_text: generated, diagnostic_emitter: emitter)
+    name_only.to_s.should eq("evloop")
+    name_anchors.should be_empty
+    text = io.to_s
+    anchors.should eq([Iyi::DiagnosticMacroAnchor.new(0, "Call", "method", emitter, binding.parent_origin, nil)])
+    invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 1, "Call", "method")
+    definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.cr", 1, "Macro", "keyword")
+    emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, anchors, generated)
+    parser = Iyi::Parser.new(text)
+    parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
+      {0 => [emission] of Iyi::Lexer::LocPragma})
+    restored = parser.parse.as(Iyi::Assign).target.as(Iyi::Var).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic)
+    expanded = restored.parent_origin.as(Iyi::DiagnosticOrigin::Expanded)
+    expanded.spliced_origin.should eq(binding.parent_origin)
+    expanded.emission_parts.first.emitter_origin.should eq(emitter)
+    parser.diagnostic_check_consumed
+
+    missing = Iyi::Parser.new(text)
+    missing.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
+      {0 => [Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [] of Iyi::DiagnosticMacroAnchor, generated)] of Iyi::Lexer::LocPragma})
+    expect_raises(ArgumentError, /unauthorized macro anchor/) { missing.parse }
+  end
+
+  it "round trips expansions rooted in real hook trigger tokens and rejects other ancestry" do
+    macro_parser = Iyi::Parser.new("macro included\n  def generated\n    -> { 1 }\n  end\nend")
+    macro_parser.filename = "/src/hooks.cr"
+    macro_parser.diagnostic_source_file = "/src/hooks.cr"
+    macro_parser.diagnostic_capture = true
+    macro_node = macro_parser.parse.as(Iyi::Macro)
+    definition = macro_node.diagnostic_origin.not_nil!
+    program = Iyi::Program.new
+    program.diagnostic_capture = true
+    text, pragmas = program.expand_macro(macro_node.body, program, program)
+    cases = [
+      {"include Feature", "Include"},
+      {"extend Feature", "Extend"},
+      {"class Child\nend", "ClassDef"},
+      {"def method\nend", "Def"},
+      {"macro finished\nend", "Macro"},
+    ]
+    cases.each do |source, kind|
+      trigger_parser = Iyi::Parser.new(source)
+      trigger_parser.filename = "/src/main.cr"
+      trigger_parser.diagnostic_source_file = "/src/main.cr"
+      trigger_parser.diagnostic_capture = true
+      trigger = trigger_parser.parse.diagnostic_origin.not_nil!
+      trigger.valid_for_anchor?(kind, "keyword").should be_true
+      parser = Iyi::Parser.new(text)
+      parser.diagnostic_expansion(trigger, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
+      generated_def = parser.parse.as(Iyi::Def)
+      generated_def.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded).invocation_origin.should eq(trigger)
+      origin = generated_def.body.as(Iyi::ProcLiteral).diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
+      origin.invocation_origin.should eq(trigger)
+      origin.macro_definition_origin.should eq(definition)
+      Iyi::DiagnosticOrigin.from_json(origin.as_json).should eq(origin)
+      table = Iyi::IyiMod::DiagnosticOrigins.new
+      index = table.intern(origin)
+      io = IO::Memory.new
+      table.write(io)
+      io.rewind
+      Iyi::IyiMod::DiagnosticOrigins.read(io).parent(index).should eq(origin)
+    end
+
+    parts = [Iyi::DiagnosticEmissionPart.new(0, 1, nil)]
+    [{"Include", "method"}, {"Extend", "control"}, {"ClassDef", "method"},
+     {"Def", "method"}, {"Macro", "control"}, {"Module", "keyword"}].each do |kind, role|
+      invalid = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 0, kind, role)
+      expect_raises(ArgumentError) do
+        Iyi::DiagnosticOrigin::Expanded.new(invalid, definition, "sha256:" + "0" * 64, 0, "ProcLiteral", "arrow", parts)
+      end
+    end
+    valid = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 0, "Include", "keyword")
+    wrong_definition = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 1, "Def", "keyword")
+    expect_raises(ArgumentError) do
+      Iyi::DiagnosticOrigin::Expanded.new(valid, wrong_definition, "sha256:" + "0" * 64, 0, "ProcLiteral", "arrow", parts)
+    end
+  end
+
 
   it "records the printed proc arrow at its exact byte offset" do
     origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 7, "ProcLiteral", "arrow")

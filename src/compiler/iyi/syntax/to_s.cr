@@ -258,13 +258,13 @@ module Iyi
     def visit(node : NamedTupleLiteral)
       # short-circuit to handle empty named tuple context
       if node.entries.empty?
-        start = @str.pos.to_i32
+        start = @str.pos.to_i32 if @diagnostic_emissions || @diagnostic_generated_text
         if emissions = @diagnostic_emissions
-          emissions << DiagnosticMacroAnchor.new(start + 13, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyNamedTupleProjection)
+          emissions << DiagnosticMacroAnchor.new(start.not_nil! + 13, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyNamedTupleProjection)
         end
         @str << "::NamedTuple.new"
         if generated = @diagnostic_generated_text
-          generated << DiagnosticGeneratedText.new(start, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyNamedTupleProjection)
+          generated << DiagnosticGeneratedText.new(start.not_nil!, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyNamedTupleProjection)
         end
         return false
       end
@@ -469,6 +469,7 @@ module Iyi
       if node.abstract?
         @str << "abstract "
       end
+      diagnostic_anchor(node, "ClassDef", "keyword")
       @str << (node.struct? ? "struct" : "class")
       @str << ' '
       node.name.accept self
@@ -931,6 +932,7 @@ module Iyi
       target = node.target
       @str << "pub " if target.is_a?(Path) && target.exported?
       diagnostic_anchor(node, "Assign", "constant") if target.is_a?(Path)
+      diagnostic_local_binding_emission(target) if target.is_a?(Var)
       node.target.accept self
       @str << " = "
 
@@ -950,7 +952,10 @@ module Iyi
 
     def visit(node : MultiAssign)
       diagnostic_anchor(node, "Literal", "multiassign")
-      node.targets.join(@str, ", ", &.accept self)
+      node.targets.join(@str, ", ") do |target|
+        diagnostic_local_binding_emission(target) if target.is_a?(Var)
+        target.accept self
+      end
       @str << " = "
       node.values.join(@str, ", ") { |value| accept_as_expression value }
       false
@@ -979,6 +984,18 @@ module Iyi
       @str << "out "
       node.exp.accept self
       false
+    end
+
+    private def diagnostic_local_binding_emission(node : Var) : Nil
+      if (emissions = @diagnostic_emissions) &&
+         (origin = node.diagnostic_origin).is_a?(DiagnosticOrigin::Synthetic) &&
+         origin.synthesis_kind == "local_binding" && origin.structural_slot == "assignment"
+        parent = origin.parent_origin
+        unless node.diagnostic_macro_lineage.preserved? && parent.valid_for_anchor?("Call", "method")
+          raise ArgumentError.new("local binding lacks preserved call origin")
+        end
+        emissions << DiagnosticMacroAnchor.new(@str.pos.to_i32, "Call", "method", @diagnostic_emitter, parent, nil)
+      end
     end
 
     def visit(node : Var)
@@ -1520,13 +1537,13 @@ module Iyi
     def visit(node : TupleLiteral)
       first = node.elements.first?
       unless first
-        start = @str.pos.to_i32
+        start = @str.pos.to_i32 if @diagnostic_emissions || @diagnostic_generated_text
         if emissions = @diagnostic_emissions
-          emissions << DiagnosticMacroAnchor.new(start + 8, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyTupleProjection)
+          emissions << DiagnosticMacroAnchor.new(start.not_nil! + 8, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyTupleProjection)
         end
         @str << "::Tuple.new"
         if generated = @diagnostic_generated_text
-          generated << DiagnosticGeneratedText.new(start, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyTupleProjection)
+          generated << DiagnosticGeneratedText.new(start.not_nil!, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyTupleProjection)
         end
         return false
       end
@@ -1618,12 +1635,14 @@ module Iyi
     end
 
     def visit(node : Include)
+      diagnostic_anchor(node, "Include", "keyword")
       @str << "include "
       node.name.accept self
       false
     end
 
     def visit(node : Extend)
+      diagnostic_anchor(node, "Extend", "keyword")
       @str << "extend "
       node.name.accept self
       false
