@@ -2,6 +2,7 @@ require "set"
 require "./ast"
 require "crystal/digest/sha256"
 require "./lexer"
+require "./heredoc_indent"
 
 module Iyi
   record DiagnosticParsedName, input_start : Int32, input_end : Int32, token_kind : String,
@@ -247,6 +248,7 @@ module Iyi
     # the source module.
     @diagnostic_module_path : String? = nil
     getter diagnostic_source_unit : String? = nil
+    @diagnostic_heredoc_openers = [] of {Int32, Int32, Token::DelimiterState}
     getter diagnostic_capture = false
 
     def diagnostic_capture=(@diagnostic_capture : Bool)
@@ -1383,10 +1385,18 @@ module Iyi
       input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
       digest = @diagnostic_input_digest ||= ::Crystal::Digest::SHA256.hexdigest(input)
       raw = string.byte_slice(offset - @input_offset_base, snapshot[0] - offset)
-      token = DiagnosticSourceNameToken.new(origin, nil, context, digest, input.bytesize,
-        offset, snapshot[0], snapshot[2], snapshot[1], raw)
       slots = node.diagnostic_name_slots
-      value = DiagnosticNameValue::Observed.new(token)
+      value = if origin.is_a?(DiagnosticOrigin::DerivedName) && origin.derivation_kind == "QuotedName"
+                unless DiagnosticSourceNameToken.valid_token?(snapshot[1], raw, snapshot[2], context) &&
+                       origin.rendered_text == raw && origin.producer_context == context
+                  ::raise ArgumentError.new("restored diagnostic name does not match token or role")
+                end
+                DiagnosticNameValue::Derived.new(origin)
+              else
+                token = DiagnosticSourceNameToken.new(origin, nil, context, digest, input.bytesize,
+                  offset, snapshot[0], snapshot[2], snapshot[1], raw)
+                DiagnosticNameValue::Observed.new(token)
+              end
       slots[slot] = append && slots.has_key?(slot) ? slots[slot] + [value] : [value] of DiagnosticNameValue
       node.diagnostic_name_slots = slots
     end
@@ -2979,7 +2989,15 @@ module Iyi
         @wants_regex = false
         node_and_next_token NumberLiteral.new(@token.value.to_s, @token.number_kind)
       when .char?
-        node_and_next_token CharLiteral.new(@token.value.as(Char))
+        node = CharLiteral.new(@token.value.as(Char))
+        if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+          start_offset = @token.input_offset
+          end_offset = @token.input_end
+          witness = DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, start_offset, end_offset)
+          production = diagnostic_production(DiagnosticLiteralProduction::CharToken, start_offset, end_offset, nil, [witness])
+          diagnostic_literal(node, node.value.to_s, [{start_offset, end_offset}], [production])
+        end
+        node_and_next_token node
       when .string?, .delimiter_start?
         parse_delimiter
       when .string_array_start?
@@ -3048,10 +3066,17 @@ module Iyi
         node_and_next_token MagicConstant.expand_line_node(@token.location)
       when .magic_end_line?
         raise "__END_LINE__ can only be used in default parameter value", @token
-      when .magic_file?
-        node_and_next_token MagicConstant.expand_file_node(@token.location)
-      when .magic_dir?
-        node_and_next_token MagicConstant.expand_dir_node(@token.location)
+      when .magic_file?, .magic_dir?
+        production_kind = @token.type.magic_file? ? DiagnosticLiteralProduction::MagicFile : DiagnosticLiteralProduction::MagicDir
+        node = @token.type.magic_file? ? MagicConstant.expand_file_node(@token.location) : MagicConstant.expand_dir_node(@token.location)
+        if (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) && node.is_a?(StringLiteral)
+          start_offset = @token.input_offset
+          end_offset = @token.input_end
+          witness = DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, start_offset, end_offset)
+          production = diagnostic_production(production_kind, start_offset, end_offset, nil, [witness])
+          diagnostic_literal(node, node.value, [{start_offset, end_offset}], [production])
+        end
+        node_and_next_token node
       when .ident?
         # NOTE: Update `Parser#invalid_internal_name?` keyword list
         # when adding or removing keyword to handle here.
@@ -3446,12 +3471,18 @@ module Iyi
         open("annotation") do
           next_token_skip_space_or_newline
           while !@token.type.op_rparen?
-            if @token.type.ident? && current_char == ':'
+            if named_tuple_start?
               named_args = parse_named_args(@token.location, first_name: nil, allow_newline: true)
               check :OP_RPAREN
               break
             else
-              args << parse_call_arg
+              arg = parse_call_arg
+              if @token.type.op_colon? && arg.is_a?(StringLiteral)
+                named_args = parse_named_args(arg.location.not_nil!, first_name: arg.value, allow_newline: true, first_literal: arg)
+                check :OP_RPAREN
+                break
+              end
+              args << arg
             end
 
             skip_space_or_newline
@@ -5198,7 +5229,9 @@ module Iyi
     def parse_delimiter(want_skip_space = true)
       if @token.type.string?
         node = StringLiteral.new(@token.value.to_s).at(@token.location)
-        diagnostic_literal(node, node.value, [{@token.input_offset, @token.input_end}]) if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+        if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+          diagnostic_string_piece(node, @token.input_offset, @token.input_end, @token.delimiter_state)
+        end
         return node_and_next_token node
       end
 
@@ -5207,7 +5240,7 @@ module Iyi
       diagnostic_snapshot = diagnostic_current_token_snapshot
       delimiter_state = @token.delimiter_state
       diagnostic_segments = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of {Int32, Int32} : nil
-      diagnostic_productions = diagnostic_segments && delimiter_state.kind.string? ? [] of DiagnosticLiteralProductionSegment : nil
+      diagnostic_productions = diagnostic_segments && !delimiter_state.kind.heredoc? ? [] of DiagnosticLiteralProductionSegment : nil
       literal_witnesses = diagnostic_productions ? [] of DiagnosticLiteralWitness : nil
       if witnesses = literal_witnesses
         witnesses << DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::Opener, @token.input_offset, @token.input_end)
@@ -5222,6 +5255,9 @@ module Iyi
         end
         node = StringInterpolation.new([] of ASTNode).at(location)
         @heredocs << {delimiter_state, node}
+        if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+          @diagnostic_heredoc_openers << {diagnostic_start, @token.input_end, delimiter_state}
+        end
         next_token
         return node
       end
@@ -5343,7 +5379,7 @@ module Iyi
     private def diagnostic_string_piece(node : StringLiteral, start_offset : Int32, end_offset : Int32,
                                         state : Token::DelimiterState) : Nil
       return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
-      return unless state.kind.string? && start_offset >= 0 && end_offset > start_offset
+      return unless (state.kind.string? || state.kind.regex? || state.kind.command? || state.kind.string_array?) && start_offset >= 0 && end_offset > start_offset
       witness = DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, start_offset, end_offset)
       production = diagnostic_production(DiagnosticLiteralProduction::StringPiece, start_offset, end_offset, state, [witness])
       diagnostic_literal(node, node.value, [{start_offset, end_offset}], [production])
@@ -5476,6 +5512,7 @@ module Iyi
     def consume_heredocs
       @consuming_heredocs = true
       @heredocs.reverse!
+      @diagnostic_heredoc_openers.reverse!
       while heredoc = @heredocs.pop?
         consume_heredoc(heredoc[0], heredoc[1].as(StringInterpolation))
       end
@@ -5488,12 +5525,20 @@ module Iyi
 
       pieces = [] of Piece
 
-      delimiter_state, _options, end_location = consume_delimiter pieces, delimiter_state
+      opener = @diagnostic_heredoc_openers.pop?
+      witnesses = opener ? [DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::Opener, opener[0], opener[1])] : nil
+      delimiter_state, _options, end_location, literal_end = consume_delimiter pieces, delimiter_state, witnesses
 
-      # iyi: heredoc constituents carry no evidence. The verifier has no heredoc
-      # production, so their StringLiterals stay unattested and the strict check
-      # refuses them.
       result = combine_pieces(pieces, delimiter_state)
+      if opener && witnesses
+        production = diagnostic_production(DiagnosticLiteralProduction::Heredoc, opener[0], literal_end, opener[2], witnesses)
+        targets = result.is_a?(StringInterpolation) ? result.expressions : [result] of ASTNode
+        targets.each do |target|
+          next unless target.is_a?(StringLiteral)
+          next if pieces.any? { |piece| piece.value.is_a?(ASTNode) && piece.value.same?(target) }
+          diagnostic_literal(target, target.value, [{opener[0], literal_end}], [production])
+        end
+      end
       if result.is_a?(StringInterpolation)
         node.expressions.concat(result.expressions)
       else
@@ -5510,99 +5555,12 @@ module Iyi
     end
 
     def remove_heredoc_indent(pieces : Array, indent)
-      current_line = IO::Memory.new
-      remove_indent = true
-      new_pieces = [] of ASTNode | String
-      previous_line_number = 0
-      pieces.each_with_index do |piece, i|
-        value = piece.value
-        line_number = piece.line_number
-
-        this_piece_is_in_new_line = line_number != previous_line_number
-        next_piece_is_in_new_line = i == pieces.size - 1 || pieces[i + 1].line_number != line_number
-        if value.is_a?(String)
-          if value.in?("\n", "\r\n")
-            current_line << value
-            if this_piece_is_in_new_line || next_piece_is_in_new_line
-              line = current_line.to_s
-              line = remove_heredoc_from_line(line, indent, line_number - 1) if remove_indent
-              add_heredoc_piece new_pieces, line
-              current_line.clear
-              remove_indent = true
-            end
-          elsif (slash_n = value.starts_with?('\n')) || value.starts_with?("\r\n")
-            current_line << (slash_n ? '\n' : "\r\n")
-            line = current_line.to_s
-            line = remove_heredoc_from_line(line, indent, line_number - 1) if remove_indent
-            add_heredoc_piece new_pieces, line
-            current_line.clear
-            remove_indent = true
-            current_line << value.byte_slice(slash_n ? 1 : 2)
-          else
-            current_line << value
-          end
-        else
-          if remove_indent
-            line = current_line.to_s
-            if (line.size < indent) || !line.each_char.first(indent).all?(&.ascii_whitespace?)
-              raise "heredoc line must have an indent greater than or equal to #{indent}", line_number, 1
-            else
-              line = line[indent..-1]
-            end
-            add_heredoc_piece new_pieces, line unless line.empty?
-            add_heredoc_piece new_pieces, value
-            remove_indent = false
-            current_line.clear
-          else
-            unless current_line.empty?
-              line = current_line.to_s
-              add_heredoc_piece new_pieces, line
-              current_line.clear
-            end
-
-            add_heredoc_piece new_pieces, value
-          end
-        end
-        previous_line_number = line_number
+      input = pieces.map { |piece| HeredocIndent::Piece(ASTNode).new(piece.value, piece.line_number) }
+      HeredocIndent.remove(input, indent).map do |piece|
+        piece.is_a?(String) ? StringLiteral.new(piece).as(ASTNode) : piece
       end
-      unless current_line.empty?
-        line = current_line.to_s
-        line = remove_heredoc_from_line(line, indent, pieces.last.line_number) if remove_indent
-        add_heredoc_piece new_pieces, line
-      end
-      new_pieces.map do |piece|
-        if piece.is_a?(String)
-          StringLiteral.new(piece)
-        else
-          piece
-        end
-      end
-    end
-
-    private def add_heredoc_piece(pieces, piece : String)
-      last = pieces.last?
-      if last.is_a?(String)
-        last += piece
-        pieces[-1] = last
-      else
-        pieces << piece
-      end
-    end
-
-    private def add_heredoc_piece(pieces, piece : ASTNode)
-      pieces << piece
-    end
-
-    def remove_heredoc_from_line(line, indent, line_number)
-      if line.each_char.first(indent).all? &.ascii_whitespace?
-        if line.size - 1 < indent
-          "\n"
-        else
-          line[indent..-1]
-        end
-      else
-        raise "heredoc line must have an indent greater than or equal to #{indent}", line_number, 1
-      end
+    rescue error : HeredocIndent::Error
+      raise error.message.not_nil!, error.line, error.column
     end
 
     def parse_string_without_interpolation(context, want_skip_space = true)
@@ -5625,17 +5583,33 @@ module Iyi
     end
 
     def parse_string_array
-      strings, end_location, _closing_start, _closing_end = parse_string_or_symbol_array_strings do |pieces|
+      opening_start = @token.input_offset
+      opening_end = @token.input_end
+      opening_state = @token.delimiter_state
+      opener = diagnostic_type_syntax_token
+      strings, end_location, closing_start, closing_end = parse_string_or_symbol_array_strings do |pieces|
         combine_pieces(pieces, @token.delimiter_state)
       end
-
-      ArrayLiteral.new(strings, Path.global("String")).at_end(end_location)
+      if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+        strings.each do |node|
+          next unless node.is_a?(StringLiteral)
+          witnesses = [DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::Opener, opening_start, opening_end)]
+          witnesses.concat(node.diagnostic_percent_witnesses)
+          witnesses << DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::ClosingDelimiter, closing_start, closing_end)
+          production = diagnostic_production(DiagnosticLiteralProduction::PercentStringElement,
+            opening_start, closing_end, opening_state, witnesses)
+          node.diagnostic_literal_production("value", 0, [production])
+        end
+      end
+      type = diagnostic_sugar_path(Path.global("String"), DiagnosticTypeSugar::StringArray, opener, DiagnosticTypeSugarResult::String)
+      ArrayLiteral.new(strings, type).at_end(end_location)
     end
 
     def parse_symbol_array
       opening_start = @token.input_offset
       opening_end = @token.input_end
       opening_state = @token.delimiter_state
+      opener = diagnostic_type_syntax_token
       strings, end_location, closing_start, closing_end = parse_string_or_symbol_array_strings do |pieces|
         string = combine_stringliteral_pieces(pieces, @token.delimiter_state)
         SymbolLiteral.new(string)
@@ -5652,7 +5626,8 @@ module Iyi
         end
       end
 
-      ArrayLiteral.new(strings, Path.global("Symbol")).at_end(end_location)
+      type = diagnostic_sugar_path(Path.global("Symbol"), DiagnosticTypeSugar::SymbolArray, opener, DiagnosticTypeSugarResult::Symbol)
+      ArrayLiteral.new(strings, type).at_end(end_location)
     end
 
     def parse_string_or_symbol_array_strings(&)
@@ -5693,7 +5668,11 @@ module Iyi
         case @token.type
         when .string?
           percent_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, @token.input_offset, @token.input_end))
-          pieces << Piece.new(@token.value.to_s, @token.line_number)
+          if percent_witnesses
+            pieces << Piece.new(@token.value.to_s, @token.line_number, @token.input_offset, @token.input_end, delimiter_state)
+          else
+            pieces << Piece.new(@token.value.to_s, @token.line_number)
+          end
         when .interpolation_start?
           percent_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationStart, @token.input_offset, @token.input_end))
           line_number = @token.line_number
@@ -5707,22 +5686,28 @@ module Iyi
             splat_location = @token.location
             next_token_skip_space_or_newline
 
-            exp = consume_interpolation(delimiter_state)
+            exp = consume_interpolation_node(delimiter_state)
 
             next_string_token(delimiter_state)
             unless @token.type.space? || @token.type.string_array_end?
               raise "splat interpolation must be the only piece in a string array element", @token
             end
 
-            if exp.is_a?(String)
-              exp = StringLiteral.new(exp)
+            if exp.is_a?(StringLiteral)
+              folded = StringLiteral.new(exp.value)
+              diagnostic_copy_literal(exp, folded, "value")
+              exp = folded
             end
 
             return Splat.new(exp).at(splat_location)
           else
-            interpolation = consume_interpolation(delimiter_state)
+            interpolation = consume_interpolation_node(delimiter_state)
             percent_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationEnd, @token.input_offset, @token.input_end))
-            pieces << Piece.new(interpolation, line_number)
+            if interpolation.is_a?(StringLiteral)
+              pieces << Piece.new(interpolation.value, line_number, literal_source: interpolation)
+            else
+              pieces << Piece.new(interpolation, line_number)
+            end
           end
         else
           literal_end = @token.input_offset
@@ -5733,8 +5718,8 @@ module Iyi
       return if pieces.empty?
 
       node = (yield pieces).at(start_location).at_end(end_location)
-      node.diagnostic_percent_witnesses = percent_witnesses if percent_witnesses && node.is_a?(SymbolLiteral)
-      if node.is_a?(SymbolLiteral) && (start_offset = literal_start) && (end_offset = literal_end) &&
+      node.diagnostic_percent_witnesses = percent_witnesses if percent_witnesses && (node.is_a?(SymbolLiteral) || node.is_a?(StringLiteral))
+      if (node.is_a?(SymbolLiteral) || node.is_a?(StringLiteral)) && (start_offset = literal_start) && (end_offset = literal_end) &&
          (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions)
         diagnostic_literal(node, node.value, [{start_offset, end_offset}])
       end
@@ -6086,7 +6071,9 @@ module Iyi
 
       skip_space
 
-      Require.new(string_literal.value).at_end(string_literal)
+      node = Require.new(string_literal.value).at_end(string_literal)
+      diagnostic_copy_literal(string_literal, node, "string")
+      node
     end
 
     def parse_case
@@ -9584,13 +9571,16 @@ module Iyi
       next_token_skip_space
       check :OP_LPAREN
       next_token_skip_space_or_newline
-      text = parse_string_without_interpolation("asm")
+      text_literal = parse_string_literal_without_interpolation("asm")
+      text = text_literal.value
       skip_space_or_newline
 
       volatile = false
       alignstack = false
       intel = false
       can_throw = false
+      clobber_literals = [] of StringLiteral
+      option_literals = [] of StringLiteral
 
       part_index = 0
       until @token.type.op_rparen?
@@ -9615,11 +9605,11 @@ module Iyi
           end
         when 3
           if @token.type.delimiter_start?
-            clobbers = parse_asm_clobbers
+            clobbers = parse_asm_clobbers(clobber_literals)
           end
         when 4
           if @token.type.delimiter_start?
-            volatile, alignstack, intel, can_throw = parse_asm_options
+            volatile, alignstack, intel, can_throw = parse_asm_options(option_literals)
           end
         else break
         end
@@ -9631,7 +9621,11 @@ module Iyi
 
       next_token_skip_space
 
-      Asm.new(text, outputs, inputs, clobbers, volatile, alignstack, intel, can_throw).at_end(end_location)
+      node = Asm.new(text, outputs, inputs, clobbers, volatile, alignstack, intel, can_throw).at_end(end_location)
+      diagnostic_copy_literal(text_literal, node, "text")
+      clobber_literals.each_with_index { |literal, index| diagnostic_copy_literal(literal, node, "clobbers", index) }
+      option_literals.each_with_index { |literal, index| diagnostic_copy_literal(literal, node, "options", index) }
+      node
     end
 
     def parse_asm_operands
@@ -9647,19 +9641,24 @@ module Iyi
     end
 
     def parse_asm_operand
-      text = parse_string_without_interpolation("constraint")
+      literal = parse_string_literal_without_interpolation("constraint")
+      text = literal.value
       check :OP_LPAREN
       next_token_skip_space_or_newline
       exp = parse_expression
       check :OP_RPAREN
       next_token_skip_space_or_newline
-      AsmOperand.new(text, exp)
+      node = AsmOperand.new(text, exp)
+      diagnostic_copy_literal(literal, node, "constraint")
+      node
     end
 
-    def parse_asm_clobbers
+    def parse_asm_clobbers(literals : Array(StringLiteral))
       clobbers = [] of String
       while true
-        clobbers << parse_string_without_interpolation("asm clobber")
+        literal = parse_string_literal_without_interpolation("asm clobber")
+        literals << literal if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+        clobbers << literal.value
         skip_space_or_newline
         if @token.type.op_comma?
           next_token_skip_space_or_newline
@@ -9669,14 +9668,16 @@ module Iyi
       clobbers
     end
 
-    def parse_asm_options
+    def parse_asm_options(literals : Array(StringLiteral))
       volatile = false
       alignstack = false
       intel = false
       can_throw = false
       while true
         location = @token.location
-        option = parse_string_without_interpolation("asm option")
+        literal = parse_string_literal_without_interpolation("asm option")
+        literals << literal if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+        option = literal.value
         skip_space_or_newline
         case option
         when "volatile"
