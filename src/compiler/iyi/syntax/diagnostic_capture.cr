@@ -1825,25 +1825,25 @@ module Iyi
   # than a union of Bool, Int32, String and arrays, so every block and nested
   # builder call sees one static type. The shape selects which field is live.
   record DiagnosticScalar, shape : DiagnosticScalarShape, flag : Bool, number : Int32,
-    text : String, parts : Array(String) do
+    text : String, parts : Array(String)? do
     def self.absent : DiagnosticScalar
-      new(DiagnosticScalarShape::Null, false, 0, "", [] of String)
+      new(DiagnosticScalarShape::Null, false, 0, "", nil)
     end
 
     def self.flag(value : Bool) : DiagnosticScalar
-      new(DiagnosticScalarShape::Flag, value, 0, "", [] of String)
+      new(DiagnosticScalarShape::Flag, value, 0, "", nil)
     end
 
     def self.number(value : Int32) : DiagnosticScalar
-      new(DiagnosticScalarShape::Number, false, value, "", [] of String)
+      new(DiagnosticScalarShape::Number, false, value, "", nil)
     end
 
     def self.text(value : String) : DiagnosticScalar
-      new(DiagnosticScalarShape::Text, false, 0, value, [] of String)
+      new(DiagnosticScalarShape::Text, false, 0, value, nil)
     end
 
     def self.parts(value : Array(String)) : DiagnosticScalar
-      new(DiagnosticScalarShape::TextList, false, 0, "", value.dup)
+      new(DiagnosticScalarShape::TextList, false, 0, "", value)
     end
 
     def self.optional_number(value : Int32?) : DiagnosticScalar
@@ -2207,7 +2207,7 @@ module Iyi
       when DiagnosticScalarShape::Text
         write_scalar_string(json, value.text)
       when DiagnosticScalarShape::TextList
-        json.array { value.parts.each { |part| write_scalar_string(json, part) } }
+        json.array { value.parts.not_nil!.each { |part| write_scalar_string(json, part) } }
       end
     end
 
