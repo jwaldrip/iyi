@@ -83,16 +83,24 @@ module Iyi
       return unless diagnostic_span_recordable?(start, finish)
       kind = @token.type
       # The lexer's own value, byte for byte: an escape such as `\xFF` stays as it is.
+      # A value is recorded only when the lexer set a String, so journaling never raises from an ensure.
       value_base64 = nil
-      if kind.string? || kind.symbol?
+      number_kind = nil
+      if kind.string? || kind.symbol? || kind.number? || kind.macro_literal?
         value = @token.value
-        value_base64 = Base64.strict_encode(value.to_slice) if value.is_a?(String)
+        if value.is_a?(String)
+          value_base64 = Base64.strict_encode(value.to_slice)
+          # The kind is set with the value on every path that sets one.
+          number_kind = @token.number_kind.to_s if kind.number?
+        end
       elsif kind.char?
         # The UTF-8 of the character the lexer decoded.
         value = @token.value
         value_base64 = Base64.strict_encode(value.to_s.to_slice) if value.is_a?(Char)
       elsif kind.magic_file? || kind.magic_dir?
         value_base64 = diagnostic_magic_value_base64(kind)
+      elsif kind.magic_line?
+        value_base64 = diagnostic_line_value_base64
       end
       delimiter = nil
       if kind.delimiter_start? || kind.string? || kind.delimiter_end? || kind.interpolation_start? ||
@@ -100,7 +108,7 @@ module Iyi
         delimiter = diagnostic_delimiter(@token.delimiter_state)
       end
       diagnostic_append_observation(kind.to_s, start, finish, @token.line_number, value_base64, delimiter,
-        @token.passed_backslash_newline, @token.invalid_escape)
+        @token.passed_backslash_newline, @token.invalid_escape, number_kind)
     end
 
     # The value a magic constant has at this token: the expansion the parser makes for the same location.
@@ -115,16 +123,24 @@ module Iyi
       Base64.strict_encode(expanded.to_slice)
     end
 
+    # The value `__LINE__` has at this token: the line `MagicConstant.expand_line_node` gives for the same location.
+    # Built from the token's fields, as `diagnostic_magic_value_base64` is, so the token's memo is untouched.
+    private def diagnostic_line_value_base64 : String
+      location = Location.new(@token.filename, @token.line_number, @token.column_number, @token.artifact)
+      Base64.strict_encode(MagicConstant.expand_line(location).to_s.to_slice)
+    end
+
     # A journal entry for an absolute span of the input, which need not be the current token.
     private def diagnostic_append_observation(kind : String, start : Int32, finish : Int32, line : Int32?,
                                               value_base64 : String?, delimiter : DiagnosticRenderedDelimiter?,
-                                              passed_backslash_newline : Bool, invalid_escape : Bool) : Nil
+                                              passed_backslash_newline : Bool, invalid_escape : Bool,
+                                              number_kind : String? = nil) : Nil
       observations = @diagnostic_lexical_observations
       return unless observations && diagnostic_span_recordable?(start, finish)
       raw = string.byte_slice(start - @input_offset_base, finish - start)
       observations << DiagnosticRenderedToken.new(start, finish, kind, raw, iyi? ? "Iyi" : "Crystal",
         value_base64: value_base64, delimiter: delimiter, line: line,
-        passed_backslash_newline: passed_backslash_newline, invalid_escape: invalid_escape)
+        passed_backslash_newline: passed_backslash_newline, invalid_escape: invalid_escape, number_kind: number_kind)
     end
 
     # A line continuation in a string body: the backslash, the line break and the whitespace after it.

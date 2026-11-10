@@ -950,15 +950,29 @@ module Iyi
     token_kind : String, token_text : String, lexical_mode : String,
     value_base64 : String? = nil, delimiter : DiagnosticRenderedDelimiter? = nil,
     passed_backslash_newline : Bool = false, invalid_escape : Bool = false,
-    line : Int32? = nil do
+    line : Int32? = nil, number_kind : String? = nil do
+    VALUE_KINDS            = {"STRING", "SYMBOL", "CHAR", "__FILE__", "__DIR__", "__LINE__", "NUMBER", "MACRO_LITERAL"}
+    NUMBER_KINDS           = NumberKind.values.map(&.to_s)
+    # A number's value is its decimal form: up to 39 digits, with a sign for the widest kinds.
+    MAX_NUMBER_VALUE_BYTES = 40
+    # A line number is at most ten digits, with a sign.
+    MAX_LINE_VALUE_BYTES   = 11
+
     def initialize(@input_start : Int32, @input_end : Int32, @token_kind : String, @token_text : String,
                    @lexical_mode : String, @value_base64 : String? = nil,
                    @delimiter : DiagnosticRenderedDelimiter? = nil,
                    @passed_backslash_newline : Bool = false, @invalid_escape : Bool = false,
-                   @line : Int32? = nil)
+                   @line : Int32? = nil, @number_kind : String? = nil)
       if value = @value_base64
-        raise ArgumentError.new("rendered value on a non-string token") unless {"STRING", "SYMBOL", "CHAR", "__FILE__", "__DIR__"}.includes?(@token_kind)
+        raise ArgumentError.new("rendered value on a non-string token") unless VALUE_KINDS.includes?(@token_kind)
         DiagnosticRenderedToken.decode_value(value, DiagnosticRenderedToken.value_bound(@token_kind, @token_text))
+      end
+      if number = @number_kind
+        raise ArgumentError.new("number kind on a non-number token") unless @token_kind == "NUMBER"
+        raise ArgumentError.new("invalid number kind") unless NUMBER_KINDS.includes?(number)
+      end
+      if @token_kind == "NUMBER" && @value_base64.nil? != @number_kind.nil?
+        raise ArgumentError.new("number value and kind differ in presence")
       end
       if @delimiter && !{"DELIMITER_START", "STRING", "STRING_CONTINUATION", "DELIMITER_END", "INTERPOLATION_START", "STRING_ARRAY_START", "SYMBOL_ARRAY_START", "STRING_ARRAY_END"}.includes?(@token_kind)
         raise ArgumentError.new("rendered delimiter on a non-delimiter token")
@@ -982,8 +996,14 @@ module Iyi
     end
 
     # Magic constants expand to a path, so they are bounded by the unfolded limit rather than their token text.
+    # A number's value is its decimal form, which can be longer than its text: `0x7fffffffffffffff` is 19 digits.
     def self.value_bound(token_kind : String, token_text : String) : Int32
-      {"__FILE__", "__DIR__"}.includes?(token_kind) ? DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i32 : token_text.bytesize
+      case token_kind
+      when "__FILE__", "__DIR__" then DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i32
+      when "__LINE__"            then MAX_LINE_VALUE_BYTES
+      when "NUMBER"              then Math.max(token_text.bytesize, MAX_NUMBER_VALUE_BYTES)
+      else                            token_text.bytesize
+      end
     end
   end
 
