@@ -5768,6 +5768,7 @@ module Iyi
         uncompilable = false
       end
     end
+    parameter_recipes = owner.program.diagnostic_capture ? [] of IyiMod::DiagnosticSignatureParameterRecipe : nil
 
     method = BindMethod.new(
       owner: owner.to_s,
@@ -5843,7 +5844,7 @@ module Iyi
       # does. Asking it of the arguments alone was half the question.
       storable: a_def.args.all? { |arg| storable_restriction?(owner, arg.restriction) } &&
                 (a_def.return_type.nil? || storable_restriction?(owner, a_def.return_type)),
-      params: bind_params(owner, a_def),
+      params: bind_params(owner, a_def, parameter_recipes),
       returns: written,
       checked: checked,
       produced: produced,
@@ -5873,6 +5874,7 @@ module Iyi
     )
     method.source_def = given
     if owner.program.diagnostic_capture
+      method.diagnostic_parameter_recipes = parameter_recipes
       method.diagnostic_def = a_def
       if origin = a_def.diagnostic_origin
         method.diagnostic_body = owner.program.diagnostic_def_bodies[origin]?
@@ -5960,7 +5962,8 @@ module Iyi
   # plain parameters, which is a different method — it takes a different set of
   # calls, and `JWT.encode(payload, key, algorithm)` with `**header_keys`
   # flattened away refuses the call the README makes.
-  private def self.bind_params(owner : Type, a_def : Def) : Array({String, String, String})
+  private def self.bind_params(owner : Type, a_def : Def,
+                               recipes : Array(IyiMod::DiagnosticSignatureParameterRecipe)? = nil) : Array({String, String, String})
     params = a_def.args.map_with_index do |arg, index|
       # The external name in front of the internal one where they differ. A
       # parameter may be called one thing by the caller and another inside the
@@ -5971,13 +5974,37 @@ module Iyi
       # every one of them naming the parameter `type`.
       written = arg.external_name == arg.name ? arg.name : "#{arg.external_name} #{arg.name}"
       name = index == a_def.splat_index ? "*#{written}" : written
-      {name, resolve_restriction(owner, arg.restriction) || "?",
-       arg.default_value.try(&.to_s) || ""}
+      restriction, projections = if recipes
+                                   resolve_restriction_recipe(owner, arg.restriction)
+                                 else
+                                   {resolve_restriction(owner, arg.restriction), nil}
+                                 end
+      default = arg.default_value.try(&.to_s) || ""
+      if recipes
+        kind = if index == a_def.splat_index
+                 arg.name.empty? ? IyiMod::DiagnosticSignatureParameterKind::BareSplat : IyiMod::DiagnosticSignatureParameterKind::Splat
+               else
+                 IyiMod::DiagnosticSignatureParameterKind::Normal
+               end
+        recipes << IyiMod::DiagnosticSignatureParameterRecipe.new(arg, kind, name,
+          restriction == "?" ? nil : restriction, default.empty? ? nil : default, projections.not_nil!, [] of DiagnosticBoundProducer, false)
+      end
+      {name, restriction || "?", default}
     end
 
     if double_splat = a_def.double_splat
-      params << {"**#{double_splat.name}",
-                 resolve_restriction(owner, double_splat.restriction) || "?", ""}
+      name = "**#{double_splat.name}"
+      restriction, projections = if recipes
+                                   resolve_restriction_recipe(owner, double_splat.restriction)
+                                 else
+                                   {resolve_restriction(owner, double_splat.restriction), nil}
+                                 end
+      if recipes
+        recipes << IyiMod::DiagnosticSignatureParameterRecipe.new(double_splat,
+          IyiMod::DiagnosticSignatureParameterKind::DoubleSplat, name, restriction == "?" ? nil : restriction, nil,
+          projections.not_nil!, [] of DiagnosticBoundProducer, false)
+      end
+      params << {name, restriction || "?", ""}
     end
 
     params

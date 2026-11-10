@@ -2419,10 +2419,11 @@ module Iyi
                    parents << producer.declaration_origin
                    "uninitialized #{producer.semantic_type}"
                  when DiagnosticBoundProducer::ConstantAccessor
-                   unless producer.definition_origin.valid_for_anchor?("Def", "keyword") &&
-                          producer.definition_origin.is_a?(DiagnosticOrigin::Synthetic) &&
-                          producer.definition_origin.synthesis_kind == "constant_accessor" &&
-                          producer.definition_origin.structural_slot == "getter" &&
+                   definition_origin = producer.definition_origin
+                   unless definition_origin.valid_for_anchor?("Def", "keyword") &&
+                          definition_origin.is_a?(DiagnosticOrigin::Synthetic) &&
+                          definition_origin.synthesis_kind == "constant_accessor" &&
+                          definition_origin.structural_slot == "getter" &&
                           !producer.constant_name.empty? && data.source_text.empty? && data.source_names.empty?
                      raise ArgumentError.new("invalid constant accessor projection")
                    end
@@ -2472,7 +2473,9 @@ module Iyi
             tail += 1
           elsif byte == '#'.ord
             tail += 1
-            tail += 1 while tail < data.output_text.bytesize && data.output_text.byte_at(tail) != 10
+            while tail < data.output_text.bytesize && data.output_text.byte_at(tail) != 10
+              tail += 1
+            end
           else
             break
           end
