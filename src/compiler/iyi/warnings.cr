@@ -1,3 +1,5 @@
+require "json"
+
 module Iyi
   # Which warnings to detect.
   enum WarningLevel
@@ -99,16 +101,38 @@ module Iyi
       @reports << report
     end
 
+
+    # Snapshot only the policy, not previously collected reports. Subclasses
+    # can override warning behavior and cannot be authenticated by these fields.
+    def parse_ahead_policy : String?
+      return nil unless self.class == WarningCollection
+      JSON.build do |json|
+        json.object do
+          json.field "level", @level.to_s
+          json.field "excluded_paths", @excluded_paths
+          json.field "lib_path", @lib_path
+          json.field "explain_spawn", @explain_spawn.to_s
+          json.field "error_on_warnings", @error_on_warnings
+        end
+      end
+    end
     # iyi: an empty collection that keeps what this one keeps, for a parse on
     # another thread (`ParseAhead`). Its reports join these when the walk
     # takes the file, in the order the walk reads files.
     def fork : WarningCollection
-      dup.tap &.forget_reports
+      dup.tap do |copy|
+        copy.forget_reports
+        copy.detach_policy
+      end
     end
 
     protected def forget_reports : Nil
       @reports = [] of CodeError
       @notes = [] of {Location, String}
+    end
+
+    protected def detach_policy : Nil
+      @excluded_paths = @excluded_paths.dup
     end
 
     def report(io : IO)

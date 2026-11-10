@@ -44,7 +44,11 @@ module Iyi
       property state = State::Queued
       property source : String? = nil
       property nodes : ASTNode? = nil
+      property contract : String? = nil
+      property capture_input : AcceptedCaptureInput? = nil
+      property warning_policy : String? = nil
       property reports = [] of CodeError
+      property notes = [] of {Location, String}
       getter package : String?
 
       def initialize(@package : String?)
@@ -114,9 +118,14 @@ module Iyi
     # *filename*'s nodes, which the walk read as *source* and set *parser*
     # up for: a worker's when it parsed the same thing, else *parser*'s.
     def parse(parser : Parser, filename : String, source : String) : ASTNode
-      if parser.diagnostic_capture == @diagnostic_capture &&
+      contract = parser.parse_ahead_contract
+      candidate = parser.diagnostic_capture && contract ? capture_candidate(parser) : nil
+      recipient = parser.warnings
+      warning_policy = recipient.class == WarningCollection ? recipient.parse_ahead_policy : nil
+      if contract && warning_policy && (!@diagnostic_capture || candidate) &&
+         parser.diagnostic_capture == @diagnostic_capture &&
          (!@diagnostic_capture || parser.diagnostic_source_unit == "source-file:#{filename}")
-        if nodes = take(filename, source, parser.iyi_package_name, parser.wants_doc?)
+        if nodes = take(filename, source, parser.iyi_package_name, parser.wants_doc?, contract, recipient, warning_policy, candidate)
           Prof.count("parse ahead: taken")
           return nodes
         end
@@ -149,7 +158,8 @@ module Iyi
       Prof.count("parse ahead: unused", unused)
     end
 
-    private def take(filename, source, package, wants_doc) : ASTNode?
+    private def take(filename, source, package, wants_doc, contract : String,
+                     recipient : WarningCollection, warning_policy : String, candidate : AcceptedCaptureInput?) : ASTNode?
       entry = @mutex.synchronize do
         return nil unless found = @entries[filename]?
         if found.state.parsing?
@@ -168,9 +178,36 @@ module Iyi
       end
 
       return nil unless (nodes = entry.nodes) && entry.source == source &&
-                        entry.package == package && @wants_doc == wants_doc
-      @program.warnings.reports.concat(entry.reports)
+                        entry.package == package && @wants_doc == wants_doc && entry.contract == contract &&
+                        entry.warning_policy == warning_policy && recipient.class == WarningCollection &&
+                        recipient.parse_ahead_policy == warning_policy
+      if @diagnostic_capture
+        worker_input = entry.capture_input
+        return nil unless worker_input && candidate && same_capture_candidate?(worker_input, candidate, source)
+      end
+      if @diagnostic_capture
+        raise ArgumentError.new("parse-ahead capture acceptance requires an authenticated frozen registry")
+      end
+      recipient.reports.concat(entry.reports)
+      recipient.notes.concat(entry.notes)
       nodes
+    end
+
+    private def capture_candidate(parser : Parser) : AcceptedCaptureInput?
+      parser.diagnostic_capture_input(DiagnosticCaptureInputKind::SourceFile, nil, DiagnosticCaptureParseEntry::Parse, Parser::ParseMode::Normal)
+    rescue ArgumentError
+      nil
+    end
+
+    private def same_capture_candidate?(left : AcceptedCaptureInput, right : AcceptedCaptureInput, source : String) : Bool
+      left.input == source && right.input == source && left.kind == right.kind &&
+        left.logical_module == right.logical_module && left.package == right.package &&
+        left.original_file == right.original_file && left.lexical_mode == right.lexical_mode &&
+        left.entry == right.entry && left.mode == right.mode &&
+        left.module_extends_written == right.module_extends_written && left.source_only == right.source_only &&
+        left.visibility == right.visibility && left.def_nest == right.def_nest &&
+        left.fun_nest == right.fun_nest && left.type_nest == right.type_nest &&
+        left.wants_doc == right.wants_doc && left.scopes == right.scopes
     end
 
     private def queue(filename : String, package : String?) : Nil
@@ -185,7 +222,10 @@ module Iyi
         entry, filename = entry_and_name
         found = [] of {String, String?}
         source = nodes = nil
+        worker_contract = nil
+        worker_input = nil
         warnings = @program.warnings.fork
+        warning_policy = warnings.class == WarningCollection ? warnings.parse_ahead_policy : nil
         begin
           source = File.read(filename)
           parser = Parser.new(source, pool, [Set(String).new], warnings)
@@ -194,8 +234,11 @@ module Iyi
           parser.diagnostic_source_file = filename if @diagnostic_capture
           parser.wants_doc = @wants_doc
           parser.iyi_package_name = entry.package
+          worker_contract = parser.parse_ahead_contract
+          worker_input = capture_candidate(parser) if @diagnostic_capture && worker_contract
           nodes = parser.parse
           discover(nodes, filename, found)
+          warning_policy = nil unless warning_policy && warnings.parse_ahead_policy == warning_policy
         rescue
           # The walk parses it, and says what is wrong with it, where its own
           # parse would have.
@@ -203,8 +246,12 @@ module Iyi
         end
         @mutex.synchronize do
           entry.source = source
+          entry.contract = worker_contract
+          entry.capture_input = worker_input
+          entry.warning_policy = warning_policy
           entry.nodes = nodes
           entry.reports = warnings.reports
+          entry.notes = warnings.notes
           entry.state = State::Done
           found.each { |(file, package)| queue(file, package) }
           @parsed.broadcast
