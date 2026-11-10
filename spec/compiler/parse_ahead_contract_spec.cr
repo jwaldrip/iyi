@@ -12,7 +12,10 @@ class Iyi::ParseAhead
   end
 end
 
-private def with_ahead_contract_fixture(source = "module app/left\npub def value : Int32\n  1\nend\n", &)
+private class CustomParseAheadWarnings < Iyi::WarningCollection
+end
+
+private def with_ahead_contract_fixture(source = "module app/left\npub def value : Int32\n  1\nend\n", capture = true, &)
   with_tempdir("parse_ahead_contract") do
     Dir.mkdir_p("app")
     File.write("main.iyi", "module main\nimport app/left\n")
@@ -20,7 +23,7 @@ private def with_ahead_contract_fixture(source = "module app/left\npub def value
     filename = Iyi.native_path(File.join(Dir.current, "app/left.iyi"))
     program = Iyi::Program.new
     program.filename = File.expand_path("main.iyi")
-    program.diagnostic_capture = true
+    program.diagnostic_capture = capture
     entry = Iyi::Parser.parse(File.read("main.iyi"))
     ahead = Iyi::ParseAhead.start(program, entry, 2).should_not be_nil
     begin
@@ -34,12 +37,46 @@ end
 
 describe "parse-ahead parser contract" do
   it "takes a worker result only for a matching fresh parser" do
+    with_ahead_contract_fixture(capture: false) do |program, ahead, filename, source|
+      parser = program.new_parser(source)
+      parser.filename = filename
+      ahead.parse(parser, filename, source).to_s.should contain("value")
+      parser.reader.pos.should eq(0)
+    end
+  end
+
+  it "refuses captured worker acceptance without an authenticated registry" do
     with_ahead_contract_fixture do |program, ahead, filename, source|
       parser = program.new_parser(source)
       parser.filename = filename
       parser.diagnostic_source_file = filename
+      expect_raises(ArgumentError, /authenticated frozen registry/) do
+        ahead.parse(parser, filename, source)
+      end
+    end
+  end
+
+  it "parses locally after the mutable reader escapes" do
+    with_ahead_contract_fixture do |program, ahead, filename, source|
+      parser = program.new_parser(source)
+      parser.filename = filename
+      parser.diagnostic_source_file = filename
+      parser.reader
+      parser.parse_ahead_contract.should be_nil
       ahead.parse(parser, filename, source).to_s.should contain("value")
-      parser.reader.pos.should eq(0)
+      parser.reader.pos.should be > 0
+    end
+  end
+
+  it "parses locally after the mutable token escapes" do
+    with_ahead_contract_fixture do |program, ahead, filename, source|
+      parser = program.new_parser(source)
+      parser.filename = filename
+      parser.diagnostic_source_file = filename
+      parser.token
+      parser.parse_ahead_contract.should be_nil
+      ahead.parse(parser, filename, source).to_s.should contain("value")
+      parser.reader.pos.should be > 0
     end
   end
 
@@ -98,12 +135,33 @@ describe "parse-ahead parser contract" do
     end
   end
 
-  it "delivers accepted worker warnings to the consumer's collection" do
-    source = "module app/left\npub def value: Int32\n  1\nend\n"
-    with_ahead_contract_fixture(source) do |program, ahead, filename, input|
-      parser = program.new_parser(input)
+  it "does not reuse a worker under an unrecognized warning handler" do
+    with_ahead_contract_fixture do |program, ahead, filename, source|
+      parser = program.new_parser(source)
       parser.filename = filename
       parser.diagnostic_source_file = filename
+      parser.warnings = CustomParseAheadWarnings.new
+      ahead.parse(parser, filename, source).to_s.should contain("value")
+      parser.reader.pos.should be > 0
+    end
+  end
+
+  it "rejects a worker after the consumer warning exclusions change" do
+    with_ahead_contract_fixture do |program, ahead, filename, source|
+      parser = program.new_parser(source)
+      parser.filename = filename
+      parser.diagnostic_source_file = filename
+      parser.warnings.exclude_path(filename)
+      ahead.parse(parser, filename, source).to_s.should contain("value")
+      parser.reader.pos.should be > 0
+    end
+  end
+
+  it "delivers accepted worker warnings to the consumer's collection" do
+    source = "module app/left\npub def value: Int32\n  1\nend\n"
+    with_ahead_contract_fixture(source, false) do |program, ahead, filename, input|
+      parser = program.new_parser(input)
+      parser.filename = filename
       recipient = Iyi::WarningCollection.new
       parser.warnings = recipient
       ahead.parse(parser, filename, input)
@@ -119,5 +177,14 @@ describe "parse-ahead parser contract" do
     original.parse_ahead_policy.should eq(worker.parse_ahead_policy)
     original.exclude_path("new-exclusion")
     original.parse_ahead_policy.should_not eq(worker.parse_ahead_policy)
+  end
+
+  it "compares the actual parser input including the BOM" do
+    content = "module app/left\n"
+    parser = Iyi::Parser.new("\uFEFF#{content}")
+    parser.filename = "app/left.iyi"
+    parser.parse_ahead_input_matches?("\uFEFF#{content}").should be_true
+    parser.parse_ahead_input_matches?(content).should be_false
+    Iyi::Parser.new(content).parse_ahead_input_matches?("\uFEFF#{content}").should be_false
   end
 end

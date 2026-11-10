@@ -1,5 +1,6 @@
 require "json"
 require "base64"
+require "set"
 require "crystal/digest/sha256"
 
 module Iyi
@@ -94,6 +95,14 @@ module Iyi
         @scopes == other.stored_scopes
     end
 
+    def matches_source_token?(token : DiagnosticSourceNameToken) : Bool
+      return false unless token.input_sha256 == @input_sha256 &&
+                          token.input_bytesize == @input.bytesize &&
+                          token.lexical_mode == @lexical_mode &&
+                          token.input_start >= 0 && token.input_end <= @input.bytesize
+      @input.to_slice[token.input_start, token.input_end - token.input_start] == token.raw_text.to_slice
+    end
+
     protected def stored_input : String
       @input
     end
@@ -135,6 +144,8 @@ module Iyi
     def initialize(pragmas : Hash(Int32, Array(Lexer::LocPragma))?)
       output = DiagnosticCaptureOutput.new(MAX_BYTES)
       json = JSON::Builder.new(output)
+      json.max_nesting = 1024
+      json.start_document
       json.object do
         json.field "present", !pragmas.nil?
         json.field "entries" do
@@ -151,6 +162,7 @@ module Iyi
           end
         end
       end
+      json.end_document
       @bytes = output.snapshot
       @sha256 = ::Crystal::Digest::SHA256.hexdigest(@bytes)
     end
@@ -300,6 +312,289 @@ module Iyi
           raise ArgumentError.new("unclassified pragma variant")
         end
       end
+    end
+  end
+
+  # A structural filename snapshot, not a resolved authority graph. Macro
+  # owners must already have a capture coordinate; this does not assert that
+  # the coordinate resolves in a separately trusted registry.
+  class DiagnosticFilenameSnapshot
+    MAX_BYTES = 64_i64 * 1024 * 1024
+    MAX_DEPTH = 128
+    getter sha256 : String
+    @bytes : String
+    @seen = Set(UInt64).new
+
+    def initialize(filename : String | VirtualFile | Nil)
+      output = DiagnosticCaptureOutput.new(MAX_BYTES)
+      json = JSON::Builder.new(output)
+      json.max_nesting = 1024
+      json.start_document
+      write_filename(json, filename, 0)
+      json.end_document
+      @bytes = output.snapshot
+      @sha256 = ::Crystal::Digest::SHA256.hexdigest(@bytes)
+    end
+
+    def bytes : String
+      @bytes.dup
+    end
+
+    private def write_ref(json : JSON::Builder, ref : DiagnosticCaptureFieldRef) : Nil
+      json.object do
+        json.field "capture_id", ref.capture_id
+        json.field "owner_path_json", ref.owner_path_json
+        json.field "field_tag", ref.field_tag
+        json.field "index", ref.index
+        json.field "map_key", ref.map_key
+      end
+    end
+
+    private def write_filename(json : JSON::Builder, filename : String | VirtualFile | Nil, depth : Int32) : Nil
+      raise ArgumentError.new("filename graph exceeds depth limit") if depth > MAX_DEPTH
+      json.object do
+        case filename
+        when Nil
+          json.field "kind", "Absent"
+        when String
+          json.field "kind", "SourceFile"
+          json.field "original_file", filename
+        when VirtualFile
+          id = filename.object_id
+          raise ArgumentError.new("cyclic virtual filename") unless @seen.add?(id)
+          begin
+            owner = filename.macro.diagnostic_capture_ref || raise ArgumentError.new("virtual filename macro lacks capture reference")
+            source = filename.source
+            raise ArgumentError.new("virtual filename input exceeds size limit") if source.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
+            json.field "kind", "VirtualFile"
+            json.field "input_base64", Base64.strict_encode(source.to_slice)
+            json.field "input_sha256", ::Crystal::Digest::SHA256.hexdigest(source)
+            json.field("macro_owner") { write_ref(json, owner) }
+            json.field "depth", filename.depth
+            json.field "line_origins" do
+              if origins = filename.line_origins
+                json.array do
+                  origins.each do |line, origin|
+                    json.array { json.number(line); json.number(origin) }
+                  end
+                end
+              else
+                json.null
+              end
+            end
+            json.field "expanded_location" do
+              if location = filename.expanded_location
+                json.object do
+                  json.field "line", location.line_number
+                  json.field "column", location.column_number
+                  json.field "artifact", location.artifact
+                  json.field("filename") { write_filename(json, location.filename, depth + 1) }
+                end
+              else
+                json.null
+              end
+            end
+          ensure
+            @seen.delete(id)
+          end
+        else
+          raise ArgumentError.new("unclassified filename binding")
+        end
+      end
+    end
+  end
+
+  # Reads every Path.names element directly. This snapshot is an incremental
+  # field encoder, not a complete AST census or a registry authority.
+  class DiagnosticPathSnapshot
+    getter sha256 : String
+    @bytes : String
+
+    def initialize(path : Path, input : AcceptedCaptureInput)
+      names = path.names
+      raise ArgumentError.new("path has no name segments") if names.empty?
+      slots = path.diagnostic_name_slots
+      if slots.size != names.size
+        raise ArgumentError.new("path name evidence does not cover all segments")
+      end
+      origin = path.diagnostic_origin || raise ArgumentError.new("path lacks structural origin")
+      raise ArgumentError.new("path origin exceeds depth limit") if origin.graph_depth > DiagnosticOrigin::MAX_DEPTH
+      budget = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      raise ArgumentError.new("path origin exceeds size limit") if origin.graph_bytes > budget
+      budget -= origin.graph_bytes
+      output = DiagnosticCaptureOutput.new(DiagnosticPragmaSnapshot::MAX_BYTES)
+      json = JSON::Builder.new(output)
+      json.max_nesting = 1024
+      json.start_document
+      json.object do
+        json.field "node_kind", "Path"
+        json.field "names" do
+          json.array do
+            names.each_with_index do |name, index|
+              values = slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, index)]? ||
+                       raise ArgumentError.new("missing path segment evidence at #{index}")
+              raise ArgumentError.new("ambiguous path segment evidence at #{index}") unless values.size == 1
+              value = values.first
+              raise ArgumentError.new("path segment evidence differs at #{index}") unless value.rendered_text == name
+              raise ArgumentError.new("path name evidence exceeds size limit") if value.graph_bytes > budget
+              budget -= value.graph_bytes
+              if value.is_a?(DiagnosticNameValue::Observed)
+                token = value.source_token
+                unless input.matches_source_token?(token)
+                  raise ArgumentError.new("path segment evidence input mismatch at #{index}")
+                end
+              elsif !value.is_a?(DiagnosticNameValue::Derived)
+                raise ArgumentError.new("unclassified path name evidence")
+              end
+              json.object do
+                json.field "index", index
+                json.field "value", name
+                json.field "evidence", value
+              end
+            end
+          end
+        end
+        json.field "global", path.global?
+        json.field "visibility", path.visibility.to_s
+        json.field "exported", path.exported?
+        json.field "iyi_from_artifact", path.iyi_from_artifact?
+        json.field "iyi_synthetic", path.iyi_synthetic?
+        json.field("location") { write_location(json, path.location) }
+        json.field("end_location") { write_location(json, path.end_location) }
+        json.field "origin", origin
+        json.field "macro_lineage", path.diagnostic_macro_lineage.to_s
+      end
+      json.end_document
+      @bytes = output.snapshot
+      @sha256 = ::Crystal::Digest::SHA256.hexdigest(@bytes)
+    end
+
+    def bytes : String
+      @bytes.dup
+    end
+
+    private def write_location(json : JSON::Builder, location : Location?) : Nil
+      unless location
+        json.null
+        return
+      end
+      filename = DiagnosticFilenameSnapshot.new(location.filename)
+      json.object do
+        json.field "filename_snapshot", filename.bytes
+        json.field "line", location.line_number
+        json.field "column", location.column_number
+        json.field "artifact", location.artifact
+      end
+    end
+  end
+
+  enum DiagnosticAstFieldClass
+    Child
+    ChildList
+    NamedValue
+    NamedChildMap
+    SyntaxScalar
+    OriginEvidence
+    Infrastructure
+  end
+
+  # Closed incremental classification. Unknown kinds and fields are errors;
+  # the entries here do not claim that the complete syntax schema is present.
+  module DiagnosticAstFieldSchema
+    SUPPORTED = %w(Path Generic Union TypeOf Arg NamedArgument Def Nop NilLiteral ImplicitObj Self Underscore
+      Expressions BoolLiteral NumberLiteral CharLiteral StringLiteral SymbolLiteral MacroLiteral
+      StringInterpolation ArrayLiteral TupleLiteral RangeLiteral RegexLiteral Var InstanceVar ClassVar
+      Global ReadInstanceVar If Unless Assign OpAssign MultiAssign And Or ProcNotation)
+
+    def self.classify(kind : String, field : String) : DiagnosticAstFieldClass
+      case field
+      when "location", "end_location", "diagnostic_origin", "diagnostic_macro_lineage",
+           "diagnostic_name_slots", "diagnostic_literal_names", "diagnostic_literal_productions"
+        return DiagnosticAstFieldClass::OriginEvidence if SUPPORTED.includes?(kind)
+      when "diagnostic_capture_ref", "diagnostic_percent_witnesses"
+        return DiagnosticAstFieldClass::Infrastructure if SUPPORTED.includes?(kind)
+      when "dependencies", "observers", "enclosing_call", "dirty", "type"
+        return DiagnosticAstFieldClass::Infrastructure if SUPPORTED.includes?(kind)
+      end
+      case kind
+      when "Path"
+        return DiagnosticAstFieldClass::NamedValue if field == "names"
+        return DiagnosticAstFieldClass::SyntaxScalar if {"global", "visibility", "exported"}.includes?(field)
+        return DiagnosticAstFieldClass::Infrastructure if {"iyi_from_artifact", "iyi_synthetic"}.includes?(field)
+      when "Generic"
+        return DiagnosticAstFieldClass::Child if field == "name"
+        return DiagnosticAstFieldClass::ChildList if {"type_vars", "named_args"}.includes?(field)
+        return DiagnosticAstFieldClass::SyntaxScalar if field == "suffix"
+      when "Union"
+        return DiagnosticAstFieldClass::ChildList if field == "types"
+        return DiagnosticAstFieldClass::SyntaxScalar if field == "parens"
+      when "TypeOf"
+        return DiagnosticAstFieldClass::ChildList if field == "expressions"
+      when "Arg"
+        return DiagnosticAstFieldClass::NamedValue if {"name", "external_name"}.includes?(field)
+        return DiagnosticAstFieldClass::Child if {"default_value", "restriction"}.includes?(field)
+        return DiagnosticAstFieldClass::ChildList if field == "parsed_annotations"
+        return DiagnosticAstFieldClass::SyntaxScalar if field == "doc"
+      when "NamedArgument"
+        return DiagnosticAstFieldClass::NamedValue if field == "name"
+        return DiagnosticAstFieldClass::Child if field == "value"
+      when "Def"
+        return DiagnosticAstFieldClass::NamedValue if {"name", "free_vars"}.includes?(field)
+        return DiagnosticAstFieldClass::NamedChildMap if {"free_var_bounds", "where_bounds"}.includes?(field)
+        return DiagnosticAstFieldClass::Child if {"receiver", "double_splat", "body", "block_arg", "return_type"}.includes?(field)
+        return DiagnosticAstFieldClass::ChildList if field == "args"
+        return DiagnosticAstFieldClass::OriginEvidence if field == "name_location"
+        return DiagnosticAstFieldClass::SyntaxScalar if {"block_arity", "splat_index", "doc", "visibility", "exported",
+          "iyi_from_impl", "macro_def", "abstract", "calls_super", "calls_initialize", "calls_previous_def",
+          "uses_block_arg", "assigns_special_var"}.includes?(field)
+      when "Expressions"
+        return DiagnosticAstFieldClass::ChildList if field == "expressions"
+        return DiagnosticAstFieldClass::SyntaxScalar if field == "keyword"
+      when "BoolLiteral", "CharLiteral", "StringLiteral", "SymbolLiteral", "MacroLiteral"
+        return DiagnosticAstFieldClass::SyntaxScalar if field == "value"
+      when "NumberLiteral"
+        return DiagnosticAstFieldClass::SyntaxScalar if {"value", "kind"}.includes?(field)
+      when "StringInterpolation"
+        return DiagnosticAstFieldClass::ChildList if field == "expressions"
+        return DiagnosticAstFieldClass::SyntaxScalar if field == "heredoc_indent"
+      when "ArrayLiteral"
+        return DiagnosticAstFieldClass::ChildList if field == "elements"
+        return DiagnosticAstFieldClass::Child if {"of", "name"}.includes?(field)
+      when "TupleLiteral"
+        return DiagnosticAstFieldClass::ChildList if field == "elements"
+      when "RangeLiteral"
+        return DiagnosticAstFieldClass::Child if {"from", "to"}.includes?(field)
+        return DiagnosticAstFieldClass::SyntaxScalar if field == "exclusive"
+      when "RegexLiteral"
+        return DiagnosticAstFieldClass::Child if field == "value"
+        return DiagnosticAstFieldClass::SyntaxScalar if field == "options"
+      when "Var", "InstanceVar", "ClassVar", "Global"
+        return DiagnosticAstFieldClass::NamedValue if field == "name"
+        return DiagnosticAstFieldClass::SyntaxScalar if kind == "Var" && field == "doc"
+      when "ReadInstanceVar"
+        return DiagnosticAstFieldClass::Child if field == "obj"
+        return DiagnosticAstFieldClass::NamedValue if field == "name"
+      when "If", "Unless"
+        return DiagnosticAstFieldClass::Child if {"cond", "then", "else"}.includes?(field)
+        return DiagnosticAstFieldClass::OriginEvidence if field == "else_location"
+        return DiagnosticAstFieldClass::SyntaxScalar if kind == "If" && field == "ternary"
+        return DiagnosticAstFieldClass::Infrastructure if kind == "If" && field == "iyi_definition_probe"
+      when "Assign"
+        return DiagnosticAstFieldClass::Child if {"target", "value"}.includes?(field)
+        return DiagnosticAstFieldClass::SyntaxScalar if field == "doc"
+      when "OpAssign"
+        return DiagnosticAstFieldClass::Child if {"target", "value"}.includes?(field)
+        return DiagnosticAstFieldClass::NamedValue if field == "op"
+        return DiagnosticAstFieldClass::OriginEvidence if field == "name_location"
+      when "MultiAssign"
+        return DiagnosticAstFieldClass::ChildList if {"targets", "values"}.includes?(field)
+      when "And", "Or"
+        return DiagnosticAstFieldClass::Child if {"left", "right"}.includes?(field)
+      when "ProcNotation"
+        return DiagnosticAstFieldClass::ChildList if field == "inputs"
+        return DiagnosticAstFieldClass::Child if field == "output"
+      end
+      raise ArgumentError.new("unclassified AST field #{kind}.#{field}")
     end
   end
 

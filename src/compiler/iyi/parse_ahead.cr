@@ -214,8 +214,11 @@ module Iyi
         source = nodes = nil
         worker_contract = nil
         worker_input = nil
-        warnings = @program.warnings.fork
-        warning_policy = warnings.class == WarningCollection ? warnings.parse_ahead_policy : nil
+        source_warnings = @program.warnings
+        warnings = source_warnings.fork
+        warning_policy = if source_warnings.class == WarningCollection && warnings.class == WarningCollection
+                           warnings.parse_ahead_policy
+                         end
         begin
           source = File.read(filename)
           parser = Parser.new(source, pool, [Set(String).new], warnings)
