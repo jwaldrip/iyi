@@ -46,3 +46,130 @@ describe Iyi::DiagnosticAstFieldSchema do
     end
   end
 end
+
+describe Iyi::DiagnosticDirectChildFields do
+  it "reads argument annotations and both definition bound maps directly" do
+    annotation = Iyi::Annotation.new(Iyi::Path.new("Marker"))
+    argument = Iyi::Arg.new("arg", parsed_annotations: [annotation])
+    definition = Iyi::Def.new("f", [argument])
+    definition.free_var_bounds = {"T" => Iyi::Path.new("Trait").as(Iyi::ASTNode)}
+    definition.where_bounds = {"U" => Iyi::Path.new("Other").as(Iyi::ASTNode)}
+
+    argument_fields = [] of {String, Int32?, String?, Iyi::ASTNode}
+    Iyi::DiagnosticDirectChildFields.each(argument) do |field, index, key, child|
+      argument_fields << {field, index, key, child}
+    end
+    argument_fields.should contain({"parsed_annotations", 0, nil, annotation})
+
+    definition_fields = [] of {String, Int32?, String?, Iyi::ASTNode}
+    Iyi::DiagnosticDirectChildFields.each(definition) do |field, index, key, child|
+      definition_fields << {field, index, key, child}
+    end
+    definition_fields.map { |field| {field[0], field[2]} }.should contain({"free_var_bounds", "T"})
+    definition_fields.map { |field| {field[0], field[2]} }.should contain({"where_bounds", "U"})
+  end
+end
+
+describe Iyi::DiagnosticDirectNameFields do
+  it "enumerates actual path segments and symbol bytes without contributor selection" do
+    path_fields = [] of {String, Int32?, String?, String}
+    Iyi::DiagnosticDirectNameFields.each(Iyi::Path.new(["Root", "Thing"])) do |field, index, key, value|
+      path_fields << {field, index, key, value}
+    end
+    path_fields.should eq([
+      {"names", 0, nil, "Root"},
+      {"names", 1, nil, "Thing"},
+    ])
+
+    symbol_fields = [] of {String, Int32?, String?, String}
+    Iyi::DiagnosticDirectNameFields.each(Iyi::SymbolLiteral.new("name")) do |field, index, key, value|
+      symbol_fields << {field, index, key, value}
+    end
+    symbol_fields.should contain({"value", nil, nil, "name"})
+  end
+end
+
+describe Iyi::DiagnosticDirectPresenceFields do
+  it "distinguishes absent and present-empty named argument lists" do
+    generic = Iyi::Generic.new(Iyi::Path.new("Foo"), [] of Iyi::ASTNode)
+    absent = {} of String => Iyi::DiagnosticFieldPresence
+    Iyi::DiagnosticDirectPresenceFields.each(generic) { |field, state| absent[field] = state }
+    absent["named_args"].should eq(Iyi::DiagnosticFieldPresence::Absent)
+    generic.named_args = [] of Iyi::NamedArgument
+    present = {} of String => Iyi::DiagnosticFieldPresence
+    Iyi::DiagnosticDirectPresenceFields.each(generic) { |field, state| present[field] = state }
+    present["named_args"].should eq(Iyi::DiagnosticFieldPresence::Empty)
+  end
+end
+
+describe Iyi::DiagnosticAstInventorySnapshot do
+  it "freezes direct nested names before mutation" do
+    path = Iyi::Path.new(["Root", "Thing"])
+    generic = Iyi::Generic.new(path, [Iyi::Path.new("Other")] of Iyi::ASTNode)
+    capture = Iyi::DiagnosticAstInventorySnapshot.new(generic)
+    before = capture.bytes
+    children = JSON.parse(before)["children"].as_a
+    segments = children.first["node"]["names"].as_a
+    segments.map { |entry| Base64.decode_string(entry["value_base64"].as_s) }.should eq(["Root", "Thing"])
+    path.names.pop
+    capture.bytes.should eq(before)
+    owner = [Iyi::DiagnosticInventoryStep.new("name", nil, nil)]
+    field = Iyi::DiagnosticInventoryStep.new("names", 1, nil)
+    String.new(capture.resolve_name(owner, field)).should eq("Thing")
+    expect_raises(ArgumentError, /unknown inventory coordinate/) do
+      capture.resolve_name(owner, Iyi::DiagnosticInventoryStep.new("names", 2, nil))
+    end
+  end
+
+  it "rejects cycles instead of walking a back-reference indefinitely" do
+    definition = Iyi::Def.new("f")
+    definition.body = definition
+    expect_raises(ArgumentError, /cyclic AST inventory/) do
+      Iyi::DiagnosticAstInventorySnapshot.new(definition)
+    end
+  end
+
+  it "retains decoded symbol bytes that are not UTF-8" do
+    bytes = Bytes[0xff, 0x61]
+    capture = Iyi::DiagnosticAstInventorySnapshot.new(Iyi::SymbolLiteral.new(String.new(bytes)))
+    field = Iyi::DiagnosticInventoryStep.new("value", nil, nil)
+    capture.resolve_name([] of Iyi::DiagnosticInventoryStep, field).should eq(bytes)
+  end
+
+  it "distinguishes absent name evidence from present-empty evidence" do
+    path = Iyi::Path.new("Root")
+    absent = JSON.parse(Iyi::DiagnosticAstInventorySnapshot.new(path).bytes)
+    absent["name_slots"].raw.should be_nil
+    path.diagnostic_name_slots = {} of Iyi::DiagnosticNameSlot => Array(Iyi::DiagnosticNameValue)
+    present = JSON.parse(Iyi::DiagnosticAstInventorySnapshot.new(path).bytes)
+    present["name_slots"].as_a.should be_empty
+  end
+
+  it "records stored end-location absence rather than a derived child location" do
+    right = Iyi::Path.new("Right")
+    right.end_location = Iyi::Location.new("/spec/source.cr", 1, 9)
+    expression = Iyi::And.new(Iyi::Path.new("Left"), right)
+    expression.end_location.should_not be_nil
+    inventory = JSON.parse(Iyi::DiagnosticAstInventorySnapshot.new(expression).bytes)
+    inventory["end_location"].raw.should be_nil
+  end
+end
+
+describe Iyi::DiagnosticLiteralInputChecks do
+  it "binds literal byte observations to the original input and decoded value" do
+    source = %q(f("\xFF": 1))
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/literal_input.cr"
+    parser.diagnostic_source_file = "/spec/literal_input.cr"
+    parser.diagnostic_capture = true
+    input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
+      nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
+    arg = parser.parse.as(Iyi::Call).named_args.not_nil!.first
+    literal = arg.diagnostic_literal_names[{"name", 0}]
+    productions = arg.diagnostic_literal_productions[{"name", 0}]
+    Iyi::DiagnosticLiteralInputChecks.verify_input_bytes!(literal, productions, String.new(Bytes[0xff]), input)
+    expect_raises(ArgumentError, /decoded value mismatch/) do
+      Iyi::DiagnosticLiteralInputChecks.verify_input_bytes!(literal, productions, "x", input)
+    end
+  end
+end
