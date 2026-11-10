@@ -146,9 +146,10 @@ describe "Iyi::Lexer diagnostic journal" do
 
       it "records a string's own backslash newline without repeating the piece after it" do
         observations = lex_journal("\"a\\\nb\"", iyi)
-        observations.map(&.token_kind).should eq ["DELIMITER_START", "STRING", "STRING", "DELIMITER_END"]
-        observations[1..2].map { |observation| String.new(decoded(observation)) }.should eq ["a", "b"]
-        observations.map(&.passed_backslash_newline).should eq [false, false, false, false]
+        observations.map(&.token_kind).should eq ["DELIMITER_START", "STRING", "STRING_CONTINUATION", "STRING", "DELIMITER_END"]
+        observations.select { |observation| observation.token_kind == "STRING" }.map { |observation| String.new(decoded(observation)) }.should eq ["a", "b"]
+        observations[2].token_text.should eq "\\\n"
+        observations.map(&.passed_backslash_newline).should eq [false, false, false, false, false]
       end
 
       it "keeps input offsets exact after a byte order mark" do

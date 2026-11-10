@@ -13,6 +13,7 @@ checked_origin) and must fail with its exact message.
 Run: python3 bench/test_operator_derivation.py
 """
 
+import ast
 import copy
 import hashlib
 import os
@@ -442,6 +443,19 @@ class RejectionTests(unittest.TestCase):
         value = operator("IndexQuery", "a[1]?",
                          [(1, "[", "[", "Whole"), (3, "]", "]", "Whole"), (4, "?", "IDENT", "Whole")],
                          "[]?", "method_name")
+        self.assertRejected(value, "invalid operator witness")
+
+    # `]?` is one suffix. A gap between `]` and `?` lexes as two tokens that are not the IndexQuery method.
+    def test_index_query_with_a_space_before_the_suffix_is_refused(self):
+        value = operator("IndexQuery", "a[1] ?",
+                         [(1, "[", "[", "Whole"), (3, "]", "]", "Whole"), (5, "?", "?", "Whole")],
+                         "[]?", "method_name")
+        self.assertRejected(value, "invalid operator witness")
+
+    def test_index_query_with_a_space_before_the_suffix_is_refused_when_expanded(self):
+        value = operator("IndexQuery", "a[1] ?",
+                         [(1, "[", "[", "Whole"), (3, "]", "]", "Whole"), (5, "?", "?", "Whole")],
+                         "[]?", "method_name", "expanded")
         self.assertRejected(value, "invalid operator witness")
 
     def test_index_assign_mixing_both_forms_is_refused(self):
@@ -1054,6 +1068,59 @@ class FreshIndexOrderTests(unittest.TestCase):
 
     def test_non_integer_entries_are_refused(self):
         self.assertRefused([(6, "0")], "invalid provenance integer")
+
+
+class CrystalParityTests(unittest.TestCase):
+    """Cross-language controls: every refusal the Python derivation validators can raise has a Crystal twin
+    with the same text in the codegen consumer, so both readers refuse the same values for the same reason."""
+
+    CRYSTAL_CONSUMER = os.path.join(BENCH_DIR, os.pardir, "src", "compiler", "iyi", "codegen", "diagnostic_provenance.cr")
+    DERIVATION_FUNCTIONS = frozenset((
+        "fields", "text", "number", "guard", "token_fields", "operator_rendered", "operator_emitter",
+        "witness_event", "witness_parts", "operator_name", "structural_rendering", "structural_spans",
+        "unnamed_anchor", "structural_anchor", "structural_name",
+    ))
+
+    @classmethod
+    def python_refusals(cls):
+        """Every literal refusal in the derivation validators. f-string labels become Crystal interpolation."""
+        with open(frames.__file__, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read(), filename=frames.__file__)
+        messages = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or node.name not in cls.DERIVATION_FUNCTIONS:
+                continue
+            for raise_node in ast.walk(node):
+                if not isinstance(raise_node, ast.Raise) or not isinstance(raise_node.exc, ast.Call):
+                    continue
+                if not raise_node.exc.args:
+                    continue
+                message = raise_node.exc.args[0]
+                if isinstance(message, ast.Constant) and isinstance(message.value, str):
+                    messages.add(message.value)
+                elif isinstance(message, ast.JoinedStr):
+                    pieces = []
+                    for piece in message.values:
+                        if isinstance(piece, ast.Constant):
+                            pieces.append(piece.value)
+                        else:
+                            pieces.append("#{" + piece.value.id + "}")
+                    messages.add("".join(pieces))
+        return messages
+
+    def test_every_python_refusal_has_a_crystal_twin(self):
+        messages = self.python_refusals()
+        self.assertGreater(len(messages), 30)
+        with open(self.CRYSTAL_CONSUMER, encoding="utf-8") as handle:
+            crystal = handle.read()
+        missing = sorted(message for message in messages if '"%s"' % message not in crystal)
+        self.assertEqual(missing, [])
+
+    def test_index_query_refusal_is_shared_with_the_crystal_consumer(self):
+        # The `]?` adjacency control is refused in both readers under the same message.
+        self.assertIn("invalid operator witness", self.python_refusals())
+        with open(self.CRYSTAL_CONSUMER, encoding="utf-8") as handle:
+            self.assertIn('production == "IndexQuery"', handle.read())
 
 
 if __name__ == "__main__":

@@ -291,6 +291,8 @@ def operator_rendered(production, witnesses, mode):
     }[production]
     if not any(pairs == [(spelling, spelling) for spelling in form] for form in forms):
         raise ValueError("invalid operator witness")
+    if production == "IndexQuery" and witnesses[2]["input_start"] != witnesses[1]["input_end"]:
+        raise ValueError("invalid operator witness")
     return rendered
 
 

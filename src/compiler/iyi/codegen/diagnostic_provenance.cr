@@ -172,6 +172,11 @@ module Iyi::DiagnosticProvenance
   MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer LiteralValue)
   NAME_OPERATORS = %w(! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~)
   INVALID_PARAMETER_NAMES = %w(begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof)
+  OPERATOR_PRODUCTIONS = %w(OpAssign SignedNumber Index IndexQuery IndexAssign Setter Command)
+  OP_ASSIGN_OPERATORS = %w(+= -= *= /= //= %= |= &= ^= **= <<= >>= ||= &&= &+= &-= &*=)
+  COMMAND_OPENERS = ["`", "%x(", "%x[", "%x{", "%x<", "%x|"]
+  OPERATOR_CONTEXTS = {"OpAssign" => "op_assign_operator"}
+  STRUCTURAL_ROLES = {"UnnamedFunParameter" => {"FunDef", "keyword"}, "ShortBlockArgument" => {"Block", "ampersand"}}
 
   private def self.name_token?(kind : String, raw : String, mode : String, context : String) : Bool
     allowed = case context
@@ -745,6 +750,315 @@ module Iyi::DiagnosticProvenance
     {context, observed.token_text}
   end
 
+  # Exact key set, with the refusal text used by the Python comparator for the same check.
+  private def self.derived_fields!(value : JSON::Any, keys : Array(String)) : Hash(String, JSON::Any)
+    object = value.as_h? || raise "invalid provenance fields"
+    raise "invalid provenance fields" unless object.size == keys.size && keys.all? { |key| object.has_key?(key) }
+    object
+  end
+
+  private def self.derived_number!(value : JSON::Any) : Int64
+    number = value.as_i64? || raise "invalid provenance integer"
+    raise "invalid provenance integer" unless number >= 0 && number <= 0x7fffffff
+    number
+  end
+
+  private def self.derived_text!(value : JSON::Any) : String
+    raw = value.as_s? || raise "invalid provenance text"
+    raise "invalid provenance text" if raw.empty?
+    raise "invalid provenance UTF-8" unless raw.valid_encoding?
+    raw
+  end
+
+  private def self.derived_guard!(value : JSON::Any) : String
+    digest = value.as_s? || raise "invalid input guard"
+    raise "invalid input guard" unless digest.matches?(/\A[0-9a-f]{64}\z/)
+    digest
+  end
+
+  private def self.derived_token_kind!(value : JSON::Any) : String
+    kind = value.as_s? || raise "invalid token classification"
+    raise "invalid token classification" unless Iyi::Token::Kind.values.any? { |member| member.to_s == kind }
+    kind
+  end
+
+  # E2: a witness's parts tile its span exactly once, left to right. Generated parts carry recorded
+  # producers, NameSplice parts only IDENT or CONST, and adjacent Generated parts with the same
+  # producer and emitter are refused (they must be merged).
+  private def self.derived_emitter!(emitter : JSON::Any, depth : Int32, label : String) : Nil
+    return if emitter.raw.nil?
+    origin_schema4!(emitter, depth + 1)
+    directive = Iyi::DiagnosticOrigin.from_json(emitter)
+    unless directive.valid_for_anchor?("MacroDirective", "expression") || directive.valid_for_anchor?("MacroDirective", "control")
+      raise "invalid #{label} witness provenance"
+    end
+  end
+
+  private def self.derived_witness_parts!(event : Hash(String, JSON::Any), witness : Hash(String, JSON::Any), depth : Int32, label : String) : Nil
+    parts = event["byte_parts"].as_a? || raise "invalid #{label} witness provenance"
+    raise "invalid #{label} witness provenance" if parts.empty?
+    token_kind = witness["token_kind"].as_s
+    raw = witness["raw_text"].as_s
+    base = event["input_start"].as_i64
+    finish = event["input_end"].as_i64
+    cursor = base
+    previous = nil.as(Tuple(String, JSON::Any)?)
+    parts.each do |part_value|
+      part = part_value.as_h? || raise "invalid #{label} witness provenance"
+      kind = part["kind"]?.try(&.as_s?)
+      producer_name = nil.as(String?)
+      case kind
+      when "Generated"
+        derived_fields!(part_value, %w(kind start_offset end_offset emitter_origin producer))
+        producer_name = part["producer"].as_s?
+      when "NameSplice"
+        derived_fields!(part_value, %w(kind start_offset end_offset emitter_origin source_name))
+        raise "invalid #{label} witness provenance" unless token_kind == "IDENT" || token_kind == "CONST"
+      else
+        raise "invalid #{label} witness provenance"
+      end
+      start = derived_number!(part["start_offset"])
+      stop = derived_number!(part["end_offset"])
+      raise "witness bytes not attributed by macro emission" if start > cursor
+      raise "invalid #{label} witness provenance" if start < cursor || !(start < stop && stop <= finish)
+      emitter = part["emitter_origin"]
+      derived_emitter!(emitter, depth, label)
+      segment = raw.byte_slice(start - base, stop - start)
+      if kind == "Generated"
+        name = producer_name || raise "invalid #{label} witness provenance"
+        raise "invalid #{label} witness provenance" unless MACRO_PRODUCERS.includes?(name) && segment.valid_encoding?
+        if (prior = previous) && prior[0] == name && prior[1] == emitter
+          raise "invalid #{label} witness provenance"
+        end
+        previous = {name, emitter}
+      else
+        raise "invalid #{label} witness provenance" unless name_value_schema4!(part["source_name"], depth + 1) == segment
+        previous = nil.as(Tuple(String, JSON::Any)?)
+      end
+      cursor = stop
+    end
+    raise "witness bytes not attributed by macro emission" unless cursor == finish
+  end
+
+  # E3 and E2: a later witness carries an event equal to its own fields, built from its own emission records.
+  private def self.derived_witness_event!(witness : Hash(String, JSON::Any), mode : String, depth : Int32, label : String) : Nil
+    raise "invalid #{label} witness provenance" if witness["event"].raw.nil?
+    event = derived_fields!(witness["event"], %w(input_start input_end token_kind token_text lexical_mode selection byte_parts))
+    first = derived_number!(event["input_start"])
+    last = derived_number!(event["input_end"])
+    raise "#{label} witnesses use different inputs" unless event["lexical_mode"].as_s? == mode
+    same = first == witness["input_start"].as_i64 && last == witness["input_end"].as_i64 &&
+           event["token_kind"] == witness["token_kind"] && event["token_text"] == witness["raw_text"] &&
+           event["selection"] == witness["selection"] && witness["selection"].as_s? == "Whole"
+    raise "invalid #{label} witness provenance" unless same
+    derived_witness_parts!(event, witness, depth, label)
+  end
+
+  # Recomputes the C-OP rendering. Shape and spelling only; the caller compares the stored rendering.
+  private def self.operator_rendered!(production : String, witnesses : Array(Hash(String, JSON::Any)), mode : String) : String
+    pairs = witnesses.map { |witness| {witness["token_kind"].as_s, witness["raw_text"].as_s} }
+    case production
+    when "OpAssign"
+      raise "invalid operator witness" unless pairs.size == 1 && pairs[0][0] == pairs[0][1] && OP_ASSIGN_OPERATORS.includes?(pairs[0][1])
+      pairs[0][1].byte_slice(0, pairs[0][1].bytesize - 1)
+    when "SignedNumber"
+      raise "invalid operator witness" unless pairs.size == 1 && pairs[0][0] == "NUMBER" && pairs[0][1].matches?(/\A[+-][0-9]/)
+      pairs[0][1].byte_slice(0, 1)
+    when "Setter"
+      raise "invalid operator witness" unless pairs.size == 2 && pairs[1] == {"=", "="}
+      kind, name = pairs[0]
+      raise "invalid operator witness" unless {"IDENT", "CONST"}.includes?(kind) && !name.ends_with?("?") && !name.ends_with?("!")
+      raise "invalid operator witness" unless name_token?(kind, name, mode, "method_name")
+      name + "="
+    when "Command"
+      raise "invalid operator witness" unless pairs.size == 1 && pairs[0][0] == "DELIMITER_START"
+      raise "invalid command opener" unless COMMAND_OPENERS.includes?(pairs[0][1])
+      "`"
+    else
+      spec = case production
+             when "Index" then {[["[", "]"]], "[]"}
+             when "IndexQuery" then {[["[", "]", "?"]], "[]?"}
+             when "IndexAssign" then {[["[", "]", "="], ["[]", "="]], "[]="}
+             else raise "invalid operator witness"
+             end
+      forms, rendered = spec
+      raise "invalid operator witness" unless forms.any? { |form| pairs == form.map { |spelling| {spelling, spelling} } }
+      # `]?` is one suffix: the `?` must start exactly where the `]` ends, so `a[1] ?` is refused.
+      if production == "IndexQuery" && witnesses[2]["input_start"].as_i64 != witnesses[1]["input_end"].as_i64
+        raise "invalid operator witness"
+      end
+      rendered
+    end
+  end
+
+  private def self.operator_name_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
+    item = derived_fields!(value, %w(kind derivation_kind production anchor_origin input_sha256 input_bytesize lexical_mode witnesses rendered_text producer_context))
+    production = item["production"].as_s? || raise "unknown operator production"
+    raise "unknown operator production" unless OPERATOR_PRODUCTIONS.includes?(production)
+    digest = derived_guard!(item["input_sha256"])
+    size = derived_number!(item["input_bytesize"])
+    mode = item["lexical_mode"].as_s? || raise "invalid token classification"
+    raise "invalid token classification" unless mode == "Crystal" || mode == "Iyi"
+    witness_values = item["witnesses"].as_a? || raise "invalid operator witness"
+    raise "invalid operator witness" unless (1..3).includes?(witness_values.size)
+    witnesses = [] of Hash(String, JSON::Any)
+    previous = 0_i64
+    witness_values.each_with_index do |witness_value, index|
+      witness = derived_fields!(witness_value, %w(input_start input_end token_kind raw_text selection event))
+      first = derived_number!(witness["input_start"])
+      last = derived_number!(witness["input_end"])
+      raw = derived_text!(witness["raw_text"])
+      derived_token_kind!(witness["token_kind"])
+      raise "invalid operator witness span" unless first < last && last <= size && last - first == raw.bytesize
+      raise "invalid operator witness order" if first < previous
+      previous = last
+      selection = production == "SignedNumber" && index == 0 ? "SignedNumberSign" : "Whole"
+      raise "invalid operator witness" unless witness["selection"].as_s? == selection
+      witnesses << witness
+    end
+    rendered = operator_rendered!(production, witnesses, mode)
+    raise "derived operator rendering differs" unless item["rendered_text"].as_s? == rendered
+    context = OPERATOR_CONTEXTS[production]? || "method_name"
+    raise "derived operator context differs" unless item["producer_context"].as_s? == context
+    anchor_value = item["anchor_origin"]
+    anchor = anchor_value.as_h? || raise "invalid operator anchor"
+    kind = anchor["kind"]?.try(&.as_s?)
+    raise "invalid operator anchor" unless kind == "Written" || kind == "Expanded"
+    origin_schema4!(anchor_value, depth + 1)
+    raise "invalid operator anchor" unless Iyi::DiagnosticOrigin.from_json(anchor_value).valid_for_anchor?("Call", "method")
+    head = witnesses[0]
+    if kind == "Written"
+      raise "operator anchor offset mismatch" unless anchor["input_byte_offset"].as_i64 == head["input_start"].as_i64
+      raise "invalid operator witness provenance" if witnesses.any? { |witness| !witness["event"].raw.nil? }
+    else
+      event = anchor["token_event"].as_h
+      raise "operator witnesses use different inputs" unless anchor["expansion_guard"].as_s? == "sha256:" + digest && event["lexical_mode"].as_s? == mode
+      same = event["input_start"] == head["input_start"] && event["input_end"] == head["input_end"] &&
+             event["token_kind"] == head["token_kind"] && event["token_text"] == head["raw_text"] &&
+             event["selection"] == head["selection"]
+      raise "operator anchor token differs from witness 0" unless same
+      raise "invalid operator witness provenance" unless head["event"].raw.nil?
+      witnesses.each_with_index do |witness, index|
+        derived_witness_event!(witness, mode, depth, "operator") if index > 0
+      end
+    end
+    {context, rendered}
+  end
+
+  private def self.witness_sequence?(witnesses : Array(Hash(String, JSON::Any)), expected : Array(String)) : Bool
+    return false unless witnesses.size == expected.size
+    (0...expected.size).all? do |index|
+      witnesses[index]["token_kind"].as_s? == expected[index] && witnesses[index]["raw_text"].as_s? == expected[index] &&
+        witnesses[index]["selection"].as_s? == "Whole"
+    end
+  end
+
+  # Returns {rendered text, producer context} per structural production (contract S).
+  private def self.structural_rendering!(production : String, witnesses : Array(Hash(String, JSON::Any)), fresh : JSON::Any) : Tuple(String, String)
+    if production == "UnnamedFunParameter"
+      raise "structural witness differs" unless witnesses.size == 2 && fresh.raw.nil?
+      separator = witnesses[0]
+      type_head = witnesses[1]
+      separator_raw = separator["raw_text"].as_s
+      unless (separator_raw == "(" || separator_raw == ",") && separator["token_kind"].as_s == separator_raw && separator["selection"].as_s? == "Whole"
+        raise "structural witness differs"
+      end
+      head_kind = type_head["token_kind"].as_s
+      head_raw = type_head["raw_text"].as_s
+      raise "unnamed parameter head is not the first type token" if head_kind == "IDENT" || head_kind == "..." || head_raw == "..."
+      raise "structural witness differs" if head_raw.empty? || type_head["selection"].as_s? != "Whole"
+      {"", "parameter"}
+    elsif production == "ShortBlockArgument"
+      raise "structural witness differs" unless witness_sequence?(witnesses, ["&", "."])
+      index = fresh.as_i64? || raise "invalid short block fresh index"
+      raise "invalid short block fresh index" unless index >= 0 && index <= Int32::MAX
+      {"__arg#{index}", "local_reference"}
+    else
+      raise "invalid structural production"
+    end
+  end
+
+  private def self.structural_spans!(witnesses : Array(Hash(String, JSON::Any)), size : Int64) : Nil
+    previous = 0_i64
+    witnesses.each_with_index do |witness, index|
+      first = witness["input_start"].as_i64
+      last = witness["input_end"].as_i64
+      raise "invalid structural witness span" unless 0 <= first && first < last && last <= size && last - first == witness["raw_text"].as_s.bytesize
+      raise "invalid structural witness selection" unless witness["selection"].as_s? == "Whole"
+      raise "structural witnesses overlap or are out of order" if index > 0 && previous > first
+      previous = last
+    end
+  end
+
+  # U1 to U2 for an Expanded UnnamedFunParameter: the fun keyword anchors and precedes both witnesses.
+  private def self.unnamed_anchor!(anchor : Hash(String, JSON::Any), event : Hash(String, JSON::Any), witnesses : Array(Hash(String, JSON::Any)), digest : String, mode : String) : Nil
+    raise "invalid structural anchor" unless event["token_kind"].as_s? == "IDENT" && event["token_text"].as_s? == "fun" && event["selection"].as_s? == "Whole" && event["lexical_mode"].as_s? == mode
+    raise "anchor does not precede witnesses" if derived_number!(event["input_end"]) > witnesses[0]["input_start"].as_i64
+    raise "structural witnesses use different inputs" unless anchor["expansion_guard"].as_s? == "sha256:" + digest
+  end
+
+  private def self.structural_anchor!(production : String, anchor : Hash(String, JSON::Any), witnesses : Array(Hash(String, JSON::Any)), digest : String, mode : String, depth : Int32) : Nil
+    head = witnesses[0]
+    if anchor["kind"].as_s == "Written"
+      offset = anchor["input_byte_offset"].as_i64
+      if production == "UnnamedFunParameter"
+        raise "anchor does not precede witnesses" if offset >= head["input_start"].as_i64
+      else
+        raise "structural anchor offset mismatch" unless offset == head["input_start"].as_i64
+      end
+      raise "structural witness has a token event for written source" if witnesses.any? { |witness| !witness["event"].raw.nil? }
+      return
+    end
+    event = anchor["token_event"].as_h
+    if production == "UnnamedFunParameter"
+      unnamed_anchor!(anchor, event, witnesses, digest, mode)
+      witnesses.each { |witness| derived_witness_event!(witness, mode, depth, "structural") }
+      return
+    end
+    same = event["input_start"] == head["input_start"] && event["input_end"] == head["input_end"] &&
+           event["token_kind"] == head["token_kind"] && event["token_text"] == head["raw_text"] &&
+           event["lexical_mode"].as_s? == mode && event["selection"] == head["selection"]
+    raise "structural anchor event differs from first witness" unless same
+    raise "structural witnesses use different inputs" unless anchor["expansion_guard"].as_s? == "sha256:" + digest
+    raise "invalid structural witness provenance" unless head["event"].raw.nil?
+    witnesses.each_with_index do |witness, index|
+      derived_witness_event!(witness, mode, depth, "structural") if index > 0
+    end
+  end
+
+  private def self.structural_name_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
+    item = derived_fields!(value, %w(kind derivation_kind production anchor_origin input_sha256 input_bytesize lexical_mode witnesses fresh_index rendered_text producer_context))
+    production = item["production"].as_s? || raise "invalid structural production"
+    raise "invalid structural production" unless STRUCTURAL_ROLES.has_key?(production)
+    digest = derived_guard!(item["input_sha256"])
+    size = derived_number!(item["input_bytesize"])
+    mode = item["lexical_mode"].as_s? || raise "invalid structural input"
+    raise "invalid structural input" if size < 1 || (mode != "Crystal" && mode != "Iyi")
+    witness_values = item["witnesses"].as_a? || raise "structural witness differs"
+    raise "structural witness differs" unless witness_values.size == 2
+    witnesses = [] of Hash(String, JSON::Any)
+    witness_values.each do |witness_value|
+      witness = derived_fields!(witness_value, %w(input_start input_end token_kind raw_text selection event))
+      derived_number!(witness["input_start"])
+      derived_number!(witness["input_end"])
+      derived_text!(witness["raw_text"])
+      derived_token_kind!(witness["token_kind"])
+      witnesses << witness
+    end
+    anchor_value = item["anchor_origin"]
+    anchor = anchor_value.as_h? || raise "invalid structural anchor"
+    kind = anchor["kind"]?.try(&.as_s?)
+    raise "invalid structural anchor" unless kind == "Written" || kind == "Expanded"
+    origin_schema4!(anchor_value, depth + 1)
+    role = STRUCTURAL_ROLES[production]
+    raise "invalid structural anchor" unless Iyi::DiagnosticOrigin.from_json(anchor_value).valid_for_anchor?(role[0], role[1])
+    rendered, context = structural_rendering!(production, witnesses, item["fresh_index"])
+    structural_spans!(witnesses, size)
+    structural_anchor!(production, anchor, witnesses, digest, mode, depth)
+    raise "derived structural rendering differs" unless item["rendered_text"].as_s? == rendered && item["producer_context"].as_s? == context
+    {context, rendered}
+  end
+
   private def self.derived_name_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
     raise "diagnostic origin nesting too deep" if depth > 128
     object = value.as_h
@@ -822,6 +1136,8 @@ module Iyi::DiagnosticProvenance
     if object["derivation_kind"].as_s == "QuotedName"
       return quoted_name_schema4!(value)
     end
+    return operator_name_schema4!(value, depth) if object["derivation_kind"].as_s == "OperatorName"
+    return structural_name_schema4!(value, depth) if object["derivation_kind"].as_s == "StructuralName"
     raise "unknown derived name operation" unless object["derivation_kind"].as_s == "ParameterLowering"
     item = fields(value, %w(kind derivation_kind source_token definition_origin parameter_slot parameter_index result projection fresh_index))
     source = item["source_token"].as_h
