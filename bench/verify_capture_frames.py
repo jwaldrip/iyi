@@ -28,9 +28,8 @@ check_presence!, check_scalars! and check_stubs!:
 - Child and name stubs carry field "base" or "base.sub", with an index for
   Indexed rows and a key for Keyed rows. Counts follow the presence state.
 
-Authority: a stream verifies only when every framed row has a non-null
-type_expression, and only against a digest the caller supplies. A schema with
-any null framed type_expression gets no verdict at all.
+This checks structure and a caller-supplied digest, not provenance or authority.
+It refuses a schema with an unknown framed type expression.
 
 REMAINING_BEYOND_PARSER lists what this module does not establish.
 """
@@ -391,7 +390,7 @@ def load_schema(doc: object) -> FieldSchema:
     return FieldSchema(kinds=kinds)
 
 
-def _require_authority(schema: FieldSchema) -> None:
+def _require_complete_schema(schema: FieldSchema) -> None:
     for kschema in schema.kinds.values():
         for row in kschema.framed:
             if row.type_expression is None:
@@ -910,15 +909,14 @@ def _expected_digest(value: object) -> str:
 def verify_capture_stream(stream, *, expected_sha256: str, schema: FieldSchema) -> CaptureSummary:
     """Verifies one frame stream read from a binary file-like object.
 
-    Raises VerifyError with a stable ``code`` on the first failure. Refuses
-    before reading when the digest is not pinned or any framed row lacks a
-    proven type_expression. The digest comparison happens after the structure
-    verifies.
+    Raises VerifyError with a stable ``code`` on the first failure. Requires
+    an expected digest and a schema without unknown framed type expressions.
+    The caller must establish whether either input is trustworthy.
     """
     expected = _expected_digest(expected_sha256)
     if not isinstance(schema, FieldSchema):
         raise VerifyError("schema_malformed", "schema must be the result of load_schema()")
-    _require_authority(schema)
+    _require_complete_schema(schema)
     reader = _Reader(stream)
     digest = hashlib.sha256(DIGEST_TAG)
     walk = _Walk(schema)
