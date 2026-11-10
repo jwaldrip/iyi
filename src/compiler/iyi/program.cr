@@ -1111,52 +1111,60 @@ module Iyi
     getter(iyi_mono_body_diagnostics) { {} of String => Hash(String, IyiMod::DiagnosticFragment) }
     getter(iyi_mono_body_origins) { {} of String => Hash(String, DiagnosticOrigin) }
     getter(iyi_initialiser_diagnostics) { {} of String => IyiMod::DiagnosticFragment }
-    getter(iyi_class_var_diagnostics) { {} of {String, String} => {String, Array(DiagnosticAnchor)} }
-    getter(iyi_field_diagnostics) { {} of {String, String} => {String, Array(DiagnosticAnchor)} }
-    getter(iyi_macro_diagnostics) { {} of {String, String} => Array(DiagnosticAnchor) }
+    getter(iyi_class_var_diagnostics) { {} of {String, String} => {String, IyiMod::DiagnosticFragment} }
+    getter(iyi_field_diagnostics) { {} of {String, String} => {String, IyiMod::DiagnosticFragment} }
+    getter(iyi_macro_diagnostics) { {} of {String, String} => IyiMod::DiagnosticFragment }
     getter(iyi_signature_diagnostics) { {} of String => Hash(String, IyiMod::DiagnosticFragment) }
-    getter(iyi_top_fun_diagnostics) { {} of String => Array(DiagnosticAnchor) }
+    getter(iyi_top_fun_diagnostics) { {} of String => IyiMod::DiagnosticFragment }
     getter(diagnostic_emissions) { [] of DiagnosticProvenance::Emission }
     getter(diagnostic_object_inputs) { [] of DiagnosticProvenance::ObjectInput }
     getter(diagnostic_bindings) { [] of DiagnosticProvenance::Binding }
 
     def record_class_var_diagnostic(owner : String, name : String, source : String,
-                                    anchors : Array(DiagnosticAnchor)) : Nil
+                                    fragment : IyiMod::DiagnosticFragment) : Nil
+      validate_diagnostic_fragment_source(source, fragment)
       key = {owner, name}
-      value = {source, anchors}
+      value = {source, fragment}
       if previous = iyi_class_var_diagnostics[key]?
         raise "conflicting class variable diagnostic source" unless previous == value
       else
-        iyi_class_var_diagnostics[key] = {source, anchors.dup}
+        iyi_class_var_diagnostics[key] = value
       end
     end
 
     def record_field_diagnostic(owner : String, name : String, source : String,
-                                anchors : Array(DiagnosticAnchor)) : Nil
+                                fragment : IyiMod::DiagnosticFragment) : Nil
+      validate_diagnostic_fragment_source(source, fragment)
       key = {owner, name}
-      value = {source, anchors}
+      value = {source, fragment}
       if previous = iyi_field_diagnostics[key]?
         raise "conflicting field diagnostic source" unless previous == value
       else
-        iyi_field_diagnostics[key] = {source, anchors.dup}
+        iyi_field_diagnostics[key] = value
       end
     end
 
-    def record_macro_diagnostic(owner : String, source : String, anchors : Array(DiagnosticAnchor)) : Nil
+    def record_macro_diagnostic(owner : String, source : String, fragment : IyiMod::DiagnosticFragment) : Nil
+      validate_diagnostic_fragment_source(source, fragment)
       key = {owner, source}
       if previous = iyi_macro_diagnostics[key]?
-        raise "conflicting macro diagnostic source" unless previous == anchors
+        raise "conflicting macro diagnostic source" unless previous == fragment
       else
-        iyi_macro_diagnostics[key] = anchors.dup
+        iyi_macro_diagnostics[key] = fragment
       end
     end
 
-    def record_top_fun_diagnostic(source : String, anchors : Array(DiagnosticAnchor)) : Nil
+    def record_top_fun_diagnostic(source : String, fragment : IyiMod::DiagnosticFragment) : Nil
+      validate_diagnostic_fragment_source(source, fragment)
       if previous = iyi_top_fun_diagnostics[source]?
-        raise "ambiguous top-level fun diagnostic source" unless previous == anchors
+        raise "ambiguous top-level fun diagnostic source" unless previous == fragment
       else
-        iyi_top_fun_diagnostics[source] = anchors.dup
+        iyi_top_fun_diagnostics[source] = fragment
       end
+    end
+
+    private def validate_diagnostic_fragment_source(source : String, fragment : IyiMod::DiagnosticFragment) : Nil
+      raise "diagnostic fragment text changed" unless fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(source)
     end
 
     def record_signature_diagnostic(filename : String, container : String, signature : IyiMod::Signature, a_def : Def) : Nil
@@ -1174,7 +1182,7 @@ module Iyi
     end
 
     def record_mono_body_diagnostic(filename : String, semantic_key : String, container : String,
-                                    signature : IyiMod::Signature, text : String, anchors : Array(DiagnosticAnchor)) : Nil
+                                    signature : IyiMod::Signature, text : String, builder : DiagnosticFragmentBuilder) : Nil
       origin = signature.diagnostic_origin || raise "mono body has no definition origin"
       origins = iyi_mono_body_origins[filename] ||= {} of String => DiagnosticOrigin
       if previous = origins[semantic_key]?
@@ -1183,7 +1191,7 @@ module Iyi
         origins[semantic_key] = origin
       end
       key = IyiMod.signature_body_fragment_key(container, signature)
-      fragment = IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(text), anchors)
+      fragment = builder.finish(key, text)
       fragments = iyi_mono_body_diagnostics[filename] ||= {} of String => IyiMod::DiagnosticFragment
       if previous = fragments[key]?
         raise "conflicting mono body diagnostic fragment" unless previous == fragment

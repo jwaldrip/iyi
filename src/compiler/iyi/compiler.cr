@@ -3238,8 +3238,9 @@ module Iyi
       end
       macros.sort_by!(&.to_s).map do |a_macro|
         if type && type.program.diagnostic_capture
-          source, anchors = IyiMod.diagnostic_macro_source(a_macro)
-          type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, anchors)
+          source, builder = IyiMod.diagnostic_macro_source(a_macro)
+          fragment = builder.finish(::Crystal::Digest::SHA256.hexdigest(source), source)
+          type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, fragment)
           source
         else
           IyiMod.macro_source(a_macro)
@@ -3265,8 +3266,8 @@ module Iyi
                                      a_def : Def, ordinal : Int32) : Nil
       key = IyiMod.mono_body_key(container, signature, ordinal)
       if program.diagnostic_capture
-        text, positions, anchors = IyiMod.diagnostic_located_source(a_def.body)
-        program.record_mono_body_diagnostic(filename, key, container, signature, text, anchors)
+        text, positions, builder = IyiMod.diagnostic_located_source(a_def.body)
+        program.record_mono_body_diagnostic(filename, key, container, signature, text, builder)
       else
         text, positions = IyiMod.located_source(a_def.body)
       end
@@ -3312,8 +3313,8 @@ module Iyi
         type.instance_vars_initializers.try &.each do |initializer|
           defaults[initializer.name] = initializer.written
           if type.program.diagnostic_capture && !initializer.written.empty?
-            anchors = initializer.written_anchors || raise "field initializer lacks diagnostic anchors"
-            type.program.record_field_diagnostic(type.to_s(generic_args: false), initializer.name, initializer.written, anchors)
+            fragment = initializer.written_diagnostic || raise "field initializer lacks diagnostic fragment"
+            type.program.record_field_diagnostic(type.to_s(generic_args: false), initializer.name, initializer.written, fragment)
           end
         end
       end
@@ -3405,10 +3406,10 @@ module Iyi
     private def diagnostic_add_macros(program : Program, section : IyiMod::DiagnosticSection,
                                       sources : Array(String), owner : String, container : String) : Nil
       sources.each do |source|
-        anchors = program.iyi_macro_diagnostics[{owner, source}]? ||
-                  raise "missing macro diagnostic source for #{owner}"
+        fragment = program.iyi_macro_diagnostics[{owner, source}]? ||
+                   raise "missing macro diagnostic source for #{owner}"
         key = IyiMod.macro_fragment_key(container, source)
-        section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+        section.add_fragment(IyiMod::DiagnosticFragment.new(key, fragment.text_sha256, fragment.events, fragment.anchors))
       end
     end
 
@@ -3424,11 +3425,11 @@ module Iyi
                                           variables : Array(IyiMod::ClassVarDecl), owner : String, container : String) : Nil
       variables.each do |variable|
         next if variable.value.empty?
-        source, anchors = program.iyi_class_var_diagnostics[{owner, variable.name}]? ||
-                          raise "missing class variable diagnostic source for #{owner}::#{variable.name}"
+        source, fragment = program.iyi_class_var_diagnostics[{owner, variable.name}]? ||
+                           raise "missing class variable diagnostic source for #{owner}::#{variable.name}"
         raise "class variable diagnostic text changed" unless source == variable.value
         key = IyiMod.class_var_fragment_key(container, variable.name)
-        section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+        section.add_fragment(IyiMod::DiagnosticFragment.new(key, fragment.text_sha256, fragment.events, fragment.anchors))
       end
     end
 
@@ -3439,10 +3440,10 @@ module Iyi
       diagnostic_add_class_vars(program, section, declaration.class_vars, owner, here)
       declaration.fields.each do |name, _, value|
         next if value.empty?
-        source, anchors = program.iyi_field_diagnostics[{owner, name}]? || raise "missing field diagnostic source for #{owner}::#{name}"
+        source, fragment = program.iyi_field_diagnostics[{owner, name}]? || raise "missing field diagnostic source for #{owner}::#{name}"
         raise "field diagnostic text changed" unless source == value
         key = IyiMod.field_fragment_key(here, name)
-        section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+        section.add_fragment(IyiMod::DiagnosticFragment.new(key, fragment.text_sha256, fragment.events, fragment.anchors))
       end
       declaration.types.each { |nested| diagnostic_add_type_class_vars(program, section, nested, root_owner, here) }
     end
@@ -3454,8 +3455,8 @@ module Iyi
       type.class_vars?.try &.each do |name, variable|
         initialiser = variable.iyi_initialiser_source
         if type.program.diagnostic_capture && !initialiser.empty?
-          anchors = variable.iyi_initialiser_anchors || raise "class variable initializer lacks diagnostic anchors"
-          type.program.record_class_var_diagnostic(type.to_s(generic_args: false), name, initialiser, anchors)
+          fragment = variable.iyi_initialiser_diagnostic || raise "class variable initializer lacks diagnostic fragment"
+          type.program.record_class_var_diagnostic(type.to_s(generic_args: false), name, initialiser, fragment)
         end
         # `@[ThreadLocal]` travels with it: a consumer that declared the
         # variable without it writes to a different global than this module's
