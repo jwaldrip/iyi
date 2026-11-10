@@ -647,6 +647,8 @@ module Iyi
     # compiler drops a nil initialiser because assigning nil assigns nothing.
     property iyi_initialiser_source : String = ""
     property iyi_initialiser_diagnostic : DiagnosticModeCaptures? = nil
+    # The actual declared class-variable name and its parser-captured evidence.
+    property iyi_class_var_declaration : ClassVar? = nil
 
     # iyi: the first write to a class variable the typer met outside its
     # initializer - an assignment, or a `pointerof` that can write it - and

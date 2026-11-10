@@ -14,7 +14,8 @@ struct Iyi::TypeDeclarationProcessor
     type : Type,
     location : Location,
     uninitialized : Bool,
-    annotations : Array({AnnotationType, Annotation})?
+    annotations : Array({AnnotationType, Annotation})?,
+    class_variable : ClassVar? = nil
 
   # This captures an initialize info: it's related Def,
   # and which instance variables are assigned. Useful
@@ -200,8 +201,9 @@ struct Iyi::TypeDeclarationProcessor
     # are processed before initializers are visited, so within a single run the
     # existing var never has one — and dropping it would both fail the
     # non-nilable check and leave the variable uninitialized at runtime.
-    if (existing = vars[name]?) && (existing_initializer = existing.initializer)
-      var.initializer = existing_initializer
+    if existing = vars[name]?
+      var.initializer = existing.initializer if existing.initializer
+      var.iyi_class_var_declaration = existing.iyi_class_var_declaration
     end
 
     vars[name] = var
@@ -222,6 +224,7 @@ struct Iyi::TypeDeclarationProcessor
 
     var = declare_meta_type_var(vars, owner, name, info.type.as(Type), info.location, freeze_type: freeze_type, annotations: info.annotations)
     var.location = info.location
+    var.iyi_class_var_declaration = info.class_variable if info.class_variable
 
     # Check if var is uninitialized
     var.uninitialized = true if info.uninitialized
@@ -297,7 +300,7 @@ struct Iyi::TypeDeclarationProcessor
       if owner.is_a?(GenericType)
         owner.each_instantiated_type do |instance|
           new_type = type_decl.type.replace_type_parameters(instance)
-          new_type_decl = TypeDeclarationWithLocation.new(new_type, type_decl.location, type_decl.uninitialized, type_decl.annotations)
+          new_type_decl = TypeDeclarationWithLocation.new(new_type, type_decl.location, type_decl.uninitialized, type_decl.annotations, type_decl.class_variable)
           declare_meta_type_var(instance.instance_vars, instance, name, new_type_decl, instance_var: true, check_nilable: false)
         end
       end

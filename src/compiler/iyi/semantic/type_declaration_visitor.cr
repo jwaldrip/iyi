@@ -277,7 +277,8 @@ class Iyi::TypeDeclarationVisitor < Iyi::SemanticVisitor
     var_type = lookup_type(node.declared_type)
     var_type = check_declare_var_type(node, var_type, "a class variable")
     owner_vars = @class_vars[owner] ||= {} of String => TypeDeclarationWithLocation
-    owner_vars[var.name] = TypeDeclarationWithLocation.new(var_type.virtual_type, node.location.not_nil!, uninitialized, nil)
+    declaration = var.clone.as(ClassVar) if @program.diagnostic_capture
+    owner_vars[var.name] = TypeDeclarationWithLocation.new(var_type.virtual_type, node.location.not_nil!, uninitialized, nil, declaration)
   end
 
   def visit(node : UninitializedVar)
