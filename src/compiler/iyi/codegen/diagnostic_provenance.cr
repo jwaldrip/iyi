@@ -691,6 +691,21 @@ module Iyi::DiagnosticProvenance
     end
     named_entry = following.starts_with?(":") && !following.starts_with?("::")
     raise "invalid projected type position" unless (context == "named_entry") == named_entry
+    unless kind == "ConstantAccessor"
+      prefix = kind == "UninitializedClassVar" ? "uninitialized ".bytesize : 0
+      type_text = output.byte_slice(prefix, output.bytesize - prefix)
+      parser = Iyi::Parser.new(type_text)
+      parser.iyi = mode == "Iyi"
+      parser.enable_diagnostic_name_observations
+      parser.next_token
+      parser.parse_bare_proc_type
+      parser.check :EOF
+      matched = parser.diagnostic_name_observations.any? do |entry|
+        entry.input_start + prefix == first && entry.input_end + prefix == last &&
+          entry.token_kind == item["token_kind"].as_s && entry.context == context && entry.token_text == observed.token_text
+      end
+      raise "bound token is not an accepted type name" unless matched
+    end
     {context, observed.token_text}
   end
 

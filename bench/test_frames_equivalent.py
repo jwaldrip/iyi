@@ -1386,6 +1386,11 @@ def test_composed_origin_controls():
     ]
     for valid in projections:
         assert frames.checked_origin(valid) == ("Name", valid["context"])
+    missing_contributor = copy.deepcopy(projections[0])
+    missing_contributor["source_names"].pop()
+    try: frames.checked_origin(missing_contributor)
+    except ValueError: pass
+    else: raise AssertionError("bound projection accepted omitted source contributor")
     for mutation in ("guard", "source_name", "source_overlap", "output", "inside_token", "wrong_context", "wrong_producer",
                      "foreign_boundary", "class_variable", "uninitialized_keyword", "signature_index", "literal_token", "accessor_owner", "global_root"):
         if mutation == "foreign_boundary":
