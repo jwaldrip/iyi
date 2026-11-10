@@ -646,7 +646,7 @@ module Iyi
     # that. Empty for a variable with none, and for one written `= nil`: the
     # compiler drops a nil initialiser because assigning nil assigns nothing.
     property iyi_initialiser_source : String = ""
-    property iyi_initialiser_anchors : Array(DiagnosticAnchor)? = nil
+    property iyi_initialiser_diagnostic : IyiMod::DiagnosticFragment? = nil
 
     # iyi: the first write to a class variable the typer met outside its
     # initializer - an assignment, or a `pointerof` that can write it - and

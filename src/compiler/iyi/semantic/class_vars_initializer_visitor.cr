@@ -79,10 +79,11 @@ module Iyi
         # on its owner yet: the line below this loop is what puts it there.
         if diagnostic_capture
           io = IO::Memory.new
-          anchors = [] of DiagnosticAnchor
-          node.to_s(io, diagnostic_anchors: anchors)
+          builder = DiagnosticFragmentBuilder.new
+          node.to_s(io, diagnostic_fragment: builder)
           class_var.iyi_initialiser_source = io.to_s
-          class_var.iyi_initialiser_anchors = anchors
+          class_var.iyi_initialiser_diagnostic = builder.finish(
+            ::Crystal::Digest::SHA256.hexdigest(class_var.iyi_initialiser_source), class_var.iyi_initialiser_source)
         else
           class_var.iyi_initialiser_source = node.to_s
         end

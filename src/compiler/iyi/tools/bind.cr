@@ -1864,8 +1864,8 @@ module Iyi
       type.instance_vars_initializers.try &.each do |initializer|
         defaults[initializer.name] = initializer.written
         if type.program.diagnostic_capture && !initializer.written.empty?
-          anchors = initializer.written_anchors || raise "bound field lacks diagnostic anchors"
-          type.program.record_field_diagnostic(type.to_s(generic_args: false), initializer.name, initializer.written, anchors)
+          fragment = initializer.written_diagnostic || raise "bound field lacks diagnostic fragment"
+          type.program.record_field_diagnostic(type.to_s(generic_args: false), initializer.name, initializer.written, fragment)
         end
       end
     end
@@ -1957,10 +1957,11 @@ module Iyi
   private def self.diagnostic_bound_macro_source(type : Type, a_macro : Macro) : String
     return a_macro.to_s unless type.program.diagnostic_capture
     io = IO::Memory.new
-    anchors = [] of DiagnosticAnchor
-    a_macro.to_s(io, diagnostic_anchors: anchors)
+    builder = DiagnosticFragmentBuilder.new
+    a_macro.to_s(io, diagnostic_fragment: builder)
     source = io.to_s
-    type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, anchors)
+    fragment = builder.finish(::Crystal::Digest::SHA256.hexdigest(source), source)
+    type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, fragment)
     source
   end
 
@@ -3885,10 +3886,11 @@ module Iyi
         if node.is_a?(FunDef)
           if program.diagnostic_capture
             output = IO::Memory.new
-            anchors = [] of DiagnosticAnchor
-            node.to_s(output, diagnostic_anchors: anchors)
+            builder = DiagnosticFragmentBuilder.new
+            node.to_s(output, diagnostic_fragment: builder)
             text = output.to_s
-            program.record_top_fun_diagnostic(text, anchors)
+            fragment = builder.finish(::Crystal::Digest::SHA256.hexdigest(text), text)
+            program.record_top_fun_diagnostic(text, fragment)
             funs << text
           else
             funs << node.to_s
