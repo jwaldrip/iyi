@@ -170,7 +170,7 @@ def token_fields(value):
 
 NAME_OPERATORS = frozenset("! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~".split())
 CONTEXT_KINDS = {
-    "method_name": frozenset(("IDENT",)) | NAME_OPERATORS,
+    "method_name": frozenset(("IDENT", "CONST")) | NAME_OPERATORS,
     "definition_name": frozenset(("IDENT",)) | NAME_OPERATORS,
     "macro_name": frozenset(("IDENT",)),
     "local_reference": frozenset(("IDENT",)),

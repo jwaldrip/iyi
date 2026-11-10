@@ -1072,6 +1072,7 @@ def test_composed_origin_controls():
     for kind, raw, mode, context, expected in (
             ("CLASS_VAR", "@@empty", "Crystal", "class_variable", True),
             ("IDENT", "éclair?", "Crystal", "method_name", True),
+            ("CONST", "Example", "Crystal", "method_name", True),
             ("IDENT", "name!", "Crystal", "method_name", True),
             ("IDENT", "name!", "Iyi", "method_name", False),
             ("IDENT", "1name", "Crystal", "method_name", False),

@@ -174,7 +174,9 @@ module Iyi::DiagnosticProvenance
 
   private def self.name_token?(kind : String, raw : String, mode : String, context : String) : Bool
     allowed = case context
-              when "method_name", "definition_name"
+              when "method_name"
+                kind == "IDENT" || kind == "CONST" || NAME_OPERATORS.includes?(kind)
+              when "definition_name"
                 kind == "IDENT" || NAME_OPERATORS.includes?(kind)
               when "macro_name", "local_reference"
                 kind == "IDENT"
