@@ -227,9 +227,12 @@ if [ "${IYI_RELEASE_PROVENANCE_PROOF:-0}" = 1 ]; then
     cat > "$fixture/boot/closure.iyi" <<'IYI'
 module boot/closure
 
-pub def invoke(action : Proc(Nil)) : Nil
-  outer = -> { action.call }
-  outer.call
+@[NoInline]
+pub def make(offset : Int32) : Proc(Int32, Int32)
+  ->(n : Int32) do
+    raise "observer closure proof" if n < 0
+    n + offset
+  end
 end
 IYI
     cat > "$fixture/main.iyi" <<'IYI'
@@ -237,8 +240,14 @@ module main
 
 import boot/closure
 
-inner = -> { raise "observer closure proof" }
-Boot::Closure.invoke(inner)
+@[NoInline]
+def invoke(action : Proc(Int32, Int32), n : Int32) : Int32
+  action.call(n)
+end
+
+target = Boot::Closure.make(1)
+inner = ->(n : Int32) { target.call(n) * 2 }
+puts invoke(inner, -1)
 IYI
     for mode in source-1 source-4 artifact-producer artifact-consumer; do
       partitions=4

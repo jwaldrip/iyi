@@ -128,6 +128,29 @@ describe Iyi::DiagnosticOrigin do
     lowered.value.as(Iyi::Call).diagnostic_origin.should eq(origin)
   end
 
+  it "scans field mutation through an inline macro with diagnostic capture" do
+    source = <<-CRYSTAL
+      class Probe
+        def bump
+          {% if true %}
+            @count = 1
+          {% end %}
+        end
+      end
+      CRYSTAL
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/src/probe.cr"
+    parser.diagnostic_source_file = "/src/probe.cr"
+    parser.diagnostic_capture = true
+    definition = parser.parse.as(Iyi::ClassDef).body.as(Iyi::Def)
+    program = Iyi::Program.new
+    program.diagnostic_capture = true
+    scanner = Iyi::Share::MutationScanner.new(program, program, definition)
+    definition.body.accept(scanner)
+    scanner.unexpanded?.should be_false
+    scanner.fields.should contain("@count")
+  end
+
   it "retains every interned regex occurrence and the actual initializer origin" do
     program = Iyi::Program.new
     program.diagnostic_capture = true
@@ -3384,6 +3407,9 @@ describe Iyi::IyiMod do
       with_tempdir("iyimod_release_diagnostic_objects") do
         with_env("IYI_RELEASE_PARTITIONS": "4") do
           Dir.mkdir_p "boot"
+          Dir.mkdir_p "source"
+          Dir.mkdir_p "consumer"
+          Dir.mkdir_p "rewritten"
           File.write "boot/half.iyi", <<-IYI
             module boot/half
 
@@ -3391,17 +3417,27 @@ describe Iyi::IyiMod do
               pub OFFSET = 1
             end
 
-            pub def apply(x : Int32) : Int32
-              f = ->(n : Int32) { n + Values::OFFSET }
-              f.call(x)
+            @[NoInline]
+            pub def make(offset : Int32) : Proc(Int32, Int32)
+              ->(n : Int32) do
+                raise "artifact closure trace" if n < 0
+                n + offset + Values::OFFSET
+              end
             end
             IYI
           File.write "main.iyi", <<-IYI
             module main
             import boot/half
 
-            f = ->(n : Int32) { n * 2 }
-            puts f.call(Boot::Half.apply(20))
+            @[NoInline]
+            def invoke(action : Proc(Int32, Int32), n : Int32) : Int32
+              action.call(n)
+            end
+
+            target = Boot::Half.make(0)
+            f = ->(n : Int32) { target.call(n) * 2 }
+            input = Program.env("IYI_DIAGNOSTIC_TRACE") == "1" ? -1 : 20
+            puts invoke(f, input)
             IYI
           source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
           producer = create_spec_compiler
@@ -3409,8 +3445,8 @@ describe Iyi::IyiMod do
           producer.release!
           producer.emit_iyimod = "mods"
           producer.emit_frame_provenance = "producer-frames.json"
-          producer.compile source, File.expand_path("from-source")
-          `./from-source`.chomp.should eq("42")
+          producer.compile source, File.expand_path("source/program")
+          `./source/program`.chomp.should eq("42")
           artifact = Iyi::IyiMod.read(File.join("mods", "boot", "half.iyimod"), want_object_code: true)
           artifact.object_code.should_not be_empty
           artifact.object_code.map(&.name).should contain("Boot::Half")
@@ -3418,6 +3454,7 @@ describe Iyi::IyiMod do
           section.validate_objects!(artifact.object_code)
           section.objects.each_value { |object| object.partition.should be_nil }
           section.objects.values.any? { |object| !object.definitions.empty? }.should be_true
+          section.objects.values.any? { |object| object.unit_name == "Boot::Half" && !object.definitions.empty? }.should be_true
           Dir.mkdir_p "rewritten/boot"
           rewritten_path = File.join("rewritten", "boot", "half.iyimod")
           Iyi::IyiMod.write artifact, rewritten_path
@@ -3435,8 +3472,8 @@ describe Iyi::IyiMod do
           consumer.release!
           consumer.use_iyimod = "mods"
           consumer.emit_frame_provenance = "consumer-frames.json"
-          consumer.compile source, File.expand_path("from-artifact")
-          `./from-artifact`.chomp.should eq("42")
+          consumer.compile source, File.expand_path("consumer/program")
+          `./consumer/program`.chomp.should eq("42")
           manifest = JSON.parse(File.read("consumer-frames.json"))
           manifest["schema"].as_i.should eq(4)
           inputs = manifest["object_inputs"].as_a
@@ -3452,8 +3489,8 @@ describe Iyi::IyiMod do
           rewritten_consumer.release!
           rewritten_consumer.use_iyimod = "rewritten"
           rewritten_consumer.emit_frame_provenance = "rewritten-frames.json"
-          rewritten_consumer.compile source, File.expand_path("from-rewritten-artifact")
-          `./from-rewritten-artifact`.chomp.should eq("42")
+          rewritten_consumer.compile source, File.expand_path("rewritten/program")
+          `./rewritten/program`.chomp.should eq("42")
           rewritten_manifest = JSON.parse(File.read("rewritten-frames.json"))
           rewritten_manifest["schema"].as_i.should eq(4)
           rewritten_inputs = rewritten_manifest["object_inputs"].as_a
@@ -3461,6 +3498,53 @@ describe Iyi::IyiMod do
           rewritten_bound = rewritten_inputs.select { |input| rewritten_ids.includes?(input["link_input_id"].as_i) }
           rewritten_bound.any? { |input| input["producer"]["kind"].as_s == "artifact_object" }.should be_true
           rewritten_bound.any? { |input| input["producer"]["kind"].as_s == "current_unit" }.should be_true
+
+          # Exercise both retained closure bodies in a real backtrace. Normal
+          # runs above still prove the value independently of the failure path.
+          [
+            {"source/program", "producer-frames.json", "source-trace.log"},
+            {"consumer/program", "consumer-frames.json", "consumer-trace.log"},
+            {"rewritten/program", "rewritten-frames.json", "rewritten-trace.log"},
+          ].each do |program, manifest_path, trace_path|
+            trace = IO::Memory.new
+            result = Process.run(File.expand_path(program), env: {"IYI_DIAGNOSTIC_TRACE" => "1"},
+              output: trace, error: trace)
+            result.success?.should be_false
+            trace.to_s.should contain("artifact closure trace")
+            File.write(trace_path, trace.to_s)
+            observed = trace.to_s.lines.compact_map do |line|
+              if match = line.match(/^\d+ +\S+ +0x[0-9a-fA-F]{16} (.*) \+ \d+/)
+                match[1]
+              end
+            end.to_set
+            evidence = JSON.parse(File.read(manifest_path))
+            entries = evidence["object_inputs"].as_a
+            observed_kinds = evidence["bindings"].as_a.compact_map do |binding|
+              name = binding["definition"]["native_object_symbol"].as_s
+              name.starts_with?("_").should be_true
+              if observed.includes?(name.byte_slice(1, name.bytesize - 1))
+                entries[binding["link_input_id"].as_i]["producer"]["kind"].as_s
+              end
+            end.to_set
+            if program != "source/program"
+              observed_kinds.includes?("artifact_object").should be_true
+              observed_kinds.includes?("current_unit").should be_true
+            end
+          end
+
+          comparator = File.expand_path("../../bench/frames_equivalent.py", __DIR__)
+          [
+            {"consumer/program", "consumer-frames.json", "consumer-trace.log"},
+            {"rewritten/program", "rewritten-frames.json", "rewritten-trace.log"},
+          ].each do |program, manifest_path, trace_path|
+            result = Process.run("python3", [
+              comparator, "--strict-provenance", "--require-frames",
+              "--source-manifest", "producer-frames.json", "--artifact-manifest", manifest_path,
+              "--source-executable", "source/program", "--artifact-executable", program,
+              "source-trace.log", trace_path,
+            ], output: Process::Redirect::Inherit, error: Process::Redirect::Inherit)
+            result.success?.should be_true
+          end
         end
       end
     end
@@ -7496,6 +7580,67 @@ end
 # consumer's. All three have answers, so the combination is now supported and
 # these are what keeps it working.
 describe "a module compiled against Crystal's library" do
+  it "calls a captured closure from a source-absent Crystal-library artifact" do
+    with_tempdir("iyimod_crystal_library_closure") do
+      Dir.mkdir_p "app"
+      File.write "app/closure.iyi", <<-IYI
+        module app/closure
+
+        @[NoInline]
+        pub def make(offset : Int32) : Proc(Int32, Int32)
+          ->(n : Int32) { n + offset }
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import app/closure
+
+        @[NoInline]
+        def invoke(action : Proc(Int32, Int32), value : Int32) : Int32
+          action.call(value)
+        end
+
+        target = App::Closure.make(1)
+        action = ->(n : Int32) { target.call(n) * 2 }
+        puts invoke(action, 20)
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+      producer = create_spec_compiler
+      producer.release!
+      producer.emit_iyimod = "mods"
+      producer.compile source, File.expand_path("from-source")
+      `./from-source`.chomp.should eq("42")
+
+      path = File.join("mods", "app", "closure.iyimod")
+      artifact = Iyi::IyiMod.read(path, want_object_code: true)
+      artifact.crystal_library.should be_true
+      artifact.object_code.should_not be_empty
+      Dir.mkdir_p "rewritten/app"
+      rewritten_path = File.join("rewritten", "app", "closure.iyimod")
+      Iyi::IyiMod.write artifact, rewritten_path
+      rewritten = Iyi::IyiMod.read(rewritten_path, want_object_code: true)
+      rewritten.object_code.should eq(artifact.object_code)
+
+      File.delete "app/closure.iyi"
+      File.exists?("app/closure.iyi").should be_false
+      consumer = create_spec_compiler
+      consumer.release!
+      consumer.use_iyimod = "mods"
+      consumer.compile source, File.expand_path("from-artifact")
+      `./from-artifact`.chomp.should eq("42")
+
+      File.delete path
+      File.exists?(path).should be_false
+      rewritten_consumer = create_spec_compiler
+      rewritten_consumer.release!
+      rewritten_consumer.use_iyimod = "rewritten"
+      rewritten_consumer.compile source, File.expand_path("from-rewritten-artifact")
+      `./from-rewritten-artifact`.chomp.should eq("42")
+    end
+  end
+
   it "travels through a .iyimod and links, replaying its requires" do
     with_tempdir("iyimod_crystal_library") do
       Dir.mkdir_p "app"
