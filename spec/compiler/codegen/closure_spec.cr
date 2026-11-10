@@ -3,6 +3,7 @@ require "../../spec_helper"
 describe "Code gen: closure" do
   it "namespaces only closures hosted in selected carried units" do
     program = Iyi::Program.new
+    program.flags.delete("msvc")
     names = ["Boot::Half", "Boot::Half+", "Boot::Half::Nested", "A%@^", "雪"]
     program.register_iyi_carried_closure_units(names)
     requested = "~procProc(Int32)^source.iyi:12"

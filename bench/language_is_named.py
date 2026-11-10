@@ -43,7 +43,7 @@ EXEMPT = {
         "the regex engine's parser, whose source is a pattern",
     # The factory. Every caller sets the name on what it hands back, which
     # is why the parameter is not here.
-    "Parser.new(source, string_pool, var_scopes, warnings)":
+    "Parser.new(source, string_pool, var_scopes, warnings).tap do |parser|":
         "the factory `new_parser`, named by each caller",
     # The formatter's own lexer, named through `Formatter#filename=` when
     # the caller says which file this is.
