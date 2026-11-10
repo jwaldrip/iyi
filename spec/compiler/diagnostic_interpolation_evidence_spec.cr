@@ -168,6 +168,21 @@ describe "interpolated string constituents" do
 end
 
 describe "bracket and operator method names" do
+  it "retains actual binary and unary operator tokens in both language modes" do
+    {
+      "1 < 2" => "<", "1 == 2" => "==", "1 | 2" => "|",
+      "1 << 2" => "<<", "1 + 2" => "+", "1 * 2" => "*",
+      "1 ** 2" => "**", "-x" => "-", "~x" => "~",
+    }.each do |source, name|
+      [false, true].each do |iyi|
+        root, input = capture_interpolation_root(source, iyi: iyi)
+        call = root.as(Iyi::Call)
+        assert_observed_name(call, name)
+        Iyi::DiagnosticRecordedEvidenceInputCheck.new(input).verify!(root)
+      end
+    end
+  end
+
   it "observes the empty bracket call name from its own token" do
     root, input = capture_interpolation_root("g[]")
     call = root.as(Iyi::Call)
