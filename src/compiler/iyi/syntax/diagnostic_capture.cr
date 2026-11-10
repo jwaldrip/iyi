@@ -1104,6 +1104,40 @@ module Iyi
         end
       {% end %}
     end
+
+    # Compile-time census of concrete `ASTNode` descendants, enumerated from the
+    # type hierarchy and never from SUPPORTED. Abstract bases are skipped. Each
+    # concrete node contributes its stored instance variables, so a new node or
+    # field appears in this census without anyone naming it here.
+    macro concrete_census_kinds
+      [
+        {% for sub in Iyi::ASTNode.all_subclasses %}
+          {% unless sub.abstract? %}
+            {{ sub.name.split("::").last }},
+          {% end %}
+        {% end %}
+      ] of String
+    end
+
+    macro concrete_census_pairs
+      [
+        {% for sub in Iyi::ASTNode.all_subclasses %}
+          {% unless sub.abstract? %}
+            {% for ivar in sub.instance_vars %}
+              { {{ sub.name.split("::").last }}, {{ ivar.name.stringify }}.lchop("@") },
+            {% end %}
+          {% end %}
+        {% end %}
+      ] of {String, String}
+    end
+
+    def self.census_kinds : Array(String)
+      concrete_census_kinds
+    end
+
+    def self.census_pairs : Array({String, String})
+      concrete_census_pairs
+    end
   end
 
   # Direct syntax edges for the types below. The caller must separately encode

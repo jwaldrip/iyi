@@ -34,3 +34,22 @@ describe "rendered macro observation" do
     expect_raises(ArgumentError) { Iyi::Parser.observe_rendered_macro("macro sample\nend\nother", "Crystal") }
   end
 end
+
+describe "parameter name provenance" do
+  it "distinguishes written external names from implicit and lowered defaults" do
+    {
+      {"def f(arg); end", false},
+      {"def f(external internal); end", true},
+      { %q(def f("external" internal); end), true},
+      {"def f(@select); end", false},
+      {"def f(external @select); end", true},
+    }.each do |source, explicit|
+      parser = Iyi::Parser.new(source)
+      parser.filename = "/spec/parameter.cr"
+      parser.diagnostic_source_file = "/spec/parameter.cr"
+      parser.diagnostic_capture = true
+      arg = parser.parse.as(Iyi::Def).args.first
+      arg.diagnostic_external_explicit.should eq(explicit)
+    end
+  end
+end
