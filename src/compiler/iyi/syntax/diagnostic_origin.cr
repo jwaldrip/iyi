@@ -3,6 +3,9 @@ require "set"
 require "crystal/digest/sha256"
 
 module Iyi
+  # Producer source coordinates for a span in rendered source or an artifact.
+  record SourcePosition, offset : Int32, filename : String, line : Int32, column : Int32
+
   class DiagnosticAnchor
     getter offset : Int32
     getter kind : String
@@ -1282,9 +1285,9 @@ module Iyi
     getter text : String
     getter crystal : DiagnosticModeCaptureResult
     getter iyi : DiagnosticModeCaptureResult
-    @positions : Array(IyiMod::SourcePosition)
+    @positions : Array(SourcePosition)
 
-    def initialize(@text : String, positions : Array(IyiMod::SourcePosition), @crystal : DiagnosticModeCaptureResult,
+    def initialize(@text : String, positions : Array(SourcePosition), @crystal : DiagnosticModeCaptureResult,
                    @iyi : DiagnosticModeCaptureResult)
       @positions = positions.dup
       digest = ::Crystal::Digest::SHA256.hexdigest(@text)
@@ -1302,10 +1305,10 @@ module Iyi
       end
     end
 
-    def positions : Array(IyiMod::SourcePosition); @positions.dup; end
+    def positions : Array(SourcePosition); @positions.dup; end
 
-    def self.capture(text : String, positions : Array(IyiMod::SourcePosition),
-                     &block : String -> {String, Array(IyiMod::SourcePosition), DiagnosticFragmentBuilder}) : DiagnosticModeCaptures
+    def self.capture(text : String, positions : Array(SourcePosition),
+                     &block : String -> {String, Array(SourcePosition), DiagnosticFragmentBuilder}) : DiagnosticModeCaptures
       results = ["Crystal", "Iyi"].map do |mode|
         begin
           rendered, actual_positions, builder = yield mode

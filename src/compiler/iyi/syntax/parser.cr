@@ -253,20 +253,20 @@ module Iyi
     def diagnostic_capture_input(kind : DiagnosticCaptureInputKind, logical_module : String?,
                                  entry : DiagnosticCaptureParseEntry, mode : ParseMode) : AcceptedCaptureInput
       fresh_contract = parse_ahead_contract
-      raise ArgumentError.new("parser state is not eligible for capture") if fresh_contract.nil?
+      ::raise ArgumentError.new("parser state is not eligible for capture") if fresh_contract.nil?
       # The parser's actual warning policy, read from the collection it parses
       # with. `nil` means this collection cannot be represented (a subclass or a
       # non-UTF-8 path), so capture refuses rather than guessing a policy.
       warning_policy = warnings.parse_ahead_snapshot
-      raise ArgumentError.new("warning policy is not representable for capture") if warning_policy.nil?
-      raise ArgumentError.new("capture entry requires original Def context") unless entry.parse?
+      ::raise ArgumentError.new("warning policy is not representable for capture") if warning_policy.nil?
+      ::raise ArgumentError.new("capture entry requires original Def context") unless entry.parse?
       capture_mode = case mode
                      when .normal?             then DiagnosticCaptureParseMode::Normal
                      when .lib?                then DiagnosticCaptureParseMode::Lib
                      when .lib_struct_or_union? then DiagnosticCaptureParseMode::LibStructOrUnion
                      when .enum?               then DiagnosticCaptureParseMode::Enum
                      else
-                       raise ArgumentError.new("unknown parser mode")
+                       ::raise ArgumentError.new("unknown parser mode")
                      end
       input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
       original_file = @input_filename.as(String)
@@ -327,11 +327,12 @@ module Iyi
                         !@calls_super && !@calls_initialize && !@calls_previous_def &&
                         !@uses_block_arg && !@assigns_special_var && @temp_arg_count == 0 &&
                         @block_arg_name.nil? && @block_arity.nil?
-      return nil unless @input_filename.is_a?(String) && @filename == @input_filename
+      input_filename = @input_filename
+      return nil unless input_filename.is_a?(String) && @filename == input_filename
       JSON.build do |json|
         json.object do
           json.field "entry_rule", "parse"
-          json.field "filename", @input_filename
+          json.field "filename", input_filename
           json.field "input_offset_base", @input_offset_base
           json.field "lexical_journal_enabled", !@diagnostic_lexical_observations.nil?
           json.field "lexical_mode", iyi? ? "Iyi" : "Crystal"
@@ -4948,11 +4949,11 @@ module Iyi
                                    productions : Array(DiagnosticLiteralProductionSegment)? = nil) : Nil
       return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
       input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
-      raise ArgumentError.new("diagnostic literal input exceeds authority budget") if input.bytesize > 64 * 1024 * 1024
+      ::raise ArgumentError.new("diagnostic literal input exceeds authority budget") if input.bytesize > 64 * 1024 * 1024
       segments = ranges.map do |range|
         start_offset, end_offset = range
         unless start_offset >= 0 && end_offset > start_offset && end_offset <= input.bytesize
-          raise ArgumentError.new("invalid diagnostic literal range")
+          ::raise ArgumentError.new("invalid diagnostic literal range")
         end
         raw = input.byte_slice(start_offset, end_offset - start_offset)
         DiagnosticLiteralSegment.new(start_offset, end_offset, Base64.strict_encode(raw.to_slice))
@@ -4970,7 +4971,7 @@ module Iyi
                                       witnesses : Array(DiagnosticLiteralWitness)) : DiagnosticLiteralProductionSegment
       input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
       unless start_offset >= 0 && end_offset > start_offset && end_offset <= input.bytesize
-        raise ArgumentError.new("invalid diagnostic literal production")
+        ::raise ArgumentError.new("invalid diagnostic literal production")
       end
       raw = input.byte_slice(start_offset, end_offset - start_offset)
       DiagnosticLiteralProductionSegment.new(production, start_offset, end_offset, Base64.strict_encode(raw.to_slice),
@@ -7510,7 +7511,7 @@ module Iyi
       param = Arg.new(param_name, default_value, restriction, external_name: external_name, parsed_annotations: annotations).at(param_location)
       # An external name the author wrote, even one equal to the internal name,
       # is a parser fact. An implicit default (external name = name) is not.
-      param.diagnostic_external_explicit = true unless external_name.nil?
+      param.diagnostic_external_explicit = true if external_offset || external_literal
       diagnostic_copy_literal(external_literal, param, "external_name") if external_literal
       diagnostic_name(param, param_offset, "parameter", token_snapshot: param_snapshot) if param_offset
       if external_offset

@@ -333,7 +333,7 @@ module Iyi::IyiMod
   # `@caller.first.filename`, `__DIR__` and an error answer in that build.
   # A node a macro wrote is placed at the call that expanded it, the place
   # an error inside the expansion is reported from.
-  record SourcePosition, offset : Int32, filename : String, line : Int32, column : Int32
+  # The fields are `Iyi::SourcePosition` (syntax/diagnostic_origin.cr).
 
   # One independently guarded executable text fragment. Anchor offsets are
   # relative to the exact fragment bytes, not its eventual rendering.
@@ -1399,15 +1399,15 @@ module Iyi::IyiMod
   # was written. The text is the same bytes `to_s` gives; the positions are
   # taken as it is written, one per offset — the innermost node starting
   # there, which is the one whose token the lexer reads at that offset.
-  def self.located_source(node : ASTNode) : {String, Array(SourcePosition)}
+  def self.located_source(node : ASTNode) : {String, Array(Iyi::SourcePosition)}
     located_source([node] of ASTNode)
   end
 
   # *nodes*, each as `to_s` writes it, joined by newlines: the initialiser's
   # shape (`SemanticVisitor#iyi_initialiser_source`).
-  def self.located_source(nodes : Array(ASTNode)) : {String, Array(SourcePosition)}
+  def self.located_source(nodes : Array(ASTNode)) : {String, Array(Iyi::SourcePosition)}
     io = IO::Memory.new
-    positions = [] of SourcePosition
+    positions = [] of Iyi::SourcePosition
     nodes.each_with_index do |node, index|
       io << '\n' if index > 0
       node.accept PositionWriter.new(io, positions)
@@ -1415,13 +1415,13 @@ module Iyi::IyiMod
     {io.to_s, positions}
   end
 
-  def self.diagnostic_located_source(node : ASTNode, lexical_mode : String) : {String, Array(SourcePosition), DiagnosticFragmentBuilder}
+  def self.diagnostic_located_source(node : ASTNode, lexical_mode : String) : {String, Array(Iyi::SourcePosition), DiagnosticFragmentBuilder}
     diagnostic_located_source([node] of ASTNode, lexical_mode)
   end
 
-  def self.diagnostic_located_source(nodes : Array(ASTNode), lexical_mode : String) : {String, Array(SourcePosition), DiagnosticFragmentBuilder}
+  def self.diagnostic_located_source(nodes : Array(ASTNode), lexical_mode : String) : {String, Array(Iyi::SourcePosition), DiagnosticFragmentBuilder}
     io = IO::Memory.new
-    positions = [] of SourcePosition
+    positions = [] of Iyi::SourcePosition
     builder = DiagnosticFragmentBuilder.new(lexical_mode)
     nodes.each_with_index do |node, index|
       io << '\n' if index > 0
@@ -1432,13 +1432,13 @@ module Iyi::IyiMod
 
   # `ToSVisitor`, noting where each node starts as it writes it.
   private class PositionWriter < ToSVisitor
-    def initialize(@memory : IO::Memory, @positions : Array(SourcePosition), builder : DiagnosticFragmentBuilder? = nil)
+    def initialize(@memory : IO::Memory, @positions : Array(Iyi::SourcePosition), builder : DiagnosticFragmentBuilder? = nil)
       super(@memory, diagnostic_fragment: builder)
     end
 
     def visit_any(node)
       if (location = node.location.try(&.expanded_location)) && (filename = location.filename).is_a?(String)
-        position = SourcePosition.new(@memory.pos.to_i32, filename, location.line_number, location.column_number)
+        position = Iyi::SourcePosition.new(@memory.pos.to_i32, filename, location.line_number, location.column_number)
         if (last = @positions.last?) && last.offset == position.offset
           @positions[-1] = position
         else
@@ -1461,7 +1461,7 @@ module Iyi::IyiMod
   # its last bring the lexer back to the declarations' own lines, which it
   # kept counting underneath.
   class Bodies
-    NO_POSITIONS = [] of SourcePosition
+    NO_POSITIONS = [] of Iyi::SourcePosition
 
     # The source lines the placed nodes were written on, as this rendering
     # has them, by filename and line number, for each source that is not on
@@ -1489,11 +1489,11 @@ module Iyi::IyiMod
       @artifact.mono_bodies[key]?
     end
 
-    def positions(key : String) : Array(SourcePosition)
+    def positions(key : String) : Array(Iyi::SourcePosition)
       @artifact.body_positions[key]? || NO_POSITIONS
     end
 
-    def write_carried(io : IO, key : String, text : String, positions : Array(SourcePosition),
+    def write_carried(io : IO, key : String, text : String, positions : Array(Iyi::SourcePosition),
                       prefix : String = "", lines : Bool = true) : Nil
       if regions = @diagnostic_regions
         raise ArgumentError.new("duplicate diagnostic fragment use #{key}") unless @diagnostic_seen.not_nil!.add?(key)
@@ -1561,7 +1561,7 @@ module Iyi::IyiMod
     # Writes *text* to *io*, each line behind *prefix* and ended by a newline
     # when *lines* is true — a body, indented back under its declaration —
     # and as it stands otherwise.
-    def write(io : IO, text : String, positions : Array(SourcePosition),
+    def write(io : IO, text : String, positions : Array(Iyi::SourcePosition),
               prefix : String = "", lines : Bool = true) : Nil
       pragmas = @pragmas
       memory = io.as?(IO::Memory)
@@ -1647,7 +1647,7 @@ module Iyi::IyiMod
 
     # Render a guarded fragment through the existing location path, then map
     # its syntactic anchors into the exact bytes the consumer will parse.
-    def write_diagnostic(io : IO::Memory, text : String, positions : Array(SourcePosition),
+    def write_diagnostic(io : IO::Memory, text : String, positions : Array(Iyi::SourcePosition),
                          fragment : DiagnosticFragment, prefix : String = "", lines : Bool = true) : DiagnosticRegion
       raise ArgumentError.new("empty diagnostic fragment key") if fragment.key.empty?
       unless ::Crystal::Digest::SHA256.hexdigest(text) == fragment.text_sha256
@@ -1687,7 +1687,7 @@ module Iyi::IyiMod
       DiagnosticFragmentRewrite.place(source, String.new(io.to_slice), start)
     end
 
-    private def place(pragmas, at : Int32, position : SourcePosition, index : Int32,
+    private def place(pragmas, at : Int32, position : Iyi::SourcePosition, index : Int32,
                       line : String, within : Int32) : Nil
       list = pragmas[at] ||= [] of Lexer::LocPragma
       list << Lexer::LocPushPragma.new if index == 0
@@ -1774,7 +1774,7 @@ module Iyi::IyiMod
     end
     a_macro.to_s(authoritative)
     source = authoritative.to_s
-    captures = DiagnosticModeCaptures.capture(source, [] of SourcePosition) do |mode|
+    captures = DiagnosticModeCaptures.capture(source, [] of Iyi::SourcePosition) do |mode|
       _, observations = Parser.observe_rendered_macro(source, mode)
       io = IO::Memory.new
       if (doc = a_macro.doc) && !doc.empty?
@@ -1783,7 +1783,7 @@ module Iyi::IyiMod
       builder = DiagnosticFragmentBuilder.new(mode)
       builder.rendered_observations = observations
       a_macro.to_s(io, diagnostic_fragment: builder)
-      {io.to_s, [] of SourcePosition, builder}
+      {io.to_s, [] of Iyi::SourcePosition, builder}
     end
     {source, captures}
   end
@@ -2799,8 +2799,8 @@ module Iyi::IyiMod
     # interface hash: an edit above a body moves where its nodes were written
     # and leaves what a consumer compiles from it as it was. The bytes of the
     # body are hashed, and a dependent rebuilds when they change.
-    getter body_positions : Hash(String, Array(SourcePosition))
-    getter initialiser_positions : Array(SourcePosition)
+    getter body_positions : Hash(String, Array(Iyi::SourcePosition))
+    getter initialiser_positions : Array(Iyi::SourcePosition)
 
     # The types this module's object code refers to a type id of, by name.
     #
@@ -3120,8 +3120,8 @@ module Iyi::IyiMod
                    @layouts = [] of {String, TypeLayout},
                    @inputs = [] of String, @symbol_literals = [] of String,
                    @declarations_only = false, @package_name = "", @unsafe = "",
-                   @body_positions = {} of String => Array(SourcePosition),
-                   @initialiser_positions = [] of SourcePosition)
+                   @body_positions = {} of String => Array(Iyi::SourcePosition),
+                   @initialiser_positions = [] of Iyi::SourcePosition)
     end
   end
 
@@ -3473,7 +3473,7 @@ module Iyi::IyiMod
       inputs = [] of String
       spawns = [] of SpawnRecord
       reaches = nil
-      positions = {bodies: {} of String => Array(SourcePosition), initialiser: [] of SourcePosition}
+      positions = {bodies: {} of String => Array(Iyi::SourcePosition), initialiser: [] of Iyi::SourcePosition}
       diagnostic = nil
 
       table.each do |(kind, length, sum)|
@@ -5591,7 +5591,7 @@ module Iyi::IyiMod
     end
 
     lists = IO::Memory.new
-    write_positions = ->(positions : Array(SourcePosition)) do
+    write_positions = ->(positions : Array(Iyi::SourcePosition)) do
       lists.write_bytes positions.size.to_u32, FORMAT
       positions.each do |position|
         lists.write_bytes position.offset.to_u32, FORMAT
@@ -5615,19 +5615,19 @@ module Iyi::IyiMod
     io.to_slice
   end
 
-  private def self.decode_source_positions(payload : Bytes) : NamedTuple(bodies: Hash(String, Array(SourcePosition)), initialiser: Array(SourcePosition))
+  private def self.decode_source_positions(payload : Bytes) : NamedTuple(bodies: Hash(String, Array(Iyi::SourcePosition)), initialiser: Array(Iyi::SourcePosition))
     io = IO::Memory.new(payload)
     filenames = read_strings(io)
     read_positions = -> do
-      Array(SourcePosition).new(io.read_bytes(UInt32, FORMAT)) do
+      Array(Iyi::SourcePosition).new(io.read_bytes(UInt32, FORMAT)) do
         offset = io.read_bytes(UInt32, FORMAT).to_i32
         filename = filenames[io.read_bytes(UInt32, FORMAT)]? || raise IO::EOFError.new
         line = io.read_bytes(UInt32, FORMAT).to_i32
         column = io.read_bytes(UInt32, FORMAT).to_i32
-        SourcePosition.new(offset, filename, line, column)
+        Iyi::SourcePosition.new(offset, filename, line, column)
       end
     end
-    bodies = {} of String => Array(SourcePosition)
+    bodies = {} of String => Array(Iyi::SourcePosition)
     io.read_bytes(UInt32, FORMAT).times do
       key = read_string(io)
       bodies[key] = read_positions.call

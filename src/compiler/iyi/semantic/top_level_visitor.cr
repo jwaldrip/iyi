@@ -878,7 +878,7 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
           text, positions = IyiMod.located_source(a_def.body)
         end
         (@program.iyi_mono_bodies[file] ||= {} of String => String)[key] = text
-        (@program.iyi_mono_body_positions[file] ||= {} of String => Array(IyiMod::SourcePosition))[key] = positions
+        (@program.iyi_mono_body_positions[file] ||= {} of String => Array(SourcePosition))[key] = positions
       end
     end
 
@@ -1661,11 +1661,11 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     end
     if @program.diagnostic_capture && (origin = node.diagnostic_origin)
       source = node.body.to_s
-      captures = DiagnosticModeCaptures.capture(source, [] of IyiMod::SourcePosition) do |mode|
+      captures = DiagnosticModeCaptures.capture(source, [] of SourcePosition) do |mode|
         io = IO::Memory.new
         builder = DiagnosticFragmentBuilder.new(mode)
         node.body.to_s(io, diagnostic_fragment: builder)
-        {io.to_s, [] of IyiMod::SourcePosition, builder}
+        {io.to_s, [] of SourcePosition, builder}
       end
       @program.record_diagnostic_def_body(origin, source, captures)
     end
@@ -2583,11 +2583,11 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     # shard wrote. See `Const#iyi_value_source`.
     if @program.diagnostic_capture
       const.iyi_value_source = value.to_s
-      const.iyi_value_fragment = DiagnosticModeCaptures.capture(const.iyi_value_source, [] of IyiMod::SourcePosition) do |mode|
+      const.iyi_value_fragment = DiagnosticModeCaptures.capture(const.iyi_value_source, [] of SourcePosition) do |mode|
         io = IO::Memory.new
         fragment = DiagnosticFragmentBuilder.new(mode)
         value.to_s(io, diagnostic_fragment: fragment)
-        {io.to_s, [] of IyiMod::SourcePosition, fragment}
+        {io.to_s, [] of SourcePosition, fragment}
       end
     else
       const.iyi_value_source = value.to_s

@@ -996,7 +996,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
 
     # With the places the travelling bodies and the initialiser were written,
     # so their nodes are located in the module's source and not in this
-    # rendering of it (`IyiMod::SourcePosition`): a macro's
+    # rendering of it (`SourcePosition`): a macro's
     # `@caller.first.filename`, an error and the debug info answer as they
     # do when the module is built from source. Every node keeps the artifact
     # as `Location#artifact`, which is what decisions about the file this
@@ -1589,8 +1589,8 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
   # `iyi_uncarried_initialiser?` still sees it.
   #
   # In text order, because that is the order III.5 gives a module's own code.
-  # With where each node of it was written (`IyiMod::SourcePosition`).
-  private def iyi_initialiser_source(node : ASTNode, artifact_path : String) : {String, Array(IyiMod::SourcePosition), DiagnosticFragmentBuilder?}
+  # With where each node of it was written (`SourcePosition`).
+  private def iyi_initialiser_source(node : ASTNode, artifact_path : String) : {String, Array(SourcePosition), DiagnosticFragmentBuilder?}
     statements = [] of ASTNode
     iyi_collect_initialiser node, statements
     if @program.diagnostic_capture

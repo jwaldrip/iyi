@@ -3889,11 +3889,11 @@ module Iyi
         if node.is_a?(FunDef)
           if program.diagnostic_capture
             text = node.to_s
-            captures = DiagnosticModeCaptures.capture(text, [] of IyiMod::SourcePosition) do |mode|
+            captures = DiagnosticModeCaptures.capture(text, [] of Iyi::SourcePosition) do |mode|
               output = IO::Memory.new
               builder = DiagnosticFragmentBuilder.new(mode)
               node.to_s(output, diagnostic_fragment: builder)
-              {output.to_s, [] of IyiMod::SourcePosition, builder}
+              {output.to_s, [] of Iyi::SourcePosition, builder}
             end
             program.record_top_fun_diagnostic(text, captures)
             funs << text
@@ -4892,7 +4892,7 @@ module Iyi
                      origin = variable.iyi_class_var_declaration_origin
                      crystal = bound_uninitialized_capture(origin, owner, name, written, "Crystal")
                      iyi = bound_uninitialized_capture(origin, owner, name, written, "Iyi")
-                     DiagnosticModeCaptures.new(initialiser, [] of IyiMod::SourcePosition, crystal, iyi)
+                     DiagnosticModeCaptures.new(initialiser, [] of Iyi::SourcePosition, crystal, iyi)
                    else
                      variable.iyi_initialiser_diagnostic || raise "bound class variable initializer lacks diagnostic capture"
                    end

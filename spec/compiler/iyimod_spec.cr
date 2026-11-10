@@ -622,7 +622,7 @@ describe Iyi::DiagnosticOrigin do
     fragment = diagnostic_arrow_fragment("body:f", text, origin)
     io = IO::Memory.new
     bodies = Iyi::IyiMod::Bodies.new(sample_artifact)
-    region = bodies.write_diagnostic(io, text, [] of Iyi::IyiMod::SourcePosition, fragment, "  ")
+    region = bodies.write_diagnostic(io, text, [] of Iyi::SourcePosition, fragment, "  ")
     parser = Iyi::Parser.new(io.to_s)
     parser.diagnostic_regions = [region]
     parser.parse.diagnostic_origin.should eq(origin)

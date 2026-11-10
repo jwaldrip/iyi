@@ -1334,11 +1334,11 @@ module Iyi
       def initialize(@name, @value, @meta_vars, diagnostic_capture : Bool = false)
         @written = @value.to_s
         if diagnostic_capture
-          @written_diagnostic = DiagnosticModeCaptures.capture(@written, [] of IyiMod::SourcePosition) do |mode|
+          @written_diagnostic = DiagnosticModeCaptures.capture(@written, [] of Iyi::SourcePosition) do |mode|
             io = IO::Memory.new
             builder = DiagnosticFragmentBuilder.new(mode)
             @value.to_s(io, diagnostic_fragment: builder)
-            {io.to_s, [] of IyiMod::SourcePosition, builder}
+            {io.to_s, [] of Iyi::SourcePosition, builder}
           end
         else
           @written_diagnostic = nil

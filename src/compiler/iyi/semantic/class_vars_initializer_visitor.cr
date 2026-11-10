@@ -79,11 +79,11 @@ module Iyi
         # on its owner yet: the line below this loop is what puts it there.
         class_var.iyi_initialiser_source = node.to_s
         if diagnostic_capture
-          class_var.iyi_initialiser_diagnostic = DiagnosticModeCaptures.capture(class_var.iyi_initialiser_source, [] of IyiMod::SourcePosition) do |mode|
+          class_var.iyi_initialiser_diagnostic = DiagnosticModeCaptures.capture(class_var.iyi_initialiser_source, [] of Iyi::SourcePosition) do |mode|
             io = IO::Memory.new
             builder = DiagnosticFragmentBuilder.new(mode)
             node.to_s(io, diagnostic_fragment: builder)
-            {io.to_s, [] of IyiMod::SourcePosition, builder}
+            {io.to_s, [] of Iyi::SourcePosition, builder}
           end
         end
 

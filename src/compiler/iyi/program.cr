@@ -112,8 +112,8 @@ module Iyi
     getter iyi_module_initialiser_source = {} of String => String
 
     # iyi: where the nodes of each module's initialiser were written, beside
-    # `iyi_module_initialiser_source` (`IyiMod::SourcePosition`).
-    getter iyi_module_initialiser_positions = {} of String => Array(IyiMod::SourcePosition)
+    # `iyi_module_initialiser_source` (`Iyi::SourcePosition`).
+    getter iyi_module_initialiser_positions = {} of String => Array(Iyi::SourcePosition)
 
     # iyi: which modules each file imports, by absolute filename (SPEC.md
     # III.5 rule 2). `iyi_module_inits` is one order the DAG allows; these are
@@ -191,7 +191,7 @@ module Iyi
       #
       # The file it was read from, which is what the edges are keyed on: a
       # mono body or initialiser read from an artifact is located in its
-      # module's source (`IyiMod::SourcePosition`), and asked of that path the
+      # module's source (`Iyi::SourcePosition`), and asked of that path the
       # walk found no edges, so `Tuple(DnsMessage, String)` in a body
       # `std/socket` ships met `Std::Tuple`, a module std/socket never
       # imports: "Std::Tuple is not a generic type".
@@ -1105,8 +1105,8 @@ module Iyi
     getter iyi_mono_bodies = {} of String => Hash(String, String)
 
     # iyi: where the nodes of each body in `iyi_mono_bodies` were written, by
-    # the same two keys (`IyiMod::SourcePosition`).
-    getter iyi_mono_body_positions = {} of String => Hash(String, Array(IyiMod::SourcePosition))
+    # the same two keys (`Iyi::SourcePosition`).
+    getter iyi_mono_body_positions = {} of String => Hash(String, Array(Iyi::SourcePosition))
 
     # Diagnostic fragments are keyed identically to the travelling bodies.
     getter(iyi_mono_body_diagnostics) { {} of String => Hash(String, IyiMod::DiagnosticFragment) }

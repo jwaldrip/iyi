@@ -254,7 +254,7 @@ module Iyi
   # iyi: the lines of a module's source that a `.iyimod` carries a travelling
   # body or initialiser from, as the artifact renders them, by line number.
   #
-  # Their nodes are located in the source (`IyiMod::SourcePosition`), and a
+  # Their nodes are located in the source (`SourcePosition`), and a
   # consumer need not have it: R-1 is that it builds without. The line an
   # error is on is then shown from what the build read, as the declarations
   # are above. Only for a file that is not there, and asked only when it is

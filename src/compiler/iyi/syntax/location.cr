@@ -8,7 +8,7 @@ class Iyi::Location
 
   # iyi: the `.iyimod` this build read the node out of, or nil for a node of
   # a file it read. A body that travelled in an artifact is located in its
-  # module's source (`IyiMod::SourcePosition`), which is what a person and a
+  # module's source (`SourcePosition`), which is what a person and a
   # macro's `@caller` see; this is what says it came from the artifact all
   # the same, for every decision about *which file this build read*: import
   # edges, file-private names, and the refusals a module's own build already
