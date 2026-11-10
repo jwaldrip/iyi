@@ -1006,7 +1006,7 @@ module Iyi
           has_initialiser: program.iyi_module_initialisers.includes?(filename),
           mono_bodies: program.iyi_mono_bodies[filename]? || {} of String => String,
           body_positions: program.iyi_mono_body_positions[filename]? || {} of String => Array(IyiMod::SourcePosition),
-          macro_bodies: collect_iyi_macros(program, module_name, filename),
+          macro_bodies: collect_iyi_macros(program, module_name),
           initialiser: program.iyi_module_initialiser_source[filename]? || "",
           initialiser_positions: program.iyi_module_initialiser_positions[filename]? || [] of IyiMod::SourcePosition,
           requires: program.iyi_module_requires[filename]? || [] of String,
@@ -1033,12 +1033,13 @@ module Iyi
           end
           root = program.iyi_module_type(module_name) || raise "missing artifact root owner"
           root_owner = root.to_s(generic_args: false)
-          diagnostic_add_class_vars(program, diagnostic, artifact.exports.class_vars, root_owner, IyiMod::DIAGNOSTIC_ROOT_CONTAINER)
-          artifact.exports.types.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration, root_owner) }
-          artifact.reopened.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration, root_owner) }
-          diagnostic_add_macros(program, diagnostic, artifact.macro_bodies, root_owner, IyiMod::DIAGNOSTIC_ROOT_CONTAINER)
-          artifact.exports.types.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration, root_owner) }
-          artifact.reopened.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration, root_owner) }
+          mode = program.diagnostic_artifact_lexical_mode(artifact.source_path)
+          diagnostic_add_class_vars(program, diagnostic, artifact.exports.class_vars, root_owner, IyiMod::DIAGNOSTIC_ROOT_CONTAINER, mode)
+          artifact.exports.types.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration, root_owner, mode) }
+          artifact.reopened.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration, root_owner, mode) }
+          diagnostic_add_macros(program, diagnostic, artifact.macro_bodies, root_owner, IyiMod::DIAGNOSTIC_ROOT_CONTAINER, mode)
+          artifact.exports.types.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration, root_owner, mode) }
+          artifact.reopened.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration, root_owner, mode) }
           artifact.diagnostic_provenance = diagnostic
         end
 
@@ -1597,7 +1598,7 @@ module Iyi
         # methods are: `std/static_array` writes `macro [](*args)` on
         # `::StaticArray`, and neither a consumer of the artifact nor `iyi
         # doc` had it.
-        macros = iyi_macros_on(type, filename, filename)
+        macros = iyi_macros_on(type, filename)
         next if methods.empty? && included.empty? && fields.empty? && class_vars.empty? && macros.empty?
         iyi_stable_sort_signatures!(methods)
 
@@ -2266,7 +2267,7 @@ module Iyi
         methods: methods,
         visibility: "pub",
         types: iyi_carried_types(program, filename, type, path: name),
-        macros: iyi_macros_on(type, filename),
+        macros: iyi_macros_on(type),
         annotations: annotations,
         doc: type.doc || "",
         superclass: iyi_superclass_name(type),
@@ -2501,7 +2502,7 @@ module Iyi
             methods: iyi_carried_methods(program, filename, container, declared),
             visibility: declared.private? ? "private" : "",
             types: iyi_carried_types(program, filename, declared, path: container),
-            macros: iyi_macros_on(declared, filename),
+            macros: iyi_macros_on(declared),
             # Read the way `Iyi::Bind` reads it: a module that extends itself
             # is one whose metaclass has it as an ancestor, which is what
             # makes `Helper.twice` and `Helper#twice` the same method.
@@ -2548,7 +2549,7 @@ module Iyi
           methods: iyi_carried_methods(program, filename, container, declared),
           visibility: declared.private? ? "private" : "",
           types: iyi_carried_types(program, filename, declared, path: container),
-          macros: iyi_macros_on(declared, filename),
+          macros: iyi_macros_on(declared),
           superclass: iyi_superclass_name(declared),
           includes: iyi_included_modules(declared),
           doc: declared.doc || "",
@@ -3206,8 +3207,8 @@ module Iyi
     # twice` in a module body is added to the module's metaclass, the same way
     # `def self.zero` is, and the type's own `macros` is empty for a file full
     # of them.
-    private def collect_iyi_macros(program : Program, module_name : String, source_path : String) : Array(String)
-      iyi_macros_on(program.iyi_module_type(module_name), source_path)
+    private def collect_iyi_macros(program : Program, module_name : String) : Array(String)
+      iyi_macros_on(program.iyi_module_type(module_name))
     end
 
     # The macros declared on one type, which is the same question one level in:
@@ -3225,7 +3226,7 @@ module Iyi
     # source build does: without it `Mine.new.kind` was `undefined method
     # 'kind' for Main::Mine`, and a registry hook added nothing and printed
     # `[]` where the source build printed `["Main::Mine"]`.
-    private def iyi_macros_on(type : Type?, source_path : String, filename : String? = nil) : Array(String)
+    private def iyi_macros_on(type : Type?, filename : String? = nil) : Array(String)
       macros = [] of Macro
       metaclass = type.try &.metaclass.as?(ModuleType)
       metaclass.try &.macros.try &.each_value do |overloads|
@@ -3238,9 +3239,8 @@ module Iyi
       end
       macros.sort_by!(&.to_s).map do |a_macro|
         if type && type.program.diagnostic_capture
-          source, builder = IyiMod.diagnostic_macro_source(a_macro, type.program.diagnostic_artifact_lexical_mode(source_path))
-          fragment = builder.finish(::Crystal::Digest::SHA256.hexdigest(source), source)
-          type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, fragment)
+          source, captures = IyiMod.diagnostic_macro_source_modes(a_macro)
+          type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, captures)
           source
         else
           IyiMod.macro_source(a_macro)
@@ -3404,48 +3404,48 @@ module Iyi
     # module that merely reads `@@x` from an included module would otherwise
     # declare a second one of its own.
     private def diagnostic_add_macros(program : Program, section : IyiMod::DiagnosticSection,
-                                      sources : Array(String), owner : String, container : String) : Nil
+                                      sources : Array(String), owner : String, container : String, mode : String) : Nil
       sources.each do |source|
-        fragment = program.iyi_macro_diagnostics[{owner, source}]? ||
+        captures = program.iyi_macro_diagnostics[{owner, source}]? ||
                    raise "missing macro diagnostic source for #{owner}"
         key = IyiMod.macro_fragment_key(container, source)
-        section.add_fragment(IyiMod::DiagnosticFragment.new(key, fragment.text_sha256, fragment.events, fragment.anchors))
+        section.add_fragment(captures.fragment(key, mode))
       end
     end
 
     private def diagnostic_add_type_macros(program : Program, section : IyiMod::DiagnosticSection,
-                                           declaration : IyiMod::TypeDecl, root_owner : String, path : String = "") : Nil
+                                           declaration : IyiMod::TypeDecl, root_owner : String, mode : String, path : String = "") : Nil
       here = path.empty? ? declaration.name : "#{path}::#{declaration.name}"
       owner = here.starts_with?("::") ? here.lchop("::") : "#{root_owner}::#{here}"
-      diagnostic_add_macros(program, section, declaration.macros, owner, here)
-      declaration.types.each { |nested| diagnostic_add_type_macros(program, section, nested, root_owner, here) }
+      diagnostic_add_macros(program, section, declaration.macros, owner, here, mode)
+      declaration.types.each { |nested| diagnostic_add_type_macros(program, section, nested, root_owner, mode, here) }
     end
 
     private def diagnostic_add_class_vars(program : Program, section : IyiMod::DiagnosticSection,
-                                          variables : Array(IyiMod::ClassVarDecl), owner : String, container : String) : Nil
+                                          variables : Array(IyiMod::ClassVarDecl), owner : String, container : String, mode : String) : Nil
       variables.each do |variable|
         next if variable.value.empty?
-        source, fragment = program.iyi_class_var_diagnostics[{owner, variable.name}]? ||
+        source, captures = program.iyi_class_var_diagnostics[{owner, variable.name}]? ||
                            raise "missing class variable diagnostic source for #{owner}::#{variable.name}"
         raise "class variable diagnostic text changed" unless source == variable.value
         key = IyiMod.class_var_fragment_key(container, variable.name)
-        section.add_fragment(IyiMod::DiagnosticFragment.new(key, fragment.text_sha256, fragment.events, fragment.anchors))
+        section.add_fragment(captures.fragment(key, mode))
       end
     end
 
     private def diagnostic_add_type_class_vars(program : Program, section : IyiMod::DiagnosticSection,
-                                               declaration : IyiMod::TypeDecl, root_owner : String, path : String = "") : Nil
+                                               declaration : IyiMod::TypeDecl, root_owner : String, mode : String, path : String = "") : Nil
       here = path.empty? ? declaration.name : "#{path}::#{declaration.name}"
       owner = here.starts_with?("::") ? here.lchop("::") : "#{root_owner}::#{here}"
-      diagnostic_add_class_vars(program, section, declaration.class_vars, owner, here)
+      diagnostic_add_class_vars(program, section, declaration.class_vars, owner, here, mode)
       declaration.fields.each do |name, _, value|
         next if value.empty?
-        source, fragment = program.iyi_field_diagnostics[{owner, name}]? || raise "missing field diagnostic source for #{owner}::#{name}"
+        source, captures = program.iyi_field_diagnostics[{owner, name}]? || raise "missing field diagnostic source for #{owner}::#{name}"
         raise "field diagnostic text changed" unless source == value
         key = IyiMod.field_fragment_key(here, name)
-        section.add_fragment(IyiMod::DiagnosticFragment.new(key, fragment.text_sha256, fragment.events, fragment.anchors))
+        section.add_fragment(captures.fragment(key, mode))
       end
-      declaration.types.each { |nested| diagnostic_add_type_class_vars(program, section, nested, root_owner, here) }
+      declaration.types.each { |nested| diagnostic_add_type_class_vars(program, section, nested, root_owner, mode, here) }
     end
 
     private def collect_iyi_class_vars(type : Type) : Array(IyiMod::ClassVarDecl)

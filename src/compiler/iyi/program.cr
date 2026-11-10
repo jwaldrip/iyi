@@ -805,14 +805,15 @@ module Iyi
     # written.
     getter iyi_def_bodies = {} of String => String
     getter iyi_def_bodies_by_identity = ({} of Def => String).compare_by_identity
-    getter(diagnostic_def_bodies) { {} of DiagnosticOrigin => {String, Array(DiagnosticAnchor)} }
+    getter(diagnostic_def_bodies) { {} of DiagnosticOrigin => {String, DiagnosticModeCaptures} }
 
-    def record_diagnostic_def_body(origin : DiagnosticOrigin, source : String, anchors : Array(DiagnosticAnchor)) : Nil
-      value = {source, anchors}
+    def record_diagnostic_def_body(origin : DiagnosticOrigin, source : String, captures : DiagnosticModeCaptures) : Nil
+      raise "diagnostic definition body text changed" unless source == captures.text
+      value = {source, captures}
       if previous = diagnostic_def_bodies[origin]?
         raise "conflicting body for one diagnostic definition origin" unless previous == value
       else
-        diagnostic_def_bodies[origin] = {source, anchors.dup}
+        diagnostic_def_bodies[origin] = value
       end
     end
 
@@ -1111,20 +1112,20 @@ module Iyi
     getter(iyi_mono_body_diagnostics) { {} of String => Hash(String, IyiMod::DiagnosticFragment) }
     getter(iyi_mono_body_origins) { {} of String => Hash(String, DiagnosticOrigin) }
     getter(iyi_initialiser_diagnostics) { {} of String => IyiMod::DiagnosticFragment }
-    getter(iyi_class_var_diagnostics) { {} of {String, String} => {String, IyiMod::DiagnosticFragment} }
-    getter(iyi_field_diagnostics) { {} of {String, String} => {String, IyiMod::DiagnosticFragment} }
-    getter(iyi_macro_diagnostics) { {} of {String, String} => IyiMod::DiagnosticFragment }
+    getter(iyi_class_var_diagnostics) { {} of {String, String} => {String, DiagnosticModeCaptures} }
+    getter(iyi_field_diagnostics) { {} of {String, String} => {String, DiagnosticModeCaptures} }
+    getter(iyi_macro_diagnostics) { {} of {String, String} => DiagnosticModeCaptures }
     getter(iyi_signature_diagnostics) { {} of String => Hash(String, IyiMod::DiagnosticFragment) }
-    getter(iyi_top_fun_diagnostics) { {} of String => IyiMod::DiagnosticFragment }
+    getter(iyi_top_fun_diagnostics) { {} of String => DiagnosticModeCaptures }
     getter(diagnostic_emissions) { [] of DiagnosticProvenance::Emission }
     getter(diagnostic_object_inputs) { [] of DiagnosticProvenance::ObjectInput }
     getter(diagnostic_bindings) { [] of DiagnosticProvenance::Binding }
 
     def record_class_var_diagnostic(owner : String, name : String, source : String,
-                                    fragment : IyiMod::DiagnosticFragment) : Nil
-      validate_diagnostic_fragment_source(source, fragment)
+                                    captures : DiagnosticModeCaptures) : Nil
+      raise "diagnostic class variable text changed" unless captures.text == source
       key = {owner, name}
-      value = {source, fragment}
+      value = {source, captures}
       if previous = iyi_class_var_diagnostics[key]?
         raise "conflicting class variable diagnostic source" unless previous == value
       else
@@ -1133,10 +1134,10 @@ module Iyi
     end
 
     def record_field_diagnostic(owner : String, name : String, source : String,
-                                fragment : IyiMod::DiagnosticFragment) : Nil
-      validate_diagnostic_fragment_source(source, fragment)
+                                captures : DiagnosticModeCaptures) : Nil
+      raise "diagnostic field text changed" unless captures.text == source
       key = {owner, name}
-      value = {source, fragment}
+      value = {source, captures}
       if previous = iyi_field_diagnostics[key]?
         raise "conflicting field diagnostic source" unless previous == value
       else
@@ -1144,27 +1145,23 @@ module Iyi
       end
     end
 
-    def record_macro_diagnostic(owner : String, source : String, fragment : IyiMod::DiagnosticFragment) : Nil
-      validate_diagnostic_fragment_source(source, fragment)
+    def record_macro_diagnostic(owner : String, source : String, captures : DiagnosticModeCaptures) : Nil
+      raise "diagnostic macro text changed" unless captures.text == source
       key = {owner, source}
       if previous = iyi_macro_diagnostics[key]?
-        raise "conflicting macro diagnostic source" unless previous == fragment
+        raise "conflicting macro diagnostic source" unless previous == captures
       else
-        iyi_macro_diagnostics[key] = fragment
+        iyi_macro_diagnostics[key] = captures
       end
     end
 
-    def record_top_fun_diagnostic(source : String, fragment : IyiMod::DiagnosticFragment) : Nil
-      validate_diagnostic_fragment_source(source, fragment)
+    def record_top_fun_diagnostic(source : String, captures : DiagnosticModeCaptures) : Nil
+      raise "diagnostic top-level fun text changed" unless captures.text == source
       if previous = iyi_top_fun_diagnostics[source]?
-        raise "ambiguous top-level fun diagnostic source" unless previous == fragment
+        raise "ambiguous top-level fun diagnostic source" unless previous == captures
       else
-        iyi_top_fun_diagnostics[source] = fragment
+        iyi_top_fun_diagnostics[source] = captures
       end
-    end
-
-    private def validate_diagnostic_fragment_source(source : String, fragment : IyiMod::DiagnosticFragment) : Nil
-      raise "diagnostic fragment text changed" unless fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(source)
     end
 
     # Artifacts parse their rendered fragments using the mode of their recorded
