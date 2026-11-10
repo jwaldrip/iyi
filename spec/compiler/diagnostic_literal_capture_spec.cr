@@ -112,8 +112,8 @@ describe "parsed literal name evidence" do
 
   it "records a foreign symbol alias and a quoted symbol literal" do
     source = %q(lib Lib; fun local = "foreign name"; end)
-    fun = parse_literal_capture(source).as(Iyi::LibDef).body.as(Iyi::FunDef)
-    assert_literal_capture(fun, "real_name", 0, source, %q("foreign name"), "foreign name".to_slice)
+    foreign_fun = parse_literal_capture(source).as(Iyi::LibDef).body.as(Iyi::FunDef)
+    assert_literal_capture(foreign_fun, "real_name", 0, source, %q("foreign name"), "foreign name".to_slice)
     symbol_source = %q(:"a b")
     symbol = parse_literal_capture(symbol_source).as(Iyi::SymbolLiteral)
     assert_literal_capture(symbol, "value", 0, symbol_source, symbol_source, "a b".to_slice)
