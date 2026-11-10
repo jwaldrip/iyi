@@ -2,6 +2,7 @@ require "./token"
 require "./diagnostic_origin"
 require "../exception"
 require "string_pool"
+require "base64"
 require "../warnings"
 
 module Iyi
@@ -53,13 +54,31 @@ module Iyi
       @diagnostic_lexical_observations.try(&.dup) || [] of DiagnosticRenderedToken
     end
 
+    # The delimiter a journal entry records, encoded the way `diagnostic_production` encodes it.
+    private def diagnostic_delimiter(state : Token::DelimiterState) : {String, String, String, Bool}
+      {state.kind.to_s, state.nest.to_s, state.end.to_s, state.allow_escapes}
+    end
+
     private def diagnostic_record_observation : Nil
       return unless observations = @diagnostic_lexical_observations
       start = @token.input_offset
       finish = @token.input_end
       return unless start >= @input_offset_base && finish >= start && finish <= string.bytesize + @input_offset_base
       raw = string.byte_slice(start - @input_offset_base, finish - start)
-      observations << DiagnosticRenderedToken.new(start, finish, @token.type.to_s, raw, iyi? ? "Iyi" : "Crystal")
+      kind = @token.type
+      # The lexer's own value, byte for byte: an escape such as `\xFF` stays as it is.
+      value_base64 = nil
+      if kind.string? || kind.symbol?
+        value = @token.value
+        value_base64 = Base64.strict_encode(value.to_slice) if value.is_a?(String)
+      end
+      delimiter = nil
+      if kind.delimiter_start? || kind.string? || kind.delimiter_end? || kind.interpolation_start?
+        delimiter = diagnostic_delimiter(@token.delimiter_state)
+      end
+      observations << DiagnosticRenderedToken.new(start, finish, kind.to_s, raw, iyi? ? "Iyi" : "Crystal",
+        value_base64: value_base64, delimiter: delimiter,
+        passed_backslash_newline: @token.passed_backslash_newline, invalid_escape: @token.invalid_escape)
     end
 
     # This is an interface for storing data associated to a heredoc
@@ -1631,6 +1650,9 @@ module Iyi
     end
 
     def next_string_token(delimiter_state)
+      # A continuation returns the token of its recursive call, and that call
+      # records it. This call must not record the same token a second time.
+      recorded_by_continuation = false
       @parse_state_exposed_or_advanced = true
       reset_token
 
@@ -1742,6 +1764,7 @@ module Iyi
                   break
                 end
               end
+              recorded_by_continuation = true
               next_string_token delimiter_state
             when '\0'
               raise_unterminated_quoted delimiter_state
@@ -1828,7 +1851,7 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
-      diagnostic_record_observation
+      diagnostic_record_observation unless recorded_by_continuation
     end
 
     def next_string_token_noescape(delimiter_state)
