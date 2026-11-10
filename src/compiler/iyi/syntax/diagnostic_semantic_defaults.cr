@@ -19,6 +19,29 @@ module Iyi
       {% end %}
     end
 
+    # Reflect initializer metadata from each concrete class directly. Metadata
+    # from a generic T reached through ASTNode dispatch can lose initializers.
+    private def self.initializer(kind : String, field : String) : String
+      {% begin %}
+      case kind
+      {% for sub in Iyi::ASTNode.all_subclasses %}
+        {% unless sub.abstract? %}
+        when {{sub.name.split("::").last}}
+          case field
+          {% for ivar in sub.instance_vars %}
+          when {{ivar.name.stringify}} then {{ivar.default_value.stringify}}
+          {% end %}
+          else
+            raise ArgumentError.new("#{kind}.#{field}: field is not reflected")
+          end
+        {% end %}
+      {% end %}
+      else
+        raise ArgumentError.new("unclassified AST kind #{kind}")
+      end
+      {% end %}
+    end
+
     def self.verify_coverage!(table = DiagnosticFieldTable::TABLE) : Nil
       pairs = DiagnosticAstFieldSchema.census_pairs
       missing = DiagnosticFieldTable.uncovered(table, pairs, DiagnosticFieldTable::Scope::Full)
@@ -28,9 +51,8 @@ module Iyi
       end
     end
 
-    # Only actual inert raw values are accepted. The reflected type, rather
-    # than initializer metadata, is used because the latter can disappear when
-    # a class is reached through an ASTNode dispatch.
+    # A recognized initializer and the raw field must agree. Unknown forms
+    # refuse rather than assuming that zero, false or nil is the default.
     private def self.check_concrete!(node : T, selected : String?, table : Hash(String, Array(DiagnosticFieldTable::Row))) : Nil forall T
       kind = {{T.name.split("::").last}}
       rows = table[kind]? || raise ArgumentError.new("#{kind}: no field table")
@@ -39,13 +61,18 @@ module Iyi
       end
       {% for ivar in T.instance_vars %}
         if (!selected || selected == {{ivar.name.stringify}}) && rows.any? { |row| row.field == {{ivar.name.stringify}} && row.provenance.semantic? }
+          expected = initializer(kind, {{ivar.name.stringify}})
           {% if ivar.type.nilable? %}
+            raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: unrecognized nil initializer") unless expected == "nil"
             raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: raw value is not nil") unless node.@{{ivar.name.id}}.nil?
           {% elsif ivar.type == Bool %}
-            raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: raw value differs from its inert state") if node.@{{ivar.name.id}}
+            raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: unrecognized boolean initializer") unless expected == "true" || expected == "false"
+            raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: raw value differs from its declared default") unless node.@{{ivar.name.id}} == (expected == "true")
           {% elsif ivar.type == Int32 %}
-            raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: raw value differs from its inert state") unless node.@{{ivar.name.id}} == 0
+            raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: unrecognized numeric initializer") unless expected == "0"
+            raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: raw value differs from its declared default") unless node.@{{ivar.name.id}} == 0
           {% elsif ivar.type.stringify == "Iyi::SmallNodeList" %}
+            raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: unrecognized list initializer") unless expected == "SmallNodeList.new"
             value = node.@{{ivar.name.id}}
             unless value.@first.nil? && value.@second.nil? && value.@tail.nil?
               raise ArgumentError.new("#{kind}.#{{{ivar.name.stringify}}}: raw list is not empty")

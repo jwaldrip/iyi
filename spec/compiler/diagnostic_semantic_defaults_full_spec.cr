@@ -128,6 +128,7 @@ describe Iyi::DiagnosticSemanticDefaults do
 
     it "refuses a def whose abi_info flag is set" do
       node = Iyi::Def.new("f")
+      Iyi::DiagnosticSemanticDefaults.check_field!(node, "abi_info")
       node.abi_info = true
       expect_raises(ArgumentError, /Def\.abi_info: raw value differs/) do
         Iyi::DiagnosticSemanticDefaults.check_field!(node, "abi_info")
@@ -168,6 +169,17 @@ describe Iyi::DiagnosticSemanticDefaults do
       root = Iyi::Expressions.new([child] of Iyi::ASTNode)
       expect_raises(ArgumentError, /Call\.expanded: raw value is not nil/) do
         Iyi::DiagnosticSemanticDefaults.verify_tree!(root)
+      end
+    end
+
+    it "refuses mutated semantic state through the inventory entry path" do
+      child = Iyi::Call.new(nil, "f")
+      root = Iyi::Expressions.new([child] of Iyi::ASTNode)
+      before = Iyi::DiagnosticAstInventorySnapshot.new(root).bytes
+      before.includes?("Call").should be_true
+      child.expanded = Iyi::NumberLiteral.new(1)
+      expect_raises(ArgumentError, /Call\.expanded: raw value is not nil/) do
+        Iyi::DiagnosticAstInventorySnapshot.new(root)
       end
     end
   end

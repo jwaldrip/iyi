@@ -889,6 +889,11 @@ module Iyi
       when "dependencies", "observers", "enclosing_call", "dirty", "type"
         return DiagnosticAstFieldClass::Infrastructure if SUPPORTED.includes?(kind)
       end
+      if rows = DiagnosticFieldTable::TABLE[kind]?
+        if row = rows.find { |item| item.field == field && item.provenance.semantic? }
+          return row.klass
+        end
+      end
       case kind
       when "Path"
         return DiagnosticAstFieldClass::NamedValue if field == "names"
@@ -1206,6 +1211,9 @@ module Iyi
       unless class_name == "Iyi::#{kind}" && SUPPORTED.includes?(kind)
         raise ArgumentError.new("unclassified AST node #{class_name}")
       end
+      {% if Iyi::Block.has_method?(:binder) %}
+        DiagnosticSemanticDefaults.verify!(node)
+      {% end %}
       {% begin %}
         case node
         {% for name in SUPPORTED %}
