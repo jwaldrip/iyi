@@ -25,6 +25,7 @@ class Iyi::Command
   # the same root would otherwise share one file; see the check in
   # `bind_boundary`.
   @bind_owners = {} of String => String
+  @bind_capture_diagnostic_provenance = false
 
   private def bind
     mods = "mods"
@@ -40,9 +41,12 @@ class Iyi::Command
       when "--lib"
         options.shift
         lib_dir = flag_value!("--lib", "a directory")
+      when "--capture-diagnostic-provenance"
+        options.shift
+        @bind_capture_diagnostic_provenance = true
       when "--help", "-h"
         puts <<-USAGE
-          Usage: #{Command.program_name} bind [--lib DIR] [--mods DIR] [SHARD ...]
+          Usage: #{Command.program_name} bind [--lib DIR] [--mods DIR] [--capture-diagnostic-provenance] [SHARD ...]
 
           Bind the shards shard.yml depends on (what `shards install` put
           under lib/, development dependencies aside) as a .iyimod each
@@ -350,7 +354,10 @@ class Iyi::Command
     message = ""
 
     until bound
-      step = run_step(executable, envs[:bind], ["tool", "bind", "--crystal", "-e", root, "--emit-bind", mods_path, "--use-iyimod", mods_path, entry], chdir: nil, log: bind_log)
+      bind_args = ["tool", "bind", "--crystal", "-e", root, "--emit-bind", mods_path, "--use-iyimod", mods_path]
+      bind_args << "--capture-diagnostic-provenance" if @bind_capture_diagnostic_provenance
+      bind_args << entry
+      step = run_step(executable, envs[:bind], bind_args, chdir: nil, log: bind_log)
       unless step
         message = "binding failed; #{mods}/#{artifact}.bind.log has the compiler's answer"
         break
@@ -372,7 +379,10 @@ class Iyi::Command
       # `--error-trace`, because the frame this needs is the outermost one:
       # the compiler names the shard's own line by default, and which
       # method of the boundary reached it is the whole question here.
-      if run_step(executable, envs[:fill], ["build", "--crystal", "--error-trace", "--iyi-keep", root, "--emit-bind", ".", "-o", "keep_#{artifact}", "#{artifact}_keep.cr"], chdir: mods_path, log: fill_log)
+      fill_args = ["build", "--crystal", "--error-trace", "--iyi-keep", root, "--emit-bind", ".", "-o", "keep_#{artifact}"]
+      fill_args << "--capture-diagnostic-provenance" if @bind_capture_diagnostic_provenance
+      fill_args << "#{artifact}_keep.cr"
+      if run_step(executable, envs[:fill], fill_args, chdir: mods_path, log: fill_log)
         bound = true
         break
       end

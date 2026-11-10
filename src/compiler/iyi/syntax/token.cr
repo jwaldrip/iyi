@@ -282,6 +282,9 @@ module Iyi
     property doc_buffer : IO::Memory?
     property raw : String
     property start : Int32
+    # Byte offset in the actual lexer input, independent of location pragmas.
+    property input_offset : Int32
+    property input_end : Int32
     property invalid_escape : Bool
 
     record MacroState,
@@ -359,6 +362,8 @@ module Iyi
       @passed_backslash_newline = false
       @raw = ""
       @start = 0
+      @input_offset = 0
+      @input_end = 0
       @invalid_escape = false
     end
 
@@ -395,6 +400,8 @@ module Iyi
       @macro_state = other.macro_state
       @doc_buffer = other.doc_buffer
       @start = other.start
+      @input_offset = other.input_offset
+      @input_end = other.input_end
     end
 
     def to_s(io : IO) : Nil

@@ -3,6 +3,15 @@ module Iyi
     def initialize(@program : Program)
     end
 
+    private def literal_call(call : Call, parent : ASTNode, slot : String) : Call
+      return call unless @program.diagnostic_capture
+      origin = parent.diagnostic_origin || raise "literal expansion lacks a source origin"
+      result = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", slot)
+      raise "invalid literal expansion origin" unless result.valid_for_anchor?("Call", "method")
+      call.diagnostic_origin = result
+      call
+    end
+
     # Converts an array literal to creating an Array and storing the values:
     #
     # From:
@@ -56,6 +65,7 @@ module Iyi
         ary_var = new_temp_var.at(node)
 
         ary_instance = Call.new(generic, "new", NumberLiteral.new(capacity).at(node)).at(node)
+        literal_call(ary_instance, node, "array:constructor")
 
         exps = Array(ASTNode).new(node.elements.size + elem_temp_var_count + 2)
         elem_temp_vars.try &.each_with_index do |elem_temp_var, i|
@@ -69,9 +79,13 @@ module Iyi
         node.elements.each_with_index do |elem, i|
           temp_var = elem_temp_vars.try &.[i]
           if elem.is_a?(Splat)
-            exps << Call.new(ary_var.clone, "concat", (temp_var || elem.exp).clone).at(node)
+            call = Call.new(ary_var.clone, "concat", (temp_var || elem.exp).clone).at(node)
+            literal_call(call, node, "array:concat:#{i}") if @program.diagnostic_capture
+            exps << call
           else
-            exps << Call.new(ary_var.clone, "<<", (temp_var || elem).clone).at(node)
+            call = Call.new(ary_var.clone, "<<", (temp_var || elem).clone).at(node)
+            literal_call(call, node, "array:append:#{i}") if @program.diagnostic_capture
+            exps << call
           end
         end
 
@@ -79,13 +93,15 @@ module Iyi
 
         Expressions.new(exps).at(node)
       elsif capacity.zero?
-        Call.new(generic, "new").at(node)
+        literal_call(Call.new(generic, "new").at(node), node, "array:constructor")
       else
         ary_var = new_temp_var.at(node)
 
         ary_instance = Call.new(generic, "unsafe_build", NumberLiteral.new(capacity).at(node)).at(node)
+        literal_call(ary_instance, node, "array:constructor")
 
         buffer = Call.new(ary_var, "to_unsafe").at(node)
+        literal_call(buffer, node, "array:buffer")
         buffer_var = new_temp_var.at(node)
 
         exps = Array(ASTNode).new(node.elements.size + elem_temp_var_count + 3)
@@ -99,7 +115,9 @@ module Iyi
 
         node.elements.each_with_index do |elem, i|
           temp_var = elem_temp_vars.try &.[i]
-          exps << Call.new(buffer_var.clone, "[]=", NumberLiteral.new(i).at(node), (temp_var || elem).clone).at(node)
+          call = Call.new(buffer_var.clone, "[]=", NumberLiteral.new(i).at(node), (temp_var || elem).clone).at(node)
+          literal_call(call, node, "array:store:#{i}") if @program.diagnostic_capture
+          exps << call
         end
 
         exps << ary_var.clone
@@ -133,7 +151,9 @@ module Iyi
       type_exps = node.elements.map_with_index do |elem, i|
         temp_var = temp_vars.try &.[i]
         if elem.is_a?(Splat)
-          Call.new(Path.global("Enumerable").at(node), "element_type", (temp_var || elem.exp).clone).at(node)
+          call = Call.new(Path.global("Enumerable").at(node), "element_type", (temp_var || elem.exp).clone).at(node)
+          literal_call(call, node, "array:element_type:#{i}") if @program.diagnostic_capture
+          call
         else
           (temp_var || elem).clone
         end
@@ -181,6 +201,7 @@ module Iyi
       end
 
       constructor = Call.new(node_name, "new").at(node)
+      literal_call(constructor, node, "array:constructor")
       if node.elements.empty?
         return constructor
       end
@@ -201,10 +222,19 @@ module Iyi
         if elem.is_a?(Splat)
           yield_var = new_temp_var(elem)
           each_body = Call.new(ary_var.clone, "<<", yield_var.clone).at(node)
+          literal_call(each_body, node, "array:each_body:#{i}") if @program.diagnostic_capture
           each_block = Block.new(args: [yield_var], body: each_body).at(node)
-          exps << Call.new((temp_var || elem.exp).clone, "each", block: each_block).at(node)
+          if @program.diagnostic_capture
+            origin = node.diagnostic_origin || raise "array expansion lacks a source origin"
+            each_block.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "array:block:#{i}")
+          end
+          each_call = Call.new((temp_var || elem.exp).clone, "each", block: each_block).at(node)
+          literal_call(each_call, node, "array:each:#{i}") if @program.diagnostic_capture
+          exps << each_call
         else
-          exps << Call.new(ary_var.clone, "<<", (temp_var || elem).clone).at(node)
+          call = Call.new(ary_var.clone, "<<", (temp_var || elem).clone).at(node)
+          literal_call(call, node, "array:append:#{i}") if @program.diagnostic_capture
+          exps << call
         end
       end
 
@@ -273,6 +303,7 @@ module Iyi
       end
 
       constructor = Call.new(generic, "new").at(node)
+      literal_call(constructor, node, "hash:constructor")
       return constructor if node.entries.empty?
 
       hash_var = new_temp_var
@@ -291,7 +322,9 @@ module Iyi
       node.entries.each_with_index do |entry, i|
         key_exp = key_temp_vars.try(&.[i]) || entry.key
         value_exp = value_temp_vars.try(&.[i]) || entry.value
-        exps << Call.new(hash_var.clone, "[]=", key_exp.clone, value_exp.clone).at(node)
+        call = Call.new(hash_var.clone, "[]=", key_exp.clone, value_exp.clone).at(node)
+        literal_call(call, node, "hash:store:#{i}") if @program.diagnostic_capture
+        exps << call
       end
 
       exps << hash_var
@@ -359,12 +392,15 @@ module Iyi
         # instead of racing to define two — sharing is the right answer rather
         # than the hazard, which is what content addressing buys over a number.
         const_name = Program.regex_const_name(string, node.options)
+        origin = regex_occurrence(node, const_name, string)
 
         if existing = @program.types[const_name]?
           const = existing.as(Const)
+          validate_regex_hit(const_name, string, node.options) if origin
         else
           const_value = regex_new_call(node, StringLiteral.new(string).at(node))
           const = Const.new(@program, @program, const_name, const_value)
+          @program.select_regex_initializer(const_name, origin) if origin
 
           @program.types[const_name] = const
 
@@ -374,7 +410,9 @@ module Iyi
           @program.iyi_regex_constants[const_name] = {string, node.options}
         end
 
-        Path.new(const_name).at(const.value)
+        reference = Path.new(const_name).at(const.value)
+        reference.diagnostic_origin = origin if origin
+        reference
       else
         regex_new_call(node, node_value)
       end
@@ -406,26 +444,46 @@ module Iyi
       end
 
       node_value = node.value
-      return Program.iyi_regex_compile_call(node_value, node.options, node) unless node_value.is_a?(StringLiteral)
+      origin = @program.diagnostic_capture ? (node.diagnostic_origin || raise "regex literal lacks source origin") : nil
+      unless node_value.is_a?(StringLiteral)
+        return Program.iyi_regex_compile_call(node_value, node.options, node, diagnostic_literal_origin: origin)
+      end
 
       string = node_value.value
       const_name = Program.iyi_regex_const_name(string, node.options)
+      @program.record_regex_occurrence(const_name, string, node.options.value.to_u32, origin) if origin
       if existing = @program.types[const_name]?
         const = existing.as(Const)
+        validate_regex_hit(const_name, string, node.options) if origin
       else
-        const = Const.new(@program, @program, const_name, Program.iyi_regex_compile_call(StringLiteral.new(string).at(node), node.options, node))
+        value = Program.iyi_regex_compile_call(StringLiteral.new(string).at(node), node.options, node,
+          diagnostic_literal_origin: origin)
+        const = Const.new(@program, @program, const_name, value)
+        @program.select_regex_initializer(const_name, origin) if origin
         @program.types[const_name] = const
         @program.iyi_regex_constants[const_name] = {string, node.options}
       end
-      Path.new(const_name).at(const.value)
+      reference = Path.new(const_name).at(const.value)
+      reference.diagnostic_origin = origin if origin
+      reference
     end
 
-    private def regex_new_call(node, value)
-      Call.new(Path.global("Regex").at(node), "new", value, regex_options(node)).at(node)
+    private def regex_new_call(node : RegexLiteral, value : ASTNode) : Call
+      origin = @program.diagnostic_capture ? (node.diagnostic_origin || raise "regex literal lacks source origin") : nil
+      Program.crystal_regex_compile_call(value, node.options, node, diagnostic_literal_origin: origin)
     end
 
-    private def regex_options(node)
-      Call.new(Path.global(["Regex", "Options"]).at(node), "new", NumberLiteral.new(node.options.value.to_s).at(node)).at(node)
+    private def regex_occurrence(node : RegexLiteral, name : String, pattern : String) : DiagnosticOrigin?
+      return nil unless @program.diagnostic_capture
+      origin = node.diagnostic_origin || raise "regex literal lacks source origin"
+      @program.record_regex_occurrence(name, pattern, node.options.value.to_u32, origin)
+      origin
+    end
+
+    private def validate_regex_hit(name : String, pattern : String, options : RegexOptions) : Nil
+      existing = @program.iyi_regex_constants[name]? || raise "existing regex lacks semantic provenance"
+      raise "existing regex has conflicting contents" unless existing == {pattern, options}
+      @program.diagnostic_regex_initializers[name]? || raise "existing regex lacks initializer origin"
     end
 
     # Convert and to if:
@@ -514,7 +572,7 @@ module Iyi
     def expand(node : RangeLiteral)
       path = Path.global("Range").at(node)
       bool = BoolLiteral.new(node.exclusive?).at(node)
-      Call.new(path, "new", node.from, node.to, bool).at(node)
+      literal_call(Call.new(path, "new", node.from, node.to, bool).at(node), node, "range:constructor")
     end
 
     # Convert an interpolation to a call to `String.interpolation`
@@ -533,7 +591,7 @@ module Iyi
       # result is just fine.
       pieces = node.expressions
       combine_contiguous_string_literals(pieces)
-      Call.new(Path.global("String").at(node), "interpolation", pieces).at(node)
+      literal_call(Call.new(Path.global("String").at(node), "interpolation", pieces).at(node), node, "interpolation:call")
     end
 
     private def combine_contiguous_string_literals(pieces)
@@ -735,17 +793,24 @@ module Iyi
       # where there is exactly one, which is what the parser already gated on.
       it_subject = temp_vars.try { |vars| vars.first if vars.size == 1 }
 
-      node.whens.each do |wh|
+      node.whens.each_with_index do |wh, when_index|
+        condition_index = -1
         comps = wh.conds.compact_map do |cond|
+          condition_index += 1
           next if cond.is_a?(Underscore)
 
           if node_cond.is_a?(TupleLiteral)
             if cond.is_a?(TupleLiteral)
               comp = nil
+              tuple_index = -1
               cond.elements.zip(temp_vars.not_nil!) do |lh, rh|
+                tuple_index += 1
                 next if lh.is_a?(Underscore)
 
                 sub_comp = case_when_comparison(rh, lh).at(cond)
+                if @program.diagnostic_capture && sub_comp.is_a?(Call) && !sub_comp.same?(lh)
+                  literal_call(sub_comp, node, "case:compare:#{when_index}:#{condition_index}:#{tuple_index}")
+                end
                 if comp
                   comp = And.new(comp, sub_comp).at(comp)
                 else
@@ -754,11 +819,19 @@ module Iyi
               end
               comp
             else
-              case_when_comparison(TupleLiteral.new(temp_vars.not_nil!.clone), cond).at(cond)
+              comparison = case_when_comparison(TupleLiteral.new(temp_vars.not_nil!.clone), cond).at(cond)
+              if @program.diagnostic_capture && comparison.is_a?(Call) && !comparison.same?(cond)
+                literal_call(comparison, node, "case:compare:#{when_index}:#{condition_index}:0")
+              end
+              comparison
             end
           else
             temp_var = temp_vars.try &.first
-            case_when_comparison(temp_var, cond).at(cond)
+            comparison = case_when_comparison(temp_var, cond).at(cond)
+            if @program.diagnostic_capture && comparison.is_a?(Call) && !comparison.same?(cond)
+              literal_call(comparison, node, "case:compare:#{when_index}:#{condition_index}:0")
+            end
+            comparison
           end
         end
 
@@ -928,6 +1001,10 @@ module Iyi
 
           typeof_node = TypeOf.new([condition.value.clone] of ASTNode).at(node)
           cast = Cast.new(Var.new(value_name).at(node), typeof_node).at(node)
+          if @program.diagnostic_capture
+            origin = node.diagnostic_origin || raise "select cast lacks its source origin"
+            cast.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "select_cast", "arm:#{index}")
+          end
           new_assign = Assign.new(condition.target.clone, cast).at(node)
           new_body = Expressions.new([new_assign, a_when.body.clone] of ASTNode)
           case_whens << When.new([NumberLiteral.new(index).at(node)] of ASTNode, new_body)
@@ -939,15 +1016,20 @@ module Iyi
       if node_else = node.else
         case_else = node_else.clone
       else
-        case_else = Call.new("raise", StringLiteral.new("BUG: invalid select index"), global: true).at(node)
+        case_else = literal_call(Call.new("raise", StringLiteral.new("BUG: invalid select index"), global: true).at(node), node, "select:invalid")
       end
 
       args = [TupleLiteral.new(tuple_values).at(node)] of ASTNode
       args << NumberLiteral.new(first_bound).at(node) if happened_name
       call = Call.new(channel, node.else ? "non_blocking_select" : "select", args).at(node)
+      literal_call(call, node, "select:select")
       multi = MultiAssign.new(targets, [call] of ASTNode)
       case_cond = Var.new(index_name).at(node)
       a_case = Case.new(case_cond, case_whens, case_else, exhaustive: false).at(node)
+      if origin = node.diagnostic_origin
+        multi.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "select:multiassign")
+        a_case.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "select:case")
+      end
       Expressions.from([multi, a_case] of ASTNode).at(node)
     end
 
@@ -1022,13 +1104,17 @@ module Iyi
         # raise ... if temp.size < ...
         if raise_on_count_mismatch
           size_call = Call.new(temp_var.clone, "size").at(value)
+          literal_call(size_call, node, "multiassign:size")
           if middle_splat
             size_comp = Call.new(size_call, "<", NumberLiteral.new(node.targets.size - 1)).at(value)
           else
             size_comp = Call.new(size_call, "!=", NumberLiteral.new(node.targets.size)).at(value)
           end
+          literal_call(size_comp, node, "multiassign:compare")
           index_error = Call.new(Path.global("IndexError"), "new", StringLiteral.new("Multiple assignment count mismatch")).at(value)
+          literal_call(index_error, node, "multiassign:error")
           raise_call = Call.global("raise", index_error).at(value)
+          literal_call(raise_call, node, "multiassign:raise")
           assigns << If.new(size_comp, raise_call).at(value)
         end
 
@@ -1041,10 +1127,15 @@ module Iyi
               NumberLiteral.new(i - node.targets.size),
               false,
             ).at(value)
+            if @program.diagnostic_capture
+              origin = node.diagnostic_origin || raise "multiassignment lacks a source origin"
+              indexer.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "multiassign:range:#{i}")
+            end
           else
             indexer = NumberLiteral.new(splat_index && i > splat_index ? i - node.targets.size : i)
           end
           call = Call.new(temp_var.clone, "[]", indexer).at(value)
+          literal_call(call, node, "multiassign:index:#{i}") if @program.diagnostic_capture
           assigns << transform_multi_assign_target(target, call)
         end
 
@@ -1240,7 +1331,14 @@ module Iyi
       end
 
       body = Call.new(obj, node.name, call_args, global: node.global?).at(node)
+      body.diagnostic_origin = node.diagnostic_origin.try do |origin|
+        DiagnosticOrigin::Synthetic.new(origin, "proc_pointer_invoke", "call")
+      end
       proc_literal = ProcLiteral.new(Def.new("->", def_args, body).at(node)).at(node)
+      proc_literal.diagnostic_origin = node.diagnostic_origin.try do |origin|
+        DiagnosticOrigin::Synthetic.new(origin, "proc_pointer", "proc")
+      end
+      proc_literal.def.diagnostic_origin = proc_literal.diagnostic_origin
       proc_literal.proc_pointer = node
 
       if assign

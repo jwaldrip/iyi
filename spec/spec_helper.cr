@@ -9,6 +9,7 @@ require "./support/syntax"
 require "./support/tempfile"
 require "./support/win32"
 require "./support/wasm32"
+require "./support/env"
 
 class Iyi::Program
   def reset_temp_vars

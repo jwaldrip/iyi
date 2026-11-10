@@ -72,6 +72,20 @@ module Iyi::ReleasePartition
   # is written for the partitions, so every partition reads the same name.
   PROMOTED = ".iyi.part"
 
+  # Captured from LLVM on each side of promotion, indexed by function position.
+  record DiagnosticFunction,
+    original_name : String,
+    original_linkage : String,
+    promoted_name : String,
+    promoted_linkage : String
+
+  record DiagnosticGlobal,
+    original_name : String,
+    original_linkage : String,
+    promoted_name : String,
+    promoted_linkage : String,
+    owner : Int32
+
   # What every partition is built from: who owns each function and what each
   # partition imports, by position in the module, which bitcode keeps.
   class Plan
@@ -86,8 +100,10 @@ module Iyi::ReleasePartition
     # definition, external or promoted, answers every call the copy does
     # not take.
     getter inline_only : Array(Array(Int32))
+    getter diagnostic_functions : Array(DiagnosticFunction)?
+    getter diagnostic_globals : Array(DiagnosticGlobal)?
 
-    def initialize(@count, @owner, @copies, @inline_only)
+    def initialize(@count, @owner, @copies, @inline_only, @diagnostic_functions = nil, @diagnostic_globals = nil)
     end
   end
 
@@ -98,7 +114,7 @@ module Iyi::ReleasePartition
   # optimisation (`PreemptChecks.named`), which keeps its name.
   # *import_limit* is `IMPORT_LIMIT` unless a build says otherwise.
   def self.plan(mod : LLVM::Module, count : Int32? = nil, named : Array(String) = [] of String,
-                import_limit : Int32 = IMPORT_LIMIT, inline_limit : Int32 = INLINE_LIMIT) : Plan?
+                import_limit : Int32 = IMPORT_LIMIT, inline_limit : Int32 = INLINE_LIMIT, diagnostic : Bool = false) : Plan?
     return nil if count == 1
     functions = [] of LibLLVM::ValueRef
     position = {} of UInt64 => Int32
@@ -152,13 +168,43 @@ module Iyi::ReleasePartition
       inline_list.each { |index| (present_in[index] ||= [] of Int32) << partition }
     end
 
+    original_functions = if diagnostic
+                           functions.map do |function|
+                             {String.new(LibLLVM.get_value_name2(function, out length), length), LibLLVM.get_linkage(function).to_s}
+                           end
+                         end
+    globals = diagnostic ? [] of LibLLVM::ValueRef : nil
+    original_globals = if diagnostic
+                         global = LibLLVM.get_first_global(mod)
+                         until global.null?
+                           globals.not_nil! << global
+                           global = LibLLVM.get_next_global(global)
+                         end
+                         globals.not_nil!.map do |global|
+                           {String.new(LibLLVM.get_value_name2(global, out length), length),
+                            LibLLVM.get_linkage(global).to_s, declaration?(global) ? -1 : 0}
+                         end
+                       end
     promote(mod, position, owner, copied_by, present_in, named)
+    diagnostic_functions = original_functions.try do |originals|
+      functions.map_with_index do |function, index|
+        promoted_name = String.new(LibLLVM.get_value_name2(function, out length), length)
+        DiagnosticFunction.new(originals[index][0], originals[index][1], promoted_name, LibLLVM.get_linkage(function).to_s)
+      end
+    end
+    diagnostic_globals = original_globals.try do |originals|
+      globals.not_nil!.map_with_index do |global, index|
+        promoted_name = String.new(LibLLVM.get_value_name2(global, out length), length)
+        DiagnosticGlobal.new(originals[index][0], originals[index][1], promoted_name,
+          LibLLVM.get_linkage(global).to_s, originals[index][2])
+      end
+    end
     inline_only.each do |list|
       list.each do |index|
         raise "BUG: an available_externally copy of a function its owner does not export" if local?(functions[index])
       end
     end
-    Plan.new(count, owner, copies, inline_only)
+    Plan.new(count, owner, copies, inline_only, diagnostic_functions, diagnostic_globals)
   end
 
   def self.partition_count(instructions : Int64) : Int32

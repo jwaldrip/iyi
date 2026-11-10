@@ -2004,7 +2004,29 @@ jobs:
         run: bash bench/samples_roundtrip.sh
 
       - name: Release builds on every core, the same program
+        env:
+          IYI_RELEASE_PROVENANCE_PROOF: "1"
+          IYI_RELEASE_EVIDENCE_DIR: ${{ runner.temp }}/iyi-release-evidence
         run: bash bench/release_cores.sh
+      - name: Retain release observer evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: darwin-release-observer-evidence
+          path: ${{ runner.temp }}/iyi-release-evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Closure frame comparator controls
+        run: python3 bench/test_frames_equivalent.py
+
+      - name: Source-absent closure frame provenance
+        env:
+          CRYSTAL_WORKERS: "1"
+          IYI_WORKERS: "1"
+        run: |
+          LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config" ./bin/crystal spec spec/compiler/iyimod_spec.cr \
+            --example "carries per-type release diagnostic objects to a source-absent consumer"
 
       - name: Up to date, and only then (V.9 (e))
         run: bash bench/up_to_date.sh
@@ -2210,7 +2232,16 @@ jobs:
       - name: The native standard library's foundation
         env:
           STD_SIBLINGS: "0"
+          IYI_STD_EVIDENCE_DIR: ${{ runner.temp }}/iyi-std-evidence
         run: bash bench/std_exercise.sh
+      - name: Retain standard library evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: darwin-std-evidence
+          path: ${{ runner.temp }}/iyi-std-evidence
+          if-no-files-found: warn
+          retention-days: 7
 
   # A Windows binary, run twenty times, and every run held to the right
   # answer. Three things used to happen: it printed the right answer, it

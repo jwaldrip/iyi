@@ -53,7 +53,7 @@ module Iyi
     end
 
     def visit(node : MetaMacroVar)
-      @str << node.name
+      diagnostic_raw(node, DiagnosticMacroProducer::MacroVar) { @str << node.name }
       false
     end
 
@@ -62,7 +62,7 @@ module Iyi
     end
 
     def visit(node : TypeNode)
-      node.type.devirtualize.to_s(@str)
+      diagnostic_raw(node, DiagnosticMacroProducer::SemanticPrinter) { node.type.devirtualize.to_s(@str) }
       false
     end
 
@@ -94,7 +94,7 @@ module Iyi
     end
 
     def visit(node : MacroId)
-      @str << node.value
+      diagnostic_raw(node, DiagnosticMacroProducer::MacroId) { @str << node.value }
       false
     end
 

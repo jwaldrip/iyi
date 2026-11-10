@@ -627,6 +627,10 @@ class Iyi::Call
 
       unless typed_def
         typed_def, typed_def_args = prepare_typed_def_with_args(match.def, match_owner, lookup_self_type, call_arg_types, block_arg_type, named_args_types)
+        if program.diagnostic_capture && !block && !@block_arg
+          snapshot = diagnostic_specialization(match, lookup_self_type, call_arg_types, block_arg_type, named_args_types)
+          typed_def.record_diagnostic_specialization(snapshot) if snapshot
+        end
         def_instance_owner.add_def_instance(def_instance_key, typed_def) if use_cache
 
         if typed_def_return_type = typed_def.return_type
@@ -690,6 +694,10 @@ class Iyi::Call
           # already.
           answered = typed_def.freeze_type || program.nil
           typed_def.type = answered.responds_to?(:virtual_type) ? answered.virtual_type : answered
+          if program.diagnostic_capture
+            typed_def.record_diagnostic_specialization(
+              diagnostic_specialization(match, lookup_self_type, call_arg_types, block_arg_type, named_args_types))
+          end
           typed_defs << typed_def
           next
         end
@@ -726,11 +734,148 @@ class Iyi::Call
           end
         end
       end
+      if program.diagnostic_capture
+        typed_def.record_diagnostic_specialization(
+          diagnostic_specialization(match, lookup_self_type, call_arg_types, block_arg_type, named_args_types))
+      end
 
       typed_defs << typed_def
     end
 
     typed_defs
+  end
+
+  # This is diagnostic metadata only. The cache key above remains unchanged.
+  # Any type or lexical context we cannot describe leaves the entry unusable.
+  private def diagnostic_specialization(match : Match, dispatch_type : Type,
+                                        argument_types : Array(Type), block_type : Type?,
+                                        named_types : Array(NamedArgumentType)?) : JSON::Any?
+    origin = match.def.diagnostic_origin || return nil
+    dispatch = DiagnosticType.identity(dispatch_type) || return nil
+    owner = DiagnosticType.identity(match.context.defining_type) || return nil
+    arguments = [] of JSON::Any
+    argument_types.each do |type|
+      arguments << (DiagnosticType.identity(type) || return nil)
+    end
+    block_identity = block_type ? DiagnosticType.identity(block_type) : nil
+    return nil if block_type && !block_identity
+
+    named = [] of {String, JSON::Any}
+    if named_types
+      named_types.each do |item|
+        type = DiagnosticType.identity(item.type) || return nil
+        named << {item.name, type}
+      end
+    end
+
+    bindings = [] of {String, JSON::Any}
+    bound = match.context.bound_free_vars
+    if free_vars = match.def.free_vars
+      free_vars.each { |name| return nil unless bound && bound.has_key?(name) }
+    end
+    if bound
+      bound.to_a.sort_by!(&.[0]).each do |name, value|
+        return nil unless value.is_a?(Type)
+        type = DiagnosticType.identity(value) || return nil
+        bindings << {name, type}
+      end
+    end
+
+    # A passed Proc value needs its binding/environment identity, not just its
+    # type. That identity is not recoverable from a call argument alone.
+    return nil if @block_arg
+    lexical_origin = nil
+    lexical_arguments = [] of JSON::Any
+    lexical_return = nil
+    enclosing_specialization = nil
+    if block = @block
+      lexical_origin = block.diagnostic_origin || return nil
+      block.args.each do |arg|
+        arg_type = arg.type? || return nil
+        lexical_arguments << (DiagnosticType.identity(arg_type) || return nil)
+      end
+      return_type = block.type? || return nil
+      lexical_return = DiagnosticType.identity(return_type) || return nil
+      visitor = @parent_visitor || return nil
+      if enclosing = visitor.typed_def?
+        enclosing_specialization = enclosing.diagnostic_specialization_json || return nil
+      end
+    end
+
+    lexical_specialization = nil
+    if (block = @block) && lexical_origin
+      environment = diagnostic_block_environment(block, @parent_visitor.not_nil!) || return nil
+      lexical_specialization = JSON.parse(JSON.build do |json|
+        json.object do
+          json.field "origin", lexical_origin
+          json.field "parameter_types", lexical_arguments
+          json.field "return_type", lexical_return
+          json.field "enclosing_specialization", enclosing_specialization
+          json.field "environment", environment
+        end
+      end)
+      block.record_diagnostic_specialization(lexical_specialization)
+      lexical_specialization = block.diagnostic_specialization_json || return nil
+    end
+
+    JSON.parse(JSON.build do |json|
+      json.object do
+        json.field "definition_origin", origin
+        json.field "dispatch_type", dispatch
+        json.field "defining_owner", owner
+        json.field "ordered_argument_types", arguments
+        json.field "block_parameter_type", block_identity
+        json.field "named_argument_types" do
+          json.array do
+            named.each do |name, type|
+              json.object do
+                json.field "name", name
+                json.field "type", type
+              end
+            end
+          end
+        end
+        json.field "free_variable_bindings" do
+          json.array do
+            bindings.each do |name, type|
+              json.object do
+                json.field "name", name
+                json.field "type", type
+              end
+            end
+          end
+        end
+        json.field "expansion_shape" do
+          json.object do
+            json.field "positional_count", argument_types.size
+            json.field "splat_index", match.def.splat_index
+            json.field "double_splat_name", match.def.double_splat.try(&.name)
+            json.field "formal_parameters" do
+              json.array do
+                match.def.args.each do |arg|
+                  json.object do
+                    json.field "name", arg.name
+                    json.field "external_name", arg.external_name
+                    json.field "has_default", !arg.default_value.nil?
+                  end
+                end
+              end
+            end
+          end
+        end
+        json.field "lexical_block_specialization", lexical_specialization
+      end
+    end)
+  end
+
+  # The block's lexical environment is recorded from semantic metavariables,
+  # not inferred from its displayed name or from the emitted function. The
+  # actual closure layout is separately captured by codegen.
+  private def diagnostic_block_environment(block : Block, visitor : MainVisitor) : JSON::Any?
+    vars = block.vars || return nil
+    lexical_scope = block.scope || visitor.scope?
+    return nil if visitor.typed_def? && !lexical_scope
+    DiagnosticEnvironment.snapshot(vars, block, lexical_scope)
   end
 
   # iyi: the types a `.iyimod` declaration names for its parameters, or nil
@@ -1413,6 +1558,10 @@ class Iyi::Call
           end
 
           fun_literal = ProcLiteral.new(a_def).at(self)
+          fun_literal.diagnostic_origin = block.diagnostic_origin.try do |origin|
+            DiagnosticOrigin::Synthetic.new(origin, "block_to_proc", "proc")
+          end
+          a_def.diagnostic_origin = fun_literal.diagnostic_origin
           fun_literal.expected_return_type = output_type if output_type
           fun_literal.from_block = true
           fun_literal.force_nil = true unless output
@@ -1726,6 +1875,9 @@ class Iyi::Call
       arg = typed_def.args[index]
       type = arg_types[index]
       var = MetaVar.new(arg.name, type).at(arg)
+      if program.diagnostic_capture && (origin = original_untyped_def.diagnostic_origin)
+        var.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "parameter_binding", "index:#{index}")
+      end
       var.bind_to(var)
       args[arg.name] = var
 
@@ -1763,6 +1915,9 @@ class Iyi::Call
         default_value.raise "BUG: unknown magic constant: #{default_value.name}"
       end
       var = MetaVar.new(arg.name, type).at(arg)
+      if program.diagnostic_capture && (origin = original_untyped_def.diagnostic_origin)
+        var.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "parameter_binding", "index:#{index}")
+      end
       var.bind_to(var)
       args[arg.name] = var
       arg.type = type
@@ -1773,6 +1928,11 @@ class Iyi::Call
 
       type = named_arg.type
       var = MetaVar.new(arg.name, type)
+      if program.diagnostic_capture && (origin = original_untyped_def.diagnostic_origin)
+        if index = typed_def.args.index { |item| item.same?(arg) }
+          var.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "parameter_binding", "index:#{index}")
+        end
+      end
       var.bind_to(var)
 
       args[arg.name] = var

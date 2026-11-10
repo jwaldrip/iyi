@@ -108,6 +108,10 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.
 ALLOWED_LINES: list[tuple[str, str]] = [
     (r"--crystal", "the compatibility mode's own flag"),
+    (r"crystal_regex_compile_call", "the regex constructor used with Crystal's library"),
+    (r"module-less Crystal file", "the identity of a source file in the other language"),
+    (r"captured closure from a source-absent Crystal-library artifact", "the other library's artifact compatibility fixture"),
+    (r"^\s*(source = <<-CRYSTAL|CRYSTAL)$", "the heredoc delimiter for a Crystal source fixture"),
     (r"Crystal library effects are not classified", "stale testing refusal reason for crystal compatibility mode"),
     (r"category.*['\"]crystal['\"]", "stale testing refusal category for crystal compatibility mode"),
     # `bench/std_dependency_floor.sh` fails when a standard library module

@@ -210,5 +210,314 @@ else
   fi
 fi
 
+# The capture observer must not change partitioning or the linked objects.
+# This opt-in proof retains the compiler's under-lock snapshots and compares
+# them by occurrence, rather than inspecting cache files after the lock.
+if [ "${IYI_RELEASE_PROVENANCE_PROOF:-0}" = 1 ]; then
+  if [ -z "${IYI_RELEASE_EVIDENCE_DIR:-}" ] ||
+     ! mkdir -p "$IYI_RELEASE_EVIDENCE_DIR" ||
+     ! proof_root="$(mktemp -d "$IYI_RELEASE_EVIDENCE_DIR/release-observer.XXXXXX")" ||
+     ! proof_root="$(cd "$proof_root" && pwd)" ||
+     ! command -v python3 >/dev/null 2>&1; then
+    echo "observer: cannot create evidence directory or find python3" >&2
+    status=1
+  else
+    fixture="$proof_root/fixture"
+    mkdir -p "$fixture/boot"
+    cat > "$fixture/boot/closure.iyi" <<'IYI'
+module boot/closure
+
+@[NoInline]
+pub def make(offset : Int32) : Proc(Int32, Int32)
+  ->(n : Int32) do
+    raise "observer closure proof" if n < 0
+    n + offset
+  end
+end
+IYI
+    cat > "$fixture/main.iyi" <<'IYI'
+module main
+
+import boot/closure
+
+@[NoInline]
+def invoke(action : Proc(Int32, Int32), n : Int32) : Int32
+  action.call(n)
+end
+
+target = Boot::Closure.make(1)
+inner = ->(n : Int32) { target.call(n) * 2 }
+puts invoke(inner, -1)
+IYI
+    for mode in source-1 source-4 artifact-producer artifact-consumer; do
+      partitions=4
+      [ "$mode" = source-1 ] && partitions=1
+      proof="$proof_root/$mode"
+      mkdir -p "$proof"
+      build_args=(--release --force --threads 1)
+      case "$mode" in
+        artifact-producer) build_args+=(--emit-iyimod "$fixture/mods") ;;
+        artifact-consumer)
+          if [ -f "$fixture/boot/closure.iyi" ]; then
+            if ! mv "$fixture/boot/closure.iyi" "$proof_root/producer-source.iyi"; then
+              echo "observer: cannot preserve and remove producer source" >&2
+              status=1
+              continue
+            fi
+          fi
+          if [ -e "$fixture/boot/closure.iyi" ] || [ ! -d "$fixture/mods" ]; then
+            echo "observer: consumer source must be absent and producer artifacts present" >&2
+            status=1
+            continue
+          fi
+          build_args+=(--use-iyimod "$fixture/mods")
+          ;;
+      esac
+      for capture in off on; do
+        if [ "$mode" = artifact-producer ]; then
+          rm -rf "$fixture/mods"
+        fi
+        args=(--emit-link-input-proof "$proof/$capture.json")
+        [ "$capture" = on ] && args+=(--emit-frame-provenance "$proof/frame-provenance.json")
+        if ! (cd "$fixture" && env IYI_CACHE_DIR="$proof/cache" IYI_RELEASE_PARTITIONS="$partitions" \
+          "$IYI" build "${build_args[@]}" "${args[@]}" \
+          -o "$proof/program" "$fixture/main.iyi") \
+          > "$proof/$capture.stdout" 2> "$proof/$capture.stderr"; then
+          echo "observer: $mode capture $capture build failed" >&2
+          status=1
+          break
+        fi
+        if [ ! -s "$proof/$capture.json" ] ||
+           { [ "$capture" = on ] && [ ! -s "$proof/frame-provenance.json" ]; } ||
+           ! cp "$proof/program" "$proof/$capture.program"; then
+          echo "observer: $mode capture $capture missing evidence" >&2
+          status=1
+          break
+        fi
+        if [ "$capture" = on ]; then
+          "$proof/program" > "$proof/runtime.out" 2>&1
+          printf '%s\n' "$?" > "$proof/runtime.status"
+        fi
+      done
+      if [ ! -s "$proof/off.json" ] || [ ! -s "$proof/on.json" ] ||
+         [ ! -s "$proof/frame-provenance.json" ] ||
+         [ ! -f "$proof/off.program" ] || [ ! -f "$proof/on.program" ]; then
+        status=1
+        continue
+      fi
+      if ! python3 - "$proof" "$mode" > "$proof/comparison.out" 2> "$proof/comparison.stderr" <<'PY'
+import base64
+import copy
+import hashlib
+import json
+import pathlib
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[1])
+mode = sys.argv[2]
+
+def load(name):
+    with (root / (name + ".json")).open("rb") as f:
+        value = json.load(f)
+    if value.get("schema") != 1 or not isinstance(value.get("tool"), dict):
+        raise ValueError(name + ": invalid proof schema")
+    if not isinstance(value.get("linker"), dict) or not value.get("units") or not value.get("inputs"):
+        raise ValueError(name + ": missing tool, linker, plan or inputs")
+    tool_fields = {"compiler_version", "target", "optimization", "flags", "link_flags",
+                   "static", "mcpu", "mattr", "mcmodel", "debug", "frame_pointers",
+                   "single_module", "emit_targets", "n_threads", "llvm_version",
+                   "compiler_executable_path", "compiler_executable_path_sha256"}
+    if not tool_fields <= value["tool"].keys() or not {"program", "command", "args"} <= value["linker"].keys():
+        raise ValueError(name + ": incomplete tool or linker evidence")
+    for unit in value["units"]:
+        if not {"unit_ordinal", "unit_name", "plan"} <= unit.keys():
+            raise ValueError(name + ": incomplete unit evidence")
+        plan = unit["plan"]
+        if not isinstance(plan, dict) or not {"count", "functions", "globals"} <= plan.keys():
+            raise ValueError(name + ": incomplete partition plan")
+        if not isinstance(plan["count"], int) or plan["count"] < 1 or not isinstance(plan["functions"], list) or not isinstance(plan["globals"], list):
+            raise ValueError(name + ": invalid partition plan")
+        common = {"position", "original_name", "original_linkage", "promoted_name", "promoted_linkage", "owner"}
+        if any(not common | {"copies", "inline_only"} <= entry.keys() for entry in plan["functions"]):
+            raise ValueError(name + ": incomplete function plan")
+        if any(not common <= entry.keys() for entry in plan["globals"]):
+            raise ValueError(name + ": incomplete global plan")
+    for index, obj in enumerate(value["inputs"]):
+        if not {"link_input_id", "producer", "unit_name", "partition", "sha256", "bytes_base64"} <= obj.keys():
+            raise ValueError(name + ": incomplete object evidence")
+        data = base64.b64decode(obj["bytes_base64"], validate=True)
+        if not data or hashlib.sha256(data).hexdigest() != obj["sha256"]:
+            raise ValueError(name + ": object digest mismatch at " + str(index))
+        if obj["link_input_id"] != index:
+            raise ValueError(name + ": invalid input occurrence " + str(index))
+    return value
+
+def compare(left, right):
+    if left["tool"] != right["tool"] or left["linker"] != right["linker"]:
+        raise ValueError("tool settings or linker invocation differ")
+    if left["units"] != right["units"]:
+        raise ValueError("selected partition plans differ")
+    if len(left["inputs"]) != len(right["inputs"]):
+        raise ValueError("ordered object input counts differ")
+    for first, second in zip(left["inputs"], right["inputs"]):
+        a = {k: v for k, v in first.items() if k not in ("bytes_base64", "sha256")}
+        b = {k: v for k, v in second.items() if k not in ("bytes_base64", "sha256")}
+        if a != b:
+            raise ValueError("ordered object input coordinates differ")
+        if base64.b64decode(first["bytes_base64"], validate=True) != base64.b64decode(second["bytes_base64"], validate=True):
+            raise ValueError("ordered object input bytes differ")
+        if first["sha256"] != second["sha256"]:
+            raise ValueError("ordered object input digests differ")
+
+off, on = load("off"), load("on")
+compare(off, on)
+current = [item for item in off["inputs"] if item["producer"]["kind"] == "current_unit"]
+if not current:
+    raise ValueError("no locally generated objects")
+partitions = [item["partition"] for item in current]
+if mode == "source-4" and {part["index"] for part in partitions if part and part["count"] == 4} != {0, 1, 2, 3}:
+    raise ValueError("source build did not produce all four partition inputs")
+if mode != "source-4" and any(part is not None for part in partitions):
+    raise ValueError("per-type or single-unit build unexpectedly partitioned")
+if mode == "artifact-producer" and len(current) < 2:
+    raise ValueError("artifact producer did not produce per-type objects")
+if mode == "artifact-consumer" and not any(item["producer"]["kind"] == "artifact_object" for item in off["inputs"]):
+    raise ValueError("consumer did not import a native artifact object")
+with (root / "frame-provenance.json").open("rb") as f:
+    manifest = json.load(f)
+if manifest.get("schema") != 4 or not manifest.get("bindings") or not manifest.get("object_inputs"):
+    raise ValueError("missing schema-4 closure bindings")
+bound_inputs = [manifest["object_inputs"][binding["link_input_id"]] for binding in manifest["bindings"]]
+if mode == "source-4" and not any(item["partition"] and item["partition"]["count"] == 4 for item in bound_inputs):
+    raise ValueError("partitioned build lacks a closure definition in a partition")
+if mode == "artifact-consumer":
+    kinds = {item["producer"]["kind"] for item in bound_inputs}
+    if not {"artifact_object", "current_unit"} <= kinds:
+        raise ValueError("consumer lacks imported and local closure definitions")
+
+for name, proof in (("off", off), ("on", on)):
+    directory = root / name
+    directory.mkdir()
+    for index, obj in enumerate(proof["inputs"]):
+        filename = "input-%06d.o" % index
+        (directory / filename).write_bytes(base64.b64decode(obj["bytes_base64"], validate=True))
+        try:
+            result = subprocess.run(["nm", "-a", filename], cwd=directory,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as exc:
+            (directory / (filename + ".symbols.stderr")).write_text(str(exc))
+            continue
+        (directory / (filename + ".symbols")).write_bytes(result.stdout)
+        (directory / (filename + ".symbols.stderr")).write_bytes(result.stderr)
+
+mutant = copy.deepcopy(on)
+original = base64.b64decode(mutant["inputs"][0]["bytes_base64"], validate=True)
+changed = bytes([original[0] ^ 1]) + original[1:]
+mutant["inputs"][0]["bytes_base64"] = base64.b64encode(changed).decode("ascii")
+mutant["inputs"][0]["sha256"] = hashlib.sha256(changed).hexdigest()
+with (root / "altered-input.json").open("w") as f:
+    json.dump(mutant, f)
+try:
+    compare(off, mutant)
+except ValueError as exc:
+    if str(exc) != "ordered object input bytes differ":
+        raise
+else:
+    raise ValueError("altered object was not rejected")
+print("matched selected plans and ordered object bytes; altered object rejected")
+PY
+      then
+        echo "observer: $mode evidence did not match" >&2
+        status=1
+      else
+        echo "observer: $mode matched; altered object rejected"
+      fi
+    done
+    source_four="$proof_root/source-4"
+    if [ ! -s "$source_four/runtime.status" ] ||
+       [ "$(cat "$source_four/runtime.status" 2>/dev/null)" = 0 ] ||
+       ! grep -Fq "observer closure proof" "$source_four/runtime.out" 2>/dev/null ||
+       ! python3 "$REPO/bench/frames_equivalent.py" --strict-provenance --require-frames \
+         --source-manifest "$source_four/frame-provenance.json" --artifact-manifest "$source_four/frame-provenance.json" \
+         --source-executable "$source_four/on.program" --artifact-executable "$source_four/on.program" \
+         "$source_four/runtime.out" "$source_four/runtime.out" > "$proof_root/source-strict.out" 2> "$proof_root/source-strict.stderr"; then
+      echo "observer: partitioned source frame evidence failed" >&2
+      status=1
+    fi
+    producer="$proof_root/artifact-producer"
+    consumer="$proof_root/artifact-consumer"
+    if [ ! -s "$producer/runtime.status" ] || [ ! -s "$consumer/runtime.status" ] ||
+       [ "$(cat "$producer/runtime.status" 2>/dev/null)" = 0 ] ||
+       [ "$(cat "$producer/runtime.status" 2>/dev/null)" != "$(cat "$consumer/runtime.status" 2>/dev/null)" ] ||
+       ! grep -Fq "observer closure proof" "$producer/runtime.out" 2>/dev/null ||
+       ! grep -Fq "observer closure proof" "$consumer/runtime.out" 2>/dev/null; then
+      echo "observer: artifact producer/consumer runtime evidence missing or inconsistent" >&2
+      status=1
+    elif ! python3 "$REPO/bench/frames_equivalent.py" --strict-provenance --require-frames \
+      --source-manifest "$producer/frame-provenance.json" --artifact-manifest "$consumer/frame-provenance.json" \
+      --source-executable "$producer/on.program" --artifact-executable "$consumer/on.program" \
+      "$producer/runtime.out" "$consumer/runtime.out" > "$proof_root/strict.out" 2> "$proof_root/strict.stderr"; then
+      echo "observer: strict artifact frame comparison failed" >&2
+      status=1
+    elif ! python3 - "$consumer" > "$proof_root/mutations.out" 2> "$proof_root/mutations.stderr" <<'PY'
+import copy
+import json
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / "frame-provenance.json").read_text())
+frames = set()
+for line in (root / "runtime.out").read_bytes().splitlines():
+    match = re.fullmatch(rb"\d+ +\S+ +0x[0-9a-fA-F]{16} (.*) \+ \d+", line)
+    if match:
+        frames.add(match.group(1))
+selected = {}
+for index, binding in enumerate(manifest["bindings"]):
+    obj = manifest["object_inputs"][binding["link_input_id"]]
+    name = binding["definition"]["native_object_symbol"]
+    if not name.startswith("_"):
+        raise ValueError("expected Darwin native symbol decoration")
+    if name[1:].encode() in frames:
+        selected.setdefault(obj["producer"]["kind"], index)
+if not {"artifact_object", "current_unit"} <= selected.keys():
+    raise ValueError("observed frames do not include both imported and local closures")
+a, b = selected["artifact_object"], selected["current_unit"]
+swapped = copy.deepcopy(manifest)
+swapped["bindings"][a]["link_input_id"], swapped["bindings"][b]["link_input_id"] = \
+    swapped["bindings"][b]["link_input_id"], swapped["bindings"][a]["link_input_id"]
+(root / "swapped-bindings.json").write_text(json.dumps(swapped))
+changed = copy.deepcopy(manifest)
+first = changed["bindings"][a]["definition"]["emission"]
+other = changed["bindings"][b]["definition"]["emission"]
+if first["origin"] == other["origin"]:
+    raise ValueError("fixture closures do not have distinct origins")
+first["origin"] = other["origin"]
+(root / "changed-identity.json").write_text(json.dumps(changed))
+missing = copy.deepcopy(manifest)
+del missing["bindings"][a]
+(root / "missing-import.json").write_text(json.dumps(missing))
+print("observed imported and local closure frames; created binding and identity mutants")
+PY
+    then
+      echo "observer: cannot establish both observed closure origins" >&2
+      status=1
+    else
+      for mutant in missing-import swapped-bindings changed-identity; do
+        if python3 "$REPO/bench/frames_equivalent.py" --strict-provenance --require-frames \
+          --source-manifest "$producer/frame-provenance.json" --artifact-manifest "$consumer/$mutant.json" \
+          --source-executable "$producer/on.program" --artifact-executable "$consumer/on.program" \
+          "$producer/runtime.out" "$consumer/runtime.out" > "$proof_root/$mutant.out" 2> "$proof_root/$mutant.stderr"; then
+          echo "observer: $mutant was not rejected" >&2
+          status=1
+        fi
+      done
+    fi
+    echo "observer evidence: $proof_root"
+  fi
+fi
+
 rm -rf "$WORK"
 exit $status

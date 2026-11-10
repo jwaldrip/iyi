@@ -19,9 +19,13 @@ require "./spec_helper"
 # The program `tool bind` reads: a Crystal source, analysed under Crystal's own
 # library, which is what the tool needs and why it lives in the compiler.
 private def bind_artifact(source_path : String, root : String, dir : String,
-                          bound : String? = nil) : String
+                          bound : String? = nil, capture : Bool = false) : String
   compiler = create_spec_compiler
   compiler.no_codegen = true
+  if capture
+    compiler.emit_bind = dir
+    compiler.capture_diagnostic_provenance = true
+  end
   source = Iyi::Compiler::Source.new(File.expand_path(source_path), File.read(source_path))
   result = compiler.compile source, File.expand_path("bind-probe")
 
@@ -113,6 +117,39 @@ describe "tool bind" do
 
       File.exists?(bind_artifact("shard.cr", "MyLib", "mods")).should be_true
       consume "mods", "my_lib"
+    end
+  end
+
+  it "carries each same-signature module redefinition with its own body" do
+    with_tempdir("bind_module_previous") do
+      Dir.mkdir_p "mods"
+      File.write "shard.cr", <<-CR
+        module Chain
+          extend self
+
+          def apply(x : Int32, &block : Int32 -> Int32) : Int32
+            yield x
+          end
+
+          def apply(x : Int32, &block : Int32 -> Int32) : Int32
+            previous_def(x, &block)
+          end
+        end
+        CR
+      path = bind_artifact("shard.cr", "Chain", "mods", capture: true)
+      artifact = Iyi::IyiMod.read(path)
+      methods = artifact.exports.functions.select { |method| method.name == "apply" }
+      methods.size.should eq(2)
+      first = artifact.mono_bodies[Iyi::IyiMod.mono_body_key(artifact.module_name, methods[0], 0)]
+      second = artifact.mono_bodies[Iyi::IyiMod.mono_body_key(artifact.module_name, methods[1], 1)]
+      first.should contain("yield")
+      second.should contain("previous_def")
+      first_origin = methods[0].diagnostic_origin.not_nil!
+      second_origin = methods[1].diagnostic_origin.not_nil!
+      first_origin.should_not eq(second_origin)
+      section = artifact.diagnostic_provenance.not_nil!
+      section.fragments.has_key?(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, methods[0])).should be_true
+      section.fragments.has_key?(Iyi::IyiMod.signature_body_fragment_key(artifact.module_name, methods[1])).should be_true
     end
   end
 

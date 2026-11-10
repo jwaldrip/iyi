@@ -317,6 +317,7 @@ module Iyi
       end
 
       @context = Context.new @main, main_type, @program
+      @context.diagnostic_scope = @program
       @context.return_type = @main_ret_type
 
       @argc = @main.params[0]
@@ -872,7 +873,9 @@ module Iyi
     end
 
     def visit(node : FileNode)
-      with_context(Context.new(context.fun, context.fun_type, context.type)) do
+      file_context = Context.new(context.fun, context.fun_type, context.type)
+      file_context.diagnostic_scope = context.diagnostic_scope
+      with_context(file_context) do
         file_module = @program.file_module(node.filename)
         if vars = file_module.vars?
           set_current_debug_location Location.new(node.filename, 1, 1) if @debug.line_numbers?
@@ -1072,14 +1075,47 @@ module Iyi
       # the same answer, and the same reason, as the callees the closure
       # already copies.
       host = @iyi_closure_host
-      the_fun = codegen_fun fun_literal_name, node.def, context.type,
+      linkage_name = @program.iyi_closure_linkage_name(fun_literal_name, host.try(&.mod.name),
+        host.nil? || host.mod == @main_mod)
+      if host && linkage_name != fun_literal_name && @llvm_mod != host.mod
+        node.raise "cannot reference a private carried closure from another LLVM module"
+      end
+      the_fun = codegen_fun linkage_name, node.def, context.type,
         fun_module_info: host || @main_module_info, is_fun_literal: true,
         is_closure: is_closure, iyi_internal: !host.nil?
+      if linkage_name != fun_literal_name && the_fun.func.name != linkage_name
+        node.raise "carried closure LLVM symbol collision: #{linkage_name}"
+      end
+      if @program.diagnostic_capture
+        origin = node.diagnostic_origin
+        node.raise "closure has no diagnostic origin" unless origin
+        specialization =
+          case scope = context.diagnostic_scope
+          when Def     then scope.diagnostic_specialization_json
+          when Program then origin.program_specialization_json
+          else              nil
+          end
+        node.raise "closure has no complete diagnostic specialization" unless specialization
+        capture = context.diagnostic_capture(node, is_closure)
+        node.raise "cannot describe closure capture for diagnostic provenance" unless capture
+        location = node.location.try(&.expanded_location)
+        node.raise "closure has no displayed source location" unless location
+        filename = location.original_filename
+        node.raise "closure has no displayed source filename" unless filename
+        displayed = JSON::Any.new({
+          "file"   => JSON::Any.new(filename),
+          "line"   => JSON::Any.new(location.line_number.to_i64),
+          "column" => JSON::Any.new(location.column_number.to_i64),
+        })
+        @program.diagnostic_emissions << DiagnosticProvenance::Emission.new(
+          fun_literal_name, the_fun.func.name, (host || @main_module_info).mod.name,
+          the_fun.func.linkage.to_s, node.diagnostic_origin_json.not_nil!, specialization, capture, displayed)
+      end
       the_fun =
         if host
-          check_mod_fun host.mod, fun_literal_name, the_fun
+          check_mod_fun host.mod, the_fun.func.name, the_fun
         else
-          check_main_fun fun_literal_name, the_fun
+          check_main_fun the_fun.func.name, the_fun
         end
 
       set_current_debug_location(node) if @debug.line_numbers?
@@ -2000,7 +2036,13 @@ module Iyi
         pieces << StringLiteral.new(", at #{location.expanded_location}:#{location.line_number}").at(node)
       end
 
-      ex = Call.new(Path.global("TypeCastError").at(node), "new", StringInterpolation.new(pieces).at(node)).at(node)
+      interpolation = StringInterpolation.new(pieces).at(node)
+      if @program.diagnostic_capture
+        origin = node.diagnostic_origin
+        node.raise "cast has no diagnostic origin" unless origin
+        interpolation.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "cast_error_interpolation", "message")
+      end
+      ex = Call.new(Path.global("TypeCastError").at(node), "new", interpolation).at(node)
       call = Call.global("raise", ex).at(node)
       call = @program.normalize(call)
 

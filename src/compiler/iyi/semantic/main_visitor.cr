@@ -144,6 +144,7 @@ module Iyi
         end
         vars.each do |name, var|
           meta_var = new_meta_var(name)
+          meta_var.diagnostic_origin = var.diagnostic_origin if program.diagnostic_capture
           meta_var.bind_to(var)
           meta_vars[name] = meta_var
         end
@@ -932,6 +933,9 @@ module Iyi
 
       var_name = target.name
       meta_var, meta_var_existed = assign_to_meta_var(var_name)
+      if program.diagnostic_capture && !meta_var_existed && (origin = target.diagnostic_origin)
+        meta_var.diagnostic_origin = origin if origin.valid_for_binding?
+      end
 
       freeze_type = meta_var.freeze_type
 
@@ -1355,10 +1359,16 @@ module Iyi
 
     def bind_block_var(node, target, meta_vars, before_block_vars)
       meta_var = new_meta_var(target.name, context: node)
+      if program.diagnostic_capture && (origin = node.diagnostic_origin)
+        if index = node.args.index { |arg| arg.same?(target) }
+          meta_var.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "block_parameter", "index:#{index}")
+        end
+      end
       meta_var.bind_to(target)
       meta_vars[target.name] = meta_var
 
       before_block_var = new_meta_var(target.name, context: node)
+      before_block_var.diagnostic_origin = meta_var.diagnostic_origin if program.diagnostic_capture
       before_block_var.bind_to(target)
       before_block_vars[target.name] = before_block_var
     end
@@ -1382,7 +1392,7 @@ module Iyi
       fun_vars = @vars.dup
       meta_vars = @meta_vars.dup
 
-      node.def.args.each do |arg|
+      node.def.args.each_with_index do |arg, index|
         # It can happen that the argument has a type already,
         # when converting a block to a proc literal
         if restriction = arg.restriction
@@ -1400,6 +1410,9 @@ module Iyi
         fun_vars[arg.name] = fun_var
 
         meta_var = new_meta_var(arg.name, context: node.def)
+        if program.diagnostic_capture && (origin = node.diagnostic_origin)
+          meta_var.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "proc_parameter", "index:#{index}")
+        end
         meta_var.bind_to fun_var
         meta_vars[arg.name] = meta_var
       end
@@ -1418,6 +1431,7 @@ module Iyi
       node.bind_to node.def
       node.def.bind_to node.def.body
       node.def.vars = meta_vars
+      node.def.diagnostic_proc_scope(node, @typed_def || @program, @scope) if program.diagnostic_capture
 
       block_visitor = MainVisitor.new(program, fun_vars, node.def, meta_vars)
       block_visitor.current_type = current_type
@@ -1434,6 +1448,7 @@ module Iyi
       block_visitor.iyi_defer_entries = Set(MetaVar).new.compare_by_identity if node.def.iyi_defer?
 
       node.def.body.accept block_visitor
+      node.def.diagnostic_proc_ready if program.diagnostic_capture
 
       false
     end

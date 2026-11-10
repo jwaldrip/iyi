@@ -7,8 +7,10 @@
   require "llvm"
 {% end %}
 require "json"
+require "./codegen/diagnostic_provenance"
 require "./types"
 require "crystal/digest/md5"
+require "crystal/digest/sha256"
 
 module Iyi
   # A program contains all types and top-level methods related to one
@@ -464,6 +466,7 @@ module Iyi
     # (SPEC.md IV.1g). What the linker is given in place of the code this build
     # did not generate, because it never saw the bodies.
     getter iyi_artifact_objects = {} of String => Array(IyiMod::ObjectUnit)
+    getter(iyi_artifact_diagnostics) { {} of String => IyiMod::DiagnosticSection }
 
     # iyi: types whose methods must be emitted as real functions because their
     # module's `.iyimod` is being written (SPEC.md IV.1g).
@@ -474,6 +477,21 @@ module Iyi
     # calls the symbol, which the artifact then turns out not to define. Empty
     # unless `--emit-iyimod` asked for artifacts.
     getter iyi_exported_owners = Set(Type).new
+
+    # Computed before codegen from the same unit names selected for carriage.
+    getter iyi_carried_closure_suffixes = {} of String => String
+
+    def register_iyi_carried_closure_units(names : Array(String)) : Nil
+      names.each do |name|
+        @iyi_carried_closure_suffixes[name] ||= Iyi.safe_mangling(self, "^unit:#{name.to_slice.hexstring}")
+      end
+    end
+
+    def iyi_closure_linkage_name(requested : String, host_name : String?, main_host : Bool) : String
+      return requested if main_host || host_name.nil?
+      suffix = @iyi_carried_closure_suffixes[host_name]?
+      suffix ? requested + suffix : requested
+    end
 
     property stale_recorder : Iyi::Stale::Recorder? = nil
     property stale_reach : Iyi::Stale::Reach? = nil
@@ -786,6 +804,17 @@ module Iyi
     # pass, which runs before any of that, and only while a boundary is being
     # written.
     getter iyi_def_bodies = {} of String => String
+    getter iyi_def_bodies_by_identity = ({} of Def => String).compare_by_identity
+    getter(diagnostic_def_bodies) { {} of DiagnosticOrigin => {String, Array(DiagnosticAnchor)} }
+
+    def record_diagnostic_def_body(origin : DiagnosticOrigin, source : String, anchors : Array(DiagnosticAnchor)) : Nil
+      value = {source, anchors}
+      if previous = diagnostic_def_bodies[origin]?
+        raise "conflicting body for one diagnostic definition origin" unless previous == value
+      else
+        diagnostic_def_bodies[origin] = {source, anchors.dup}
+      end
+    end
 
     # iyi: the key one of those is stored under.
     #
@@ -913,6 +942,43 @@ module Iyi
     # a second artifact naming the same pattern share the constant rather than
     # define it twice.
     getter iyi_regex_constants = {} of String => {String, RegexOptions}
+    getter(diagnostic_regex_occurrences) { {} of String => {String, UInt32, Array(DiagnosticOrigin)} }
+    getter(diagnostic_regex_initializers) { {} of String => DiagnosticOrigin }
+    getter(diagnostic_regex_origin_tuples) { {} of DiagnosticOrigin => {String, String, UInt32} }
+
+    def record_regex_occurrence(name : String, pattern : String, options : UInt32, origin : DiagnosticOrigin) : Nil
+      raise "invalid regex literal origin" unless origin.valid_for_anchor?("Literal", "regex")
+      tuple = {name, pattern, options}
+      if existing = diagnostic_regex_occurrences[name]?
+        raise "regex name has conflicting contents" unless existing[0] == pattern && existing[1] == options
+      end
+      if previous = diagnostic_regex_origin_tuples[origin]?
+        raise "regex origin names conflicting constants" unless previous == tuple
+      else
+        diagnostic_regex_origin_tuples[origin] = tuple
+      end
+      if existing = diagnostic_regex_occurrences[name]?
+        existing[2] << origin unless existing[2].includes?(origin)
+      else
+        diagnostic_regex_occurrences[name] = {pattern, options, [origin] of DiagnosticOrigin}
+      end
+    end
+
+    def select_regex_initializer(name : String, origin : DiagnosticOrigin) : Nil
+      occurrence = diagnostic_regex_occurrences[name]? || raise "regex initializer has no occurrence"
+      raise "regex initializer is not an occurrence" unless occurrence[2].includes?(origin)
+      if previous = diagnostic_regex_initializers[name]?
+        raise "regex initializer selection changed" unless previous == origin
+      else
+        diagnostic_regex_initializers[name] = origin
+      end
+    end
+
+    def diagnostic_regex_record(name : String) : IyiMod::DiagnosticRegex
+      pattern, options, origins = diagnostic_regex_occurrences[name]? || raise "missing regex occurrences"
+      selected = diagnostic_regex_initializers[name]? || raise "missing regex initializer selection"
+      IyiMod::DiagnosticRegex.new(name, pattern, options, selected, origins.sort_by(&.to_json))
+    end
 
     # The name a regex literal's constant gets: `$Regex:` and a digest of what
     # it was written as.
@@ -968,12 +1034,36 @@ module Iyi
     # numbers are the other library's on both sides, which is what lets them
     # pass through unchanged. *at* is the node or location every part is
     # placed at.
-    def self.iyi_regex_compile_call(value : ASTNode, options : RegexOptions, at) : Call
+    def self.iyi_regex_compile_call(value : ASTNode, options : RegexOptions, at,
+                                    diagnostic_literal_origin : DiagnosticOrigin? = nil) : Call
       regex = Path.global(["Std", "Regex", "Regex"]).at(at)
-      return Call.new(regex, "compile", value).at(at) if options.value == 0
+      origin = diagnostic_literal_origin
+      if origin && !origin.valid_for_anchor?("Literal", "regex")
+        raise "invalid regex factory origin"
+      end
+      if options.value == 0
+        call = Call.new(regex, "compile", value).at(at)
+        call.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:compile") if origin
+        return call
+      end
       flags = Call.new(Path.global(["Std", "Regex", "Regex", "Options"]).at(at), "new",
         NumberLiteral.new(options.value.to_s).at(at)).at(at)
-      Call.new(regex, "compile", value, flags).at(at)
+      flags.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:options") if origin
+      call = Call.new(regex, "compile", value, flags).at(at)
+      call.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:compile") if origin
+      call
+    end
+
+    def self.crystal_regex_compile_call(value : ASTNode, options : RegexOptions, at,
+                                        diagnostic_literal_origin : DiagnosticOrigin? = nil) : Call
+      origin = diagnostic_literal_origin
+      raise "invalid regex factory origin" if origin && !origin.valid_for_anchor?("Literal", "regex")
+      flags = Call.new(Path.global(["Regex", "Options"]).at(at), "new",
+        NumberLiteral.new(options.value.to_s).at(at)).at(at)
+      flags.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:options") if origin
+      call = Call.new(Path.global("Regex").at(at), "new", value, flags).at(at)
+      call.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion", "regex:constructor") if origin
+      call
     end
 
     # iyi: the imports' names each file's module unit writes, by absolute
@@ -1016,6 +1106,91 @@ module Iyi
     # iyi: where the nodes of each body in `iyi_mono_bodies` were written, by
     # the same two keys (`IyiMod::SourcePosition`).
     getter iyi_mono_body_positions = {} of String => Hash(String, Array(IyiMod::SourcePosition))
+
+    # Diagnostic fragments are keyed identically to the travelling bodies.
+    getter(iyi_mono_body_diagnostics) { {} of String => Hash(String, IyiMod::DiagnosticFragment) }
+    getter(iyi_mono_body_origins) { {} of String => Hash(String, DiagnosticOrigin) }
+    getter(iyi_initialiser_diagnostics) { {} of String => IyiMod::DiagnosticFragment }
+    getter(iyi_class_var_diagnostics) { {} of {String, String} => {String, Array(DiagnosticAnchor)} }
+    getter(iyi_field_diagnostics) { {} of {String, String} => {String, Array(DiagnosticAnchor)} }
+    getter(iyi_macro_diagnostics) { {} of {String, String} => Array(DiagnosticAnchor) }
+    getter(iyi_signature_diagnostics) { {} of String => Hash(String, IyiMod::DiagnosticFragment) }
+    getter(iyi_top_fun_diagnostics) { {} of String => Array(DiagnosticAnchor) }
+    getter(diagnostic_emissions) { [] of DiagnosticProvenance::Emission }
+    getter(diagnostic_object_inputs) { [] of DiagnosticProvenance::ObjectInput }
+    getter(diagnostic_bindings) { [] of DiagnosticProvenance::Binding }
+
+    def record_class_var_diagnostic(owner : String, name : String, source : String,
+                                    anchors : Array(DiagnosticAnchor)) : Nil
+      key = {owner, name}
+      value = {source, anchors}
+      if previous = iyi_class_var_diagnostics[key]?
+        raise "conflicting class variable diagnostic source" unless previous == value
+      else
+        iyi_class_var_diagnostics[key] = {source, anchors.dup}
+      end
+    end
+
+    def record_field_diagnostic(owner : String, name : String, source : String,
+                                anchors : Array(DiagnosticAnchor)) : Nil
+      key = {owner, name}
+      value = {source, anchors}
+      if previous = iyi_field_diagnostics[key]?
+        raise "conflicting field diagnostic source" unless previous == value
+      else
+        iyi_field_diagnostics[key] = {source, anchors.dup}
+      end
+    end
+
+    def record_macro_diagnostic(owner : String, source : String, anchors : Array(DiagnosticAnchor)) : Nil
+      key = {owner, source}
+      if previous = iyi_macro_diagnostics[key]?
+        raise "conflicting macro diagnostic source" unless previous == anchors
+      else
+        iyi_macro_diagnostics[key] = anchors.dup
+      end
+    end
+
+    def record_top_fun_diagnostic(source : String, anchors : Array(DiagnosticAnchor)) : Nil
+      if previous = iyi_top_fun_diagnostics[source]?
+        raise "ambiguous top-level fun diagnostic source" unless previous == anchors
+      else
+        iyi_top_fun_diagnostics[source] = anchors.dup
+      end
+    end
+
+    def record_signature_diagnostic(filename : String, container : String, signature : IyiMod::Signature, a_def : Def) : Nil
+      return unless diagnostic_capture
+      records = IyiMod.diagnostic_signature_annotations(container, a_def, signature)
+      records << IyiMod.diagnostic_signature_fragment(container, a_def, signature)
+      fragments = iyi_signature_diagnostics[filename] ||= {} of String => IyiMod::DiagnosticFragment
+      records.each do |fragment|
+        if previous = fragments[fragment.key]?
+          raise "ambiguous signature diagnostic fragment" unless previous == fragment
+        else
+          fragments[fragment.key] = fragment
+        end
+      end
+    end
+
+    def record_mono_body_diagnostic(filename : String, semantic_key : String, container : String,
+                                    signature : IyiMod::Signature, text : String, anchors : Array(DiagnosticAnchor)) : Nil
+      origin = signature.diagnostic_origin || raise "mono body has no definition origin"
+      origins = iyi_mono_body_origins[filename] ||= {} of String => DiagnosticOrigin
+      if previous = origins[semantic_key]?
+        raise "ambiguous repeated mono body requires structural collection" unless previous == origin
+      else
+        origins[semantic_key] = origin
+      end
+      key = IyiMod.signature_body_fragment_key(container, signature)
+      fragment = IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(text), anchors)
+      fragments = iyi_mono_body_diagnostics[filename] ||= {} of String => IyiMod::DiagnosticFragment
+      if previous = fragments[key]?
+        raise "conflicting mono body diagnostic fragment" unless previous == fragment
+      else
+        fragments[key] = fragment
+      end
+    end
 
     # iyi: the defs whose bodies travel because their machine code enumerates an
     # open type's members, by the location each was written at (SPEC.md III.6).
@@ -1571,10 +1746,15 @@ module Iyi
     # without anybody remembering to add it.
     getter builtin_type_names = Set(String).new
 
+    # Capture is explicitly enabled by a provenance-producing compilation.
+    property diagnostic_capture = false
+
     # Returns a new `Parser` for the given *source*, sharing the string pool and
     # warnings with this program.
     def new_parser(source : String, var_scopes = [Set(String).new])
-      Parser.new(source, string_pool, var_scopes, warnings)
+      Parser.new(source, string_pool, var_scopes, warnings).tap do |parser|
+        parser.diagnostic_capture = @diagnostic_capture
+      end
     end
 
     # iyi: how many threads parse ahead of the top-level pass (`ParseAhead`);

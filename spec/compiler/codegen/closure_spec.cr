@@ -1,6 +1,37 @@
 require "../../spec_helper"
 
 describe "Code gen: closure" do
+  it "namespaces only closures hosted in selected carried units" do
+    program = Iyi::Program.new
+    names = ["Boot::Half", "Boot::Half+", "Boot::Half::Nested", "A%@^", "雪"]
+    program.register_iyi_carried_closure_units(names)
+    requested = "~procProc(Int32)^source.iyi:12"
+    names.each do |name|
+      suffix = "^unit:#{name.to_slice.hexstring}"
+      program.iyi_carried_closure_suffixes[name].should eq(suffix)
+      program.iyi_closure_linkage_name(requested, name, false).should eq(requested + suffix)
+    end
+    program.iyi_carried_closure_suffixes.values.uniq.size.should eq(names.size)
+    program.iyi_closure_linkage_name(requested, nil, false).should eq(requested)
+    program.iyi_closure_linkage_name(requested, "Caller::Other", false).should eq(requested)
+    program.iyi_closure_linkage_name(requested, "Boot::Half", true).should eq(requested)
+    program.diagnostic_capture = true
+    program.register_iyi_carried_closure_units(names)
+    program.iyi_closure_linkage_name(requested, "Boot::Half", false)
+      .should eq("#{requested}^unit:426f6f743a3a48616c66")
+  end
+
+  it "mangles only the carried unit suffix on MSVC" do
+    program = Iyi::Program.new
+    program.flags << "msvc"
+    program.register_iyi_carried_closure_units(["Boot::Half", "雪"])
+    requested = ".7E.proc.28.Int32.29."
+    program.iyi_closure_linkage_name(requested, "Boot::Half", false)
+      .should eq("#{requested}.5E.unit.3A.426f6f743a3a48616c66")
+    program.iyi_closure_linkage_name(requested, "雪", false)
+      .should eq("#{requested}.5E.unit.3A.e99baa")
+  end
+
   it "codegens simple closure at global scope" do
     run(<<-CODE).to_i.should eq(1)
       a = 1
@@ -800,5 +831,255 @@ describe "Code gen: closure" do
 
       fn.call.closure_data.address == Closure.atomic.address
       CODE
+  end
+  it "rejects incomplete frame provenance identities" do
+    origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":false,"environment":null}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    emission = Iyi::DiagnosticProvenance::Emission.new("requested", "actual", "unit", "Internal", origin, specialization, capture, location)
+    Iyi::DiagnosticProvenance.validate_emission!(emission)
+
+    capture["proc_type"].as_h.delete("return")
+    expect_raises(Exception) { Iyi::DiagnosticProvenance.validate_emission!(emission) }
+  end
+
+  it "rejects legacy expanded origins without emission parts" do
+    origin = JSON.parse(%({"kind":"Expanded","invocation_origin":{"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"Call","role":"method"},"macro_definition_origin":{"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":1,"anchor_kind":"Macro","role":"keyword"},"expansion_guard":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","generated_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow","spliced_origin":null}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":false,"environment":null}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    record = Iyi::DiagnosticProvenance::Emission.new("requested", "actual", "unit", "Internal", origin, specialization, capture, location)
+    expect_raises(Exception) { Iyi::DiagnosticProvenance.validate_emission!(record) }
+  end
+
+  it "rejects an unproven closure binding scope" do
+    origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":true,"environment":{"captured_self_type":null,"bindings":[{"name":"x","binding_origin":{"kind":"Synthetic","parent_origin":{"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":1,"anchor_kind":"Call","role":"method"},"synthesis_kind":"local_binding","structural_slot":"assignment"},"scope":{"kind":"program"},"type":{"kind":"Iyi::IntegerType","name":"Int32"},"mutable":false}],"parent":null}}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    emission = Iyi::DiagnosticProvenance::Emission.new("requested", "actual", "unit", "Internal", origin, specialization, capture, location)
+    Iyi::DiagnosticProvenance.validate_emission!(emission)
+    capture["environment"]["bindings"][0]["scope"].as_h["kind"] = JSON::Any.new("unknown")
+    expect_raises(Exception) { Iyi::DiagnosticProvenance.validate_emission!(emission) }
+  end
+
+  it "reads exact Mach-O name bytes and rejects malformed native evidence" do
+    name = "_~proc line\n0000000000000010 (__TEXT,__text) external forged\r \xff".to_slice
+    bytes = Bytes.new(230 + name.size, 0_u8)
+    put = ->(offset : Int32, value : UInt64, width : Int32) do
+      width.times { |i| bytes[offset + i] = ((value >> (8 * i)) & 0xff).to_u8 }
+    end
+    put.call(0, 0xfeedfacf_u64, 4)
+    put.call(4, 0x0100000c_u64, 4)
+    put.call(12, 1_u64, 4)
+    put.call(16, 2_u64, 4)
+    put.call(20, 176_u64, 4)
+    put.call(32, 0x19_u64, 4)
+    put.call(36, 152_u64, 4)
+    put.call(96, 1_u64, 4)
+    bytes[104, 6].copy_from("__text".to_slice)
+    bytes[120, 6].copy_from("__TEXT".to_slice)
+    put.call(136, 0x100_u64, 8)
+    put.call(144, 4_u64, 8)
+    put.call(152, 208_u64, 4)
+    put.call(168, 0x80000000_u64, 4)
+    put.call(184, 2_u64, 4)
+    put.call(188, 24_u64, 4)
+    put.call(192, 212_u64, 4)
+    put.call(196, 1_u64, 4)
+    put.call(200, 228_u64, 4)
+    put.call(204, (name.size + 2).to_u64, 4)
+    put.call(212, 1_u64, 4)
+    put.call(216, 0x0e_u64, 1)
+    put.call(217, 1_u64, 1)
+    put.call(218, 0x80_u64, 2)
+    put.call(220, 0x100_u64, 8)
+    bytes[229, name.size].copy_from(name)
+    parse = -> { Iyi::DiagnosticProvenance.parse_native_evidence(bytes, Iyi::DiagnosticProvenance::NativeKind::Object) }
+    evidence = parse.call
+    evidence.symbols.size.should eq(1)
+    evidence.symbols.first.name_base64.should eq("X35wcm9jIGxpbmUKMDAwMDAwMDAwMDAwMDAxMCAoX19URVhULF9fdGV4dCkgZXh0ZXJuYWwgZm9yZ2VkDSD/")
+    evidence.symbols.first.value.should eq("0000000000000100")
+    evidence.direct_code?(evidence.symbols.first).should be_true
+    [0x0f_u64, 0x1f_u64].each do |type|
+      put.call(216, type, 1)
+      found = parse.call
+      found.direct_code?(found.symbols.first).should be_true
+    end
+    put.call(216, 0x0e_u64, 1)
+    put.call(168, 0_u64, 4)
+    found = parse.call
+    found.direct_code?(found.symbols.first).should be_false
+    put.call(168, 0x80000008_u64, 4)
+    found = parse.call
+    found.direct_code?(found.symbols.first).should be_false
+    put.call(168, 0x80000000_u64, 4)
+    [0_u64, 1_u64, 2_u64, 0xe0_u64].each do |type|
+      put.call(216, type, 1)
+      found = parse.call
+      found.direct_code?(found.symbols.first).should be_false
+    end
+    put.call(216, 0x0e_u64, 1)
+    # Linker-defined header symbols can carry a section ordinal even when
+    # their address is outside the section. Neither side nor the end is code.
+    [0xff_u64, 0x104_u64, 0x105_u64].each do |address|
+      put.call(220, address, 8)
+      found = parse.call
+      found.symbols.first.value.should eq(address.to_s(16).rjust(16, '0'))
+      found.direct_code?(found.symbols.first).should be_false
+    end
+    put.call(220, 0x100_u64, 8)
+    put.call(216, 0x0a_u64, 1)
+    expect_raises(Exception, /indirect/) { parse.call }
+    put.call(216, 0x0e_u64, 1)
+    put.call(217, 2_u64, 1)
+    expect_raises(Exception, /ordinal/) { parse.call }
+    put.call(217, 1_u64, 1)
+    put.call(204, (name.size + 1).to_u64, 4)
+    expect_raises(Exception, /unterminated/) { parse.call }
+    put.call(204, (name.size + 2).to_u64, 4)
+    put.call(188, 16_u64, 4)
+    expect_raises(Exception) { parse.call }
+    put.call(188, 24_u64, 4)
+    put.call(16, 3_u64, 4)
+    expect_raises(Exception) { parse.call }
+    put.call(16, 2_u64, 4)
+    put.call(192, 200_u64, 4)
+    expect_raises(Exception) { parse.call }
+    put.call(192, 212_u64, 4)
+    put.call(212, (name.size + 2).to_u64, 4)
+    expect_raises(Exception, /string index/) { parse.call }
+    put.call(212, 1_u64, 4)
+    put.call(184, 0_u64, 4)
+    expect_raises(Exception, /missing Mach-O symtab/) { parse.call }
+    put.call(184, 2_u64, 4)
+    put.call(0, 0xcafebabe_u64, 4)
+    expect_raises(Exception, /magic/) { parse.call }
+  end
+
+  it "bounds expanded Mach-O names including shared and suffix string indexes" do
+    # One valid string table, referenced repeatedly by valid undefined nlists.
+    # Small names are accepted; long shared names exceed the expanded budget.
+    [32, 32768].each do |name_length|
+      [false, true].each do |suffixes|
+        count = 1024
+        string_start = 56 + count * 16
+        bytes = Bytes.new(string_start + name_length + 2, 0_u8)
+        put = ->(offset : Int32, value : UInt64, width : Int32) do
+          width.times { |i| bytes[offset + i] = ((value >> (8 * i)) & 0xff).to_u8 }
+        end
+        put.call(0, 0xfeedfacf_u64, 4)
+        put.call(4, 0x0100000c_u64, 4)
+        put.call(12, 1_u64, 4)
+        put.call(16, 1_u64, 4)
+        put.call(20, 24_u64, 4)
+        put.call(32, 2_u64, 4)
+        put.call(36, 24_u64, 4)
+        put.call(40, 56_u64, 4)
+        put.call(44, count.to_u64, 4)
+        put.call(48, string_start.to_u64, 4)
+        put.call(52, (name_length + 2).to_u64, 4)
+        bytes[string_start + 1, name_length].fill(0x61_u8)
+        count.times do |i|
+          index = suffixes ? 1 + i % 16 : 1
+          put.call(56 + 16 * i, index.to_u64, 4)
+        end
+        if name_length == 32
+          evidence = Iyi::DiagnosticProvenance.parse_native_evidence(bytes, Iyi::DiagnosticProvenance::NativeKind::Object)
+          evidence.symbols.size.should eq(count)
+          evidence.symbols.first.name_base64.should eq(Base64.strict_encode("a" * 32))
+          if suffixes
+            evidence.symbols[15].name_base64.should eq(Base64.strict_encode("a" * 17))
+          end
+        else
+          expect_raises(Exception, /native evidence size limit exceeded/) do
+            Iyi::DiagnosticProvenance.parse_native_evidence(bytes, Iyi::DiagnosticProvenance::NativeKind::Object)
+          end
+        end
+      end
+    end
+  end
+
+  it "observes defined functions but not declarations" do
+    llvm_context = LLVM::Context.new
+    mod = llvm_context.new_module("diagnostic-observer")
+    mod.functions.add("defined", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    end
+    mod.functions.add("declared", [] of LLVM::Type, llvm_context.int32)
+    observer = Iyi::DiagnosticProvenance::Observer.new(mod, {} of String => Array(Iyi::DiagnosticProvenance::Emission))
+    observed = observer.finish
+    observed.map(&.llvm_symbol).should eq(["defined"])
+    observed.first.unresolved_nonclosure?.should be_true
+  end
+
+  it "retains all identities when LLVM replaces one tracked function with another" do
+    llvm_context = LLVM::Context.new
+    mod = llvm_context.new_module("diagnostic-observer-replacement")
+    first = mod.functions.add("first", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    end
+    second = mod.functions.add("second", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(2) }
+    end
+    origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":false,"environment":null}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    first_record = Iyi::DiagnosticProvenance::Emission.new("first", "first", "unit", "Internal", origin, specialization, capture, location)
+    second_record = Iyi::DiagnosticProvenance::Emission.new("second", "second", "unit", "Internal", origin, specialization, capture, location)
+    observer = Iyi::DiagnosticProvenance::Observer.new(mod, {"first" => [first_record], "second" => [second_record]})
+    LibLLVM.replace_all_uses_with(first, second)
+    first.delete
+    observed = observer.finish
+    observed.size.should eq(1)
+    observed[0].llvm_symbol.should eq("second")
+    observed[0].emissions.map(&.requested_symbol).sort.should eq(["first", "second"])
+    observed[0].unresolved_nonclosure?.should be_false
+  end
+
+  it "marks a closure replaced by a non-closure as unresolved" do
+    llvm_context = LLVM::Context.new
+    mod = llvm_context.new_module("diagnostic-observer-unresolved")
+    closure = mod.functions.add("closure", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    end
+    other = mod.functions.add("other", [] of LLVM::Type, llvm_context.int32) do |function|
+      function.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(2) }
+    end
+    origin = JSON.parse(%({"kind":"Written","source_identity":{"module":"app/main","file":"main.iyi"},"input_byte_offset":0,"anchor_kind":"ProcLiteral","role":"arrow"}))
+    specialization = JSON.parse(%({"kind":"program_scope","source_identity":{"module":"app/main","file":"main.iyi"}}))
+    capture = JSON.parse(%({"proc_type":{"kind":"Iyi::ProcInstanceType","arguments":[],"return":{"kind":"Iyi::NilType","name":"Nil"}},"is_closure":false,"environment":null}))
+    location = JSON.parse(%({"file":"main.iyi","line":1,"column":1}))
+    record = Iyi::DiagnosticProvenance::Emission.new("closure", "closure", "unit", "Internal", origin, specialization, capture, location)
+    observer = Iyi::DiagnosticProvenance::Observer.new(mod, {"closure" => [record]})
+    LibLLVM.replace_all_uses_with(closure, other)
+    closure.delete
+    observed = observer.finish
+    observed.size.should eq(1)
+    observed[0].emissions.size.should eq(1)
+    observed[0].unresolved_nonclosure?.should be_true
+  end
+
+  it "does not claim a deleted LLVM definition survived" do
+    llvm_context = LLVM::Context.new
+    mod = llvm_context.new_module("diagnostic-observer-deletion")
+    function = mod.functions.add("removed", [] of LLVM::Type, llvm_context.int32) do |definition|
+      definition.basic_blocks.append("entry") { |builder| builder.ret llvm_context.int32.const_int(1) }
+    end
+    observer = Iyi::DiagnosticProvenance::Observer.new(mod, {} of String => Array(Iyi::DiagnosticProvenance::Emission))
+    function.delete
+    observer.finish.should be_empty
+  end
+
+  it "requires the cast's structural anchor for its synthetic error interpolation" do
+    cast = Iyi::DiagnosticOrigin::Written.new("app/main", "main.iyi", 12, "Cast", "keyword")
+    origin = Iyi::DiagnosticOrigin::Synthetic.new(cast, "cast_error_interpolation", "message")
+    origin.valid_for_anchor?("Literal", "interpolation").should be_true
+
+    other = Iyi::DiagnosticOrigin::Written.new("app/main", "main.iyi", 12, "Call", "method")
+    invalid = Iyi::DiagnosticOrigin::Synthetic.new(other, "cast_error_interpolation", "message")
+    invalid.valid_for_anchor?("Literal", "interpolation").should be_false
   end
 end

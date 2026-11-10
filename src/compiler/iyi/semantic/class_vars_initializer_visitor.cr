@@ -77,7 +77,15 @@ module Iyi
         #
         # Here rather than in the gather above, because the variable may not be
         # on its owner yet: the line below this loop is what puts it there.
-        class_var.iyi_initialiser_source = node.to_s
+        if diagnostic_capture
+          io = IO::Memory.new
+          anchors = [] of DiagnosticAnchor
+          node.to_s(io, diagnostic_anchors: anchors)
+          class_var.iyi_initialiser_source = io.to_s
+          class_var.iyi_initialiser_anchors = anchors
+        else
+          class_var.iyi_initialiser_source = node.to_s
+        end
 
         main_visitor.pushing_type(owner.as(ModuleType)) do
           # Check if we can autocast

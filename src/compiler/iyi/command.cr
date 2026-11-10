@@ -974,6 +974,14 @@ class Iyi::Command
         opts.on("--no-codegen", "Don't do code generation") do
           compiler.no_codegen = true
         end
+        opts.on("--emit-frame-provenance FILE", "Write executable-bound closure frame provenance") do |path|
+          abort! "--emit-frame-provenance takes a file path", :USAGE_ERROR if path.empty?
+          compiler.emit_frame_provenance = path
+        end
+        opts.on("--emit-link-input-proof FILE", "Write the selected link inputs and partition plan") do |path|
+          abort! "--emit-link-input-proof takes a file path", :USAGE_ERROR if path.empty?
+          compiler.emit_link_input_proof = path
+        end
         opts.on("-o FILE", "--output FILE", "Output path. If a directory, the filename is derived from the first source file (default: ./)") do |an_output_filename|
           # `-o ""` is what a shell produces from `-o "$OUT"` with `OUT`
           # unset, and it used to mean the current directory - the
@@ -1024,6 +1032,9 @@ class Iyi::Command
       # library — which is exactly the combination `--emit-iyimod` refuses.
       opts.on("--emit-bind DIR", "iyi: where `tool bind` writes the boundary it generates") do |dir|
         compiler.emit_bind = dir
+      end
+      opts.on("--capture-diagnostic-provenance", "Capture diagnostic provenance for an artifact build") do
+        compiler.capture_diagnostic_provenance = true
       end
 
       opts.on("--emit-iyimod DIR", "iyi: write a .iyimod per imported module this build reads from source into DIR (a package's is III.7 step 5's, and is not one of these)") do |dir|
@@ -1157,6 +1168,10 @@ class Iyi::Command
     end
 
     compiler.link_flags = link_flags.join(' ') unless link_flags.empty?
+    if compiler.capture_diagnostic_provenance && command != "tool bind" &&
+       (command != "build" || compiler.no_codegen?)
+      abort! "--capture-diagnostic-provenance requires tool bind or a bind keep build", :USAGE_ERROR
+    end
 
     filenames += opt_filenames.not_nil!
     arguments = opt_arguments.not_nil!

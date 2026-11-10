@@ -1,10 +1,14 @@
 require "option_parser"
 require "file_utils"
+require "file/tempfile"
 require "colorize"
 require "crystal/digest/md5"
 require "./optimization_mode"
 require "./wasm_roots"
 require "./release_partition"
+{% unless flag?(:without_llvm) %}
+  require "./codegen/diagnostic_observer"
+{% end %}
 require "./preempt_checks"
 require "./mod/installer"
 require "./stale/encoding"
@@ -114,6 +118,13 @@ module Iyi
     # If `true`, no executable will be generated after compilation
     # (useful to type-check a program)
     property? no_codegen = false
+
+    property emit_frame_provenance : String? = nil
+    property capture_diagnostic_provenance = false
+    property emit_link_input_proof : String? = nil
+    record LinkInputProofSnapshot, tool : JSON::Any, units : Array(JSON::Any), inputs : Array(JSON::Any)
+    @link_input_proof_snapshot : LinkInputProofSnapshot? = nil
+    @link_input_proof_linker : JSON::Any? = nil
 
     # iyi: whether this build's link is the one the compiler builds itself
     # rather than the one `cc` builds for it, and whether that has already been
@@ -409,6 +420,9 @@ module Iyi
     # the prelude for reasons caching its analysis does not remove.
     private def compile_with_preanalysed_prelude(pre : Preanalysed, sources : Array(Source),
                                                  output_filename : String, & : Program -> Nil) : Result
+      if @emit_frame_provenance || @capture_diagnostic_provenance || @emit_link_input_proof
+        raise CompilerError.new("diagnostic evidence requires a fresh prelude analysis", :USAGE_ERROR)
+      end
       program = pre.program
       @iyi_link_driver_only = true if stale_build?
 
@@ -450,6 +464,7 @@ module Iyi
       program.iyi_prefers_source = @iyi_prefers_source
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
+      program.diagnostic_capture = !@emit_frame_provenance.nil? || @capture_diagnostic_provenance
       # An emitting build parses docs whatever the adopted analysis wanted:
       # the artifact's `Docs` travel per module, and modules are parsed per
       # build — the prelude's own docs are nobody's surface.
@@ -510,6 +525,7 @@ module Iyi
       end
 
       if stale_check(program, node, sources)
+        raise CompilerError.new("link-input proof cannot use a completed-build shortcut", :FAILURE) if @emit_link_input_proof
         return Result.new(program, node)
       end
 
@@ -522,6 +538,7 @@ module Iyi
 
       write_iyimods program, prepared, units
       fill_bind_artifact program, units
+      write_link_input_proof
 
       @progress_tracker.clear
       print_macro_run_stats(program)
@@ -597,7 +614,7 @@ module Iyi
 
     # Re-applied by the adopt path above. `new_program` is what would otherwise
     # have set them, and adoption skips it.
-    APPLIED_ON_ADOPT = %w(use_iyimod iyi_prefers_source no_codegen emit_iyimod warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root iyi_header_root crystal_library)
+    APPLIED_ON_ADOPT = %w(use_iyimod iyi_prefers_source no_codegen emit_iyimod emit_frame_provenance capture_diagnostic_provenance warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root iyi_header_root crystal_library)
     # Neither, and two of these are judgements rather than facts. `mcpu`,
     # `mattr` and `mcmodel` reach the target machine and the target machine
     # reaches codegen, not analysis — a prelude analysed for one `-mcpu` is the
@@ -606,8 +623,8 @@ module Iyi
     # which is visible now rather than merely true.
     OUTSIDE_PRELUDE_ANALYSIS = %w(
       cleanup cross_compile dependency_printer dump_ll emit_base_filename
-      emit_bind emit_targets frame_pointers iyi_direct_link iyi_keep
-      iyi_link_driver_only link_flags mattr mcmodel mcpu n_threads no_cleanup
+      emit_bind emit_targets emit_link_input_proof frame_pointers iyi_direct_link iyi_keep
+      iyi_link_driver_only link_flags link_input_proof_linker link_input_proof_snapshot mattr mcmodel mcpu n_threads no_cleanup
       program progress_tracker single_module stale_drop stderr target_machine verbose
       stale_accept stale_block stale_dump_elements stale_key
     )
@@ -637,8 +654,8 @@ module Iyi
     end
 
     IN_BEHAVIOR_KEY = %w(
-      cleanup codegen_target cross_compile crystal_library debug dump_ll
-      emit_bind emit_iyimod emit_targets flags frame_pointers iyi_direct_link
+      capture_diagnostic_provenance cleanup codegen_target cross_compile crystal_library debug dump_ll
+      emit_bind emit_frame_provenance emit_iyimod emit_link_input_proof emit_targets flags frame_pointers iyi_direct_link
       iyi_keep iyi_link_driver_only iyi_prefers_source link_flags mattr mcmodel
       mcpu n_threads no_cleanup no_codegen optimization_mode prelude single_module
       static target_machine wants_doc
@@ -649,9 +666,12 @@ module Iyi
       iyi_project_root program use_iyimod
     )
 
+    # The two link-input fields are per-invocation evidence scratch, reset at
+    # compile entry and never consulted to decide code generation or reuse.
     DISPLAY_ONLY = %w(
       color dependency_printer progress_tracker show_error_trace stale_accept
       stale_block stale_drop stale_dump_elements stale_key stderr stdout verbose warnings
+      link_input_proof_linker link_input_proof_snapshot
     )
 
     def behavior_key : Stale::Digest
@@ -667,6 +687,9 @@ module Iyi
       {% end %}
 
       Stale.d("behavior") do |encoder|
+        encoder.bool(@capture_diagnostic_provenance)
+        encoder.bool(!@emit_frame_provenance.nil?)
+        encoder.bool(!@emit_link_input_proof.nil?)
         encoder.bool(@cleanup)
         encoder.str(@codegen_target.to_s)
         encoder.bool(@cross_compile)
@@ -783,8 +806,43 @@ module Iyi
     # Yields a `Program` instance before compiling.
     def compile_configure_program(source : Source | Array(Source), output_filename : String, & : Program -> Nil) : Result
       source = [source] unless source.is_a?(Array)
+      @link_input_proof_snapshot = nil
+      @link_input_proof_linker = nil
+      if @capture_diagnostic_provenance && (!emit_bind || (!@no_codegen && !iyi_keep))
+        raise CompilerError.new("capture-only diagnostics require tool bind or a bind keep build with --emit-bind", :USAGE_ERROR)
+      end
+      if proof = @emit_link_input_proof
+        proof_path = File.expand_path(proof)
+        if proof_path == File.expand_path(output_filename) ||
+           source.any? { |entry| !entry.filename.empty? && File.expand_path(entry.filename) == proof_path } ||
+           @emit_frame_provenance.try { |path| File.expand_path(path) == proof_path }
+          raise CompilerError.new("link-input proof path must differ from executable, sources, and frame manifest", :USAGE_ERROR)
+        end
+        if File.exists?(proof_path) || File.symlink?(proof_path)
+          raise CompilerError.new("link-input proof path already exists; choose a new path", :USAGE_ERROR)
+        end
+        if stale_build? || @stale_drop || @stale_dump_elements || @stale_accept || @stale_block
+          raise CompilerError.new("link-input proof cannot be combined with stale-check options", :USAGE_ERROR)
+        end
+        if @no_codegen || @cross_compile || (emit_bind && iyi_keep) || ENV["IYI_FORK_PROBE"]?
+          raise CompilerError.new("link-input proof requires an ordinary linked executable", :USAGE_ERROR)
+        end
+      end
+      if manifest = @emit_frame_provenance
+        manifest_path = File.expand_path(manifest)
+        if manifest_path == File.expand_path(output_filename) || source.any? { |entry| !entry.filename.empty? && File.expand_path(entry.filename) == manifest_path }
+          raise CompilerError.new("frame provenance path must differ from the executable and source files", :USAGE_ERROR)
+        end
+        File.delete?(manifest_path)
+        if File.exists?(manifest_path)
+          raise CompilerError.new("cannot remove stale frame provenance at #{manifest_path}", :FAILURE)
+        end
+        if @no_codegen || @cross_compile || (emit_bind && iyi_keep)
+          raise CompilerError.new("frame provenance requires a linked executable", :USAGE_ERROR)
+        end
+      end
       @iyi_link_driver_only = true if stale_build?
-      return prelude_fork_probe(source, output_filename) if ENV["IYI_FORK_PROBE"]?
+      return prelude_fork_probe(source, output_filename) if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && ENV["IYI_FORK_PROBE"]?
 
       # iyi: `IYI_WARM=1` — analyse the prelude and adopt it, in one process and
       # **without forking**, printing the two halves.
@@ -800,7 +858,7 @@ module Iyi
       # the fork costs 0.2 to 0.3 s of it (SPEC.md IV.1d). A measurement tool
       # rather than a mode — it analyses the prelude in the foreground, so it is
       # always slower overall than an ordinary build.
-      if ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
+      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && @emit_link_input_proof.nil? && ENV["IYI_WARM"]? && !Compiler.preanalysed.has_key?(prelude_cache_key)
         warm = Time.instant
         pre = preanalyse_prelude
         Compiler.preanalysed[pre.key] = pre
@@ -811,7 +869,7 @@ module Iyi
         return result
       end
 
-      if pre = Compiler.preanalysed[prelude_cache_key]?
+      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && @emit_link_input_proof.nil? && (pre = Compiler.preanalysed[prelude_cache_key]?)
         return compile_with_preanalysed_prelude(pre, source, output_filename) { |program| yield program }
       end
       program = new_program(source)
@@ -824,7 +882,7 @@ module Iyi
         program.macro_expansion_error_hook.try &.call(ex.cause)
       end
 
-      if stale_check(program, node, source)
+      if @emit_frame_provenance.nil? && !@capture_diagnostic_provenance && @emit_link_input_proof.nil? && stale_check(program, node, source)
         return Result.new(program, node)
       end
 
@@ -837,6 +895,10 @@ module Iyi
 
       write_iyimods program, prepared, units
       fill_bind_artifact program, units
+      write_link_input_proof
+      if manifest = @emit_frame_provenance
+        DiagnosticProvenance.write_manifest(manifest, output_filename, program.diagnostic_bindings, program.diagnostic_object_inputs, DiagnosticProvenance.target_cpu(program.codegen_target.to_s))
+      end
 
       @progress_tracker.clear
       print_macro_run_stats(program)
@@ -874,6 +936,7 @@ module Iyi
       program.iyi_fills_boundary = true
       program.iyi_exported_owners << type
       collect_iyi_owners type, program.iyi_exported_owners
+      program.register_iyi_carried_closure_units(iyi_unit_names(type)) if emit_bind
     end
 
     private def prepare_iyimods(program : Program) : Array({String, IyiMod::Artifact})?
@@ -887,6 +950,7 @@ module Iyi
       program.iyi_module_paths.each_value do |module_name|
         if type = program.iyi_module_type(module_name)
           program.iyi_exported_owners << type
+          program.register_iyi_carried_closure_units(iyi_unit_names(type))
           collect_iyi_owners type, program.iyi_exported_owners
         end
       end
@@ -959,6 +1023,24 @@ module Iyi
           # allowed in a consumer what they were here (SPEC.md III.13).
           unsafe: program.iyi_unsafe_files[filename]? || "",
         )
+
+        if program.diagnostic_capture
+          diagnostic = IyiMod::DiagnosticSection.new
+          program.iyi_mono_body_diagnostics[filename]?.try &.each_value { |fragment| diagnostic.add_fragment(fragment) }
+          program.iyi_signature_diagnostics[filename]?.try &.each_value { |fragment| diagnostic.add_fragment(fragment) }
+          if fragment = program.iyi_initialiser_diagnostics[filename]?
+            diagnostic.add_fragment(fragment)
+          end
+          root = program.iyi_module_type(module_name) || raise "missing artifact root owner"
+          root_owner = root.to_s(generic_args: false)
+          diagnostic_add_class_vars(program, diagnostic, artifact.exports.class_vars, root_owner, IyiMod::DIAGNOSTIC_ROOT_CONTAINER)
+          artifact.exports.types.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration, root_owner) }
+          artifact.reopened.each { |declaration| diagnostic_add_type_class_vars(program, diagnostic, declaration, root_owner) }
+          diagnostic_add_macros(program, diagnostic, artifact.macro_bodies, root_owner, IyiMod::DIAGNOSTIC_ROOT_CONTAINER)
+          artifact.exports.types.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration, root_owner) }
+          artifact.reopened.each { |declaration| diagnostic_add_type_macros(program, diagnostic, declaration, root_owner) }
+          artifact.diagnostic_provenance = diagnostic
+        end
 
         # What each of its functions reaches of module state, for the walk
         # a consumer's spawn makes into them (SPEC.md III.4.15). Before the
@@ -1089,19 +1171,32 @@ module Iyi
       type = program.types?.try &.[]?(root)
       return unless type.is_a?(ModuleType)
 
-      names = [type.to_s] of String
-      collect_iyi_unit_names type, names
-      names.sort!.uniq!
+      names = iyi_unit_names(type)
 
       path = File.join(dir, "#{Iyi.iyi_module_name(root).gsub('/', '-')}.iyimod")
       return unless File.file?(path)
 
       artifact = IyiMod.read path
-      units_by_name = units.to_h { |unit| {unit.original_name, unit} }
-      artifact.object_code = collect_iyi_object_code(names, units_by_name)
+      if program.diagnostic_capture
+        object_code, records = diagnostic_carried_objects(program, names, units)
+        artifact.object_code = object_code
+        section = artifact.diagnostic_provenance || raise "bound artifact has no diagnostic provenance"
+        section.objects.clear
+        records.each { |record| section.add_object(record) }
+        section.validate_objects!(object_code)
+      else
+        units_by_name = units.to_h { |unit| {unit.original_name, unit} }
+        artifact.object_code = collect_iyi_object_code(names, units_by_name)
+      end
       artifact.type_ids = collect_iyi_type_ids(program, names, type)
       artifact.constants = collect_iyi_constants(program, names)
       artifact.regexes = collect_iyi_regexes(program, artifact.constants)
+      if program.diagnostic_capture
+        section = artifact.diagnostic_provenance || raise "missing bound regex diagnostics"
+        section.regexes.clear
+        artifact.regexes.each { |regex| section.add_regex(program.diagnostic_regex_record(regex.name)) }
+        section.validate_regexes!(artifact.regexes)
+      end
       artifact.class_vars = collect_iyi_unit_class_vars(program, names)
       artifact.match_types = collect_iyi_match_types(program, names)
       artifact.symbol_literals = collect_iyi_symbol_literals(program, names)
@@ -1224,7 +1319,15 @@ module Iyi
         next if artifact.module_name.includes?('.')
 
         unit_names = iyi_unit_names(program, artifact.module_name)
-        artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
+        if program.diagnostic_capture
+          object_code, records = diagnostic_carried_objects(program, unit_names, units)
+          artifact.object_code = object_code
+          section = artifact.diagnostic_provenance || raise "missing artifact diagnostic section"
+          records.each { |record| section.add_object(record) }
+          section.validate_objects!(object_code)
+        else
+          artifact.object_code = collect_iyi_object_code(unit_names, units_by_name)
+        end
 
         # The units whose object code actually travelled, which is not the same
         # list. `collect_iyi_object_code` drops a name with no compilation unit
@@ -1243,6 +1346,11 @@ module Iyi
         artifact.type_ids = collect_iyi_type_ids(program, unit_names, program.iyi_module_type(artifact.module_name))
         artifact.constants = collect_iyi_constants(program, unit_names)
         artifact.regexes = collect_iyi_regexes(program, artifact.constants)
+        if program.diagnostic_capture
+          section = artifact.diagnostic_provenance || raise "missing regex diagnostics"
+          artifact.regexes.each { |regex| section.add_regex(program.diagnostic_regex_record(regex.name)) }
+          section.validate_regexes!(artifact.regexes)
+        end
         artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
         artifact.match_types = collect_iyi_match_types(program, unit_names)
         artifact.symbol_literals = collect_iyi_symbol_literals(program, unit_names)
@@ -1289,16 +1397,20 @@ module Iyi
           # name rather than on a kind of declaration.
           if signatures = type.defs.try &.[]?(name)
             signatures.each do |item|
-              signature = IyiMod.signature(item.def)
-              functions << signature
-              # A module's own `pub def` that takes a block, or has `forall`
-              # parameters, is the consumer's to compile for the same reason,
-              # and the module name is the container the far side looks it up
-              # under.
-              if !item.def.abstract? &&
-                 (IyiMod.caller_instantiated?(item.def) || iyi_widened_parameters?(type, item.def) ||
-                 IyiMod.answer_travels?(item.def))
-                iyi_record_mono_body program, filename, module_name, signature, item.def
+              iyi_each_previous_def(item.def) do |a_def|
+                signature = IyiMod.signature(a_def)
+                program.record_signature_diagnostic(filename, module_name, signature, a_def)
+                functions << signature
+                # A module's own `pub def` that takes a block, or has `forall`
+                # parameters, is the consumer's to compile for the same reason,
+                # and the module name is the container the far side looks it up
+                # under.
+                if !a_def.abstract? &&
+                   (IyiMod.caller_instantiated?(a_def) || iyi_widened_parameters?(type, a_def) ||
+                   IyiMod.answer_travels?(a_def))
+                  ordinal = functions.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                  iyi_record_mono_body program, filename, module_name, signature, a_def, ordinal
+                end
               end
             end
           elsif exported_type = type.types?.try &.[]?(name)
@@ -1319,21 +1431,25 @@ module Iyi
         type.defs.try &.each do |name, items|
           next if exported.try &.includes?(name)
           items.each do |item|
-            next if item.def.abstract?
-            next if item.def.body.is_a?(Primitive)
+            iyi_each_previous_def(item.def) do |a_def|
+              next if a_def.abstract?
+              next if a_def.body.is_a?(Primitive)
 
-            signature = IyiMod.signature(item.def, check_block: false)
-            carried_functions << signature
-            # A widened one too: an exported body that travels calls it at
-            # what it holds, and the consumer keys that call on the
-            # declaration (`iyi_widened_parameters?`).
-            if IyiMod.caller_instantiated?(item.def) || iyi_widened_parameters?(type, item.def) ||
-               IyiMod.answer_travels?(item.def)
-              iyi_record_mono_body program, filename, module_name, signature, item.def
+              signature = IyiMod.signature(a_def, check_block: false)
+              program.record_signature_diagnostic(filename, module_name, signature, a_def)
+              carried_functions << signature
+              # A widened one too: an exported body that travels calls it at
+              # what it holds, and the consumer keys that call on the
+              # declaration (`iyi_widened_parameters?`).
+              if IyiMod.caller_instantiated?(a_def) || iyi_widened_parameters?(type, a_def) ||
+                 IyiMod.answer_travels?(a_def)
+                ordinal = carried_functions.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                iyi_record_mono_body program, filename, module_name, signature, a_def, ordinal
+              end
             end
           end
         end
-        carried_functions.sort_by! &.name
+        iyi_stable_sort_signatures!(carried_functions)
 
         # And the ones it does not export, which travel as names and layouts
         # rather than as a surface. See `iyi_carried_types`.
@@ -1421,24 +1537,29 @@ module Iyi
         {type, type.metaclass}.each do |side|
           side.as?(ModuleType).try &.defs.try &.each_value do |items|
             items.each do |item|
-              a_def = item.def
-              # `original_filename`, through the macro: the integer tower is
-              # written once as `{% for %}` over eleven types, and a def a
-              # macro wrote is located in its expansion, not in the file.
-              next unless a_def.location.try(&.original_read_from) == filename
-              next if a_def.iyi_from_impl? || a_def.new? || a_def.abstract?
-              next if a_def.macro_def? && !named_here
-              # The compiler's instructions are not this module's to describe;
-              # the ones it wrote `@[Primitive]` above are. `std/float` writes
-              # the whole matrix for `::Float32` this way.
-              primitive = a_def.body.is_a?(Primitive)
-              next if primitive && !iyi_primitive_written?(a_def)
-              signature = IyiMod.signature(a_def, check_block: false)
-              methods << signature
-              # An instruction has no body to carry — it *is* the body — and
-              # the annotation travelling on the signature is what makes the
-              # consumer's copy the same instruction.
-              iyi_record_mono_body program, filename, container, signature, a_def unless primitive
+              iyi_each_previous_def(item.def) do |a_def|
+                # `original_filename`, through the macro: the integer tower is
+                # written once as `{% for %}` over eleven types, and a def a
+                # macro wrote is located in its expansion, not in the file.
+                next unless a_def.location.try(&.original_read_from) == filename
+                next if a_def.iyi_from_impl? || a_def.new? || a_def.abstract?
+                next if a_def.macro_def? && !named_here
+                # The compiler's instructions are not this module's to describe;
+                # the ones it wrote `@[Primitive]` above are. `std/float` writes
+                # the whole matrix for `::Float32` this way.
+                primitive = a_def.body.is_a?(Primitive)
+                next if primitive && !iyi_primitive_written?(a_def)
+                signature = IyiMod.signature(a_def, check_block: false)
+                program.record_signature_diagnostic(filename, container, signature, a_def)
+                methods << signature
+                # An instruction has no body to carry — it *is* the body — and
+                # the annotation travelling on the signature is what makes the
+                # consumer's copy the same instruction.
+                unless primitive
+                  ordinal = methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                  iyi_record_mono_body program, filename, container, signature, a_def, ordinal
+                end
+              end
             end
           end
         end
@@ -1478,7 +1599,7 @@ module Iyi
         # doc` had it.
         macros = iyi_macros_on(type, filename)
         next if methods.empty? && included.empty? && fields.empty? && class_vars.empty? && macros.empty?
-        methods.sort_by! &.name
+        iyi_stable_sort_signatures!(methods)
 
         # `Tuple` and `NamedTuple` describe themselves as "tuple" and "named
         # tuple", which are not keywords; reopened, they are structs.
@@ -1638,6 +1759,41 @@ module Iyi
       code
     end
 
+    # Carry exactly the objects selected by the existing per-type policy, but
+    # use the immutable bytes captured while the link-input lock was held.
+    private def diagnostic_carried_objects(program : Program, names : Array(String),
+                                           units : Array(CompilationUnit)?) : {Array(IyiMod::ObjectUnit), Array(IyiMod::DiagnosticObjectRecords)}
+      objects = [] of IyiMod::ObjectUnit
+      records = [] of IyiMod::DiagnosticObjectRecords
+      return {objects, records} unless units
+      by_name = {} of String => CompilationUnit
+      units.each do |unit|
+        raise "ambiguous carried unit name" if by_name.has_key?(unit.original_name)
+        by_name[unit.original_name] = unit
+      end
+      names.each do |name|
+        unit = by_name[name]?
+        next unless unit
+        raise "cannot carry a partitioned per-type artifact object" if unit.partitioned?
+        unit_ordinal = units.index { |candidate| candidate.same?(unit) } || raise "missing carried unit coordinate"
+        candidates = program.diagnostic_object_inputs.select do |input|
+          producer = input.producer.as_h
+          producer["kind"]?.try(&.as_s?) == "current_unit" &&
+            producer["unit_ordinal"]?.try(&.as_i?) == unit_ordinal
+        end
+        raise "missing or ambiguous carried object snapshot" unless candidates.size == 1
+        input = candidates.first
+        raise "carried object unit name mismatch" unless input.unit_name == name && input.partition.raw.nil?
+        bytes = Base64.decode(input.bytes_base64)
+        raise "carried object digest mismatch" unless ::Crystal::Digest::SHA256.hexdigest(bytes) == input.sha256
+        definitions = program.diagnostic_bindings.select { |binding| binding.link_input_id == input.link_input_id }.map(&.definition)
+        ordinal = objects.size
+        objects << IyiMod::ObjectUnit.new(name, bytes)
+        records << IyiMod::DiagnosticObjectRecords.new(ordinal, name, input.sha256, nil, definitions)
+      end
+      {objects, records}
+    end
+
     # The names of the units a module's object code is made of: the module type
     # itself, where its own `pub def`s are owned, and every non-generic type
     # declared under it.
@@ -1645,7 +1801,11 @@ module Iyi
       names = [] of String
       return names unless type = program.iyi_module_type(module_name)
 
-      names << type.to_s
+      iyi_unit_names(type)
+    end
+
+    private def iyi_unit_names(type : ModuleType) : Array(String)
+      names = [type.to_s] of String
       collect_iyi_unit_names type, names
       names.sort!.uniq!
       names
@@ -2054,7 +2214,7 @@ module Iyi
       iyi_collect_type_methods program, filename, name, type,
         travels || iyi_stencilled_module?(program, type, filename), methods
       iyi_collect_type_methods program, filename, name, type.metaclass, travels, methods
-      methods.sort_by! &.name
+      iyi_stable_sort_signatures!(methods)
 
       # A generic trait's type variables are its parameters followed by its
       # associated types, which is how they are stored and not how they are
@@ -2175,7 +2335,7 @@ module Iyi
       methods = [] of IyiMod::Signature
       iyi_collect_type_methods program, filename, container, type, travels, methods
       iyi_collect_type_methods program, filename, container, type.metaclass, travels, methods
-      methods.sort_by! &.name
+      iyi_stable_sort_signatures!(methods)
 
       IyiMod::TypeDecl.new(
         name: name,
@@ -2707,56 +2867,60 @@ module Iyi
         # The distinction is invisible here — an impl works by defining methods
         # on the target — which is why it is marked where it is made.
         items.each do |item|
-          next if item.def.iyi_from_impl?
-          next if item.def.new?
+          iyi_each_previous_def(item.def) do |a_def|
+            next if a_def.iyi_from_impl?
+            next if a_def.new?
 
-          # `allocate` is put on every metaclass by the compiler, not by the
-          # author, and the consumer's compiler puts one there too. Anything
-          # whose body is a `Primitive` is the compiler's rather than the
-          # module's, and describing it as part of the module's surface would
-          # be describing this compiler instead.
-          #
-          # Unless the module asked for it. `@[Primitive]` is a declaration a
-          # module makes — `std/float` writes the whole matrix for `Float32`
-          # the way the prelude writes it for `Float64` — and the body it has
-          # no need of is the instruction itself. Dropped, a consumer got a
-          # `Float32` with no arithmetic: `wrong number of arguments for
-          # 'Float32#+' (given 1, expected 0)`, about the prelude's unary
-          # plus, the only `+` left. The annotation travels with the
-          # signature, which is what makes the consumer's copy the same
-          # instruction rather than a promise of a symbol nobody emitted.
-          next if item.def.body.is_a?(Primitive) && !iyi_primitive_written?(item.def)
+            # `allocate` is put on every metaclass by the compiler, not by the
+            # author, and the consumer's compiler puts one there too. Anything
+            # whose body is a `Primitive` is the compiler's rather than the
+            # module's, and describing it as part of the module's surface would
+            # be describing this compiler instead.
+            #
+            # Unless the module asked for it. `@[Primitive]` is a declaration a
+            # module makes — `std/float` writes the whole matrix for `Float32`
+            # the way the prelude writes it for `Float64` — and the body it has
+            # no need of is the instruction itself. Dropped, a consumer got a
+            # `Float32` with no arithmetic: `wrong number of arguments for
+            # 'Float32#+' (given 1, expected 0)`, about the prelude's unary
+            # plus, the only `+` left. The annotation travels with the
+            # signature, which is what makes the consumer's copy the same
+            # instruction rather than a promise of a symbol nobody emitted.
+            next if a_def.body.is_a?(Primitive) && !iyi_primitive_written?(a_def)
 
-          # And an enum's question methods, for the same reason one line up
-          # and a different mechanism: their bodies are ordinary code, so
-          # `Primitive` does not catch them, and the consumer's own compiler
-          # writes one per member out of the members it reads. See
-          # `Def#iyi_compiler_made`.
-          next if item.def.iyi_compiler_made?
+            # And an enum's question methods, for the same reason one line up
+            # and a different mechanism: their bodies are ordinary code, so
+            # `Primitive` does not catch them, and the consumer's own compiler
+            # writes one per member out of the members it reads. See
+            # `Def#iyi_compiler_made`.
+            next if a_def.iyi_compiler_made?
 
-          signature = IyiMod.signature(item.def)
-          methods << signature
-          # A block-taking or `forall` def travels whatever type it is on: it
-          # is instantiated with the caller's block inside it, or at the
-          # caller's types, so the consumer is what compiles it — the same
-          # reason a generic's method and a trait's default travel (SPEC.md
-          # IV.1g).
-          #
-          # And a def whose machine code enumerates an open type's members, or
-          # which calls one that does, for the reason III.6 gives: the set is
-          # the whole program's, so the answer is too. `Iyi::OpenTravel` marked
-          # it before this ran.
-          #
-          # And a def whose body uses `{{@type}}` and the like, which is
-          # expanded again for each receiver a call reaches: a consumer's
-          # `class User < Model` is a receiver this build never saw, so only
-          # its own expansion can answer. Kept behind, `type_name` was a header
-          # and the consumer's link ended on `Model+^Model#type_name:String`,
-          # where the source build printed `Main::User`.
-          if (travels || IyiMod.caller_instantiated?(item.def) || item.def.iyi_open_travel? ||
-             item.def.macro_def? || iyi_widened_parameters?(type, item.def) ||
-             IyiMod.answer_travels?(item.def)) && !item.def.abstract?
-            iyi_record_mono_body program, filename, container, signature, item.def
+            signature = IyiMod.signature(a_def)
+            program.record_signature_diagnostic(filename, container, signature, a_def)
+            methods << signature
+            # A block-taking or `forall` def travels whatever type it is on: it
+            # is instantiated with the caller's block inside it, or at the
+            # caller's types, so the consumer is what compiles it — the same
+            # reason a generic's method and a trait's default travel (SPEC.md
+            # IV.1g).
+            #
+            # And a def whose machine code enumerates an open type's members, or
+            # which calls one that does, for the reason III.6 gives: the set is
+            # the whole program's, so the answer is too. `Iyi::OpenTravel` marked
+            # it before this ran.
+            #
+            # And a def whose body uses `{{@type}}` and the like, which is
+            # expanded again for each receiver a call reaches: a consumer's
+            # `class User < Model` is a receiver this build never saw, so only
+            # its own expansion can answer. Kept behind, `type_name` was a header
+            # and the consumer's link ended on `Model+^Model#type_name:String`,
+            # where the source build printed `Main::User`.
+            if (travels || IyiMod.caller_instantiated?(a_def) || a_def.iyi_open_travel? ||
+               a_def.macro_def? || iyi_widened_parameters?(type, a_def) ||
+               IyiMod.answer_travels?(a_def)) && !a_def.abstract?
+              ordinal = methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+              iyi_record_mono_body program, filename, container, signature, a_def, ordinal
+            end
           end
         end
       end
@@ -2850,33 +3014,37 @@ module Iyi
       {type, type.metaclass}.each do |side|
         side.as?(ModuleType).try &.defs.try &.each_value do |items|
           items.each do |item|
-            next if item.def.new?
-            # The module's own `@[Primitive]` is not the compiler's — see the
-            # exported side.
-            next if item.def.body.is_a?(Primitive) && !iyi_primitive_written?(item.def)
-            next if item.def.abstract?
-            next if item.def.iyi_compiler_made?
+            iyi_each_previous_def(item.def) do |a_def|
+              next if a_def.new?
+              # The module's own `@[Primitive]` is not the compiler's — see the
+              # exported side.
+              next if a_def.body.is_a?(Primitive) && !iyi_primitive_written?(a_def)
+              next if a_def.abstract?
+              next if a_def.iyi_compiler_made?
 
-            signature = IyiMod.signature(item.def, check_block: false)
-            signatures << signature
-            # The same reasons the exported side travels for: a block-taking
-            # or `forall` body is the caller's, one whose code answers for
-            # an open set is the program's (SPEC.md III.6), and one whose
-            # parameter is written wider than its callers has no symbol the
-            # consumer can ask for. A header for any of them would promise a
-            # symbol nobody emitted — `std/io` writes
-            # `ByteFormat::BigEndian.decode_int32(io : IyiIO)` inside a
-            # module it keeps to itself, and the link ended on
-            # `decode_int32<IyiIO+>`.
-            if travels || (stencilled && side.same?(type)) ||
-               IyiMod.caller_instantiated?(item.def) || item.def.iyi_open_travel? || item.def.macro_def? ||
-               iyi_widened_parameters?(type, item.def) || IyiMod.answer_travels?(item.def)
-              iyi_record_mono_body program, filename, container, signature, item.def
+              signature = IyiMod.signature(a_def, check_block: false)
+              program.record_signature_diagnostic(filename, container, signature, a_def)
+              signatures << signature
+              # The same reasons the exported side travels for: a block-taking
+              # or `forall` body is the caller's, one whose code answers for
+              # an open set is the program's (SPEC.md III.6), and one whose
+              # parameter is written wider than its callers has no symbol the
+              # consumer can ask for. A header for any of them would promise a
+              # symbol nobody emitted — `std/io` writes
+              # `ByteFormat::BigEndian.decode_int32(io : IyiIO)` inside a
+              # module it keeps to itself, and the link ended on
+              # `decode_int32<IyiIO+>`.
+              if travels || (stencilled && side.same?(type)) ||
+                 IyiMod.caller_instantiated?(a_def) || a_def.iyi_open_travel? || a_def.macro_def? ||
+                 iyi_widened_parameters?(type, a_def) || IyiMod.answer_travels?(a_def)
+                ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                iyi_record_mono_body program, filename, container, signature, a_def, ordinal
+              end
             end
           end
         end
       end
-      signatures.sort_by! &.name
+      iyi_stable_sort_signatures!(signatures)
     end
 
     # iyi: whether the *module* asked for this def's `Primitive` body.
@@ -3068,14 +3236,40 @@ module Iyi
       metaclass.try &.hooks.try &.each do |hook|
         macros << hook.macro if filename.nil? || hook.macro.location.try(&.original_read_from) == filename
       end
-      macros.sort_by!(&.to_s).map { |a_macro| IyiMod.macro_source(a_macro) }
+      macros.sort_by!(&.to_s).map do |a_macro|
+        if type && type.program.diagnostic_capture
+          source, anchors = IyiMod.diagnostic_macro_source(a_macro)
+          type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, anchors)
+          source
+        else
+          IyiMod.macro_source(a_macro)
+        end
+      end
+    end
+
+    private def iyi_each_previous_def(definition : Def, &block : Def ->) : Nil
+      if previous = definition.previous
+        iyi_each_previous_def(previous.def, &block)
+      end
+      block.call(definition)
+    end
+
+    private def iyi_stable_sort_signatures!(signatures : Array(IyiMod::Signature)) : Array(IyiMod::Signature)
+      ordered = signatures.map_with_index { |signature, index| {signature, index} }
+      ordered.sort_by! { |entry| {entry[0].name, entry[1]} }
+      signatures.replace(ordered.map { |entry| entry[0] })
     end
 
     private def iyi_record_mono_body(program : Program, filename : String,
                                      container : String, signature : IyiMod::Signature,
-                                     a_def : Def) : Nil
-      key = IyiMod.mono_body_key(container, signature)
-      text, positions = IyiMod.located_source(a_def.body)
+                                     a_def : Def, ordinal : Int32) : Nil
+      key = IyiMod.mono_body_key(container, signature, ordinal)
+      if program.diagnostic_capture
+        text, positions, anchors = IyiMod.diagnostic_located_source(a_def.body)
+        program.record_mono_body_diagnostic(filename, key, container, signature, text, anchors)
+      else
+        text, positions = IyiMod.located_source(a_def.body)
+      end
       (program.iyi_mono_bodies[filename] ||= {} of String => String)[key] = text
       (program.iyi_mono_body_positions[filename] ||= {} of String => Array(IyiMod::SourcePosition))[key] = positions
     end
@@ -3117,6 +3311,10 @@ module Iyi
       if type.responds_to?(:instance_vars_initializers)
         type.instance_vars_initializers.try &.each do |initializer|
           defaults[initializer.name] = initializer.written
+          if type.program.diagnostic_capture && !initializer.written.empty?
+            anchors = initializer.written_anchors || raise "field initializer lacks diagnostic anchors"
+            type.program.record_field_diagnostic(type.to_s(generic_args: false), initializer.name, initializer.written, anchors)
+          end
         end
       end
 
@@ -3204,12 +3402,61 @@ module Iyi
     # up walks ancestors and *copies* what it finds onto the asking type, so a
     # module that merely reads `@@x` from an included module would otherwise
     # declare a second one of its own.
+    private def diagnostic_add_macros(program : Program, section : IyiMod::DiagnosticSection,
+                                      sources : Array(String), owner : String, container : String) : Nil
+      sources.each do |source|
+        anchors = program.iyi_macro_diagnostics[{owner, source}]? ||
+                  raise "missing macro diagnostic source for #{owner}"
+        key = IyiMod.macro_fragment_key(container, source)
+        section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+      end
+    end
+
+    private def diagnostic_add_type_macros(program : Program, section : IyiMod::DiagnosticSection,
+                                           declaration : IyiMod::TypeDecl, root_owner : String, path : String = "") : Nil
+      here = path.empty? ? declaration.name : "#{path}::#{declaration.name}"
+      owner = here.starts_with?("::") ? here.lchop("::") : "#{root_owner}::#{here}"
+      diagnostic_add_macros(program, section, declaration.macros, owner, here)
+      declaration.types.each { |nested| diagnostic_add_type_macros(program, section, nested, root_owner, here) }
+    end
+
+    private def diagnostic_add_class_vars(program : Program, section : IyiMod::DiagnosticSection,
+                                          variables : Array(IyiMod::ClassVarDecl), owner : String, container : String) : Nil
+      variables.each do |variable|
+        next if variable.value.empty?
+        source, anchors = program.iyi_class_var_diagnostics[{owner, variable.name}]? ||
+                          raise "missing class variable diagnostic source for #{owner}::#{variable.name}"
+        raise "class variable diagnostic text changed" unless source == variable.value
+        key = IyiMod.class_var_fragment_key(container, variable.name)
+        section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+      end
+    end
+
+    private def diagnostic_add_type_class_vars(program : Program, section : IyiMod::DiagnosticSection,
+                                               declaration : IyiMod::TypeDecl, root_owner : String, path : String = "") : Nil
+      here = path.empty? ? declaration.name : "#{path}::#{declaration.name}"
+      owner = here.starts_with?("::") ? here.lchop("::") : "#{root_owner}::#{here}"
+      diagnostic_add_class_vars(program, section, declaration.class_vars, owner, here)
+      declaration.fields.each do |name, _, value|
+        next if value.empty?
+        source, anchors = program.iyi_field_diagnostics[{owner, name}]? || raise "missing field diagnostic source for #{owner}::#{name}"
+        raise "field diagnostic text changed" unless source == value
+        key = IyiMod.field_fragment_key(here, name)
+        section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+      end
+      declaration.types.each { |nested| diagnostic_add_type_class_vars(program, section, nested, root_owner, here) }
+    end
+
     private def collect_iyi_class_vars(type : Type) : Array(IyiMod::ClassVarDecl)
       class_vars = [] of IyiMod::ClassVarDecl
       return class_vars unless type.responds_to?(:class_vars?)
 
       type.class_vars?.try &.each do |name, variable|
         initialiser = variable.iyi_initialiser_source
+        if type.program.diagnostic_capture && !initialiser.empty?
+          anchors = variable.iyi_initialiser_anchors || raise "class variable initializer lacks diagnostic anchors"
+          type.program.record_class_var_diagnostic(type.to_s(generic_args: false), name, initialiser, anchors)
+        end
         # `@[ThreadLocal]` travels with it: a consumer that declared the
         # variable without it writes to a different global than this module's
         # object code does. See `IyiMod::ClassVarDecl`.
@@ -3538,6 +3785,7 @@ module Iyi
       program.iyi_prefers_source = @iyi_prefers_source
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
+      program.diagnostic_capture = !@emit_frame_provenance.nil? || @capture_diagnostic_provenance
       # iyi: the manifest, if the root the entry is answered from has one
       # (III.7, `Compiler.entry_root_of`) — or the table a tool prepared,
       # which wins because the tool resolved the *user's* manifest and the
@@ -3595,6 +3843,7 @@ module Iyi
     private def parse(program, source : Source)
       parser = program.new_parser(source.code)
       parser.filename = source.filename
+      parser.diagnostic_source_file = source.filename if program.diagnostic_capture && !source.filename.empty?
       parser.wants_doc = program.wants_doc?
       # The entry is a module of the program's own package as much as a
       # file it imports is (`SemanticVisitor#import_file`).
@@ -3635,6 +3884,31 @@ module Iyi
       bc_flags_changed
     end
 
+    private def write_link_input_proof : Nil
+      if proof = @emit_link_input_proof
+        snapshot = @link_input_proof_snapshot || raise CompilerError.new("missing locked link-input proof", :FAILURE)
+        linker = @link_input_proof_linker || raise CompilerError.new("missing actual linker invocation", :FAILURE)
+        output = JSON.build do |json|
+          json.object do
+            json.field "schema", 1
+            json.field "tool", snapshot.tool
+            json.field "linker", linker
+            json.field "units", snapshot.units
+            json.field "inputs", snapshot.inputs
+          end
+        end
+        temporary = File.tempfile("iyi-link-proof-", ".tmp", dir: File.dirname(File.expand_path(proof)))
+        begin
+          temporary << output
+          temporary.close
+          File.link(temporary.path, proof)
+        ensure
+          temporary.close unless temporary.closed?
+          File.delete?(temporary.path)
+        end
+      end
+    end
+
     private def codegen(program, node : ASTNode, sources, output_filename)
       {% if LibLLVM::IS_LT_130 %}
         if @codegen_target.architecture == "aarch64"
@@ -3668,6 +3942,9 @@ module Iyi
       # body was `undefined reference to '__iyi_raise_overflow'` at link.
       single_module = @cross_compile || !@emit_targets.none? ||
                       (@single_module && @emit_iyimod.nil? && program.iyi_artifact_objects.empty?)
+      if program.diagnostic_capture && single_module && (@emit_iyimod || (emit_bind && iyi_keep))
+        raise CompilerError.new("diagnostic artifact production requires per-type object units", :USAGE_ERROR)
+      end
       llvm_modules = @progress_tracker.stage("Codegen (crystal)") do
         modules = program.codegen node, debug: debug, frame_pointers: frame_pointers,
           single_module: single_module
@@ -4261,27 +4538,240 @@ module Iyi
       # reaches — and the units are written after the link, so a boundary that
       # had everything it needed got nothing.
       if emit_bind && iyi_keep
+        if @capture_diagnostic_provenance
+          {% unless flag?(:without_llvm) %}
+            snapshot_diagnostic_inputs(program, units, object_names, output_dir)
+          {% else %}
+            raise CompilerError.new("diagnostic capture requires LLVM", :FAILURE)
+          {% end %}
+        end
         @progress_tracker.clear
         return units
+      end
+      snapshot_link_input_proof(program, units, object_names, output_dir) if @emit_link_input_proof
+
+      if @emit_frame_provenance
+        {% unless flag?(:without_llvm) %}
+          snapshot_diagnostic_inputs(program, units, object_names, output_dir)
+        {% else %}
+          raise CompilerError.new("frame provenance requires LLVM", :FAILURE)
+        {% end %}
       end
 
       @progress_tracker.stage("Codegen (linking)") do
         Dir.cd(output_dir) do
           begin
-            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true), busy_output: output_filename
+            link = linker_command(program, object_names, output_filename, output_dir, expand: true)
+            run_linker *link, busy_output: output_filename
+            record_linker_proof(link) if @emit_link_input_proof
           rescue ex : CompilerError
             # A link the compiler built itself, on a machine where that does
             # not work: the driver is asked to do it instead and the template
             # is marked unusable, so this is paid once rather than every build.
             raise ex unless @iyi_direct_link
             iyi_disable_direct_link(@link_flags || "", program.lib_flags(@cross_compile))
-            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true), busy_output: output_filename
+            link = linker_command(program, object_names, output_filename, output_dir, expand: true)
+            run_linker *link, busy_output: output_filename
+            record_linker_proof(link) if @emit_link_input_proof
           end
         end
       end
 
       units
     end
+
+    private def record_linker_proof(link) : Nil
+      @link_input_proof_linker = JSON.parse(JSON.build do |json|
+        json.object do
+          json.field "program", link[0]
+          json.field "command", link[1]
+          json.field "args", link[2]
+        end
+      end)
+    end
+
+    private def proof_input(id : Int32, producer : JSON::Any, unit_name : String, partition : JSON::Any,
+                            path : String, expected : Bytes? = nil) : JSON::Any
+      bytes = File.read(path)
+      raise "link input changed during proof snapshot" unless File.read(path) == bytes
+      raise "artifact object differs from extracted bytes" if expected && bytes.to_slice != expected
+      JSON.parse(JSON.build do |json|
+        json.object do
+          json.field "link_input_id", id
+          json.field "producer", producer
+          json.field "unit_name", unit_name
+          json.field "partition", partition
+          json.field "sha256", ::Crystal::Digest::SHA256.hexdigest(bytes)
+          json.field "bytes_base64", Base64.strict_encode(bytes.to_slice)
+        end
+      end)
+    end
+
+    # Snapshot only the inputs actually passed to the compiler's link command.
+    # This deliberately excludes driver-injected startup objects and libraries.
+    private def snapshot_link_input_proof(program : Program, units : Array(CompilationUnit),
+                                          link_names : Array(String), output_dir : String) : Nil
+      raise "no compiler-supplied linker inputs for proof" if link_names.empty?
+      compiler_path = Process.executable_path || raise "cannot identify compiler executable for link-input proof"
+      compiler_path_sha256 = Stale.hex(Stale::Toolchain.file_sha256(compiler_path))
+      unit_records = [] of JSON::Any
+      input_records = [] of JSON::Any
+      seen = Set(String).new
+      cursor = 0
+      units.each_with_index do |unit, ordinal|
+        unit_name = unit.proof_unit_name || raise "missing LLVM unit proof name"
+        plan = unit.link_input_proof_plan
+        unit_records << JSON.parse(JSON.build do |json|
+          json.object do
+            json.field "unit_ordinal", ordinal
+            json.field "unit_name", unit_name
+            json.field "plan", plan
+          end
+        end)
+        paths = unit.object_filenames
+        raise "LLVM unit has no link object" if paths.empty?
+        paths.each_with_index do |name, index|
+          raise "link input ordering changed" unless link_names[cursor]? == name
+          path = File.join(output_dir, name)
+          raise "link inputs alias the same file" unless seen.add?(File.realpath(path))
+          producer = JSON.parse(%({"kind":"current_unit","unit_ordinal":#{ordinal}}))
+          partition = unit.partitioned? ? JSON.parse(%({"index":#{index},"count":#{paths.size}})) : JSON.parse("null")
+          input_records << proof_input(cursor, producer, unit_name, partition, path)
+          cursor += 1
+        end
+      end
+      extension = codegen_target.object_extension
+      program.iyi_artifact_objects.each do |module_name, objects|
+        objects.each_with_index do |object, ordinal|
+          name = "iyimod-#{safe_object_name(module_name)}-#{safe_object_name(object.name)}#{extension}"
+          raise "artifact link input ordering changed" unless link_names[cursor]? == name
+          path = File.join(output_dir, name)
+          raise "link inputs alias the same file" unless seen.add?(File.realpath(path))
+          producer = JSON.parse(JSON.build do |json|
+            json.object do
+              json.field "kind", "artifact_object"
+              json.field "artifact_identity", module_name
+              json.field "object_ordinal", ordinal
+            end
+          end)
+          # The current link treats each carried ObjectUnit as one opaque input.
+          input_records << proof_input(cursor, producer, object.name, JSON.parse("null"), path, object.code)
+          cursor += 1
+        end
+      end
+      raise "unmapped link input in proof" unless cursor == link_names.size
+      tool = JSON.parse(JSON.build do |json|
+        json.object do
+          json.field "compiler_version", IyiMod.compiler_version
+          json.field "compiler_executable_path", compiler_path
+          json.field "compiler_executable_path_sha256", compiler_path_sha256
+          json.field "llvm_version", LLVM.version
+          json.field "target", codegen_target.to_s
+          json.field "optimization", @optimization_mode.to_s
+          json.field "flags", program.flags.to_a.sort!
+          json.field "link_flags", @link_flags
+          json.field "static", @static
+          json.field "mcpu", @mcpu
+          json.field "mattr", @mattr
+          json.field "mcmodel", @mcmodel.to_s
+          json.field "debug", @debug.to_s
+          json.field "frame_pointers", @frame_pointers.to_s
+          json.field "single_module", @single_module
+          json.field "emit_targets", @emit_targets.to_s
+          json.field "n_threads", @n_threads
+        end
+      end)
+      @link_input_proof_snapshot = LinkInputProofSnapshot.new(tool, unit_records, input_records)
+    end
+
+    {% unless flag?(:without_llvm) %}
+      # Called inside the same cache lock that protects the linker inputs.
+      private def snapshot_diagnostic_inputs(program : Program, units : Array(CompilationUnit),
+                                             link_names : Array(String), output_dir : String) : Nil
+        raise CompilerError.new("frame provenance currently requires a Darwin target", :FAILURE) unless program.has_flag?("darwin")
+        cpu = DiagnosticProvenance.target_cpu(program.codegen_target.to_s)
+        program.diagnostic_object_inputs.clear
+        program.diagnostic_bindings.clear
+        seen_paths = Set(String).new
+        cursor = 0
+        units.each_with_index do |unit, unit_ordinal|
+          paths = unit.object_filenames
+          observations = unit.diagnostic_observations || raise "missing per-object optimizer observations"
+          roles_by_object = unit.diagnostic_roles || raise "missing per-object partition roles"
+          unless observations.size == paths.size && roles_by_object.size == paths.size
+            raise "diagnostic object observation count mismatch"
+          end
+          unit_name = unit.llvm_mod.name
+          raise "unnamed diagnostic LLVM unit" if unit_name.empty?
+          paths.each_with_index do |name, index|
+            raise "link input ordering changed" unless link_names[cursor]? == name
+            path = File.join(output_dir, name)
+            raise "link inputs alias the same file" unless seen_paths.add?(File.realpath(path))
+            producer = JSON.parse(%({"kind":"current_unit","unit_ordinal":#{unit_ordinal}}))
+            partition = if unit.partitioned?
+                          JSON.parse(%({"index":#{index},"count":#{paths.size}}))
+                        else
+                          JSON.parse("null")
+                        end
+            input = DiagnosticProvenance.snapshot_object(cursor, producer, unit_name, partition, path, cpu)
+            program.diagnostic_object_inputs << input
+            observed = observations[index] || raise "missing diagnostic object observation"
+            roles = roles_by_object[index] || raise "missing diagnostic object roles"
+            observed.each do |definition|
+              next if definition.emissions.empty?
+              raise "closure was folded with an unresolved definition" if definition.unresolved_nonclosure?
+              definition.emissions.each do |emission|
+                expected = unit.diagnostic_promoted_name(emission.actual_llvm_symbol)
+                raise "optimized closure name changed without proof" unless definition.llvm_symbol == expected
+                raise "unsupported verbatim LLVM symbol" if expected.empty? || expected.starts_with?('\u0001')
+                native = "_#{expected}"
+                unless input.native_evidence.direct_named(native).size == 1
+                  raise "closure definition absent from its exact object"
+                end
+                role = roles[emission.actual_llvm_symbol]? || raise "missing closure partition role"
+                record = DiagnosticProvenance::Definition.new(emission, expected, native, definition.linkage, role)
+                program.diagnostic_bindings << DiagnosticProvenance::Binding.new(cursor, record)
+              end
+            end
+            cursor += 1
+          end
+        end
+        extension = codegen_target.object_extension
+        program.iyi_artifact_objects.each do |module_name, objects|
+          section = program.iyi_artifact_diagnostics[module_name]? || raise "missing imported diagnostic section"
+          section.validate_objects!(objects)
+          objects.each_with_index do |object, ordinal|
+            record = section.objects[ordinal]? || raise "missing imported object ordinal"
+            name = "iyimod-#{safe_object_name(module_name)}-#{safe_object_name(object.name)}#{extension}"
+            raise "artifact link input ordering changed" unless link_names[cursor]? == name
+            path = File.join(output_dir, name)
+            raise "link inputs alias the same file" unless seen_paths.add?(File.realpath(path))
+            producer = JSON.parse(JSON.build do |json|
+              json.object do
+                json.field "kind", "artifact_object"
+                json.field "artifact_identity", module_name
+                json.field "object_ordinal", ordinal
+              end
+            end)
+            partition = record.partition || JSON.parse("null")
+            input = DiagnosticProvenance.snapshot_object(cursor, producer, object.name, partition, path, cpu)
+            unless input.sha256 == record.object_sha256 && Base64.decode(input.bytes_base64) == object.code
+              raise "imported object bytes differ from artifact"
+            end
+            program.diagnostic_object_inputs << input
+            record.definitions.each do |definition|
+              DiagnosticProvenance.validate_definition!(definition)
+              unless input.native_evidence.direct_named(definition.native_object_symbol).size == 1
+                raise "imported closure definition absent from its exact object"
+              end
+              program.diagnostic_bindings << DiagnosticProvenance::Binding.new(cursor, definition)
+            end
+            cursor += 1
+          end
+        end
+        raise "unmapped artifact or other linker input" unless cursor == link_names.size
+      end
+    {% end %}
 
     # iyi: unpacks the object files imported artifacts carried, into the same
     # directory the build's own units go to, and returns their names for the
@@ -4866,7 +5356,17 @@ module Iyi
       @object_name : String?
       @bc_name : String?
       @preempt_flag : String?
+      @diagnostic_capture : Bool
       @plan : ReleasePartition::Plan?
+      @proof_functions : Array(ReleasePartition::DiagnosticFunction)? = nil
+      @proof_owners : Array(Int32)? = nil
+      @proof_globals : Array(ReleasePartition::DiagnosticGlobal)? = nil
+      getter proof_unit_name : String? = nil
+      {% unless flag?(:without_llvm) %}
+        getter diagnostic_observations : Array(Array(DiagnosticProvenance::ObservedDefinition)?)? = nil
+        getter diagnostic_roles : Array(Hash(String, String)?)? = nil
+        @diagnostic_emissions : Array(DiagnosticProvenance::Emission)? = nil
+      {% end %}
 
       # *verify*: whether `prepare` verifies the module, which it does for a
       # unit per type; one module is verified by `CodeGenVisitor#finish`.
@@ -4898,6 +5398,37 @@ module Iyi
         @name = "#{@name}#{@compiler.optimization_mode.suffix}"
         @object_extension = compiler.codegen_target.object_extension
         @preempt_flag = program.iyi_preempt_flag
+        @diagnostic_capture = program.diagnostic_capture
+        {% unless flag?(:without_llvm) %}
+          if compiler.emit_link_input_proof
+            @proof_unit_name = @llvm_mod.name
+            functions = [] of ReleasePartition::DiagnosticFunction
+            owners = [] of Int32
+            @llvm_mod.functions.each do |function|
+              name = function.name
+              linkage = function.linkage.to_s
+              functions << ReleasePartition::DiagnosticFunction.new(name, linkage, name, linkage)
+              owners << (LibLLVM.is_declaration(function) != 0 ? -1 : 0)
+            end
+            globals = [] of ReleasePartition::DiagnosticGlobal
+            global = LibLLVM.get_first_global(@llvm_mod)
+            until global.null?
+              name = String.new(LibLLVM.get_value_name2(global, out length), length)
+              linkage = LibLLVM.get_linkage(global).to_s
+              owner = LibLLVM.is_declaration(global) != 0 ? -1 : 0
+              globals << ReleasePartition::DiagnosticGlobal.new(name, linkage, name, linkage, owner)
+              global = LibLLVM.get_next_global(global)
+            end
+            @proof_globals = globals
+            @proof_functions = functions
+            @proof_owners = owners
+          end
+        {% end %}
+        {% unless flag?(:without_llvm) %}
+          if @diagnostic_capture
+            @diagnostic_emissions = program.diagnostic_emissions.select { |record| record.unit_name == @llvm_mod.name }
+          end
+        {% end %}
       end
 
       def generate_bitcode
@@ -4958,7 +5489,8 @@ module Iyi
       # to be worth cutting.
       def partition(count : Int32?, import_limit : Int32, inline_limit : Int32) : Nil
         named = @preempt_flag.try { |flag| PreemptChecks.named(flag) } || [] of String
-        @plan = ReleasePartition.plan(llvm_mod, count, named, import_limit, inline_limit)
+        @plan = ReleasePartition.plan(llvm_mod, count, named, import_limit, inline_limit,
+          diagnostic: @diagnostic_capture || !compiler.emit_link_input_proof.nil?)
       end
 
       def partitions : Int32
@@ -4967,6 +5499,70 @@ module Iyi
 
       def partitioned? : Bool
         !@plan.nil?
+      end
+
+      # This is a snapshot of the selected plan, not an optimizer directive.
+      def link_input_proof_plan : JSON::Any
+        if plan = @plan
+          functions = plan.diagnostic_functions || raise "partition proof lacks promotion observations"
+          globals = plan.diagnostic_globals || raise "partition proof lacks global observations"
+          owners = plan.owner
+          count = plan.count
+          raise "partition proof count mismatch" unless plan.copies.size == count && plan.inline_only.size == count
+        else
+          functions = @proof_functions || raise "single-unit proof lacks function observations"
+          globals = @proof_globals || raise "single-unit proof lacks global observations"
+          owners = @proof_owners || raise "single-unit proof lacks ownership observations"
+          count = 1
+        end
+        raise "partition proof function count mismatch" unless functions.size == owners.size
+        JSON.parse(JSON.build do |json|
+          json.object do
+            json.field "count", count
+            json.field "functions" do
+              json.array do
+                functions.each_with_index do |function, position|
+                  owner = owners[position]
+                  raise "invalid partition owner" unless owner >= -1 && owner < count
+                  copies = [] of Int32
+                  inline_only = [] of Int32
+                  if plan = @plan
+                    plan.copies.each_with_index { |items, index| copies << index if items.includes?(position) }
+                    plan.inline_only.each_with_index { |items, index| inline_only << index if items.includes?(position) }
+                  end
+                  if copies.includes?(owner) || inline_only.includes?(owner) || copies.any? { |index| inline_only.includes?(index) }
+                    raise "overlapping partition roles"
+                  end
+                  json.object do
+                    json.field "position", position
+                    json.field "original_name", function.original_name
+                    json.field "original_linkage", function.original_linkage
+                    json.field "promoted_name", function.promoted_name
+                    json.field "promoted_linkage", function.promoted_linkage
+                    json.field "owner", owner
+                    json.field "copies", copies
+                    json.field "inline_only", inline_only
+                  end
+                end
+              end
+            end
+            json.field "globals" do
+              json.array do
+                globals.each_with_index do |global, position|
+                  raise "invalid global owner" unless global.owner == -1 || global.owner == 0
+                  json.object do
+                    json.field "position", position
+                    json.field "original_name", global.original_name
+                    json.field "original_linkage", global.original_linkage
+                    json.field "promoted_name", global.promoted_name
+                    json.field "promoted_linkage", global.promoted_linkage
+                    json.field "owner", global.owner
+                  end
+                end
+              end
+            end
+          end
+        end)
       end
 
       # Whether the partitions have to be compiled, on the main thread before
@@ -4980,8 +5576,74 @@ module Iyi
         end
         object_names.each { |name| File.delete?(name) }
         File.write(bc_name, @memory_buffer.not_nil!.to_slice)
+        {% unless flag?(:without_llvm) %}
+          if @diagnostic_capture
+            @diagnostic_observations = Array(Array(DiagnosticProvenance::ObservedDefinition)?).new(partitions, nil)
+            @diagnostic_roles = Array(Hash(String, String)?).new(partitions, nil)
+          end
+        {% end %}
         true
       end
+
+      {% unless flag?(:without_llvm) %}
+        def diagnostic_promoted_name(original : String) : String
+          return original unless plan = @plan
+          functions = plan.diagnostic_functions || raise "partition provenance missing"
+          matches = functions.select { |function| function.original_name == original }
+          raise "ambiguous original partition symbol" unless matches.size == 1
+          matches.first.promoted_name
+        end
+
+        private def diagnostic_observer(mod : LLVM::Module, index : Int32?) : DiagnosticProvenance::Observer
+          records = @diagnostic_emissions.not_nil!
+          by_name = {} of String => Array(DiagnosticProvenance::Emission)
+          records.each do |record|
+            (by_name[record.actual_llvm_symbol] ||= [] of DiagnosticProvenance::Emission) << record
+          end
+          defined = Set(String).new
+          mod.functions.each { |function| defined.add(function.name) if LibLLVM.is_declaration(function) == 0 }
+          candidates = {} of String => Array(DiagnosticProvenance::Emission)
+          roles = {} of String => String
+          slot = index || 0
+          if plan = @plan
+            partition = index || raise "partition coordinate missing"
+            functions = plan.diagnostic_functions || raise "partition provenance missing"
+            raise "partition provenance length mismatch" unless functions.size == plan.owner.size
+            by_name.each_key do |name|
+              position = nil
+              functions.each_with_index do |function, candidate|
+                next unless function.original_name == name
+                raise "ambiguous closure in partition plan" if position
+                position = candidate
+              end
+              unless position && plan.owner[position] >= 0
+                raise "emitted closure absent from partition plan"
+              end
+            end
+            functions.each_with_index do |function, position|
+              matching = by_name[function.original_name]?
+              next unless matching
+              role = if plan.owner[position] == partition
+                       "owner"
+                     elsif plan.copies[partition].includes?(position)
+                       "local_copy"
+                     end
+              next unless role && defined.includes?(function.promoted_name)
+              raise "duplicate promoted closure name" if candidates.has_key?(function.promoted_name)
+              candidates[function.promoted_name] = matching
+              roles[function.original_name] = role
+            end
+          else
+            by_name.each do |name, matching|
+              raise "emitted closure absent from LLVM unit" unless defined.includes?(name)
+              candidates[name] = matching
+              roles[name] = "single"
+            end
+          end
+          @diagnostic_roles.not_nil![slot] = roles
+          DiagnosticProvenance::Observer.new(mod, candidates)
+        end
+      {% end %}
 
       # Partition *index*, read from the module's bitcode into a context of
       # its own, optimised and written to its object. Safe on any thread.
@@ -4992,9 +5654,15 @@ module Iyi
         target_machine = compiler.create_target_machine
         mod = ReleasePartition.materialize(@memory_buffer.not_nil!, plan, index, target_machine)
         begin
+          {% unless flag?(:without_llvm) %}
+            observer = diagnostic_observer(mod, index) if @diagnostic_capture
+          {% end %}
           compiler.optimize mod, target_machine
           WasmRoots.run(mod) if compiler.codegen_target.architecture == "wasm32"
           compiler.preempt_checks mod, @preempt_flag
+          {% unless flag?(:without_llvm) %}
+            @diagnostic_observations.not_nil![index] = observer.finish if observer
+          {% end %}
           mod.print_to_file "#{@output_dir}/#{@name}.part#{index}.ll" if compiler.dump_ll?
           target_machine.emit_obj_to_file mod, temporary_object_name
           File.rename(temporary_object_name, object_name)
@@ -5012,6 +5680,7 @@ module Iyi
 
       private def must_compile?
         memory_buffer = generate_bitcode
+        return true if @diagnostic_capture
 
         return true unless compiler.emit_targets.none?
         return true if @bc_flags_changed
@@ -5064,9 +5733,19 @@ module Iyi
       private def compile_to_object
         temporary_object_name = self.temporary_object_name
         target_machine = compiler.create_target_machine
+        {% unless flag?(:without_llvm) %}
+          if @diagnostic_capture
+            @diagnostic_observations = Array(Array(DiagnosticProvenance::ObservedDefinition)?).new(1, nil)
+            @diagnostic_roles = Array(Hash(String, String)?).new(1, nil)
+            observer = diagnostic_observer(llvm_mod, nil)
+          end
+        {% end %}
         compiler.optimize llvm_mod, target_machine unless compiler.optimization_mode.o0?
         WasmRoots.run(llvm_mod) if compiler.codegen_target.architecture == "wasm32"
         compiler.preempt_checks llvm_mod, @preempt_flag
+        {% unless flag?(:without_llvm) %}
+          @diagnostic_observations.not_nil![0] = observer.finish if observer
+        {% end %}
         target_machine.emit_obj_to_file llvm_mod, temporary_object_name
         File.rename(temporary_object_name, object_name)
       rescue ex

@@ -4,6 +4,9 @@ Compare two test outputs for semantic backtrace equivalence.
 
 Usage:
     python3 bench/frames_equivalent.py [--across-optimisation] [--require-frames] OUT_A OUT_B
+    python3 bench/frames_equivalent.py --strict-provenance --source-manifest SOURCE_JSON \\
+        --artifact-manifest ARTIFACT_JSON --source-executable SOURCE_EXE \\
+        --artifact-executable ARTIFACT_EXE [--require-frames] OUT_A OUT_B
     python3 bench/frames_equivalent.py --mutant KIND OUT
 
 Tested by:
@@ -15,33 +18,83 @@ Exit codes:
     2: Usage error or unreadable input
 """
 
+import base64
+import hashlib
+import json
 import os
 import re
+import struct
 import sys
 
 FRAME_RE = re.compile(rb'^(\d+) +(\S+) +0x[0-9a-fA-F]{16} (.*) \+ \d+$')
 DARWIN_FRAME_RE = FRAME_RE
 LINUX_FRAME_RE = re.compile(rb'^(\d+) +(\S+) at (.+):(\d+):(\d+)$')
 
+def proc_location(sym: bytes):
+    """Return the path and line spans of a current proc linkage name."""
+    start = re.match(rb'^~proc\d*Proc\(', sym)
+    if not start:
+        return None
+    depth = 1
+    quote = None
+    escaped = False
+    for i in range(start.end(), len(sym)):
+        c = sym[i]
+        if c == ord('^'):
+            return None
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif c == ord('\\'):
+                escaped = True
+            elif c == quote:
+                quote = None
+        elif c in (ord('"'), ord("'")):
+            quote = c
+        elif c == ord('('):
+            depth += 1
+        elif c == ord(')'):
+            depth -= 1
+            if depth == 0:
+                if sym[i + 1:i + 2] != b'^':
+                    return None
+                location = re.fullmatch(rb'([^^]+):(\d+)', sym[i + 2:])
+                if not location:
+                    return None
+                path_start = i + 2
+                return (path_start, path_start + len(location.group(1)),
+                        path_start + location.start(2), path_start + location.end(2))
+    return None
+
+
 def canonical_function(sym: bytes) -> bytes:
-    # 1. strip one trailing ~iyi
-    if sym.endswith(b'~iyi'):
-        sym = sym[:-4]
-    # 2. for a symbol starting ~proc, drop the digits after ~proc
-    if sym.startswith(b'~proc'):
-        sym = re.sub(rb'^~proc\d*', b'~proc', sym)
-    # 3. in the @FILE:LINE tail (split at the last @), rewrite …/src/std/X.iyi and mods/std/X.iyimod to std/X
-    if b'@' in sym:
-        head, sep, tail = sym.rpartition(b'@')
-        tail = re.sub(rb'^(?:.*?[/\\])?src/std/(.+?)\.iyi(?=:\d+|$)', rb'std/\1', tail)
-        tail = re.sub(rb'^(?:.*?[/\\])?mods/std/(.+?)\.iyimod(?=:\d+|$)', rb'std/\1', tail)
-        sym = head + sep + tail
+    location = proc_location(sym)
+    if location:
+        start, end, _, _ = location
+        path = sym[start:end]
+        canonical = canonical_file(path)
+        if canonical != path:
+            # NUL cannot occur in a linkage name and prevents a literal path
+            # already named std/X from colliding with this equivalence class.
+            return sym[:start] + b'\0' + canonical + sym[end:]
+        return sym
+    # Older proc symbols use @ as their location separator.
+    legacy = re.fullmatch(rb'(~proc\d*@)([^@:]+):(\d+)', sym)
+    if legacy:
+        path = legacy.group(2)
+        canonical = canonical_file(path)
+        if canonical != path:
+            return legacy.group(1) + b'\0' + canonical + b':' + legacy.group(3)
     return sym
 
 def canonical_file(path: bytes) -> bytes:
-    # Rewrite …/src/std/X.iyi and …/mods/std/X.iyimod to std/X
-    path = re.sub(rb'^(?:.*?[/\\])?src/std/(.+?)\.iyi$', rb'std/\1', path)
-    path = re.sub(rb'^(?:.*?[/\\])?mods/std/(.+?)\.iyimod$', rb'std/\1', path)
+    # Only paths beneath the std tree correspond; reject traversal and empty
+    # components rather than equating a different file with a std module.
+    match = re.fullmatch(rb'(?:.*?[/\\])?(?:src/std/(.+)\.iyi|mods/std/(.+)\.iyimod)', path)
+    if match:
+        module = match.group(1) or match.group(2)
+        if all(part not in (b'', b'.', b'..') for part in re.split(rb'[/\\]', module)):
+            return b'std/' + module
     return path
 
 
@@ -79,11 +132,515 @@ def is_named_function(fn: bytes) -> bool:
     return True
 
 
+def fields(value, keys):
+    if not isinstance(value, dict) or set(value) != set(keys.split()):
+        raise ValueError("invalid provenance fields")
+    return value
+
+
+def text(value):
+    if not isinstance(value, str) or not value:
+        raise ValueError("invalid provenance text")
+    try: value.encode("utf-8")
+    except UnicodeError as exc: raise ValueError("invalid provenance UTF-8") from exc
+
+
+def number(value):
+    if type(value) is not int or not 0 <= value <= 0x7fffffff:
+        raise ValueError("invalid provenance integer")
+
+
+def origin(value, depth=0):
+    if depth > 128 or not isinstance(value, dict):
+        raise ValueError("invalid origin depth")
+    kind = value.get("kind")
+    if kind == "Written":
+        fields(value, "kind source_identity input_byte_offset anchor_kind role")
+        source = fields(value["source_identity"], "module file")
+        text(source["module"]); text(source["file"]); number(value["input_byte_offset"])
+    elif kind == "Synthetic":
+        fields(value, "kind parent_origin synthesis_kind structural_slot")
+        parent = origin(value["parent_origin"], depth + 1)
+        text(value["synthesis_kind"]); text(value["structural_slot"])
+        key = (value["synthesis_kind"], value["structural_slot"])
+        if ((key == ("block_to_proc", "proc") and parent in (("Block", "opener"), ("Block", "ampersand"))) or
+            (key == ("proc_pointer", "proc") and parent == ("ProcPointer", "arrow")) or
+            (key == ("defer", "cleanup") and parent == ("Defer", "keyword"))):
+            return ("ProcLiteral", "arrow")
+        if key == ("inline_macro_definition", "macro") and parent in (("MacroDirective", "expression"), ("MacroDirective", "control")):
+            return ("Macro", "keyword")
+        return ("Synthetic", value["synthesis_kind"])
+    elif kind == "Expanded":
+        fields(value, "kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset anchor_kind role emission_parts spliced_origin")
+        invocation = origin(value["invocation_origin"], depth + 1)
+        definition = origin(value["macro_definition_origin"], depth + 1)
+        if invocation not in (("Call", "method"), ("MacroDirective", "expression"), ("MacroDirective", "control")) or definition != ("Macro", "keyword"):
+            raise ValueError("invalid macro ancestry")
+        if not isinstance(value["expansion_guard"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["expansion_guard"]):
+            raise ValueError("invalid expansion guard")
+        number(value["generated_byte_offset"])
+        parts = value["emission_parts"]
+        if not isinstance(parts, list) or not parts: raise ValueError("missing emission parts")
+        end, previous = value["generated_byte_offset"], object()
+        for part in parts:
+            fields(part, "start_offset end_offset emitter_origin")
+            number(part["start_offset"]); number(part["end_offset"])
+            emitter = part["emitter_origin"]
+            if part["start_offset"] != end or part["end_offset"] <= end or emitter == previous:
+                raise ValueError("invalid emission part")
+            if emitter is not None and origin(emitter, depth + 1) not in (("MacroDirective", "expression"), ("MacroDirective", "control")):
+                raise ValueError("invalid emitter")
+            end, previous = part["end_offset"], emitter
+        splice = value["spliced_origin"]
+        if splice is not None and origin(splice, depth + 1) != (value["anchor_kind"], value["role"]):
+            raise ValueError("invalid spliced origin")
+    else:
+        raise ValueError("unknown origin")
+    text(value["anchor_kind"]); text(value["role"])
+    return value["anchor_kind"], value["role"]
+
+
+def checked_origin(value):
+    # Bound the unfolded structure before recursive validation or equality.
+    stack, size = [(value, 0)], 0
+    while stack:
+        node, depth = stack.pop()
+        # Each origin edge contributes at most three JSON container levels
+        # (Expanded -> emission_parts -> part -> emitter_origin).
+        if depth > 3 * 128 + 3: raise ValueError("origin nesting too deep")
+        if isinstance(node, dict):
+            size += 2 + max(0, len(node) - 1)
+            for key, child in node.items():
+                size += len(json.dumps(key, ensure_ascii=False).encode("utf-8")) + 1
+                stack.append((child, depth + 1))
+        elif isinstance(node, list):
+            size += 2 + max(0, len(node) - 1)
+            stack.extend((child, depth + 1) for child in node)
+        else:
+            size += len(json.dumps(node, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        if size > 8 * 1024 * 1024: raise ValueError("origin size limit exceeded")
+    return origin(value)
+
+
+NOMINAL_TYPES = frozenset("NilType VoidType BoolType CharType IntegerType FloatType SymbolType NoReturnType PrimitiveType AliasType ClassType ModuleType EnumType NonGenericClassType NonGenericModuleType TraitType FileModule GenericClassType GenericModuleType GenericTraitType LibType".split())
+UNION_TYPES = frozenset("UnionType NilableType NilableReferenceUnionType ReferenceUnionType NilableProcType MixedUnionType".split())
+
+
+def type_identity(value, depth=0):
+    if depth > 128 or not isinstance(value, dict): raise ValueError("invalid type")
+    kind = value.get("kind")
+    if not isinstance(kind, str) or not kind.startswith("Iyi::"): raise ValueError("unknown type")
+    kind = kind[5:]
+    if kind == "Program": fields(value, "kind")
+    elif kind in NOMINAL_TYPES: text(fields(value, "kind name")["name"])
+    elif kind in UNION_TYPES or kind == "TupleInstanceType":
+        name = "members" if kind in UNION_TYPES else "elements"
+        items = fields(value, "kind " + name)[name]
+        if not isinstance(items, list): raise ValueError("invalid type list")
+        for item in items: type_identity(item, depth + 1)
+    elif kind in ("VirtualType", "MetaclassType", "VirtualMetaclassType", "GenericClassInstanceMetaclassType", "GenericModuleInstanceMetaclassType", "PointerInstanceType"):
+        name = "base" if kind == "VirtualType" else "element" if kind == "PointerInstanceType" else "instance"
+        type_identity(fields(value, "kind " + name)[name], depth + 1)
+    elif kind == "ProcInstanceType":
+        fields(value, "kind arguments return")
+        if not isinstance(value["arguments"], list): raise ValueError("invalid proc arguments")
+        for item in value["arguments"]: type_identity(item, depth + 1)
+        type_identity(value["return"], depth + 1)
+    elif kind in ("NamedTupleInstanceType", "GenericClassInstanceType", "GenericModuleInstanceType"):
+        name = "entries" if kind == "NamedTupleInstanceType" else "parameters"
+        fields(value, "kind " + name + ("" if name == "entries" else " owner"))
+        if name == "parameters": text(value["owner"])
+        if not isinstance(value[name], list): raise ValueError("invalid type entries")
+        for item in value[name]:
+            fields(item, "name type"); text(item["name"]); type_identity(item["type"], depth + 1)
+    elif kind == "StaticArrayInstanceType":
+        fields(value, "kind element size_kind size_value")
+        type_identity(value["element"], depth + 1); text(value["size_kind"]); text(value["size_value"])
+    elif kind == "TypeDefType":
+        fields(value, "kind name target"); text(value["name"]); type_identity(value["target"], depth + 1)
+    else: raise ValueError("unknown type")
+
+
+def scope_identity(value, depth, current=False):
+    if depth > 128 or not isinstance(value, dict): raise ValueError("invalid scope")
+    kind = value.get("kind")
+    if kind == "program" or (kind == "current_scope" and current): fields(value, "kind")
+    elif kind in ("def", "block"):
+        fields(value, "kind origin specialization"); checked_origin(value["origin"])
+        (specialization_identity if kind == "def" else block_identity)(value["specialization"], depth + 1)
+    else: raise ValueError("unknown scope")
+
+
+def binding_identities(values, depth, semantic):
+    if not isinstance(values, list): raise ValueError("invalid bindings")
+    for value in values:
+        fields(value, "name binding_origin scope type mutable" + (" closured assigned" if semantic else ""))
+        text(value["name"]); checked_origin(value["binding_origin"]); scope_identity(value["scope"], depth + 1, semantic)
+        binding = value["binding_origin"]
+        if binding.get("kind") != "Synthetic": raise ValueError("invalid binding origin")
+        parent = origin(binding["parent_origin"])
+        role, slot = binding["synthesis_kind"], binding["structural_slot"]
+        if role == "local_binding":
+            valid = slot == "assignment" and parent == ("Call", "method")
+        else:
+            valid_slot = re.fullmatch(r"index:(0|[1-9][0-9]*)", slot) is not None
+            allowed = {"parameter_binding": (("Def", "keyword"),),
+                       "block_parameter": (("Block", "opener"), ("Block", "ampersand")),
+                       "proc_parameter": (("ProcLiteral", "arrow"),)}
+            valid = valid_slot and parent in allowed.get(role, ())
+        if not valid: raise ValueError("invalid binding origin")
+        type_identity(value["type"], depth + 1)
+        for name in (("mutable", "closured", "assigned") if semantic else ("mutable",)):
+            if type(value[name]) is not bool: raise ValueError("invalid binding flag")
+
+
+def semantic_environment(value, depth):
+    fields(value, "self_type lexical_scope_type bindings")
+    for name in ("self_type", "lexical_scope_type"):
+        if value[name] is not None: type_identity(value[name], depth + 1)
+    binding_identities(value["bindings"], depth + 1, True)
+
+
+def block_identity(value, depth):
+    if depth > 128: raise ValueError("block nesting too deep")
+    fields(value, "origin parameter_types return_type enclosing_specialization environment")
+    checked_origin(value["origin"])
+    if not isinstance(value["parameter_types"], list): raise ValueError("invalid block parameters")
+    for item in value["parameter_types"]: type_identity(item, depth + 1)
+    type_identity(value["return_type"], depth + 1)
+    if value["enclosing_specialization"] is not None: specialization_identity(value["enclosing_specialization"], depth + 1)
+    semantic_environment(value["environment"], depth + 1)
+
+
+def specialization_identity(value, depth=0):
+    if depth > 128 or not isinstance(value, dict): raise ValueError("invalid specialization")
+    if value.get("kind") == "program_scope":
+        source = fields(fields(value, "kind source_identity")["source_identity"], "module file")
+        text(source["module"]); text(source["file"])
+    elif value.get("kind") == "proc_scope":
+        fields(value, "kind origin proc_type enclosing_specialization environment")
+        checked_origin(value["origin"]); type_identity(value["proc_type"], depth + 1)
+        if value["proc_type"]["kind"] != "Iyi::ProcInstanceType": raise ValueError("invalid proc scope")
+        specialization_identity(value["enclosing_specialization"], depth + 1); semantic_environment(value["environment"], depth + 1)
+    else:
+        fields(value, "definition_origin dispatch_type defining_owner ordered_argument_types block_parameter_type named_argument_types free_variable_bindings expansion_shape lexical_block_specialization")
+        checked_origin(value["definition_origin"]); type_identity(value["dispatch_type"], depth + 1); type_identity(value["defining_owner"], depth + 1)
+        if not isinstance(value["ordered_argument_types"], list): raise ValueError("invalid arguments")
+        for item in value["ordered_argument_types"]: type_identity(item, depth + 1)
+        if value["block_parameter_type"] is not None: type_identity(value["block_parameter_type"], depth + 1)
+        for name in ("named_argument_types", "free_variable_bindings"):
+            if not isinstance(value[name], list): raise ValueError("invalid named types")
+            for item in value[name]:
+                fields(item, "name type"); text(item["name"]); type_identity(item["type"], depth + 1)
+        shape = fields(value["expansion_shape"], "positional_count splat_index double_splat_name formal_parameters")
+        number(shape["positional_count"])
+        if shape["splat_index"] is not None: number(shape["splat_index"])
+        if shape["double_splat_name"] is not None: text(shape["double_splat_name"])
+        if not isinstance(shape["formal_parameters"], list): raise ValueError("invalid formals")
+        for item in shape["formal_parameters"]:
+            fields(item, "name external_name has_default"); text(item["name"]); text(item["external_name"])
+            if type(item["has_default"]) is not bool: raise ValueError("invalid default")
+        if value["lexical_block_specialization"] is not None: block_identity(value["lexical_block_specialization"], depth + 1)
+
+
+def capture_environment(value, depth=0):
+    if depth > 128: raise ValueError("environment too deep")
+    fields(value, "captured_self_type bindings parent")
+    if value["captured_self_type"] is not None: type_identity(value["captured_self_type"], depth + 1)
+    binding_identities(value["bindings"], depth + 1, False)
+    if value["parent"] is not None: capture_environment(value["parent"], depth + 1)
+
+
+def no_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result: raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+NATIVE_EVIDENCE_BUDGET = 64 * 1024 * 1024
+
+
+def macho_summary(data, expected_type):
+    """Read a bounded, thin little-endian 64-bit Mach-O snapshot."""
+    if len(data) < 32 or data[:4] != b"\xcf\xfa\xed\xfe":
+        raise ValueError("unsupported or truncated Mach-O")
+    _, cpu, subtype, file_type, ncmds, sizeofcmds, _, _ = struct.unpack_from("<8I", data)
+    if cpu not in (0x01000007, 0x0100000c) or file_type != expected_type:
+        raise ValueError("unsupported Mach-O CPU or file type")
+    end = 32 + sizeofcmds
+    if end > len(data) or ncmds > sizeofcmds // 8:
+        raise ValueError("invalid Mach-O command area")
+    sections, symtab, pos = [], None, 32
+    budget = NATIVE_EVIDENCE_BUDGET
+    for _ in range(ncmds):
+        if pos + 8 > end: raise ValueError("truncated load command")
+        cmd, size = struct.unpack_from("<II", data, pos)
+        if size < 8 or size % 8 or pos + size > end:
+            raise ValueError("invalid load command size")
+        if cmd == 2:
+            if size != 24 or symtab is not None: raise ValueError("invalid LC_SYMTAB")
+            symtab = struct.unpack_from("<4I", data, pos + 8)
+        elif cmd == 0x19:
+            if size < 72: raise ValueError("truncated segment")
+            nsects = struct.unpack_from("<I", data, pos + 64)[0]
+            if nsects > (size - 72) // 80: raise ValueError("truncated sections")
+            budget -= 256 * nsects
+            if budget < 0: raise ValueError("native evidence size limit")
+            for i in range(nsects):
+                p = pos + 72 + 80 * i
+                sect, seg = struct.unpack_from("<16s16s", data, p)
+                address, length, offset = struct.unpack_from("<QQI", data, p + 32)
+                flags = struct.unpack_from("<I", data, p + 64)[0]
+                if address + length > 0xffffffffffffffff:
+                    raise ValueError("section address overflow")
+                kind = flags & 0xff
+                if kind not in (1, 0xc, 0x12) and (offset > len(data) or length > len(data) - offset):
+                    raise ValueError("section data outside file")
+                sections.append({"index": len(sections) + 1,
+                                 "segment_name_base64": base64.b64encode(seg).decode(),
+                                 "section_name_base64": base64.b64encode(sect).decode(),
+                                 "address": f"{address:016x}", "size": f"{length:016x}",
+                                 "file_offset": offset, "flags": flags})
+        pos += size
+    if pos != end or symtab is None: raise ValueError("invalid Mach-O command count")
+    symoff, nsyms, stroff, strsize = symtab
+    if symoff > len(data) or nsyms > (len(data) - symoff) // 16 or stroff > len(data) or strsize > len(data) - stroff:
+        raise ValueError("symbol table outside file")
+    symend, strend = symoff + nsyms * 16, stroff + strsize
+    def overlap(a, b, c, d):
+        return a < b and c < d and a < d and c < b
+    if overlap(symoff, symend, 0, end) or overlap(stroff, strend, 0, end) or overlap(symoff, symend, stroff, strend):
+        raise ValueError("overlapping Mach-O tables")
+    budget -= 256 * nsyms
+    if budget < 0: raise ValueError("native evidence size limit")
+    symbols = []
+    for i in range(nsyms):
+        strx, typ, sect, desc, value = struct.unpack_from("<IBBHQ", data, symoff + 16 * i)
+        if strx:
+            if strx >= strsize: raise ValueError("invalid symbol string index")
+            start = stroff + strx
+            scan_end = min(strend, start + budget + 1)
+            stop = data.find(b"\0", start, scan_end)
+            if stop < 0:
+                if scan_end < strend: raise ValueError("native evidence size limit")
+                raise ValueError("unterminated symbol name")
+            length = stop - start
+            budget -= length + 4 * ((length + 2) // 3)
+            if budget < 0: raise ValueError("native evidence size limit")
+            name = data[start:stop]
+        else:
+            name = b""
+        if not typ & 0xe0:
+            base = typ & 0x0e
+            if base == 0x0a: raise ValueError("unsupported indirect symbol")
+            if base not in (0, 2, 0x0c, 0x0e): raise ValueError("unsupported symbol type")
+            if base == 0x0e:
+                if not 1 <= sect <= len(sections): raise ValueError("invalid symbol section")
+        symbols.append({"index": i, "string_index": strx, "name_base64": base64.b64encode(name).decode(),
+                        "type": typ, "section": sect, "desc": desc, "value": f"{value:016x}"})
+    return {"format": "macho64-le-symtab-v1", "cpu_type": cpu, "cpu_subtype": subtype,
+            "file_type": file_type, "sections": sections, "symbols": symbols}
+
+
+def same_json(actual, expected):
+    # Equality alone would accept JSON booleans in integer fields.
+    if type(actual) is not type(expected): return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(same_json(actual[k], v) for k, v in expected.items())
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(same_json(a, b) for a, b in zip(actual, expected))
+    return actual == expected
+
+
+def evidence(value, data, file_type):
+    expected = macho_summary(data, file_type)
+    if not same_json(value, expected): raise ValueError("native symbol evidence does not match bytes")
+    return expected
+
+
+def direct_code_symbols(summary):
+    result = []
+    for section in summary["sections"]:
+        flags = section["flags"]
+        if flags & 0x80000400 and not flags & 0x02000000 and flags & 0xff not in (0, 8):
+            raise ValueError("unsupported instruction-bearing section")
+    for symbol in summary["symbols"]:
+        typ = symbol["type"]
+        if typ & 0xe0 or typ & 0x0e != 0x0e: continue
+        section = summary["sections"][symbol["section"] - 1]
+        flags = section["flags"]
+        if not flags & 0x80000400 or flags & 0x02000000: continue
+        if flags & 0xff: continue
+        address, size = int(section["address"], 16), int(section["size"], 16)
+        value = int(symbol["value"], 16)
+        if address <= value < address + size:
+            result.append((base64.b64decode(symbol["name_base64"]), symbol))
+    return result
+
+
+def emission_identity(value):
+    fields(value, "requested_symbol actual_llvm_symbol unit_name linkage origin specialization capture_descriptor displayed_source_location")
+    for name in ("requested_symbol", "actual_llvm_symbol", "unit_name", "linkage"): text(value[name])
+    anchor = checked_origin(value["origin"])
+    if anchor != ("ProcLiteral", "arrow"): raise ValueError("invalid closure origin")
+    specialization_identity(value["specialization"])
+    capture = fields(value["capture_descriptor"], "proc_type is_closure environment")
+    type_identity(capture["proc_type"])
+    if capture["proc_type"]["kind"] != "Iyi::ProcInstanceType" or type(capture["is_closure"]) is not bool:
+        raise ValueError("invalid closure capture")
+    if capture["is_closure"]: capture_environment(capture["environment"])
+    elif capture["environment"] is not None: raise ValueError("invalid non-closure environment")
+    location = fields(value["displayed_source_location"], "file line column")
+    text(location["file"]); number(location["line"]); number(location["column"])
+    if not location["line"] or not location["column"]: raise ValueError("invalid source location")
+    return (value["origin"], value["specialization"], capture, location)
+
+
+class FrameManifest:
+    def __init__(self, path, executable):
+        with open(path, encoding="utf-8") as stream:
+            manifest = json.load(stream, object_pairs_hook=no_duplicate_keys)
+        fields(manifest, "schema object_input_scope executable_sha256 executable_symbols object_inputs bindings")
+        if type(manifest["schema"]) is not int or manifest["schema"] != 4 or manifest["object_input_scope"] != "compiler_supplied_link_inputs":
+            raise ValueError("unsupported manifest schema or scope")
+        with open(executable, "rb") as stream: binary = stream.read()
+        if hashlib.sha256(binary).hexdigest() != manifest["executable_sha256"]:
+            raise ValueError("executable digest mismatch")
+        linked = evidence(manifest["executable_symbols"], binary, 2)
+        with open(executable, "rb") as stream:
+            if stream.read() != binary: raise ValueError("executable changed while inspecting")
+        if not linked["symbols"]: raise ValueError("empty executable symbols")
+        inputs = manifest["object_inputs"]
+        if not isinstance(inputs, list) or not inputs: raise ValueError("missing link inputs")
+        seen, current_units, object_code = set(), {}, []
+        for index, item in enumerate(inputs):
+            fields(item, "link_input_id producer unit_name partition sha256 bytes_base64 native_evidence")
+            if type(item["link_input_id"]) is not int or item["link_input_id"] != index: raise ValueError("invalid link input ID")
+            text(item["unit_name"])
+            producer = item["producer"]
+            if not isinstance(producer, dict): raise ValueError("invalid producer")
+            if producer.get("kind") == "current_unit":
+                fields(producer, "kind unit_ordinal"); number(producer["unit_ordinal"])
+            elif producer.get("kind") == "artifact_object":
+                fields(producer, "kind artifact_identity object_ordinal")
+                text(producer["artifact_identity"]); number(producer["object_ordinal"])
+            else: raise ValueError("unknown producer")
+            partition = item["partition"]
+            if partition is not None:
+                fields(partition, "index count"); number(partition["index"]); number(partition["count"])
+                if partition["count"] == 0 or partition["index"] >= partition["count"]: raise ValueError("invalid partition")
+            coordinate = json.dumps([producer, partition if producer["kind"] == "current_unit" else None], sort_keys=True, separators=(",", ":"))
+            if coordinate in seen: raise ValueError("duplicate input coordinate")
+            seen.add(coordinate)
+            if producer["kind"] == "current_unit":
+                group = current_units.setdefault(producer["unit_ordinal"], [])
+                group.append((item["unit_name"], partition))
+            try:
+                data = base64.b64decode(item["bytes_base64"], validate=True)
+            except (ValueError, TypeError) as exc: raise ValueError("invalid object encoding") from exc
+            if base64.b64encode(data).decode("ascii") != item["bytes_base64"] or hashlib.sha256(data).hexdigest() != item["sha256"]:
+                raise ValueError("object digest mismatch")
+            object_summary = evidence(item["native_evidence"], data, 1)
+            if object_summary["cpu_type"] != linked["cpu_type"]: raise ValueError("inconsistent Mach-O architecture")
+            object_code.append(direct_code_symbols(object_summary))
+        for group in current_units.values():
+            if len({name for name, _ in group}) != 1: raise ValueError("unit name collision")
+            partitions = [part for _, part in group]
+            if partitions == [None]: continue
+            if any(part is None for part in partitions): raise ValueError("mixed partition coordinates")
+            count = partitions[0]["count"]
+            if any(part["count"] != count for part in partitions) or len(partitions) != count:
+                raise ValueError("incomplete partition set")
+        bindings = manifest["bindings"]
+        if not isinstance(bindings, list): raise ValueError("missing object bindings")
+        identities, requested_names, bound = {}, {}, set()
+        for binding in bindings:
+            fields(binding, "link_input_id definition")
+            index = binding["link_input_id"]
+            if type(index) is not int or not 0 <= index < len(inputs): raise ValueError("binding input absent")
+            item = inputs[index]
+            definition = fields(binding["definition"], "emission post_partition_llvm_symbol native_object_symbol post_partition_linkage partition_role")
+            for name in ("post_partition_llvm_symbol", "native_object_symbol", "post_partition_linkage"): text(definition[name])
+            role = definition["partition_role"]
+            if role not in ("single", "owner", "local_copy") or (item["partition"] is None) != (role == "single"):
+                raise ValueError("invalid partition role")
+            llvm_name = definition["post_partition_llvm_symbol"]
+            if llvm_name.startswith("\x01") or definition["native_object_symbol"] != "_" + llvm_name: raise ValueError("unsupported native decoration")
+            name = definition["native_object_symbol"].encode("utf-8")
+            if definition["emission"]["unit_name"] != item["unit_name"]: raise ValueError("binding unit mismatch")
+            identity = emission_identity(definition["emission"])
+            requested = definition["emission"]["requested_symbol"].encode("utf-8")
+            matches = [s for n, s in object_code[index] if n == name]
+            if len(matches) != 1: raise ValueError("binding absent or ambiguous in object")
+            if matches[0]["desc"] & 0x300: raise ValueError("unsupported resolver or alternate entry")
+            key = (index, name)
+            if key in bound: raise ValueError("duplicate object binding")
+            bound.add(key)
+            if name in identities and identities[name] != identity: raise ValueError("ambiguous native symbol")
+            requested_names.setdefault(name, []).append(requested)
+            identities[name] = identity
+        linked_text = direct_code_symbols(linked)
+        linked_by_name, linked_by_address = {}, {}
+        for name, symbol in linked_text:
+            linked_by_name.setdefault(name, []).append(symbol)
+            linked_by_address.setdefault((symbol["section"], symbol["value"]), []).append(name)
+            if name.startswith((b"_~proc", b"_~fun_literal")) and name not in identities:
+                raise ValueError("linked closure lacks provenance")
+        linked_names = set(linked_by_name)
+        for index, symbols in enumerate(object_code):
+            for name, symbol in symbols:
+                if name in identities and (index, name) not in bound:
+                    raise ValueError("unbound competing definition")
+        for name, identity in identities.items():
+            matches = linked_by_name.get(name, [])
+            if len(matches) > 1: raise ValueError("ambiguous executable definition")
+            if not matches: continue
+            symbol = matches[0]
+            if symbol["desc"] & 0x300: raise ValueError("unsupported resolver or alternate entry")
+            for other in linked_by_address[(symbol["section"], symbol["value"])]:
+                if identities.get(other) != identity: raise ValueError("ambiguous folded symbol")
+        self.identities = {name: identity for name, identity in identities.items() if name in linked_names}
+        self.requested_names = {name: requested_names[name] for name in self.identities}
+
+    def resolve(self, symbol):
+        name = b"_" + symbol
+        if name not in self.identities: raise ValueError("closure symbol missing from executable")
+        originals = self.requested_names[name]
+        shape = requested_shape(originals[0])
+        if any(requested_shape(item) != shape for item in originals[1:]):
+            raise ValueError("ambiguous original closure spelling")
+        return self.identities[name], originals[0]
+
+
+def requested_shape(symbol):
+    prefix = re.match(rb"^~proc(\d*)Proc\(", symbol)
+    location = proc_location(symbol)
+    if not prefix or location is None: raise ValueError("unsupported original closure linkage")
+    canonical = canonical_function(symbol)
+    return canonical[:prefix.start(1)] + canonical[prefix.end(1):]
+
+
+def compare_functions(left, right, manifests):
+    if manifests is None: return canonical_function(left) == canonical_function(right)
+    a, b = left.startswith((b"~proc", b"~fun_literal")), right.startswith((b"~proc", b"~fun_literal"))
+    if not a and not b: return canonical_function(left) == canonical_function(right)
+    if not a or not b: return False
+    (identity_a, original_a), (identity_b, original_b) = manifests[0].resolve(left), manifests[1].resolve(right)
+    if identity_a[:3] != identity_b[:3]: return False
+    location_a, location_b = identity_a[3], identity_b[3]
+    la, lb = proc_location(original_a), proc_location(original_b)
+    if int(original_a[la[2]:la[3]]) != location_a["line"] or int(original_b[lb[2]:lb[3]]) != location_b["line"]:
+        raise ValueError("closure line does not match emission")
+    if (canonical_file(location_a["file"].encode()), location_a["line"], location_a["column"]) != (canonical_file(location_b["file"].encode()), location_b["line"], location_b["column"]): return False
+    return requested_shape(original_a) == requested_shape(original_b)
+
+
 def report_violation(line_no: int, rule: str, left: bytes, right: bytes):
     sys.stdout.write(f"line {line_no}: rule {rule}\n  left:  {repr(left)}\n  right: {repr(right)}\n")
 
 
-def compare_same_opt(lines1: list[bytes], lines2: list[bytes], require_frames: bool = False) -> int:
+def compare_same_opt(lines1: list[bytes], lines2: list[bytes], require_frames: bool = False, manifests=None) -> int:
     # Equal line count
     if len(lines1) != len(lines2):
         min_len = min(len(lines1), len(lines2))
@@ -126,7 +683,12 @@ def compare_same_opt(lines1: list[bytes], lines2: list[bytes], require_frames: b
                 if img1 != img2:
                     report_violation(line_no, 'image', l1, l2)
                     return 1
-                if fn1 != fn2:
+                try:
+                    matched = compare_functions(FRAME_RE.match(l1.rstrip(b'\r\n')).group(3), FRAME_RE.match(l2.rstrip(b'\r\n')).group(3), manifests)
+                except ValueError as exc:
+                    report_violation(line_no, 'provenance', str(exc).encode(), l2)
+                    return 1
+                if not matched:
                     report_violation(line_no, 'function', l1, l2)
                     return 1
                 if is_named_function(fn1):
@@ -140,7 +702,12 @@ def compare_same_opt(lines1: list[bytes], lines2: list[bytes], require_frames: b
                 if idx1 != idx2:
                     report_violation(line_no, 'index', l1, l2)
                     return 1
-                if fn1 != fn2:
+                try:
+                    matched = compare_functions(LINUX_FRAME_RE.match(l1.rstrip(b'\r\n')).group(2), LINUX_FRAME_RE.match(l2.rstrip(b'\r\n')).group(2), manifests)
+                except ValueError as exc:
+                    report_violation(line_no, 'provenance', str(exc).encode(), l2)
+                    return 1
+                if not matched:
                     report_violation(line_no, 'function', l1, l2)
                     return 1
                 if (file1, line1, col1) != (file2, line2, col2):
@@ -356,11 +923,13 @@ def generate_mutant(kind: str, lines: list[bytes]) -> list[bytes]:
             m_d = FRAME_RE.match(s)
             if m_d:
                 fn = m_d.group(3)
-                sub_m = re.search(rb'(@.*?):(\d+)', fn)
-                if sub_m:
-                    old_num = sub_m.group(2)
+                loc = proc_location(fn)
+                sub_m = re.fullmatch(rb'~proc\d*@[^@:]+:(\d+)', fn) if not loc else None
+                if loc or sub_m:
+                    start, end = (loc[2], loc[3]) if loc else sub_m.span(1)
+                    old_num = fn[start:end]
                     new_num = str(int(old_num) + 12345).encode()
-                    new_fn = fn[:sub_m.start(2)] + new_num + fn[sub_m.end(2):]
+                    new_fn = fn[:start] + new_num + fn[end:]
                     mutated[i] = line.replace(fn, new_fn, 1)
                     return mutated
         raise ValueError("no frame line with location/line for mutant")
@@ -451,10 +1020,25 @@ def main():
 
     across_opt = False
     require_frames = False
+    strict = False
+    options = {}
+    option_names = {"--source-manifest", "--artifact-manifest", "--source-executable", "--artifact-executable"}
     files = []
-    for arg in args:
+    iterator = iter(args)
+    for arg in iterator:
         if arg in ("--across-optimisation", "--across-optimization"):
             across_opt = True
+        elif arg == "--strict-provenance":
+            strict = True
+        elif arg in option_names:
+            if arg in options:
+                sys.stderr.write(f"Duplicate option: {arg}\n")
+                sys.exit(2)
+            value = next(iterator, None)
+            if value is None or value.startswith("-"):
+                sys.stderr.write(f"Missing value for {arg}\n")
+                sys.exit(2)
+            options[arg] = value
         elif arg in ("--require-frames", "--require-named-frames", "--named-frame-proof"):
             require_frames = True
         elif arg.startswith("-"):
@@ -466,6 +1050,17 @@ def main():
     if len(files) != 2:
         sys.stderr.write("Error: exactly two files required\n")
         sys.exit(2)
+    if (strict and (across_opt or set(options) != option_names)) or (not strict and options):
+        sys.stderr.write("Error: strict provenance requires both manifests and executables and forbids across-optimisation\n")
+        sys.exit(2)
+    manifests = None
+    if strict:
+        try:
+            manifests = (FrameManifest(options["--source-manifest"], options["--source-executable"]),
+                         FrameManifest(options["--artifact-manifest"], options["--artifact-executable"]))
+        except (OSError, ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
+            sys.stderr.write(f"Invalid frame provenance: {exc}\n")
+            sys.exit(1)
 
     try:
         with open(files[0], 'rb') as f1, open(files[1], 'rb') as f2:
@@ -478,7 +1073,7 @@ def main():
     if across_opt:
         ret = compare_across_opt(lines1, lines2, require_frames=require_frames)
     else:
-        ret = compare_same_opt(lines1, lines2, require_frames=require_frames)
+        ret = compare_same_opt(lines1, lines2, require_frames=require_frames, manifests=manifests)
 
     sys.exit(ret)
 

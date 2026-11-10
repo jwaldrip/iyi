@@ -171,6 +171,12 @@ class Iyi::Program
     virtual = VirtualFile.new(the_macro, generated_source, node.location)
     virtual.line_origins = line_origins_of(generated_source, macro_expansion_pragmas)
     parser.filename = virtual
+    if @program.diagnostic_capture
+      invocation = node.diagnostic_origin || raise ArgumentError.new("macro invocation lacks diagnostic origin")
+      definition = the_macro.diagnostic_origin || raise ArgumentError.new("macro definition lacks diagnostic origin")
+      guard = "sha256:#{::Crystal::Digest::SHA256.hexdigest(generated_source)}"
+      parser.diagnostic_expansion(invocation, definition, guard, macro_expansion_pragmas)
+    end
     # iyi: an expansion inside code read from an artifact ends at the
     # artifact, which is no `.iyi`, so `raw!` was read as a call to a method
     # named `raw!`. The module the artifact was built from decides.
@@ -194,6 +200,7 @@ class Iyi::Program
       node.raise "macro expansion nested more than #{VirtualFile::DEPTH_LIMIT} deep: a macro whose expansion runs it again (a call of itself, of a macro that calls it back, or a class that sets off the `inherited` hook that wrote it) has to stop before that"
     end
     generated_node = Prof.span("  macro: reparse") { yield parser }
+    parser.diagnostic_check_consumed
     Prof.span("  macro: normalize") { normalize(generated_node, inside_exp: inside_exp, current_def: current_def) }
   end
 

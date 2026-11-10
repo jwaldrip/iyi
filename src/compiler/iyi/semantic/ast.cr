@@ -155,6 +155,60 @@ module Iyi
     property! owner : Type
     property! original_owner : Type
     property vars : MetaVars?
+
+    @diagnostic_proc_node : ProcLiteral? = nil
+    @diagnostic_proc_parent : Def | Program | Nil = nil
+    @diagnostic_proc_lexical_scope : Type? = nil
+    @diagnostic_proc_ready = false
+    @diagnostic_proc_computing = false
+
+    def diagnostic_proc_scope(node : ProcLiteral, parent : Def | Program, lexical_scope : Type?) : Nil
+      @diagnostic_proc_node = node
+      @diagnostic_proc_parent = parent
+      @diagnostic_proc_lexical_scope = lexical_scope
+    end
+
+    def diagnostic_proc_ready : Nil
+      @diagnostic_proc_ready = true
+    end
+
+    # A proc is typed recursively before its return type and environment are
+    # stable. Compute its scope only once semantic analysis has left its body.
+    def diagnostic_specialization_json : JSON::Any?
+      recorded = previous_def
+      return recorded if recorded
+      return nil if @diagnostic_specialization_unusable || !@diagnostic_proc_ready || @diagnostic_proc_computing
+      node = @diagnostic_proc_node || return nil
+      parent = @diagnostic_proc_parent || return nil
+      origin = node.diagnostic_origin || return nil
+      proc_type = node.type?.as?(ProcInstanceType) || return nil
+      type_identity = DiagnosticType.identity(proc_type) || return nil
+      vars = self.vars || return nil
+      return nil if parent.is_a?(Def) && !@diagnostic_proc_lexical_scope
+      @diagnostic_proc_computing = true
+      begin
+        enclosing = case parent
+                    when Def
+                      return nil if parent.same?(self)
+                      parent.diagnostic_specialization_json || return nil
+                    when Program
+                      origin.program_specialization_json
+                    end
+        environment = DiagnosticEnvironment.snapshot(vars, self, @diagnostic_proc_lexical_scope) || return nil
+        JSON.parse(JSON.build do |json|
+          json.object do
+            json.field "kind", "proc_scope"
+            json.field "origin", origin
+            json.field "proc_type", type_identity
+            json.field "enclosing_specialization", enclosing
+            json.field "environment", environment
+          end
+        end)
+      ensure
+        @diagnostic_proc_computing = false
+      end
+    end
+
     property yield_vars : Array(Var)?
     property previous : DefWithMetadata?
     property next : Def?
@@ -592,6 +646,7 @@ module Iyi
     # that. Empty for a variable with none, and for one written `= nil`: the
     # compiler drops a nil initialiser because assigning nil assigns nothing.
     property iyi_initialiser_source : String = ""
+    property iyi_initialiser_anchors : Array(DiagnosticAnchor)? = nil
 
     # iyi: the first write to a class variable the typer met outside its
     # initializer - an assignment, or a `pointerof` that can write it - and

@@ -847,6 +847,7 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       a_def.iyi_from_impl = true
       @iyi_impl_defs[a_def] = {node, impl_label}
       signature = IyiMod.signature(a_def)
+      @program.record_signature_diagnostic(file, container, signature, a_def) if file
       impl_methods << signature
 
       # And one more way the machine code ends up somewhere the consumer
@@ -868,8 +869,14 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       # struct this module declares carried a header alone, and the
       # consumer's link ended on `Kit::Lib::B#walk<&Proc(Int32, Nil)>:Nil`.
       if file && (bodies_travel || IyiMod.caller_instantiated?(a_def) || iyi_impl_signature_widened?(a_def))
-        key = IyiMod.mono_body_key(container, signature)
-        text, positions = IyiMod.located_source(a_def.body)
+        ordinal = impl_methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+        key = IyiMod.mono_body_key(container, signature, ordinal)
+        if @program.diagnostic_capture
+          text, positions, anchors = IyiMod.diagnostic_located_source(a_def.body)
+          @program.record_mono_body_diagnostic(file, key, container, signature, text, anchors)
+        else
+          text, positions = IyiMod.located_source(a_def.body)
+        end
         (@program.iyi_mono_bodies[file] ||= {} of String => String)[key] = text
         (@program.iyi_mono_body_positions[file] ||= {} of String => Array(IyiMod::SourcePosition))[key] = positions
       end
@@ -1643,13 +1650,20 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     # Keyed on the location, which is what a `Def` and its declaration share.
     # Recorded only while a boundary is being written.
     if @program.compiler.try(&.emit_bind)
+      written_body = @program.iyi_def_bodies_by_identity[node] ||= node.body.to_s
       if location = node.location
         # Keyed on the name as well as the place. A synthesised `new` carries
         # the *location* of the `initialize` it was made from, so a key of one
         # handed `new` the other's body — and `@block = ...` in a metaclass is
         # `@instance_vars are not yet allowed in metaclasses`.
-        @program.iyi_def_bodies[Program.iyi_def_body_key(location, node.name)] ||= node.body.to_s
+        @program.iyi_def_bodies[Program.iyi_def_body_key(location, node.name)] ||= written_body
       end
+    end
+    if @program.diagnostic_capture && (origin = node.diagnostic_origin)
+      io = IO::Memory.new
+      anchors = [] of DiagnosticAnchor
+      node.body.to_s(io, diagnostic_anchors: anchors)
+      @program.record_diagnostic_def_body(origin, io.to_s, anchors)
     end
 
     annotations = read_annotations
@@ -2560,9 +2574,18 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     end
 
     const = Const.new(@program, scope, name, value)
+    const.iyi_declaration_origin = node.diagnostic_origin if @program.diagnostic_capture
     # iyi: here, because here is the only place the value is still what the
     # shard wrote. See `Const#iyi_value_source`.
-    const.iyi_value_source = value.to_s
+    if @program.diagnostic_capture
+      io = IO::Memory.new
+      anchors = [] of DiagnosticAnchor
+      value.to_s(io, diagnostic_anchors: anchors)
+      const.iyi_value_source = io.to_s
+      const.iyi_value_anchors = anchors
+    else
+      const.iyi_value_source = value.to_s
+    end
     const.declared_type = declared_type
     const.private = true if target.visibility.private?
 
@@ -2880,9 +2903,15 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       collect_derive_fields declaration, fields
     end
 
+    field_list = ArrayLiteral.new(fields)
+    if origin = derive.diagnostic_origin
+      field_list.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "derive:fields")
+    elsif @program.diagnostic_capture
+      raise "derive field list lacks its invocation origin"
+    end
     NamedTupleLiteral.new([
       NamedTupleLiteral::Entry.new("name", StringLiteral.new(owner.name.names.last)),
-      NamedTupleLiteral::Entry.new("fields", ArrayLiteral.new(fields)),
+      NamedTupleLiteral::Entry.new("fields", field_list),
     ])
   end
 

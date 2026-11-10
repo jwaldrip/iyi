@@ -185,4 +185,48 @@ describe "`crystal tool bind`, end to end" do
         .output.chomp.should eq "hello, iyi\nhi iyi\n7\none\n10\nb\ntrue\nfalse\n42"
     end
   end
+  {% if flag?(:darwin) %}
+    it "rejects whole-module diagnostic fills without changing the declaration artifact" do
+      pending!("requires #{IYI_BIN} (`make iyi`)") unless File::Info.executable?(IYI_BIN)
+      with_tempfile("bind-diagnostic-mode") do |dir|
+        mods = File.join(dir, "mods")
+        Dir.mkdir_p mods
+        File.write File.join(dir, "shard.cr"), <<-CR
+          module Greeter
+            extend self
+
+            def greet : String
+              "hello"
+            end
+          end
+          CR
+        Process.capture_result([IYI_BIN, "tool", "bind", "--crystal", "-e", "Greeter",
+                                "--capture-diagnostic-provenance", "--emit-bind", "mods", "shard.cr"],
+          chdir: dir, env: crystal_env).should be_success
+        artifact = File.join(mods, "greeter.iyimod")
+        original = File.read(artifact)
+        ["1", "4"].each do |count|
+          env = crystal_env.merge({"IYI_RELEASE_PARTITIONS" => count})
+          result = Process.capture_result([IYI_BIN, "build", "--crystal", "--release", "--iyi-keep", "Greeter",
+                                           "--capture-diagnostic-provenance", "--emit-bind", ".", "-o", "keepbin",
+                                           "greeter_keep.cr"], chdir: mods, env: env)
+          result.status.success?.should be_false
+          result.error.should contain("diagnostic artifact production requires per-type object units")
+          File.read(artifact).should eq(original)
+        end
+        dump = Process.capture_result([IYI_BIN, "mod", "dump", artifact], chdir: dir, env: crystal_env)
+        dump.should be_success
+        dump.output.should contain("never filled")
+
+        Process.capture_result([IYI_BIN, "build", "--crystal", "--iyi-keep", "Greeter",
+                                "--capture-diagnostic-provenance", "--emit-bind", ".", "-o", "keepbin",
+                                "greeter_keep.cr"], chdir: mods, env: crystal_env).should be_success
+        File.delete File.join(dir, "shard.cr")
+        File.write File.join(dir, "main.iyi"), "module main\nimport greeter\nputs Greeter.greet\n"
+        Process.capture_result([IYI_BIN, "build", "--crystal", "--use-iyimod", "mods", "-o", "app", "main.iyi"],
+          chdir: dir, env: crystal_env).should be_success
+        Process.capture_result([File.join(dir, "app")], chdir: dir).output.chomp.should eq("hello")
+      end
+    end
+  {% end %}
 end

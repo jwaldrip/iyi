@@ -1,4 +1,6 @@
 require "crystal/digest/md5"
+require "crystal/digest/sha256"
+require "./codegen/diagnostic_provenance"
 require "./config"
 
 # iyi: `.iyimod`, the module artifact — SPEC.md Part IV.
@@ -96,7 +98,9 @@ module Iyi::IyiMod
   # producer's mark allowed there the consumer has to allow (SPEC.md
   # III.13). A v61 artifact is refused and rebuilt rather than read as a
   # module that handles no raw memory.
-  FORMAT_VERSION = 62_u32
+  # v63 adds intrinsic signature origins and an optional diagnostic provenance
+  # section. Older artifacts must be rebuilt rather than decoded as v63.
+  FORMAT_VERSION = 63_u32
 
   FORMAT = IO::ByteFormat::LittleEndian
 
@@ -262,7 +266,8 @@ module Iyi::IyiMod
     # an absent section is a module whose functions reach what nobody
     # knows, whose spawns stay in their units. In the interface hash,
     # since a dependent's placement is decided by it. 67, beside `Spawns`.
-    Reaches = 67
+    Reaches              = 67
+    DiagnosticProvenance = 68
   end
 
   # One piece of module state a function of the module may reach (SPEC.md
@@ -295,6 +300,8 @@ module Iyi::IyiMod
   # enum, because the enum belongs to the compiler that wrote this and the file
   # outlives it. `Regex::Options.new` on the far side turns it back.
   record RegexConst, name : String, pattern : String, options : UInt32
+  record DiagnosticRegex, name : String, pattern : String, options : UInt32,
+    initializer_origin : DiagnosticOrigin, literal_origins : Array(DiagnosticOrigin)
 
   # A class variable a module's object code refers to: `Owner::@@name`, and how.
   #
@@ -328,6 +335,392 @@ module Iyi::IyiMod
   # an error inside the expansion is reported from.
   record SourcePosition, offset : Int32, filename : String, line : Int32, column : Int32
 
+  # One independently guarded executable text fragment. Anchor offsets are
+  # relative to the exact fragment bytes, not its eventual rendering.
+  record DiagnosticFragment,
+    key : String,
+    text_sha256 : String,
+    anchors : Array(DiagnosticAnchor)
+
+  # Shared origins in the diagnostic section are emitted parent-first.
+  # Indices are structural, never object identity or a digest.
+  class DiagnosticOrigins
+    getter entries = [] of DiagnosticOrigin
+    @indices = {} of DiagnosticOrigin => UInt32
+
+    def intern(origin : DiagnosticOrigin) : UInt32
+      if index = @indices[origin]?
+        return index
+      end
+      case origin
+      when DiagnosticOrigin::Expanded
+        intern(origin.invocation_origin)
+        intern(origin.macro_definition_origin)
+        origin.spliced_origin.try { |spliced| intern(spliced) }
+        origin.emission_parts.each { |part| part.emitter_origin.try { |emitter| intern(emitter) } }
+      when DiagnosticOrigin::Synthetic
+        intern(origin.parent_origin)
+      end
+      index = @entries.size.to_u32
+      @entries << origin
+      @indices[origin] = index
+      index
+    end
+
+    def write(io : IO) : Nil
+      io.write_bytes @entries.size.to_u32, FORMAT
+      @entries.each do |origin|
+        case origin
+        when DiagnosticOrigin::Written
+          io.write_byte 1_u8
+          DiagnosticOrigins.write_string io, origin.source_module
+          DiagnosticOrigins.write_string io, origin.source_file
+          io.write_bytes origin.input_byte_offset.to_u32, FORMAT
+          DiagnosticOrigins.write_string io, origin.anchor_kind
+          DiagnosticOrigins.write_string io, origin.role
+        when DiagnosticOrigin::Expanded
+          io.write_byte 2_u8
+          io.write_bytes @indices[origin.invocation_origin], FORMAT
+          io.write_bytes @indices[origin.macro_definition_origin], FORMAT
+          DiagnosticOrigins.write_string io, origin.expansion_guard
+          io.write_bytes origin.generated_byte_offset.to_u32, FORMAT
+          DiagnosticOrigins.write_string io, origin.anchor_kind
+          DiagnosticOrigins.write_string io, origin.role
+          io.write_bytes(origin.spliced_origin.try { |value| @indices[value] } || UInt32::MAX, FORMAT)
+          io.write_bytes origin.emission_parts.size.to_u32, FORMAT
+          origin.emission_parts.each do |part|
+            io.write_bytes part.start_offset.to_u32, FORMAT
+            io.write_bytes part.end_offset.to_u32, FORMAT
+            io.write_bytes(part.emitter_origin.try { |emitter| @indices[emitter] } || UInt32::MAX, FORMAT)
+          end
+        when DiagnosticOrigin::Synthetic
+          io.write_byte 3_u8
+          io.write_bytes @indices[origin.parent_origin], FORMAT
+          DiagnosticOrigins.write_string io, origin.synthesis_kind
+          DiagnosticOrigins.write_string io, origin.structural_slot
+        else
+          raise ArgumentError.new("unknown diagnostic origin")
+        end
+      end
+    end
+
+    def self.read(io : IO) : DiagnosticOrigins
+      table = new
+      count = io.read_bytes(UInt32, FORMAT)
+      if io.is_a?(IO::Memory) && count.to_u64 > (io.size - io.pos).to_u64
+        raise ArgumentError.new("diagnostic origin count exceeds remaining bytes")
+      end
+      count.times do
+        origin = case io.read_byte
+                 when 1_u8
+                   DiagnosticOrigin::Written.new(read_string(io), read_string(io),
+                     io.read_bytes(UInt32, FORMAT).to_i32, read_string(io), read_string(io))
+                 when 2_u8
+                   invocation = table.parent(io.read_bytes(UInt32, FORMAT))
+                   definition = table.parent(io.read_bytes(UInt32, FORMAT))
+                   guard = read_string(io)
+                   offset = io.read_bytes(UInt32, FORMAT).to_i32
+                   kind = read_string(io)
+                   role = read_string(io)
+                   splice_index = io.read_bytes(UInt32, FORMAT)
+                   splice = splice_index == UInt32::MAX ? nil : table.parent(splice_index)
+                   part_count = io.read_bytes(UInt32, FORMAT)
+                   if io.is_a?(IO::Memory) && part_count.to_u64 > ((io.size - io.pos) // 12).to_u64
+                     raise ArgumentError.new("macro emission parts exceed remaining bytes")
+                   end
+                   parts = Array(DiagnosticEmissionPart).new(part_count) do
+                     start_offset = io.read_bytes(UInt32, FORMAT).to_i32
+                     end_offset = io.read_bytes(UInt32, FORMAT).to_i32
+                     emitter_index = io.read_bytes(UInt32, FORMAT)
+                     emitter = emitter_index == UInt32::MAX ? nil : table.parent(emitter_index)
+                     DiagnosticEmissionPart.new(start_offset, end_offset, emitter)
+                   end
+                   DiagnosticOrigin::Expanded.new(invocation, definition, guard, offset, kind, role, parts, splice)
+                 when 3_u8
+                   parent = table.parent(io.read_bytes(UInt32, FORMAT))
+                   DiagnosticOrigin::Synthetic.new(parent, read_string(io), read_string(io))
+                 else
+                   raise ArgumentError.new("unknown diagnostic origin tag")
+                 end
+        # A duplicate record would make its numeric identity ambiguous.
+        previous_size = table.entries.size
+        table.intern(origin)
+        raise ArgumentError.new("duplicate diagnostic origin") unless table.entries.size == previous_size + 1
+      end
+      table
+    end
+
+    def parent(index : UInt32) : DiagnosticOrigin
+      @entries[index]? || raise ArgumentError.new("invalid diagnostic origin parent index")
+    end
+
+    def self.write_string(io : IO, value : String) : Nil
+      io.write_bytes value.bytesize.to_u32, FORMAT
+      io.write value.to_slice
+    end
+
+    def self.read_string(io : IO) : String
+      size = io.read_bytes(UInt32, FORMAT)
+      if io.is_a?(IO::Memory) && size.to_u64 > (io.size - io.pos).to_u64
+        raise ArgumentError.new("truncated diagnostic origin string")
+      end
+      bytes = Bytes.new(size)
+      io.read_fully(bytes)
+      value = String.new(bytes)
+      raise ArgumentError.new("invalid UTF-8 in diagnostic section") unless value.valid_encoding?
+      value
+    end
+  end
+
+  record DiagnosticObjectRecords,
+    ordinal : Int32,
+    unit_name : String,
+    object_sha256 : String,
+    partition : JSON::Any?,
+    definitions : Array(DiagnosticProvenance::Definition)
+
+  # The section is built and decoded independently of the ordinary source
+  # positions. Its caller must also prove complete fragment and object coverage.
+  class DiagnosticSection
+    SCHEMA = 3_u32
+
+    getter fragments = {} of String => DiagnosticFragment
+    getter objects = {} of Int32 => DiagnosticObjectRecords
+    getter regexes = {} of String => DiagnosticRegex
+
+    def add_regex(record : DiagnosticRegex) : Nil
+      raise ArgumentError.new("duplicate diagnostic regex name") if @regexes.has_key?(record.name)
+      raise ArgumentError.new("invalid diagnostic regex text") unless record.name.valid_encoding? && record.pattern.valid_encoding?
+      options = RegexOptions.new(record.options.to_i32)
+      expected = if record.name.starts_with?(Program::IYI_REGEX_CONST_PREFIX)
+                   Program.iyi_regex_const_name(record.pattern, options)
+                 else
+                   Program.regex_const_name(record.pattern, options)
+                 end
+      raise ArgumentError.new("noncanonical diagnostic regex name") unless record.name == expected
+      origins = record.literal_origins
+      raise ArgumentError.new("missing diagnostic regex origins") if origins.empty?
+      canonical = origins.map(&.to_json)
+      raise ArgumentError.new("noncanonical diagnostic regex origin order") unless canonical == canonical.sort.uniq
+      raise ArgumentError.new("missing regex initializer occurrence") unless origins.count(record.initializer_origin) == 1
+      raise ArgumentError.new("invalid regex literal origin") unless origins.all? { |origin| origin.valid_for_anchor?("Literal", "regex") }
+      @regexes.each_value do |previous|
+        if previous.literal_origins.any? { |origin| origins.includes?(origin) }
+          raise ArgumentError.new("regex origin names conflicting constants")
+        end
+      end
+      @regexes[record.name] = record
+    end
+
+    def validate_regexes!(actual : Array(RegexConst)) : Nil
+      seen_names = Set(String).new
+      seen_origins = {} of DiagnosticOrigin => {String, String, UInt32}
+      actual.each do |regex|
+        raise ArgumentError.new("duplicate regex constant") unless seen_names.add?(regex.name)
+        record = @regexes[regex.name]? || raise ArgumentError.new("missing regex diagnostics")
+        unless {record.name, record.pattern, record.options} == {regex.name, regex.pattern, regex.options}
+          raise ArgumentError.new("regex diagnostic content mismatch")
+        end
+        record.literal_origins.each do |origin|
+          semantic = {regex.name, regex.pattern, regex.options}
+          if previous = seen_origins[origin]?
+            raise ArgumentError.new("regex origin names conflicting constants") unless previous == semantic
+          else
+            seen_origins[origin] = semantic
+          end
+        end
+      end
+      raise ArgumentError.new("unmatched regex diagnostics") unless actual.size == @regexes.size
+    end
+
+    def add_fragment(fragment : DiagnosticFragment) : Nil
+      raise ArgumentError.new("duplicate diagnostic fragment") if @fragments.has_key?(fragment.key)
+      raise ArgumentError.new("invalid diagnostic fragment key") if fragment.key.empty? || !fragment.key.valid_encoding?
+      check_digest(fragment.text_sha256)
+      seen = Set({Int32, String, String}).new
+      fragment.anchors.each do |anchor|
+        origin = anchor.origin || raise ArgumentError.new("missing diagnostic fragment origin")
+        unless anchor.offset >= 0 && origin.valid_for_anchor?(anchor.kind, anchor.role)
+          raise ArgumentError.new("invalid diagnostic fragment anchor")
+        end
+        raise ArgumentError.new("duplicate diagnostic fragment anchor") unless seen.add?({anchor.offset, anchor.kind, anchor.role})
+      end
+      @fragments[fragment.key] = fragment
+    end
+
+    def add_object(object : DiagnosticObjectRecords) : Nil
+      raise ArgumentError.new("invalid diagnostic object unit") if object.unit_name.empty? || !object.unit_name.valid_encoding?
+      raise ArgumentError.new("invalid diagnostic object ordinal") if object.ordinal < 0
+      raise ArgumentError.new("duplicate diagnostic object ordinal") if @objects.has_key?(object.ordinal)
+      check_digest(object.object_sha256)
+      if partition = object.partition
+        fields = partition.as_h
+        unless fields.size == 2 && fields.has_key?("index") && fields.has_key?("count")
+          raise ArgumentError.new("invalid diagnostic partition")
+        end
+        index, count = fields["index"].as_i64, fields["count"].as_i64
+        raise ArgumentError.new("invalid diagnostic partition coordinate") unless count > 1 && index >= 0 && index < count
+      end
+      definitions = Set(String).new
+      object.definitions.each do |definition|
+        DiagnosticProvenance.validate_definition!(definition)
+        raise ArgumentError.new("diagnostic emission unit mismatch") unless definition.emission.unit_name == object.unit_name
+        expected_roles = object.partition ? {"owner", "local_copy"} : {"single"}
+        raise ArgumentError.new("diagnostic partition role mismatch") unless expected_roles.includes?(definition.partition_role)
+        raise ArgumentError.new("duplicate diagnostic definition") unless definitions.add?(definition.to_json)
+      end
+      @objects[object.ordinal] = object
+    end
+
+    def validate_objects!(actual : Array(ObjectUnit)) : Nil
+      names = Set(String).new
+      actual.each_with_index do |unit, ordinal|
+        raise ArgumentError.new("duplicate carried object unit") unless names.add?(unit.name)
+        record = @objects[ordinal]? || raise ArgumentError.new("missing diagnostic object ordinal #{ordinal}")
+        unless record.unit_name == unit.name && record.object_sha256 == ::Crystal::Digest::SHA256.hexdigest(unit.code)
+          raise ArgumentError.new("diagnostic object identity mismatch at ordinal #{ordinal}")
+        end
+      end
+      raise ArgumentError.new("unmatched diagnostic object ordinal") unless actual.size == @objects.size
+    end
+
+    def validate_fragment_keys!(expected : Set(String)) : Nil
+      unless expected.size == @fragments.size && expected.all? { |key| @fragments.has_key?(key) }
+        raise ArgumentError.new("incomplete diagnostic fragment coverage")
+      end
+    end
+
+    def encode : Bytes
+      checked = DiagnosticSection.new
+      @fragments.each do |key, fragment|
+        raise ArgumentError.new("diagnostic fragment key changed") unless key == fragment.key
+        checked.add_fragment(fragment)
+      end
+      @objects.each do |key, object|
+        raise ArgumentError.new("diagnostic object key changed") unless key == object.ordinal
+        checked.add_object(object)
+      end
+      @regexes.each do |key, record|
+        raise ArgumentError.new("diagnostic regex key changed") unless key == record.name
+        checked.add_regex(record)
+      end
+      table = DiagnosticOrigins.new
+      @fragments.keys.sort!.each do |key|
+        @fragments[key].anchors.each { |anchor| table.intern(anchor.origin.not_nil!) }
+      end
+      @objects.keys.sort!.each do |key|
+        @objects[key].definitions.each { |definition| table.intern(DiagnosticOrigin.from_json(definition.emission.origin)) }
+      end
+      @regexes.keys.sort!.each do |key|
+        record = @regexes[key]
+        table.intern(record.initializer_origin)
+        record.literal_origins.each { |origin| table.intern(origin) }
+      end
+      io = IO::Memory.new
+      io.write_bytes SCHEMA, FORMAT
+      table.write(io)
+      io.write_bytes @fragments.size.to_u32, FORMAT
+      @fragments.keys.sort!.each do |key|
+        fragment = @fragments[key]
+        DiagnosticOrigins.write_string(io, key)
+        DiagnosticOrigins.write_string(io, fragment.text_sha256)
+        io.write_bytes fragment.anchors.size.to_u32, FORMAT
+        fragment.anchors.each do |anchor|
+          io.write_bytes anchor.offset.to_u32, FORMAT
+          DiagnosticOrigins.write_string(io, anchor.kind)
+          DiagnosticOrigins.write_string(io, anchor.role)
+          io.write_bytes table.intern(anchor.origin.not_nil!), FORMAT
+        end
+      end
+      io.write_bytes @objects.size.to_u32, FORMAT
+      @objects.keys.sort!.each do |key|
+        object = @objects[key]
+        io.write_bytes object.ordinal.to_u32, FORMAT
+        DiagnosticOrigins.write_string(io, object.unit_name)
+        DiagnosticOrigins.write_string(io, object.object_sha256)
+        DiagnosticOrigins.write_string(io, object.partition.to_json)
+        io.write_bytes object.definitions.size.to_u32, FORMAT
+        object.definitions.each do |definition|
+          io.write_bytes table.intern(DiagnosticOrigin.from_json(definition.emission.origin)), FORMAT
+          DiagnosticOrigins.write_string(io, definition.to_json)
+        end
+      end
+      io.write_bytes @regexes.size.to_u32, FORMAT
+      @regexes.keys.sort!.each do |key|
+        record = @regexes[key]
+        DiagnosticOrigins.write_string(io, record.name)
+        DiagnosticOrigins.write_string(io, record.pattern)
+        io.write_bytes record.options, FORMAT
+        io.write_bytes table.intern(record.initializer_origin), FORMAT
+        io.write_bytes record.literal_origins.size.to_u32, FORMAT
+        record.literal_origins.each { |origin| io.write_bytes table.intern(origin), FORMAT }
+      end
+      io.to_slice
+    end
+
+    def self.decode(payload : Bytes) : DiagnosticSection
+      io = IO::Memory.new(payload)
+      raise ArgumentError.new("unsupported diagnostic section schema") unless io.read_bytes(UInt32, FORMAT) == SCHEMA
+      table = DiagnosticOrigins.read(io)
+      result = new
+      read_count(io, 12).times do
+        key = DiagnosticOrigins.read_string(io)
+        guard = DiagnosticOrigins.read_string(io)
+        anchors = Array(DiagnosticAnchor).new(read_count(io, 16)) do
+          offset = io.read_bytes(UInt32, FORMAT).to_i32
+          kind = DiagnosticOrigins.read_string(io)
+          role = DiagnosticOrigins.read_string(io)
+          origin = table.parent(io.read_bytes(UInt32, FORMAT))
+          DiagnosticAnchor.new(offset, kind, role, origin)
+        end
+        result.add_fragment(DiagnosticFragment.new(key, guard, anchors))
+      end
+      read_count(io, 20).times do
+        ordinal = io.read_bytes(UInt32, FORMAT).to_i32
+        unit = DiagnosticOrigins.read_string(io)
+        digest = DiagnosticOrigins.read_string(io)
+        raw_partition = JSON.parse(DiagnosticOrigins.read_string(io))
+        partition = raw_partition.raw.nil? ? nil : raw_partition
+        definitions = Array(DiagnosticProvenance::Definition).new(read_count(io, 8)) do
+          origin = table.parent(io.read_bytes(UInt32, FORMAT))
+          definition = DiagnosticProvenance::Definition.from_json(DiagnosticOrigins.read_string(io))
+          unless DiagnosticOrigin.from_json(definition.emission.origin) == origin
+            raise ArgumentError.new("diagnostic definition origin table mismatch")
+          end
+          definition
+        end
+        result.add_object(DiagnosticObjectRecords.new(ordinal, unit, digest, partition, definitions))
+      end
+      previous_name = nil.as(String?)
+      read_count(io, 20).times do
+        name = DiagnosticOrigins.read_string(io)
+        raise ArgumentError.new("noncanonical diagnostic regex order") if previous_name && previous_name >= name
+        previous_name = name
+        pattern = DiagnosticOrigins.read_string(io)
+        options = io.read_bytes(UInt32, FORMAT)
+        initializer = table.parent(io.read_bytes(UInt32, FORMAT))
+        origins = Array(DiagnosticOrigin).new(read_count(io, 4)) { table.parent(io.read_bytes(UInt32, FORMAT)) }
+        result.add_regex(DiagnosticRegex.new(name, pattern, options, initializer, origins))
+      end
+      raise ArgumentError.new("trailing diagnostic section bytes") unless io.pos == io.size
+      result
+    end
+
+    private def self.read_count(io : IO::Memory, minimum : Int32) : UInt32
+      count = io.read_bytes(UInt32, FORMAT)
+      if count.to_u64 > ((io.size - io.pos) // minimum).to_u64
+        raise ArgumentError.new("diagnostic section count exceeds remaining bytes")
+      end
+      count
+    end
+
+    private def check_digest(digest : String) : Nil
+      unless digest.bytesize == 64 && digest.each_byte.all? { |byte| (byte >= 48_u8 && byte <= 57_u8) || (byte >= 97_u8 && byte <= 102_u8) }
+        raise ArgumentError.new("invalid diagnostic SHA-256")
+      end
+    end
+  end
+
   # A travelling text as `ASTNode#to_s` writes it, and where each node in it
   # was written. The text is the same bytes `to_s` gives; the positions are
   # taken as it is written, one per offset — the innermost node starting
@@ -348,10 +741,25 @@ module Iyi::IyiMod
     {io.to_s, positions}
   end
 
+  def self.diagnostic_located_source(node : ASTNode) : {String, Array(SourcePosition), Array(DiagnosticAnchor)}
+    diagnostic_located_source([node] of ASTNode)
+  end
+
+  def self.diagnostic_located_source(nodes : Array(ASTNode)) : {String, Array(SourcePosition), Array(DiagnosticAnchor)}
+    io = IO::Memory.new
+    positions = [] of SourcePosition
+    anchors = [] of DiagnosticAnchor
+    nodes.each_with_index do |node, index|
+      io << '\n' if index > 0
+      node.accept PositionWriter.new(io, positions, anchors)
+    end
+    {io.to_s, positions, anchors}
+  end
+
   # `ToSVisitor`, noting where each node starts as it writes it.
   private class PositionWriter < ToSVisitor
-    def initialize(@memory : IO::Memory, @positions : Array(SourcePosition))
-      super(@memory)
+    def initialize(@memory : IO::Memory, @positions : Array(SourcePosition), anchors : Array(DiagnosticAnchor)? = nil)
+      super(@memory, diagnostic_anchors: anchors)
     end
 
     def visit_any(node)
@@ -389,11 +797,18 @@ module Iyi::IyiMod
     # caret is put.
     getter travelled_lines = {} of String => Hash(Int32, String)
     @missing = {} of String => Bool
+    @diagnostic_seen : Set(String)? = nil
 
     # *path* is the artifact's own, which a placed node keeps as its
     # `Location#artifact`.
     def initialize(@artifact : Artifact, @pragmas : Hash(Int32, Array(Lexer::LocPragma))? = nil,
-                   @path : String? = nil)
+                   @path : String? = nil, @diagnostic_regions : Array(DiagnosticRegion)? = nil,
+                   diagnostic_seen : Set(String)? = nil)
+      @diagnostic_seen = diagnostic_seen || Set(String).new if @diagnostic_regions
+    end
+
+    def diagnostic? : Bool
+      !@diagnostic_regions.nil?
     end
 
     def []?(key : String) : String?
@@ -402,6 +817,76 @@ module Iyi::IyiMod
 
     def positions(key : String) : Array(SourcePosition)
       @artifact.body_positions[key]? || NO_POSITIONS
+    end
+
+    def write_carried(io : IO, key : String, text : String, positions : Array(SourcePosition),
+                      prefix : String = "", lines : Bool = true) : Nil
+      if regions = @diagnostic_regions
+        raise ArgumentError.new("duplicate diagnostic fragment use #{key}") unless @diagnostic_seen.not_nil!.add?(key)
+        section = @artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
+        fragment = section.fragments[key]? || raise ArgumentError.new("missing diagnostic fragment #{key}")
+        memory = io.as?(IO::Memory) || raise ArgumentError.new("diagnostic rendering requires an in-memory input")
+        regions << write_diagnostic(memory, text, positions, fragment, prefix, lines)
+      else
+        write(io, text, positions, prefix, lines)
+      end
+    end
+
+    def validate_signature(container : String, signature : Signature) : Nil
+      return unless @diagnostic_regions
+      origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no intrinsic origin")
+      key = IyiMod.signature_fragment_key(container, signature)
+      section = @artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
+      fragment = section.fragments[key]? || raise ArgumentError.new("missing signature diagnostic fragment")
+      root_offset = (signature.visibility.empty? ? 0 : signature.visibility.bytesize + 1) + (signature.required ? 9 : 0)
+      roots = fragment.anchors.select { |anchor| anchor.offset == root_offset && anchor.kind == "Def" && anchor.role == "keyword" }
+      unless roots.size == 1 && roots.first.origin == origin
+        raise ArgumentError.new("signature diagnostic root does not match its intrinsic origin")
+      end
+    end
+
+    def write_macro(io : IO, source : String, container : String, prefix : String = "", lines : Bool = true, exported : Bool = false) : Nil
+      rendered = exported ? IyiMod.exported_macro(source) : source
+      unless regions = @diagnostic_regions
+        write(io, rendered, NO_POSITIONS, prefix, lines)
+        return
+      end
+      key = IyiMod.macro_fragment_key(container, source)
+      if rendered == source
+        write_carried(io, key, source, NO_POSITIONS, prefix, lines)
+        return
+      end
+      raise ArgumentError.new("duplicate diagnostic fragment use #{key}") unless @diagnostic_seen.not_nil!.add?(key)
+      section = @artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
+      fragment = section.fragments[key]? || raise ArgumentError.new("missing diagnostic macro fragment")
+      unless fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(source)
+        raise ArgumentError.new("diagnostic macro text guard mismatch")
+      end
+      doc_chars = source.size - IyiMod.undocumented_macro(source).size
+      insertion = source[0, doc_chars].bytesize
+      expected = source.byte_slice(0, insertion) + "pub " + source.byte_slice(insertion, source.bytesize - insertion)
+      raise ArgumentError.new("unknown macro export transformation") unless rendered == expected
+      adjusted = fragment.anchors.map do |anchor|
+        origin = anchor.origin || raise ArgumentError.new("missing macro anchor origin")
+        unless anchor.offset >= 0 && anchor.offset < source.bytesize && origin.valid_for_anchor?(anchor.kind, anchor.role)
+          raise ArgumentError.new("invalid macro anchor")
+        end
+        offset = anchor.offset >= insertion ? anchor.offset + 4 : anchor.offset
+        DiagnosticAnchor.new(offset, anchor.kind, anchor.role, origin)
+      end
+      transformed = DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(rendered), adjusted)
+      memory = io.as?(IO::Memory) || raise ArgumentError.new("diagnostic rendering requires an in-memory input")
+      regions << write_diagnostic(memory, rendered, NO_POSITIONS, transformed, prefix, lines)
+    end
+
+    def validate_empty_carried(key : String, text : String) : Nil
+      return unless @diagnostic_regions
+      raise ArgumentError.new("duplicate diagnostic fragment use #{key}") unless @diagnostic_seen.not_nil!.add?(key)
+      section = @artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
+      fragment = section.fragments[key]? || raise ArgumentError.new("missing diagnostic fragment #{key}")
+      unless fragment.anchors.empty? && fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(text)
+        raise ArgumentError.new("invalid empty diagnostic fragment #{key}")
+      end
     end
 
     # Writes *text* to *io*, each line behind *prefix* and ended by a newline
@@ -441,6 +926,53 @@ module Iyi::IyiMod
       end
       io << text unless lines
       (pragmas[memory.pos.to_i32] ||= [] of Lexer::LocPragma) << Lexer::LocPopPragma.new if index > 0
+    end
+
+    # Render a guarded fragment through the existing location path, then map
+    # its syntactic anchors into the exact bytes the consumer will parse.
+    def write_diagnostic(io : IO::Memory, text : String, positions : Array(SourcePosition),
+                         fragment : DiagnosticFragment, prefix : String = "", lines : Bool = true) : DiagnosticRegion
+      raise ArgumentError.new("empty diagnostic fragment key") if fragment.key.empty?
+      unless ::Crystal::Digest::SHA256.hexdigest(text) == fragment.text_sha256
+        raise ArgumentError.new("diagnostic fragment text guard mismatch")
+      end
+      anchors = fragment.anchors.sort_by { |anchor| {anchor.offset, anchor.kind, anchor.role} }
+      seen = Set({Int32, String, String}).new
+      anchors.each do |anchor|
+        unless anchor.offset >= 0 && anchor.offset < text.bytesize && (origin = anchor.origin) &&
+               origin.valid_for_anchor?(anchor.kind, anchor.role)
+          raise ArgumentError.new("invalid diagnostic fragment anchor")
+        end
+        raise ArgumentError.new("duplicate diagnostic fragment anchor") unless seen.add?({anchor.offset, anchor.kind, anchor.role})
+      end
+
+      start = io.pos.to_i32
+      write(io, text, positions, prefix, lines)
+      finish = io.pos.to_i32
+      mapped = [] of DiagnosticAnchor
+      if lines
+        source_start = 0
+        output_start = start
+        index = 0
+        text.each_line(chomp: false) do |raw|
+          line = raw.chomp
+          while (anchor = anchors[index]?) && anchor.offset < source_start + raw.bytesize
+            within = anchor.offset - source_start
+            raise ArgumentError.new("diagnostic anchor on a removed line ending") if within >= line.bytesize
+            mapped << DiagnosticAnchor.new(output_start + prefix.bytesize + within, anchor.kind, anchor.role, anchor.origin)
+            index += 1
+          end
+          source_start += raw.bytesize
+          output_start += prefix.bytesize + line.bytesize + 1
+        end
+        raise ArgumentError.new("unmapped diagnostic fragment anchor") unless index == anchors.size
+      else
+        anchors.each do |anchor|
+          mapped << DiagnosticAnchor.new(start + anchor.offset, anchor.kind, anchor.role, anchor.origin)
+        end
+      end
+      rendered = io.to_slice[start, finish - start]
+      DiagnosticRegion.new(start, finish, ::Crystal::Digest::SHA256.hexdigest(rendered), mapped)
     end
 
     private def place(pragmas, at : Int32, position : SourcePosition, index : Int32,
@@ -513,6 +1045,24 @@ module Iyi::IyiMod
       write_doc io, doc, ""
       io << source
     end
+  end
+
+  def self.macro_fragment_key(container : String, source : String) : String
+    "macro:#{container.bytesize}:#{container}#{source}"
+  end
+
+  def self.top_fun_fragment_key(source : String) : String
+    "top-fun:#{source}"
+  end
+
+  def self.diagnostic_macro_source(a_macro : Macro) : {String, Array(DiagnosticAnchor)}
+    io = IO::Memory.new
+    if (doc = a_macro.doc) && !doc.empty?
+      write_doc io, doc, ""
+    end
+    anchors = [] of DiagnosticAnchor
+    a_macro.to_s(io, diagnostic_anchors: anchors)
+    {io.to_s, anchors}
   end
 
   # A carried macro's first line, `pub macro twice(x)`, past its doc.
@@ -630,7 +1180,7 @@ module Iyi::IyiMod
   # and every dependent stays valid.
   def self.hashes_for(artifact : Artifact, source : String) : Hashes
     interface = IO::Memory.new
-    interface.write encode_exports(artifact, docs: false)
+    interface.write encode_exports(artifact, docs: false, diagnostics: false)
     write_strings interface, artifact.usings
     # The edges by name, because which modules resolve a signature's names is
     # part of what that signature means — not their hashes, which are what a
@@ -763,7 +1313,33 @@ module Iyi::IyiMod
     # `Pair.new(Dog.new, Dog.new).shown` for a `Dog` that never implemented
     # `Show` and printed `dog,dog`, where the source build refused it.
     free_variable_bounds : Array({String, String}) = [] of {String, String},
-    where_bounds : Array({String, String}) = [] of {String, String}
+    where_bounds : Array({String, String}) = [] of {String, String} do
+    # Diagnostic metadata does not participate in semantic Signature equality.
+    property diagnostic_origin : DiagnosticOrigin? = nil
+    def_equals_and_hash name, receiver, parameters, block_parameter, return_type,
+      free_variables, required, visibility, doc, annotations, free_variable_bounds, where_bounds
+  end
+
+  struct Signature
+    def copy_with(name _name = @name, receiver _receiver = @receiver, parameters _parameters = @parameters,
+                  block_parameter _block_parameter = @block_parameter, return_type _return_type = @return_type,
+                  free_variables _free_variables = @free_variables, required _required = @required,
+                  visibility _visibility = @visibility, doc _doc = @doc, annotations _annotations = @annotations,
+                  free_variable_bounds _free_variable_bounds = @free_variable_bounds, where_bounds _where_bounds = @where_bounds)
+      result = Signature.new(_name, _receiver, _parameters, _block_parameter, _return_type, _free_variables,
+        _required, _visibility, _doc, _annotations, _free_variable_bounds, _where_bounds)
+      result.diagnostic_origin = @diagnostic_origin
+      result
+    end
+
+    def clone
+      result = Signature.new(@name.clone, @receiver.clone, @parameters.clone, @block_parameter.clone,
+        @return_type.clone, @free_variables.clone, @required.clone, @visibility.clone, @doc.clone,
+        @annotations.clone, @free_variable_bounds.clone, @where_bounds.clone)
+      result.diagnostic_origin = @diagnostic_origin
+      result
+    end
+  end
 
   # A type the module declares: `pub struct`, `pub class`, `pub trait` — and,
   # since the object code started travelling, the ones it does not export.
@@ -1607,6 +2183,7 @@ module Iyi::IyiMod
     # when the section is absent, which a consumer reads as "not known".
     # See `Section::Reaches`.
     property reaches : Array(ReachRecord)? = nil
+    property diagnostic_provenance : DiagnosticSection? = nil
 
     def initialize(@module_name, @source_path, @compiler_version, @target_triple,
                    @flags, @imports, @usings = [] of String, @exports = Exports.empty,
@@ -1640,6 +2217,11 @@ module Iyi::IyiMod
   # reader sees either the old file or the new one.
   def self.write(artifact : Artifact, path : String) : Nil
     sections = [] of {Section, Bytes}
+    if diagnostic = artifact.diagnostic_provenance
+      validate_diagnostic_fragments!(artifact)
+      diagnostic.validate_objects!(artifact.object_code)
+      diagnostic.validate_regexes!(artifact.regexes)
+    end
     sections << {Section::Header, encode_header(artifact)}
 
     # Second, right behind the header, because a build deciding what to rebuild
@@ -1660,7 +2242,7 @@ module Iyi::IyiMod
       sections << {Section::Inputs, encode_strings(artifact.inputs)}
     end
 
-    sections << {Section::Exports, encode_exports(artifact)}
+    sections << {Section::Exports, encode_exports(artifact, diagnostics: true)}
 
     # After the declarations, for `iyi mod dump` and the next build of this
     # module, which compares its own verdicts with these.
@@ -1739,14 +2321,17 @@ module Iyi::IyiMod
     end
 
     unless artifact.reopened.empty?
-      sections << {Section::Reopened, encode_reopened(artifact)}
+      sections << {Section::Reopened, encode_reopened(artifact, diagnostics: true)}
     end
 
     unless artifact.top_level_funs.empty?
       sections << {Section::TopLevelFuns, encode_strings(artifact.top_level_funs)}
     end
     unless artifact.top_level.empty?
-      sections << {Section::TopLevel, encode_top_level(artifact)}
+      sections << {Section::TopLevel, encode_top_level(artifact, diagnostics: true)}
+    end
+    if diagnostic = artifact.diagnostic_provenance
+      sections << {Section::DiagnosticProvenance, diagnostic.encode}
     end
 
     # Last, and omitted when there is nothing in it. A consumer reading
@@ -1799,8 +2384,10 @@ module Iyi::IyiMod
     end
 
     count = file.read_bytes(UInt32, FORMAT)
+    seen = Set(UInt16).new
     Array({UInt16, UInt32, UInt64}).new(count) do
       kind = file.read_bytes(UInt16, FORMAT)
+      raise Error.new("#{path} contains a duplicate section #{kind}") unless seen.add?(kind)
       file.read_bytes(UInt16, FORMAT) # padding
       {kind, file.read_bytes(UInt32, FORMAT), file.read_bytes(UInt64, FORMAT)}
     end
@@ -1967,6 +2554,7 @@ module Iyi::IyiMod
       spawns = [] of SpawnRecord
       reaches = nil
       positions = {bodies: {} of String => Array(SourcePosition), initialiser: [] of SourcePosition}
+      diagnostic = nil
 
       table.each do |(kind, length, sum)|
         section = Section.from_value?(kind)
@@ -1985,7 +2573,7 @@ module Iyi::IyiMod
         case section
         when Section::Header          then header = decode_header(payload)
         when Section::Imports         then imports = decode_imports(payload)
-        when Section::Exports         then exports = decode_exports(payload)
+        when Section::Exports         then exports = decode_exports(payload, diagnostics: true)
         when Section::ObjectCode      then object_code = decode_object_code(payload)
         when Section::MonoBodies      then mono_bodies = decode_mono_bodies(payload)
         when Section::MacroBodies     then macro_bodies = decode_macro_bodies(payload)
@@ -1997,9 +2585,9 @@ module Iyi::IyiMod
         when Section::MatchTypes      then match_types = decode_match_types(payload)
         when Section::Symbols         then symbols = decode_symbols(payload)
         when Section::Libs            then libs = decode_libs(payload)
-        when Section::TopLevel        then top_level = decode_top_level(payload)
+        when Section::TopLevel        then top_level = decode_top_level(payload, diagnostics: true)
         when Section::TopLevelFuns    then top_level_funs = decode_strings(payload)
-        when Section::Reopened        then reopened = decode_reopened(payload)
+        when Section::Reopened        then reopened = decode_reopened(payload, diagnostics: true)
         when Section::Requires        then requires = decode_requires(payload)
         when Section::Hashes          then hashes = decode_hashes(payload)
         when Section::Layouts         then layouts = decode_layouts(payload)
@@ -2008,11 +2596,15 @@ module Iyi::IyiMod
         when Section::SourcePositions then positions = decode_source_positions(payload)
         when Section::Spawns          then spawns = decode_spawns(payload)
         when Section::Reaches         then reaches = decode_reaches(payload)
+        when Section::DiagnosticProvenance
+          raise ArgumentError.new("duplicate diagnostic provenance section") if diagnostic
+          diagnostic = DiagnosticSection.decode(payload)
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
         end
       end
+      raise Error.new("#{path} has truncated or trailing section bytes") unless file.pos == file.size
 
       unless header
         raise Error.new("#{path} has no header section")
@@ -2029,6 +2621,12 @@ module Iyi::IyiMod
         body_positions: positions[:bodies], initialiser_positions: positions[:initialiser])
       artifact.spawns = spawns
       artifact.reaches = reaches
+      if section = diagnostic
+        artifact.diagnostic_provenance = section
+        validate_diagnostic_fragments!(artifact)
+        section.validate_objects!(object_code) if want_object_code
+        section.validate_regexes!(artifact.regexes)
+      end
       artifact
     end
   rescue ex : Error
@@ -2316,16 +2914,24 @@ module Iyi::IyiMod
   #
   # Empty for every module that has none, which is every iyi module: iyi has no
   # top level to write a `def` at. This is a `--crystal` shard's shape.
-  def self.top_level_declarations(artifact : Artifact, io : IO) : Nil
+  def self.top_level_declarations(artifact : Artifact, io : IO, diagnostic_regions : Array(DiagnosticRegion)? = nil,
+                                  diagnostic_seen : Set(String)? = nil) : Nil
+    bodies = Bodies.new(artifact, diagnostic_regions: diagnostic_regions, diagnostic_seen: diagnostic_seen)
     # The `fun`s first, and with their bodies: this is the one text outside the
     # module, which is the only scope a `fun` can be declared in. See
     # `Artifact#top_level_funs`.
-    artifact.top_level_funs.each { |source| io << source << '\n' }
-
-    bodies = Bodies.new(artifact)
+    artifact.top_level_funs.each do |source|
+      if bodies.diagnostic?
+        bodies.write_carried io, top_fun_fragment_key(source), source, Bodies::NO_POSITIONS, lines: false
+      else
+        io << source
+      end
+      io << '\n'
+    end
+    ordinals = mono_body_ordinals(artifact.top_level)
     artifact.top_level.each_with_index do |signature, index|
       io << '\n' if index > 0
-      render_declaration io, signature, bodies, mono_body_key(TOP_LEVEL_CONTAINER, signature)
+      render_declaration io, signature, bodies, mono_body_key(TOP_LEVEL_CONTAINER, signature, ordinals[index]), TOP_LEVEL_CONTAINER
     end
   end
 
@@ -2346,8 +2952,8 @@ module Iyi::IyiMod
   # this machine, as they were rendered (`Bodies#travelled_lines`).
   def self.declarations(artifact : Artifact, io : IO::Memory,
                         pragmas : Hash(Int32, Array(Lexer::LocPragma)),
-                        path : String) : Hash(String, Hash(Int32, String))
-    bodies = Bodies.new(artifact, pragmas, path)
+                        path : String, diagnostic_regions : Array(DiagnosticRegion)? = nil) : Hash(String, Hash(Int32, String))
+    bodies = Bodies.new(artifact, pragmas, path, diagnostic_regions)
     write_declarations artifact, io, bodies
     bodies.travelled_lines
   end
@@ -2412,7 +3018,9 @@ module Iyi::IyiMod
     # was callable as `App::Lib.inner` through the artifact while the source
     # said `App::Lib does not export 'inner'`.
     artifact.macro_bodies.each do |source|
-      io << '\n' << (artifact.crystal_library ? exported_macro(source) : source) << '\n'
+      io << '\n'
+      bodies.write_macro(io, source, DIAGNOSTIC_ROOT_CONTAINER, lines: false, exported: artifact.crystal_library)
+      io << '\n'
     end
 
     # Before the functions, because one of them reads it: `Backtracer.configure`
@@ -2422,16 +3030,18 @@ module Iyi::IyiMod
       io << '\n'
       exports.class_vars.each do |class_var|
         class_var.annotations.each { |source| io << source << '\n' }
-        io << render_class_var(class_var) << '\n'
+        write_class_var io, class_var, bodies, DIAGNOSTIC_ROOT_CONTAINER
+        io << '\n'
       end
     end
 
-    exports.functions.each do |signature|
+    function_ordinals = mono_body_ordinals(exports.functions)
+    exports.functions.each_with_index do |signature, index|
       io << '\n'
       # A module's own `pub def` that takes a block ships its body, because the
       # consumer is what instantiates it — the block is the consumer's code.
       # The container is the module's own path.
-      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature),
+      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature, function_ordinals[index]), artifact.module_name,
         exported: true
     end
 
@@ -2439,9 +3049,10 @@ module Iyi::IyiMod
     # `pub`, so the consumer has them and cannot name them. They are here
     # because a body that travels may call one, and a block-taking one brings
     # its body along for the reason every travelling body does.
-    exports.carried_functions.each do |signature|
+    carried_ordinals = mono_body_ordinals(exports.carried_functions)
+    exports.carried_functions.each_with_index do |signature, index|
       io << '\n'
-      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature)
+      render_declaration io, signature, bodies, mono_body_key(artifact.module_name, signature, carried_ordinals[index]), artifact.module_name
     end
 
     inheritance_order(exports.types).each do |declaration|
@@ -2456,8 +3067,9 @@ module Iyi::IyiMod
       container = mono_body_container(record.trait_name, record.type_name)
       io << '\n' << render_impl_header(record) << '\n'
       record.assoc_types.each { |(name, answer)| io << "  type " << name << " = " << answer << '\n' }
-      record.methods.each do |signature|
-        render_declaration io, signature, bodies, mono_body_key(container, signature), indent: "  "
+      ordinals = mono_body_ordinals(record.methods)
+      record.methods.each_with_index do |signature, index|
+        render_declaration io, signature, bodies, mono_body_key(container, signature, ordinals[index]), container, indent: "  "
       end
       io << "end\n"
     end
@@ -2479,7 +3091,7 @@ module Iyi::IyiMod
     # puts the module's own code back in the namespace it was written in.
     unless artifact.initialiser.empty?
       io << '\n'
-      bodies.write io, artifact.initialiser, artifact.initialiser_positions, lines: false
+      bodies.write_carried io, "initialiser", artifact.initialiser, artifact.initialiser_positions, lines: false
       io << '\n'
     end
   end
@@ -2636,7 +3248,7 @@ module Iyi::IyiMod
       parameters << "**#{double_splat}"
     end
 
-    Signature.new(
+    signature = Signature.new(
       name: a_def.name,
       receiver: a_def.receiver.try(&.to_s) || "",
       parameters: parameters,
@@ -2651,6 +3263,8 @@ module Iyi::IyiMod
       free_variable_bounds: bound_pairs(a_def.free_var_bounds),
       where_bounds: bound_pairs(a_def.where_bounds),
     )
+    signature.diagnostic_origin = a_def.diagnostic_origin
+    signature
   end
 
   # A def's bounds as the `{name, trait}` pairs `Signature` carries, in the
@@ -2976,7 +3590,7 @@ module Iyi::IyiMod
   end
 
   private def self.render_declaration(io : IO, signature : Signature,
-                                      bodies : Bodies, key : String,
+                                      bodies : Bodies, key : String, container : String,
                                       exported = false, indent = "") : Nil
     # The doc comment, where it was written: above the declaration, as
     # comment lines a consumer's parser reattaches. Surface for a reader —
@@ -2986,10 +3600,25 @@ module Iyi::IyiMod
     # written and the only place they mean anything. `@[::Primitive(:binary)]`
     # is what makes the def a machine instruction rather than a promise of a
     # symbol nobody emitted.
-    signature.annotations.each { |source| io << indent << source << '\n' }
+    signature.annotations.each_with_index do |source, index|
+      io << indent
+      if bodies.diagnostic?
+        bodies.write_carried io, signature_annotation_fragment_key(container, signature, index), source, Bodies::NO_POSITIONS, lines: false
+      else
+        io << source
+      end
+      io << '\n'
+    end
     io << indent
     io << "pub " if exported
-    io << render_signature(signature) << '\n'
+    header = render_signature(signature)
+    if bodies.diagnostic?
+      bodies.validate_signature container, signature
+      bodies.write_carried io, signature_fragment_key(container, signature), header, Bodies::NO_POSITIONS, lines: false
+    else
+      io << header
+    end
+    io << '\n'
     # An `abstract def` ends at its signature. Anything else needs the `end`
     # its absent body would have carried.
     return if signature.required
@@ -3007,9 +3636,14 @@ module Iyi::IyiMod
     # empty block-taking def, each listed in `MonoBodies`.
     if body = bodies[key]?
       if body.blank?
+        bodies.validate_empty_carried signature_body_fragment_key(container, signature), body if bodies.diagnostic?
         io << indent << "  nil\n"
       else
-        bodies.write io, body, bodies.positions(key), indent + "  "
+        if bodies.diagnostic?
+          bodies.write_carried io, signature_body_fragment_key(container, signature), body, bodies.positions(key), indent + "  "
+        else
+          bodies.write io, body, bodies.positions(key), indent + "  "
+        end
       end
     end
 
@@ -3045,6 +3679,32 @@ module Iyi::IyiMod
     name, type, value = class_var.name, class_var.type, class_var.value
     return "#{name} = #{value}" if value.starts_with?("uninitialized ")
     value.empty? ? "#{name} : #{type}" : "#{name} : #{type} = #{value}"
+  end
+
+  # The owner is the artifact's structural declaration path, not the text or
+  # an ordinal. The special root cannot collide with a type declaration.
+  DIAGNOSTIC_ROOT_CONTAINER = "@module"
+
+  def self.class_var_fragment_key(container : String, name : String) : String
+    "classvar:#{container.bytesize}:#{container}#{name}"
+  end
+
+  def self.field_fragment_key(container : String, name : String) : String
+    "field:#{container.bytesize}:#{container}#{name}"
+  end
+
+  private def self.write_class_var(io : IO, class_var : ClassVarDecl, bodies : Bodies, container : String) : Nil
+    value = class_var.value
+    unless bodies.diagnostic? && !value.empty?
+      io << render_class_var(class_var)
+      return
+    end
+    io << class_var.name
+    unless value.starts_with?("uninitialized ")
+      io << " : " << class_var.type
+    end
+    io << " = "
+    bodies.write_carried(io, class_var_fragment_key(container, class_var.name), value, Bodies::NO_POSITIONS, lines: false)
   end
 
   # The same line for a *dump*, where the annotations go beside it rather than
@@ -3088,6 +3748,7 @@ module Iyi::IyiMod
     return if declaration.kind == "alias" || declaration.kind == "type"
 
     inner = indent + "  "
+    here = path.empty? ? declaration.name : path
 
     # Before anything written in terms of the names they bring, which is
     # everything below. See `TypeDecl#usings`.
@@ -3102,7 +3763,7 @@ module Iyi::IyiMod
     # Before everything the type declares, because a macro is read before it is
     # called and what it is called from is below it.
     declaration.macros.each do |source|
-      source.each_line { |line| io << inner << line << '\n' }
+      bodies.write_macro(io, source, here, inner)
     end
 
     declaration.assoc_types.each { |name| io << inner << "type " << name << '\n' }
@@ -3116,7 +3777,10 @@ module Iyi::IyiMod
       # in its `lib`, and written as an instance variable it was
       # `expecting identifier 'end', not '@st_dev'`.
       io << inner << (in_lib ? name.lchop('@') : name) << " : " << type
-      io << " = " << value unless value.empty?
+      unless value.empty?
+        io << " = "
+        bodies.write_carried(io, field_fragment_key(here, name), value, Bodies::NO_POSITIONS, lines: false)
+      end
       io << '\n'
     end
 
@@ -3127,7 +3791,9 @@ module Iyi::IyiMod
     # code, and all that is owed here is the global it assigns to.
     declaration.class_vars.each do |class_var|
       class_var.annotations.each { |source| io << inner << source << '\n' }
-      io << inner << render_class_var(class_var) << '\n'
+      io << inner
+      write_class_var io, class_var, bodies, here
+      io << '\n'
     end
 
     # An enum's members, which are what an enum is. `Small = 0` rather than
@@ -3135,7 +3801,6 @@ module Iyi::IyiMod
     # a field would have a type where a value belongs.
     declaration.members.each { |(name, value)| io << inner << name << " = " << value << '\n' }
 
-    here = path.empty? ? declaration.name : path
     inheritance_order(declaration.types).each do |nested|
       render_type_declaration io, nested, bodies, inner, "#{here}::#{nested.name}",
         in_lib: declaration.kind == "lib"
@@ -3153,7 +3818,7 @@ module Iyi::IyiMod
 
     ordinals = mono_body_ordinals(declaration.methods)
     declaration.methods.each_with_index do |signature, index|
-      render_declaration io, signature, bodies, mono_body_key(here, signature, ordinals[index]),
+      render_declaration io, signature, bodies, mono_body_key(here, signature, ordinals[index]), here,
         indent: inner
     end
     io << indent << "end\n"
@@ -3560,6 +4225,183 @@ module Iyi::IyiMod
     end
   end
 
+  def self.signature_fragment_key(container : String, signature : Signature) : String
+    origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no diagnostic origin")
+    raise ArgumentError.new("signature origin is not a definition") unless origin.valid_for_anchor?("Def", "keyword")
+    header = render_signature(signature)
+    encoded_origin = origin.to_json
+    "signature:#{container.bytesize}:#{container}#{header.bytesize}:#{header}#{encoded_origin.bytesize}:#{encoded_origin}"
+  end
+
+  def self.signature_annotation_fragment_key(container : String, signature : Signature, index : Int32) : String
+    signature_key = signature_fragment_key(container, signature)
+    "signature-annotation:#{signature_key.bytesize}:#{signature_key}#{index}"
+  end
+
+  def self.signature_body_fragment_key(container : String, signature : Signature) : String
+    signature_key = signature_fragment_key(container, signature)
+    "signature-body:#{signature_key.bytesize}:#{signature_key}"
+  end
+
+  def self.validate_diagnostic_fragments!(artifact : Artifact) : Nil
+    validate_signature_diagnostics!(artifact)
+    section = artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
+    seen = Set(String).new
+    regions = [] of DiagnosticRegion
+    io = IO::Memory.new
+    write_declarations(artifact, io, Bodies.new(artifact, diagnostic_regions: regions, diagnostic_seen: seen))
+    top_level_declarations(artifact, IO::Memory.new, regions, seen)
+    section.validate_fragment_keys!(seen)
+  end
+
+  def self.validate_signature_diagnostics!(artifact : Artifact) : Nil
+    section = artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
+    expected = Set(String).new
+    function_ordinals = mono_body_ordinals(artifact.exports.functions)
+    artifact.exports.functions.each_with_index do |sig, index|
+      check_signature_diagnostic(section, artifact, expected, artifact.module_name, sig, function_ordinals[index])
+    end
+    carried_ordinals = mono_body_ordinals(artifact.exports.carried_functions)
+    artifact.exports.carried_functions.each_with_index do |sig, index|
+      check_signature_diagnostic(section, artifact, expected, artifact.module_name, sig, carried_ordinals[index])
+    end
+    artifact.exports.impls.each do |implementation|
+      container = mono_body_container(implementation.trait_name, implementation.type_name)
+      ordinals = mono_body_ordinals(implementation.methods)
+      implementation.methods.each_with_index { |sig, index| check_signature_diagnostic(section, artifact, expected, container, sig, ordinals[index]) }
+    end
+    artifact.exports.types.each { |type| check_type_signature_diagnostics(section, artifact, expected, type) }
+    artifact.reopened.each { |type| check_type_signature_diagnostics(section, artifact, expected, type) }
+    ordinals = mono_body_ordinals(artifact.top_level)
+    artifact.top_level.each_with_index { |sig, index| check_signature_diagnostic(section, artifact, expected, TOP_LEVEL_CONTAINER, sig, ordinals[index]) }
+    actual = section.fragments.keys.select do |key|
+      key.starts_with?("signature:") || key.starts_with?("signature-annotation:") || key.starts_with?("signature-body:")
+    end.to_set
+    raise ArgumentError.new("unexpected or missing signature diagnostic fragments") unless actual == expected
+  end
+
+  private def self.check_type_signature_diagnostics(section : DiagnosticSection, artifact : Artifact,
+                                                    expected : Set(String), type : TypeDecl, path : String = "") : Nil
+    here = path.empty? ? type.name : "#{path}::#{type.name}"
+    ordinals = mono_body_ordinals(type.methods)
+    type.methods.each_with_index do |signature, index|
+      check_signature_diagnostic(section, artifact, expected, here, signature, ordinals[index])
+    end
+    type.types.each { |nested| check_type_signature_diagnostics(section, artifact, expected, nested, here) }
+  end
+
+  private def self.check_signature_diagnostic(section : DiagnosticSection, artifact : Artifact, expected : Set(String),
+                                              container : String, signature : Signature, ordinal : Int32 = 0) : Nil
+    origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no intrinsic origin")
+    key = signature_fragment_key(container, signature)
+    raise ArgumentError.new("duplicate signature diagnostic identity") unless expected.add?(key)
+    fragment = section.fragments[key]? || raise ArgumentError.new("missing signature diagnostic fragment")
+    header = render_signature(signature)
+    raise ArgumentError.new("signature diagnostic guard mismatch") unless fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(header)
+    offset = (signature.visibility.empty? ? 0 : signature.visibility.bytesize + 1) + (signature.required ? 9 : 0)
+    roots = fragment.anchors.select { |anchor| anchor.offset == offset && anchor.kind == "Def" && anchor.role == "keyword" }
+    raise ArgumentError.new("signature diagnostic root mismatch") unless roots.size == 1 && roots.first.origin == origin
+    signature.annotations.each_with_index do |annotation_text, index|
+      annotation_key = signature_annotation_fragment_key(container, signature, index)
+      raise ArgumentError.new("duplicate signature annotation identity") unless expected.add?(annotation_key)
+      annotation_fragment = section.fragments[annotation_key]? || raise ArgumentError.new("missing signature annotation diagnostic")
+      unless annotation_fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(annotation_text)
+        raise ArgumentError.new("signature annotation guard mismatch")
+      end
+    end
+    if body = artifact.mono_bodies[mono_body_key(container, signature, ordinal)]?
+      body_key = signature_body_fragment_key(container, signature)
+      raise ArgumentError.new("duplicate signature body identity") unless expected.add?(body_key)
+      body_fragment = section.fragments[body_key]? || raise ArgumentError.new("missing signature body diagnostic")
+      raise ArgumentError.new("signature body guard mismatch") unless body_fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(body)
+    end
+  end
+
+  def self.diagnostic_signature_annotations(container : String, a_def : Def, signature : Signature) : Array(DiagnosticFragment)
+    annotations = a_def.all_annotations || [] of Annotation
+    raise ArgumentError.new("signature annotation count differs from source") unless annotations.size == signature.annotations.size
+    annotations.map_with_index do |annotation_node, index|
+      io = IO::Memory.new
+      anchors = [] of DiagnosticAnchor
+      annotation_node.to_s(io, diagnostic_anchors: anchors)
+      source = io.to_s
+      raise ArgumentError.new("signature annotation text differs from source") unless source == signature.annotations[index]
+      DiagnosticFragment.new(signature_annotation_fragment_key(container, signature, index),
+        ::Crystal::Digest::SHA256.hexdigest(source), anchors)
+    end
+  end
+
+  # Replays the exact signature renderer while recording each AST anchor
+  # inside parameter defaults, restrictions and bounds. A disagreement with
+  # the authoritative renderer is an error, not a nearest-token guess.
+  def self.diagnostic_signature_fragment(container : String, a_def : Def, signature : Signature) : DiagnosticFragment
+    origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no diagnostic origin")
+    unless origin == a_def.diagnostic_origin && origin.valid_for_anchor?("Def", "keyword")
+      raise ArgumentError.new("signature origin differs from definition")
+    end
+    io = IO::Memory.new
+    anchors = [] of DiagnosticAnchor
+    io << signature.visibility << ' ' unless signature.visibility.empty?
+    io << "abstract " if signature.required
+    anchors << DiagnosticAnchor.new(io.pos.to_i32, "Def", "keyword", a_def.diagnostic_origin)
+    io << "def "
+    if receiver = a_def.receiver
+      receiver.to_s(io, diagnostic_anchors: anchors)
+      io << '.'
+    end
+    io << signature.name
+    unless signature.parameters.empty? && signature.block_parameter.empty?
+      io << '('
+      printed = false
+      a_def.args.each_with_index do |arg, index|
+        io << ", " if printed
+        io << '*' if a_def.splat_index == index
+        arg.to_s(io, diagnostic_anchors: anchors)
+        printed = true
+      end
+      if arg = a_def.double_splat
+        io << ", " if printed
+        io << "**"
+        arg.to_s(io, diagnostic_anchors: anchors)
+        printed = true
+      end
+      if arg = a_def.block_arg
+        io << ", " if printed
+        io << '&'
+        arg.to_s(io, diagnostic_anchors: anchors)
+      end
+      io << ')'
+    end
+    if result = a_def.return_type
+      io << " : "
+      result.to_s(io, diagnostic_anchors: anchors)
+    end
+    unless signature.free_variables.empty?
+      io << " forall "
+      signature.free_variables.each_with_index do |name, index|
+        io << ", " if index > 0
+        io << name
+        if signature.free_variable_bounds.any? { |pair| pair[0] == name }
+          bound = a_def.free_var_bounds.try(&.[name]?) || raise ArgumentError.new("missing free-variable bound AST")
+          io << " : "
+          bound.to_s(io, diagnostic_anchors: anchors)
+        end
+      end
+    end
+    unless signature.where_bounds.empty?
+      io << " where "
+      signature.where_bounds.each_with_index do |(name, _), index|
+        io << ", " if index > 0
+        bound = a_def.where_bounds.try(&.[name]?) || raise ArgumentError.new("missing where-bound AST")
+        io << name << " : "
+        bound.to_s(io, diagnostic_anchors: anchors)
+      end
+    end
+    text = io.to_s
+    raise ArgumentError.new("diagnostic signature rendering differs from carried signature") unless text == render_signature(signature)
+    DiagnosticFragment.new(signature_fragment_key(container, signature), ::Crystal::Digest::SHA256.hexdigest(text), anchors)
+  end
+
   private def self.encode_header(artifact : Artifact) : Bytes
     io = IO::Memory.new
     write_string io, artifact.module_name
@@ -3824,24 +4666,30 @@ module Iyi::IyiMod
     read_strings(IO::Memory.new(payload))
   end
 
-  private def self.encode_reopened(artifact : Artifact) : Bytes
+  private def self.encode_reopened(artifact : Artifact, diagnostics : Bool = false) : Bytes
     io = IO::Memory.new
-    write_type_declarations io, artifact.reopened
+    write_type_declarations io, artifact.reopened, diagnostics: diagnostics
     io.to_slice
   end
 
-  private def self.decode_reopened(payload : Bytes) : Array(TypeDecl)
-    read_type_declarations(IO::Memory.new(payload))
+  private def self.decode_reopened(payload : Bytes, diagnostics : Bool = false) : Array(TypeDecl)
+    io = IO::Memory.new(payload)
+    result = read_type_declarations(io, diagnostics: diagnostics)
+    raise ArgumentError.new("trailing reopened declaration bytes") unless io.pos == io.size
+    result
   end
 
-  private def self.encode_top_level(artifact : Artifact) : Bytes
+  private def self.encode_top_level(artifact : Artifact, diagnostics : Bool = false) : Bytes
     io = IO::Memory.new
-    write_signatures io, artifact.top_level
+    write_signatures io, artifact.top_level, diagnostics: diagnostics
     io.to_slice
   end
 
-  private def self.decode_top_level(payload : Bytes) : Array(Signature)
-    read_signatures(IO::Memory.new(payload))
+  private def self.decode_top_level(payload : Bytes, diagnostics : Bool = false) : Array(Signature)
+    io = IO::Memory.new(payload)
+    result = read_signatures(io, diagnostics: diagnostics)
+    raise ArgumentError.new("trailing top-level signature bytes") unless io.pos == io.size
+    result
   end
 
   private def self.encode_libs(artifact : Artifact) : Bytes
@@ -3980,11 +4828,11 @@ module Iyi::IyiMod
   # *docs* is false on the interface-hash path (IV.3): a doc comment is
   # surface for a reader, not for the type checker, so editing one must
   # not move the hash a dependent's validity hangs on.
-  private def self.encode_exports(artifact : Artifact, docs : Bool = true) : Bytes
+  private def self.encode_exports(artifact : Artifact, docs : Bool = true, diagnostics : Bool = false) : Bytes
     io = IO::Memory.new
-    write_signatures io, artifact.exports.functions, docs
+    write_signatures io, artifact.exports.functions, docs, diagnostics
 
-    write_type_declarations io, artifact.exports.types, docs
+    write_type_declarations io, artifact.exports.types, docs, diagnostics
 
     impls = artifact.exports.impls
     io.write_bytes impls.size.to_u32, FORMAT
@@ -3995,10 +4843,10 @@ module Iyi::IyiMod
       write_strings io, record.free_variables
       write_pairs io, record.free_variable_bounds
       write_pairs io, record.assoc_types
-      write_signatures io, record.methods, docs
+      write_signatures io, record.methods, docs, diagnostics
     end
 
-    write_signatures io, artifact.exports.carried_functions, docs
+    write_signatures io, artifact.exports.carried_functions, docs, diagnostics
 
     write_class_vars io, artifact.exports.class_vars
 
@@ -4008,7 +4856,7 @@ module Iyi::IyiMod
   # Recursive, because a type's declarations are types: the nesting a module
   # wrote is the nesting a consumer has to read back, and iyi cannot reopen a
   # container to add one afterwards.
-  private def self.write_type_declarations(io : IO, types : Array(TypeDecl), docs : Bool = true) : Nil
+  private def self.write_type_declarations(io : IO, types : Array(TypeDecl), docs : Bool = true, diagnostics : Bool = false) : Nil
     io.write_bytes types.size.to_u32, FORMAT
     types.each do |declaration|
       write_string io, declaration.name
@@ -4029,12 +4877,12 @@ module Iyi::IyiMod
       write_string io, (docs ? declaration.doc : "")
       io.write_byte(declaration.extends_self ? 1_u8 : 0_u8)
       write_strings io, declaration.usings
-      write_signatures io, declaration.methods, docs
-      write_type_declarations io, declaration.types, docs
+      write_signatures io, declaration.methods, docs, diagnostics
+      write_type_declarations io, declaration.types, docs, diagnostics
     end
   end
 
-  private def self.read_type_declarations(io : IO) : Array(TypeDecl)
+  private def self.read_type_declarations(io : IO, diagnostics : Bool = false) : Array(TypeDecl)
     Array(TypeDecl).new(io.read_bytes(UInt32, FORMAT)) do
       name = read_string(io)
       kind = read_string(io)
@@ -4054,14 +4902,14 @@ module Iyi::IyiMod
       doc = read_string(io)
       extends_self = io.read_byte == 1_u8
       usings = read_strings(io)
-      methods = read_signatures(io)
+      methods = read_signatures(io, diagnostics)
       TypeDecl.new(name, kind, parameters, assoc_types, supertraits, fields, methods,
-        visibility, read_type_declarations(io), value, macros, members, class_vars,
+        visibility, read_type_declarations(io, diagnostics), value, macros, members, class_vars,
         superclass, includes, funs, annotations, doc, extends_self, usings)
     end
   end
 
-  private def self.write_signatures(io : IO, signatures : Array(Signature), docs : Bool = true) : Nil
+  private def self.write_signatures(io : IO, signatures : Array(Signature), docs : Bool = true, diagnostics : Bool = false) : Nil
     io.write_bytes signatures.size.to_u32, FORMAT
     signatures.each do |signature|
       write_string io, signature.name
@@ -4076,10 +4924,11 @@ module Iyi::IyiMod
       write_strings io, signature.annotations
       write_pairs io, signature.free_variable_bounds
       write_pairs io, signature.where_bounds
+      write_string io, (signature.diagnostic_origin.try(&.to_json) || "") if diagnostics
     end
   end
 
-  private def self.read_signatures(io : IO) : Array(Signature)
+  private def self.read_signatures(io : IO, diagnostics : Bool = false) : Array(Signature)
     Array(Signature).new(io.read_bytes(UInt32, FORMAT)) do
       name = read_string(io)
       receiver = read_string(io)
@@ -4091,16 +4940,25 @@ module Iyi::IyiMod
       doc = read_string(io)
       visibility = read_string(io)
       annotations = read_strings(io)
-      Signature.new(name, receiver, parameters, block_parameter, return_type,
+      signature = Signature.new(name, receiver, parameters, block_parameter, return_type,
         free_variables, required, visibility, doc, annotations, read_pairs(io), read_pairs(io))
+      if diagnostics
+        encoded = DiagnosticOrigins.read_string(io)
+        unless encoded.empty?
+          origin = DiagnosticOrigin.from_json(JSON.parse(encoded))
+          raise ArgumentError.new("noncanonical diagnostic signature origin") unless origin.to_json == encoded
+          signature.diagnostic_origin = origin
+        end
+      end
+      signature
     end
   end
 
-  private def self.decode_exports(payload : Bytes) : Exports
+  private def self.decode_exports(payload : Bytes, diagnostics : Bool = false) : Exports
     io = IO::Memory.new(payload)
-    functions = read_signatures(io)
+    functions = read_signatures(io, diagnostics)
 
-    types = read_type_declarations(io)
+    types = read_type_declarations(io, diagnostics)
 
     impls = Array(ImplRecord).new(io.read_bytes(UInt32, FORMAT)) do
       trait_name = read_string(io)
@@ -4110,10 +4968,12 @@ module Iyi::IyiMod
       free_variable_bounds = read_pairs(io)
       assoc_types = read_pairs(io)
       ImplRecord.new(trait_name, type_name, trait_arguments, free_variables,
-        free_variable_bounds, assoc_types, read_signatures(io))
+        free_variable_bounds, assoc_types, read_signatures(io, diagnostics))
     end
 
-    Exports.new(functions, types, impls, read_signatures(io), read_class_vars(io))
+    result = Exports.new(functions, types, impls, read_signatures(io, diagnostics), read_class_vars(io))
+    raise ArgumentError.new("trailing export bytes") unless io.pos == io.size
+    result
   end
 
   private def self.write_strings(io : IO, values : Array(String)) : Nil
