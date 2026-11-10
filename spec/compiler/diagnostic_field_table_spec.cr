@@ -92,38 +92,47 @@ describe Iyi::DiagnosticFieldTable do
     end
   end
 
-  describe "scopes against the census" do
+  describe "census scopes" do
+    {% if Iyi::Block.has_method?(:binder) %}
+    # Full-compiler context. Every census pair must be covered by a full-scope
+    # row, and every full-scope row must be in the census. Nothing is skipped.
+    it "requires zero full-scope census pairs without a row" do
+      Iyi::DiagnosticFieldTable.uncovered(table, pairs, full).should eq([] of String)
+    end
+
+    it "requires zero full-scope rows missing from the census" do
+      Iyi::DiagnosticFieldTable.unlisted(table, pairs, full).should eq([] of String)
+    end
+    {% else %}
+    # Syntax-only context. The census holds syntax fields alone.
     it "covers every syntax census pair with a syntax row, base fields included" do
       Iyi::DiagnosticFieldTable.uncovered(table, pairs, syntax).should eq([] of String)
     end
 
-    it "lists no syntax-scope row the syntax census does not contain" do
+    it "lists no syntax-scope row that the syntax census does not contain" do
       Iyi::DiagnosticFieldTable.unlisted(table, pairs, syntax).should eq([] of String)
-    end
-
-    it "keeps semantic rows out of the syntax scope and in the full scope" do
-      Iyi::DiagnosticFieldTable.rows_in_scope("Path", syntax).any? { |row| row.field == "target_const" }.should eq(false)
-      Iyi::DiagnosticFieldTable.rows_in_scope("Path", full).any? { |row| row.field == "target_const" }.should eq(true)
-    end
-
-    it "covers every syntax census pair when the full scope is checked" do
-      Iyi::DiagnosticFieldTable.uncovered(table, pairs, full).should eq([] of String)
     end
 
     it "shows that a syntax-only census cannot satisfy the full scope" do
       Iyi::DiagnosticFieldTable.unlisted(table, pairs, full).includes?("Path.target_const").should eq(true)
     end
 
-    it "reports a syntax field that the table marks semantic" do
-      demoted = table.dup
-      demoted["Def"] = table["Def"].map { |row| row.field == "doc" ? DiagnosticFieldTableSpec.with_provenance(row, provenance_semantic) : row }
-      Iyi::DiagnosticFieldTable.uncovered(demoted, pairs, syntax).includes?("Def.doc").should eq(true)
-    end
-
     it "reports a semantic field that the table marks syntax" do
       promoted = table.dup
       promoted["Path"] = table["Path"].map { |row| row.field == "target_const" ? DiagnosticFieldTableSpec.with_provenance(row, provenance_syntax) : row }
       Iyi::DiagnosticFieldTable.unlisted(promoted, pairs, syntax).includes?("Path.target_const").should eq(true)
+    end
+    {% end %}
+
+    it "keeps semantic rows out of the syntax scope and in the full scope" do
+      Iyi::DiagnosticFieldTable.rows_in_scope("Path", syntax).any? { |row| row.field == "target_const" }.should eq(false)
+      Iyi::DiagnosticFieldTable.rows_in_scope("Path", full).any? { |row| row.field == "target_const" }.should eq(true)
+    end
+
+    it "reports a syntax field that the table marks semantic" do
+      demoted = table.dup
+      demoted["Def"] = table["Def"].map { |row| row.field == "doc" ? DiagnosticFieldTableSpec.with_provenance(row, provenance_semantic) : row }
+      Iyi::DiagnosticFieldTable.uncovered(demoted, pairs, syntax).includes?("Def.doc").should eq(true)
     end
 
     it "reports a table that omits a census base field" do
