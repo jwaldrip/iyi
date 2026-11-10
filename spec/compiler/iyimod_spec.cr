@@ -1397,6 +1397,111 @@ describe Iyi::DiagnosticOrigin do
     end
   end
 
+  it "restores parent and child uses of shared tokens from source-absent artifacts" do
+    {"Set {1, 2}", %(Foo{"x" => "y"}), "VALUE = 1", "VALUE : Int32 = 1", "a, b = 1, 2"}.each do |source|
+      producer = Iyi::Parser.new(source)
+      producer.filename = "/absent/shared.cr"
+      producer.diagnostic_source_file = "/absent/shared.cr"
+      producer.diagnostic_capture = true
+      original = producer.parse
+      printed = IO::Memory.new
+      anchors = [] of Iyi::DiagnosticAnchor
+      original.to_s(printed, diagnostic_anchors: anchors)
+      text = printed.to_s
+      Iyi::Parser.new(source).parse.to_s.should eq(text)
+      parent = anchors.find { |anchor| {"Literal", "Assign"}.includes?(anchor.kind) }.not_nil!
+      child = anchors.find { |anchor| anchor.offset == parent.offset && anchor != parent }.not_nil!
+      parent.origin.should_not eq(child.origin)
+      key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
+      declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", text}])
+      artifact = sample_artifact(types: [declaration])
+      section = Iyi::IyiMod::DiagnosticSection.new
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key,
+        ::Crystal::Digest::SHA256.hexdigest(text), anchors))
+      artifact.diagnostic_provenance = section
+      with_temporary_file do |path|
+        Iyi::IyiMod.write artifact, path
+        imported = Iyi::IyiMod.read(path)
+        fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
+        carried = imported.exports.types.first.fields.first[2]
+        consumer = Iyi::Parser.new(carried)
+        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.anchors)]
+        restored = consumer.parse
+        consumer.diagnostic_check_consumed
+        reprinted = IO::Memory.new
+        reanchors = [] of Iyi::DiagnosticAnchor
+        restored.to_s(reprinted, diagnostic_anchors: reanchors)
+        reprinted.to_s.should eq(text)
+        reanchors.should eq(anchors)
+        Iyi::IyiMod.write imported, path
+        Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
+
+        {parent, child}.each do |removed|
+          incomplete = fragment.anchors.reject { |anchor| anchor == removed }
+          broken = Iyi::Parser.new(carried)
+          broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, incomplete)]
+          expect_raises(ArgumentError) do
+            broken.parse
+            broken.diagnostic_check_consumed
+          end
+        end
+      end
+    end
+  end
+
+  it "restores interpolation payloads at their owner opener after artifact re-emission" do
+    {"/abc\#{foo}/", "/\#{foo}/", "`abc\#{foo}`", "`\#{foo}`"}.each do |source|
+      producer = Iyi::Parser.new(source)
+      producer.filename = "/absent/payload.cr"
+      producer.diagnostic_source_file = "/absent/payload.cr"
+      producer.diagnostic_capture = true
+      original = producer.parse
+      printed = IO::Memory.new
+      anchors = [] of Iyi::DiagnosticAnchor
+      original.to_s(printed, diagnostic_anchors: anchors)
+      text = printed.to_s
+      Iyi::Parser.new(source).parse.to_s.should eq(text)
+      owner = anchors.find { |anchor| anchor.offset == 0 && anchor.role != "interpolation" }.not_nil!
+      payload = anchors.find { |anchor| anchor.kind == "Literal" && anchor.role == "interpolation" }.not_nil!
+      payload.offset.should eq(owner.offset)
+      payload.origin.should_not eq(owner.origin)
+      key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
+      declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", text}])
+      artifact = sample_artifact(types: [declaration])
+      section = Iyi::IyiMod::DiagnosticSection.new
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key,
+        ::Crystal::Digest::SHA256.hexdigest(text), anchors))
+      artifact.diagnostic_provenance = section
+      with_temporary_file do |path|
+        Iyi::IyiMod.write artifact, path
+        imported = Iyi::IyiMod.read(path)
+        fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
+        carried = imported.exports.types.first.fields.first[2]
+        consumer = Iyi::Parser.new(carried)
+        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.anchors)]
+        restored = consumer.parse
+        consumer.diagnostic_check_consumed
+        reprinted = IO::Memory.new
+        reanchors = [] of Iyi::DiagnosticAnchor
+        restored.to_s(reprinted, diagnostic_anchors: reanchors)
+        reprinted.to_s.should eq(text)
+        reanchors.should eq(anchors)
+        Iyi::IyiMod.write imported, path
+        Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
+        nested = fragment.anchors.find { |anchor| anchor.kind == "Call" && anchor.role == "method" && anchor.offset != owner.offset }.not_nil!
+        {owner, payload, nested}.each do |removed|
+          incomplete = fragment.anchors.reject { |anchor| anchor == removed }
+          broken = Iyi::Parser.new(carried)
+          broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, incomplete)]
+          expect_raises(ArgumentError) do
+            broken.parse
+            broken.diagnostic_check_consumed
+          end
+        end
+      end
+    end
+  end
+
   it "round trips diagnostic fragments and binds object records to their bytes" do
     source = "-> { 1 }"
     origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 8, "ProcLiteral", "arrow")
