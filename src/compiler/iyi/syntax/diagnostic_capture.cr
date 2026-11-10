@@ -3710,17 +3710,26 @@ module Iyi
       macro_owner = origin.structural_production == DiagnosticStructuralProduction::MacroBareSplatParameter
       owner_kind = macro_owner ? "Macro" : "Def"
       keyword = macro_owner ? "macro" : "def"
-      fits = macro_owner ? owner.is_a?(Macro) : owner.is_a?(Def)
-      raise ArgumentError.new("bare splat evidence outside its parameter") unless fits && bundle.frozen?(owner)
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless bundle.frozen?(owner)
+      owner_args, owner_splat_index, owner_origin = case owner
+      when Def
+        raise ArgumentError.new("bare splat evidence outside its parameter") if macro_owner
+        {owner.args, owner.splat_index, owner.diagnostic_origin}
+      when Macro
+        raise ArgumentError.new("bare splat evidence outside its parameter") unless macro_owner
+        {owner.args, owner.splat_index, owner.diagnostic_origin}
+      else
+        raise ArgumentError.new("bare splat evidence outside its parameter")
+      end
 
       index = observed.index
       raise ArgumentError.new("bare splat evidence outside its parameter") unless index >= 0
-      raise ArgumentError.new("bare splat evidence outside its parameter") unless owner.args[index]?.try(&.same?(arg))
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless owner_args[index]?.try(&.same?(arg))
       occurrence = @arg_occurrence || raise ArgumentError.new("bare splat evidence outside its parameter")
       raise ArgumentError.new("bare splat evidence outside its parameter") unless occurrence == {owner.object_id, index, arg.object_id}
       raise ArgumentError.new("bare splat evidence outside its parameter") unless bundle.frozen_edge?(owner, "args", index, arg)
 
-      raise ArgumentError.new("bare splat evidence outside its parameter") unless owner.splat_index == index && index + 1 < owner.args.size
+      raise ArgumentError.new("bare splat evidence outside its parameter") unless owner_splat_index == index && index + 1 < owner_args.size
       raise ArgumentError.new("bare splat evidence outside its parameter") unless arg.name.empty? && arg.external_name.empty?
       raise ArgumentError.new("bare splat evidence outside its parameter") if arg.diagnostic_external_explicit
       raise ArgumentError.new("bare splat evidence outside its parameter") unless arg.restriction.nil? && arg.default_value.nil?
@@ -3734,7 +3743,6 @@ module Iyi
       raise ArgumentError.new("expanded bare splat requires resolved expansion ancestry (contract X)") if anchor.is_a?(DiagnosticOrigin::Expanded)
       written = anchor.as?(DiagnosticOrigin::Written) || raise ArgumentError.new("invalid structural anchor")
       raise ArgumentError.new("invalid structural anchor") unless written_identity_ok?(written) && written.valid_for_anchor?(owner_kind, "keyword")
-      owner_origin = owner.diagnostic_origin
       raise ArgumentError.new("bare splat evidence outside its parameter") unless owner_origin && written == owner_origin
       start = written.input_byte_offset
       raise ArgumentError.new("invalid structural anchor") unless journal.scanned_span?(start, start + keyword.size, "IDENT", keyword, mode)
