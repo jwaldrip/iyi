@@ -123,7 +123,14 @@ module Iyi
       when UnionType
         type.union_types.flat_map { |member| roots_of(member, false, path) }
       when ReferenceStorageType
-        container(type, roots_of(type.reference_type, false, path))
+        # Lowered as `llvm_struct_type` of the reference type (llvm_typer.cr,
+        # `create_llvm_type(ReferenceStorageType)`). A class or other field-bearing
+        # type lowers to its instance struct; tuples and static arrays lower to
+        # their value layout, as their `create_llvm_struct_type` overloads show.
+        target = type.reference_type
+        instance_target = target.is_a?(InstanceVarContainer) &&
+                          !(target.is_a?(TupleInstanceType) || target.is_a?(NamedTupleInstanceType) || target.is_a?(StaticArrayInstanceType))
+        container(type, roots_of(target, instance_target, path))
       when StaticArrayInstanceType
         container(type, roots_of(type.element_type, false, path))
       when TupleInstanceType
@@ -194,6 +201,18 @@ module Iyi
       return if layout_fold_state == LayoutFoldState::Patched
       return if !patch && layout_fold_state == LayoutFoldState::Reported
 
+      {% if flag?(:without_llvm) %}
+        # The LLVM-free front end has no layouts to settle against. Its layout
+        # queries raise before any fold is recorded (program.cr), so there is
+        # nothing to settle and the front end is unchanged by this pass.
+        self.layout_fold_state = patch ? LayoutFoldState::Patched : LayoutFoldState::Reported
+      {% else %}
+        settle_with_layouts(patch)
+      {% end %}
+    end
+
+    {% unless flag?(:without_llvm) %}
+    private def settle_with_layouts(patch : Bool) : Nil
       # The fresh typer lowers every folded type, so a recursive struct is refused
       # here, before the typer could recur on it.
       RecursiveStructChecker.new(self).run if patch
@@ -215,6 +234,12 @@ module Iyi
           final = recompute_layout_fold(fold, typer)
         rescue error : Exception
           failure = error.message || error.class.name
+          # A raise can leave the typer holding a half-lowered type: a tuple is
+          # cached as an opaque struct before its elements are lowered
+          # (llvm_typer.cr, `create_llvm_type(TupleInstanceType)`), so a later
+          # fold in the same typer would read that struct. Later folds get a
+          # fresh typer, and the native shared typer is that fresh one.
+          typer = LLVMTyper.new(self, LLVM::Context.new)
         end
         {fold, own, roots, final, failure}
       end
@@ -301,6 +326,8 @@ module Iyi
         instance_offset_of(subject, fold.index.not_nil!, typer).to_u64
       end
     end
+
+    {% end %}
 
     private def correct_layout_fold(fold : LayoutFold, final : UInt64) : Nil
       expanded = NumberLiteral.new(final.to_s, :i32)
