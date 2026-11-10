@@ -2,6 +2,7 @@ require "json"
 require "set"
 require "crystal/digest/sha256"
 require "base64"
+require "./token"
 
 module Iyi
   # Producer source coordinates for a span in rendered source or an artifact.
@@ -653,6 +654,8 @@ module Iyi
   end
 
   class DiagnosticTokenEvent
+    TOKEN_KINDS = Token::Kind.values.map(&.to_s).to_set
+
     getter input_start : Int32
     getter input_end : Int32
     getter token_kind : String
@@ -666,7 +669,7 @@ module Iyi
     def initialize(@input_start : Int32, @input_end : Int32, @token_kind : String, @token_text : String,
                    @lexical_mode : String, @selection : DiagnosticTokenSelection, byte_parts : Array(DiagnosticEmissionPart))
       unless @input_start >= 0 && @input_end > @input_start && @token_text.valid_encoding? &&
-             @token_text.bytesize == @input_end - @input_start && !@token_kind.empty? &&
+             @token_text.bytesize == @input_end - @input_start && TOKEN_KINDS.includes?(@token_kind) &&
              {"Crystal", "Iyi"}.includes?(@lexical_mode) && {@selection.whole?, @selection.signed_number_sign?}.any?
         raise ArgumentError.new("invalid diagnostic token event")
       end
@@ -679,7 +682,7 @@ module Iyi
       @byte_parts = byte_parts.dup
       raise ArgumentError.new("missing diagnostic token byte parts") if @byte_parts.empty?
       cursor = selected_start
-      own = 1024_u64 + @token_text.bytesize.to_u64 * 6
+      own = 1024_u64 + (@token_text.bytesize.to_u64 + @token_kind.bytesize.to_u64) * 6
       parents = [] of DiagnosticOrigin
       @byte_parts.each do |part|
         unless part.start_offset == cursor && part.end_offset <= selected_end

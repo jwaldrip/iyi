@@ -79,6 +79,15 @@ def heredoc_spec_delimiter(identifier : String, allow_escapes : Bool = true, ind
 end
 
 describe "operator name derivation" do
+  it "rejects token events with unrecognized kinds" do
+    expect_raises(ArgumentError, "invalid diagnostic token event") do
+      operator_spec_event(0, "x", "FORGED_KIND")
+    end
+    expect_raises(ArgumentError, "invalid diagnostic token event") do
+      operator_spec_event(0, "x", "X" * 1_500_000)
+    end
+  end
+
   it "derives rendered text and producer context for every production at a written anchor" do
     cases = [
       {"a += 1", Iyi::DiagnosticOperatorProduction::OpAssign, [operator_spec_witness(2, "+=")], "+", "op_assign_operator"},
