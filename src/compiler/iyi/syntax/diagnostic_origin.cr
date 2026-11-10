@@ -100,6 +100,7 @@ module Iyi
                 when "regex_match_index"             then kind == "GLOBAL_MATCH_DATA_INDEX"
                 when "type_self"                    then kind == "IDENT"
                 when "module_segment"                then kind == "IDENT"
+                when "macro_fresh_variable"          then kind == "MACRO_VAR"
                 else                                      false
                 end
       return false unless allowed && {"Crystal", "Iyi"}.includes?(mode) && raw.valid_encoding?
@@ -116,7 +117,7 @@ module Iyi
         return !number.to_i?.nil?
       end
       return raw == kind if NAME_OPERATORS.includes?(kind)
-      prefix = kind == "INSTANCE_VAR" ? "@" : (kind == "CLASS_VAR" ? "@@" : "")
+      prefix = kind == "INSTANCE_VAR" ? "@" : (kind == "CLASS_VAR" ? "@@" : (kind == "MACRO_VAR" ? "%" : ""))
       return false unless raw.starts_with?(prefix)
       name = raw.byte_slice(prefix.bytesize, raw.bytesize - prefix.bytesize)
       if kind == "IDENT" && (name.ends_with?("?") || name.ends_with?("!"))
@@ -138,7 +139,8 @@ module Iyi
                    @lexical_mode : String, @token_kind : String, @raw_text : String)
       unless {"method_name", "definition_name", "macro_name", "local_reference", "instance_variable",
               "class_variable", "parameter", "path_segment", "type_parameter", "named_entry",
-              "enum_member", "special_global", "regex_match_index", "where_variable", "type_self", "module_segment"}.includes?(@context)
+              "enum_member", "special_global", "regex_match_index", "where_variable", "type_self", "module_segment",
+              "macro_fresh_variable"}.includes?(@context)
         raise ArgumentError.new("invalid diagnostic name context")
       end
       unless @input_sha256.bytesize == 64 && @input_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) }

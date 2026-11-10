@@ -168,7 +168,7 @@ module Iyi::DiagnosticProvenance
     end
   end
 
-  NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self module_segment)
+  NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self module_segment macro_fresh_variable)
   MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer LiteralValue)
   NAME_OPERATORS = %w(! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~)
   INVALID_PARAMETER_NAMES = %w(begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof)
@@ -200,6 +200,8 @@ module Iyi::DiagnosticProvenance
                 kind == "IDENT" || kind == "CONST"
               when "type_self", "module_segment"
                 kind == "IDENT"
+              when "macro_fresh_variable"
+                kind == "MACRO_VAR"
               when "special_global"
                 kind == "$~" || kind == "$?"
               when "regex_match_index"
@@ -218,7 +220,7 @@ module Iyi::DiagnosticProvenance
       return digits.bytesize < 10 || (digits.bytesize == 10 && digits <= "2147483647")
     end
     return raw == kind if NAME_OPERATORS.includes?(kind)
-    prefix = kind == "INSTANCE_VAR" ? "@" : (kind == "CLASS_VAR" ? "@@" : "")
+    prefix = kind == "INSTANCE_VAR" ? "@" : (kind == "CLASS_VAR" ? "@@" : (kind == "MACRO_VAR" ? "%" : ""))
     return false unless raw.starts_with?(prefix)
     name = raw.byte_slice(prefix.bytesize, raw.bytesize - prefix.bytesize)
     if kind == "IDENT" && (name.ends_with?("?") || name.ends_with?("!"))

@@ -1543,7 +1543,21 @@ def test_composed_origin_controls():
             ("IDENT", "@name", "Crystal", "method_name", False),
             ("CONST", "name", "Crystal", "path_segment", False),
             ("INSTANCE_VAR", "@@name", "Crystal", "instance_variable", False),
-            ("IDENT", "name", "Crystal", "class_variable", False)):
+            ("IDENT", "name", "Crystal", "class_variable", False),
+            ("MACRO_VAR", "%var", "Crystal", "macro_fresh_variable", True),
+            ("MACRO_VAR", "%Foo", "Iyi", "macro_fresh_variable", True),
+            ("MACRO_VAR", "%_x1", "Crystal", "macro_fresh_variable", True),
+            ("MACRO_VAR", "%éclair", "Iyi", "macro_fresh_variable", True),
+            ("MACRO_VAR", "%", "Crystal", "macro_fresh_variable", False),
+            ("MACRO_VAR", "var", "Crystal", "macro_fresh_variable", False),
+            ("MACRO_VAR", "%var?", "Crystal", "macro_fresh_variable", False),
+            ("MACRO_VAR", "%var!", "Iyi", "macro_fresh_variable", False),
+            ("MACRO_VAR", "%1x", "Crystal", "macro_fresh_variable", False),
+            ("MACRO_VAR", "%va-r", "Iyi", "macro_fresh_variable", False),
+            ("MACRO_VAR", "%@var", "Crystal", "macro_fresh_variable", False),
+            ("IDENT", "%var", "Crystal", "macro_fresh_variable", False),
+            ("MACRO_VAR", "%var", "Crystal", "local_reference", False),
+            ("MACRO_VAR", "%var", "Iyi", "method_name", False)):
         assert frames.name_token(kind, raw, mode, context) == expected, (kind, raw, context)
 
 

@@ -150,7 +150,7 @@ def number(value):
         raise ValueError("invalid provenance integer")
 
 
-NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self module_segment".split())
+NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter where_variable named_entry enum_member special_global regex_match_index type_self module_segment macro_fresh_variable".split())
 PRODUCERS = frozenset("ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter StructuredSyntax ArtifactSemanticRenderer LiteralValue".split())
 TOKEN_KINDS = frozenset(("EOF SPACE NEWLINE IDENT CONST INSTANCE_VAR CLASS_VAR CHAR STRING SYMBOL NUMBER _ COMMENT "
     "DELIMITER_START DELIMITER_END STRING_ARRAY_START INTERPOLATION_START SYMBOL_ARRAY_START STRING_ARRAY_END "
@@ -186,6 +186,7 @@ CONTEXT_KINDS = {
     "enum_member": frozenset(("CONST",)),
     "special_global": frozenset(("$~", "$?")),
     "regex_match_index": frozenset(("GLOBAL_MATCH_DATA_INDEX",)),
+    "macro_fresh_variable": frozenset(("MACRO_VAR",)),
 }
 
 
@@ -199,7 +200,7 @@ def name_token(kind, raw, mode, context):
         digits = raw[1:].rstrip("?")
         return len(digits) < 10 or (len(digits) == 10 and digits <= "2147483647")
     if kind in NAME_OPERATORS: return raw == kind
-    prefix = {"INSTANCE_VAR": "@", "CLASS_VAR": "@@"}.get(kind, "")
+    prefix = {"INSTANCE_VAR": "@", "CLASS_VAR": "@@", "MACRO_VAR": "%"}.get(kind, "")
     if not raw.startswith(prefix): return False
     name = raw[len(prefix):]
     if kind == "IDENT" and name.endswith(("?", "!")):

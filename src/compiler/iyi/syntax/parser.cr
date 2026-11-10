@@ -7023,6 +7023,8 @@ module Iyi
             return new_macro_expressions(pieces), nil
           end
         when .macro_var?
+          name_offset = @token.input_offset
+          name_snapshot = diagnostic_current_token_snapshot
           macro_var_name = @token.value.to_s
           location = @token.location
           if macro_var_name[0].uppercase? || macro_var_name[0].titlecase?
@@ -7037,7 +7039,9 @@ module Iyi
           else
             macro_var_exps = nil
           end
-          pieces << MacroVar.new(macro_var_name, macro_var_exps).at(location).at_end(token_end_location)
+          macro_var = MacroVar.new(macro_var_name, macro_var_exps).at(location).at_end(token_end_location)
+          diagnostic_name(macro_var, name_offset, "macro_fresh_variable", token_snapshot: name_snapshot)
+          pieces << macro_var
         when .macro_end?
           break
         when .eof?
