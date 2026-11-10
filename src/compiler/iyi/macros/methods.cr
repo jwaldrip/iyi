@@ -2974,7 +2974,7 @@ module Iyi
       when "named_args"
         interpret_check_args do
           if named_args = @named_args
-            interpreter.diagnostic_new(NamedTupleLiteral, named_args.map { |arg| NamedTupleLiteral::Entry.new(arg.name, arg.value) })
+            interpreter.diagnostic_named_tuple(named_args)
           else
             NilLiteral.new
           end
@@ -3230,7 +3230,7 @@ end
 
 private def get_named_annotation_args(object, interpreter)
   if named_args = object.named_args
-    interpreter.diagnostic_new(Iyi::NamedTupleLiteral, named_args.map { |arg| Iyi::NamedTupleLiteral::Entry.new(arg.name, arg.value) })
+    interpreter.diagnostic_named_tuple(named_args)
   else
     interpreter.diagnostic_new(Iyi::NamedTupleLiteral)
   end

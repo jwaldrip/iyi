@@ -68,7 +68,8 @@ module Iyi
       allowed = case context
                 when "method_name"                   then kind == "IDENT" || kind == "CONST" || NAME_OPERATORS.includes?(kind)
                 when "definition_name"               then kind == "IDENT" || NAME_OPERATORS.includes?(kind)
-                when "macro_name", "local_reference" then kind == "IDENT"
+                when "macro_name"                    then kind == "IDENT" || kind == "="
+                when "local_reference"               then kind == "IDENT"
                 when "instance_variable"             then kind == "INSTANCE_VAR"
                 when "class_variable"                then kind == "CLASS_VAR"
                 when "parameter"                     then {"IDENT", "INSTANCE_VAR", "CLASS_VAR"}.includes?(kind)
@@ -400,7 +401,7 @@ module Iyi
         expected_keys(object, %w(kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset generated_byte_end token_kind token_text lexical_mode anchor_kind role name_context emission_parts))
         %w(expansion_guard token_kind token_text lexical_mode anchor_kind role).each { |key| budget.text(object[key].as_s) }
         budget.text(object["name_context"].as_s) unless object["name_context"].raw.nil?
-        budget.consume(object["emission_parts"].as_a.size.to_u64)
+        budget.consume(object["emission_parts"].as_a.size.to_u64 * 1024_u64)
         parts = object["emission_parts"].as_a.map do |part|
           fields = part.as_h
           emitter = fields["emitter_origin"]

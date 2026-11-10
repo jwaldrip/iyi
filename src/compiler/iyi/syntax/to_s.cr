@@ -114,6 +114,8 @@ module Iyi
       if !@diagnostic_name_fragments && !@diagnostic_anchors
         visit_named_arg_name(name)
       elsif node.diagnostic_name_slots[slot]?
+        rendered = String.build { |io| Symbol.quote_for_named_argument(io, name) }
+        raise ArgumentError.new("quoted named entry projection is not recorded") unless rendered == name
         diagnostic_name(node, name, "named_entry", slot)
       elsif node.diagnostic_macro_lineage.constructed?
         diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { visit_named_arg_name(name) }
@@ -1089,7 +1091,7 @@ module Iyi
         obj.accept self
         @str << '.'
       end
-      @str << node.name
+      diagnostic_name(node, node.name, "method_name")
 
       if node.args.size > 0
         @str << '('
@@ -1497,7 +1499,7 @@ module Iyi
     def visit(node : ReadInstanceVar)
       node.obj.accept self
       @str << '.'
-      @str << node.name
+      diagnostic_name(node, node.name, "instance_variable")
       false
     end
 

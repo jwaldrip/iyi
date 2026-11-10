@@ -44,6 +44,29 @@ end
 
 module Iyi
   describe Macro do
+    it "preserves source keys when projecting named arguments into a tuple" do
+      input = "f(alpha: 1, beta: 2)"
+      parser = Parser.new(input)
+      parser.filename = "/spec/named_args.cr"
+      parser.diagnostic_source_file = "/spec/named_args.cr"
+      parser.diagnostic_capture = true
+      args = parser.parse.as(Call).named_args.not_nil!
+      program = new_program
+      program.diagnostic_capture = true
+      tuple = MacroInterpreter.diagnostic_named_tuple(program, args)
+      slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry)
+      args.each_with_index do |arg, index|
+        destination = DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index)
+        tuple.diagnostic_name_slots[destination].should eq(arg.diagnostic_name_slots[slot])
+      end
+      tuple.clone.diagnostic_name_slots.should eq(tuple.diagnostic_name_slots)
+
+      args.first.diagnostic_name_slots = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+      expect_raises(ArgumentError, /lacks name evidence/) do
+        MacroInterpreter.diagnostic_named_tuple(program, args)
+      end
+    end
+
     describe "node methods" do
       describe "location" do
         location = Location.new("foo.cr", 1, 2)

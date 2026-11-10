@@ -40,17 +40,15 @@ module Iyi
 
       # The double splat argument
       if double_splat
-        named_tuple_elems = [] of NamedTupleLiteral::Entry
+        selected = [] of NamedArgument
         if named_args = call.named_args
           named_args.each do |named_arg|
             # Skip an argument that's already there as a positional argument
             next if a_macro.args.any? &.external_name.==(named_arg.name)
-
-            named_tuple_elems << NamedTupleLiteral::Entry.new(named_arg.name, named_arg.value)
+            selected << named_arg
           end
         end
-
-        vars[double_splat.name] = NamedTupleLiteral.new(named_tuple_elems)
+        vars[double_splat.name] = diagnostic_named_tuple(program, selected)
       end
 
       # Process default values
@@ -99,6 +97,27 @@ module Iyi
 
     def diagnostic_new(klass : T.class, *args, **kwargs) : T forall T
       MacroInterpreter.diagnostic_new(@program, klass, *args, **kwargs)
+    end
+
+    def self.diagnostic_named_tuple(program : Program, args : Array(NamedArgument)) : NamedTupleLiteral
+      tuple = diagnostic_new(program, NamedTupleLiteral, args.map { |arg| NamedTupleLiteral::Entry.new(arg.name, arg.value) })
+      if program.diagnostic_capture
+        slots = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+        source_slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry)
+        args.each_with_index do |arg, index|
+          if tokens = arg.diagnostic_name_slots[source_slot]?
+            slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index)] = tokens
+          elsif !arg.diagnostic_macro_lineage.constructed?
+            raise ArgumentError.new("named argument projection lacks name evidence")
+          end
+        end
+        tuple.diagnostic_name_slots = slots
+      end
+      tuple
+    end
+
+    def diagnostic_named_tuple(args : Array(NamedArgument)) : NamedTupleLiteral
+      MacroInterpreter.diagnostic_named_tuple(@program, args)
     end
 
     def diagnostic_clone_without_location(node : ASTNode) : ASTNode
@@ -883,10 +902,20 @@ module Iyi
     end
 
     def visit(node : NamedTupleLiteral)
-      @last =
-        diagnostic_new(NamedTupleLiteral, node.entries.map do |entry|
-          NamedTupleLiteral::Entry.new(entry.key, accept(entry.value))
-        end)
+      tuple = diagnostic_new(NamedTupleLiteral, node.entries.map do |entry|
+        NamedTupleLiteral::Entry.new(entry.key, accept(entry.value))
+      end)
+      if @program.diagnostic_capture
+        slots = node.diagnostic_name_slots
+        node.entries.each_with_index do |_, index|
+          slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index)
+          if !slots.has_key?(slot) && !node.diagnostic_macro_lineage.constructed?
+            raise ArgumentError.new("named tuple projection lacks name evidence")
+          end
+        end
+        tuple.diagnostic_name_slots = slots
+      end
+      @last = tuple
       false
     end
 
