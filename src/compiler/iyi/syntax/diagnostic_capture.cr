@@ -4113,18 +4113,35 @@ module Iyi
     end
     getter journal : DiagnosticReplayJournal
 
+    @input_key : String
+    @mode : String
+    @literal_owners : Array(DiagnosticLiteralOwnerObservation)
+    @numbers : Array(DiagnosticNumberObservation)
+    @signed_numbers : Array(DiagnosticSignedNumberObservation)
+    @macro_literals : Array(DiagnosticMacroLiteralObservation)
+    @scalar_owners : Array(DiagnosticScalarGrammarObservation)
+    @folds : Array(DiagnosticFoldedStringObservation)
+    @interpolations : Array(DiagnosticInterpolationObservation)
+    @wrappers : Array(DiagnosticInterpolationWrapperObservation)
+    @wrapper_pieces : Array(DiagnosticInterpolationPieceObservation)
+    @transfers : Array(DiagnosticLiteralTransferObservation)
+    @heredoc_groups : Array(DiagnosticHeredocGroupObservation)
+    @percent_groups : Array(DiagnosticPercentGroupObservation)
+    @percent_elements : Array(DiagnosticPercentElementObservation)
+    @payloads : Array(DiagnosticLiteralPayloadObservation)
+    @regex_options : Array(DiagnosticRegexOptionsObservation)
+    @graph : Hash(UInt64, NodeEdges)
+    @coordinates : Hash(UInt64, String)
+    @path : Array(DiagnosticCaptureRefs::Step)
+    @active : Set(UInt64)
+
     def initialize(input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal, parser : Parser, @root : ASTNode)
       @input_key = input.capture_key
       @mode = input.lexical_mode
       @literal_owners = parser.diagnostic_literal_owner_observations.map { |item| copy_owner(item) }
-      @numbers = parser.diagnostic_number_observations.map do |item|
-        DiagnosticNumberObservation.new(item.owner, String.new(item.role.to_slice), item.token,
-          String.new(item.value.to_slice), String.new(item.number_kind.to_slice))
-      end
-      @macro_literals = parser.diagnostic_macro_literal_observations.map do |item|
-        DiagnosticMacroLiteralObservation.new(item.owner, item.token, String.new(item.lexical_mode.to_slice),
-          String.new(item.value.to_slice))
-      end
+      @numbers = parser.diagnostic_number_observations
+      @signed_numbers = parser.diagnostic_signed_number_observations
+      @macro_literals = parser.diagnostic_macro_literal_observations
       @scalar_owners = parser.diagnostic_scalar_grammar_observations
       @folds = parser.diagnostic_folded_string_observations
       @interpolations = parser.diagnostic_interpolation_observations
@@ -4192,17 +4209,15 @@ module Iyi
     end
 
     def numbers : Array(DiagnosticNumberObservation)
-      @numbers.map do |item|
-        DiagnosticNumberObservation.new(item.owner, String.new(item.role.to_slice), item.token,
-          String.new(item.value.to_slice), String.new(item.number_kind.to_slice))
-      end
+      @numbers.dup
+    end
+
+    def signed_numbers : Array(DiagnosticSignedNumberObservation)
+      @signed_numbers.dup
     end
 
     def macro_literals : Array(DiagnosticMacroLiteralObservation)
-      @macro_literals.map do |item|
-        DiagnosticMacroLiteralObservation.new(item.owner, item.token, String.new(item.lexical_mode.to_slice),
-          String.new(item.value.to_slice))
-      end
+      @macro_literals.dup
     end
 
     def field_ref(owner : ASTNode, field : String, index : Int32) : DiagnosticCaptureFieldRef
