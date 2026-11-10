@@ -369,7 +369,7 @@ module Iyi::IyiMod
         intern(origin.parent_origin)
       when DiagnosticOrigin::DerivedName
         intern_source_token(origin.source_token)
-        intern(origin.definition_origin)
+        origin.definition_origin.try { |definition| intern(definition) }
       end
       index = @entries.size.to_u32
       @entries << origin
@@ -509,17 +509,27 @@ module Iyi::IyiMod
           DiagnosticOrigins.write_string io, origin.structural_slot
         when DiagnosticOrigin::DerivedName
           io.write_byte 4_u8
-          write_source_token(io, origin.source_token)
-          io.write_bytes @indices[origin.definition_origin], FORMAT
-          DiagnosticOrigins.write_string io, origin.parameter_slot
-          io.write_bytes origin.parameter_index.to_u32, FORMAT
-          DiagnosticOrigins.write_string io, origin.result
-          DiagnosticOrigins.write_string io, origin.projection
-          if fresh_index = origin.fresh_index
+          case origin.derivation_kind
+          when "ParameterLowering"
             io.write_byte 1_u8
-            io.write_bytes fresh_index.to_u32, FORMAT
+            write_source_token(io, origin.source_token)
+            io.write_bytes @indices[origin.definition_origin.not_nil!], FORMAT
+            DiagnosticOrigins.write_string io, origin.parameter_slot.not_nil!
+            io.write_bytes origin.parameter_index.not_nil!.to_u32, FORMAT
+            DiagnosticOrigins.write_string io, origin.result
+            DiagnosticOrigins.write_string io, origin.projection.not_nil!
+            if fresh_index = origin.fresh_index
+              io.write_byte 1_u8
+              io.write_bytes fresh_index.to_u32, FORMAT
+            else
+              io.write_byte 0_u8
+            end
+          when "RegexMatchIndex"
+            io.write_byte 2_u8
+            write_source_token(io, origin.source_token)
+            DiagnosticOrigins.write_string io, origin.result
           else
-            io.write_byte 0_u8
+            raise ArgumentError.new("unknown diagnostic name derivation")
           end
         else
           raise ArgumentError.new("unknown diagnostic origin")
@@ -584,18 +594,29 @@ module Iyi::IyiMod
                    parent = table.parent(io.read_bytes(UInt32, FORMAT))
                    DiagnosticOrigin::Synthetic.new(parent, read_string(io), read_string(io))
                  when 4_u8
+                   derivation = io.read_byte
+                   unless derivation == 1_u8 || derivation == 2_u8
+                     raise ArgumentError.new("unknown diagnostic name derivation tag")
+                   end
                    token = table.read_source_token(io)
-                   definition = table.parent(io.read_bytes(UInt32, FORMAT))
-                   slot = read_string(io)
-                   index = io.read_bytes(UInt32, FORMAT).to_i32
-                   result = read_string(io)
-                   projection = read_string(io)
-                   fresh = case io.read_byte
-                           when 0_u8 then nil
-                           when 1_u8 then io.read_bytes(UInt32, FORMAT).to_i32
-                           else raise ArgumentError.new("invalid fresh parameter index marker")
-                           end
-                   DiagnosticOrigin::DerivedName.new(token, definition, slot, index, result, projection, fresh)
+                   case derivation
+                   when 1_u8
+                     definition = table.parent(io.read_bytes(UInt32, FORMAT))
+                     slot = read_string(io)
+                     index = io.read_bytes(UInt32, FORMAT).to_i32
+                     result = read_string(io)
+                     projection = read_string(io)
+                     fresh = case io.read_byte
+                             when 0_u8 then nil
+                             when 1_u8 then io.read_bytes(UInt32, FORMAT).to_i32
+                             else raise ArgumentError.new("invalid fresh parameter index marker")
+                             end
+                     DiagnosticOrigin::DerivedName.new(token, definition, slot, index, result, projection, fresh)
+                   when 2_u8
+                     DiagnosticOrigin::DerivedName.regex_match_index(token, read_string(io))
+                   else
+                     raise ArgumentError.new("unknown diagnostic name derivation tag")
+                   end
                  else
                    raise ArgumentError.new("unknown diagnostic origin tag")
                  end

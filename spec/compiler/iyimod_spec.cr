@@ -1068,6 +1068,15 @@ describe Iyi::DiagnosticOrigin do
     unknown.rewind
     expect_raises(ArgumentError, /unknown diagnostic origin tag/) { Iyi::IyiMod::DiagnosticOrigins.read(unknown) }
 
+    unknown_derivation = IO::Memory.new
+    unknown_derivation.write_bytes 1_u32, Iyi::IyiMod::FORMAT
+    unknown_derivation.write_byte 4_u8
+    unknown_derivation.write_byte 255_u8
+    unknown_derivation.rewind
+    expect_raises(ArgumentError, /unknown diagnostic name derivation tag/) do
+      Iyi::IyiMod::DiagnosticOrigins.read(unknown_derivation)
+    end
+
     parents = Iyi::IyiMod::DiagnosticOrigins.new
     parents.intern(invocation)
     parents.intern(definition)
@@ -1294,6 +1303,90 @@ describe Iyi::DiagnosticOrigin do
         Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
 
         missing = fragment.anchors.reject { |anchor| anchor.origin.is_a?(Iyi::DiagnosticOrigin::DerivedName) }
+        broken = Iyi::Parser.new(carried)
+        broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, missing)]
+        expect_raises(ArgumentError) do
+          broken.parse
+          broken.diagnostic_check_consumed
+        end
+      end
+    end
+  end
+
+  it "carries enum members and special-global derivations through source-absent artifacts" do
+    {"enum E\n  A = build()\n  B\nend", "$~", "$?", "$~ = nil", "$? = nil", "$~.foo", "$?.foo", "$0", "$1", "$1?"}.each do |source|
+      producer = Iyi::Parser.new(source)
+      producer.filename = "/absent/special.cr"
+      producer.diagnostic_source_file = "/absent/special.cr"
+      producer.diagnostic_capture = true
+      original = producer.parse
+      printed = IO::Memory.new
+      anchors = [] of Iyi::DiagnosticAnchor
+      original.to_s(printed, diagnostic_anchors: anchors)
+      text = printed.to_s
+      Iyi::Parser.new(source).parse.to_s.should eq(text)
+      key = Iyi::IyiMod.field_fragment_key("Box", "@factory")
+      declaration = type_declaration("Box", "class", fields: [{"@factory", "Object", text}])
+      artifact = sample_artifact(types: [declaration])
+      section = Iyi::IyiMod::DiagnosticSection.new
+      section.add_fragment(Iyi::IyiMod::DiagnosticFragment.new(key,
+        ::Crystal::Digest::SHA256.hexdigest(text), anchors))
+      artifact.diagnostic_provenance = section
+      with_temporary_file do |path|
+        Iyi::IyiMod.write artifact, path
+        imported = Iyi::IyiMod.read(path)
+        fragment = imported.diagnostic_provenance.not_nil!.fragments[key]
+        carried = imported.exports.types.first.fields.first[2]
+        consumer = Iyi::Parser.new(carried)
+        consumer.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, fragment.anchors)]
+        restored = consumer.parse
+        consumer.diagnostic_check_consumed
+        if source.starts_with?("enum")
+          enum = restored.as(Iyi::EnumDef)
+          enum.members.size.should eq(2)
+          enum.members.each do |member|
+            value = member.as(Iyi::Arg).diagnostic_name_slots[
+              Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::EnumMember)].first
+            value.as(Iyi::DiagnosticNameValue::Observed).source_token.context.should eq("enum_member")
+          end
+        elsif source == "$~" || source == "$?"
+          value = restored.as(Iyi::Global).diagnostic_name_slots[
+            Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)].first
+          value.as(Iyi::DiagnosticNameValue::Observed).source_token.raw_text.should eq(source)
+        elsif source.includes?(" = ")
+          value = restored.as(Iyi::Assign).target.as(Iyi::Var).diagnostic_name_slots[
+            Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)].first
+          value.as(Iyi::DiagnosticNameValue::Observed).source_token.raw_text.should eq(source.byte_slice(0, 2))
+        elsif source.ends_with?(".foo")
+          value = restored.as(Iyi::Call).obj.as(Iyi::Global).diagnostic_name_slots[
+            Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)].first
+          value.as(Iyi::DiagnosticNameValue::Observed).source_token.raw_text.should eq(source.byte_slice(0, 2))
+        else
+          call = restored.as(Iyi::Call)
+          lookup = call.diagnostic_origin.as(Iyi::DiagnosticOrigin::DerivedName)
+          lookup.derivation_kind.should eq("RegexMatchIndex")
+          lookup.result.should eq("Lookup")
+          lookup.source_token.raw_text.should eq(source)
+          match = call.obj.as(Iyi::Global).diagnostic_name_slots[
+            Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)].first.as(Iyi::DiagnosticNameValue::Derived).origin
+          match.result.should eq("MatchData")
+          match.source_token.should eq(lookup.source_token)
+        end
+        reprinted = IO::Memory.new
+        reanchors = [] of Iyi::DiagnosticAnchor
+        restored.to_s(reprinted, diagnostic_anchors: reanchors)
+        reprinted.to_s.should eq(text)
+        reanchors.should eq(anchors)
+        Iyi::IyiMod.write imported, path
+        Iyi::IyiMod.read(path).diagnostic_provenance.not_nil!.fragments[key].anchors.should eq(anchors)
+        required = if source.starts_with?("enum")
+                     fragment.anchors.find { |anchor| anchor.kind == "Name" && anchor.role == "enum_member" }
+                   elsif source.starts_with?("$0") || source.starts_with?("$1")
+                     fragment.anchors.find { |anchor| anchor.origin.is_a?(Iyi::DiagnosticOrigin::DerivedName) && anchor.kind == "Call" }
+                   else
+                     fragment.anchors.find { |anchor| anchor.kind == "Name" && anchor.role == "special_global" }
+                   end.not_nil!
+        missing = fragment.anchors.reject { |anchor| anchor == required }
         broken = Iyi::Parser.new(carried)
         broken.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, carried.bytesize, fragment.text_sha256, missing)]
         expect_raises(ArgumentError) do
