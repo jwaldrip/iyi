@@ -1328,17 +1328,18 @@ module Iyi
       # a name iyi's parser refuses outright: `$global_variables are not
       # supported`.
       getter written : String
-      getter written_diagnostic : IyiMod::DiagnosticFragment?
+      getter written_diagnostic : DiagnosticModeCaptures?
 
       def initialize(@name, @value, @meta_vars, diagnostic_capture : Bool = false)
+        @written = @value.to_s
         if diagnostic_capture
-          io = IO::Memory.new
-          builder = DiagnosticFragmentBuilder.new
-          @value.to_s(io, diagnostic_fragment: builder)
-          @written = io.to_s
-          @written_diagnostic = builder.finish(::Crystal::Digest::SHA256.hexdigest(@written), @written)
+          @written_diagnostic = DiagnosticModeCaptures.capture(@written, [] of IyiMod::SourcePosition) do |mode|
+            io = IO::Memory.new
+            builder = DiagnosticFragmentBuilder.new(mode)
+            @value.to_s(io, diagnostic_fragment: builder)
+            {io.to_s, [] of IyiMod::SourcePosition, builder}
+          end
         else
-          @written = @value.to_s
           @written_diagnostic = nil
         end
       end
@@ -3745,7 +3746,7 @@ module Iyi
     # Empty for a constant nobody wrote — the compiler's own `$Regex:0`, the
     # program's `ARGV_UNSAFE` — which is right: those are not a shard's to carry.
     property iyi_value_source : String = ""
-    property iyi_value_fragment : IyiMod::DiagnosticFragment? = nil
+    property iyi_value_fragment : DiagnosticModeCaptures? = nil
     property iyi_declaration_origin : DiagnosticOrigin? = nil
 
     # iyi: the reason `@[SafeReach("...")]` gives, when the constant has

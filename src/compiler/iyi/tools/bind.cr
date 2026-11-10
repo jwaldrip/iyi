@@ -155,7 +155,7 @@ module Iyi
     free_vars : Array(String) = [] of String do
     property source_def : Def? = nil
     property diagnostic_def : Def? = nil
-    property diagnostic_body : {String, Array(DiagnosticAnchor)}? = nil
+    property diagnostic_body : {String, DiagnosticModeCaptures}? = nil
     def_equals_and_hash owner, name, verdict, block, untyped, location, params, returns, receiver,
       written_block, inferred, refused, body, storable, checked, produced, private_def,
       body_answers, uncompilable, abstract_def, answers_abstract, written, free_vars
@@ -1956,12 +1956,8 @@ module Iyi
 
   private def self.diagnostic_bound_macro_source(type : Type, a_macro : Macro) : String
     return a_macro.to_s unless type.program.diagnostic_capture
-    io = IO::Memory.new
-    builder = DiagnosticFragmentBuilder.new
-    a_macro.to_s(io, diagnostic_fragment: builder)
-    source = io.to_s
-    fragment = builder.finish(::Crystal::Digest::SHA256.hexdigest(source), source)
-    type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, fragment)
+    source, captures = IyiMod.diagnostic_macro_source_modes(a_macro)
+    type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, captures)
     source
   end
 
@@ -3885,12 +3881,14 @@ module Iyi
       flat_expressions(parser.parse).each do |node|
         if node.is_a?(FunDef)
           if program.diagnostic_capture
-            output = IO::Memory.new
-            builder = DiagnosticFragmentBuilder.new
-            node.to_s(output, diagnostic_fragment: builder)
-            text = output.to_s
-            fragment = builder.finish(::Crystal::Digest::SHA256.hexdigest(text), text)
-            program.record_top_fun_diagnostic(text, fragment)
+            text = node.to_s
+            captures = DiagnosticModeCaptures.capture(text, [] of IyiMod::SourcePosition) do |mode|
+              output = IO::Memory.new
+              builder = DiagnosticFragmentBuilder.new(mode)
+              node.to_s(output, diagnostic_fragment: builder)
+              {output.to_s, [] of IyiMod::SourcePosition, builder}
+            end
+            program.record_top_fun_diagnostic(text, captures)
             funs << text
           else
             funs << node.to_s
