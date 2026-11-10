@@ -30,6 +30,13 @@ private def operator_claim_derived(node : Iyi::ASTNode) : Iyi::DiagnosticOrigin:
   value.as(Iyi::DiagnosticNameValue::Derived).origin
 end
 
+# The FunDefs of a parsed lib, whether it holds one fun or several.
+private def operator_claim_funs(root : Iyi::ASTNode) : Array(Iyi::FunDef)
+  body = root.as(Iyi::LibDef).body
+  items = body.is_a?(Iyi::Expressions) ? body.expressions : [body]
+  items.map(&.as(Iyi::FunDef))
+end
+
 describe "derived operator names" do
   it "names an op-assign statement by its op token" do
     root = operator_claim_last(operator_claim_parse("x = 0\nx += 1", true))
@@ -118,11 +125,8 @@ end
 
 describe "derived structural names" do
   it "names each unnamed lib parameter by its separator and type head" do
-    lib_def = operator_claim_parse("lib L\n  fun f(Int32, Char*)\nend", true).as(Iyi::LibDef)
-    body = lib_def.body
-    fun_def = (body.is_a?(Iyi::Expressions) ? body.expressions.first : body).as(Iyi::FunDef)
-    first = fun_def.args[0]
-    second = fun_def.args[1]
+    lib_def = operator_claim_parse("lib L\n  fun f(Int32, Char*)\nend", true)
+    first, second = operator_claim_funs(lib_def)[0].args
     first.name.should eq("")
     second.name.should eq("")
     [first, second].each do |arg|
@@ -131,6 +135,26 @@ describe "derived structural names" do
       origin.rendered_text.should eq("")
       origin.producer_context.should eq("parameter")
     end
+  end
+
+  it "binds each written unnamed lib parameter whatever its head token" do
+    # PC-1, PC-4 and PC-5: a CONST head, a `::` head, and the head of a proc notation.
+    source = "lib LibC\n  fun abs(Int32) : Int32\n  fun two(Int32, Void*) : Void\n" \
+             "  fun h(::Int32) : Void\n  fun k(Int32 -> Void) : Void\nend"
+    funs = operator_claim_funs(operator_claim_parse(source, true))
+    funs.size.should eq(4)
+    funs.each do |fun_def|
+      fun_def.args.each do |arg|
+        operator_claim_derived(arg).derivation_kind.should eq("StructuralName")
+      end
+    end
+    funs[1].args.size.should eq(2)
+  end
+
+  it "leaves a named lib parameter observed and never structural" do
+    fun_def = operator_claim_funs(operator_claim_parse("lib L\n  fun n(x : Int32)\nend", true))[0]
+    fun_def.args[0].name.should eq("x")
+    operator_claim_primary(fun_def.args[0]).should be_a(Iyi::DiagnosticNameValue::Observed)
   end
 
   it "names a short block argument and its receiver by one fresh local" do
@@ -167,9 +191,7 @@ describe "operator and structural names with capture off" do
   end
 
   it "keeps an unnamed lib parameter unnamed when capture is off" do
-    lib_def = operator_claim_parse("lib L\n  fun f(Int32)\nend", false).as(Iyi::LibDef)
-    body = lib_def.body
-    fun_def = (body.is_a?(Iyi::Expressions) ? body.expressions.first : body).as(Iyi::FunDef)
+    fun_def = operator_claim_funs(operator_claim_parse("lib L\n  fun f(Int32)\nend", false))[0]
     fun_def.args[0].diagnostic_name_slots.should be_empty
   end
 end

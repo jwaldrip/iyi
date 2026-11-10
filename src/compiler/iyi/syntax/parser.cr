@@ -800,20 +800,21 @@ module Iyi
       diagnostic_attach_primary(node, origin)
     end
 
-    # The witnesses of one derived name: each token as the parser read it. In an expansion, every later
-    # token needs its own A1 event. Nil refuses the name, so nothing is attached.
+    # The witnesses of one derived name, each token as the parser read it. Written sources carry no events.
+    # In an expansion, the witness whose span is the anchor token takes the anchor's own event (E1), and
+    # every other witness is attributed from the emission records (E2). Nil refuses the name when there is
+    # no expansion to attribute from.
     private def diagnostic_witness_list(anchor : DiagnosticOrigin, tokens : Array(ParsedOperatorToken)) : Array(DiagnosticOperatorWitness)?
       expanded = anchor.is_a?(DiagnosticOrigin::Expanded)
       return nil if expanded && !@diagnostic_expansion
-      source = diagnostic_anchor_source(anchor)
+      anchor_event = anchor.is_a?(DiagnosticOrigin::Expanded) ? anchor.token_event : nil
       witnesses = [] of DiagnosticOperatorWitness
-      tokens.each_with_index do |token, index|
+      tokens.each do |token|
         snapshot = token.snapshot
         return nil unless snapshot
         event : DiagnosticTokenEvent? = nil
-        if expanded && index > 0
-          event = diagnostic_witness_event(token.start, snapshot, source)
-          return nil unless event
+        if expanded && !(anchor_event && anchor_event.input_start == token.start && anchor_event.input_end == snapshot[0])
+          event = diagnostic_attribute_witness(token.start, snapshot)
         end
         raw = string.byte_slice(token.start - @input_offset_base, snapshot[0] - token.start)
         witnesses << DiagnosticOperatorWitness.new(token.start, snapshot[0], snapshot[1], raw, token.selection, event)
@@ -854,13 +855,12 @@ module Iyi
       diagnostic_attach_primary(receiver, origin)
     end
 
-    # An unnamed lib parameter, witnessed by its separator and the first token of its type. Its anchor is
-    # the FunDef keyword. An expanded keyword anchor is not bound: that path awaits amendment A1, so the
-    # field stays unnamed and the verifier refuses it.
+    # An unnamed lib parameter, witnessed by its separator and the first token of its type. Its anchor is the
+    # FunDef keyword, which precedes both witnesses. The anchor is not a witness, so each witness is attributed
+    # from its own emission (E2).
     private def diagnostic_unnamed_param(arg : Arg, fun_origin : DiagnosticOrigin?,
                                          separator : ParsedOperatorToken?, head : ParsedOperatorToken?) : Nil
       return unless fun_origin && separator && head
-      return if fun_origin.is_a?(DiagnosticOrigin::Expanded)
       witnesses = diagnostic_witness_list(fun_origin, [separator, head])
       return unless witnesses
       digest, bytesize = diagnostic_source_identity
@@ -869,41 +869,37 @@ module Iyi
       diagnostic_attach_primary(arg, origin)
     end
 
-    # The source origin of the one spliced claim that wrote the anchor, or nil
-    # for a written or raw-generated anchor.
-    private def diagnostic_anchor_source(anchor : DiagnosticOrigin) : DiagnosticOrigin?
-      return nil unless anchor.is_a?(DiagnosticOrigin::Expanded)
-      claims = anchor.token_event.byte_parts.select(&.is_a?(DiagnosticEmissionPart::AstAnchor))
-      return nil unless claims.size == 1
-      claims[0].as(DiagnosticEmissionPart::AstAnchor).source_origin
-    end
-
-    # A1: the event of a later operator witness in an expansion. Its bytes are
-    # raw-generated text when every byte is. Otherwise they are one spliced claim
-    # whose writer range covers the whole token and whose AstAnchor has the anchor's
-    # source origin. Anything else is nil, which refuses the name. Mixed provenance
-    # is never built.
-    private def diagnostic_witness_event(start : Int32, snapshot : {Int32, String, String},
-                                         source : DiagnosticOrigin?) : DiagnosticTokenEvent?
+    # E2: the event of a witness that is not the anchor token, attributed from the expansion's emission records.
+    # Left to right over the token: a name fragment starting at the cursor is a NameSplice, and only for IDENT
+    # and CONST. A generated range covering the cursor is a Generated part of any producer, and adjacent parts
+    # with one producer and emitter merge. Claim writers are never consulted. A byte no record covers refuses.
+    private def diagnostic_attribute_witness(start : Int32, snapshot : {Int32, String, String}) : DiagnosticTokenEvent
       finish = snapshot[0]
-      generated = diagnostic_generated_event(start, snapshot, true)
-      return generated if generated
-      return nil unless source && (writers = @diagnostic_writer_direct)
-      claims = [] of DiagnosticEmissionPart::AstAnchor
-      writers.each do |writer, origins|
-        next unless writer.start_offset <= start && writer.end_offset >= finish
-        origins.each do |origin|
-          origin.token_event.byte_parts.each do |part|
-            next unless part.is_a?(DiagnosticEmissionPart::AstAnchor) && part.source_origin == source
-            next unless part.start_offset <= start && part.end_offset >= finish
-            claims << part unless claims.any?(&.equal?(part))
+      ranges = @diagnostic_generated_ranges.not_nil!
+      fragments = @diagnostic_name_fragments || [] of DiagnosticMacroNameFragment
+      parts = [] of DiagnosticEmissionPart
+      cursor = start
+      while cursor < finish
+        if fragment = fragments.find { |f| f.start_offset == cursor }
+          unless {"IDENT", "CONST"}.includes?(snapshot[1]) && fragment.end_offset <= finish
+            ::raise ArgumentError.new("witness bytes not attributed by macro emission")
           end
+          parts << DiagnosticEmissionPart::NameSplice.new(cursor, fragment.end_offset, fragment.emitter_origin, fragment.source_name)
+          cursor = fragment.end_offset
+        elsif range = ranges.find { |r| r.start_offset <= cursor && r.end_offset > cursor }
+          limit = Math.min(finish, range.end_offset)
+          if (previous = parts.last?).is_a?(DiagnosticEmissionPart::Generated) &&
+             previous.end_offset == cursor && previous.producer == range.producer && previous.emitter_origin == range.emitter_origin
+            parts[parts.size - 1] = DiagnosticEmissionPart::Generated.new(previous.start_offset, limit, range.emitter_origin, range.producer)
+          else
+            parts << DiagnosticEmissionPart::Generated.new(cursor, limit, range.emitter_origin, range.producer)
+          end
+          cursor = limit
+        else
+          ::raise ArgumentError.new("witness bytes not attributed by macro emission")
         end
       end
-      return nil unless claims.size == 1
-      claim = claims[0]
       raw = string.byte_slice(start - @input_offset_base, finish - start)
-      parts = [DiagnosticEmissionPart::AstAnchor.new(start, finish, claim.emitter_origin, claim.source_origin).as(DiagnosticEmissionPart)] of DiagnosticEmissionPart
       DiagnosticTokenEvent.new(start, finish, snapshot[1], raw, snapshot[2], DiagnosticTokenSelection::Whole, parts)
     end
 
@@ -922,7 +918,7 @@ module Iyi
       return unless equals
       brackets = @diagnostic_bracket_witnesses.try(&.delete(node.object_id))
       if observations = @diagnostic_name_observations
-        observations.reject! { |item| item.owner.equal?(node) }
+        observations.reject! { |item| item.owner.same?(node) }
       end
       slots = node.diagnostic_name_slots
       slots.delete(DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))

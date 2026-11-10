@@ -295,7 +295,7 @@ describe "Iyi::Lexer diagnostic journal" do
         end
         lexer.diagnostic_lexical_observations.size.should eq 1
         lexer.next_token # (
-        lexer.next_token.delimiter_start?.should be_true
+        lexer.next_token.type.delimiter_start?.should be_true
         lexer.diagnostic_lexical_observations.map(&.token_kind).last.should eq "DELIMITER_START"
         lexer.diagnostic_lexical_observations.size.should eq 3
       end
