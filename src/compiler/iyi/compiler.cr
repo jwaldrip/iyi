@@ -1006,7 +1006,7 @@ module Iyi
           has_initialiser: program.iyi_module_initialisers.includes?(filename),
           mono_bodies: program.iyi_mono_bodies[filename]? || {} of String => String,
           body_positions: program.iyi_mono_body_positions[filename]? || {} of String => Array(IyiMod::SourcePosition),
-          macro_bodies: collect_iyi_macros(program, module_name),
+          macro_bodies: collect_iyi_macros(program, module_name, filename),
           initialiser: program.iyi_module_initialiser_source[filename]? || "",
           initialiser_positions: program.iyi_module_initialiser_positions[filename]? || [] of IyiMod::SourcePosition,
           requires: program.iyi_module_requires[filename]? || [] of String,
@@ -1597,7 +1597,7 @@ module Iyi
         # methods are: `std/static_array` writes `macro [](*args)` on
         # `::StaticArray`, and neither a consumer of the artifact nor `iyi
         # doc` had it.
-        macros = iyi_macros_on(type, filename)
+        macros = iyi_macros_on(type, filename, filename)
         next if methods.empty? && included.empty? && fields.empty? && class_vars.empty? && macros.empty?
         iyi_stable_sort_signatures!(methods)
 
@@ -2266,7 +2266,7 @@ module Iyi
         methods: methods,
         visibility: "pub",
         types: iyi_carried_types(program, filename, type, path: name),
-        macros: iyi_macros_on(type),
+        macros: iyi_macros_on(type, filename),
         annotations: annotations,
         doc: type.doc || "",
         superclass: iyi_superclass_name(type),
@@ -2501,7 +2501,7 @@ module Iyi
             methods: iyi_carried_methods(program, filename, container, declared),
             visibility: declared.private? ? "private" : "",
             types: iyi_carried_types(program, filename, declared, path: container),
-            macros: iyi_macros_on(declared),
+            macros: iyi_macros_on(declared, filename),
             # Read the way `Iyi::Bind` reads it: a module that extends itself
             # is one whose metaclass has it as an ancestor, which is what
             # makes `Helper.twice` and `Helper#twice` the same method.
@@ -2548,7 +2548,7 @@ module Iyi
           methods: iyi_carried_methods(program, filename, container, declared),
           visibility: declared.private? ? "private" : "",
           types: iyi_carried_types(program, filename, declared, path: container),
-          macros: iyi_macros_on(declared),
+          macros: iyi_macros_on(declared, filename),
           superclass: iyi_superclass_name(declared),
           includes: iyi_included_modules(declared),
           doc: declared.doc || "",
@@ -3206,8 +3206,8 @@ module Iyi
     # twice` in a module body is added to the module's metaclass, the same way
     # `def self.zero` is, and the type's own `macros` is empty for a file full
     # of them.
-    private def collect_iyi_macros(program : Program, module_name : String) : Array(String)
-      iyi_macros_on(program.iyi_module_type(module_name))
+    private def collect_iyi_macros(program : Program, module_name : String, source_path : String) : Array(String)
+      iyi_macros_on(program.iyi_module_type(module_name), source_path)
     end
 
     # The macros declared on one type, which is the same question one level in:
@@ -3225,7 +3225,7 @@ module Iyi
     # source build does: without it `Mine.new.kind` was `undefined method
     # 'kind' for Main::Mine`, and a registry hook added nothing and printed
     # `[]` where the source build printed `["Main::Mine"]`.
-    private def iyi_macros_on(type : Type?, filename : String? = nil) : Array(String)
+    private def iyi_macros_on(type : Type?, source_path : String, filename : String? = nil) : Array(String)
       macros = [] of Macro
       metaclass = type.try &.metaclass.as?(ModuleType)
       metaclass.try &.macros.try &.each_value do |overloads|
@@ -3238,7 +3238,7 @@ module Iyi
       end
       macros.sort_by!(&.to_s).map do |a_macro|
         if type && type.program.diagnostic_capture
-          source, builder = IyiMod.diagnostic_macro_source(a_macro)
+          source, builder = IyiMod.diagnostic_macro_source(a_macro, type.program.diagnostic_artifact_lexical_mode(source_path))
           fragment = builder.finish(::Crystal::Digest::SHA256.hexdigest(source), source)
           type.program.record_macro_diagnostic(type.to_s(generic_args: false), source, fragment)
           source
@@ -3266,7 +3266,7 @@ module Iyi
                                      a_def : Def, ordinal : Int32) : Nil
       key = IyiMod.mono_body_key(container, signature, ordinal)
       if program.diagnostic_capture
-        text, positions, builder = IyiMod.diagnostic_located_source(a_def.body)
+        text, positions, builder = IyiMod.diagnostic_located_source(a_def.body, program.diagnostic_artifact_lexical_mode(filename))
         program.record_mono_body_diagnostic(filename, key, container, signature, text, builder)
       else
         text, positions = IyiMod.located_source(a_def.body)

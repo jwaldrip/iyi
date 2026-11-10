@@ -1167,10 +1167,21 @@ module Iyi
       raise "diagnostic fragment text changed" unless fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(source)
     end
 
+    # Artifacts parse their rendered fragments using the mode of their recorded
+    # source path, not the extension of the .iyimod carrying them.
+    def diagnostic_artifact_lexical_mode(path : String) : String
+      source = iyi_artifact_source_paths[path]? || begin
+        raise "missing diagnostic artifact source path for #{path}" if path.ends_with?(".iyimod")
+        path
+      end
+      Lexer.iyi_source?(source) ? "Iyi" : "Crystal"
+    end
+
     def record_signature_diagnostic(filename : String, container : String, signature : IyiMod::Signature, a_def : Def) : Nil
       return unless diagnostic_capture
-      records = IyiMod.diagnostic_signature_annotations(container, a_def, signature)
-      records << IyiMod.diagnostic_signature_fragment(container, a_def, signature)
+      mode = diagnostic_artifact_lexical_mode(filename)
+      records = IyiMod.diagnostic_signature_annotations(container, a_def, signature, mode)
+      records << IyiMod.diagnostic_signature_fragment(container, a_def, signature, mode)
       fragments = iyi_signature_diagnostics[filename] ||= {} of String => IyiMod::DiagnosticFragment
       records.each do |fragment|
         if previous = fragments[fragment.key]?
