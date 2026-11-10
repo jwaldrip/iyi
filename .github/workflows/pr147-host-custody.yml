@@ -1,0 +1,32 @@
+name: PR147 host custody inventory only
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  census:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Collect unprivileged inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 -B proof/host_custody_preflight.py | tee "$RUNNER_TEMP/pr147-host-custody.json" "$RUNNER_TEMP/pr147-host-custody.stdout"
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always()
+        with:
+          name: pr147-host-custody-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pr147-host-custody.json
+            ${{ runner.temp }}/pr147-host-custody.stdout
+          if-no-files-found: error
+          retention-days: 7
