@@ -15,6 +15,96 @@ private UNSTABLE_ABI_TYPES = [
 ]
 
 describe "MacroExpander" do
+  it "retains the source name in every token emitted by the real class_getter" do
+    properties_path = File.expand_path("../../../src/object/properties.cr", __DIR__)
+    properties = Iyi::Parser.new(File.read(properties_path))
+    properties.filename = properties_path
+    properties.diagnostic_source_file = properties_path
+    properties.diagnostic_capture = true
+    object = properties.parse.as(Iyi::ClassDef)
+    macro_node = object.body.as(Iyi::Expressions).expressions.find do |node|
+      node.is_a?(Iyi::Macro) && node.name.to_s == "class_getter"
+    end.not_nil!.as(Iyi::Macro)
+
+    input = "class_getter empty = new([] of Void*)"
+    source = Iyi::Parser.new(input)
+    source.filename = "/spec/class_getter_call.cr"
+    source.diagnostic_source_file = "/spec/class_getter_call.cr"
+    source.diagnostic_capture = true
+    call = source.parse.as(Iyi::Call)
+    argument = call.args.first.as(Iyi::Assign)
+    binding = argument.target.as(Iyi::Var).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic)
+    lexical = binding.parent_origin.as(Iyi::DiagnosticOrigin::Written)
+    lexical.input_byte_offset.should eq(input.byte_index("empty").not_nil!)
+
+    program = new_program
+    program.top_level_semantic_complete = true
+    program.diagnostic_capture = true
+    text, pragmas = program.expand_macro(macro_node, call, program, program)
+    expanded = Iyi::Parser.new(text)
+    expanded.diagnostic_expansion(call.diagnostic_origin.not_nil!, macro_node.diagnostic_origin.not_nil!,
+      "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
+    nodes = expanded.parse.as(Iyi::Expressions).expressions
+    target = nodes.find(&.is_a?(Iyi::Assign)).not_nil!.as(Iyi::Assign).target.as(Iyi::ClassVar)
+    definition = nodes.find(&.is_a?(Iyi::Def)).not_nil!.as(Iyi::Def)
+    reference = definition.body.as(Iyi::ClassVar)
+    target.name.should eq("@@empty")
+    definition.name.should eq("empty")
+    reference.name.should eq("@@empty")
+
+    slot = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)
+    [target, definition, reference].each do |node|
+      origin = node.diagnostic_name_slots[slot].first.lexical_origin.as(Iyi::DiagnosticOrigin::Expanded)
+      splice = origin.emission_parts.find(&.is_a?(Iyi::DiagnosticEmissionPart::NameSplice)).not_nil!
+        .as(Iyi::DiagnosticEmissionPart::NameSplice)
+      splice.source_token.raw_text.should eq("empty")
+      splice.source_token.lexical_origin.should eq(lexical)
+      splice.source_token.binding_origin.should eq(binding)
+    end
+    expanded.diagnostic_check_consumed
+  end
+
+  it "keeps a yielded local assignment's lexical and binding origins" do
+    properties_path = File.expand_path("../../../src/object/properties.cr", __DIR__)
+    properties = Iyi::Parser.new(File.read(properties_path))
+    properties.filename = properties_path
+    properties.diagnostic_source_file = properties_path
+    properties.diagnostic_capture = true
+    object = properties.parse.as(Iyi::ClassDef)
+    macro_node = object.body.as(Iyi::Expressions).expressions.find do |node|
+      node.is_a?(Iyi::Macro) && node.name.to_s == "getter"
+    end.not_nil!.as(Iyi::Macro)
+
+    input = "getter(event_loop : Int32) do\n  evloop = 1\n  evloop\nend"
+    source = Iyi::Parser.new(input)
+    source.filename = "/spec/getter_call.cr"
+    source.diagnostic_source_file = "/spec/getter_call.cr"
+    source.diagnostic_capture = true
+    call = source.parse.as(Iyi::Call)
+    body = call.block.not_nil!.body.as(Iyi::Expressions)
+    binding = body.expressions.first.as(Iyi::Assign).target.as(Iyi::Var).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic)
+    binding.parent_origin.as(Iyi::DiagnosticOrigin::Written).input_byte_offset.should eq(input.byte_index("evloop").not_nil!)
+
+    program = new_program
+    program.top_level_semantic_complete = true
+    program.diagnostic_capture = true
+    text, pragmas = program.expand_macro(macro_node, call, program, program)
+    text.should contain("evloop = 1")
+    fragments = pragmas.not_nil!.values.flat_map do |entries|
+      entries.compact_map do |entry|
+        entry.as?(Iyi::Lexer::LocDiagnosticEmission)
+      end.flat_map(&.name_fragments)
+    end
+    assignment_name = fragments.find { |fragment| fragment.source_token.binding_origin == binding }.not_nil!
+    assignment_name.source_token.raw_text.should eq("evloop")
+    assignment_name.source_token.lexical_origin.should eq(binding.parent_origin)
+    expanded = Iyi::Parser.new(text)
+    expanded.diagnostic_expansion(call.diagnostic_origin.not_nil!, macro_node.diagnostic_origin.not_nil!,
+      "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
+    expanded.parse
+    expanded.diagnostic_check_consumed
+  end
+
   it "expands simple macro" do
     assert_macro "1 + 2", "1 + 2"
   end

@@ -88,28 +88,42 @@ module Iyi
         unless tokens.join(&.raw_text) == text
           raise ArgumentError.new("diagnostic name was renamed without a recorded projection")
         end
-        if (anchors = @diagnostic_anchors) && artifact_anchor
-          origin = tokens.first.lexical_origin
-          if origin.valid_for_anchor?("Name", context)
-            anchors << DiagnosticAnchor.new(@str.pos.to_i32, "Name", context, origin, {slot => tokens})
-          elsif origin.valid_for_anchor?("Call", "method")
-            anchors << DiagnosticAnchor.new(@str.pos.to_i32, "Call", "method", origin, {slot => tokens})
-          else
-            raise ArgumentError.new("diagnostic name lacks an artifact anchor for #{context}")
-          end
-        end
         tokens.each do |token|
           start = @str.pos.to_i32
+          if (anchors = @diagnostic_anchors) && artifact_anchor
+            origin = token.lexical_origin
+            if origin.valid_for_anchor?("Name", context)
+              anchors << DiagnosticAnchor.new(start, "Name", context, origin, {slot => [token]})
+            elsif origin.valid_for_anchor?("Call", "method")
+              anchors << DiagnosticAnchor.new(start, "Call", "method", origin, {slot => [token]})
+            else
+              raise ArgumentError.new("diagnostic name lacks an artifact anchor for #{context}")
+            end
+          end
           @str << token.raw_text
           @diagnostic_name_fragments.try &.<< DiagnosticMacroNameFragment.new(start, @str.pos.to_i32, @diagnostic_emitter, token)
         end
       elsif node.diagnostic_macro_lineage.constructed?
         diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { @str << text }
-      elsif @diagnostic_name_fragments
-        raise ArgumentError.new("preserved macro name lacks token evidence for #{context}")
       else
-        @str << text
+        raise ArgumentError.new("name lacks token evidence for #{context}")
       end
+    end
+
+    private def diagnostic_named_entry(node : ASTNode, name : String, slot : DiagnosticNameSlot) : Nil
+      if !@diagnostic_name_fragments && !@diagnostic_anchors
+        visit_named_arg_name(name)
+      elsif node.diagnostic_name_slots[slot]?
+        diagnostic_name(node, name, "named_entry", slot)
+      elsif node.diagnostic_macro_lineage.constructed?
+        diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { visit_named_arg_name(name) }
+      else
+        raise ArgumentError.new("named entry lacks token evidence")
+      end
+    end
+
+    private def diagnostic_external_name(node : Arg) : Nil
+      diagnostic_named_entry(node, node.external_name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName))
     end
 
     def visit_any(node)
@@ -340,7 +354,7 @@ module Iyi
           @str << ' '
         end
 
-        visit_named_arg_name(entry.key)
+        diagnostic_named_entry(node, entry.key, DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, idx))
         @str << ": "
         accept_as_expression entry.value
 
@@ -516,7 +530,7 @@ module Iyi
         type_vars.each_with_index do |type_var, i|
           @str << ", " if i > 0
           @str << '*' if node.splat_index == i
-          @str << type_var.to_s
+          diagnostic_name(node, type_var.to_s, "type_parameter", DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, i))
         end
         @str << ')'
       end
@@ -559,7 +573,12 @@ module Iyi
       @str << "trait "
       node.name.accept self
       if type_vars = node.type_vars
-        @str << '(' << type_vars.join(", ") << ')'
+        @str << '('
+        type_vars.each_with_index do |name, i|
+          @str << ", " if i > 0
+          diagnostic_name(node, name.to_s, "type_parameter", DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, i))
+        end
+        @str << ')'
       end
       if supertraits = node.supertraits
         @str << " : "
@@ -619,7 +638,11 @@ module Iyi
       @str << " for "
       node.target.accept self
       if type_vars = node.type_vars
-        @str << " forall " << type_vars.join(", ")
+        @str << " forall "
+        type_vars.each_with_index do |name, i|
+          @str << ", " if i > 0
+          diagnostic_name(node, name.to_s, "type_parameter", DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, i))
+        end
       end
       newline
       accept_with_indent(node.body)
@@ -636,7 +659,7 @@ module Iyi
         type_vars.each_with_index do |type_var, i|
           @str << ", " if i > 0
           @str << '*' if node.splat_index == i
-          @str << type_var
+          diagnostic_name(node, type_var.to_s, "type_parameter", DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, i))
         end
         @str << ')'
       end
@@ -737,16 +760,22 @@ module Iyi
         @str << "] = "
         accept_as_expression node.args.last
       elsif node_obj && node.name.in?(UNARY_OPERATORS) && node.args.empty? && !node.named_args && !node.block_arg && !block && !short_block_call
-        diagnostic_anchor(node, "Call", "method")
-        @str << node.name
+        diagnostic_anchor(node, "Call", "method", name_splice: true)
+        diagnostic_name(node, node.name, "method_name", artifact_anchor: false)
         in_parenthesis(need_parens, node_obj)
       elsif node_obj && !Lexer.ident?(node.name) && node.name != "~" && node.args.size == 1 && !node.named_args && !node.block_arg && !block && !short_block_call
         in_parenthesis(need_parens, node_obj)
 
         arg = node.args[0]
         @str << ' '
-        diagnostic_anchor(node, "Call", "method")
-        @str << node.name
+        if node.diagnostic_signed_number_operator
+          raise ArgumentError.new("invalid signed-number operator") unless node.name == "+" || node.name == "-"
+          diagnostic_anchor(node, "Call", "method")
+          @str << node.name
+        else
+          diagnostic_anchor(node, "Call", "method", name_splice: true)
+          diagnostic_name(node, node.name, "method_name", artifact_anchor: false)
+        end
         @str << ' '
         in_parenthesis(need_parens(arg), arg)
       else
@@ -765,8 +794,8 @@ module Iyi
           @str << '.'
         end
         if Lexer.setter?(node.name)
-          diagnostic_anchor(node, "Call", "method")
-          @str << node.name.rchop
+          diagnostic_anchor(node, "Call", "method", name_splice: true)
+          diagnostic_name(node, node.name.rchop, "method_name", artifact_anchor: false)
           @str << " = "
           node.args.join(@str, ", ") { |arg| accept_as_expression arg }
         else
@@ -937,7 +966,7 @@ module Iyi
     end
 
     def visit(node : NamedArgument)
-      visit_named_arg_name(node.name)
+      diagnostic_named_entry(node, node.name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry))
       @str << ": "
       accept_as_expression node.value
       false
@@ -1024,7 +1053,11 @@ module Iyi
 
 
     def visit(node : Var)
-      diagnostic_name(node, node.name, "local_reference")
+      if node.name == "_" || node.name.empty?
+        @str << node.name
+      else
+        diagnostic_name(node, node.name, "local_reference")
+      end
       false
     end
 
@@ -1328,11 +1361,7 @@ module Iyi
       end
 
       if node.external_name != node.name
-        if @diagnostic_name_fragments || @diagnostic_anchors
-          diagnostic_name(node, node.external_name, "named_entry", DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName))
-        else
-          visit_named_arg_name(node.external_name)
-        end
+        diagnostic_external_name(node)
         @str << ' '
       end
       if name = node.name
@@ -1403,7 +1432,7 @@ module Iyi
       if named_args = node.named_args
         named_args.each do |named_arg|
           @str << ", " if printed_arg
-          visit_named_arg_name(named_arg.name)
+          diagnostic_named_entry(named_arg, named_arg.name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry))
           @str << ": "
           named_arg.value.accept self
           printed_arg = true
@@ -2064,7 +2093,7 @@ module Iyi
         if named_args = node.named_args
           named_args.each do |named_arg|
             @str << ", " if printed_arg
-            visit_named_arg_name(named_arg.name)
+            diagnostic_named_entry(named_arg, named_arg.name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry))
             @str << ": "
             named_arg.value.accept self
             printed_arg = true

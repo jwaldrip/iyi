@@ -50,6 +50,7 @@ module Iyi
     # Independent of source locations and never used for semantic decisions.
     getter diagnostic_origin : DiagnosticOrigin?
     property diagnostic_macro_lineage : DiagnosticMacroLineage = DiagnosticMacroLineage::Unknown
+    property diagnostic_signed_number_operator : Bool = false
 
     @diagnostic_name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))? = nil
 
@@ -60,8 +61,7 @@ module Iyi
     end
 
     def diagnostic_name_slots=(slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))) : Nil
-      copy = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
-      slots.each { |slot, tokens| copy[slot] = tokens.dup }
+      copy = DiagnosticNameMetadata.copy_and_validate(slots)
       @diagnostic_name_slots = copy.empty? ? nil : copy
     end
 
@@ -115,6 +115,7 @@ module Iyi
       clone.diagnostic_origin = diagnostic_origin
       clone.diagnostic_macro_lineage = diagnostic_macro_lineage
       clone.diagnostic_name_slots = diagnostic_name_slots
+      clone.diagnostic_signed_number_operator = diagnostic_signed_number_operator
       clone.doc = doc
       clone
     end

@@ -106,6 +106,7 @@ module Iyi
       copy.diagnostic_origin = node.diagnostic_origin
       copy.diagnostic_macro_lineage = node.diagnostic_macro_lineage
       copy.diagnostic_name_slots = node.diagnostic_name_slots
+      copy.diagnostic_signed_number_operator = node.diagnostic_signed_number_operator
       copy
     end
 

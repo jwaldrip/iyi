@@ -1,12 +1,24 @@
 require "json"
 
 module Iyi
-  record DiagnosticAnchor,
-    offset : Int32,
-    kind : String,
-    role : String,
-    origin : DiagnosticOrigin?,
-    name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken)) = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+  class DiagnosticAnchor
+    getter offset : Int32
+    getter kind : String
+    getter role : String
+    getter origin : DiagnosticOrigin?
+    @name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))
+
+    def initialize(@offset : Int32, @kind : String, @role : String, @origin : DiagnosticOrigin?,
+                   name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken)) = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken))
+      @name_slots = DiagnosticNameMetadata.copy_and_validate(name_slots, @origin)
+    end
+
+    def name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))
+      DiagnosticNameMetadata.copy_and_validate(@name_slots, @origin)
+    end
+
+    def_equals_and_hash @offset, @kind, @role, @origin, @name_slots
+  end
 
   record DiagnosticRegion,
     start_offset : Int32,
@@ -54,7 +66,8 @@ module Iyi
 
     def self.valid_token?(kind : String, raw : String, mode : String, context : String) : Bool
       allowed = case context
-                when "method_name", "definition_name" then kind == "IDENT" || NAME_OPERATORS.includes?(kind)
+                when "method_name"                   then kind == "IDENT" || kind == "CONST" || NAME_OPERATORS.includes?(kind)
+                when "definition_name"               then kind == "IDENT" || NAME_OPERATORS.includes?(kind)
                 when "macro_name", "local_reference" then kind == "IDENT"
                 when "instance_variable"             then kind == "INSTANCE_VAR"
                 when "class_variable"                then kind == "CLASS_VAR"
@@ -108,6 +121,10 @@ module Iyi
         bytes += origin.graph_bytes
       end
       raise ArgumentError.new("diagnostic name graph exceeds size limit") if bytes > DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      unless @lexical_origin.valid_for_anchor?("Name", @context) ||
+             ({"method_name", "local_reference"}.includes?(@context) && @lexical_origin.valid_for_anchor?("Call", "method"))
+        raise ArgumentError.new("name lexical origin has incompatible role")
+      end
       case @lexical_origin
       when DiagnosticOrigin::Written
         raise ArgumentError.new("name token origin offset mismatch") unless @lexical_origin.input_byte_offset == @input_start
@@ -126,6 +143,13 @@ module Iyi
       end
     end
 
+    def graph_bytes : UInt64
+      bytes = 256_u64 + @raw_text.bytesize.to_u64 * 6 + @token_kind.bytesize.to_u64 * 6 + @context.bytesize.to_u64 * 6
+      bytes += @lexical_origin.graph_bytes
+      bytes += @binding_origin.not_nil!.graph_bytes if @binding_origin
+      bytes
+    end
+
     def to_json(json : JSON::Builder) : Nil
       json.object do
         json.field "lexical_origin", @lexical_origin
@@ -139,6 +163,26 @@ module Iyi
         json.field "token_kind", @token_kind
         json.field "raw_text", @raw_text
       end
+    end
+  end
+
+  module DiagnosticNameMetadata
+    def self.copy_and_validate(slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken)), origin : DiagnosticOrigin? = nil)
+      remaining = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      if origin
+        raise ArgumentError.new("diagnostic name metadata exceeds size limit") if origin.graph_bytes > remaining
+        remaining -= origin.graph_bytes
+      end
+      copy = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+      slots.each do |slot, tokens|
+        raise ArgumentError.new("empty diagnostic name slot") if tokens.empty?
+        tokens.each do |token|
+          raise ArgumentError.new("diagnostic name metadata exceeds size limit") if token.graph_bytes > remaining
+          remaining -= token.graph_bytes
+        end
+        copy[slot] = tokens.dup
+      end
+      copy
     end
   end
 
@@ -498,6 +542,10 @@ module Iyi
           unless DiagnosticSourceNameToken.valid_token?(@token_kind, @token_text, @lexical_mode, context)
             raise ArgumentError.new("invalid diagnostic name token")
           end
+          unless (@anchor_kind == "Name" && @role == context) ||
+                 (@anchor_kind == "Call" && @role == "method" && context == "method_name")
+            raise ArgumentError.new("invalid receiving diagnostic name role")
+          end
         end
         raise ArgumentError.new("missing macro emission parts") if emission_parts.empty?
         @emission_parts = emission_parts.dup
@@ -530,6 +578,7 @@ module Iyi
               raise ArgumentError.new("name splice bytes differ from source")
             end
           end
+          raise ArgumentError.new("diagnostic origin graph exceeds size limit") if own > MAX_UNFOLDED_BYTES
         end
         raise ArgumentError.new("incomplete macro emission coverage") unless cursor == @generated_byte_end
         set_graph_bounds!(own, parents)

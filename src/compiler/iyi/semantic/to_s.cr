@@ -17,11 +17,7 @@ module Iyi
       end
 
       if node.external_name != node.name
-        if @diagnostic_name_fragments || @diagnostic_anchors
-          diagnostic_name(node, node.external_name, "named_entry", DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName))
-        else
-          visit_named_arg_name(node.external_name)
-        end
+        diagnostic_external_name(node)
         @str << ' '
       end
       if name = node.name
@@ -52,7 +48,13 @@ module Iyi
     end
 
     def visit(node : MetaVar)
-      @str << node.name
+      if node.diagnostic_name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
+        diagnostic_name(node, node.name, "local_reference")
+      elsif node.diagnostic_origin && (@diagnostic_name_fragments || @diagnostic_anchors)
+        raise ArgumentError.new("semantic variable lacks preserved name evidence")
+      else
+        diagnostic_raw(node, DiagnosticMacroProducer::SemanticPrinter) { @str << node.name }
+      end
       false
     end
 
