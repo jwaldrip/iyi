@@ -76,10 +76,10 @@ module Iyi
       slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::EnumMember)
       member.diagnostic_name_slots[slot].first.rendered_text.should eq("A")
       io = IO::Memory.new
-      anchors = [] of DiagnosticAnchor
-      member.clone.to_s(io, diagnostic_anchors: anchors)
+      builder = DiagnosticFragmentBuilder.new("Crystal")
+      member.clone.to_s(io, diagnostic_fragment: builder)
       io.to_s.should eq("A = 1")
-      anchors.any? { |anchor| anchor.kind == "Name" && anchor.role == "enum_member" }.should be_true
+      builder.finish("member", io.to_s).anchors.any? { |anchor| anchor.kind == "Name" && anchor.role == "enum_member" }.should be_true
     end
 
     it "preserves the original numbered-match derivation when printing its lowered nodes" do
@@ -99,8 +99,9 @@ module Iyi
       derived.source_token.not_nil!.raw_text.should eq("$1?")
       derived.rendered_text.should eq("$~")
       io = IO::Memory.new
-      anchors = [] of DiagnosticAnchor
-      lookup.to_s(io, diagnostic_anchors: anchors)
+      builder = DiagnosticFragmentBuilder.new("Crystal")
+      lookup.to_s(io, diagnostic_fragment: builder)
+      anchors = builder.finish("lookup", io.to_s).anchors
       anchors.any? { |anchor| anchor.origin == lookup_origin }.should be_true
       anchors.any? { |anchor| anchor.origin == derived }.should be_true
     end

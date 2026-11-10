@@ -35,6 +35,21 @@ module Iyi
       new(str, string_pool, var_scopes).parse
     end
 
+    # Parse the complete rendered declaration in its destination language.
+    # The journal is collected by the real lexer, including macro-state reads.
+    def self.observe_rendered_macro(input : String, lexical_mode : String) : {Macro, Array(DiagnosticRenderedToken)}
+      unless input.valid_encoding? && {"Crystal", "Iyi"}.includes?(lexical_mode)
+        ::raise ArgumentError.new("invalid rendered macro input or lexical mode")
+      end
+      parser = new(input)
+      parser.iyi = lexical_mode == "Iyi"
+      parser.enable_diagnostic_observations
+      root = parser.parse
+      root = root.exp if root.is_a?(VisibilityModifier)
+      macro_node = root.as?(Macro) || ::raise(ArgumentError.new("rendered input is not one complete macro"))
+      {macro_node, parser.diagnostic_lexical_observations}
+    end
+
     def initialize(str, string_pool : StringPool? = nil, @var_scopes = [Set(String).new], warnings : WarningCollection? = nil)
       super(str, string_pool, warnings)
       @unclosed_stack = [] of Unclosed

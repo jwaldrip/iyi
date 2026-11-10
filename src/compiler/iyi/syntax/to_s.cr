@@ -340,6 +340,35 @@ module Iyi
       end
     end
 
+    # The same writer is used by full Arg printing and by signature recipes.
+    # Prefix is written after annotations, matching the language printer.
+    def write_arg_name(node : Arg, include_annotations : Bool, prefix : String, enum_member : Bool = false) : Nil
+      unless {"", "*", "**", "&"}.includes?(prefix)
+        raise ArgumentError.new("invalid argument prefix")
+      end
+      if include_annotations && (parsed_annotations = node.parsed_annotations)
+        parsed_annotations.each do |ann|
+          ann.accept self
+          @str << ' '
+        end
+      end
+      @str << prefix
+      if node.external_name != node.name
+        diagnostic_external_name(node)
+        @str << ' '
+      end
+      if name = node.name
+        diagnostic_arg_name(node, name, enum_member)
+      else
+        @str << '?'
+      end
+    end
+
+    def self.write_arg_name(io : IO, node : Arg, include_annotations : Bool, prefix : String,
+                            diagnostic_fragment : DiagnosticFragmentBuilder? = nil) : Nil
+      new(io, diagnostic_fragment: diagnostic_fragment).write_arg_name(node, include_annotations, prefix)
+    end
+
     def visit_any(node)
       if @emit_doc && (doc = node.doc) && !doc.empty?
         doc.each_line(chomp: true) do |line|
@@ -1568,28 +1597,13 @@ module Iyi
     def visit(node : Arg)
       enum_member = @inside_enum_member
       @inside_enum_member = false
-      if parsed_annotations = node.parsed_annotations
-        parsed_annotations.each do |ann|
-          ann.accept self
-          @str << ' '
-        end
-      end
-
-      case @current_arg_type
-      when .splat?        then @str << '*'
-      when .double_splat? then @str << "**"
-      when .block_arg?    then @str << '&'
-      end
-
-      if node.external_name != node.name
-        diagnostic_external_name(node)
-        @str << ' '
-      end
-      if name = node.name
-        diagnostic_arg_name(node, name, enum_member)
-      else
-        @str << '?'
-      end
+      prefix = case @current_arg_type
+               when .splat? then "*"
+               when .double_splat? then "**"
+               when .block_arg? then "&"
+               else ""
+               end
+      write_arg_name(node, true, prefix, enum_member)
       if restriction = node.restriction
         @str << " : "
         restriction.accept self

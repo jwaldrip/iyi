@@ -5,28 +5,13 @@ module Iyi
     def visit(node : Arg)
       enum_member = @inside_enum_member
       @inside_enum_member = false
-      if parsed_annotations = node.parsed_annotations
-        parsed_annotations.each do |ann|
-          ann.accept self
-          @str << ' '
-        end
-      end
-
-      case @current_arg_type
-      when .splat?        then @str << '*'
-      when .double_splat? then @str << "**"
-      when .block_arg?    then @str << '&'
-      end
-
-      if node.external_name != node.name
-        diagnostic_external_name(node)
-        @str << ' '
-      end
-      if name = node.name
-        diagnostic_arg_name(node, name, enum_member)
-      else
-        @str << '?'
-      end
+      prefix = case @current_arg_type
+               when .splat? then "*"
+               when .double_splat? then "**"
+               when .block_arg? then "&"
+               else ""
+               end
+      write_arg_name(node, true, prefix, enum_member)
       if type = node.type?
         @str << " : "
         TypeNode.new(type).accept(self)
@@ -55,10 +40,10 @@ module Iyi
         @str << node.name
       elsif node.diagnostic_name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
         diagnostic_name(node, node.name, node.name == "$~" || node.name == "$?" ? "special_global" : "local_reference")
-      elsif node.diagnostic_origin && (@diagnostic_name_fragments || @diagnostic_fragment)
-        raise ArgumentError.new("semantic variable lacks preserved name evidence")
+      elsif node.diagnostic_macro_lineage.constructed?
+        diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { @str << node.name }
       else
-        diagnostic_raw(node, DiagnosticMacroProducer::SemanticPrinter) { @str << node.name }
+        raise ArgumentError.new("semantic variable lacks preserved name evidence")
       end
       false
     end

@@ -571,6 +571,7 @@ module Iyi::DiagnosticProvenance
   private def self.bound_projection_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
     item = fields(value, %w(kind derivation_kind producer source_fragment_sha256 source_text source_names output_text lexical_mode result_start result_end token_kind context))
     source, output = item["source_text"].as_s, item["output_text"].as_s
+    raise "bound projection requires authoritative source inventory" unless source.empty?
     raise "invalid projection UTF-8" unless source.valid_encoding? && output.valid_encoding?
     raise "projection source guard mismatch" unless ::Crystal::Digest::SHA256.hexdigest(source) == item["source_fragment_sha256"].as_s
     names = item["source_names"].as_a

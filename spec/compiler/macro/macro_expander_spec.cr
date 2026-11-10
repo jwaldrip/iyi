@@ -55,7 +55,7 @@ describe "MacroExpander" do
     slot = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)
     [target, definition, reference].each do |node|
       origin = node.diagnostic_name_slots[slot].first.artifact_origin.as(Iyi::DiagnosticOrigin::Expanded)
-      splice = origin.emission_parts.find(&.is_a?(Iyi::DiagnosticEmissionPart::NameSplice)).not_nil!
+      splice = origin.token_event.byte_parts.find(&.is_a?(Iyi::DiagnosticEmissionPart::NameSplice)).not_nil!
         .as(Iyi::DiagnosticEmissionPart::NameSplice)
       source_token = splice.source_name.as(Iyi::DiagnosticNameValue::Observed).source_token
       source_token.raw_text.should eq("empty")

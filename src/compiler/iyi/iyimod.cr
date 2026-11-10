@@ -1775,11 +1775,13 @@ module Iyi::IyiMod
     a_macro.to_s(authoritative)
     source = authoritative.to_s
     captures = DiagnosticModeCaptures.capture(source, [] of SourcePosition) do |mode|
+      _, observations = Parser.observe_rendered_macro(source, mode)
       io = IO::Memory.new
       if (doc = a_macro.doc) && !doc.empty?
         write_doc io, doc, ""
       end
       builder = DiagnosticFragmentBuilder.new(mode)
+      builder.rendered_observations = observations
       a_macro.to_s(io, diagnostic_fragment: builder)
       {io.to_s, [] of SourcePosition, builder}
     end
@@ -2059,6 +2061,202 @@ module Iyi::IyiMod
         @annotations.clone, @free_variable_bounds.clone, @where_bounds.clone)
       result.diagnostic_origin = @diagnostic_origin
       result
+    end
+  end
+
+  enum DiagnosticSignatureParameterKind : UInt8
+    Normal
+    Splat
+    DoubleSplat
+    BareSplat
+    Block
+  end
+
+  class DiagnosticSignatureParameterRecipe
+    getter argument : Arg
+    getter kind : DiagnosticSignatureParameterKind
+    getter name_text : String
+    getter restriction_text : String?
+    getter default_text : String?
+    getter include_annotations : Bool
+    @restriction_projections : Array(DiagnosticBoundProducer)
+    @default_projections : Array(DiagnosticBoundProducer)
+
+    def initialize(@argument : Arg, @kind : DiagnosticSignatureParameterKind, @name_text : String,
+                   @restriction_text : String?, @default_text : String?,
+                   restriction_projections : Array(DiagnosticBoundProducer),
+                   default_projections : Array(DiagnosticBoundProducer), @include_annotations : Bool)
+      @restriction_projections = restriction_projections.dup
+      @default_projections = default_projections.dup
+    end
+
+    def restriction_projections : Array(DiagnosticBoundProducer)
+      @restriction_projections.dup
+    end
+
+    def default_projections : Array(DiagnosticBoundProducer)
+      @default_projections.dup
+    end
+  end
+
+  # Capture-only description of the source objects that supplied a header.
+  # Bound transformations remain separate and are never inferred here.
+  class DiagnosticSignatureRecipe
+    getter definition : Def
+    getter signature : Signature
+    getter block : DiagnosticSignatureParameterRecipe?
+    @parameters : Array(DiagnosticSignatureParameterRecipe)
+    @return_type_projections : Array(DiagnosticBoundProducer)
+
+    private def initialize(@definition : Def, @signature : Signature,
+                           parameters : Array(DiagnosticSignatureParameterRecipe),
+                           @block : DiagnosticSignatureParameterRecipe?,
+                           return_type_projections : Array(DiagnosticBoundProducer))
+      @parameters = parameters.dup
+      @return_type_projections = return_type_projections.dup
+    end
+
+    def parameters : Array(DiagnosticSignatureParameterRecipe)
+      @parameters.dup
+    end
+
+    def return_type_projections : Array(DiagnosticBoundProducer)
+      @return_type_projections.dup
+    end
+
+    def self.from_def(definition : Def, signature : Signature) : DiagnosticSignatureRecipe
+      validate_origin!(definition, signature)
+      expected = IyiMod.signature(definition, check_block: false)
+      unless signature == expected && signature.annotations == expected.annotations
+        raise ArgumentError.new("signature differs from definition")
+      end
+      parameters = [] of DiagnosticSignatureParameterRecipe
+      definition.args.each_with_index do |argument, index|
+        kind = if definition.splat_index == index
+                 argument.name.empty? ? DiagnosticSignatureParameterKind::BareSplat : DiagnosticSignatureParameterKind::Splat
+               else
+                 DiagnosticSignatureParameterKind::Normal
+               end
+        parameters << from_source_argument(argument, kind)
+      end
+      if argument = definition.double_splat
+        parameters << from_source_argument(argument, DiagnosticSignatureParameterKind::DoubleSplat)
+      end
+      block = definition.block_arg.try { |argument| from_source_argument(argument, DiagnosticSignatureParameterKind::Block) }
+      validate_parameters!(definition, signature, parameters, block, true)
+      new(definition, signature, parameters, block, [] of DiagnosticBoundProducer)
+    end
+
+    def self.from_bind(definition : Def, signature : Signature,
+                       parameters : Array(DiagnosticSignatureParameterRecipe),
+                       block : DiagnosticSignatureParameterRecipe?,
+                       return_type_projections : Array(DiagnosticBoundProducer)) : DiagnosticSignatureRecipe
+      validate_origin!(definition, signature)
+      unless definition.name == signature.name && (definition.receiver.try(&.to_s) || "") == signature.receiver
+        raise ArgumentError.new("bound signature name or receiver differs from definition")
+      end
+      original = IyiMod.signature(definition, check_block: false)
+      unless signature.annotations == original.annotations &&
+             signature.free_variables == original.free_variables &&
+             signature.free_variable_bounds == original.free_variable_bounds &&
+             signature.where_bounds == original.where_bounds
+        raise ArgumentError.new("bound signature removes source metadata without a projection")
+      end
+      validate_parameters!(definition, signature, parameters, block, false)
+      unless (definition.return_type.try(&.to_s) || "") == signature.return_type
+        raise ArgumentError.new("bound return type projection lacks authoritative source validation")
+      end
+      new(definition, signature, parameters, block, return_type_projections)
+    end
+
+    private def self.validate_origin!(definition : Def, signature : Signature) : Nil
+      origin = definition.diagnostic_origin
+      unless origin && origin.valid_for_anchor?("Def", "keyword") && origin == signature.diagnostic_origin
+        raise ArgumentError.new("signature recipe lacks matching definition origin")
+      end
+    end
+
+    private def self.from_source_argument(argument : Arg, kind : DiagnosticSignatureParameterKind) : DiagnosticSignatureParameterRecipe
+      prefix = case kind
+               when DiagnosticSignatureParameterKind::Splat, DiagnosticSignatureParameterKind::BareSplat then "*"
+               when DiagnosticSignatureParameterKind::DoubleSplat then "**"
+               when DiagnosticSignatureParameterKind::Block then "&"
+               else ""
+               end
+      io = IO::Memory.new
+      io << prefix
+      ToSVisitor.write_arg_name(io, argument, true, "")
+      DiagnosticSignatureParameterRecipe.new(argument, kind, io.to_s, argument.restriction.try(&.to_s),
+        argument.default_value.try(&.to_s), [] of DiagnosticBoundProducer, [] of DiagnosticBoundProducer, true)
+    end
+
+    private def self.validate_parameters!(definition : Def, signature : Signature,
+                                          parameters : Array(DiagnosticSignatureParameterRecipe),
+                                          block : DiagnosticSignatureParameterRecipe?, source : Bool) : Nil
+      arguments = definition.args.dup
+      definition.double_splat.try { |argument| arguments << argument }
+      unless parameters.size == arguments.size && parameters.size == signature.parameters.size
+        raise ArgumentError.new("signature recipe parameter count mismatch")
+      end
+      parameters.each_with_index do |recipe, index|
+        argument = arguments[index]
+        expected_kind = if index >= definition.args.size
+                          DiagnosticSignatureParameterKind::DoubleSplat
+                        elsif definition.splat_index == index
+                          argument.name.empty? ? DiagnosticSignatureParameterKind::BareSplat : DiagnosticSignatureParameterKind::Splat
+                        else
+                          DiagnosticSignatureParameterKind::Normal
+                        end
+        unless recipe.argument.same?(argument) && recipe.kind == expected_kind && recipe.include_annotations == source
+          raise ArgumentError.new("signature recipe parameter identity mismatch")
+        end
+        validate_parameter!(recipe, signature.parameters[index])
+      end
+      if argument = definition.block_arg
+        recipe = block || raise ArgumentError.new("missing signature block recipe")
+        unless recipe.argument.same?(argument) && recipe.kind.block? && recipe.include_annotations == source
+          raise ArgumentError.new("signature block recipe identity mismatch")
+        end
+        validate_parameter!(recipe, signature.block_parameter)
+      elsif block || !signature.block_parameter.empty?
+        raise ArgumentError.new("unexpected signature block recipe")
+      end
+    end
+
+    private def self.validate_parameter!(recipe : DiagnosticSignatureParameterRecipe, expected : String) : Nil
+      argument = recipe.argument
+      rendered_name = IO::Memory.new
+      prefix = case recipe.kind
+               when DiagnosticSignatureParameterKind::Splat, DiagnosticSignatureParameterKind::BareSplat then "*"
+               when DiagnosticSignatureParameterKind::DoubleSplat then "**"
+               when DiagnosticSignatureParameterKind::Block then "&"
+               else ""
+               end
+      rendered_name << prefix
+      ToSVisitor.write_arg_name(rendered_name, argument, recipe.include_annotations, "")
+      if !recipe.include_annotations && argument.parsed_annotations.try { |annotations| !annotations.empty? }
+        raise ArgumentError.new("bound parameter removes annotations without a projection")
+      end
+      unless rendered_name.to_s == recipe.name_text
+        raise ArgumentError.new("signature recipe name differs from source")
+      end
+      if recipe.kind.bare_splat? && recipe.name_text != "*"
+        raise ArgumentError.new("invalid bare splat recipe")
+      end
+      source_restriction = argument.restriction.try(&.to_s)
+      source_default = argument.default_value.try(&.to_s)
+      if source_restriction != recipe.restriction_text
+        raise ArgumentError.new("bound restriction projection lacks authoritative source validation")
+      end
+      if source_default != recipe.default_text
+        raise ArgumentError.new("bound default projection lacks authoritative source validation")
+      end
+      rendered = String.build do |io|
+        io << recipe.name_text
+        io << " : " << recipe.restriction_text.not_nil! if recipe.restriction_text
+        io << " = " << recipe.default_text.not_nil! if recipe.default_text
+      end
+      raise ArgumentError.new("signature recipe field mismatch") unless rendered == expected
     end
   end
 

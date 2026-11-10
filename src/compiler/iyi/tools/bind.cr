@@ -156,6 +156,7 @@ module Iyi
     property source_def : Def? = nil
     property diagnostic_def : Def? = nil
     property diagnostic_body : {String, DiagnosticModeCaptures}? = nil
+    property diagnostic_parameter_recipes : Array(IyiMod::DiagnosticSignatureParameterRecipe)? = nil
     def_equals_and_hash owner, name, verdict, block, untyped, location, params, returns, receiver,
       written_block, inferred, refused, body, storable, checked, produced, private_def,
       body_answers, uncompilable, abstract_def, answers_abstract, written, free_vars
@@ -4474,6 +4475,7 @@ module Iyi
           method.diagnostic_def = original.diagnostic_def
           method.source_def = original.source_def
           method.diagnostic_body = original.diagnostic_body
+          method.diagnostic_parameter_recipes = original.diagnostic_parameter_recipes
         end
         next if already.includes?(key.call(method))
         pool << method
@@ -6085,42 +6087,48 @@ module Iyi
   # `String` and a qualified restriction prints `::String`, and held against
   # each other those read as a disagreement — `Narrow#exact`, which writes
   # exactly what it answers, was reported as crossing on its answer instead.
-  private def self.resolve_restriction(owner : Type, node : ASTNode?,
-                                       qualify = true) : String?
-    return nil unless node
-    written = node.to_s
-    return written if written == "_"
-    return owner.instance_type.devirtualize.to_s if node.is_a?(Self)
+  private def self.resolve_restriction(owner : Type, node : ASTNode?, qualify = true) : String?
+    resolve_restriction_decision(owner, node, qualify)[1]
+  end
 
-    # `Foo.class` resolves to a type whose name is the compiler's own spelling
-    # — `DB::Mappable:Module`, `Enum:Class` — and no source can carry that. So
-    # the metaclass is written back the way it was written down, over an
-    # instance name resolved like any other. `db` writes `def read(type :
-    # DB::Mappable.class)`, which is how a row becomes a struct, and it
-    # crossed as a parameter nothing could parse.
+  # Resolve once before constructing any diagnostic producer. Semantic lookup
+  # failure retains the original source spelling, as the ordinary path does.
+  private def self.resolve_restriction_decision(owner : Type, node : ASTNode?,
+                                                qualify : Bool) : {String?, String?, String?, Bool}
+    return {nil, nil, nil, false} unless node
+    written = node.to_s
+    return {written, written, written, false} if written == "_"
+    if node.is_a?(Self)
+      resolved = owner.instance_type.devirtualize.to_s
+      return {written, resolved, resolved, false}
+    end
+
     if node.is_a?(Metaclass)
       inner = resolve_restriction(owner, node.name, qualify)
-      return inner ? "#{inner}.class" : written
+      resolved = inner ? "#{inner}.class" : written
+      return {written, resolved, resolved, false}
     end
 
     type = owner.lookup_type?(node)
-    return written unless type
-    # A free variable is a name this method binds, not one anybody declares.
-    return written if type.is_a?(TypeParameter)
+    return {written, written, written, false} unless type
+    return {written, written, written, false} if type.is_a?(TypeParameter) || type.is_a?(GenericType)
 
-    # And a bare generic is a name too. `private def
-    # perform_exec_and_release(args : Enumerable)` means "any Enumerable", and
-    # the type it resolves to prints `Enumerable(T)` — with a `T` that is the
-    # *method's* free variable and is declared nowhere a reader can see:
-    # `undefined constant T`. What the shard wrote is what a reader can read.
-    return written if type.is_a?(GenericType)
-
-    # Written `::Log` where a bare `Log` would find the shard's own. See
-    # `global_name`.
     resolved = type.devirtualize.to_s
-    qualify ? global_name(resolved, @@root) : resolved
+    target = qualify ? global_name(resolved, @@root) : resolved
+    {written, target, resolved, target != resolved}
   rescue
-    node.to_s
+    written = node.try(&.to_s)
+    {written, written, written, false}
+  end
+
+  private def self.resolve_restriction_recipe(owner : Type, node : ASTNode?,
+                                              qualify : Bool = true) : {String?, Array(DiagnosticBoundProducer)}
+    written, target, resolved, add_global = resolve_restriction_decision(owner, node, qualify)
+    producers = [] of DiagnosticBoundProducer
+    if written && target && resolved && written != target
+      producers << DiagnosticBoundProducer::ResolvedRestriction.new(owner.to_s, written, resolved, @@root, add_global)
+    end
+    {target, producers}
   end
 
   # Whether a variable could have the type this restriction names.

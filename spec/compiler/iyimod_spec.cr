@@ -2426,6 +2426,31 @@ describe Iyi::IyiMod do
     end
   end
 
+  it "captures signature recipes from real arguments and rejects unvalidated bound changes" do
+    definition = captured_diagnostic_def("def f(x : Int32 = 1, *rest : String)\nend", "/absent/recipe.cr", "Crystal")
+    signature = Iyi::IyiMod.signature(definition, check_block: false)
+    recipe = Iyi::IyiMod::DiagnosticSignatureRecipe.from_def(definition, signature)
+    recipe.parameters.map(&.kind).should eq([Iyi::IyiMod::DiagnosticSignatureParameterKind::Normal,
+                                             Iyi::IyiMod::DiagnosticSignatureParameterKind::Splat])
+    recipe.parameters.map(&.name_text).should eq(["x", "*rest"])
+    recipe.parameters.first.restriction_text.should eq("Int32")
+    recipe.parameters.first.default_text.should eq("1")
+    recipe.parameters.clear
+    recipe.parameters.size.should eq(2)
+    argument = definition.args.first
+    bad = Iyi::IyiMod::DiagnosticSignatureParameterRecipe.new(argument,
+      Iyi::IyiMod::DiagnosticSignatureParameterKind::Normal, "x", "Other", "1",
+      [Iyi::DiagnosticBoundProducer::StripRoot.new("Root")] of Iyi::DiagnosticBoundProducer,
+      [] of Iyi::DiagnosticBoundProducer, false)
+    rest = Iyi::IyiMod::DiagnosticSignatureParameterRecipe.new(definition.args.last,
+      Iyi::IyiMod::DiagnosticSignatureParameterKind::Splat, "*rest", "String", nil,
+      [] of Iyi::DiagnosticBoundProducer, [] of Iyi::DiagnosticBoundProducer, false)
+    changed = signature.copy_with(parameters: ["x : Other = 1", "*rest : String"])
+    expect_raises(ArgumentError, /authoritative source validation/) do
+      Iyi::IyiMod::DiagnosticSignatureRecipe.from_bind(definition, changed, [bad, rest], nil, [] of Iyi::DiagnosticBoundProducer)
+    end
+  end
+
   it "dumps a def's header the way it was written" do
     io = IO::Memory.new
     Iyi::IyiMod.dump sample_artifact(exports: [

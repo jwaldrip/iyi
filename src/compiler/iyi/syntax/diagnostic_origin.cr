@@ -914,6 +914,14 @@ module Iyi
     @events = [] of DiagnosticTokenEvent
     @anchors = [] of DiagnosticAnchor
     getter lexical_mode : String
+    @rendered_observations : Array(DiagnosticRenderedToken)? = nil
+
+    def rendered_observations=(observations : Array(DiagnosticRenderedToken)) : Nil
+      unless observations.all? { |observation| observation.lexical_mode == @lexical_mode }
+        raise ArgumentError.new("rendered observation lexical mode mismatch")
+      end
+      @rendered_observations = observations.dup
+    end
 
     def initialize(@lexical_mode : String)
       raise ArgumentError.new("invalid fragment lexical mode") unless {"Crystal", "Iyi"}.includes?(@lexical_mode)
@@ -965,7 +973,20 @@ module Iyi
                            kind : String, role : String, origin : DiagnosticOrigin,
                            name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue))) : Int32
       raise ArgumentError.new("invalid measured fragment origin") unless origin.valid_for_anchor?(kind, role)
-      observed = DiagnosticRenderedTokens.observe_one(rendered, start_offset, end_offset, @lexical_mode, context)
+      observed = if journal = @rendered_observations
+                   matches = journal.select { |item| item.input_start == start_offset && item.input_end == end_offset }
+                   matches = matches.uniq
+                   raise ArgumentError.new("missing or ambiguous committed token observation") unless matches.size == 1
+                   candidate = matches.first
+                   unless candidate.token_text == rendered.byte_slice(start_offset, end_offset - start_offset)
+                     raise ArgumentError.new("committed token bytes differ from writer")
+                   end
+                   candidate
+                 elsif kind == "MacroDirective"
+                   raise ArgumentError.new("macro directive requires full macro parser observation")
+                 else
+                   DiagnosticRenderedTokens.observe_one(rendered, start_offset, end_offset, @lexical_mode, context)
+                 end
       bytes = observed.token_text
       part = if name_slots.empty?
                DiagnosticEmissionPart::AstAnchor.new(start_offset, end_offset, nil, origin).as(DiagnosticEmissionPart)
@@ -1074,6 +1095,10 @@ module Iyi
       DiagnosticFragmentRewrite.append_into(self, io, DiagnosticRenderedFragment.new(source, data))
     end
 
+    def attach_fragment(destination_text : String, source : String, data : DiagnosticFragmentData, at : Int32) : Nil
+      DiagnosticFragmentRewrite.attach_into(self, destination_text, DiagnosticRenderedFragment.new(source, data), at)
+    end
+
     def finish_data(text : String) : DiagnosticFragmentData
       events, anchors = canonicalize
       DiagnosticFragmentData.new(text, events, anchors)
@@ -1113,6 +1138,21 @@ module Iyi
         case attachment = anchor.attachment
         when DiagnosticFragmentAttachment::Direct
           raise ArgumentError.new("duplicate direct fragment writer") unless direct.add?(anchor.event_index)
+          parts = event.byte_parts
+          raise ArgumentError.new("direct fragment event has multiple writers") unless parts.size == 1
+          case part = parts.first
+          when DiagnosticEmissionPart::AstAnchor
+            unless anchor.name_slots.empty? && part.source_origin == anchor.origin
+              raise ArgumentError.new("direct structural writer does not match anchor")
+            end
+          when DiagnosticEmissionPart::NameSplice
+            values = anchor.name_slots.values.flat_map { |items| items }
+            unless values.size == 1 && values.first == part.source_name && part.source_name.artifact_origin == anchor.origin
+              raise ArgumentError.new("direct name writer does not match anchor")
+            end
+          else
+            raise ArgumentError.new("direct fragment anchor lacks a captured writer")
+          end
         when DiagnosticFragmentAttachment::HeadOf
           expected = case attachment.rule
                      when DiagnosticHeadRule::NamedArrayHead then {"Literal", "array"}
@@ -1248,7 +1288,7 @@ module Iyi
                    @iyi : DiagnosticModeCaptureResult)
       @positions = positions.dup
       digest = ::Crystal::Digest::SHA256.hexdigest(@text)
-      {"Crystal", "Iyi"}.zip({@crystal, @iyi}).each do |mode, outcome|
+      [{"Crystal", @crystal}, {"Iyi", @iyi}].each do |mode, outcome|
         case outcome
         when DiagnosticModeCaptureResult::Success
           unless outcome.data.text_sha256 == digest && outcome.data.events.all? { |event| event.lexical_mode == mode }
@@ -1350,7 +1390,7 @@ module Iyi
     end
 
     def self.place(source : DiagnosticRenderedFragment, destination_text : String, at : Int32) : DiagnosticRegion
-      unless at >= 0 && at.to_i64 + source.text.bytesize <= destination_text.bytesize &&
+      unless destination_text.valid_encoding? && at >= 0 && at.to_i64 + source.text.bytesize <= destination_text.bytesize &&
              ::Crystal::Digest::SHA256.hexdigest(source.text) == source.data.text_sha256 &&
              destination_text.byte_slice(at, source.text.bytesize) == source.text
         raise ArgumentError.new("fragment placement text or guard mismatch")
@@ -1362,15 +1402,17 @@ module Iyi
     end
 
     def self.append_into(builder : DiagnosticFragmentBuilder, io : IO::Memory, source : DiagnosticRenderedFragment) : Nil
-      unless ::Crystal::Digest::SHA256.hexdigest(source.text) == source.data.text_sha256
-        raise ArgumentError.new("fragment append guard mismatch")
-      end
-      DiagnosticFragmentValidation.validate_text!(source.text, source.data.events, source.data.anchors)
       at = io.pos.to_i32
       io << source.text
-      events = source.data.events.map { |event| builder.add_event(shift_event(event, at)) }
+      attach_into(builder, io.to_s, source, at)
+    end
+
+    def self.attach_into(builder : DiagnosticFragmentBuilder, destination_text : String,
+                         source : DiagnosticRenderedFragment, at : Int32) : Nil
+      region = place(source, destination_text, at)
+      events = region.events.map { |event| builder.add_event(event) }
       anchors = [] of Int32
-      source.data.anchors.each do |anchor|
+      region.anchors.each do |anchor|
         attachment = case part = anchor.attachment
                      when DiagnosticFragmentAttachment::Direct
                        DiagnosticFragmentAttachment::Direct.new.as(DiagnosticFragmentAttachment)
@@ -1387,8 +1429,7 @@ module Iyi
                        DiagnosticFragmentAttachment::PayloadOf.new(part.rule, anchors[part.owner_anchor_index]).as(DiagnosticFragmentAttachment)
                      else raise ArgumentError.new("unknown fragment attachment")
                      end
-        anchors << builder.add_anchor(anchor.copy_with(offset: checked_offset(anchor.offset, at),
-          event_index: events[anchor.event_index], attachment: attachment))
+        anchors << builder.add_anchor(anchor.copy_with(event_index: events[anchor.event_index], attachment: attachment))
       end
     end
 
@@ -1644,8 +1685,8 @@ module Iyi
         parser.next_token
         parser.parse_bare_proc_type
         parser.check :EOF
-        if parser.diagnostic_lexical_observations.any? { |token| token.token_text == "self?" }
-          raise ArgumentError.new("bound self? requires an explicit type-sugar projection")
+        if parser.diagnostic_lexical_observations.any? { |token| {"*", "**", "?", "[", "]", "{", "}", "self?", "nil?"}.includes?(token.token_text) }
+          raise ArgumentError.new("bound type syntax requires explicit type-sugar witness transfer")
         end
         parser.diagnostic_name_observations.each do |observation|
           next unless {"path_segment", "named_entry", "type_self"}.includes?(observation.context)
@@ -2296,6 +2337,9 @@ module Iyi
                data.source_fragment_sha256 == ::Crystal::Digest::SHA256.hexdigest(data.source_text)
           raise ArgumentError.new("invalid bound projection inputs")
         end
+        unless data.source_text.empty?
+          raise ArgumentError.new("bound projection requires authoritative source inventory")
+        end
         parents = [] of DiagnosticOrigin
         own = 2048_u64 + data.source_text.bytesize.to_u64 * 6 + data.output_text.bytesize.to_u64 * 6
         bound_strings = case producer = data.producer
@@ -2687,6 +2731,9 @@ module Iyi
           raise ArgumentError.new("invalid diagnostic expansion guard")
         end
         raise ArgumentError.new("invalid diagnostic anchor") if @anchor_kind.empty? || @role.empty?
+        if @anchor_kind == "Name" && @name_context.nil?
+          raise ArgumentError.new("name anchor lacks receiving context")
+        end
         if @token_event.selection.signed_number_sign? && !(@anchor_use.is_a?(DiagnosticAnchorUse::Direct) && @anchor_kind == "Call" && @role == "method" && @name_context.nil?)
           raise ArgumentError.new("invalid signed-number anchor use")
         end
@@ -2753,6 +2800,9 @@ module Iyi
               role, spelling = expected_witnesses[index]
               first_splat = index == 0 && role == DiagnosticWitnessRole::Splat &&
                             event == @token_event
+              if role == DiagnosticWitnessRole::Splat && !first_splat
+                raise ArgumentError.new("splat witness must be the head event")
+              end
               unless witness.role == role && event.selection.whole? && event.token_kind == spelling &&
                      event.token_text == spelling && event.lexical_mode == @token_event.lexical_mode &&
                      (first_splat || event.selected_start >= cursor)

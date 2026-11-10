@@ -410,6 +410,7 @@ def bound_projection(value, depth):
     fields(value, "kind derivation_kind producer source_fragment_sha256 source_text source_names output_text lexical_mode result_start result_end token_kind context")
     source, output = value["source_text"], value["output_text"]
     if not isinstance(source, str) or not isinstance(output, str): raise ValueError("invalid projection text")
+    if source: raise ValueError("bound projection requires authoritative source inventory")
     try: source_bytes, output_bytes = source.encode("utf-8"), output.encode("utf-8")
     except UnicodeError as exc: raise ValueError("invalid projection UTF-8") from exc
     guard(value["source_fragment_sha256"])
