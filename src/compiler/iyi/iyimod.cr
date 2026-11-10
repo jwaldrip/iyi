@@ -4904,46 +4904,106 @@ module Iyi::IyiMod
   # against — deliberately the same text from the same function. A dump that
   # showed something other than what the compiler reads would be a debugging
   # tool that lies at exactly the moment it is needed.
-  def self.render_signature(signature : Signature) : String
-    String.build do |io|
-      # Written as the module wrote it: `mod dump` printed `def hidden` for
-      # a `private def hidden`, and `protected` was nowhere.
-      io << signature.visibility << ' ' unless signature.visibility.empty?
-      io << "abstract " if signature.required
-      io << "def "
-      io << signature.receiver << '.' unless signature.receiver.empty?
-      io << signature.name
+  enum DiagnosticSignatureFieldKind : UInt8
+    Visibility
+    Abstract
+    Def
+    Receiver
+    Name
+    Parameter
+    BlockParameter
+    ReturnType
+    ForallName
+    ForallBound
+    WhereName
+    WhereBound
+  end
 
-      parameters = signature.parameters
-      block_parameter = signature.block_parameter
-      unless parameters.empty? && block_parameter.empty?
-        io << '('
-        parameters.join(io, ", ")
-        io << ", " unless parameters.empty? || block_parameter.empty?
-        io << block_parameter
-        io << ')'
+  record DiagnosticSignatureFieldWrite, kind : DiagnosticSignatureFieldKind, index : Int32,
+    start_offset : Int32, end_offset : Int32, text : String
+  alias DiagnosticSignatureObserver = Proc(DiagnosticSignatureFieldWrite, Nil)
+
+  private def self.write_signature_field(io : IO, kind : DiagnosticSignatureFieldKind, index : Int32,
+                                         text : String, observer : DiagnosticSignatureObserver?) : Nil
+    if observer
+      memory = io.as?(IO::Memory) || raise ArgumentError.new("observed signature requires in-memory output")
+      first = memory.pos.to_i32
+      io << text
+      observer.call(DiagnosticSignatureFieldWrite.new(kind, index, first, memory.pos.to_i32, text))
+    else
+      io << text
+    end
+  end
+
+  def self.write_signature(io : IO, signature : Signature, observer : DiagnosticSignatureObserver? = nil) : Nil
+    if observer && !io.is_a?(IO::Memory)
+      raise ArgumentError.new("observed signature requires in-memory output")
+    end
+    unless signature.visibility.empty?
+      write_signature_field(io, DiagnosticSignatureFieldKind::Visibility, -1, signature.visibility, observer)
+      io << ' '
+    end
+    if signature.required
+      write_signature_field(io, DiagnosticSignatureFieldKind::Abstract, -1, "abstract", observer)
+      io << ' '
+    end
+    write_signature_field(io, DiagnosticSignatureFieldKind::Def, -1, "def", observer)
+    io << ' '
+    unless signature.receiver.empty?
+      write_signature_field(io, DiagnosticSignatureFieldKind::Receiver, -1, signature.receiver, observer)
+      io << '.'
+    end
+    write_signature_field(io, DiagnosticSignatureFieldKind::Name, -1, signature.name, observer)
+
+    parameters = signature.parameters
+    block_parameter = signature.block_parameter
+    unless parameters.empty? && block_parameter.empty?
+      io << '('
+      parameters.each_with_index do |parameter, index|
+        io << ", " if index > 0
+        write_signature_field(io, DiagnosticSignatureFieldKind::Parameter, index, parameter, observer)
       end
-
-      io << " : " << signature.return_type unless signature.return_type.empty?
-
-      free_variables = signature.free_variables
-      unless free_variables.empty?
-        bounds = signature.free_variable_bounds.to_h
-        io << " forall "
-        free_variables.join(io, ", ") do |name, inner|
-          inner << name
-          if bound = bounds[name]?
-            inner << " : " << bound
-          end
+      io << ", " unless parameters.empty? || block_parameter.empty?
+      write_signature_field(io, DiagnosticSignatureFieldKind::BlockParameter, -1, block_parameter, observer) unless block_parameter.empty?
+      io << ')'
+    end
+    unless signature.return_type.empty?
+      io << " : "
+      write_signature_field(io, DiagnosticSignatureFieldKind::ReturnType, -1, signature.return_type, observer)
+    end
+    unless signature.free_variables.empty?
+      bounds = signature.free_variable_bounds.to_h
+      io << " forall "
+      signature.free_variables.each_with_index do |name, index|
+        io << ", " if index > 0
+        write_signature_field(io, DiagnosticSignatureFieldKind::ForallName, index, name, observer)
+        if bound = bounds[name]?
+          io << " : "
+          write_signature_field(io, DiagnosticSignatureFieldKind::ForallBound, index, bound, observer)
         end
       end
-
-      where_bounds = signature.where_bounds
-      unless where_bounds.empty?
-        io << " where "
-        where_bounds.join(io, ", ") { |(name, bound), inner| inner << name << " : " << bound }
+    end
+    unless signature.where_bounds.empty?
+      io << " where "
+      signature.where_bounds.each_with_index do |(name, bound), index|
+        io << ", " if index > 0
+        write_signature_field(io, DiagnosticSignatureFieldKind::WhereName, index, name, observer)
+        io << " : "
+        write_signature_field(io, DiagnosticSignatureFieldKind::WhereBound, index, bound, observer)
       end
     end
+  end
+
+  def self.render_signature(signature : Signature) : String
+    String.build { |io| write_signature(io, signature) }
+  end
+
+  def self.render_signature_observed(signature : Signature) : {String, Array(DiagnosticSignatureFieldWrite)}
+    io = IO::Memory.new
+    fields = [] of DiagnosticSignatureFieldWrite
+    observer = ->(field : DiagnosticSignatureFieldWrite) { fields << field; nil }
+    write_signature(io, signature, observer)
+    {io.to_s, fields}
   end
 
   def self.signature_fragment_key(container : String, signature : Signature) : String
@@ -5051,91 +5111,87 @@ module Iyi::IyiMod
     end
   end
 
-  # Replays the exact signature renderer while recording each AST anchor
-  # inside parameter defaults, restrictions and bounds. A disagreement with
-  # the authoritative renderer is an error, not a nearest-token guess.
+  # Capture each source-backed field against the spans produced by the one
+  # authoritative header writer. Changed fields require an explicit recipe.
   def self.diagnostic_signature_fragment(container : String, a_def : Def, signature : Signature, lexical_mode : String) : DiagnosticFragment
     origin = signature.diagnostic_origin || raise ArgumentError.new("signature has no diagnostic origin")
     unless origin == a_def.diagnostic_origin && origin.valid_for_anchor?("Def", "keyword")
       raise ArgumentError.new("signature origin differs from definition")
     end
-    io = IO::Memory.new
+    text, fields = render_signature_observed(signature)
     builder = DiagnosticFragmentBuilder.new(lexical_mode)
-    io << signature.visibility << ' ' unless signature.visibility.empty?
-    io << "abstract " if signature.required
-    builder.write_anchor_token(io, "Def", "keyword", origin, DiagnosticRenderedLexContext::Operand) { io << "def" }
-    io << ' '
-    if receiver = a_def.receiver
-      receiver.to_s(io, diagnostic_fragment: builder)
-      io << '.'
-    end
-    write_diagnostic_signature_name(io, builder, a_def, DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary),
-      signature.name)
-    unless signature.parameters.empty? && signature.block_parameter.empty?
-      io << '('
-      printed = false
-      a_def.args.each_with_index do |arg, index|
-        io << ", " if printed
-        io << '*' if a_def.splat_index == index
-        arg.to_s(io, diagnostic_fragment: builder)
-        printed = true
-      end
-      if arg = a_def.double_splat
-        io << ", " if printed
-        io << "**"
-        arg.to_s(io, diagnostic_fragment: builder)
-        printed = true
-      end
-      if arg = a_def.block_arg
-        io << ", " if printed
-        io << '&'
-        arg.to_s(io, diagnostic_fragment: builder)
-      end
-      io << ')'
-    end
-    if result = a_def.return_type
-      io << " : "
-      result.to_s(io, diagnostic_fragment: builder)
-    end
-    unless signature.free_variables.empty?
-      io << " forall "
-      signature.free_variables.each_with_index do |name, index|
-        io << ", " if index > 0
-        write_diagnostic_signature_name(io, builder, a_def,
-          DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index), name)
-        if signature.free_variable_bounds.any? { |pair| pair[0] == name }
-          bound = a_def.free_var_bounds.try(&.[name]?) || raise ArgumentError.new("missing free-variable bound AST")
-          io << " : "
-          bound.to_s(io, diagnostic_fragment: builder)
+    fields.each do |field|
+      case field.kind
+      when DiagnosticSignatureFieldKind::Def
+        builder.add_written_anchor(field.start_offset, field.end_offset, text, DiagnosticRenderedLexContext::Operand,
+          "Def", "keyword", origin, {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
+      when DiagnosticSignatureFieldKind::Name
+        capture_diagnostic_signature_name(builder, text, field, a_def, DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
+      when DiagnosticSignatureFieldKind::Receiver
+        receiver = a_def.receiver || raise ArgumentError.new("missing signature receiver AST")
+        capture_diagnostic_signature_node(builder, text, field, receiver, "", lexical_mode)
+      when DiagnosticSignatureFieldKind::Parameter
+        index = field.index
+        if index < a_def.args.size
+          prefix = a_def.splat_index == index ? "*" : ""
+          capture_diagnostic_signature_node(builder, text, field, a_def.args[index], prefix, lexical_mode)
+        elsif index == a_def.args.size
+          argument = a_def.double_splat || raise ArgumentError.new("missing signature double-splat AST")
+          capture_diagnostic_signature_node(builder, text, field, argument, "**", lexical_mode)
+        else
+          raise ArgumentError.new("missing signature parameter AST")
         end
-      end
-    end
-    unless signature.where_bounds.empty?
-      io << " where "
-      signature.where_bounds.each_with_index do |(name, _), index|
-        io << ", " if index > 0
+      when DiagnosticSignatureFieldKind::BlockParameter
+        argument = a_def.block_arg || raise ArgumentError.new("missing signature block parameter AST")
+        capture_diagnostic_signature_node(builder, text, field, argument, "&", lexical_mode)
+      when DiagnosticSignatureFieldKind::ReturnType
+        result = a_def.return_type || raise ArgumentError.new("missing signature return type AST")
+        capture_diagnostic_signature_node(builder, text, field, result, "", lexical_mode)
+      when DiagnosticSignatureFieldKind::ForallName
+        capture_diagnostic_signature_name(builder, text, field, a_def,
+          DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, field.index))
+      when DiagnosticSignatureFieldKind::ForallBound
+        name = signature.free_variables[field.index]
+        bound = a_def.free_var_bounds.try(&.[name]?) || raise ArgumentError.new("missing free-variable bound AST")
+        capture_diagnostic_signature_node(builder, text, field, bound, "", lexical_mode)
+      when DiagnosticSignatureFieldKind::WhereName
+        capture_diagnostic_signature_name(builder, text, field, a_def,
+          DiagnosticNameSlot.new(DiagnosticNameSlotKind::WhereVariable, field.index))
+      when DiagnosticSignatureFieldKind::WhereBound
+        name = signature.where_bounds[field.index][0]
         bound = a_def.where_bounds.try(&.[name]?) || raise ArgumentError.new("missing where-bound AST")
-        write_diagnostic_signature_name(io, builder, a_def,
-          DiagnosticNameSlot.new(DiagnosticNameSlotKind::WhereVariable, index), name)
-        io << " : "
-        bound.to_s(io, diagnostic_fragment: builder)
+        capture_diagnostic_signature_node(builder, text, field, bound, "", lexical_mode)
       end
     end
-    text = io.to_s
-    raise ArgumentError.new("diagnostic signature rendering differs from carried signature") unless text == render_signature(signature)
     builder.finish(signature_fragment_key(container, signature), text)
   end
 
-  private def self.write_diagnostic_signature_name(io : IO::Memory, builder : DiagnosticFragmentBuilder,
-                                                   owner : Def, slot : DiagnosticNameSlot, expected : String) : Nil
+  private def self.capture_diagnostic_signature_name(builder : DiagnosticFragmentBuilder, header : String,
+                                                      field : DiagnosticSignatureFieldWrite, owner : Def,
+                                                      slot : DiagnosticNameSlot) : Nil
     values = owner.diagnostic_name_slots[slot]? || raise ArgumentError.new("missing signature name evidence")
-    start = io.pos.to_i32
+    cursor = field.start_offset
+    context = slot.kind.primary? ? DiagnosticRenderedLexContext::DefOrMacroName : DiagnosticRenderedLexContext::TypeName
     values.each do |value|
-      builder.write_name(io, value, value.producer_context, slot)
+      last = cursor + value.rendered_text.bytesize
+      raise ArgumentError.new("signature name evidence exceeds field") if last > field.end_offset
+      builder.add_written_anchor(cursor, last, header, context, "Name", value.producer_context,
+        value.artifact_origin, {slot => [value] of DiagnosticNameValue})
+      cursor = last
     end
-    unless io.to_s.byte_slice(start, io.pos.to_i32 - start) == expected
-      raise ArgumentError.new("signature name differs from recorded evidence")
-    end
+    raise ArgumentError.new("signature name differs from recorded evidence") unless cursor == field.end_offset
+  end
+
+  private def self.capture_diagnostic_signature_node(builder : DiagnosticFragmentBuilder, header : String,
+                                                      field : DiagnosticSignatureFieldWrite, node : ASTNode,
+                                                      prefix : String, lexical_mode : String) : Nil
+    io = IO::Memory.new
+    io << prefix
+    field_builder = DiagnosticFragmentBuilder.new(lexical_mode)
+    node.to_s(io, diagnostic_fragment: field_builder)
+    source = io.to_s
+    raise ArgumentError.new("signature field differs from source AST") unless source == field.text
+    builder.attach_fragment(header, source, field_builder.finish_data(source), field.start_offset)
   end
 
   private def self.encode_header(artifact : Artifact) : Bytes

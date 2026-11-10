@@ -2383,6 +2383,49 @@ describe Iyi::IyiMod do
     end
   end
 
+  it "observes exact signature field byte spans without changing the rendering" do
+    signature = Iyi::IyiMod::Signature.new("render", "self", ["x : T", "label = \"é\""], "&block : Proc",
+      "String", ["T", "U"], true, visibility: "private",
+      free_variable_bounds: [{"T", "Show"}], where_bounds: [{"T", "Trait"}])
+    expected = "private abstract def self.render(x : T, label = \"é\", &block : Proc) : String forall T : Show, U where T : Trait"
+    text, fields = Iyi::IyiMod.render_signature_observed(signature)
+    text.should eq(expected)
+    Iyi::IyiMod.render_signature(signature).should eq(expected)
+    fields.each do |field|
+      text.byte_slice(field.start_offset, field.end_offset - field.start_offset).should eq(field.text)
+    end
+    fields.map { |field| {field.kind, field.index, field.text} }.should eq([
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::Visibility, -1, "private"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::Abstract, -1, "abstract"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::Def, -1, "def"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::Receiver, -1, "self"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::Name, -1, "render"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::Parameter, 0, "x : T"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::Parameter, 1, "label = \"é\""},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::BlockParameter, -1, "&block : Proc"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::ReturnType, -1, "String"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::ForallName, 0, "T"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::ForallBound, 0, "Show"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::ForallName, 1, "U"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::WhereName, 0, "T"},
+      {Iyi::IyiMod::DiagnosticSignatureFieldKind::WhereBound, 0, "Trait"},
+    ])
+    sink = NonPositionableDiagnosticIO.new
+    Iyi::IyiMod.write_signature(sink, signature)
+    sink.buffer.to_s.should eq(expected)
+    observer = ->(_field : Iyi::IyiMod::DiagnosticSignatureFieldWrite) { nil }
+    expect_raises(ArgumentError) { Iyi::IyiMod.write_signature(NonPositionableDiagnosticIO.new, signature, observer) }
+  end
+
+  it "rejects changed signature fields without an authoritative projection recipe" do
+    definition = captured_diagnostic_def("def greet(x : String) : String\nend", "/absent/header.cr", "Crystal")
+    signature = Iyi::IyiMod.signature(definition, check_block: false)
+    changed = signature.copy_with(return_type: "Int32")
+    expect_raises(ArgumentError, /signature field differs from source AST/) do
+      Iyi::IyiMod.diagnostic_signature_fragment("app", definition, changed, "Crystal")
+    end
+  end
+
   it "dumps a def's header the way it was written" do
     io = IO::Memory.new
     Iyi::IyiMod.dump sample_artifact(exports: [
