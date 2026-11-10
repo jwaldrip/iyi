@@ -648,6 +648,286 @@ module Iyi
         end
       end
     end
+
+    # Canonical decode of snapshot bytes into the live pragma structure. Insertion
+    # order is kept exactly, and a repeated offset is refused. Every value is
+    # rebuilt with the public constructor of its own type. Origins come from
+    # DiagnosticOrigin.from_json under one budget shared by the whole snapshot.
+    # The canonical round trip at the end proves that each rebuilt value writes
+    # back the same bytes, so anything that does not reconstruct exactly is refused.
+    def self.read(bytes : String) : Hash(Int32, Array(Lexer::LocPragma))?
+      raise ArgumentError.new("pragma snapshot exceeds size limit") if bytes.bytesize.to_i64 > MAX_BYTES
+      raise ArgumentError.new("pragma snapshot is not UTF-8") unless bytes.valid_encoding?
+      tree = begin
+        JSON.parse(bytes)
+      rescue ex : JSON::ParseException
+        raise ArgumentError.new("pragma snapshot is not parseable JSON: #{ex.message}")
+      end
+      top = pragma_fields!(tree, %w(present entries), "snapshot")
+      present = top["present"].raw.as?(Bool) || raise ArgumentError.new("pragma snapshot present is not a boolean")
+      entries = pragma_array!(top["entries"], "entries")
+      raise ArgumentError.new("pragma snapshot has entries but is not present") if !present && !entries.empty?
+      decoded : Hash(Int32, Array(Lexer::LocPragma))? = nil
+      if present
+        budget = DiagnosticOrigin::DecodeBudget.new
+        result = {} of Int32 => Array(Lexer::LocPragma)
+        entries.each do |entry|
+          item = pragma_fields!(entry, %w(offset pragmas), "entry")
+          offset = pragma_integer!(item["offset"], "offset")
+          raise ArgumentError.new("pragma offset is negative") if offset < 0
+          raise ArgumentError.new("pragma snapshot repeats offset #{offset}") if result.has_key?(offset)
+          result[offset] = pragma_array!(item["pragmas"], "pragmas").map { |pragma| decode_pragma(pragma, budget) }
+        end
+        decoded = result
+      end
+      raise ArgumentError.new("pragma snapshot is not in canonical encoding") unless DiagnosticPragmaSnapshot.new(decoded).bytes == bytes
+      decoded
+    end
+
+    private def self.decode_pragma(pragma : JSON::Any, budget : DiagnosticOrigin::DecodeBudget) : Lexer::LocPragma
+      case kind = pragma_kind!(pragma)
+      when "Set"
+        item = pragma_fields!(pragma, %w(kind filename line column artifact), "Set pragma")
+        Lexer::LocSetPragma.new(pragma_text!(item["filename"], "filename"), pragma_integer!(item["line"], "line"),
+          pragma_integer!(item["column"], "column"), pragma_nullable_text!(item["artifact"], "artifact"))
+      when "Push"
+        pragma_fields!(pragma, %w(kind), "Push pragma")
+        Lexer::LocPushPragma.new
+      when "Pop"
+        pragma_fields!(pragma, %w(kind), "Pop pragma")
+        Lexer::LocPopPragma.new
+      when "Origin"
+        item = pragma_fields!(pragma, %w(kind line), "Origin pragma")
+        Lexer::LocOriginPragma.new(pragma_integer!(item["line"], "line"))
+      when "DiagnosticEmission"
+        emission_from_json!(pragma, budget, 0)
+      else
+        raise ArgumentError.new("unknown pragma kind #{kind}")
+      end
+    end
+
+    private def self.pragma_fields!(value : JSON::Any, keys : Array(String), where : String) : Hash(String, JSON::Any)
+      hash = value.as_h? || raise ArgumentError.new("pragma #{where} is not an object")
+      raise ArgumentError.new("pragma #{where} keys are not #{keys.join(", ")}") unless hash.keys == keys
+      hash
+    end
+
+    private def self.pragma_kind!(value : JSON::Any) : String
+      hash = value.as_h? || raise ArgumentError.new("pragma is not an object")
+      pragma_text!(hash["kind"]? || raise(ArgumentError.new("pragma lacks kind")), "kind")
+    end
+
+    private def self.pragma_array!(value : JSON::Any, where : String) : Array(JSON::Any)
+      value.as_a? || raise ArgumentError.new("pragma #{where} is not an array")
+    end
+
+    private def self.pragma_text!(value : JSON::Any, where : String) : String
+      value.raw.as?(String) || raise ArgumentError.new("pragma #{where} is not a string")
+    end
+
+    private def self.pragma_nullable_text!(value : JSON::Any, where : String) : String?
+      return nil if value.raw.nil?
+      pragma_text!(value, where)
+    end
+
+    private def self.pragma_integer!(value : JSON::Any, where : String) : Int32
+      number = value.raw.as?(Int64) || raise ArgumentError.new("pragma #{where} is not an integer")
+      raise ArgumentError.new("pragma #{where} is out of range") if number < Int32::MIN || number > Int32::MAX
+      number.to_i32
+    end
+
+    # Typed emission readers. Each rebuilds one value from its canonical JSON with
+    # the public constructor of its own type. Enumerations accept exact member names
+    # only, and nesting is bounded by check_depth!. A value that does not write back
+    # to the same bytes is refused by the canonical round trip in `read`.
+    private def self.check_depth!(depth : Int32) : Nil
+      raise ArgumentError.new("pragma nesting is too deep") if depth > DiagnosticOrigin::MAX_DEPTH
+    end
+
+    private def self.emission_from_json!(pragma : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : Lexer::LocDiagnosticEmission
+      check_depth!(depth)
+      item = pragma_fields!(pragma, %w(kind end claims generated_text name_fragments), "DiagnosticEmission pragma")
+      Lexer::LocDiagnosticEmission.new(
+        pragma_integer!(item["end"], "emission end"),
+        pragma_array!(item["claims"], "claims").map { |claim| claim_from_json!(claim, budget, depth + 1) },
+        pragma_array!(item["generated_text"], "generated_text").map { |text| generated_text_from_json!(text, budget, depth + 1) },
+        pragma_array!(item["name_fragments"], "name_fragments").map { |fragment| name_fragment_from_json!(fragment, budget, depth + 1) })
+    end
+
+    private def self.origin_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget) : DiagnosticOrigin
+      DiagnosticOrigin.from_json(value, 0, budget)
+    end
+
+    private def self.optional_origin_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget) : DiagnosticOrigin?
+      return nil if value.raw.nil?
+      origin_from_json!(value, budget)
+    end
+
+    private def self.writer_from_json!(value : JSON::Any, where : String) : DiagnosticWriterRef
+      item = pragma_fields!(value, %w(start end), where)
+      start = pragma_integer!(item["start"], "#{where} start")
+      finish = pragma_integer!(item["end"], "#{where} end")
+      raise ArgumentError.new("pragma #{where} ends before it starts") if start < 0 || finish < start
+      DiagnosticWriterRef.new(start, finish)
+    end
+
+    private def self.key_from_json!(value : JSON::Any, where : String) : DiagnosticMacroClaimKey
+      item = pragma_fields!(value, %w(writer kind role), where)
+      DiagnosticMacroClaimKey.new(writer_from_json!(item["writer"], "#{where} writer"),
+        pragma_text!(item["kind"], "#{where} kind"), pragma_text!(item["role"], "#{where} role"))
+    end
+
+    private def self.producer_from_json!(value : JSON::Any) : DiagnosticMacroProducer
+      text = pragma_text!(value, "producer")
+      DiagnosticMacroProducer.parse?(text) || raise ArgumentError.new("unknown macro producer #{text}")
+    end
+
+    private def self.evidence_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : DiagnosticAnchorEvidence
+      check_depth!(depth)
+      case kind = pragma_kind!(value)
+      when "Spliced"
+        item = pragma_fields!(value, %w(kind source_origin), "Spliced evidence")
+        DiagnosticAnchorEvidence::Spliced.new(origin_from_json!(item["source_origin"], budget))
+      when "Constructed"
+        item = pragma_fields!(value, %w(kind producer), "Constructed evidence")
+        DiagnosticAnchorEvidence::Constructed.new(producer_from_json!(item["producer"]))
+      when "RawSyntax"
+        item = pragma_fields!(value, %w(kind witnesses), "RawSyntax evidence")
+        DiagnosticAnchorEvidence::RawSyntax.new(pragma_array!(item["witnesses"], "witnesses").map { |witness| witness_from_json!(witness, budget, depth + 1) })
+      when "DerivedFromOwner"
+        pragma_fields!(value, %w(kind), "DerivedFromOwner evidence")
+        DiagnosticAnchorEvidence::DerivedFromOwner.new
+      else
+        raise ArgumentError.new("unknown evidence kind #{kind}")
+      end
+    end
+
+    private def self.witness_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : DiagnosticSyntaxWitness
+      check_depth!(depth)
+      item = pragma_fields!(value, %w(role event), "syntax witness")
+      text = pragma_text!(item["role"], "witness role")
+      role = DiagnosticWitnessRole.parse?(text) || raise ArgumentError.new("unknown witness role #{text}")
+      DiagnosticSyntaxWitness.new(role, token_event_from_json!(item["event"], budget, depth + 1))
+    end
+
+    private def self.token_event_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : DiagnosticTokenEvent
+      check_depth!(depth)
+      item = pragma_fields!(value, %w(input_start input_end token_kind token_text lexical_mode selection byte_parts), "token event")
+      text = pragma_text!(item["selection"], "selection")
+      selection = DiagnosticTokenSelection.parse?(text) || raise ArgumentError.new("unknown token selection #{text}")
+      DiagnosticTokenEvent.new(pragma_integer!(item["input_start"], "token input start"),
+        pragma_integer!(item["input_end"], "token input end"), pragma_text!(item["token_kind"], "token kind"),
+        pragma_text!(item["token_text"], "token text"), pragma_text!(item["lexical_mode"], "token lexical mode"), selection,
+        pragma_array!(item["byte_parts"], "byte_parts").map { |part| emission_part_from_json!(part, budget, depth + 1) })
+    end
+
+    private def self.emission_part_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : DiagnosticEmissionPart
+      check_depth!(depth)
+      case kind = pragma_kind!(value)
+      when "Generated"
+        item = pragma_fields!(value, %w(kind start_offset end_offset emitter_origin producer), "Generated part")
+        DiagnosticEmissionPart::Generated.new(pragma_integer!(item["start_offset"], "part start"),
+          pragma_integer!(item["end_offset"], "part end"), optional_origin_from_json!(item["emitter_origin"], budget),
+          producer_from_json!(item["producer"]))
+      when "AstAnchor"
+        item = pragma_fields!(value, %w(kind start_offset end_offset emitter_origin source_origin), "AstAnchor part")
+        DiagnosticEmissionPart::AstAnchor.new(pragma_integer!(item["start_offset"], "part start"),
+          pragma_integer!(item["end_offset"], "part end"), optional_origin_from_json!(item["emitter_origin"], budget),
+          origin_from_json!(item["source_origin"], budget))
+      when "NameSplice"
+        item = pragma_fields!(value, %w(kind start_offset end_offset emitter_origin source_name), "NameSplice part")
+        DiagnosticEmissionPart::NameSplice.new(pragma_integer!(item["start_offset"], "part start"),
+          pragma_integer!(item["end_offset"], "part end"), optional_origin_from_json!(item["emitter_origin"], budget),
+          name_value_from_json!(item["source_name"], budget, depth + 1))
+      else
+        raise ArgumentError.new("unknown emission part kind #{kind}")
+      end
+    end
+
+    private def self.name_value_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : DiagnosticNameValue
+      check_depth!(depth)
+      case kind = pragma_kind!(value)
+      when "Observed"
+        item = pragma_fields!(value, %w(kind source_token), "Observed name")
+        DiagnosticNameValue::Observed.new(source_token_from_json!(item["source_token"], budget, depth + 1))
+      when "Derived"
+        item = pragma_fields!(value, %w(kind origin), "Derived name")
+        origin = origin_from_json!(item["origin"], budget)
+        DiagnosticNameValue::Derived.new(origin.as?(DiagnosticOrigin::DerivedName) || raise ArgumentError.new("derived name value lacks a derived origin"))
+      else
+        raise ArgumentError.new("unknown name value kind #{kind}")
+      end
+    end
+
+    private def self.source_token_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : DiagnosticSourceNameToken
+      check_depth!(depth)
+      item = pragma_fields!(value, %w(lexical_origin binding_origin context input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text), "source token")
+      DiagnosticSourceNameToken.new(origin_from_json!(item["lexical_origin"], budget),
+        optional_origin_from_json!(item["binding_origin"], budget), pragma_text!(item["context"], "token context"),
+        pragma_text!(item["input_sha256"], "token input digest"), pragma_integer!(item["input_bytesize"], "token input bytesize"),
+        pragma_integer!(item["input_start"], "token input start"), pragma_integer!(item["input_end"], "token input end"),
+        pragma_text!(item["lexical_mode"], "token lexical mode"), pragma_text!(item["token_kind"], "token kind"),
+        pragma_text!(item["raw_text"], "token raw text"))
+    end
+
+    private def self.claim_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : DiagnosticMacroClaim
+      check_depth!(depth)
+      item = pragma_fields!(value, %w(key evidence attachment emitter_origin), "claim")
+      DiagnosticMacroClaim.new(key_from_json!(item["key"], "claim key"),
+        evidence_from_json!(item["evidence"], budget, depth + 1),
+        attachment_from_json!(item["attachment"]),
+        optional_origin_from_json!(item["emitter_origin"], budget))
+    end
+
+    private def self.attachment_from_json!(value : JSON::Any) : DiagnosticMacroAttachment
+      case kind = pragma_kind!(value)
+      when "Direct"
+        item = pragma_fields!(value, %w(kind writer), "Direct attachment")
+        DiagnosticMacroAttachment::Direct.new(writer_from_json!(item["writer"], "attachment writer"))
+      when "HeadOf"
+        item = pragma_fields!(value, %w(kind rule head), "HeadOf attachment")
+        text = pragma_text!(item["rule"], "head rule")
+        rule = DiagnosticHeadRule.parse?(text) || raise ArgumentError.new("unknown head rule #{text}")
+        DiagnosticMacroAttachment::HeadOf.new(rule, head_from_json!(item["head"]))
+      when "PayloadOf"
+        item = pragma_fields!(value, %w(kind rule owner_key), "PayloadOf attachment")
+        text = pragma_text!(item["rule"], "payload rule")
+        rule = DiagnosticPayloadRule.parse?(text) || raise ArgumentError.new("unknown payload rule #{text}")
+        DiagnosticMacroAttachment::PayloadOf.new(rule, key_from_json!(item["owner_key"], "owner key"))
+      else
+        raise ArgumentError.new("unknown attachment kind #{kind}")
+      end
+    end
+
+    private def self.head_from_json!(value : JSON::Any) : DiagnosticMacroHead
+      case kind = pragma_kind!(value)
+      when "Anchor"
+        item = pragma_fields!(value, %w(kind writer), "Anchor head")
+        DiagnosticMacroHead::Anchor.new(writer_from_json!(item["writer"], "head writer"))
+      when "Syntax"
+        item = pragma_fields!(value, %w(kind form writer adjacent_name_writer), "Syntax head")
+        text = pragma_text!(item["form"], "head form")
+        form = DiagnosticHeadSyntax.parse?(text) || raise ArgumentError.new("unknown head syntax #{text}")
+        adjacent = item["adjacent_name_writer"].raw.nil? ? nil : writer_from_json!(item["adjacent_name_writer"], "adjacent writer")
+        DiagnosticMacroHead::Syntax.new(form, writer_from_json!(item["writer"], "head writer"), adjacent)
+      else
+        raise ArgumentError.new("unknown head kind #{kind}")
+      end
+    end
+
+    private def self.generated_text_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : DiagnosticGeneratedText
+      check_depth!(depth)
+      item = pragma_fields!(value, %w(start end emitter_origin producer), "generated text")
+      DiagnosticGeneratedText.new(pragma_integer!(item["start"], "generated start"), pragma_integer!(item["end"], "generated end"),
+        optional_origin_from_json!(item["emitter_origin"], budget), producer_from_json!(item["producer"]))
+    end
+
+    private def self.name_fragment_from_json!(value : JSON::Any, budget : DiagnosticOrigin::DecodeBudget, depth : Int32) : DiagnosticMacroNameFragment
+      check_depth!(depth)
+      item = pragma_fields!(value, %w(start end emitter_origin source_name), "name fragment")
+      DiagnosticMacroNameFragment.new(pragma_integer!(item["start"], "fragment start"), pragma_integer!(item["end"], "fragment end"),
+        optional_origin_from_json!(item["emitter_origin"], budget), name_value_from_json!(item["source_name"], budget, depth + 1))
+    end
   end
 
   # A structural filename snapshot, not a resolved authority graph. Macro
@@ -2917,20 +3197,28 @@ module Iyi
     end
   end
 
-  # Checks recorded observations against one source input. This does not prove
-  # that every actual name has evidence, bind derived origins or authorize an
-  # inventory as a registry.
+  # Checks recorded observations against one source input. Without a replay
+  # journal and identity this is structural only and authorizes nothing. With
+  # both, every span, origin and derived name must bind to the replay
+  # (DiagnosticCaptureBinding.bind!). Legacy callers keep the byte-level mode.
   class DiagnosticRecordedEvidenceInputCheck
     MAX_DEPTH = 128
     @active = Set(UInt64).new
     @remaining : UInt64 = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+    @source : String
 
-    def initialize(@input : AcceptedCaptureInput)
+    def initialize(@input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal? = nil,
+                   @identity : DiagnosticModuleIdentity? = nil)
+      raise ArgumentError.new("bound evidence requires both a replay journal and module identity") unless @journal.nil? == @identity.nil?
+      @source = @input.input
     end
 
     def verify!(root : ASTNode) : Nil
-      @remaining = DiagnosticOrigin::MAX_UNFOLDED_BYTES
       visit(root, 0)
+    end
+
+    private def bound? : Bool
+      !@identity.nil?
     end
 
     private def charge(bytes : UInt64) : Nil
@@ -2943,8 +3231,13 @@ module Iyi
       id = node.object_id
       raise ArgumentError.new("cyclic recorded evidence graph") unless @active.add?(id)
       begin
+        # Each node has its own budget. The 8 MiB constant is unchanged.
+        @remaining = DiagnosticOrigin::MAX_UNFOLDED_BYTES
         charge(256_u64)
         DiagnosticAstFieldSchema.validate_node_fields(node)
+        if (identity = @identity) && node.is_a?(ModuleHeader)
+          raise ArgumentError.new("multiple module headers") unless (header = identity.header) && header.same?(node)
+        end
         if origin = node.diagnostic_origin
           check_structural_origin!(origin, depth)
         end
@@ -2966,17 +3259,24 @@ module Iyi
                 graph_depth = Math.max(graph_depth, binding.graph_depth)
               end
               raise ArgumentError.new("recorded name evidence exceeds depth limit") if graph_depth.to_i64 + depth > MAX_DEPTH
-              unless @input.matches_source_token?(value.source_token)
+              unless source_token_ok?(token)
                 raise ArgumentError.new("recorded name token input mismatch")
               end
             when DiagnosticNameValue::Derived
-              raise ArgumentError.new("derived name requires independently resolved ancestry")
+              raise ArgumentError.new("derived name requires independently resolved ancestry") unless bound?
+              bound_derived!(value.origin)
             else
               raise ArgumentError.new("unclassified recorded name evidence")
             end
           end
         end
-        validate_literals(node)
+        if bound?
+          if (node.diagnostic_literal_names_count || 0) > 0 || (node.diagnostic_literal_productions_count || 0) > 0
+            raise ArgumentError.new("literal evidence requires journal literal binding")
+          end
+        else
+          validate_literals(node)
+        end
         verify_core_name_coverage!(node)
         DiagnosticDirectChildFields.each(node) { |_, _, _, child| visit(child, depth + 1) }
       ensure
@@ -2993,7 +3293,7 @@ module Iyi
       loop do
         case current
         when DiagnosticOrigin::Written
-          unless @input.matches_written_identity?(current)
+          unless written_identity_ok?(current)
             raise ArgumentError.new("structural origin input identity mismatch")
           end
           return
@@ -3005,6 +3305,76 @@ module Iyi
           raise ArgumentError.new("unclassified structural origin ancestry")
         end
       end
+    end
+
+    # Legacy mode: the input's own identity. Bound mode: the replay's identity,
+    # chosen by offset. Both refuse an offset outside the input.
+    private def written_identity_ok?(origin : DiagnosticOrigin::Written) : Bool
+      identity = @identity
+      return @input.matches_written_identity?(origin) unless identity
+      offset = origin.input_byte_offset
+      return false unless offset >= 0 && offset <= @input.input_bytesize
+      origin.source_file == @input.original_file && origin.source_module == identity.expected_module(offset)
+    end
+
+    # A token is bound when the replay scanned its exact span with the same kind
+    # and mode, its bytes match the input, and its origins resolve to the identity.
+    private def source_token_ok?(token : DiagnosticSourceNameToken) : Bool
+      return @input.matches_source_token?(token) unless bound?
+      journal = @journal.not_nil!
+      return false unless token.input_sha256 == @input.input_sha256 &&
+                          token.input_bytesize == @input.input_bytesize &&
+                          token.lexical_mode == @input.lexical_mode &&
+                          token.input_start >= 0 && token.input_end > token.input_start &&
+                          token.input_end <= @input.input_bytesize
+      return false unless @source.byte_slice(token.input_start, token.input_end - token.input_start) == token.raw_text
+      return false unless journal.scanned?(token)
+      return false unless bound_written_origin?(token.lexical_origin)
+      binding = token.binding_origin
+      binding.nil? || bound_written_origin?(binding)
+    end
+
+    # Follows Synthetic parents to a Written origin that the identity accepts.
+    # Expanded and any other ancestry is refused.
+    private def bound_written_origin?(origin : DiagnosticOrigin) : Bool
+      current = origin
+      while current.is_a?(DiagnosticOrigin::Synthetic)
+        current = current.parent_origin
+      end
+      current.is_a?(DiagnosticOrigin::Written) && written_identity_ok?(current)
+    end
+
+    private def bound_derived!(origin : DiagnosticOrigin::DerivedName) : Nil
+      identity = @identity.not_nil!
+      case origin.derivation_kind
+      when "ModuleHeaderPath"   then verify_module_header_path!(origin, identity)
+      when "ImplicitModuleSelf" then verify_implicit_module_self!(origin, identity)
+      else
+        raise ArgumentError.new("derived name #{origin.derivation_kind} has no journal binding")
+      end
+    end
+
+    private def verify_module_header_path!(origin : DiagnosticOrigin::DerivedName,
+                                           identity : DiagnosticModuleIdentity) : Nil
+      header = identity.header_origin || raise ArgumentError.new("module header path without a module header")
+      raise ArgumentError.new("module header path origin differs") unless origin.module_header_origin == header
+      segments = origin.source_segments
+      raise ArgumentError.new("module header path segments differ") unless segments.map(&.raw_text) == identity.header_segments
+      segments.each do |token|
+        raise ArgumentError.new("module segment is not a scanned token") unless source_token_ok?(token)
+      end
+      raise ArgumentError.new("module header path package differs") unless origin.package_name == identity.package
+      index = origin.result_index || raise ArgumentError.new("module header path lacks result index")
+      expected = Parser.iyi_package_segments(identity.package, identity.header_segments)[index]?
+      raise ArgumentError.new("module header path index out of range") unless expected
+      raise ArgumentError.new("module header path rendering differs") unless origin.rendered_text == expected
+    end
+
+    private def verify_implicit_module_self!(origin : DiagnosticOrigin::DerivedName,
+                                             identity : DiagnosticModuleIdentity) : Nil
+      header = identity.header_origin || raise ArgumentError.new("implicit module self without a module header")
+      raise ArgumentError.new("implicit module self origin differs") unless origin.module_header_origin == header
+      raise ArgumentError.new("implicit module self rendering differs") unless origin.rendered_text == "self"
     end
 
     # Actual field values drive this check. This deliberately refuses fields
@@ -3286,5 +3656,136 @@ module Iyi
     end
 
     def_equals_and_hash @capture_id, @owner_path_json, @field_tag, @index, @map_key
+  end
+
+  # The replay's own lexical journal, indexed by start offset. Membership here
+  # is the only evidence that a span was scanned. Byte equality alone is not.
+  class DiagnosticReplayJournal
+    getter entries : Array(DiagnosticRenderedToken)
+    @by_start : Hash(Int32, Array(DiagnosticRenderedToken))
+
+    def initialize(entries : Array(DiagnosticRenderedToken))
+      @entries = entries.dup
+      @by_start = {} of Int32 => Array(DiagnosticRenderedToken)
+      @entries.each do |entry|
+        (@by_start[entry.input_start] ||= [] of DiagnosticRenderedToken) << entry
+      end
+    end
+
+    def starts_at(start : Int32) : Array(DiagnosticRenderedToken)
+      @by_start[start]? || [] of DiagnosticRenderedToken
+    end
+
+    def scanned?(token : DiagnosticSourceNameToken) : Bool
+      scanned_span?(token.input_start, token.input_end, token.token_kind, token.raw_text, token.lexical_mode)
+    end
+
+    def scanned_span?(start : Int32, finish : Int32, kind : String, raw : String, mode : String) : Bool
+      starts_at(start).any? do |entry|
+        entry.input_end == finish && entry.token_kind == kind && entry.token_text == raw && entry.lexical_mode == mode
+      end
+    end
+  end
+
+  # The identity of one source capture, derived from its replay (C-M). The
+  # caller's logical module never participates.
+  class DiagnosticModuleIdentity
+    getter source_unit : String
+    getter declared : String?
+    getter package : String?
+    getter header : ModuleHeader?
+    getter header_origin : DiagnosticOrigin::Written?
+    getter header_segments : Array(String)
+
+    def initialize(@source_unit : String, @declared : String?, @package : String?,
+                   @header : ModuleHeader?, @header_origin : DiagnosticOrigin::Written?,
+                   @header_segments : Array(String))
+    end
+
+    def header_offset : Int32?
+      @header_origin.try(&.input_byte_offset)
+    end
+
+    # The module a Written origin at `offset` must carry. Each offset has one.
+    def expected_module(offset : Int32) : String
+      if (declared = @declared) && (start = header_offset) && offset >= start
+        declared
+      else
+        @source_unit
+      end
+    end
+
+    def self.from(root : ASTNode, input : AcceptedCaptureInput,
+                  journal : DiagnosticReplayJournal) : DiagnosticModuleIdentity
+      raise ArgumentError.new("EntryBuffer capture has no written identity rule") unless input.kind.source_file?
+      raise ArgumentError.new("caller-supplied module identity") unless input.logical_module.nil?
+      file = input.original_file || raise ArgumentError.new("source capture requires original file identity")
+      source_unit = "source-file:#{file}"
+      package = input.package
+      mode = input.lexical_mode
+      expressions = case root
+                    when Expressions then root.keyword.none? ? root.expressions : [root] of ASTNode
+                    else                  [root] of ASTNode
+                    end
+      # The header follows an optional unsafe file mark, as apply_module_header places it.
+      if mode == "Iyi" && (first = expressions.first?) && first.is_a?(Annotation) && Parser.iyi_unsafe_file_mark?(first)
+        expressions = expressions[1..]
+      end
+      header = expressions.first?
+      return new(source_unit, nil, package, nil, nil, [] of String) unless header.is_a?(ModuleHeader)
+      origin = header.diagnostic_origin.as?(DiagnosticOrigin::Written) ||
+               raise ArgumentError.new("module header lacks written origin")
+      raise ArgumentError.new("module header origin has the wrong anchor") unless origin.valid_for_anchor?("ModuleHeader", "keyword")
+      raise ArgumentError.new("module header origin is in another file") unless origin.source_file == file
+      start = origin.input_byte_offset
+      keyword_scanned = journal.starts_at(start).any? do |entry|
+        entry.input_end == start + "module".bytesize && entry.token_text == "module" && entry.lexical_mode == mode
+      end
+      raise ArgumentError.new("module header keyword is not a scanned token") unless keyword_scanned
+      declared = Parser.iyi_package_segments(package, header.path).join("/")
+      raise ArgumentError.new("module header origin carries the wrong module") unless origin.source_module == declared
+      header.path.each_with_index do |segment, index|
+        slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ModuleSegment, index)
+        value = header.diagnostic_name_slots[slot]?.try(&.first?)
+        observed = value.as?(DiagnosticNameValue::Observed) || raise ArgumentError.new("module segment is not an observed token")
+        token = observed.source_token
+        raise ArgumentError.new("module segment is not a scanned token") unless token.raw_text == segment && journal.scanned?(token)
+      end
+      new(source_unit, declared, package, header, origin, header.path.dup)
+    end
+  end
+
+  # The replay-bound evidence walk (C-B step 4). The byte checks in the base class
+  # accept nothing alone. This walk accepts only what the replay journal and
+  # identity bind. Literal and operator evidence stays refused until C-L and C-OPJ.
+  class DiagnosticEvidenceBinding < DiagnosticRecordedEvidenceInputCheck
+    def initialize(input : AcceptedCaptureInput, journal : DiagnosticReplayJournal,
+                   identity : DiagnosticModuleIdentity)
+      super(input, journal, identity)
+    end
+  end
+
+  record DiagnosticBoundCapture, input : AcceptedCaptureInput, ast_sha256 : String, root : ASTNode,
+    identity : DiagnosticModuleIdentity, journal : DiagnosticReplayJournal
+
+  # J2 (C-B): the only path from a capture to a bound capture. The expected digest
+  # is supplied by the caller and is never read from the capture.
+  module DiagnosticCaptureBinding
+    SHA256_HEX = /\A[0-9a-f]{64}\z/
+
+    def self.bind!(input : AcceptedCaptureInput, ast_sha256 : String) : DiagnosticBoundCapture
+      raise ArgumentError.new("expected ast_sha256 is not a lowercase sha256 digest") unless ast_sha256.matches?(SHA256_HEX)
+      raise ArgumentError.new("EntryBuffer capture has no written identity rule") unless input.kind.source_file?
+      parser = input.replay_parser
+      parser.enable_diagnostic_observations
+      root = parser.parse
+      stream = DiagnosticAstFrameStream.new(root)
+      stream.stream { |_| }
+      raise ArgumentError.new("replay AST digest differs") unless stream.ast_sha256 == ast_sha256
+      journal = DiagnosticReplayJournal.new(parser.diagnostic_lexical_observations)
+      identity = DiagnosticModuleIdentity.from(root, input, journal)
+      DiagnosticEvidenceBinding.new(input, journal, identity).verify!(root)
+      DiagnosticBoundCapture.new(input, ast_sha256, root, identity, journal)
+    end
   end
 end
