@@ -93,8 +93,8 @@ end
 # The first fun of each lib in a root that is either one lib or several libs.
 private def authority_spec_lib_funs(root : Iyi::ASTNode) : Array(Iyi::FunDef)
   libs = root.is_a?(Iyi::Expressions) ? root.expressions : [root] of Iyi::ASTNode
-  libs.map do |lib|
-    body = lib.as(Iyi::LibDef).body
+  libs.map do |lib_node|
+    body = lib_node.as(Iyi::LibDef).body
     (body.is_a?(Iyi::Expressions) ? body.expressions.first : body).as(Iyi::FunDef)
   end
 end

@@ -3273,10 +3273,10 @@ module Iyi
       end
     end
 
-    private def verify_lib_fun_order!(lib : LibDef, upper : Int32) : Nil
-      lower = written_offset(lib.name.diagnostic_origin)
+    private def verify_lib_fun_order!(lib_node : LibDef, upper : Int32) : Nil
+      lower = written_offset(lib_node.name.diagnostic_origin)
       return unless lower
-      body = lib.body
+      body = lib_node.body
       items = body.is_a?(Expressions) ? body.expressions : [body] of ASTNode
       previous = lower
       items.each do |item|
@@ -3509,16 +3509,20 @@ module Iyi
             slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index.not_nil!)
           end
         when Arg
+          # An enum member is an Arg whose internal name lives in the EnumMember slot
+          # (parser.cr enum body). Copy-time validation already refuses both slots at once.
+          internal = slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::EnumMember)) ?
+                     DiagnosticNameSlot.new(DiagnosticNameSlotKind::EnumMember) :
+                     DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
           if field == "name"
-            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+            slot = internal
           elsif field == "external_name"
             if !node.diagnostic_external_explicit
-              primary = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
               external = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
               if expected != node.name || slots.has_key?(external) || literal_keys.includes?({"external_name", 0})
                 raise ArgumentError.new("invalid implicit external-name observation")
               end
-              values = slots[primary]? || raise ArgumentError.new("implicit external name lacks internal evidence")
+              values = slots[internal]? || raise ArgumentError.new("implicit external name lacks internal evidence")
               verify_slot_value!(values, expected)
               next
             end
