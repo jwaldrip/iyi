@@ -1392,6 +1392,31 @@ describe Iyi::DiagnosticOrigin do
       Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/main.iyi", 0, "Def", "keyword")) }
   end
 
+  it "transports module header paths with their complete source segments" do
+    text = "module foo/bar"
+    digest = ::Crystal::Digest::SHA256.hexdigest(text)
+    header = Iyi::DiagnosticOrigin::Written.new("source-file:/absent/main.iyi", "/absent/main.iyi", 0, "ModuleHeader", "keyword")
+    first = Iyi::DiagnosticOrigin::Written.new("source-file:/absent/main.iyi", "/absent/main.iyi", 7, "Name", "module_segment")
+    second = Iyi::DiagnosticOrigin::Written.new("source-file:/absent/main.iyi", "/absent/main.iyi", 11, "Name", "module_segment")
+    segments = [
+      Iyi::DiagnosticSourceNameToken.new(first, nil, "module_segment", digest, text.bytesize, 7, 10, "Iyi", "IDENT", "foo"),
+      Iyi::DiagnosticSourceNameToken.new(second, nil, "module_segment", digest, text.bytesize, 11, 14, "Iyi", "IDENT", "bar"),
+    ]
+    origin = Iyi::DiagnosticOrigin::DerivedName.module_header_path(header, segments, nil, 1)
+    table = Iyi::IyiMod::DiagnosticOrigins.new
+    index = table.intern(origin)
+    io = IO::Memory.new
+    table.write(io)
+    io.rewind
+    restored = Iyi::IyiMod::DiagnosticOrigins.read(io).parent(index).as(Iyi::DiagnosticOrigin::DerivedName)
+    restored.should eq(origin)
+    restored.module_header_origin.should eq(header)
+    restored.source_segments.should eq(segments)
+    restored.package_name.should be_nil
+    restored.result_index.should eq(1)
+    expect_raises(ArgumentError) { Iyi::DiagnosticOrigin::DerivedName.module_header_path(header, segments, nil, 2) }
+  end
+
   it "round trips type-sugar source syntax witnesses without inventing identifier tokens" do
     text = "Int32*"
     source = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/types.cr", 5, "TypeSyntax", "token")

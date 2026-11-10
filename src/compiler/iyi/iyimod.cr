@@ -371,6 +371,7 @@ module Iyi::IyiMod
         origin.witnesses.each { |token| intern(token.lexical_origin) }
         origin.definition_origin.try { |definition| intern(definition) }
         origin.module_header_origin.try { |header| intern(header) }
+        origin.source_segments.each { |token| intern_source_token(token) }
         origin.source_names.try { |names| names.each { |source| intern_name_value(source.name) } }
         if producer = origin.producer
           case producer
@@ -945,6 +946,18 @@ module Iyi::IyiMod
           when "ImplicitModuleSelf"
             io.write_byte 5_u8
             io.write_bytes @indices[origin.module_header_origin.not_nil!], FORMAT
+          when "ModuleHeaderPath"
+            io.write_byte 6_u8
+            io.write_bytes @indices[origin.module_header_origin.not_nil!], FORMAT
+            io.write_bytes origin.source_segments.size.to_u32, FORMAT
+            origin.source_segments.each { |token| write_source_token(io, token) }
+            if package_name = origin.package_name
+              io.write_byte 1_u8
+              DiagnosticOrigins.write_string(io, package_name)
+            else
+              io.write_byte 0_u8
+            end
+            io.write_bytes origin.result_index.not_nil!.to_u32, FORMAT
           else
             raise ArgumentError.new("unknown diagnostic name derivation")
           end
@@ -1037,6 +1050,20 @@ module Iyi::IyiMod
                      DiagnosticOrigin::DerivedName.bound_projection(producer, guard, source, names, output, mode, first, last, kind, context)
                    when 5_u8
                      DiagnosticOrigin::DerivedName.implicit_module_self(table.parent(io.read_bytes(UInt32, FORMAT)))
+                   when 6_u8
+                     header = table.parent(io.read_bytes(UInt32, FORMAT))
+                     count = io.read_bytes(UInt32, FORMAT)
+                     if io.is_a?(IO::Memory) && count.to_u64 > ((io.size - io.pos) // 40).to_u64
+                       raise ArgumentError.new("module segments exceed remaining bytes")
+                     end
+                     segments = Array(DiagnosticSourceNameToken).new(count) { table.read_source_token(io) }
+                     package_name = case io.read_byte
+                                    when 0_u8 then nil
+                                    when 1_u8 then read_string(io)
+                                    else raise ArgumentError.new("invalid diagnostic package marker")
+                                    end
+                     index = io.read_bytes(UInt32, FORMAT).to_i32
+                     DiagnosticOrigin::DerivedName.module_header_path(header, segments, package_name, index)
                    else
                      raise ArgumentError.new("unknown diagnostic name derivation tag")
                    end
@@ -1513,8 +1540,9 @@ module Iyi::IyiMod
       insertion = source[0, doc_chars].bytesize
       expected = source.byte_slice(0, insertion) + "pub " + source.byte_slice(insertion, source.bytesize - insertion)
       raise ArgumentError.new("unknown macro export transformation") unless rendered == expected
-      transformed = remap_fragment(fragment, source, rendered) do |offset|
-        offset >= insertion ? offset + 4 : offset
+      transformed = remap_fragment(fragment, source, rendered) do |first, last|
+        raise ArgumentError.new("macro export insertion splits diagnostic token") if first < insertion && last > insertion
+        first >= insertion ? first + 4 : first
       end
       memory = io.as?(IO::Memory) || raise ArgumentError.new("diagnostic rendering requires an in-memory input")
       regions << write_diagnostic(memory, rendered, NO_POSITIONS, transformed, prefix, lines)
@@ -1590,7 +1618,7 @@ module Iyi::IyiMod
     end
 
     private def remap_fragment(fragment : DiagnosticFragment, source : String, rendered : String,
-                               &map : Int32 -> Int32) : DiagnosticFragment
+                               &map : Int32, Int32 -> Int32) : DiagnosticFragment
       unless ::Crystal::Digest::SHA256.hexdigest(source) == fragment.text_sha256
         raise ArgumentError.new("diagnostic fragment text guard mismatch")
       end
@@ -1598,12 +1626,23 @@ module Iyi::IyiMod
       lexical_mode = Lexer.iyi_source?(@artifact.source_path) ? "Iyi" : "Crystal"
       builder = DiagnosticFragmentBuilder.new(lexical_mode)
       event_indices = fragment.events.map do |event|
-        builder.add_event(rebase_event(event, yield event.input_start))
+        builder.add_event(rebase_event(event, yield(event.input_start, event.input_end)))
       end
       fragment.anchors.each do |anchor|
-        builder.add_anchor(anchor.copy_with(offset: yield(anchor.offset), event_index: event_indices[anchor.event_index]))
+        builder.add_anchor(anchor.copy_with(offset: yield(anchor.offset, anchor.offset + 1), event_index: event_indices[anchor.event_index]))
       end
       builder.finish(fragment.key, rendered)
+    end
+
+    private def append_copy_span(spans : Array(Tuple(Int32, Int32, Int32)), first : Int32, last : Int32, output : Int32) : Nil
+      return if first == last
+      if previous = spans.last?
+        if previous[1] == first && previous[2] + previous[1] - previous[0] == output
+          spans[-1] = {previous[0], last, previous[2]}
+          return
+        end
+      end
+      spans << {first, last, output}
     end
 
     # Render a guarded fragment through the existing location path, then map
@@ -1625,23 +1664,27 @@ module Iyi::IyiMod
         output_start = 0
         text.each_line(chomp: false) do |raw|
           line = raw.chomp
-          segments << {source_start, source_start + line.bytesize, output_start + prefix.bytesize}
+          append_copy_span(segments, source_start, source_start + line.bytesize, output_start + prefix.bytesize)
+          if raw.bytesize == line.bytesize + 1 && raw.ends_with?('\n')
+            append_copy_span(segments, source_start + line.bytesize, source_start + raw.bytesize,
+              output_start + prefix.bytesize + line.bytesize)
+          end
           source_start += raw.bytesize
           output_start += prefix.bytesize + line.bytesize + 1
         end
       end
-      mapped = remap_fragment(fragment, text, rendered) do |offset|
+      mapped = remap_fragment(fragment, text, rendered) do |first, last|
         if lines
-          segment = segments.find { |first, last, _| offset >= first && offset < last } ||
-                    raise ArgumentError.new("diagnostic event on a removed line ending")
-          segment[2] + offset - segment[0]
+          segment = segments.find { |from, to, _| first >= from && last <= to } ||
+                    raise ArgumentError.new("diagnostic token is not within one copied span")
+          segment[2] + first - segment[0]
         else
-          offset
+          first
         end
       end
-      events = mapped.events.map { |event| rebase_event(event, event.input_start + start) }
-      anchors = mapped.anchors.map { |anchor| anchor.copy_with(offset: anchor.offset + start) }
-      DiagnosticRegion.new(start, finish, ::Crystal::Digest::SHA256.hexdigest(rendered), events, anchors)
+      data = DiagnosticFragmentData.new(rendered, mapped.events, mapped.anchors)
+      source = DiagnosticRenderedFragment.new(rendered, data)
+      DiagnosticFragmentRewrite.place(source, String.new(io.to_slice), start)
     end
 
     private def place(pragmas, at : Int32, position : SourcePosition, index : Int32,
