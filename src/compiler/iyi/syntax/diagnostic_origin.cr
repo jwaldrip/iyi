@@ -217,6 +217,8 @@ module Iyi
     Tuple = 7
     NamedTuple = 8
     NilPredicate = 9
+    StringArray = 10
+    SymbolArray = 11
   end
   enum DiagnosticTypeSugarResult : UInt8
     Pointer = 1
@@ -226,6 +228,8 @@ module Iyi
     Tuple = 5
     NamedTuple = 6
     Self = 7
+    String = 8
+    Symbol = 9
   end
 
   record DiagnosticSourceSyntaxToken,
@@ -237,6 +241,15 @@ module Iyi
     lexical_mode : String,
     token_kind : String,
     raw_text : String do
+    def self.percent_array_opener?(kind : String, raw : String) : Bool
+      prefixes = case kind
+                 when "STRING_ARRAY_START" then ["%w", "%W"]
+                 when "SYMBOL_ARRAY_START" then ["%i"]
+                 else return false
+                 end
+      raw.bytesize == 3 && prefixes.includes?(raw.byte_slice(0, 2)) && ["(", "[", "{", "<", "|"].includes?(raw.byte_slice(2, 1))
+    end
+
     def initialize(@lexical_origin : DiagnosticOrigin, @input_sha256 : String, @input_bytesize : Int32,
                    @input_start : Int32, @input_end : Int32, @lexical_mode : String, @token_kind : String, @raw_text : String)
       unless @input_sha256.bytesize == 64 && @input_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) } &&
@@ -244,7 +257,8 @@ module Iyi
              @input_end - @input_start == @raw_text.bytesize && @raw_text.valid_encoding? &&
              {"Crystal", "Iyi"}.includes?(@lexical_mode) &&
              (({"*", "**", "?", "[", "]", "{", "}"}.includes?(@raw_text) && @token_kind == @raw_text) ||
-              (@token_kind == "IDENT" && {"self?", "nil?"}.includes?(@raw_text))) &&
+              (@token_kind == "IDENT" && {"self?", "nil?"}.includes?(@raw_text)) ||
+              DiagnosticSourceSyntaxToken.percent_array_opener?(@token_kind, @raw_text)) &&
              @lexical_origin.valid_for_anchor?("TypeSyntax", "token")
         raise ArgumentError.new("invalid observed type-syntax token")
       end
@@ -565,6 +579,7 @@ module Iyi
     SemanticPrinter
     StructuredSyntax
     ArtifactSemanticRenderer
+    LiteralValue
   end
 
   enum DiagnosticTokenSelection : UInt8
@@ -939,10 +954,10 @@ module Iyi
                    @passed_backslash_newline : Bool = false, @invalid_escape : Bool = false,
                    @line : Int32? = nil)
       if value = @value_base64
-        raise ArgumentError.new("rendered value on a non-string token") unless {"STRING", "SYMBOL"}.includes?(@token_kind)
-        DiagnosticRenderedToken.decode_value(value, @token_text.bytesize)
+        raise ArgumentError.new("rendered value on a non-string token") unless {"STRING", "SYMBOL", "CHAR", "MAGIC_FILE", "MAGIC_DIR"}.includes?(@token_kind)
+        DiagnosticRenderedToken.decode_value(value, DiagnosticRenderedToken.value_bound(@token_kind, @token_text))
       end
-      if @delimiter && !{"DELIMITER_START", "STRING", "DELIMITER_END", "INTERPOLATION_START"}.includes?(@token_kind)
+      if @delimiter && !{"DELIMITER_START", "STRING", "STRING_CONTINUATION", "DELIMITER_END", "INTERPOLATION_START", "STRING_ARRAY_START", "SYMBOL_ARRAY_START", "STRING_ARRAY_END"}.includes?(@token_kind)
         raise ArgumentError.new("rendered delimiter on a non-delimiter token")
       end
       raise ArgumentError.new("backslash-newline flag on a non-space token") if @passed_backslash_newline && @token_kind != "SPACE"
@@ -961,6 +976,11 @@ module Iyi
       raise ArgumentError.new("rendered value is not canonical base64") unless Base64.strict_encode(bytes) == value
       raise ArgumentError.new("rendered value exceeds token bound") if bytes.size > token_bytes
       bytes
+    end
+
+    # Magic constants expand to a path, so they are bounded by the unfolded limit rather than their token text.
+    def self.value_bound(token_kind : String, token_text : String) : Int32
+      {"MAGIC_FILE", "MAGIC_DIR"}.includes?(token_kind) ? DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i32 : token_text.bytesize
     end
   end
 
@@ -2091,6 +2111,11 @@ module Iyi
             raise ArgumentError.new("derived structural rendering differs")
           end
           derived
+        when "QuotedName"
+          expected_keys(object, %w(kind derivation_kind context input_sha256 input_bytesize lexical_mode literal_start literal_end rendered_text))
+          %w(context input_sha256 lexical_mode rendered_text).each { |key| budget.text(object[key].as_s) }
+          DerivedName.quoted_name(object["context"].as_s, object["input_sha256"].as_s, object["input_bytesize"].as_i,
+            object["lexical_mode"].as_s, object["literal_start"].as_i, object["literal_end"].as_i, object["rendered_text"].as_s)
         else
           raise ArgumentError.new("unknown diagnostic name derivation")
         end
@@ -2294,6 +2319,11 @@ module Iyi
       @source_segments = [] of DiagnosticSourceNameToken
       getter package_name : String? = nil
       getter result_index : Int32? = nil
+      getter quoted_input_sha256 : String? = nil
+      getter quoted_input_bytesize : Int32? = nil
+      getter quoted_lexical_mode : String? = nil
+      getter quoted_literal_start : Int32? = nil
+      getter quoted_literal_end : Int32? = nil
 
       def source_segments : Array(DiagnosticSourceNameToken); @source_segments.dup; end
 
@@ -2369,6 +2399,63 @@ module Iyi
 
       def self.regex_match_index(source_token : DiagnosticSourceNameToken, result : String) : DerivedName
         new(source_token, result)
+      end
+
+      def self.quoted_name(context : String, input_sha256 : String, input_bytesize : Int32, lexical_mode : String,
+                           literal_start : Int32, literal_end : Int32, rendered_text : String) : DerivedName
+        new(context, input_sha256, input_bytesize, lexical_mode, literal_start, literal_end, rendered_text)
+      end
+
+      # Mirrors Symbol.needs_quotes_for_named_argument? (src/symbol.cr:81-100): quotes are needed for "", "_",
+      # a leading ASCII digit, or any character outside [A-Za-z0-9_].
+      def self.quote_free_name?(text : String) : Bool
+        return false unless text.valid_encoding? && !text.empty? && text != "_"
+        text.each_char_with_index do |char, index|
+          return false if index == 0 && char.ascii_number?
+          return false unless char.ascii_letter? || char.ascii_number? || char == '_'
+        end
+        true
+      end
+
+      def self.lowercase_sha256?(digest : String) : Bool
+        digest.bytesize == 64 && digest.each_byte.all? { |byte| (48_u8..57_u8).includes?(byte) || (97_u8..102_u8).includes?(byte) }
+      end
+
+      def initialize(context : String, input_sha256 : String, input_bytesize : Int32, lexical_mode : String,
+                     literal_start : Int32, literal_end : Int32, rendered_text : String)
+        @source_token = nil
+        @derivation_kind = "QuotedName"
+        @definition_origin = nil
+        @parameter_slot = nil
+        @parameter_index = nil
+        @result = ""
+        @projection = nil
+        @fresh_index = nil
+        @production = nil
+        @sugar_result = nil
+        @lowering_index = nil
+        @witnesses = [] of DiagnosticSourceSyntaxToken
+        unless {"named_entry", "method_name"}.includes?(context) && DerivedName.lowercase_sha256?(input_sha256) &&
+               {"Crystal", "Iyi"}.includes?(lexical_mode) && input_bytesize >= 0 &&
+               literal_start >= 0 && literal_end > literal_start && literal_end <= input_bytesize &&
+               DerivedName.quote_free_name?(rendered_text)
+          raise ArgumentError.new("invalid quoted name")
+        end
+        first = rendered_text.to_slice[0]
+        kind = (65_u8..90_u8).includes?(first) ? "CONST" : "IDENT"
+        unless DiagnosticSourceNameToken.valid_token?(kind, rendered_text, lexical_mode, context) &&
+               literal_end - literal_start >= rendered_text.bytesize + 2
+          raise ArgumentError.new("invalid quoted name")
+        end
+        @rendered_text = rendered_text
+        @producer_context = context
+        @quoted_input_sha256 = input_sha256
+        @quoted_input_bytesize = input_bytesize
+        @quoted_lexical_mode = lexical_mode
+        @quoted_literal_start = literal_start
+        @quoted_literal_end = literal_end
+        set_graph_bounds!(1024_u64 + input_sha256.bytesize.to_u64 * 6 + lexical_mode.bytesize.to_u64 * 6 +
+                          rendered_text.bytesize.to_u64 * 6, [] of DiagnosticOrigin)
       end
 
       def initialize(source_token : DiagnosticSourceNameToken, @result : String)
@@ -2767,6 +2854,17 @@ module Iyi
         new(production, witnesses, result, lowering_index)
       end
 
+      def self.check_percent_array_sugar!(production : DiagnosticTypeSugar, witnesses : Array(DiagnosticSourceSyntaxToken),
+                                          result : DiagnosticTypeSugarResult, lowering_index : Int32) : Nil
+        kind = production.string_array? ? "STRING_ARRAY_START" : "SYMBOL_ARRAY_START"
+        expected = production.string_array? ? DiagnosticTypeSugarResult::String : DiagnosticTypeSugarResult::Symbol
+        unless witnesses.size == 1 && witnesses[0].token_kind == kind &&
+               DiagnosticSourceSyntaxToken.percent_array_opener?(kind, witnesses[0].raw_text) &&
+               result == expected && lowering_index == 0
+          raise ArgumentError.new("invalid type-sugar derivation")
+        end
+      end
+
       def initialize(@production : DiagnosticTypeSugar, witnesses : Array(DiagnosticSourceSyntaxToken),
                      result : DiagnosticTypeSugarResult, @lowering_index : Int32)
         @source_token = nil
@@ -2792,9 +2890,12 @@ module Iyi
           when DiagnosticTypeSugar::Tuple then {["{", "}"], [DiagnosticTypeSugarResult::Tuple], [0]}
           when DiagnosticTypeSugar::NamedTuple then {["{", "}"], [DiagnosticTypeSugarResult::NamedTuple], [0]}
           when DiagnosticTypeSugar::NilPredicate then {["nil?"], [DiagnosticTypeSugarResult::Nil], [0]}
+          when DiagnosticTypeSugar::StringArray, DiagnosticTypeSugar::SymbolArray then {[] of String, [] of DiagnosticTypeSugarResult, [] of Int32}
           else raise ArgumentError.new("unknown type-sugar production")
         end
-        unless @witnesses.map(&.raw_text) == expected && allowed_results.includes?(result) && allowed_indices.includes?(@lowering_index.not_nil!)
+        if production.string_array? || production.symbol_array?
+          DerivedName.check_percent_array_sugar!(production, @witnesses, result, @lowering_index.not_nil!)
+        elsif !(@witnesses.map(&.raw_text) == expected && allowed_results.includes?(result) && allowed_indices.includes?(@lowering_index.not_nil!))
           raise ArgumentError.new("invalid type-sugar derivation")
         end
         @witnesses.each_cons_pair do |left, right|
@@ -3123,7 +3224,7 @@ module Iyi
         end
       end
 
-      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index, @production, @sugar_result, @lowering_index, @witnesses, @bound_data, @module_header_origin, @source_segments, @package_name, @result_index, @operator_production, @operator_witnesses, @operator_input_sha256, @operator_input_bytesize, @operator_lexical_mode, @operator_anchor, @structural_production, @structural_witnesses, @structural_input_sha256, @structural_input_bytesize, @structural_lexical_mode, @structural_anchor, @structural_fresh_index
+      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index, @production, @sugar_result, @lowering_index, @witnesses, @bound_data, @module_header_origin, @source_segments, @package_name, @result_index, @operator_production, @operator_witnesses, @operator_input_sha256, @operator_input_bytesize, @operator_lexical_mode, @operator_anchor, @structural_production, @structural_witnesses, @structural_input_sha256, @structural_input_bytesize, @structural_lexical_mode, @structural_anchor, @structural_fresh_index, @quoted_input_sha256, @quoted_input_bytesize, @quoted_lexical_mode, @quoted_literal_start, @quoted_literal_end
 
       def to_json(json : JSON::Builder) : Nil
         json.object do
@@ -3182,6 +3283,14 @@ module Iyi
             json.field "fresh_index", @structural_fresh_index
             json.field "rendered_text", @rendered_text
             json.field "producer_context", @producer_context
+          elsif @derivation_kind == "QuotedName"
+            json.field "context", @producer_context
+            json.field "input_sha256", @quoted_input_sha256
+            json.field "input_bytesize", @quoted_input_bytesize
+            json.field "lexical_mode", @quoted_lexical_mode
+            json.field "literal_start", @quoted_literal_start
+            json.field "literal_end", @quoted_literal_end
+            json.field "rendered_text", @rendered_text
           else
             json.field "source_token", @source_token
             if @derivation_kind == "ParameterLowering"

@@ -21,8 +21,8 @@ ok = 0
 paths.each do |path|
   begin
     parser = Iyi::Parser.new(File.read(path))
-    parser.iyi = !crystal_mode
     parser.filename = path
+    parser.iyi = !crystal_mode
     parser.diagnostic_source_file = path
     parser.diagnostic_capture = true
     input = parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile, nil,
@@ -32,6 +32,7 @@ paths.each do |path|
     digest = stream.stream { |_chunk| }
 
     replay = input.replay_parser
+    raise "replay lexical mode differs" unless replay.iyi? == !crystal_mode
     replay_input = input.replay_capture_input(replay)
     raise "replay capture key differs" unless replay_input.capture_key == input.capture_key
     replay_stream = Iyi::DiagnosticAstFrameStream.new(replay.parse)
