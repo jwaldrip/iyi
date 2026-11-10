@@ -32,6 +32,24 @@ module Iyi
     @stacked_artifact : String? = nil
     @token_end_location : Location?
     @string_pool : StringPool
+    @diagnostic_lexical_observations : Array(DiagnosticRenderedToken)? = nil
+
+    def enable_diagnostic_observations : Nil
+      @diagnostic_lexical_observations ||= [] of DiagnosticRenderedToken
+    end
+
+    def diagnostic_lexical_observations : Array(DiagnosticRenderedToken)
+      @diagnostic_lexical_observations.try(&.dup) || [] of DiagnosticRenderedToken
+    end
+
+    private def diagnostic_record_observation : Nil
+      return unless observations = @diagnostic_lexical_observations
+      start = @token.input_offset
+      finish = @token.input_end
+      return unless start >= @input_offset_base && finish >= start && finish <= string.bytesize + @input_offset_base
+      raw = string.byte_slice(start - @input_offset_base, finish - start)
+      observations << DiagnosticRenderedToken.new(start, finish, @token.type.to_s, raw, iyi? ? "Iyi" : "Crystal")
+    end
 
     # This is an interface for storing data associated to a heredoc
     module HeredocItem
@@ -90,7 +108,7 @@ module Iyi
       end
     end
 
-    record LocDiagnosticEmission, end_offset : Int32, anchors : Array(DiagnosticMacroAnchor),
+    record LocDiagnosticEmission, end_offset : Int32, claims : Array(DiagnosticMacroClaim),
       generated_text : Array(DiagnosticGeneratedText),
       name_fragments : Array(DiagnosticMacroNameFragment) = [] of DiagnosticMacroNameFragment do
       def run_pragma(lexer)
@@ -1224,6 +1242,7 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
+      diagnostic_record_observation
     end
 
     def token_end_location
@@ -1796,6 +1815,7 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
+      diagnostic_record_observation
     end
 
     def next_string_token_noescape(delimiter_state)
@@ -2198,6 +2218,7 @@ module Iyi
       @token
     ensure
       @token.input_end = current_pos + @input_offset_base
+      diagnostic_record_observation
     end
 
     def delimiter_state_for_percent_literal
@@ -2226,12 +2247,16 @@ module Iyi
     def lookahead(preserve_token_on_fail = false, &)
       old_pos, old_line, old_column = current_pos, @line_number, @column_number
       old_place = {@filename, @artifact, @stacked, @stacked_filename, @stacked_artifact, @stacked_line_number, @stacked_column_number, @location_pragma_index}
+      old_diagnostic_observation_count = @diagnostic_lexical_observations.try(&.size)
       @temp_token.copy_from(@token) if preserve_token_on_fail
 
       result = yield
       unless result
         self.current_pos, @line_number, @column_number = old_pos, old_line, old_column
         @filename, @artifact, @stacked, @stacked_filename, @stacked_artifact, @stacked_line_number, @stacked_column_number, @location_pragma_index = old_place
+        if (observations = @diagnostic_lexical_observations) && (old_count = old_diagnostic_observation_count)
+          observations.pop(observations.size - old_count)
+        end
         @token.copy_from(@temp_token) if preserve_token_on_fail
       end
       result

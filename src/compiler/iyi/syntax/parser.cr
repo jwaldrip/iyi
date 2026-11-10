@@ -201,7 +201,11 @@ module Iyi
     # the source module.
     @diagnostic_module_path : String? = nil
     getter diagnostic_source_unit : String? = nil
-    property diagnostic_capture = false
+    getter diagnostic_capture = false
+
+    def diagnostic_capture=(@diagnostic_capture : Bool)
+      enable_diagnostic_observations if @diagnostic_capture
+    end
 
     # A source file with no iyi module header is its own compilation unit.
     # This must be set only for an actual parser input, never an artifact or
@@ -216,11 +220,16 @@ module Iyi
     @diagnostic_regions : Array(DiagnosticRegion)? = nil
     @diagnostic_pending : Hash({Int32, String, String}, DiagnosticAnchor)? = nil
     @diagnostic_restored_names : Hash(Int32, Hash(DiagnosticNameSlot, Array(DiagnosticNameValue)))? = nil
+    @diagnostic_restored_keys : Hash(Int32, {Int32, String, String})? = nil
+    @diagnostic_attached_nodes : Hash({Int32, String, String}, ASTNode)? = nil
     @diagnostic_input_digest : String? = nil
     @diagnostic_expansion : {DiagnosticOrigin, DiagnosticOrigin, String}? = nil
-    @diagnostic_emitted_anchors : Hash({Int32, String, String}, DiagnosticMacroAnchor)? = nil
+    @diagnostic_emitted_claims : Hash(DiagnosticMacroClaimKey, DiagnosticMacroClaim)? = nil
+    @diagnostic_writer_direct : Hash(DiagnosticWriterRef, Array(DiagnosticOrigin::Expanded))? = nil
     @diagnostic_generated_ranges : Array(DiagnosticGeneratedText)? = nil
     @diagnostic_name_fragments : Array(DiagnosticMacroNameFragment)? = nil
+    @diagnostic_syntax_witnesses : Hash(UInt64, Array(DiagnosticSyntaxWitness))? = nil
+    @diagnostic_assignment_witnesses : Hash(UInt64, {ASTNode, DiagnosticSyntaxWitness})? = nil
     @last_macro_control_offset : Int32? = nil
     @last_macro_control_snapshot : {Int32, String, String}? = nil
     @diagnostic_last_def_equals_offset : Int32? = nil
@@ -233,7 +242,9 @@ module Iyi
         ::raise ArgumentError.new("diagnostic macro expansion guard mismatch")
       end
       @diagnostic_expansion = {invocation, definition, guard}
-      emitted = @diagnostic_emitted_anchors = {} of {Int32, String, String} => DiagnosticMacroAnchor
+      enable_diagnostic_observations
+      emitted = @diagnostic_emitted_claims = {} of DiagnosticMacroClaimKey => DiagnosticMacroClaim
+      @diagnostic_writer_direct = {} of DiagnosticWriterRef => Array(DiagnosticOrigin::Expanded)
       generated_ranges = @diagnostic_generated_ranges = [] of DiagnosticGeneratedText
       fragments = @diagnostic_name_fragments = [] of DiagnosticMacroNameFragment
       return unless pragmas
@@ -245,19 +256,25 @@ module Iyi
             if start < 0 || finish < start || finish > string.bytesize + @input_offset_base
               ::raise ArgumentError.new("invalid diagnostic macro emission extent")
             end
-            entry.anchors.each do |anchor|
-              unless anchor.offset >= start && anchor.end_offset > anchor.offset && anchor.end_offset <= finish
-                ::raise ArgumentError.new("macro emission anchor outside emission bounds")
+            entry.claims.each do |claim|
+              key = claim.key
+              writer = key.writer
+              unless writer.start_offset >= start && writer.end_offset > writer.start_offset && writer.end_offset <= finish &&
+                     !key.kind.empty? && !key.role.empty?
+                ::raise ArgumentError.new("macro emission claim outside emission bounds")
               end
-              if anchor.source_origin.nil? == anchor.producer.nil?
-                ::raise ArgumentError.new("macro emission anchor must be either spliced or generated")
+              if attachment = claim.attachment.as?(DiagnosticMacroAttachment::Direct)
+                unless attachment.writer == writer
+                  ::raise ArgumentError.new("direct macro claim writer mismatch")
+                end
               end
-              if (source = anchor.source_origin) && !source.valid_for_anchor?(anchor.kind, anchor.role)
-                ::raise ArgumentError.new("macro splice anchor kind or role mismatch")
+              if evidence = claim.evidence.as?(DiagnosticAnchorEvidence::Spliced)
+                unless evidence.source_origin.valid_for_anchor?(key.kind, key.role)
+                  ::raise ArgumentError.new("macro splice anchor kind or role mismatch")
+                end
               end
-              key = {anchor.offset, anchor.kind, anchor.role}
-              ::raise ArgumentError.new("duplicate macro emission anchor") if emitted.has_key?(key)
-              emitted[key] = anchor
+              ::raise ArgumentError.new("duplicate macro emission claim") if emitted.has_key?(key)
+              emitted[key] = claim
             end
             entry.generated_text.each do |gen|
               if gen.start_offset < start || gen.end_offset > finish || gen.end_offset <= gen.start_offset
@@ -294,6 +311,7 @@ module Iyi
     # Offsets are in the full parser input, not in a line/column coordinate
     # system. The caller supplies only regions whose text is carried.
     def diagnostic_regions=(regions : Array(DiagnosticRegion))
+      enable_diagnostic_observations
       ordered = regions.sort_by(&.start_offset)
       pending = {} of {Int32, String, String} => DiagnosticAnchor
       last_end = @input_offset_base
@@ -307,7 +325,30 @@ module Iyi
         unless ::Crystal::Digest::SHA256.hexdigest(text) == region.text_sha256
           ::raise ArgumentError.new("diagnostic provenance text guard mismatch")
         end
-        region.anchors.each do |anchor|
+        region.events.each do |event|
+          unless event.input_start >= start && event.input_end <= finish &&
+                 string.byte_slice(event.input_start - @input_offset_base, event.input_end - event.input_start) == event.token_text
+            ::raise ArgumentError.new("diagnostic fragment token event differs from input")
+          end
+        end
+        region.anchors.each_with_index do |anchor, anchor_index|
+          ::raise ArgumentError.new("negative diagnostic fragment event index") if anchor.event_index < 0
+          event = region.events[anchor.event_index]? || ::raise(ArgumentError.new("missing diagnostic fragment event"))
+          unless event.selected_start == anchor.offset
+            ::raise ArgumentError.new("diagnostic fragment anchor and event differ")
+          end
+          dependency = case attachment = anchor.attachment
+                       when DiagnosticFragmentAttachment::HeadOf
+                         case head = attachment.head
+                         when DiagnosticFragmentHead::Anchor then head.anchor_index
+                         when DiagnosticFragmentHead::Syntax then head.adjacent_anchor_index
+                         end
+                       when DiagnosticFragmentAttachment::PayloadOf
+                         attachment.owner_anchor_index
+                       end
+          if dependency && (dependency < 0 || dependency >= anchor_index)
+            ::raise ArgumentError.new("invalid diagnostic fragment dependency")
+          end
           unless anchor.offset >= start && anchor.offset < finish && !anchor.kind.empty? && !anchor.role.empty?
             ::raise ArgumentError.new("diagnostic provenance anchor outside its region")
           end
@@ -329,8 +370,8 @@ module Iyi
       if pending = @diagnostic_pending
         ::raise ArgumentError.new("unconsumed diagnostic provenance anchors") unless pending.empty?
       end
-      if emitted = @diagnostic_emitted_anchors
-        ::raise ArgumentError.new("unconsumed diagnostic macro emitted anchors") unless emitted.empty?
+      if emitted = @diagnostic_emitted_claims
+        ::raise ArgumentError.new("unconsumed diagnostic macro emitted claims") unless emitted.empty?
       end
       if fragments = @diagnostic_name_fragments
         ::raise ArgumentError.new("unconsumed diagnostic macro name fragments") unless fragments.empty?
@@ -338,16 +379,36 @@ module Iyi
       if restored = @diagnostic_restored_names
         ::raise ArgumentError.new("unattached diagnostic name metadata") unless restored.empty?
       end
+      if witnesses = @diagnostic_syntax_witnesses
+        ::raise ArgumentError.new("unconsumed diagnostic syntax witnesses") unless witnesses.empty?
+      end
+      @diagnostic_assignment_witnesses = nil
     end
 
     private def diagnostic_anchor(kind : String, role : String, offset : Int32, token_end : Int32? = nil,
                                   name_context : String? = nil, token_snapshot : {Int32, String, String}? = nil) : DiagnosticOrigin?
       if regions = @diagnostic_regions
-        if regions.any? { |region| offset >= region.start_offset && offset < region.end_offset }
-          anchor = @diagnostic_pending.not_nil!.delete({offset, kind, role}) ||
+        if region = regions.find { |item| offset >= item.start_offset && offset < item.end_offset }
+          key = {offset, kind, role}
+          anchor = @diagnostic_pending.not_nil![key]? ||
             ::raise(ArgumentError.new("missing diagnostic provenance anchor at byte #{offset} for #{kind}:#{role}"))
+          unless anchor.attachment.is_a?(DiagnosticFragmentAttachment::Direct)
+            ::raise ArgumentError.new("diagnostic attachment requires its accepted grammar relationship")
+          end
+          snapshot = token_snapshot || (@token.input_offset == offset ? diagnostic_current_token_snapshot : nil)
+          event = region.events[anchor.event_index]
+          unless snapshot && event.input_start == offset && event.input_end == snapshot[0] &&
+                 event.token_kind == snapshot[1] && event.lexical_mode == snapshot[2] &&
+                 event.token_text == string.byte_slice(offset - @input_offset_base, snapshot[0] - offset) &&
+                 event.selected_end == (token_end || snapshot[0])
+            ::raise ArgumentError.new("diagnostic fragment event does not match accepted token")
+          end
+          @diagnostic_pending.not_nil!.delete(key)
           unless anchor.name_slots.empty?
             (@diagnostic_restored_names ||= {} of Int32 => Hash(DiagnosticNameSlot, Array(DiagnosticNameValue)))[offset] = anchor.name_slots
+            restored_keys = (@diagnostic_restored_keys ||= {} of Int32 => {Int32, String, String})
+            ::raise ArgumentError.new("ambiguous restored diagnostic name") if restored_keys.has_key?(offset)
+            restored_keys[offset] = key
           end
           return anchor.origin
         end
@@ -370,8 +431,9 @@ module Iyi
           end
         end
         context = name_context
-        key = {offset, kind, role}
-        emitted = @diagnostic_emitted_anchors.try(&.[key]?)
+        writer = DiagnosticWriterRef.new(offset, end_pos)
+        key = DiagnosticMacroClaimKey.new(writer, kind, role)
+        emitted = @diagnostic_emitted_claims.try(&.[key]?)
         ranges = @diagnostic_generated_ranges.not_nil!
         fragments = @diagnostic_name_fragments.not_nil!
         overlapping_fragments = fragments.select { |f| f.start_offset < end_pos && f.end_offset > offset }
@@ -381,26 +443,30 @@ module Iyi
         end
         parts = [] of DiagnosticEmissionPart
         if emitted
-          unless emitted.end_offset == end_pos
-            ::raise ArgumentError.new("macro structural anchor extent does not match accepted token")
+          unless emitted.attachment.is_a?(DiagnosticMacroAttachment::Direct)
+            ::raise ArgumentError.new("macro attachment requires its accepted grammar relationship")
           end
           unless overlapping_fragments.empty?
             ::raise ArgumentError.new("macro structural anchor overlaps name fragment")
           end
           ranges.each do |range|
             next unless range.start_offset < end_pos && range.end_offset > offset
-            producer = emitted.producer
-            projection = producer == DiagnosticMacroProducer::EmptyTupleProjection ||
-                         producer == DiagnosticMacroProducer::EmptyNamedTupleProjection
-            unless projection && range.producer == producer && range.emitter_origin == emitted.emitter_origin &&
+            evidence = emitted.evidence.as?(DiagnosticAnchorEvidence::Constructed)
+            projection = evidence && (evidence.producer == DiagnosticMacroProducer::EmptyTupleProjection ||
+                                      evidence.producer == DiagnosticMacroProducer::EmptyNamedTupleProjection)
+            unless projection && kind == "Call" && role == "method" && raw == "new" &&
+                   range.producer == evidence.not_nil!.producer && range.emitter_origin == emitted.emitter_origin &&
                    range.start_offset <= offset && range.end_offset >= end_pos
               ::raise ArgumentError.new("macro anchor overlaps generated text at byte #{offset}")
             end
           end
-          if source = emitted.source_origin
-            parts << DiagnosticEmissionPart::AstAnchor.new(offset, end_pos, emitted.emitter_origin, source)
+          case evidence = emitted.evidence
+          when DiagnosticAnchorEvidence::Spliced
+            parts << DiagnosticEmissionPart::AstAnchor.new(offset, end_pos, emitted.emitter_origin, evidence.source_origin)
+          when DiagnosticAnchorEvidence::Constructed
+            parts << DiagnosticEmissionPart::Generated.new(offset, end_pos, emitted.emitter_origin, evidence.producer)
           else
-            parts << DiagnosticEmissionPart::Generated.new(offset, end_pos, emitted.emitter_origin, emitted.producer.not_nil!)
+            ::raise ArgumentError.new("invalid direct macro claim evidence")
           end
         else
           cursor = offset
@@ -431,8 +497,19 @@ module Iyi
         event = DiagnosticTokenEvent.new(offset, snapshot[0], snapshot[1], raw, snapshot[2], selection, parts)
         origin = DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2],
           kind, role, context, event, DiagnosticAnchorUse::Direct.new)
-        @diagnostic_emitted_anchors.try(&.delete(key)) if emitted
-        overlapping_fragments.each { |fragment| fragments.delete(fragment) }
+        if emitted
+          @diagnostic_emitted_claims.not_nil!.delete(key)
+          diagnostic_record_writer_direct(writer, origin)
+        end
+        overlapping_fragments.each do |fragment|
+          fragment_writer = DiagnosticWriterRef.new(fragment.start_offset, fragment.end_offset)
+          diagnostic_record_writer_direct(fragment_writer, origin)
+          fragments.delete(fragment)
+        end
+        ranges.each do |range|
+          next unless range.start_offset < end_pos && range.end_offset > offset
+          diagnostic_record_writer_direct(DiagnosticWriterRef.new(range.start_offset, range.end_offset), origin)
+        end
         return origin
       end
       return nil unless @diagnostic_capture
@@ -444,6 +521,384 @@ module Iyi
       end
       DiagnosticOrigin::Written.new(module_path, filename, offset, kind, role)
     end
+
+    private def diagnostic_record_writer_direct(writer : DiagnosticWriterRef, origin : DiagnosticOrigin::Expanded) : Nil
+      direct = @diagnostic_writer_direct.not_nil!
+      values = direct[writer] ||= [] of DiagnosticOrigin::Expanded
+      if existing = values.find { |item| item.token_event == origin.token_event }
+        ::raise ArgumentError.new("multiple direct uses for one writer event") unless existing == origin
+      else
+        values << origin
+      end
+    end
+
+    private def diagnostic_generated_event(start : Int32, snapshot : {Int32, String, String}, raw_only : Bool) : DiagnosticTokenEvent?
+      finish = snapshot[0]
+      return nil unless finish > start
+      ranges = @diagnostic_generated_ranges.not_nil!
+      parts = [] of DiagnosticEmissionPart
+      cursor = start
+      while cursor < finish
+        range = ranges.find { |item| item.start_offset <= cursor && item.end_offset > cursor }
+        return nil unless range
+        if raw_only && !{DiagnosticMacroProducer::MacroTemplate, DiagnosticMacroProducer::MacroId,
+                         DiagnosticMacroProducer::MacroVar, DiagnosticMacroProducer::MacroVerbatim,
+                         DiagnosticMacroProducer::YieldWrapper, DiagnosticMacroProducer::SemanticPrinter}.includes?(range.producer)
+          return nil
+        end
+        limit = Math.min(finish, range.end_offset)
+        if (previous = parts.last?).is_a?(DiagnosticEmissionPart::Generated) &&
+           previous.end_offset == cursor && previous.producer == range.producer && previous.emitter_origin == range.emitter_origin
+          parts[parts.size - 1] = DiagnosticEmissionPart::Generated.new(previous.start_offset, limit, range.emitter_origin, range.producer)
+        else
+          parts << DiagnosticEmissionPart::Generated.new(cursor, limit, range.emitter_origin, range.producer)
+        end
+        cursor = limit
+      end
+      raw = string.byte_slice(start - @input_offset_base, finish - start)
+      DiagnosticTokenEvent.new(start, finish, snapshot[1], raw, snapshot[2], DiagnosticTokenSelection::Whole, parts)
+    end
+
+    private def diagnostic_raw_witness(role : DiagnosticWitnessRole) : DiagnosticSyntaxWitness?
+      return nil unless @diagnostic_expansion
+      snapshot = diagnostic_current_token_snapshot
+      return nil unless snapshot
+      event = diagnostic_generated_event(@token.input_offset, snapshot, true)
+      event ? DiagnosticSyntaxWitness.new(role, event) : nil
+    end
+
+
+    private def diagnostic_writer_starts_with_event?(writer : DiagnosticWriterRef, event : DiagnosticTokenEvent) : Bool
+      observations = @diagnostic_lexical_observations
+      return false unless observations
+      first = observations.find do |observation|
+        !{"SPACE", "NEWLINE", "COMMENT", "EOF"}.includes?(observation.token_kind) &&
+          observation.input_start < writer.end_offset && observation.input_end > writer.start_offset
+      end
+      return false unless first
+      first.input_start == event.input_start && first.input_end == event.input_end &&
+        first.token_kind == event.token_kind && first.token_text == event.token_text && first.lexical_mode == event.lexical_mode
+    end
+
+    private def diagnostic_path_head(kind : String, role : String, offset : Int32,
+                                     snapshot : {Int32, String, String}?, rule : DiagnosticHeadRule,
+                                     child : ASTNode, raw_witnesses : Array(DiagnosticSyntaxWitness)? = nil) : DiagnosticOrigin?
+      if expansion = @diagnostic_expansion
+        path = case child
+               when Path then child
+               when Generic then child.name.as?(Path)
+               end
+        ::raise ArgumentError.new("diagnostic path head has no path child") unless path
+        values = path.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment)]?
+        lexical = values.try(&.first?).try(&.artifact_origin).as?(DiagnosticOrigin::Expanded)
+        ::raise ArgumentError.new("diagnostic path head lacks an expanded lexical child") unless lexical
+        global_prefix = path.global? && snapshot && snapshot[1] == "::"
+        event = if global_prefix
+                  diagnostic_generated_event(offset, snapshot.not_nil!, false) ||
+                    ::raise(ArgumentError.new("missing diagnostic global-prefix token event"))
+                else
+                  lexical.token_event
+                end
+        unless snapshot && event.input_start == offset && event.input_end == snapshot[0] &&
+               event.token_kind == snapshot[1] && event.lexical_mode == snapshot[2] &&
+               event.token_text == string.byte_slice(offset - @input_offset_base, snapshot[0] - offset) &&
+               (!global_prefix || event.selected_end == lexical.token_event.selected_start)
+          ::raise ArgumentError.new("diagnostic macro path head is not the accepted leading token")
+        end
+        head_origin = if global_prefix
+                        DiagnosticHead::Syntax.new(DiagnosticHeadSyntax::GlobalPathPrefix, lexical).as(DiagnosticHead)
+                      else
+                        DiagnosticHead::Anchor.new(lexical).as(DiagnosticHead)
+                      end
+        claims = @diagnostic_emitted_claims.not_nil!.values.select do |claim|
+          next false unless claim.key.kind == kind && claim.key.role == role
+          attachment = claim.attachment.as?(DiagnosticMacroAttachment::HeadOf)
+          next false unless attachment && attachment.rule == rule
+          case head = attachment.head
+          when DiagnosticMacroHead::Anchor
+            !global_prefix && head.writer == claim.key.writer &&
+              (@diagnostic_writer_direct.not_nil![head.writer]?.try(&.includes?(lexical)) || false)
+          when DiagnosticMacroHead::Syntax
+            global_prefix && head.form == DiagnosticHeadSyntax::GlobalPathPrefix &&
+              head.writer == claim.key.writer && (adjacent = head.adjacent_name_writer) &&
+              (@diagnostic_writer_direct.not_nil![adjacent]?.try(&.includes?(lexical)) || false)
+          else
+            false
+          end
+        end
+        if claims.empty? && raw_witnesses && !raw_witnesses.empty?
+          colliding = @diagnostic_emitted_claims.not_nil!.values.any? do |claim|
+            claim.key.kind == kind && claim.key.role == role &&
+              claim.key.writer.start_offset < event.selected_end && claim.key.writer.end_offset > event.selected_start
+          end
+          ::raise ArgumentError.new("raw syntax cannot replace a structured head claim") if colliding
+          use = DiagnosticAnchorUse::HeadOf.new(rule, DiagnosticAnchorEvidence::RawSyntax.new(raw_witnesses),
+            head_origin, nil)
+          return DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2],
+            kind, role, nil, event, use)
+        end
+        unless claims.size == 1
+          ::raise ArgumentError.new("missing or ambiguous diagnostic macro path head claim")
+        end
+        claim = claims.first
+        unless diagnostic_writer_starts_with_event?(claim.key.writer, event)
+          ::raise ArgumentError.new("diagnostic macro head is not the writer's first token")
+        end
+        use = DiagnosticAnchorUse::HeadOf.new(rule, claim.evidence, head_origin, claim.emitter_origin)
+        origin = DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2],
+          kind, role, nil, event, use)
+        @diagnostic_emitted_claims.not_nil!.delete(claim.key)
+        return origin
+      end
+      regions = @diagnostic_regions
+      region = regions.try &.find { |item| offset >= item.start_offset && offset < item.end_offset }
+      return diagnostic_anchor(kind, role, offset, token_snapshot: snapshot) unless region
+      key = {offset, kind, role}
+      anchor = @diagnostic_pending.not_nil![key]? ||
+        ::raise(ArgumentError.new("missing diagnostic head attachment"))
+      attachment = anchor.attachment.as?(DiagnosticFragmentAttachment::HeadOf) ||
+        ::raise(ArgumentError.new("diagnostic path head lacks HeadOf"))
+      ::raise ArgumentError.new("wrong diagnostic path head rule") unless attachment.rule == rule
+      event = region.events[anchor.event_index]
+      unless snapshot && event.input_start == offset && event.input_end == snapshot[0] &&
+             event.token_kind == snapshot[1] && event.lexical_mode == snapshot[2] &&
+             event.token_text == string.byte_slice(offset - @input_offset_base, snapshot[0] - offset)
+        ::raise ArgumentError.new("diagnostic path head token mismatch")
+      end
+      path = case child
+             when Path then child
+             when Generic then child.name.as?(Path)
+             end
+      ::raise ArgumentError.new("diagnostic path head has no path child") unless path
+      dependency_index = case head = attachment.head
+                         when DiagnosticFragmentHead::Anchor
+                           head.anchor_index
+                         when DiagnosticFragmentHead::Syntax
+                           unless head.form == DiagnosticHeadSyntax::GlobalPathPrefix && path.global? &&
+                                  event.selected_text == "::"
+                             ::raise ArgumentError.new("invalid diagnostic path prefix")
+                           end
+                           head.adjacent_anchor_index
+                         end
+      dependency = dependency_index ? region.anchors[dependency_index]? : nil
+      unless dependency && dependency.name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment)) &&
+             @diagnostic_attached_nodes.try(&.[{dependency.offset, dependency.kind, dependency.role}]?).try(&.same?(path))
+        ::raise ArgumentError.new("diagnostic path head is not the accepted child")
+      end
+      case head = attachment.head
+      when DiagnosticFragmentHead::Anchor
+        ::raise ArgumentError.new("diagnostic path head event mismatch") unless dependency.event_index == anchor.event_index
+      when DiagnosticFragmentHead::Syntax
+        ::raise ArgumentError.new("diagnostic path prefix is not adjacent") unless dependency.offset == event.selected_end
+      end
+      ::raise ArgumentError.new("diagnostic path head has unexpected slots") unless anchor.name_slots.empty?
+      @diagnostic_pending.not_nil!.delete(key)
+      anchor.origin
+    end
+
+    private def diagnostic_first_multi_node(node : ASTNode) : ASTNode
+      case node
+      when Call
+        node.obj ? diagnostic_first_multi_node(node.obj.not_nil!) : node
+      when Generic
+        diagnostic_first_multi_node(node.name)
+      else
+        node
+      end
+    end
+
+    private def diagnostic_multi_head(multi : MultiAssign, offset : Int32,
+                                      snapshot : {Int32, String, String}?, raw_witnesses : Array(DiagnosticSyntaxWitness)? = nil) : DiagnosticOrigin?
+      first = multi.targets.first? || ::raise(ArgumentError.new("multiassignment lacks its first target"))
+      child = diagnostic_first_multi_node(first)
+      syntax = if first.is_a?(Splat)
+                 DiagnosticHeadSyntax::FirstSplat
+               elsif first.is_a?(Underscore)
+                 DiagnosticHeadSyntax::FirstUnderscore
+               elsif child.is_a?(Path) && child.global? && snapshot.try(&.[1]) == "::"
+                 DiagnosticHeadSyntax::GlobalPathPrefix
+               elsif child.is_a?(Expressions) && child.keyword.paren? && snapshot.try(&.[1]) == "("
+                 DiagnosticHeadSyntax::ParenthesizedFirstTarget
+               end
+      if expansion = @diagnostic_expansion
+        lexical = if syntax && syntax != DiagnosticHeadSyntax::GlobalPathPrefix
+                    nil
+                  elsif child.is_a?(Call)
+                    child.diagnostic_origin.as?(DiagnosticOrigin::Expanded)
+                  else
+                    slot = child.is_a?(Path) ? DiagnosticNameSlotKind::PathSegment : DiagnosticNameSlotKind::Primary
+                    child.diagnostic_name_slots[DiagnosticNameSlot.new(slot)]?.try(&.first?).try(&.artifact_origin).as?(DiagnosticOrigin::Expanded)
+                  end
+        event = if syntax
+                  snapshot.try { |value| diagnostic_generated_event(offset, value, false) }
+                else
+                  lexical.try(&.token_event)
+                end
+        unless event && snapshot && event.input_start == offset && event.input_end == snapshot[0] &&
+               event.token_kind == snapshot[1] && event.lexical_mode == snapshot[2] &&
+               event.token_text == string.byte_slice(offset - @input_offset_base, snapshot[0] - offset)
+          ::raise ArgumentError.new("multiassignment head is not the accepted token")
+        end
+        if syntax == DiagnosticHeadSyntax::GlobalPathPrefix &&
+           (!lexical || event.selected_end != lexical.token_event.selected_start)
+          ::raise ArgumentError.new("multiassignment global prefix is not adjacent to its path")
+        end
+        claims = @diagnostic_emitted_claims.not_nil!.values.select do |claim|
+          next false unless claim.key.kind == "Literal" && claim.key.role == "multiassign"
+          attachment = claim.attachment.as?(DiagnosticMacroAttachment::HeadOf)
+          next false unless attachment && attachment.rule == DiagnosticHeadRule::MultiAssignHead
+          case head = attachment.head
+          when DiagnosticMacroHead::Anchor
+            !syntax && lexical && head.writer == claim.key.writer &&
+              (@diagnostic_writer_direct.not_nil![head.writer]?.try(&.includes?(lexical)) || false)
+          when DiagnosticMacroHead::Syntax
+            if syntax == DiagnosticHeadSyntax::GlobalPathPrefix
+              adjacent = head.adjacent_name_writer
+              head.form == syntax && head.writer == claim.key.writer && adjacent && lexical &&
+                (@diagnostic_writer_direct.not_nil![adjacent]?.try(&.includes?(lexical)) || false)
+            else
+              syntax && head.form == syntax && head.writer == claim.key.writer && head.adjacent_name_writer.nil?
+            end
+          else
+            false
+          end
+        end
+        head = if form = syntax
+                 DiagnosticHead::Syntax.new(form, form == DiagnosticHeadSyntax::GlobalPathPrefix ? lexical : nil).as(DiagnosticHead)
+               else
+                 DiagnosticHead::Anchor.new(lexical.not_nil!).as(DiagnosticHead)
+               end
+        if claims.empty? && raw_witnesses && raw_witnesses.size == 2
+          colliding = @diagnostic_emitted_claims.not_nil!.values.any? do |claim|
+            claim.key.kind == "Literal" && claim.key.role == "multiassign" &&
+              claim.key.writer.start_offset < event.selected_end && claim.key.writer.end_offset > event.selected_start
+          end
+          ::raise ArgumentError.new("raw syntax cannot replace a structured multiassignment claim") if colliding
+          use = DiagnosticAnchorUse::HeadOf.new(DiagnosticHeadRule::MultiAssignHead,
+            DiagnosticAnchorEvidence::RawSyntax.new(raw_witnesses), head, nil)
+          return DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2], "Literal", "multiassign", nil, event, use)
+        end
+        ::raise ArgumentError.new("missing or ambiguous multiassignment head claim") unless claims.size == 1
+        claim = claims.first
+        unless diagnostic_writer_starts_with_event?(claim.key.writer, event)
+          ::raise ArgumentError.new("multiassignment head is not the writer's first token")
+        end
+        use = DiagnosticAnchorUse::HeadOf.new(DiagnosticHeadRule::MultiAssignHead, claim.evidence, head, claim.emitter_origin)
+        origin = DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2], "Literal", "multiassign", nil, event, use)
+        @diagnostic_emitted_claims.not_nil!.delete(claim.key)
+        return origin
+      end
+      regions = @diagnostic_regions
+      region = regions.try &.find { |item| offset >= item.start_offset && offset < item.end_offset }
+      return diagnostic_anchor("Literal", "multiassign", offset, token_snapshot: snapshot) unless region
+      key = {offset, "Literal", "multiassign"}
+      anchor = @diagnostic_pending.not_nil![key]? || ::raise(ArgumentError.new("missing multiassignment head attachment"))
+      attachment = anchor.attachment.as?(DiagnosticFragmentAttachment::HeadOf) || ::raise(ArgumentError.new("multiassignment lacks HeadOf"))
+      ::raise ArgumentError.new("wrong multiassignment head rule") unless attachment.rule == DiagnosticHeadRule::MultiAssignHead
+      event = region.events[anchor.event_index]
+      unless snapshot && event.input_start == offset && event.input_end == snapshot[0] &&
+             event.token_kind == snapshot[1] && event.lexical_mode == snapshot[2] &&
+             event.token_text == string.byte_slice(offset - @input_offset_base, snapshot[0] - offset)
+        ::raise ArgumentError.new("multiassignment artifact head token mismatch")
+      end
+      case head = attachment.head
+      when DiagnosticFragmentHead::Anchor
+        dependency = region.anchors[head.anchor_index]? || ::raise(ArgumentError.new("missing multiassignment child"))
+        unless !syntax && dependency.event_index == anchor.event_index &&
+               @diagnostic_attached_nodes.try(&.[{dependency.offset, dependency.kind, dependency.role}]?).try(&.same?(child))
+          ::raise ArgumentError.new("multiassignment head is not the accepted first target")
+        end
+      when DiagnosticFragmentHead::Syntax
+        if syntax == DiagnosticHeadSyntax::GlobalPathPrefix
+          index = head.adjacent_anchor_index
+          dependency = index ? region.anchors[index]? : nil
+          unless head.form == syntax && dependency && dependency.offset == event.selected_end &&
+                 dependency.name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment)) &&
+                 @diagnostic_attached_nodes.try(&.[{dependency.offset, dependency.kind, dependency.role}]?).try(&.same?(child))
+            ::raise ArgumentError.new("multiassignment global path is not the accepted child")
+          end
+        elsif !(syntax && head.form == syntax && head.adjacent_anchor_index.nil?)
+          ::raise ArgumentError.new("multiassignment syntax head does not match its first target")
+        end
+      else
+        ::raise ArgumentError.new("invalid multiassignment head")
+      end
+      ::raise ArgumentError.new("multiassignment head has unexpected slots") unless anchor.name_slots.empty?
+      @diagnostic_pending.not_nil!.delete(key)
+      anchor.origin
+    end
+
+    private def diagnostic_payload_origin(owner : ASTNode, owner_origin : DiagnosticOrigin,
+                                          offset : Int32, snapshot : {Int32, String, String}?,
+                                          rule : DiagnosticPayloadRule) : DiagnosticOrigin
+      owner_kind, owner_role = rule == DiagnosticPayloadRule::RegexInterpolationPayload ? {"Literal", "regex"} : {"Call", "method"}
+      if expansion = @diagnostic_expansion
+        expanded = owner_origin.as?(DiagnosticOrigin::Expanded) ||
+          ::raise(ArgumentError.new("macro payload owner is not expanded"))
+        claims = @diagnostic_emitted_claims.not_nil!.values.select do |claim|
+          next false unless claim.key.kind == "Literal" && claim.key.role == "interpolation"
+          attachment = claim.attachment.as?(DiagnosticMacroAttachment::PayloadOf)
+          next false unless attachment && attachment.rule == rule && claim.key.writer == attachment.owner_key.writer &&
+                            attachment.owner_key.kind == owner_kind && attachment.owner_key.role == owner_role
+          @diagnostic_writer_direct.not_nil![attachment.owner_key.writer]?.try(&.includes?(expanded)) || false
+        end
+        if claims.empty?
+          colliding = @diagnostic_emitted_claims.not_nil!.values.any? do |claim|
+            claim.key.kind == "Literal" && claim.key.role == "interpolation" &&
+              claim.key.writer.start_offset < expanded.token_event.selected_end &&
+              claim.key.writer.end_offset > expanded.token_event.selected_start
+          end
+          ::raise ArgumentError.new("raw payload cannot replace a structured claim") if colliding
+          raw_owner = expanded.anchor_use.is_a?(DiagnosticAnchorUse::Direct) &&
+                      expanded.token_event.byte_parts.all? do |part|
+                        part.is_a?(DiagnosticEmissionPart::Generated) &&
+                          {DiagnosticMacroProducer::MacroTemplate, DiagnosticMacroProducer::MacroId,
+                           DiagnosticMacroProducer::MacroVar, DiagnosticMacroProducer::MacroVerbatim,
+                           DiagnosticMacroProducer::YieldWrapper, DiagnosticMacroProducer::SemanticPrinter}.includes?(part.producer)
+                      end
+          ::raise ArgumentError.new("missing diagnostic macro payload claim") unless raw_owner
+          evidence = DiagnosticAnchorEvidence::DerivedFromOwner.new
+          use = DiagnosticAnchorUse::PayloadOf.new(rule, evidence, expanded, nil)
+        else
+          ::raise ArgumentError.new("ambiguous diagnostic macro payload claim") unless claims.size == 1
+          claim = claims.first
+          unless diagnostic_writer_starts_with_event?(claim.key.writer, expanded.token_event)
+            ::raise ArgumentError.new("diagnostic payload owner is not the writer's first token")
+          end
+          use = DiagnosticAnchorUse::PayloadOf.new(rule, claim.evidence, expanded, claim.emitter_origin)
+          @diagnostic_emitted_claims.not_nil!.delete(claim.key)
+        end
+        return DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2],
+          "Literal", "interpolation", nil, expanded.token_event, use)
+      end
+      if regions = @diagnostic_regions
+        if region = regions.find { |item| offset >= item.start_offset && offset < item.end_offset }
+          key = {offset, "Literal", "interpolation"}
+          anchor = @diagnostic_pending.not_nil![key]? || ::raise(ArgumentError.new("missing diagnostic payload attachment"))
+          attachment = anchor.attachment.as?(DiagnosticFragmentAttachment::PayloadOf) ||
+            ::raise(ArgumentError.new("diagnostic payload lacks PayloadOf"))
+          ::raise ArgumentError.new("wrong diagnostic payload rule") unless attachment.rule == rule
+          dependency = region.anchors[attachment.owner_anchor_index]? || ::raise(ArgumentError.new("missing diagnostic payload owner"))
+          unless dependency.kind == owner_kind && dependency.role == owner_role && dependency.offset == offset &&
+                 dependency.event_index == anchor.event_index && dependency.origin == owner_origin &&
+                 @diagnostic_attached_nodes.try(&.[{offset, owner_kind, owner_role}]?).try(&.same?(owner))
+            ::raise ArgumentError.new("diagnostic payload is not attached to the accepted owner")
+          end
+          event = region.events[anchor.event_index]
+          unless snapshot && event.input_start == offset && event.input_end == snapshot[0] &&
+                 event.token_kind == snapshot[1] && event.lexical_mode == snapshot[2] &&
+                 event.token_text == string.byte_slice(offset - @input_offset_base, snapshot[0] - offset) &&
+                 anchor.name_slots.empty?
+            ::raise ArgumentError.new("diagnostic payload event mismatch")
+          end
+          @diagnostic_pending.not_nil!.delete(key)
+          return anchor.origin || ::raise(ArgumentError.new("diagnostic payload lacks origin"))
+        end
+      end
+      slot = rule == DiagnosticPayloadRule::RegexInterpolationPayload ? "regex:interpolation" : "command:interpolation"
+      DiagnosticOrigin::Synthetic.new(owner_origin, "literal_expansion_node", slot)
+    end
+
     private def diagnostic_current_token_snapshot : {Int32, String, String}?
       return nil unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
       {@token.input_end, @token.type.to_s, iyi? ? "Iyi" : "Crystal"}
@@ -499,6 +954,8 @@ module Iyi
       slots = node.diagnostic_name_slots
       slots[slot] = append && slots.has_key?(slot) ? slots[slot] + values : values
       node.diagnostic_name_slots = slots
+      key = @diagnostic_restored_keys.try(&.delete(offset)) || ::raise(ArgumentError.new("missing restored diagnostic name key"))
+      (@diagnostic_attached_nodes ||= {} of {Int32, String, String} => ASTNode)[key] = node
       @diagnostic_restored_names.not_nil!.delete(offset)
       true
     end
@@ -549,6 +1006,11 @@ module Iyi
         end
       end
       variable.diagnostic_name_slots = slots
+      if attached = @diagnostic_attached_nodes
+        attached.each do |key, node|
+          attached[key] = variable if node.same?(call)
+        end
+      end
     end
 
     # iyi: the namespace a module of *package* whose in-package path is
@@ -857,6 +1319,7 @@ module Iyi
       location = @token.location
       multi_offset = @token.input_offset
       multi_snapshot = diagnostic_current_token_snapshot
+      splat_witness = @token.type.op_star? ? diagnostic_raw_witness(DiagnosticWitnessRole::Splat) : nil
 
       if @token.type.op_star?
         lhs_splat = {index: 0, location: @token.location}
@@ -865,6 +1328,7 @@ module Iyi
 
       last = parse_expression
       skip_space
+      comma_witness = @token.type.op_comma? ? diagnostic_raw_witness(DiagnosticWitnessRole::Comma) : nil
 
       last_is_target = multi_assign_target?(last) || multi_assign_middle?(last)
 
@@ -961,7 +1425,11 @@ module Iyi
       end
 
       multi = MultiAssign.new(targets, values).at(location)
-      multi.diagnostic_origin = diagnostic_anchor("Literal", "multiassign", multi_offset, token_snapshot: multi_snapshot)
+      assignment_witness = @diagnostic_assignment_witnesses.try(&.delete(assign.object_id))
+      equals_witness = assignment_witness.try { |entry| entry[1] if entry[0].same?(assign) }
+      first_witness = splat_witness || comma_witness
+      witnesses = first_witness && equals_witness ? [first_witness, equals_witness] : nil
+      multi.diagnostic_origin = diagnostic_multi_head(multi, multi_offset, multi_snapshot, witnesses)
       parse_expression_suffix multi, location
     end
 
@@ -1125,6 +1593,7 @@ module Iyi
         when .op_eq?
           slash_is_regex!
           break unless can_be_assigned?(atomic)
+          equals_witness = diagnostic_raw_witness(DiagnosticWitnessRole::Equals)
 
           if atomic.is_a?(Call) && atomic.name == "[]"
             next_token_skip_space_or_newline
@@ -1134,6 +1603,7 @@ module Iyi
             arg = iyi_nest { parse_op_assign_no_control }
             atomic.args << arg
             atomic.end_location = arg.end_location
+            (@diagnostic_assignment_witnesses ||= {} of UInt64 => {ASTNode, DiagnosticSyntaxWitness})[atomic.object_id] = {atomic, equals_witness} if equals_witness
           else
             if atomic.is_a?(Path) && (inside_def? || inside_fun? || @is_constant_assignment)
               raise "dynamic constant assignment. Constants can only be declared at the top level or inside other types."
@@ -1204,7 +1674,11 @@ module Iyi
 
             constant_target = atomic.is_a?(Path)
             atomic = Assign.new(atomic, atomic_value).at(location)
-            atomic.diagnostic_origin = diagnostic_anchor("Assign", "constant", diagnostic_start, token_snapshot: diagnostic_snapshot) if constant_target
+            (@diagnostic_assignment_witnesses ||= {} of UInt64 => {ASTNode, DiagnosticSyntaxWitness})[atomic.object_id] = {atomic, equals_witness} if equals_witness
+            if constant_target
+              witnesses = equals_witness ? [equals_witness] : nil
+              atomic.diagnostic_origin = diagnostic_path_head("Assign", "constant", diagnostic_start, diagnostic_snapshot, DiagnosticHeadRule::ConstantAssignHead, atomic.target, witnesses)
+            end
             atomic.doc = doc
             atomic
           end
@@ -1626,6 +2100,7 @@ module Iyi
             when .op_eq?
               atomic = Call.new(atomic, name)
               unexpected_token unless can_be_assigned?(atomic)
+              equals_witness = diagnostic_raw_witness(DiagnosticWitnessRole::Equals)
 
               # Rewrite 'f.x = arg' as f.x=(arg)
               next_token
@@ -1658,6 +2133,7 @@ module Iyi
               atomic.name_location = name_location
               atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
               diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin, token_snapshot: name_snapshot) if diagnostic_identifier
+              (@diagnostic_assignment_witnesses ||= {} of UInt64 => {ASTNode, DiagnosticSyntaxWitness})[atomic.object_id] = {atomic, equals_witness} if equals_witness
               next
             when .assignment_operator?
               call = Call.new(atomic, name)
@@ -1988,10 +2464,24 @@ module Iyi
                      when Select              then "select"
                      end
       if literal_role && !atomic.diagnostic_origin
-        atomic.diagnostic_origin = diagnostic_anchor("Literal", literal_role, literal_offset, token_snapshot: literal_snapshot)
+        witnesses = @diagnostic_syntax_witnesses.try(&.delete(atomic.object_id))
+        atomic.diagnostic_origin = if atomic.is_a?(ArrayLiteral) && (name = atomic.name)
+                                     diagnostic_path_head("Literal", literal_role, literal_offset, literal_snapshot, DiagnosticHeadRule::NamedArrayHead, name, witnesses)
+                                   elsif atomic.is_a?(HashLiteral) && (name = atomic.name)
+                                     diagnostic_path_head("Literal", literal_role, literal_offset, literal_snapshot, DiagnosticHeadRule::NamedHashHead, name, witnesses)
+                                   else
+                                     diagnostic_anchor("Literal", literal_role, literal_offset, token_snapshot: literal_snapshot)
+                                   end
       end
       if atomic.is_a?(RegexLiteral) && (origin = atomic.diagnostic_origin) && (pattern = atomic.value).is_a?(StringInterpolation)
-        pattern.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "regex:interpolation")
+        if @diagnostic_regions
+          (@diagnostic_attached_nodes ||= {} of {Int32, String, String} => ASTNode)[{literal_offset, "Literal", "regex"}] = atomic
+        end
+        resolved = diagnostic_payload_origin(atomic, origin, literal_offset, literal_snapshot, DiagnosticPayloadRule::RegexInterpolationPayload)
+        if (existing = pattern.diagnostic_origin) && existing != resolved
+          ::raise ArgumentError.new("conflicting diagnostic regex payload origin")
+        end
+        pattern.diagnostic_origin = resolved
       end
       if atomic.is_a?(ArrayLiteral) && (origin = atomic.diagnostic_origin)
         atomic.elements.each_with_index do |element, index|
@@ -2335,16 +2825,23 @@ module Iyi
     end
 
     def parse_type_declaration(var, is_const = false)
+      colon_witness = is_const ? diagnostic_raw_witness(DiagnosticWitnessRole::Colon) : nil
+      equals_witness = nil
       next_token_skip_space_or_newline
       var_type = parse_bare_proc_type
       skip_space
       if @token.type.op_eq?
+        equals_witness = diagnostic_raw_witness(DiagnosticWitnessRole::Equals) if is_const
         next_token_skip_space_or_newline
         value = parse_op_assign_no_control
       elsif is_const
         raise "expected '=' for constant type declaration"
       end
-      TypeDeclaration.new(var, var_type, value).at(var).at_end(value || var_type)
+      declaration = TypeDeclaration.new(var, var_type, value).at(var).at_end(value || var_type)
+      if colon_witness && equals_witness
+        (@diagnostic_syntax_witnesses ||= {} of UInt64 => Array(DiagnosticSyntaxWitness))[declaration.object_id] = [colon_witness, equals_witness]
+      end
+      declaration
     end
 
     def next_comes_colon_space?
@@ -2401,7 +2898,8 @@ module Iyi
           warnings.add_warning_at(@token.location, "space required before colon in type declaration (run `iyi fmt` to fix this)")
         end
         declaration = parse_type_declaration(type, is_const: true)
-        declaration.diagnostic_origin = diagnostic_anchor("Assign", "constant", diagnostic_start, token_snapshot: diagnostic_snapshot)
+        witnesses = @diagnostic_syntax_witnesses.try(&.delete(declaration.object_id))
+        declaration.diagnostic_origin = diagnostic_path_head("Assign", "constant", diagnostic_start, diagnostic_snapshot, DiagnosticHeadRule::ConstantTypeHead, type, witnesses)
         declaration
       else
         parse_custom_literal type
@@ -2417,6 +2915,7 @@ module Iyi
 
     def parse_custom_literal(type)
       if @token.type.op_lcurly?
+        opener = diagnostic_raw_witness(DiagnosticWitnessRole::Open)
         tuple_or_hash = parse_hash_or_tuple_literal allow_of: false
 
         skip_space
@@ -2428,9 +2927,11 @@ module Iyi
         case tuple_or_hash
         when TupleLiteral
           ary = ArrayLiteral.new(tuple_or_hash.elements, name: type).at(tuple_or_hash)
+          (@diagnostic_syntax_witnesses ||= {} of UInt64 => Array(DiagnosticSyntaxWitness))[ary.object_id] = [opener] if opener
           return ary
         when HashLiteral
           tuple_or_hash.name = type
+          (@diagnostic_syntax_witnesses ||= {} of UInt64 => Array(DiagnosticSyntaxWitness))[tuple_or_hash.object_id] = [opener] if opener
           return tuple_or_hash
         else
           raise "BUG: tuple_or_hash should be tuple or hash, not #{tuple_or_hash}"
@@ -4159,7 +4660,14 @@ module Iyi
         result = Call.new("`", result).at(result)
         result.diagnostic_origin = diagnostic_anchor("Call", "method", diagnostic_start, token_snapshot: diagnostic_snapshot)
         if (origin = result.diagnostic_origin) && (interpolation = result.as(Call).args.first).is_a?(StringInterpolation)
-          interpolation.diagnostic_origin = DiagnosticOrigin::Synthetic.new(origin, "literal_expansion_node", "command:interpolation")
+          if @diagnostic_regions
+            (@diagnostic_attached_nodes ||= {} of {Int32, String, String} => ASTNode)[{diagnostic_start, "Call", "method"}] = result
+          end
+          resolved = diagnostic_payload_origin(result, origin, diagnostic_start, diagnostic_snapshot, DiagnosticPayloadRule::CommandInterpolationPayload)
+          if (existing = interpolation.diagnostic_origin) && existing != resolved
+            ::raise ArgumentError.new("conflicting diagnostic command payload origin")
+          end
+          interpolation.diagnostic_origin = resolved
         end
       when .regex?
         # iyi: no compile-time pattern check. It was `Regex.error?`, which is
@@ -5958,17 +6466,19 @@ module Iyi
 
       skip_space
       free_var_bounds = nil
+      free_var_observations = nil
       if @token.type.ident? && @token.value == "forall"
         next_token_skip_space
-        free_vars, free_var_bounds = parse_def_free_vars
+        free_vars, free_var_bounds, free_var_observations = parse_def_free_vars
       end
 
       skip_space
       where_bounds = nil
+      where_observations = nil
       if @token.type.ident? && @token.value == "where"
         where_location = @token.location
         next_token_skip_space
-        where_bounds = parse_where_bounds
+        where_bounds, where_observations = parse_where_bounds
         iyi_check_method_where(where_location, where_bounds, free_vars, is_abstract)
       end
 
@@ -6007,6 +6517,16 @@ module Iyi
       node = Def.new name, params, body, receiver, block_param, return_type, @is_macro_def, @block_arity, is_abstract, splat_index, double_splat: double_splat, free_vars: free_vars
       node.free_var_bounds = free_var_bounds
       node.where_bounds = where_bounds
+      if observations = free_var_observations
+        observations.each_with_index do |observation, index|
+          diagnostic_name(node, observation[0], "type_parameter", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter, index), token_snapshot: observation[1])
+        end
+      end
+      if observations = where_observations
+        observations.each_with_index do |observation, index|
+          diagnostic_name(node, observation[0], "where_variable", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::WhereVariable, index), token_snapshot: observation[1])
+        end
+      end
       node.name_location = name_location
       diagnostic_name(node, name_offset, "definition_name", token_snapshot: name_snapshot)
       diagnostic_name(node, name_equals_offset, "definition_name", append: true, token_snapshot: name_equals_snapshot) if name_equals_offset
@@ -6061,10 +6581,12 @@ module Iyi
     # is already in scope — an associated type of the enclosing trait. Keeping
     # the two separate keeps `forall`'s rule intact: a name it did not
     # introduce is not its business.
-    private def parse_where_bounds : Hash(String, ASTNode)
+    private def parse_where_bounds
       bounds = {} of String => ASTNode
+      observations = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of DiagnosticTokenObservation : nil
       loop do
         check Token::Kind::CONST
+        observations.try &.<<({@token.input_offset, diagnostic_current_token_snapshot})
         name = @token.value.to_s
         if bounds.has_key?(name)
           raise "duplicate `where` bound for #{name}", @token
@@ -6080,7 +6602,7 @@ module Iyi
         break unless @token.type.op_comma?
         next_token_skip_space_or_newline
       end
-      bounds
+      {bounds, observations}
     end
 
     # iyi: `def area : Float64` with no body, inside a trait, and the next
@@ -6270,11 +6792,13 @@ module Iyi
     # bounded by — `forall B : IntoBody` (SPEC.md II.7 rule 3). A bound is a
     # trait path and nothing else: there is no separate constraint language,
     # so what you can bound by is what you can implement.
-    def parse_def_free_vars : {Array(String), Hash(String, ASTNode)?}
+    def parse_def_free_vars
       free_vars = [] of String
       bounds = nil
+      observations = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of DiagnosticTokenObservation : nil
       while true
         check :CONST
+        observations.try &.<<({@token.input_offset, diagnostic_current_token_snapshot})
         free_var = @token.value.to_s
         raise "duplicated free variable name: #{free_var}", @token if free_vars.includes?(free_var)
         free_vars << free_var
@@ -6295,7 +6819,7 @@ module Iyi
           break
         end
       end
-      {free_vars, bounds}
+      {free_vars, bounds, observations}
     end
 
     # A bound, and a supertrait, is a trait as a type position names it, so a
