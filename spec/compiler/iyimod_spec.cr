@@ -102,7 +102,7 @@ describe Iyi::DiagnosticOrigin do
       generated = [] of Iyi::DiagnosticGeneratedText
       node.to_s(io, diagnostic_emissions: emissions, diagnostic_generated_text: generated)
       io.to_s.should eq("prefix " + expected)
-      emissions.should eq([Iyi::DiagnosticMacroAnchor.new(7 + method_offset, "Call", "method", nil, nil, producer)])
+      emissions.should eq([Iyi::DiagnosticMacroAnchor.new(7 + method_offset, 10 + method_offset, "Call", "method", nil, nil, producer)])
       generated.should eq([Iyi::DiagnosticGeneratedText.new(7, 7 + expected.bytesize, nil, producer)])
     end
   end
@@ -911,7 +911,7 @@ describe Iyi::DiagnosticOrigin do
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
     original = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticMacroAnchor.new(0, "ProcLiteral", "arrow", emitter, original, nil)
+    anchor = Iyi::DiagnosticMacroAnchor.new(0, 2, "ProcLiteral", "arrow", emitter, original, nil)
     emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [] of Iyi::DiagnosticGeneratedText)
     pragmas = {0 => [emission] of Iyi::Lexer::LocPragma}
     parser = Iyi::Parser.new(text)
@@ -961,7 +961,7 @@ describe Iyi::DiagnosticOrigin do
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     emitter = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 20, "MacroDirective", "expression")
     original = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "ProcLiteral", "arrow")
-    anchor = Iyi::DiagnosticMacroAnchor.new(0, "ProcLiteral", "arrow", emitter, original, nil)
+    anchor = Iyi::DiagnosticMacroAnchor.new(0, 2, "ProcLiteral", "arrow", emitter, original, nil)
     generated = Iyi::DiagnosticGeneratedText.new(0, text.bytesize, emitter, Iyi::DiagnosticMacroProducer::MacroId)
     emission = Iyi::Lexer::LocDiagnosticEmission.new(text.bytesize, [anchor], [generated])
     parser = Iyi::Parser.new(text)
