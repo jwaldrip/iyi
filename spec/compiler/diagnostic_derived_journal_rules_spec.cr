@@ -7,17 +7,48 @@ require "../support/syntax"
 
 DERIVED_RULES_SUFFIXES = [".cr", ".iyi"]
 
-DERIVED_RULES_OPERATOR_SOURCES = [
-  "x += 1\n", "a.x += 1\n", "a[1] += 2\n", "x -1\n", "x -1-1\n", "x -0x10\n", "a[1]\n", "a[b[1]]\n",
-  "a[\"[\"]\n", "a[\"]\"]\n", "a[%w[x]]\n", "a[1]?\n", "a[1] = 2\n", "a[1]=2\n", "a[] = 2\n", "a[1, 2] = 3\n",
-  "a.x = 1\n", "a.x=1\n", "a.x =\n 1\n", "`ls`\n", "`ls \#{x}`\n", "%x(ls)\n",
-]
+# Locals the sources assign or read as a value. `x += 1` is refused for an undeclared `x`, and a NUMBER after an
+# undeclared `x` is a command argument rather than the signed-number split. Only `x` is declared, so the other
+# names keep the shapes the existing operator-claim specs rely on. The source text and offsets are unchanged.
+DERIVED_RULES_LOCALS = Set(String).new(["x"])
 
-DERIVED_RULES_SUGAR_SOURCES = [
-  "def f(x : Int32*)\nend\n", "def f(x : Int32**)\nend\n", "def f(x : Int32?)\nend\n",
-  "class A\n  def f(x : self?)\n  end\nend\n", "def f(x : Int32[4])\nend\n", "def f(x : {Int32, String})\nend\n",
-  "def f(x : {a: Int32})\nend\n", "def f(x : {Int32, {Int32, String}})\nend\n", "x.nil?\n", "%w()\n", "%i()\n",
-]
+# Each source and the production its derived name must take. Every replayed derived name must also pass the rules.
+# NilableExpression has no source here yet, so it is not covered by this table.
+DERIVED_RULES_SHAPES = {
+  "x += 1\n"                        => "OpAssign",
+  "a.x += 1\n"                      => "OpAssign",
+  "a[1] += 2\n"                     => "OpAssign",
+  "x -1\n"                          => "SignedNumber",
+  "x -1-1\n"                        => "SignedNumber",
+  "x -0x10\n"                       => "SignedNumber",
+  "a[1]\n"                          => "Index",
+  "a[b[1]]\n"                       => "Index",
+  "a[\"[\"]\n"                      => "Index",
+  "a[\"]\"]\n"                      => "Index",
+  "a[%w[x]]\n"                      => "Index",
+  "a[1]?\n"                         => "IndexQuery",
+  "a[1] = 2\n"                      => "IndexAssign",
+  "a[1]=2\n"                        => "IndexAssign",
+  "a[] = 2\n"                       => "IndexAssign",
+  "a[1, 2] = 3\n"                   => "IndexAssign",
+  "a.x = 1\n"                       => "Setter",
+  "a.x=1\n"                         => "Setter",
+  "a.x =\n 1\n"                     => "Setter",
+  "`ls`\n"                          => "Command",
+  "`ls \#{x}`\n"                    => "Command",
+  "%x(ls)\n"                        => "Command",
+  "def f(x : Int32*)\nend\n"        => "Pointer",
+  "def f(x : Int32**)\nend\n"       => "DoublePointer",
+  "def f(x : Int32?)\nend\n"        => "NilableType",
+  "class A\n  def f(x : self?)\n  end\nend\n" => "SelfNilableType",
+  "def f(x : Int32[4])\nend\n"      => "StaticArray",
+  "def f(x : {Int32, String})\nend\n" => "Tuple",
+  "def f(x : {a: Int32})\nend\n"    => "NamedTuple",
+  "def f(x : {Int32, {Int32, String}})\nend\n" => "Tuple",
+  "x.nil?\n"                        => "NilPredicate",
+  "%w()\n"                          => "StringArray",
+  "%i()\n"                          => "SymbolArray",
+}
 
 # Records `source` over a real temp file, then replays it as bind! does. Returns the claim (the input), the
 # replayed root, and the replay journal.
@@ -25,7 +56,7 @@ private def derived_rules_spec_claim(source : String, suffix : String) : {Iyi::A
   path = File.tempname("derived_rules", suffix)
   File.write(path, source)
   begin
-    parser = Iyi::Parser.new(source, nil, [Set(String).new], Iyi::WarningCollection.new)
+    parser = Iyi::Parser.new(source, nil, [DERIVED_RULES_LOCALS.dup], Iyi::WarningCollection.new)
     parser.filename = path
     ledger = Iyi::DiagnosticCaptureLedger.new
     _, claim, _ = Iyi::DiagnosticCaptureAuthority.record_source(ledger, parser)
@@ -87,31 +118,28 @@ end
 
 # The journal rebuilt from its own entries, with `mutate` applied to a copy.
 private def derived_rules_spec_rebuild(journal : Iyi::DiagnosticReplayJournal,
-                                       mutate : Array(Iyi::DiagnosticRenderedToken) -> Array(Iyi::DiagnosticRenderedToken)) : Iyi::DiagnosticReplayJournal
+                                       &mutate : Array(Iyi::DiagnosticRenderedToken) -> Array(Iyi::DiagnosticRenderedToken)) : Iyi::DiagnosticReplayJournal
   Iyi::DiagnosticReplayJournal.new(mutate.call(journal.entries))
 end
 
 describe "S3 derived journal rules: positive controls" do
   DERIVED_RULES_SUFFIXES.each do |suffix|
-    it "accepts every derived operator name and type sugar in #{suffix} mode" do
-      counts = Hash(String, Int32).new(0)
-      (DERIVED_RULES_OPERATOR_SOURCES + DERIVED_RULES_SUGAR_SOURCES).each do |source|
+    DERIVED_RULES_SHAPES.each do |source, production|
+      it "names #{production} for #{source.inspect} and passes its rules in #{suffix} mode" do
         claim, root, journal = derived_rules_spec_claim(source, suffix)
         sequence = Iyi::DiagnosticJournalSequence.new(journal)
-        derived_rules_spec_origins(root).each do |origin|
+        origins = derived_rules_spec_origins(root)
+        names = origins.map do |origin|
           if origin.derivation_kind == "OperatorName"
             Iyi::DiagnosticDerivedJournalRules.verify_operator!(origin, claim, sequence) { |_visits| }
-            counts[origin.operator_production.to_s] += 1
-          elsif origin.derivation_kind == "TypeSugar"
-            Iyi::DiagnosticDerivedJournalRules.verify_type_sugar!(origin, claim, sequence) { |_visits| }
-            counts[origin.production.to_s] += 1
+            origin.operator_production.to_s
+          else
+            Iyi::DiagnosticDerivedJournalRules.verify_type_sugar!(origin, claim, sequence) { |_visits| } if origin.derivation_kind == "TypeSugar"
+            origin.production.to_s
           end
         end
+        names.should contain production
       end
-      operator_names = ["OpAssign", "SignedNumber", "Index", "IndexQuery", "IndexAssign", "Setter", "Command"]
-      sugar_names = ["Pointer", "DoublePointer", "NilableType", "SelfNilableType", "StaticArray", "Tuple",
-                     "NamedTuple", "NilPredicate", "StringArray", "SymbolArray"]
-      (operator_names + sugar_names - counts.keys).should be_empty
     end
 
     it "charges one journal visit per entry walked in #{suffix} mode" do
