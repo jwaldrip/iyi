@@ -52,7 +52,7 @@ end
 
 def line_pragma_map(*entries : {Int32, Array(Iyi::Lexer::LocPragma)}) : Hash(Int32, Array(Iyi::Lexer::LocPragma))
   hash = {} of Int32 => Array(Iyi::Lexer::LocPragma)
-  entries.each { |position, list| hash[position] = list }
+  entries.each { |position, list| hash[position] = Array(Iyi::Lexer::LocPragma).new(list.size) { |index| list[index] } }
   hash
 end
 

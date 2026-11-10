@@ -247,6 +247,40 @@ module Iyi
       end
     end
 
+    # Records punctuation this printer writes outside any claim as StructuredSyntax
+    # generated text, so the parser can attribute each token byte. Each call records
+    # exactly one token. Capture off, or no generated-text list, writes plain text.
+    private def diagnostic_structured_syntax(text : String) : Nil
+      generated = @diagnostic_generated_text
+      unless generated
+        @str << text
+        return
+      end
+      start = @str.pos.to_i32
+      @str << text
+      finish = @str.pos.to_i32
+      diagnostic_assert_unrecorded!(start, finish)
+      generated << DiagnosticGeneratedText.new(start, finish, @diagnostic_emitter, DiagnosticMacroProducer::StructuredSyntax)
+    end
+
+    # Fails closed: the parser rejects overlapping generated ranges and macro anchors
+    # that overlap generated text, so a new record may not cover recorded bytes.
+    private def diagnostic_assert_unrecorded!(start : Int32, finish : Int32) : Nil
+      recorded = [] of {Int32, Int32}
+      if claims = @diagnostic_claims
+        claims.each { |claim| recorded << {claim.key.writer.start_offset, claim.key.writer.end_offset} }
+      end
+      if generated = @diagnostic_generated_text
+        generated.each { |item| recorded << {item.start_offset, item.end_offset} }
+      end
+      if names = @diagnostic_name_fragments
+        names.each { |item| recorded << {item.start_offset, item.end_offset} }
+      end
+      if recorded.any? { |range| range[0] < finish && range[1] > start }
+        raise ArgumentError.new("structural syntax overlaps recorded text")
+      end
+    end
+
     private def diagnostic_name(node : ASTNode, text : String, context : String,
                                 slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary),
                                 artifact_anchor = true) : Nil
@@ -972,32 +1006,42 @@ module Iyi
 
       if node_obj && node.name.in?("[]", "[]?") && !block
         in_parenthesis(need_parens, node_obj)
-        diagnostic_anchor(node, "Call", "method") { @str << "[" }
-        visit_args(node)
-
-        if short_block_call
-          @str << ", " if node.args.present? || node.named_args
-          diagnostic_anchor(short_block.not_nil!, "Block", "ampersand") { @str << "&." }
-          visit_call short_block_call, ignore_obj: true
-        end
-
-        if node.name == "[]"
-          @str << "]"
+        if node.args.empty? && !node.named_args && !node.block_arg && !short_block_call
+          diagnostic_anchor(node, "Call", "method") { @str << "[]" }
         else
-          @str << "]?"
+          diagnostic_anchor(node, "Call", "method") { @str << "[" }
+          visit_args(node)
+
+          if short_block_call
+            @str << ", " if node.args.present? || node.named_args
+            diagnostic_anchor(short_block.not_nil!, "Block", "ampersand") { @str << "&" }
+            diagnostic_structured_syntax(".")
+            visit_call short_block_call, ignore_obj: true
+          end
+
+          diagnostic_structured_syntax("]")
         end
+        diagnostic_structured_syntax("?") unless node.name == "[]"
       elsif node_obj && node.name == "[]=" && !node.args.empty? && !block
         in_parenthesis(need_parens, node_obj)
-        diagnostic_anchor(node, "Call", "method") { @str << "[" }
-        visit_args(node, exclude_last: true)
+        if node.args.size == 1 && !node.named_args && !node.block_arg && !short_block_call
+          diagnostic_anchor(node, "Call", "method") { @str << "[]" }
+        else
+          diagnostic_anchor(node, "Call", "method") { @str << "[" }
+          visit_args(node, exclude_last: true)
 
-        if short_block_call
-          @str << ", " if node.args.size > 1 || node.named_args
-          diagnostic_anchor(short_block.not_nil!, "Block", "ampersand") { @str << "&." }
-          visit_call short_block_call, ignore_obj: true
+          if short_block_call
+            @str << ", " if node.args.size > 1 || node.named_args
+            diagnostic_anchor(short_block.not_nil!, "Block", "ampersand") { @str << "&" }
+            diagnostic_structured_syntax(".")
+            visit_call short_block_call, ignore_obj: true
+          end
+
+          diagnostic_structured_syntax("]")
         end
-
-        @str << "] = "
+        @str << ' '
+        diagnostic_structured_syntax("=")
+        @str << ' '
         accept_as_expression node.args.last
       elsif node_obj && node.name.in?(UNARY_OPERATORS) && node.args.empty? && !node.named_args && !node.block_arg && !block && !short_block_call
         diagnostic_anchor(node, "Call", "method") { @str << node.name }
@@ -1028,7 +1072,9 @@ module Iyi
         if Lexer.setter?(node.name)
           diagnostic_anchor(node, "Call", "method", name_splice: true)
           diagnostic_name(node, node.name.rchop, "method_name")
-          @str << " = "
+          @str << ' '
+          diagnostic_structured_syntax("=")
+          @str << ' '
           node.args.join(@str, ", ") { |arg| accept_as_expression arg }
         else
           diagnostic_anchor(node, "Call", "method", name_splice: true)
@@ -1038,7 +1084,8 @@ module Iyi
 
             if short_block_call
               @str << ", " if node.args.present? || node.named_args
-              diagnostic_anchor(short_block.not_nil!, "Block", "ampersand") { @str << "&." }
+              diagnostic_anchor(short_block.not_nil!, "Block", "ampersand") { @str << "&" }
+              diagnostic_structured_syntax(".")
               visit_call short_block_call, ignore_obj: true
             end
           end
@@ -1619,24 +1666,30 @@ module Iyi
     end
 
     def visit(node : ProcNotation)
-      @str << '(' unless drop_parens_for_proc_notation?
+      diagnostic_structured_syntax("(") unless drop_parens_for_proc_notation?
 
       # only drop the outermost pair of parentheses; this produces
       # `foo(x : (T -> U) -> V, W)`, not
       # `foo(x : ((T -> U) -> V), W)` nor `foo(x : T -> U -> V, W)`
       drop_parens_for_proc_notation(false) do
         if inputs = node.inputs
-          inputs.join(@str, ", ", &.accept self)
+          inputs.each_with_index do |input, index|
+            if index > 0
+              diagnostic_structured_syntax(",")
+              @str << ' '
+            end
+            input.accept self
+          end
           @str << ' '
         end
-        @str << "->"
+        diagnostic_structured_syntax("->")
         if output = node.output
           @str << ' '
           output.accept self
         end
       end
 
-      @str << ')' unless drop_parens_for_proc_notation?
+      diagnostic_structured_syntax(")") unless drop_parens_for_proc_notation?
       false
     end
 
@@ -2024,32 +2077,60 @@ module Iyi
     def visit(node : FunDef)
       diagnostic_anchor(node, "FunDef", "keyword") { @str << "fun" }
       @str << ' '
-      if node.name == node.real_name
-        @str << node.name
-      else
-        @str << node.name
+      diagnostic_name(node, node.name, "method_name")
+      if node.name != node.real_name
         @str << " = "
-        Symbol.quote_for_named_argument(@str, node.real_name)
+        external = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
+        rendered = String.build { |io| Symbol.quote_for_named_argument(io, node.real_name) }
+        if node.diagnostic_name_slots[external]?
+          if rendered == node.real_name
+            diagnostic_name(node, node.real_name, "method_name", external)
+          elsif rendered == "\"#{node.real_name}\""
+            # The source token is the bare name. The quotes are printer syntax, recorded
+            # around it, so the token's own bytes stay exact.
+            diagnostic_structured_syntax("\"")
+            diagnostic_name(node, node.real_name, "method_name", external)
+            diagnostic_structured_syntax("\"")
+          else
+            raise ArgumentError.new("external name projection is not recorded")
+          end
+        elsif node.diagnostic_macro_lineage.constructed?
+          diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { @str << rendered }
+        else
+          @str << rendered
+        end
       end
       if node.args.size > 0
-        @str << '('
-        node.args.join(@str, ", ") do |arg|
+        diagnostic_structured_syntax("(")
+        node.args.each_with_index do |arg, index|
+          if index > 0
+            diagnostic_structured_syntax(",")
+            @str << ' '
+          end
           if arg_name = arg.name.presence
-            @str << arg_name << " : "
+            diagnostic_name(arg, arg_name, "parameter")
+            @str << ' '
+            diagnostic_structured_syntax(":")
+            @str << ' '
           end
           drop_parens_for_proc_notation(arg) do
             arg.restriction.not_nil!.accept self
           end
         end
         if node.varargs?
-          @str << ", ..."
+          diagnostic_structured_syntax(",")
+          @str << " ..."
         end
-        @str << ')'
+        diagnostic_structured_syntax(")")
       elsif node.varargs?
-        @str << "(...)"
+        diagnostic_structured_syntax("(")
+        @str << "..."
+        diagnostic_structured_syntax(")")
       end
       if node_return_type = node.return_type
-        @str << " : "
+        @str << ' '
+        diagnostic_structured_syntax(":")
+        @str << ' '
         node_return_type.accept self
       end
       if body = node.body

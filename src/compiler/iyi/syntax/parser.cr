@@ -9885,15 +9885,21 @@ module Iyi
                  check IdentOrConst
                  @token.value.to_s
                end
+        name_offset = @token.input_offset
+        name_snapshot = diagnostic_current_token_snapshot
 
         next_token_skip_space_or_newline
         real_name_literal = nil
+        real_name_offset : Int32? = nil
+        real_name_snapshot : {Int32, String, String}? = nil
 
         if @token.type.op_eq?
           next_token_skip_space_or_newline
           case @token.type
           when .ident?, .const?
             real_name = @token.value.to_s
+            real_name_offset = @token.input_offset
+            real_name_snapshot = diagnostic_current_token_snapshot
             next_token_skip_space_or_newline
           when .delimiter_start?
             real_name_literal = parse_string_literal_without_interpolation("fun name")
@@ -9998,6 +10004,10 @@ module Iyi
         fun_def.name_location = name_location
         fun_def.doc = doc
         fun_def.diagnostic_origin = origin
+        diagnostic_name(fun_def, name_offset, "method_name", token_snapshot: name_snapshot)
+        if real_name_offset
+          diagnostic_name(fun_def, real_name_offset, "method_name", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName), token_snapshot: real_name_snapshot)
+        end
         fun_def.at(location).at_end(end_location)
       end
     end
