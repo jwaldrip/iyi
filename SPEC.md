@@ -9570,7 +9570,7 @@ private symbols and object bytes compared with older compilers. It does not
 change the public method ABI or closure calling convention. Older artifacts
 with colliding names still fail the strict proof.
 
-The `.iyimod` outer format remains 63, its diagnostic section uses schema 4,
+The `.iyimod` outer format is 64, its diagnostic section uses schema 5,
 and the separate link-input proof remains schema 1. Earlier diagnostic and
 frame-manifest schemas are explicitly rejected, not interpreted as the new
 schema; artifacts carrying the earlier diagnostic schema must be rebuilt.
