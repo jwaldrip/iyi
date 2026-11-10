@@ -244,8 +244,9 @@ module Iyi
     end
 
     # Builds a fresh parser from this input alone: the recorded text, the decoded
-    # contract and the rebuilt warning policy. The caller must compare the replay's
-    # capture key with this one before trusting any parse from it.
+    # contract and the rebuilt warning policy. Every field the contract records is
+    # applied, so the replay runs in the live parser's own state. The caller
+    # compares the replay's capture key with this one before any parse from it.
     def replay_parser : Parser
       fields = JSON.parse(@fresh_parser_contract).as_h
       scopes = fields["scopes"].as_a.map { |scope| Set(String).new(scope.as_a.map(&.as_s)) }
@@ -253,7 +254,10 @@ module Iyi
       parser = Parser.new(@input, nil, scopes, warnings)
       filename = fields["filename"].as_s
       parser.filename = filename
-      parser.diagnostic_source_file = filename if fields["source_unit"].as_s?
+      # The constructor requires a SourceFile's unit to equal its file, so the unit
+      # is set unconditionally. Other kinds have no binding recipe yet.
+      raise ArgumentError.new("EntryBuffer capture has no written identity rule") unless @kind.source_file?
+      parser.diagnostic_source_file = filename
       parser.iyi = fields["lexical_mode"].as_s == "Iyi"
       parser.iyi_package_name = fields["package"].as_s?
       parser.iyi_source_only = fields["source_only"].as_bool
@@ -264,6 +268,16 @@ module Iyi
       parser.fun_nest = fields["fun_nest"].as_i
       parser.type_nest = fields["type_nest"].as_i
       parser.wants_doc = fields["wants_doc"].as_bool
+      # After wants_doc, which overwrites doc_enabled.
+      parser.doc_enabled = fields["doc_enabled"].as_bool
+      parser.comments_enabled = fields["comments_enabled"].as_bool
+      parser.count_whitespace = fields["count_whitespace"].as_bool
+      parser.wants_raw = fields["wants_raw"].as_bool
+      parser.slash_is_regex = fields["slash_is_regex"].as_bool
+      parser.wants_regex = fields["wants_regex"].as_bool
+      parser.wants_def_or_macro_name = fields["wants_def_or_macro_name"].as_bool
+      parser.wants_symbol = fields["wants_symbol"].as_bool
+      parser.iyi_reads_using = fields["reads_using"].as_bool
       parser.diagnostic_capture = true
       parser
     end
@@ -271,6 +285,13 @@ module Iyi
     # Captures the replay parser's own input, before it parses, for comparison.
     def replay_capture_input(parser : Parser) : AcceptedCaptureInput
       parser.diagnostic_capture_input(@kind, @logical_module, @entry, replay_parse_mode)
+    end
+
+    # The one executor the recorder and `bind!` share: the same entry and mode the
+    # claim recorded. Only Parse is recordable, so any other entry has no executor.
+    def replay_entry(parser : Parser) : ASTNode
+      raise ArgumentError.new("capture entry has no executor") unless @entry.parse?
+      parser.parse(replay_parse_mode)
     end
 
     private def replay_parse_mode : Parser::ParseMode
@@ -345,6 +366,9 @@ module Iyi
          wants_def_or_macro_name wants_symbol).each { |field| fields[field].as_bool }
       source_unit = fields["source_unit"].raw
       raise ArgumentError.new("invalid parser source unit") unless source_unit.nil? || source_unit.is_a?(String)
+      if @kind.source_file? && source_unit != "source-file:#{@original_file}"
+        raise ArgumentError.new("source capture unit differs from its file")
+      end
       scopes = fields["scopes"].as_a
       raise ArgumentError.new("fresh parser scope count mismatch") unless scopes.size == @scopes.size
       scopes.each_with_index do |scope, index|
@@ -3217,7 +3241,62 @@ module Iyi
     end
 
     def verify!(root : ASTNode) : Nil
+      verify_lib_order!(root, @input.input_bytesize, 0)
       visit(root, 0)
+    end
+
+    # D4, the order of lib funs. A fun's `fun` anchor lies after its own lib's name
+    # and before the next lib's name, and one lib's anchors strictly increase. A
+    # fun given another fun's origin breaks one of these, whatever name slots it
+    # carries. Only Written anchors are ordered; Expanded origins have no source
+    # position here, so they are not checked.
+    private def verify_lib_order!(node : ASTNode, upper : Int32, depth : Int32) : Nil
+      raise ArgumentError.new("recorded evidence exceeds depth limit") if depth > MAX_DEPTH
+      case node
+      when Expressions
+        items = node.expressions
+        items.each_with_index do |item, index|
+          bound = upper
+          if item.is_a?(LibDef)
+            following = items[(index + 1)..].find { |sibling| sibling.is_a?(LibDef) }
+            if following.is_a?(LibDef) && (next_lower = written_offset(following.name.diagnostic_origin))
+              bound = next_lower
+            end
+          end
+          verify_lib_order!(item, bound, depth + 1)
+        end
+      when LibDef
+        verify_lib_fun_order!(node, upper)
+        DiagnosticDirectChildFields.each(node) { |_, _, _, child| verify_lib_order!(child, upper, depth + 1) }
+      else
+        DiagnosticDirectChildFields.each(node) { |_, _, _, child| verify_lib_order!(child, upper, depth + 1) }
+      end
+    end
+
+    private def verify_lib_fun_order!(lib : LibDef, upper : Int32) : Nil
+      lower = written_offset(lib.name.diagnostic_origin)
+      return unless lower
+      body = lib.body
+      items = body.is_a?(Expressions) ? body.expressions : [body] of ASTNode
+      previous = lower
+      items.each do |item|
+        next unless item.is_a?(FunDef)
+        anchor = written_offset(item.diagnostic_origin)
+        next unless anchor
+        raise ArgumentError.new("fun anchor lies outside its lib") unless lower < anchor && anchor < upper
+        raise ArgumentError.new("fun anchors are out of source order") unless previous < anchor
+        previous = anchor
+      end
+    end
+
+    # The input offset of a fun's or lib's own Written anchor, through Synthetic
+    # wrappers (which carry their parent's anchor). Nil for any other origin.
+    private def written_offset(origin : DiagnosticOrigin?) : Int32?
+      current = origin
+      while current.is_a?(DiagnosticOrigin::Synthetic)
+        current = current.parent_origin
+      end
+      current.is_a?(DiagnosticOrigin::Written) ? current.input_byte_offset : nil
     end
 
     private def bound? : Bool
@@ -3275,7 +3354,10 @@ module Iyi
         end
         if bound?
           literal_class = node.is_a?(StringLiteral) || node.is_a?(SymbolLiteral) || node.is_a?(CharLiteral)
-          if literal_class || (node.diagnostic_literal_names_count || 0) > 0 || (node.diagnostic_literal_productions_count || 0) > 0
+          # Require and Asm keep their source text as plain fields with no literal
+          # evidence (D2). Until that binding lands they are refused, not accepted.
+          text_class = node.is_a?(Require) || node.is_a?(Asm) || node.is_a?(AsmOperand)
+          if literal_class || text_class || (node.diagnostic_literal_names_count || 0) > 0 || (node.diagnostic_literal_productions_count || 0) > 0
             raise ArgumentError.new("literal evidence requires journal literal binding")
           end
         else
@@ -3863,28 +3945,117 @@ module Iyi
     end
   end
 
-  record DiagnosticBoundCapture, input : AcceptedCaptureInput, ast_sha256 : String, root : ASTNode,
-    identity : DiagnosticModuleIdentity, journal : DiagnosticReplayJournal
+  # The ledger of recorded authorities for one run. Authorities are appended in
+  # execution order. The ledger freezes before any binding, so every sequence is
+  # known when the first claim binds.
+  class DiagnosticCaptureLedger
+    @authorities = [] of DiagnosticCaptureAuthority
+    @frozen = false
 
-  # J2 (C-B): the only path from a capture to a bound capture. The expected digest
-  # is supplied by the caller and is never read from the capture.
-  module DiagnosticCaptureBinding
-    SHA256_HEX = /\A[0-9a-f]{64}\z/
+    def authorities : Array(DiagnosticCaptureAuthority)
+      @authorities.dup
+    end
 
-    def self.bind!(input : AcceptedCaptureInput, ast_sha256 : String) : DiagnosticBoundCapture
-      raise ArgumentError.new("expected ast_sha256 is not a lowercase sha256 digest") unless ast_sha256.matches?(SHA256_HEX)
-      raise ArgumentError.new("EntryBuffer capture has no written identity rule") unless input.kind.source_file?
-      parser = input.replay_parser
-      parser.enable_diagnostic_observations
-      root = parser.parse
+    def size : Int32
+      @authorities.size
+    end
+
+    def authority(key : String) : DiagnosticCaptureAuthority?
+      @authorities.find { |recorded| recorded.capture_key == key }
+    end
+
+    def frozen? : Bool
+      @frozen
+    end
+
+    def freeze! : Nil
+      @frozen = true
+    end
+
+    # Only an authority this ledger minted, at its next sequence, while open.
+    def append!(authority : DiagnosticCaptureAuthority) : Nil
+      raise ArgumentError.new("capture ledger is frozen") if @frozen
+      raise ArgumentError.new("capture authority belongs to another ledger") unless authority.ledger.same?(self)
+      raise ArgumentError.new("capture authority is out of sequence") unless authority.sequence == @authorities.size
+      @authorities << authority
+    end
+
+    # Binds one claim against its recorded authority, after the ledger is frozen.
+    def bind!(claim : AcceptedCaptureInput, authority : DiagnosticCaptureAuthority) : DiagnosticBoundCapture
+      raise ArgumentError.new("capture ledger must be frozen before binding") unless @frozen
+      raise ArgumentError.new("capture authority belongs to another ledger") unless authority.ledger.same?(self)
+      DiagnosticCaptureBinding.bind!(claim, authority)
+    end
+  end
+
+  # The only mint for a capture authority. `record_source` runs the live parser's
+  # entry itself, takes the key from that parser's snapshot before the entry runs,
+  # and digests the tree the entry returned. Nothing here is read from a claim.
+  class DiagnosticCaptureAuthority
+    getter ledger : DiagnosticCaptureLedger
+    getter sequence : Int32
+    getter kind : DiagnosticCaptureInputKind
+    getter capture_key : String
+    getter ast_sha256 : String
+
+    private def initialize(@ledger : DiagnosticCaptureLedger, @sequence : Int32,
+                           @kind : DiagnosticCaptureInputKind, @capture_key : String, @ast_sha256 : String)
+    end
+
+    # Records one SourceFile: the parser's filename must name a real file whose
+    # bytes the parser was given, otherwise the capture is an EntryBuffer and is
+    # refused until its identity rule lands.
+    def self.record_source(ledger : DiagnosticCaptureLedger, parser : Parser,
+                           mode : Parser::ParseMode = Parser::ParseMode::Normal) : {ASTNode, AcceptedCaptureInput, DiagnosticCaptureAuthority}
+      raise ArgumentError.new("capture ledger is frozen") if ledger.frozen?
+      contract = parser.parse_ahead_contract
+      raise ArgumentError.new("parser state is not eligible for capture") if contract.nil?
+      filename = JSON.parse(contract)["filename"].as_s? ||
+                 raise ArgumentError.new("EntryBuffer capture has no written identity rule")
+      unless !filename.empty? && File.file?(filename) && parser.parse_ahead_input_matches?(File.read(filename))
+        raise ArgumentError.new("EntryBuffer capture has no written identity rule")
+      end
+      current = parser.diagnostic_source_unit
+      unless current.nil? || current == "source-file:#{filename}"
+        raise ArgumentError.new("capture source unit disagrees with its classification")
+      end
+      parser.diagnostic_capture = true
+      parser.diagnostic_source_file = filename
+      claim = parser.diagnostic_capture_input(DiagnosticCaptureInputKind::SourceFile, nil,
+        DiagnosticCaptureParseEntry::Parse, mode)
+      root = claim.replay_entry(parser)
       stream = DiagnosticAstFrameStream.new(root)
       stream.stream { |_| }
-      raise ArgumentError.new("replay AST digest differs") unless stream.ast_sha256 == ast_sha256
+      authority = new(ledger, ledger.size, DiagnosticCaptureInputKind::SourceFile, claim.capture_key, stream.ast_sha256)
+      ledger.append!(authority)
+      {root, claim, authority}
+    end
+  end
+
+  record DiagnosticBoundCapture, input : AcceptedCaptureInput, authority : DiagnosticCaptureAuthority, root : ASTNode,
+    identity : DiagnosticModuleIdentity, journal : DiagnosticReplayJournal
+
+  # J2 (C-B), revised for D3: the only path from a claim to a bound capture. The
+  # claim binds only against an authority with an equal key, and only if its
+  # replay reproduces that key, runs the same entry and yields the same digest.
+  module DiagnosticCaptureBinding
+    def self.bind!(input : AcceptedCaptureInput, authority : DiagnosticCaptureAuthority) : DiagnosticBoundCapture
+      raise ArgumentError.new("capture key differs from its authority") unless input.capture_key == authority.capture_key
+      raise ArgumentError.new("EntryBuffer capture has no written identity rule") unless authority.kind.source_file?
+      parser = input.replay_parser
+      parser.enable_diagnostic_observations
+      unless input.replay_capture_input(parser).capture_key == input.capture_key
+        raise ArgumentError.new("capture replay does not reproduce its parser contract")
+      end
+      root = input.replay_entry(parser)
+      stream = DiagnosticAstFrameStream.new(root)
+      stream.stream { |_| }
+      raise ArgumentError.new("replay AST digest differs") unless stream.ast_sha256 == authority.ast_sha256
       journal = DiagnosticReplayJournal.new(parser.diagnostic_lexical_observations)
       identity = DiagnosticModuleIdentity.from(root, input, journal)
       structural = DiagnosticUnnamedParamBinder.new(input, journal).verify!(root)
       DiagnosticEvidenceBinding.new(input, journal, identity, structural).verify!(root)
-      DiagnosticBoundCapture.new(input, ast_sha256, root, identity, journal)
+      DiagnosticBoundCapture.new(input, authority, root, identity, journal)
     end
   end
 

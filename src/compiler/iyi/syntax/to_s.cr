@@ -321,11 +321,7 @@ module Iyi
                            raise ArgumentError.new("diagnostic name lacks an artifact anchor for #{context}")
                          end
             io = @str.as?(IO::Memory) || raise ArgumentError.new("fragment capture requires a readable output buffer")
-            lex_context = case context
-                          when "definition_name", "macro_name", "method_name" then DiagnosticRenderedLexContext::DefOrMacroName
-                          when "path_segment", "type_parameter", "where_variable", "enum_member" then DiagnosticRenderedLexContext::TypeName
-                          else DiagnosticRenderedLexContext::Operand
-                          end
+            lex_context = diagnostic_lex_context(context)
             fragment.add_written_anchor(start, finish, io.to_s, lex_context,
               kind, role, origin, {slot => [token] of DiagnosticNameValue})
           end
@@ -338,22 +334,90 @@ module Iyi
       end
     end
 
-    private def diagnostic_named_entry(node : ASTNode, name : String, slot : DiagnosticNameSlot) : Nil
+    private def diagnostic_named_entry(node : ASTNode, name : String, slot : DiagnosticNameSlot,
+                                       literal : {String, Int32}? = nil, context : String = "named_entry") : Nil
       if !@diagnostic_name_fragments && !@diagnostic_fragment
         visit_named_arg_name(name)
-      elsif node.diagnostic_name_slots[slot]?
-        rendered = String.build { |io| Symbol.quote_for_named_argument(io, name) }
-        raise ArgumentError.new("quoted named entry projection is not recorded") unless rendered == name
-        diagnostic_name(node, name, "named_entry", slot)
+        return
+      end
+      rendered = String.build { |io| Symbol.quote_for_named_argument(io, name) }
+      unless rendered == name
+        # The name needs quotes: the quoted spelling is the literal's value.
+        diagnostic_literal_value { @str << rendered }
+        return
+      end
+      if node.diagnostic_name_slots[slot]?
+        diagnostic_name(node, name, context, slot)
+      elsif (key = literal) && (parsed = node.diagnostic_literal_names[key]?)
+        diagnostic_quoted_name(name, context, parsed)
       elsif node.diagnostic_macro_lineage.constructed?
         diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { visit_named_arg_name(name) }
       else
-        raise ArgumentError.new("named entry lacks token evidence")
+        raise ArgumentError.new(context == "method_name" ? "fun real name lacks token evidence" : "named entry lacks token evidence")
       end
     end
 
+    # A bare name whose source was a quoted literal. The fragment writes it as a
+    # `Name` anchor carrying `QuotedName`. Claims mode records it as LiteralValue.
+    private def diagnostic_quoted_name(name : String, context : String, literal : DiagnosticParsedLiteral) : Nil
+      segments = literal.segments
+      raise ArgumentError.new("quoted name lacks literal segments") if segments.empty?
+      decoded = String.new(Base64.decode(literal.decoded_base64))
+      raise ArgumentError.new("quoted name projection differs from literal evidence") unless decoded == name
+      fragment = @diagnostic_fragment
+      unless fragment
+        diagnostic_literal_value { @str << name }
+        return
+      end
+      io = @str.as?(IO::Memory) || raise ArgumentError.new("fragment capture requires a readable output buffer")
+      origin = DiagnosticOrigin::DerivedName.quoted_name(context, literal.input_sha256, literal.input_bytesize,
+        literal.lexical_mode, segments.first.start_offset, segments.last.end_offset, name)
+      start = @str.pos.to_i32
+      @str << name
+      fragment.add_written_anchor(start, @str.pos.to_i32, io.to_s, diagnostic_lex_context(context), "Name", context,
+        origin, {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
+    end
+
+    private def diagnostic_lex_context(context : String) : DiagnosticRenderedLexContext
+      case context
+      when "definition_name", "macro_name", "method_name" then DiagnosticRenderedLexContext::DefOrMacroName
+      when "path_segment", "type_parameter", "where_variable", "enum_member" then DiagnosticRenderedLexContext::TypeName
+      else DiagnosticRenderedLexContext::Operand
+      end
+    end
+
+    # Records the bytes the block writes as generated text from `producer` in claims
+    # mode. Fails closed on overlap. Capture off, or no generated-text list, writes plain text.
+    private def diagnostic_recorded(producer : DiagnosticMacroProducer, &) : Nil
+      generated = @diagnostic_generated_text
+      unless generated
+        yield
+        return
+      end
+      start = @str.pos.to_i32
+      yield
+      finish = @str.pos.to_i32
+      return unless finish > start
+      diagnostic_assert_unrecorded!(start, finish)
+      generated << DiagnosticGeneratedText.new(start, finish, @diagnostic_emitter, producer)
+    end
+
+    private def diagnostic_literal_value(&) : Nil
+      diagnostic_recorded(DiagnosticMacroProducer::LiteralValue) { yield }
+    end
+
+    # An interpolation whose parts are all string literals, including empty heredocs.
+    private def literal_only_interpolation?(node : StringInterpolation) : Bool
+      node.expressions.all? { |exp| exp.is_a?(StringLiteral) }
+    end
+
+    private def joined_literal_value(node : StringInterpolation) : String
+      node.expressions.join(&.as(StringLiteral).value)
+    end
+
     private def diagnostic_external_name(node : Arg) : Nil
-      diagnostic_named_entry(node, node.external_name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName))
+      diagnostic_named_entry(node, node.external_name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName),
+        {"external_name", 0})
     end
 
     private def diagnostic_arg_name(node : Arg, name : String, enum_member : Bool) : Nil
@@ -468,12 +532,12 @@ module Iyi
     end
 
     def visit(node : CharLiteral)
-      node.value.inspect(@str)
+      diagnostic_literal_value { node.value.inspect(@str) }
       false
     end
 
     def visit(node : SymbolLiteral)
-      visit_symbol_literal_value node.value
+      diagnostic_literal_value { visit_symbol_literal_value node.value }
       false
     end
 
@@ -487,14 +551,20 @@ module Iyi
     end
 
     def visit(node : StringLiteral)
-      node.value.inspect(@str)
+      diagnostic_literal_value { node.value.inspect(@str) }
       false
     end
 
     def visit(node : StringInterpolation)
+      if literal_only_interpolation?(node)
+        # Prints as the StringLiteral of the joined value, with no interpolation anchor.
+        value = joined_literal_value(node)
+        diagnostic_literal_value { value.inspect(@str) }
+        return false
+      end
       diagnostic_anchor(node, "Literal", "interpolation") { @str << '"' }
       visit_interpolation node, &.inspect_unquoted
-      @str << '"'
+      diagnostic_structured_syntax("\"")
       false
     end
 
@@ -502,10 +572,11 @@ module Iyi
       node.expressions.chunks(&.is_a?(StringLiteral)).each do |(is_string, exps)|
         if is_string
           value = exps.join(&.as(StringLiteral).value)
-          @str << yield value
+          text = yield value
+          diagnostic_literal_value { @str << text }
         else
           exps.each do |exp|
-            @str << "\#{"
+            diagnostic_structured_syntax("\#{")
             # iyi: a lowering can leave several expressions where one was
             # written: `#{half(x).or(-1)}` is a temporary and an `if` once
             # normalized, and that is the text a body travelling in a
@@ -520,7 +591,7 @@ module Iyi
             else
               exp.accept(self)
             end
-            @str << '}'
+            diagnostic_structured_syntax("}")
           end
         end
       end
@@ -637,7 +708,8 @@ module Iyi
           @str << ' '
         end
 
-        diagnostic_named_entry(node, entry.key, DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, idx))
+        diagnostic_named_entry(node, entry.key, DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, idx),
+          {"entries.key", idx})
         @str << ": "
         accept_as_expression entry.value
 
@@ -1244,35 +1316,43 @@ module Iyi
     end
 
     def visit(node : NamedArgument)
-      diagnostic_named_entry(node, node.name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry))
+      diagnostic_named_entry(node, node.name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry),
+        {"name", 0})
       @str << ": "
       accept_as_expression node.value
       false
     end
 
     def visit_backtick(exp, call : Call? = nil)
-      if call && exp.is_a?(StringInterpolation)
+      literal_only = exp.is_a?(StringInterpolation) && literal_only_interpolation?(exp)
+      if call && exp.is_a?(StringInterpolation) && !literal_only
         diagnostic_payload_owner(call, exp, "Call", "method", DiagnosticPayloadRule::CommandInterpolationPayload) { @str << '`' }
       elsif call
         diagnostic_anchor(call, "Call", "method") { @str << '`' }
       else
-        @str << '`'
+        diagnostic_structured_syntax("`")
       end
       case exp
       when StringLiteral
-        @str << exp.value.inspect_unquoted.gsub('`', "\\`")
+        text = exp.value
+        diagnostic_literal_value { @str << text.inspect_unquoted.gsub('`', "\\`") }
       when StringInterpolation
-        visit_interpolation exp, &.inspect_unquoted.gsub('`', "\\`")
+        if literal_only
+          text = joined_literal_value(exp)
+          diagnostic_literal_value { @str << text.inspect_unquoted.gsub('`', "\\`") }
+        else
+          visit_interpolation exp, &.inspect_unquoted.gsub('`', "\\`")
+        end
       else
         # This branch can be reached after the literal expander has expanded
         # `StringLiteral` nodes to a call to `::String.interpolation` which means
         # `exp` is a `Call`.
 
-        @str << "\#{"
+        diagnostic_structured_syntax("\#{")
         exp.accept(self)
-        @str << "}"
+        diagnostic_structured_syntax("}")
       end
-      @str << '`'
+      diagnostic_structured_syntax("`")
       false
     end
 
@@ -1607,11 +1687,13 @@ module Iyi
     end
 
     def visit(node : MacroLiteral)
-      # These two can only come from an escaped sequence like \{ or \{%
-      if node.value == "{" || node.value.starts_with?("{%")
-        @str << "\\"
+      diagnostic_recorded(DiagnosticMacroProducer::MacroVerbatim) do
+        # These two can only come from an escaped sequence like \{ or \{%
+        if node.value == "{" || node.value.starts_with?("{%")
+          @str << "\\"
+        end
+        @str << node.value
       end
-      @str << node.value
       false
     end
 
@@ -1843,24 +1925,36 @@ module Iyi
         # // is not always an empty regex, sometimes is an operator
         # so it's safer to emit empty regex as %r()
         diagnostic_anchor(node, "Literal", "regex") { @str << "%r(" }
-        @str << ')'
+        diagnostic_structured_syntax(")")
       else
-        if (payload = node.value).is_a?(StringInterpolation)
+        if (payload = node.value).is_a?(StringInterpolation) && !literal_only_interpolation?(payload)
           diagnostic_payload_owner(node, payload, "Literal", "regex", DiagnosticPayloadRule::RegexInterpolationPayload) { @str << '/' }
         else
           diagnostic_anchor(node, "Literal", "regex") { @str << '/' }
         end
         case exp = node.value
         when StringLiteral
-          @str << '\\' if exp.value[0]?.try &.ascii_whitespace?
-          append_regex_source exp.value, @str
+          text = exp.value
+          diagnostic_literal_value do
+            @str << '\\' if text[0]?.try &.ascii_whitespace?
+            append_regex_source text, @str
+          end
         when StringInterpolation
-          @str << '\\' if exp.expressions.first?.as?(StringLiteral).try &.value[0]?.try &.ascii_whitespace?
-          visit_interpolation(exp) { |s| append_regex_source s, @str }
+          leading_space = exp.expressions.first?.as?(StringLiteral).try &.value[0]?.try &.ascii_whitespace?
+          if literal_only_interpolation?(exp)
+            text = joined_literal_value(exp)
+            diagnostic_literal_value do
+              @str << '\\' if leading_space
+              append_regex_source text, @str
+            end
+          else
+            diagnostic_literal_value { @str << '\\' if leading_space }
+            visit_interpolation(exp) { |s| append_regex_source s, @str }
+          end
         else
           raise "Bug: shouldn't happen"
         end
-        @str << '/'
+        diagnostic_structured_syntax("/")
       end
       @str << 'i' if node.options.ignore_case?
       @str << 'm' if node.options.multiline?
@@ -2080,25 +2174,8 @@ module Iyi
       diagnostic_name(node, node.name, "method_name")
       if node.name != node.real_name
         @str << " = "
-        external = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
-        rendered = String.build { |io| Symbol.quote_for_named_argument(io, node.real_name) }
-        if node.diagnostic_name_slots[external]?
-          if rendered == node.real_name
-            diagnostic_name(node, node.real_name, "method_name", external)
-          elsif rendered == "\"#{node.real_name}\""
-            # The source token is the bare name. The quotes are printer syntax, recorded
-            # around it, so the token's own bytes stay exact.
-            diagnostic_structured_syntax("\"")
-            diagnostic_name(node, node.real_name, "method_name", external)
-            diagnostic_structured_syntax("\"")
-          else
-            raise ArgumentError.new("external name projection is not recorded")
-          end
-        elsif node.diagnostic_macro_lineage.constructed?
-          diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { @str << rendered }
-        else
-          @str << rendered
-        end
+        diagnostic_named_entry(node, node.real_name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName),
+          {"real_name", 0}, "method_name")
       end
       if node.args.size > 0
         diagnostic_structured_syntax("(")
@@ -2446,7 +2523,7 @@ module Iyi
 
     def visit(node : Asm)
       @str << "asm("
-      node.text.inspect(@str)
+      diagnostic_literal_value { node.text.inspect(@str) }
       @str << " :"
       if outputs = node.outputs
         @str << ' '
@@ -2462,7 +2539,10 @@ module Iyi
       @str << ":"
       if clobbers = node.clobbers
         @str << ' '
-        clobbers.join(@str, ", ", &.inspect @str)
+        clobbers.each_with_index do |clobber, index|
+          @str << ", " if index > 0
+          diagnostic_literal_value { clobber.inspect(@str) }
+        end
         @str << ' '
       end
       @str << ":"
@@ -2470,22 +2550,22 @@ module Iyi
         @str << ' '
         comma = false
         if node.volatile?
-          @str << %("volatile")
+          diagnostic_literal_value { @str << %("volatile") }
           comma = true
         end
         if node.alignstack?
           @str << ", " if comma
-          @str << %("alignstack")
+          diagnostic_literal_value { @str << %("alignstack") }
           comma = true
         end
         if node.intel?
           @str << ", " if comma
-          @str << %("intel")
+          diagnostic_literal_value { @str << %("intel") }
           comma = true
         end
         if node.can_throw?
           @str << ", " if comma
-          @str << %("unwind")
+          diagnostic_literal_value { @str << %("unwind") }
         end
       end
       @str << ')'
@@ -2493,7 +2573,7 @@ module Iyi
     end
 
     def visit(node : AsmOperand)
-      node.constraint.inspect(@str)
+      diagnostic_literal_value { node.constraint.inspect(@str) }
       @str << '('
       node.exp.accept self
       @str << ')'

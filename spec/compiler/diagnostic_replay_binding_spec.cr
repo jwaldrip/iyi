@@ -303,8 +303,8 @@ describe "DiagnosticPragmaSnapshot.read" do
   end
 end
 
-# J2 replay binding. Each input is replayed from its own bytes and must reproduce
-# the externally pinned digest before anything binds.
+# J2 replay binding. A claim binds only against the authority its live parse
+# recorded, and its replay must reproduce that authority's key and digest.
 
 private def binding_spec_parser(source : String, filename : String) : Iyi::Parser
   parser = Iyi::Parser.new(source, nil, [Set(String).new], Iyi::WarningCollection.new)
@@ -320,11 +320,36 @@ private def binding_spec_input(source : String, filename : String, logical_modul
     logical_module, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
 end
 
-# The digest an honest capture pins: a fresh parse of the same bytes, streamed.
-private def binding_spec_digest(source : String, filename : String) : String
-  stream = Iyi::DiagnosticAstFrameStream.new(binding_spec_parser(source, filename).parse)
-  stream.stream { |_| }
-  stream.ast_sha256
+# Runs the block with `source` written to a temp file, removed afterward. The
+# recorder classifies a capture by reading that file, so the bytes must be on disk.
+private def binding_spec_with_file(source : String, stem : String, & : String ->)
+  path = File.tempname(stem, ".iyi")
+  File.write(path, source)
+  begin
+    yield path
+  ensure
+    File.delete(path) if File.file?(path)
+  end
+end
+
+# Records `source` through the live recorder over `path`, which must hold the same
+# bytes. Returns the ledger (not yet frozen), the claim and its authority.
+private def binding_spec_record(source : String, path : String) : {Iyi::DiagnosticCaptureLedger, Iyi::AcceptedCaptureInput, Iyi::DiagnosticCaptureAuthority}
+  parser = Iyi::Parser.new(source, nil, [Set(String).new], Iyi::WarningCollection.new)
+  parser.filename = path
+  ledger = Iyi::DiagnosticCaptureLedger.new
+  _, claim, authority = Iyi::DiagnosticCaptureAuthority.record_source(ledger, parser)
+  {ledger, claim, authority}
+end
+
+# Writes, records, freezes and binds one source. The bound capture's identity uses
+# the temp path, so callers read it from `bound.input.original_file`.
+private def binding_spec_bind(source : String, stem : String) : Iyi::DiagnosticBoundCapture
+  binding_spec_with_file(source, stem) do |path|
+    ledger, claim, authority = binding_spec_record(source, path)
+    ledger.freeze!
+    ledger.bind!(claim, authority)
+  end
 end
 
 BINDING_SPEC_HEADER  = "module sample/identity\nvalue = 1\n"
@@ -333,70 +358,63 @@ BINDING_SPEC_LITERAL = "value = \"abc\"\n"
 BINDING_SPEC_FORGED  = "value = \"xyz\"\n"
 
 describe "DiagnosticCaptureBinding.bind!" do
-  it "binds a header source whose replay reproduces the pinned digest" do
-    path = "/spec/binding/identity.iyi"
-    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(BINDING_SPEC_HEADER, path),
-      binding_spec_digest(BINDING_SPEC_HEADER, path))
+  it "binds a header source whose replay reproduces its recorded authority" do
+    bound = binding_spec_bind(BINDING_SPEC_HEADER, "identity")
     bound.identity.declared.should eq "sample/identity"
     bound.identity.expected_module(0).should eq "sample/identity"
   end
 
   it "takes module identity from the real header, not a decoy in a comment" do
-    source = "# module decoy/name\nmodule sample/identity\nvalue = 1\n"
-    path = "/spec/binding/decoy.iyi"
-    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    bound = binding_spec_bind("# module decoy/name\nmodule sample/identity\nvalue = 1\n", "decoy")
     bound.identity.declared.should eq "sample/identity"
   end
 
   it "gives a headerless source the source-file unit at every offset" do
-    path = "/spec/binding/plain.iyi"
-    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(BINDING_SPEC_PLAIN, path),
-      binding_spec_digest(BINDING_SPEC_PLAIN, path))
+    bound = binding_spec_bind(BINDING_SPEC_PLAIN, "plain")
     bound.identity.declared.should be_nil
-    bound.identity.expected_module(0).should eq "source-file:/spec/binding/plain.iyi"
+    bound.identity.expected_module(0).should eq "source-file:#{bound.input.original_file}"
   end
 
-  it "refuses the forged abc-to-xyz pair: the forged tree's digest does not replay" do
-    path = "/spec/binding/literal.iyi"
-    input = binding_spec_input(BINDING_SPEC_LITERAL, path)
-    expect_raises(ArgumentError, /replay AST digest differs/) do
-      Iyi::DiagnosticCaptureBinding.bind!(input, binding_spec_digest(BINDING_SPEC_FORGED, path))
+  it "refuses the forged abc-to-xyz pair: a claim cannot bind to another recording's authority" do
+    binding_spec_with_file(BINDING_SPEC_LITERAL, "literal") do |literal_path|
+      binding_spec_with_file(BINDING_SPEC_FORGED, "forged") do |forged_path|
+        _, literal_claim, _ = binding_spec_record(BINDING_SPEC_LITERAL, literal_path)
+        ledger, _, forged_authority = binding_spec_record(BINDING_SPEC_FORGED, forged_path)
+        ledger.freeze!
+        expect_raises(ArgumentError, /capture key differs from its authority/) do
+          ledger.bind!(literal_claim, forged_authority)
+        end
+      end
     end
   end
 
-  it "refuses a source whose bytes replay to another tree (wrong source)" do
-    path = "/spec/binding/plain.iyi"
-    expect_raises(ArgumentError, /replay AST digest differs/) do
-      Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(BINDING_SPEC_PLAIN, path),
-        binding_spec_digest(BINDING_SPEC_HEADER, path))
-    end
-  end
-
-  it "refuses a wrong AST digest" do
-    expect_raises(ArgumentError, /replay AST digest differs/) do
-      Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(BINDING_SPEC_HEADER, "/spec/binding/identity.iyi"), "0" * 64)
-    end
-  end
-
-  it "refuses a malformed pinned digest before any replay" do
-    expect_raises(ArgumentError, /not a lowercase sha256 digest/) do
-      Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(BINDING_SPEC_PLAIN, "/spec/binding/plain.iyi"), "ABC")
+  it "refuses a source whose bytes bind to another source's authority (wrong source)" do
+    binding_spec_with_file(BINDING_SPEC_PLAIN, "plain") do |plain_path|
+      binding_spec_with_file(BINDING_SPEC_HEADER, "header") do |header_path|
+        _, plain_claim, _ = binding_spec_record(BINDING_SPEC_PLAIN, plain_path)
+        ledger, _, header_authority = binding_spec_record(BINDING_SPEC_HEADER, header_path)
+        ledger.freeze!
+        expect_raises(ArgumentError, /capture key differs from its authority/) do
+          ledger.bind!(plain_claim, header_authority)
+        end
+      end
     end
   end
 
   it "refuses a caller-supplied module identity on a source file (wrong module)" do
-    path = "/spec/binding/plain.iyi"
-    expect_raises(ArgumentError, /caller-supplied module identity/) do
-      Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(BINDING_SPEC_PLAIN, path, "forged/module"),
-        binding_spec_digest(BINDING_SPEC_PLAIN, path))
+    binding_spec_with_file(BINDING_SPEC_PLAIN, "plain") do |path|
+      ledger, _, authority = binding_spec_record(BINDING_SPEC_PLAIN, path)
+      ledger.freeze!
+      forged = binding_spec_input(BINDING_SPEC_PLAIN, path, "forged/module")
+      expect_raises(ArgumentError, /capture key differs from its authority/) do
+        ledger.bind!(forged, authority)
+      end
     end
   end
 
   it "fails closed on a string literal until its journal binding (C-L) lands" do
-    path = "/spec/binding/literal.iyi"
     expect_raises(ArgumentError, /literal evidence requires journal literal binding/) do
-      Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(BINDING_SPEC_LITERAL, path),
-        binding_spec_digest(BINDING_SPEC_LITERAL, path))
+      binding_spec_bind(BINDING_SPEC_LITERAL, "literal")
     end
   end
 end
@@ -468,9 +486,7 @@ end
 
 describe "DiagnosticUnnamedParamBinder (Written chain)" do
   it "binds a lib fun whose unnamed parameter witnesses are Written" do
-    source = "lib LibC\n  fun abs(Int32) : Int32\nend\n"
-    path = "/spec/binding/lib.iyi"
-    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    bound = binding_spec_bind("lib LibC\n  fun abs(Int32) : Int32\nend\n", "lib")
     bound.should be_a(Iyi::DiagnosticBoundCapture)
   end
 end
@@ -503,31 +519,23 @@ end
 
 describe "DiagnosticCaptureBinding.bind! unnamed parameters and name evidence" do
   it "binds a written `::` head as an unnamed lib parameter (PC-4)" do
-    source = "lib LibC\n  fun h(::Int32) : Void\nend\n"
-    path = "/spec/binding/pc4.iyi"
-    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    bound = binding_spec_bind("lib LibC\n  fun h(::Int32) : Void\nend\n", "pc4")
     bound.should be_a(Iyi::DiagnosticBoundCapture)
   end
 
   it "binds a written proc-notation head as an unnamed lib parameter (PC-5)" do
-    source = "lib LibC\n  fun k((Int32) -> Void) : Void\nend\n"
-    path = "/spec/binding/pc5.iyi"
-    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    bound = binding_spec_bind("lib LibC\n  fun k((Int32) -> Void) : Void\nend\n", "pc5")
     bound.should be_a(Iyi::DiagnosticBoundCapture)
   end
 
   it "refuses a string real name as literal evidence, not as a misplaced separator" do
-    source = "lib LibC\n  fun f = \"c_f\"(Int32) : Int32\nend\n"
-    path = "/spec/binding/cf.iyi"
     expect_raises(ArgumentError, "literal evidence requires journal literal binding") do
-      Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+      binding_spec_bind("lib LibC\n  fun f = \"c_f\"(Int32) : Int32\nend\n", "cf")
     end
   end
 
   it "binds an explicit real name on a lib fun" do
-    source = "lib LibC\n  fun gcollect = GC_gcollect : Void\nend\n"
-    path = "/spec/binding/gcollect.iyi"
-    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    bound = binding_spec_bind("lib LibC\n  fun gcollect = GC_gcollect : Void\nend\n", "gcollect")
     bound.should be_a(Iyi::DiagnosticBoundCapture)
   end
 end
