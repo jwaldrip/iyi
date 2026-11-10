@@ -361,7 +361,14 @@ module Iyi
         unless end_pos > offset && end_pos <= snapshot[0]
           ::raise ArgumentError.new("invalid diagnostic token extent at byte #{offset}")
         end
-        raw = string.byte_slice(offset - @input_offset_base, end_pos - offset)
+        raw = string.byte_slice(offset - @input_offset_base, snapshot[0] - offset)
+        selection = end_pos == snapshot[0] ? "Whole" : "SignedNumberSign"
+        if selection == "SignedNumberSign"
+          unless kind == "Call" && role == "method" && snapshot[1] == "NUMBER" &&
+                 end_pos == offset + 1 && (raw.starts_with?("+") || raw.starts_with?("-"))
+            ::raise ArgumentError.new("invalid signed-number operator selection")
+          end
+        end
         context = name_context
         key = {offset, kind, role}
         emitted = @diagnostic_emitted_anchors.try(&.[key]?)
@@ -408,15 +415,22 @@ module Iyi
               cursor = fragment.end_offset
             elsif range = ranges.find { |r| r.start_offset <= cursor && r.end_offset > cursor }
               finish = Math.min(end_pos, range.end_offset)
-              parts << DiagnosticEmissionPart::Generated.new(cursor, finish, range.emitter_origin, range.producer)
+              if (previous = parts.last?).is_a?(DiagnosticEmissionPart::Generated) &&
+                 previous.end_offset == cursor && previous.producer == range.producer &&
+                 previous.emitter_origin == range.emitter_origin
+                parts[parts.size - 1] = DiagnosticEmissionPart::Generated.new(previous.start_offset, finish, range.emitter_origin, range.producer)
+              else
+                parts << DiagnosticEmissionPart::Generated.new(cursor, finish, range.emitter_origin, range.producer)
+              end
               cursor = finish
             else
               ::raise ArgumentError.new("unauthorized macro anchor at byte #{offset} for #{kind}:#{role}")
             end
           end
         end
+        event = DiagnosticTokenEvent.new(offset, snapshot[0], snapshot[1], raw, snapshot[2], selection, parts)
         origin = DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2],
-          offset, end_pos, snapshot[1], raw, snapshot[2], kind, role, context, parts)
+          kind, role, context, event, DiagnosticAnchorUse::Direct.new)
         @diagnostic_emitted_anchors.try(&.delete(key)) if emitted
         overlapping_fragments.each { |fragment| fragments.delete(fragment) }
         return origin
@@ -4762,7 +4776,7 @@ module Iyi
 
       entries = [] of NamedTupleLiteral::Entry
       entries << NamedTupleLiteral::Entry.new(first_key, first_value)
-      key_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [first_key_observation] : nil
+      key_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [first_key_observation] of DiagnosticTokenObservation? : nil
 
       if @token.type.op_comma?
         next_token_skip_space_or_newline
