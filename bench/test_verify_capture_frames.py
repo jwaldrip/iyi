@@ -533,6 +533,14 @@ class VerifyCaptureFramesTest(unittest.TestCase):
         )
         self.assertRejects("stub_count", frame(TAG_N, dumps(node_dict(0, keyed))))
 
+    def test_keyed_key_and_value_coordinates_must_match(self):
+        keyed = Node(
+            "Keyed",
+            children=[("entries", None, "a", Node("Leaf", scalars=[("value", "x")]))],
+            names=[("entries.key", None, "b", "b")],
+        )
+        self.assertRejects("stub_coordinate", frame(TAG_N, dumps(node_dict(0, keyed))))
+
     def test_map_child_stub_field_must_not_have_sub(self):
         obj = node_dict(0, Node("Pair", children=[("items", 0, None, Node("Leaf", scalars=[("value", "a")]))]))
         obj["children"][0]["field"] = "items.key"

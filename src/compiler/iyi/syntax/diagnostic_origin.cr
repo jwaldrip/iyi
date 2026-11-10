@@ -3224,7 +3224,7 @@ module Iyi
         end
       end
 
-      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index, @production, @sugar_result, @lowering_index, @witnesses, @bound_data, @module_header_origin, @source_segments, @package_name, @result_index, @operator_production, @operator_witnesses, @operator_input_sha256, @operator_input_bytesize, @operator_lexical_mode, @operator_anchor, @structural_production, @structural_witnesses, @structural_input_sha256, @structural_input_bytesize, @structural_lexical_mode, @structural_anchor, @structural_fresh_index, @quoted_input_sha256, @quoted_input_bytesize, @quoted_lexical_mode, @quoted_literal_start, @quoted_literal_end
+      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index, @production, @sugar_result, @lowering_index, @witnesses, @bound_data, @module_header_origin, @source_segments, @package_name, @result_index, @operator_production, @operator_witnesses, @operator_input_sha256, @operator_input_bytesize, @operator_lexical_mode, @operator_anchor, @structural_production, @structural_witnesses, @structural_input_sha256, @structural_input_bytesize, @structural_lexical_mode, @structural_anchor, @structural_fresh_index, @quoted_input_sha256, @quoted_input_bytesize, @quoted_lexical_mode, @quoted_literal_start, @quoted_literal_end, @producer_context, @rendered_text
 
       def to_json(json : JSON::Builder) : Nil
         json.object do

@@ -674,6 +674,10 @@ def _check_stubs(kind: str, kschema: KindSchema, children: object, names: object
                         raise VerifyError("stub_index", f"{where} field {row.field!r} indexes are not 0..n-1 in order")
         if len(set(counts)) != 1:
             raise VerifyError("stub_count", f"{where} field {row.field!r} key and value counts differ")
+        if row.coordinate == "Keyed" and len(subs) > 1:
+            coordinates = [{stub[3] for stub in mine if stub[1] == sub} for sub in subs]
+            if any(keys != coordinates[0] for keys in coordinates[1:]):
+                raise VerifyError("stub_coordinate", f"{where} field {row.field!r} key and value coordinates differ")
         total = counts[0]
         if state in ("Absent", "Empty"):
             if total != 0:

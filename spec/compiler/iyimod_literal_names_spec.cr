@@ -61,6 +61,22 @@ describe "iyimod literal names and type sugars" do
     bytes[5].should eq(9_u8)
   end
 
+  it "keeps quoted names distinct by spelling and context during interning" do
+    table = Iyi::IyiMod::DiagnosticOrigins.new
+    original = names_quoted("named_entry", "abc")
+    different_text = names_quoted("named_entry", "xyz")
+    different_context = names_quoted("method_name", "abc")
+    indices = [table.intern(original), table.intern(different_text), table.intern(different_context)]
+    indices.uniq.size.should eq(3)
+
+    io = IO::Memory.new
+    table.write(io)
+    restored = Iyi::IyiMod::DiagnosticOrigins.read(IO::Memory.new(io.to_slice))
+    restored.parent(indices[0]).as(Iyi::DiagnosticOrigin::DerivedName).rendered_text.should eq("abc")
+    restored.parent(indices[1]).as(Iyi::DiagnosticOrigin::DerivedName).rendered_text.should eq("xyz")
+    restored.parent(indices[2]).as(Iyi::DiagnosticOrigin::DerivedName).producer_context.should eq("method_name")
+  end
+
   it "round trips QuotedName, StringArray and SymbolArray byte-equal through the table" do
     quoted = names_quoted
     string_sugar = Iyi::DiagnosticOrigin::DerivedName.type_sugar(Iyi::DiagnosticTypeSugar::StringArray,
