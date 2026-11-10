@@ -533,18 +533,18 @@ describe "DiagnosticCaptureBinding.bind! unnamed parameters and name evidence" d
   it "binds a string real name before an unnamed parameter" do
     bound = binding_spec_bind("lib LibC\n  fun f = \"c_f\"(Int32) : Int32\nend\n", "cf")
     lib_body = bound.root.as(Iyi::LibDef).body
-    fun = (lib_body.is_a?(Iyi::Expressions) ? lib_body.expressions.first : lib_body).as(Iyi::FunDef)
-    fun.name.should eq "f"
-    fun.real_name.should eq "c_f"
-    fun.args.size.should eq 1
+    fun_node = (lib_body.is_a?(Iyi::Expressions) ? lib_body.expressions.first : lib_body).as(Iyi::FunDef)
+    fun_node.name.should eq "f"
+    fun_node.real_name.should eq "c_f"
+    fun_node.args.size.should eq 1
   end
 
   it "keeps a parenthesis inside a string real name out of the separator search" do
     bound = binding_spec_bind("lib LibC\n  fun f = \"c(f\"(Int32) : Int32\nend\n", "cparen")
     lib_body = bound.root.as(Iyi::LibDef).body
-    fun = (lib_body.is_a?(Iyi::Expressions) ? lib_body.expressions.first : lib_body).as(Iyi::FunDef)
-    fun.real_name.should eq "c(f"
-    fun.args.size.should eq 1
+    fun_node = (lib_body.is_a?(Iyi::Expressions) ? lib_body.expressions.first : lib_body).as(Iyi::FunDef)
+    fun_node.real_name.should eq "c(f"
+    fun_node.args.size.should eq 1
   end
 
   it "binds an explicit real name on a lib fun" do
