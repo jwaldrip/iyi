@@ -185,10 +185,11 @@ describe "bracket and operator method names" do
 
   it "observes an operator method called after a dot from its own token" do
     {"f.+(1)" => "+", "f.==(1)" => "==", "f.<=>(1)" => "<=>"}.each do |source, name|
-      root, _input = capture_interpolation_root(source)
+      root, input = capture_interpolation_root(source)
       call = root.as(Iyi::Call)
       call.name.should eq(name)
       assert_observed_name(call, name)
+      Iyi::DiagnosticRecordedEvidenceInputCheck.new(input).verify!(root)
     end
   end
 end
