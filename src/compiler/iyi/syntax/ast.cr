@@ -52,6 +52,43 @@ module Iyi
     getter diagnostic_origin : DiagnosticOrigin?
     property diagnostic_macro_lineage : DiagnosticMacroLineage = DiagnosticMacroLineage::Unknown
     property diagnostic_capture_ref : DiagnosticCaptureFieldRef?
+    @diagnostic_literal_names : Hash({String, Int32}, DiagnosticParsedLiteral)? = nil
+    @diagnostic_literal_productions : Hash({String, Int32}, Array(DiagnosticLiteralProductionSegment))? = nil
+    @diagnostic_percent_witnesses : Array(DiagnosticLiteralWitness)? = nil
+
+    def diagnostic_percent_witnesses : Array(DiagnosticLiteralWitness)
+      @diagnostic_percent_witnesses.try(&.dup) || [] of DiagnosticLiteralWitness
+    end
+
+    def diagnostic_percent_witnesses=(witnesses : Array(DiagnosticLiteralWitness)) : Nil
+      @diagnostic_percent_witnesses = witnesses.dup
+    end
+
+    def diagnostic_literal_productions : Hash({String, Int32}, Array(DiagnosticLiteralProductionSegment))
+      copy = {} of {String, Int32} => Array(DiagnosticLiteralProductionSegment)
+      @diagnostic_literal_productions.try &.each { |key, segments| copy[key] = segments.dup }
+      copy
+    end
+
+    def diagnostic_literal_production(field : String, index : Int32, segments : Array(DiagnosticLiteralProductionSegment)) : Nil
+      raise ArgumentError.new("invalid literal production field") if field.empty? || index < 0 || segments.empty?
+      productions = (@diagnostic_literal_productions ||= {} of {String, Int32} => Array(DiagnosticLiteralProductionSegment))
+      key = {field, index}
+      raise ArgumentError.new("duplicate literal production field") if productions.has_key?(key)
+      productions[key] = segments.dup
+    end
+
+    def diagnostic_literal_names : Hash({String, Int32}, DiagnosticParsedLiteral)
+      @diagnostic_literal_names.try(&.dup) || {} of {String, Int32} => DiagnosticParsedLiteral
+    end
+
+    def diagnostic_literal_name(field : String, index : Int32, literal : DiagnosticParsedLiteral) : Nil
+      raise ArgumentError.new("invalid literal-name field") if field.empty? || index < 0
+      names = (@diagnostic_literal_names ||= {} of {String, Int32} => DiagnosticParsedLiteral)
+      key = {field, index}
+      raise ArgumentError.new("duplicate literal-name field") if names.has_key?(key)
+      names[key] = literal
+    end
 
     @diagnostic_name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue))? = nil
 
@@ -117,6 +154,12 @@ module Iyi
       clone.diagnostic_macro_lineage = diagnostic_macro_lineage
       clone.diagnostic_name_slots = diagnostic_name_slots
       clone.diagnostic_capture_ref = diagnostic_capture_ref
+      if literal_names = @diagnostic_literal_names
+        literal_names.each { |key, literal| clone.diagnostic_literal_name(key[0], key[1], literal) }
+      end
+      if literal_productions = @diagnostic_literal_productions
+        literal_productions.each { |key, segments| clone.diagnostic_literal_production(key[0], key[1], segments) }
+      end
       clone.doc = doc
       clone
     end

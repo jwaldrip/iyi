@@ -224,6 +224,95 @@ module Iyi
     def diagnostic_capture=(@diagnostic_capture : Bool)
       enable_diagnostic_observations if @diagnostic_capture
     end
+
+    # Take the parser state before invoking the given entry rule. This is only
+    # an input envelope; it does not publish a census or establish acceptance.
+    def diagnostic_capture_input(kind : DiagnosticCaptureInputKind, logical_module : String?,
+                                 entry : DiagnosticCaptureParseEntry, mode : ParseMode) : AcceptedCaptureInput
+      raise ArgumentError.new("parser state is not eligible for capture") unless parse_ahead_contract
+      raise ArgumentError.new("capture entry requires original Def context") unless entry.parse?
+      capture_mode = case mode
+                     when .normal?             then DiagnosticCaptureParseMode::Normal
+                     when .lib?                then DiagnosticCaptureParseMode::Lib
+                     when .lib_struct_or_union? then DiagnosticCaptureParseMode::LibStructOrUnion
+                     when .enum?               then DiagnosticCaptureParseMode::Enum
+                     else
+                       raise ArgumentError.new("unknown parser mode")
+                     end
+      input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
+      original_file = @input_filename.as(String)
+      AcceptedCaptureInput.new(input, kind, logical_module, @iyi_package_name, original_file,
+        iyi? ? "Iyi" : "Crystal", entry, capture_mode, @iyi_module_extends_written, @iyi_source_only,
+        @visibility, @def_nest, @fun_nest, @type_nest, @wants_doc,
+        @var_scopes.map { |scope| scope.to_a.sort })
+    end
+
+    # Parse-ahead may reuse a worker result only when both parsers start from
+    # this same fresh-parser contract. A parser with transient lexer or parser
+    # state is deliberately ineligible for speculative reuse.
+    def parse_ahead_contract : String?
+      return nil unless @reader.pos == 0 && @location_pragmas.nil? && @heredocs.empty? &&
+                        @input_artifact.nil? && @artifact.nil? && @diagnostic_regions.nil? &&
+                        @diagnostic_expansion.nil? && @macro_literal_breaks.nil? &&
+                        @token.type.eof? && @token.input_offset == 0 && @token.input_end == 0 &&
+                        @token.value.nil? && @token.doc_buffer.nil? && @token.raw.empty? &&
+                        @token.line_number == 0 && @token.column_number == 0 &&
+                        @token.start == 0 && !@token.passed_backslash_newline && !@token.invalid_escape &&
+                        @token.delimiter_state == Token::DelimiterState.default &&
+                        @token.macro_state == Token::MacroState.default &&
+                        @comment_is_doc && @macro_curly_count == 0 && @token_end_location.nil? &&
+                        @diagnostic_name_observations.nil? &&
+                        @diagnostic_module_path.nil? && @diagnostic_pending.nil? &&
+                        @diagnostic_restored_names.nil? && @diagnostic_restored_keys.nil? &&
+                        @diagnostic_attached_nodes.nil? && @diagnostic_input_digest.nil? &&
+                        @diagnostic_emitted_claims.nil? && @diagnostic_writer_direct.nil? &&
+                        @diagnostic_generated_ranges.nil? && @diagnostic_name_fragments.nil? &&
+                        @diagnostic_syntax_witnesses.nil? && @diagnostic_assignment_witnesses.nil? &&
+                        @last_macro_control_offset.nil? && @last_macro_control_snapshot.nil? &&
+                        @diagnostic_last_def_equals_offset.nil? && @diagnostic_last_def_equals_snapshot.nil? &&
+                        @iyi_import_end.nil? && @iyi_module_headers.nil? && @iyi_open.empty? &&
+                        @iyi_else_if.nil? && @iyi_impl_trait.nil? && @iyi_def_lookalike.nil? &&
+                        @iyi_for_lookalike.nil? && @iyi_match_lookalike.nil? &&
+                        (@diagnostic_lexical_observations.nil? || @diagnostic_lexical_observations.not_nil!.empty?) &&
+                        @line_number == 1 && @column_number == 1 &&
+                        @delimiter_state_stack.empty? && !@stacked && @unclosed_stack.empty? &&
+                        @call_args_start_locations.empty? && @assigned_vars.empty? &&
+                        !@inside_interpolation && !@consuming_heredocs && !@in_macro_expression &&
+                        !@inside_c_struct && !@inside_trait_or_impl && @inside_defer == 0 &&
+                        @no_type_declaration == 0 && @iyi_nesting == 0 && @stop_on_yield == 0 &&
+                        !@stop_on_do && !@is_constant_assignment && !@is_macro_def &&
+                        !@calls_super && !@calls_initialize && !@calls_previous_def &&
+                        !@uses_block_arg && !@assigns_special_var && @temp_arg_count == 0 &&
+                        @block_arg_name.nil?
+      return nil unless @input_filename.is_a?(String) && @filename == @input_filename
+      JSON.build do |json|
+        json.object do
+          json.field "entry_rule", "parse"
+          json.field "filename", @input_filename
+          json.field "lexical_mode", iyi? ? "Iyi" : "Crystal"
+          json.field "package", @iyi_package_name
+          json.field "diagnostic_capture", @diagnostic_capture
+          json.field "source_unit", @diagnostic_source_unit
+          json.field "source_only", @iyi_source_only
+          json.field "reads_using", @iyi_reads_using
+          json.field "module_extends_written", @iyi_module_extends_written
+          json.field "visibility", @visibility.try(&.to_s)
+          json.field "def_nest", @def_nest
+          json.field "fun_nest", @fun_nest
+          json.field "type_nest", @type_nest
+          json.field "wants_doc", @wants_doc
+          json.field "doc_enabled", @doc_enabled
+          json.field "comments_enabled", @comments_enabled
+          json.field "count_whitespace", @count_whitespace
+          json.field "wants_raw", @wants_raw
+          json.field "slash_is_regex", @slash_is_regex
+          json.field "wants_regex", @wants_regex
+          json.field "wants_def_or_macro_name", @wants_def_or_macro_name
+          json.field "wants_symbol", @wants_symbol
+          json.field "scopes", @var_scopes.map { |scope| scope.to_a.sort }
+        end
+      end
+    end
     @diagnostic_name_observations : Array(DiagnosticParsedName)? = nil
 
     def enable_diagnostic_name_observations : Nil
@@ -2659,7 +2748,15 @@ module Iyi
       when .symbol_array_start?
         parse_symbol_array
       when .symbol?
-        node_and_next_token SymbolLiteral.new(@token.value.to_s)
+        symbol = SymbolLiteral.new(@token.value.to_s)
+        if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+          start_offset = @token.input_offset
+          end_offset = @token.input_end
+          witnesses = [DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, start_offset, end_offset)]
+          production = diagnostic_production(DiagnosticLiteralProduction::SymbolToken, start_offset, end_offset, nil, witnesses)
+          diagnostic_literal(symbol, symbol.value, [{start_offset, end_offset}], [production])
+        end
+        node_and_next_token symbol
       when .global?
         # iyi: the other library's advice, "use @@class_variables instead",
         # sent a program's shared count to a class variable, which the
@@ -4765,15 +4862,67 @@ module Iyi
       value : String | ASTNode,
       line_number : Int32
 
+    private def diagnostic_literal(node : ASTNode, decoded : String, ranges : Array({Int32, Int32}),
+                                   productions : Array(DiagnosticLiteralProductionSegment)? = nil) : Nil
+      return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+      input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
+      raise ArgumentError.new("diagnostic literal input exceeds authority budget") if input.bytesize > 64 * 1024 * 1024
+      segments = ranges.map do |range|
+        start_offset, end_offset = range
+        unless start_offset >= 0 && end_offset > start_offset && end_offset <= input.bytesize
+          raise ArgumentError.new("invalid diagnostic literal range")
+        end
+        raw = input.byte_slice(start_offset, end_offset - start_offset)
+        DiagnosticLiteralSegment.new(start_offset, end_offset, Base64.strict_encode(raw.to_slice))
+      end
+      digest = @diagnostic_input_digest ||= ::Crystal::Digest::SHA256.hexdigest(input)
+      literal = DiagnosticParsedLiteral.new(digest, input.bytesize, iyi? ? "Iyi" : "Crystal",
+        Base64.strict_encode(decoded.to_slice), segments, @diagnostic_expansion)
+      node.diagnostic_literal_name("value", 0, literal)
+      node.diagnostic_literal_production("value", 0, productions) if productions
+    end
+
+
+    private def diagnostic_production(production : DiagnosticLiteralProduction, start_offset : Int32,
+                                      end_offset : Int32, state : Token::DelimiterState?,
+                                      witnesses : Array(DiagnosticLiteralWitness)) : DiagnosticLiteralProductionSegment
+      input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
+      unless start_offset >= 0 && end_offset > start_offset && end_offset <= input.bytesize
+        raise ArgumentError.new("invalid diagnostic literal production")
+      end
+      raw = input.byte_slice(start_offset, end_offset - start_offset)
+      DiagnosticLiteralProductionSegment.new(production, start_offset, end_offset, Base64.strict_encode(raw.to_slice),
+        state.try(&.kind.to_s), state.try(&.nest.to_s), state.try(&.end.to_s), state.try(&.allow_escapes), witnesses)
+    end
+
+    private def diagnostic_copy_literal(source : ASTNode, target : ASTNode, field : String, index : Int32 = 0) : Nil
+      return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+      if literal = source.diagnostic_literal_names[{"value", 0}]?
+        target.diagnostic_literal_name(field, index, literal)
+      end
+      if productions = source.diagnostic_literal_productions[{"value", 0}]?
+        target.diagnostic_literal_production(field, index, productions)
+      end
+    end
+
     def parse_delimiter(want_skip_space = true)
       if @token.type.string?
-        return node_and_next_token StringLiteral.new(@token.value.to_s).at(@token.location)
+        node = StringLiteral.new(@token.value.to_s).at(@token.location)
+        diagnostic_literal(node, node.value, [{@token.input_offset, @token.input_end}]) if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+        return node_and_next_token node
       end
 
       location = @token.location
       diagnostic_start = @token.input_offset
       diagnostic_snapshot = diagnostic_current_token_snapshot
       delimiter_state = @token.delimiter_state
+      diagnostic_segments = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of {Int32, Int32} : nil
+      diagnostic_productions = diagnostic_segments && delimiter_state.kind.string? ? [] of DiagnosticLiteralProductionSegment : nil
+      literal_witnesses = diagnostic_productions ? [] of DiagnosticLiteralWitness : nil
+      if witnesses = literal_witnesses
+        witnesses << DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::Opener, @token.input_offset, @token.input_end)
+      end
+      initial_delimiter_state = delimiter_state
 
       check :DELIMITER_START
 
@@ -4792,7 +4941,11 @@ module Iyi
 
       pieces = [] of Piece
 
-      delimiter_state, options, end_location = consume_delimiter pieces, delimiter_state
+      delimiter_state, options, end_location, literal_end = consume_delimiter pieces, delimiter_state, literal_witnesses
+      diagnostic_segments.try &.<<({diagnostic_start, literal_end})
+      if (productions = diagnostic_productions) && (witnesses = literal_witnesses)
+        productions << diagnostic_production(DiagnosticLiteralProduction::Delimiter, diagnostic_start, literal_end, initial_delimiter_state, witnesses)
+      end
 
       if want_skip_space && delimiter_state.kind.string?
         while true
@@ -4800,9 +4953,22 @@ module Iyi
           skip_space
 
           if passed_backslash_newline && @token.type.delimiter_start? && @token.delimiter_state.kind.string?
+            continuation_start = @token.input_offset
+            if diagnostic_productions
+              literal_witnesses = [] of DiagnosticLiteralWitness
+              if literal_end < continuation_start
+                literal_witnesses << DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::Continuation, literal_end, continuation_start)
+              end
+              literal_witnesses << DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::Opener, @token.input_offset, @token.input_end)
+              initial_delimiter_state = @token.delimiter_state
+            end
             next_string_token(delimiter_state)
             delimiter_state = @token.delimiter_state
-            delimiter_state, options, end_location = consume_delimiter pieces, delimiter_state
+            delimiter_state, options, end_location, literal_end = consume_delimiter pieces, delimiter_state, literal_witnesses
+            diagnostic_segments.try &.<<({continuation_start, literal_end})
+            if (productions = diagnostic_productions) && (witnesses = literal_witnesses)
+              productions << diagnostic_production(DiagnosticLiteralProduction::Delimiter, continuation_start, literal_end, initial_delimiter_state, witnesses)
+            end
           else
             break
           end
@@ -4810,6 +4976,7 @@ module Iyi
       end
 
       result = combine_pieces(pieces, delimiter_state).at(location).at_end(end_location)
+      diagnostic_literal(result, result.value, diagnostic_segments, diagnostic_productions) if result.is_a?(StringLiteral) && diagnostic_segments
 
       case delimiter_state.kind
       when .command?
@@ -4873,21 +5040,25 @@ module Iyi
       end
     end
 
-    def consume_delimiter(pieces, delimiter_state)
+    def consume_delimiter(pieces, delimiter_state, literal_witnesses : Array(DiagnosticLiteralWitness)? = nil)
       options = RegexOptions::None
       end_location = nil
+      literal_end = 0
       while true
         case @token.type
         when .string?
+          literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, @token.input_offset, @token.input_end))
           pieces << Piece.new(@token.value.to_s, @token.line_number)
 
           next_string_token(delimiter_state)
           delimiter_state = @token.delimiter_state
         when .delimiter_end?
+          literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::ClosingDelimiter, @token.input_offset, @token.input_end))
           if delimiter_state.kind.regex?
             options = consume_regex_options
           end
           end_location = token_end_location
+          literal_end = @token.input_end
           next_token
           break
         when .eof?
@@ -4902,17 +5073,19 @@ module Iyi
             raise "Unterminated string literal"
           end
         else
+          literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationStart, @token.input_offset, @token.input_end))
           next_token_skip_space_or_newline
 
           line_number = @token.line_number
           exp = consume_interpolation(delimiter_state)
+          literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationEnd, @token.input_offset, @token.input_end))
           next_string_token delimiter_state
           pieces << Piece.new(exp, line_number)
           delimiter_state = @token.delimiter_state
         end
       end
 
-      {delimiter_state, options, end_location}
+      {delimiter_state, options, end_location, literal_end}
     end
 
     def consume_interpolation(delimiter_state)
@@ -5110,7 +5283,7 @@ module Iyi
     end
 
     def parse_string_array
-      strings, end_location = parse_string_or_symbol_array_strings do |pieces|
+      strings, end_location, _closing_start, _closing_end = parse_string_or_symbol_array_strings do |pieces|
         combine_pieces(pieces, @token.delimiter_state)
       end
 
@@ -5118,9 +5291,23 @@ module Iyi
     end
 
     def parse_symbol_array
-      strings, end_location = parse_string_or_symbol_array_strings do |pieces|
+      opening_start = @token.input_offset
+      opening_end = @token.input_end
+      opening_state = @token.delimiter_state
+      strings, end_location, closing_start, closing_end = parse_string_or_symbol_array_strings do |pieces|
         string = combine_stringliteral_pieces(pieces, @token.delimiter_state)
         SymbolLiteral.new(string)
+      end
+      if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+        strings.each do |node|
+          next unless node.is_a?(SymbolLiteral)
+          witnesses = [DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::Opener, opening_start, opening_end)]
+          witnesses.concat(node.diagnostic_percent_witnesses)
+          witnesses << DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::ClosingDelimiter, closing_start, closing_end)
+          production = diagnostic_production(DiagnosticLiteralProduction::PercentSymbolElement,
+            opening_start, closing_end, opening_state, witnesses)
+          node.diagnostic_literal_production("value", 0, [production])
+        end
       end
 
       ArrayLiteral.new(strings, Path.global("Symbol")).at_end(end_location)
@@ -5138,10 +5325,12 @@ module Iyi
       check :STRING_ARRAY_END
 
       end_location = @token.location
+      closing_start = @token.input_offset
+      closing_end = @token.input_end
 
       next_token
 
-      {strings, end_location}
+      {strings, end_location, closing_start, closing_end}
     end
 
     def parse_percent_array_element(&)
@@ -5149,16 +5338,22 @@ module Iyi
       start_location = nil
       end_location = nil
       delimiter_state = @token.delimiter_state
+      literal_start = nil
+      literal_end = nil
+      percent_witnesses = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of DiagnosticLiteralWitness : nil
 
       while true
         end_location = token_end_location
         next_string_token(delimiter_state)
         start_location ||= @token.location
         delimiter_state = @token.delimiter_state
+        literal_start ||= @token.input_offset if @token.type.string? || @token.type.interpolation_start?
         case @token.type
         when .string?
+          percent_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::StringPiece, @token.input_offset, @token.input_end))
           pieces << Piece.new(@token.value.to_s, @token.line_number)
         when .interpolation_start?
+          percent_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationStart, @token.input_offset, @token.input_end))
           line_number = @token.line_number
           # parse interpolation expression
           next_token_skip_space_or_newline
@@ -5183,16 +5378,25 @@ module Iyi
 
             return Splat.new(exp).at(splat_location)
           else
-            pieces << Piece.new(consume_interpolation(delimiter_state), line_number)
+            interpolation = consume_interpolation(delimiter_state)
+            percent_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationEnd, @token.input_offset, @token.input_end))
+            pieces << Piece.new(interpolation, line_number)
           end
         else
+          literal_end = @token.input_offset
           break
         end
       end
 
       return if pieces.empty?
 
-      (yield pieces).at(start_location).at_end(end_location)
+      node = (yield pieces).at(start_location).at_end(end_location)
+      node.diagnostic_percent_witnesses = percent_witnesses if percent_witnesses && node.is_a?(SymbolLiteral)
+      if node.is_a?(SymbolLiteral) && (start_offset = literal_start) && (end_offset = literal_end) &&
+         (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions)
+        diagnostic_literal(node, node.value, [{start_offset, end_offset}])
+      end
+      node
     end
 
     def parse_empty_array_literal
@@ -5304,7 +5508,7 @@ module Iyi
               if first_key.value.empty?
                 raise "named tuple name cannot be empty", key_location
               end
-              return parse_named_tuple(location, first_key.value)
+              return parse_named_tuple(location, first_key.value, first_literal: first_key)
             else
               check :OP_EQ_GT
             end
@@ -5454,7 +5658,7 @@ module Iyi
       parse_named_tuple(location, @token.value.to_s, {@token.input_offset, diagnostic_current_token_snapshot})
     end
 
-    def parse_named_tuple(location, first_key, first_key_observation : DiagnosticTokenObservation? = nil)
+    def parse_named_tuple(location, first_key, first_key_observation : DiagnosticTokenObservation? = nil, first_literal : StringLiteral? = nil)
       next_token_never_a_symbol
 
       slash_is_regex!
@@ -5466,6 +5670,8 @@ module Iyi
       entries = [] of NamedTupleLiteral::Entry
       entries << NamedTupleLiteral::Entry.new(first_key, first_value)
       key_offsets = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_name_observations) ? [first_key_observation] of DiagnosticTokenObservation? : nil
+      literal_keys = [] of {Int32, StringLiteral}
+      literal_keys << {0, first_literal} if first_literal
 
       if @token.type.op_comma?
         next_token_skip_space_or_newline
@@ -5478,7 +5684,9 @@ module Iyi
             next_token_never_a_symbol
           elsif string_literal_start?
             key_offsets.try &.<<(nil)
-            key = parse_string_without_interpolation("named tuple name", want_skip_space: false)
+            literal = parse_string_literal_without_interpolation("named tuple name", want_skip_space: false)
+            key = literal.value
+            literal_keys << {entries.size, literal}
           else
             raise "expected '}' or named tuple name, not #{@token}", @token
           end
@@ -5519,6 +5727,7 @@ module Iyi
       next_token_skip_space
 
       tuple = NamedTupleLiteral.new(entries).at(location).at_end(end_location)
+      literal_keys.each { |index, literal| diagnostic_copy_literal(literal, tuple, "entries.key", index) }
       if offsets = key_offsets
         offsets.each_with_index do |observation, index|
           diagnostic_name(tuple, observation[0], "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index), token_snapshot: observation[1]) if observation
@@ -7104,13 +7313,14 @@ module Iyi
       param_snapshot = nil
       external_snapshot = nil
       lowered = nil
+      external_literal = nil
 
       if splat && (@token.type.op_comma? || @token.type.op_rparen?)
         param_name = ""
         allow_restrictions = false
       else
         param_location = @token.location
-        param_name, external_name, found_space, _uses_param, param_offset, external_offset, param_snapshot, external_snapshot, lowered = parse_param_name(param_location, extra_assigns, allow_external_name: allow_external_name)
+        param_name, external_name, found_space, _uses_param, param_offset, external_offset, param_snapshot, external_snapshot, lowered, external_literal = parse_param_name(param_location, extra_assigns, allow_external_name: allow_external_name)
 
         params.each do |param|
           if param.name == param_name
@@ -7192,6 +7402,7 @@ module Iyi
       raise "BUG: param_name is nil" unless param_name
 
       param = Arg.new(param_name, default_value, restriction, external_name: external_name, parsed_annotations: annotations).at(param_location)
+      diagnostic_copy_literal(external_literal, param, "external_name") if external_literal
       diagnostic_name(param, param_offset, "parameter", token_snapshot: param_snapshot) if param_offset
       if external_offset && param.external_name != param.name
         diagnostic_name(param, external_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName), token_snapshot: external_snapshot)
@@ -7215,7 +7426,7 @@ module Iyi
       if @token.type.op_rparen? || @token.type.newline? || @token.type.op_colon?
         param_name = ""
       else
-        param_name, _external_name, found_space, uses_param, param_offset, _external_offset, param_snapshot, _external_snapshot, lowered = parse_param_name(name_location, extra_assigns, allow_external_name: false)
+        param_name, _external_name, found_space, uses_param, param_offset, _external_offset, param_snapshot, _external_snapshot, lowered, _external_literal = parse_param_name(name_location, extra_assigns, allow_external_name: false)
         @uses_block_arg = true if uses_param
       end
 
@@ -7256,6 +7467,7 @@ module Iyi
       external_offset = nil
       param_snapshot = nil
       external_snapshot = nil
+      external_literal = nil
 
       if allow_external_name && (@token.type.ident? || string_literal_start?)
         name_location = @token.location
@@ -7268,7 +7480,8 @@ module Iyi
           external_name = @token.value.to_s
           next_token
         else
-          external_name = parse_string_without_interpolation("external name")
+          external_literal = parse_string_literal_without_interpolation("external name")
+          external_name = external_literal.value
           found_string_literal = true
         end
 
@@ -7399,7 +7612,7 @@ module Iyi
 
       skip_space
 
-      {param_name, external_name, found_space, uses_param, param_offset, external_offset, param_snapshot, external_snapshot, lowered}
+      {param_name, external_name, found_space, uses_param, param_offset, external_offset, param_snapshot, external_snapshot, lowered, external_literal}
     end
 
     def invalid_internal_name?(keyword)
@@ -8073,7 +8286,7 @@ module Iyi
             else
               arg = parse_call_arg(found_double_splat)
               if @token.type.op_colon? && arg.is_a?(StringLiteral)
-                return parse_call_args_named_args(arg.location.not_nil!, args, first_name: arg.value, allow_newline: true)
+                return parse_call_args_named_args(arg.location.not_nil!, args, first_name: arg.value, allow_newline: true, first_literal: arg)
               else
                 args << arg
                 found_double_splat = arg.is_a?(DoubleSplat)
@@ -8188,7 +8401,7 @@ module Iyi
         else
           arg = parse_call_arg(found_double_splat)
           if @token.type.op_colon? && arg.is_a?(StringLiteral)
-            return parse_call_args_named_args(arg.location.not_nil!, args, first_name: arg.value, allow_newline: false)
+            return parse_call_args_named_args(arg.location.not_nil!, args, first_name: arg.value, allow_newline: false, first_literal: arg)
           else
             args << arg
             found_double_splat = arg.is_a?(DoubleSplat)
@@ -8211,8 +8424,8 @@ module Iyi
       CallArgs.new args, nil, nil, nil, false, end_location, has_parentheses: false
     end
 
-    def parse_call_args_named_args(location, args, first_name, allow_newline)
-      named_args = parse_named_args(location, first_name: first_name, allow_newline: allow_newline)
+    def parse_call_args_named_args(location, args, first_name, allow_newline, first_literal : StringLiteral? = nil)
+      named_args = parse_named_args(location, first_name: first_name, allow_newline: allow_newline, first_literal: first_literal)
 
       if call_block_arg_follows?
         return parse_call_block_arg(args, check_paren: allow_newline, named_args: named_args)
@@ -8234,13 +8447,16 @@ module Iyi
       CallArgs.new args, nil, nil, named_args, false, end_location, has_parentheses: allow_newline
     end
 
-    def parse_named_args(location, first_name = nil, allow_newline = false)
+    def parse_named_args(location, first_name = nil, allow_newline = false, first_literal : StringLiteral? = nil)
       named_args = [] of NamedArgument
       while true
         name_offset = nil
         name_snapshot = nil
+        name_literal = nil
         if first_name
           name = first_name
+          name_literal = first_literal
+          first_literal = nil
           first_name = nil
         else
           if named_tuple_start?
@@ -8249,7 +8465,8 @@ module Iyi
             name = @token.value.to_s
             next_token_never_a_symbol
           elsif string_literal_start?
-            name = parse_string_without_interpolation("named argument")
+            name_literal = parse_string_literal_without_interpolation("named argument")
+            name = name_literal.value
           else
             raise "expected named argument, not #{@token}", location
           end
@@ -8280,6 +8497,7 @@ module Iyi
         end
 
         argument = NamedArgument.new(name, value).at(location)
+        diagnostic_copy_literal(name_literal, argument, "name") if name_literal
         diagnostic_name(argument, name_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry), token_snapshot: name_snapshot) if name_offset
         named_args << argument
         skip_space
@@ -8682,13 +8900,15 @@ module Iyi
         name_location = @token.location
         name_offset = nil
         name_snapshot = nil
+        name_literal = nil
         if named_tuple_start?
           name_offset = @token.input_offset
           name_snapshot = diagnostic_current_token_snapshot
           name = @token.value.to_s
           next_token
         elsif string_literal_start?
-          name = parse_string_without_interpolation("named argument")
+          name_literal = parse_string_literal_without_interpolation("named argument")
+          name = name_literal.value
         else
           raise "expected '#{end_token}' or named argument, not #{@token}", @token
         end
@@ -8708,6 +8928,7 @@ module Iyi
         skip_space
 
         argument = NamedArgument.new(name, type).at(name_location)
+        diagnostic_copy_literal(name_literal, argument, "name") if name_literal
         diagnostic_name(argument, name_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry), token_snapshot: name_snapshot) if name_offset
         named_args << argument
 
@@ -9292,6 +9513,7 @@ module Iyi
                end
 
         next_token_skip_space_or_newline
+        real_name_literal = nil
 
         if @token.type.op_eq?
           next_token_skip_space_or_newline
@@ -9300,7 +9522,8 @@ module Iyi
             real_name = @token.value.to_s
             next_token_skip_space_or_newline
           when .delimiter_start?
-            real_name = parse_string_without_interpolation("fun name")
+            real_name_literal = parse_string_literal_without_interpolation("fun name")
+            real_name = real_name_literal.value
             skip_space
           else
             unexpected_token
@@ -9391,6 +9614,7 @@ module Iyi
         end
 
         fun_def = FunDef.new name, params, return_type, varargs, body, real_name
+        diagnostic_copy_literal(real_name_literal, fun_def, "real_name") if real_name_literal
         fun_def.name_location = name_location
         fun_def.doc = doc
         fun_def.diagnostic_origin = origin
