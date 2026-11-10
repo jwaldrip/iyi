@@ -664,7 +664,9 @@ module Iyi
         raise ArgumentError.new("pragma snapshot is not parseable JSON: #{ex.message}")
       end
       top = pragma_fields!(tree, %w(present entries), "snapshot")
-      present = top["present"].raw.as?(Bool) || raise ArgumentError.new("pragma snapshot present is not a boolean")
+      present_value = top["present"].raw
+      raise ArgumentError.new("pragma snapshot present is not a boolean") unless present_value.is_a?(Bool)
+      present = present_value
       entries = pragma_array!(top["entries"], "entries")
       raise ArgumentError.new("pragma snapshot has entries but is not present") if !present && !entries.empty?
       decoded : Hash(Int32, Array(Lexer::LocPragma))? = nil
@@ -3272,7 +3274,8 @@ module Iyi
           end
         end
         if bound?
-          if (node.diagnostic_literal_names_count || 0) > 0 || (node.diagnostic_literal_productions_count || 0) > 0
+          literal_class = node.is_a?(StringLiteral) || node.is_a?(SymbolLiteral) || node.is_a?(CharLiteral)
+          if literal_class || (node.diagnostic_literal_names_count || 0) > 0 || (node.diagnostic_literal_productions_count || 0) > 0
             raise ArgumentError.new("literal evidence requires journal literal binding")
           end
         else
@@ -3368,9 +3371,9 @@ module Iyi
       end
       raise ArgumentError.new("module header path package differs") unless origin.package_name == identity.package
       index = origin.result_index || raise ArgumentError.new("module header path lacks result index")
-      expected = Parser.iyi_package_segments(identity.package, identity.header_segments)[index]?
-      raise ArgumentError.new("module header path index out of range") unless expected
-      raise ArgumentError.new("module header path rendering differs") unless origin.rendered_text == expected
+      segment = Parser.iyi_package_segments(identity.package, identity.header_segments)[index]?
+      raise ArgumentError.new("module header path index out of range") unless segment
+      raise ArgumentError.new("module header path rendering differs") unless origin.rendered_text == segment.camelcase
     end
 
     private def verify_implicit_module_self!(origin : DiagnosticOrigin::DerivedName,
@@ -3440,6 +3443,60 @@ module Iyi
             literal_key = {"external_name", 0}
             slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
           end
+        when FunDef
+          if field == "name"
+            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+            if (journal = @journal)
+              name_values = slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)]? || raise ArgumentError.new("missing source evidence for FunDef.name")
+              name_token = fun_name_token(name_values) || raise ArgumentError.new("fun name is not an observed token")
+              raise ArgumentError.new("fun name is not a scanned token") unless journal.scanned?(name_token)
+              verify_fun_name_position!(node, journal, name_token)
+            end
+          elsif field == "real_name"
+            external = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
+            literal = {"real_name", 0}
+            has_external = slots.has_key?(external)
+            has_literal = literal_keys.includes?(literal)
+            raise ArgumentError.new("ambiguous fun real name evidence") if has_external && has_literal
+            name_values = slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)]? || raise ArgumentError.new("fun real name lacks name evidence")
+            if (journal = @journal)
+              name_token = fun_name_token(name_values) || raise ArgumentError.new("fun name is not an observed token")
+              raise ArgumentError.new("fun name is not a scanned token") unless journal.scanned?(name_token)
+              verify_fun_name_position!(node, journal, name_token)
+              following = fun_next_token(journal, name_token.input_end)
+              if has_external || has_literal
+                raise ArgumentError.new("explicit fun real name lacks '=' evidence") unless following
+                raise ArgumentError.new("explicit fun real name lacks '=' evidence") unless following.token_text == "="
+                value_token = fun_next_token(journal, following.input_end) || raise ArgumentError.new("explicit fun real name lacks a value token")
+                if has_external
+                  real_token = fun_name_token(slots[external]) || raise ArgumentError.new("explicit fun real name is not an observed token")
+                  raise ArgumentError.new("explicit fun real name is not a scanned token") unless journal.scanned?(real_token)
+                  raise ArgumentError.new("explicit fun real name is not the token after '='") unless real_token.input_start == value_token.input_start && real_token.input_end == value_token.input_end
+                  slot = external
+                else
+                  raise ArgumentError.new("quoted fun real name lacks its opening delimiter") unless value_token.token_kind == "DELIMITER_START"
+                  literal_key = literal
+                  slot = external
+                end
+              else
+                raise ArgumentError.new("invalid implicit foreign-name observation") unless expected == node.name
+                raise ArgumentError.new("implicit fun real name lacks evidence") if following && following.token_text == "="
+                verify_slot_value!(name_values, expected)
+                next
+              end
+            elsif has_external
+              # Legacy byte-level mode: the token text is checked against the name. Nothing is authorized.
+              slot = external
+            elsif has_literal
+              literal_key = literal
+              slot = external
+            else
+              # Legacy implicit: the source name must equal the real name. Only the bound path proves that no `=` follows.
+              raise ArgumentError.new("invalid implicit foreign-name observation") unless expected == node.name
+              verify_slot_value!(name_values, expected)
+              next
+            end
+          end
         when SymbolLiteral
           literal_key = {"value", 0} if field == "value"
         when Def
@@ -3504,9 +3561,47 @@ module Iyi
         end
         verify_slot_value!(values, expected)
       end
+
+      # `Self` has no name field. Its Primary slot, if any, may only hold "self".
+      if node.class.name.rpartition("::")[2] == "Self"
+        primary = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+        if values = slots[primary]?
+          verify_slot_value!(values, "self")
+          used_slots.add(primary)
+        end
+      end
       slots.each_key do |slot|
         raise ArgumentError.new("unbound name evidence slot #{slot.kind}:#{slot.index}") unless used_slots.includes?(slot)
       end
+    end
+
+    # The name token must be the first non-trivia journal token after this FunDef's own
+    # written `fun` keyword. A name token from another fun is refused here.
+    private def verify_fun_name_position!(node : FunDef, journal : DiagnosticReplayJournal, name_token : DiagnosticSourceNameToken) : Nil
+      written = node.diagnostic_origin
+      while written.is_a?(DiagnosticOrigin::Synthetic)
+        written = written.parent_origin
+      end
+      raise ArgumentError.new("fun name lacks a written fun anchor") unless written.is_a?(DiagnosticOrigin::Written)
+      raise ArgumentError.new("fun name lacks a written fun anchor") unless written.valid_for_anchor?("FunDef", "keyword")
+      start = written.input_byte_offset
+      raise ArgumentError.new("fun name lacks a written fun anchor") unless journal.scanned_span?(start, start + 3, "IDENT", "fun", @input.lexical_mode)
+      first = fun_next_token(journal, start + 3) || raise ArgumentError.new("fun name is not the token after its fun keyword")
+      unless first.input_start == name_token.input_start && first.input_end == name_token.input_end && first.token_text == name_token.raw_text
+        raise ArgumentError.new("fun name is not the token after its fun keyword")
+      end
+    end
+
+    # The observed token behind a name slot that holds exactly one token.
+    private def fun_name_token(values : Indexable(DiagnosticNameValue)) : DiagnosticSourceNameToken?
+      return nil unless values.size == 1
+      observed = values[0].as?(DiagnosticNameValue::Observed) || return nil
+      observed.source_token
+    end
+
+    # The first journal entry at or after offset that is not trivia.
+    private def fun_next_token(journal : DiagnosticReplayJournal, offset : Int32) : DiagnosticRenderedToken?
+      journal.entries.select { |entry| entry.input_start >= offset && !{"SPACE", "NEWLINE", "COMMENT", "EOF"}.includes?(entry.token_kind) }.min_by? { |entry| entry.input_start }
     end
 
     # The parser derives these summaries only from direct body declarations,
@@ -3841,7 +3936,8 @@ module Iyi
   # on every non-anchor witness (contract X). Until that is wired it is held, and
   # a ShortBlockArgument has no binding in this slice.
   class DiagnosticUnnamedParamBinder
-    record Candidate, origin : DiagnosticOrigin::DerivedName, fundef : FunDef, index : Int32, lib : Bool
+    record Candidate, origin : DiagnosticOrigin::DerivedName, fundef : FunDef, index : Int32, inside_lib : Bool
+    @ordered : Array(DiagnosticRenderedToken)
 
     def initialize(@input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal)
       @owners = {} of UInt64 => Tuple(FunDef, Int32, Bool)
@@ -3860,10 +3956,10 @@ module Iyi
       verified
     end
 
-    private def collect(node : ASTNode, lib : Bool, depth : Int32) : Nil
+    private def collect(node : ASTNode, inside_lib : Bool, depth : Int32) : Nil
       raise ArgumentError.new("recorded evidence exceeds depth limit") if depth > DiagnosticRecordedEvidenceInputCheck::MAX_DEPTH
       if node.is_a?(FunDef)
-        node.args.each_with_index { |arg, index| @owners[arg.object_id] = {node, index, lib} }
+        node.args.each_with_index { |arg, index| @owners[arg.object_id] = {node, index, inside_lib} }
       end
       node.each_diagnostic_name_slot do |_, values|
         values.each do |value|
@@ -3872,7 +3968,7 @@ module Iyi
           @candidates << Candidate.new(value.origin, fundef, index, owner_lib)
         end
       end
-      child_lib = node.is_a?(LibDef) || (lib && node.is_a?(Expressions))
+      child_lib = node.is_a?(LibDef) || (inside_lib && node.is_a?(Expressions))
       DiagnosticDirectChildFields.each(node) { |_, _, _, child| collect(child, child_lib, depth + 1) }
     end
 
@@ -3891,13 +3987,20 @@ module Iyi
       end
       raise ArgumentError.new("invalid structural anchor") unless anchor.is_a?(DiagnosticOrigin::Written)
       raise ArgumentError.new("invalid structural anchor") unless anchor.valid_for_anchor?("FunDef", "keyword") && anchor == candidate.fundef.diagnostic_origin
-      raise ArgumentError.new("unnamed parameter outside lib fun") unless candidate.lib
+      raise ArgumentError.new("unnamed parameter outside lib fun") unless candidate.inside_lib
       mode = @input.lexical_mode
       start = anchor.input_byte_offset
+      owner_arg = candidate.fundef.args[candidate.index]? || raise ArgumentError.new("structural witness differs")
+      raise ArgumentError.new("structural witness differs") unless owner_arg.name.empty?
+      unless origin.structural_input_sha256 == @input.input_sha256 &&
+             origin.structural_input_bytesize == @input.input_bytesize &&
+             origin.structural_lexical_mode == mode
+        raise ArgumentError.new("structural witnesses use different inputs")
+      end
       raise ArgumentError.new("invalid structural anchor") unless @journal.scanned_span?(start, start + 3, "IDENT", "fun", mode)
 
-      witnesses = origin.operator_witnesses
-      raise ArgumentError.new("structural witness differs") unless witnesses.size == 2 && origin.fresh_index.nil?
+      witnesses = origin.structural_witnesses
+      raise ArgumentError.new("structural witness differs") unless witnesses.size == 2 && origin.structural_fresh_index.nil?
       separator = witnesses[0]
       head = witnesses[1]
       witnesses.each do |witness|
@@ -3910,7 +4013,27 @@ module Iyi
       trivia = {"SPACE", "NEWLINE", "COMMENT", "EOF"}
       tokens = @ordered.select { |entry| entry.input_start >= start + 3 && !trivia.includes?(entry.token_kind) }
       tokens[0]? || raise ArgumentError.new("separator outside parameter list")
-      index = tokens[1]?.try(&.token_text) == "=" ? 3 : 1
+      index = 1
+      if tokens[1]?.try(&.token_text) == "="
+        real = tokens[2]? || raise ArgumentError.new("separator outside parameter list")
+        if {"IDENT", "CONST"}.includes?(real.token_kind)
+          index = 3
+        elsif real.token_kind == "DELIMITER_START"
+          # A string real name spans its DELIMITER_START through the matching DELIMITER_END.
+          nest = 0
+          index = 2
+          while index < tokens.size
+            kind = tokens[index].token_kind
+            nest += 1 if kind == "DELIMITER_START"
+            nest -= 1 if kind == "DELIMITER_END"
+            index += 1
+            break if nest == 0
+          end
+          raise ArgumentError.new("separator outside parameter list") unless nest == 0
+        else
+          raise ArgumentError.new("separator outside parameter list")
+        end
+      end
       opener = tokens[index]? || raise ArgumentError.new("separator outside parameter list")
       raise ArgumentError.new("separator outside parameter list") unless opener.token_text == "("
       depth = 0
@@ -3922,6 +4045,7 @@ module Iyi
         if token.input_start == separator.input_start
           raise ArgumentError.new("structural witness differs") unless token.token_text == separator.raw_text && token.token_kind == separator.token_kind
           raise ArgumentError.new("separator outside parameter list") unless position == index || (token.token_text == "," && depth == 1)
+          separator_index += 1 if token.token_text == "," && depth == 1
           found = position
           break
         end
@@ -3936,17 +4060,83 @@ module Iyi
       end
       raise ArgumentError.new("separator outside parameter list") if found < 0
 
+      # The slot ends at the token that closes the list, or at a depth-1 comma after the separator.
+      slot_end = -1
+      depth = 1
+      position = found + 1
+      while position < tokens.size
+        token = tokens[position]
+        case token.token_text
+        when "(", "[", "{" then depth += 1
+        when ")", "]", "}"
+          depth -= 1
+          if depth == 0
+            slot_end = token.input_start
+            break
+          end
+        when ","
+          if depth == 1
+            slot_end = token.input_start
+            break
+          end
+        end
+        position += 1
+      end
+      raise ArgumentError.new("separator outside parameter list") if slot_end < 0
+
       # The head is the first journal entry after the separator that is not SPACE or NEWLINE.
       following = @ordered.find { |entry| entry.input_start >= separator.input_end && !{"SPACE", "NEWLINE"}.includes?(entry.token_kind) }
       raise ArgumentError.new("unnamed parameter head is not the first type token") unless following && following.input_start == head.input_start
       raise ArgumentError.new("structural witness differs") unless following.token_kind == head.token_kind && following.token_text == head.raw_text
       raise ArgumentError.new("unnamed parameter head is not the first type token") if following.token_kind == "IDENT" || following.token_text == "..."
 
-      owner_arg = candidate.fundef.args[candidate.index]? || raise ArgumentError.new("structural witness differs")
-      raise ArgumentError.new("structural witness differs") unless separator_index == candidate.index && owner_arg.name.empty?
+      raise ArgumentError.new("structural witness differs") unless separator_index == candidate.index
       restriction = owner_arg.restriction || raise ArgumentError.new("structural witness differs")
-      restriction_origin = restriction.diagnostic_origin
-      raise ArgumentError.new("structural witness differs") unless restriction_origin.is_a?(DiagnosticOrigin::Written) && restriction_origin.input_byte_offset == head.input_start
+      evidence = [] of {Int32, Int32}
+      structural_restriction_evidence(restriction, mode, 0, evidence)
+      raise ArgumentError.new("structural witness differs") if evidence.empty?
+      evidence.each do |span|
+        raise ArgumentError.new("structural witness differs") unless head.input_start <= span[0] && span[0] < span[1] && span[1] <= slot_end
+      end
+      first = evidence.min_of { |span| span[0] }
+      @ordered.each do |entry|
+        next if entry.input_start < head.input_start || entry.input_start >= first
+        next if trivia.includes?(entry.token_kind)
+        raise ArgumentError.new("structural witness differs") unless {"::", "(", "->"}.includes?(entry.token_text)
+      end
+    end
+
+    # U4 evidence for a restriction subtree: each Written origin (which must start a
+    # scanned token), each scanned Observed token and each derived witness, appended as spans.
+    private def structural_restriction_evidence(node : ASTNode, mode : String, depth : Int32, spans : Array({Int32, Int32})) : Nil
+      raise ArgumentError.new("structural witness differs") if depth > DiagnosticRecordedEvidenceInputCheck::MAX_DEPTH
+      if origin = node.diagnostic_origin
+        written = origin
+        while written.is_a?(DiagnosticOrigin::Synthetic)
+          written = written.parent_origin
+        end
+        if written.is_a?(DiagnosticOrigin::Written)
+          entries = @journal.starts_at(written.input_byte_offset)
+          raise ArgumentError.new("structural witness differs") if entries.empty?
+          entries.each { |entry| spans << {entry.input_start, entry.input_end} }
+        end
+      end
+      node.each_diagnostic_name_slot do |_, values|
+        values.each do |value|
+          case value
+          when DiagnosticNameValue::Observed
+            token = value.source_token
+            raise ArgumentError.new("structural witness differs") unless @journal.scanned?(token)
+            spans << {token.input_start, token.input_end}
+          when DiagnosticNameValue::Derived
+            (value.origin.operator_witnesses + value.origin.structural_witnesses).each do |witness|
+              raise ArgumentError.new("structural witness differs") unless @journal.scanned_span?(witness.input_start, witness.input_end, witness.token_kind, witness.raw_text, mode)
+              spans << {witness.input_start, witness.input_end}
+            end
+          end
+        end
+      end
+      DiagnosticDirectChildFields.each(node) { |_, _, _, child| structural_restriction_evidence(child, mode, depth + 1, spans) }
     end
   end
 end
