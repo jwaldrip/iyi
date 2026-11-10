@@ -237,15 +237,15 @@ describe "direct capture binding" do
     end
   end
 
-  it "holds numeric literals rather than accepting unchecked numeric values" do
-    expect_raises(ArgumentError, "numeric and macro literal journal binding is not implemented") do
-      literal_binding_source("42\n", ".cr") { |_| }
+  it "binds numeric literals in both lexical modes" do
+    [".cr", ".iyi"].each do |suffix|
+      literal_binding_source("42\n", suffix) { |bound| bound.root.should_not be_nil }
     end
   end
 
-  it "holds macro body literals rather than accepting unchecked macro text" do
-    expect_raises(ArgumentError, "numeric and macro literal journal binding is not implemented") do
-      literal_binding_source("macro example\n  hello\nend\n", ".cr") { |_| }
+  it "binds macro body literals in both lexical modes" do
+    [".cr", ".iyi"].each do |suffix|
+      literal_binding_source("macro example\n  hello\nend\n", suffix) { |bound| bound.root.should_not be_nil }
     end
   end
 end

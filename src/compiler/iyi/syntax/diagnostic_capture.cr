@@ -2668,10 +2668,10 @@ module Iyi
         raise ArgumentError.new("AST inventory name evidence exceeds graph limit")
       end
       charge_evidence(count.to_u64 * 64_u64, 0, depth)
-      slots = [] of {DiagnosticNameSlot, Indexable(DiagnosticNameValue)}
+      slots = [] of {DiagnosticNameSlot, Array(DiagnosticNameValue)}
       node.each_diagnostic_name_slot do |slot, values|
         charge_evidence(values.size.to_u64 * 32_u64, 0, depth)
-        slots << {slot, values}
+        slots << {slot, values.to_a}
       end
       json.array do
         slots.sort_by { |entry| {entry[0].kind.value, entry[0].index} }.each do |slot, values|
@@ -2764,10 +2764,10 @@ module Iyi
         raise ArgumentError.new("AST inventory literal production exceeds size limit")
       end
       charge_evidence(count.to_u64 * 64_u64, 0, 0)
-      productions = [] of Tuple(Tuple(String, Int32), Indexable(DiagnosticLiteralProductionSegment))
+      productions = [] of Tuple(Tuple(String, Int32), Array(DiagnosticLiteralProductionSegment))
       node.each_diagnostic_literal_production do |key, segments|
         charge_evidence(segments.size.to_u64 * 32_u64, 0, 0)
-        productions << {key, segments}
+        productions << {key, segments.to_a}
       end
       json.array do
         productions.sort_by { |entry| entry[0] }.each do |key, segments|
@@ -3284,12 +3284,10 @@ module Iyi
       @structural = structural || Set(UInt64).new
       @literal_fields = Set(DiagnosticCaptureFieldRef).new
       @scalar_verified = Set(UInt64).new
+      @atom_fields = Set(DiagnosticCaptureFieldRef).new
     end
 
     def verify!(root : ASTNode) : Nil
-      if bound?
-        reject_unbound_scalar_literals!(root, Set(UInt64).new, Set(UInt64).new, 0)
-      end
       if bundle = @literal_bundle
         raise ArgumentError.new("literal replay input differs") unless bundle.input_key == @input.capture_key
         raise ArgumentError.new("literal replay journal differs") unless bundle.journal.same?(@journal)
@@ -3298,28 +3296,11 @@ module Iyi
         owners = DiagnosticLiteralOwnerBinding.new(reducer, bundle.literal_owners)
         @scalar_verified = DiagnosticScalarGrammarReplay.new(@input, bundle.journal, owners, bundle.scalar_owners).verify!(root)
         @literal_fields = owners.verify!(root, @scalar_verified, bundle)
+        @atom_fields = DiagnosticNumberLiteralBinding.from(@input, bundle).verify!(root) |
+                       DiagnosticMacroLiteralBinding.from(@input, bundle).verify!(root)
       end
       verify_lib_order!(root, @input.input_bytesize, 0)
       visit(root, 0)
-    end
-
-    private def reject_unbound_scalar_literals!(node : ASTNode, visited : Set(UInt64),
-                                               active : Set(UInt64), depth : Int32) : Nil
-      raise ArgumentError.new("recorded evidence exceeds depth limit") if depth > MAX_DEPTH
-      id = node.object_id
-      raise ArgumentError.new("cyclic recorded evidence graph") if active.includes?(id)
-      return unless visited.add?(id)
-      if node.is_a?(NumberLiteral) || node.is_a?(MacroLiteral)
-        raise ArgumentError.new("numeric and macro literal journal binding is not implemented")
-      end
-      active.add(id)
-      begin
-        DiagnosticDirectChildFields.each(node) do |_, _, _, child|
-          reject_unbound_scalar_literals!(child, visited, active, depth + 1)
-        end
-      ensure
-        active.delete(id)
-      end
     end
 
     # D4, the order of lib funs. A fun's `fun` anchor lies after its own lib's name
@@ -3431,7 +3412,11 @@ module Iyi
         end
         if bound?
           if node.is_a?(NumberLiteral) || node.is_a?(MacroLiteral)
-            raise ArgumentError.new("numeric and macro literal journal binding is not implemented")
+            literal_bundle = @literal_bundle || raise ArgumentError.new("literal evidence requires journal literal binding")
+            fields = node.is_a?(NumberLiteral) ? ["value", "kind"] : ["value"]
+            fields.each do |field|
+              raise ArgumentError.new("atomic literal field occurrence not bound") unless @atom_fields.includes?(literal_bundle.field_ref(node, field, 0))
+            end
           end
           bundle = @literal_bundle
           literal_class = node.is_a?(StringLiteral) || node.is_a?(SymbolLiteral) || node.is_a?(CharLiteral) ||
@@ -3866,9 +3851,9 @@ module Iyi
         raise ArgumentError.new("literal evidence exceeds graph limit")
       end
       names = [] of Tuple(Tuple(String, Int32), DiagnosticParsedLiteral)
-      productions = [] of Tuple(Tuple(String, Int32), Indexable(DiagnosticLiteralProductionSegment))
+      productions = [] of Tuple(Tuple(String, Int32), Array(DiagnosticLiteralProductionSegment))
       node.each_diagnostic_literal_name { |key, value| names << {key, value} }
-      node.each_diagnostic_literal_production { |key, value| productions << {key, value} }
+      node.each_diagnostic_literal_production { |key, value| productions << {key, value.to_a} }
       names.sort_by! { |entry| entry[0] }
       productions.sort_by! { |entry| entry[0] }
       names.each_with_index do |(key, literal), index|
@@ -4219,6 +4204,18 @@ module Iyi
 
     def macro_literals : Array(DiagnosticMacroLiteralObservation)
       @macro_literals.dup
+    end
+
+    # True only when the frozen snapshot holds this exact object, not an equal one.
+    def frozen?(node : ASTNode) : Bool
+      snapshot = @graph[node.object_id]?
+      return false unless snapshot
+      snapshot.owner.same?(node)
+    end
+
+    # Yields each frozen owner with a copy of its edges, in the frozen order.
+    def each_frozen(& : ASTNode, Array(Edge) ->)
+      @graph.each_value { |snapshot| yield snapshot.owner, snapshot.edges.dup }
     end
 
     def field_ref(owner : ASTNode, field : String, index : Int32) : DiagnosticCaptureFieldRef
@@ -5227,6 +5224,185 @@ module Iyi
         left.delimiter_kind == right.delimiter_kind && left.nest == right.nest &&
         left.end_delimiter == right.end_delimiter && left.allow_escapes == right.allow_escapes &&
         left.witnesses == right.witnesses
+    end
+  end
+
+  # Binds each NumberLiteral to one occurrence in the fresh replay. The value and
+  # kind come from the lexer journal; the node is compared with them, never the
+  # other way round. Literal, TypeArgument and Offset read NUMBER tokens,
+  # Backreference reads GLOBAL_MATCH_DATA_INDEX, and Line reads __LINE__.
+  class DiagnosticNumberLiteralBinding
+    BACKREFERENCE = /\A\$[0-9]+\??\z/
+
+    def self.from(input : AcceptedCaptureInput, bundle : DiagnosticLiteralReplayAssociations) : self
+      new(input, bundle, bundle.numbers, bundle.signed_numbers)
+    end
+
+    def initialize(@input : AcceptedCaptureInput, @bundle : DiagnosticLiteralReplayAssociations,
+                   @observations : Array(DiagnosticNumberObservation),
+                   @signed : Array(DiagnosticSignedNumberObservation))
+      @journal = @bundle.journal
+    end
+
+    def verify!(root : ASTNode) : Set(DiagnosticCaptureFieldRef)
+      raise ArgumentError.new("literal replay input differs") unless @bundle.input_key == @input.capture_key
+      @bundle.verify_graph!(root)
+      fields = Set(DiagnosticCaptureFieldRef).new
+      owners = Set(UInt64).new
+      used = Set(Int32).new
+      literal_used = Set(Int32).new
+      @observations.each do |item|
+        owner = item.owner
+        raise ArgumentError.new("duplicate number literal association") unless owners.add?(owner.object_id)
+        raise ArgumentError.new("number literal owner is not reachable") unless @bundle.frozen?(owner)
+        token_kind = case item.role
+                     when .backreference? then "GLOBAL_MATCH_DATA_INDEX"
+                     when .line?          then "__LINE__"
+                     else                      "NUMBER"
+                     end
+        entry = token!(item.token, token_kind)
+        raise ArgumentError.new("number token consumed twice") unless used.add?(item.token.ordinal)
+        literal_used << item.token.ordinal if item.role.literal?
+        value, number_kind = case item.role
+                             when .backreference?
+                               backreference!(owner, entry, item.call)
+                             when .line?
+                               raise ArgumentError.new("number observation call differs") unless item.call.nil?
+                               line!(entry)
+                             else
+                               raise ArgumentError.new("number observation call differs") unless item.call.nil?
+                               number!(item.role, entry)
+                             end
+        raise ArgumentError.new("number literal value differs from scanned token") unless owner.value == value
+        raise ArgumentError.new("number literal kind differs from scanned token") unless owner.kind.to_s == number_kind
+        fields << @bundle.field_ref(owner, "value", 0)
+        fields << @bundle.field_ref(owner, "kind", 0)
+      end
+      @signed.each do |item|
+        call = item.call
+        raise ArgumentError.new("signed number operator is not reachable") unless @bundle.frozen?(call)
+        signed = token!(item.signed, "NUMBER")
+        unsigned = token!(item.unsigned, "NUMBER")
+        sign = signed.token_text.byte_slice(0, 1)
+        raise ArgumentError.new("signed number operator differs") unless {"+", "-"}.includes?(sign) && call.name == sign
+        unless item.unsigned.ordinal > item.signed.ordinal && unsigned.input_start == signed.input_start + 1 &&
+               unsigned.input_end == signed.input_end && unsigned.token_text == signed.token_text.byte_slice(1) &&
+               literal_used.includes?(item.unsigned.ordinal)
+          raise ArgumentError.new("signed number operand differs")
+        end
+        raise ArgumentError.new("number token consumed twice") unless used.add?(item.signed.ordinal)
+      end
+      @journal.entries.each_with_index do |entry, ordinal|
+        next unless {"NUMBER", "GLOBAL_MATCH_DATA_INDEX"}.includes?(entry.token_kind)
+        raise ArgumentError.new("unbound number token") unless used.includes?(ordinal)
+      end
+      @bundle.each_frozen do |owner, _|
+        next unless owner.is_a?(NumberLiteral)
+        raise ArgumentError.new("number literal binding missing") unless owners.includes?(owner.object_id)
+      end
+      fields
+    end
+
+    private def token!(reference : DiagnosticReplayTokenRef, kind : String) : DiagnosticRenderedToken
+      entry = @journal.entry!(reference)
+      @journal.literal_entry!(entry.input_start, entry.input_end, kind, @input.lexical_mode)
+    end
+
+    private def backreference!(owner : NumberLiteral, entry : DiagnosticRenderedToken, call : Call?) : {String, String}
+      call = call || raise ArgumentError.new("backreference call association missing")
+      raw = entry.token_text
+      raise ArgumentError.new("backreference token differs") unless raw.matches?(BACKREFERENCE)
+      query = raw.ends_with?('?')
+      digits = query ? raw.byte_slice(1, raw.bytesize - 2) : raw.byte_slice(1)
+      index = digits.to_i32? || raise ArgumentError.new("backreference token differs")
+      raise ArgumentError.new("backreference call differs") unless @bundle.frozen?(call)
+      global = call.obj
+      raise ArgumentError.new("backreference call differs") unless global.is_a?(Global) && global.name == "$~"
+      raise ArgumentError.new("backreference call differs") unless call.args.size == 1 && call.args[0].same?(owner)
+      named = call.named_args
+      raise ArgumentError.new("backreference call differs") if (named && !named.empty?) || call.block || call.block_arg
+      raise ArgumentError.new("backreference call differs") unless call.name == (query ? "[]?" : "[]")
+      {index.to_s, "i32"}
+    end
+
+    private def line!(entry : DiagnosticRenderedToken) : {String, String}
+      value = journal_value!(entry, "number token lacks a value")
+      raise ArgumentError.new("line number value is not canonical") unless value.to_i32?.try(&.to_s) == value
+      {value, "i32"}
+    end
+
+    private def number!(role : DiagnosticNumberRole, entry : DiagnosticRenderedToken) : {String, String}
+      value = journal_value!(entry, "number token lacks a value")
+      kind = entry.number_kind || raise ArgumentError.new("number token lacks a kind")
+      raise ArgumentError.new("offset number kind differs") if role.offset? && kind != "i32"
+      {value, kind}
+    end
+
+    private def journal_value!(entry : DiagnosticRenderedToken, message : String) : String
+      encoded = entry.value_base64 || raise ArgumentError.new(message)
+      String.new(DiagnosticRenderedToken.decode_value(encoded, DiagnosticRenderedToken.value_bound(entry.token_kind, entry.token_text)))
+    end
+  end
+
+  # Binds each MacroLiteral to one MACRO_LITERAL occurrence. The value must equal
+  # the occurrence's source bytes (less an escape's backslash) and the node. Order
+  # is checked only among the MacroLiteral children of a frozen Expressions.
+  class DiagnosticMacroLiteralBinding
+    def self.from(input : AcceptedCaptureInput, bundle : DiagnosticLiteralReplayAssociations) : self
+      new(input, bundle, bundle.macro_literals)
+    end
+
+    def initialize(@input : AcceptedCaptureInput, @bundle : DiagnosticLiteralReplayAssociations,
+                   @observations : Array(DiagnosticMacroLiteralObservation))
+      @journal = @bundle.journal
+    end
+
+    def verify!(root : ASTNode) : Set(DiagnosticCaptureFieldRef)
+      raise ArgumentError.new("literal replay input differs") unless @bundle.input_key == @input.capture_key
+      @bundle.verify_graph!(root)
+      fields = Set(DiagnosticCaptureFieldRef).new
+      owners = Set(UInt64).new
+      used = Set(Int32).new
+      ordinals = {} of UInt64 => Int32
+      @observations.each do |item|
+        owner = item.owner
+        raise ArgumentError.new("duplicate macro literal association") unless owners.add?(owner.object_id)
+        raise ArgumentError.new("macro literal owner is not reachable") unless @bundle.frozen?(owner)
+        entry = token!(item.token)
+        raise ArgumentError.new("macro literal token consumed twice") unless used.add?(item.token.ordinal)
+        encoded = entry.value_base64 || raise ArgumentError.new("macro literal token lacks a value")
+        value = String.new(DiagnosticRenderedToken.decode_value(encoded, DiagnosticRenderedToken.value_bound(entry.token_kind, entry.token_text)))
+        raw = entry.token_text
+        expected = (raw.starts_with?("\\{") || raw.starts_with?("\\%")) ? raw.byte_slice(1) : raw
+        raise ArgumentError.new("macro literal value differs from its source bytes") unless value == expected
+        raise ArgumentError.new("macro literal value differs from scanned token") unless owner.value == value
+        fields << @bundle.field_ref(owner, "value", 0)
+        ordinals[owner.object_id] = item.token.ordinal
+      end
+      @journal.entries.each_with_index do |entry, ordinal|
+        next unless entry.token_kind == "MACRO_LITERAL"
+        raise ArgumentError.new("unbound macro literal token") unless used.includes?(ordinal)
+      end
+      @bundle.each_frozen do |owner, _|
+        next unless owner.is_a?(MacroLiteral)
+        raise ArgumentError.new("macro literal binding missing") unless owners.includes?(owner.object_id)
+      end
+      @bundle.each_frozen do |owner, edges|
+        next unless owner.is_a?(Expressions)
+        last = -1
+        edges.each do |edge|
+          next unless edge.child.is_a?(MacroLiteral)
+          ordinal = ordinals[edge.child.object_id]
+          raise ArgumentError.new("macro literal order differs from scanned tokens") unless ordinal > last
+          last = ordinal
+        end
+      end
+      fields
+    end
+
+    private def token!(reference : DiagnosticReplayTokenRef) : DiagnosticRenderedToken
+      entry = @journal.entry!(reference)
+      @journal.literal_entry!(entry.input_start, entry.input_end, "MACRO_LITERAL", @input.lexical_mode)
     end
   end
 
