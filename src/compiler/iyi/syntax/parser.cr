@@ -7,6 +7,29 @@ module Iyi
   record DiagnosticParsedName, input_start : Int32, input_end : Int32, token_kind : String,
     token_text : String, lexical_mode : String, context : String, slot : DiagnosticNameSlot, owner : ASTNode
 
+  # The five flags `parse_to_def` copies onto its definition, read from real
+  # parser or definition state.
+  record ParseDefFlags,
+    calls_super : Bool,
+    calls_initialize : Bool,
+    calls_previous_def : Bool,
+    uses_block_arg : Bool,
+    assigns_special_var : Bool
+
+  # What `parse_to_def` did, read at each actual boundary: the owner before
+  # anything is touched, the parser after `prepare_parse_def`, the parser's
+  # result before any copy, and the owner after the copy. Nesting is recorded
+  # before and after the increment. Built only when diagnostic capture is on.
+  record ParseToDefEffect,
+    owner_before : ParseDefFlags,
+    delegated : ParseDefFlags,
+    delegated_block_arg_name : String?,
+    delegated_is_macro_def : Bool,
+    result : ParseDefFlags,
+    owner_after : ParseDefFlags,
+    def_nest_before : Int32,
+    def_nest_after : Int32
+
   class Parser < Lexer
     enum ParseMode
       Normal
@@ -263,6 +286,7 @@ module Iyi
     # state is deliberately ineligible for speculative reuse.
     def parse_ahead_contract : String?
       return nil if @parse_state_exposed_or_advanced
+      return nil unless @string_pool.class == StringPool
       return nil unless @reader.pos == 0 && @location_pragmas.nil? && @heredocs.empty? &&
                         @input_artifact.nil? && @artifact.nil? && @diagnostic_regions.nil? &&
                         @diagnostic_expansion.nil? && @macro_literal_breaks.nil? &&
@@ -6111,11 +6135,19 @@ module Iyi
       klass.new(name).tap { |node| node.diagnostic_origin = origin }
     end
 
+    getter last_parse_to_def_effect : ParseToDefEffect? = nil
+
     def parse_to_def(a_def)
+      owner_before = def_flags_of(a_def) if @diagnostic_capture
+      def_nest_before = @def_nest
       prepare_parse_def
+      delegated = parser_def_flags if @diagnostic_capture
+      delegated_block_arg_name = @block_arg_name
+      delegated_is_macro_def = @is_macro_def
       @def_nest += 1
 
       result = parse
+      result_flags = parser_def_flags if @diagnostic_capture
 
       a_def.calls_super = @calls_super
       a_def.calls_initialize = @calls_initialize
@@ -6123,7 +6155,23 @@ module Iyi
       a_def.uses_block_arg = @uses_block_arg
       a_def.assigns_special_var = @assigns_special_var
 
+      if owner_before && delegated && result_flags
+        @last_parse_to_def_effect = ParseToDefEffect.new(owner_before, delegated,
+          delegated_block_arg_name, delegated_is_macro_def, result_flags,
+          def_flags_of(a_def), def_nest_before, @def_nest)
+      end
+
       result
+    end
+
+    private def parser_def_flags : ParseDefFlags
+      ParseDefFlags.new(@calls_super, @calls_initialize, @calls_previous_def,
+        @uses_block_arg, @assigns_special_var)
+    end
+
+    private def def_flags_of(a_def) : ParseDefFlags
+      ParseDefFlags.new(a_def.calls_super, a_def.calls_initialize, a_def.calls_previous_def,
+        a_def.uses_block_arg, a_def.assigns_special_var)
     end
 
     def parse_def(is_abstract = false, is_macro_def = false, doc = nil)
