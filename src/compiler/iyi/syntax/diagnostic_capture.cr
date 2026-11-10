@@ -198,6 +198,114 @@ module Iyi
       @input.bytesize
     end
 
+    ENVELOPE_SCHEMA = "iyi-capture-envelope/1"
+    CAPTURE_KEY_TAG = "iyi.capture.v1.key\0"
+    MAX_ENVELOPE_INTEGER = 9007199254740991_i64
+
+    # Canonical envelope (C1): keys sorted bytewise, no whitespace, ASCII only.
+    # Every string is an identifier, lowercase hex or strict base64, and integers
+    # are range-checked against 2^53 - 1 without taking an absolute value.
+    def envelope_bytes : String
+      entries = [] of {String, String}
+      entries << {"schema", "\"#{ENVELOPE_SCHEMA}\""}
+      entries << {"kind", envelope_identifier(@kind.to_s)}
+      entries << {"entry", envelope_identifier(@entry.to_s)}
+      entries << {"mode", envelope_identifier(@mode.to_s)}
+      entries << {"lexical_mode", envelope_identifier(@lexical_mode)}
+      entries << {"def_nest", envelope_integer(@def_nest.to_i64)}
+      entries << {"fun_nest", envelope_integer(@fun_nest.to_i64)}
+      entries << {"type_nest", envelope_integer(@type_nest.to_i64)}
+      entries << {"module_extends_written", @module_extends_written.to_s}
+      entries << {"source_only", @source_only.to_s}
+      entries << {"wants_doc", @wants_doc.to_s}
+      entries << {"visibility", @visibility.try { |value| envelope_identifier(value.to_s) } || "null"}
+      entries << {"logical_module_b64", envelope_base64(@logical_module)}
+      entries << {"package_b64", envelope_base64(@package)}
+      entries << {"original_file_b64", envelope_base64(@original_file)}
+      entries << {"scopes_b64", envelope_scopes}
+      entries << {"fresh_parser_contract_b64", envelope_base64(@fresh_parser_contract)}
+      entries << {"warning_policy_b64", envelope_base64(@warning_policy_json)}
+      entries << {"context", "null"}
+      members = entries.sort_by { |entry| entry[0] }.map { |key, value| "\"#{key}\":#{value}" }
+      "{#{members.join(",")}}"
+    end
+
+    # Key = sha256("iyi.capture.v1.key\0" || envelope || "\0" || input_sha256 || "\0" || decimal(bytesize)).
+    def capture_key : String
+      material = String.build do |io|
+        io << CAPTURE_KEY_TAG
+        io << envelope_bytes
+        io << "\0"
+        io << @input_sha256
+        io << "\0"
+        io << @input.bytesize.to_s
+      end
+      ::Crystal::Digest::SHA256.hexdigest(material)
+    end
+
+    # Builds a fresh parser from this input alone: the recorded text, the decoded
+    # contract and the rebuilt warning policy. The caller must compare the replay's
+    # capture key with this one before trusting any parse from it.
+    def replay_parser : Parser
+      fields = JSON.parse(@fresh_parser_contract).as_h
+      scopes = fields["scopes"].as_a.map { |scope| Set(String).new(scope.as_a.map(&.as_s)) }
+      warnings = WarningCollection.from_parse_ahead_snapshot(warning_policy)
+      parser = Parser.new(@input, nil, scopes, warnings)
+      filename = fields["filename"].as_s
+      parser.filename = filename
+      parser.diagnostic_source_file = filename if fields["source_unit"].as_s?
+      parser.iyi = fields["lexical_mode"].as_s == "Iyi"
+      parser.iyi_package_name = fields["package"].as_s?
+      parser.iyi_source_only = fields["source_only"].as_bool
+      parser.iyi_module_extends_written = fields["module_extends_written"].as_bool
+      visibility = fields["visibility"].as_s?
+      parser.visibility = visibility ? Visibility.parse(visibility) : nil
+      parser.def_nest = fields["def_nest"].as_i
+      parser.fun_nest = fields["fun_nest"].as_i
+      parser.type_nest = fields["type_nest"].as_i
+      parser.wants_doc = fields["wants_doc"].as_bool
+      parser.diagnostic_capture = true
+      parser
+    end
+
+    # Captures the replay parser's own input, before it parses, for comparison.
+    def replay_capture_input(parser : Parser) : AcceptedCaptureInput
+      parser.diagnostic_capture_input(@kind, @logical_module, @entry, replay_parse_mode)
+    end
+
+    private def replay_parse_mode : Parser::ParseMode
+      case @mode
+      when .normal?              then Parser::ParseMode::Normal
+      when .lib?                 then Parser::ParseMode::Lib
+      when .lib_struct_or_union? then Parser::ParseMode::LibStructOrUnion
+      when .enum?                then Parser::ParseMode::Enum
+      else                            raise ArgumentError.new("unmapped capture parse mode")
+      end
+    end
+
+    private def envelope_identifier(value : String) : String
+      raise ArgumentError.new("envelope value is not an identifier") unless value.matches?(/\A[A-Za-z_][A-Za-z0-9_]*\z/)
+      "\"#{value}\""
+    end
+
+    private def envelope_integer(value : Int64) : String
+      raise ArgumentError.new("envelope integer out of range") if value < -MAX_ENVELOPE_INTEGER || value > MAX_ENVELOPE_INTEGER
+      value.to_s
+    end
+
+    private def envelope_base64(value : String?) : String
+      return "null" unless value
+      "\"#{Base64.strict_encode(value.to_slice)}\""
+    end
+
+    private def envelope_scopes : String
+      rows = @scopes.map do |scope|
+        names = scope.map { |name| "\"#{Base64.strict_encode(name.to_slice)}\"" }
+        "[#{names.join(",")}]"
+      end
+      "[#{rows.join(",")}]"
+    end
+
     def matches_encoded_span?(start_offset : Int32, end_offset : Int32, encoded : String) : Bool
       return false unless start_offset >= 0 && end_offset > start_offset && end_offset <= @input.bytesize
       return false if encoded.bytesize.to_i64 > DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i64
@@ -2052,124 +2160,68 @@ module Iyi
     end
   end
 
-  # Bounded partial syntax inventory. Unsupported presence or scalar readers
-  # refuse capture. It is not a registry: parser acceptance, complete field
-  # coverage, source-witness binding and authority still need validation.
-  class DiagnosticAstInventorySnapshot
+  # One AST node object, written by the snapshot and by the frame walker alike.
+  # Subclasses decide how a filename and a child node are written. Each
+  # instance holds its own evidence budget, so every writer charges its own bound.
+  abstract class DiagnosticAstNodeBody
     MAX_BYTES = 8_i64 * 1024 * 1024
     MAX_DEPTH = 128
-    @sha256 : String
-    @bytes : String
-    @active = Set(UInt64).new
-    @object_ids = {} of UInt64 => Int32
-    @evidence_budget : UInt64 = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+    @evidence_budget : UInt64
 
-    def initialize(root : ASTNode)
-      output = DiagnosticCaptureOutput.new(MAX_BYTES)
-      json = JSON::Builder.new(output)
-      json.max_nesting = 1024
-      json.start_document
-      write_node(json, root, 0)
-      json.end_document
-      @bytes = output.snapshot
-      @sha256 = ::Crystal::Digest::SHA256.hexdigest(@bytes)
+    def initialize(@evidence_budget : UInt64)
     end
 
-    def bytes : String
-      String.new(@bytes.to_slice)
-    end
+    abstract def write_filename_field(json : JSON::Builder, filename : String | VirtualFile | Nil) : Nil
+    abstract def write_child_node(json : JSON::Builder, child : ASTNode, depth : Int32) : Nil
 
-    def sha256 : String
-      String.new(@sha256.to_slice)
-    end
-
-    # Resolves only the inventory's own name bytes. It cannot establish source
-    # provenance or authorize a transformed artifact.
-    def resolve_name(owner_path : Array(DiagnosticInventoryStep), field : DiagnosticInventoryStep) : Bytes
-      raise ArgumentError.new("inventory path exceeds depth limit") if owner_path.size > MAX_DEPTH
-      parser = JSON::Parser.new(@bytes)
-      parser.max_nesting = 1024
-      node = parser.parse
-      owner_path.each do |step|
-        node = find_coordinate(node["children"].as_a, step)["node"]
+    protected def write_node_object(json : JSON::Builder, node : ASTNode, depth : Int32, owner_id : Int32) : Nil
+      charge_evidence(64_u64, 0, depth)
+      DiagnosticAstFieldSchema.validate_node_fields(node)
+      if !node.is_a?(Arg) && node.diagnostic_external_explicit
+        raise ArgumentError.new("external-name observation on non-argument node")
       end
-      encoded = find_coordinate(node["names"].as_a, field)["value_base64"].as_s
-      Base64.decode(encoded)
-    end
-
-    private def find_coordinate(entries : Array(JSON::Any), step : DiagnosticInventoryStep) : JSON::Any
-      encoded_key = encode_key(step.map_key)
-      found : JSON::Any? = nil
-      entries.each do |entry|
-        next unless entry["field"].as_s == step.field
-        next unless entry["index"].as_i? == step.index
-        next unless entry["map_key_base64"].as_s? == encoded_key
-        raise ArgumentError.new("ambiguous inventory coordinate") if found
-        found = entry
-      end
-      found || raise ArgumentError.new("unknown inventory coordinate")
-    end
-
-    private def write_node(json : JSON::Builder, node : ASTNode, depth : Int32) : Nil
-      raise ArgumentError.new("AST inventory exceeds depth limit") if depth > MAX_DEPTH
-      id = node.object_id
-      raise ArgumentError.new("cyclic AST inventory") unless @active.add?(id)
-      begin
-        charge_evidence(64_u64, 0, depth)
-        owner_id = @object_ids[id]?
-        unless owner_id
-          owner_id = @object_ids.size
-          @object_ids[id] = owner_id
+      json.object do
+        json.field "owner_id", owner_id
+        json.field "kind", node.class.name
+        json.field("presence") { write_presence(json, node) }
+        json.field("scalars") { write_scalars(json, node) }
+        json.field("location") { write_stored_location(json, node.diagnostic_stored_location) }
+        json.field("end_location") { write_stored_location(json, node.diagnostic_stored_end_location) }
+        json.field("extra_locations") { write_extra_locations(json, node) }
+        if origin = node.diagnostic_origin
+          charge_evidence(origin.graph_bytes, origin.graph_depth, depth)
         end
-        DiagnosticAstFieldSchema.validate_node_fields(node)
-        if !node.is_a?(Arg) && node.diagnostic_external_explicit
-          raise ArgumentError.new("external-name observation on non-argument node")
-        end
-        json.object do
-          json.field "owner_id", owner_id
-          json.field "kind", node.class.name
-          json.field("presence") { write_presence(json, node) }
-          json.field("scalars") { write_scalars(json, node) }
-          json.field("location") { write_stored_location(json, node.diagnostic_stored_location) }
-          json.field("end_location") { write_stored_location(json, node.diagnostic_stored_end_location) }
-          json.field("extra_locations") { write_extra_locations(json, node) }
-          if origin = node.diagnostic_origin
-            charge_evidence(origin.graph_bytes, origin.graph_depth, depth)
-          end
-          json.field "origin", node.diagnostic_origin
-          json.field "macro_lineage", node.diagnostic_macro_lineage.to_s
-          json.field "external_name_explicit", node.diagnostic_external_explicit
-          json.field("name_slots") { write_name_slots(json, node, depth) }
-          json.field("literal_names") { write_literal_names(json, node, depth) }
-          json.field("literal_productions") { write_literal_productions(json, node) }
-          json.field "names" do
-            json.array do
-              DiagnosticDirectNameFields.each(node) do |field, index, key, value|
-                raise ArgumentError.new("AST inventory name exceeds size limit") if value.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
-                json.object do
-                  json.field "field", field
-                  json.field "index", index
-                  json.field "map_key_base64", encode_key(key)
-                  json.field "value_base64", Base64.strict_encode(value.to_slice)
-                end
-              end
-            end
-          end
-          json.field "children" do
-            json.array do
-              DiagnosticDirectChildFields.each(node) do |field, index, key, child|
-                json.object do
-                  json.field "field", field
-                  json.field "index", index
-                  json.field "map_key_base64", encode_key(key)
-                  json.field("node") { write_node(json, child, depth + 1) }
-                end
+        json.field "origin", node.diagnostic_origin
+        json.field "macro_lineage", node.diagnostic_macro_lineage.to_s
+        json.field "external_name_explicit", node.diagnostic_external_explicit
+        json.field("name_slots") { write_name_slots(json, node, depth) }
+        json.field("literal_names") { write_literal_names(json, node, depth) }
+        json.field("literal_productions") { write_literal_productions(json, node) }
+        json.field "names" do
+          json.array do
+            DiagnosticDirectNameFields.each(node) do |field, index, key, value|
+              raise ArgumentError.new("AST inventory name exceeds size limit") if value.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
+              json.object do
+                json.field "field", field
+                json.field "index", index
+                json.field "map_key_base64", encode_key(key)
+                json.field "value_base64", Base64.strict_encode(value.to_slice)
               end
             end
           end
         end
-      ensure
-        @active.delete(id)
+        json.field "children" do
+          json.array do
+            DiagnosticDirectChildFields.each(node) do |field, index, key, child|
+              json.object do
+                json.field "field", field
+                json.field "index", index
+                json.field "map_key_base64", encode_key(key)
+                json.field("node") { write_child_node(json, child, depth + 1) }
+              end
+            end
+          end
+        end
       end
     end
 
@@ -2272,9 +2324,8 @@ module Iyi
         json.null
         return
       end
-      filename = DiagnosticFilenameSnapshot.new(location.filename)
       json.object do
-        json.field "filename_snapshot", filename.bytes
+        write_filename_field(json, location.filename)
         json.field "line", location.line_number
         json.field "column", location.column_number
         json.field "artifact", location.artifact
@@ -2442,6 +2493,91 @@ module Iyi
       raise ArgumentError.new("AST inventory key exceeds size limit") if key.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
       Base64.strict_encode(key.to_slice)
     end
+  end
+
+  # Bounded partial syntax inventory. Unsupported presence or scalar readers
+  # refuse capture. It is not a registry: parser acceptance, complete field
+  # coverage, source-witness binding and authority still need validation.
+  class DiagnosticAstInventorySnapshot < DiagnosticAstNodeBody
+    MAX_BYTES = DiagnosticAstNodeBody::MAX_BYTES
+    MAX_DEPTH = DiagnosticAstNodeBody::MAX_DEPTH
+    @sha256 : String
+    @bytes : String
+    @active = Set(UInt64).new
+    @object_ids = {} of UInt64 => Int32
+
+    def initialize(root : ASTNode)
+      super(DiagnosticOrigin::MAX_UNFOLDED_BYTES)
+      output = DiagnosticCaptureOutput.new(MAX_BYTES)
+      json = JSON::Builder.new(output)
+      json.max_nesting = 1024
+      json.start_document
+      write_node(json, root, 0)
+      json.end_document
+      @bytes = output.snapshot
+      @sha256 = ::Crystal::Digest::SHA256.hexdigest(@bytes)
+    end
+
+    def bytes : String
+      String.new(@bytes.to_slice)
+    end
+
+    def sha256 : String
+      String.new(@sha256.to_slice)
+    end
+
+    # Resolves only the inventory's own name bytes. It cannot establish source
+    # provenance or authorize a transformed artifact.
+    def resolve_name(owner_path : Array(DiagnosticInventoryStep), field : DiagnosticInventoryStep) : Bytes
+      raise ArgumentError.new("inventory path exceeds depth limit") if owner_path.size > MAX_DEPTH
+      parser = JSON::Parser.new(@bytes)
+      parser.max_nesting = 1024
+      node = parser.parse
+      owner_path.each do |step|
+        node = find_coordinate(node["children"].as_a, step)["node"]
+      end
+      encoded = find_coordinate(node["names"].as_a, field)["value_base64"].as_s
+      Base64.decode(encoded)
+    end
+
+    private def find_coordinate(entries : Array(JSON::Any), step : DiagnosticInventoryStep) : JSON::Any
+      encoded_key = encode_key(step.map_key)
+      found : JSON::Any? = nil
+      entries.each do |entry|
+        next unless entry["field"].as_s == step.field
+        next unless entry["index"].as_i? == step.index
+        next unless entry["map_key_base64"].as_s? == encoded_key
+        raise ArgumentError.new("ambiguous inventory coordinate") if found
+        found = entry
+      end
+      found || raise ArgumentError.new("unknown inventory coordinate")
+    end
+
+    private def write_node(json : JSON::Builder, node : ASTNode, depth : Int32) : Nil
+      raise ArgumentError.new("AST inventory exceeds depth limit") if depth > MAX_DEPTH
+      id = node.object_id
+      raise ArgumentError.new("cyclic AST inventory") unless @active.add?(id)
+      begin
+        owner_id = @object_ids[id]?
+        unless owner_id
+          owner_id = @object_ids.size
+          @object_ids[id] = owner_id
+        end
+        write_node_object(json, node, depth, owner_id)
+      ensure
+        @active.delete(id)
+      end
+    end
+
+    def write_filename_field(json : JSON::Builder, filename : String | VirtualFile | Nil) : Nil
+      snapshot = DiagnosticFilenameSnapshot.new(filename)
+      json.field "filename_snapshot", snapshot.bytes
+    end
+
+    def write_child_node(json : JSON::Builder, child : ASTNode, depth : Int32) : Nil
+      write_node(json, child, depth)
+    end
+
   end
 
   # One parser-observed literal constituent, represented as bytes rather than
