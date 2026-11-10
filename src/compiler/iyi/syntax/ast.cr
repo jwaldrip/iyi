@@ -51,6 +51,20 @@ module Iyi
     getter diagnostic_origin : DiagnosticOrigin?
     property diagnostic_macro_lineage : DiagnosticMacroLineage = DiagnosticMacroLineage::Unknown
 
+    @diagnostic_name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))? = nil
+
+    def diagnostic_name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))
+      copy = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+      @diagnostic_name_slots.try &.each { |slot, tokens| copy[slot] = tokens.dup }
+      copy
+    end
+
+    def diagnostic_name_slots=(slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))) : Nil
+      copy = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+      slots.each { |slot, tokens| copy[slot] = tokens.dup }
+      @diagnostic_name_slots = copy.empty? ? nil : copy
+    end
+
     def diagnostic_origin=(origin : DiagnosticOrigin?) : DiagnosticOrigin?
       @diagnostic_origin = origin
       @diagnostic_macro_lineage = DiagnosticMacroLineage::Preserved if origin
@@ -100,6 +114,7 @@ module Iyi
       clone.end_location = end_location
       clone.diagnostic_origin = diagnostic_origin
       clone.diagnostic_macro_lineage = diagnostic_macro_lineage
+      clone.diagnostic_name_slots = diagnostic_name_slots
       clone.doc = doc
       clone
     end

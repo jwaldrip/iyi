@@ -5,7 +5,8 @@ module Iyi
     offset : Int32,
     kind : String,
     role : String,
-    origin : DiagnosticOrigin?
+    origin : DiagnosticOrigin?,
+    name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken)) = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
 
   record DiagnosticRegion,
     start_offset : Int32,
@@ -19,7 +20,116 @@ module Iyi
     Constructed
   end
 
-  record DiagnosticEmissionPart, start_offset : Int32, end_offset : Int32, emitter_origin : DiagnosticOrigin?
+
+  enum DiagnosticNameSlotKind
+    Primary
+    Receiver
+    ExternalName
+    PathSegment
+    TypeParameter
+    NamedEntry
+  end
+
+  record DiagnosticNameSlot, kind : DiagnosticNameSlotKind, index : Int32 = 0 do
+    def initialize(@kind : DiagnosticNameSlotKind, @index : Int32 = 0)
+      raise ArgumentError.new("negative diagnostic name slot index") if @index < 0
+      if @index != 0 && !@kind.path_segment? && !@kind.type_parameter? && !@kind.named_entry?
+        raise ArgumentError.new("diagnostic name slot is not indexed")
+      end
+    end
+  end
+
+  record DiagnosticSourceNameToken,
+    lexical_origin : DiagnosticOrigin,
+    binding_origin : DiagnosticOrigin?,
+    context : String,
+    input_sha256 : String,
+    input_bytesize : Int32,
+    input_start : Int32,
+    input_end : Int32,
+    lexical_mode : String,
+    token_kind : String,
+    raw_text : String do
+    def initialize(@lexical_origin : DiagnosticOrigin, @binding_origin : DiagnosticOrigin?, @context : String,
+                   @input_sha256 : String, @input_bytesize : Int32, @input_start : Int32, @input_end : Int32,
+                   @lexical_mode : String, @token_kind : String, @raw_text : String)
+      unless {"method_name", "definition_name", "macro_name", "local_reference", "instance_variable",
+              "class_variable", "parameter", "path_segment", "type_parameter", "named_entry"}.includes?(@context)
+        raise ArgumentError.new("invalid diagnostic name context")
+      end
+      unless @input_sha256.bytesize == 64 && @input_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) }
+        raise ArgumentError.new("invalid diagnostic name input digest")
+      end
+      unless @input_start >= 0 && @input_end > @input_start && @input_end <= @input_bytesize &&
+             @input_end - @input_start == @raw_text.bytesize && @raw_text.valid_encoding? &&
+             {"Crystal", "Iyi"}.includes?(@lexical_mode) && !@token_kind.empty?
+        raise ArgumentError.new("invalid diagnostic source name token")
+      end
+      case @lexical_origin
+      when DiagnosticOrigin::Written
+        raise ArgumentError.new("name token origin offset mismatch") unless @lexical_origin.input_byte_offset == @input_start
+      when DiagnosticOrigin::Expanded
+        unless @lexical_origin.generated_byte_offset == @input_start && @lexical_origin.expansion_guard == "sha256:#{@input_sha256}"
+          raise ArgumentError.new("name token expansion input mismatch")
+        end
+      else
+        raise ArgumentError.new("invalid name lexical origin")
+      end
+      if binding = @binding_origin
+        unless binding.is_a?(DiagnosticOrigin::Synthetic) && binding.synthesis_kind == "local_binding" &&
+               binding.structural_slot == "assignment" && binding.parent_origin == @lexical_origin
+          raise ArgumentError.new("invalid name binding origin")
+        end
+      end
+    end
+  end
+
+  abstract class DiagnosticEmissionPart
+    getter start_offset : Int32
+    getter end_offset : Int32
+    getter emitter_origin : DiagnosticOrigin?
+
+    def initialize(@start_offset : Int32, @end_offset : Int32, @emitter_origin : DiagnosticOrigin?)
+      raise ArgumentError.new("invalid macro emission extent") unless @start_offset >= 0 && @end_offset > @start_offset
+      if emitter = @emitter_origin
+        unless emitter.valid_for_anchor?("MacroDirective", "expression") || emitter.valid_for_anchor?("MacroDirective", "control")
+          raise ArgumentError.new("invalid macro emission directive")
+        end
+      end
+    end
+
+    class Generated < DiagnosticEmissionPart
+      getter producer : DiagnosticMacroProducer
+      def initialize(start_offset : Int32, end_offset : Int32, emitter_origin : DiagnosticOrigin?, @producer : DiagnosticMacroProducer)
+        super(start_offset, end_offset, emitter_origin)
+      end
+      def_equals_and_hash @start_offset, @end_offset, @emitter_origin, @producer
+    end
+
+    class AstAnchor < DiagnosticEmissionPart
+      getter source_origin : DiagnosticOrigin
+      def initialize(start_offset : Int32, end_offset : Int32, emitter_origin : DiagnosticOrigin?, @source_origin : DiagnosticOrigin)
+        super(start_offset, end_offset, emitter_origin)
+      end
+      def_equals_and_hash @start_offset, @end_offset, @emitter_origin, @source_origin
+    end
+
+    class NameSplice < DiagnosticEmissionPart
+      getter source_token : DiagnosticSourceNameToken
+      getter slice_start : Int32
+      getter slice_end : Int32
+      getter projection : String
+      def initialize(start_offset : Int32, end_offset : Int32, emitter_origin : DiagnosticOrigin?,
+                     @source_token : DiagnosticSourceNameToken, @slice_start : Int32, @slice_end : Int32, @projection : String)
+        super(start_offset, end_offset, emitter_origin)
+        unless @projection == "Whole" && @slice_start == 0 && @slice_end == @source_token.raw_text.bytesize &&
+               @end_offset - @start_offset == @slice_end - @slice_start
+          raise ArgumentError.new("unsupported diagnostic name projection")
+        end
+      end
+      def_equals_and_hash @start_offset, @end_offset, @emitter_origin, @source_token, @slice_start, @slice_end, @projection
+    end
+  end
 
   enum DiagnosticMacroProducer
     ConstructedAst
@@ -239,9 +349,13 @@ module Iyi
       getter macro_definition_origin : DiagnosticOrigin
       getter expansion_guard : String
       getter generated_byte_offset : Int32
+      getter generated_byte_end : Int32
+      getter token_kind : String
+      getter token_text : String
+      getter lexical_mode : String
       getter anchor_kind : String
       getter role : String
-      getter spliced_origin : DiagnosticOrigin?
+      getter name_context : String?
       @emission_parts : Array(DiagnosticEmissionPart)
 
       def emission_parts : Array(DiagnosticEmissionPart)
@@ -249,23 +363,10 @@ module Iyi
       end
 
       def initialize(@invocation_origin : DiagnosticOrigin, @macro_definition_origin : DiagnosticOrigin,
-                     expansion_guard : String, generated_byte_offset : Int32,
-                     anchor_kind : String, role : String, emission_parts : Array(DiagnosticEmissionPart),
-                     @spliced_origin : DiagnosticOrigin? = nil)
-        parents = [@invocation_origin, @macro_definition_origin] of DiagnosticOrigin
-        @spliced_origin.try { |origin| parents << origin }
-        emission_parts.each { |part| part.emitter_origin.try { |origin| parents << origin } }
-        own = %({"kind":"Expanded","invocation_origin":,"macro_definition_origin":,"expansion_guard":,"generated_byte_offset":,"anchor_kind":,"role":,"emission_parts":[],"spliced_origin":}).bytesize.to_u64
-        own += DiagnosticOrigin.json_string_size(expansion_guard) + generated_byte_offset.to_s.bytesize.to_u64
-        own += DiagnosticOrigin.json_string_size(anchor_kind) + DiagnosticOrigin.json_string_size(role)
-        own += 4_u64 unless @spliced_origin
-        emission_parts.each_with_index do |part, index|
-          own += 1_u64 if index > 0
-          own += %({"start_offset":,"end_offset":,"emitter_origin":}).bytesize.to_u64
-          own += part.start_offset.to_s.bytesize.to_u64 + part.end_offset.to_s.bytesize.to_u64
-          own += 4_u64 unless part.emitter_origin
-        end
-        set_graph_bounds!(own, parents)
+                     @expansion_guard : String, @generated_byte_offset : Int32, @generated_byte_end : Int32,
+                     @token_kind : String, @token_text : String, @lexical_mode : String,
+                     @anchor_kind : String, @role : String, @name_context : String?,
+                     emission_parts : Array(DiagnosticEmissionPart))
         invocation_valid = @invocation_origin.valid_for_anchor?("Call", "method") ||
                            @invocation_origin.valid_for_anchor?("MacroDirective", "control") ||
                            @invocation_origin.valid_for_anchor?("MacroDirective", "expression") ||
@@ -277,34 +378,53 @@ module Iyi
         unless invocation_valid && @macro_definition_origin.valid_for_anchor?("Macro", "keyword")
           raise ArgumentError.new("unsupported diagnostic macro invocation or definition origin")
         end
-        @expansion_guard = DiagnosticOrigin.require_text(expansion_guard, "expansion guard")
         unless @expansion_guard.starts_with?("sha256:") && @expansion_guard.bytesize == 71 &&
-               @expansion_guard.byte_slice(7, 64).each_byte.all? { |byte| (byte >= 48_u8 && byte <= 57_u8) || (byte >= 97_u8 && byte <= 102_u8) }
+               @expansion_guard.byte_slice(7, 64).each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) }
           raise ArgumentError.new("invalid diagnostic expansion guard")
         end
-        @generated_byte_offset = DiagnosticOrigin.require_offset(generated_byte_offset, "generated offset")
-        @anchor_kind = DiagnosticOrigin.require_text(anchor_kind, "anchor kind")
-        @role = DiagnosticOrigin.require_text(role, "role")
+        unless @generated_byte_offset >= 0 && @generated_byte_end > @generated_byte_offset &&
+               @token_text.bytesize == @generated_byte_end - @generated_byte_offset && @token_text.valid_encoding? &&
+               !@token_kind.empty? && {"Crystal", "Iyi"}.includes?(@lexical_mode) && !@anchor_kind.empty? && !@role.empty?
+          raise ArgumentError.new("invalid diagnostic expansion token")
+        end
+        if context = @name_context
+          unless {"method_name", "definition_name", "macro_name", "local_reference", "instance_variable",
+                  "class_variable", "parameter", "path_segment", "type_parameter", "named_entry"}.includes?(context)
+            raise ArgumentError.new("invalid diagnostic name context")
+          end
+        end
         raise ArgumentError.new("missing macro emission parts") if emission_parts.empty?
         @emission_parts = emission_parts.dup
         cursor = @generated_byte_offset
-        previous_emitter = nil.as(DiagnosticOrigin?)
-        @emission_parts.each_with_index do |part, index|
-          unless part.start_offset == cursor && part.end_offset > part.start_offset
-            raise ArgumentError.new("invalid macro emission part extent")
-          end
-          emitter = part.emitter_origin
-          if emitter && !emitter.valid_for_anchor?("MacroDirective", "expression") &&
-             !emitter.valid_for_anchor?("MacroDirective", "control")
-            raise ArgumentError.new("invalid macro emission directive")
-          end
-          raise ArgumentError.new("uncoalesced macro emission parts") if index > 0 && emitter == previous_emitter
-          previous_emitter = emitter
+        parents = [@invocation_origin, @macro_definition_origin] of DiagnosticOrigin
+        own = 512_u64 + DiagnosticOrigin.json_string_size(@token_text) + DiagnosticOrigin.json_string_size(@token_kind) +
+              DiagnosticOrigin.json_string_size(@anchor_kind) + DiagnosticOrigin.json_string_size(@role)
+        @emission_parts.each do |part|
+          raise ArgumentError.new("invalid macro emission coverage") unless part.start_offset == cursor && part.end_offset <= @generated_byte_end
           cursor = part.end_offset
+          part.emitter_origin.try { |origin| parents << origin }
+          own += 256_u64
+          case part
+          when DiagnosticEmissionPart::AstAnchor
+            unless @emission_parts.size == 1 && part.source_origin.valid_for_anchor?(@anchor_kind, @role)
+              raise ArgumentError.new("invalid structural macro splice")
+            end
+            parents << part.source_origin
+          when DiagnosticEmissionPart::NameSplice
+            raise ArgumentError.new("name splice without name context") unless @name_context
+            token = part.source_token
+            parents << token.lexical_origin
+            token.binding_origin.try { |binding| parents << binding }
+            own += DiagnosticOrigin.json_string_size(token.raw_text) + DiagnosticOrigin.json_string_size(token.input_sha256) +
+                   DiagnosticOrigin.json_string_size(token.token_kind) + DiagnosticOrigin.json_string_size(token.context)
+            bytes = @token_text.byte_slice(part.start_offset - @generated_byte_offset, part.end_offset - part.start_offset)
+            unless bytes == token.raw_text.byte_slice(part.slice_start, part.slice_end - part.slice_start)
+              raise ArgumentError.new("name splice bytes differ from source")
+            end
+          end
         end
-        if (spliced = @spliced_origin) && !spliced.valid_for_anchor?(@anchor_kind, @role)
-          raise ArgumentError.new("spliced diagnostic origin does not match its anchor")
-        end
+        raise ArgumentError.new("incomplete macro emission coverage") unless cursor == @generated_byte_end
+        set_graph_bounds!(own, parents)
       end
 
       def valid_for_anchor?(kind : String, role : String) : Bool
@@ -312,7 +432,7 @@ module Iyi
       end
 
       def_equals_and_hash @invocation_origin, @macro_definition_origin, @expansion_guard, @generated_byte_offset,
-        @anchor_kind, @role, @emission_parts, @spliced_origin
+        @generated_byte_end, @token_kind, @token_text, @lexical_mode, @anchor_kind, @role, @name_context, @emission_parts
 
       def to_json(json : JSON::Builder) : Nil
         json.object do
@@ -321,20 +441,18 @@ module Iyi
           json.field "macro_definition_origin", @macro_definition_origin
           json.field "expansion_guard", @expansion_guard
           json.field "generated_byte_offset", @generated_byte_offset
+          json.field "generated_byte_end", @generated_byte_end
+          json.field "token_kind", @token_kind
+          json.field "token_text", @token_text
+          json.field "lexical_mode", @lexical_mode
           json.field "anchor_kind", @anchor_kind
           json.field "role", @role
+          json.field "name_context", @name_context
           json.field "emission_parts" do
             json.array do
-              @emission_parts.each do |part|
-                json.object do
-                  json.field "start_offset", part.start_offset
-                  json.field "end_offset", part.end_offset
-                  json.field "emitter_origin", part.emitter_origin
-                end
-              end
+              @emission_parts.each { |part| part.to_json(json) }
             end
           end
-          json.field "spliced_origin", @spliced_origin
         end
       end
     end
