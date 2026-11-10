@@ -254,6 +254,189 @@ def source_name(value, depth):
 INVALID_PARAMETER_NAMES = frozenset("begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof".split())
 
 
+OP_ASSIGN_OPERATORS = frozenset("+= -= *= /= //= %= |= &= ^= **= <<= >>= ||= &&= &+= &-= &*=".split())
+COMMAND_OPENERS = frozenset(("`", "%x(", "%x[", "%x{", "%x<", "%x|"))
+OPERATOR_PRODUCTIONS = frozenset("OpAssign SignedNumber Index IndexQuery IndexAssign Setter Command".split())
+OPERATOR_CONTEXTS = {"OpAssign": "op_assign_operator"}
+
+
+def operator_rendered(production, witnesses, mode):
+    """Recompute the rendered operator from its witnesses, refusing any shape the C-OP table does not allow."""
+    pairs = [(witness["token_kind"], witness["raw_text"]) for witness in witnesses]
+    if production == "OpAssign":
+        if len(pairs) != 1 or pairs[0][0] != pairs[0][1] or pairs[0][1] not in OP_ASSIGN_OPERATORS:
+            raise ValueError("invalid operator witness")
+        return pairs[0][1][:-1]
+    if production == "SignedNumber":
+        if len(pairs) != 1 or pairs[0][0] != "NUMBER" or not re.match(r"\A[+-][0-9]", pairs[0][1]):
+            raise ValueError("invalid operator witness")
+        return pairs[0][1][0]
+    if production == "Setter":
+        if len(pairs) != 2 or pairs[1] != ("=", "="):
+            raise ValueError("invalid operator witness")
+        kind, name = pairs[0]
+        if kind not in ("IDENT", "CONST") or name.endswith(("?", "!")) or not name_token(kind, name, mode, "method_name"):
+            raise ValueError("invalid operator witness")
+        return name + "="
+    if production == "Command":
+        if len(pairs) != 1 or pairs[0][0] != "DELIMITER_START":
+            raise ValueError("invalid operator witness")
+        if pairs[0][1] not in COMMAND_OPENERS:
+            raise ValueError("invalid command opener")
+        return "`"
+    forms, rendered = {
+        "Index": ((("[", "]"),), "[]"),
+        "IndexQuery": ((("[", "]", "?"),), "[]?"),
+        "IndexAssign": ((("[", "]", "="), ("[]", "=")), "[]="),
+    }[production]
+    if not any(pairs == [(spelling, spelling) for spelling in form] for form in forms):
+        raise ValueError("invalid operator witness")
+    return rendered
+
+
+def operator_event_parts(event, raw, depth, anchor_source):
+    """A1: a later witness carries all-Generated raw-producer parts, or one spliced AstAnchor, never a mix."""
+    parts = event["byte_parts"]
+    if not isinstance(parts, list) or not parts:
+        raise ValueError("invalid operator witness provenance")
+    kinds = []
+    for part in parts:
+        if not isinstance(part, dict) or not isinstance(part.get("kind"), str):
+            raise ValueError("invalid operator witness provenance")
+        kinds.append(part["kind"])
+    if len(set(kinds)) > 1:
+        raise ValueError("mixed operator witness provenance")
+    if kinds[0] == "Generated":
+        operator_generated_parts(event, raw, parts, depth)
+    elif kinds[0] == "AstAnchor" and len(parts) == 1:
+        operator_spliced_part(event, parts[0], anchor_source, depth)
+    else:
+        raise ValueError("invalid operator witness provenance")
+
+
+def operator_generated_parts(event, raw, parts, depth):
+    """Raw-producer byte parts must tile the witness span exactly and split no UTF-8 character."""
+    base = event["input_start"]
+    cursor, end = base, event["input_end"]
+    for part in parts:
+        producer = part.get("producer")
+        if not isinstance(producer, str) or producer not in RAW_PRODUCERS:
+            raise ValueError("invalid operator witness provenance")
+        fields(part, "kind start_offset end_offset emitter_origin producer")
+        number(part["start_offset"])
+        number(part["end_offset"])
+        if part["start_offset"] != cursor or not cursor < part["end_offset"] <= end:
+            raise ValueError("invalid operator witness provenance")
+        try:
+            raw[cursor - base:part["end_offset"] - base].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("invalid operator witness provenance") from exc
+        operator_emitter(part["emitter_origin"], depth)
+        cursor = part["end_offset"]
+    if cursor != end:
+        raise ValueError("invalid operator witness provenance")
+
+
+def operator_spliced_part(event, part, anchor_source, depth):
+    """A1: one AstAnchor from the spliced claim must cover the token and share witness 0's source origin."""
+    fields(part, "kind start_offset end_offset emitter_origin source_origin")
+    number(part["start_offset"])
+    number(part["end_offset"])
+    if anchor_source is None or part["source_origin"] != anchor_source:
+        raise ValueError("invalid operator witness provenance")
+    if not part["start_offset"] <= event["input_start"] < event["input_end"] <= part["end_offset"]:
+        raise ValueError("invalid operator witness provenance")
+    operator_emitter(part["emitter_origin"], depth)
+
+
+def operator_emitter(emitter, depth):
+    if emitter is not None and origin(emitter, depth + 1) not in (("MacroDirective", "expression"), ("MacroDirective", "control")):
+        raise ValueError("invalid operator witness provenance")
+
+
+def operator_witness_event(witness, mode, depth, anchor_source):
+    """A later expanded witness must carry an event equal to its own fields, with admitted provenance only."""
+    event = witness["event"]
+    if event is None:
+        raise ValueError("invalid operator witness provenance")
+    fields(event, "input_start input_end token_kind token_text lexical_mode selection byte_parts")
+    number(event["input_start"])
+    number(event["input_end"])
+    if event["lexical_mode"] != mode:
+        raise ValueError("operator witnesses use different inputs")
+    if (event["input_start"] != witness["input_start"] or event["input_end"] != witness["input_end"] or
+            event["token_kind"] != witness["token_kind"] or event["token_text"] != witness["raw_text"] or
+            event["selection"] != witness["selection"] or witness["selection"] != "Whole"):
+        raise ValueError("invalid operator witness provenance")
+    operator_event_parts(event, witness["raw_text"].encode("utf-8"), depth, anchor_source)
+
+
+def operator_name(value, depth):
+    """Validate a DerivedName OperatorName by recomputing its rendering, context, witnesses and anchor."""
+    fields(value, "kind derivation_kind production anchor_origin input_sha256 input_bytesize lexical_mode witnesses rendered_text producer_context")
+    production, mode = value["production"], value["lexical_mode"]
+    if not isinstance(production, str) or production not in OPERATOR_PRODUCTIONS:
+        raise ValueError("unknown operator production")
+    guard(value["input_sha256"])
+    number(value["input_bytesize"])
+    if not isinstance(mode, str) or mode not in ("Crystal", "Iyi"):
+        raise ValueError("invalid token classification")
+    witnesses = value["witnesses"]
+    # Bounded like TypeSugar: the table fixes the count, so no witness walk is unbounded.
+    if not isinstance(witnesses, list) or not 1 <= len(witnesses) <= 3:
+        raise ValueError("invalid operator witness")
+    previous = 0
+    for index, witness in enumerate(witnesses):
+        fields(witness, "input_start input_end token_kind raw_text selection event")
+        number(witness["input_start"])
+        number(witness["input_end"])
+        text(witness["raw_text"])
+        kind = witness["token_kind"]
+        if not isinstance(kind, str) or kind not in TOKEN_KINDS:
+            raise ValueError("invalid token classification")
+        raw = witness["raw_text"].encode("utf-8")
+        start, end = witness["input_start"], witness["input_end"]
+        if not 0 <= start < end <= value["input_bytesize"] or end - start != len(raw):
+            raise ValueError("invalid operator witness span")
+        if start < previous:
+            raise ValueError("invalid operator witness order")
+        previous = end
+        selection = "SignedNumberSign" if production == "SignedNumber" and index == 0 else "Whole"
+        if witness["selection"] != selection:
+            raise ValueError("invalid operator witness")
+    rendered = operator_rendered(production, witnesses, mode)
+    if value["rendered_text"] != rendered:
+        raise ValueError("derived operator rendering differs")
+    context = OPERATOR_CONTEXTS.get(production, "method_name")
+    if value["producer_context"] != context:
+        raise ValueError("derived operator context differs")
+    anchor = value["anchor_origin"]
+    if not isinstance(anchor, dict) or anchor.get("kind") not in ("Written", "Expanded"):
+        raise ValueError("invalid operator anchor")
+    if origin(anchor, depth + 1) != ("Call", "method"):
+        raise ValueError("invalid operator anchor")
+    head = witnesses[0]
+    if anchor["kind"] == "Written":
+        if anchor["input_byte_offset"] != head["input_start"]:
+            raise ValueError("operator anchor offset mismatch")
+        if any(witness["event"] is not None for witness in witnesses):
+            raise ValueError("invalid operator witness provenance")
+    else:
+        event = anchor["token_event"]
+        parts = event["byte_parts"]
+        anchor_source = parts[0]["source_origin"] if len(parts) == 1 and parts[0]["kind"] == "AstAnchor" else None
+        if anchor["expansion_guard"] != "sha256:" + value["input_sha256"] or event["lexical_mode"] != mode:
+            raise ValueError("operator witnesses use different inputs")
+        if (event["input_start"], event["input_end"], event["token_kind"], event["token_text"], event["selection"]) != (
+                head["input_start"], head["input_end"], head["token_kind"], head["raw_text"], head["selection"]):
+            raise ValueError("operator anchor token differs from witness 0")
+        if head["event"] is not None:
+            raise ValueError("invalid operator witness provenance")
+        for witness in witnesses[1:]:
+            operator_witness_event(witness, mode, depth, anchor_source)
+    return ("Name", context), rendered.encode("utf-8")
+
+
 def derived_name(value, depth):
     if value.get("derivation_kind") == "BoundProjection":
         return bound_projection(value, depth)
@@ -360,6 +543,7 @@ def derived_name(value, depth):
         if value["result"] == "MatchData": return (("Name", "special_global"), b"$~")
         if value["result"] == "Lookup": return (("Call", "method"), b"[]?" if raw.endswith(b"?") else b"[]")
         raise ValueError("invalid regex derivation result")
+    if value.get("derivation_kind") == "OperatorName": return operator_name(value, depth)
     if value.get("derivation_kind") != "ParameterLowering": raise ValueError("unknown derived name operation")
     fields(value, "kind derivation_kind source_token definition_origin parameter_slot parameter_index result projection fresh_index")
     source = value["source_token"]
