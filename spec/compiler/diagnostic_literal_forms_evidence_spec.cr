@@ -131,12 +131,55 @@ describe "literal form parser evidence" do
     parser.filename = "/spec/literal_forms.cr"
     parser.enable_diagnostic_observations
     node = parser.parse.as(Iyi::Asm)
-    boundaries = parser.diagnostic_scalar_owner_boundaries
-    asm = boundaries.find { |item| item.owner.same?(node) }.not_nil!
-    operand = boundaries.find { |item| item.owner.same?(node.outputs.not_nil!.first) }.not_nil!
-    source.byte_slice(asm.first_start, asm.first_end - asm.first_start).should eq("asm")
-    source.byte_slice(asm.last_start.not_nil!, asm.last_end.not_nil! - asm.last_start.not_nil!).should eq(")")
-    source.byte_slice(operand.first_start, operand.first_end - operand.first_start).should eq("\"")
-    source.byte_slice(operand.last_start.not_nil!, operand.last_end.not_nil! - operand.last_start.not_nil!).should eq(")")
+    observations = parser.diagnostic_scalar_grammar_observations
+    journal = parser.diagnostic_lexical_observations
+    asm = observations.find { |item| item.owner.same?(node) }.not_nil!
+    operand = observations.find { |item| item.owner.same?(node.outputs.not_nil!.first) }.not_nil!
+    journal[asm.first.ordinal].token_text.should eq("asm")
+    journal[asm.open.not_nil!.ordinal].token_text.should eq("(")
+    journal[asm.close.ordinal].token_text.should eq(")")
+    journal[operand.first.ordinal].token_text.should eq("\"")
+    journal[operand.open.not_nil!.ordinal].token_text.should eq("(")
+    journal[operand.close.ordinal].token_text.should eq(")")
+    operand.expression.should be(node.outputs.not_nil!.first.exp)
+    journal[operand.expression_first.not_nil!.ordinal].token_text.should eq("x")
+  end
+
+  it "associates folded interpolation with the original expression" do
+    source = %q(require "x#{"y"}")
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/literal_forms.cr"
+    parser.enable_diagnostic_observations
+    parser.parse
+    fold = parser.diagnostic_folded_string_observations.first
+    journal = parser.diagnostic_lexical_observations
+    journal[fold.open.ordinal].token_text.should eq(%q(#{))
+    journal[fold.close.ordinal].token_text.should eq("}")
+    fold.expression.value.should eq("y")
+  end
+  it "distinguishes neighboring asm owners and their journal ordinals" do
+    parser = Iyi::Parser.new(%q(asm("nop"); asm("nop")))
+    parser.filename = "/spec/literal_forms.cr"
+    parser.enable_diagnostic_observations
+    nodes = parser.parse.as(Iyi::Expressions).expressions
+    observations = parser.diagnostic_scalar_grammar_observations.select { |item| item.kind.asm? }
+    observations.size.should eq(2)
+    observations[0].owner.should be(nodes[0])
+    observations[1].owner.should be(nodes[1])
+    observations[0].first.ordinal.should be < observations[1].first.ordinal
+  end
+
+  it "associates a nested asm with its containing operand expression" do
+    parser = Iyi::Parser.new(%q(asm("outer" : "=r"(asm("inner")))))
+    parser.filename = "/spec/literal_forms.cr"
+    parser.enable_diagnostic_observations
+    outer = parser.parse.as(Iyi::Asm)
+    operand = outer.outputs.not_nil!.first
+    observations = parser.diagnostic_scalar_grammar_observations
+    inner = operand.exp.as(Iyi::Asm)
+    operand_observation = observations.find { |item| item.owner.same?(operand) }.not_nil!
+    inner_observation = observations.find { |item| item.owner.same?(inner) }.not_nil!
+    operand_observation.expression.should be(inner)
+    inner_observation.first.ordinal.should be >= operand_observation.expression_first.not_nil!.ordinal
   end
 end

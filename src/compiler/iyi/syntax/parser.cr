@@ -8,10 +8,18 @@ module Iyi
   record DiagnosticParsedName, input_start : Int32, input_end : Int32, token_kind : String,
     token_text : String, lexical_mode : String, context : String, slot : DiagnosticNameSlot, owner : ASTNode
 
-  # Replay-only association between an owner and the tokens that bound its
-  # grammar. These observations must still be matched to the lexer journal.
-  record DiagnosticScalarOwnerBoundary, owner : ASTNode,
-    first_start : Int32, first_end : Int32, last_start : Int32?, last_end : Int32?
+  enum DiagnosticScalarGrammarKind
+    Require
+    Asm
+    AsmOperand
+  end
+
+  record DiagnosticReplayTokenRef, ordinal : Int32
+  record DiagnosticScalarGrammarObservation, owner : ASTNode, kind : DiagnosticScalarGrammarKind,
+    first : DiagnosticReplayTokenRef, open : DiagnosticReplayTokenRef?, close : DiagnosticReplayTokenRef,
+    after : DiagnosticReplayTokenRef, expression : ASTNode?, expression_first : DiagnosticReplayTokenRef?
+  record DiagnosticFoldedStringObservation, open : DiagnosticReplayTokenRef,
+    close : DiagnosticReplayTokenRef, expression : StringLiteral
 
   # A raw token a derived operator name is built from: its start, the parser's
   # snapshot of it (nil outside diagnostic modes), and the selection it keeps.
@@ -254,7 +262,52 @@ module Iyi
     @diagnostic_module_path : String? = nil
     getter diagnostic_source_unit : String? = nil
     @diagnostic_heredoc_openers = [] of {Int32, Int32, Token::DelimiterState}
-    getter diagnostic_scalar_owner_boundaries = [] of DiagnosticScalarOwnerBoundary
+    @diagnostic_scalar_grammar_observations = [] of DiagnosticScalarGrammarObservation
+    @diagnostic_folded_string_observations = [] of DiagnosticFoldedStringObservation
+    @diagnostic_last_literal_close : DiagnosticReplayTokenRef? = nil
+
+    def diagnostic_scalar_grammar_observations : Array(DiagnosticScalarGrammarObservation)
+      @diagnostic_scalar_grammar_observations.dup
+    end
+
+    def diagnostic_folded_string_observations : Array(DiagnosticFoldedStringObservation)
+      @diagnostic_folded_string_observations.dup
+    end
+
+    private def diagnostic_replay_token_ref : DiagnosticReplayTokenRef?
+      observations = @diagnostic_lexical_observations
+      return nil unless observations
+      index = observations.size - 1
+      mode = iyi? ? "Iyi" : "Crystal"
+      while index >= 0
+        token = observations[index]
+        if token.input_start == @token.input_offset && token.input_end == @token.input_end &&
+           token.token_kind == @token.type.to_s && token.lexical_mode == mode
+          return DiagnosticReplayTokenRef.new(index)
+        end
+        index -= 1
+      end
+      ::raise ArgumentError.new("current parser token is absent from replay journal")
+    end
+
+    private def diagnostic_record_fold(open : DiagnosticReplayTokenRef?, expression : ASTNode) : Nil
+      return unless open && expression.is_a?(StringLiteral)
+      close = diagnostic_replay_token_ref || ::raise ArgumentError.new("fold closer is absent from replay journal")
+      @diagnostic_folded_string_observations << DiagnosticFoldedStringObservation.new(open, close, expression)
+    end
+
+    def lookahead(preserve_token_on_fail = false, &)
+      scalar_count = @diagnostic_scalar_grammar_observations.size
+      fold_count = @diagnostic_folded_string_observations.size
+      literal_close = @diagnostic_last_literal_close
+      result = super(preserve_token_on_fail) { yield }
+      unless result
+        @diagnostic_scalar_grammar_observations.pop(@diagnostic_scalar_grammar_observations.size - scalar_count)
+        @diagnostic_folded_string_observations.pop(@diagnostic_folded_string_observations.size - fold_count)
+        @diagnostic_last_literal_close = literal_close
+      end
+      result
+    end
     getter diagnostic_capture = false
 
     def diagnostic_capture=(@diagnostic_capture : Bool)
@@ -5273,7 +5326,7 @@ module Iyi
 
       pieces = [] of Piece
 
-      delimiter_state, options, end_location, literal_end = consume_delimiter pieces, delimiter_state, literal_witnesses
+      delimiter_state, options, end_location, literal_end, literal_close = consume_delimiter pieces, delimiter_state, literal_witnesses
       diagnostic_segments.try &.<<({diagnostic_start, literal_end})
       if (productions = diagnostic_productions) && (witnesses = literal_witnesses)
         productions << diagnostic_production(DiagnosticLiteralProduction::Delimiter, diagnostic_start, literal_end, initial_delimiter_state, witnesses)
@@ -5296,7 +5349,7 @@ module Iyi
             end
             next_string_token(delimiter_state)
             delimiter_state = @token.delimiter_state
-            delimiter_state, options, end_location, literal_end = consume_delimiter pieces, delimiter_state, literal_witnesses
+            delimiter_state, options, end_location, literal_end, literal_close = consume_delimiter pieces, delimiter_state, literal_witnesses
             diagnostic_segments.try &.<<({continuation_start, literal_end})
             if (productions = diagnostic_productions) && (witnesses = literal_witnesses)
               productions << diagnostic_production(DiagnosticLiteralProduction::Delimiter, continuation_start, literal_end, initial_delimiter_state, witnesses)
@@ -5306,6 +5359,7 @@ module Iyi
           end
         end
       end
+      @diagnostic_last_literal_close = literal_close
 
       result = combine_pieces(pieces, delimiter_state).at(location).at_end(end_location)
       diagnostic_literal(result, result.value, diagnostic_segments, diagnostic_productions) if result.is_a?(StringLiteral) && diagnostic_segments
@@ -5404,6 +5458,7 @@ module Iyi
       options = RegexOptions::None
       end_location = nil
       literal_end = 0
+      literal_close = nil
       while true
         case @token.type
         when .string?
@@ -5418,6 +5473,7 @@ module Iyi
           next_string_token(delimiter_state)
           delimiter_state = @token.delimiter_state
         when .delimiter_end?
+          literal_close = diagnostic_replay_token_ref
           literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::ClosingDelimiter, @token.input_offset, @token.input_end))
           if delimiter_state.kind.regex?
             options = consume_regex_options
@@ -5438,11 +5494,13 @@ module Iyi
             raise "Unterminated string literal"
           end
         else
+          fold_open = diagnostic_replay_token_ref
           literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationStart, @token.input_offset, @token.input_end))
           next_token_skip_space_or_newline
 
           line_number = @token.line_number
           exp = consume_interpolation_node(delimiter_state)
+          diagnostic_record_fold(fold_open, exp) unless delimiter_state.kind.heredoc?
           literal_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationEnd, @token.input_offset, @token.input_end))
           next_string_token delimiter_state
           if exp.is_a?(StringLiteral) && !delimiter_state.kind.heredoc?
@@ -5459,7 +5517,7 @@ module Iyi
         end
       end
 
-      {delimiter_state, options, end_location, literal_end}
+      {delimiter_state, options, end_location, literal_end, literal_close}
     end
 
     def consume_interpolation(delimiter_state)
@@ -5680,6 +5738,7 @@ module Iyi
             pieces << Piece.new(@token.value.to_s, @token.line_number)
           end
         when .interpolation_start?
+          fold_open = diagnostic_replay_token_ref
           percent_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationStart, @token.input_offset, @token.input_end))
           line_number = @token.line_number
           # parse interpolation expression
@@ -5693,6 +5752,7 @@ module Iyi
             next_token_skip_space_or_newline
 
             exp = consume_interpolation_node(delimiter_state)
+            diagnostic_record_fold(fold_open, exp)
 
             next_string_token(delimiter_state)
             unless @token.type.space? || @token.type.string_array_end?
@@ -5708,6 +5768,7 @@ module Iyi
             return Splat.new(exp).at(splat_location)
           else
             interpolation = consume_interpolation_node(delimiter_state)
+            diagnostic_record_fold(fold_open, interpolation)
             percent_witnesses.try &.<<(DiagnosticLiteralWitness.new(DiagnosticLiteralWitnessKind::InterpolationEnd, @token.input_offset, @token.input_end))
             if interpolation.is_a?(StringLiteral)
               pieces << Piece.new(interpolation.value, line_number, literal_source: interpolation)
@@ -6071,18 +6132,20 @@ module Iyi
 
     def parse_require
       raise "can't require inside type declarations", @token if @type_nest > 0
-      diagnostic_start = @token.input_offset
-      diagnostic_end = @token.input_end
+      first = diagnostic_replay_token_ref
 
       next_token_skip_space
       string_literal = parse_string_literal_without_interpolation("require")
+      close = @diagnostic_last_literal_close
 
       skip_space
 
       node = Require.new(string_literal.value).at_end(string_literal)
       diagnostic_copy_literal(string_literal, node, "string")
-      if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_lexical_observations
-        @diagnostic_scalar_owner_boundaries << DiagnosticScalarOwnerBoundary.new(node, diagnostic_start, diagnostic_end, nil, nil)
+      if first && close
+        after = diagnostic_replay_token_ref || ::raise ArgumentError.new("require return token is absent from replay journal")
+        @diagnostic_scalar_grammar_observations << DiagnosticScalarGrammarObservation.new(node, DiagnosticScalarGrammarKind::Require,
+          first, nil, close, after, nil, nil)
       end
       node
     end
@@ -9579,10 +9642,10 @@ module Iyi
     end
 
     def parse_asm
-      diagnostic_start = @token.input_offset
-      diagnostic_end = @token.input_end
+      first = diagnostic_replay_token_ref
       next_token_skip_space
       check :OP_LPAREN
+      open = diagnostic_replay_token_ref
       next_token_skip_space_or_newline
       text_literal = parse_string_literal_without_interpolation("asm")
       text = text_literal.value
@@ -9629,8 +9692,7 @@ module Iyi
       end
 
       check :OP_RPAREN
-      diagnostic_close_start = @token.input_offset
-      diagnostic_close_end = @token.input_end
+      close = diagnostic_replay_token_ref
 
       end_location = token_end_location
 
@@ -9640,8 +9702,10 @@ module Iyi
       diagnostic_copy_literal(text_literal, node, "text")
       clobber_literals.each_with_index { |literal, index| diagnostic_copy_literal(literal, node, "clobbers", index) }
       option_literals.each_with_index { |literal, index| diagnostic_copy_literal(literal, node, "options", index) }
-      if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_lexical_observations
-        @diagnostic_scalar_owner_boundaries << DiagnosticScalarOwnerBoundary.new(node, diagnostic_start, diagnostic_end, diagnostic_close_start, diagnostic_close_end)
+      if first && open && close
+        after = diagnostic_replay_token_ref || ::raise ArgumentError.new("asm return token is absent from replay journal")
+        @diagnostic_scalar_grammar_observations << DiagnosticScalarGrammarObservation.new(node, DiagnosticScalarGrammarKind::Asm,
+          first, open, close, after, nil, nil)
       end
       node
     end
@@ -9659,21 +9723,23 @@ module Iyi
     end
 
     def parse_asm_operand
-      diagnostic_start = @token.input_offset
-      diagnostic_end = @token.input_end
+      first = diagnostic_replay_token_ref
       literal = parse_string_literal_without_interpolation("constraint")
       text = literal.value
       check :OP_LPAREN
+      open = diagnostic_replay_token_ref
       next_token_skip_space_or_newline
+      expression_first = diagnostic_replay_token_ref
       exp = parse_expression
       check :OP_RPAREN
-      diagnostic_close_start = @token.input_offset
-      diagnostic_close_end = @token.input_end
+      close = diagnostic_replay_token_ref
       next_token_skip_space_or_newline
       node = AsmOperand.new(text, exp)
       diagnostic_copy_literal(literal, node, "constraint")
-      if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions || @diagnostic_lexical_observations
-        @diagnostic_scalar_owner_boundaries << DiagnosticScalarOwnerBoundary.new(node, diagnostic_start, diagnostic_end, diagnostic_close_start, diagnostic_close_end)
+      if first && open && close && expression_first
+        after = diagnostic_replay_token_ref || ::raise ArgumentError.new("asm operand return token is absent from replay journal")
+        @diagnostic_scalar_grammar_observations << DiagnosticScalarGrammarObservation.new(node, DiagnosticScalarGrammarKind::AsmOperand,
+          first, open, close, after, exp, expression_first)
       end
       node
     end
