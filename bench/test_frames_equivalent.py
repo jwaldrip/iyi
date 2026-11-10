@@ -738,6 +738,19 @@ def test_strict_manifest_synthetic_controls():
             collision = copy.deepcopy(copies)
             collision["bindings"][1]["definition"]["emission"]["origin"]["input_byte_offset"] += 1
             reject(collision)
+            # Equal semantic identities must not hide two direct executable
+            # definitions at different addresses.
+            duplicate_binary, duplicate_evidence = macho_fixture(2, [
+                (b"_" + right_symbol.encode(), 0x0f, 1, 0, 0x10),
+                (b"_" + right_symbol.encode(), 0x0e, 1, 0, 0x11)])
+            duplicate = copy.deepcopy(copies)
+            duplicate["executable_sha256"] = hashlib.sha256(duplicate_binary).hexdigest()
+            duplicate["executable_symbols"] = duplicate_evidence
+            with open(executable_b, "wb") as f: f.write(duplicate_binary)
+            try: load(duplicate, executable_b)
+            except ValueError as exc: assert str(exc) == "ambiguous executable definition"
+            else: raise AssertionError("duplicate executable definition accepted")
+            with open(executable_b, "wb") as f: f.write(binary_b)
             partition_missing = copy.deepcopy(manifest_b)
             partition_missing["object_inputs"][0]["partition"] = {"index": 0, "count": 2}
             partition_missing["bindings"][0]["definition"]["partition_role"] = "owner"
@@ -759,9 +772,16 @@ def test_strict_manifest_synthetic_controls():
             combined["bindings"].append(second_binding)
             with open(executable_b, "wb") as f: f.write(combined_binary)
             load(combined, executable_b)
+            missing_import = copy.deepcopy(combined)
+            missing_import["bindings"].pop()
+            try: load(missing_import, executable_b)
+            except ValueError as exc: assert str(exc) == "linked closure lacks provenance"
+            else: raise AssertionError("missing imported binding accepted")
             swapped = copy.deepcopy(combined)
             swapped["bindings"][0]["link_input_id"], swapped["bindings"][1]["link_input_id"] = 1, 0
-            reject(swapped)
+            try: load(swapped, executable_b)
+            except ValueError as exc: assert str(exc) == "binding absent or ambiguous in object"
+            else: raise AssertionError("swapped imported and current bindings accepted")
             with open(executable_b, "wb") as f: f.write(binary_b)
             folded = copy.deepcopy(manifest_b)
             folded_binary, folded_evidence = macho_fixture(2, [
@@ -783,6 +803,46 @@ def test_strict_manifest_synthetic_controls():
             assert capture_violation(compare_same_opt, [line_a], [promoted_line], manifests=(left, promoted_map))[0] == 0
             unknown_line = line_b.replace(right_symbol.encode(), (right_symbol + ".unknown").encode())
             assert capture_violation(compare_same_opt, [line_a], [unknown_line], manifests=(left, promoted_map))[0] == 1
+            # The linkage namespace is resolved only by the explicit binding;
+            # the requested spelling is still the unqualified proc name.
+            namespaced_name = right_symbol + "^unit:" + "Boot::Half".encode().hex()
+            namespaced_binary, namespaced = fixture("namespaced", namespaced_name)
+            namespaced_emission = namespaced["bindings"][0]["definition"]["emission"]
+            namespaced_emission["requested_symbol"] = right_symbol
+            with open(executable_b, "wb") as f: f.write(namespaced_binary)
+            namespaced_map = load(namespaced, executable_b)
+            namespaced_line = line_b.replace(right_symbol.encode(), namespaced_name.encode())
+            assert namespaced_map.resolve(namespaced_name.encode())[1] == right_symbol.encode()
+            assert capture_violation(compare_same_opt, [line_a], [namespaced_line], manifests=(left, namespaced_map))[0] == 0
+            for invalid_name in (namespaced_name + "00", namespaced_name[:-1] + "0"):
+                assert invalid_name != namespaced_name
+                invalid_line = line_b.replace(right_symbol.encode(), invalid_name.encode())
+                assert capture_violation(compare_same_opt, [line_a], [invalid_line], manifests=(left, namespaced_map))[:2] == (1, "provenance")
+
+            # Both names are actually bound, but one belongs to a different
+            # semantic closure. A valid binding is not interchangeable.
+            other_name = right_symbol + "^unit:" + "Boot::Other".encode().hex()
+            _, other_manifest = fixture("other-namespaced", other_name)
+            other_manifest["bindings"][0]["definition"]["emission"]["requested_symbol"] = right_symbol
+            other_manifest["bindings"][0]["definition"]["emission"]["origin"]["input_byte_offset"] += 1
+            paired = copy.deepcopy(namespaced)
+            other_input = copy.deepcopy(other_manifest["object_inputs"][0])
+            other_input["link_input_id"] = 1
+            other_input["producer"] = {"kind": "artifact_object", "artifact_identity": "other", "object_ordinal": 0}
+            paired["object_inputs"].append(other_input)
+            other_binding = copy.deepcopy(other_manifest["bindings"][0])
+            other_binding["link_input_id"] = 1
+            paired["bindings"].append(other_binding)
+            paired_binary, paired_evidence = macho_fixture(2, [
+                (b"_" + namespaced_name.encode(), 0x0f, 1, 0, 0x10),
+                (b"_" + other_name.encode(), 0x0e, 1, 0, 0x11)])
+            paired["executable_sha256"] = hashlib.sha256(paired_binary).hexdigest()
+            paired["executable_symbols"] = paired_evidence
+            with open(executable_b, "wb") as f: f.write(paired_binary)
+            paired_map = load(paired, executable_b)
+            assert capture_violation(compare_same_opt, [line_a], [namespaced_line], manifests=(left, paired_map))[0] == 0
+            other_line = line_b.replace(right_symbol.encode(), other_name.encode())
+            assert capture_violation(compare_same_opt, [line_a], [other_line], manifests=(left, paired_map))[:2] == (1, "function")
             # Equal raw names are not evidence of identity, even under a counter permutation.
             same_binary, same_manifest = fixture("same", left_symbol)
             with open(executable_b, "wb") as f: f.write(same_binary)

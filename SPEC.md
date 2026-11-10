@@ -9556,9 +9556,22 @@ architectures and unresolved alias semantics fail the proof rather than
 guessing. The independent comparator rereads both sets of bytes and checks
 direct code definitions and competing same-address symbols. Its scope is
 `compiler_supplied_link_inputs`: it does not authenticate fabricated compiler
-history or prove every relocation. This proof does not change ordinary builds
-or `--crystal`. The `.iyimod` format remains 63, its diagnostic section schema
-remains 3, and the separate link-input proof remains schema 1.
+history or prove every relocation. Enabling capture does not change the ordered
+object bytes relative to the same build with capture off.
+
+Independently of capture, private closures hosted in selected carried artifact
+units use a linkage suffix `^unit:` followed by the lowercase hex encoding of
+the complete UTF-8 logical unit name. This prevents a carried closure from
+colliding with a separately generated closure. The requested spelling remains
+unchanged and the proof binds the actual spelling explicitly; it does not strip
+the suffix or accept ambiguous executable definitions. This correction applies
+to artifact production and bind filling, including `--crystal`, and can change
+private symbols and object bytes compared with older compilers. It does not
+change the public method ABI or closure calling convention. Older artifacts
+with colliding names still fail the strict proof.
+
+The `.iyimod` format remains 63, its diagnostic section schema remains 3,
+and the separate link-input proof remains schema 1.
 
 A module's units are the module type itself, where its own `pub def`s are
 owned: plus every non-generic type declared under it, recursively.
