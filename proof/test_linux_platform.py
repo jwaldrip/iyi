@@ -1236,21 +1236,22 @@ class TestHttpOmissionSkips(unittest.TestCase):
         violations = validate_census(self.census, self.script_bytes, self.census["script"], target_platform="linux")
         self.assertEqual(violations, [])
 
-        # Test source drift rejection: modifying a skip line causes validate_census to fail
-        lines = self.script_bytes.decode("utf-8").splitlines()
+        # Keep the digest current so this exercises source grounding, not hash drift.
+        lines = self.script_bytes.decode("utf-8").splitlines(keepends=True)
         tampered_lines = list(lines)
         skip = next(item for item in self.census["skips"] if item["text"] == 'said = "zstd unchecked: no compression.zstd in this Python"')
         skip_line = skip["line"]
-        tampered_lines[skip_line - 1] = 'said = "modified line without skip"'
-        tampered_bytes = "\n".join(tampered_lines).encode("utf-8")
-        drift_violations = validate_census(self.census, tampered_bytes, self.census["script"], target_platform="linux")
+        tampered_lines[skip_line - 1] = 'said = "modified line without skip"\n'
+        tampered_bytes = "".join(tampered_lines).encode("utf-8")
+        tampered_census = {**self.census, "script_sha256": hashlib.sha256(tampered_bytes).hexdigest()}
+        drift_violations = validate_census(tampered_census, tampered_bytes, self.census["script"], target_platform="linux")
         self.assertTrue(any(v[0] == "C5.0-schema" and v[1] == skip_line and "text is not the cited source line" in v[2] for v in drift_violations))
         self.assertTrue(any(v[0] == "C5.4-skip-regex" and v[1] == skip_line for v in drift_violations))
 
         # Test unlisted skip rejection: adding an unlisted python assignment with skip vocab triggers C5.4-unlisted-skip-line
         tampered_lines2 = list(lines)
-        tampered_lines2.insert(355, 'unlisted = "zstd unchecked: rogue skip vocab"')
-        tampered_bytes2 = "\n".join(tampered_lines2).encode("utf-8")
+        tampered_lines2.insert(355, 'unlisted = "zstd unchecked: rogue skip vocab"\n')
+        tampered_bytes2 = "".join(tampered_lines2).encode("utf-8")
         drift_violations2 = validate_census(self.census, tampered_bytes2, self.census["script"], target_platform="linux")
         self.assertTrue(any(v[0] == "C5.4-unlisted-skip-line" for v in drift_violations2))
 
@@ -1261,9 +1262,9 @@ class TestHttpOmissionSkips(unittest.TestCase):
         ):
             with self.subTest(source=source):
                 modified = list(lines)
-                modified.insert(355, source)
+                modified.insert(355, source + "\n")
                 violations = validate_census(
-                    self.census, "\n".join(modified).encode("utf-8"),
+                    self.census, "".join(modified).encode("utf-8"),
                     self.census["script"], target_platform="linux",
                 )
                 self.assertTrue(any(

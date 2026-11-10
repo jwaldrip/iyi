@@ -2,7 +2,7 @@
   "census_version": 1,
   "driver": "http",
   "script": "bench/std_http_exercise.sh",
-  "script_sha256": "3abed0bb2ce8d8bd2e15794290697a7f21fb1b300dbb7973a8699f41e85f12cf",
+  "script_sha256": "45ef374bb7efea486f2446792a18aa8fc0861006410d834197a886990f91e941",
   "sites": [
     {
       "lines": [
@@ -636,8 +636,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -668,8 +668,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -700,8 +700,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -732,8 +732,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -764,8 +764,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -796,8 +796,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -828,8 +828,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -860,8 +860,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -892,8 +892,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -925,12 +925,24 @@
               3707,
               3708,
               3710,
-              3729
+              3711,
+              3714,
+              3715,
+              3717,
+              3718,
+              3741,
+              3769
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
               "mutation_said \"$n\" \"  $label: the exercise PASSED on a broken module\"",
-              "touch \"$WORK/mutres/failed\""
+              "touch \"$WORK/mutres/failed\"",
+              "local_code=$?",
+              "if [ -n \"$required\" ]; then",
+              "if [ \"$local_code\" -eq 1 ] && grep -Eq \"$required\" \"$WORK/mut-$n.out\"; then",
+              "mutation_said \"$n\" \"  $label: caught\" \"$(grep -E -m1 \"$required\" \"$WORK/mut-$n.out\")\"",
+              "mutation_said \"$n\" \"  $label: exited $local_code without the required assertion\"",
+              "end' http.iyi 'ASSERTION FAILED: short-body allocation budget: [0-9]+ bytes, under 1048576'"
             ]
           }
         },
@@ -956,8 +968,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -988,8 +1000,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1020,8 +1032,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1052,8 +1064,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1084,8 +1096,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1116,8 +1128,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1148,8 +1160,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1180,8 +1192,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1212,8 +1224,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1244,8 +1256,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1276,8 +1288,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1308,8 +1320,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1340,8 +1352,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1372,8 +1384,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1404,8 +1416,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1436,8 +1448,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1468,8 +1480,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1500,8 +1512,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1532,8 +1544,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1564,8 +1576,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1596,8 +1608,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1628,8 +1640,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1660,8 +1672,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1692,8 +1704,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1724,8 +1736,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1756,8 +1768,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1788,8 +1800,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1820,8 +1832,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1852,8 +1864,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1884,8 +1896,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1916,8 +1928,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1948,8 +1960,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -1980,8 +1992,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2012,8 +2024,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2044,8 +2056,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2076,8 +2088,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2108,8 +2120,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2140,8 +2152,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2172,8 +2184,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2204,8 +2216,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2236,8 +2248,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2268,8 +2280,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2300,8 +2312,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2332,8 +2344,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2364,8 +2376,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2396,8 +2408,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2428,8 +2440,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2460,8 +2472,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2492,8 +2504,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2524,8 +2536,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2556,8 +2568,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2588,8 +2600,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2620,8 +2632,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2652,8 +2664,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2684,8 +2696,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2716,8 +2728,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2748,8 +2760,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2780,8 +2792,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2812,8 +2824,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2844,8 +2856,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2876,8 +2888,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2908,8 +2920,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2940,8 +2952,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -2972,8 +2984,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3004,8 +3016,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3036,8 +3048,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3068,8 +3080,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3100,8 +3112,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3132,8 +3144,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3164,8 +3176,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3196,8 +3208,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3228,8 +3240,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3260,8 +3272,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3292,8 +3304,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3324,8 +3336,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3356,8 +3368,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3388,8 +3400,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3420,8 +3432,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3452,8 +3464,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3484,8 +3496,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3516,8 +3528,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3548,8 +3560,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3580,8 +3592,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3612,8 +3624,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3644,8 +3656,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3676,8 +3688,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3708,8 +3720,8 @@
               3706,
               3707,
               3708,
-              3710,
-              3729
+              3721,
+              3741
             ],
             "contains": [
               "mutation_said \"$n\" \"  $label: the broken copy did not compile\"",
@@ -3722,7 +3734,7 @@
     },
     {
       "lines": [
-        3926
+        3938
       ],
       "command": "build",
       "kind": "negative",
@@ -3746,19 +3758,19 @@
           ],
           "verdict": {
             "lines": [
-              3997,
-              3998,
-              3999,
-              4000,
-              4002,
-              4004,
-              4005,
-              4006,
-              4007,
-              4008,
               4009,
+              4010,
               4011,
-              4013
+              4012,
+              4014,
+              4016,
+              4017,
+              4018,
+              4019,
+              4020,
+              4021,
+              4023,
+              4025
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
@@ -3784,19 +3796,19 @@
           ],
           "verdict": {
             "lines": [
-              3997,
-              3998,
-              3999,
-              4000,
-              4002,
-              4004,
-              4005,
-              4006,
-              4007,
-              4008,
               4009,
+              4010,
               4011,
-              4013
+              4012,
+              4014,
+              4016,
+              4017,
+              4018,
+              4019,
+              4020,
+              4021,
+              4023,
+              4025
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
@@ -3823,17 +3835,17 @@
           ],
           "verdict": {
             "lines": [
-              4022,
-              4023,
-              4024,
-              4025,
-              4027,
-              4032,
-              4033,
+              4034,
+              4035,
               4036,
               4037,
               4039,
-              4040
+              4044,
+              4045,
+              4048,
+              4049,
+              4051,
+              4052
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or node\"",
@@ -3859,19 +3871,19 @@
           ],
           "verdict": {
             "lines": [
-              3997,
-              3998,
-              3999,
-              4000,
-              4002,
-              4004,
-              4005,
-              4006,
-              4007,
-              4008,
               4009,
+              4010,
               4011,
-              4013
+              4012,
+              4014,
+              4016,
+              4017,
+              4018,
+              4019,
+              4020,
+              4021,
+              4023,
+              4025
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
@@ -3897,19 +3909,19 @@
           ],
           "verdict": {
             "lines": [
-              3997,
-              3998,
-              3999,
-              4000,
-              4002,
-              4004,
-              4005,
-              4006,
-              4007,
-              4008,
               4009,
+              4010,
               4011,
-              4013
+              4012,
+              4014,
+              4016,
+              4017,
+              4018,
+              4019,
+              4020,
+              4021,
+              4023,
+              4025
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
@@ -3935,19 +3947,19 @@
           ],
           "verdict": {
             "lines": [
-              3997,
-              3998,
-              3999,
-              4000,
-              4002,
-              4004,
-              4005,
-              4006,
-              4007,
-              4008,
               4009,
+              4010,
               4011,
-              4013
+              4012,
+              4014,
+              4016,
+              4017,
+              4018,
+              4019,
+              4020,
+              4021,
+              4023,
+              4025
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
@@ -3973,19 +3985,19 @@
           ],
           "verdict": {
             "lines": [
-              3997,
-              3998,
-              3999,
-              4000,
-              4002,
-              4004,
-              4005,
-              4006,
-              4007,
-              4008,
               4009,
+              4010,
               4011,
-              4013
+              4012,
+              4014,
+              4016,
+              4017,
+              4018,
+              4019,
+              4020,
+              4021,
+              4023,
+              4025
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
@@ -4011,19 +4023,19 @@
           ],
           "verdict": {
             "lines": [
-              3997,
-              3998,
-              3999,
-              4000,
-              4002,
-              4004,
-              4005,
-              4006,
-              4007,
-              4008,
               4009,
+              4010,
               4011,
-              4013
+              4012,
+              4014,
+              4016,
+              4017,
+              4018,
+              4019,
+              4020,
+              4021,
+              4023,
+              4025
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 exercise or no python3\"",
@@ -4049,20 +4061,20 @@
           ],
           "verdict": {
             "lines": [
-              4047,
-              4048,
-              4049,
-              4050,
-              4052,
+              4059,
+              4060,
               4061,
+              4062,
               4064,
-              4065,
-              4071,
-              4072,
               4073,
-              4074,
               4076,
-              4077
+              4077,
+              4083,
+              4084,
+              4085,
+              4086,
+              4088,
+              4089
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
@@ -4088,20 +4100,20 @@
           ],
           "verdict": {
             "lines": [
-              4047,
-              4048,
-              4049,
-              4050,
-              4052,
+              4059,
+              4060,
               4061,
+              4062,
               4064,
-              4065,
-              4071,
-              4072,
               4073,
-              4074,
               4076,
-              4077
+              4077,
+              4083,
+              4084,
+              4085,
+              4086,
+              4088,
+              4089
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
@@ -4127,20 +4139,20 @@
           ],
           "verdict": {
             "lines": [
-              4047,
-              4048,
-              4049,
-              4050,
-              4052,
+              4059,
+              4060,
               4061,
+              4062,
               4064,
-              4065,
-              4071,
-              4072,
               4073,
-              4074,
               4076,
-              4077
+              4077,
+              4083,
+              4084,
+              4085,
+              4086,
+              4088,
+              4089
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
@@ -4166,20 +4178,20 @@
           ],
           "verdict": {
             "lines": [
-              4047,
-              4048,
-              4049,
-              4050,
-              4052,
+              4059,
+              4060,
               4061,
+              4062,
               4064,
-              4065,
-              4071,
-              4072,
               4073,
-              4074,
               4076,
-              4077
+              4077,
+              4083,
+              4084,
+              4085,
+              4086,
+              4088,
+              4089
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
@@ -4205,20 +4217,20 @@
           ],
           "verdict": {
             "lines": [
-              4047,
-              4048,
-              4049,
-              4050,
-              4052,
+              4059,
+              4060,
               4061,
+              4062,
               4064,
-              4065,
-              4071,
-              4072,
               4073,
-              4074,
               4076,
-              4077
+              4077,
+              4083,
+              4084,
+              4085,
+              4086,
+              4088,
+              4089
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
@@ -4244,20 +4256,20 @@
           ],
           "verdict": {
             "lines": [
-              4047,
-              4048,
-              4049,
-              4050,
-              4052,
+              4059,
+              4060,
               4061,
+              4062,
               4064,
-              4065,
-              4071,
-              4072,
               4073,
-              4074,
               4076,
-              4077
+              4077,
+              4083,
+              4084,
+              4085,
+              4086,
+              4088,
+              4089
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
@@ -4283,20 +4295,20 @@
           ],
           "verdict": {
             "lines": [
-              4047,
-              4048,
-              4049,
-              4050,
-              4052,
+              4059,
+              4060,
               4061,
+              4062,
               4064,
-              4065,
-              4071,
-              4072,
               4073,
-              4074,
               4076,
-              4077
+              4077,
+              4083,
+              4084,
+              4085,
+              4086,
+              4088,
+              4089
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
@@ -4322,20 +4334,20 @@
           ],
           "verdict": {
             "lines": [
-              4047,
-              4048,
-              4049,
-              4050,
-              4052,
+              4059,
+              4060,
               4061,
+              4062,
               4064,
-              4065,
-              4071,
-              4072,
               4073,
-              4074,
               4076,
-              4077
+              4077,
+              4083,
+              4084,
+              4085,
+              4086,
+              4088,
+              4089
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
@@ -4361,19 +4373,19 @@
           ],
           "verdict": {
             "lines": [
-              4157,
-              4158,
-              4160,
-              4161,
-              4167,
-              4168,
               4169,
+              4170,
+              4172,
+              4173,
+              4179,
+              4180,
               4181,
-              4182,
-              4184,
-              4185,
-              4186,
-              4210
+              4193,
+              4194,
+              4196,
+              4197,
+              4198,
+              4222
             ],
             "contains": [
               "echo \"  $label: skipped with the close cases\"",
@@ -4399,19 +4411,19 @@
           ],
           "verdict": {
             "lines": [
-              4157,
-              4158,
-              4160,
-              4161,
-              4167,
-              4168,
               4169,
+              4170,
+              4172,
+              4173,
+              4179,
+              4180,
               4181,
-              4182,
-              4184,
-              4185,
-              4186,
-              4210
+              4193,
+              4194,
+              4196,
+              4197,
+              4198,
+              4222
             ],
             "contains": [
               "echo \"  $label: skipped with the close cases\"",
@@ -4437,19 +4449,19 @@
           ],
           "verdict": {
             "lines": [
-              4157,
-              4158,
-              4160,
-              4161,
-              4167,
-              4168,
               4169,
+              4170,
+              4172,
+              4173,
+              4179,
+              4180,
               4181,
-              4182,
-              4184,
-              4185,
-              4186,
-              4210
+              4193,
+              4194,
+              4196,
+              4197,
+              4198,
+              4222
             ],
             "contains": [
               "echo \"  $label: skipped with the close cases\"",
@@ -4475,19 +4487,19 @@
           ],
           "verdict": {
             "lines": [
-              4157,
-              4158,
-              4160,
-              4161,
-              4167,
-              4168,
               4169,
+              4170,
+              4172,
+              4173,
+              4179,
+              4180,
               4181,
-              4182,
-              4184,
-              4185,
-              4186,
-              4210
+              4193,
+              4194,
+              4196,
+              4197,
+              4198,
+              4222
             ],
             "contains": [
               "echo \"  $label: skipped with the close cases\"",
@@ -4513,19 +4525,19 @@
           ],
           "verdict": {
             "lines": [
-              4157,
-              4158,
-              4160,
-              4161,
-              4167,
-              4168,
               4169,
+              4170,
+              4172,
+              4173,
+              4179,
+              4180,
               4181,
-              4182,
-              4184,
-              4185,
-              4186,
-              4210
+              4193,
+              4194,
+              4196,
+              4197,
+              4198,
+              4222
             ],
             "contains": [
               "echo \"  $label: skipped with the close cases\"",
@@ -4551,19 +4563,19 @@
           ],
           "verdict": {
             "lines": [
-              4157,
-              4158,
-              4160,
-              4161,
-              4167,
-              4168,
               4169,
+              4170,
+              4172,
+              4173,
+              4179,
+              4180,
               4181,
-              4182,
-              4184,
-              4185,
-              4186,
-              4210
+              4193,
+              4194,
+              4196,
+              4197,
+              4198,
+              4222
             ],
             "contains": [
               "echo \"  $label: skipped with the close cases\"",
@@ -4589,19 +4601,19 @@
           ],
           "verdict": {
             "lines": [
-              4157,
-              4158,
-              4160,
-              4161,
-              4167,
-              4168,
               4169,
+              4170,
+              4172,
+              4173,
+              4179,
+              4180,
               4181,
-              4182,
-              4184,
-              4185,
-              4186,
-              4210
+              4193,
+              4194,
+              4196,
+              4197,
+              4198,
+              4222
             ],
             "contains": [
               "echo \"  $label: skipped with the close cases\"",
@@ -4627,20 +4639,20 @@
           ],
           "verdict": {
             "lines": [
-              4047,
-              4048,
-              4049,
-              4050,
-              4052,
+              4059,
+              4060,
               4061,
+              4062,
               4064,
-              4065,
-              4071,
-              4072,
               4073,
-              4074,
               4076,
-              4077
+              4077,
+              4083,
+              4084,
+              4085,
+              4086,
+              4088,
+              4089
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\"",
@@ -4666,15 +4678,15 @@
           ],
           "verdict": {
             "lines": [
-              4247,
-              4248,
-              4249,
-              4250,
-              4252,
-              4253,
-              4254,
-              4255,
-              4257
+              4259,
+              4260,
+              4261,
+              4262,
+              4264,
+              4265,
+              4266,
+              4267,
+              4269
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTPS server to break\"",
@@ -4700,15 +4712,15 @@
           ],
           "verdict": {
             "lines": [
-              4247,
-              4248,
-              4249,
-              4250,
-              4252,
-              4253,
-              4254,
-              4255,
-              4257
+              4259,
+              4260,
+              4261,
+              4262,
+              4264,
+              4265,
+              4266,
+              4267,
+              4269
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTPS server to break\"",
@@ -4734,15 +4746,15 @@
           ],
           "verdict": {
             "lines": [
-              4247,
-              4248,
-              4249,
-              4250,
-              4252,
-              4253,
-              4254,
-              4255,
-              4257
+              4259,
+              4260,
+              4261,
+              4262,
+              4264,
+              4265,
+              4266,
+              4267,
+              4269
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTPS server to break\"",
@@ -4768,18 +4780,18 @@
           ],
           "verdict": {
             "lines": [
-              4274,
-              4275,
-              4276,
-              4277,
-              4279,
-              4280,
-              4281,
-              4282,
-              4283,
-              4284,
               4286,
-              4287
+              4287,
+              4288,
+              4289,
+              4291,
+              4292,
+              4293,
+              4294,
+              4295,
+              4296,
+              4298,
+              4299
             ],
             "contains": [
               "echo \"  $label: skipped with the slow clients' section\"",
@@ -4805,18 +4817,18 @@
           ],
           "verdict": {
             "lines": [
-              4274,
-              4275,
-              4276,
-              4277,
-              4279,
-              4280,
-              4281,
-              4282,
-              4283,
-              4284,
               4286,
-              4287
+              4287,
+              4288,
+              4289,
+              4291,
+              4292,
+              4293,
+              4294,
+              4295,
+              4296,
+              4298,
+              4299
             ],
             "contains": [
               "echo \"  $label: skipped with the slow clients' section\"",
@@ -4842,18 +4854,18 @@
           ],
           "verdict": {
             "lines": [
-              4274,
-              4275,
-              4276,
-              4277,
-              4279,
-              4280,
-              4281,
-              4282,
-              4283,
-              4284,
               4286,
-              4287
+              4287,
+              4288,
+              4289,
+              4291,
+              4292,
+              4293,
+              4294,
+              4295,
+              4296,
+              4298,
+              4299
             ],
             "contains": [
               "echo \"  $label: skipped with the slow clients' section\"",
@@ -4879,18 +4891,18 @@
           ],
           "verdict": {
             "lines": [
-              4274,
-              4275,
-              4276,
-              4277,
-              4279,
-              4280,
-              4281,
-              4282,
-              4283,
-              4284,
               4286,
-              4287
+              4287,
+              4288,
+              4289,
+              4291,
+              4292,
+              4293,
+              4294,
+              4295,
+              4296,
+              4298,
+              4299
             ],
             "contains": [
               "echo \"  $label: skipped with the slow clients' section\"",
@@ -4916,18 +4928,18 @@
           ],
           "verdict": {
             "lines": [
-              4274,
-              4275,
-              4276,
-              4277,
-              4279,
-              4280,
-              4281,
-              4282,
-              4283,
-              4284,
               4286,
-              4287
+              4287,
+              4288,
+              4289,
+              4291,
+              4292,
+              4293,
+              4294,
+              4295,
+              4296,
+              4298,
+              4299
             ],
             "contains": [
               "echo \"  $label: skipped with the slow clients' section\"",
@@ -4953,15 +4965,15 @@
           ],
           "verdict": {
             "lines": [
-              4317,
-              4318,
-              4319,
-              4320,
-              4322,
-              4323,
-              4324,
-              4325,
-              4327
+              4329,
+              4330,
+              4331,
+              4332,
+              4334,
+              4335,
+              4336,
+              4337,
+              4339
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTPS server to break\"",
@@ -4987,15 +4999,15 @@
           ],
           "verdict": {
             "lines": [
-              4317,
-              4318,
-              4319,
-              4320,
-              4322,
-              4323,
-              4324,
-              4325,
-              4327
+              4329,
+              4330,
+              4331,
+              4332,
+              4334,
+              4335,
+              4336,
+              4337,
+              4339
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTPS server to break\"",
@@ -5021,15 +5033,15 @@
           ],
           "verdict": {
             "lines": [
-              4317,
-              4318,
-              4319,
-              4320,
-              4322,
-              4323,
-              4324,
-              4325,
-              4327
+              4329,
+              4330,
+              4331,
+              4332,
+              4334,
+              4335,
+              4336,
+              4337,
+              4339
             ],
             "contains": [
               "echo \"  $label: skipped, no HTTPS server to break\"",
@@ -5055,16 +5067,16 @@
           ],
           "verdict": {
             "lines": [
-              4344,
-              4345,
-              4346,
-              4348,
-              4349,
-              4351,
-              4354,
-              4355,
               4356,
-              4358
+              4357,
+              4358,
+              4360,
+              4361,
+              4363,
+              4366,
+              4367,
+              4368,
+              4370
             ],
             "contains": [
               "echo \"  $label: skipped, no proxy round to break\"",
@@ -5090,16 +5102,16 @@
           ],
           "verdict": {
             "lines": [
-              4344,
-              4345,
-              4346,
-              4348,
-              4349,
-              4351,
-              4354,
-              4355,
               4356,
-              4358
+              4357,
+              4358,
+              4360,
+              4361,
+              4363,
+              4366,
+              4367,
+              4368,
+              4370
             ],
             "contains": [
               "echo \"  $label: skipped, no proxy round to break\"",
@@ -5125,16 +5137,16 @@
           ],
           "verdict": {
             "lines": [
-              4344,
-              4345,
-              4346,
-              4348,
-              4349,
-              4351,
-              4354,
-              4355,
               4356,
-              4358
+              4357,
+              4358,
+              4360,
+              4361,
+              4363,
+              4366,
+              4367,
+              4368,
+              4370
             ],
             "contains": [
               "echo \"  $label: skipped, no proxy round to break\"",
@@ -5160,16 +5172,16 @@
           ],
           "verdict": {
             "lines": [
-              4344,
-              4345,
-              4346,
-              4348,
-              4349,
-              4351,
-              4354,
-              4355,
               4356,
-              4358
+              4357,
+              4358,
+              4360,
+              4361,
+              4363,
+              4366,
+              4367,
+              4368,
+              4370
             ],
             "contains": [
               "echo \"  $label: skipped, no proxy round to break\"",
@@ -5195,16 +5207,16 @@
           ],
           "verdict": {
             "lines": [
-              4344,
-              4345,
-              4346,
-              4348,
-              4349,
-              4351,
-              4354,
-              4355,
               4356,
-              4358
+              4357,
+              4358,
+              4360,
+              4361,
+              4363,
+              4366,
+              4367,
+              4368,
+              4370
             ],
             "contains": [
               "echo \"  $label: skipped, no proxy round to break\"",
@@ -5230,16 +5242,16 @@
           ],
           "verdict": {
             "lines": [
-              4344,
-              4345,
-              4346,
-              4348,
-              4349,
-              4351,
-              4354,
-              4355,
               4356,
-              4358
+              4357,
+              4358,
+              4360,
+              4361,
+              4363,
+              4366,
+              4367,
+              4368,
+              4370
             ],
             "contains": [
               "echo \"  $label: skipped, no proxy round to break\"",
@@ -5458,56 +5470,56 @@
       "text": "  echo \"  wrk is not installed; skipped\""
     },
     {
-      "line": 3998,
+      "line": 4010,
       "class": "tool",
       "what": "HTTP/2 exercise or python3",
       "regex": "^  .*: skipped, no HTTP/2 exercise or no python3$",
       "text": "    echo \"  $label: skipped, no HTTP/2 exercise or no python3\""
     },
     {
-      "line": 4023,
+      "line": 4035,
       "class": "tool",
       "what": "HTTP/2 server, python3 or node",
       "regex": "^  .*: skipped, no HTTP/2 server, python3 or node$",
       "text": "    echo \"  $label: skipped, no HTTP/2 server, python3 or node\""
     },
     {
-      "line": 4048,
+      "line": 4060,
       "class": "tool",
       "what": "HTTP/2 server, python3 or frame fixture",
       "regex": "^  .*: skipped, no HTTP/2 server, python3 or frames to send it$",
       "text": "    echo \"  $label: skipped, no HTTP/2 server, python3 or frames to send it\""
     },
     {
-      "line": 4182,
+      "line": 4194,
       "class": "tool",
       "what": "close-case prerequisites",
       "regex": "^  .*: skipped with the close cases$",
       "text": "    echo \"  $label: skipped with the close cases\" >\"$WORK/closeres/$close_n\""
     },
     {
-      "line": 4248,
+      "line": 4260,
       "class": "tool",
       "what": "HTTPS server",
       "regex": "^  .*: skipped, no HTTPS server to break$",
       "text": "    echo \"  $label: skipped, no HTTPS server to break\""
     },
     {
-      "line": 4275,
+      "line": 4287,
       "class": "tool",
       "what": "slow-client section",
       "regex": "^  .*: skipped with the slow clients' section$",
       "text": "    echo \"  $label: skipped with the slow clients' section\""
     },
     {
-      "line": 4318,
+      "line": 4330,
       "class": "tool",
       "what": "HTTPS server",
       "regex": "^  .*: skipped, no HTTPS server to break$",
       "text": "    echo \"  $label: skipped, no HTTPS server to break\""
     },
     {
-      "line": 4345,
+      "line": 4357,
       "class": "tool",
       "what": "proxy round",
       "regex": "^  .*: skipped, no proxy round to break$",
@@ -5516,7 +5528,7 @@
   ],
   "not_skips": [],
   "pass_sentinel": {
-    "line": 4436,
+    "line": 4448,
     "regex": "^the std/http exercise holds$",
     "text": "  echo \"the std/http exercise holds\""
   },
@@ -5547,7 +5559,7 @@
       ],
       "refs_ok": [
         {
-          "line": 3914,
+          "line": 3926,
           "kind": "cleanup"
         }
       ]
