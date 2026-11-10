@@ -182,4 +182,77 @@ describe "literal form parser evidence" do
     operand_observation.expression.should be(inner)
     inner_observation.first.ordinal.should be >= operand_observation.expression_first.not_nil!.ordinal
   end
+  it "keeps replay-owned associations distinct when sibling metadata is exchanged" do
+    parser = Iyi::Parser.new(%q(["same", "same"]))
+    parser.filename = "/spec/literal_forms.cr"
+    parser.diagnostic_source_file = "/spec/literal_forms.cr"
+    parser.diagnostic_capture = true
+    nodes = parser.parse.as(Iyi::ArrayLiteral).elements
+    observations = parser.diagnostic_literal_owner_observations
+    left = observations.find { |item| item.owner.same?(nodes[0]) }.not_nil!
+    right = observations.find { |item| item.owner.same?(nodes[1]) }.not_nil!
+    left.ranges.should_not eq(right.ranges)
+    nodes[0].diagnostic_literal_name("value", 0, nodes[1].diagnostic_literal_names[{"value", 0}])
+    observations.find { |item| item.owner.same?(nodes[0]) }.not_nil!.ranges.should eq(left.ranges)
+    nodes[0].diagnostic_literal_names[{"value", 0}].segments.first.start_offset.should_not eq(left.ranges.first[0])
+  end
+  it "associates heredoc interpolation markers with their distinct expression nodes" do
+    source = "<<-EOS\n  \#{x} \#{x}\n  EOS\n"
+    parser = Iyi::Parser.new(source)
+    parser.filename = "/spec/literal_forms.cr"
+    parser.diagnostic_source_file = "/spec/literal_forms.cr"
+    parser.diagnostic_capture = true
+    node = parser.parse.as(Iyi::StringInterpolation)
+    observations = parser.diagnostic_interpolation_observations
+    observations.size.should eq(2)
+    observations[0].expression.should_not be(observations[1].expression)
+    node.expressions.any? { |expression| expression.same?(observations[0].expression) }.should be_true
+    node.expressions.any? { |expression| expression.same?(observations[1].expression) }.should be_true
+    observations[0].open.ordinal.should be < observations[1].open.ordinal
+  end
+  it "records regex suffix bytes and the exact wrapper payload" do
+    parser = Iyi::Parser.new("/a/imx")
+    parser.filename = "/spec/literal_forms.cr"
+    parser.diagnostic_source_file = "/spec/literal_forms.cr"
+    parser.diagnostic_capture = true
+    node = parser.parse.as(Iyi::RegexLiteral)
+    suffix = parser.diagnostic_regex_options_observations.first
+    suffix.owner.should be(node)
+    suffix.modifiers.size.should eq(1)
+    token = parser.diagnostic_lexical_observations[suffix.modifiers.first.ordinal]
+    token.token_kind.should eq("REGEX_OPTIONS")
+    token.token_text.should eq("imx")
+    payload = parser.diagnostic_literal_payload_observations.first
+    payload.owner.should be(node)
+    payload.payload.should be(node.value)
+  end
+
+  it "retains ordered percent element identities" do
+    parser = Iyi::Parser.new("%w(same same)")
+    parser.filename = "/spec/literal_forms.cr"
+    parser.diagnostic_source_file = "/spec/literal_forms.cr"
+    parser.diagnostic_capture = true
+    array = parser.parse.as(Iyi::ArrayLiteral)
+    group = parser.diagnostic_percent_group_observations.first
+    group.owner.should be(array)
+    group.elements[0].should be(array.elements[0])
+    group.elements[1].should be(array.elements[1])
+    group.elements[0].should_not be(group.elements[1])
+  end
+  it "records dynamic and splat percent element boundaries by owner" do
+    parser = Iyi::Parser.new(%q(%W(a#{x} #{*items})))
+    parser.filename = "/spec/literal_forms.cr"
+    parser.diagnostic_source_file = "/spec/literal_forms.cr"
+    parser.diagnostic_capture = true
+    array = parser.parse.as(Iyi::ArrayLiteral)
+    group = parser.diagnostic_percent_group_observations.first
+    elements = parser.diagnostic_percent_element_observations
+    journal = parser.diagnostic_lexical_observations
+    group.elements.each_with_index do |node, index|
+      observation = elements.find { |item| item.owner.same?(node) }.not_nil!
+      journal[observation.first.ordinal].input_start.should be < journal[observation.after.ordinal].input_start
+      node.should be(array.elements[index])
+    end
+    elements.size.should eq(2)
+  end
 end
