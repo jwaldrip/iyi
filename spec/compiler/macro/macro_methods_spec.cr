@@ -61,10 +61,67 @@ module Iyi
       end
       tuple.clone.diagnostic_name_slots.should eq(tuple.diagnostic_name_slots)
 
-      args.first.diagnostic_name_slots = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+      args.first.diagnostic_name_slots = {} of DiagnosticNameSlot => Array(DiagnosticNameValue)
       expect_raises(ArgumentError, /lacks name evidence/) do
         MacroInterpreter.diagnostic_named_tuple(program, args)
       end
+    end
+
+    it "prints a captured enum member independently with its source name" do
+      parser = Parser.new("enum Mode\n  A = 1\n  B\nend")
+      parser.filename = "/spec/enum.cr"
+      parser.diagnostic_source_file = "/spec/enum.cr"
+      parser.diagnostic_capture = true
+      member = parser.parse.as(EnumDef).members.first.as(Arg)
+      slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::EnumMember)
+      member.diagnostic_name_slots[slot].first.rendered_text.should eq("A")
+      io = IO::Memory.new
+      anchors = [] of DiagnosticAnchor
+      member.clone.to_s(io, diagnostic_anchors: anchors)
+      io.to_s.should eq("A = 1")
+      anchors.any? { |anchor| anchor.kind == "Name" && anchor.role == "enum_member" }.should be_true
+    end
+
+    it "preserves the original numbered-match derivation when printing its lowered nodes" do
+      parser = Parser.new("$1?")
+      parser.filename = "/spec/match.cr"
+      parser.diagnostic_source_file = "/spec/match.cr"
+      parser.diagnostic_capture = true
+      lookup = parser.parse.as(Call)
+      lookup_origin = lookup.diagnostic_origin.as(DiagnosticOrigin::DerivedName)
+      lookup_origin.derivation_kind.should eq("RegexMatchIndex")
+      lookup_origin.result.should eq("Lookup")
+      lookup_origin.rendered_text.should eq("[]?")
+      global = lookup.obj.as(Global)
+      source = global.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)].first
+      derived = source.as(DiagnosticNameValue::Derived).origin
+      derived.result.should eq("MatchData")
+      derived.source_token.raw_text.should eq("$1?")
+      derived.rendered_text.should eq("$~")
+      io = IO::Memory.new
+      anchors = [] of DiagnosticAnchor
+      lookup.to_s(io, diagnostic_anchors: anchors)
+      anchors.any? { |anchor| anchor.origin == lookup_origin }.should be_true
+      anchors.any? { |anchor| anchor.origin == derived }.should be_true
+    end
+
+    it "rejects forged parameter and numbered-match derivations" do
+      parser = Parser.new("def f(@x)\nend")
+      parser.filename = "/spec/parameter.cr"
+      parser.diagnostic_source_file = "/spec/parameter.cr"
+      parser.diagnostic_capture = true
+      definition = parser.parse.as(Def)
+      slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      argument = definition.args.first.diagnostic_name_slots[slot].first.as(DiagnosticNameValue::Derived).origin
+      token = argument.source_token
+      owner = definition.diagnostic_origin.not_nil!
+      expect_raises(ArgumentError) do
+        DiagnosticOrigin::DerivedName.new(token, owner, "positional", 0, "Target", "StripVariablePrefix", nil)
+      end
+      expect_raises(ArgumentError) do
+        DiagnosticOrigin::DerivedName.new(token, owner, "block", 1, "Argument", "StripVariablePrefix", nil)
+      end
+      expect_raises(ArgumentError) { DiagnosticOrigin::DerivedName.regex_match_index(token, "MatchData") }
     end
 
     describe "node methods" do

@@ -3,6 +3,8 @@ require "../syntax/to_s"
 module Iyi
   class ToSVisitor
     def visit(node : Arg)
+      enum_member = @inside_enum_member
+      @inside_enum_member = false
       if parsed_annotations = node.parsed_annotations
         parsed_annotations.each do |ann|
           ann.accept self
@@ -21,7 +23,7 @@ module Iyi
         @str << ' '
       end
       if name = node.name
-        diagnostic_name(node, name, "parameter")
+        diagnostic_arg_name(node, name, enum_member)
       else
         @str << '?'
       end
@@ -38,6 +40,7 @@ module Iyi
       end
       false
     ensure
+      @inside_enum_member = enum_member
       @current_arg_type = :none
     end
 
@@ -48,8 +51,10 @@ module Iyi
     end
 
     def visit(node : MetaVar)
-      if node.diagnostic_name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
-        diagnostic_name(node, node.name, "local_reference")
+      if !@diagnostic_name_fragments && !@diagnostic_anchors && !@diagnostic_generated_text
+        @str << node.name
+      elsif node.diagnostic_name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
+        diagnostic_name(node, node.name, node.name == "$~" || node.name == "$?" ? "special_global" : "local_reference")
       elsif node.diagnostic_origin && (@diagnostic_name_fragments || @diagnostic_anchors)
         raise ArgumentError.new("semantic variable lacks preserved name evidence")
       else

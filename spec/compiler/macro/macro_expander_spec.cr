@@ -54,12 +54,13 @@ describe "MacroExpander" do
 
     slot = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)
     [target, definition, reference].each do |node|
-      origin = node.diagnostic_name_slots[slot].first.lexical_origin.as(Iyi::DiagnosticOrigin::Expanded)
+      origin = node.diagnostic_name_slots[slot].first.artifact_origin.as(Iyi::DiagnosticOrigin::Expanded)
       splice = origin.emission_parts.find(&.is_a?(Iyi::DiagnosticEmissionPart::NameSplice)).not_nil!
         .as(Iyi::DiagnosticEmissionPart::NameSplice)
-      splice.source_token.raw_text.should eq("empty")
-      splice.source_token.lexical_origin.should eq(lexical)
-      splice.source_token.binding_origin.should eq(binding)
+      source_token = splice.source_name.as(Iyi::DiagnosticNameValue::Observed).source_token
+      source_token.raw_text.should eq("empty")
+      source_token.lexical_origin.should eq(lexical)
+      source_token.binding_origin.should eq(binding)
     end
     expanded.diagnostic_check_consumed
   end
@@ -95,9 +96,12 @@ describe "MacroExpander" do
         entry.as?(Iyi::Lexer::LocDiagnosticEmission)
       end.flat_map(&.name_fragments)
     end
-    assignment_name = fragments.find { |fragment| fragment.source_token.binding_origin == binding }.not_nil!
-    assignment_name.source_token.raw_text.should eq("evloop")
-    assignment_name.source_token.lexical_origin.should eq(binding.parent_origin)
+    assignment_name = fragments.find do |fragment|
+      fragment.source_name.as?(Iyi::DiagnosticNameValue::Observed).try(&.source_token.binding_origin) == binding
+    end.not_nil!
+    source_token = assignment_name.source_name.as(Iyi::DiagnosticNameValue::Observed).source_token
+    source_token.raw_text.should eq("evloop")
+    source_token.lexical_origin.should eq(binding.parent_origin)
     expanded = Iyi::Parser.new(text)
     expanded.diagnostic_expansion(call.diagnostic_origin.not_nil!, macro_node.diagnostic_origin.not_nil!,
       "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)

@@ -102,7 +102,7 @@ module Iyi
     def self.diagnostic_named_tuple(program : Program, args : Array(NamedArgument)) : NamedTupleLiteral
       tuple = diagnostic_new(program, NamedTupleLiteral, args.map { |arg| NamedTupleLiteral::Entry.new(arg.name, arg.value) })
       if program.diagnostic_capture
-        slots = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+        slots = {} of DiagnosticNameSlot => Array(DiagnosticNameValue)
         source_slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry)
         args.each_with_index do |arg, index|
           if tokens = arg.diagnostic_name_slots[source_slot]?
@@ -125,7 +125,6 @@ module Iyi
       copy.diagnostic_origin = node.diagnostic_origin
       copy.diagnostic_macro_lineage = node.diagnostic_macro_lineage
       copy.diagnostic_name_slots = node.diagnostic_name_slots
-      copy.diagnostic_signed_number_operator = node.diagnostic_signed_number_operator
       copy
     end
 

@@ -6,14 +6,14 @@ module Iyi
     getter kind : String
     getter role : String
     getter origin : DiagnosticOrigin?
-    @name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))
+    @name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue))
 
     def initialize(@offset : Int32, @kind : String, @role : String, @origin : DiagnosticOrigin?,
-                   name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken)) = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken))
+                   name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue)) = {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
       @name_slots = DiagnosticNameMetadata.copy_and_validate(name_slots, @origin)
     end
 
-    def name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))
+    def name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue))
       DiagnosticNameMetadata.copy_and_validate(@name_slots, @origin)
     end
 
@@ -40,6 +40,7 @@ module Iyi
     PathSegment
     TypeParameter
     NamedEntry
+    EnumMember
   end
 
   record DiagnosticNameSlot, kind : DiagnosticNameSlotKind, index : Int32 = 0 do
@@ -63,21 +64,35 @@ module Iyi
     token_kind : String,
     raw_text : String do
     NAME_OPERATORS = %w(! != !~ % & &* &** &+ &- * ** + - / // < << <= <=> = == === =~ > >= >> [] []= []? ^ ` | ~)
+    MACRO_OPERATORS = %w(<< < <= == === != =~ !~ >> > >= + - * / // ~ % & | ^ ** [] []? []= <=> &+ &- &* &** = `)
 
     def self.valid_token?(kind : String, raw : String, mode : String, context : String) : Bool
       allowed = case context
                 when "method_name"                   then kind == "IDENT" || kind == "CONST" || NAME_OPERATORS.includes?(kind)
                 when "definition_name"               then kind == "IDENT" || NAME_OPERATORS.includes?(kind)
-                when "macro_name"                    then kind == "IDENT" || kind == "="
+                when "macro_name"                    then kind == "IDENT" || kind == "CONST" || MACRO_OPERATORS.includes?(kind)
                 when "local_reference"               then kind == "IDENT"
                 when "instance_variable"             then kind == "INSTANCE_VAR"
                 when "class_variable"                then kind == "CLASS_VAR"
                 when "parameter"                     then {"IDENT", "INSTANCE_VAR", "CLASS_VAR"}.includes?(kind)
                 when "path_segment", "type_parameter" then kind == "CONST"
                 when "named_entry"                   then {"IDENT", "CONST"}.includes?(kind)
+                when "enum_member"                   then kind == "CONST"
+                when "special_global"                then {"$~", "$?"}.includes?(kind)
+                when "regex_match_index"             then kind == "GLOBAL_MATCH_DATA_INDEX"
                 else                                      false
                 end
       return false unless allowed && {"Crystal", "Iyi"}.includes?(mode) && raw.valid_encoding?
+      return raw == kind if context == "special_global"
+      if context == "regex_match_index"
+        return false unless raw.starts_with?("$")
+        number = raw.byte_slice(1, raw.bytesize - 1)
+        optional = number.ends_with?("?")
+        number = number.byte_slice(0, number.bytesize - 1) if optional
+        return false if number.empty? || (number.starts_with?("0") && (number != "0" || optional))
+        return false unless number.each_byte.all? { |byte| (48_u8..57_u8).includes?(byte) }
+        return !number.to_i?.nil?
+      end
       return raw == kind if NAME_OPERATORS.includes?(kind)
       prefix = kind == "INSTANCE_VAR" ? "@" : (kind == "CLASS_VAR" ? "@@" : "")
       return false unless raw.starts_with?(prefix)
@@ -100,7 +115,8 @@ module Iyi
                    @input_sha256 : String, @input_bytesize : Int32, @input_start : Int32, @input_end : Int32,
                    @lexical_mode : String, @token_kind : String, @raw_text : String)
       unless {"method_name", "definition_name", "macro_name", "local_reference", "instance_variable",
-              "class_variable", "parameter", "path_segment", "type_parameter", "named_entry"}.includes?(@context)
+              "class_variable", "parameter", "path_segment", "type_parameter", "named_entry",
+              "enum_member", "special_global", "regex_match_index"}.includes?(@context)
         raise ArgumentError.new("invalid diagnostic name context")
       end
       unless @input_sha256.bytesize == 64 && @input_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) }
@@ -167,16 +183,63 @@ module Iyi
     end
   end
 
+  abstract class DiagnosticNameValue
+    abstract def rendered_text : String
+    abstract def artifact_origin : DiagnosticOrigin
+    abstract def producer_context : String
+    abstract def graph_bytes : UInt64
+    abstract def to_json(json : JSON::Builder) : Nil
+
+    class Observed < DiagnosticNameValue
+      getter source_token : DiagnosticSourceNameToken
+      def initialize(@source_token : DiagnosticSourceNameToken); end
+      def rendered_text : String; @source_token.raw_text; end
+      def artifact_origin : DiagnosticOrigin; @source_token.lexical_origin; end
+      def producer_context : String; @source_token.context; end
+      def graph_bytes : UInt64; 64_u64 + @source_token.graph_bytes; end
+      def_equals_and_hash @source_token
+      def to_json(json : JSON::Builder) : Nil
+        json.object do
+          json.field "kind", "Observed"
+          json.field "source_token", @source_token
+        end
+      end
+    end
+
+    class Derived < DiagnosticNameValue
+      getter origin : DiagnosticOrigin::DerivedName
+      def initialize(@origin : DiagnosticOrigin::DerivedName); end
+      def rendered_text : String; @origin.rendered_text; end
+      def artifact_origin : DiagnosticOrigin; @origin; end
+      def producer_context : String; @origin.producer_context; end
+      def graph_bytes : UInt64; 64_u64 + @origin.graph_bytes; end
+      def_equals_and_hash @origin
+      def to_json(json : JSON::Builder) : Nil
+        json.object do
+          json.field "kind", "Derived"
+          json.field "origin", @origin
+        end
+      end
+    end
+  end
+
   module DiagnosticNameMetadata
-    def self.copy_and_validate(slots : Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken)), origin : DiagnosticOrigin? = nil)
+    def self.copy_and_validate(slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue)), origin : DiagnosticOrigin? = nil)
+      if slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::EnumMember)) &&
+         slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
+        raise ArgumentError.new("conflicting enum member and parameter names")
+      end
       remaining = DiagnosticOrigin::MAX_UNFOLDED_BYTES
       if origin
         raise ArgumentError.new("diagnostic name metadata exceeds size limit") if origin.graph_bytes > remaining
         remaining -= origin.graph_bytes
       end
-      copy = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+      copy = {} of DiagnosticNameSlot => Array(DiagnosticNameValue)
       slots.each do |slot, tokens|
         raise ArgumentError.new("empty diagnostic name slot") if tokens.empty?
+        if slot.kind.enum_member? && (tokens.size != 1 || tokens.first.producer_context != "enum_member")
+          raise ArgumentError.new("invalid enum member name slot")
+        end
         tokens.each do |token|
           raise ArgumentError.new("diagnostic name metadata exceeds size limit") if token.graph_bytes > remaining
           remaining -= token.graph_bytes
@@ -217,10 +280,7 @@ module Iyi
         when AstAnchor
           json.field "source_origin", source_origin
         when NameSplice
-          json.field "source_token", source_token
-          json.field "slice_start", slice_start
-          json.field "slice_end", slice_end
-          json.field "projection", projection
+          json.field "source_name", source_name
         end
       end
     end
@@ -242,19 +302,15 @@ module Iyi
     end
 
     class NameSplice < DiagnosticEmissionPart
-      getter source_token : DiagnosticSourceNameToken
-      getter slice_start : Int32
-      getter slice_end : Int32
-      getter projection : String
+      getter source_name : DiagnosticNameValue
       def initialize(start_offset : Int32, end_offset : Int32, emitter_origin : DiagnosticOrigin?,
-                     @source_token : DiagnosticSourceNameToken, @slice_start : Int32, @slice_end : Int32, @projection : String)
+                     @source_name : DiagnosticNameValue)
         super(start_offset, end_offset, emitter_origin)
-        unless @projection == "Whole" && @slice_start == 0 && @slice_end == @source_token.raw_text.bytesize &&
-               @end_offset - @start_offset == @slice_end - @slice_start
-          raise ArgumentError.new("unsupported diagnostic name projection")
+        unless @end_offset - @start_offset == @source_name.rendered_text.bytesize
+          raise ArgumentError.new("invalid diagnostic name splice extent")
         end
       end
-      def_equals_and_hash @start_offset, @end_offset, @emitter_origin, @source_token, @slice_start, @slice_end, @projection
+      def_equals_and_hash @start_offset, @end_offset, @emitter_origin, @source_name
     end
   end
 
@@ -270,14 +326,14 @@ module Iyi
     SemanticPrinter
   end
 
-  record DiagnosticMacroAnchor, offset : Int32, kind : String, role : String,
+  record DiagnosticMacroAnchor, offset : Int32, end_offset : Int32, kind : String, role : String,
     emitter_origin : DiagnosticOrigin?, source_origin : DiagnosticOrigin?, producer : DiagnosticMacroProducer?
 
   record DiagnosticGeneratedText, start_offset : Int32, end_offset : Int32,
     emitter_origin : DiagnosticOrigin?, producer : DiagnosticMacroProducer
 
   record DiagnosticMacroNameFragment, start_offset : Int32, end_offset : Int32,
-    emitter_origin : DiagnosticOrigin?, source_token : DiagnosticSourceNameToken
+    emitter_origin : DiagnosticOrigin?, source_name : DiagnosticNameValue
 
   # Provenance is independent of Location, which remains the source of
   # human-facing positions. These records contain no process-local identity.
@@ -417,18 +473,9 @@ module Iyi
             expected_keys(fields, %w(kind start_offset end_offset emitter_origin source_origin))
             DiagnosticEmissionPart::AstAnchor.new(start, finish, emitter_origin, from_json(fields["source_origin"], depth + 1, budget)).as(DiagnosticEmissionPart)
           when "NameSplice"
-            expected_keys(fields, %w(kind start_offset end_offset emitter_origin source_token slice_start slice_end projection))
-            token = fields["source_token"].as_h
-            expected_keys(token, %w(lexical_origin binding_origin context input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text))
-            %w(context input_sha256 lexical_mode token_kind raw_text).each { |key| budget.text(token[key].as_s) }
-            budget.text(fields["projection"].as_s)
-            binding = token["binding_origin"]
-            source = DiagnosticSourceNameToken.new(from_json(token["lexical_origin"], depth + 1, budget),
-              binding.raw.nil? ? nil : from_json(binding, depth + 1, budget), token["context"].as_s,
-              token["input_sha256"].as_s, token["input_bytesize"].as_i, token["input_start"].as_i,
-              token["input_end"].as_i, token["lexical_mode"].as_s, token["token_kind"].as_s, token["raw_text"].as_s)
-            DiagnosticEmissionPart::NameSplice.new(start, finish, emitter_origin, source,
-              fields["slice_start"].as_i, fields["slice_end"].as_i, fields["projection"].as_s).as(DiagnosticEmissionPart)
+            expected_keys(fields, %w(kind start_offset end_offset emitter_origin source_name))
+            DiagnosticEmissionPart::NameSplice.new(start, finish, emitter_origin,
+              name_value_from_json(fields["source_name"], depth + 1, budget)).as(DiagnosticEmissionPart)
           else
             raise ArgumentError.new("unknown diagnostic emission part")
           end
@@ -438,6 +485,22 @@ module Iyi
           object["expansion_guard"].as_s, object["generated_byte_offset"].as_i, object["generated_byte_end"].as_i,
           object["token_kind"].as_s, object["token_text"].as_s, object["lexical_mode"].as_s,
           object["anchor_kind"].as_s, object["role"].as_s, object["name_context"].as_s?, parts)
+      when "DerivedName"
+        case object["derivation_kind"].as_s
+        when "ParameterLowering"
+          expected_keys(object, %w(kind derivation_kind source_token definition_origin parameter_slot parameter_index result projection fresh_index))
+          %w(parameter_slot result projection).each { |key| budget.text(object[key].as_s) }
+          DerivedName.new(source_token_from_json(object["source_token"], depth + 1, budget),
+            from_json(object["definition_origin"], depth + 1, budget), object["parameter_slot"].as_s,
+            object["parameter_index"].as_i, object["result"].as_s, object["projection"].as_s,
+            object["fresh_index"].raw.nil? ? nil : object["fresh_index"].as_i)
+        when "RegexMatchIndex"
+          expected_keys(object, %w(kind derivation_kind source_token result))
+          budget.text(object["result"].as_s)
+          DerivedName.regex_match_index(source_token_from_json(object["source_token"], depth + 1, budget), object["result"].as_s)
+        else
+          raise ArgumentError.new("unknown diagnostic name derivation")
+        end
       when "Synthetic"
         expected_keys(object, %w(kind parent_origin synthesis_kind structural_slot))
         budget.text(object["synthesis_kind"].as_s)
@@ -449,9 +512,159 @@ module Iyi
       end
     end
 
+    private def self.source_token_from_json(value : JSON::Any, depth : Int32, budget : DecodeBudget) : DiagnosticSourceNameToken
+      token = value.as_h
+      expected_keys(token, %w(lexical_origin binding_origin context input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text))
+      %w(context input_sha256 lexical_mode token_kind raw_text).each { |key| budget.text(token[key].as_s) }
+      binding = token["binding_origin"]
+      DiagnosticSourceNameToken.new(from_json(token["lexical_origin"], depth + 1, budget),
+        binding.raw.nil? ? nil : from_json(binding, depth + 1, budget), token["context"].as_s,
+        token["input_sha256"].as_s, token["input_bytesize"].as_i, token["input_start"].as_i,
+        token["input_end"].as_i, token["lexical_mode"].as_s, token["token_kind"].as_s, token["raw_text"].as_s)
+    end
+
+    private def self.name_value_from_json(value : JSON::Any, depth : Int32, budget : DecodeBudget) : DiagnosticNameValue
+      fields = value.as_h
+      case fields["kind"].as_s
+      when "Observed"
+        expected_keys(fields, %w(kind source_token))
+        DiagnosticNameValue::Observed.new(source_token_from_json(fields["source_token"], depth + 1, budget))
+      when "Derived"
+        expected_keys(fields, %w(kind origin))
+        DiagnosticNameValue::Derived.new(from_json(fields["origin"], depth + 1, budget).as(DerivedName))
+      else
+        raise ArgumentError.new("unknown diagnostic name value")
+      end
+    end
+
     private def self.expected_keys(object : Hash(String, JSON::Any), keys : Array(String)) : Nil
       unless object.size == keys.size && keys.all? { |key| object.has_key?(key) }
         raise ArgumentError.new("invalid diagnostic origin fields")
+      end
+    end
+
+    class DerivedName < DiagnosticOrigin
+      INVALID_INTERNAL_NAMES = %w(begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof)
+      getter source_token : DiagnosticSourceNameToken
+      getter derivation_kind : String
+      getter definition_origin : DiagnosticOrigin?
+      getter parameter_slot : String?
+      getter parameter_index : Int32?
+      getter result : String
+      getter projection : String?
+      getter fresh_index : Int32?
+      getter rendered_text : String
+      getter producer_context : String
+
+      def initialize(@source_token : DiagnosticSourceNameToken, definition_origin : DiagnosticOrigin,
+                     parameter_slot : String, parameter_index : Int32, @result : String,
+                     projection : String, @fresh_index : Int32?)
+        @derivation_kind = "ParameterLowering"
+        @definition_origin = definition_origin
+        @parameter_slot = parameter_slot
+        @parameter_index = parameter_index
+        @projection = projection
+        unless @source_token.context == "parameter" && @source_token.binding_origin.nil? &&
+               {"INSTANCE_VAR", "CLASS_VAR"}.includes?(@source_token.token_kind) &&
+               @source_token.lexical_origin.valid_for_anchor?("Name", "parameter") &&
+               definition_origin.valid_for_anchor?("Def", "keyword")
+          raise ArgumentError.new("invalid derived name source")
+        end
+        unless {"positional", "double_splat", "block"}.includes?(parameter_slot) &&
+               parameter_index >= 0 && (parameter_slot == "positional" || parameter_index == 0)
+          raise ArgumentError.new("invalid derived name parameter slot")
+        end
+        prefix = @source_token.token_kind == "INSTANCE_VAR" ? "@" : "@@"
+        raw = @source_token.raw_text
+        raise ArgumentError.new("invalid derived name prefix") unless raw.starts_with?(prefix)
+        stem = raw.byte_slice(prefix.bytesize, raw.bytesize - prefix.bytesize)
+        invalid = INVALID_INTERNAL_NAMES.includes?(stem)
+        @producer_context = case @result
+                            when "Argument" then "parameter"
+                            when "Target" then @source_token.token_kind == "INSTANCE_VAR" ? "instance_variable" : "class_variable"
+                            when "LocalValue" then "local_reference"
+                            when "DefaultExternal" then "named_entry"
+                            else raise ArgumentError.new("invalid derived name result")
+                            end
+        @rendered_text = case projection
+                         when "Whole"
+                           raise ArgumentError.new("invalid whole name derivation") unless @result == "Target" && @fresh_index.nil?
+                           raw
+                         when "StripVariablePrefix"
+                           unless (@result == "Argument" || @result == "LocalValue") && !invalid && @fresh_index.nil? ||
+                                  @result == "DefaultExternal" && invalid && @fresh_index.nil?
+                             raise ArgumentError.new("invalid prefix name derivation")
+                           end
+                           stem
+                         when "FreshParameterName"
+                           index = @fresh_index
+                           unless invalid && index && index >= 0 && {"Argument", "LocalValue"}.includes?(@result)
+                             raise ArgumentError.new("invalid fresh name derivation")
+                           end
+                           "__arg#{index}"
+                         else
+                           raise ArgumentError.new("unknown name projection")
+                         end
+        parents = [@source_token.lexical_origin, definition_origin] of DiagnosticOrigin
+        @source_token.binding_origin.try { |binding| parents << binding }
+        own = 1024_u64 + @source_token.raw_text.bytesize.to_u64 * 6 + @source_token.token_kind.bytesize.to_u64 * 6
+        set_graph_bounds!(own, parents)
+      end
+
+      def self.regex_match_index(source_token : DiagnosticSourceNameToken, result : String) : DerivedName
+        new(source_token, result)
+      end
+
+      def initialize(@source_token : DiagnosticSourceNameToken, @result : String)
+        @derivation_kind = "RegexMatchIndex"
+        @definition_origin = nil
+        @parameter_slot = nil
+        @parameter_index = nil
+        @projection = nil
+        @fresh_index = nil
+        unless @source_token.context == "regex_match_index" && @source_token.binding_origin.nil? &&
+               @source_token.lexical_origin.valid_for_anchor?("Name", "regex_match_index")
+          raise ArgumentError.new("invalid regex-match derivation source")
+        end
+        case @result
+        when "MatchData"
+          @producer_context = "special_global"
+          @rendered_text = "$~"
+        when "Lookup"
+          @producer_context = "method_name"
+          @rendered_text = @source_token.raw_text.ends_with?("?") ? "[]?" : "[]"
+        else
+          raise ArgumentError.new("invalid regex-match derivation result")
+        end
+        set_graph_bounds!(1024_u64 + @source_token.raw_text.bytesize.to_u64 * 6, [@source_token.lexical_origin] of DiagnosticOrigin)
+      end
+
+      def valid_for_anchor?(kind : String, role : String) : Bool
+        if @derivation_kind == "RegexMatchIndex" && @result == "Lookup"
+          kind == "Call" && role == "method"
+        else
+          kind == "Name" && role == @producer_context
+        end
+      end
+
+      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index
+
+      def to_json(json : JSON::Builder) : Nil
+        json.object do
+          json.field "kind", "DerivedName"
+          json.field "derivation_kind", @derivation_kind
+          json.field "source_token", @source_token
+          if @derivation_kind == "ParameterLowering"
+            json.field "definition_origin", @definition_origin
+            json.field "parameter_slot", @parameter_slot
+            json.field "parameter_index", @parameter_index
+            json.field "result", @result
+            json.field "projection", @projection
+            json.field "fresh_index", @fresh_index
+          else
+            json.field "result", @result
+          end
+        end
       end
     end
 
@@ -569,13 +782,18 @@ module Iyi
             parents << part.source_origin
           when DiagnosticEmissionPart::NameSplice
             raise ArgumentError.new("name splice without name context") unless @name_context
-            token = part.source_token
-            parents << token.lexical_origin
-            token.binding_origin.try { |binding| parents << binding }
-            own += DiagnosticOrigin.json_string_size(token.raw_text) + DiagnosticOrigin.json_string_size(token.input_sha256) +
-                   DiagnosticOrigin.json_string_size(token.token_kind) + DiagnosticOrigin.json_string_size(token.context)
-            bytes = @token_text.byte_slice(part.start_offset - @generated_byte_offset, part.end_offset - part.start_offset)
-            unless bytes == token.raw_text.byte_slice(part.slice_start, part.slice_end - part.slice_start)
+            name = part.source_name
+            case name
+            when DiagnosticNameValue::Observed
+              token = name.source_token
+              parents << token.lexical_origin
+              token.binding_origin.try { |binding| parents << binding }
+              own += DiagnosticOrigin.json_string_size(token.raw_text) + DiagnosticOrigin.json_string_size(token.input_sha256) +
+                     DiagnosticOrigin.json_string_size(token.token_kind) + DiagnosticOrigin.json_string_size(token.context)
+            when DiagnosticNameValue::Derived
+              parents << name.origin
+            end
+            unless bytes == name.rendered_text
               raise ArgumentError.new("name splice bytes differ from source")
             end
           end

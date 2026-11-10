@@ -21,6 +21,7 @@ module Iyi
     @str : IO
     @macro_expansion_pragmas : Hash(Int32, Array(Lexer::LocPragma))?
     @current_arg_type : DefArgType = :none
+    @inside_enum_member = false
 
     # Represents the root level `Expressions` instance within a `MacroExpression`.
     @root_level_macro_expressions : Expressions? = nil
@@ -51,18 +52,34 @@ module Iyi
 
     private def diagnostic_anchor(node : ASTNode, kind : String, role : String, name_splice = false) : Nil
       if anchors = @diagnostic_anchors
-        anchors << DiagnosticAnchor.new(@str.pos.to_i32, kind, role, node.diagnostic_origin, node.diagnostic_name_slots)
+        slots = kind == "Call" && role == "method" ? node.diagnostic_name_slots : ({} of DiagnosticNameSlot => Array(DiagnosticNameValue))
+        anchors << DiagnosticAnchor.new(@str.pos.to_i32, kind, role, node.diagnostic_origin, slots)
       end
-      if (emissions = @diagnostic_emissions) && !(name_splice && @diagnostic_name_fragments)
+      if @diagnostic_emissions && !(name_splice && @diagnostic_name_fragments)
+        raise ArgumentError.new("structural macro anchor lacks a measured writer extent for #{kind}:#{role}")
+      end
+    end
+
+    private def diagnostic_anchor(node : ASTNode, kind : String, role : String, &)
+      if anchors = @diagnostic_anchors
+        slots = kind == "Call" && role == "method" ? node.diagnostic_name_slots : ({} of DiagnosticNameSlot => Array(DiagnosticNameValue))
+        anchors << DiagnosticAnchor.new(@str.pos.to_i32, kind, role, node.diagnostic_origin, slots)
+      end
+      start = @str.pos.to_i32 if @diagnostic_emissions
+      yield
+      if emissions = @diagnostic_emissions
+        finish = @str.pos.to_i32
+        first = start.not_nil!
+        raise ArgumentError.new("empty structural macro anchor") unless finish > first
         case node.diagnostic_macro_lineage
         when .preserved?
           origin = node.diagnostic_origin || raise ArgumentError.new("preserved macro node lacks origin")
           raise ArgumentError.new("preserved macro node origin mismatch") unless origin.valid_for_anchor?(kind, role)
-          emissions << DiagnosticMacroAnchor.new(@str.pos.to_i32, kind, role, @diagnostic_emitter, origin, nil)
+          emissions << DiagnosticMacroAnchor.new(first, finish, kind, role, @diagnostic_emitter, origin, nil)
         when .constructed?
-          emissions << DiagnosticMacroAnchor.new(@str.pos.to_i32, kind, role, @diagnostic_emitter, nil, DiagnosticMacroProducer::ConstructedAst)
+          emissions << DiagnosticMacroAnchor.new(first, finish, kind, role, @diagnostic_emitter, nil, DiagnosticMacroProducer::ConstructedAst)
         else
-          raise ArgumentError.new("unclassified macro node at #{@str.pos} for #{kind}:#{role}")
+          raise ArgumentError.new("unclassified macro node at #{first} for #{kind}:#{role}")
         end
       end
     end
@@ -85,13 +102,27 @@ module Iyi
       end
       tokens = node.diagnostic_name_slots[slot]?
       if tokens && !tokens.empty?
-        unless tokens.join(&.raw_text) == text
+        unless tokens.join(&.rendered_text) == text
           raise ArgumentError.new("diagnostic name was renamed without a recorded projection")
+        end
+        if context == "macro_name"
+          valid = if tokens.size == 1
+                    value = tokens.first.rendered_text
+                    value != "=" && (!value.ends_with?("=") || DiagnosticSourceNameToken::MACRO_OPERATORS.includes?(value))
+                  elsif tokens.size == 2
+                    first = tokens[0].rendered_text
+                    tokens[1].rendered_text == "=" && !first.ends_with?("?") && !first.ends_with?("!") &&
+                      (DiagnosticSourceNameToken.valid_token?("IDENT", first, "Crystal", "macro_name") ||
+                       DiagnosticSourceNameToken.valid_token?("CONST", first, "Crystal", "macro_name"))
+                  else
+                    false
+                  end
+          raise ArgumentError.new("invalid complete macro name") unless valid
         end
         tokens.each do |token|
           start = @str.pos.to_i32
           if (anchors = @diagnostic_anchors) && artifact_anchor
-            origin = token.lexical_origin
+            origin = token.artifact_origin
             if origin.valid_for_anchor?("Name", context)
               anchors << DiagnosticAnchor.new(start, "Name", context, origin, {slot => [token]})
             elsif origin.valid_for_anchor?("Call", "method")
@@ -100,7 +131,7 @@ module Iyi
               raise ArgumentError.new("diagnostic name lacks an artifact anchor for #{context}")
             end
           end
-          @str << token.raw_text
+          @str << token.rendered_text
           @diagnostic_name_fragments.try &.<< DiagnosticMacroNameFragment.new(start, @str.pos.to_i32, @diagnostic_emitter, token)
         end
       elsif node.diagnostic_macro_lineage.constructed?
@@ -126,6 +157,24 @@ module Iyi
 
     private def diagnostic_external_name(node : Arg) : Nil
       diagnostic_named_entry(node, node.external_name, DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName))
+    end
+
+    private def diagnostic_arg_name(node : Arg, name : String, enum_member : Bool) : Nil
+      unless @diagnostic_name_fragments || @diagnostic_anchors
+        @str << name
+        return
+      end
+      slots = node.diagnostic_name_slots
+      primary = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      member = DiagnosticNameSlot.new(DiagnosticNameSlotKind::EnumMember)
+      if slots.has_key?(primary) && slots.has_key?(member)
+        raise ArgumentError.new("conflicting enum member and parameter names")
+      end
+      if slots.has_key?(member) || enum_member
+        diagnostic_name(node, name, "enum_member", member)
+      else
+        diagnostic_name(node, name, "parameter", primary)
+      end
     end
 
     def visit_any(node)
@@ -217,8 +266,7 @@ module Iyi
     end
 
     def visit(node : StringInterpolation)
-      diagnostic_anchor(node, "Literal", "interpolation")
-      @str << '"'
+      diagnostic_anchor(node, "Literal", "interpolation") { @str << '"' }
       visit_interpolation node, &.inspect_unquoted
       @str << '"'
       false
@@ -253,13 +301,13 @@ module Iyi
     end
 
     def visit(node : ArrayLiteral)
-      diagnostic_anchor(node, "Literal", "array")
+      diagnostic_anchor(node, "Literal", "array") if node.name
       name = node.name
       if name
         name.accept self
         @str << " {"
       else
-        @str << '['
+        diagnostic_anchor(node, "Literal", "array") { @str << '[' }
       end
 
       node.elements.join(@str, ", ") { |element| accept_as_expression element }
@@ -278,14 +326,18 @@ module Iyi
     end
 
     def visit(node : HashLiteral)
-      diagnostic_anchor(node, "Literal", "hash")
+      diagnostic_anchor(node, "Literal", "hash") if node.name
       if name = node.name
         name.accept self
         @str << ' '
       end
 
       space = false
-      @str << '{'
+      if node.name
+        @str << '{'
+      else
+        diagnostic_anchor(node, "Literal", "hash") { @str << '{' }
+      end
 
       node.entries.each_with_index do |entry, i|
         @str << ", " if i > 0
@@ -313,10 +365,12 @@ module Iyi
       # short-circuit to handle empty named tuple context
       if node.entries.empty?
         start = @str.pos.to_i32 if @diagnostic_emissions || @diagnostic_generated_text
+        @str << "::NamedTuple."
+        method_start = @str.pos.to_i32 if @diagnostic_emissions
+        @str << "new"
         if emissions = @diagnostic_emissions
-          emissions << DiagnosticMacroAnchor.new(start.not_nil! + 13, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyNamedTupleProjection)
+          emissions << DiagnosticMacroAnchor.new(method_start.not_nil!, @str.pos.to_i32, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyNamedTupleProjection)
         end
-        @str << "::NamedTuple.new"
         if generated = @diagnostic_generated_text
           generated << DiagnosticGeneratedText.new(start.not_nil!, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyNamedTupleProjection)
         end
@@ -523,8 +577,7 @@ module Iyi
       if node.abstract?
         @str << "abstract "
       end
-      diagnostic_anchor(node, "ClassDef", "keyword")
-      @str << (node.struct? ? "struct" : "class")
+      diagnostic_anchor(node, "ClassDef", "keyword") { @str << (node.struct? ? "struct" : "class") }
       @str << ' '
       node.name.accept self
       if type_vars = node.type_vars
@@ -603,8 +656,8 @@ module Iyi
     end
 
     def visit(node : Defer)
-      diagnostic_anchor(node, "Defer", "keyword")
-      @str << "defer "
+      diagnostic_anchor(node, "Defer", "keyword") { @str << "defer" }
+      @str << ' '
       node.exp.accept self
       false
     end
@@ -613,14 +666,13 @@ module Iyi
       node.exp.accept self
       if default = node.default
         @str << '.'
-        diagnostic_anchor(node, "Call", "method")
-        @str << "or("
+        diagnostic_anchor(node, "Call", "method") { @str << "or" }
+        @str << '('
         default.accept self
         @str << ')'
       else
         @str << '.'
-        diagnostic_anchor(node, "Call", "method")
-        @str << "or_panic"
+        diagnostic_anchor(node, "Call", "method") { @str << "or_panic" }
       end
       false
     end
@@ -690,9 +742,8 @@ module Iyi
     UNARY_OPERATORS = {"+", "-", "~", "&+", "&-"}
 
     def visit_call(node, ignore_obj = false)
-      diagnostic_anchor(node, "Call", "method") if node.name == "`"
       if node.name == "`"
-        visit_backtick(node.args[0])
+        visit_backtick(node.args[0], node)
         return false
       end
 
@@ -728,15 +779,12 @@ module Iyi
 
       if node_obj && node.name.in?("[]", "[]?") && !block
         in_parenthesis(need_parens, node_obj)
-        diagnostic_anchor(node, "Call", "method")
-
-        @str << "["
+        diagnostic_anchor(node, "Call", "method") { @str << "[" }
         visit_args(node)
 
         if short_block_call
           @str << ", " if node.args.present? || node.named_args
-          diagnostic_anchor(short_block.not_nil!, "Block", "ampersand")
-          @str << "&."
+          diagnostic_anchor(short_block.not_nil!, "Block", "ampersand") { @str << "&." }
           visit_call short_block_call, ignore_obj: true
         end
 
@@ -747,37 +795,26 @@ module Iyi
         end
       elsif node_obj && node.name == "[]=" && !node.args.empty? && !block
         in_parenthesis(need_parens, node_obj)
-        diagnostic_anchor(node, "Call", "method")
-
-        @str << "["
+        diagnostic_anchor(node, "Call", "method") { @str << "[" }
         visit_args(node, exclude_last: true)
 
         if short_block_call
           @str << ", " if node.args.size > 1 || node.named_args
-          diagnostic_anchor(short_block.not_nil!, "Block", "ampersand")
-          @str << "&."
+          diagnostic_anchor(short_block.not_nil!, "Block", "ampersand") { @str << "&." }
           visit_call short_block_call, ignore_obj: true
         end
 
         @str << "] = "
         accept_as_expression node.args.last
       elsif node_obj && node.name.in?(UNARY_OPERATORS) && node.args.empty? && !node.named_args && !node.block_arg && !block && !short_block_call
-        diagnostic_anchor(node, "Call", "method", name_splice: true)
-        diagnostic_name(node, node.name, "method_name", artifact_anchor: false)
+        diagnostic_anchor(node, "Call", "method") { @str << node.name }
         in_parenthesis(need_parens, node_obj)
       elsif node_obj && !Lexer.ident?(node.name) && node.name != "~" && node.args.size == 1 && !node.named_args && !node.block_arg && !block && !short_block_call
         in_parenthesis(need_parens, node_obj)
 
         arg = node.args[0]
         @str << ' '
-        if node.diagnostic_signed_number_operator
-          raise ArgumentError.new("invalid signed-number operator") unless node.name == "+" || node.name == "-"
-          diagnostic_anchor(node, "Call", "method")
-          @str << node.name
-        else
-          diagnostic_anchor(node, "Call", "method", name_splice: true)
-          diagnostic_name(node, node.name, "method_name", artifact_anchor: false)
-        end
+        diagnostic_anchor(node, "Call", "method") { @str << node.name }
         @str << ' '
         in_parenthesis(need_parens(arg), arg)
       else
@@ -808,8 +845,7 @@ module Iyi
 
             if short_block_call
               @str << ", " if node.args.present? || node.named_args
-              diagnostic_anchor(short_block.not_nil!, "Block", "ampersand")
-              @str << "&."
+              diagnostic_anchor(short_block.not_nil!, "Block", "ampersand") { @str << "&." }
               visit_call short_block_call, ignore_obj: true
             end
           end
@@ -974,8 +1010,12 @@ module Iyi
       false
     end
 
-    def visit_backtick(exp)
-      @str << '`'
+    def visit_backtick(exp, call : Call? = nil)
+      if call
+        diagnostic_anchor(call, "Call", "method") { @str << '`' }
+      else
+        @str << '`'
+      end
       case exp
       when StringLiteral
         @str << exp.value.inspect_unquoted.gsub('`', "\\`")
@@ -1012,8 +1052,8 @@ module Iyi
     def visit(node : OpAssign)
       node.target.accept self
       @str << ' '
-      diagnostic_anchor(node, "Call", "method")
-      @str << node.op << '=' << ' '
+      diagnostic_anchor(node, "Call", "method") { @str << node.op << '=' }
+      @str << ' '
       accept_as_expression node.value
       false
     end
@@ -1057,6 +1097,8 @@ module Iyi
     def visit(node : Var)
       if node.name == "_" || node.name.empty?
         @str << node.name
+      elsif node.name == "$~" || node.name == "$?"
+        diagnostic_name(node, node.name, "special_global")
       else
         diagnostic_name(node, node.name, "local_reference")
       end
@@ -1064,8 +1106,7 @@ module Iyi
     end
 
     def visit(node : ProcLiteral)
-      diagnostic_anchor(node, "ProcLiteral", "arrow")
-      @str << "->"
+      diagnostic_anchor(node, "ProcLiteral", "arrow") { @str << "->" }
       if node.def.args.size > 0
         @str << '('
         node.def.args.join(@str, ", ", &.accept self)
@@ -1084,8 +1125,7 @@ module Iyi
     end
 
     def visit(node : ProcPointer)
-      diagnostic_anchor(node, "ProcPointer", "arrow")
-      @str << "->"
+      diagnostic_anchor(node, "ProcPointer", "arrow") { @str << "->" }
       @str << "::" if node.global?
       if obj = node.obj
         obj.accept self
@@ -1103,8 +1143,8 @@ module Iyi
 
     def visit(node : Def)
       @str << "abstract " if node.abstract?
-      diagnostic_anchor(node, "Def", "keyword")
-      @str << "def "
+      diagnostic_anchor(node, "Def", "keyword") { @str << "def" }
+      @str << ' '
       if node_receiver = node.receiver
         node_receiver.accept self
         @str << '.'
@@ -1159,8 +1199,8 @@ module Iyi
       # iyi: a macro travels in an artifact as this text, so what marks it
       # exported has to be in the text (R-2b, SPEC.md IV.4).
       @str << "pub " if node.exported?
-      diagnostic_anchor(node, "Macro", "keyword")
-      @str << "macro "
+      diagnostic_anchor(node, "Macro", "keyword") { @str << "macro" }
+      @str << ' '
       diagnostic_name(node, node.name.to_s, "macro_name")
       if node.args.size > 0 || node.block_arg || node.double_splat
         @str << '('
@@ -1207,8 +1247,10 @@ module Iyi
       # and similarly ends multiline if its expression end location is on a different line than its end location (`}}` or `%}`)
       end_multiline = (body_end_loc = node.exp.end_location) && (end_loc = node.end_location) && end_loc.line_number > body_end_loc.line_number
 
-      diagnostic_anchor(node, "MacroDirective", node.output? ? "expression" : "control")
-      @str << (node.output? ? "{{ " : start_multiline ? "{%" : "{% ")
+      diagnostic_anchor(node, "MacroDirective", node.output? ? "expression" : "control") do
+        @str << (node.output? ? "{{" : "{%")
+      end
+      @str << ' ' unless !node.output? && start_multiline
 
       if start_multiline
         newline
@@ -1250,13 +1292,13 @@ module Iyi
       else_node = nil
 
       while true
-        diagnostic_anchor(node, "MacroDirective", "control")
+        diagnostic_anchor(node, "MacroDirective", "control") { @str << "{%" }
         if node.is_unless?
-          @str << "{% unless "
+          @str << " unless "
           then_node = node.else
           else_node = node.then
         else
-          @str << (else_node ? "{% elsif " : "{% if ")
+          @str << (else_node ? " elsif " : " if ")
           then_node = node.then
           else_node = node.else
         end
@@ -1289,8 +1331,8 @@ module Iyi
     end
 
     def visit(node : MacroFor)
-      diagnostic_anchor(node, "MacroDirective", "control")
-      @str << "{% for "
+      diagnostic_anchor(node, "MacroDirective", "control") { @str << "{%" }
+      @str << " for "
       node.vars.join(@str, ", ", &.accept self)
       @str << " in "
       node.exp.accept self
@@ -1323,8 +1365,8 @@ module Iyi
     end
 
     def visit(node : MacroVerbatim)
-      diagnostic_anchor(node, "MacroDirective", "control")
-      @str << "{% verbatim do %}"
+      diagnostic_anchor(node, "MacroDirective", "control") { @str << "{%" }
+      @str << " verbatim do %}"
 
       with_indent do
         inside_macro do
@@ -1349,6 +1391,8 @@ module Iyi
     end
 
     def visit(node : Arg)
+      enum_member = @inside_enum_member
+      @inside_enum_member = false
       if parsed_annotations = node.parsed_annotations
         parsed_annotations.each do |ann|
           ann.accept self
@@ -1367,7 +1411,7 @@ module Iyi
         @str << ' '
       end
       if name = node.name
-        diagnostic_name(node, name, "parameter")
+        diagnostic_arg_name(node, name, enum_member)
       else
         @str << '?'
       end
@@ -1381,6 +1425,7 @@ module Iyi
       end
       false
     ensure
+      @inside_enum_member = enum_member
       @current_arg_type = :none
     end
 
@@ -1546,13 +1591,13 @@ module Iyi
     end
 
     def visit(node : RegexLiteral)
-      diagnostic_anchor(node, "Literal", "regex")
       if (exp = node.value).is_a?(StringLiteral) && exp.value.empty?
         # // is not always an empty regex, sometimes is an operator
         # so it's safer to emit empty regex as %r()
-        @str << "%r()"
+        diagnostic_anchor(node, "Literal", "regex") { @str << "%r(" }
+        @str << ')'
       else
-        @str << '/'
+        diagnostic_anchor(node, "Literal", "regex") { @str << '/' }
         case exp = node.value
         when StringLiteral
           @str << '\\' if exp.value[0]?.try &.ascii_whitespace?
@@ -1597,10 +1642,12 @@ module Iyi
       first = node.elements.first?
       unless first
         start = @str.pos.to_i32 if @diagnostic_emissions || @diagnostic_generated_text
+        @str << "::Tuple."
+        method_start = @str.pos.to_i32 if @diagnostic_emissions
+        @str << "new"
         if emissions = @diagnostic_emissions
-          emissions << DiagnosticMacroAnchor.new(start.not_nil! + 8, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyTupleProjection)
+          emissions << DiagnosticMacroAnchor.new(method_start.not_nil!, @str.pos.to_i32, "Call", "method", @diagnostic_emitter, nil, DiagnosticMacroProducer::EmptyTupleProjection)
         end
-        @str << "::Tuple.new"
         if generated = @diagnostic_generated_text
           generated << DiagnosticGeneratedText.new(start.not_nil!, @str.pos.to_i32, @diagnostic_emitter, DiagnosticMacroProducer::EmptyTupleProjection)
         end
@@ -1640,8 +1687,7 @@ module Iyi
       # If the node's body end location is on the same line as the start of the block itself, it's on a single line.
       single_line_block = (node_loc = node.location) && (end_loc = node.body.end_location) && end_loc.line_number == node_loc.line_number
 
-      diagnostic_anchor(node, "Block", "opener")
-      @str << "do"
+      diagnostic_anchor(node, "Block", "opener") { @str << "do" }
 
       if node.has_any_args?
         @str << " |"
@@ -1694,15 +1740,15 @@ module Iyi
     end
 
     def visit(node : Include)
-      diagnostic_anchor(node, "Include", "keyword")
-      @str << "include "
+      diagnostic_anchor(node, "Include", "keyword") { @str << "include" }
+      @str << ' '
       node.name.accept self
       false
     end
 
     def visit(node : Extend)
-      diagnostic_anchor(node, "Extend", "keyword")
-      @str << "extend "
+      diagnostic_anchor(node, "Extend", "keyword") { @str << "extend" }
+      @str << ' '
       node.name.accept self
       false
     end
@@ -1753,7 +1799,11 @@ module Iyi
     end
 
     def visit(node : Global)
-      @str << node.name
+      if node.name == "$~" || node.name == "$?"
+        diagnostic_name(node, node.name, "special_global")
+      else
+        @str << node.name
+      end
       false
     end
 
@@ -1768,8 +1818,8 @@ module Iyi
     end
 
     def visit(node : FunDef)
-      diagnostic_anchor(node, "FunDef", "keyword")
-      @str << "fun "
+      diagnostic_anchor(node, "FunDef", "keyword") { @str << "fun" }
+      @str << ' '
       if node.name == node.real_name
         @str << node.name
       else
@@ -1829,7 +1879,7 @@ module Iyi
     def visit(node : EnumDef)
       @str << "pub " if node.exported?
       @str << "enum "
-      @str << node.name.to_s
+      node.name.accept self
       if base_type = node.base_type
         @str << " : "
         base_type.accept self
@@ -1838,7 +1888,13 @@ module Iyi
       with_indent do
         node.members.each do |member|
           append_indent
-          member.accept self
+          previous = @inside_enum_member
+          @inside_enum_member = true
+          begin
+            member.accept self
+          ensure
+            @inside_enum_member = previous
+          end
           newline
         end
       end
@@ -1852,13 +1908,7 @@ module Iyi
         need_parens = need_parens(node.from)
         in_parenthesis(need_parens, node.from)
       end
-      diagnostic_anchor(node, "Literal", "range")
-
-      if node.exclusive?
-        @str << "..."
-      else
-        @str << ".."
-      end
+      diagnostic_anchor(node, "Literal", "range") { @str << (node.exclusive? ? "..." : "..") }
 
       unless node.to.nop?
         need_parens = need_parens(node.to)
@@ -1936,8 +1986,7 @@ module Iyi
       need_parens = need_parens(node.obj)
       in_parenthesis(need_parens, node.obj)
       @str << '.'
-      diagnostic_anchor(node, "Cast", "keyword")
-      @str << keyword
+      diagnostic_anchor(node, "Cast", "keyword") { @str << keyword }
       @str << '('
       node.to.accept self
       @str << ')'
@@ -1960,8 +2009,7 @@ module Iyi
     end
 
     def visit(node : Case)
-      diagnostic_anchor(node, "Literal", "case")
-      @str << "case"
+      diagnostic_anchor(node, "Literal", "case") { @str << "case" }
       if cond = node.cond
         @str << ' '
         accept_as_expression cond
@@ -1994,8 +2042,7 @@ module Iyi
     end
 
     def visit(node : Select)
-      diagnostic_anchor(node, "Literal", "select")
-      @str << "select"
+      diagnostic_anchor(node, "Literal", "select") { @str << "select" }
       newline
       node.whens.each do |a_when|
         append_indent
