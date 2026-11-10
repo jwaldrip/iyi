@@ -71,16 +71,18 @@ describe Iyi::DiagnosticOrigin do
     call = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 8, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 3, "Macro", "keyword")
     splice = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 20, "Block", "opener")
-    expansion = Iyi::DiagnosticOrigin::Expanded.new(call, definition, "sha256:" + "0" * 64, 17, 18, "{", "{", "Iyi", "Block", "opener", nil,
+    event = Iyi::DiagnosticTokenEvent.new(17, 18, "{", "{", "Iyi", "Whole",
       [Iyi::DiagnosticEmissionPart::AstAnchor.new(17, 18, nil, splice)] of Iyi::DiagnosticEmissionPart)
+    expansion = Iyi::DiagnosticOrigin::Expanded.new(call, definition, "sha256:" + "0" * 64,
+      "Block", "opener", nil, event, Iyi::DiagnosticAnchorUse::Direct.new)
     origin = Iyi::DiagnosticOrigin::Synthetic.new(expansion, "block_to_proc", "proc")
     node = Iyi::Nop.new
     node.diagnostic_origin = origin
     node.clone.diagnostic_origin.should eq(origin)
     Iyi::Nop.new.at(node).diagnostic_origin.should eq(origin)
     json = node.diagnostic_origin_json.not_nil!
-    json["parent_origin"]["generated_byte_offset"].as_i.should eq(17)
-    json["parent_origin"]["emission_parts"][0]["source_origin"]["source_identity"]["module"].as_s.should eq("app/main")
+    json["parent_origin"]["token_event"]["input_start"].as_i.should eq(17)
+    json["parent_origin"]["token_event"]["byte_parts"][0]["source_origin"]["source_identity"]["module"].as_s.should eq("app/main")
     json["parent_origin"]["macro_definition_origin"]["input_byte_offset"].as_i.should eq(3)
     Iyi::DiagnosticOrigin.from_json(json).should eq(origin)
   end
@@ -183,8 +185,8 @@ describe Iyi::DiagnosticOrigin do
       {0 => [emission] of Iyi::Lexer::LocPragma})
     restored = parser.parse.as(Iyi::Assign).target.as(Iyi::Var).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic)
     expanded = restored.parent_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    expanded.emission_parts.first.as(Iyi::DiagnosticEmissionPart::NameSplice).source_name.as(Iyi::DiagnosticNameValue::Observed).source_token.lexical_origin.should eq(binding.parent_origin)
-    expanded.emission_parts.first.emitter_origin.should eq(emitter)
+    expanded.token_event.byte_parts.first.as(Iyi::DiagnosticEmissionPart::NameSplice).source_name.as(Iyi::DiagnosticNameValue::Observed).source_token.lexical_origin.should eq(binding.parent_origin)
+    expanded.token_event.byte_parts.first.emitter_origin.should eq(emitter)
     parser.diagnostic_check_consumed
 
     missing = Iyi::Parser.new(text)
@@ -234,17 +236,18 @@ describe Iyi::DiagnosticOrigin do
     end
 
     parts = [Iyi::DiagnosticEmissionPart::Generated.new(0, 2, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart
+    event = Iyi::DiagnosticTokenEvent.new(0, 2, "->", "->", "Iyi", "Whole", parts)
     [{"Include", "method"}, {"Extend", "control"}, {"ClassDef", "method"},
      {"Def", "method"}, {"Macro", "control"}, {"Module", "keyword"}].each do |kind, role|
       invalid = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 0, kind, role)
       expect_raises(ArgumentError) do
-        Iyi::DiagnosticOrigin::Expanded.new(invalid, definition, "sha256:" + "0" * 64, 0, 2, "->", "->", "Iyi", "ProcLiteral", "arrow", nil, parts)
+        Iyi::DiagnosticOrigin::Expanded.new(invalid, definition, "sha256:" + "0" * 64, "ProcLiteral", "arrow", nil, event, Iyi::DiagnosticAnchorUse::Direct.new)
       end
     end
     valid = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 0, "Include", "keyword")
     wrong_definition = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 1, "Def", "keyword")
     expect_raises(ArgumentError) do
-      Iyi::DiagnosticOrigin::Expanded.new(valid, wrong_definition, "sha256:" + "0" * 64, 0, 2, "->", "->", "Iyi", "ProcLiteral", "arrow", nil, parts)
+      Iyi::DiagnosticOrigin::Expanded.new(valid, wrong_definition, "sha256:" + "0" * 64, "ProcLiteral", "arrow", nil, event, Iyi::DiagnosticAnchorUse::Direct.new)
     end
   end
 
@@ -336,8 +339,10 @@ describe Iyi::DiagnosticOrigin do
     macro_origin = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.cr", 2, "Macro", "keyword")
     origins = [
       Iyi::DiagnosticOrigin::Written.new("app/main", "/src/literals.cr", 4, "Literal", "regex"),
-      Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin, "sha256:" + "0" * 64, 8, 9, "DELIMITER_START", "/", "Iyi", "Literal", "regex", nil,
-        [Iyi::DiagnosticEmissionPart::Generated.new(8, 9, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart),
+      Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin, "sha256:" + "0" * 64, "Literal", "regex", nil,
+        Iyi::DiagnosticTokenEvent.new(8, 9, "DELIMITER_START", "/", "Iyi", "Whole",
+          [Iyi::DiagnosticEmissionPart::Generated.new(8, 9, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart),
+        Iyi::DiagnosticAnchorUse::Direct.new),
     ] of Iyi::DiagnosticOrigin
     references = origins.map do |origin|
       literal = Iyi::RegexLiteral.new(Iyi::StringLiteral.new("same")).at(location)
@@ -917,9 +922,9 @@ describe Iyi::DiagnosticOrigin do
     parser = Iyi::Parser.new(text)
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
     expanded = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    expanded.generated_byte_offset.should eq(0)
-    expanded.emission_parts.first.as(Iyi::DiagnosticEmissionPart::AstAnchor).source_origin.should eq(original)
-    expanded.emission_parts.first.emitter_origin.should eq(emitter)
+    expanded.token_event.input_start.should eq(0)
+    expanded.token_event.byte_parts.first.as(Iyi::DiagnosticEmissionPart::AstAnchor).source_origin.should eq(original)
+    expanded.token_event.byte_parts.first.emitter_origin.should eq(emitter)
     expanded.invocation_origin.should eq(invocation)
   end
 
@@ -934,7 +939,7 @@ describe Iyi::DiagnosticOrigin do
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
     origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart::Generated.new(0, 2, emitter, Iyi::DiagnosticMacroProducer::MacroId)])
+    origin.token_event.byte_parts.should eq([Iyi::DiagnosticEmissionPart::Generated.new(0, 2, emitter, Iyi::DiagnosticMacroProducer::MacroId)])
 
     missing = Iyi::Parser.new(text)
     missing.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", nil)
@@ -952,7 +957,8 @@ describe Iyi::DiagnosticOrigin do
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
     origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart::Generated.new(1, 2, emitter, Iyi::DiagnosticMacroProducer::MacroId)])
+    origin.token_event.selection.should eq("SignedNumberSign")
+    origin.token_event.byte_parts.should eq([Iyi::DiagnosticEmissionPart::Generated.new(1, 2, emitter, Iyi::DiagnosticMacroProducer::MacroId)])
   end
 
   it "rejects a spliced anchor that overlaps generated text" do
@@ -993,10 +999,10 @@ describe Iyi::DiagnosticOrigin do
       "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
     array = parser.parse.as(Iyi::ArrayLiteral)
     array_origin = array.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    array_origin.emission_parts.any? { |part| part.is_a?(Iyi::DiagnosticEmissionPart::AstAnchor) }.should be_false
+    array_origin.token_event.byte_parts.any? { |part| part.is_a?(Iyi::DiagnosticEmissionPart::AstAnchor) }.should be_false
     closure_origin = array.elements.first.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    closure_origin.emission_parts.first.as(Iyi::DiagnosticEmissionPart::AstAnchor).source_origin.should eq(original)
-    closure_origin.emission_parts.first.emitter_origin.should_not be_nil
+    closure_origin.token_event.byte_parts.first.as(Iyi::DiagnosticEmissionPart::AstAnchor).source_origin.should eq(original)
+    closure_origin.token_event.byte_parts.first.emitter_origin.should_not be_nil
 
     fragment_io = IO::Memory.new
     anchors = [] of Iyi::DiagnosticAnchor
@@ -1034,8 +1040,10 @@ describe Iyi::DiagnosticOrigin do
   it "distinguishes an inline macro directive and its synthetic definition" do
     directive = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "MacroDirective", "control")
     definition = Iyi::DiagnosticOrigin::Synthetic.new(directive, "inline_macro_definition", "macro")
-    expanded = Iyi::DiagnosticOrigin::Expanded.new(directive, definition, "sha256:" + "0" * 64, 4, 6, "->", "->", "Iyi", "ProcLiteral", "arrow", nil,
+    event = Iyi::DiagnosticTokenEvent.new(4, 6, "->", "->", "Iyi", "Whole",
       [Iyi::DiagnosticEmissionPart::Generated.new(4, 6, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart)
+    expanded = Iyi::DiagnosticOrigin::Expanded.new(directive, definition, "sha256:" + "0" * 64,
+      "ProcLiteral", "arrow", nil, event, Iyi::DiagnosticAnchorUse::Direct.new)
     expanded.valid_for_anchor?("ProcLiteral", "arrow").should be_true
     Iyi::DiagnosticOrigin.from_json(expanded.as_json).should eq(expanded)
   end
@@ -1044,8 +1052,10 @@ describe Iyi::DiagnosticOrigin do
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     splice = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "Block", "opener")
-    expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64, 4, 5, "{", "{", "Iyi", "Block", "opener", nil,
+    event = Iyi::DiagnosticTokenEvent.new(4, 5, "{", "{", "Iyi", "Whole",
       [Iyi::DiagnosticEmissionPart::AstAnchor.new(4, 5, nil, splice)] of Iyi::DiagnosticEmissionPart)
+    expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64,
+      "Block", "opener", nil, event, Iyi::DiagnosticAnchorUse::Direct.new)
     origin = Iyi::DiagnosticOrigin::Synthetic.new(expanded, "block_to_proc", "proc")
     table = Iyi::IyiMod::DiagnosticOrigins.new
     index = table.intern(origin)
@@ -1089,11 +1099,14 @@ describe Iyi::DiagnosticOrigin do
     bad_part.write_bytes 0_u32, Iyi::IyiMod::FORMAT
     bad_part.write_bytes 1_u32, Iyi::IyiMod::FORMAT
     Iyi::IyiMod::DiagnosticOrigins.write_string(bad_part, "sha256:" + "0" * 64)
+    Iyi::IyiMod::DiagnosticOrigins.write_string(bad_part, "ProcLiteral")
+    Iyi::IyiMod::DiagnosticOrigins.write_string(bad_part, "arrow")
+    bad_part.write_byte 0_u8
     bad_part.write_bytes 0_u32, Iyi::IyiMod::FORMAT
     bad_part.write_bytes 2_u32, Iyi::IyiMod::FORMAT
-    {"->", "->", "Iyi", "ProcLiteral", "arrow"}.each do |text|
-      Iyi::IyiMod::DiagnosticOrigins.write_string(bad_part, text)
-    end
+    Iyi::IyiMod::DiagnosticOrigins.write_string(bad_part, "->")
+    Iyi::IyiMod::DiagnosticOrigins.write_string(bad_part, "->")
+    bad_part.write_byte 1_u8
     bad_part.write_byte 0_u8
     bad_part.write_bytes 1_u32, Iyi::IyiMod::FORMAT
     bad_part.write_byte 255_u8
@@ -1122,9 +1135,10 @@ describe Iyi::DiagnosticOrigin do
       Iyi::DiagnosticEmissionPart::Generated.new(0, 2, nil, Iyi::DiagnosticMacroProducer::MacroTemplate),
       Iyi::DiagnosticEmissionPart::NameSplice.new(2, 7, nil, Iyi::DiagnosticNameValue::Observed.new(token)),
     ] of Iyi::DiagnosticEmissionPart
+    event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@empty", "Crystal", "Whole", parts)
     expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition,
-      "sha256:" + ::Crystal::Digest::SHA256.hexdigest("@@empty"), 0, 7,
-      "CLASS_VAR", "@@empty", "Crystal", "Name", "class_variable", "class_variable", parts)
+      "sha256:" + ::Crystal::Digest::SHA256.hexdigest("@@empty"),
+      "Name", "class_variable", "class_variable", event, Iyi::DiagnosticAnchorUse::Direct.new)
     slot = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)
     composed_token = Iyi::DiagnosticSourceNameToken.new(expanded, nil, "class_variable",
       ::Crystal::Digest::SHA256.hexdigest("@@empty"), 7, 0, 7, "Crystal", "CLASS_VAR", "@@empty")
@@ -1138,7 +1152,7 @@ describe Iyi::DiagnosticOrigin do
     decoded = Iyi::IyiMod::DiagnosticSection.decode(bytes)
     restored = decoded.fragments["body:composed"].anchors.first
     restored.should eq(anchor)
-    restored.origin.as(Iyi::DiagnosticOrigin::Expanded).emission_parts.should eq(parts)
+    restored.origin.as(Iyi::DiagnosticOrigin::Expanded).token_event.byte_parts.should eq(parts)
     restored.name_slots[slot].first.as(Iyi::DiagnosticNameValue::Observed).source_token.lexical_origin.should eq(expanded)
     decoded.encode.should eq(bytes)
 
@@ -1175,14 +1189,16 @@ describe Iyi::DiagnosticOrigin do
       Iyi::DiagnosticEmissionPart::NameSplice.new(2, 6, nil, Iyi::DiagnosticNameValue::Observed.new(token))
     end
     expect_raises(ArgumentError) do
+      invalid_event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@other", "Crystal", "Whole", parts)
       Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64,
-        0, 7, "CLASS_VAR", "@@other", "Crystal", "Name", "class_variable", "class_variable", parts)
+        "Name", "class_variable", "class_variable", invalid_event, Iyi::DiagnosticAnchorUse::Direct.new)
     end
     expect_raises(ArgumentError) do
       short_parts = [Iyi::DiagnosticEmissionPart::Generated.new(0, 1, nil, Iyi::DiagnosticMacroProducer::MacroTemplate),
                      Iyi::DiagnosticEmissionPart::NameSplice.new(2, 7, nil, Iyi::DiagnosticNameValue::Observed.new(token))] of Iyi::DiagnosticEmissionPart
+      invalid_event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@empty", "Crystal", "Whole", short_parts)
       Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64,
-        0, 7, "CLASS_VAR", "@@empty", "Crystal", "Name", "class_variable", "class_variable", short_parts)
+        "Name", "class_variable", "class_variable", invalid_event, Iyi::DiagnosticAnchorUse::Direct.new)
     end
     expect_raises(ArgumentError) do
       bad_slots = {slot => [] of Iyi::DiagnosticNameValue}
@@ -1214,9 +1230,10 @@ describe Iyi::DiagnosticOrigin do
       Iyi::DiagnosticEmissionPart::Generated.new(0, 6, nil, Iyi::DiagnosticMacroProducer::MacroTemplate),
       Iyi::DiagnosticEmissionPart::NameSplice.new(6, 7, nil, value),
     ] of Iyi::DiagnosticEmissionPart
+    event = Iyi::DiagnosticTokenEvent.new(0, 7, "IDENT", "prefixx", "Crystal", "Whole", parts)
     expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin,
-      "sha256:" + ::Crystal::Digest::SHA256.hexdigest("prefixx"), 0, 7,
-      "IDENT", "prefixx", "Crystal", "Call", "method", "method_name", parts)
+      "sha256:" + ::Crystal::Digest::SHA256.hexdigest("prefixx"),
+      "Call", "method", "method_name", event, Iyi::DiagnosticAnchorUse::Direct.new)
     table = Iyi::IyiMod::DiagnosticOrigins.new
     index = table.intern(expanded)
     io = IO::Memory.new
@@ -1224,7 +1241,7 @@ describe Iyi::DiagnosticOrigin do
     io.rewind
     restored = Iyi::IyiMod::DiagnosticOrigins.read(io).parent(index).as(Iyi::DiagnosticOrigin::Expanded)
     restored.should eq(expanded)
-    restored.emission_parts.last.as(Iyi::DiagnosticEmissionPart::NameSplice).source_name.should eq(value)
+    restored.token_event.byte_parts.last.as(Iyi::DiagnosticEmissionPart::NameSplice).source_name.should eq(value)
     unknown = IO::Memory.new
     unknown.write_byte 255_u8
     unknown.rewind
@@ -1398,7 +1415,8 @@ describe Iyi::DiagnosticOrigin do
   end
 
   it "restores parent and child uses of shared tokens from source-absent artifacts" do
-    {"Set {1, 2}", %(Foo{"x" => "y"}), "VALUE = 1", "VALUE : Int32 = 1", "a, b = 1, 2"}.each do |source|
+    {"Set {1, 2}", "Set(Int32) {1, 2}", %(Foo{"x" => "y"}),
+     %(Foo::Bar{"x" => "y"}), "VALUE = 1", "VALUE : Int32 = 1", "a, b = 1, 2"}.each do |source|
       producer = Iyi::Parser.new(source)
       producer.filename = "/absent/shared.cr"
       producer.diagnostic_source_file = "/absent/shared.cr"

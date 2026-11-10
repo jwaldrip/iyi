@@ -137,7 +137,7 @@ module Iyi
       elsif node.diagnostic_macro_lineage.constructed?
         diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { @str << text }
       else
-        raise ArgumentError.new("name lacks token evidence for #{context}")
+        raise ArgumentError.new("name lacks token evidence for #{context}: node=#{node.class}, text=#{text.inspect}, rendered=#{node}, location=#{node.location}, lineage=#{node.diagnostic_macro_lineage}, slots=#{node.diagnostic_name_slots.keys}")
       end
     end
 

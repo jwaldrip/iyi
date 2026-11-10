@@ -356,15 +356,8 @@ module Iyi::IyiMod
       when DiagnosticOrigin::Expanded
         intern(origin.invocation_origin)
         intern(origin.macro_definition_origin)
-        origin.emission_parts.each do |part|
-          part.emitter_origin.try { |emitter| intern(emitter) }
-          case part
-          when DiagnosticEmissionPart::AstAnchor
-            intern(part.source_origin)
-          when DiagnosticEmissionPart::NameSplice
-            intern_name_value(part.source_name)
-          end
-        end
+        intern_token_event(origin.token_event)
+        intern_anchor_use(origin.anchor_use)
       when DiagnosticOrigin::Synthetic
         intern(origin.parent_origin)
       when DiagnosticOrigin::DerivedName
@@ -375,6 +368,62 @@ module Iyi::IyiMod
       @entries << origin
       @indices[origin] = index
       index
+    end
+
+    HEAD_RULES = %w(NamedArrayHead NamedHashHead ConstantAssignHead ConstantTypeHead MultiAssignHead)
+    PAYLOAD_RULES = %w(RegexInterpolationPayload CommandInterpolationPayload)
+    WITNESS_ROLES = %w(Open Colon Equals Comma Splat)
+    HEAD_FORMS = %w(GlobalPathPrefix FirstSplat FirstUnderscore ParenthesizedFirstTarget)
+    TOKEN_MODES = %w(Crystal Iyi)
+    TOKEN_SELECTIONS = %w(Whole SignedNumberSign)
+
+    def intern_token_event(event : DiagnosticTokenEvent) : Nil
+      event.byte_parts.each do |part|
+        part.emitter_origin.try { |emitter| intern(emitter) }
+        case part
+        when DiagnosticEmissionPart::AstAnchor
+          intern(part.source_origin)
+        when DiagnosticEmissionPart::NameSplice
+          intern_name_value(part.source_name)
+        end
+      end
+    end
+
+    def intern_anchor_evidence(evidence : DiagnosticAnchorEvidence) : Nil
+      case evidence
+      when DiagnosticAnchorEvidence::Spliced
+        intern(evidence.source_origin)
+      when DiagnosticAnchorEvidence::RawSyntax
+        evidence.witnesses.each { |witness| intern_token_event(witness.event) }
+      end
+    end
+
+    def intern_anchor_use(use : DiagnosticAnchorUse) : Nil
+      case use
+      when DiagnosticAnchorUse::HeadOf
+        intern_anchor_evidence(use.evidence)
+        case head = use.head
+        when DiagnosticAnchorHead::Anchor
+          intern(head.origin)
+        when DiagnosticAnchorHead::Syntax
+          head.adjacent_name_origin.try { |origin| intern(origin) }
+        end
+      when DiagnosticAnchorUse::PayloadOf
+        intern_anchor_evidence(use.evidence)
+        intern(use.owner_origin)
+      end
+    end
+
+    def self.write_choice(io : IO, value : String, choices : Array(String), base : Int32 = 1) : Nil
+      index = choices.index(value) || raise ArgumentError.new("unknown diagnostic enum value")
+      io.write_byte (index + base).to_u8
+    end
+
+    def self.read_choice(io : IO, choices : Array(String), base : Int32 = 1) : String
+      value = io.read_byte || raise ArgumentError.new("missing diagnostic enum value")
+      index = value.to_i32 - base
+      raise ArgumentError.new("unknown diagnostic enum value") if index < 0
+      choices[index]? || raise ArgumentError.new("unknown diagnostic enum value")
     end
 
     def intern_source_token(token : DiagnosticSourceNameToken) : Nil
@@ -449,6 +498,170 @@ module Iyi::IyiMod
         start_offset, end_offset, mode, kind, text)
     end
 
+    def write_token_event(io : IO, event : DiagnosticTokenEvent) : Nil
+      io.write_bytes event.input_start.to_u32, FORMAT
+      io.write_bytes event.input_end.to_u32, FORMAT
+      DiagnosticOrigins.write_string io, event.token_kind
+      DiagnosticOrigins.write_string io, event.token_text
+      DiagnosticOrigins.write_choice(io, event.lexical_mode, TOKEN_MODES, 0)
+      DiagnosticOrigins.write_choice(io, event.selection, TOKEN_SELECTIONS, 0)
+      io.write_bytes event.byte_parts.size.to_u32, FORMAT
+      event.byte_parts.each do |part|
+        case part
+        when DiagnosticEmissionPart::Generated then io.write_byte 1_u8
+        when DiagnosticEmissionPart::AstAnchor then io.write_byte 2_u8
+        when DiagnosticEmissionPart::NameSplice then io.write_byte 3_u8
+        else raise ArgumentError.new("unknown macro emission part")
+        end
+        io.write_bytes part.start_offset.to_u32, FORMAT
+        io.write_bytes part.end_offset.to_u32, FORMAT
+        io.write_bytes(part.emitter_origin.try { |origin| @indices[origin] } || UInt32::MAX, FORMAT)
+        case part
+        when DiagnosticEmissionPart::Generated then io.write_bytes part.producer.value.to_u32, FORMAT
+        when DiagnosticEmissionPart::AstAnchor then io.write_bytes @indices[part.source_origin], FORMAT
+        when DiagnosticEmissionPart::NameSplice then write_name_value(io, part.source_name)
+        end
+      end
+    end
+
+    def read_token_event(io : IO) : DiagnosticTokenEvent
+      start_offset = io.read_bytes(UInt32, FORMAT).to_i32
+      end_offset = io.read_bytes(UInt32, FORMAT).to_i32
+      kind = DiagnosticOrigins.read_string(io)
+      text = DiagnosticOrigins.read_string(io)
+      mode = DiagnosticOrigins.read_choice(io, TOKEN_MODES, 0)
+      selection = DiagnosticOrigins.read_choice(io, TOKEN_SELECTIONS, 0)
+      count = io.read_bytes(UInt32, FORMAT)
+      if io.is_a?(IO::Memory) && count.to_u64 > ((io.size - io.pos) // 17).to_u64
+        raise ArgumentError.new("macro emission parts exceed remaining bytes")
+      end
+      parts = Array(DiagnosticEmissionPart).new(count) do
+        tag = io.read_byte
+        part_start = io.read_bytes(UInt32, FORMAT).to_i32
+        part_end = io.read_bytes(UInt32, FORMAT).to_i32
+        emitter_index = io.read_bytes(UInt32, FORMAT)
+        emitter = emitter_index == UInt32::MAX ? nil : parent(emitter_index)
+        case tag
+        when 1_u8
+          producer_value = io.read_bytes(UInt32, FORMAT)
+          producer = DiagnosticMacroProducer.values.find { |candidate| candidate.value.to_u32 == producer_value } ||
+                     raise ArgumentError.new("unknown macro emission producer")
+          DiagnosticEmissionPart::Generated.new(part_start, part_end, emitter, producer)
+        when 2_u8
+          DiagnosticEmissionPart::AstAnchor.new(part_start, part_end, emitter, parent(io.read_bytes(UInt32, FORMAT)))
+        when 3_u8
+          DiagnosticEmissionPart::NameSplice.new(part_start, part_end, emitter, read_name_value(io))
+        else
+          raise ArgumentError.new("unknown macro emission part tag")
+        end
+      end
+      DiagnosticTokenEvent.new(start_offset, end_offset, kind, text, mode, selection, parts)
+    end
+
+    def write_anchor_evidence(io : IO, evidence : DiagnosticAnchorEvidence) : Nil
+      case evidence
+      when DiagnosticAnchorEvidence::Spliced
+        io.write_byte 0_u8
+        io.write_bytes @indices[evidence.source_origin], FORMAT
+      when DiagnosticAnchorEvidence::Constructed
+        io.write_byte 1_u8
+        io.write_bytes evidence.producer.value.to_u32, FORMAT
+      when DiagnosticAnchorEvidence::RawSyntax
+        io.write_byte 2_u8
+        io.write_bytes evidence.witnesses.size.to_u32, FORMAT
+        evidence.witnesses.each do |witness|
+          DiagnosticOrigins.write_choice(io, witness.role, WITNESS_ROLES)
+          write_token_event(io, witness.event)
+        end
+      when DiagnosticAnchorEvidence::DerivedFromOwner
+        io.write_byte 3_u8
+      else
+        raise ArgumentError.new("unknown diagnostic anchor evidence")
+      end
+    end
+
+    def read_anchor_evidence(io : IO) : DiagnosticAnchorEvidence
+      case io.read_byte
+      when 0_u8
+        DiagnosticAnchorEvidence::Spliced.new(parent(io.read_bytes(UInt32, FORMAT)))
+      when 1_u8
+        value = io.read_bytes(UInt32, FORMAT)
+        producer = DiagnosticMacroProducer.values.find { |candidate| candidate.value.to_u32 == value } ||
+                   raise ArgumentError.new("unknown macro emission producer")
+        DiagnosticAnchorEvidence::Constructed.new(producer)
+      when 2_u8
+        count = io.read_bytes(UInt32, FORMAT)
+        if io.is_a?(IO::Memory) && count.to_u64 > (io.size - io.pos).to_u64
+          raise ArgumentError.new("diagnostic witnesses exceed remaining bytes")
+        end
+        witnesses = Array(DiagnosticTokenWitness).new(count) do
+          role = DiagnosticOrigins.read_choice(io, WITNESS_ROLES)
+          DiagnosticTokenWitness.new(role, read_token_event(io))
+        end
+        DiagnosticAnchorEvidence::RawSyntax.new(witnesses)
+      when 3_u8
+        DiagnosticAnchorEvidence::DerivedFromOwner.new
+      else
+        raise ArgumentError.new("unknown diagnostic anchor evidence tag")
+      end
+    end
+
+    def write_anchor_use(io : IO, use : DiagnosticAnchorUse) : Nil
+      case use
+      when DiagnosticAnchorUse::Direct
+        io.write_byte 0_u8
+      when DiagnosticAnchorUse::HeadOf
+        io.write_byte 1_u8
+        DiagnosticOrigins.write_choice(io, use.rule, HEAD_RULES)
+        write_anchor_evidence(io, use.evidence)
+        case head = use.head
+        when DiagnosticAnchorHead::Anchor
+          io.write_byte 0_u8
+          io.write_bytes @indices[head.origin], FORMAT
+        when DiagnosticAnchorHead::Syntax
+          io.write_byte 1_u8
+          DiagnosticOrigins.write_choice(io, head.form, HEAD_FORMS)
+          io.write_bytes(head.adjacent_name_origin.try { |origin| @indices[origin] } || UInt32::MAX, FORMAT)
+        else
+          raise ArgumentError.new("unknown diagnostic anchor head")
+        end
+      when DiagnosticAnchorUse::PayloadOf
+        io.write_byte 2_u8
+        DiagnosticOrigins.write_choice(io, use.rule, PAYLOAD_RULES)
+        write_anchor_evidence(io, use.evidence)
+        io.write_bytes @indices[use.owner_origin], FORMAT
+      else
+        raise ArgumentError.new("unknown diagnostic anchor use")
+      end
+    end
+
+    def read_anchor_use(io : IO) : DiagnosticAnchorUse
+      case io.read_byte
+      when 0_u8
+        DiagnosticAnchorUse::Direct.new
+      when 1_u8
+        rule = DiagnosticOrigins.read_choice(io, HEAD_RULES)
+        evidence = read_anchor_evidence(io)
+        head = case io.read_byte
+               when 0_u8
+                 DiagnosticAnchorHead::Anchor.new(parent(io.read_bytes(UInt32, FORMAT)))
+               when 1_u8
+                 form = DiagnosticOrigins.read_choice(io, HEAD_FORMS)
+                 index = io.read_bytes(UInt32, FORMAT)
+                 DiagnosticAnchorHead::Syntax.new(form, index == UInt32::MAX ? nil : parent(index))
+               else
+                 raise ArgumentError.new("unknown diagnostic anchor head tag")
+               end
+        DiagnosticAnchorUse::HeadOf.new(rule, evidence, head)
+      when 2_u8
+        rule = DiagnosticOrigins.read_choice(io, PAYLOAD_RULES)
+        evidence = read_anchor_evidence(io)
+        DiagnosticAnchorUse::PayloadOf.new(rule, evidence, parent(io.read_bytes(UInt32, FORMAT)))
+      else
+        raise ArgumentError.new("unknown diagnostic anchor use tag")
+      end
+    end
+
     def write(io : IO) : Nil
       io.write_bytes @entries.size.to_u32, FORMAT
       @entries.each do |origin|
@@ -465,11 +678,6 @@ module Iyi::IyiMod
           io.write_bytes @indices[origin.invocation_origin], FORMAT
           io.write_bytes @indices[origin.macro_definition_origin], FORMAT
           DiagnosticOrigins.write_string io, origin.expansion_guard
-          io.write_bytes origin.generated_byte_offset.to_u32, FORMAT
-          io.write_bytes origin.generated_byte_end.to_u32, FORMAT
-          DiagnosticOrigins.write_string io, origin.token_kind
-          DiagnosticOrigins.write_string io, origin.token_text
-          DiagnosticOrigins.write_string io, origin.lexical_mode
           DiagnosticOrigins.write_string io, origin.anchor_kind
           DiagnosticOrigins.write_string io, origin.role
           if context = origin.name_context
@@ -478,30 +686,8 @@ module Iyi::IyiMod
           else
             io.write_byte 0_u8
           end
-          io.write_bytes origin.emission_parts.size.to_u32, FORMAT
-          origin.emission_parts.each do |part|
-            case part
-            when DiagnosticEmissionPart::Generated
-              io.write_byte 1_u8
-            when DiagnosticEmissionPart::AstAnchor
-              io.write_byte 2_u8
-            when DiagnosticEmissionPart::NameSplice
-              io.write_byte 3_u8
-            else
-              raise ArgumentError.new("unknown macro emission part")
-            end
-            io.write_bytes part.start_offset.to_u32, FORMAT
-            io.write_bytes part.end_offset.to_u32, FORMAT
-            io.write_bytes(part.emitter_origin.try { |emitter| @indices[emitter] } || UInt32::MAX, FORMAT)
-            case part
-            when DiagnosticEmissionPart::Generated
-              io.write_bytes part.producer.value.to_u32, FORMAT
-            when DiagnosticEmissionPart::AstAnchor
-              io.write_bytes @indices[part.source_origin], FORMAT
-            when DiagnosticEmissionPart::NameSplice
-              write_name_value(io, part.source_name)
-            end
-          end
+          write_token_event(io, origin.token_event)
+          write_anchor_use(io, origin.anchor_use)
         when DiagnosticOrigin::Synthetic
           io.write_byte 3_u8
           io.write_bytes @indices[origin.parent_origin], FORMAT
@@ -552,11 +738,6 @@ module Iyi::IyiMod
                    invocation = table.parent(io.read_bytes(UInt32, FORMAT))
                    definition = table.parent(io.read_bytes(UInt32, FORMAT))
                    guard = read_string(io)
-                   offset = io.read_bytes(UInt32, FORMAT).to_i32
-                   end_offset = io.read_bytes(UInt32, FORMAT).to_i32
-                   token_kind = read_string(io)
-                   token_text = read_string(io)
-                   mode = read_string(io)
                    kind = read_string(io)
                    role = read_string(io)
                    context = case io.read_byte
@@ -564,32 +745,9 @@ module Iyi::IyiMod
                              when 1_u8 then read_string(io)
                              else raise ArgumentError.new("invalid diagnostic name context marker")
                              end
-                   part_count = io.read_bytes(UInt32, FORMAT)
-                   if io.is_a?(IO::Memory) && part_count.to_u64 > ((io.size - io.pos) // 17).to_u64
-                     raise ArgumentError.new("macro emission parts exceed remaining bytes")
-                   end
-                   parts = Array(DiagnosticEmissionPart).new(part_count) do
-                     tag = io.read_byte
-                     start_offset = io.read_bytes(UInt32, FORMAT).to_i32
-                     part_end = io.read_bytes(UInt32, FORMAT).to_i32
-                     emitter_index = io.read_bytes(UInt32, FORMAT)
-                     emitter = emitter_index == UInt32::MAX ? nil : table.parent(emitter_index)
-                     case tag
-                     when 1_u8
-                       value = io.read_bytes(UInt32, FORMAT)
-                       producer = DiagnosticMacroProducer.values.find { |candidate| candidate.value.to_u32 == value } ||
-                                  raise ArgumentError.new("unknown macro emission producer")
-                       DiagnosticEmissionPart::Generated.new(start_offset, part_end, emitter, producer)
-                     when 2_u8
-                       DiagnosticEmissionPart::AstAnchor.new(start_offset, part_end, emitter, table.parent(io.read_bytes(UInt32, FORMAT)))
-                     when 3_u8
-                       DiagnosticEmissionPart::NameSplice.new(start_offset, part_end, emitter, table.read_name_value(io))
-                     else
-                       raise ArgumentError.new("unknown macro emission part tag")
-                     end
-                   end
-                   DiagnosticOrigin::Expanded.new(invocation, definition, guard, offset, end_offset,
-                     token_kind, token_text, mode, kind, role, context, parts)
+                   event = table.read_token_event(io)
+                   use = table.read_anchor_use(io)
+                   DiagnosticOrigin::Expanded.new(invocation, definition, guard, kind, role, context, event, use)
                  when 3_u8
                    parent = table.parent(io.read_bytes(UInt32, FORMAT))
                    DiagnosticOrigin::Synthetic.new(parent, read_string(io), read_string(io))

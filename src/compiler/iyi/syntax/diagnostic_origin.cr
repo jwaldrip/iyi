@@ -330,6 +330,226 @@ module Iyi
     SemanticPrinter
   end
 
+  class DiagnosticTokenEvent
+    getter input_start : Int32
+    getter input_end : Int32
+    getter token_kind : String
+    getter token_text : String
+    getter lexical_mode : String
+    getter selection : String
+    getter graph_bytes : UInt64
+    getter graph_depth : Int32
+    @byte_parts : Array(DiagnosticEmissionPart)
+
+    def initialize(@input_start : Int32, @input_end : Int32, @token_kind : String, @token_text : String,
+                   @lexical_mode : String, @selection : String, byte_parts : Array(DiagnosticEmissionPart))
+      unless @input_start >= 0 && @input_end > @input_start && @token_text.valid_encoding? &&
+             @token_text.bytesize == @input_end - @input_start && !@token_kind.empty? &&
+             {"Crystal", "Iyi"}.includes?(@lexical_mode) && {"Whole", "SignedNumberSign"}.includes?(@selection)
+        raise ArgumentError.new("invalid diagnostic token event")
+      end
+      if @selection == "SignedNumberSign"
+        unless @token_kind == "NUMBER" && (@token_text.starts_with?("+") || @token_text.starts_with?("-")) && @token_text.bytesize > 1
+          raise ArgumentError.new("invalid signed-number token selection")
+        end
+      end
+      @byte_parts = byte_parts.dup
+      raise ArgumentError.new("missing diagnostic token byte parts") if @byte_parts.empty?
+      cursor = selected_start
+      own = 1024_u64 + @token_text.bytesize.to_u64 * 6
+      parents = [] of DiagnosticOrigin
+      @byte_parts.each do |part|
+        unless part.start_offset == cursor && part.end_offset <= selected_end
+          raise ArgumentError.new("invalid diagnostic token byte coverage")
+        end
+        cursor = part.end_offset
+        bytes = @token_text.byte_slice(part.start_offset - @input_start, part.end_offset - part.start_offset)
+        raise ArgumentError.new("token event splits UTF-8") unless bytes.valid_encoding?
+        part.emitter_origin.try { |origin| parents << origin }
+        case part
+        when DiagnosticEmissionPart::AstAnchor
+          parents << part.source_origin
+        when DiagnosticEmissionPart::NameSplice
+          raise ArgumentError.new("name splice differs from output bytes") unless bytes == part.source_name.rendered_text
+          case name = part.source_name
+          when DiagnosticNameValue::Observed
+            parents << name.source_token.lexical_origin
+            name.source_token.binding_origin.try { |binding| parents << binding }
+            own += name.source_token.raw_text.bytesize.to_u64 * 6 + 1024_u64
+          when DiagnosticNameValue::Derived
+            parents << name.origin
+          end
+        end
+        own += 1024_u64
+        raise ArgumentError.new("diagnostic token event exceeds size limit") if own > DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      end
+      raise ArgumentError.new("incomplete diagnostic token byte coverage") unless cursor == selected_end
+      depth = 0
+      parents.each do |parent|
+        raise ArgumentError.new("diagnostic token event exceeds depth limit") if parent.graph_depth + 1 > DiagnosticOrigin::MAX_DEPTH
+        raise ArgumentError.new("diagnostic token event exceeds size limit") if parent.graph_bytes > DiagnosticOrigin::MAX_UNFOLDED_BYTES - own
+        own += parent.graph_bytes
+        depth = Math.max(depth, parent.graph_depth + 1)
+      end
+      @graph_bytes = own
+      @graph_depth = depth
+    end
+
+    def selected_start : Int32; @input_start; end
+    def selected_end : Int32; @selection == "Whole" ? @input_end : @input_start + 1; end
+    def selected_text : String; @token_text.byte_slice(0, selected_end - selected_start); end
+    def byte_parts : Array(DiagnosticEmissionPart); @byte_parts.dup; end
+    def_equals_and_hash @input_start, @input_end, @token_kind, @token_text, @lexical_mode, @selection, @byte_parts
+
+    def to_json(json : JSON::Builder) : Nil
+      json.object do
+        json.field "input_start", @input_start
+        json.field "input_end", @input_end
+        json.field "token_kind", @token_kind
+        json.field "token_text", @token_text
+        json.field "lexical_mode", @lexical_mode
+        json.field "selection", @selection
+        json.field "byte_parts" do
+          json.array { @byte_parts.each { |part| part.to_json(json) } }
+        end
+      end
+    end
+  end
+
+  record DiagnosticTokenWitness, role : String, event : DiagnosticTokenEvent do
+    def to_json(json : JSON::Builder) : Nil
+      json.object do
+        json.field "role", role
+        json.field "event", event
+      end
+    end
+  end
+
+  abstract class DiagnosticAnchorEvidence
+    def to_json(json : JSON::Builder) : Nil
+      json.object do
+        case self
+        when Spliced
+          json.field "kind", "Spliced"
+          json.field "source_origin", self.source_origin
+        when Constructed
+          json.field "kind", "Constructed"
+          json.field "producer", self.producer.to_s
+        when RawSyntax
+          json.field "kind", "RawSyntax"
+          json.field "witnesses" do
+            json.array { self.witnesses.each { |witness| witness.to_json(json) } }
+          end
+        when DerivedFromOwner
+          json.field "kind", "DerivedFromOwner"
+        end
+      end
+    end
+    class Spliced < DiagnosticAnchorEvidence
+      getter source_origin : DiagnosticOrigin
+      def initialize(@source_origin : DiagnosticOrigin); end
+      def_equals_and_hash @source_origin
+    end
+    class Constructed < DiagnosticAnchorEvidence
+      getter producer : DiagnosticMacroProducer
+      def initialize(@producer : DiagnosticMacroProducer)
+        raise ArgumentError.new("invalid constructed anchor producer") unless @producer == DiagnosticMacroProducer::ConstructedAst
+      end
+      def_equals_and_hash @producer
+    end
+    class RawSyntax < DiagnosticAnchorEvidence
+      @witnesses : Array(DiagnosticTokenWitness)
+      def initialize(witnesses : Array(DiagnosticTokenWitness)); @witnesses = witnesses.dup; end
+      def witnesses : Array(DiagnosticTokenWitness); @witnesses.dup; end
+      def_equals_and_hash @witnesses
+    end
+    class DerivedFromOwner < DiagnosticAnchorEvidence
+      def_equals_and_hash
+    end
+  end
+
+  abstract class DiagnosticAnchorHead
+    def to_json(json : JSON::Builder) : Nil
+      json.object do
+        case self
+        when Anchor
+          json.field "kind", "Anchor"
+          json.field "origin", self.origin
+        when Syntax
+          json.field "kind", "Syntax"
+          json.field "form", self.form
+          json.field "adjacent_name_origin", self.adjacent_name_origin
+        end
+      end
+    end
+    class Anchor < DiagnosticAnchorHead
+      getter origin : DiagnosticOrigin
+      def initialize(@origin : DiagnosticOrigin); end
+      def_equals_and_hash @origin
+    end
+    class Syntax < DiagnosticAnchorHead
+      getter form : String
+      getter adjacent_name_origin : DiagnosticOrigin?
+      def initialize(@form : String, @adjacent_name_origin : DiagnosticOrigin?)
+        unless {"GlobalPathPrefix", "FirstSplat", "FirstUnderscore", "ParenthesizedFirstTarget"}.includes?(@form)
+          raise ArgumentError.new("invalid syntax head")
+        end
+        unless (@form == "GlobalPathPrefix") == !@adjacent_name_origin.nil?
+          raise ArgumentError.new("invalid syntax head adjacency")
+        end
+      end
+      def_equals_and_hash @form, @adjacent_name_origin
+    end
+  end
+
+  abstract class DiagnosticAnchorUse
+    def to_json(json : JSON::Builder) : Nil
+      json.object do
+        case self
+        when Direct
+          json.field "kind", "Direct"
+        when HeadOf
+          json.field "kind", "HeadOf"
+          json.field "rule", self.rule
+          json.field "evidence", self.evidence
+          json.field "head", self.head
+        when PayloadOf
+          json.field "kind", "PayloadOf"
+          json.field "rule", self.rule
+          json.field "evidence", self.evidence
+          json.field "owner_origin", self.owner_origin
+        end
+      end
+    end
+    class Direct < DiagnosticAnchorUse
+      def_equals_and_hash
+    end
+    class HeadOf < DiagnosticAnchorUse
+      getter rule : String
+      getter evidence : DiagnosticAnchorEvidence
+      getter head : DiagnosticAnchorHead
+      def initialize(@rule : String, @evidence : DiagnosticAnchorEvidence, @head : DiagnosticAnchorHead)
+        unless {"NamedArrayHead", "NamedHashHead", "ConstantAssignHead", "ConstantTypeHead", "MultiAssignHead"}.includes?(@rule)
+          raise ArgumentError.new("invalid head attachment rule")
+        end
+        raise ArgumentError.new("invalid head evidence") if @evidence.is_a?(DiagnosticAnchorEvidence::DerivedFromOwner)
+      end
+      def_equals_and_hash @rule, @evidence, @head
+    end
+    class PayloadOf < DiagnosticAnchorUse
+      getter rule : String
+      getter evidence : DiagnosticAnchorEvidence
+      getter owner_origin : DiagnosticOrigin
+      def initialize(@rule : String, @evidence : DiagnosticAnchorEvidence, @owner_origin : DiagnosticOrigin)
+        unless {"RegexInterpolationPayload", "CommandInterpolationPayload"}.includes?(@rule)
+          raise ArgumentError.new("invalid payload attachment rule")
+        end
+        raise ArgumentError.new("invalid payload evidence") if @evidence.is_a?(DiagnosticAnchorEvidence::RawSyntax)
+      end
+      def_equals_and_hash @rule, @evidence, @owner_origin
+    end
+  end
+
   record DiagnosticMacroAnchor, offset : Int32, end_offset : Int32, kind : String, role : String,
     emitter_origin : DiagnosticOrigin?, source_origin : DiagnosticOrigin?, producer : DiagnosticMacroProducer?
 
@@ -717,25 +937,15 @@ module Iyi
       getter invocation_origin : DiagnosticOrigin
       getter macro_definition_origin : DiagnosticOrigin
       getter expansion_guard : String
-      getter generated_byte_offset : Int32
-      getter generated_byte_end : Int32
-      getter token_kind : String
-      getter token_text : String
-      getter lexical_mode : String
       getter anchor_kind : String
       getter role : String
       getter name_context : String?
-      @emission_parts : Array(DiagnosticEmissionPart)
-
-      def emission_parts : Array(DiagnosticEmissionPart)
-        @emission_parts.dup
-      end
+      getter token_event : DiagnosticTokenEvent
+      getter anchor_use : DiagnosticAnchorUse
 
       def initialize(@invocation_origin : DiagnosticOrigin, @macro_definition_origin : DiagnosticOrigin,
-                     @expansion_guard : String, @generated_byte_offset : Int32, @generated_byte_end : Int32,
-                     @token_kind : String, @token_text : String, @lexical_mode : String,
-                     @anchor_kind : String, @role : String, @name_context : String?,
-                     emission_parts : Array(DiagnosticEmissionPart))
+                     @expansion_guard : String, @anchor_kind : String, @role : String, @name_context : String?,
+                     @token_event : DiagnosticTokenEvent, @anchor_use : DiagnosticAnchorUse)
         invocation_valid = @invocation_origin.valid_for_anchor?("Call", "method") ||
                            @invocation_origin.valid_for_anchor?("MacroDirective", "control") ||
                            @invocation_origin.valid_for_anchor?("MacroDirective", "expression") ||
@@ -751,64 +961,100 @@ module Iyi
                @expansion_guard.byte_slice(7, 64).each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) }
           raise ArgumentError.new("invalid diagnostic expansion guard")
         end
-        unless @generated_byte_offset >= 0 && @generated_byte_end > @generated_byte_offset &&
-               @token_text.bytesize == @generated_byte_end - @generated_byte_offset && @token_text.valid_encoding? &&
-               !@token_kind.empty? && {"Crystal", "Iyi"}.includes?(@lexical_mode) && !@anchor_kind.empty? && !@role.empty?
-          raise ArgumentError.new("invalid diagnostic expansion token")
+        raise ArgumentError.new("invalid diagnostic anchor") if @anchor_kind.empty? || @role.empty?
+        if @token_event.selection == "SignedNumberSign" && !(@anchor_use.is_a?(DiagnosticAnchorUse::Direct) && @anchor_kind == "Call" && @role == "method" && @name_context.nil?)
+          raise ArgumentError.new("invalid signed-number anchor use")
         end
         if context = @name_context
-          unless DiagnosticSourceNameToken.valid_token?(@token_kind, @token_text, @lexical_mode, context)
-            raise ArgumentError.new("invalid diagnostic name token")
-          end
-          unless (@anchor_kind == "Name" && @role == context) ||
-                 (@anchor_kind == "Call" && @role == "method" && context == "method_name")
+          unless @anchor_use.is_a?(DiagnosticAnchorUse::Direct) &&
+                 DiagnosticSourceNameToken.valid_token?(@token_event.token_kind, @token_event.selected_text, @token_event.lexical_mode, context) &&
+                 ((@anchor_kind == "Name" && @role == context) || (@anchor_kind == "Call" && @role == "method" && context == "method_name"))
             raise ArgumentError.new("invalid receiving diagnostic name role")
           end
         end
-        raise ArgumentError.new("missing macro emission parts") if emission_parts.empty?
-        @emission_parts = emission_parts.dup
-        cursor = @generated_byte_offset
+
         parents = [@invocation_origin, @macro_definition_origin] of DiagnosticOrigin
-        own = 1024_u64 + DiagnosticOrigin.json_string_size(@token_text) + DiagnosticOrigin.json_string_size(@token_kind) +
-              DiagnosticOrigin.json_string_size(@anchor_kind) + DiagnosticOrigin.json_string_size(@role)
-        @emission_parts.each do |part|
-          raise ArgumentError.new("invalid macro emission coverage") unless part.start_offset == cursor && part.end_offset <= @generated_byte_end
-          cursor = part.end_offset
-          part.emitter_origin.try { |origin| parents << origin }
-          own += 1024_u64
-          bytes = @token_text.byte_slice(part.start_offset - @generated_byte_offset, part.end_offset - part.start_offset)
-          raise ArgumentError.new("macro emission splits a UTF-8 character") unless bytes.valid_encoding?
-          case part
-          when DiagnosticEmissionPart::AstAnchor
-            unless @emission_parts.size == 1 && part.source_origin.valid_for_anchor?(@anchor_kind, @role)
-              raise ArgumentError.new("invalid structural macro splice")
-            end
-            parents << part.source_origin
-          when DiagnosticEmissionPart::NameSplice
-            raise ArgumentError.new("name splice without name context") unless @name_context
-            name = part.source_name
-            case name
-            when DiagnosticNameValue::Observed
-              token = name.source_token
-              parents << token.lexical_origin
-              token.binding_origin.try { |binding| parents << binding }
-              own += DiagnosticOrigin.json_string_size(token.raw_text) + DiagnosticOrigin.json_string_size(token.input_sha256) +
-                     DiagnosticOrigin.json_string_size(token.token_kind) + DiagnosticOrigin.json_string_size(token.context)
-            when DiagnosticNameValue::Derived
-              parents << name.origin
-            end
-            unless bytes == name.rendered_text
-              raise ArgumentError.new("name splice bytes differ from source")
+        own = 1024_u64 + @token_event.graph_bytes + DiagnosticOrigin.json_string_size(@anchor_kind) + DiagnosticOrigin.json_string_size(@role)
+        raise ArgumentError.new("diagnostic origin graph exceeds depth limit") if @token_event.graph_depth + 1 > MAX_DEPTH
+        case use = @anchor_use
+        when DiagnosticAnchorUse::Direct
+          @token_event.byte_parts.each do |part|
+            case part
+            when DiagnosticEmissionPart::AstAnchor
+              unless @token_event.byte_parts.size == 1 && part.source_origin.valid_for_anchor?(@anchor_kind, @role)
+                raise ArgumentError.new("invalid structural macro splice")
+              end
+            when DiagnosticEmissionPart::NameSplice
+              raise ArgumentError.new("name splice without name context") unless @name_context
             end
           end
-          raise ArgumentError.new("diagnostic origin graph exceeds size limit") if own > MAX_UNFOLDED_BYTES
+        when DiagnosticAnchorUse::HeadOf
+          expected = case use.rule
+                     when "NamedArrayHead" then {"Literal", "array"}
+                     when "NamedHashHead" then {"Literal", "hash"}
+                     when "ConstantAssignHead", "ConstantTypeHead" then {"Assign", "constant"}
+                     when "MultiAssignHead" then {"Literal", "multiassign"}
+                     else raise ArgumentError.new("invalid head rule")
+                     end
+          raise ArgumentError.new("head role mismatch") unless {@anchor_kind, @role} == expected && @name_context.nil?
+          case evidence = use.evidence
+          when DiagnosticAnchorEvidence::Spliced
+            raise ArgumentError.new("head source role mismatch") unless evidence.source_origin.valid_for_anchor?(@anchor_kind, @role)
+            parents << evidence.source_origin
+          when DiagnosticAnchorEvidence::Constructed
+          when DiagnosticAnchorEvidence::RawSyntax
+            raise ArgumentError.new("raw syntax witness validation unavailable")
+          else
+            raise ArgumentError.new("invalid head evidence")
+          end
+          case head = use.head
+          when DiagnosticAnchorHead::Anchor
+            child = head.origin.as?(Expanded) || raise ArgumentError.new("head is not an expanded child")
+            parents << child
+          when DiagnosticAnchorHead::Syntax
+            parents << head.adjacent_name_origin.not_nil! if head.adjacent_name_origin
+          end
+        when DiagnosticAnchorUse::PayloadOf
+          raise ArgumentError.new("payload role mismatch") unless @anchor_kind == "Literal" && @role == "interpolation" && @name_context.nil?
+          owner = use.owner_origin.as?(Expanded) || raise ArgumentError.new("payload owner is not expanded")
+          owner_role = use.rule == "RegexInterpolationPayload" ? {"Literal", "regex"} : {"Call", "method"}
+          raise ArgumentError.new("payload owner role mismatch") unless owner.valid_for_anchor?(*owner_role)
+          parents << owner
+          case evidence = use.evidence
+          when DiagnosticAnchorEvidence::Spliced
+            raise ArgumentError.new("payload source role mismatch") unless evidence.source_origin.valid_for_anchor?("Literal", "interpolation")
+            parents << evidence.source_origin
+          when DiagnosticAnchorEvidence::Constructed, DiagnosticAnchorEvidence::DerivedFromOwner
+          else
+            raise ArgumentError.new("invalid payload evidence")
+          end
         end
-        raise ArgumentError.new("incomplete macro emission coverage") unless cursor == @generated_byte_end
         set_graph_bounds!(own, parents)
-        @emission_parts.each_cons_pair do |left, right|
-          if left.is_a?(DiagnosticEmissionPart::Generated) && right.is_a?(DiagnosticEmissionPart::Generated) &&
-             left.producer == right.producer && left.emitter_origin == right.emitter_origin
-            raise ArgumentError.new("uncoalesced macro emission parts")
+
+        case use = @anchor_use
+        when DiagnosticAnchorUse::HeadOf
+          case head = use.head
+          when DiagnosticAnchorHead::Anchor
+            child = head.origin.as(Expanded)
+            unless child.invocation_origin == @invocation_origin && child.macro_definition_origin == @macro_definition_origin &&
+                   child.expansion_guard == @expansion_guard && child.token_event == @token_event
+              raise ArgumentError.new("head event mismatch")
+            end
+          when DiagnosticAnchorHead::Syntax
+            expected_text = case head.form
+                            when "GlobalPathPrefix" then "::"
+                            when "FirstSplat" then "*"
+                            when "FirstUnderscore" then "_"
+                            when "ParenthesizedFirstTarget" then "("
+                            else raise ArgumentError.new("invalid syntax head")
+                            end
+            raise ArgumentError.new("syntax head token mismatch") unless @token_event.selected_text == expected_text
+          end
+        when DiagnosticAnchorUse::PayloadOf
+          owner = use.owner_origin.as(Expanded)
+          unless owner.invocation_origin == @invocation_origin && owner.macro_definition_origin == @macro_definition_origin &&
+                 owner.expansion_guard == @expansion_guard && owner.token_event == @token_event
+            raise ArgumentError.new("payload event mismatch")
           end
         end
       end
@@ -817,8 +1063,7 @@ module Iyi
         @anchor_kind == kind && @role == role
       end
 
-      def_equals_and_hash @invocation_origin, @macro_definition_origin, @expansion_guard, @generated_byte_offset,
-        @generated_byte_end, @token_kind, @token_text, @lexical_mode, @anchor_kind, @role, @name_context, @emission_parts
+      def_equals_and_hash @invocation_origin, @macro_definition_origin, @expansion_guard, @anchor_kind, @role, @name_context, @token_event, @anchor_use
 
       def to_json(json : JSON::Builder) : Nil
         json.object do
@@ -826,19 +1071,11 @@ module Iyi
           json.field "invocation_origin", @invocation_origin
           json.field "macro_definition_origin", @macro_definition_origin
           json.field "expansion_guard", @expansion_guard
-          json.field "generated_byte_offset", @generated_byte_offset
-          json.field "generated_byte_end", @generated_byte_end
-          json.field "token_kind", @token_kind
-          json.field "token_text", @token_text
-          json.field "lexical_mode", @lexical_mode
           json.field "anchor_kind", @anchor_kind
           json.field "role", @role
           json.field "name_context", @name_context
-          json.field "emission_parts" do
-            json.array do
-              @emission_parts.each { |part| part.to_json(json) }
-            end
-          end
+          json.field "token_event", @token_event
+          json.field "anchor_use", @anchor_use
         end
       end
     end
