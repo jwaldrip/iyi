@@ -361,6 +361,11 @@ describe "diagnostic capture real parser roots" do
       input, root = real_capture_root(REAL_CAPTURE_TOTALS, "/spec/real/totals.iyi")
       Iyi::DiagnosticRecordedEvidenceInputCheck.new(input).verify!(root)
     end
+
+    it "binds a declared Iyi module to its actual parsed source" do
+      input, root = real_capture_root("module sample/identity\nvalue = 1\n", "/spec/real/identity.iyi")
+      Iyi::DiagnosticRecordedEvidenceInputCheck.new(input).verify!(root)
+    end
   end
 
   describe "a real non-default semantic mutation is refused through the stream" do
