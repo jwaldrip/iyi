@@ -6,10 +6,13 @@ module Iyi
     getter kind : String
     getter role : String
     getter origin : DiagnosticOrigin?
+    getter event_index : Int32
+    getter attachment : DiagnosticFragmentAttachment
     @name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue))
 
     def initialize(@offset : Int32, @kind : String, @role : String, @origin : DiagnosticOrigin?,
-                   name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue)) = {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
+                   name_slots : Hash(DiagnosticNameSlot, Array(DiagnosticNameValue)),
+                   @event_index : Int32, @attachment : DiagnosticFragmentAttachment)
       @name_slots = DiagnosticNameMetadata.copy_and_validate(name_slots, @origin)
     end
 
@@ -17,17 +20,19 @@ module Iyi
       DiagnosticNameMetadata.copy_and_validate(@name_slots, @origin)
     end
 
-    def copy_with(*, offset : Int32 = @offset) : DiagnosticAnchor
-      DiagnosticAnchor.new(offset, @kind, @role, @origin, @name_slots)
+    def copy_with(*, offset : Int32 = @offset, event_index : Int32 = @event_index,
+                  attachment : DiagnosticFragmentAttachment = @attachment) : DiagnosticAnchor
+      DiagnosticAnchor.new(offset, @kind, @role, @origin, @name_slots, event_index, attachment)
     end
 
-    def_equals_and_hash @offset, @kind, @role, @origin, @name_slots
+    def_equals_and_hash @offset, @kind, @role, @origin, @name_slots, @event_index, @attachment
   end
 
   record DiagnosticRegion,
     start_offset : Int32,
     end_offset : Int32,
     text_sha256 : String,
+    events : Array(DiagnosticTokenEvent),
     anchors : Array(DiagnosticAnchor)
 
   enum DiagnosticMacroLineage
@@ -150,7 +155,7 @@ module Iyi
       when DiagnosticOrigin::Written
         raise ArgumentError.new("name token origin offset mismatch") unless lexical_origin.input_byte_offset == @input_start
       when DiagnosticOrigin::Expanded
-        unless lexical_origin.generated_byte_offset == @input_start && lexical_origin.expansion_guard == "sha256:#{@input_sha256}"
+        unless lexical_origin.token_event.input_start == @input_start && lexical_origin.expansion_guard == "sha256:#{@input_sha256}"
           raise ArgumentError.new("name token expansion input mismatch")
         end
       else
@@ -176,6 +181,73 @@ module Iyi
         json.field "lexical_origin", @lexical_origin
         json.field "binding_origin", @binding_origin
         json.field "context", @context
+        json.field "input_sha256", @input_sha256
+        json.field "input_bytesize", @input_bytesize
+        json.field "input_start", @input_start
+        json.field "input_end", @input_end
+        json.field "lexical_mode", @lexical_mode
+        json.field "token_kind", @token_kind
+        json.field "raw_text", @raw_text
+      end
+    end
+  end
+
+  enum DiagnosticTypeSugar : UInt8
+    Pointer = 1
+    DoublePointer = 2
+    NilableType = 3
+    NilableExpression = 4
+    SelfNilableType = 5
+    StaticArray = 6
+    Tuple = 7
+    NamedTuple = 8
+    NilPredicate = 9
+  end
+  enum DiagnosticTypeSugarResult : UInt8
+    Pointer = 1
+    Union = 2
+    Nil = 3
+    StaticArray = 4
+    Tuple = 5
+    NamedTuple = 6
+  end
+
+  record DiagnosticSourceSyntaxToken,
+    lexical_origin : DiagnosticOrigin,
+    input_sha256 : String,
+    input_bytesize : Int32,
+    input_start : Int32,
+    input_end : Int32,
+    lexical_mode : String,
+    token_kind : String,
+    raw_text : String do
+    def initialize(@lexical_origin : DiagnosticOrigin, @input_sha256 : String, @input_bytesize : Int32,
+                   @input_start : Int32, @input_end : Int32, @lexical_mode : String, @token_kind : String, @raw_text : String)
+      unless @input_sha256.bytesize == 64 && @input_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) } &&
+             @input_start >= 0 && @input_end > @input_start && @input_end <= @input_bytesize &&
+             @input_end - @input_start == @raw_text.bytesize && @raw_text.valid_encoding? &&
+             {"Crystal", "Iyi"}.includes?(@lexical_mode) &&
+             (({"*", "**", "?", "[", "]", "{", "}"}.includes?(@raw_text) && @token_kind == @raw_text) ||
+              (@token_kind == "IDENT" && {"self?", "nil?"}.includes?(@raw_text))) &&
+             @lexical_origin.valid_for_anchor?("TypeSyntax", "token")
+        raise ArgumentError.new("invalid observed type-syntax token")
+      end
+      case origin = @lexical_origin
+      when DiagnosticOrigin::Written
+        raise ArgumentError.new("type-syntax token offset mismatch") unless origin.input_byte_offset == @input_start
+      when DiagnosticOrigin::Expanded
+        unless origin.token_event.input_start == @input_start && origin.expansion_guard == "sha256:#{@input_sha256}"
+          raise ArgumentError.new("type-syntax expansion mismatch")
+        end
+      else
+        raise ArgumentError.new("invalid type-syntax origin")
+      end
+      raise ArgumentError.new("type-syntax origin graph too large") if @lexical_origin.graph_bytes + @raw_text.bytesize.to_u64 * 6 + 256_u64 > DiagnosticOrigin::MAX_UNFOLDED_BYTES
+    end
+
+    def to_json(json : JSON::Builder) : Nil
+      json.object do
+        json.field "lexical_origin", @lexical_origin
         json.field "input_sha256", @input_sha256
         json.field "input_bytesize", @input_bytesize
         json.field "input_start", @input_start
@@ -330,25 +402,95 @@ module Iyi
     SemanticPrinter
   end
 
+  enum DiagnosticTokenSelection : UInt8
+    Whole = 0
+    SignedNumberSign = 1
+  end
+  enum DiagnosticWitnessRole : UInt8
+    Open = 1
+    Colon = 2
+    Equals = 3
+    Comma = 4
+    Splat = 5
+  end
+  enum DiagnosticHeadSyntax : UInt8
+    GlobalPathPrefix = 1
+    FirstSplat = 2
+    FirstUnderscore = 3
+    ParenthesizedFirstTarget = 4
+  end
+  enum DiagnosticHeadRule : UInt8
+    NamedArrayHead = 1
+    NamedHashHead = 2
+    ConstantAssignHead = 3
+    ConstantTypeHead = 4
+    MultiAssignHead = 5
+  end
+  enum DiagnosticPayloadRule : UInt8
+    RegexInterpolationPayload = 1
+    CommandInterpolationPayload = 2
+  end
+
+  abstract class DiagnosticFragmentHead
+    class Anchor < DiagnosticFragmentHead
+      getter anchor_index : Int32
+      def initialize(@anchor_index : Int32)
+        raise ArgumentError.new("negative fragment anchor reference") if @anchor_index < 0
+      end
+      def_equals_and_hash @anchor_index
+    end
+    class Syntax < DiagnosticFragmentHead
+      getter form : DiagnosticHeadSyntax
+      getter adjacent_anchor_index : Int32?
+      def initialize(@form : DiagnosticHeadSyntax, @adjacent_anchor_index : Int32?)
+        unless (@form == DiagnosticHeadSyntax::GlobalPathPrefix) == !@adjacent_anchor_index.nil?
+          raise ArgumentError.new("invalid fragment head adjacency")
+        end
+        raise ArgumentError.new("negative fragment anchor reference") if @adjacent_anchor_index.try(&.<(0))
+      end
+      def_equals_and_hash @form, @adjacent_anchor_index
+    end
+  end
+
+  abstract class DiagnosticFragmentAttachment
+    class Direct < DiagnosticFragmentAttachment
+      def_equals_and_hash
+    end
+    class HeadOf < DiagnosticFragmentAttachment
+      getter rule : DiagnosticHeadRule
+      getter head : DiagnosticFragmentHead
+      def initialize(@rule : DiagnosticHeadRule, @head : DiagnosticFragmentHead); end
+      def_equals_and_hash @rule, @head
+    end
+    class PayloadOf < DiagnosticFragmentAttachment
+      getter rule : DiagnosticPayloadRule
+      getter owner_anchor_index : Int32
+      def initialize(@rule : DiagnosticPayloadRule, @owner_anchor_index : Int32)
+        raise ArgumentError.new("negative fragment owner reference") if @owner_anchor_index < 0
+      end
+      def_equals_and_hash @rule, @owner_anchor_index
+    end
+  end
+
   class DiagnosticTokenEvent
     getter input_start : Int32
     getter input_end : Int32
     getter token_kind : String
     getter token_text : String
     getter lexical_mode : String
-    getter selection : String
+    getter selection : DiagnosticTokenSelection
     getter graph_bytes : UInt64
     getter graph_depth : Int32
     @byte_parts : Array(DiagnosticEmissionPart)
 
     def initialize(@input_start : Int32, @input_end : Int32, @token_kind : String, @token_text : String,
-                   @lexical_mode : String, @selection : String, byte_parts : Array(DiagnosticEmissionPart))
+                   @lexical_mode : String, @selection : DiagnosticTokenSelection, byte_parts : Array(DiagnosticEmissionPart))
       unless @input_start >= 0 && @input_end > @input_start && @token_text.valid_encoding? &&
              @token_text.bytesize == @input_end - @input_start && !@token_kind.empty? &&
-             {"Crystal", "Iyi"}.includes?(@lexical_mode) && {"Whole", "SignedNumberSign"}.includes?(@selection)
+             {"Crystal", "Iyi"}.includes?(@lexical_mode) && {@selection.whole?, @selection.signed_number_sign?}.any?
         raise ArgumentError.new("invalid diagnostic token event")
       end
-      if @selection == "SignedNumberSign"
+      if @selection.signed_number_sign?
         unless @token_kind == "NUMBER" && (@token_text.starts_with?("+") || @token_text.starts_with?("-")) && @token_text.bytesize > 1
           raise ArgumentError.new("invalid signed-number token selection")
         end
@@ -396,7 +538,9 @@ module Iyi
     end
 
     def selected_start : Int32; @input_start; end
-    def selected_end : Int32; @selection == "Whole" ? @input_end : @input_start + 1; end
+    def selected_end : Int32; @selection.whole? ? @input_end : @input_start + 1; end
+    def start_offset : Int32; selected_start; end
+    def end_offset : Int32; selected_end; end
     def selected_text : String; @token_text.byte_slice(0, selected_end - selected_start); end
     def byte_parts : Array(DiagnosticEmissionPart); @byte_parts.dup; end
     def_equals_and_hash @input_start, @input_end, @token_kind, @token_text, @lexical_mode, @selection, @byte_parts
@@ -408,7 +552,7 @@ module Iyi
         json.field "token_kind", @token_kind
         json.field "token_text", @token_text
         json.field "lexical_mode", @lexical_mode
-        json.field "selection", @selection
+        json.field "selection", @selection.to_s
         json.field "byte_parts" do
           json.array { @byte_parts.each { |part| part.to_json(json) } }
         end
@@ -416,10 +560,10 @@ module Iyi
     end
   end
 
-  record DiagnosticTokenWitness, role : String, event : DiagnosticTokenEvent do
+  record DiagnosticSyntaxWitness, role : DiagnosticWitnessRole, event : DiagnosticTokenEvent do
     def to_json(json : JSON::Builder) : Nil
       json.object do
-        json.field "role", role
+        json.field "role", role.to_s
         json.field "event", event
       end
     end
@@ -458,9 +602,9 @@ module Iyi
       def_equals_and_hash @producer
     end
     class RawSyntax < DiagnosticAnchorEvidence
-      @witnesses : Array(DiagnosticTokenWitness)
-      def initialize(witnesses : Array(DiagnosticTokenWitness)); @witnesses = witnesses.dup; end
-      def witnesses : Array(DiagnosticTokenWitness); @witnesses.dup; end
+      @witnesses : Array(DiagnosticSyntaxWitness)
+      def initialize(witnesses : Array(DiagnosticSyntaxWitness)); @witnesses = witnesses.dup; end
+      def witnesses : Array(DiagnosticSyntaxWitness); @witnesses.dup; end
       def_equals_and_hash @witnesses
     end
     class DerivedFromOwner < DiagnosticAnchorEvidence
@@ -468,7 +612,7 @@ module Iyi
     end
   end
 
-  abstract class DiagnosticAnchorHead
+  abstract class DiagnosticHead
     def to_json(json : JSON::Builder) : Nil
       json.object do
         case self
@@ -477,24 +621,21 @@ module Iyi
           json.field "origin", self.origin
         when Syntax
           json.field "kind", "Syntax"
-          json.field "form", self.form
+          json.field "form", self.form.to_s
           json.field "adjacent_name_origin", self.adjacent_name_origin
         end
       end
     end
-    class Anchor < DiagnosticAnchorHead
-      getter origin : DiagnosticOrigin
-      def initialize(@origin : DiagnosticOrigin); end
+    class Anchor < DiagnosticHead
+      getter origin : DiagnosticOrigin::Expanded
+      def initialize(@origin : DiagnosticOrigin::Expanded); end
       def_equals_and_hash @origin
     end
-    class Syntax < DiagnosticAnchorHead
-      getter form : String
-      getter adjacent_name_origin : DiagnosticOrigin?
-      def initialize(@form : String, @adjacent_name_origin : DiagnosticOrigin?)
-        unless {"GlobalPathPrefix", "FirstSplat", "FirstUnderscore", "ParenthesizedFirstTarget"}.includes?(@form)
-          raise ArgumentError.new("invalid syntax head")
-        end
-        unless (@form == "GlobalPathPrefix") == !@adjacent_name_origin.nil?
+    class Syntax < DiagnosticHead
+      getter form : DiagnosticHeadSyntax
+      getter adjacent_name_origin : DiagnosticOrigin::Expanded?
+      def initialize(@form : DiagnosticHeadSyntax, @adjacent_name_origin : DiagnosticOrigin::Expanded?)
+        unless (@form == DiagnosticHeadSyntax::GlobalPathPrefix) == !@adjacent_name_origin.nil?
           raise ArgumentError.new("invalid syntax head adjacency")
         end
       end
@@ -510,12 +651,12 @@ module Iyi
           json.field "kind", "Direct"
         when HeadOf
           json.field "kind", "HeadOf"
-          json.field "rule", self.rule
+          json.field "rule", self.rule.to_s
           json.field "evidence", self.evidence
           json.field "head", self.head
         when PayloadOf
           json.field "kind", "PayloadOf"
-          json.field "rule", self.rule
+          json.field "rule", self.rule.to_s
           json.field "evidence", self.evidence
           json.field "owner_origin", self.owner_origin
         end
@@ -525,28 +666,110 @@ module Iyi
       def_equals_and_hash
     end
     class HeadOf < DiagnosticAnchorUse
-      getter rule : String
+      getter rule : DiagnosticHeadRule
       getter evidence : DiagnosticAnchorEvidence
-      getter head : DiagnosticAnchorHead
-      def initialize(@rule : String, @evidence : DiagnosticAnchorEvidence, @head : DiagnosticAnchorHead)
-        unless {"NamedArrayHead", "NamedHashHead", "ConstantAssignHead", "ConstantTypeHead", "MultiAssignHead"}.includes?(@rule)
-          raise ArgumentError.new("invalid head attachment rule")
-        end
+      getter head : DiagnosticHead
+      def initialize(@rule : DiagnosticHeadRule, @evidence : DiagnosticAnchorEvidence, @head : DiagnosticHead)
         raise ArgumentError.new("invalid head evidence") if @evidence.is_a?(DiagnosticAnchorEvidence::DerivedFromOwner)
       end
       def_equals_and_hash @rule, @evidence, @head
     end
     class PayloadOf < DiagnosticAnchorUse
-      getter rule : String
+      getter rule : DiagnosticPayloadRule
       getter evidence : DiagnosticAnchorEvidence
-      getter owner_origin : DiagnosticOrigin
-      def initialize(@rule : String, @evidence : DiagnosticAnchorEvidence, @owner_origin : DiagnosticOrigin)
-        unless {"RegexInterpolationPayload", "CommandInterpolationPayload"}.includes?(@rule)
-          raise ArgumentError.new("invalid payload attachment rule")
-        end
+      getter owner_origin : DiagnosticOrigin::Expanded
+      def initialize(@rule : DiagnosticPayloadRule, @evidence : DiagnosticAnchorEvidence, @owner_origin : DiagnosticOrigin::Expanded)
         raise ArgumentError.new("invalid payload evidence") if @evidence.is_a?(DiagnosticAnchorEvidence::RawSyntax)
       end
       def_equals_and_hash @rule, @evidence, @owner_origin
+    end
+  end
+
+  class DiagnosticFragmentBuilder
+    @events = [] of DiagnosticTokenEvent
+    @anchors = [] of DiagnosticAnchor
+
+    def add_event(event : DiagnosticTokenEvent) : Int32
+      @events.each_with_index do |existing, index|
+        if existing.selected_start == event.selected_start && existing.selected_end == event.selected_end
+          raise ArgumentError.new("conflicting fragment token events") unless existing == event
+          return index
+        end
+      end
+      @events << event
+      @events.size - 1
+    end
+
+    def add_anchor(anchor : DiagnosticAnchor) : Int32
+      unless anchor.event_index >= 0 && anchor.event_index < @events.size
+        raise ArgumentError.new("fragment anchor references missing event")
+      end
+      if @anchors.any? { |item| item.offset == anchor.offset && item.kind == anchor.kind && item.role == anchor.role }
+        raise ArgumentError.new("duplicate fragment anchor")
+      end
+      @anchors << anchor
+      @anchors.size - 1
+    end
+
+    def finish(key : String, text : String) : IyiMod::DiagnosticFragment
+      raise ArgumentError.new("invalid fragment text") unless text.valid_encoding?
+      events_with_index = @events.each_with_index.to_a
+      events_with_index.sort_by! do |event, _|
+        {event.selected_start, event.selected_end, event.selection.value, event.token_kind, event.token_text, event.lexical_mode}
+      end
+      event_remap = Array(Int32).new(@events.size, 0)
+      events = events_with_index.map_with_index do |(event, old_index), new_index|
+        unless event.input_end <= text.bytesize &&
+               text.byte_slice(event.input_start, event.input_end - event.input_start) == event.token_text
+          raise ArgumentError.new("fragment token bytes do not match text")
+        end
+        event_remap[old_index] = new_index
+        event
+      end
+
+      remaining = (0...@anchors.size).to_a
+      anchor_remap = {} of Int32 => Int32
+      anchors = [] of DiagnosticAnchor
+      until remaining.empty?
+        ready = remaining.select do |index|
+          attachment = @anchors[index].attachment
+          dependency = case attachment
+                       when DiagnosticFragmentAttachment::HeadOf
+                         case head = attachment.head
+                         when DiagnosticFragmentHead::Anchor then head.anchor_index
+                         when DiagnosticFragmentHead::Syntax then head.adjacent_anchor_index
+                         end
+                       when DiagnosticFragmentAttachment::PayloadOf then attachment.owner_anchor_index
+                       end
+          dependency.nil? || anchor_remap.has_key?(dependency)
+        end
+        raise ArgumentError.new("cyclic or missing fragment anchor dependency") if ready.empty?
+        index = ready.min_by { |item| anchor = @anchors[item]; {anchor.offset, anchor.kind, anchor.role} }
+        original = @anchors[index]
+        attachment = case part = original.attachment
+                     when DiagnosticFragmentAttachment::Direct
+                       DiagnosticFragmentAttachment::Direct.new.as(DiagnosticFragmentAttachment)
+                     when DiagnosticFragmentAttachment::HeadOf
+                       head = case old = part.head
+                              when DiagnosticFragmentHead::Anchor
+                                DiagnosticFragmentHead::Anchor.new(anchor_remap[old.anchor_index]).as(DiagnosticFragmentHead)
+                              when DiagnosticFragmentHead::Syntax
+                                adjacent = old.adjacent_anchor_index.try { |item| anchor_remap[item] }
+                                DiagnosticFragmentHead::Syntax.new(old.form, adjacent).as(DiagnosticFragmentHead)
+                              else
+                                raise ArgumentError.new("unknown fragment head")
+                              end
+                       DiagnosticFragmentAttachment::HeadOf.new(part.rule, head).as(DiagnosticFragmentAttachment)
+                     when DiagnosticFragmentAttachment::PayloadOf
+                       DiagnosticFragmentAttachment::PayloadOf.new(part.rule, anchor_remap[part.owner_anchor_index]).as(DiagnosticFragmentAttachment)
+                     else
+                       raise ArgumentError.new("unknown fragment attachment")
+                     end
+        anchor_remap[index] = anchors.size
+        anchors << original.copy_with(event_index: event_remap[original.event_index], attachment: attachment)
+        remaining.delete(index)
+      end
+      IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(text), events, anchors)
     end
   end
 
@@ -769,7 +992,7 @@ module Iyi
 
     class DerivedName < DiagnosticOrigin
       INVALID_INTERNAL_NAMES = %w(begin nil true false yield with abstract def macro require case select if unless include extend class struct module enum while until return next break lib fun alias pointerof sizeof offsetof instance_sizeof typeof private protected asm out self in end alignof instance_alignof)
-      getter source_token : DiagnosticSourceNameToken
+      getter source_token : DiagnosticSourceNameToken?
       getter derivation_kind : String
       getter definition_origin : DiagnosticOrigin?
       getter parameter_slot : String?
@@ -779,18 +1002,29 @@ module Iyi
       getter fresh_index : Int32?
       getter rendered_text : String
       getter producer_context : String
+      getter production : DiagnosticTypeSugar?
+      getter sugar_result : DiagnosticTypeSugarResult?
+      getter lowering_index : Int32?
+      @witnesses : Array(DiagnosticSourceSyntaxToken)
 
-      def initialize(@source_token : DiagnosticSourceNameToken, definition_origin : DiagnosticOrigin,
+      def witnesses : Array(DiagnosticSourceSyntaxToken); @witnesses.dup; end
+
+      def initialize(source_token : DiagnosticSourceNameToken, definition_origin : DiagnosticOrigin,
                      parameter_slot : String, parameter_index : Int32, @result : String,
                      projection : String, @fresh_index : Int32?)
+        @source_token = source_token
         @derivation_kind = "ParameterLowering"
         @definition_origin = definition_origin
         @parameter_slot = parameter_slot
         @parameter_index = parameter_index
         @projection = projection
-        unless @source_token.context == "parameter" && @source_token.binding_origin.nil? &&
-               {"INSTANCE_VAR", "CLASS_VAR"}.includes?(@source_token.token_kind) &&
-               @source_token.lexical_origin.valid_for_anchor?("Name", "parameter") &&
+        @production = nil
+        @sugar_result = nil
+        @lowering_index = nil
+        @witnesses = [] of DiagnosticSourceSyntaxToken
+        unless source_token.context == "parameter" && source_token.binding_origin.nil? &&
+               {"INSTANCE_VAR", "CLASS_VAR"}.includes?(source_token.token_kind) &&
+               source_token.lexical_origin.valid_for_anchor?("Name", "parameter") &&
                definition_origin.valid_for_anchor?("Def", "keyword")
           raise ArgumentError.new("invalid derived name source")
         end
@@ -798,14 +1032,14 @@ module Iyi
                parameter_index >= 0 && (parameter_slot == "positional" || parameter_index == 0)
           raise ArgumentError.new("invalid derived name parameter slot")
         end
-        prefix = @source_token.token_kind == "INSTANCE_VAR" ? "@" : "@@"
-        raw = @source_token.raw_text
+        prefix = source_token.token_kind == "INSTANCE_VAR" ? "@" : "@@"
+        raw = source_token.raw_text
         raise ArgumentError.new("invalid derived name prefix") unless raw.starts_with?(prefix)
         stem = raw.byte_slice(prefix.bytesize, raw.bytesize - prefix.bytesize)
         invalid = INVALID_INTERNAL_NAMES.includes?(stem)
         @producer_context = case @result
                             when "Argument" then "parameter"
-                            when "Target" then @source_token.token_kind == "INSTANCE_VAR" ? "instance_variable" : "class_variable"
+                            when "Target" then source_token.token_kind == "INSTANCE_VAR" ? "instance_variable" : "class_variable"
                             when "LocalValue" then "local_reference"
                             when "DefaultExternal" then "named_entry"
                             else raise ArgumentError.new("invalid derived name result")
@@ -815,8 +1049,8 @@ module Iyi
                            raise ArgumentError.new("invalid whole name derivation") unless @result == "Target" && @fresh_index.nil?
                            raw
                          when "StripVariablePrefix"
-                           unless (@result == "Argument" || @result == "LocalValue") && !invalid && @fresh_index.nil? ||
-                                  @result == "DefaultExternal" && invalid && @fresh_index.nil?
+                           unless ((@result == "Argument" || @result == "LocalValue") && !invalid && @fresh_index.nil?) ||
+                                  (@result == "DefaultExternal" && invalid && @fresh_index.nil?)
                              raise ArgumentError.new("invalid prefix name derivation")
                            end
                            stem
@@ -829,25 +1063,27 @@ module Iyi
                          else
                            raise ArgumentError.new("unknown name projection")
                          end
-        parents = [@source_token.lexical_origin, definition_origin] of DiagnosticOrigin
-        @source_token.binding_origin.try { |binding| parents << binding }
-        own = 1024_u64 + @source_token.raw_text.bytesize.to_u64 * 6 + @source_token.token_kind.bytesize.to_u64 * 6
-        set_graph_bounds!(own, parents)
+        set_graph_bounds!(1024_u64 + source_token.raw_text.bytesize.to_u64 * 6, [source_token.lexical_origin, definition_origin] of DiagnosticOrigin)
       end
 
       def self.regex_match_index(source_token : DiagnosticSourceNameToken, result : String) : DerivedName
         new(source_token, result)
       end
 
-      def initialize(@source_token : DiagnosticSourceNameToken, @result : String)
+      def initialize(source_token : DiagnosticSourceNameToken, @result : String)
+        @source_token = source_token
         @derivation_kind = "RegexMatchIndex"
         @definition_origin = nil
         @parameter_slot = nil
         @parameter_index = nil
         @projection = nil
         @fresh_index = nil
-        unless @source_token.context == "regex_match_index" && @source_token.binding_origin.nil? &&
-               @source_token.lexical_origin.valid_for_anchor?("Name", "regex_match_index")
+        @production = nil
+        @sugar_result = nil
+        @lowering_index = nil
+        @witnesses = [] of DiagnosticSourceSyntaxToken
+        unless source_token.context == "regex_match_index" && source_token.binding_origin.nil? &&
+               source_token.lexical_origin.valid_for_anchor?("Name", "regex_match_index")
           raise ArgumentError.new("invalid regex-match derivation source")
         end
         case @result
@@ -856,11 +1092,57 @@ module Iyi
           @rendered_text = "$~"
         when "Lookup"
           @producer_context = "method_name"
-          @rendered_text = @source_token.raw_text.ends_with?("?") ? "[]?" : "[]"
+          @rendered_text = source_token.raw_text.ends_with?("?") ? "[]?" : "[]"
         else
           raise ArgumentError.new("invalid regex-match derivation result")
         end
-        set_graph_bounds!(1024_u64 + @source_token.raw_text.bytesize.to_u64 * 6, [@source_token.lexical_origin] of DiagnosticOrigin)
+        set_graph_bounds!(1024_u64 + source_token.raw_text.bytesize.to_u64 * 6, [source_token.lexical_origin] of DiagnosticOrigin)
+      end
+
+      def self.type_sugar(production : DiagnosticTypeSugar, witnesses : Array(DiagnosticSourceSyntaxToken),
+                          result : DiagnosticTypeSugarResult, lowering_index : Int32) : DerivedName
+        new(production, witnesses, result, lowering_index)
+      end
+
+      def initialize(@production : DiagnosticTypeSugar, witnesses : Array(DiagnosticSourceSyntaxToken),
+                     result : DiagnosticTypeSugarResult, @lowering_index : Int32)
+        @source_token = nil
+        @derivation_kind = "TypeSugar"
+        @definition_origin = nil
+        @parameter_slot = nil
+        @parameter_index = nil
+        @projection = nil
+        @fresh_index = nil
+        @sugar_result = result
+        @result = result.to_s
+        @producer_context = "path_segment"
+        @rendered_text = result.to_s
+        @witnesses = witnesses.dup
+        production = @production.not_nil!
+        expected, allowed_results, allowed_indices = case production
+          when DiagnosticTypeSugar::Pointer then {["*"], [DiagnosticTypeSugarResult::Pointer], [0]}
+          when DiagnosticTypeSugar::DoublePointer then {["**"], [DiagnosticTypeSugarResult::Pointer], [0, 1]}
+          when DiagnosticTypeSugar::NilableType then {["?"], [DiagnosticTypeSugarResult::Nil], [0]}
+          when DiagnosticTypeSugar::NilableExpression then {["?"], [DiagnosticTypeSugarResult::Union, DiagnosticTypeSugarResult::Nil], [0]}
+          when DiagnosticTypeSugar::SelfNilableType then {["self?"], [DiagnosticTypeSugarResult::Nil], [0]}
+          when DiagnosticTypeSugar::StaticArray then {["[", "]"], [DiagnosticTypeSugarResult::StaticArray], [0]}
+          when DiagnosticTypeSugar::Tuple then {["{", "}"], [DiagnosticTypeSugarResult::Tuple], [0]}
+          when DiagnosticTypeSugar::NamedTuple then {["{", "}"], [DiagnosticTypeSugarResult::NamedTuple], [0]}
+          when DiagnosticTypeSugar::NilPredicate then {["nil?"], [DiagnosticTypeSugarResult::Nil], [0]}
+          else raise ArgumentError.new("unknown type-sugar production")
+        end
+        unless @witnesses.map(&.raw_text) == expected && allowed_results.includes?(result) && allowed_indices.includes?(@lowering_index)
+          raise ArgumentError.new("invalid type-sugar derivation")
+        end
+        first = @witnesses.first
+        @witnesses.each_cons_pair do |left, right|
+          unless left.input_sha256 == right.input_sha256 && left.input_bytesize == right.input_bytesize &&
+                 left.lexical_mode == right.lexical_mode && left.input_end <= right.input_start
+            raise ArgumentError.new("inconsistent type-sugar witnesses")
+          end
+        end
+        parents = @witnesses.map(&.lexical_origin)
+        set_graph_bounds!(1024_u64 + @witnesses.sum { |w| w.raw_text.bytesize.to_u64 * 6 + 256_u64 }, parents)
       end
 
       def valid_for_anchor?(kind : String, role : String) : Bool
@@ -871,22 +1153,31 @@ module Iyi
         end
       end
 
-      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index
+      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index, @production, @sugar_result, @lowering_index, @witnesses
 
       def to_json(json : JSON::Builder) : Nil
         json.object do
           json.field "kind", "DerivedName"
           json.field "derivation_kind", @derivation_kind
-          json.field "source_token", @source_token
-          if @derivation_kind == "ParameterLowering"
-            json.field "definition_origin", @definition_origin
-            json.field "parameter_slot", @parameter_slot
-            json.field "parameter_index", @parameter_index
+          if @derivation_kind == "TypeSugar"
+            json.field "production", @production.not_nil!.to_s
+            json.field "witnesses" do
+              json.array { @witnesses.each { |witness| witness.to_json(json) } }
+            end
             json.field "result", @result
-            json.field "projection", @projection
-            json.field "fresh_index", @fresh_index
+            json.field "lowering_index", @lowering_index
           else
-            json.field "result", @result
+            json.field "source_token", @source_token
+            if @derivation_kind == "ParameterLowering"
+              json.field "definition_origin", @definition_origin
+              json.field "parameter_slot", @parameter_slot
+              json.field "parameter_index", @parameter_index
+              json.field "result", @result
+              json.field "projection", @projection
+              json.field "fresh_index", @fresh_index
+            else
+              json.field "result", @result
+            end
           end
         end
       end
@@ -962,7 +1253,7 @@ module Iyi
           raise ArgumentError.new("invalid diagnostic expansion guard")
         end
         raise ArgumentError.new("invalid diagnostic anchor") if @anchor_kind.empty? || @role.empty?
-        if @token_event.selection == "SignedNumberSign" && !(@anchor_use.is_a?(DiagnosticAnchorUse::Direct) && @anchor_kind == "Call" && @role == "method" && @name_context.nil?)
+        if @token_event.selection.signed_number_sign? && !(@anchor_use.is_a?(DiagnosticAnchorUse::Direct) && @anchor_kind == "Call" && @role == "method" && @name_context.nil?)
           raise ArgumentError.new("invalid signed-number anchor use")
         end
         if context = @name_context
@@ -990,10 +1281,10 @@ module Iyi
           end
         when DiagnosticAnchorUse::HeadOf
           expected = case use.rule
-                     when "NamedArrayHead" then {"Literal", "array"}
-                     when "NamedHashHead" then {"Literal", "hash"}
-                     when "ConstantAssignHead", "ConstantTypeHead" then {"Assign", "constant"}
-                     when "MultiAssignHead" then {"Literal", "multiassign"}
+                     when DiagnosticHeadRule::NamedArrayHead then {"Literal", "array"}
+                     when DiagnosticHeadRule::NamedHashHead then {"Literal", "hash"}
+                     when DiagnosticHeadRule::ConstantAssignHead, DiagnosticHeadRule::ConstantTypeHead then {"Assign", "constant"}
+                     when DiagnosticHeadRule::MultiAssignHead then {"Literal", "multiassign"}
                      else raise ArgumentError.new("invalid head rule")
                      end
           raise ArgumentError.new("head role mismatch") unless {@anchor_kind, @role} == expected && @name_context.nil?
@@ -1008,16 +1299,16 @@ module Iyi
             raise ArgumentError.new("invalid head evidence")
           end
           case head = use.head
-          when DiagnosticAnchorHead::Anchor
+          when DiagnosticHead::Anchor
             child = head.origin.as?(Expanded) || raise ArgumentError.new("head is not an expanded child")
             parents << child
-          when DiagnosticAnchorHead::Syntax
+          when DiagnosticHead::Syntax
             parents << head.adjacent_name_origin.not_nil! if head.adjacent_name_origin
           end
         when DiagnosticAnchorUse::PayloadOf
           raise ArgumentError.new("payload role mismatch") unless @anchor_kind == "Literal" && @role == "interpolation" && @name_context.nil?
           owner = use.owner_origin.as?(Expanded) || raise ArgumentError.new("payload owner is not expanded")
-          owner_role = use.rule == "RegexInterpolationPayload" ? {"Literal", "regex"} : {"Call", "method"}
+          owner_role = use.rule == DiagnosticPayloadRule::RegexInterpolationPayload ? {"Literal", "regex"} : {"Call", "method"}
           raise ArgumentError.new("payload owner role mismatch") unless owner.valid_for_anchor?(*owner_role)
           parents << owner
           case evidence = use.evidence
@@ -1034,18 +1325,18 @@ module Iyi
         case use = @anchor_use
         when DiagnosticAnchorUse::HeadOf
           case head = use.head
-          when DiagnosticAnchorHead::Anchor
+          when DiagnosticHead::Anchor
             child = head.origin.as(Expanded)
             unless child.invocation_origin == @invocation_origin && child.macro_definition_origin == @macro_definition_origin &&
                    child.expansion_guard == @expansion_guard && child.token_event == @token_event
               raise ArgumentError.new("head event mismatch")
             end
-          when DiagnosticAnchorHead::Syntax
+          when DiagnosticHead::Syntax
             expected_text = case head.form
-                            when "GlobalPathPrefix" then "::"
-                            when "FirstSplat" then "*"
-                            when "FirstUnderscore" then "_"
-                            when "ParenthesizedFirstTarget" then "("
+                            when DiagnosticHeadSyntax::GlobalPathPrefix then "::"
+                            when DiagnosticHeadSyntax::FirstSplat then "*"
+                            when DiagnosticHeadSyntax::FirstUnderscore then "_"
+                            when DiagnosticHeadSyntax::ParenthesizedFirstTarget then "("
                             else raise ArgumentError.new("invalid syntax head")
                             end
             raise ArgumentError.new("syntax head token mismatch") unless @token_event.selected_text == expected_text

@@ -362,8 +362,8 @@ module Iyi
           ::raise ArgumentError.new("invalid diagnostic token extent at byte #{offset}")
         end
         raw = string.byte_slice(offset - @input_offset_base, snapshot[0] - offset)
-        selection = end_pos == snapshot[0] ? "Whole" : "SignedNumberSign"
-        if selection == "SignedNumberSign"
+        selection = end_pos == snapshot[0] ? DiagnosticTokenSelection::Whole : DiagnosticTokenSelection::SignedNumberSign
+        if selection == DiagnosticTokenSelection::SignedNumberSign
           unless kind == "Call" && role == "method" && snapshot[1] == "NUMBER" &&
                  end_pos == offset + 1 && (raw.starts_with?("+") || raw.starts_with?("-"))
             ::raise ArgumentError.new("invalid signed-number operator selection")
@@ -447,6 +447,29 @@ module Iyi
     private def diagnostic_current_token_snapshot : {Int32, String, String}?
       return nil unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
       {@token.input_end, @token.type.to_s, iyi? ? "Iyi" : "Crystal"}
+    end
+
+    private def diagnostic_type_syntax_token : DiagnosticSourceSyntaxToken?
+      snapshot = diagnostic_current_token_snapshot
+      return nil unless snapshot
+      start = @token.input_offset
+      origin = diagnostic_anchor("TypeSyntax", "token", start, token_snapshot: snapshot)
+      return nil unless origin
+      input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
+      digest = @diagnostic_input_digest ||= ::Crystal::Digest::SHA256.hexdigest(input)
+      raw = string.byte_slice(start - @input_offset_base, snapshot[0] - start)
+      DiagnosticSourceSyntaxToken.new(origin, digest, input.bytesize, start, snapshot[0], snapshot[2], snapshot[1], raw)
+    end
+
+    private def diagnostic_sugar_path(path : Path, production : DiagnosticTypeSugar,
+                                      first : DiagnosticSourceSyntaxToken?, result : DiagnosticTypeSugarResult,
+                                      second : DiagnosticSourceSyntaxToken? = nil, index : Int32 = 0) : Path
+      return path unless first
+      witnesses = [first]
+      witnesses << second if second
+      origin = DiagnosticOrigin::DerivedName.type_sugar(production, witnesses, result, index)
+      path.diagnostic_name_slots = {DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment) => [DiagnosticNameValue::Derived.new(origin)] of DiagnosticNameValue}
+      path
     end
 
 
@@ -1907,6 +1930,7 @@ module Iyi
     end
 
     def parse_nil?(atomic)
+      witness = diagnostic_type_syntax_token
       end_location = token_end_location
       next_token
 
@@ -1917,7 +1941,8 @@ module Iyi
         next_token_skip_space
       end
 
-      IsA.new(atomic, Path.global("Nil"), nil_check: true).at_end(end_location)
+      nil_path = diagnostic_sugar_path(Path.global("Nil"), DiagnosticTypeSugar::NilPredicate, witness, DiagnosticTypeSugarResult::Nil)
+      IsA.new(atomic, nil_path, nil_check: true).at_end(end_location)
     end
 
     def parse_negation_suffix(atomic)
@@ -7741,8 +7766,9 @@ module Iyi
           next_token_skip_space
           Self.new.at(location)
         when "self?"
+          witness = diagnostic_type_syntax_token
           next_token_skip_space
-          make_nilable_type Self.new.at(location)
+          make_nilable_type Self.new.at(location), witness, DiagnosticTypeSugar::SelfNilableType
         when Keyword::TYPEOF
           parse_typeof
         else
@@ -7766,16 +7792,22 @@ module Iyi
         skip_space
         type
       when .op_lcurly?
+        opener = diagnostic_type_syntax_token
         next_token_skip_space_or_newline
-        if named_tuple_start? || @token.type.delimiter_start?
-          type = make_named_tuple_type parse_named_type_args(:OP_RCURLY)
-        else
-          type = make_tuple_type parse_union_types(:OP_RCURLY, allow_splats: true)
-        end
+        named_tuple = named_tuple_start? || @token.type.delimiter_start?
+        tuple_type = if named_tuple
+                       make_named_tuple_type parse_named_type_args(:OP_RCURLY)
+                     else
+                       make_tuple_type parse_union_types(:OP_RCURLY, allow_splats: true)
+                     end
         check :OP_RCURLY
+        closer = diagnostic_type_syntax_token
+        production = named_tuple ? DiagnosticTypeSugar::NamedTuple : DiagnosticTypeSugar::Tuple
+        result = named_tuple ? DiagnosticTypeSugarResult::NamedTuple : DiagnosticTypeSugarResult::Tuple
+        diagnostic_sugar_path(tuple_type.name.as(Path), production, opener, result, closer)
         end_location = token_end_location
         next_token_skip_space
-        type.at(location).at_end(end_location)
+        tuple_type.at(location).at_end(end_location)
       when .op_minus_gt?
         parse_proc_type_output(nil, location)
       when .op_lparen?
@@ -7864,9 +7896,10 @@ module Iyi
       # is appeared in macro expression. (e.g. `{% if T <= Int32? %} ... {% end %}`)
       # Note that the parser cannot consume any spaces because it conflicts ternary operator.
       while expression && @token.type.op_question?
+        witness = diagnostic_type_syntax_token
         end_location = token_end_location
         next_token
-        type = make_nilable_expression(type).at_end(end_location)
+        type = make_nilable_expression(type, witness).at_end(end_location)
       end
 
       type
@@ -8050,22 +8083,28 @@ module Iyi
           next_token_skip_space
           type = Metaclass.new(type).at(type).at_end(end_location)
         when .op_question?
+          witness = diagnostic_type_syntax_token
           next_token_skip_space
-          type = make_nilable_type(type).at_end(end_location)
+          type = make_nilable_type(type, witness).at_end(end_location)
         when .op_star?
+          witness = diagnostic_type_syntax_token
           next_token_skip_space
-          type = make_pointer_type(type).at_end(end_location)
+          type = make_pointer_type(type, witness, DiagnosticTypeSugar::Pointer, 0).at_end(end_location)
         when .op_star_star?
+          witness = diagnostic_type_syntax_token
           next_token_skip_space
-          type = make_pointer_type(make_pointer_type(type)).at_end(end_location)
+          inner = make_pointer_type(type, witness, DiagnosticTypeSugar::DoublePointer, 0)
+          type = make_pointer_type(inner, witness, DiagnosticTypeSugar::DoublePointer, 1).at_end(end_location)
         when .op_lsquare?
+          opener = diagnostic_type_syntax_token
           next_token_skip_space_or_newline
           size = parse_type_arg
           skip_space_or_newline
           check :OP_RSQUARE
+          closer = diagnostic_type_syntax_token
           end_location = token_end_location
           next_token_skip_space
-          type = make_static_array_type(type, size).at_end(end_location)
+          type = make_static_array_type(type, size, opener, closer).at_end(end_location)
         else
           return type
         end
@@ -8102,24 +8141,29 @@ module Iyi
       ProcNotation.new(input_types, output_type).at(location).at_end(end_location)
     end
 
-    def make_nilable_type(type)
-      Union.new([type, Path.global("Nil").at(type)]).at(type)
+    def make_nilable_type(type, witness : DiagnosticSourceSyntaxToken?, production = DiagnosticTypeSugar::NilableType)
+      nil_path = diagnostic_sugar_path(Path.global("Nil").at(type), production, witness, DiagnosticTypeSugarResult::Nil)
+      Union.new([type, nil_path]).at(type)
     end
 
-    def make_nilable_expression(type)
-      type = Generic.new(Path.global("Union").at(type), [type, Path.global("Nil").at(type)]).at(type)
+    def make_nilable_expression(type, witness : DiagnosticSourceSyntaxToken?)
+      union_path = diagnostic_sugar_path(Path.global("Union").at(type), DiagnosticTypeSugar::NilableExpression, witness, DiagnosticTypeSugarResult::Union)
+      nil_path = diagnostic_sugar_path(Path.global("Nil").at(type), DiagnosticTypeSugar::NilableExpression, witness, DiagnosticTypeSugarResult::Nil)
+      type = Generic.new(union_path, [type, nil_path]).at(type)
       type.suffix = :question
       type
     end
 
-    def make_pointer_type(type)
-      type = Generic.new(Path.global("Pointer").at(type), [type] of ASTNode).at(type)
+    def make_pointer_type(type, witness : DiagnosticSourceSyntaxToken?, production : DiagnosticTypeSugar, index : Int32)
+      path = diagnostic_sugar_path(Path.global("Pointer").at(type), production, witness, DiagnosticTypeSugarResult::Pointer, index: index)
+      type = Generic.new(path, [type] of ASTNode).at(type)
       type.suffix = :asterisk
       type
     end
 
-    def make_static_array_type(type, size)
-      type = Generic.new(Path.global("StaticArray").at(type), [type, size] of ASTNode).at(type)
+    def make_static_array_type(type, size, opener : DiagnosticSourceSyntaxToken?, closer : DiagnosticSourceSyntaxToken?)
+      path = diagnostic_sugar_path(Path.global("StaticArray").at(type), DiagnosticTypeSugar::StaticArray, opener, DiagnosticTypeSugarResult::StaticArray, closer)
+      type = Generic.new(path, [type, size] of ASTNode).at(type)
       type.suffix = :bracket
       type
     end

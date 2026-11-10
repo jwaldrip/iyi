@@ -236,9 +236,10 @@ def source_name(value, depth):
     if lexical["kind"] == "Written":
         if lexical["input_byte_offset"] != start: raise ValueError("source origin offset mismatch")
     elif lexical["kind"] == "Expanded":
-        if (lexical["generated_byte_offset"] != start or lexical["generated_byte_end"] != end or
+        event = lexical["token_event"]
+        if (event["input_start"] != start or event["input_end"] != end or
                 lexical["expansion_guard"] != "sha256:" + value["input_sha256"] or
-                lexical["token_text"] != value["raw_text"]):
+                event["token_text"] != value["raw_text"] or event["selection"] != "Whole"):
             raise ValueError("expanded source token mismatch")
     else:
         raise ValueError("invalid lexical name origin")
@@ -248,6 +249,53 @@ INVALID_PARAMETER_NAMES = frozenset("begin nil true false yield with abstract de
 
 
 def derived_name(value, depth):
+    if value.get("derivation_kind") == "TypeSugar":
+        fields(value, "kind derivation_kind production witnesses result lowering_index")
+        matrix = {
+            "Pointer": (("*",), {("Pointer", 0)}),
+            "DoublePointer": (("**",), {("Pointer", 0), ("Pointer", 1)}),
+            "NilableType": (("?",), {("Nil", 0)}),
+            "NilableExpression": (("?",), {("Union", 0), ("Nil", 0)}),
+            "SelfNilableType": (("self?",), {("Nil", 0)}),
+            "StaticArray": (("[", "]"), {("StaticArray", 0)}),
+            "Tuple": (("{", "}"), {("Tuple", 0)}),
+            "NamedTuple": (("{", "}"), {("NamedTuple", 0)}),
+            "NilPredicate": (("nil?",), {("Nil", 0)}),
+        }
+        production = value["production"]
+        if production not in matrix: raise ValueError("unknown type sugar")
+        number(value["lowering_index"])
+        spellings, results = matrix[production]
+        if (value["result"], value["lowering_index"]) not in results: raise ValueError("invalid type sugar result")
+        witnesses = value["witnesses"]
+        if not isinstance(witnesses, list) or len(witnesses) != len(spellings): raise ValueError("invalid type sugar witnesses")
+        previous, common = -1, None
+        for witness, spelling in zip(witnesses, spellings):
+            fields(witness, "lexical_origin input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text")
+            if origin(witness["lexical_origin"], depth + 1) != ("TypeSyntax", "token"): raise ValueError("invalid type syntax origin")
+            guard(witness["input_sha256"])
+            for key in ("input_bytesize", "input_start", "input_end"): number(witness[key])
+            token_fields(witness); text(witness["raw_text"])
+            expected_kind = "IDENT" if spelling in ("self?", "nil?") else spelling
+            if (witness["token_kind"] != expected_kind or witness["raw_text"] != spelling or
+                    witness["input_start"] < previous or witness["input_end"] > witness["input_bytesize"] or
+                    witness["input_end"] - witness["input_start"] != len(spelling.encode("utf-8"))):
+                raise ValueError("invalid type syntax token")
+            lexical = witness["lexical_origin"]
+            if lexical["kind"] == "Written":
+                if lexical["input_byte_offset"] != witness["input_start"]: raise ValueError("type syntax offset mismatch")
+            elif lexical["kind"] == "Expanded":
+                event = lexical["token_event"]
+                if (lexical["expansion_guard"] != "sha256:" + witness["input_sha256"] or event["selection"] != "Whole" or
+                        event["input_start"] != witness["input_start"] or event["input_end"] != witness["input_end"] or
+                        event["token_kind"] != witness["token_kind"] or event["token_text"] != spelling or
+                        event["lexical_mode"] != witness["lexical_mode"]):
+                    raise ValueError("expanded type syntax mismatch")
+            else: raise ValueError("invalid type syntax source")
+            identity = (witness["input_sha256"], witness["input_bytesize"], witness["lexical_mode"])
+            if common is not None and common != identity: raise ValueError("type syntax input mismatch")
+            common, previous = identity, witness["input_end"]
+        return (("Name", "path_segment"), value["result"].encode("utf-8"))
     if value.get("derivation_kind") == "RegexMatchIndex":
         fields(value, "kind derivation_kind source_token result")
         source = value["source_token"]
@@ -303,6 +351,135 @@ def name_value(value, depth):
     raise ValueError("unknown name value")
 
 
+RAW_PRODUCERS = frozenset("MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter".split())
+HEAD_ROLES = {"NamedArrayHead": ("Literal", "array"), "NamedHashHead": ("Literal", "hash"),
+              "ConstantAssignHead": ("Assign", "constant"), "ConstantTypeHead": ("Assign", "constant"),
+              "MultiAssignHead": ("Literal", "multiassign")}
+WITNESS_FORMS = {"NamedArrayHead": (("Open", "{"),), "NamedHashHead": (("Open", "{"),),
+                 "ConstantAssignHead": (("Equals", "="),),
+                 "ConstantTypeHead": (("Colon", ":"), ("Equals", "="))}
+SCOPE_KEYS = ("invocation_origin", "macro_definition_origin", "expansion_guard")
+
+
+def raw_event(event, expected, mode, depth):
+    fields(event, "input_start input_end token_kind token_text lexical_mode selection byte_parts")
+    token_fields(event)
+    for key in ("input_start", "input_end"): number(event[key])
+    if (event["lexical_mode"] != mode or event["selection"] != "Whole" or
+            event["token_kind"] != expected or event["token_text"] != expected or event["input_end"] - event["input_start"] != len(expected.encode())):
+        raise ValueError("invalid raw syntax witness")
+    parts = event["byte_parts"]
+    if not isinstance(parts, list) or not parts: raise ValueError("missing raw witness parts")
+    cursor = event["input_start"]
+    for part in parts:
+        fields(part, "kind start_offset end_offset emitter_origin producer")
+        for key in ("start_offset", "end_offset"): number(part[key])
+        if (part["kind"] != "Generated" or part["producer"] not in RAW_PRODUCERS or
+                part["start_offset"] != cursor or not cursor < part["end_offset"] <= event["input_end"]):
+            raise ValueError("invalid raw syntax producer")
+        if part["emitter_origin"] is not None and origin(part["emitter_origin"], depth + 1) not in (("MacroDirective", "expression"), ("MacroDirective", "control")):
+            raise ValueError("invalid raw witness emitter")
+        cursor = part["end_offset"]
+    if cursor != event["input_end"]: raise ValueError("incomplete raw witness")
+
+
+def shared_scope(left, right):
+    return all(left[k] == right[k] for k in SCOPE_KEYS)
+
+
+def anchor_use(value, depth):
+    use, event = value["anchor_use"], value["token_event"]
+    tag = use["kind"]
+    if tag == "Direct": return
+    if tag == "HeadOf":
+        fields(use, "kind rule evidence head emitter_origin")
+        rule = use["rule"]
+        if rule not in HEAD_ROLES or (value["anchor_kind"], value["role"]) != HEAD_ROLES[rule]:
+            raise ValueError("invalid head rule")
+        head = use["head"]
+        if not isinstance(head, dict): raise ValueError("invalid head")
+        if head.get("kind") == "Anchor":
+            fields(head, "kind origin")
+            child = head["origin"]
+            child_role = origin(child, depth + 1)
+            allowed = {("Name", "path_segment")}
+            if rule == "MultiAssignHead":
+                allowed |= {("Call", "method"), ("Name", "local_reference"), ("Name", "instance_variable"),
+                            ("Name", "class_variable"), ("Name", "special_global"), ("ProcLiteral", "arrow"),
+                            ("ProcPointer", "arrow"), ("Cast", "keyword")}
+                allowed |= {("Literal", role) for role in ("array", "hash", "regex", "interpolation", "range", "case", "select")}
+            if (child_role not in allowed or child.get("kind") != "Expanded" or child["anchor_use"] != {"kind": "Direct"} or
+                    not shared_scope(value, child) or child["token_event"] != event):
+                raise ValueError("invalid head child")
+        elif head.get("kind") == "Syntax":
+            fields(head, "kind form adjacent_name_origin")
+            form = head["form"]
+            allowed = {"GlobalPathPrefix": "::", "FirstSplat": "*", "FirstUnderscore": "_", "ParenthesizedFirstTarget": "("}
+            if form not in allowed or event["token_text"] != allowed[form] or event["selection"] != "Whole":
+                raise ValueError("invalid syntax head")
+            adjacent = head["adjacent_name_origin"]
+            if form == "GlobalPathPrefix":
+                if (origin(adjacent, depth + 1) != ("Name", "path_segment") or adjacent.get("kind") != "Expanded" or
+                        not shared_scope(value, adjacent) or adjacent["anchor_use"] != {"kind": "Direct"} or
+                        adjacent["token_event"]["input_start"] != event["input_end"] or
+                        adjacent["token_event"]["selection"] != "Whole" or adjacent["token_event"]["token_kind"] != "CONST" or
+                        adjacent["token_event"]["lexical_mode"] != event["lexical_mode"]):
+                    raise ValueError("invalid global path head")
+            elif rule != "MultiAssignHead" or adjacent is not None:
+                raise ValueError("invalid first target syntax")
+        else: raise ValueError("unknown head")
+    elif tag == "PayloadOf":
+        fields(use, "kind rule evidence owner_origin emitter_origin")
+        owner = use["owner_origin"]
+        owner_role = origin(owner, depth + 1)
+        rule = use["rule"]
+        if ((value["anchor_kind"], value["role"]) != ("Literal", "interpolation") or value["name_context"] is not None or
+                owner.get("kind") != "Expanded" or owner["anchor_use"] != {"kind": "Direct"} or
+                not shared_scope(value, owner) or owner["token_event"] != event):
+            raise ValueError("invalid payload owner")
+        if rule == "RegexInterpolationPayload":
+            if owner_role != ("Literal", "regex") or event["token_text"] not in ("/", "%r("): raise ValueError("invalid regex owner")
+        elif rule == "CommandInterpolationPayload":
+            if owner_role != ("Call", "method") or event["token_text"] != "`": raise ValueError("invalid command owner")
+        else: raise ValueError("unknown payload rule")
+    else: raise ValueError("unknown anchor use")
+    evidence = use["evidence"]
+    if not isinstance(evidence, dict): raise ValueError("invalid use evidence")
+    emitter = use["emitter_origin"]
+    if emitter is not None and origin(emitter, depth + 1) not in (("MacroDirective", "expression"), ("MacroDirective", "control")):
+        raise ValueError("invalid anchor use emitter")
+    if evidence.get("kind") in ("RawSyntax", "DerivedFromOwner") and emitter is not None:
+        raise ValueError("invalid inferred emitter")
+    if evidence.get("kind") == "Spliced":
+        fields(evidence, "kind source_origin")
+        if origin(evidence["source_origin"], depth + 1) != (value["anchor_kind"], value["role"]):
+            raise ValueError("invalid preserved parent")
+    elif evidence.get("kind") == "Constructed":
+        fields(evidence, "kind producer")
+        if evidence["producer"] != "ConstructedAst": raise ValueError("invalid constructed parent")
+    elif evidence.get("kind") == "DerivedFromOwner":
+        fields(evidence, "kind")
+        if tag != "PayloadOf" or any(part.get("kind") != "Generated" or part.get("producer") not in RAW_PRODUCERS for part in event["byte_parts"]):
+            raise ValueError("invalid derived payload")
+    elif evidence.get("kind") == "RawSyntax":
+        fields(evidence, "kind witnesses")
+        if tag != "HeadOf": raise ValueError("invalid raw syntax use")
+        witnesses = evidence["witnesses"]
+        if not isinstance(witnesses, list): raise ValueError("invalid witnesses")
+        forms = WITNESS_FORMS.get(rule)
+        if rule == "MultiAssignHead":
+            forms = (("Splat", "*"), ("Equals", "=")) if use["head"].get("form") == "FirstSplat" else (("Comma", ","), ("Equals", "="))
+        if forms is None or len(witnesses) != len(forms): raise ValueError("missing raw syntax witnesses")
+        last = event["input_end"]
+        for witness, (role, spelling) in zip(witnesses, forms):
+            fields(witness, "role event")
+            if witness["role"] != role or witness["event"]["input_start"] < last:
+                raise ValueError("invalid witness order")
+            raw_event(witness["event"], spelling, event["lexical_mode"], depth)
+            last = witness["event"]["input_end"]
+    else: raise ValueError("unknown use evidence")
+
+
 def origin(value, depth=0):
     if depth > 128 or not isinstance(value, dict):
         raise ValueError("invalid origin depth")
@@ -322,11 +499,14 @@ def origin(value, depth=0):
             return ("ProcLiteral", "arrow")
         if key == ("inline_macro_definition", "macro") and parent in (("MacroDirective", "expression"), ("MacroDirective", "control")):
             return ("Macro", "keyword")
+        if ((key == ("literal_expansion_node", "regex:interpolation") and parent == ("Literal", "regex")) or
+                (key == ("literal_expansion_node", "command:interpolation") and parent == ("Call", "method"))):
+            return ("Literal", "interpolation")
         return ("Synthetic", value["synthesis_kind"])
     elif kind == "DerivedName":
         return derived_name(value, depth)[0]
     elif kind == "Expanded":
-        fields(value, "kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset generated_byte_end token_kind token_text lexical_mode anchor_kind role name_context emission_parts")
+        fields(value, "kind invocation_origin macro_definition_origin expansion_guard anchor_kind role name_context token_event anchor_use")
         invocation = origin(value["invocation_origin"], depth + 1)
         definition = origin(value["macro_definition_origin"], depth + 1)
         if invocation not in (("Call", "method"), ("MacroDirective", "expression"), ("MacroDirective", "control"),
@@ -334,21 +514,36 @@ def origin(value, depth=0):
                               ("Def", "keyword"), ("Macro", "keyword")) or definition != ("Macro", "keyword"):
             raise ValueError("invalid macro ancestry")
         guard(value["expansion_guard"], "sha256:")
-        number(value["generated_byte_offset"]); number(value["generated_byte_end"])
-        token_fields(value)
-        text(value["anchor_kind"]); text(value["role"]); text(value["token_text"])
-        output = value["token_text"].encode("utf-8")
-        start, finish = value["generated_byte_offset"], value["generated_byte_end"]
-        if finish <= start or finish - start != len(output): raise ValueError("invalid generated token span")
+        event = fields(value["token_event"], "input_start input_end token_kind token_text lexical_mode selection byte_parts")
+        number(event["input_start"]); number(event["input_end"])
+        token_fields(event)
+        text(value["anchor_kind"]); text(value["role"]); text(event["token_text"])
+        output = event["token_text"].encode("utf-8")
+        start, measured_end = event["input_start"], event["input_end"]
+        if measured_end <= start or measured_end - start != len(output): raise ValueError("invalid generated token span")
+        use = value["anchor_use"]
+        if not isinstance(use, dict) or use.get("kind") not in ("Direct", "HeadOf", "PayloadOf"):
+            raise ValueError("invalid anchor use")
+        direct = use["kind"] == "Direct"
+        if direct: fields(use, "kind")
+        if event["selection"] == "Whole": finish = measured_end
+        elif event["selection"] == "SignedNumberSign":
+            if (not direct or (value["anchor_kind"], value["role"]) != ("Call", "method") or
+                    event["token_kind"] != "NUMBER" or len(output) < 2 or
+                    output[:1] not in (b"+", b"-") or output[1:2] not in tuple(bytes([i]) for i in range(48, 58))):
+                raise ValueError("invalid signed number selection")
+            finish = start + 1
+            output = output[:1]
+        else: raise ValueError("unknown token selection")
         context = value["name_context"]
         if value["anchor_kind"] == "Name" and context is None: raise ValueError("missing name context")
         if context is not None and context not in NAME_CONTEXTS: raise ValueError("unknown name context")
         if context is not None and not ((value["anchor_kind"], value["role"]) == ("Name", context) or
                                         (value["anchor_kind"], value["role"], context) == ("Call", "method", "method_name")):
             raise ValueError("name context on structural anchor")
-        if context is not None and not name_token(value["token_kind"], value["token_text"], value["lexical_mode"], context):
+        if context is not None and not name_token(event["token_kind"], event["token_text"], event["lexical_mode"], context):
             raise ValueError("receiving token disagrees with name context")
-        parts = value["emission_parts"]
+        parts = event["byte_parts"]
         if not isinstance(parts, list) or not parts: raise ValueError("missing emission parts")
         end = start
         for part in parts:
@@ -359,11 +554,12 @@ def origin(value, depth=0):
                 if part["producer"] not in PRODUCERS: raise ValueError("unknown producer")
             elif tag == "AstAnchor":
                 fields(part, "kind start_offset end_offset emitter_origin source_origin")
-                if len(parts) != 1 or origin(part["source_origin"], depth + 1) != (value["anchor_kind"], value["role"]):
+                source_role = origin(part["source_origin"], depth + 1)
+                if len(parts) != 1 or (direct and source_role != (value["anchor_kind"], value["role"])):
                     raise ValueError("invalid structural source")
             elif tag == "NameSplice":
                 fields(part, "kind start_offset end_offset emitter_origin source_name")
-                if context is None: raise ValueError("name contribution without receiving context")
+                if direct and context is None: raise ValueError("name contribution without receiving context")
                 raw = name_value(part["source_name"], depth + 1)
             else:
                 raise ValueError("unknown emission part")
@@ -379,6 +575,7 @@ def origin(value, depth=0):
                 raise ValueError("name contribution bytes differ")
             end = part["end_offset"]
         if end != finish: raise ValueError("incomplete token coverage")
+        anchor_use(value, depth)
     else:
         raise ValueError("unknown origin")
     text(value["anchor_kind"]); text(value["role"])
@@ -403,7 +600,22 @@ def checked_origin(value):
         else:
             size += len(json.dumps(node, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         if size > 8 * 1024 * 1024: raise ValueError("origin size limit exceeded")
-    return origin(value)
+    result = origin(value)
+    events, stack = {}, [value]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if node.get("kind") == "Expanded":
+                event = node["token_event"]
+                scope = json.dumps([node[k] for k in SCOPE_KEYS], sort_keys=True, separators=(",", ":"))
+                key = (scope, event["input_start"])
+                if key in events and events[key] != event:
+                    raise ValueError("conflicting token event identity")
+                events[key] = event
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return result
 
 
 NOMINAL_TYPES = frozenset("NilType VoidType BoolType CharType IntegerType FloatType SymbolType NoReturnType PrimitiveType AliasType ClassType ModuleType EnumType NonGenericClassType NonGenericModuleType TraitType FileModule GenericClassType GenericModuleType GenericTraitType LibType".split())

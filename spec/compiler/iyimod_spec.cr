@@ -71,7 +71,7 @@ describe Iyi::DiagnosticOrigin do
     call = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 8, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 3, "Macro", "keyword")
     splice = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 20, "Block", "opener")
-    event = Iyi::DiagnosticTokenEvent.new(17, 18, "{", "{", "Iyi", "Whole",
+    event = Iyi::DiagnosticTokenEvent.new(17, 18, "{", "{", "Iyi", Iyi::DiagnosticTokenSelection::Whole,
       [Iyi::DiagnosticEmissionPart::AstAnchor.new(17, 18, nil, splice)] of Iyi::DiagnosticEmissionPart)
     expansion = Iyi::DiagnosticOrigin::Expanded.new(call, definition, "sha256:" + "0" * 64,
       "Block", "opener", nil, event, Iyi::DiagnosticAnchorUse::Direct.new)
@@ -236,7 +236,7 @@ describe Iyi::DiagnosticOrigin do
     end
 
     parts = [Iyi::DiagnosticEmissionPart::Generated.new(0, 2, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart
-    event = Iyi::DiagnosticTokenEvent.new(0, 2, "->", "->", "Iyi", "Whole", parts)
+    event = Iyi::DiagnosticTokenEvent.new(0, 2, "->", "->", "Iyi", Iyi::DiagnosticTokenSelection::Whole, parts)
     [{"Include", "method"}, {"Extend", "control"}, {"ClassDef", "method"},
      {"Def", "method"}, {"Macro", "control"}, {"Module", "keyword"}].each do |kind, role|
       invalid = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 0, kind, role)
@@ -340,7 +340,7 @@ describe Iyi::DiagnosticOrigin do
     origins = [
       Iyi::DiagnosticOrigin::Written.new("app/main", "/src/literals.cr", 4, "Literal", "regex"),
       Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin, "sha256:" + "0" * 64, "Literal", "regex", nil,
-        Iyi::DiagnosticTokenEvent.new(8, 9, "DELIMITER_START", "/", "Iyi", "Whole",
+        Iyi::DiagnosticTokenEvent.new(8, 9, "DELIMITER_START", "/", "Iyi", Iyi::DiagnosticTokenSelection::Whole,
           [Iyi::DiagnosticEmissionPart::Generated.new(8, 9, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart),
         Iyi::DiagnosticAnchorUse::Direct.new),
     ] of Iyi::DiagnosticOrigin
@@ -957,7 +957,7 @@ describe Iyi::DiagnosticOrigin do
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
     origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    origin.token_event.selection.should eq("SignedNumberSign")
+    origin.token_event.selection.should eq(Iyi::DiagnosticTokenSelection::SignedNumberSign)
     origin.token_event.byte_parts.should eq([Iyi::DiagnosticEmissionPart::Generated.new(1, 2, emitter, Iyi::DiagnosticMacroProducer::MacroId)])
   end
 
@@ -1040,7 +1040,7 @@ describe Iyi::DiagnosticOrigin do
   it "distinguishes an inline macro directive and its synthetic definition" do
     directive = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "MacroDirective", "control")
     definition = Iyi::DiagnosticOrigin::Synthetic.new(directive, "inline_macro_definition", "macro")
-    event = Iyi::DiagnosticTokenEvent.new(4, 6, "->", "->", "Iyi", "Whole",
+    event = Iyi::DiagnosticTokenEvent.new(4, 6, "->", "->", "Iyi", Iyi::DiagnosticTokenSelection::Whole,
       [Iyi::DiagnosticEmissionPart::Generated.new(4, 6, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart)
     expanded = Iyi::DiagnosticOrigin::Expanded.new(directive, definition, "sha256:" + "0" * 64,
       "ProcLiteral", "arrow", nil, event, Iyi::DiagnosticAnchorUse::Direct.new)
@@ -1052,7 +1052,7 @@ describe Iyi::DiagnosticOrigin do
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     splice = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "Block", "opener")
-    event = Iyi::DiagnosticTokenEvent.new(4, 5, "{", "{", "Iyi", "Whole",
+    event = Iyi::DiagnosticTokenEvent.new(4, 5, "{", "{", "Iyi", Iyi::DiagnosticTokenSelection::Whole,
       [Iyi::DiagnosticEmissionPart::AstAnchor.new(4, 5, nil, splice)] of Iyi::DiagnosticEmissionPart)
     expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64,
       "Block", "opener", nil, event, Iyi::DiagnosticAnchorUse::Direct.new)
@@ -1135,7 +1135,7 @@ describe Iyi::DiagnosticOrigin do
       Iyi::DiagnosticEmissionPart::Generated.new(0, 2, nil, Iyi::DiagnosticMacroProducer::MacroTemplate),
       Iyi::DiagnosticEmissionPart::NameSplice.new(2, 7, nil, Iyi::DiagnosticNameValue::Observed.new(token)),
     ] of Iyi::DiagnosticEmissionPart
-    event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@empty", "Crystal", "Whole", parts)
+    event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@empty", "Crystal", Iyi::DiagnosticTokenSelection::Whole, parts)
     expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition,
       "sha256:" + ::Crystal::Digest::SHA256.hexdigest("@@empty"),
       "Name", "class_variable", "class_variable", event, Iyi::DiagnosticAnchorUse::Direct.new)
@@ -1189,14 +1189,14 @@ describe Iyi::DiagnosticOrigin do
       Iyi::DiagnosticEmissionPart::NameSplice.new(2, 6, nil, Iyi::DiagnosticNameValue::Observed.new(token))
     end
     expect_raises(ArgumentError) do
-      invalid_event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@other", "Crystal", "Whole", parts)
+      invalid_event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@other", "Crystal", Iyi::DiagnosticTokenSelection::Whole, parts)
       Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64,
         "Name", "class_variable", "class_variable", invalid_event, Iyi::DiagnosticAnchorUse::Direct.new)
     end
     expect_raises(ArgumentError) do
       short_parts = [Iyi::DiagnosticEmissionPart::Generated.new(0, 1, nil, Iyi::DiagnosticMacroProducer::MacroTemplate),
                      Iyi::DiagnosticEmissionPart::NameSplice.new(2, 7, nil, Iyi::DiagnosticNameValue::Observed.new(token))] of Iyi::DiagnosticEmissionPart
-      invalid_event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@empty", "Crystal", "Whole", short_parts)
+      invalid_event = Iyi::DiagnosticTokenEvent.new(0, 7, "CLASS_VAR", "@@empty", "Crystal", Iyi::DiagnosticTokenSelection::Whole, short_parts)
       Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64,
         "Name", "class_variable", "class_variable", invalid_event, Iyi::DiagnosticAnchorUse::Direct.new)
     end
@@ -1215,6 +1215,42 @@ describe Iyi::DiagnosticOrigin do
     end
   end
 
+  it "transports shared-event head and payload uses with independent parent origins" do
+    invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/main.cr", 0, "Call", "method")
+    definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/absent/macro.cr", 0, "Macro", "keyword")
+    source = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/source.cr", 0, "Literal", "array")
+    guard = "sha256:" + ::Crystal::Digest::SHA256.hexdigest("Set")
+    event = Iyi::DiagnosticTokenEvent.new(0, 3, "CONST", "Set", "Crystal", Iyi::DiagnosticTokenSelection::Whole,
+      [Iyi::DiagnosticEmissionPart::Generated.new(0, 3, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart)
+    child = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, guard,
+      "Name", "path_segment", "path_segment", event, Iyi::DiagnosticAnchorUse::Direct.new)
+    use = Iyi::DiagnosticAnchorUse::HeadOf.new(Iyi::DiagnosticHeadRule::NamedArrayHead,
+      Iyi::DiagnosticAnchorEvidence::Spliced.new(source), Iyi::DiagnosticHead::Anchor.new(child), nil)
+    parent = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, guard,
+      "Literal", "array", nil, event, use)
+
+    regex_event = Iyi::DiagnosticTokenEvent.new(0, 1, "DELIMITER_START", "/", "Crystal", Iyi::DiagnosticTokenSelection::Whole,
+      [Iyi::DiagnosticEmissionPart::Generated.new(0, 1, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart)
+    regex_guard = "sha256:" + ::Crystal::Digest::SHA256.hexdigest("/")
+    owner = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, regex_guard,
+      "Literal", "regex", nil, regex_event, Iyi::DiagnosticAnchorUse::Direct.new)
+    payload_use = Iyi::DiagnosticAnchorUse::PayloadOf.new(Iyi::DiagnosticPayloadRule::RegexInterpolationPayload,
+      Iyi::DiagnosticAnchorEvidence::DerivedFromOwner.new, owner, nil)
+    payload = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, regex_guard,
+      "Literal", "interpolation", nil, regex_event, payload_use)
+    table = Iyi::IyiMod::DiagnosticOrigins.new
+    parent_index = table.intern(parent)
+    payload_index = table.intern(payload)
+    io = IO::Memory.new
+    table.write(io)
+    io.rewind
+    decoded = Iyi::IyiMod::DiagnosticOrigins.read(io)
+    decoded.parent(parent_index).should eq(parent)
+    decoded.parent(payload_index).should eq(payload)
+    decoded.parent(parent_index).as(Iyi::DiagnosticOrigin::Expanded).anchor_use.should eq(use)
+    decoded.parent(payload_index).as(Iyi::DiagnosticOrigin::Expanded).anchor_use.should eq(payload_use)
+  end
+
   it "interns derived names before macro compositions and rejects forged derivations" do
     source = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/parameter.cr", 0, "Name", "parameter")
     token = Iyi::DiagnosticSourceNameToken.new(source, nil, "parameter",
@@ -1230,7 +1266,7 @@ describe Iyi::DiagnosticOrigin do
       Iyi::DiagnosticEmissionPart::Generated.new(0, 6, nil, Iyi::DiagnosticMacroProducer::MacroTemplate),
       Iyi::DiagnosticEmissionPart::NameSplice.new(6, 7, nil, value),
     ] of Iyi::DiagnosticEmissionPart
-    event = Iyi::DiagnosticTokenEvent.new(0, 7, "IDENT", "prefixx", "Crystal", "Whole", parts)
+    event = Iyi::DiagnosticTokenEvent.new(0, 7, "IDENT", "prefixx", "Crystal", Iyi::DiagnosticTokenSelection::Whole, parts)
     expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin,
       "sha256:" + ::Crystal::Digest::SHA256.hexdigest("prefixx"),
       "Call", "method", "method_name", event, Iyi::DiagnosticAnchorUse::Direct.new)
@@ -1284,8 +1320,8 @@ describe Iyi::DiagnosticOrigin do
       derived.map(&.result).should contain("Target")
       derived.map(&.result).should contain("LocalValue")
       derived.each do |name|
-        name.source_token.raw_text.should eq(parameter)
-        name.source_token.input_sha256.should eq(::Crystal::Digest::SHA256.hexdigest(original))
+        name.source_token.not_nil!.raw_text.should eq(parameter)
+        name.source_token.not_nil!.input_sha256.should eq(::Crystal::Digest::SHA256.hexdigest(original))
         name.definition_origin.should eq(definition.diagnostic_origin)
       end
       if parameter == "@select"
@@ -1383,7 +1419,7 @@ describe Iyi::DiagnosticOrigin do
           lookup = call.diagnostic_origin.as(Iyi::DiagnosticOrigin::DerivedName)
           lookup.derivation_kind.should eq("RegexMatchIndex")
           lookup.result.should eq("Lookup")
-          lookup.source_token.raw_text.should eq(source)
+          lookup.source_token.not_nil!.raw_text.should eq(source)
           match = call.obj.as(Iyi::Global).diagnostic_name_slots[
             Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)].first.as(Iyi::DiagnosticNameValue::Derived).origin
           match.result.should eq("MatchData")

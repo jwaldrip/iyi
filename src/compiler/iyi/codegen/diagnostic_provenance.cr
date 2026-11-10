@@ -241,19 +241,31 @@ module Iyi::DiagnosticProvenance
     when "DerivedName"
       derived_name_schema4!(value, depth)
     when "Expanded"
-      expansion = fields(value, %w(kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset generated_byte_end token_kind token_text lexical_mode anchor_kind role name_context emission_parts))
+      expansion = fields(value, %w(kind invocation_origin macro_definition_origin expansion_guard anchor_kind role name_context token_event anchor_use))
       origin_schema4!(expansion["invocation_origin"], depth + 1)
       origin_schema4!(expansion["macro_definition_origin"], depth + 1)
       guard = expansion["expansion_guard"].as_s
       raise "invalid expansion guard" unless guard.matches?(/\Asha256:[0-9a-f]{64}\z/)
-      mode = expansion["lexical_mode"].as_s
+      event = fields(expansion["token_event"], %w(input_start input_end token_kind token_text lexical_mode selection byte_parts))
+      mode = event["lexical_mode"].as_s
       raise "invalid lexical mode" unless mode == "Crystal" || mode == "Iyi"
-      raise "unknown token kind" unless Iyi::Token::Kind.values.any? { |kind| kind.to_s == expansion["token_kind"].as_s }
-      token = expansion["token_text"].as_s
+      raise "unknown token kind" unless Iyi::Token::Kind.values.any? { |kind| kind.to_s == event["token_kind"].as_s }
+      token = event["token_text"].as_s
       raise "invalid token text" if token.empty? || !token.valid_encoding?
-      first = expansion["generated_byte_offset"].as_i64
-      last = expansion["generated_byte_end"].as_i64
-      raise "invalid token extent" unless first >= 0 && last <= Int32::MAX && last - first == token.bytesize && last > first
+      first = event["input_start"].as_i64
+      measured_end = event["input_end"].as_i64
+      raise "invalid token extent" unless first >= 0 && measured_end <= Int32::MAX && measured_end - first == token.bytesize && measured_end > first
+      use = expansion["anchor_use"].as_h
+      direct = use["kind"].as_s == "Direct"
+      fields(expansion["anchor_use"], %w(kind)) if direct
+      last = case event["selection"].as_s
+             when "Whole" then measured_end
+             when "SignedNumberSign"
+               valid_sign = token.bytesize >= 2 && (token.byte_at(0) == '+'.ord || token.byte_at(0) == '-'.ord) && token.byte_at(1) >= '0'.ord && token.byte_at(1) <= '9'.ord
+               raise "invalid signed number selection" unless direct && expansion["anchor_kind"].as_s == "Call" && expansion["role"].as_s == "method" && event["token_kind"].as_s == "NUMBER" && valid_sign
+               first + 1
+             else raise "unknown token selection"
+             end
       context = expansion["name_context"]
       raise "missing name context" if expansion["anchor_kind"].as_s == "Name" && context.raw.nil?
       unless context.raw.nil?
@@ -261,9 +273,9 @@ module Iyi::DiagnosticProvenance
         raise "unknown name context" unless NAME_CONTEXTS.includes?(name)
         kind, role = expansion["anchor_kind"].as_s, expansion["role"].as_s
         raise "invalid receiving name role" unless (kind == "Name" && role == name) || (kind == "Call" && role == "method" && name == "method_name")
-        raise "invalid receiving name token" unless name_token?(expansion["token_kind"].as_s, token, mode, name)
+        raise "invalid receiving name token" unless name_token?(event["token_kind"].as_s, token, mode, name)
       end
-      parts = expansion["emission_parts"].as_a
+      parts = event["byte_parts"].as_a
       raise "expanded origin has no emission parts" if parts.empty?
       cursor = first
       parts.each do |part|
@@ -277,10 +289,10 @@ module Iyi::DiagnosticProvenance
           raise "structural source must cover token" unless parts.size == 1
           origin_schema4!(entry["source_origin"], depth + 1)
           source = Iyi::DiagnosticOrigin.from_json(entry["source_origin"])
-          raise "structural source role mismatch" unless source.valid_for_anchor?(expansion["anchor_kind"].as_s, expansion["role"].as_s)
+          raise "structural source role mismatch" if direct && !source.valid_for_anchor?(expansion["anchor_kind"].as_s, expansion["role"].as_s)
         when "NameSplice"
           fields(part, %w(kind start_offset end_offset emitter_origin source_name))
-          raise "name contribution without context" if context.raw.nil?
+          raise "name contribution without context" if direct && context.raw.nil?
           selected = name_value_schema4!(entry["source_name"], depth + 1)
           offset = entry["start_offset"].as_i64 - first
           length = entry["end_offset"].as_i64 - entry["start_offset"].as_i64
@@ -302,15 +314,246 @@ module Iyi::DiagnosticProvenance
         cursor = end_offset
       end
       raise "incomplete token coverage" unless cursor == last
+      anchor_use_schema4!(value, depth)
     else
       raise "unknown diagnostic origin kind"
     end
+  end
+
+  RAW_MACRO_PRODUCERS = %w(MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter)
+
+  private def self.same_scope?(left : Hash(String, JSON::Any), right : Hash(String, JSON::Any)) : Bool
+    %w(invocation_origin macro_definition_origin expansion_guard).all? { |key| left[key] == right[key] }
+  end
+
+  private def self.raw_witness_schema4!(value : JSON::Any, spelling : String, mode : String, depth : Int32) : Nil
+    event = fields(value, %w(input_start input_end token_kind token_text lexical_mode selection byte_parts))
+    first, last = event["input_start"].as_i64, event["input_end"].as_i64
+    raise "invalid raw witness" unless first >= 0 && last <= Int32::MAX && last - first == spelling.bytesize &&
+      event["token_kind"].as_s == spelling && event["token_text"].as_s == spelling && event["selection"].as_s == "Whole" && event["lexical_mode"].as_s == mode
+    raise "unknown witness token kind" unless Iyi::Token::Kind.values.any? { |kind| kind.to_s == event["token_kind"].as_s }
+    parts = event["byte_parts"].as_a
+    raise "missing raw witness" if parts.empty?
+    cursor = first
+    parts.each do |part|
+      item = fields(part, %w(kind start_offset end_offset emitter_origin producer))
+      start_offset, end_offset = item["start_offset"].as_i64, item["end_offset"].as_i64
+      unless item["kind"].as_s == "Generated" && RAW_MACRO_PRODUCERS.includes?(item["producer"].as_s) &&
+             start_offset == cursor && end_offset > cursor && end_offset <= last
+        raise "invalid raw witness producer"
+      end
+      emitter = item["emitter_origin"]
+      unless emitter.raw.nil?
+        origin_schema4!(emitter, depth + 1)
+        directive = Iyi::DiagnosticOrigin.from_json(emitter)
+        raise "invalid witness emitter" unless directive.valid_for_anchor?("MacroDirective", "control") || directive.valid_for_anchor?("MacroDirective", "expression")
+      end
+      cursor = end_offset
+    end
+    raise "incomplete raw witness" unless cursor == last
+  end
+
+  private def self.anchor_use_schema4!(value : JSON::Any, depth : Int32) : Nil
+    expanded = value.as_h
+    event = expanded["token_event"].as_h
+    use_value = expanded["anchor_use"]
+    use = use_value.as_h
+    tag = use["kind"].as_s
+    return if tag == "Direct"
+    rule = use["rule"].as_s
+    case tag
+    when "HeadOf"
+      fields(use_value, %w(kind rule evidence head emitter_origin))
+      parent_role = case rule
+                    when "NamedArrayHead"     then {"Literal", "array"}
+                    when "NamedHashHead"      then {"Literal", "hash"}
+                    when "ConstantAssignHead", "ConstantTypeHead" then {"Assign", "constant"}
+                    when "MultiAssignHead"    then {"Literal", "multiassign"}
+                    else raise "unknown head rule"
+                    end
+      raise "invalid head role" unless expanded["anchor_kind"].as_s == parent_role[0] && expanded["role"].as_s == parent_role[1]
+      head_value = use["head"]
+      head = head_value.as_h
+      case head["kind"].as_s
+      when "Anchor"
+        fields(head_value, %w(kind origin))
+        child_value = head["origin"]
+        origin_schema4!(child_value, depth + 1)
+        child = child_value.as_h
+        origin = Iyi::DiagnosticOrigin.from_json(child_value)
+        valid = origin.valid_for_anchor?("Name", "path_segment")
+        if rule == "MultiAssignHead"
+          valid ||= origin.valid_for_anchor?("Call", "method") || %w(local_reference instance_variable class_variable special_global).any? { |role| origin.valid_for_anchor?("Name", role) }
+          valid ||= origin.valid_for_anchor?("ProcLiteral", "arrow") || origin.valid_for_anchor?("ProcPointer", "arrow") || origin.valid_for_anchor?("Cast", "keyword")
+          valid ||= %w(array hash regex interpolation range case select).any? { |role| origin.valid_for_anchor?("Literal", role) }
+        end
+        raise "invalid head child" unless valid && child["kind"].as_s == "Expanded" && child["anchor_use"].as_h["kind"].as_s == "Direct" && same_scope?(expanded, child) && child["token_event"] == expanded["token_event"]
+      when "Syntax"
+        fields(head_value, %w(kind form adjacent_name_origin))
+        form = head["form"].as_s
+        spelling = case form
+                   when "GlobalPathPrefix" then "::"
+                   when "FirstSplat" then "*"
+                   when "FirstUnderscore" then "_"
+                   when "ParenthesizedFirstTarget" then "("
+                   else raise "unknown syntax head"
+                   end
+        raise "invalid syntax head" unless event["token_text"].as_s == spelling && event["selection"].as_s == "Whole"
+        adjacent = head["adjacent_name_origin"]
+        if form == "GlobalPathPrefix"
+          origin_schema4!(adjacent, depth + 1)
+          child = adjacent.as_h
+          origin = Iyi::DiagnosticOrigin.from_json(adjacent)
+          child_event = child["token_event"].as_h
+          unless origin.valid_for_anchor?("Name", "path_segment") && child["kind"].as_s == "Expanded" &&
+                 child["anchor_use"].as_h["kind"].as_s == "Direct" && same_scope?(expanded, child) &&
+                 child_event["input_start"].as_i64 == event["input_end"].as_i64 && child_event["selection"].as_s == "Whole" &&
+                 child_event["token_kind"].as_s == "CONST" && child_event["lexical_mode"] == event["lexical_mode"]
+            raise "invalid global path head"
+          end
+        elsif rule != "MultiAssignHead" || !adjacent.raw.nil?
+          raise "invalid first target head"
+        end
+      else
+        raise "unknown head kind"
+      end
+    when "PayloadOf"
+      fields(use_value, %w(kind rule evidence owner_origin emitter_origin))
+      owner_value = use["owner_origin"]
+      origin_schema4!(owner_value, depth + 1)
+      owner = owner_value.as_h
+      origin = Iyi::DiagnosticOrigin.from_json(owner_value)
+      unless expanded["anchor_kind"].as_s == "Literal" && expanded["role"].as_s == "interpolation" && expanded["name_context"].raw.nil? &&
+             owner["kind"].as_s == "Expanded" && owner["anchor_use"].as_h["kind"].as_s == "Direct" && same_scope?(expanded, owner) && owner["token_event"] == expanded["token_event"]
+        raise "invalid payload owner"
+      end
+      case rule
+      when "RegexInterpolationPayload"
+        raise "invalid regex owner" unless origin.valid_for_anchor?("Literal", "regex") && {"/", "%r("}.includes?(event["token_text"].as_s)
+      when "CommandInterpolationPayload"
+        raise "invalid command owner" unless origin.valid_for_anchor?("Call", "method") && event["token_text"].as_s == "`"
+      else raise "unknown payload rule"
+      end
+    else
+      raise "unknown anchor use"
+    end
+    evidence_value = use["evidence"]
+    evidence = evidence_value.as_h
+    emitter = use["emitter_origin"]
+    unless emitter.raw.nil?
+      origin_schema4!(emitter, depth + 1)
+      directive = Iyi::DiagnosticOrigin.from_json(emitter)
+      raise "invalid anchor use emitter" unless directive.valid_for_anchor?("MacroDirective", "expression") || directive.valid_for_anchor?("MacroDirective", "control")
+      raise "invalid inferred emitter" if {"RawSyntax", "DerivedFromOwner"}.includes?(evidence["kind"].as_s)
+    end
+    case evidence["kind"].as_s
+    when "Spliced"
+      fields(evidence_value, %w(kind source_origin))
+      source = evidence["source_origin"]
+      origin_schema4!(source, depth + 1)
+      raise "invalid preserved parent" unless Iyi::DiagnosticOrigin.from_json(source).valid_for_anchor?(expanded["anchor_kind"].as_s, expanded["role"].as_s)
+    when "Constructed"
+      fields(evidence_value, %w(kind producer))
+      raise "invalid constructed parent" unless evidence["producer"].as_s == "ConstructedAst"
+    when "DerivedFromOwner"
+      fields(evidence_value, %w(kind))
+      raw = event["byte_parts"].as_a.all? { |part| part.as_h["kind"].as_s == "Generated" && RAW_MACRO_PRODUCERS.includes?(part.as_h["producer"].as_s) }
+      raise "invalid derived payload" unless tag == "PayloadOf" && raw
+    when "RawSyntax"
+      fields(evidence_value, %w(kind witnesses))
+      raise "invalid raw syntax use" unless tag == "HeadOf"
+      forms = case rule
+              when "NamedArrayHead", "NamedHashHead" then [{"Open", "{"}]
+              when "ConstantAssignHead" then [{"Equals", "="}]
+              when "ConstantTypeHead" then [{"Colon", ":"}, {"Equals", "="}]
+              when "MultiAssignHead"
+                if use["head"].as_h["form"]?.try(&.as_s) == "FirstSplat"
+                  [{"Splat", "*"}, {"Equals", "="}]
+                else
+                  [{"Comma", ","}, {"Equals", "="}]
+                end
+              else raise "unknown witness rule"
+              end
+      witnesses = evidence["witnesses"].as_a
+      raise "missing witnesses" unless witnesses.size == forms.size
+      last = event["input_end"].as_i64
+      witnesses.each_with_index do |witness, index|
+        item = fields(witness, %w(role event))
+        role, spelling = forms[index]
+        witness_event = item["event"].as_h
+        raise "invalid witness order" unless item["role"].as_s == role && witness_event["input_start"].as_i64 >= last
+        raw_witness_schema4!(item["event"], spelling, event["lexical_mode"].as_s, depth)
+        last = witness_event["input_end"].as_i64
+      end
+    else
+      raise "unknown use evidence"
+    end
+  end
+
+  private def self.type_sugar_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
+    item = fields(value, %w(kind derivation_kind production witnesses result lowering_index))
+    production, result = item["production"].as_s, item["result"].as_s
+    index = item["lowering_index"].as_i64
+    spellings, allowed = case production
+                         when "Pointer" then {["*"], result == "Pointer" && index == 0}
+                         when "DoublePointer" then {["**"], result == "Pointer" && (index == 0 || index == 1)}
+                         when "NilableType" then {["?"], result == "Nil" && index == 0}
+                         when "NilableExpression" then {["?"], {"Union", "Nil"}.includes?(result) && index == 0}
+                         when "SelfNilableType" then {["self?"], result == "Nil" && index == 0}
+                         when "StaticArray" then {["[", "]"], result == "StaticArray" && index == 0}
+                         when "Tuple" then {["{", "}"], result == "Tuple" && index == 0}
+                         when "NamedTuple" then {["{", "}"], result == "NamedTuple" && index == 0}
+                         when "NilPredicate" then {["nil?"], result == "Nil" && index == 0}
+                         else raise "unknown type sugar"
+                         end
+    raise "invalid type sugar result" unless allowed
+    witnesses = item["witnesses"].as_a
+    raise "invalid type sugar witnesses" unless witnesses.size == spellings.size
+    previous = -1_i64
+    common_digest = nil.as(String?)
+    common_size = -1_i64
+    common_mode = nil.as(String?)
+    witnesses.each_with_index do |value_token, ordinal|
+      token = fields(value_token, %w(lexical_origin input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text))
+      lexical = token["lexical_origin"]
+      origin_schema4!(lexical, depth + 1)
+      raise "invalid type syntax origin" unless Iyi::DiagnosticOrigin.from_json(lexical).valid_for_anchor?("TypeSyntax", "token")
+      digest, mode = token["input_sha256"].as_s, token["lexical_mode"].as_s
+      raise "invalid type syntax input" unless digest.matches?(/\A[0-9a-f]{64}\z/) && (mode == "Crystal" || mode == "Iyi")
+      size, first, last = token["input_bytesize"].as_i64, token["input_start"].as_i64, token["input_end"].as_i64
+      spelling = spellings[ordinal]
+      expected_kind = {"self?", "nil?"}.includes?(spelling) ? "IDENT" : spelling
+      unless token["token_kind"].as_s == expected_kind && token["raw_text"].as_s == spelling &&
+             first >= 0 && first >= previous && size <= Int32::MAX && last <= size && last - first == spelling.bytesize
+        raise "invalid type syntax token"
+      end
+      source = lexical.as_h
+      case source["kind"].as_s
+      when "Written"
+        raise "type syntax offset mismatch" unless source["input_byte_offset"].as_i64 == first
+      when "Expanded"
+        event = source["token_event"].as_h
+        unless source["expansion_guard"].as_s == "sha256:#{digest}" && event["selection"].as_s == "Whole" &&
+               event["input_start"].as_i64 == first && event["input_end"].as_i64 == last &&
+               event["token_kind"].as_s == expected_kind && event["token_text"].as_s == spelling && event["lexical_mode"].as_s == mode
+          raise "expanded type syntax mismatch"
+        end
+      else
+        raise "invalid type syntax source"
+      end
+      if ordinal > 0 && (common_digest != digest || common_size != size || common_mode != mode)
+        raise "type syntax input mismatch"
+      end
+      common_digest, common_size, common_mode, previous = digest, size, mode, last
+    end
+    {"path_segment", result}
   end
 
   private def self.derived_name_schema4!(value : JSON::Any, depth : Int32) : Tuple(String, String)
     raise "diagnostic origin nesting too deep" if depth > 128
     object = value.as_h
     raise "invalid derived origin kind" unless object["kind"].as_s == "DerivedName"
+    return type_sugar_schema4!(value, depth) if object["derivation_kind"].as_s == "TypeSugar"
     if object["derivation_kind"].as_s == "RegexMatchIndex"
       item = fields(value, %w(kind derivation_kind source_token result))
       source_name_schema4!(item["source_token"], depth + 1)
@@ -407,7 +650,8 @@ module Iyi::DiagnosticProvenance
       raise "source offset mismatch" unless lexical.as_h["input_byte_offset"].as_i64 == first
     when "Expanded"
       expanded = lexical.as_h
-      raise "expanded source mismatch" unless expanded["generated_byte_offset"].as_i64 == first && expanded["generated_byte_end"].as_i64 == last && expanded["expansion_guard"].as_s == "sha256:#{digest}" && expanded["token_text"].as_s == raw
+      event = expanded["token_event"].as_h
+      raise "expanded source mismatch" unless event["input_start"].as_i64 == first && event["input_end"].as_i64 == last && expanded["expansion_guard"].as_s == "sha256:#{digest}" && event["token_text"].as_s == raw && event["selection"].as_s == "Whole"
     else
       raise "invalid source lexical origin"
     end
@@ -416,6 +660,27 @@ module Iyi::DiagnosticProvenance
   private def self.validated_origin(value : JSON::Any) : Iyi::DiagnosticOrigin
     bound_origin!(value)
     origin_schema4!(value)
+    events = {} of Tuple(String, String, String, Int64) => JSON::Any
+    pending = [value]
+    until pending.empty?
+      item = pending.pop
+      case raw = item.raw
+      when Array
+        raw.each { |child| pending << child }
+      when Hash
+        if raw["kind"]?.try(&.as_s) == "Expanded"
+          event = raw["token_event"]
+          key = {raw["invocation_origin"].to_json, raw["macro_definition_origin"].to_json,
+                 raw["expansion_guard"].as_s, event.as_h["input_start"].as_i64}
+          if previous = events[key]?
+            raise "conflicting token event identity" unless previous == event
+          else
+            events[key] = event
+          end
+        end
+        raw.each_value { |child| pending << child }
+      end
+    end
     Iyi::DiagnosticOrigin.from_json(value)
   end
 

@@ -340,6 +340,7 @@ module Iyi::IyiMod
   record DiagnosticFragment,
     key : String,
     text_sha256 : String,
+    events : Array(DiagnosticTokenEvent),
     anchors : Array(DiagnosticAnchor)
 
   # Shared origins in the diagnostic section are emitted parent-first.
@@ -361,7 +362,8 @@ module Iyi::IyiMod
       when DiagnosticOrigin::Synthetic
         intern(origin.parent_origin)
       when DiagnosticOrigin::DerivedName
-        intern_source_token(origin.source_token)
+        origin.source_token.try { |token| intern_source_token(token) }
+        origin.witnesses.each { |token| intern(token.lexical_origin) }
         origin.definition_origin.try { |definition| intern(definition) }
       end
       index = @entries.size.to_u32
@@ -376,6 +378,8 @@ module Iyi::IyiMod
     HEAD_FORMS = %w(GlobalPathPrefix FirstSplat FirstUnderscore ParenthesizedFirstTarget)
     TOKEN_MODES = %w(Crystal Iyi)
     TOKEN_SELECTIONS = %w(Whole SignedNumberSign)
+    TYPE_SUGARS = %w(Pointer DoublePointer NilableType NilableExpression SelfNilableType StaticArray Tuple NamedTuple NilPredicate)
+    TYPE_SUGAR_RESULTS = %w(Pointer Union Nil StaticArray Tuple NamedTuple)
 
     def intern_token_event(event : DiagnosticTokenEvent) : Nil
       event.byte_parts.each do |part|
@@ -401,14 +405,16 @@ module Iyi::IyiMod
     def intern_anchor_use(use : DiagnosticAnchorUse) : Nil
       case use
       when DiagnosticAnchorUse::HeadOf
+        use.emitter_origin.try { |origin| intern(origin) }
         intern_anchor_evidence(use.evidence)
         case head = use.head
-        when DiagnosticAnchorHead::Anchor
+        when DiagnosticHead::Anchor
           intern(head.origin)
-        when DiagnosticAnchorHead::Syntax
+        when DiagnosticHead::Syntax
           head.adjacent_name_origin.try { |origin| intern(origin) }
         end
       when DiagnosticAnchorUse::PayloadOf
+        use.emitter_origin.try { |origin| intern(origin) }
         intern_anchor_evidence(use.evidence)
         intern(use.owner_origin)
       end
@@ -498,13 +504,36 @@ module Iyi::IyiMod
         start_offset, end_offset, mode, kind, text)
     end
 
+    def write_source_syntax_token(io : IO, token : DiagnosticSourceSyntaxToken) : Nil
+      io.write_bytes @indices[token.lexical_origin], FORMAT
+      DiagnosticOrigins.write_string io, token.input_sha256
+      io.write_bytes token.input_bytesize.to_u32, FORMAT
+      io.write_bytes token.input_start.to_u32, FORMAT
+      io.write_bytes token.input_end.to_u32, FORMAT
+      DiagnosticOrigins.write_string io, token.lexical_mode
+      DiagnosticOrigins.write_string io, token.token_kind
+      DiagnosticOrigins.write_string io, token.raw_text
+    end
+
+    def read_source_syntax_token(io : IO) : DiagnosticSourceSyntaxToken
+      lexical = parent(io.read_bytes(UInt32, FORMAT))
+      guard = DiagnosticOrigins.read_string(io)
+      size = io.read_bytes(UInt32, FORMAT).to_i32
+      first = io.read_bytes(UInt32, FORMAT).to_i32
+      last = io.read_bytes(UInt32, FORMAT).to_i32
+      mode = DiagnosticOrigins.read_string(io)
+      kind = DiagnosticOrigins.read_string(io)
+      text = DiagnosticOrigins.read_string(io)
+      DiagnosticSourceSyntaxToken.new(lexical, guard, size, first, last, mode, kind, text)
+    end
+
     def write_token_event(io : IO, event : DiagnosticTokenEvent) : Nil
       io.write_bytes event.input_start.to_u32, FORMAT
       io.write_bytes event.input_end.to_u32, FORMAT
       DiagnosticOrigins.write_string io, event.token_kind
       DiagnosticOrigins.write_string io, event.token_text
       DiagnosticOrigins.write_choice(io, event.lexical_mode, TOKEN_MODES, 0)
-      DiagnosticOrigins.write_choice(io, event.selection, TOKEN_SELECTIONS, 0)
+      DiagnosticOrigins.write_choice(io, event.selection.to_s, TOKEN_SELECTIONS, 0)
       io.write_bytes event.byte_parts.size.to_u32, FORMAT
       event.byte_parts.each do |part|
         case part
@@ -530,7 +559,9 @@ module Iyi::IyiMod
       kind = DiagnosticOrigins.read_string(io)
       text = DiagnosticOrigins.read_string(io)
       mode = DiagnosticOrigins.read_choice(io, TOKEN_MODES, 0)
-      selection = DiagnosticOrigins.read_choice(io, TOKEN_SELECTIONS, 0)
+      selection_name = DiagnosticOrigins.read_choice(io, TOKEN_SELECTIONS, 0)
+      selection = DiagnosticTokenSelection.values.find { |candidate| candidate.to_s == selection_name } ||
+                  raise ArgumentError.new("unknown diagnostic token selection")
       count = io.read_bytes(UInt32, FORMAT)
       if io.is_a?(IO::Memory) && count.to_u64 > ((io.size - io.pos) // 17).to_u64
         raise ArgumentError.new("macro emission parts exceed remaining bytes")
@@ -570,7 +601,7 @@ module Iyi::IyiMod
         io.write_byte 2_u8
         io.write_bytes evidence.witnesses.size.to_u32, FORMAT
         evidence.witnesses.each do |witness|
-          DiagnosticOrigins.write_choice(io, witness.role, WITNESS_ROLES)
+          DiagnosticOrigins.write_choice(io, witness.role.to_s, WITNESS_ROLES)
           write_token_event(io, witness.event)
         end
       when DiagnosticAnchorEvidence::DerivedFromOwner
@@ -594,9 +625,11 @@ module Iyi::IyiMod
         if io.is_a?(IO::Memory) && count.to_u64 > (io.size - io.pos).to_u64
           raise ArgumentError.new("diagnostic witnesses exceed remaining bytes")
         end
-        witnesses = Array(DiagnosticTokenWitness).new(count) do
-          role = DiagnosticOrigins.read_choice(io, WITNESS_ROLES)
-          DiagnosticTokenWitness.new(role, read_token_event(io))
+        witnesses = Array(DiagnosticSyntaxWitness).new(count) do
+          role_name = DiagnosticOrigins.read_choice(io, WITNESS_ROLES)
+          role = DiagnosticWitnessRole.values.find { |candidate| candidate.to_s == role_name } ||
+                 raise ArgumentError.new("unknown diagnostic witness role")
+          DiagnosticSyntaxWitness.new(role, read_token_event(io))
         end
         DiagnosticAnchorEvidence::RawSyntax.new(witnesses)
       when 3_u8
@@ -612,24 +645,26 @@ module Iyi::IyiMod
         io.write_byte 0_u8
       when DiagnosticAnchorUse::HeadOf
         io.write_byte 1_u8
-        DiagnosticOrigins.write_choice(io, use.rule, HEAD_RULES)
+        DiagnosticOrigins.write_choice(io, use.rule.to_s, HEAD_RULES)
         write_anchor_evidence(io, use.evidence)
         case head = use.head
-        when DiagnosticAnchorHead::Anchor
+        when DiagnosticHead::Anchor
           io.write_byte 0_u8
           io.write_bytes @indices[head.origin], FORMAT
-        when DiagnosticAnchorHead::Syntax
+        when DiagnosticHead::Syntax
           io.write_byte 1_u8
-          DiagnosticOrigins.write_choice(io, head.form, HEAD_FORMS)
+          DiagnosticOrigins.write_choice(io, head.form.to_s, HEAD_FORMS)
           io.write_bytes(head.adjacent_name_origin.try { |origin| @indices[origin] } || UInt32::MAX, FORMAT)
         else
           raise ArgumentError.new("unknown diagnostic anchor head")
         end
+        io.write_bytes(use.emitter_origin.try { |origin| @indices[origin] } || UInt32::MAX, FORMAT)
       when DiagnosticAnchorUse::PayloadOf
         io.write_byte 2_u8
-        DiagnosticOrigins.write_choice(io, use.rule, PAYLOAD_RULES)
+        DiagnosticOrigins.write_choice(io, use.rule.to_s, PAYLOAD_RULES)
         write_anchor_evidence(io, use.evidence)
         io.write_bytes @indices[use.owner_origin], FORMAT
+        io.write_bytes(use.emitter_origin.try { |origin| @indices[origin] } || UInt32::MAX, FORMAT)
       else
         raise ArgumentError.new("unknown diagnostic anchor use")
       end
@@ -640,25 +675,101 @@ module Iyi::IyiMod
       when 0_u8
         DiagnosticAnchorUse::Direct.new
       when 1_u8
-        rule = DiagnosticOrigins.read_choice(io, HEAD_RULES)
+        rule_name = DiagnosticOrigins.read_choice(io, HEAD_RULES)
+        rule = DiagnosticHeadRule.values.find { |candidate| candidate.to_s == rule_name } ||
+               raise ArgumentError.new("unknown diagnostic head rule")
         evidence = read_anchor_evidence(io)
         head = case io.read_byte
                when 0_u8
-                 DiagnosticAnchorHead::Anchor.new(parent(io.read_bytes(UInt32, FORMAT)))
+                 DiagnosticHead::Anchor.new(expanded_parent(io.read_bytes(UInt32, FORMAT)))
                when 1_u8
-                 form = DiagnosticOrigins.read_choice(io, HEAD_FORMS)
+                 form_name = DiagnosticOrigins.read_choice(io, HEAD_FORMS)
+                 form = DiagnosticHeadSyntax.values.find { |candidate| candidate.to_s == form_name } ||
+                        raise ArgumentError.new("unknown diagnostic head form")
                  index = io.read_bytes(UInt32, FORMAT)
-                 DiagnosticAnchorHead::Syntax.new(form, index == UInt32::MAX ? nil : parent(index))
+                 DiagnosticHead::Syntax.new(form, index == UInt32::MAX ? nil : expanded_parent(index))
                else
                  raise ArgumentError.new("unknown diagnostic anchor head tag")
                end
-        DiagnosticAnchorUse::HeadOf.new(rule, evidence, head)
+        emitter_index = io.read_bytes(UInt32, FORMAT)
+        emitter = emitter_index == UInt32::MAX ? nil : parent(emitter_index)
+        DiagnosticAnchorUse::HeadOf.new(rule, evidence, head, emitter)
       when 2_u8
-        rule = DiagnosticOrigins.read_choice(io, PAYLOAD_RULES)
+        rule_name = DiagnosticOrigins.read_choice(io, PAYLOAD_RULES)
+        rule = DiagnosticPayloadRule.values.find { |candidate| candidate.to_s == rule_name } ||
+               raise ArgumentError.new("unknown diagnostic payload rule")
         evidence = read_anchor_evidence(io)
-        DiagnosticAnchorUse::PayloadOf.new(rule, evidence, parent(io.read_bytes(UInt32, FORMAT)))
+        owner = expanded_parent(io.read_bytes(UInt32, FORMAT))
+        emitter_index = io.read_bytes(UInt32, FORMAT)
+        emitter = emitter_index == UInt32::MAX ? nil : parent(emitter_index)
+        DiagnosticAnchorUse::PayloadOf.new(rule, evidence, owner, emitter)
       else
         raise ArgumentError.new("unknown diagnostic anchor use tag")
+      end
+    end
+
+    def write_fragment_attachment(io : IO, attachment : DiagnosticFragmentAttachment) : Nil
+      case attachment
+      when DiagnosticFragmentAttachment::Direct
+        io.write_byte 0_u8
+      when DiagnosticFragmentAttachment::HeadOf
+        io.write_byte 1_u8
+        DiagnosticOrigins.write_choice(io, attachment.rule.to_s, HEAD_RULES)
+        case head = attachment.head
+        when DiagnosticFragmentHead::Anchor
+          io.write_byte 0_u8
+          io.write_bytes head.anchor_index.to_u32, FORMAT
+        when DiagnosticFragmentHead::Syntax
+          io.write_byte 1_u8
+          DiagnosticOrigins.write_choice(io, head.form.to_s, HEAD_FORMS)
+          io.write_bytes(head.adjacent_anchor_index.try(&.to_u32) || UInt32::MAX, FORMAT)
+        else
+          raise ArgumentError.new("unknown diagnostic fragment head")
+        end
+      when DiagnosticFragmentAttachment::PayloadOf
+        io.write_byte 2_u8
+        DiagnosticOrigins.write_choice(io, attachment.rule.to_s, PAYLOAD_RULES)
+        io.write_bytes attachment.owner_anchor_index.to_u32, FORMAT
+      else
+        raise ArgumentError.new("unknown diagnostic fragment attachment")
+      end
+    end
+
+    def read_fragment_attachment(io : IO, preceding : Int32) : DiagnosticFragmentAttachment
+      case io.read_byte
+      when 0_u8
+        DiagnosticFragmentAttachment::Direct.new
+      when 1_u8
+        name = DiagnosticOrigins.read_choice(io, HEAD_RULES)
+        rule = DiagnosticHeadRule.values.find { |candidate| candidate.to_s == name } ||
+               raise ArgumentError.new("unknown diagnostic fragment head rule")
+        head = case io.read_byte
+               when 0_u8
+                 index = io.read_bytes(UInt32, FORMAT)
+                 raise ArgumentError.new("invalid diagnostic fragment head index") if index >= preceding.to_u32
+                 DiagnosticFragmentHead::Anchor.new(index.to_i32)
+               when 1_u8
+                 name = DiagnosticOrigins.read_choice(io, HEAD_FORMS)
+                 form = DiagnosticHeadSyntax.values.find { |candidate| candidate.to_s == name } ||
+                        raise ArgumentError.new("unknown diagnostic fragment head form")
+                 index = io.read_bytes(UInt32, FORMAT)
+                 if index != UInt32::MAX && index >= preceding.to_u32
+                   raise ArgumentError.new("invalid diagnostic fragment adjacent index")
+                 end
+                 DiagnosticFragmentHead::Syntax.new(form, index == UInt32::MAX ? nil : index.to_i32)
+               else
+                 raise ArgumentError.new("unknown diagnostic fragment head tag")
+               end
+        DiagnosticFragmentAttachment::HeadOf.new(rule, head)
+      when 2_u8
+        name = DiagnosticOrigins.read_choice(io, PAYLOAD_RULES)
+        rule = DiagnosticPayloadRule.values.find { |candidate| candidate.to_s == name } ||
+               raise ArgumentError.new("unknown diagnostic fragment payload rule")
+        index = io.read_bytes(UInt32, FORMAT)
+        raise ArgumentError.new("invalid diagnostic fragment owner index") if index >= preceding.to_u32
+        DiagnosticFragmentAttachment::PayloadOf.new(rule, index.to_i32)
+      else
+        raise ArgumentError.new("unknown diagnostic fragment attachment tag")
       end
     end
 
@@ -698,7 +809,7 @@ module Iyi::IyiMod
           case origin.derivation_kind
           when "ParameterLowering"
             io.write_byte 1_u8
-            write_source_token(io, origin.source_token)
+            write_source_token(io, origin.source_token.not_nil!)
             io.write_bytes @indices[origin.definition_origin.not_nil!], FORMAT
             DiagnosticOrigins.write_string io, origin.parameter_slot.not_nil!
             io.write_bytes origin.parameter_index.not_nil!.to_u32, FORMAT
@@ -712,8 +823,15 @@ module Iyi::IyiMod
             end
           when "RegexMatchIndex"
             io.write_byte 2_u8
-            write_source_token(io, origin.source_token)
+            write_source_token(io, origin.source_token.not_nil!)
             DiagnosticOrigins.write_string io, origin.result
+          when "TypeSugar"
+            io.write_byte 3_u8
+            DiagnosticOrigins.write_choice(io, origin.production.not_nil!.to_s, TYPE_SUGARS)
+            io.write_bytes origin.witnesses.size.to_u32, FORMAT
+            origin.witnesses.each { |token| write_source_syntax_token(io, token) }
+            DiagnosticOrigins.write_choice(io, origin.sugar_result.not_nil!.to_s, TYPE_SUGAR_RESULTS)
+            io.write_bytes origin.lowering_index.not_nil!.to_u32, FORMAT
           else
             raise ArgumentError.new("unknown diagnostic name derivation")
           end
@@ -753,12 +871,9 @@ module Iyi::IyiMod
                    DiagnosticOrigin::Synthetic.new(parent, read_string(io), read_string(io))
                  when 4_u8
                    derivation = io.read_byte
-                   unless derivation == 1_u8 || derivation == 2_u8
-                     raise ArgumentError.new("unknown diagnostic name derivation tag")
-                   end
-                   token = table.read_source_token(io)
                    case derivation
                    when 1_u8
+                     token = table.read_source_token(io)
                      definition = table.parent(io.read_bytes(UInt32, FORMAT))
                      slot = read_string(io)
                      index = io.read_bytes(UInt32, FORMAT).to_i32
@@ -771,7 +886,22 @@ module Iyi::IyiMod
                              end
                      DiagnosticOrigin::DerivedName.new(token, definition, slot, index, result, projection, fresh)
                    when 2_u8
+                     token = table.read_source_token(io)
                      DiagnosticOrigin::DerivedName.regex_match_index(token, read_string(io))
+                   when 3_u8
+                     production_name = read_choice(io, TYPE_SUGARS)
+                     production = DiagnosticTypeSugar.values.find { |candidate| candidate.to_s == production_name } ||
+                                  raise ArgumentError.new("unknown diagnostic type sugar")
+                     count = io.read_bytes(UInt32, FORMAT)
+                     if io.is_a?(IO::Memory) && count.to_u64 > ((io.size - io.pos) // 32).to_u64
+                       raise ArgumentError.new("diagnostic syntax witnesses exceed remaining bytes")
+                     end
+                     witnesses = Array(DiagnosticSourceSyntaxToken).new(count) { table.read_source_syntax_token(io) }
+                     result_name = read_choice(io, TYPE_SUGAR_RESULTS)
+                     result = DiagnosticTypeSugarResult.values.find { |candidate| candidate.to_s == result_name } ||
+                              raise ArgumentError.new("unknown diagnostic type sugar result")
+                     index = io.read_bytes(UInt32, FORMAT).to_i32
+                     DiagnosticOrigin::DerivedName.type_sugar(production, witnesses, result, index)
                    else
                      raise ArgumentError.new("unknown diagnostic name derivation tag")
                    end
@@ -788,6 +918,11 @@ module Iyi::IyiMod
 
     def parent(index : UInt32) : DiagnosticOrigin
       @entries[index]? || raise ArgumentError.new("invalid diagnostic origin parent index")
+    end
+
+    def expanded_parent(index : UInt32) : DiagnosticOrigin::Expanded
+      parent(index).as?(DiagnosticOrigin::Expanded) ||
+        raise ArgumentError.new("diagnostic anchor reference is not expanded")
     end
 
     def self.write_string(io : IO, value : String) : Nil
@@ -943,6 +1078,7 @@ module Iyi::IyiMod
       end
       table = DiagnosticOrigins.new
       @fragments.keys.sort!.each do |key|
+        @fragments[key].events.each { |event| table.intern_token_event(event) }
         @fragments[key].anchors.each do |anchor|
           table.intern(anchor.origin.not_nil!)
           anchor.name_slots.each_value do |values|
@@ -966,12 +1102,16 @@ module Iyi::IyiMod
         fragment = @fragments[key]
         DiagnosticOrigins.write_string(io, key)
         DiagnosticOrigins.write_string(io, fragment.text_sha256)
+        io.write_bytes fragment.events.size.to_u32, FORMAT
+        fragment.events.each { |event| table.write_token_event(io, event) }
         io.write_bytes fragment.anchors.size.to_u32, FORMAT
         fragment.anchors.each do |anchor|
           io.write_bytes anchor.offset.to_u32, FORMAT
           DiagnosticOrigins.write_string(io, anchor.kind)
           DiagnosticOrigins.write_string(io, anchor.role)
           io.write_bytes table.intern(anchor.origin.not_nil!), FORMAT
+          io.write_bytes anchor.event_index.to_u32, FORMAT
+          table.write_fragment_attachment(io, anchor.attachment)
           slots = anchor.name_slots.to_a.sort_by { |slot, _| {slot.kind.value, slot.index} }
           io.write_bytes slots.size.to_u32, FORMAT
           slots.each do |slot, values|
@@ -1016,11 +1156,15 @@ module Iyi::IyiMod
       read_count(io, 12).times do
         key = DiagnosticOrigins.read_string(io)
         guard = DiagnosticOrigins.read_string(io)
-        anchors = Array(DiagnosticAnchor).new(read_count(io, 16)) do
+        events = Array(DiagnosticTokenEvent).new(read_count(io, 22)) { table.read_token_event(io) }
+        anchors = Array(DiagnosticAnchor).new(read_count(io, 25)) do |anchor_index|
           offset = io.read_bytes(UInt32, FORMAT).to_i32
           kind = DiagnosticOrigins.read_string(io)
           role = DiagnosticOrigins.read_string(io)
           origin = table.parent(io.read_bytes(UInt32, FORMAT))
+          event_index = io.read_bytes(UInt32, FORMAT)
+          raise ArgumentError.new("invalid diagnostic fragment event index") if event_index >= events.size.to_u32
+          attachment = table.read_fragment_attachment(io, anchor_index)
           slots = {} of DiagnosticNameSlot => Array(DiagnosticNameValue)
           previous_slot = nil.as(Tuple(Int32, Int32)?)
           read_count(io, 12).times do
@@ -1038,9 +1182,9 @@ module Iyi::IyiMod
             raise ArgumentError.new("empty diagnostic name slot") if values.empty?
             slots[slot] = values
           end
-          DiagnosticAnchor.new(offset, kind, role, origin, slots)
+          DiagnosticAnchor.new(offset, kind, role, origin, slots, event_index.to_i32, attachment)
         end
-        result.add_fragment(DiagnosticFragment.new(key, guard, anchors))
+        result.add_fragment(DiagnosticFragment.new(key, guard, events, anchors))
       end
       read_count(io, 20).times do
         ordinal = io.read_bytes(UInt32, FORMAT).to_i32
