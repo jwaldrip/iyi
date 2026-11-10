@@ -643,6 +643,10 @@ module Iyi::IyiMod
           DiagnosticNameSlot.new(slot.kind, slot.index)
           raise ArgumentError.new("empty diagnostic name slot") if tokens.empty?
           tokens.each do |token|
+            if token.lexical_origin.graph_depth >= DiagnosticOrigin::MAX_DEPTH ||
+               token.binding_origin.try { |parent| parent.graph_depth >= DiagnosticOrigin::MAX_DEPTH }
+              raise ArgumentError.new("diagnostic name graph exceeds depth limit")
+            end
             size += token.lexical_origin.graph_bytes
             size += token.binding_origin.try(&.graph_bytes) || 0_u64
             size += token.context.bytesize.to_u64 + token.input_sha256.bytesize.to_u64 +
