@@ -12,8 +12,19 @@ module Iyi
     property? wants_raw : Bool
     property? slash_is_regex : Bool
     property? wants_def_or_macro_name : Bool
-    getter reader : Char::Reader
-    getter token : Token
+    # The mutable reader and token can be changed and then restored by a
+    # caller. Once either escapes, a value snapshot cannot prove freshness.
+    @parse_state_exposed_or_advanced = false
+
+    def reader : Char::Reader
+      @parse_state_exposed_or_advanced = true
+      @reader
+    end
+
+    def token : Token
+      @parse_state_exposed_or_advanced = true
+      @token
+    end
     property line_number : Int32
     property column_number : Int32
     property wants_symbol : Bool
@@ -262,6 +273,7 @@ module Iyi
     end
 
     def next_token
+      @parse_state_exposed_or_advanced = true
       # Check previous token:
       if @token.type.newline? || @token.type.eof?
         # 1) After a newline or at the start of the stream (:EOF), a following comment can be a doc comment
@@ -1619,6 +1631,7 @@ module Iyi
     end
 
     def next_string_token(delimiter_state)
+      @parse_state_exposed_or_advanced = true
       reset_token
 
       @token.line_number = @line_number
@@ -1819,6 +1832,7 @@ module Iyi
     end
 
     def next_string_token_noescape(delimiter_state)
+      @parse_state_exposed_or_advanced = true
       string_end = delimiter_state.end
       string_nest = delimiter_state.nest
 
@@ -1898,6 +1912,7 @@ module Iyi
     end
 
     def next_macro_token(macro_state, skip_whitespace)
+      @parse_state_exposed_or_advanced = true
       reset_token
 
       nest = macro_state.nest
@@ -2245,6 +2260,7 @@ module Iyi
     # column still counting, and after `a = 1` the parser's look for a `.`
     # on the next line - `  {{x}}.nope` - put `nope` at column 8, not 5.
     def lookahead(preserve_token_on_fail = false, &)
+      @parse_state_exposed_or_advanced = true
       old_pos, old_line, old_column = current_pos, @line_number, @column_number
       old_place = {@filename, @artifact, @stacked, @stacked_filename, @stacked_artifact, @stacked_line_number, @stacked_column_number, @location_pragma_index}
       old_diagnostic_observation_count = @diagnostic_lexical_observations.try(&.size)
@@ -2966,6 +2982,7 @@ module Iyi
     end
 
     def next_char_no_column_increment
+      @parse_state_exposed_or_advanced ||= true
       @reader.next_char.tap { check_reader_error }
     end
 
@@ -3059,6 +3076,7 @@ module Iyi
     end
 
     def current_pos=(pos)
+      @parse_state_exposed_or_advanced = true
       @reader.pos = pos
     end
 

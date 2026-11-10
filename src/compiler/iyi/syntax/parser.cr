@@ -247,15 +247,28 @@ module Iyi
         @var_scopes.map { |scope| scope.to_a.sort })
     end
 
+    # Compare the original bytes, including a BOM stripped by Lexer#initialize.
+    def parse_ahead_input_matches?(source : String) : Bool
+      if @input_offset_base == 0
+        source == string
+      elsif @input_offset_base == 3 && source.starts_with?('\uFEFF')
+        source.to_slice[3, source.bytesize - 3] == string.to_slice
+      else
+        false
+      end
+    end
+
     # Parse-ahead may reuse a worker result only when both parsers start from
     # this same fresh-parser contract. A parser with transient lexer or parser
     # state is deliberately ineligible for speculative reuse.
     def parse_ahead_contract : String?
+      return nil if @parse_state_exposed_or_advanced
       return nil unless @reader.pos == 0 && @location_pragmas.nil? && @heredocs.empty? &&
                         @input_artifact.nil? && @artifact.nil? && @diagnostic_regions.nil? &&
                         @diagnostic_expansion.nil? && @macro_literal_breaks.nil? &&
                         @token.type.eof? && @token.input_offset == 0 && @token.input_end == 0 &&
                         @token.value.nil? && @token.doc_buffer.nil? && @token.raw.empty? &&
+                        @token.number_kind == NumberKind::I32 && @token.filename.nil? && @token.artifact.nil? &&
                         @token.line_number == 0 && @token.column_number == 0 &&
                         @token.start == 0 && !@token.passed_backslash_newline && !@token.invalid_escape &&
                         @token.delimiter_state == Token::DelimiterState.default &&
@@ -283,12 +296,14 @@ module Iyi
                         !@stop_on_do && !@is_constant_assignment && !@is_macro_def &&
                         !@calls_super && !@calls_initialize && !@calls_previous_def &&
                         !@uses_block_arg && !@assigns_special_var && @temp_arg_count == 0 &&
-                        @block_arg_name.nil?
+                        @block_arg_name.nil? && @block_arity.nil?
       return nil unless @input_filename.is_a?(String) && @filename == @input_filename
       JSON.build do |json|
         json.object do
           json.field "entry_rule", "parse"
           json.field "filename", @input_filename
+          json.field "input_offset_base", @input_offset_base
+          json.field "lexical_journal_enabled", !@diagnostic_lexical_observations.nil?
           json.field "lexical_mode", iyi? ? "Iyi" : "Crystal"
           json.field "package", @iyi_package_name
           json.field "diagnostic_capture", @diagnostic_capture

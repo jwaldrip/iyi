@@ -44,6 +44,40 @@ describe "parsed literal name evidence" do
         nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
     end
   end
+  it "refuses parse-ahead reuse after mutable reader or token exposure" do
+    parser = Iyi::Parser.new("a")
+    parser.filename = "/spec/fresh.cr"
+    parser.parse_ahead_contract.should_not be_nil
+    reader = parser.reader
+    reader.next_char
+    reader.pos = 0
+    parser.parse_ahead_contract.should be_nil
+
+    parser = Iyi::Parser.new("a")
+    parser.filename = "/spec/fresh.cr"
+    parser.parse_ahead_contract.should_not be_nil
+    token = parser.token
+    token.value = "changed"
+    token.value = nil
+    parser.parse_ahead_contract.should be_nil
+  end
+
+  it "distinguishes BOM input and lexical observation settings" do
+    plain = Iyi::Parser.new("a")
+    plain.filename = "/spec/fresh.cr"
+    bom = Iyi::Parser.new("\uFEFFa")
+    bom.filename = "/spec/fresh.cr"
+    plain.parse_ahead_input_matches?("a").should be_true
+    plain.parse_ahead_input_matches?("\uFEFFa").should be_false
+    bom.parse_ahead_input_matches?("\uFEFFa").should be_true
+    bom.parse_ahead_input_matches?("a").should be_false
+    plain.parse_ahead_contract.should_not eq(bom.parse_ahead_contract)
+    observed = Iyi::Parser.new("a")
+    observed.filename = "/spec/fresh.cr"
+    observed.enable_diagnostic_observations
+    plain.parse_ahead_contract.should_not eq(observed.parse_ahead_contract)
+  end
+
 
   it "keeps distinct first and later named tuple keys and clone evidence" do
     source = %q({"first": 1, "second": 2})
