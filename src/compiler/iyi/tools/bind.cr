@@ -157,6 +157,8 @@ module Iyi
     property diagnostic_def : Def? = nil
     property diagnostic_body : {String, DiagnosticModeCaptures}? = nil
     property diagnostic_parameter_recipes : Array(IyiMod::DiagnosticSignatureParameterRecipe)? = nil
+    property diagnostic_block_recipe : IyiMod::DiagnosticSignatureParameterRecipe? = nil
+    property diagnostic_return_projections : Array(DiagnosticBoundProducer)? = nil
     def_equals_and_hash owner, name, verdict, block, untyped, location, params, returns, receiver,
       written_block, inferred, refused, body, storable, checked, produced, private_def,
       body_answers, uncompilable, abstract_def, answers_abstract, written, free_vars
@@ -4476,6 +4478,8 @@ module Iyi
           method.source_def = original.source_def
           method.diagnostic_body = original.diagnostic_body
           method.diagnostic_parameter_recipes = original.diagnostic_parameter_recipes
+          method.diagnostic_block_recipe = original.diagnostic_block_recipe
+          method.diagnostic_return_projections = original.diagnostic_return_projections
         end
         next if already.includes?(key.call(method))
         pool << method
@@ -5708,7 +5712,11 @@ module Iyi
     refused = nil
     checked = BindCheck::NotWritten
     produced = nil
-    written = resolve_restriction(owner, a_def.return_type)
+    written, return_projections = if owner.program.diagnostic_capture
+                                    resolve_restriction_recipe(owner, a_def.return_type)
+                                  else
+                                    {resolve_restriction(owner, a_def.return_type), nil}
+                                  end
     # The same restriction, unqualified, for the comparison below. See
     # `resolve_restriction`.
     plain = resolve_restriction(owner, a_def.return_type, qualify: false)
@@ -5769,6 +5777,31 @@ module Iyi
       end
     end
     parameter_recipes = owner.program.diagnostic_capture ? [] of IyiMod::DiagnosticSignatureParameterRecipe : nil
+    block_recipe = nil.as(IyiMod::DiagnosticSignatureParameterRecipe?)
+    written_block = if argument = a_def.block_arg
+                      name = "&#{argument.name}"
+                      restriction = argument.restriction
+                      if restriction
+                        if owner.program.diagnostic_capture
+                          resolved, projections = resolve_block_restriction_recipe(owner, restriction)
+                          block_recipe = IyiMod::DiagnosticSignatureParameterRecipe.new(argument,
+                            IyiMod::DiagnosticSignatureParameterKind::Block, name, resolved, nil,
+                            projections, [] of DiagnosticBoundProducer, false)
+                        else
+                          resolved = resolve_block_restriction(owner, restriction)
+                        end
+                        "#{name} : #{resolved}"
+                      else
+                        if owner.program.diagnostic_capture
+                          block_recipe = IyiMod::DiagnosticSignatureParameterRecipe.new(argument,
+                            IyiMod::DiagnosticSignatureParameterKind::Block, name, nil, nil,
+                            [] of DiagnosticBoundProducer, [] of DiagnosticBoundProducer, false)
+                        end
+                        name
+                      end
+                    else
+                      a_def.block_arity ? "&" : ""
+                    end
 
     method = BindMethod.new(
       owner: owner.to_s,
@@ -5864,17 +5897,13 @@ module Iyi
       # decides whether the method crosses at all — so the one `initialize`
       # a consumer needs to build a `Database` with was dropped, and the body
       # that calls `Database.new(…, &factory)` met a `new` that takes no block.
-      written_block: a_def.block_arg.try do |argument|
-        if restriction = argument.restriction
-          "&#{argument.name} : #{resolve_block_restriction(owner, restriction)}"
-        else
-          "&#{argument.name}"
-        end
-      end || (a_def.block_arity ? "&" : ""),
+      written_block: written_block,
     )
     method.source_def = given
     if owner.program.diagnostic_capture
       method.diagnostic_parameter_recipes = parameter_recipes
+      method.diagnostic_block_recipe = block_recipe
+      method.diagnostic_return_projections = return_projections
       method.diagnostic_def = a_def
       if origin = a_def.diagnostic_origin
         method.diagnostic_body = owner.program.diagnostic_def_bodies[origin]?
@@ -6107,6 +6136,22 @@ module Iyi
     inputs = (node.inputs || [] of ASTNode).map { |input| resolve_restriction(owner, input).to_s }
     output = node.output.try { |type| resolve_restriction(owner, type).to_s }
     "#{inputs.join(", ")} -> #{output}".strip
+  end
+
+  private def self.resolve_block_restriction_recipe(owner : Type, node : ASTNode) : {String, Array(DiagnosticBoundProducer)}
+    unless node.is_a?(ProcNotation)
+      resolved, producers = resolve_restriction_recipe(owner, node)
+      return {resolved.to_s, producers}
+    end
+    inputs = (node.inputs || [] of ASTNode).map { |input| resolve_restriction(owner, input).to_s }
+    output = node.output.try { |type| resolve_restriction(owner, type).to_s }
+    resolved = "#{inputs.join(", ")} -> #{output}".strip
+    written = node.to_s
+    producers = [] of DiagnosticBoundProducer
+    if resolved != written
+      producers << DiagnosticBoundProducer::ResolvedRestriction.new(owner.to_s, written, resolved, @@root, false)
+    end
+    {resolved, producers}
   end
 
   # *qualify* writes a shadowable name absolutely. Off where the answer is
