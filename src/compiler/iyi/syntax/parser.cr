@@ -7,6 +7,11 @@ module Iyi
   record DiagnosticParsedName, input_start : Int32, input_end : Int32, token_kind : String,
     token_text : String, lexical_mode : String, context : String, slot : DiagnosticNameSlot, owner : ASTNode
 
+  # A raw token a derived operator name is built from: its start, the parser's
+  # snapshot of it (nil outside diagnostic modes), and the selection it keeps.
+  record ParsedOperatorToken, start : Int32, snapshot : {Int32, String, String}?,
+    selection : DiagnosticTokenSelection = DiagnosticTokenSelection::Whole
+
   # The five flags `parse_to_def` copies onto its definition, read from real
   # parser or definition state.
   record ParseDefFlags,
@@ -393,6 +398,7 @@ module Iyi
     @diagnostic_name_fragments : Array(DiagnosticMacroNameFragment)? = nil
     @diagnostic_syntax_witnesses : Hash(UInt64, Array(DiagnosticSyntaxWitness))? = nil
     @diagnostic_assignment_witnesses : Hash(UInt64, {ASTNode, DiagnosticSyntaxWitness})? = nil
+    @diagnostic_bracket_witnesses : Hash(UInt64, Array(ParsedOperatorToken))? = nil
     @last_macro_control_offset : Int32? = nil
     @last_macro_control_snapshot : {Int32, String, String}? = nil
     @diagnostic_last_def_equals_offset : Int32? = nil
@@ -586,6 +592,7 @@ module Iyi
         ::raise ArgumentError.new("unconsumed diagnostic syntax witnesses") unless witnesses.empty?
       end
       @diagnostic_assignment_witnesses = nil
+      @diagnostic_bracket_witnesses = nil
     end
 
     private def diagnostic_anchor(kind : String, role : String, offset : Int32, token_end : Int32? = nil,
@@ -768,6 +775,108 @@ module Iyi
       return nil unless snapshot
       event = diagnostic_generated_event(@token.input_offset, snapshot, true)
       event ? DiagnosticSyntaxWitness.new(role, event) : nil
+    end
+
+    # The token the parser is at, read as a derived operator witness. Nil outside
+    # diagnostic modes, so an ordinary parse allocates nothing.
+    private def diagnostic_operator_token : ParsedOperatorToken?
+      return nil unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+      ParsedOperatorToken.new(@token.input_offset, diagnostic_current_token_snapshot)
+    end
+
+    # Builds the derived name of one operator production from its raw witness
+    # tokens and attaches it to the node's Primary name slot. The first token is
+    # the node's own anchor. In an expansion each later token carries its raw
+    # event. A regions-only parse has no expansion events, so it attaches
+    # nothing and the verifier refuses the field, as it did before.
+    private def diagnostic_operator_name(node : ASTNode, production : DiagnosticOperatorProduction,
+                                         tokens : Array(ParsedOperatorToken)) : Nil
+      anchor = node.diagnostic_origin
+      return unless anchor
+      expanded = anchor.is_a?(DiagnosticOrigin::Expanded)
+      source = diagnostic_anchor_source(anchor)
+      return if expanded && !@diagnostic_expansion
+      witnesses = [] of DiagnosticOperatorWitness
+      tokens.each_with_index do |token, index|
+        snapshot = token.snapshot
+        return unless snapshot
+        event : DiagnosticTokenEvent? = nil
+        if expanded && index > 0
+          event = diagnostic_witness_event(token.start, snapshot, source)
+          return unless event
+        end
+        raw = string.byte_slice(token.start - @input_offset_base, snapshot[0] - token.start)
+        witnesses << DiagnosticOperatorWitness.new(token.start, snapshot[0], snapshot[1], raw, token.selection, event)
+      end
+      input = diagnostic_literal_input
+      digest = @diagnostic_input_digest ||= ::Crystal::Digest::SHA256.hexdigest(input)
+      origin = DiagnosticOrigin::DerivedName.operator_name(production, anchor, digest, input.bytesize,
+        iyi? ? "Iyi" : "Crystal", witnesses)
+      slots = node.diagnostic_name_slots
+      slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)] = [DiagnosticNameValue::Derived.new(origin)] of DiagnosticNameValue
+      node.diagnostic_name_slots = slots
+    end
+
+    # The source origin of the one spliced claim that wrote the anchor, or nil
+    # for a written or raw-generated anchor.
+    private def diagnostic_anchor_source(anchor : DiagnosticOrigin) : DiagnosticOrigin?
+      return nil unless anchor.is_a?(DiagnosticOrigin::Expanded)
+      claims = anchor.token_event.byte_parts.select(&.is_a?(DiagnosticEmissionPart::AstAnchor))
+      return nil unless claims.size == 1
+      claims[0].as(DiagnosticEmissionPart::AstAnchor).source_origin
+    end
+
+    # A1: the event of a later operator witness in an expansion. Its bytes are
+    # raw-generated text when every byte is. Otherwise they are one spliced claim
+    # whose writer range covers the whole token and whose AstAnchor has the anchor's
+    # source origin. Anything else is nil, which refuses the name. Mixed provenance
+    # is never built.
+    private def diagnostic_witness_event(start : Int32, snapshot : {Int32, String, String},
+                                         source : DiagnosticOrigin?) : DiagnosticTokenEvent?
+      finish = snapshot[0]
+      generated = diagnostic_generated_event(start, snapshot, true)
+      return generated if generated
+      return nil unless source && (writers = @diagnostic_writer_direct)
+      claims = [] of DiagnosticEmissionPart::AstAnchor
+      writers.each do |writer, origins|
+        next unless writer.start_offset <= start && writer.end_offset >= finish
+        origins.each do |origin|
+          origin.token_event.byte_parts.each do |part|
+            next unless part.is_a?(DiagnosticEmissionPart::AstAnchor) && part.source_origin == source
+            next unless part.start_offset <= start && part.end_offset >= finish
+            claims << part unless claims.any?(&.equal?(part))
+          end
+        end
+      end
+      return nil unless claims.size == 1
+      claim = claims[0]
+      raw = string.byte_slice(start - @input_offset_base, finish - start)
+      parts = [DiagnosticEmissionPart::AstAnchor.new(start, finish, claim.emitter_origin, claim.source_origin).as(DiagnosticEmissionPart)] of DiagnosticEmissionPart
+      DiagnosticTokenEvent.new(start, finish, snapshot[1], raw, snapshot[2], DiagnosticTokenSelection::Whole, parts)
+    end
+
+    # The `[` and `]`, or one `[]`, an index read was parsed from. Kept for the
+    # `=` that may rename the read to `[]=`.
+    private def diagnostic_stash_brackets(node : ASTNode, brackets : Array(ParsedOperatorToken)) : Nil
+      return unless node.diagnostic_origin
+      (@diagnostic_bracket_witnesses ||= {} of UInt64 => Array(ParsedOperatorToken))[node.object_id] = brackets
+    end
+
+    # `a[i] = v` and `a[] = v` rename the index read to `[]=`. The new name is the
+    # IndexAssign production over the brackets that read recorded, then this `=`.
+    # The read's old name and observation are dropped first, so a read whose
+    # brackets are unknown is left unnamed and the verifier refuses it.
+    private def diagnostic_index_assign(node : ASTNode, equals : ParsedOperatorToken?) : Nil
+      return unless equals
+      brackets = @diagnostic_bracket_witnesses.try(&.delete(node.object_id))
+      if observations = @diagnostic_name_observations
+        observations.reject! { |item| item.owner.equal?(node) }
+      end
+      slots = node.diagnostic_name_slots
+      slots.delete(DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
+      node.diagnostic_name_slots = slots
+      return unless brackets
+      diagnostic_operator_name(node, DiagnosticOperatorProduction::IndexAssign, brackets + [equals])
     end
 
 
@@ -1869,6 +1978,7 @@ module Iyi
           equals_witness = diagnostic_raw_witness(DiagnosticWitnessRole::Equals)
 
           if atomic.is_a?(Call) && atomic.name == "[]"
+            equals_token = diagnostic_operator_token
             next_token_skip_space_or_newline
 
             atomic.name = "[]="
@@ -1877,6 +1987,7 @@ module Iyi
             atomic.args << arg
             atomic.end_location = arg.end_location
             (@diagnostic_assignment_witnesses ||= {} of UInt64 => {ASTNode, DiagnosticSyntaxWitness})[atomic.object_id] = {atomic, equals_witness} if equals_witness
+            diagnostic_index_assign(atomic, equals_token)
           else
             if atomic.is_a?(Path) && (inside_def? || inside_fun? || @is_constant_assignment)
               raise "dynamic constant assignment. Constants can only be declared at the top level or inside other types."
@@ -1976,11 +2087,13 @@ module Iyi
           push_var atomic
           op_offset = @token.input_offset
           op_snapshot = diagnostic_current_token_snapshot
+          op_token = diagnostic_operator_token
           method = @token.type.to_s.byte_slice(0, @token.to_s.bytesize - 1)
           next_token_skip_space_or_newline
           value = iyi_nest { parse_op_assign_no_control }
           atomic = OpAssign.new(atomic, method, value).at(location)
           atomic.diagnostic_origin = diagnostic_anchor("Call", "method", op_offset, token_snapshot: op_snapshot)
+          diagnostic_operator_name(atomic, DiagnosticOperatorProduction::OpAssign, [op_token]) if op_token
           atomic.name_location = name_location
         else
           break
@@ -2193,6 +2306,8 @@ module Iyi
             left = Call.new(left, method, right).at(location).at_end(right)
             left.name_location = name_location
             left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, name_end, token_snapshot: name_snapshot)
+            diagnostic_operator_name(left, DiagnosticOperatorProduction::SignedNumber,
+              [ParsedOperatorToken.new(name_offset, name_snapshot, DiagnosticTokenSelection::SignedNumberSign)]) if name_snapshot
           else
             return left
           end
@@ -2381,6 +2496,7 @@ module Iyi
               atomic = Call.new(atomic, name)
               unexpected_token unless can_be_assigned?(atomic)
               equals_witness = diagnostic_raw_witness(DiagnosticWitnessRole::Equals)
+              equals_token = diagnostic_operator_token
 
               # Rewrite 'f.x = arg' as f.x=(arg)
               next_token
@@ -2412,7 +2528,10 @@ module Iyi
               atomic.args = [arg] of ASTNode
               atomic.name_location = name_location
               atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
-              diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin, token_snapshot: name_snapshot) if diagnostic_identifier
+              if diagnostic_identifier && equals_token
+                diagnostic_operator_name(atomic, DiagnosticOperatorProduction::Setter,
+                  [ParsedOperatorToken.new(name_offset, name_snapshot), equals_token])
+              end
               (@diagnostic_assignment_witnesses ||= {} of UInt64 => {ASTNode, DiagnosticSyntaxWitness})[atomic.object_id] = {atomic, equals_witness} if equals_witness
               next
             when .assignment_operator?
@@ -2422,6 +2541,7 @@ module Iyi
               op_name_location = @token.location
               op_offset = @token.input_offset
               op_snapshot = diagnostic_current_token_snapshot
+              method_op_token = diagnostic_operator_token
               method = @token.type.to_s.byte_slice(0, @token.type.to_s.size - 1)
               next_token_skip_space_or_newline
               value = parse_op_assign
@@ -2431,6 +2551,7 @@ module Iyi
               diagnostic_name(call, name_offset, "method_name", call.diagnostic_origin, token_snapshot: name_snapshot) if diagnostic_identifier
               atomic = OpAssign.new(call, method, value).at(location)
               atomic.diagnostic_origin = diagnostic_anchor("Call", "method", op_offset, token_snapshot: op_snapshot)
+              diagnostic_operator_name(atomic, DiagnosticOperatorProduction::OpAssign, [method_op_token]) if method_op_token
               atomic.name_location = op_name_location
               next
             else
@@ -2471,6 +2592,7 @@ module Iyi
           atomic.end_location = end_location
           atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
           diagnostic_name(atomic, name_offset, "method_name", atomic.diagnostic_origin, token_snapshot: name_snapshot)
+          diagnostic_stash_brackets(atomic, [ParsedOperatorToken.new(name_offset, name_snapshot)]) if name_snapshot
           atomic.name_size = 0 if atomic.is_a?(Call)
           atomic
         when .op_lsquare?
@@ -2479,6 +2601,7 @@ module Iyi
           name_location = @token.location
           name_offset = @token.input_offset
           name_snapshot = diagnostic_current_token_snapshot
+          lsquare = diagnostic_operator_token
           next_token_skip_space_or_newline
 
           call_args = preserve_stop_on_do do
@@ -2493,6 +2616,7 @@ module Iyi
 
           skip_space_or_newline
           check :OP_RSQUARE
+          rsquare = diagnostic_operator_token
           end_location = token_end_location
           @wants_regex = false
           next_token
@@ -2504,8 +2628,10 @@ module Iyi
             named_args = call_args.named_args
           end
 
+          question : ParsedOperatorToken? = nil
           if @token.type.op_question?
             method_name = "[]?"
+            question = diagnostic_operator_token
             end_location = token_end_location
             next_token_skip_space
           else
@@ -2518,6 +2644,14 @@ module Iyi
           atomic.end_location = end_location
           atomic.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
           atomic.name_size = 0
+          if lsquare && rsquare
+            if question
+              diagnostic_operator_name(atomic, DiagnosticOperatorProduction::IndexQuery, [lsquare, rsquare, question])
+            else
+              diagnostic_operator_name(atomic, DiagnosticOperatorProduction::Index, [lsquare, rsquare])
+              diagnostic_stash_brackets(atomic, [lsquare, rsquare])
+            end
+          end
           atomic.args_in_brackets = true
           atomic
         else
@@ -2856,7 +2990,9 @@ module Iyi
           diagnostic_name(source_node, @token.input_offset, "regex_match_index")
           token = source_node.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)].first.as(DiagnosticNameValue::Observed).source_token
           match_origin = DiagnosticOrigin::DerivedName.regex_match_index(token, "MatchData")
-          call.diagnostic_origin = DiagnosticOrigin::DerivedName.regex_match_index(token, "Lookup")
+          lookup = DiagnosticOrigin::DerivedName.regex_match_index(token, "Lookup")
+          call.diagnostic_origin = lookup
+          call.diagnostic_name_slots = {DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary) => [DiagnosticNameValue::Derived.new(lookup)] of DiagnosticNameValue}
           match_data.diagnostic_name_slots = {DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary) => [DiagnosticNameValue::Derived.new(match_origin)] of DiagnosticNameValue}
         end
         node_and_next_token call
@@ -5086,6 +5222,7 @@ module Iyi
       when .command?
         result = Call.new("`", result).at(result)
         result.diagnostic_origin = diagnostic_anchor("Call", "method", diagnostic_start, token_snapshot: diagnostic_snapshot)
+        diagnostic_operator_name(result, DiagnosticOperatorProduction::Command, [ParsedOperatorToken.new(diagnostic_start, diagnostic_snapshot)]) if diagnostic_snapshot
         if (origin = result.diagnostic_origin) && (interpolation = result.as(Call).args.first).is_a?(StringInterpolation)
           if @diagnostic_regions
             (@diagnostic_attached_nodes ||= {} of {Int32, String, String} => ASTNode)[{diagnostic_start, "Call", "method"}] = result
