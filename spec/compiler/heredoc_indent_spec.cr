@@ -152,6 +152,15 @@ private def expect_same_refusal(source : String, message : String) : Nil
   expect_raises(Iyi::HeredocIndent::Error, message) { Iyi::HeredocIndent.remove(pieces, indent) }
 end
 
+# An invalid UTF-8 byte in a heredoc body is refused by the lexer as it reads the
+# body, before HeredocIndent runs. The parser and the flat reader both raise
+# InvalidByteSequenceError with the same message, which names the byte and its
+# offset in the source.
+private def expect_malformed_refusal(source : String, message : String) : Nil
+  expect_raises(InvalidByteSequenceError, message) { parse(source) }
+  expect_raises(InvalidByteSequenceError, message) { heredoc_body(source) }
+end
+
 # The parser and the pure function agree on the same source.
 private def expect_parity(source : String) : Nil
   pieces, indent = heredoc_body(source)
@@ -365,42 +374,42 @@ describe Iyi::HeredocIndent do
   end
 
   describe "invalid UTF-8 body bytes" do
-    # Each source is compared by outcome. The parser decides whether it succeeds
-    # or refuses, and the pure function must reach the same result.
-    it "agrees on an invalid byte inside indented content" do
-      expect_agreement "<<-FOO\n  a\xFFb\n  FOO"
+    # The lexer refuses an invalid byte as it reads the heredoc body, so each source is
+    # refused, not compared. The position is the byte's offset in the whole source.
+    it "refuses an invalid byte inside indented content" do
+      expect_malformed_refusal "<<-FOO\n  a\xFFb\n  FOO", "Unexpected byte 0xff at position 10, malformed UTF-8"
     end
 
-    it "agrees on an invalid byte at column zero with no indent" do
-      expect_agreement "<<-FOO\n\xFFa\nFOO"
+    it "refuses an invalid byte at column zero with no indent" do
+      expect_malformed_refusal "<<-FOO\n\xFFa\nFOO", "Unexpected byte 0xff at position 7, malformed UTF-8"
     end
 
-    it "agrees on a truncated multi-byte sequence at the end of a line" do
-      expect_agreement "<<-FOO\n  a\xC3\n  FOO"
+    it "refuses a truncated multi-byte sequence at the end of a line" do
+      expect_malformed_refusal "<<-FOO\n  a\xC3\n  FOO", "Unexpected byte 0xc3 at position 10, malformed UTF-8"
     end
 
-    it "agrees on an invalid byte in the indent region" do
-      expect_agreement "<<-FOO\n \xFFa\n  FOO"
+    it "refuses an invalid byte in the indent region" do
+      expect_malformed_refusal "<<-FOO\n \xFFa\n  FOO", "Unexpected byte 0xff at position 8, malformed UTF-8"
     end
 
-    it "agrees on an encoded surrogate code point" do
-      expect_agreement "<<-FOO\n  a\xED\xA0\x80b\n  FOO"
+    it "refuses an encoded surrogate code point" do
+      expect_malformed_refusal "<<-FOO\n  a\xED\xA0\x80b\n  FOO", "Unexpected byte 0xed at position 10, malformed UTF-8"
     end
 
-    it "agrees on an invalid byte immediately before an interpolation" do
-      expect_agreement "<<-FOO\n  \xFF\#{1}\n  b\n  FOO"
+    it "refuses an invalid byte immediately before an interpolation" do
+      expect_malformed_refusal "<<-FOO\n  \xFF\#{1}\n  b\n  FOO", "Unexpected byte 0xff at position 9, malformed UTF-8"
     end
 
-    it "agrees on an invalid byte immediately after an interpolation" do
-      expect_agreement "<<-FOO\n  a\#{1}\xFF\n  FOO"
+    it "refuses an invalid byte immediately after an interpolation" do
+      expect_malformed_refusal "<<-FOO\n  a\#{1}\xFF\n  FOO", "Unexpected byte 0xff at position 14, malformed UTF-8"
     end
 
-    it "agrees on an invalid byte on a blank line" do
-      expect_agreement "<<-FOO\n  a\n\xFF\n  b\n  FOO"
+    it "refuses an invalid byte on a blank line" do
+      expect_malformed_refusal "<<-FOO\n  a\n\xFF\n  b\n  FOO", "Unexpected byte 0xff at position 11, malformed UTF-8"
     end
 
-    it "agrees on an invalid byte in a quoted heredoc" do
-      expect_agreement "<<-'FOO'\n  a\xFFb\n  FOO"
+    it "refuses an invalid byte in a quoted heredoc" do
+      expect_malformed_refusal "<<-'FOO'\n  a\xFFb\n  FOO", "Unexpected byte 0xff at position 12, malformed UTF-8"
     end
   end
 

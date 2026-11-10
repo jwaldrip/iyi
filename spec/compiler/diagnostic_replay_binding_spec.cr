@@ -287,6 +287,15 @@ describe "DiagnosticPragmaSnapshot.read" do
     end
   end
 
+  it "refuses a present flag that is not a boolean" do
+    expect_raises(ArgumentError, /present is not a boolean/) do
+      Iyi::DiagnosticPragmaSnapshot.read(%({"present":null,"entries":[]}))
+    end
+    expect_raises(ArgumentError, /present is not a boolean/) do
+      Iyi::DiagnosticPragmaSnapshot.read(%({"present":0,"entries":[]}))
+    end
+  end
+
   it "refuses input over the size limit before parsing" do
     expect_raises(ArgumentError, /exceeds size limit/) do
       Iyi::DiagnosticPragmaSnapshot.read("x" * (Iyi::DiagnosticPragmaSnapshot::MAX_BYTES + 1))
@@ -463,5 +472,104 @@ describe "DiagnosticUnnamedParamBinder (Written chain)" do
     path = "/spec/binding/lib.iyi"
     bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
     bound.should be_a(Iyi::DiagnosticBoundCapture)
+  end
+end
+
+# D4 controls: the binder and the name evidence, run on replayed trees.
+
+# The replay root and journal exactly as `bind!` builds them (3782-3788), so a
+# control can mutate the replayed tree before the binders see it.
+private def binder_spec_replay(source : String, path : String) : {Iyi::AcceptedCaptureInput, Iyi::ASTNode, Iyi::DiagnosticReplayJournal}
+  input = binding_spec_input(source, path)
+  parser = input.replay_parser
+  parser.enable_diagnostic_observations
+  root = parser.parse
+  {input, root, Iyi::DiagnosticReplayJournal.new(parser.diagnostic_lexical_observations)}
+end
+
+# The rest of `bind!` after the digest check: module identity, the unnamed
+# parameter binder, then the evidence walk.
+private def binder_spec_verify(input, root, journal)
+  identity = Iyi::DiagnosticModuleIdentity.from(root, input, journal)
+  structural = Iyi::DiagnosticUnnamedParamBinder.new(input, journal).verify!(root)
+  Iyi::DiagnosticEvidenceBinding.new(input, journal, identity, structural).verify!(root)
+end
+
+private def binder_spec_funs(root : Iyi::ASTNode) : Array(Iyi::FunDef)
+  body = root.as(Iyi::LibDef).body
+  items = body.is_a?(Iyi::Expressions) ? body.expressions : [body]
+  items.map(&.as(Iyi::FunDef))
+end
+
+describe "DiagnosticCaptureBinding.bind! unnamed parameters and name evidence" do
+  it "binds a written `::` head as an unnamed lib parameter (PC-4)" do
+    source = "lib LibC\n  fun h(::Int32) : Void\nend\n"
+    path = "/spec/binding/pc4.iyi"
+    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    bound.should be_a(Iyi::DiagnosticBoundCapture)
+  end
+
+  it "binds a written proc-notation head as an unnamed lib parameter (PC-5)" do
+    source = "lib LibC\n  fun k((Int32) -> Void) : Void\nend\n"
+    path = "/spec/binding/pc5.iyi"
+    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    bound.should be_a(Iyi::DiagnosticBoundCapture)
+  end
+
+  it "refuses a string real name as literal evidence, not as a misplaced separator" do
+    source = "lib LibC\n  fun f = \"c_f\"(Int32) : Int32\nend\n"
+    path = "/spec/binding/cf.iyi"
+    expect_raises(ArgumentError, "literal evidence requires journal literal binding") do
+      Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    end
+  end
+
+  it "binds an explicit real name on a lib fun" do
+    source = "lib LibC\n  fun gcollect = GC_gcollect : Void\nend\n"
+    path = "/spec/binding/gcollect.iyi"
+    bound = Iyi::DiagnosticCaptureBinding.bind!(binding_spec_input(source, path), binding_spec_digest(source, path))
+    bound.should be_a(Iyi::DiagnosticBoundCapture)
+  end
+end
+
+describe "DiagnosticUnnamedParamBinder and FunDef name controls" do
+  it "refuses a name set on a written unnamed parameter (NC-1)" do
+    input, root, journal = binder_spec_replay("lib LibC\n  fun abs(Int32) : Int32\nend\n", "/spec/binding/nc1.iyi")
+    binder_spec_funs(root)[0].args[0].name = "x"
+    expect_raises(ArgumentError, "structural witness differs") do
+      Iyi::DiagnosticUnnamedParamBinder.new(input, journal).verify!(root)
+    end
+  end
+
+  it "refuses two written unnamed parameters whose restrictions are swapped (U4)" do
+    input, root, journal = binder_spec_replay("lib LibC\n  fun two(Int32, ::Int32) : Void\nend\n", "/spec/binding/u4.iyi")
+    args = binder_spec_funs(root)[0].args
+    first_restriction = args[0].restriction
+    args[0].restriction = args[1].restriction
+    args[1].restriction = first_restriction
+    expect_raises(ArgumentError, "structural witness differs") do
+      Iyi::DiagnosticUnnamedParamBinder.new(input, journal).verify!(root)
+    end
+  end
+
+  it "refuses a mutated name field against its source token" do
+    input, root, journal = binder_spec_replay("lib LibC\n  fun gcollect = GC_gcollect : Void\nend\n", "/spec/binding/gcollect_name.iyi")
+    binder_spec_funs(root)[0].name = "other"
+    expect_raises(ArgumentError, "name field differs from source evidence") do
+      binder_spec_verify(input, root, journal)
+    end
+  end
+
+  it "refuses a mutated implicit real name" do
+    input, root, journal = binder_spec_replay("lib LibC\n  fun abs(Int32) : Int32\nend\n", "/spec/binding/abs_implicit.iyi")
+    binder_spec_funs(root)[0].real_name = "other"
+    expect_raises(ArgumentError, "invalid implicit foreign-name observation") do
+      binder_spec_verify(input, root, journal)
+    end
+  end
+
+  it "keeps the legacy check green on a named lib parameter" do
+    input, root, _ = binder_spec_replay("lib LibC\n  fun abs(x : Int32) : Int32\nend\n", "/spec/binding/legacy.iyi")
+    Iyi::DiagnosticRecordedEvidenceInputCheck.new(input).verify!(root)
   end
 end

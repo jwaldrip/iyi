@@ -292,7 +292,7 @@ describe "structural name derivation" do
   end
 
   it "refuses structural witnesses whose kinds or fresh index are wrong" do
-    expect_raises(ArgumentError, "structural witness differs") do
+    expect_raises(ArgumentError, "unnamed parameter head is not the first type token") do
       structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
         operator_spec_written(0, "FunDef", "keyword"),
         [operator_spec_witness(5, "("), operator_spec_witness(6, "Int32", "IDENT")], 12)
@@ -475,6 +475,14 @@ describe "unnamed lib parameter expansion" do
         unnamed_spec_expanded(unnamed_spec_keyword(0)),
         [operator_spec_witness(5, "(", event: operator_spec_event(5, "(")),
          operator_spec_witness(6, "foo", "IDENT", event: operator_spec_event(6, "foo", "IDENT"))], 12)
+    end
+  end
+
+  it "refuses a written head of `...` as not the first type token (U3)" do
+    expect_raises(ArgumentError, "unnamed parameter head is not the first type token") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_written(0, "FunDef", "keyword"),
+        [operator_spec_witness(5, "("), operator_spec_witness(6, "...")], 12)
     end
   end
 

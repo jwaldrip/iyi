@@ -363,8 +363,15 @@ describe "diagnostic capture real parser roots" do
     end
 
     it "binds a declared Iyi module to its actual parsed source" do
-      input, root = real_capture_root("module sample/identity\nvalue = 1\n", "/spec/real/identity.iyi")
-      Iyi::DiagnosticRecordedEvidenceInputCheck.new(input).verify!(root)
+      source = "module sample/identity\nvalue = 1\n"
+      path = "/spec/real/identity.iyi"
+      input, _ = real_capture_root(source, path)
+      digest_parser = real_capture_parser(source, path)
+      digest_parser.enable_diagnostic_observations
+      stream = Iyi::DiagnosticAstFrameStream.new(digest_parser.parse)
+      stream.stream { |_| }
+      bound = Iyi::DiagnosticCaptureBinding.bind!(input, stream.ast_sha256)
+      bound.identity.declared.should eq "sample/identity"
     end
   end
 

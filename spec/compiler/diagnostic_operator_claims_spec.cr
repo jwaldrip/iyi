@@ -137,18 +137,27 @@ describe "derived structural names" do
     end
   end
 
-  it "binds each written unnamed lib parameter whatever its head token" do
+  it "derives a structural name for each written unnamed lib parameter whatever its head token" do
     # PC-1, PC-4 and PC-5: a CONST head, a `::` head, and the head of a proc notation.
     source = "lib LibC\n  fun abs(Int32) : Int32\n  fun two(Int32, Void*) : Void\n" \
-             "  fun h(::Int32) : Void\n  fun k(Int32 -> Void) : Void\nend"
+             "  fun h(::Int32) : Void\n  fun k((Int32) -> Void) : Void\nend"
     funs = operator_claim_funs(operator_claim_parse(source, true))
     funs.size.should eq(4)
-    funs.each do |fun_def|
-      fun_def.args.each do |arg|
-        operator_claim_derived(arg).derivation_kind.should eq("StructuralName")
+    # Each parameter's witnesses are its separator, then its head token.
+    expected = [
+      [["(", "Int32"]],
+      [["(", "Int32"], [",", "Void"]],
+      [["(", "::"]],
+      [["(", "("]],
+    ]
+    funs.each_with_index do |fun_def, fun_index|
+      fun_def.args.size.should eq(expected[fun_index].size)
+      fun_def.args.each_with_index do |arg, arg_index|
+        derived = operator_claim_derived(arg)
+        derived.derivation_kind.should eq("StructuralName")
+        derived.structural_witnesses.map(&.raw_text).should eq(expected[fun_index][arg_index])
       end
     end
-    funs[1].args.size.should eq(2)
   end
 
   it "leaves a named lib parameter observed and never structural" do
