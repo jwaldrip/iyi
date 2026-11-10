@@ -38,12 +38,14 @@ module Iyi
 
   record DiagnosticGeneratedText, start_offset : Int32, end_offset : Int32,
     emitter_origin : DiagnosticOrigin?, producer : DiagnosticMacroProducer
+
   # Provenance is independent of Location, which remains the source of
   # human-facing positions. These records contain no process-local identity.
   abstract class DiagnosticOrigin
     abstract def to_json(json : JSON::Builder) : Nil
     abstract def valid_for_anchor?(kind : String, role : String) : Bool
-    MAX_DEPTH = 128
+
+    MAX_DEPTH          = 128
     MAX_UNFOLDED_BYTES = 8_u64 * 1024 * 1024
     getter graph_depth : Int32 = 0
     getter graph_bytes : UInt64 = 0_u64
@@ -68,7 +70,7 @@ module Iyi
         size += case byte
                 when 0x22, 0x5c, 0x08, 0x0c, 0x0a, 0x0d, 0x09 then 2_u64
                 when 0x00..0x1f, 0x7f                         then 6_u64
-                else                                                1_u64
+                else                                               1_u64
                 end
       end
       size
@@ -350,7 +352,7 @@ module Iyi
           label, separator, text = @structural_slot.partition(':')
           index = text.to_i?
           return label == "arm" && separator == ":" && !index.nil? && index >= 0 && index.to_s == text &&
-                 @parent_origin.valid_for_anchor?("Literal", "select")
+            @parent_origin.valid_for_anchor?("Literal", "select")
         end
         if kind == "Literal" && role == "interpolation" && @synthesis_kind == "cast_error_interpolation" && @structural_slot == "message"
           return @parent_origin.valid_for_anchor?("Cast", "keyword")
@@ -359,8 +361,8 @@ module Iyi
           parts = @structural_slot.split(':')
           index = parts[2]?.try(&.to_i?)
           return parts.size == 3 && parts[0] == "array" && parts[1] == "block" &&
-                 !index.nil? && index >= 0 && index.to_s == parts[2] &&
-                 @parent_origin.valid_for_anchor?("Literal", "array")
+            !index.nil? && index >= 0 && index.to_s == parts[2] &&
+            @parent_origin.valid_for_anchor?("Literal", "array")
         end
         if kind == "Literal" && @synthesis_kind == "literal_expansion_node"
           if @structural_slot == "derive:fields" && role == "array"
@@ -378,7 +380,7 @@ module Iyi
             text = @structural_slot.byte_slice("array:interpolation:".bytesize)
             index = text.to_i?
             return !index.nil? && index >= 0 && index.to_s == text &&
-                   @parent_origin.valid_for_anchor?("Literal", "array")
+              @parent_origin.valid_for_anchor?("Literal", "array")
           elsif @structural_slot.starts_with?("block_unpack:") && role == "multiassign"
             return false unless @parent_origin.valid_for_anchor?("Block", "opener") ||
                                 @parent_origin.valid_for_anchor?("Block", "ampersand")
@@ -391,7 +393,7 @@ module Iyi
             text = @structural_slot.byte_slice("multiassign:range:".bytesize)
             index = text.to_i?
             return !index.nil? && index >= 0 && index.to_s == text &&
-                   @parent_origin.valid_for_anchor?("Literal", "multiassign")
+              @parent_origin.valid_for_anchor?("Literal", "multiassign")
           end
           return false
         end
@@ -400,14 +402,14 @@ module Iyi
           return false unless parts.size >= 2 && @parent_origin.valid_for_anchor?("Literal", parts[0])
           if parts.size == 2
             return case parts[0]
-                   when "array"         then {"constructor", "buffer"}.includes?(parts[1])
-                   when "hash", "range" then parts[1] == "constructor"
-                   when "regex"         then {"constructor", "options", "compile"}.includes?(parts[1])
-                   when "interpolation" then parts[1] == "call"
-                   when "select"        then {"select", "invalid"}.includes?(parts[1])
-                   when "multiassign"   then {"size", "compare", "error", "raise"}.includes?(parts[1])
-                   else                      false
-                   end
+            when "array"         then {"constructor", "buffer"}.includes?(parts[1])
+            when "hash", "range" then parts[1] == "constructor"
+            when "regex"         then {"constructor", "options", "compile"}.includes?(parts[1])
+            when "interpolation" then parts[1] == "call"
+            when "select"        then {"select", "invalid"}.includes?(parts[1])
+            when "multiassign"   then {"size", "compare", "error", "raise"}.includes?(parts[1])
+            else                      false
+            end
           end
           if parts.size == 5 && parts[0] == "case" && parts[1] == "compare"
             return parts[2..4].all? do |text|
@@ -419,11 +421,11 @@ module Iyi
           index = parts[2].to_i?
           return false unless index && index >= 0 && index.to_s == parts[2]
           return case parts[0]
-                 when "array"       then {"concat", "append", "store", "element_type", "each", "each_body"}.includes?(parts[1])
-                 when "hash"        then parts[1] == "store"
-                 when "multiassign" then parts[1] == "index"
-                 else                    false
-                 end
+          when "array"       then {"concat", "append", "store", "element_type", "each", "each_body"}.includes?(parts[1])
+          when "hash"        then parts[1] == "store"
+          when "multiassign" then parts[1] == "index"
+          else                    false
+          end
         end
         if kind == "Call" && role == "method" && @synthesis_kind == "proc_pointer_invoke" && @structural_slot == "call"
           return @parent_origin.valid_for_anchor?("ProcPointer", "arrow")
@@ -438,7 +440,7 @@ module Iyi
           label, separator, text = @structural_slot.partition(':')
           index = text.to_i?
           return separator == ":" && {"value", "fiber", "object_id", "compare"}.includes?(label) &&
-                 !index.nil? && index >= 0 && index.to_s == text
+            !index.nil? && index >= 0 && index.to_s == text
         end
         if kind == "Call" && role == "method" && @synthesis_kind == "defer_runtime" &&
            (@structural_slot == "push" || @structural_slot == "pop")
@@ -453,7 +455,7 @@ module Iyi
         end
         if kind == "Macro" && role == "keyword" && @synthesis_kind == "inline_macro_definition" && @structural_slot == "macro"
           return @parent_origin.valid_for_anchor?("MacroDirective", "control") ||
-                 @parent_origin.valid_for_anchor?("MacroDirective", "expression")
+            @parent_origin.valid_for_anchor?("MacroDirective", "expression")
         end
         return false unless kind == "ProcLiteral" && role == "arrow"
         case {@synthesis_kind, @structural_slot}

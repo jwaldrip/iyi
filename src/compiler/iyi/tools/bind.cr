@@ -1353,21 +1353,21 @@ module Iyi
         end
 
         signature = IyiMod::Signature.new(
-            name: accessor,
-            # A module function, and written as one. These are synthesised
-            # here rather than read off the shard — a constant is storage and a
-            # declaration can name a type but not a global somebody else's
-            # object file holds — so nothing else says which side of the type
-            # they are on. Written without it they were instance methods of the
-            # module the moment the header stopped extending itself, and
-            # `Kemal.config_instance` was `undefined method ... for
-            # Kemal:Module`.
-            receiver: "self",
-            parameters: [] of String,
-            block_parameter: "",
-            return_type: answer,
-            free_variables: [] of String,
-            required: false,
+          name: accessor,
+          # A module function, and written as one. These are synthesised
+          # here rather than read off the shard — a constant is storage and a
+          # declaration can name a type but not a global somebody else's
+          # object file holds — so nothing else says which side of the type
+          # they are on. Written without it they were instance methods of the
+          # module the moment the header stopped extending itself, and
+          # `Kemal.config_instance` was `undefined method ... for
+          # Kemal:Module`.
+          receiver: "self",
+          parameters: [] of String,
+          block_parameter: "",
+          return_type: answer,
+          free_variables: [] of String,
+          required: false,
         )
         if owner.program.diagnostic_capture
           parent = type.iyi_declaration_origin || raise "constant accessor has no declaration origin"
@@ -3073,7 +3073,7 @@ module Iyi
   end
 
   private def self.transform_bound_classvar(owner : String, variable : IyiMod::ClassVarDecl,
-                                             & : String, Array(DiagnosticAnchor)? -> String) : String
+                                            & : String, Array(DiagnosticAnchor)? -> String) : String
     return yield variable.value, nil if !@@diagnostic_binding || variable.value.empty?
     key = {owner, variable.name}
     source, original = @@diagnostic_classvars[key]? || raise "missing bound class variable origin"

@@ -124,8 +124,8 @@ class Iyi::CodeGenVisitor
       end
       JSON::Any.new({
         "captured_self_type" => captured_self || JSON::Any.new(nil),
-        "bindings"          => JSON::Any.new(bindings),
-        "parent"            => parent_identity || JSON::Any.new(nil),
+        "bindings"           => JSON::Any.new(bindings),
+        "parent"             => parent_identity || JSON::Any.new(nil),
       })
     end
 

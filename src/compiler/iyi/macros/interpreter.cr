@@ -172,9 +172,9 @@ module Iyi
             diagnostic_generated.try(&.<< DiagnosticGeneratedText.new(yield_start, @str.pos.to_i32, diagnostic_emitter, DiagnosticMacroProducer::YieldWrapper))
           end
           @last.to_s(@str, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: true,
-                     diagnostic_emissions: diagnostic_anchors,
-                     diagnostic_generated_text: diagnostic_generated,
-                     diagnostic_emitter: diagnostic_emitter)
+            diagnostic_emissions: diagnostic_anchors,
+            diagnostic_generated_text: diagnostic_generated,
+            diagnostic_emitter: diagnostic_emitter)
           if is_yield
             yield_end_start = @str.pos.to_i32
             @str << " end"
@@ -183,9 +183,9 @@ module Iyi
           (macro_expansion_pragmas[@str.pos.to_i32] ||= [] of Lexer::LocPragma) << Lexer::LocPopPragma.new
         else
           @last.to_s(@str, emit_location_pragmas: !!@program.interpreted_node_hook,
-                     diagnostic_emissions: diagnostic_anchors,
-                     diagnostic_generated_text: diagnostic_generated,
-                     diagnostic_emitter: diagnostic_emitter)
+            diagnostic_emissions: diagnostic_anchors,
+            diagnostic_generated_text: diagnostic_generated,
+            diagnostic_emitter: diagnostic_emitter)
         end
         if diagnostic_anchors && diagnostic_generated
           pragmas = @macro_expansion_pragmas ||= {} of Int32 => Array(Lexer::LocPragma)
@@ -238,15 +238,15 @@ module Iyi
         if exp.is_a?(Expressions)
           exp.expressions.each do |subexp|
             subexp.to_s(@str, emit_location_pragmas: !!@program.interpreted_node_hook,
-                        diagnostic_emissions: diagnostic_anchors,
-                        diagnostic_generated_text: diagnostic_generated,
-                        diagnostic_emitter: diagnostic_emitter)
+              diagnostic_emissions: diagnostic_anchors,
+              diagnostic_generated_text: diagnostic_generated,
+              diagnostic_emitter: diagnostic_emitter)
           end
         else
           exp.to_s(@str, emit_location_pragmas: !!@program.interpreted_node_hook,
-                   diagnostic_emissions: diagnostic_anchors,
-                   diagnostic_generated_text: diagnostic_generated,
-                   diagnostic_emitter: diagnostic_emitter)
+            diagnostic_emissions: diagnostic_anchors,
+            diagnostic_generated_text: diagnostic_generated,
+            diagnostic_emitter: diagnostic_emitter)
         end
         pragmas = @macro_expansion_pragmas ||= {} of Int32 => Array(Lexer::LocPragma)
         (pragmas[splice_start] ||= [] of Lexer::LocPragma) << Lexer::LocDiagnosticEmission.new(

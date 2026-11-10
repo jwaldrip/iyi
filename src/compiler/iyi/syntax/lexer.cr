@@ -105,7 +105,6 @@ module Iyi
       end
     end
 
-
     record LocDiagnosticEmission, end_offset : Int32, anchors : Array(DiagnosticMacroAnchor),
       generated_text : Array(DiagnosticGeneratedText) do
       def run_pragma(lexer)

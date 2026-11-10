@@ -1082,5 +1082,4 @@ describe "Code gen: closure" do
     invalid = Iyi::DiagnosticOrigin::Synthetic.new(other, "cast_error_interpolation", "message")
     invalid.valid_for_anchor?("Literal", "interpolation").should be_false
   end
-
 end

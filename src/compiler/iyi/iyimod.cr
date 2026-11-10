@@ -266,7 +266,7 @@ module Iyi::IyiMod
     # an absent section is a module whose functions reach what nobody
     # knows, whose spawns stay in their units. In the interface hash,
     # since a dependent's placement is decided by it. 67, beside `Spawns`.
-    Reaches = 67
+    Reaches              = 67
     DiagnosticProvenance = 68
   end
 
@@ -4281,7 +4281,7 @@ module Iyi::IyiMod
   end
 
   private def self.check_type_signature_diagnostics(section : DiagnosticSection, artifact : Artifact,
-                                                     expected : Set(String), type : TypeDecl, path : String = "") : Nil
+                                                    expected : Set(String), type : TypeDecl, path : String = "") : Nil
     here = path.empty? ? type.name : "#{path}::#{type.name}"
     ordinals = mono_body_ordinals(type.methods)
     type.methods.each_with_index do |signature, index|

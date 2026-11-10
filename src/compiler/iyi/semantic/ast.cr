@@ -208,6 +208,7 @@ module Iyi
         @diagnostic_proc_computing = false
       end
     end
+
     property yield_vars : Array(Var)?
     property previous : DefWithMetadata?
     property next : Def?

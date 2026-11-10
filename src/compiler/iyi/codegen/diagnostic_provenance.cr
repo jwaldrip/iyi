@@ -128,6 +128,7 @@ module Iyi::DiagnosticProvenance
     def initialize(@link_input_id, @producer, @unit_name, @partition, @sha256, @bytes_base64, @native_evidence)
     end
   end
+
   private def self.fields(value : JSON::Any, keys : Array(String)) : Hash(String, JSON::Any)
     object = value.as_h
     raise "invalid diagnostic identity fields" unless object.size == keys.size && keys.all? { |key| object.has_key?(key) }
@@ -709,5 +710,4 @@ module Iyi::DiagnosticProvenance
     end
     File.write(path, manifest)
   end
-
 end

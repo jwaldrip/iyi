@@ -1398,19 +1398,19 @@ module Iyi
           if signatures = type.defs.try &.[]?(name)
             signatures.each do |item|
               iyi_each_previous_def(item.def) do |a_def|
-              signature = IyiMod.signature(a_def)
-              program.record_signature_diagnostic(filename, module_name, signature, a_def)
-              functions << signature
-              # A module's own `pub def` that takes a block, or has `forall`
-              # parameters, is the consumer's to compile for the same reason,
-              # and the module name is the container the far side looks it up
-              # under.
-              if !a_def.abstract? &&
-                 (IyiMod.caller_instantiated?(a_def) || iyi_widened_parameters?(type, a_def) ||
-                 IyiMod.answer_travels?(a_def))
-                ordinal = functions.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
-                iyi_record_mono_body program, filename, module_name, signature, a_def, ordinal
-              end
+                signature = IyiMod.signature(a_def)
+                program.record_signature_diagnostic(filename, module_name, signature, a_def)
+                functions << signature
+                # A module's own `pub def` that takes a block, or has `forall`
+                # parameters, is the consumer's to compile for the same reason,
+                # and the module name is the container the far side looks it up
+                # under.
+                if !a_def.abstract? &&
+                   (IyiMod.caller_instantiated?(a_def) || iyi_widened_parameters?(type, a_def) ||
+                   IyiMod.answer_travels?(a_def))
+                  ordinal = functions.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                  iyi_record_mono_body program, filename, module_name, signature, a_def, ordinal
+                end
               end
             end
           elsif exported_type = type.types?.try &.[]?(name)
@@ -1432,20 +1432,20 @@ module Iyi
           next if exported.try &.includes?(name)
           items.each do |item|
             iyi_each_previous_def(item.def) do |a_def|
-            next if a_def.abstract?
-            next if a_def.body.is_a?(Primitive)
+              next if a_def.abstract?
+              next if a_def.body.is_a?(Primitive)
 
-            signature = IyiMod.signature(a_def, check_block: false)
-            program.record_signature_diagnostic(filename, module_name, signature, a_def)
-            carried_functions << signature
-            # A widened one too: an exported body that travels calls it at
-            # what it holds, and the consumer keys that call on the
-            # declaration (`iyi_widened_parameters?`).
-            if IyiMod.caller_instantiated?(a_def) || iyi_widened_parameters?(type, a_def) ||
-               IyiMod.answer_travels?(a_def)
-              ordinal = carried_functions.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
-              iyi_record_mono_body program, filename, module_name, signature, a_def, ordinal
-            end
+              signature = IyiMod.signature(a_def, check_block: false)
+              program.record_signature_diagnostic(filename, module_name, signature, a_def)
+              carried_functions << signature
+              # A widened one too: an exported body that travels calls it at
+              # what it holds, and the consumer keys that call on the
+              # declaration (`iyi_widened_parameters?`).
+              if IyiMod.caller_instantiated?(a_def) || iyi_widened_parameters?(type, a_def) ||
+                 IyiMod.answer_travels?(a_def)
+                ordinal = carried_functions.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                iyi_record_mono_body program, filename, module_name, signature, a_def, ordinal
+              end
             end
           end
         end
@@ -1538,27 +1538,27 @@ module Iyi
           side.as?(ModuleType).try &.defs.try &.each_value do |items|
             items.each do |item|
               iyi_each_previous_def(item.def) do |a_def|
-              # `original_filename`, through the macro: the integer tower is
-              # written once as `{% for %}` over eleven types, and a def a
-              # macro wrote is located in its expansion, not in the file.
-              next unless a_def.location.try(&.original_read_from) == filename
-              next if a_def.iyi_from_impl? || a_def.new? || a_def.abstract?
-              next if a_def.macro_def? && !named_here
-              # The compiler's instructions are not this module's to describe;
-              # the ones it wrote `@[Primitive]` above are. `std/float` writes
-              # the whole matrix for `::Float32` this way.
-              primitive = a_def.body.is_a?(Primitive)
-              next if primitive && !iyi_primitive_written?(a_def)
-              signature = IyiMod.signature(a_def, check_block: false)
-              program.record_signature_diagnostic(filename, container, signature, a_def)
-              methods << signature
-              # An instruction has no body to carry — it *is* the body — and
-              # the annotation travelling on the signature is what makes the
-              # consumer's copy the same instruction.
-              unless primitive
-                ordinal = methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
-                iyi_record_mono_body program, filename, container, signature, a_def, ordinal
-              end
+                # `original_filename`, through the macro: the integer tower is
+                # written once as `{% for %}` over eleven types, and a def a
+                # macro wrote is located in its expansion, not in the file.
+                next unless a_def.location.try(&.original_read_from) == filename
+                next if a_def.iyi_from_impl? || a_def.new? || a_def.abstract?
+                next if a_def.macro_def? && !named_here
+                # The compiler's instructions are not this module's to describe;
+                # the ones it wrote `@[Primitive]` above are. `std/float` writes
+                # the whole matrix for `::Float32` this way.
+                primitive = a_def.body.is_a?(Primitive)
+                next if primitive && !iyi_primitive_written?(a_def)
+                signature = IyiMod.signature(a_def, check_block: false)
+                program.record_signature_diagnostic(filename, container, signature, a_def)
+                methods << signature
+                # An instruction has no body to carry — it *is* the body — and
+                # the annotation travelling on the signature is what makes the
+                # consumer's copy the same instruction.
+                unless primitive
+                  ordinal = methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                  iyi_record_mono_body program, filename, container, signature, a_def, ordinal
+                end
               end
             end
           end
@@ -2868,59 +2868,59 @@ module Iyi
         # on the target — which is why it is marked where it is made.
         items.each do |item|
           iyi_each_previous_def(item.def) do |a_def|
-          next if a_def.iyi_from_impl?
-          next if a_def.new?
+            next if a_def.iyi_from_impl?
+            next if a_def.new?
 
-          # `allocate` is put on every metaclass by the compiler, not by the
-          # author, and the consumer's compiler puts one there too. Anything
-          # whose body is a `Primitive` is the compiler's rather than the
-          # module's, and describing it as part of the module's surface would
-          # be describing this compiler instead.
-          #
-          # Unless the module asked for it. `@[Primitive]` is a declaration a
-          # module makes — `std/float` writes the whole matrix for `Float32`
-          # the way the prelude writes it for `Float64` — and the body it has
-          # no need of is the instruction itself. Dropped, a consumer got a
-          # `Float32` with no arithmetic: `wrong number of arguments for
-          # 'Float32#+' (given 1, expected 0)`, about the prelude's unary
-          # plus, the only `+` left. The annotation travels with the
-          # signature, which is what makes the consumer's copy the same
-          # instruction rather than a promise of a symbol nobody emitted.
-          next if a_def.body.is_a?(Primitive) && !iyi_primitive_written?(a_def)
+            # `allocate` is put on every metaclass by the compiler, not by the
+            # author, and the consumer's compiler puts one there too. Anything
+            # whose body is a `Primitive` is the compiler's rather than the
+            # module's, and describing it as part of the module's surface would
+            # be describing this compiler instead.
+            #
+            # Unless the module asked for it. `@[Primitive]` is a declaration a
+            # module makes — `std/float` writes the whole matrix for `Float32`
+            # the way the prelude writes it for `Float64` — and the body it has
+            # no need of is the instruction itself. Dropped, a consumer got a
+            # `Float32` with no arithmetic: `wrong number of arguments for
+            # 'Float32#+' (given 1, expected 0)`, about the prelude's unary
+            # plus, the only `+` left. The annotation travels with the
+            # signature, which is what makes the consumer's copy the same
+            # instruction rather than a promise of a symbol nobody emitted.
+            next if a_def.body.is_a?(Primitive) && !iyi_primitive_written?(a_def)
 
-          # And an enum's question methods, for the same reason one line up
-          # and a different mechanism: their bodies are ordinary code, so
-          # `Primitive` does not catch them, and the consumer's own compiler
-          # writes one per member out of the members it reads. See
-          # `Def#iyi_compiler_made`.
-          next if a_def.iyi_compiler_made?
+            # And an enum's question methods, for the same reason one line up
+            # and a different mechanism: their bodies are ordinary code, so
+            # `Primitive` does not catch them, and the consumer's own compiler
+            # writes one per member out of the members it reads. See
+            # `Def#iyi_compiler_made`.
+            next if a_def.iyi_compiler_made?
 
-          signature = IyiMod.signature(a_def)
-          program.record_signature_diagnostic(filename, container, signature, a_def)
-          methods << signature
-          # A block-taking or `forall` def travels whatever type it is on: it
-          # is instantiated with the caller's block inside it, or at the
-          # caller's types, so the consumer is what compiles it — the same
-          # reason a generic's method and a trait's default travel (SPEC.md
-          # IV.1g).
-          #
-          # And a def whose machine code enumerates an open type's members, or
-          # which calls one that does, for the reason III.6 gives: the set is
-          # the whole program's, so the answer is too. `Iyi::OpenTravel` marked
-          # it before this ran.
-          #
-          # And a def whose body uses `{{@type}}` and the like, which is
-          # expanded again for each receiver a call reaches: a consumer's
-          # `class User < Model` is a receiver this build never saw, so only
-          # its own expansion can answer. Kept behind, `type_name` was a header
-          # and the consumer's link ended on `Model+^Model#type_name:String`,
-          # where the source build printed `Main::User`.
-          if (travels || IyiMod.caller_instantiated?(a_def) || a_def.iyi_open_travel? ||
-             a_def.macro_def? || iyi_widened_parameters?(type, a_def) ||
-             IyiMod.answer_travels?(a_def)) && !a_def.abstract?
-            ordinal = methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
-            iyi_record_mono_body program, filename, container, signature, a_def, ordinal
-          end
+            signature = IyiMod.signature(a_def)
+            program.record_signature_diagnostic(filename, container, signature, a_def)
+            methods << signature
+            # A block-taking or `forall` def travels whatever type it is on: it
+            # is instantiated with the caller's block inside it, or at the
+            # caller's types, so the consumer is what compiles it — the same
+            # reason a generic's method and a trait's default travel (SPEC.md
+            # IV.1g).
+            #
+            # And a def whose machine code enumerates an open type's members, or
+            # which calls one that does, for the reason III.6 gives: the set is
+            # the whole program's, so the answer is too. `Iyi::OpenTravel` marked
+            # it before this ran.
+            #
+            # And a def whose body uses `{{@type}}` and the like, which is
+            # expanded again for each receiver a call reaches: a consumer's
+            # `class User < Model` is a receiver this build never saw, so only
+            # its own expansion can answer. Kept behind, `type_name` was a header
+            # and the consumer's link ended on `Model+^Model#type_name:String`,
+            # where the source build printed `Main::User`.
+            if (travels || IyiMod.caller_instantiated?(a_def) || a_def.iyi_open_travel? ||
+               a_def.macro_def? || iyi_widened_parameters?(type, a_def) ||
+               IyiMod.answer_travels?(a_def)) && !a_def.abstract?
+              ordinal = methods.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+              iyi_record_mono_body program, filename, container, signature, a_def, ordinal
+            end
           end
         end
       end
@@ -3015,31 +3015,31 @@ module Iyi
         side.as?(ModuleType).try &.defs.try &.each_value do |items|
           items.each do |item|
             iyi_each_previous_def(item.def) do |a_def|
-            next if a_def.new?
-            # The module's own `@[Primitive]` is not the compiler's — see the
-            # exported side.
-            next if a_def.body.is_a?(Primitive) && !iyi_primitive_written?(a_def)
-            next if a_def.abstract?
-            next if a_def.iyi_compiler_made?
+              next if a_def.new?
+              # The module's own `@[Primitive]` is not the compiler's — see the
+              # exported side.
+              next if a_def.body.is_a?(Primitive) && !iyi_primitive_written?(a_def)
+              next if a_def.abstract?
+              next if a_def.iyi_compiler_made?
 
-            signature = IyiMod.signature(a_def, check_block: false)
-            program.record_signature_diagnostic(filename, container, signature, a_def)
-            signatures << signature
-            # The same reasons the exported side travels for: a block-taking
-            # or `forall` body is the caller's, one whose code answers for
-            # an open set is the program's (SPEC.md III.6), and one whose
-            # parameter is written wider than its callers has no symbol the
-            # consumer can ask for. A header for any of them would promise a
-            # symbol nobody emitted — `std/io` writes
-            # `ByteFormat::BigEndian.decode_int32(io : IyiIO)` inside a
-            # module it keeps to itself, and the link ended on
-            # `decode_int32<IyiIO+>`.
-            if travels || (stencilled && side.same?(type)) ||
-               IyiMod.caller_instantiated?(a_def) || a_def.iyi_open_travel? || a_def.macro_def? ||
-               iyi_widened_parameters?(type, a_def) || IyiMod.answer_travels?(a_def)
-              ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
-              iyi_record_mono_body program, filename, container, signature, a_def, ordinal
-            end
+              signature = IyiMod.signature(a_def, check_block: false)
+              program.record_signature_diagnostic(filename, container, signature, a_def)
+              signatures << signature
+              # The same reasons the exported side travels for: a block-taking
+              # or `forall` body is the caller's, one whose code answers for
+              # an open set is the program's (SPEC.md III.6), and one whose
+              # parameter is written wider than its callers has no symbol the
+              # consumer can ask for. A header for any of them would promise a
+              # symbol nobody emitted — `std/io` writes
+              # `ByteFormat::BigEndian.decode_int32(io : IyiIO)` inside a
+              # module it keeps to itself, and the link ended on
+              # `decode_int32<IyiIO+>`.
+              if travels || (stencilled && side.same?(type)) ||
+                 IyiMod.caller_instantiated?(a_def) || a_def.iyi_open_travel? || a_def.macro_def? ||
+                 iyi_widened_parameters?(type, a_def) || IyiMod.answer_travels?(a_def)
+                ordinal = signatures.count { |seen| IyiMod.mono_body_key("", seen) == IyiMod.mono_body_key("", signature) } - 1
+                iyi_record_mono_body program, filename, container, signature, a_def, ordinal
+              end
             end
           end
         end
@@ -4549,7 +4549,6 @@ module Iyi
         return units
       end
       snapshot_link_input_proof(program, units, object_names, output_dir) if @emit_link_input_proof
-
 
       if @emit_frame_provenance
         {% unless flag?(:without_llvm) %}

@@ -7,7 +7,9 @@ class Iyi::ParseAhead
   def wait_for_diagnostic_spec(filename : String) : Nil
     @mutex.synchronize do
       entry = @entries[filename]? || raise "source was not queued"
-      @parsed.wait(@mutex) until entry.state.done?
+      until entry.state.done?
+        @parsed.wait(@mutex)
+      end
     end
   end
 end

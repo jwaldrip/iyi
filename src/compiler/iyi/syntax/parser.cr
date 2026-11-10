@@ -211,6 +211,7 @@ module Iyi
       end
       @diagnostic_source_unit = "source-file:#{filename}"
     end
+
     @diagnostic_regions : Array(DiagnosticRegion)? = nil
     @diagnostic_pending : Hash({Int32, String, String}, DiagnosticOrigin)? = nil
     @diagnostic_expansion : {DiagnosticOrigin, DiagnosticOrigin, String}? = nil
@@ -313,7 +314,7 @@ module Iyi
       if regions = @diagnostic_regions
         if regions.any? { |region| offset >= region.start_offset && offset < region.end_offset }
           return @diagnostic_pending.not_nil!.delete({offset, kind, role}) ||
-                 ::raise(ArgumentError.new("missing diagnostic provenance anchor at byte #{offset} for #{kind}:#{role}"))
+            ::raise(ArgumentError.new("missing diagnostic provenance anchor at byte #{offset} for #{kind}:#{role}"))
         end
       end
       if expansion = @diagnostic_expansion
