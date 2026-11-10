@@ -1260,6 +1260,8 @@ module Iyi
 
     # Where the import being read ends; see `parse_import_path_segment`.
     @iyi_import_end : Location? = nil
+    @import_path_observations : Array(DiagnosticTokenObservation?)? = nil
+    @import_names_observations : Array(DiagnosticTokenObservation?)? = nil
 
     # Every module header read, wherever it stood; see `apply_module_header`.
     @iyi_module_headers : Array(ModuleHeader)? = nil
@@ -1527,6 +1529,7 @@ module Iyi
         next unless node.is_a?(ImportDecl) && node.scopes?
         scope = UsingDecl.new(node.path.dup, node.glob? ? nil : node.names.dup, node.name_locations.dup)
         scope.at(node)
+        scope.diagnostic_name_slots = node.diagnostic_name_slots
         scope.end_location = node.end_location
         result << scope
       end
@@ -3864,11 +3867,13 @@ module Iyi
       next_token_skip_space
       check_import_path_shape(location)
       path = parse_import_path
+      path_observations = @import_path_observations
       if path.last.ends_with?(".iyi")
         refuse_import_path "a module path has no extension", location, @iyi_import_end, path.join('/').rchop(".iyi")
       end
       names = nil
       name_locations = nil
+      names_observations = nil
       glob = false
       if @token.type.op_colon_colon?
         next_token
@@ -3878,6 +3883,7 @@ module Iyi
           next_token_skip_space
         elsif @token.type.op_lcurly?
           names, name_locations = parse_import_names
+          names_observations = @import_names_observations
         else
           raise "after `::` an import lists the names it brings into scope, " \
                 "`import #{path.join('/')}::{name}`, or takes every one, `import #{path.join('/')}::*`", @token
@@ -3891,7 +3897,22 @@ module Iyi
       node = ImportDecl.new(path, names, name_locations, glob)
       node.at(location)
       node.end_location = @iyi_import_end
+      diagnostic_import_evidence(node, path_observations, names_observations)
       node
+    end
+
+    # Attach each plain path segment and each imported name to its own source
+    # token. A dotted or hyphenated segment is built from several tokens, so it
+    # gets no single-token evidence and stays unattached (fail closed).
+    private def diagnostic_import_evidence(node, path_obs, names_obs) : Nil
+      path_obs.try &.each_with_index do |observation, index|
+        next unless observation
+        diagnostic_name(node, observation[0], "module_segment", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::ModuleSegment, index), token_snapshot: observation[1])
+      end
+      names_obs.try &.each_with_index do |observation, index|
+        next unless observation
+        diagnostic_name(node, observation[0], "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::NamedEntry, index), token_snapshot: observation[1])
+      end
     end
 
     # iyi: the shapes an import path is written in by other languages, each
@@ -3964,6 +3985,7 @@ module Iyi
     # as before.
     private def parse_import_path : Array(String)
       segments = [] of String
+      @import_path_observations = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of DiagnosticTokenObservation? : nil
       segments << parse_import_path_segment
 
       while @token.type.op_slash?
@@ -3978,6 +4000,8 @@ module Iyi
     end
 
     private def parse_import_path_segment : String
+      first_offset = @token.input_offset
+      first_snapshot = diagnostic_current_token_snapshot
       check Token::Kind::IDENT
       segment = String.build do |io|
         io << @token.value
@@ -3991,6 +4015,10 @@ module Iyi
         end
       end
       check_module_path_segment(segment) unless segment.includes?('.') || segment.includes?('-')
+      if observations = @import_path_observations
+        plain = !(segment.includes?('.') || segment.includes?('-'))
+        observations << (plain ? {first_offset, first_snapshot} : nil)
+      end
       suppress_regex
       # Where an import's text ends, taken before the lexer moves past the
       # line: `token_end_location` after it is the end of whatever comes
@@ -4009,9 +4037,12 @@ module Iyi
       location = @token.location
       next_token_skip_space
       path = parse_import_path
+      path_observations = @import_path_observations
+      names_observations = nil
       if @token.type.op_colon_colon?
         next_token
         names, name_locations = parse_import_names
+        names_observations = @import_names_observations
       end
 
       unless @iyi_reads_using
@@ -4033,6 +4064,7 @@ module Iyi
       node = UsingDecl.new(path, names, name_locations)
       node.at(location)
       node.end_location = @iyi_import_end
+      diagnostic_import_evidence(node, path_observations, names_observations)
       node
     end
 
@@ -4042,11 +4074,13 @@ module Iyi
 
       names = [] of String
       name_locations = [] of Location
+      @import_names_observations = (@diagnostic_capture || @diagnostic_expansion || @diagnostic_regions) ? [] of DiagnosticTokenObservation? : nil
       next_token_skip_space_or_newline
       loop do
         unless @token.type.ident? || @token.type.const?
           raise "expected a name to bring into scope", @token.line_number, @token.column_number
         end
+        @import_names_observations.try &.<<({@token.input_offset, diagnostic_current_token_snapshot})
         names << @token.value.to_s
         name_locations << @token.location
         next_token_skip_space_or_newline
@@ -4205,6 +4239,8 @@ module Iyi
       next_token_skip_space_or_newline
 
       name_location = @token.location
+      name_offset = @token.input_offset
+      name_snapshot = diagnostic_current_token_snapshot
       name = check_const
       next_token_skip_space
 
@@ -4216,6 +4252,7 @@ module Iyi
       end
 
       decl = AssocTypeDecl.new(name, value)
+      diagnostic_name(decl, name_offset, "type_parameter", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter), token_snapshot: name_snapshot)
       decl.name_location = name_location
       decl.doc = doc
       decl
@@ -7465,9 +7502,12 @@ module Iyi
       raise "BUG: param_name is nil" unless param_name
 
       param = Arg.new(param_name, default_value, restriction, external_name: external_name, parsed_annotations: annotations).at(param_location)
+      # An external name the author wrote, even one equal to the internal name,
+      # is a parser fact. An implicit default (external name = name) is not.
+      param.diagnostic_external_explicit = true unless external_name.nil?
       diagnostic_copy_literal(external_literal, param, "external_name") if external_literal
       diagnostic_name(param, param_offset, "parameter", token_snapshot: param_snapshot) if param_offset
-      if external_offset && param.external_name != param.name
+      if external_offset
         diagnostic_name(param, external_offset, "named_entry", slot: DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName), token_snapshot: external_snapshot)
       end
       if lowered

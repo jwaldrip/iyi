@@ -124,8 +124,16 @@ module Iyi
       copy = node.clone_without_location
       copy.diagnostic_origin = node.diagnostic_origin
       copy.diagnostic_macro_lineage = node.diagnostic_macro_lineage
+      copy.diagnostic_external_explicit = node.diagnostic_external_explicit
       if slots = node.diagnostic_name_slots?
         copy.diagnostic_name_slots = slots
+      end
+      copy.diagnostic_capture_ref = node.diagnostic_capture_ref
+      if literal_names = node.diagnostic_literal_names?
+        literal_names.each { |key, literal| copy.diagnostic_literal_name(key[0], key[1], literal) }
+      end
+      if productions = node.diagnostic_literal_productions?
+        productions.each { |key, segments| copy.diagnostic_literal_production(key[0], key[1], segments) }
       end
       copy
     end

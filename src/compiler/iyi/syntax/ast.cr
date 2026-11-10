@@ -48,10 +48,25 @@ module Iyi
     # if the location is not known.
     property end_location : Location?
 
+    # The stored location fields as set. Subclasses override `location` and
+    # `end_location` to derive them from children, so a census that must record
+    # what was stored reads these. `nil` means nothing was recorded. `Location`
+    # has getters only, so the returned reference is read-only.
+    def diagnostic_stored_location : Location?
+      @location
+    end
+
+    def diagnostic_stored_end_location : Location?
+      @end_location
+    end
+
     # Independent of source locations and never used for semantic decisions.
     getter diagnostic_origin : DiagnosticOrigin?
     property diagnostic_macro_lineage : DiagnosticMacroLineage = DiagnosticMacroLineage::Unknown
     property diagnostic_capture_ref : DiagnosticCaptureFieldRef?
+    # Set by the parser only when an author wrote an external name for a parameter.
+    # `false` on an implicit default, even though the external name equals the name.
+    property diagnostic_external_explicit : Bool = false
     @diagnostic_literal_names : Hash({String, Int32}, DiagnosticParsedLiteral)? = nil
     @diagnostic_literal_productions : Hash({String, Int32}, Array(DiagnosticLiteralProductionSegment))? = nil
     @diagnostic_percent_witnesses : Array(DiagnosticLiteralWitness)? = nil
@@ -236,6 +251,7 @@ module Iyi
       clone.end_location = end_location
       clone.diagnostic_origin = diagnostic_origin
       clone.diagnostic_macro_lineage = diagnostic_macro_lineage
+      clone.diagnostic_external_explicit = diagnostic_external_explicit
       if slots = @diagnostic_name_slots
         clone.diagnostic_name_slots = slots.transform_values(&.dup)
       end
