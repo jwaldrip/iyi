@@ -1276,6 +1276,24 @@ describe Iyi::DiagnosticOrigin do
     decoded.parent(payload_index).as(Iyi::DiagnosticOrigin::Expanded).anchor_use.should eq(payload_use)
   end
 
+  it "refuses a bound projection without an authoritative source inventory" do
+    text = "Root::Thing"
+    guard = ::Crystal::Digest::SHA256.hexdigest(text)
+    root_origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/bind.cr", 0, "Name", "path_segment")
+    type_origin = Iyi::DiagnosticOrigin::Written.new("app/main", "/absent/bind.cr", 6, "Name", "path_segment")
+    root_token = Iyi::DiagnosticSourceNameToken.new(root_origin, nil, "path_segment", guard, text.bytesize, 0, 4, "Crystal", "CONST", "Root")
+    type_token = Iyi::DiagnosticSourceNameToken.new(type_origin, nil, "path_segment", guard, text.bytesize, 6, 11, "Crystal", "CONST", "Thing")
+    names = [
+      Iyi::DiagnosticBoundNameSource.new(0, 4, Iyi::DiagnosticNameValue::Observed.new(root_token)),
+      Iyi::DiagnosticBoundNameSource.new(6, 11, Iyi::DiagnosticNameValue::Observed.new(type_token)),
+    ]
+    error = expect_raises(ArgumentError) do
+      Iyi::DiagnosticOrigin::DerivedName.bound_projection(Iyi::DiagnosticBoundProducer::StripRoot.new("Root"),
+        guard, text, names, "Thing", "Crystal", 0, 5, "CONST", "path_segment")
+    end
+    error.message.should eq("bound projection requires authoritative source inventory")
+  end
+
   it "transports bound projections with every source-name contribution" do
     text = "Root::Thing"
     guard = ::Crystal::Digest::SHA256.hexdigest(text)
@@ -2104,6 +2122,38 @@ describe Iyi::IyiMod do
       decoded.diagnostic_provenance.not_nil!.fragments[key].anchors.first.origin.should eq(origin)
       decoded.diagnostic_provenance.not_nil!.fragments.delete(key)
       expect_raises(ArgumentError) { Iyi::IyiMod.write decoded, path }
+    end
+  end
+
+  it "refuses captured artifacts without capture authority on both write and read" do
+    with_temporary_file do |path|
+      artifact = sample_artifact
+      Iyi::IyiMod.write artifact, path
+      original = File.read(path).to_slice.dup
+      Iyi::IyiMod.read(path).diagnostic_provenance.should be_nil
+
+      artifact.diagnostic_provenance = Iyi::IyiMod::DiagnosticSection.new
+      error = expect_raises(Iyi::IyiMod::Error) { Iyi::IyiMod.write artifact, path }
+      error.message.should eq("artifact diagnostic capture authority is unavailable")
+      File.read(path).to_slice.should eq(original)
+
+      format = Iyi::IyiMod::FORMAT
+      count = format.decode(UInt32, original[12, 4])
+      table_bytes = count.to_i * 16
+      payload = artifact.diagnostic_provenance.not_nil!.encode
+      io = IO::Memory.new
+      io.write(original[0, 12])
+      io.write_bytes(count + 1_u32, format)
+      io.write(original[16, table_bytes])
+      io.write_bytes(Iyi::IyiMod::Section::DiagnosticProvenance.value, format)
+      io.write_bytes(0_u16, format)
+      io.write_bytes(payload.size.to_u32, format)
+      io.write_bytes(Iyi::IyiMod.checksum(payload), format)
+      io.write(original[16 + table_bytes, original.size - 16 - table_bytes])
+      io.write(payload)
+      File.write(path, io.to_slice)
+      error = expect_raises(Iyi::IyiMod::Error) { Iyi::IyiMod.read(path) }
+      error.message.should eq("artifact diagnostic capture authority is unavailable")
     end
   end
 

@@ -3136,10 +3136,8 @@ module Iyi::IyiMod
   # reader sees either the old file or the new one.
   def self.write(artifact : Artifact, path : String) : Nil
     sections = [] of {Section, Bytes}
-    if diagnostic = artifact.diagnostic_provenance
-      validate_diagnostic_fragments!(artifact)
-      diagnostic.validate_objects!(artifact.object_code)
-      diagnostic.validate_regexes!(artifact.regexes)
+    if artifact.diagnostic_provenance
+      raise Error.new("artifact diagnostic capture authority is unavailable")
     end
     sections << {Section::Header, encode_header(artifact)}
 
@@ -3516,8 +3514,7 @@ module Iyi::IyiMod
         when Section::Spawns          then spawns = decode_spawns(payload)
         when Section::Reaches         then reaches = decode_reaches(payload)
         when Section::DiagnosticProvenance
-          raise ArgumentError.new("duplicate diagnostic provenance section") if diagnostic
-          diagnostic = DiagnosticSection.decode(payload)
+          raise Error.new("artifact diagnostic capture authority is unavailable")
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
