@@ -2118,8 +2118,11 @@ module Iyi
             right = {% if right_associative %} iyi_nest { parse_{{name.id}} } {% else %} parse_{{next_operator.id}} {% end %}
             iyi_mark_after_floor_div(right, name_location) if iyi? && method == "//"
             left = ({{node.id}}).at(location).at_end(right)
-            left.name_location = name_location if left.is_a?(Call)
-            left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot) if left.is_a?(Call)
+            if left.is_a?(Call)
+              left.name_location = name_location
+              left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
+              diagnostic_name(left, name_offset, "method_name", left.diagnostic_origin, token_snapshot: name_snapshot)
+            end
           else
             return left
           end
@@ -2165,6 +2168,7 @@ module Iyi
           left = Call.new(left, method, right).at(location).at_end(right)
           left.name_location = name_location
           left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
+          diagnostic_name(left, name_offset, "method_name", left.diagnostic_origin, token_snapshot: name_snapshot)
         when .number?
           case char = @token.value.to_s[0]
           when '+', '-'
@@ -2226,6 +2230,7 @@ module Iyi
           call = Call.new(arg, token_type.to_s).at(location).at_end(arg)
           call.name_location = name_location
           call.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, token_snapshot: name_snapshot)
+          diagnostic_name(call, name_offset, "method_name", call.diagnostic_origin, token_snapshot: name_snapshot)
           call
         end
       else
