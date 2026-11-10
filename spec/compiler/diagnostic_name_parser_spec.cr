@@ -104,3 +104,59 @@ describe "bare splat parameter observation" do
     rolled.diagnostic_bare_splat_observations.should eq([] of Iyi::DiagnosticBareSplatObservation)
   end
 end
+
+describe "bare splat restoration" do
+  it "refuses a restored bare splat by name when its keyword origin is the producer's, and keeps source evidence" do
+    producer = Iyi::Parser.new("#{" " * 4000}def f(*, y : Int32)\nend")
+    producer.filename = "/src/bare.cr"
+    producer.diagnostic_source_file = "/src/bare.cr"
+    producer.diagnostic_capture = true
+    producer_def = producer.parse.as(Iyi::Def)
+    producer_origin = producer_def.diagnostic_origin.as(Iyi::DiagnosticOrigin::Written)
+    producer_origin.input_byte_offset.should eq(4000)
+    primary = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::Primary)
+    producer_def.args.first.diagnostic_name_slots[primary].first.is_a?(Iyi::DiagnosticNameValue::Derived).should eq(true)
+
+    io = IO::Memory.new
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    producer_def.to_s(io, diagnostic_fragment: builder)
+    text = io.to_s
+    fragment = builder.finish("fixture", text)
+    keyword = fragment.anchors.find { |item| item.kind == "Def" && item.role == "keyword" }.not_nil!
+    keyword.origin.should eq(producer_origin)
+    keyword.offset.should eq(0)
+
+    restored = Iyi::Parser.new(text)
+    restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
+    expect_raises(Iyi::DiagnosticRestorationAuthorityError, "bare splat restoration requires B2 producer authority") do
+      restored.parse
+    end
+  end
+
+  it "refuses a restored unnamed lib parameter by name, and keeps its source evidence" do
+    producer = Iyi::Parser.new("#{" " * 4000}lib L\n  fun foo(Int32) : Int32\nend")
+    producer.filename = "/src/unnamed.cr"
+    producer.diagnostic_source_file = "/src/unnamed.cr"
+    producer.diagnostic_capture = true
+    lib_def = producer.parse.as(Iyi::LibDef)
+    lib_def.diagnostic_origin.should_not be_nil
+
+    io = IO::Memory.new
+    builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+    lib_def.to_s(io, diagnostic_fragment: builder)
+    text = io.to_s
+    fragment = builder.finish("fixture", text)
+    fun_anchor = fragment.anchors.find { |item| item.kind == "FunDef" && item.role == "keyword" }.not_nil!
+    fun_anchor.origin.should_not be_nil
+
+    restored = Iyi::Parser.new(text)
+    restored.diagnostic_regions = [Iyi::DiagnosticRegion.new(0, text.bytesize, fragment.text_sha256, fragment.events, fragment.anchors)]
+    expect_raises(Iyi::DiagnosticRestorationAuthorityError, "unnamed parameter restoration requires B2 producer authority") do
+      restored.parse
+    end
+  end
+
+  it "keeps the restoration-authority error an ArgumentError, so existing refusal handling still catches it" do
+    Iyi::DiagnosticRestorationAuthorityError.new("x").is_a?(ArgumentError).should eq(true)
+  end
+end

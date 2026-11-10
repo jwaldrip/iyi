@@ -14,6 +14,11 @@ module Iyi
     AsmOperand
   end
 
+  # Raised when a restored region carries a parameter whose evidence needs producer authority the parser cannot yet
+  # resolve (B2). Named so a restoration refuses explicitly instead of yielding a partial tree.
+  class DiagnosticRestorationAuthorityError < ArgumentError
+  end
+
   record DiagnosticReplayTokenRef, ordinal : Int32
   record DiagnosticScalarGrammarObservation, owner : ASTNode, kind : DiagnosticScalarGrammarKind,
     first : DiagnosticReplayTokenRef, open : DiagnosticReplayTokenRef?, close : DiagnosticReplayTokenRef,
@@ -1096,6 +1101,7 @@ module Iyi
     # from its own emission (E2).
     private def diagnostic_unnamed_param(arg : Arg, fun_origin : DiagnosticOrigin?,
                                          separator : ParsedOperatorToken?, head : ParsedOperatorToken?) : Nil
+      raise DiagnosticRestorationAuthorityError.new("unnamed parameter restoration requires B2 producer authority") if @diagnostic_regions
       return unless fun_origin && separator && head
       witnesses = diagnostic_witness_list(fun_origin, [separator, head])
       return unless witnesses
@@ -1110,6 +1116,11 @@ module Iyi
     # after the declaration's grammar has passed. The fresh association is recorded only with the derivation it authorizes.
     private def diagnostic_bare_splat(owner : Def | Macro, anchor : DiagnosticOrigin?, keyword : DiagnosticReplayTokenRef?,
                                       params : Array(Arg), index : Int32, tokens : DiagnosticBareSplatTokens) : Nil
+      # A regions restore carries the declaration keyword from the producer's artifact while the star and comma come
+      # from the consumer text. Pairing those coordinates would forge evidence (contract 3.4), and restored acceptance
+      # needs B2 producer authority. Until B2 lands this refuses by name rather than returning silently, since other
+      # region consumers would otherwise receive a partial tree. Source and expansion parses never run under regions.
+      raise DiagnosticRestorationAuthorityError.new("bare splat restoration requires B2 producer authority") if @diagnostic_regions
       return unless anchor
       argument = params[index]
       witnesses = diagnostic_witness_list(anchor, [tokens.star, tokens.comma])
