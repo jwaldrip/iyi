@@ -423,6 +423,7 @@ module Iyi
     @bytes : String
 
     def initialize(path : Path, input : AcceptedCaptureInput)
+      DiagnosticAstFieldSchema.validate_reflected_fields(path)
       names = path.names
       raise ArgumentError.new("path has no name segments") if names.empty?
       raise ArgumentError.new("path name inventory exceeds size limit") if names.size.to_i64 > DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i64 // 64
@@ -549,7 +550,7 @@ module Iyi
       when "Path"
         return DiagnosticAstFieldClass::NamedValue if field == "names"
         return DiagnosticAstFieldClass::SyntaxScalar if {"global", "visibility", "exported"}.includes?(field)
-        return DiagnosticAstFieldClass::Infrastructure if {"iyi_from_artifact", "iyi_synthetic"}.includes?(field)
+        return DiagnosticAstFieldClass::Infrastructure if {"iyi_from_artifact", "iyi_synthetic", "target_const", "target_type", "syntax_replacement"}.includes?(field)
       when "Generic"
         return DiagnosticAstFieldClass::Child if field == "name"
         return DiagnosticAstFieldClass::ChildList if {"type_vars", "named_args"}.includes?(field)
@@ -1160,12 +1161,15 @@ module Iyi
       case node
       when Path
         yield "names", collection(node.names)
+        {"global", "visibility", "exported"}.each { |field| yield field, DiagnosticFieldPresence::Present }
       when Generic
         yield "name", DiagnosticFieldPresence::Present
         yield "type_vars", collection(node.type_vars)
         yield "named_args", collection(node.named_args)
+        yield "suffix", DiagnosticFieldPresence::Present
       when Union
         yield "types", collection(node.types)
+        yield "parens", DiagnosticFieldPresence::Present
       when TypeOf
         yield "expressions", collection(node.expressions)
       when ProcNotation
@@ -1196,13 +1200,176 @@ module Iyi
         yield "splat_index", optional(node.splat_index)
         yield "doc", optional(node.doc)
         yield "name_location", optional(node.name_location)
+        {"visibility", "exported", "iyi_from_impl", "macro_def", "abstract", "calls_super",
+         "calls_initialize", "calls_previous_def", "uses_block_arg", "assigns_special_var"}.each do |field|
+          yield field, DiagnosticFieldPresence::Present
+        end
       when Annotation
         yield "path", DiagnosticFieldPresence::Present
         yield "args", collection(node.args)
         yield "named_args", collection(node.named_args)
         yield "doc", optional(node.doc)
+        yield "iyi_file_mark", DiagnosticFieldPresence::Present
+      when SymbolLiteral
+        yield "value", DiagnosticFieldPresence::Present
+      when And, Or
+        yield "left", DiagnosticFieldPresence::Present
+        yield "right", DiagnosticFieldPresence::Present
+      when Expressions
+        yield "expressions", collection(node.expressions)
+        yield "keyword", DiagnosticFieldPresence::Present
+      when BoolLiteral, CharLiteral, StringLiteral, MacroLiteral
+        yield "value", DiagnosticFieldPresence::Present
+      when NumberLiteral
+        yield "value", DiagnosticFieldPresence::Present
+        yield "kind", DiagnosticFieldPresence::Present
+      when StringInterpolation
+        yield "expressions", collection(node.expressions)
+        yield "heredoc_indent", DiagnosticFieldPresence::Present
+      when ArrayLiteral
+        yield "elements", collection(node.elements)
+        yield "of", optional(node.of)
+        yield "name", optional(node.name)
+      when TupleLiteral
+        yield "elements", collection(node.elements)
+      when HashLiteral
+        yield "entries", collection(node.entries)
+        yield "of", optional(node.of)
+        yield "name", optional(node.name)
+      when NamedTupleLiteral
+        yield "entries", collection(node.entries)
+      when RangeLiteral
+        {"from", "to", "exclusive"}.each { |field| yield field, DiagnosticFieldPresence::Present }
+      when RegexLiteral
+        {"value", "options"}.each { |field| yield field, DiagnosticFieldPresence::Present }
+      when Var
+        yield "name", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+      when InstanceVar, ClassVar, Global
+        yield "name", DiagnosticFieldPresence::Present
+      when ReadInstanceVar
+        yield "obj", DiagnosticFieldPresence::Present
+        yield "name", DiagnosticFieldPresence::Present
+      when Block
+        yield "args", collection(node.args)
+        yield "body", DiagnosticFieldPresence::Present
+        yield "splat_index", optional(node.splat_index)
+        yield "unpacks", collection(node.unpacks)
+      when Call
+        yield "obj", optional(node.obj)
+        yield "name", DiagnosticFieldPresence::Present
+        yield "args", collection(node.args)
+        yield "named_args", collection(node.named_args)
+        yield "block", optional(node.block)
+        yield "block_arg", optional(node.block_arg)
+        yield "doc", optional(node.doc)
+        yield "name_location", optional(node.name_location)
+        yield "iyi_after_floor_div", optional(node.iyi_after_floor_div)
+        {"visibility", "global", "expansion", "args_in_brackets", "has_parentheses", "iyi_group", "iyi_banged"}.each do |field|
+          yield field, DiagnosticFieldPresence::Present
+        end
+      when If, Unless
+        {"cond", "then", "else"}.each { |field| yield field, DiagnosticFieldPresence::Present }
+        yield "else_location", optional(node.else_location)
+        yield "ternary", DiagnosticFieldPresence::Present if node.is_a?(If)
+      when Assign
+        yield "target", DiagnosticFieldPresence::Present
+        yield "value", DiagnosticFieldPresence::Present
+        yield "doc", optional(node.doc)
+      when OpAssign
+        {"target", "value", "op"}.each { |field| yield field, DiagnosticFieldPresence::Present }
+        yield "name_location", optional(node.name_location)
+      when MultiAssign
+        yield "targets", collection(node.targets)
+        yield "values", collection(node.values)
+      when Nop, NilLiteral, ImplicitObj, Self, Underscore
+        # No syntax-specific stored fields.
       else
         raise ArgumentError.new("unclassified AST presence fields for #{class_name}")
+      end
+    end
+  end
+
+  alias DiagnosticScalarFieldValue = Bool | Int32 | String | Nil
+
+  # Direct scalar reader for the listed kinds. Type tags distinguish enum
+  # names, integer optionals, booleans and arbitrary-byte strings.
+  module DiagnosticDirectScalarFields
+    def self.each(node : ASTNode, & : String, String, DiagnosticScalarFieldValue ->) : Nil
+      class_name = node.class.name
+      kind = class_name.rpartition("::")[2]
+      unless class_name == "Iyi::#{kind}" && DiagnosticAstFieldSchema::SUPPORTED.includes?(kind)
+        raise ArgumentError.new("unclassified scalar AST node #{class_name}")
+      end
+      case node
+      when Path
+        yield "global", "bool", node.global?
+        yield "visibility", "Visibility", node.visibility.to_s
+        yield "exported", "bool", node.exported?
+      when Generic
+        yield "suffix", "Generic::Suffix", node.suffix.to_s
+      when Union
+        yield "parens", "bool", node.parens?
+      when Arg
+        yield "doc", "bytes?", node.doc
+      when Def
+        yield "block_arity", "int32?", node.block_arity
+        yield "splat_index", "int32?", node.splat_index
+        yield "doc", "bytes?", node.doc
+        yield "visibility", "Visibility", node.visibility.to_s
+        yield "exported", "bool", node.exported?
+        yield "iyi_from_impl", "bool", node.iyi_from_impl?
+        yield "macro_def", "bool", node.macro_def?
+        yield "abstract", "bool", node.abstract?
+        yield "calls_super", "bool", node.calls_super?
+        yield "calls_initialize", "bool", node.calls_initialize?
+        yield "calls_previous_def", "bool", node.calls_previous_def?
+        yield "uses_block_arg", "bool", node.uses_block_arg?
+        yield "assigns_special_var", "bool", node.assigns_special_var?
+      when Annotation
+        yield "doc", "bytes?", node.doc
+        yield "iyi_file_mark", "bool", node.iyi_file_mark?
+      when Expressions
+        yield "keyword", "Expressions::Keyword", node.keyword.to_s
+      when BoolLiteral
+        yield "value", "bool", node.value
+      when NumberLiteral
+        yield "value", "bytes", node.value
+        yield "kind", "NumberKind", node.kind.to_s
+      when CharLiteral
+        yield "value", "char", node.value.ord
+      when StringLiteral, MacroLiteral
+        yield "value", "bytes", node.value
+      when StringInterpolation
+        yield "heredoc_indent", "int32", node.heredoc_indent
+      when RangeLiteral
+        yield "exclusive", "bool", node.exclusive?
+      when RegexLiteral
+        yield "options", "RegexOptions", node.options.value.to_i32
+      when Var
+        yield "doc", "bytes?", node.doc
+      when Block
+        yield "splat_index", "int32?", node.splat_index
+      when Call
+        yield "doc", "bytes?", node.doc
+        yield "visibility", "Visibility", node.visibility.to_s
+        yield "global", "bool", node.global?
+        yield "expansion", "bool", node.expansion?
+        yield "args_in_brackets", "bool", node.args_in_brackets?
+        yield "has_parentheses", "bool", node.has_parentheses?
+        yield "iyi_group", "bool", node.iyi_group?
+        yield "iyi_banged", "bool", node.iyi_banged?
+      when If
+        yield "ternary", "bool", node.ternary?
+      when Assign
+        yield "doc", "bytes?", node.doc
+      when ArrayLiteral, TupleLiteral, HashLiteral, NamedTupleLiteral, InstanceVar, ClassVar, Global,
+           ReadInstanceVar, Unless, OpAssign, MultiAssign
+        # Their syntax-specific fields are names, children, or collections.
+      when TypeOf, ProcNotation, NamedArgument, SymbolLiteral, And, Or, Nop, NilLiteral, ImplicitObj, Self, Underscore
+        # Their syntax-specific fields are names, children, or collections.
+      else
+        raise ArgumentError.new("unclassified AST scalar fields for #{class_name}")
       end
     end
   end
@@ -1215,9 +1382,9 @@ module Iyi
     end
   end
 
-  # Bounded inventory of stored child and name fields. This is not a capture
-  # registry: field presence, scalar values, witnesses and parser acceptance
-  # must be established independently.
+  # Bounded partial syntax inventory. Unsupported presence or scalar readers
+  # refuse capture. It is not a registry: parser acceptance, complete field
+  # coverage, source-witness binding and authority still need validation.
   class DiagnosticAstInventorySnapshot
     MAX_BYTES = 8_i64 * 1024 * 1024
     MAX_DEPTH = 128
@@ -1275,8 +1442,11 @@ module Iyi
       begin
         json.object do
           json.field "kind", node.class.name
+          json.field("presence") { write_presence(json, node) }
+          json.field("scalars") { write_scalars(json, node) }
           json.field("location") { write_stored_location(json, node.diagnostic_stored_location) }
           json.field("end_location") { write_stored_location(json, node.diagnostic_stored_end_location) }
+          json.field("extra_locations") { write_extra_locations(json, node) }
           if origin = node.diagnostic_origin
             charge_evidence(origin.graph_bytes, origin.graph_depth, depth)
           end
@@ -1313,6 +1483,77 @@ module Iyi
         end
       ensure
         @active.delete(id)
+      end
+    end
+
+    private def write_presence(json : JSON::Builder, node : ASTNode) : Nil
+      json.array do
+        DiagnosticDirectPresenceFields.each(node) do |field, state|
+          json.object do
+            json.field "field", field
+            json.field "state", state.to_s
+          end
+        end
+      end
+    end
+
+    private def write_scalars(json : JSON::Builder, node : ASTNode) : Nil
+      json.array do
+        DiagnosticDirectScalarFields.each(node) do |field, type, value|
+          json.object do
+            json.field "field", field
+            json.field "type", type
+            json.field "value" do
+              case value
+              when Nil
+                json.null
+              when Bool
+                json.bool(value)
+              when Int32
+                json.number(value)
+              when String
+                if value.bytesize.to_i64 > MAX_BYTES * 3 // 4 - 4
+                  raise ArgumentError.new("AST scalar exceeds size limit")
+                end
+                json.string(Base64.strict_encode(value.to_slice))
+              else
+                raise ArgumentError.new("unclassified AST scalar value")
+              end
+            end
+          end
+        end
+      end
+    end
+
+    private def write_extra_locations(json : JSON::Builder, node : ASTNode) : Nil
+      json.array do
+        case node
+        when Def
+          write_named_location(json, "name_location", node.name_location)
+        when Call
+          write_named_location(json, "name_location", node.name_location)
+          write_named_location(json, "iyi_after_floor_div", node.iyi_after_floor_div)
+        when If, Unless
+          write_named_location(json, "else_location", node.else_location)
+        when OpAssign
+          write_named_location(json, "name_location", node.name_location)
+        when Path, Generic, Union, TypeOf, ProcNotation, NamedArgument, Arg, Annotation,
+             SymbolLiteral, And, Or, Nop, NilLiteral, ImplicitObj, Self, Underscore,
+             Expressions, BoolLiteral, CharLiteral, StringLiteral, MacroLiteral, NumberLiteral,
+             StringInterpolation, ArrayLiteral, TupleLiteral, HashLiteral, NamedTupleLiteral,
+             RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, ReadInstanceVar,
+             Block, Assign, MultiAssign
+          # These kinds have no additional location field in their syntax schema.
+        else
+          raise ArgumentError.new("unclassified AST extra location fields for #{node.class}")
+        end
+      end
+    end
+
+    private def write_named_location(json : JSON::Builder, field : String, location : Location?) : Nil
+      json.object do
+        json.field "field", field
+        json.field("value") { write_stored_location(json, location) }
       end
     end
 
@@ -1600,6 +1841,38 @@ module Iyi
     def each_segment(& : DiagnosticLiteralSegment ->) : Nil
       @segments.each { |segment| yield segment }
     end
+
+    # Validates canonical RFC 4648 base64 without allocating decoded bytes.
+    def decoded_bytesize : Int32
+      encoded = @decoded_base64
+      size = encoded.bytesize
+      raise ArgumentError.new("literal decoded value exceeds size limit") if size.to_u64 > DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      raise ArgumentError.new("invalid literal base64 length") unless size % 4 == 0
+      return 0 if size == 0
+      padding = encoded.byte_at(size - 1) == 61_u8 ? 1 : 0
+      padding += 1 if padding == 1 && encoded.byte_at(size - 2) == 61_u8
+      (0...(size - padding)).each do |index|
+        raise ArgumentError.new("invalid literal base64 alphabet") unless base64_value(encoded.byte_at(index))
+      end
+      if padding > 0
+        value = base64_value(encoded.byte_at(size - padding - 1))
+        raise ArgumentError.new("invalid literal base64 padding") unless value
+        mask = padding == 2 ? 15 : 3
+        raise ArgumentError.new("noncanonical literal base64 padding") unless (value & mask) == 0
+      end
+      (size // 4) * 3 - padding
+    end
+
+    private def base64_value(byte : UInt8) : Int32?
+      case byte
+      when 65_u8..90_u8  then byte.to_i - 65
+      when 97_u8..122_u8 then byte.to_i - 97 + 26
+      when 48_u8..57_u8  then byte.to_i - 48 + 52
+      when 43_u8         then 62
+      when 47_u8         then 63
+      else                    nil
+      end
+    end
   end
 
   # Checks byte binding only. Production semantics, owner coordinates and
@@ -1618,28 +1891,106 @@ module Iyi
       if literal.decoded_base64.bytesize.to_i64 > max || expected_value.bytesize.to_i64 > max * 3 // 4 - 4
         raise ArgumentError.new("literal decoded value exceeds size limit")
       end
-      unless Base64.strict_encode(expected_value.to_slice) == literal.decoded_base64
+      unless literal.decoded_bytesize == expected_value.bytesize &&
+             Base64.strict_encode(expected_value.to_slice) == literal.decoded_base64
         raise ArgumentError.new("literal decoded value mismatch")
       end
       raise ArgumentError.new("literal production evidence missing") if productions.empty?
       if literal.segments_count.to_i64 + productions.size.to_i64 > max // 64
         raise ArgumentError.new("literal evidence count exceeds size limit")
       end
+      unless literal.segments_count == productions.size
+        raise ArgumentError.new("literal constituent and production counts differ")
+      end
+      segment_index = 0
       literal.each_segment do |segment|
         unless input.matches_encoded_span?(segment.start_offset, segment.end_offset, segment.raw_base64)
           raise ArgumentError.new("literal constituent input bytes mismatch")
         end
+        production = productions[segment_index]
+        if production.production.percent_symbol_element?
+          unless segment.start_offset >= production.start_offset && segment.end_offset <= production.end_offset
+            raise ArgumentError.new("percent symbol constituent outside production")
+          end
+        elsif segment.start_offset != production.start_offset || segment.end_offset != production.end_offset
+          raise ArgumentError.new("literal constituent and production span mismatch")
+        end
+        segment_index += 1
       end
+      previous_end : Int32? = nil
+      witness_total = 0_i64
       productions.each do |segment|
         unless input.matches_encoded_span?(segment.start_offset, segment.end_offset, segment.raw_base64)
           raise ArgumentError.new("literal production input bytes mismatch")
         end
-        raise ArgumentError.new("literal witnesses exceed size limit") if segment.witnesses_count.to_i64 > max // 64
+        witness_total += segment.witnesses_count.to_i64
+        raise ArgumentError.new("literal witnesses exceed size limit") if witness_total > max // 64
+        verify_witnesses!(segment, previous_end, input.input_bytesize)
+        previous_end = segment.end_offset
+      end
+    end
+
+    private def self.verify_witnesses!(segment : DiagnosticLiteralProductionSegment, previous_end : Int32?,
+                                       input_bytesize : Int32) : Nil
+      if segment.production.symbol_token?
+        count = 0
         segment.each_witness do |witness|
-          unless witness.start_offset >= 0 && witness.end_offset <= input.input_bytesize
-            raise ArgumentError.new("literal witness lies outside input")
+          count += 1
+          unless witness.kind.string_piece? && witness.start_offset == segment.start_offset &&
+                 witness.end_offset == segment.end_offset
+            raise ArgumentError.new("invalid symbol token witness")
           end
         end
+        raise ArgumentError.new("invalid symbol token witness count") unless count == 1 && previous_end.nil?
+        return
+      end
+      unless (segment.production.delimiter? && segment.delimiter_kind == "STRING") ||
+             (segment.production.percent_symbol_element? && segment.delimiter_kind == "SYMBOL_ARRAY")
+        raise ArgumentError.new("invalid literal delimiter production")
+      end
+      raise ArgumentError.new("percent symbol cannot be continued") if segment.production.percent_symbol_element? && previous_end
+      opener = false
+      closer = false
+      interpolation = false
+      continuation = false
+      cursor = segment.start_offset
+      segment.each_witness do |witness|
+        raise ArgumentError.new("literal witness lies outside input") if witness.end_offset > input_bytesize
+        if witness.kind.continuation?
+          unless previous_end && !opener && !continuation &&
+                 witness.start_offset == previous_end && witness.end_offset == segment.start_offset
+            raise ArgumentError.new("invalid literal continuation witness")
+          end
+          continuation = true
+          next
+        end
+        unless witness.start_offset >= cursor && witness.end_offset <= segment.end_offset && !closer
+          raise ArgumentError.new("unordered literal witness")
+        end
+        case witness.kind
+        when .opener?
+          raise ArgumentError.new("invalid literal opener witness") if opener || witness.start_offset != segment.start_offset
+          opener = true
+        when .closing_delimiter?
+          unless opener && !interpolation && witness.end_offset == segment.end_offset
+            raise ArgumentError.new("invalid literal closing witness")
+          end
+          closer = true
+        when .string_piece?
+          raise ArgumentError.new("string piece outside literal") unless opener && !interpolation
+        when .interpolation_start?
+          raise ArgumentError.new("invalid interpolation start witness") unless opener && !interpolation
+          interpolation = true
+        when .interpolation_end?
+          raise ArgumentError.new("invalid interpolation end witness") unless interpolation
+          interpolation = false
+        else
+          raise ArgumentError.new("unclassified literal witness")
+        end
+        cursor = witness.end_offset
+      end
+      unless opener && closer && !interpolation && (previous_end.nil? || continuation)
+        raise ArgumentError.new("incomplete literal production witnesses")
       end
     end
   end

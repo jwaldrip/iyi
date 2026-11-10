@@ -95,10 +95,15 @@ describe Iyi::DiagnosticDirectPresenceFields do
     absent = {} of String => Iyi::DiagnosticFieldPresence
     Iyi::DiagnosticDirectPresenceFields.each(generic) { |field, state| absent[field] = state }
     absent["named_args"].should eq(Iyi::DiagnosticFieldPresence::Absent)
+    absent_capture = Iyi::DiagnosticAstInventorySnapshot.new(generic).bytes
     generic.named_args = [] of Iyi::NamedArgument
     present = {} of String => Iyi::DiagnosticFieldPresence
     Iyi::DiagnosticDirectPresenceFields.each(generic) { |field, state| present[field] = state }
     present["named_args"].should eq(Iyi::DiagnosticFieldPresence::Empty)
+    present_capture = Iyi::DiagnosticAstInventorySnapshot.new(generic).bytes
+    absent_capture.should_not eq(present_capture)
+    generic.suffix = Iyi::Generic::Suffix::Question
+    Iyi::DiagnosticAstInventorySnapshot.new(generic).bytes.should_not eq(present_capture)
   end
 end
 
@@ -171,5 +176,18 @@ describe Iyi::DiagnosticLiteralInputChecks do
     expect_raises(ArgumentError, /decoded value mismatch/) do
       Iyi::DiagnosticLiteralInputChecks.verify_input_bytes!(literal, productions, "x", input)
     end
+    original = productions.first
+    truncated = Iyi::DiagnosticLiteralProductionSegment.new(original.production, original.start_offset,
+      original.end_offset, original.raw_base64, original.delimiter_kind, original.nest,
+      original.end_delimiter, original.allow_escapes, [original.witnesses.first])
+    expect_raises(ArgumentError, /incomplete literal production witnesses/) do
+      Iyi::DiagnosticLiteralInputChecks.verify_input_bytes!(literal, [truncated], String.new(Bytes[0xff]), input)
+    end
+  end
+
+  it "rejects noncanonical base64 padding without decoding" do
+    segment = Iyi::DiagnosticLiteralSegment.new(0, 1, "YQ==")
+    literal = Iyi::DiagnosticParsedLiteral.new("0" * 64, 1, "Crystal", "/x==", [segment], nil)
+    expect_raises(ArgumentError, /noncanonical literal base64 padding/) { literal.decoded_bytesize }
   end
 end
