@@ -200,7 +200,14 @@ module Iyi
     # the source module.
     @diagnostic_module_path : String? = nil
     getter diagnostic_source_unit : String? = nil
-    property diagnostic_capture = false
+    getter diagnostic_capture = false
+
+    def diagnostic_capture=(@diagnostic_capture : Bool)
+      if @diagnostic_capture
+        @diagnostic_token_ends ||= {} of Int32 => Int32
+        @diagnostic_token_snapshots ||= {} of Int32 => {Int32, String, String}
+      end
+    end
 
     # A source file with no iyi module header is its own compilation unit.
     # This must be set only for an actual parser input, never an artifact or
@@ -213,10 +220,13 @@ module Iyi
     end
 
     @diagnostic_regions : Array(DiagnosticRegion)? = nil
-    @diagnostic_pending : Hash({Int32, String, String}, DiagnosticOrigin)? = nil
+    @diagnostic_pending : Hash({Int32, String, String}, DiagnosticAnchor)? = nil
+    @diagnostic_restored_names : Hash(Int32, Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))) = {} of Int32 => Hash(DiagnosticNameSlot, Array(DiagnosticSourceNameToken))
+    @diagnostic_input_digest : String? = nil
     @diagnostic_expansion : {DiagnosticOrigin, DiagnosticOrigin, String}? = nil
     @diagnostic_emitted_anchors : Hash({Int32, String, String}, DiagnosticMacroAnchor)? = nil
     @diagnostic_generated_ranges : Array(DiagnosticGeneratedText)? = nil
+    @diagnostic_name_fragments : Array(DiagnosticMacroNameFragment)? = nil
     @last_macro_control_offset : Int32? = nil
 
     def diagnostic_expansion(invocation : DiagnosticOrigin, definition : DiagnosticOrigin,
@@ -227,8 +237,10 @@ module Iyi
       end
       @diagnostic_expansion = {invocation, definition, guard}
       @diagnostic_token_ends = {} of Int32 => Int32
+      @diagnostic_token_snapshots = {} of Int32 => {Int32, String, String}
       emitted = @diagnostic_emitted_anchors = {} of {Int32, String, String} => DiagnosticMacroAnchor
       generated_ranges = @diagnostic_generated_ranges = [] of DiagnosticGeneratedText
+      fragments = @diagnostic_name_fragments = [] of DiagnosticMacroNameFragment
       return unless pragmas
       pragmas.each do |start, list|
         list.each do |entry|
@@ -258,6 +270,14 @@ module Iyi
               end
               generated_ranges << gen
             end
+            entry.name_fragments.each do |fragment|
+              if fragment.start_offset < start || fragment.end_offset > finish ||
+                 fragment.end_offset <= fragment.start_offset ||
+                 fragment.end_offset - fragment.start_offset != fragment.source_token.raw_text.bytesize
+                ::raise ArgumentError.new("invalid macro name fragment extent")
+              end
+              fragments << fragment
+            end
           end
         end
       end
@@ -265,13 +285,24 @@ module Iyi
       generated_ranges.each_cons_pair do |left, right|
         ::raise ArgumentError.new("overlapping diagnostic macro generated ranges") if left.end_offset > right.start_offset
       end
+      fragments.sort_by!(&.start_offset)
+      fragments.each_cons_pair do |left, right|
+        ::raise ArgumentError.new("overlapping diagnostic macro name fragments") if left.end_offset > right.start_offset
+      end
+      fragments.each do |fragment|
+        if generated_ranges.any? { |range| range.start_offset < fragment.end_offset && range.end_offset > fragment.start_offset }
+          ::raise ArgumentError.new("macro name fragment overlaps generated text")
+        end
+      end
     end
 
     # Offsets are in the full parser input, not in a line/column coordinate
     # system. The caller supplies only regions whose text is carried.
     def diagnostic_regions=(regions : Array(DiagnosticRegion))
+      @diagnostic_token_ends ||= {} of Int32 => Int32
+      @diagnostic_token_snapshots ||= {} of Int32 => {Int32, String, String}
       ordered = regions.sort_by(&.start_offset)
-      pending = {} of {Int32, String, String} => DiagnosticOrigin
+      pending = {} of {Int32, String, String} => DiagnosticAnchor
       last_end = @input_offset_base
       ordered.each do |region|
         start = region.start_offset
@@ -293,7 +324,7 @@ module Iyi
           end
           key = {anchor.offset, anchor.kind, anchor.role}
           ::raise ArgumentError.new("duplicate diagnostic provenance anchor") if pending.has_key?(key)
-          pending[key] = origin
+          pending[key] = anchor
         end
         last_end = finish
       end
@@ -308,68 +339,82 @@ module Iyi
       if emitted = @diagnostic_emitted_anchors
         ::raise ArgumentError.new("unconsumed diagnostic macro emitted anchors") unless emitted.empty?
       end
+      if fragments = @diagnostic_name_fragments
+        ::raise ArgumentError.new("unconsumed diagnostic macro name fragments") unless fragments.empty?
+      end
     end
 
-    private def diagnostic_anchor(kind : String, role : String, offset : Int32, token_end : Int32? = nil) : DiagnosticOrigin?
+    private def diagnostic_anchor(kind : String, role : String, offset : Int32, token_end : Int32? = nil,
+                                  name_context : String? = nil) : DiagnosticOrigin?
       if regions = @diagnostic_regions
         if regions.any? { |region| offset >= region.start_offset && offset < region.end_offset }
-          return @diagnostic_pending.not_nil!.delete({offset, kind, role}) ||
+          anchor = @diagnostic_pending.not_nil!.delete({offset, kind, role}) ||
             ::raise(ArgumentError.new("missing diagnostic provenance anchor at byte #{offset} for #{kind}:#{role}"))
+          @diagnostic_restored_names[offset] = anchor.name_slots unless anchor.name_slots.empty?
+          return anchor.origin
         end
       end
       if expansion = @diagnostic_expansion
-        end_pos = token_end || @diagnostic_token_ends.try(&.[offset]?)
-        unless end_pos && end_pos > offset
-          ::raise ArgumentError.new("missing or ambiguous diagnostic token extent at byte #{offset} for #{kind}:#{role}")
+        snapshot = @diagnostic_token_snapshots.try(&.[offset]?)
+        unless snapshot && snapshot[0] > offset
+          ::raise ArgumentError.new("missing or ambiguous diagnostic token at byte #{offset} for #{kind}:#{role}")
         end
+        end_pos = token_end || snapshot[0]
+        unless end_pos > offset && end_pos <= snapshot[0]
+          ::raise ArgumentError.new("invalid diagnostic token extent at byte #{offset}")
+        end
+        raw = string.byte_slice(offset - @input_offset_base, end_pos - offset)
+        context = name_context || (kind == "Call" && role == "method" ? "method_name" : nil)
         key = {offset, kind, role}
-        if emitted = @diagnostic_emitted_anchors.try(&.delete(key))
-          if ranges = @diagnostic_generated_ranges
-            ranges.each do |range|
-              next unless range.start_offset < end_pos && range.end_offset > offset
-              producer = emitted.producer
-              projection = producer == DiagnosticMacroProducer::EmptyTupleProjection ||
-                           producer == DiagnosticMacroProducer::EmptyNamedTupleProjection
-              unless projection && range.producer == producer && range.emitter_origin == emitted.emitter_origin &&
-                     range.start_offset <= offset && range.end_offset >= end_pos
-                ::raise ArgumentError.new("macro anchor overlaps generated text at byte #{offset}")
-              end
+        emitted = @diagnostic_emitted_anchors.try(&.[key]?)
+        ranges = @diagnostic_generated_ranges.not_nil!
+        fragments = @diagnostic_name_fragments.not_nil!
+        overlapping_fragments = fragments.select { |f| f.start_offset < end_pos && f.end_offset > offset }
+        parts = [] of DiagnosticEmissionPart
+        if emitted
+          unless overlapping_fragments.empty?
+            ::raise ArgumentError.new("macro structural anchor overlaps name fragment")
+          end
+          ranges.each do |range|
+            next unless range.start_offset < end_pos && range.end_offset > offset
+            producer = emitted.producer
+            projection = producer == DiagnosticMacroProducer::EmptyTupleProjection ||
+                         producer == DiagnosticMacroProducer::EmptyNamedTupleProjection
+            unless projection && range.producer == producer && range.emitter_origin == emitted.emitter_origin &&
+                   range.start_offset <= offset && range.end_offset >= end_pos
+              ::raise ArgumentError.new("macro anchor overlaps generated text at byte #{offset}")
             end
           end
-          part = DiagnosticEmissionPart.new(offset, end_pos, emitted.emitter_origin)
-          return DiagnosticOrigin::Expanded.new(
-            expansion[0], expansion[1], expansion[2],
-            offset, kind, role, [part], emitted.source_origin
-          )
-        elsif ranges = @diagnostic_generated_ranges
+          if source = emitted.source_origin
+            parts << DiagnosticEmissionPart::AstAnchor.new(offset, end_pos, emitted.emitter_origin, source)
+          else
+            parts << DiagnosticEmissionPart::Generated.new(offset, end_pos, emitted.emitter_origin, emitted.producer.not_nil!)
+          end
+        else
           cursor = offset
-          raw_parts = [] of DiagnosticEmissionPart
           while cursor < end_pos
-            covering = ranges.find { |range| range.start_offset <= cursor && range.end_offset > cursor }
-            unless covering
+            fragment = overlapping_fragments.find { |f| f.start_offset == cursor }
+            if fragment
+              unless context && fragment.end_offset <= end_pos
+                ::raise ArgumentError.new("name fragment outside accepted name token")
+              end
+              parts << DiagnosticEmissionPart::NameSplice.new(cursor, fragment.end_offset, fragment.emitter_origin,
+                fragment.source_token, 0, fragment.source_token.raw_text.bytesize, "Whole")
+              cursor = fragment.end_offset
+            elsif range = ranges.find { |r| r.start_offset <= cursor && r.end_offset > cursor }
+              finish = Math.min(end_pos, range.end_offset)
+              parts << DiagnosticEmissionPart::Generated.new(cursor, finish, range.emitter_origin, range.producer)
+              cursor = finish
+            else
               ::raise ArgumentError.new("unauthorized macro anchor at byte #{offset} for #{kind}:#{role}")
             end
-            chunk_end = Math.min(end_pos, covering.end_offset)
-            raw_parts << DiagnosticEmissionPart.new(cursor, chunk_end, covering.emitter_origin)
-            cursor = chunk_end
           end
-          parts = [] of DiagnosticEmissionPart
-          raw_parts.each do |p|
-            if last = parts.last?
-              if last.emitter_origin == p.emitter_origin && last.end_offset == p.start_offset
-                parts[parts.size - 1] = DiagnosticEmissionPart.new(last.start_offset, p.end_offset, last.emitter_origin)
-                next
-              end
-            end
-            parts << p
-          end
-          return DiagnosticOrigin::Expanded.new(
-            expansion[0], expansion[1], expansion[2],
-            offset, kind, role, parts, nil
-          )
-        else
-          ::raise ArgumentError.new("missing diagnostic macro expansion context for #{kind}:#{role}")
         end
+        origin = DiagnosticOrigin::Expanded.new(expansion[0], expansion[1], expansion[2],
+          offset, end_pos, snapshot[1], raw, snapshot[2], kind, role, context, parts)
+        @diagnostic_emitted_anchors.try(&.delete(key)) if emitted
+        overlapping_fragments.each { |fragment| fragments.delete(fragment) }
+        return origin
       end
       return nil unless @diagnostic_capture
       return nil unless @input_artifact.nil?
@@ -379,6 +424,45 @@ module Iyi
         ::raise ArgumentError.new("diagnostic source input lacks a stable file identity")
       end
       DiagnosticOrigin::Written.new(module_path, filename, offset, kind, role)
+    end
+
+    private def diagnostic_name(node : ASTNode, offset : Int32, context : String,
+                                origin : DiagnosticOrigin? = nil, slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)) : Nil
+      return unless @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
+      if restored = @diagnostic_restored_names.delete(offset)
+        node.diagnostic_name_slots = restored
+        return
+      end
+      origin ||= diagnostic_anchor("Name", context, offset, name_context: context)
+      return unless origin
+      if restored = @diagnostic_restored_names.delete(offset)
+        node.diagnostic_name_slots = restored
+        return
+      end
+      snapshot = @diagnostic_token_snapshots.try(&.[offset]?)
+      unless snapshot && snapshot[0] > offset
+        ::raise ArgumentError.new("missing diagnostic name token at byte #{offset}")
+      end
+      input = @input_offset_base == 0 ? string : "\uFEFF#{string}"
+      digest = @diagnostic_input_digest ||= ::Crystal::Digest::SHA256.hexdigest(input)
+      raw = string.byte_slice(offset - @input_offset_base, snapshot[0] - offset)
+      token = DiagnosticSourceNameToken.new(origin, nil, context, digest, input.bytesize,
+        offset, snapshot[0], snapshot[2], snapshot[1], raw)
+      slots = node.diagnostic_name_slots
+      slots[slot] = [token]
+      node.diagnostic_name_slots = slots
+    end
+
+    private def diagnostic_transfer_binding(call : Call, variable : Var) : Nil
+      slots = call.diagnostic_name_slots
+      slots.each do |slot, tokens|
+        slots[slot] = tokens.map do |token|
+          binding = DiagnosticOrigin::Synthetic.new(token.lexical_origin, "local_binding", "assignment")
+          DiagnosticSourceNameToken.new(token.lexical_origin, binding, token.context, token.input_sha256,
+            token.input_bytesize, token.input_start, token.input_end, token.lexical_mode, token.token_kind, token.raw_text)
+        end
+      end
+      variable.diagnostic_name_slots = slots
     end
 
     # iyi: the namespace a module of *package* whose in-package path is
@@ -831,6 +915,7 @@ module Iyi
             variable.diagnostic_origin = call.diagnostic_origin.try do |origin|
               DiagnosticOrigin::Synthetic.new(origin, "local_binding", "assignment")
             end
+            diagnostic_transfer_binding(call, variable)
             exp = variable
           end
         when Global
@@ -983,6 +1068,7 @@ module Iyi
               variable.diagnostic_origin = call.diagnostic_origin.try do |origin|
                 DiagnosticOrigin::Synthetic.new(origin, "local_binding", "assignment")
               end
+              diagnostic_transfer_binding(call, variable)
               atomic = variable
             end
 
@@ -2160,6 +2246,7 @@ module Iyi
       name = @token.value.to_s
       var = klass.new(name).at(@token.location)
       var.end_location = token_end_location
+      diagnostic_name(var, @token.input_offset, var.is_a?(ClassVar) ? "class_variable" : "instance_variable")
       @wants_regex = false
       next_token
       space_after_name = @token.type.space?
@@ -5018,6 +5105,7 @@ module Iyi
 
       with_isolated_var_scope do
         name_location = @token.location
+        name_offset = @token.input_offset
 
         case @token.type
         when .const?
@@ -5109,6 +5197,7 @@ module Iyi
         node.doc = doc
         node.end_location = end_location
         node.diagnostic_origin = origin
+        diagnostic_name(node, name_offset, "macro_name")
         set_visibility node
         node
       end
@@ -5486,6 +5575,8 @@ module Iyi
       name_location = @token.location
       receiver_location = @token.location
       end_location = token_end_location
+      name_offset = @token.input_offset
+      receiver_offset = name_offset
 
       if @token.type.const?
         receiver = parse_path
@@ -5517,12 +5608,14 @@ module Iyi
         unless receiver
           if name
             receiver = Var.new(name).at(receiver_location).at_end(end_location)
+            diagnostic_name(receiver, receiver_offset, "local_reference")
           else
             raise "shouldn't reach this line"
           end
         end
 
         consume_def_or_macro_name
+        name_offset = @token.input_offset
 
         if @token.type.ident?
           check_valid_def_name
@@ -5710,6 +5803,7 @@ module Iyi
       node.free_var_bounds = free_var_bounds
       node.where_bounds = where_bounds
       node.name_location = name_location
+      diagnostic_name(node, name_offset, "definition_name")
       set_visibility node
       node.end_location = end_location
       node
@@ -6552,6 +6646,7 @@ module Iyi
         var.doc = doc
         var.location = name_location
         var.end_location = end_location
+        diagnostic_name(var, name_offset, "local_reference")
         next_token
         return var
       end
@@ -6760,7 +6855,12 @@ module Iyi
       node.doc = doc
       node.location = location
       node.end_location = block.try(&.end_location) || call_args.try(&.end_location) || end_location
-      node.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset) if node.is_a?(Call)
+      if node.is_a?(Call)
+        node.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset)
+        diagnostic_name(node, name_offset, "method_name", node.diagnostic_origin)
+      elsif node.is_a?(Var)
+        diagnostic_name(node, name_offset, "local_reference")
+      end
       node
     end
 

@@ -33,11 +33,20 @@ module Iyi
     @token_end_location : Location?
     @string_pool : StringPool
     @diagnostic_token_ends : Hash(Int32, Int32)? = nil
+    @diagnostic_token_snapshots : Hash(Int32, {Int32, String, String})? = nil
 
     private def diagnostic_record_token_end : Nil
       if ends = @diagnostic_token_ends
         start = @token.input_offset
         finish = @token.input_end
+        if snapshots = @diagnostic_token_snapshots
+          observation = {finish, @token.type.to_s, iyi? ? "Iyi" : "Crystal"}
+          if previous = snapshots[start]?
+            snapshots[start] = {-1, "", ""} if previous != observation
+          else
+            snapshots[start] = observation
+          end
+        end
         if finish > start
           if previous = ends[start]?
             ends[start] = -1 if previous != finish
@@ -106,7 +115,8 @@ module Iyi
     end
 
     record LocDiagnosticEmission, end_offset : Int32, anchors : Array(DiagnosticMacroAnchor),
-      generated_text : Array(DiagnosticGeneratedText) do
+      generated_text : Array(DiagnosticGeneratedText),
+      name_fragments : Array(DiagnosticMacroNameFragment) = [] of DiagnosticMacroNameFragment do
       def run_pragma(lexer)
       end
     end
@@ -2243,12 +2253,16 @@ module Iyi
     def lookahead(preserve_token_on_fail = false, &)
       old_pos, old_line, old_column = current_pos, @line_number, @column_number
       old_place = {@filename, @artifact, @stacked, @stacked_filename, @stacked_artifact, @stacked_line_number, @stacked_column_number, @location_pragma_index}
+      old_diagnostic_ends = @diagnostic_token_ends.try(&.dup)
+      old_diagnostic_snapshots = @diagnostic_token_snapshots.try(&.dup)
       @temp_token.copy_from(@token) if preserve_token_on_fail
 
       result = yield
       unless result
         self.current_pos, @line_number, @column_number = old_pos, old_line, old_column
         @filename, @artifact, @stacked, @stacked_filename, @stacked_artifact, @stacked_line_number, @stacked_column_number, @location_pragma_index = old_place
+        @diagnostic_token_ends = old_diagnostic_ends
+        @diagnostic_token_snapshots = old_diagnostic_snapshots
         @token.copy_from(@temp_token) if preserve_token_on_fail
       end
       result
