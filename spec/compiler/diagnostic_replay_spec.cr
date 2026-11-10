@@ -219,6 +219,14 @@ describe "AcceptedCaptureInput fresh-parser replay" do
       Iyi::DiagnosticRecordedEvidenceInputCheck.new(original).verify!(replay_root)
     end
 
+    it "detects a child removed from one replayed graph" do
+      _, _, root, replay_root = replay_parse_pair("def f(x : Root, y : Other)\nend", "/spec/replay/children.iyi")
+      expected = Iyi::DiagnosticAstInventorySnapshot.new(root).bytes
+      Iyi::DiagnosticAstInventorySnapshot.new(replay_root).bytes.should eq(expected)
+      replay_root.as(Iyi::Def).args.pop
+      Iyi::DiagnosticAstInventorySnapshot.new(replay_root).bytes.should_not eq(expected)
+    end
+
     it "replays forall bounds with the same declared-name evidence" do
       original, replay, root, replay_root = replay_parse_pair("def f(x : T) forall T : Show\nend", "/spec/replay/bounds.iyi")
       bounds = root.as(Iyi::Def).free_var_bounds.not_nil!
