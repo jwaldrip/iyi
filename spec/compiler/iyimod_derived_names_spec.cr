@@ -181,7 +181,8 @@ describe "operator and structural name transport" do
     macro_origin = Iyi::DiagnosticOrigin::Written.new("derived", "derived.cr", 0, "Macro", "keyword")
     origin = derived_names_operator(Iyi::DiagnosticOperatorProduction::IndexAssign, anchor,
       [derived_names_witness(1, "["),
-       derived_names_witness(3, "]", event: derived_names_event(3, "]", producer: Iyi::DiagnosticMacroProducer::MacroVar))], 8)
+       derived_names_witness(3, "]", event: derived_names_event(3, "]", producer: Iyi::DiagnosticMacroProducer::MacroVar)),
+       derived_names_witness(5, "=", event: derived_names_event(5, "=", producer: Iyi::DiagnosticMacroProducer::StructuredSyntax))], 8)
 
     table = Iyi::IyiMod::DiagnosticOrigins.new
     index = table.intern(origin)
@@ -297,7 +298,8 @@ describe "operator and structural name transport" do
       derived_names_operator(Iyi::DiagnosticOperatorProduction::IndexAssign,
         derived_names_expanded(derived_names_event(1, "[")),
         [derived_names_witness(1, "["),
-         derived_names_witness(3, "]", event: derived_names_event(3, "]", producer: Iyi::DiagnosticMacroProducer::MacroVar))],
+         derived_names_witness(3, "]", event: derived_names_event(3, "]", producer: Iyi::DiagnosticMacroProducer::MacroVar)),
+         derived_names_witness(5, "=", event: derived_names_event(5, "=", producer: Iyi::DiagnosticMacroProducer::StructuredSyntax))],
         8),
     ].each do |origin|
       bytes, _ = derived_names_bytes(origin)

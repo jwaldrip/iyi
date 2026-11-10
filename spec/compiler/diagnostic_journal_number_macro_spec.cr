@@ -104,11 +104,27 @@ describe "Iyi::Lexer numeric and macro journal" do
 
       it "records __LINE__ with the line it is on, and no kind" do
         observations = numeric_journal("\n\n__LINE__", iyi)
-        observations.map(&.token_kind).should eq ["NEWLINE", "NEWLINE", "__LINE__"]
-        line = observations[2]
+        observations.map(&.token_kind).should eq ["NEWLINE", "__LINE__"]
+        newline = observations[0]
+        newline.token_text.should eq "\n\n"
+        newline.input_start.should eq 0
+        newline.input_end.should eq 2
+        line = observations[1]
         line.token_text.should eq "__LINE__"
+        line.input_start.should eq 2
+        line.input_end.should eq 10
         line.line.should eq 3
         line.number_kind.should be_nil
+        numeric_decoded(line).should eq "3"
+      end
+
+      it "counts each newline run on its own line, with spaces between runs" do
+        observations = numeric_journal("\n  \n__LINE__", iyi)
+        observations.map(&.token_kind).should eq ["NEWLINE", "SPACE", "NEWLINE", "__LINE__"]
+        observations[0].token_text.should eq "\n"
+        observations[2].token_text.should eq "\n"
+        line = observations[3]
+        line.line.should eq 3
         numeric_decoded(line).should eq "3"
       end
 

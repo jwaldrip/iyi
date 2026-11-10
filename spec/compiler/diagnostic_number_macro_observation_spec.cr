@@ -1,9 +1,10 @@
 require "../support/syntax"
 
-private def number_macro_parse(source : String) : {Iyi::ASTNode, Iyi::Parser}
-  parser = Iyi::Parser.new(source)
-  parser.filename = "/spec/number_macro.cr"
-  parser.diagnostic_source_file = "/spec/number_macro.cr"
+private def number_macro_parse(source : String, var_scopes = [Set(String).new],
+                               filename = "/spec/number_macro.cr") : {Iyi::ASTNode, Iyi::Parser}
+  parser = Iyi::Parser.new(source, nil, var_scopes)
+  parser.filename = filename
+  parser.diagnostic_source_file = filename
   parser.diagnostic_capture = true
   {parser.parse, parser}
 end
@@ -43,14 +44,28 @@ describe "number and macro literal parser observations" do
   end
 
   it "records a signed number split with both token references" do
-    source = "a -1"
-    root, parser = number_macro_parse(source)
-    signed = parser.diagnostic_signed_number_observations.first
-    signed.call.should be(root)
-    signed_token = number_macro_token(parser, signed.signed)
-    unsigned_token = number_macro_token(parser, signed.unsigned)
-    source.byte_slice(signed_token.input_start, signed_token.input_end - signed_token.input_start).should eq("-1")
-    source.byte_slice(unsigned_token.input_start, unsigned_token.input_end - unsigned_token.input_start).should eq("1")
+    ["/spec/number_macro.cr", "/spec/number_macro.iyi"].each do |filename|
+      source = "a -1"
+      root, parser = number_macro_parse(source, [Set{"a"}], filename)
+      signed_observations = parser.diagnostic_signed_number_observations
+      signed_observations.size.should eq(1)
+      signed = signed_observations.first
+      signed.call.should be(root)
+      signed_token = number_macro_token(parser, signed.signed)
+      unsigned_token = number_macro_token(parser, signed.unsigned)
+      source.byte_slice(signed_token.input_start, signed_token.input_end - signed_token.input_start).should eq("-1")
+      source.byte_slice(unsigned_token.input_start, unsigned_token.input_end - unsigned_token.input_start).should eq("1")
+    end
+  end
+
+  it "reads an undeclared name before a signed number as a command argument" do
+    root, parser = number_macro_parse("a -1")
+    call = root.as(Iyi::Call)
+    call.obj.should be_nil
+    call.name.should eq("a")
+    call.args.size.should eq(1)
+    call.args.first.as(Iyi::NumberLiteral).value.should eq("-1")
+    parser.diagnostic_signed_number_observations.should be_empty
   end
 
   it "records each macro literal against its MACRO_LITERAL token" do

@@ -14,6 +14,15 @@ private def literal_forms_production(node : Iyi::ASTNode, field = "value", index
   node.diagnostic_literal_productions[{field, index}].first
 end
 
+# Spec-only: `diagnostic_literal_name` is add-only, so an exchange needs a removal first.
+abstract class Iyi::ASTNode
+  def literal_forms_spec_delete(field : String, index : Int32)
+    key = {field, index}
+    @diagnostic_literal_names.try(&.delete(key))
+    @diagnostic_literal_productions.try(&.delete(key))
+  end
+end
+
 describe "literal form parser evidence" do
   it "records char and magic tokens in both lexical modes without changing printed syntax" do
     [false, true].each do |iyi|
@@ -94,7 +103,7 @@ describe "literal form parser evidence" do
   end
 
   it "leaves literal syntax and heredoc indentation errors unchanged with capture enabled" do
-    sources = [%q("plain"), "%q(a\\)b)", %q(%Q(x)), %q(%[x]), %q(:name),
+    sources = [%q("plain"), "%q(a\\b(c)d)", %q(%Q(x)), %q(%[x]), %q(:name),
                %q(:"quoted name"), %q("a#{"b"}"), %q(%w(a b)), %q(%i(a b)),
                %q(/a\/b/i), %q(`a#{x}`), "<<-'EOS'\n  text\n  EOS\n"]
     [false, true].each do |iyi|
@@ -105,6 +114,11 @@ describe "literal form parser evidence" do
     source = "<<-EOS\nx\n  EOS\n"
     [false, true].each do |capture|
       expect_raises(Exception, /heredoc line must have an indent/) { literal_forms_parse(source, capture) }
+    end
+    [false, true].each do |iyi|
+      [false, true].each do |capture|
+        expect_raises(Iyi::SyntaxException, %(unexpected token: "b")) { literal_forms_parse("%q(a\\)b)", capture, iyi) }
+      end
     end
   end
 
@@ -192,7 +206,17 @@ describe "literal form parser evidence" do
     left = observations.find { |item| item.owner.same?(nodes[0]) }.not_nil!
     right = observations.find { |item| item.owner.same?(nodes[1]) }.not_nil!
     left.ranges.should_not eq(right.ranges)
-    nodes[0].diagnostic_literal_name("value", 0, nodes[1].diagnostic_literal_names[{"value", 0}])
+    right_name = nodes[1].diagnostic_literal_names[{"value", 0}]
+    left_name = nodes[0].diagnostic_literal_names[{"value", 0}]
+    right_production = nodes[1].diagnostic_literal_productions[{"value", 0}]
+    left_production = nodes[0].diagnostic_literal_productions[{"value", 0}]
+    nodes[0].literal_forms_spec_delete("value", 0)
+    nodes[1].literal_forms_spec_delete("value", 0)
+    nodes[0].diagnostic_literal_names.has_key?({"value", 0}).should be_false
+    nodes[0].diagnostic_literal_name("value", 0, right_name)
+    nodes[1].diagnostic_literal_name("value", 0, left_name)
+    nodes[0].diagnostic_literal_production("value", 0, right_production)
+    nodes[1].diagnostic_literal_production("value", 0, left_production)
     observations.find { |item| item.owner.same?(nodes[0]) }.not_nil!.ranges.should eq(left.ranges)
     nodes[0].diagnostic_literal_names[{"value", 0}].segments.first.start_offset.should_not eq(left.ranges.first[0])
   end

@@ -214,7 +214,7 @@ private def literal_emission_splice_forms : Hash(String, {String, String})
     "percent regex"    => {"macro literal_form\n  {{ %r() }}\nend\n", ""},
     "command"          => {"macro literal_form(value)\n  {{ value }}\nend\n", "ls"},
     "interpolation"    => {"macro literal_form\n  {{ \"e\#{1}f\" }}\nend\n", "e"},
-    "heredoc argument" => {"macro literal_form\n  {{ <<-EOS\n  a\n  EOS\n  }}\nend\n", %("a\\n")},
+    "heredoc argument" => {"macro literal_form\n  {{ <<-EOS\n  a\n  EOS\n  }}\nend\n", %("a")},
     "verbatim text"    => {"macro literal_form\nx = \"v\"\ny = :w\nz = 'c'\nend\n", %(x = "v")},
   }
 end
@@ -358,6 +358,10 @@ describe "literal emission through macro splices" do
     it "reparses a #{form} splice with byte identity, disjoint records and literal bytes covered" do
       text, emissions, expanded = literal_emission_splice(source)
       expanded.to_s.strip.should eq(text.strip)
+      if form == "heredoc argument"
+        expanded.should be_a(Iyi::StringLiteral)
+        expanded.as(Iyi::StringLiteral).value.should eq("a")
+      end
       generated = emissions.flat_map(&.generated_text)
       claims = emissions.flat_map(&.claims)
       if form == "command"
