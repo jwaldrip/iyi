@@ -1,5 +1,16 @@
 require "../support/syntax"
 
+class Iyi::DiagnosticRecordedEvidenceInputCheck
+  # Exercise the derived guard separately after proving the full walk rejects
+  # the same structural mutation at its earlier literal graph boundary.
+  def spec_bind_derived!(node : Iyi::ASTNode, slot : Iyi::DiagnosticNameSlot) : Nil
+    values = node.diagnostic_name_slots[slot]
+    origin = values[0].as(Iyi::DiagnosticNameValue::Derived).origin
+    bound_derived!(node, slot, values, origin)
+  end
+end
+
+
 # Binds the source through the public bind! path in one lexical mode, selected by suffix.
 private def derived_name_bind(source : String, suffix : String, & : Iyi::DiagnosticBoundCapture ->)
   path = File.tempname("derived-name-binding", suffix)
@@ -24,7 +35,7 @@ private def derived_name_accept(source : String)
 end
 
 # Replays the source as bind! does, mutates the replayed tree, then runs the bundled walk.
-private def derived_name_walk(source : String, suffix : String, mutate : Proc(Iyi::ASTNode, Nil)) : Nil
+private def derived_name_walk(source : String, suffix : String, mutate : Proc(Iyi::ASTNode, Nil), scope : String? = nil) : Nil
   path = File.tempname("derived-name-control", suffix)
   File.write(path, source)
   begin
@@ -42,7 +53,25 @@ private def derived_name_walk(source : String, suffix : String, mutate : Proc(Iy
     structural = Iyi::DiagnosticUnnamedParamBinder.new(claim, journal).verify!(root)
     bundle = Iyi::DiagnosticLiteralReplayAssociations.new(claim, journal, replay, root)
     mutate.call(root)
-    Iyi::DiagnosticEvidenceBinding.new(claim, journal, identity, structural, bundle).verify!(root)
+    checker = Iyi::DiagnosticRecordedEvidenceInputCheck.new(claim, journal, identity, structural, bundle)
+    if scope
+      expect_raises(ArgumentError, "literal replay graph differs") { checker.verify!(root) }
+      case scope
+      when "sugar"
+        arg = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Arg) && node.name == "x" }.as(Iyi::Arg)
+        checker.spec_bind_derived!(arg.restriction.not_nil!, derived_name_path_segment)
+      when "regex_global"
+        global = root.as(Iyi::Expressions).expressions.last
+        checker.spec_bind_derived!(global, derived_name_primary)
+      when "regex_lookup"
+        calls = derived_name_nodes(root).select { |node| node.is_a?(Iyi::Call) && node.name == "[]" }
+        checker.spec_bind_derived!(calls[1], derived_name_primary)
+      else
+        raise "unknown scoped derived-name control"
+      end
+    else
+      checker.verify!(root)
+    end
   ensure
     File.delete(path) if File.file?(path)
   end
@@ -52,6 +81,12 @@ end
 private def derived_name_reject(source : String, message : String, mutate : Proc(Iyi::ASTNode, Nil))
   [".cr", ".iyi"].each do |suffix|
     expect_raises(ArgumentError, message) { derived_name_walk(source, suffix, mutate) }
+  end
+end
+
+private def derived_name_scoped_reject(source : String, message : String, scope : String, mutate : Proc(Iyi::ASTNode, Nil))
+  [".cr", ".iyi"].each do |suffix|
+    expect_raises(ArgumentError, message) { derived_name_walk(source, suffix, mutate, scope) }
   end
 end
 
@@ -220,7 +255,7 @@ describe "derived name binding controls" do
   end
 
   it "refuses a type sugar derivation outside its owner" do
-    derived_name_reject("def f(x : Int32?)\nend\n", "type sugar outside its owner", ->(root : Iyi::ASTNode) {
+    derived_name_scoped_reject("def f(x : Int32?)\nend\n", "type sugar outside its owner", "sugar", ->(root : Iyi::ASTNode) {
       nodes = derived_name_nodes(root)
       arg = nodes.find { |node| node.is_a?(Iyi::Arg) && node.name == "x" }.as(Iyi::Arg)
       union = arg.restriction.as(Iyi::Union)
@@ -257,8 +292,8 @@ describe "derived name binding controls" do
       generic = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Generic) && node.suffix.asterisk? }.as(Iyi::Generic)
       path = generic.name.as(Iyi::Path)
       witness = derived_name_origin(path, derived_name_path_segment).witnesses[0]
-      synthetic = Iyi::DiagnosticOrigin::Synthetic.new(witness.lexical_origin, "control", "control")
-      bad = Iyi::DiagnosticSourceSyntaxToken.new(synthetic, witness.input_sha256, witness.input_bytesize,
+      wrong_identity = Iyi::DiagnosticOrigin::Written.new("elsewhere", "elsewhere.cr", witness.input_start, "TypeSyntax", "token")
+      bad = Iyi::DiagnosticSourceSyntaxToken.new(wrong_identity, witness.input_sha256, witness.input_bytesize,
         witness.input_start, witness.input_end, witness.lexical_mode, witness.token_kind, witness.raw_text)
       origin = Iyi::DiagnosticOrigin::DerivedName.type_sugar(Iyi::DiagnosticTypeSugar::Pointer, [bad],
         Iyi::DiagnosticTypeSugarResult::Pointer, 0)
@@ -288,7 +323,7 @@ describe "derived name binding controls" do
   end
 
   it "refuses a regex match data outside any lookup" do
-    derived_name_reject("\"ab\" =~ /(a)/\nx = $1\n", "regex match data outside its lookup", ->(root : Iyi::ASTNode) {
+    derived_name_scoped_reject("\"ab\" =~ /(a)/\nx = $1\n", "regex match data outside its lookup", "regex_global", ->(root : Iyi::ASTNode) {
       global = derived_name_nodes(root).find { |node| node.is_a?(Iyi::Global) && node.name == "$~" }.as(Iyi::Global)
       extra = Iyi::Global.new("$~")
       extra.diagnostic_name_slots = global.diagnostic_name_slots
@@ -298,7 +333,7 @@ describe "derived name binding controls" do
   end
 
   it "refuses a regex lookup whose backreference is another Call's operand" do
-    derived_name_reject("\"ab\" =~ /(a)/\nx = $1\ny = $1\n", "regex match index differs from backreference token", ->(root : Iyi::ASTNode) {
+    derived_name_scoped_reject("\"ab\" =~ /(a)/\nx = $1\ny = $1\n", "regex match index differs from backreference token", "regex_lookup", ->(root : Iyi::ASTNode) {
       calls = derived_name_nodes(root).select { |node| node.is_a?(Iyi::Call) && node.name == "[]" }
       first = calls[0].as(Iyi::Call)
       second = calls[1].as(Iyi::Call)
@@ -360,7 +395,7 @@ private def derived_name_legacy_reject(source : String, message : String)
       parser.filename = path
       ledger = Iyi::DiagnosticCaptureLedger.new
       root, claim, _ = Iyi::DiagnosticCaptureAuthority.record_source(ledger, parser)
-      expect_raises(ArgumentError, message) { Iyi::DiagnosticEvidenceBinding.new(claim, nil, nil).verify!(root) }
+      expect_raises(ArgumentError, message) { Iyi::DiagnosticRecordedEvidenceInputCheck.new(claim).verify!(root) }
     ensure
       File.delete(path) if File.file?(path)
     end

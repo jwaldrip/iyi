@@ -17,7 +17,7 @@ private def layout_fold_program(code : String, iyi_prelude : Bool = true, cleanu
 end
 
 private def layout_fold_header : String
-  <<-CODE
+  header = <<-CODE
     module M
     end
 
@@ -30,6 +30,7 @@ private def layout_fold_header : String
 
     a = G(Int8).new(1_i8).as(M)
     CODE
+  header + "\n"
 end
 
 # Grows `M` after the folds above, so their values go stale.
@@ -42,7 +43,7 @@ describe "Semantic: layout folds" do
     it "marks a fold inside a type argument and leaves a plain fold unmarked" do
       program = layout_fold_program(<<-CODE)
         x = sizeof(Int32)
-        buf = StaticArray(UInt8, sizeof(Int32)).new(0_u8)
+        buf = StaticArray(UInt8, sizeof(Int32)).new
         CODE
 
       folds = program.layout_folds.values.select { |fold| fold.kind == LayoutFoldKind::Size && fold.subject.to_s == "Int32" }
@@ -90,7 +91,7 @@ describe "Semantic: layout folds" do
     end
 
     it "keeps a type argument's fold and the expression tied to it under --crystal" do
-      program = layout_fold_program(layout_fold_header + "e = sizeof({Int32, M})\n" + layout_fold_growth + "buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)\n", iyi_prelude: false)
+      program = layout_fold_program(layout_fold_header + "e = sizeof({Int32, M})\n" + layout_fold_growth + "buf = StaticArray(UInt8, sizeof({Int32, M})).new\n", iyi_prelude: false)
       type_arg = program.layout_folds.values.find! { |f| f.type_argument }
       tied = program.layout_folds.values.find! { |f| !f.type_argument && f.kind == LayoutFoldKind::Size && f.subject.to_s == "{Int32, M}" }
       type_arg.node.as(ExpandableNode).expanded.as(NumberLiteral).value.should eq "8"
@@ -99,12 +100,12 @@ describe "Semantic: layout folds" do
 
     it "refuses a stale type argument under the native gate" do
       expect_raises(Iyi::TypeException, /when it was used as a type argument, but/) do
-        layout_fold_program(layout_fold_header + "buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)\n" + layout_fold_growth)
+        layout_fold_program(layout_fold_header + "buf = StaticArray(UInt8, sizeof({Int32, M})).new\n" + layout_fold_growth)
       end
     end
 
     it "does not refuse that same type argument under --crystal" do
-      program = layout_fold_program(layout_fold_header + "buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)\n" + layout_fold_growth, iyi_prelude: false)
+      program = layout_fold_program(layout_fold_header + "buf = StaticArray(UInt8, sizeof({Int32, M})).new\n" + layout_fold_growth, iyi_prelude: false)
       type_arg = program.layout_folds.values.find! { |f| f.type_argument }
       type_arg.node.as(ExpandableNode).expanded.as(NumberLiteral).value.should eq "8"
     end
@@ -112,15 +113,18 @@ describe "Semantic: layout folds" do
 
   describe "constants" do
     it "keeps a settled constant's value a NumberLiteral" do
-      program = layout_fold_program(layout_fold_header + "CONST = sizeof({Int32, M})\n" + layout_fold_growth)
+      program = layout_fold_program(layout_fold_header + "CONST = sizeof({Int32, M})\n" + layout_fold_growth + "CONST\n")
       const = program.types["CONST"].as(Const)
       const.value.should be_a(NumberLiteral)
       const.value.as(NumberLiteral).value.should eq "32"
+      const.compile_time_value.should eq 32
     end
 
     it "keeps a stable constant's value a NumberLiteral" do
       program = layout_fold_program("CONST = sizeof(Int32)\nCONST\n")
-      program.types["CONST"].as(Const).value.as(NumberLiteral).value.should eq "4"
+      const = program.types["CONST"].as(Const)
+      const.value.as(NumberLiteral).value.should eq "4"
+      const.compile_time_value.should eq 4
     end
   end
 end

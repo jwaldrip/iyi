@@ -376,7 +376,7 @@ describe "Code gen: sizeof settled folds" do
       a = G(Int8).new(1_i8).as(M)
       s1 = sizeof({Int32, M})
       b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
-      (Pointer({Int32, M}).null + 1).address == s1
+      (Pointer({Int32, M}).new(0_u64) + 1).address == s1
       CODE
   end
 
@@ -392,7 +392,7 @@ describe "Code gen: sizeof settled folds" do
     expect_raises(Iyi::TypeException, /when it was used as a type argument, but/) do
       run(settled_fold_program(<<-CODE))
         a = G(Int8).new(1_i8).as(M)
-        buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+        buf = StaticArray(UInt8, sizeof({Int32, M})).new
         b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
         buf.size
         CODE
@@ -402,7 +402,7 @@ describe "Code gen: sizeof settled folds" do
   it "keeps the value of a type argument when the module never grows" do
     run(settled_fold_program(<<-CODE)).to_i.should eq(8)
       a = G(Int8).new(1_i8).as(M)
-      buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+      buf = StaticArray(UInt8, sizeof({Int32, M})).new
       buf.size
       CODE
   end
@@ -411,7 +411,7 @@ describe "Code gen: sizeof settled folds" do
     run(settled_fold_program(<<-CODE)).to_i.should eq(32)
       a = G(Int8).new(1_i8).as(M)
       b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
-      buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+      buf = StaticArray(UInt8, sizeof({Int32, M})).new
       buf.size
       CODE
   end
@@ -426,7 +426,7 @@ describe "Code gen: sizeof settled folds" do
           include M
 
           def initialize
-            @buf = StaticArray(UInt8, N).new(0_u8)
+            @buf = StaticArray(UInt8, N).new
           end
 
           def n
@@ -503,6 +503,12 @@ private def settled_fold_program(body : String) : String
     module M
     end
 
+    struct StaticArray(T, N)
+      def size
+        N
+      end
+    end
+
     struct G(T)
       include M
 
@@ -525,5 +531,5 @@ private def settled_fold_p4(last : String) : String
     off = offsetof(S, @b)
     s = S.new(G({Int64, Int64}).new({1_i64, 2_i64}), 7)
     CODE
-  settled_fold_program(body + last)
+  settled_fold_program(body + "\n" + last)
 end

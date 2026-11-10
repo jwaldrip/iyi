@@ -25,6 +25,12 @@ private def growing_module_program(body : String) : String
     module M
     end
 
+    struct StaticArray(T, N)
+      def size
+        N
+      end
+    end
+
     struct G(T)
       include M
 
@@ -61,7 +67,7 @@ describe "Codegen: iyi layout folds" do
 
   it "settles an offsetof that precedes a grown module field and reads the field back (P4)" do
     with_tempdir("layout-fold-iyi-p4") do
-      run_iyi("layout_fold_p4", growing_module_program(<<-CODE)).should eq("24\ntrue\n7\n")
+      run_iyi("layout_fold_p4", %(@[Unsafe("reads the field at its computed byte offset")]\n) + growing_module_program(<<-CODE)).should eq("24\ntrue\n7\n")
         struct S
           def initialize(@a : M, @b : Int32)
           end
@@ -79,7 +85,7 @@ describe "Codegen: iyi layout folds" do
 
   it "settles a macro-expanded sizeof of a class (P7)" do
     with_tempdir("layout-fold-iyi-p7") do
-      run_iyi("layout_fold_p7", <<-CODE).should eq("8\n24\n24\n")
+      run_iyi("layout_fold_p7", <<-CODE).should eq("8\ntrue\ntrue\n")
         class C
           def initialize(@a : Int64, @b : Int64)
           end
@@ -90,8 +96,8 @@ describe "Codegen: iyi layout folds" do
         {% end %}
         c = C.new(1, 2)
         puts X
-        puts instance_sizeof(C)
-        puts instance_sizeof(typeof(c))
+        puts instance_sizeof(C) == 2 * sizeof(Int64)
+        puts instance_sizeof(typeof(c)) == 2 * sizeof(Int64)
         CODE
     end
   end
@@ -101,7 +107,7 @@ describe "Codegen: iyi layout folds" do
       expect_raises(Iyi::TypeException, /when it was used as a type argument, but/) do
         run_iyi("layout_fold_p2", growing_module_program(<<-CODE))
           a = G(Int8).new(1_i8).as(M)
-          buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+          buf = StaticArray(UInt8, sizeof({Int32, M})).new
           b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
           puts buf.size
           CODE
@@ -120,7 +126,7 @@ describe "Codegen: iyi layout folds" do
             include M
 
             def initialize
-              @buf = StaticArray(UInt8, N).new(0_u8)
+              @buf = StaticArray(UInt8, N).new
             end
 
             def n
@@ -145,7 +151,7 @@ describe "Codegen: iyi layout folds" do
           a = G(Int8).new(1_i8).as(M)
           e = sizeof({Int32, M})
           b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
-          buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+          buf = StaticArray(UInt8, sizeof({Int32, M})).new
           puts e
           puts buf.size
           CODE
@@ -158,7 +164,7 @@ describe "Codegen: iyi layout folds" do
       run_iyi("layout_fold_p6_prime", growing_module_program(<<-CODE)).should eq("32\n")
         a = G(Int8).new(1_i8).as(M)
         b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)
-        buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+        buf = StaticArray(UInt8, sizeof({Int32, M})).new
         puts buf.size
         CODE
     end
@@ -168,7 +174,7 @@ describe "Codegen: iyi layout folds" do
     with_tempdir("layout-fold-iyi-type-arg-stable") do
       run_iyi("layout_fold_type_arg_stable", growing_module_program(<<-CODE)).should eq("8\n")
         a = G(Int8).new(1_i8).as(M)
-        buf = StaticArray(UInt8, sizeof({Int32, M})).new(0_u8)
+        buf = StaticArray(UInt8, sizeof({Int32, M})).new
         puts buf.size
         CODE
     end
@@ -176,7 +182,7 @@ describe "Codegen: iyi layout folds" do
 
   it "runs the array dup that aborts under upstream Crystal to completion (P5)" do
     with_tempdir("layout-fold-iyi-p5") do
-      run_iyi("layout_fold_p5", growing_module_program(<<-CODE)).should eq("2\n1\n2\ntrue\n")
+      run_iyi("layout_fold_p5", growing_module_program(<<-CODE)).should eq("2\n1\n2\ntrue\ntrue\ntrue\ntrue\n")
         arr = [{1, G(Int8).new(1_i8).as(M)}]
         d1 = arr.dup
         arr << {2, G({Int64, Int64}).new({3_i64, 4_i64}).as(M)}
@@ -185,6 +191,9 @@ describe "Codegen: iyi layout folds" do
         puts d2[0][0]
         puts d2[1][0]
         puts d2 == arr
+        puts arr == arr
+        puts arr[0] == arr[0]
+        puts arr[1] == arr[1]
         CODE
     end
   end
