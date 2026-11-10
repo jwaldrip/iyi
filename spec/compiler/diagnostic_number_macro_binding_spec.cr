@@ -189,8 +189,19 @@ describe "numeric and macro literal positive binding" do
     number_macro_accept("{% for i in [1, 2] %}{{ i }}{% end %}\n")
   end
 
-  it "binds a macro body containing end! in iyi only" do
-    number_macro_bind("macro m\n  end!\nend\n", ".iyi") { |bound| bound.root.should_not be_nil }
+  it "binds a macro body containing end! as a do-block end in iyi, and as identifier text in crystal" do
+    number_macro_bind("macro m\n  def sum\n    each_item do |i|\n    end!\n    1\n  end\nend\n", ".iyi") do |bound|
+      bound.root.to_s.includes?("end!").should be_true
+    end
+    number_macro_bind("macro m\n  end!\nend\n", ".cr") do |bound|
+      bound.root.to_s.includes?("end!").should be_true
+    end
+  end
+
+  it "refuses a bare end! in an iyi macro body, which closes the macro early" do
+    expect_raises(Iyi::SyntaxException, /nothing is open for it to close/) do
+      number_macro_bind("macro m\n  end!\nend\n", ".iyi") { |bound| bound.root.should_not be_nil }
+    end
   end
 
   it "binds a macro body whose MacroVar lookahead fails" do

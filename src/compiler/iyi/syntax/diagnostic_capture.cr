@@ -2,6 +2,7 @@ require "json"
 require "base64"
 require "set"
 require "crystal/digest/sha256"
+require "./diagnostic_derived_journal_rules"
 
 module Iyi
   enum DiagnosticCaptureInputKind
@@ -3272,6 +3273,8 @@ module Iyi
   # (DiagnosticCaptureBinding.bind!). Legacy callers keep the byte-level mode.
   class DiagnosticRecordedEvidenceInputCheck
     MAX_DEPTH = 128
+    # The derivation a sugar child carries, as its owner registered it.
+    record SugarSlot, production : DiagnosticTypeSugar, result : DiagnosticTypeSugarResult, index : Int32
     @active = Set(UInt64).new
     @remaining : UInt64 = DiagnosticOrigin::MAX_UNFOLDED_BYTES
     @source : String
@@ -3285,9 +3288,17 @@ module Iyi
       @literal_fields = Set(DiagnosticCaptureFieldRef).new
       @scalar_verified = Set(UInt64).new
       @atom_fields = Set(DiagnosticCaptureFieldRef).new
+      @sequence = nil
+      @operator_claims = Set(Tuple(DiagnosticOperatorProduction, Int32)).new
+      @sugar_claims = Set(Tuple(DiagnosticTypeSugar, DiagnosticTypeSugarResult, Int32, Int32)).new
+      @parameter_claims = Set(Tuple(Int32, String)).new
+      @sugar_expected = {} of UInt64 => SugarSlot
+      @regex_globals = {} of UInt64 => DiagnosticSourceNameToken
+      @def_stack = [] of DiagnosticOrigin::Written?
     end
 
     def verify!(root : ASTNode) : Nil
+      reset_walk_state!
       if bundle = @literal_bundle
         raise ArgumentError.new("literal replay input differs") unless bundle.input_key == @input.capture_key
         raise ArgumentError.new("literal replay journal differs") unless bundle.journal.same?(@journal)
@@ -3379,7 +3390,7 @@ module Iyi
           raise ArgumentError.new("multiple module headers") unless (header = identity.header) && header.same?(node)
         end
         if origin = node.diagnostic_origin
-          check_structural_origin!(origin, depth)
+          check_structural_origin!(node, origin, depth)
         end
         if !node.is_a?(Arg) && node.diagnostic_external_explicit
           raise ArgumentError.new("external-name observation on non-argument node")
@@ -3387,7 +3398,7 @@ module Iyi
         count = node.diagnostic_name_slots_count || 0
         charge(count.to_u64 * 64_u64)
         raise ArgumentError.new("recorded name evidence exceeds graph limit") if node.diagnostic_name_slots_graph_bytes > @remaining
-        node.each_diagnostic_name_slot do |_, values|
+        node.each_diagnostic_name_slot do |slot, values|
           charge(values.size.to_u64 * 32_u64)
           values.each do |value|
             charge(value.graph_bytes)
@@ -3404,7 +3415,7 @@ module Iyi
               end
             when DiagnosticNameValue::Derived
               raise ArgumentError.new("derived name requires independently resolved ancestry") unless bound?
-              bound_derived!(value.origin)
+              bound_derived!(node, slot, values, value.origin)
             else
               raise ArgumentError.new("unclassified recorded name evidence")
             end
@@ -3437,17 +3448,35 @@ module Iyi
           validate_literals(node)
         end
         verify_core_name_coverage!(node)
-        DiagnosticDirectChildFields.each(node) { |_, _, _, child| visit(child, depth + 1) }
+        register_sugar_children!(node) if bound?
+        if node.is_a?(Def)
+          @def_stack.push(written_origin(node.diagnostic_origin))
+          begin
+            visit_children(node, depth)
+          ensure
+            @def_stack.pop
+          end
+        else
+          visit_children(node, depth)
+        end
       ensure
         @active.delete(id)
       end
     end
 
-    private def check_structural_origin!(origin : DiagnosticOrigin, depth : Int32) : Nil
+    private def visit_children(node : ASTNode, depth : Int32) : Nil
+      DiagnosticDirectChildFields.each(node) { |_, _, _, child| visit(child, depth + 1) }
+    end
+
+    private def check_structural_origin!(node : ASTNode, origin : DiagnosticOrigin, depth : Int32) : Nil
       if origin.graph_depth.to_i64 + depth > MAX_DEPTH
         raise ArgumentError.new("structural origin exceeds depth limit")
       end
       charge(origin.graph_bytes)
+      if origin.is_a?(DiagnosticOrigin::DerivedName)
+        bound_regex_lookup_origin!(node, origin)
+        return
+      end
       current = origin
       loop do
         case current
@@ -3503,15 +3532,370 @@ module Iyi
       current.is_a?(DiagnosticOrigin::Written) && written_identity_ok?(current)
     end
 
-    private def bound_derived!(origin : DiagnosticOrigin::DerivedName) : Nil
+    # Per-slot dispatch (plan S4 item 3). A derivation kind not listed keeps its refusal.
+    private def bound_derived!(node : ASTNode, slot : DiagnosticNameSlot, values : Indexable(DiagnosticNameValue),
+                               origin : DiagnosticOrigin::DerivedName) : Nil
       identity = @identity.not_nil!
       case origin.derivation_kind
       when "ModuleHeaderPath"   then verify_module_header_path!(origin, identity)
       when "ImplicitModuleSelf" then verify_implicit_module_self!(origin, identity)
       when "StructuralName"
         raise ArgumentError.new("structural witness is not verified") unless @structural.includes?(origin.object_id)
+      when "OperatorName"      then bound_operator!(node, slot, values, origin)
+      when "TypeSugar"         then bound_type_sugar!(node, slot, values, origin)
+      when "RegexMatchIndex"   then bound_regex!(node, slot, values, origin)
+      when "ParameterLowering" then bound_parameter!(node, slot, values, origin)
       else
         raise ArgumentError.new("derived name #{origin.derivation_kind} has no journal binding")
+      end
+    end
+
+    private def journal_sequence : DiagnosticJournalSequence
+      @sequence ||= DiagnosticJournalSequence.new(@journal || raise ArgumentError.new("bound evidence requires a replay journal"))
+    end
+
+    private def bound_operator!(node : ASTNode, slot : DiagnosticNameSlot, values : Indexable(DiagnosticNameValue),
+                                origin : DiagnosticOrigin::DerivedName) : Nil
+      raise ArgumentError.new("derived name shares its slot with other evidence") unless values.size == 1
+      raise ArgumentError.new("derived name production does not fit field") unless slot == DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      production = origin.operator_production || raise ArgumentError.new("invalid operator derivation")
+      fits = production.op_assign? ? node.is_a?(OpAssign) : node.is_a?(Call)
+      raise ArgumentError.new("derived name production does not fit field") unless fits
+      anchor = origin.operator_anchor || raise ArgumentError.new("derived name anchor differs from node origin")
+      raise ArgumentError.new("derived name anchor differs from node origin") unless anchor == node.diagnostic_origin
+      witnesses = origin.operator_witnesses
+      DiagnosticDerivedJournalRules.verify_operator!(origin, @input, journal_sequence) { |visited| charge(visited * 32_u64) }
+      raise ArgumentError.new("operator witness consumed twice") unless @operator_claims.add?({production, witnesses.first.input_start})
+      if production.signed_number? && (bundle = @literal_bundle)
+        witness = witnesses.first
+        matches = bundle.signed_numbers.select { |item| item.call.same?(node) }
+        raise ArgumentError.new("signed operator split not witnessed") unless matches.size == 1
+        signed = bundle.journal.entry!(matches[0].signed)
+        unless signed.input_start == witness.input_start && signed.input_end == witness.input_end
+          raise ArgumentError.new("signed operator split not witnessed")
+        end
+      end
+    end
+
+    private def bound_type_sugar!(node : ASTNode, slot : DiagnosticNameSlot, values : Indexable(DiagnosticNameValue),
+                                  origin : DiagnosticOrigin::DerivedName) : Nil
+      raise ArgumentError.new("derived name shares its slot with other evidence") unless values.size == 1
+      production = origin.production || raise ArgumentError.new("invalid type-sugar derivation")
+      result = origin.sugar_result || raise ArgumentError.new("invalid type-sugar derivation")
+      index = origin.lowering_index || raise ArgumentError.new("invalid type-sugar derivation")
+      primary = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      if result == DiagnosticTypeSugarResult::Self
+        raise ArgumentError.new("derived name production does not fit field") unless self_node?(node) && slot == primary
+      else
+        path = node.as?(Path)
+        unless path && path.global? && path.names == [origin.rendered_text] &&
+               slot == DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, 0)
+          raise ArgumentError.new("derived name production does not fit field")
+        end
+      end
+      expected = @sugar_expected[node.object_id]? || raise ArgumentError.new("type sugar outside its owner")
+      unless expected.production == production && expected.result == result && expected.index == index
+        raise ArgumentError.new("type sugar outside its owner")
+      end
+      witnesses = origin.witnesses
+      witnesses.each do |witness|
+        lexical = witness.lexical_origin
+        raise ArgumentError.new("type-sugar witness is not a scanned token") unless lexical.is_a?(DiagnosticOrigin::Written) && written_identity_ok?(lexical)
+      end
+      DiagnosticDerivedJournalRules.verify_type_sugar!(origin, @input, journal_sequence) { |visited| charge(visited * 32_u64) }
+      claim = {production, result, index, witnesses.first.input_start}
+      raise ArgumentError.new("type sugar witness consumed twice") unless @sugar_claims.add?(claim)
+    end
+
+    private def bound_regex!(node : ASTNode, slot : DiagnosticNameSlot, values : Indexable(DiagnosticNameValue),
+                             origin : DiagnosticOrigin::DerivedName) : Nil
+      raise ArgumentError.new("derived name shares its slot with other evidence") unless values.size == 1
+      raise ArgumentError.new("derived name production does not fit field") unless slot == DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      token = origin.source_token || raise ArgumentError.new("regex match index is not a scanned token")
+      unless token.token_kind == "GLOBAL_MATCH_DATA_INDEX" && source_token_ok?(token)
+        raise ArgumentError.new("regex match index is not a scanned token")
+      end
+      case origin.result
+      when "Lookup"
+        call = node.as?(Call) || raise ArgumentError.new("derived name production does not fit field")
+        raise ArgumentError.new("derived name production does not fit field") unless call.name == origin.rendered_text
+        verify_regex_lookup!(call, token)
+      when "MatchData"
+        global = node.as?(Global) || raise ArgumentError.new("regex match data outside its lookup")
+        raise ArgumentError.new("regex match data outside its lookup") unless global.name == "$~"
+        expected = @regex_globals.delete(global.object_id) || raise ArgumentError.new("regex match data outside its lookup")
+        raise ArgumentError.new("regex match data differs from its lookup") unless same_token_span?(expected, token)
+      else
+        raise ArgumentError.new("invalid regex-match derivation result")
+      end
+    end
+
+    # The Lookup is the Call's own node origin and its Primary slot. Its receiver is a
+    # `$~` whose MatchData token is this token, and its operand is the backreference.
+    private def verify_regex_lookup!(call : Call, token : DiagnosticSourceNameToken) : Nil
+      global = call.obj.as?(Global) || raise ArgumentError.new("regex match data outside its lookup")
+      raise ArgumentError.new("regex match data outside its lookup") unless global.name == "$~"
+      values = global.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)]?
+      raise ArgumentError.new("regex match data differs from its lookup") unless values && values.size == 1
+      match = values[0].as?(DiagnosticNameValue::Derived) || raise ArgumentError.new("regex match data differs from its lookup")
+      match_origin = match.origin
+      unless match_origin.derivation_kind == "RegexMatchIndex" && match_origin.result == "MatchData"
+        raise ArgumentError.new("regex match data differs from its lookup")
+      end
+      match_token = match_origin.source_token || raise ArgumentError.new("regex match data differs from its lookup")
+      raise ArgumentError.new("regex match data differs from its lookup") unless same_token_span?(match_token, token)
+      raise ArgumentError.new("regex match data outside its lookup") if @regex_globals.has_key?(global.object_id)
+      @regex_globals[global.object_id] = token
+      raise ArgumentError.new("regex match index differs from backreference token") unless call.args.size == 1
+      number = call.args[0].as?(NumberLiteral) || raise ArgumentError.new("regex match index differs from backreference token")
+      if bundle = @literal_bundle
+        matches = bundle.numbers.select { |item| item.role.backreference? && item.owner.same?(number) }
+        raise ArgumentError.new("regex match index differs from backreference token") unless matches.size == 1
+        observation = matches[0]
+        observed_call = observation.call || raise ArgumentError.new("regex match index differs from backreference token")
+        raise ArgumentError.new("regex match index differs from backreference token") unless observed_call.same?(call)
+        entry = bundle.journal.entry!(observation.token)
+        unless entry.input_start == token.input_start && entry.input_end == token.input_end && entry.token_text == token.raw_text
+          raise ArgumentError.new("regex match index differs from backreference token")
+        end
+      end
+    end
+
+    private def bound_parameter!(node : ASTNode, slot : DiagnosticNameSlot, values : Indexable(DiagnosticNameValue),
+                                 origin : DiagnosticOrigin::DerivedName) : Nil
+      raise ArgumentError.new("derived name shares its slot with other evidence") unless values.size == 1
+      token = origin.source_token || raise ArgumentError.new("parameter lowering source is not a scanned token")
+      raise ArgumentError.new("parameter lowering source is not a scanned token") unless source_token_ok?(token)
+      definition_origin = origin.definition_origin
+      definition = definition_origin.is_a?(DiagnosticOrigin::Written) ? definition_origin : nil
+      raise ArgumentError.new("parameter lowering outside its definition") unless definition && written_identity_ok?(definition)
+      enclosing = @def_stack.empty? ? nil : @def_stack[-1]
+      raise ArgumentError.new("parameter lowering outside its definition") unless enclosing && enclosing == definition
+      case origin.result
+      when "Argument"
+        raise ArgumentError.new("parameter lowering outside its definition") unless node.is_a?(Arg) && slot == DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      when "DefaultExternal"
+        raise ArgumentError.new("parameter lowering outside its definition") unless node.is_a?(Arg) && slot == DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
+      when "Target"
+        unless (node.is_a?(InstanceVar) || node.is_a?(ClassVar)) && slot == DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+          raise ArgumentError.new("parameter lowering outside its definition")
+        end
+      when "LocalValue"
+        raise ArgumentError.new("parameter lowering outside its definition") unless node.is_a?(Var) && slot == DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
+      else
+        raise ArgumentError.new("invalid derived name result")
+      end
+      raise ArgumentError.new("parameter lowering consumed twice") unless @parameter_claims.add?({token.input_start, origin.result})
+    end
+
+    # Owner-side registration (plan S4 item 4). Each owner reads its sugar children's
+    # own derivations, checks that the owner's shape fits the production, and registers
+    # the child before the child is visited. An unregistered child is refused.
+    private def register_sugar_children!(node : ASTNode) : Nil
+      case node
+      when Generic     then register_generic_sugar!(node)
+      when Union       then register_union_sugar!(node)
+      when ArrayLiteral then register_array_sugar!(node)
+      when IsA         then register_isa_sugar!(node)
+      end
+    end
+
+    private def sugar_origin_for(child : ASTNode) : DiagnosticOrigin::DerivedName?
+      values = if child.is_a?(Path)
+                 child.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, 0)]?
+               elsif self_node?(child)
+                 child.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)]?
+               end
+      return nil unless values && values.size == 1
+      value = values[0].as?(DiagnosticNameValue::Derived)
+      return nil unless value && value.origin.derivation_kind == "TypeSugar"
+      value.origin
+    end
+
+    private def register_sugar!(child : ASTNode, origin : DiagnosticOrigin::DerivedName) : Nil
+      production = origin.production || raise ArgumentError.new("invalid type-sugar derivation")
+      result = origin.sugar_result || raise ArgumentError.new("invalid type-sugar derivation")
+      index = origin.lowering_index || raise ArgumentError.new("invalid type-sugar derivation")
+      raise ArgumentError.new("type sugar outside its owner") if @sugar_expected.has_key?(child.object_id)
+      @sugar_expected[child.object_id] = SugarSlot.new(production, result, index)
+    end
+
+    private def same_witnesses?(left : DiagnosticOrigin::DerivedName, right : DiagnosticOrigin::DerivedName) : Bool
+      left_witnesses = left.witnesses
+      right_witnesses = right.witnesses
+      return false unless left_witnesses.size == right_witnesses.size && !left_witnesses.empty?
+      left_witnesses.zip(right_witnesses).all? do |a, b|
+        a.input_start == b.input_start && a.input_end == b.input_end && a.raw_text == b.raw_text && a.token_kind == b.token_kind
+      end
+    end
+
+    private def register_generic_sugar!(node : Generic) : Nil
+      name = node.name
+      return unless name.is_a?(Path)
+      # A DoublePointer inner is registered by its outer owner, which checks its shape.
+      return if @sugar_expected.has_key?(name.object_id)
+      origin = sugar_origin_for(name) || return
+      production = origin.production || raise ArgumentError.new("type sugar outside its owner")
+      types = node.type_vars
+      unnamed = node.named_args.nil?
+      case production
+      when DiagnosticTypeSugar::Pointer
+        raise ArgumentError.new("type sugar outside its owner") unless node.suffix.asterisk? && types.size == 1 && unnamed && origin.lowering_index == 0
+        register_sugar!(name, origin)
+      when DiagnosticTypeSugar::DoublePointer
+        raise ArgumentError.new("type sugar outside its owner") unless node.suffix.asterisk? && types.size == 1 && unnamed && origin.lowering_index == 1
+        inner = types[0].as?(Generic) || raise ArgumentError.new("type sugar outside its owner")
+        inner_name = inner.name.as?(Path) || raise ArgumentError.new("type sugar outside its owner")
+        inner_origin = sugar_origin_for(inner_name) || raise ArgumentError.new("type sugar outside its owner")
+        unless inner.suffix.asterisk? && inner.type_vars.size == 1 && inner.named_args.nil? &&
+               inner_origin.production == DiagnosticTypeSugar::DoublePointer && inner_origin.lowering_index == 0 &&
+               same_witnesses?(origin, inner_origin)
+          raise ArgumentError.new("type sugar outside its owner")
+        end
+        register_sugar!(name, origin)
+        register_sugar!(inner_name, inner_origin)
+      when DiagnosticTypeSugar::NilableExpression
+        raise ArgumentError.new("type sugar outside its owner") unless node.suffix.question? && types.size == 2 && unnamed &&
+                                                                       origin.sugar_result == DiagnosticTypeSugarResult::Union && origin.lowering_index == 0
+        nil_name = types[1].as?(Path) || raise ArgumentError.new("type sugar outside its owner")
+        nil_origin = sugar_origin_for(nil_name) || raise ArgumentError.new("type sugar outside its owner")
+        unless nil_origin.production == DiagnosticTypeSugar::NilableExpression && nil_origin.sugar_result == DiagnosticTypeSugarResult::Nil &&
+               nil_origin.lowering_index == 0 && same_witnesses?(origin, nil_origin)
+          raise ArgumentError.new("type sugar outside its owner")
+        end
+        register_sugar!(name, origin)
+        register_sugar!(nil_name, nil_origin)
+      when DiagnosticTypeSugar::StaticArray
+        raise ArgumentError.new("type sugar outside its owner") unless node.suffix.bracket? && types.size == 2 && unnamed && origin.lowering_index == 0
+        register_sugar!(name, origin)
+      when DiagnosticTypeSugar::Tuple
+        raise ArgumentError.new("type sugar outside its owner") unless node.suffix.none? && unnamed && origin.lowering_index == 0
+        register_sugar!(name, origin)
+      when DiagnosticTypeSugar::NamedTuple
+        raise ArgumentError.new("type sugar outside its owner") unless node.suffix.none? && !unnamed && types.empty? && origin.lowering_index == 0
+        register_sugar!(name, origin)
+      else
+        raise ArgumentError.new("type sugar outside its owner")
+      end
+    end
+
+    private def register_union_sugar!(node : Union) : Nil
+      types = node.types
+      return unless types.size == 2
+      first = types[0]
+      last = types[-1]
+      self_origin = self_node?(first) ? sugar_origin_for(first) : nil
+      last_origin = last.is_a?(Path) ? sugar_origin_for(last) : nil
+      if self_origin
+        nil_origin = last_origin || raise ArgumentError.new("type sugar outside its owner")
+        unless self_origin.production == DiagnosticTypeSugar::SelfNilableType && self_origin.sugar_result == DiagnosticTypeSugarResult::Self &&
+               self_origin.lowering_index == 0 &&
+               nil_origin.production == DiagnosticTypeSugar::SelfNilableType && nil_origin.sugar_result == DiagnosticTypeSugarResult::Nil &&
+               nil_origin.lowering_index == 0 && same_witnesses?(self_origin, nil_origin)
+          raise ArgumentError.new("type sugar outside its owner")
+        end
+        register_sugar!(first, self_origin)
+        register_sugar!(last, nil_origin)
+      elsif last_origin
+        unless last_origin.production == DiagnosticTypeSugar::NilableType && last_origin.sugar_result == DiagnosticTypeSugarResult::Nil &&
+               last_origin.lowering_index == 0
+          raise ArgumentError.new("type sugar outside its owner")
+        end
+        register_sugar!(last, last_origin)
+      end
+    end
+
+    private def register_array_sugar!(node : ArrayLiteral) : Nil
+      of = node.of
+      return unless of.is_a?(Path)
+      origin = sugar_origin_for(of) || return
+      expected_result = case origin.production
+                        when DiagnosticTypeSugar::StringArray then DiagnosticTypeSugarResult::String
+                        when DiagnosticTypeSugar::SymbolArray then DiagnosticTypeSugarResult::Symbol
+                        else raise ArgumentError.new("type sugar outside its owner")
+                        end
+      raise ArgumentError.new("type sugar outside its owner") unless origin.sugar_result == expected_result && origin.lowering_index == 0
+      bundle = @literal_bundle || raise ArgumentError.new("type sugar opener differs from percent group")
+      witnesses = origin.witnesses
+      raise ArgumentError.new("type sugar opener differs from percent group") unless witnesses.size == 1
+      group = bundle.percent_groups.find { |item| item.owner.same?(node) } || raise ArgumentError.new("type sugar opener differs from percent group")
+      opener = bundle.journal.entry!(group.opener)
+      witness = witnesses.first
+      unless opener.input_start == witness.input_start && opener.input_end == witness.input_end
+        raise ArgumentError.new("type sugar opener differs from percent group")
+      end
+      register_sugar!(of, origin)
+    end
+
+    private def register_isa_sugar!(node : IsA) : Nil
+      const = node.const
+      return unless const.is_a?(Path)
+      origin = sugar_origin_for(const) || return
+      unless node.nil_check? && origin.production == DiagnosticTypeSugar::NilPredicate &&
+             origin.sugar_result == DiagnosticTypeSugarResult::Nil && origin.lowering_index == 0
+        raise ArgumentError.new("type sugar outside its owner")
+      end
+      register_sugar!(const, origin)
+    end
+
+    # Two tokens are the same token when their span, kind and text agree.
+    private def same_token_span?(left : DiagnosticSourceNameToken, right : DiagnosticSourceNameToken) : Bool
+      left.input_start == right.input_start && left.input_end == right.input_end &&
+        left.token_kind == right.token_kind && left.raw_text == right.raw_text
+    end
+
+    # The `Self` type node, matched by class name (the Self constant is not usable in this class).
+    private def self_node?(node : ASTNode) : Bool
+      node.class.name.rpartition("::")[2] == "Self"
+    end
+
+    private def default_external_name?(values : Indexable(DiagnosticNameValue)?) : Bool
+      return false unless values && values.size == 1
+      value = values[0].as?(DiagnosticNameValue::Derived)
+      return false unless value
+      value.origin.derivation_kind == "ParameterLowering" && value.origin.result == "DefaultExternal"
+    end
+
+    private def verify_macro_variable_name!(values : Indexable(DiagnosticNameValue), expected : String) : Nil
+      raise ArgumentError.new("macro variable name lacks its fresh-variable token") unless values.size == 1
+      observed = values[0].as?(DiagnosticNameValue::Observed) || raise ArgumentError.new("macro variable name lacks its fresh-variable token")
+      raise ArgumentError.new("macro variable name lacks its fresh-variable token") unless observed.source_token.context == "macro_fresh_variable"
+      verify_slot_value!(values, "%" + expected)
+    end
+
+    private def written_origin(origin : DiagnosticOrigin?) : DiagnosticOrigin::Written?
+      current = origin
+      while current.is_a?(DiagnosticOrigin::Synthetic)
+        current = current.parent_origin
+      end
+      current.is_a?(DiagnosticOrigin::Written) ? current : nil
+    end
+
+    # Per-walk state (plan S4 item 1). Nothing carries over from an earlier walk.
+    private def reset_walk_state! : Nil
+      @sequence = nil
+      @operator_claims.clear
+      @sugar_claims.clear
+      @parameter_claims.clear
+      @sugar_expected.clear
+      @regex_globals.clear
+      @def_stack.clear
+    end
+
+    # Accepts a regex `$n` Lookup only on its own Call: the Call's Primary slot holds this
+    # origin, its token is a scanned GLOBAL_MATCH_DATA_INDEX, and the walk is bound.
+    private def bound_regex_lookup_origin!(node : ASTNode, origin : DiagnosticOrigin::DerivedName) : Nil
+      unless bound? && origin.derivation_kind == "RegexMatchIndex" && origin.result == "Lookup"
+        raise ArgumentError.new("unclassified structural origin ancestry")
+      end
+      call = node.as?(Call) || raise ArgumentError.new("unclassified structural origin ancestry")
+      values = call.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)]?
+      raise ArgumentError.new("unclassified structural origin ancestry") unless values && values.size == 1
+      value = values[0].as?(DiagnosticNameValue::Derived) || raise ArgumentError.new("unclassified structural origin ancestry")
+      raise ArgumentError.new("unclassified structural origin ancestry") unless value.origin == origin
+      token = origin.source_token || raise ArgumentError.new("unclassified structural origin ancestry")
+      unless token.token_kind == "GLOBAL_MATCH_DATA_INDEX" && source_token_ok?(token)
+        raise ArgumentError.new("unclassified structural origin ancestry")
       end
     end
 
@@ -3544,10 +3928,10 @@ module Iyi
       slot_count = node.diagnostic_name_slots_count || 0
       literal_count = node.diagnostic_literal_names_count || 0
       charge(slot_count.to_u64 * 64_u64 + literal_count.to_u64 * 64_u64)
-      slots = {} of DiagnosticNameSlot => Indexable(DiagnosticNameValue)
+      slots = {} of DiagnosticNameSlot => Array(DiagnosticNameValue)
       literal_keys = Set({String, Int32}).new
       used_slots = Set(DiagnosticNameSlot).new
-      node.each_diagnostic_name_slot { |slot, values| slots[slot] = values }
+      node.each_diagnostic_name_slot { |slot, values| slots[slot] = values.to_a }
       node.each_diagnostic_literal_name { |key, _| literal_keys.add(key) }
       bound_indices = {} of String => Int32
       variables = case node
@@ -3590,17 +3974,21 @@ module Iyi
           if field == "name"
             slot = internal
           elsif field == "external_name"
-            if !node.diagnostic_external_explicit
-              external = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
+            external = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
+            if !node.diagnostic_external_explicit && default_external_name?(slots[external]?) && !literal_keys.includes?({"external_name", 0})
+              # A lowered invalid internal name (`def f(@end)`): the external name is the stripped spelling.
+              slot = external
+            elsif !node.diagnostic_external_explicit
               if expected != node.name || slots.has_key?(external) || literal_keys.includes?({"external_name", 0})
                 raise ArgumentError.new("invalid implicit external-name observation")
               end
               values = slots[internal]? || raise ArgumentError.new("implicit external name lacks internal evidence")
               verify_slot_value!(values, expected)
               next
+            else
+              literal_key = {"external_name", 0}
+              slot = external
             end
-            literal_key = {"external_name", 0}
-            slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
           end
         when FunDef
           if field == "name"
@@ -3698,7 +4086,9 @@ module Iyi
             next
           end
         when Var, InstanceVar, ClassVar, Global, ReadInstanceVar, Call, Macro, RespondsTo,
-             ProcPointer, TypeDef, CStructOrUnionDef, MacroVar
+             ProcPointer, TypeDef, CStructOrUnionDef
+          slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary) if field == "name"
+        when MacroVar
           slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary) if field == "name"
         when AssocTypeDecl
           slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::TypeParameter) if field == "name"
@@ -3718,7 +4108,11 @@ module Iyi
         else
           raise ArgumentError.new("name source evidence reused across fields") unless used_slots.add?(slot)
         end
-        verify_slot_value!(values, expected)
+        if node.is_a?(MacroVar)
+          verify_macro_variable_name!(values, expected)
+        else
+          verify_slot_value!(values, expected)
+        end
       end
 
       # `Self` has no name field. Its Primary slot, if any, may only hold "self".
@@ -3760,7 +4154,8 @@ module Iyi
 
     # The first journal entry at or after offset that is not trivia.
     private def fun_next_token(journal : DiagnosticReplayJournal, offset : Int32) : DiagnosticRenderedToken?
-      journal.entries.select { |entry| entry.input_start >= offset && !{"SPACE", "NEWLINE", "COMMENT", "EOF"}.includes?(entry.token_kind) }.min_by? { |entry| entry.input_start }
+      trivia = {"SPACE", "NEWLINE", "SKIPPED_COMMENT", "SKIPPED_DOC_COMMENT", "SKIPPED_LOC_PRAGMA", "EOF"}
+      journal.entries.select { |entry| entry.input_start >= offset && !trivia.includes?(entry.token_kind) }.min_by? { |entry| entry.input_start }
     end
 
     # The parser derives these summaries only from direct body declarations,
@@ -5969,7 +6364,7 @@ module Iyi
       raise ArgumentError.new("anchor does not precede witnesses") unless start < separator.input_start && separator.input_start < head.input_start
 
       # The list opener is the first "(" after the name and the optional "= real_name".
-      trivia = {"SPACE", "NEWLINE", "COMMENT", "EOF"}
+      trivia = {"SPACE", "NEWLINE", "SKIPPED_COMMENT", "SKIPPED_DOC_COMMENT", "SKIPPED_LOC_PRAGMA", "EOF"}
       tokens = @ordered.select { |entry| entry.input_start >= start + 3 && !trivia.includes?(entry.token_kind) }
       tokens[0]? || raise ArgumentError.new("separator outside parameter list")
       index = 1
