@@ -92,9 +92,11 @@ module Iyi
                 when "enum_member"                   then kind == "CONST"
                 when "special_global"                then {"$~", "$?"}.includes?(kind)
                 when "regex_match_index"             then kind == "GLOBAL_MATCH_DATA_INDEX"
+                when "type_self"                    then kind == "IDENT"
                 else                                      false
                 end
       return false unless allowed && {"Crystal", "Iyi"}.includes?(mode) && raw.valid_encoding?
+      return kind == "IDENT" && raw == "self" if context == "type_self"
       return raw == kind if context == "special_global"
       if context == "regex_match_index"
         return false unless raw.starts_with?("$")
@@ -128,7 +130,7 @@ module Iyi
                    @lexical_mode : String, @token_kind : String, @raw_text : String)
       unless {"method_name", "definition_name", "macro_name", "local_reference", "instance_variable",
               "class_variable", "parameter", "path_segment", "type_parameter", "named_entry",
-              "enum_member", "special_global", "regex_match_index", "where_variable"}.includes?(@context)
+              "enum_member", "special_global", "regex_match_index", "where_variable", "type_self"}.includes?(@context)
         raise ArgumentError.new("invalid diagnostic name context")
       end
       unless @input_sha256.bytesize == 64 && @input_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) }
@@ -216,6 +218,7 @@ module Iyi
     StaticArray = 4
     Tuple = 5
     NamedTuple = 6
+    Self = 7
   end
 
   record DiagnosticSourceSyntaxToken,
@@ -265,6 +268,133 @@ module Iyi
         json.field "token_kind", @token_kind
         json.field "raw_text", @raw_text
       end
+    end
+  end
+
+  enum DiagnosticBoundProducerKind : UInt8
+    StripRoot = 1
+    ForeignType = 2
+    AliasType = 3
+    SelfReturn = 4
+    SemanticSignatureType = 5
+    UninitializedClassVar = 6
+    ConstantAccessor = 7
+  end
+
+  record DiagnosticBoundNameSource, start_offset : Int32, end_offset : Int32, name : DiagnosticNameValue do
+    def to_json(json : JSON::Builder) : Nil
+      json.object do
+        json.field "start_offset", start_offset
+        json.field "end_offset", end_offset
+        json.field "name", name
+      end
+    end
+  end
+
+  record DiagnosticBoundProjectionData,
+    producer : DiagnosticBoundProducer,
+    source_fragment_sha256 : String,
+    source_text : String,
+    source_names : Array(DiagnosticBoundNameSource),
+    output_text : String,
+    lexical_mode : String,
+    result_start : Int32,
+    result_end : Int32,
+    token_kind : String,
+    context : String
+
+  abstract class DiagnosticBoundProducer
+    def to_json(json : JSON::Builder) : Nil
+      json.object do
+        case self
+        when StripRoot
+          json.field "kind", "StripRoot"
+          json.field "root", self.root
+        when ForeignType
+          json.field "kind", "ForeignType"
+          json.field "module_name", self.module_name
+          json.field "source_name", self.source_name
+          json.field "qualified_name", self.qualified_name
+        when AliasType
+          json.field "kind", "AliasType"
+          json.field "owner", self.owner
+          json.field "name", self.name
+          json.field "resolved_type", self.resolved_type
+        when SelfReturn
+          json.field "kind", "SelfReturn"
+          json.field "owner_type", self.owner_type
+          json.field "method_name", self.method_name
+          json.field "receiver", self.receiver
+        when SemanticSignatureType
+          json.field "kind", "SemanticSignatureType"
+          json.field "definition_origin", self.definition_origin
+          json.field "field", self.field
+          json.field "parameter_index", self.parameter_index
+          json.field "semantic_type", self.semantic_type
+        when UninitializedClassVar
+          json.field "kind", "UninitializedClassVar"
+          json.field "declaration_origin", self.declaration_origin
+          json.field "owner_type", self.owner_type
+          json.field "variable_name", self.variable_name
+          json.field "semantic_type", self.semantic_type
+        when ConstantAccessor
+          json.field "kind", "ConstantAccessor"
+          json.field "definition_origin", self.definition_origin
+          json.field "prefix", self.prefix
+          json.field "constant_name", self.constant_name
+          json.field "part", self.part
+        end
+      end
+    end
+    class StripRoot < DiagnosticBoundProducer
+      getter root : String
+      def initialize(@root : String); end
+      def_equals_and_hash @root
+    end
+    class ForeignType < DiagnosticBoundProducer
+      getter module_name : String
+      getter source_name : String
+      getter qualified_name : String
+      def initialize(@module_name : String, @source_name : String, @qualified_name : String); end
+      def_equals_and_hash @module_name, @source_name, @qualified_name
+    end
+    class AliasType < DiagnosticBoundProducer
+      getter owner : String
+      getter name : String
+      getter resolved_type : String
+      def initialize(@owner : String, @name : String, @resolved_type : String); end
+      def_equals_and_hash @owner, @name, @resolved_type
+    end
+    class SelfReturn < DiagnosticBoundProducer
+      getter owner_type : String
+      getter method_name : String
+      getter receiver : String
+      def initialize(@owner_type : String, @method_name : String, @receiver : String); end
+      def_equals_and_hash @owner_type, @method_name, @receiver
+    end
+    class SemanticSignatureType < DiagnosticBoundProducer
+      getter definition_origin : DiagnosticOrigin
+      getter field : String
+      getter parameter_index : Int32?
+      getter semantic_type : String
+      def initialize(@definition_origin : DiagnosticOrigin, @field : String, @parameter_index : Int32?, @semantic_type : String); end
+      def_equals_and_hash @definition_origin, @field, @parameter_index, @semantic_type
+    end
+    class UninitializedClassVar < DiagnosticBoundProducer
+      getter declaration_origin : DiagnosticOrigin
+      getter owner_type : String
+      getter variable_name : String
+      getter semantic_type : String
+      def initialize(@declaration_origin : DiagnosticOrigin, @owner_type : String, @variable_name : String, @semantic_type : String); end
+      def_equals_and_hash @declaration_origin, @owner_type, @variable_name, @semantic_type
+    end
+    class ConstantAccessor < DiagnosticBoundProducer
+      getter definition_origin : DiagnosticOrigin
+      getter prefix : String
+      getter constant_name : String
+      getter part : String
+      def initialize(@definition_origin : DiagnosticOrigin, @prefix : String, @constant_name : String, @part : String); end
+      def_equals_and_hash @definition_origin, @prefix, @constant_name, @part
     end
   end
 
@@ -410,6 +540,7 @@ module Iyi
     YieldWrapper
     SemanticPrinter
     StructuredSyntax
+    ArtifactSemanticRenderer
   end
 
   enum DiagnosticTokenSelection : UInt8
@@ -1474,6 +1605,18 @@ module Iyi
       getter sugar_result : DiagnosticTypeSugarResult?
       getter lowering_index : Int32?
       @witnesses : Array(DiagnosticSourceSyntaxToken)
+      @bound_data : DiagnosticBoundProjectionData? = nil
+
+      def producer : DiagnosticBoundProducer?; @bound_data.try(&.producer); end
+      def source_fragment_sha256 : String?; @bound_data.try(&.source_fragment_sha256); end
+      def source_text : String?; @bound_data.try(&.source_text); end
+      def source_names : Array(DiagnosticBoundNameSource)?; @bound_data.try { |data| data.source_names.dup }; end
+      def output_text : String?; @bound_data.try(&.output_text); end
+      def lexical_mode : String?; @bound_data.try(&.lexical_mode); end
+      def result_start : Int32?; @bound_data.try(&.result_start); end
+      def result_end : Int32?; @bound_data.try(&.result_end); end
+      def token_kind : String?; @bound_data.try(&.token_kind); end
+      def context : String?; @bound_data.try(&.context); end
 
       def witnesses : Array(DiagnosticSourceSyntaxToken); @witnesses.dup; end
 
@@ -1583,8 +1726,8 @@ module Iyi
         @fresh_index = nil
         @sugar_result = result
         @result = result.to_s
-        @producer_context = "path_segment"
-        @rendered_text = result.to_s
+        @producer_context = result == DiagnosticTypeSugarResult::Self ? "type_self" : "path_segment"
+        @rendered_text = result == DiagnosticTypeSugarResult::Self ? "self" : result.to_s
         @witnesses = witnesses.dup
         production = @production.not_nil!
         expected, allowed_results, allowed_indices = case production
@@ -1592,7 +1735,7 @@ module Iyi
           when DiagnosticTypeSugar::DoublePointer then {["**"], [DiagnosticTypeSugarResult::Pointer], [0, 1]}
           when DiagnosticTypeSugar::NilableType then {["?"], [DiagnosticTypeSugarResult::Nil], [0]}
           when DiagnosticTypeSugar::NilableExpression then {["?"], [DiagnosticTypeSugarResult::Union, DiagnosticTypeSugarResult::Nil], [0]}
-          when DiagnosticTypeSugar::SelfNilableType then {["self?"], [DiagnosticTypeSugarResult::Nil], [0]}
+          when DiagnosticTypeSugar::SelfNilableType then {["self?"], [DiagnosticTypeSugarResult::Nil, DiagnosticTypeSugarResult::Self], [0]}
           when DiagnosticTypeSugar::StaticArray then {["[", "]"], [DiagnosticTypeSugarResult::StaticArray], [0]}
           when DiagnosticTypeSugar::Tuple then {["{", "}"], [DiagnosticTypeSugarResult::Tuple], [0]}
           when DiagnosticTypeSugar::NamedTuple then {["{", "}"], [DiagnosticTypeSugarResult::NamedTuple], [0]}
@@ -1625,6 +1768,120 @@ module Iyi
                        end
           raise ArgumentError.new("type-sugar witnesses use different inputs") unless same_input
         end
+      end
+
+      def self.bound_projection(producer : DiagnosticBoundProducer, source_fragment_sha256 : String, source_text : String,
+                                source_names : Array(DiagnosticBoundNameSource), output_text : String, lexical_mode : String,
+                                result_start : Int32, result_end : Int32, token_kind : String, context : String) : DerivedName
+        new(DiagnosticBoundProjectionData.new(producer, source_fragment_sha256, source_text, source_names.dup,
+          output_text, lexical_mode, result_start, result_end, token_kind, context))
+      end
+
+      def initialize(data : DiagnosticBoundProjectionData)
+        @source_token = nil
+        @derivation_kind = "BoundProjection"
+        @definition_origin = nil
+        @parameter_slot = nil
+        @parameter_index = nil
+        @result = ""
+        @projection = nil
+        @fresh_index = nil
+        @production = nil
+        @sugar_result = nil
+        @lowering_index = nil
+        @witnesses = [] of DiagnosticSourceSyntaxToken
+        @bound_data = DiagnosticBoundProjectionData.new(data.producer, data.source_fragment_sha256, data.source_text,
+          data.source_names.dup, data.output_text, data.lexical_mode, data.result_start, data.result_end, data.token_kind, data.context)
+        unless data.source_fragment_sha256.bytesize == 64 &&
+               data.source_fragment_sha256.each_byte.all? { |b| (48_u8..57_u8).includes?(b) || (97_u8..102_u8).includes?(b) } &&
+               data.source_text.valid_encoding? && data.output_text.valid_encoding? &&
+               data.result_start >= 0 && data.result_end > data.result_start && data.result_end <= data.output_text.bytesize
+          raise ArgumentError.new("invalid bound projection inputs")
+        end
+        parents = [] of DiagnosticOrigin
+        own = 2048_u64 + data.source_text.bytesize.to_u64 * 6 + data.output_text.bytesize.to_u64 * 6
+        cursor = 0
+        data.source_names.each do |entry|
+          unless entry.start_offset >= cursor && entry.end_offset > entry.start_offset && entry.end_offset <= data.source_text.bytesize &&
+                 data.source_text.byte_slice(entry.start_offset, entry.end_offset - entry.start_offset) == entry.name.rendered_text
+            raise ArgumentError.new("invalid bound source name")
+          end
+          cursor = entry.end_offset
+          own += entry.name.graph_bytes + 256_u64
+          raise ArgumentError.new("bound projection graph exceeds size limit") if own > MAX_UNFOLDED_BYTES
+          raise ArgumentError.new("bound source graph exceeds depth limit") if entry.name.artifact_origin.graph_depth + 1 > MAX_DEPTH
+        end
+        actual = case producer = data.producer
+                 when DiagnosticBoundProducer::StripRoot
+                   prefix = "#{producer.root}::"
+                   raise ArgumentError.new("invalid bound root removal") if producer.root.empty? || !data.source_text.starts_with?(prefix) || data.source_names.empty?
+                   data.source_text.byte_slice(prefix.bytesize, data.source_text.bytesize - prefix.bytesize)
+                 when DiagnosticBoundProducer::ForeignType
+                   prefix = producer.source_name
+                   raise ArgumentError.new("invalid foreign type projection") if producer.module_name.empty? || prefix.empty? || producer.qualified_name.empty? || !data.source_text.starts_with?(prefix) || data.source_names.empty?
+                   suffix = data.source_text.byte_slice(prefix.bytesize, data.source_text.bytesize - prefix.bytesize)
+                   if !suffix.empty? && (suffix[0].ascii_alphanumeric? || suffix[0] == '_')
+                     raise ArgumentError.new("foreign type projection lacks a name boundary")
+                   end
+                   producer.qualified_name + suffix
+                 when DiagnosticBoundProducer::AliasType
+                   raise ArgumentError.new("invalid alias type projection") unless !producer.owner.empty? && !producer.name.empty? && !producer.resolved_type.empty? && data.source_text == producer.name && !data.source_names.empty?
+                   producer.resolved_type
+                 when DiagnosticBoundProducer::SelfReturn
+                   unless producer.method_name == "new" && producer.receiver == "self" && data.source_text == producer.owner_type && !data.source_names.empty?
+                     raise ArgumentError.new("invalid self-return projection")
+                   end
+                   "self"
+                 when DiagnosticBoundProducer::SemanticSignatureType
+                   unless producer.definition_origin.valid_for_anchor?("Def", "keyword") && data.source_text.empty? && data.source_names.empty? &&
+                          !producer.semantic_type.empty? &&
+                          ((producer.field == "return_type" && producer.parameter_index.nil?) ||
+                           (producer.field == "parameter_restriction" && producer.parameter_index.try(&.>=(0))))
+                     raise ArgumentError.new("invalid semantic signature projection")
+                   end
+                   parents << producer.definition_origin
+                   producer.semantic_type
+                 when DiagnosticBoundProducer::UninitializedClassVar
+                   unless producer.declaration_origin.valid_for_anchor?("Name", "class_variable") &&
+                          !producer.owner_type.empty? && !producer.variable_name.empty? && !producer.semantic_type.empty? &&
+                          data.source_text.empty? && data.source_names.empty?
+                     raise ArgumentError.new("invalid class-variable projection")
+                   end
+                   parents << producer.declaration_origin
+                   "uninitialized #{producer.semantic_type}"
+                 when DiagnosticBoundProducer::ConstantAccessor
+                   unless producer.definition_origin.valid_for_anchor?("Def", "keyword") &&
+                          producer.definition_origin.is_a?(DiagnosticOrigin::Synthetic) &&
+                          producer.definition_origin.synthesis_kind == "constant_accessor" &&
+                          producer.definition_origin.structural_slot == "getter" &&
+                          !producer.constant_name.empty? && data.source_text.empty? && data.source_names.empty?
+                     raise ArgumentError.new("invalid constant accessor projection")
+                   end
+                   parents << producer.definition_origin
+                   case producer.part
+                   when "Name" then "#{producer.prefix}#{producer.constant_name}".downcase
+                   when "Receiver" then "self"
+                   else raise ArgumentError.new("invalid accessor projection part")
+                   end
+                 else
+                   raise ArgumentError.new("unknown bound projection producer")
+                 end
+        raise ArgumentError.new("bound output differs from closed projection") unless actual == data.output_text
+        permitted = if (producer = data.producer).is_a?(DiagnosticBoundProducer::ConstantAccessor)
+                      producer.part == "Name" ? {"definition_name"} : {"local_reference"}
+                    else
+                      {"path_segment", "named_entry", "type_self"}
+                    end
+        raise ArgumentError.new("invalid bound projection context") unless permitted.includes?(data.context)
+        lex_context = data.context == "definition_name" ? DiagnosticRenderedLexContext::DefOrMacroName : DiagnosticRenderedLexContext::TypeName
+        observed = DiagnosticRenderedTokens.observe_one(data.output_text, data.result_start, data.result_end, data.lexical_mode, lex_context)
+        unless observed.token_kind == data.token_kind &&
+               DiagnosticSourceNameToken.valid_token?(data.token_kind, observed.token_text, data.lexical_mode, data.context)
+          raise ArgumentError.new("invalid bound result token")
+        end
+        @producer_context = data.context
+        @rendered_text = observed.token_text
+        set_graph_bounds!(own, parents)
       end
 
       def valid_for_anchor?(kind : String, role : String) : Bool

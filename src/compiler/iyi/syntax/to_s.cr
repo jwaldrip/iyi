@@ -1627,7 +1627,12 @@ module Iyi
     end
 
     def visit(node : Self)
-      @str << "self"
+      if (@diagnostic_fragment || @diagnostic_name_fragments) &&
+         node.diagnostic_name_slots.has_key?(DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary))
+        diagnostic_name(node, "self", "type_self")
+      else
+        @str << "self"
+      end
       false
     end
 
