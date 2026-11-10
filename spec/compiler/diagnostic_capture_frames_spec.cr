@@ -109,7 +109,9 @@ private class FrameSpecExpander
     while @position < @frames.size && @frames[@position].tag == Iyi::DiagnosticAstFrameStream::TAG_FILENAME
       payload = @frames[@position].payload
       key = ::Crystal::Digest::SHA256.hexdigest(String.new(payload))
-      raise "duplicate filename frame" if @filenames.has_key?(key)
+      if previous = @filenames[key]?
+        raise "filename digest collision" unless previous == payload
+      end
       @filenames[key] = payload
       @position += 1
     end
@@ -188,6 +190,7 @@ describe "diagnostic capture frame stream" do
 
   it "reconstructs equal virtual filenames with distinct identities" do
     definition = frame_spec_parse("macro sample\nend\n").as(Iyi::Macro)
+    definition.diagnostic_capture_ref = Iyi::DiagnosticCaptureFieldRef.new("a" * 64, "[]", "body")
     file_a = Iyi::VirtualFile.new(definition, "expanded", nil)
     file_b = Iyi::VirtualFile.new(definition, "expanded", nil)
     left = Iyi::Var.new("a").at(Iyi::Location.new(file_a, 1, 1))

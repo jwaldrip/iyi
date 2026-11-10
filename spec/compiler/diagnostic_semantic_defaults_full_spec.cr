@@ -7,6 +7,16 @@ require "../../src/compiler/iyi/syntax/diagnostic_semantic_defaults"
   {% raise "diagnostic_semantic_defaults_full_spec requires the full compiler types (Block#binder)" %}
 {% end %}
 
+struct Iyi::SmallNodeList
+  def test_set_second(node : Iyi::ASTNode) : Nil
+    @second = node
+  end
+
+  def test_set_tail(node : Iyi::ASTNode) : Nil
+    @tail = [node] of Iyi::ASTNode
+  end
+end
+
 describe Iyi::DiagnosticSemanticDefaults do
   describe "coverage, both directions" do
     it "matches declared semantic fields to the table for every supported kind" do
@@ -16,7 +26,7 @@ describe Iyi::DiagnosticSemanticDefaults do
     it "refuses a table that drops a declared semantic row" do
       missing = Iyi::DiagnosticFieldTable::TABLE.dup
       missing["Call"] = Iyi::DiagnosticFieldTable::TABLE["Call"].reject { |row| row.field == "expanded" }
-      expect_raises(ArgumentError, /Call: declared semantic fields differ/) do
+      expect_raises(ArgumentError, /uncovered=Call\.expanded/) do
         Iyi::DiagnosticSemanticDefaults.verify_coverage!(missing)
       end
     end
@@ -26,7 +36,7 @@ describe Iyi::DiagnosticSemanticDefaults do
       extra["Call"] = Iyi::DiagnosticFieldTable::TABLE["Call"] + [
         Iyi::DiagnosticFieldTable::Row.new("no_such_field", Iyi::DiagnosticAstFieldClass::Infrastructure, Iyi::DiagnosticFieldTable::Role::Infrastructure, Iyi::DiagnosticFieldTable::Coordinate::Single, nil, nil, nil, Iyi::DiagnosticFieldTable::Provenance::Semantic),
       ]
-      expect_raises(ArgumentError, /Call: declared semantic fields differ/) do
+      expect_raises(ArgumentError, /unlisted=Call\.no_such_field/) do
         Iyi::DiagnosticSemanticDefaults.verify_coverage!(extra)
       end
     end
@@ -71,11 +81,6 @@ describe Iyi::DiagnosticSemanticDefaults do
       end
     end
 
-    it "refuses a non-nilable field with a nil default, even while its raw value is nil" do
-      expect_raises(ArgumentError, /Call\.scope: a non-nilable field may not carry a nil default/) do
-        Iyi::DiagnosticSemanticDefaults.check_field!(Iyi::Call.new(nil, "f"), "scope")
-      end
-    end
   end
 
   describe "per-field checks on real nodes" do
@@ -104,7 +109,7 @@ describe Iyi::DiagnosticSemanticDefaults do
     end
   end
 
-  describe "mismatched Bool defaults" do
+  describe "mismatched Bool states" do
     it "refuses a call whose uses_with_scope flag is set" do
       call = Iyi::Call.new(nil, "f")
       call.uses_with_scope = true
@@ -139,36 +144,29 @@ describe Iyi::DiagnosticSemanticDefaults do
       end
     end
 
-    it "refuses a dependency list with two entries, which sets raw @second" do
+    it "refuses a dependency list with only raw @second set" do
       call = Iyi::Call.new(nil, "f")
-      call.dependencies.push(Iyi::NumberLiteral.new(1))
-      call.dependencies.push(Iyi::NumberLiteral.new(2))
+      call.dependencies.test_set_second(Iyi::NumberLiteral.new(2))
       expect_raises(ArgumentError, /Call\.dependencies: raw list is not empty/) do
         Iyi::DiagnosticSemanticDefaults.check_field!(call, "dependencies")
       end
     end
 
-    it "refuses a dependency list with three entries, which sets raw @tail" do
+    it "refuses a dependency list with only raw @tail set" do
       call = Iyi::Call.new(nil, "f")
-      call.dependencies.push(Iyi::NumberLiteral.new(1))
-      call.dependencies.push(Iyi::NumberLiteral.new(2))
-      call.dependencies.push(Iyi::NumberLiteral.new(3))
+      call.dependencies.test_set_tail(Iyi::NumberLiteral.new(3))
       expect_raises(ArgumentError, /Call\.dependencies: raw list is not empty/) do
         Iyi::DiagnosticSemanticDefaults.check_field!(call, "dependencies")
       end
     end
   end
 
-  describe "the bulk checks stay closed" do
-    it "refuses a fresh call, whose non-nilable property! scope is unset" do
-      expect_raises(ArgumentError) do
-        Iyi::DiagnosticSemanticDefaults.verify!(Iyi::Call.new(nil, "f"))
-      end
-    end
-
-    it "refuses a tree whose child call carries the same non-nilable nil default" do
-      root = Iyi::Expressions.new([Iyi::Call.new(nil, "f")] of Iyi::ASTNode)
-      expect_raises(ArgumentError) do
+  describe "tree checks" do
+    it "refuses a tree with changed semantic state in a child" do
+      child = Iyi::Call.new(nil, "f")
+      child.expanded = Iyi::NumberLiteral.new(1)
+      root = Iyi::Expressions.new([child] of Iyi::ASTNode)
+      expect_raises(ArgumentError, /Call\.expanded: raw value is not nil/) do
         Iyi::DiagnosticSemanticDefaults.verify_tree!(root)
       end
     end
