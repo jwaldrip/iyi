@@ -82,6 +82,7 @@ module Iyi
     @running : Int32
     @wants_doc : Bool
     @diagnostic_capture : Bool
+    @warning_snapshot : WarningCollection::ParseAheadPolicy?
     @mod_table : Array({String, String})
     @module_dir : String?
     @path : IyiPath
@@ -90,6 +91,8 @@ module Iyi
       @running = threads
       @wants_doc = program.wants_doc?
       @diagnostic_capture = program.diagnostic_capture
+      warning_source = program.warnings
+      @warning_snapshot = warning_source.class == WarningCollection ? warning_source.parse_ahead_snapshot : nil
       @mod_table = program.iyi_mod_table
       @module_dir = program.iyi_module_dir
       # Made here, on the walk's thread: it is built the first time it is asked
@@ -117,16 +120,18 @@ module Iyi
     # *filename*'s nodes, which the walk read as *source* and set *parser*
     # up for: a worker's when it parsed the same thing, else *parser*'s.
     def parse(parser : Parser, filename : String, source : String) : ASTNode
-      contract = parser.parse_ahead_contract
-      candidate = @diagnostic_capture && parser.diagnostic_capture && contract ? capture_candidate(parser) : nil
-      recipient = parser.warnings
-      warning_policy = recipient.class == WarningCollection ? recipient.parse_ahead_policy : nil
-      if contract && warning_policy && (!@diagnostic_capture || candidate) &&
-         parser.parse_ahead_input_matches?(source) && parser.diagnostic_capture == @diagnostic_capture &&
-         (!@diagnostic_capture || parser.diagnostic_source_unit == "source-file:#{filename}")
-        if nodes = take(parser, filename, source, parser.iyi_package_name, parser.wants_doc?, contract, recipient, warning_policy, candidate)
-          Prof.count("parse ahead: taken")
-          return nodes
+      if parser.class == Parser
+        contract = parser.parse_ahead_contract
+        candidate = @diagnostic_capture && parser.diagnostic_capture && contract ? capture_candidate(parser) : nil
+        recipient = parser.warnings
+        warning_policy = recipient.class == WarningCollection ? recipient.parse_ahead_policy : nil
+        if contract && warning_policy && (!@diagnostic_capture || candidate) &&
+           parser.parse_ahead_input_matches?(source) && parser.diagnostic_capture == @diagnostic_capture &&
+           (!@diagnostic_capture || parser.diagnostic_source_unit == "source-file:#{filename}")
+          if nodes = take(parser, filename, source, parser.iyi_package_name, parser.wants_doc?, contract, recipient, warning_policy, candidate)
+            Prof.count("parse ahead: taken")
+            return nodes
+          end
         end
       end
 
@@ -178,7 +183,7 @@ module Iyi
 
       return nil unless (nodes = entry.nodes) && entry.source == source &&
                         entry.package == package && @wants_doc == wants_doc && entry.contract == contract &&
-                        entry.warning_policy == warning_policy && parser.warnings.same?(recipient) &&
+                        entry.warning_policy == warning_policy && parser.class == Parser && parser.warnings.same?(recipient) &&
                         parser.parse_ahead_contract == contract && parser.parse_ahead_input_matches?(source) &&
                         recipient.class == WarningCollection && recipient.parse_ahead_policy == warning_policy
       if @diagnostic_capture
@@ -214,41 +219,44 @@ module Iyi
         source = nodes = nil
         worker_contract = nil
         worker_input = nil
-        source_warnings = @program.warnings
-        warnings = source_warnings.fork
-        warning_policy = if source_warnings.class == WarningCollection && warnings.class == WarningCollection
-                           warnings.parse_ahead_policy
-                         end
+        warnings = nil.as(WarningCollection?)
+        warning_policy = nil.as(String?)
         begin
-          source = File.read(filename)
-          parser = Parser.new(source, pool, [Set(String).new], warnings)
-          parser.filename = filename
-          parser.diagnostic_capture = @diagnostic_capture
-          parser.diagnostic_source_file = filename if @diagnostic_capture
-          parser.wants_doc = @wants_doc
-          parser.iyi_package_name = entry.package
-          worker_contract = parser.parse_ahead_contract
-          worker_input = capture_candidate(parser) if @diagnostic_capture && worker_contract
-          nodes = parser.parse
-          discover(nodes, filename, found)
-          warning_policy = nil unless warning_policy && warnings.parse_ahead_policy == warning_policy
+          if snapshot = @warning_snapshot
+            warnings = WarningCollection.from_parse_ahead_snapshot(snapshot)
+            warning_policy = snapshot.fingerprint
+            source = File.read(filename)
+            parser = Parser.new(source, pool, [Set(String).new], warnings)
+            parser.filename = filename
+            parser.diagnostic_capture = @diagnostic_capture
+            parser.diagnostic_source_file = filename if @diagnostic_capture
+            parser.wants_doc = @wants_doc
+            parser.iyi_package_name = entry.package
+            worker_contract = parser.parse_ahead_contract
+            worker_input = capture_candidate(parser) if @diagnostic_capture && worker_contract
+            nodes = parser.parse
+            discover(nodes, filename, found)
+            warning_policy = nil unless warnings.parse_ahead_policy == warning_policy
+          end
         rescue
           # The walk parses it, and says what is wrong with it, where its own
           # parse would have.
           nodes = nil
-        end
-        @mutex.synchronize do
-          entry.source = source
-          entry.contract = worker_contract
-          entry.capture_input = worker_input
-          entry.warning_policy = warning_policy
-          entry.nodes = nodes
-          entry.reports = warnings.reports
-          entry.notes = warnings.notes
-          entry.state = State::Done
-          found.each { |(file, package)| queue(file, package) }
-          @parsed.broadcast
-          @work.broadcast unless found.empty?
+          found.clear
+        ensure
+          @mutex.synchronize do
+            entry.source = source
+            entry.contract = worker_contract
+            entry.capture_input = worker_input
+            entry.warning_policy = warning_policy
+            entry.nodes = nodes
+            entry.reports = warnings.try(&.reports) || [] of CodeError
+            entry.notes = warnings.try(&.notes) || [] of {Location, String}
+            entry.state = State::Done
+            @parsed.broadcast
+            found.each { |(file, package)| queue(file, package) }
+            @work.broadcast unless found.empty?
+          end
         end
       end
     end

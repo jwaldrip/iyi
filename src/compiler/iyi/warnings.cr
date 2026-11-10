@@ -48,6 +48,39 @@ module Iyi
       All
     end
 
+    # Each worker receives its own path strings and array.
+    class ParseAheadPolicy
+      getter level : WarningLevel
+      @lib_path : String?
+      getter explain_spawn : ExplainSpawn
+      getter? error_on_warnings : Bool
+      getter fingerprint : String
+      @excluded_paths : Array(String)
+
+      def initialize(@level : WarningLevel, excluded_paths : Array(String), lib_path : String?,
+                     @explain_spawn : ExplainSpawn, @error_on_warnings : Bool)
+        @excluded_paths = excluded_paths.map { |path| String.new(path.to_slice) }
+        @lib_path = lib_path.try { |path| String.new(path.to_slice) }
+        @fingerprint = JSON.build do |json|
+          json.object do
+            json.field "level", @level.to_s
+            json.field "excluded_paths", @excluded_paths
+            json.field "lib_path", @lib_path
+            json.field "explain_spawn", @explain_spawn.to_s
+            json.field "error_on_warnings", @error_on_warnings
+          end
+        end
+      end
+
+      def excluded_paths : Array(String)
+        @excluded_paths.map { |path| String.new(path.to_slice) }
+      end
+
+      def lib_path : String?
+        @lib_path.try { |path| String.new(path.to_slice) }
+      end
+    end
+
     property explain_spawn = ExplainSpawn::None
 
     # Each note as where it is and what it says, in the order the cleanup
@@ -117,6 +150,27 @@ module Iyi
         end
       end
     end
+
+    def parse_ahead_snapshot : ParseAheadPolicy?
+      return nil unless self.class == WarningCollection
+      return nil unless @excluded_paths.all?(&.valid_encoding?) && (@lib_path.nil? || @lib_path.not_nil!.valid_encoding?)
+      ParseAheadPolicy.new(@level, @excluded_paths, @lib_path, @explain_spawn, @error_on_warnings)
+    end
+
+    def self.from_parse_ahead_snapshot(snapshot : ParseAheadPolicy) : WarningCollection
+      collection = new
+      collection.apply_parse_ahead_snapshot(snapshot)
+      collection
+    end
+
+    def apply_parse_ahead_snapshot(snapshot : ParseAheadPolicy) : Nil
+      @level = snapshot.level
+      @excluded_paths = snapshot.excluded_paths
+      @lib_path = snapshot.lib_path
+      @explain_spawn = snapshot.explain_spawn
+      @error_on_warnings = snapshot.error_on_warnings?
+    end
+
     # iyi: an empty collection that keeps what this one keeps, for a parse on
     # another thread (`ParseAhead`). Its reports join these when the walk
     # takes the file, in the order the walk reads files.
