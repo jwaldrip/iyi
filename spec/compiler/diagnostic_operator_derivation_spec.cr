@@ -1,0 +1,574 @@
+require "../support/syntax"
+
+OPERATOR_SPEC_DIGEST = "0" * 64
+
+def operator_spec_written(offset : Int32, kind : String = "Call", role : String = "method") : Iyi::DiagnosticOrigin::Written
+  Iyi::DiagnosticOrigin::Written.new("sample", "sample.cr", offset, kind, role)
+end
+
+def operator_spec_witness(start : Int32, raw : String, kind : String = raw,
+                          selection : Iyi::DiagnosticTokenSelection = Iyi::DiagnosticTokenSelection::Whole,
+                          event : Iyi::DiagnosticTokenEvent? = nil) : Iyi::DiagnosticOperatorWitness
+  Iyi::DiagnosticOperatorWitness.new(start, start + raw.bytesize, kind, raw, selection, event)
+end
+
+def operator_spec_event(start : Int32, raw : String, kind : String = raw, mode : String = "Crystal",
+                        selection : Iyi::DiagnosticTokenSelection = Iyi::DiagnosticTokenSelection::Whole,
+                        producer : Iyi::DiagnosticMacroProducer = Iyi::DiagnosticMacroProducer::MacroTemplate) : Iyi::DiagnosticTokenEvent
+  finish = selection.whole? ? start + raw.bytesize : start + 1
+  part = Iyi::DiagnosticEmissionPart::Generated.new(start, finish, nil, producer).as(Iyi::DiagnosticEmissionPart)
+  Iyi::DiagnosticTokenEvent.new(start, start + raw.bytesize, kind, raw, mode, selection, [part] of Iyi::DiagnosticEmissionPart)
+end
+
+def operator_spec_claim(start : Int32, finish : Int32, source : Iyi::DiagnosticOrigin) : Iyi::DiagnosticEmissionPart::AstAnchor
+  Iyi::DiagnosticEmissionPart::AstAnchor.new(start, finish, nil, source)
+end
+
+def operator_spec_event_with(start : Int32, raw : String, kind : String, parts : Array(Iyi::DiagnosticEmissionPart)) : Iyi::DiagnosticTokenEvent
+  Iyi::DiagnosticTokenEvent.new(start, start + raw.bytesize, kind, raw, "Crystal", Iyi::DiagnosticTokenSelection::Whole, parts)
+end
+
+def operator_spec_expanded(event : Iyi::DiagnosticTokenEvent,
+                           guard : String = "sha256:#{OPERATOR_SPEC_DIGEST}",
+                           kind : String = "Call", role : String = "method") : Iyi::DiagnosticOrigin::Expanded
+  macro_origin = Iyi::DiagnosticOrigin::Written.new("sample", "sample.cr", 0, "Macro", "keyword")
+  Iyi::DiagnosticOrigin::Expanded.new(operator_spec_written(0), macro_origin, guard, kind, role, nil, event,
+    Iyi::DiagnosticAnchorUse::Direct.new)
+end
+
+def operator_spec_derive(production : Iyi::DiagnosticOperatorProduction, anchor : Iyi::DiagnosticOrigin,
+                         witnesses : Array(Iyi::DiagnosticOperatorWitness), input_bytesize : Int32 = 16,
+                         mode : String = "Crystal", digest : String = OPERATOR_SPEC_DIGEST) : Iyi::DiagnosticOrigin::DerivedName
+  Iyi::DiagnosticOrigin::DerivedName.operator_name(production, anchor, digest, input_bytesize, mode, witnesses)
+end
+
+def structural_spec_derive(production : Iyi::DiagnosticStructuralProduction, anchor : Iyi::DiagnosticOrigin,
+                           witnesses : Array(Iyi::DiagnosticOperatorWitness), input_bytesize : Int32,
+                           fresh_index : Int32? = nil, mode : String = "Crystal") : Iyi::DiagnosticOrigin::DerivedName
+  Iyi::DiagnosticOrigin::DerivedName.structural_name(production, anchor, OPERATOR_SPEC_DIGEST, input_bytesize, mode,
+    witnesses, fresh_index)
+end
+
+def heredoc_spec_delimiter(identifier : String, allow_escapes : Bool = true, indent : Int32 = 0) : Iyi::DiagnosticRenderedDelimiter
+  Iyi::DiagnosticRenderedDelimiter.new("HEREDOC", identifier, identifier, allow_escapes, indent)
+end
+
+describe "operator name derivation" do
+  it "derives rendered text and producer context for every production at a written anchor" do
+    cases = [
+      {"a += 1", Iyi::DiagnosticOperatorProduction::OpAssign, [operator_spec_witness(2, "+=")], "+", "op_assign_operator"},
+      {"f -1", Iyi::DiagnosticOperatorProduction::SignedNumber,
+       [operator_spec_witness(2, "-1", "NUMBER", Iyi::DiagnosticTokenSelection::SignedNumberSign)], "-", "method_name"},
+      {"a[1]", Iyi::DiagnosticOperatorProduction::Index,
+       [operator_spec_witness(1, "["), operator_spec_witness(3, "]")], "[]", "method_name"},
+      {"a[1]?", Iyi::DiagnosticOperatorProduction::IndexQuery,
+       [operator_spec_witness(1, "["), operator_spec_witness(3, "]"), operator_spec_witness(4, "?")], "[]?", "method_name"},
+      {"a[1] = 2", Iyi::DiagnosticOperatorProduction::IndexAssign,
+       [operator_spec_witness(1, "["), operator_spec_witness(3, "]"), operator_spec_witness(5, "=")], "[]=", "method_name"},
+      {"a[] = 2", Iyi::DiagnosticOperatorProduction::IndexAssign,
+       [operator_spec_witness(1, "[]"), operator_spec_witness(4, "=")], "[]=", "method_name"},
+      {"f.x = 1", Iyi::DiagnosticOperatorProduction::Setter,
+       [operator_spec_witness(2, "x", "IDENT"), operator_spec_witness(4, "=")], "x=", "method_name"},
+      {"`ls`", Iyi::DiagnosticOperatorProduction::Command,
+       [operator_spec_witness(0, "`", "DELIMITER_START")], "`", "method_name"},
+      {"%x(ls)", Iyi::DiagnosticOperatorProduction::Command,
+       [operator_spec_witness(0, "%x(", "DELIMITER_START")], "`", "method_name"},
+    ]
+    cases.each do |source, production, witnesses, rendered, context|
+      derived = operator_spec_derive(production, operator_spec_written(witnesses[0].input_start), witnesses, source.bytesize)
+      derived.rendered_text.should eq(rendered)
+      derived.producer_context.should eq(context)
+      derived.operator_production.should eq(production)
+    end
+  end
+
+  it "accepts expanded witnesses whose later tokens come from raw producers" do
+    index_assign = operator_spec_derive(Iyi::DiagnosticOperatorProduction::IndexAssign,
+      operator_spec_expanded(operator_spec_event(1, "[")),
+      [operator_spec_witness(1, "["),
+       operator_spec_witness(3, "]", event: operator_spec_event(3, "]", producer: Iyi::DiagnosticMacroProducer::MacroVar)),
+       operator_spec_witness(5, "=", event: operator_spec_event(5, "=", producer: Iyi::DiagnosticMacroProducer::MacroId))],
+      8)
+    index_assign.rendered_text.should eq("[]=")
+
+    signed = operator_spec_derive(Iyi::DiagnosticOperatorProduction::SignedNumber,
+      operator_spec_expanded(operator_spec_event(2, "-1", "NUMBER", selection: Iyi::DiagnosticTokenSelection::SignedNumberSign)),
+      [operator_spec_witness(2, "-1", "NUMBER", Iyi::DiagnosticTokenSelection::SignedNumberSign)], 4)
+    signed.rendered_text.should eq("-")
+  end
+
+  it "binds a spliced later witness whose claim is the anchor's claim (amendment A1)" do
+    source = operator_spec_written(1, "Call", "method")
+    anchor_event = operator_spec_event_with(1, "[", "[", [operator_spec_claim(1, 2, source)] of Iyi::DiagnosticEmissionPart)
+    spliced = operator_spec_event_with(3, "]", "]", [operator_spec_claim(3, 4, source)] of Iyi::DiagnosticEmissionPart)
+    derived = operator_spec_derive(Iyi::DiagnosticOperatorProduction::IndexAssign, operator_spec_expanded(anchor_event),
+      [operator_spec_witness(1, "["), operator_spec_witness(3, "]", event: spliced),
+       operator_spec_witness(5, "=", event: operator_spec_event(5, "="))], 8)
+    derived.rendered_text.should eq("[]=")
+  end
+
+  it "refuses a later claim whose source differs from the anchor's claim (A1)" do
+    source = operator_spec_written(1, "Call", "method")
+    other = operator_spec_written(9, "Call", "method")
+    anchor_event = operator_spec_event_with(1, "[", "[", [operator_spec_claim(1, 2, source)] of Iyi::DiagnosticEmissionPart)
+    foreign = operator_spec_event_with(3, "]", "]", [operator_spec_claim(3, 4, other)] of Iyi::DiagnosticEmissionPart)
+    expect_raises(ArgumentError, "invalid operator witness provenance") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::IndexAssign, operator_spec_expanded(anchor_event),
+        [operator_spec_witness(1, "["), operator_spec_witness(3, "]", event: foreign),
+         operator_spec_witness(5, "=", event: operator_spec_event(5, "="))], 8)
+    end
+  end
+
+  it "refuses mixed provenance inside one later witness event (A1)" do
+    source = operator_spec_written(6, "Call", "method")
+    event = operator_spec_event_with(6, "Int32", "CONST", [
+      Iyi::DiagnosticEmissionPart::Generated.new(6, 8, nil, Iyi::DiagnosticMacroProducer::MacroTemplate).as(Iyi::DiagnosticEmissionPart),
+      operator_spec_claim(8, 11, source).as(Iyi::DiagnosticEmissionPart),
+    ] of Iyi::DiagnosticEmissionPart)
+    witness = operator_spec_witness(6, "Int32", "CONST")
+    expect_raises(ArgumentError, "mixed operator witness provenance") do
+      Iyi::DiagnosticOrigin::DerivedName.check_witness_provenance!(event, witness, [operator_spec_claim(6, 8, source)], "operator")
+    end
+    expect_raises(ArgumentError, "mixed structural witness provenance") do
+      Iyi::DiagnosticOrigin::DerivedName.check_witness_provenance!(event, witness, [operator_spec_claim(6, 8, source)], "structural")
+    end
+  end
+
+  it "refuses malformed shapes and spellings" do
+    expect_raises(ArgumentError, "invalid operator witness") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign, operator_spec_written(2), [operator_spec_witness(2, "+")])
+    end
+    expect_raises(ArgumentError, "invalid operator witness") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign, operator_spec_written(2), [operator_spec_witness(2, "+=", "=")])
+    end
+    expect_raises(ArgumentError, "invalid operator witness") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::SignedNumber, operator_spec_written(2),
+        [operator_spec_witness(2, "-1", "NUMBER")])
+    end
+    expect_raises(ArgumentError, "invalid command opener") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::Command, operator_spec_written(0),
+        [operator_spec_witness(0, "%q(", "DELIMITER_START")])
+    end
+    expect_raises(ArgumentError, "index query suffix not adjacent") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::IndexQuery, operator_spec_written(1),
+        [operator_spec_witness(1, "["), operator_spec_witness(3, "]"), operator_spec_witness(5, "?")], 6)
+    end
+    expect_raises(ArgumentError, "invalid operator witness") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::Setter, operator_spec_written(2),
+        [operator_spec_witness(2, "value?", "IDENT"), operator_spec_witness(9, "=")], 10)
+    end
+    expect_raises(ArgumentError, "invalid operator witness") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::Setter, operator_spec_written(2),
+        [operator_spec_witness(2, "foo", "CONST"), operator_spec_witness(4, "=")])
+    end
+    expect_raises(ArgumentError, "invalid operator witness") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::IndexAssign, operator_spec_written(1),
+        [operator_spec_witness(1, "["), operator_spec_witness(3, "]")])
+    end
+  end
+
+  it "refuses spans that do not match the raw token or fall outside the input" do
+    expect_raises(ArgumentError, "invalid operator witness span") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign, operator_spec_written(2),
+        [Iyi::DiagnosticOperatorWitness.new(2, 5, "+=", "+=", Iyi::DiagnosticTokenSelection::Whole, nil)])
+    end
+    expect_raises(ArgumentError, "invalid operator witness span") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign, operator_spec_written(2),
+        [operator_spec_witness(2, "+=")], 3)
+    end
+    expect_raises(ArgumentError, "operator witnesses overlap or are out of order") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::IndexAssign, operator_spec_written(1),
+        [operator_spec_witness(1, "["), operator_spec_witness(1, "]"), operator_spec_witness(2, "=")])
+    end
+  end
+
+  it "refuses digests, modes, and anchors outside the contract" do
+    expect_raises(ArgumentError, "invalid operator input digest") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign, operator_spec_written(2),
+        [operator_spec_witness(2, "+=")], digest: "XYZ")
+    end
+    expect_raises(ArgumentError, "invalid operator input") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign, operator_spec_written(2),
+        [operator_spec_witness(2, "+=")], mode: "Ruby")
+    end
+    expect_raises(ArgumentError, "invalid operator anchor role") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign,
+        Iyi::DiagnosticOrigin::Written.new("sample", "sample.cr", 2, "Name", "method_name"),
+        [operator_spec_witness(2, "+=")])
+    end
+    expect_raises(ArgumentError, "invalid operator anchor") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign,
+        Iyi::DiagnosticOrigin::Synthetic.new(operator_spec_written(2), "local_binding", "assignment"),
+        [operator_spec_witness(2, "+=")])
+    end
+    expect_raises(ArgumentError, "operator anchor offset mismatch") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign, operator_spec_written(0),
+        [operator_spec_witness(2, "+=")])
+    end
+  end
+
+  it "keeps full-source anchors free of token events" do
+    expect_raises(ArgumentError, "operator witness has a token event for written source") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign, operator_spec_written(2),
+        [operator_spec_witness(2, "+=", event: operator_spec_event(2, "+="))])
+    end
+  end
+
+  it "validates macro anchors and every later witness against the expansion" do
+    expect_raises(ArgumentError, "operator anchor event differs from first witness") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign,
+        operator_spec_expanded(operator_spec_event(4, "+=")), [operator_spec_witness(2, "+=")])
+    end
+    expect_raises(ArgumentError, "operator witnesses use different inputs") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign,
+        operator_spec_expanded(operator_spec_event(2, "+="), "sha256:#{"1" * 64}"), [operator_spec_witness(2, "+=")])
+    end
+    expect_raises(ArgumentError, "invalid operator witness provenance") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::IndexAssign, operator_spec_expanded(operator_spec_event(1, "[")),
+        [operator_spec_witness(1, "["), operator_spec_witness(3, "]"),
+         operator_spec_witness(5, "=", event: operator_spec_event(5, "="))], 8)
+    end
+    expect_raises(ArgumentError, "operator witnesses use different inputs") do
+      operator_spec_derive(Iyi::DiagnosticOperatorProduction::IndexAssign, operator_spec_expanded(operator_spec_event(1, "[")),
+        [operator_spec_witness(1, "["),
+         operator_spec_witness(3, "]", event: operator_spec_event(3, "]", mode: "Iyi")),
+         operator_spec_witness(5, "=", event: operator_spec_event(5, "="))], 8)
+    end
+  end
+
+  it "round-trips derived names and rejects forged computed fields" do
+    origin = operator_spec_derive(Iyi::DiagnosticOperatorProduction::OpAssign, operator_spec_written(2),
+      [operator_spec_witness(2, "+=")], 6)
+    json = origin.to_json
+    Iyi::DiagnosticOrigin.from_json(JSON.parse(json)).should eq(origin)
+
+    expect_raises(ArgumentError, "derived operator rendering differs") do
+      Iyi::DiagnosticOrigin.from_json(JSON.parse(json.sub(%("rendered_text":"+"), %("rendered_text":"-"))))
+    end
+    expect_raises(ArgumentError, "derived operator rendering differs") do
+      Iyi::DiagnosticOrigin.from_json(JSON.parse(json.sub(%("producer_context":"op_assign_operator"), %("producer_context":"method_name"))))
+    end
+    expect_raises(ArgumentError, "invalid operator witness") do
+      Iyi::DiagnosticOrigin.from_json(JSON.parse(json.sub(%("production":"OpAssign"), %("production":"Setter"))))
+    end
+    expect_raises(ArgumentError) do
+      Iyi::DiagnosticOrigin.from_json(JSON.parse(json.sub(%("derivation_kind":"OperatorName"), %("derivation_kind":"OperatorName","extra":1))))
+    end
+  end
+
+  it "round-trips expanded operator names" do
+    origin = operator_spec_derive(Iyi::DiagnosticOperatorProduction::IndexAssign,
+      operator_spec_expanded(operator_spec_event(1, "[")),
+      [operator_spec_witness(1, "["),
+       operator_spec_witness(3, "]", event: operator_spec_event(3, "]", producer: Iyi::DiagnosticMacroProducer::MacroVar)),
+       operator_spec_witness(5, "=", event: operator_spec_event(5, "=", producer: Iyi::DiagnosticMacroProducer::MacroId))],
+      8)
+    Iyi::DiagnosticOrigin.from_json(JSON.parse(origin.to_json)).should eq(origin)
+  end
+end
+
+describe "structural name derivation" do
+  it "derives an unnamed lib parameter at the FunDef keyword and a short block variable at its ampersand" do
+    separator = operator_spec_witness(5, "(")
+    type_head = operator_spec_witness(6, "Int32", "CONST")
+    unnamed = structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+      operator_spec_written(0, "FunDef", "keyword"), [separator, type_head], 12)
+    unnamed.rendered_text.should eq("")
+    unnamed.producer_context.should eq("parameter")
+
+    short_block = structural_spec_derive(Iyi::DiagnosticStructuralProduction::ShortBlockArgument,
+      operator_spec_written(6, "Block", "ampersand"),
+      [operator_spec_witness(6, "&"), operator_spec_witness(7, ".")], 10, 0)
+    short_block.rendered_text.should eq("__arg0")
+    short_block.producer_context.should eq("local_reference")
+  end
+
+  it "binds a short block variable inside a macro expansion through its ampersand token" do
+    anchor_event = operator_spec_event(6, "&", "&")
+    derived = structural_spec_derive(Iyi::DiagnosticStructuralProduction::ShortBlockArgument,
+      operator_spec_expanded(anchor_event, kind: "Block", role: "ampersand"),
+      [operator_spec_witness(6, "&"),
+       operator_spec_witness(7, ".", event: operator_spec_event(7, "."))], 10, 3)
+    derived.rendered_text.should eq("__arg3")
+  end
+
+  it "refuses structural witnesses whose kinds or fresh index are wrong" do
+    expect_raises(ArgumentError, "structural witness differs") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_written(0, "FunDef", "keyword"),
+        [operator_spec_witness(5, "("), operator_spec_witness(6, "Int32", "IDENT")], 12)
+    end
+    expect_raises(ArgumentError, "structural witness differs") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_written(0, "FunDef", "keyword"),
+        [operator_spec_witness(5, "["), operator_spec_witness(6, "Int32", "CONST")], 12)
+    end
+    expect_raises(ArgumentError, "invalid short block fresh index") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::ShortBlockArgument,
+        operator_spec_written(6, "Block", "ampersand"),
+        [operator_spec_witness(6, "&"), operator_spec_witness(7, ".")], 10)
+    end
+    expect_raises(ArgumentError, "structural witness differs") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::ShortBlockArgument,
+        operator_spec_written(6, "Block", "ampersand"),
+        [operator_spec_witness(6, "&"), operator_spec_witness(7, "x", "IDENT")], 10, 0)
+    end
+  end
+
+  it "refuses anchors outside the contract" do
+    expect_raises(ArgumentError, "structural anchor offset mismatch") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_written(5, "FunDef", "keyword"),
+        [operator_spec_witness(5, "("), operator_spec_witness(6, "Int32", "CONST")], 12)
+    end
+    expect_raises(ArgumentError, "structural anchor offset mismatch") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::ShortBlockArgument,
+        operator_spec_written(5, "Block", "ampersand"),
+        [operator_spec_witness(6, "&"), operator_spec_witness(7, ".")], 10, 0)
+    end
+    expect_raises(ArgumentError, "invalid structural anchor role") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_written(0, "Call", "method"),
+        [operator_spec_witness(5, "("), operator_spec_witness(6, "Int32", "CONST")], 12)
+    end
+  end
+
+  it "round-trips structural names and rejects forged computed text" do
+    short_block = structural_spec_derive(Iyi::DiagnosticStructuralProduction::ShortBlockArgument,
+      operator_spec_written(6, "Block", "ampersand"),
+      [operator_spec_witness(6, "&"), operator_spec_witness(7, ".")], 10, 0)
+    json = short_block.to_json
+    Iyi::DiagnosticOrigin.from_json(JSON.parse(json)).should eq(short_block)
+    expect_raises(ArgumentError, "derived structural rendering differs") do
+      Iyi::DiagnosticOrigin.from_json(JSON.parse(json.sub(%("rendered_text":"__arg0"), %("rendered_text":"__arg9"))))
+    end
+  end
+end
+
+describe "heredoc delimiter identifiers" do
+  it "accepts realistic long heredoc identifiers, quoted forms and unicode with indentation" do
+    long = "SQL_QUARTERLY_CLOSE_REPORT_TEMPLATE_2026_REVISION_FOUR_WITH_A_LONG_NAME"
+    heredoc_spec_delimiter(long, true, 8).heredoc_indent.should eq(8)
+    heredoc_spec_delimiter("END OF REPORT v2", false, 0).nest.should eq("END OF REPORT v2")
+    heredoc_spec_delimiter("Résumé_Table", true, 0).end_delimiter.should eq("Résumé_Table")
+    token = Iyi::DiagnosticRenderedToken.new(0, 2 + long.bytesize, "DELIMITER_START", "<<-#{long}", "Crystal",
+      nil, heredoc_spec_delimiter(long), false, false, 3)
+    token.line.should eq(3)
+  end
+
+  it "refuses oversized, malformed, and mismatched heredoc identifiers" do
+    oversized = "A" * (Iyi::DiagnosticOrigin::MAX_UNFOLDED_BYTES + 1)
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter(oversized) }
+    expect_raises(ArgumentError, "heredoc identifier differs from its closing") do
+      Iyi::DiagnosticRenderedDelimiter.new("HEREDOC", "EOS", "EOT", true, 0)
+    end
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter("") }
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter("9LIVES") }
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter("END OF", true) }
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter("END-OF", true) }
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter("A\xFF", true) }
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter(" LEAD", false) }
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter("AB'C", false) }
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter("AB\nC", false) }
+    expect_raises(ArgumentError, "invalid heredoc identifier") { heredoc_spec_delimiter("A\0", false) }
+  end
+
+  it "keeps the four-byte bound for single-character delimiters and forbids indent elsewhere" do
+    expect_raises(ArgumentError, "invalid rendered delimiter state") do
+      Iyi::DiagnosticRenderedDelimiter.new("STRING", "ab", "\"", false, 0)
+    end
+    Iyi::DiagnosticRenderedDelimiter.new("STRING", "😀", "😀", false, 0).nest.should eq("😀")
+    expect_raises(ArgumentError, "rendered heredoc indent on a non-heredoc delimiter") do
+      Iyi::DiagnosticRenderedDelimiter.new("STRING", "\"", "\"", true, 2)
+    end
+    expect_raises(ArgumentError, "invalid rendered heredoc indent") do
+      Iyi::DiagnosticRenderedDelimiter.new("HEREDOC", "EOS", "EOS", true, -1)
+    end
+  end
+end
+
+describe "rendered token journal fields" do
+  it "keeps existing constructors and defaults the journal fields" do
+    token = Iyi::DiagnosticRenderedToken.new(0, 1, "IDENT", "a", "Crystal")
+    token.value_base64.should eq(nil)
+    token.delimiter.should eq(nil)
+    token.passed_backslash_newline.should eq(false)
+    token.invalid_escape.should eq(false)
+    token.line.should eq(nil)
+  end
+
+  it "accepts canonical bounded values and delimiter state on the right tokens" do
+    Iyi::DiagnosticRenderedToken.new(0, 3, "STRING", "\"a\"", "Crystal", "YQ==").value_base64.should eq("YQ==")
+    delimiter = Iyi::DiagnosticRenderedDelimiter.new("STRING", "\"", "\"", true, 0)
+    Iyi::DiagnosticRenderedToken.new(0, 1, "DELIMITER_START", "\"", "Crystal", nil, delimiter).delimiter.should eq(delimiter)
+    Iyi::DiagnosticRenderedToken.new(0, 1, "SPACE", " ", "Crystal", nil, nil, true)
+    Iyi::DiagnosticRenderedToken.new(0, 1, "STRING", "\"", "Crystal", nil, nil, false, true)
+    Iyi::DiagnosticRenderedToken.new(0, 1, "SPACE", " ", "Crystal", line: 1).line.should eq(1)
+  end
+
+  it "rejects non-canonical, oversize, and misplaced journal fields" do
+    expect_raises(ArgumentError, "rendered value on a non-string token") do
+      Iyi::DiagnosticRenderedToken.new(0, 1, "IDENT", "a", "Crystal", "YQ==")
+    end
+    expect_raises(ArgumentError, "rendered value is not canonical base64") do
+      Iyi::DiagnosticRenderedToken.new(0, 3, "STRING", "\"a\"", "Crystal", "YR==")
+    end
+    expect_raises(ArgumentError, "rendered value exceeds token bound") do
+      Iyi::DiagnosticRenderedToken.new(0, 3, "STRING", "\"a\"", "Crystal", "YWJjZA==")
+    end
+    expect_raises(ArgumentError, "rendered value exceeds token bound") do
+      Iyi::DiagnosticRenderedToken.new(0, 1, "STRING", "\"", "Crystal", "YWI=")
+    end
+    delimiter = Iyi::DiagnosticRenderedDelimiter.new("STRING", "\"", "\"", true, 0)
+    expect_raises(ArgumentError, "rendered delimiter on a non-delimiter token") do
+      Iyi::DiagnosticRenderedToken.new(0, 1, "IDENT", "a", "Crystal", nil, delimiter)
+    end
+    expect_raises(ArgumentError, "invalid rendered delimiter state") do
+      Iyi::DiagnosticRenderedDelimiter.new("Bogus", "\"", "\"", false, 0)
+    end
+    expect_raises(ArgumentError, "backslash-newline flag on a non-space token") do
+      Iyi::DiagnosticRenderedToken.new(0, 3, "STRING", "\"a\"", "Crystal", nil, nil, true)
+    end
+    expect_raises(ArgumentError, "invalid escape flag on a non-string token") do
+      Iyi::DiagnosticRenderedToken.new(0, 1, "SPACE", " ", "Crystal", nil, nil, false, true)
+    end
+    expect_raises(ArgumentError, "invalid rendered token line") do
+      Iyi::DiagnosticRenderedToken.new(0, 1, "SPACE", " ", "Crystal", line: 0)
+    end
+  end
+end
+
+def unnamed_spec_keyword(start : Int32, text : String, source : Iyi::DiagnosticOrigin? = nil) : Iyi::DiagnosticTokenEvent
+  finish = start + text.bytesize
+  parts = if claim_source = source
+            [operator_spec_claim(start, finish, claim_source).as(Iyi::DiagnosticEmissionPart)] of Iyi::DiagnosticEmissionPart
+          else
+            [Iyi::DiagnosticEmissionPart::Generated.new(start, finish, nil, Iyi::DiagnosticMacroProducer::MacroTemplate).as(Iyi::DiagnosticEmissionPart)] of Iyi::DiagnosticEmissionPart
+          end
+  Iyi::DiagnosticTokenEvent.new(start, finish, "fun", text, "Crystal", Iyi::DiagnosticTokenSelection::Whole, parts)
+end
+
+describe "unnamed lib parameter expansion" do
+  it "accepts an expanded keyword whose separator and type carry generated events" do
+    keyword = unnamed_spec_keyword(0, "fun")
+    derived = structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+      operator_spec_expanded(keyword, "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+      [operator_spec_witness(5, "(", event: operator_spec_event(5, "(")),
+       operator_spec_witness(6, "Int32", "CONST", event: operator_spec_event(6, "Int32", "CONST"))], 12)
+    derived.rendered_text.should eq("")
+    derived.producer_context.should eq("parameter")
+  end
+
+  it "accepts spliced witnesses whose claims match the keyword's claim (A1)" do
+    source = operator_spec_written(0, "FunDef", "keyword")
+    keyword = unnamed_spec_keyword(0, "fun", source)
+    separator = operator_spec_event_with(5, "(", "(", [operator_spec_claim(5, 6, source)] of Iyi::DiagnosticEmissionPart)
+    type_head = operator_spec_event_with(6, "Int32", "CONST", [operator_spec_claim(6, 11, source)] of Iyi::DiagnosticEmissionPart)
+    derived = structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+      operator_spec_expanded(keyword, "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+      [operator_spec_witness(5, "(", event: separator), operator_spec_witness(6, "Int32", "CONST", event: type_head)], 12)
+    derived.rendered_text.should eq("")
+  end
+
+  it "refuses an anchor token whose text is not fun" do
+    expect_raises(ArgumentError, "structural anchor event is not the fun keyword") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(0, "def"), "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "(", event: operator_spec_event(5, "(")),
+         operator_spec_witness(6, "Int32", "CONST", event: operator_spec_event(6, "Int32", "CONST"))], 12)
+    end
+  end
+
+  it "refuses a keyword that does not precede its separator" do
+    expect_raises(ArgumentError, "structural anchor follows its witnesses") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(6, "fun"), "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "(", event: operator_spec_event(5, "(")),
+         operator_spec_witness(6, "Int32", "CONST", event: operator_spec_event(6, "Int32", "CONST"))], 12)
+    end
+  end
+
+  it "refuses an expansion guard that does not match the input" do
+    expect_raises(ArgumentError, "structural witnesses use different inputs") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(0, "fun"), "sha256:#{"1" * 64}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "(", event: operator_spec_event(5, "(")),
+         operator_spec_witness(6, "Int32", "CONST", event: operator_spec_event(6, "Int32", "CONST"))], 12)
+    end
+  end
+
+  it "refuses a later witness without its own event" do
+    expect_raises(ArgumentError, "invalid structural witness provenance") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(0, "fun"), "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "("),
+         operator_spec_witness(6, "Int32", "CONST", event: operator_spec_event(6, "Int32", "CONST"))], 12)
+    end
+  end
+
+  it "refuses a spliced witness when the keyword carries no claim to match" do
+    source = operator_spec_written(0, "FunDef", "keyword")
+    separator = operator_spec_event_with(5, "(", "(", [operator_spec_claim(5, 6, source)] of Iyi::DiagnosticEmissionPart)
+    expect_raises(ArgumentError, "invalid structural witness provenance") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(0, "fun"), "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "(", event: separator),
+         operator_spec_witness(6, "Int32", "CONST", event: operator_spec_event(6, "Int32", "CONST"))], 12)
+    end
+  end
+
+  it "refuses a spliced witness whose claim comes from a foreign source" do
+    source = operator_spec_written(0, "FunDef", "keyword")
+    foreign = operator_spec_written(9, "FunDef", "keyword")
+    type_head = operator_spec_event_with(6, "Int32", "CONST", [operator_spec_claim(6, 11, foreign)] of Iyi::DiagnosticEmissionPart)
+    expect_raises(ArgumentError, "invalid structural witness provenance") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(0, "fun", source), "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "(", event: operator_spec_event(5, "(")),
+         operator_spec_witness(6, "Int32", "CONST", event: type_head)], 12)
+    end
+  end
+
+  it "refuses a witness that mixes generated and spliced parts (A1)" do
+    source = operator_spec_written(0, "FunDef", "keyword")
+    mixed = operator_spec_event_with(6, "Int32", "CONST", [
+      Iyi::DiagnosticEmissionPart::Generated.new(6, 8, nil, Iyi::DiagnosticMacroProducer::MacroTemplate).as(Iyi::DiagnosticEmissionPart),
+      operator_spec_claim(8, 11, source).as(Iyi::DiagnosticEmissionPart),
+    ] of Iyi::DiagnosticEmissionPart)
+    expect_raises(ArgumentError, "mixed structural witness provenance") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(0, "fun", source), "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "(", event: operator_spec_event(5, "(")),
+         operator_spec_witness(6, "Int32", "CONST", event: mixed)], 12)
+    end
+  end
+
+  it "refuses a witness produced by a non-raw producer" do
+    expect_raises(ArgumentError, "invalid structural witness provenance") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(0, "fun"), "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "(", event: operator_spec_event(5, "(", producer: Iyi::DiagnosticMacroProducer::StructuredSyntax)),
+         operator_spec_witness(6, "Int32", "CONST", event: operator_spec_event(6, "Int32", "CONST"))], 12)
+    end
+  end
+
+  it "refuses a witness event from a different lexical mode" do
+    expect_raises(ArgumentError, "structural witnesses use different inputs") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(0, "fun"), "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "(", event: operator_spec_event(5, "(")),
+         operator_spec_witness(6, "Int32", "CONST", event: operator_spec_event(6, "Int32", "CONST", mode: "Iyi"))], 12)
+    end
+  end
+
+  it "refuses a witness event whose spelling differs from the witness" do
+    spelled = Iyi::DiagnosticTokenEvent.new(6, 11, "CONST", "Int33", "Crystal", Iyi::DiagnosticTokenSelection::Whole,
+      [Iyi::DiagnosticEmissionPart::Generated.new(6, 11, nil, Iyi::DiagnosticMacroProducer::MacroTemplate).as(Iyi::DiagnosticEmissionPart)] of Iyi::DiagnosticEmissionPart)
+    expect_raises(ArgumentError, "invalid structural witness provenance") do
+      structural_spec_derive(Iyi::DiagnosticStructuralProduction::UnnamedFunParameter,
+        operator_spec_expanded(unnamed_spec_keyword(0, "fun"), "sha256:#{OPERATOR_SPEC_DIGEST}", "FunDef", "keyword"),
+        [operator_spec_witness(5, "(", event: operator_spec_event(5, "(")),
+         operator_spec_witness(6, "Int32", "CONST", event: spelled)], 12)
+    end
+  end
+end

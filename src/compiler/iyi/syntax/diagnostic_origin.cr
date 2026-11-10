@@ -1,6 +1,7 @@
 require "json"
 require "set"
 require "crystal/digest/sha256"
+require "base64"
 
 module Iyi
   # Producer source coordinates for a span in rendered source or an artifact.
@@ -883,8 +884,114 @@ module Iyi
     TypeName = 4
   end
 
+  # Lexer delimiter state, encoded as diagnostic_production encodes it (kind, nest, end, escapes, indent).
+  record DiagnosticRenderedDelimiter, kind : String, nest : String, end_delimiter : String,
+    allow_escapes : Bool, heredoc_indent : Int32 do
+    def initialize(@kind : String, @nest : String, @end_delimiter : String,
+                   @allow_escapes : Bool, @heredoc_indent : Int32)
+      member = Token::DelimiterKind.parse?(@kind)
+      raise ArgumentError.new("invalid rendered delimiter state") unless member
+      raise ArgumentError.new("invalid rendered delimiter state") unless @kind.bytesize <= 32
+      raise ArgumentError.new("invalid rendered delimiter state") unless @nest.valid_encoding? && @end_delimiter.valid_encoding?
+      unless @heredoc_indent >= 0 && @heredoc_indent <= DiagnosticOrigin::MAX_UNFOLDED_BYTES
+        raise ArgumentError.new("invalid rendered heredoc indent")
+      end
+      if member.heredoc?
+        DiagnosticRenderedDelimiter.check_heredoc_identifier!(@nest, @end_delimiter, @allow_escapes)
+      else
+        raise ArgumentError.new("rendered heredoc indent on a non-heredoc delimiter") unless @heredoc_indent == 0
+        unless @nest.size == 1 && @end_delimiter.size == 1 && @nest.bytesize <= 4 && @end_delimiter.bytesize <= 4
+          raise ArgumentError.new("invalid rendered delimiter state")
+        end
+      end
+    end
+
+    # Grounded in the lexer: the identifier is nest and end. Unquoted: ident_start then ident_part only.
+    # Quoted (allow_escapes false): ident_start then any character except NUL, CR, LF and the quote.
+    def self.check_heredoc_identifier!(identifier : String, closing : String, allow_escapes : Bool) : Nil
+      raise ArgumentError.new("heredoc identifier differs from its closing") unless identifier == closing
+      unless !identifier.empty? && identifier.bytesize <= DiagnosticOrigin::MAX_UNFOLDED_BYTES && identifier.valid_encoding?
+        raise ArgumentError.new("invalid heredoc identifier")
+      end
+      first = true
+      identifier.each_char do |char|
+        if first
+          raise ArgumentError.new("invalid heredoc identifier") unless Lexer.ident_start?(char)
+          first = false
+        elsif allow_escapes
+          raise ArgumentError.new("invalid heredoc identifier") unless Lexer.ident_part?(char)
+        else
+          raise ArgumentError.new("invalid heredoc identifier") if char == '\0' || char == '\r' || char == '\n' || char == '\''
+        end
+      end
+    end
+  end
+
+  # Journal fields are optional, so existing constructors keep their meaning. The lexer numbers lines from 1.
   record DiagnosticRenderedToken, input_start : Int32, input_end : Int32,
-    token_kind : String, token_text : String, lexical_mode : String
+    token_kind : String, token_text : String, lexical_mode : String,
+    value_base64 : String? = nil, delimiter : DiagnosticRenderedDelimiter? = nil,
+    passed_backslash_newline : Bool = false, invalid_escape : Bool = false,
+    line : Int32? = nil do
+    def initialize(@input_start : Int32, @input_end : Int32, @token_kind : String, @token_text : String,
+                   @lexical_mode : String, @value_base64 : String? = nil,
+                   @delimiter : DiagnosticRenderedDelimiter? = nil,
+                   @passed_backslash_newline : Bool = false, @invalid_escape : Bool = false,
+                   @line : Int32? = nil)
+      if value = @value_base64
+        raise ArgumentError.new("rendered value on a non-string token") unless {"STRING", "SYMBOL"}.includes?(@token_kind)
+        DiagnosticRenderedToken.decode_value(value, @token_text.bytesize)
+      end
+      if @delimiter && !{"DELIMITER_START", "STRING", "DELIMITER_END", "INTERPOLATION_START"}.includes?(@token_kind)
+        raise ArgumentError.new("rendered delimiter on a non-delimiter token")
+      end
+      raise ArgumentError.new("backslash-newline flag on a non-space token") if @passed_backslash_newline && @token_kind != "SPACE"
+      raise ArgumentError.new("invalid escape flag on a non-string token") if @invalid_escape && @token_kind != "STRING"
+      raise ArgumentError.new("invalid rendered token line") if @line.try { |number| number < 1 }
+    end
+
+    # Strict and bounded: a lexer value never decodes to more bytes than its source token.
+    def self.decode_value(value : String, token_bytes : Int32) : Bytes
+      raise ArgumentError.new("rendered value exceeds token bound") if value.bytesize > 4 * ((token_bytes + 2) // 3)
+      bytes = begin
+                Base64.decode(value)
+              rescue
+                raise ArgumentError.new("rendered value is not base64")
+              end
+      raise ArgumentError.new("rendered value is not canonical base64") unless Base64.strict_encode(bytes) == value
+      raise ArgumentError.new("rendered value exceeds token bound") if bytes.size > token_bytes
+      bytes
+    end
+  end
+
+  enum DiagnosticOperatorProduction : UInt8
+    OpAssign = 1
+    SignedNumber = 2
+    Index = 3
+    IndexQuery = 4
+    IndexAssign = 5
+    Setter = 6
+    Command = 7
+  end
+
+  enum DiagnosticStructuralProduction : UInt8
+    UnnamedFunParameter = 1
+    ShortBlockArgument = 2
+  end
+
+  record DiagnosticOperatorWitness, input_start : Int32, input_end : Int32, token_kind : String,
+    raw_text : String, selection : DiagnosticTokenSelection, event : DiagnosticTokenEvent? do
+    def to_json(json : JSON::Builder) : Nil
+      json.object do
+        json.field "input_start", input_start
+        json.field "input_end", input_end
+        json.field "token_kind", token_kind
+        json.field "raw_text", raw_text
+        json.field "selection", selection.to_s
+        json.field "event", event
+      end
+    end
+  end
 
   module DiagnosticRenderedTokens
     def self.observe_one(input : String, start : Int32, finish : Int32, lexical_mode : String,
@@ -1944,6 +2051,46 @@ module Iyi
           end
           DerivedName.type_sugar(DiagnosticTypeSugar.parse(object["production"].as_s), witnesses,
             DiagnosticTypeSugarResult.parse(object["result"].as_s), object["lowering_index"].as_i)
+        when "OperatorName"
+          expected_keys(object, %w(kind derivation_kind production anchor_origin input_sha256 input_bytesize lexical_mode witnesses rendered_text producer_context))
+          %w(input_sha256 lexical_mode rendered_text producer_context).each { |key| budget.text(object[key].as_s) }
+          budget.consume(object["witnesses"].as_a.size.to_u64 * 512_u64)
+          witnesses = object["witnesses"].as_a.map do |value|
+            item = value.as_h
+            expected_keys(item, %w(input_start input_end token_kind raw_text selection event))
+            %w(token_kind raw_text selection).each { |key| budget.text(item[key].as_s) }
+            event = item["event"].raw.nil? ? nil : token_event_from_json(item["event"], depth + 1, budget)
+            DiagnosticOperatorWitness.new(item["input_start"].as_i, item["input_end"].as_i, item["token_kind"].as_s,
+              item["raw_text"].as_s, DiagnosticTokenSelection.parse(item["selection"].as_s), event)
+          end
+          derived = DerivedName.operator_name(DiagnosticOperatorProduction.parse(object["production"].as_s),
+            from_json(object["anchor_origin"], depth + 1, budget), object["input_sha256"].as_s,
+            object["input_bytesize"].as_i, object["lexical_mode"].as_s, witnesses)
+          unless derived.rendered_text == object["rendered_text"].as_s && derived.producer_context == object["producer_context"].as_s
+            raise ArgumentError.new("derived operator rendering differs")
+          end
+          derived
+        when "StructuralName"
+          expected_keys(object, %w(kind derivation_kind production anchor_origin input_sha256 input_bytesize lexical_mode witnesses fresh_index rendered_text producer_context))
+          %w(input_sha256 lexical_mode rendered_text producer_context).each { |key| budget.text(object[key].as_s) }
+          budget.consume(object["witnesses"].as_a.size.to_u64 * 512_u64)
+          witnesses = object["witnesses"].as_a.map do |value|
+            item = value.as_h
+            expected_keys(item, %w(input_start input_end token_kind raw_text selection event))
+            %w(token_kind raw_text selection).each { |key| budget.text(item[key].as_s) }
+            event = item["event"].raw.nil? ? nil : token_event_from_json(item["event"], depth + 1, budget)
+            DiagnosticOperatorWitness.new(item["input_start"].as_i, item["input_end"].as_i, item["token_kind"].as_s,
+              item["raw_text"].as_s, DiagnosticTokenSelection.parse(item["selection"].as_s), event)
+          end
+          fresh = object["fresh_index"]
+          derived = DerivedName.structural_name(DiagnosticStructuralProduction.parse(object["production"].as_s),
+            from_json(object["anchor_origin"], depth + 1, budget), object["input_sha256"].as_s,
+            object["input_bytesize"].as_i, object["lexical_mode"].as_s, witnesses,
+            fresh.raw.nil? ? nil : fresh.as_i)
+          unless derived.rendered_text == object["rendered_text"].as_s && derived.producer_context == object["producer_context"].as_s
+            raise ArgumentError.new("derived structural rendering differs")
+          end
+          derived
         else
           raise ArgumentError.new("unknown diagnostic name derivation")
         end
@@ -2253,6 +2400,373 @@ module Iyi
         set_graph_bounds!(1024_u64 + source_token.raw_text.bytesize.to_u64 * 6, [source_token.lexical_origin] of DiagnosticOrigin)
       end
 
+      def self.operator_name(production : DiagnosticOperatorProduction, anchor_origin : DiagnosticOrigin,
+                             input_sha256 : String, input_bytesize : Int32, lexical_mode : String,
+                             witnesses : Array(DiagnosticOperatorWitness)) : DerivedName
+        new(production, anchor_origin, input_sha256, input_bytesize, lexical_mode, witnesses)
+      end
+
+      def initialize(production : DiagnosticOperatorProduction, anchor_origin : DiagnosticOrigin,
+                     input_sha256 : String, input_bytesize : Int32, lexical_mode : String,
+                     witnesses : Array(DiagnosticOperatorWitness))
+        @source_token = nil
+        @derivation_kind = "OperatorName"
+        @definition_origin = nil
+        @parameter_slot = nil
+        @parameter_index = nil
+        @result = ""
+        @projection = nil
+        @fresh_index = nil
+        @production = nil
+        @sugar_result = nil
+        @lowering_index = nil
+        @witnesses = [] of DiagnosticSourceSyntaxToken
+        DerivedName.check_operator_digest!(input_sha256)
+        unless input_bytesize >= 1 && {"Crystal", "Iyi"}.includes?(lexical_mode)
+          raise ArgumentError.new("invalid operator input")
+        end
+        unless anchor_origin.is_a?(Written) || anchor_origin.is_a?(Expanded)
+          raise ArgumentError.new("invalid operator anchor")
+        end
+        raise ArgumentError.new("invalid operator anchor role") unless anchor_origin.valid_for_anchor?("Call", "method")
+        rendered_value, producer_value = DerivedName.operator_rendering(production, witnesses, lexical_mode)
+        DerivedName.check_operator_witnesses!(production, witnesses, input_bytesize)
+        DerivedName.check_operator_anchor!(anchor_origin, witnesses, input_sha256, lexical_mode)
+        @rendered_text = rendered_value
+        @producer_context = producer_value
+        @operator_production = production
+        @operator_witnesses = witnesses.dup
+        @operator_input_sha256 = input_sha256
+        @operator_input_bytesize = input_bytesize
+        @operator_lexical_mode = lexical_mode
+        @operator_anchor = anchor_origin
+        own = 1024_u64 + input_sha256.bytesize.to_u64 * 6 + lexical_mode.bytesize.to_u64 * 6
+        event_depth = 0
+        witnesses.each do |witness|
+          own += 512_u64 + witness.raw_text.bytesize.to_u64 * 6 + witness.token_kind.bytesize.to_u64 * 6
+          if event = witness.event
+            own += event.graph_bytes
+            event_depth = Math.max(event_depth, event.graph_depth + 1)
+          end
+        end
+        set_graph_bounds!(own, [anchor_origin] of DiagnosticOrigin)
+        raise ArgumentError.new("operator name graph exceeds depth limit") if event_depth > MAX_DEPTH
+        @graph_depth = Math.max(@graph_depth, event_depth)
+      end
+
+      def self.check_operator_digest!(digest : String) : Nil
+        unless digest.bytesize == 64 && digest.each_byte.all? { |byte| (48_u8..57_u8).includes?(byte) || (97_u8..102_u8).includes?(byte) }
+          raise ArgumentError.new("invalid operator input digest")
+        end
+      end
+
+      def self.operator_plain?(witness : DiagnosticOperatorWitness, expected : String) : Bool
+        witness.token_kind == expected && witness.raw_text == expected && witness.selection.whole?
+      end
+
+      def self.operator_sequence?(witnesses : Array(DiagnosticOperatorWitness), expected : Array(String)) : Bool
+        return false unless witnesses.size == expected.size
+        expected.each_with_index do |text, index|
+          return false unless operator_plain?(witnesses[index], text)
+        end
+        true
+      end
+
+      # Shape and spelling per production (contract C-OP). Returns {rendered text, producer context}.
+      def self.operator_rendering(production : DiagnosticOperatorProduction, witnesses : Array(DiagnosticOperatorWitness),
+                                  lexical_mode : String) : Tuple(String, String)
+        invalid = "invalid operator witness"
+        case production
+        when DiagnosticOperatorProduction::OpAssign
+          raise ArgumentError.new(invalid) unless witnesses.size == 1
+          witness = witnesses[0]
+          unless OPERATOR_OP_ASSIGNS.includes?(witness.raw_text) && operator_plain?(witness, witness.raw_text)
+            raise ArgumentError.new(invalid)
+          end
+          {witness.raw_text.byte_slice(0, witness.raw_text.bytesize - 1), "op_assign_operator"}
+        when DiagnosticOperatorProduction::SignedNumber
+          raise ArgumentError.new(invalid) unless witnesses.size == 1
+          witness = witnesses[0]
+          unless witness.token_kind == "NUMBER" && witness.raw_text.matches?(/\A[+-][0-9]/) && witness.selection.signed_number_sign?
+            raise ArgumentError.new(invalid)
+          end
+          {witness.raw_text.byte_slice(0, 1), "method_name"}
+        when DiagnosticOperatorProduction::Index
+          raise ArgumentError.new(invalid) unless operator_sequence?(witnesses, ["[", "]"])
+          {"[]", "method_name"}
+        when DiagnosticOperatorProduction::IndexQuery
+          raise ArgumentError.new(invalid) unless operator_sequence?(witnesses, ["[", "]", "?"])
+          raise ArgumentError.new("index query suffix not adjacent") unless witnesses[2].input_start == witnesses[1].input_end
+          {"[]?", "method_name"}
+        when DiagnosticOperatorProduction::IndexAssign
+          unless operator_sequence?(witnesses, ["[", "]", "="]) || operator_sequence?(witnesses, ["[]", "="])
+            raise ArgumentError.new(invalid)
+          end
+          {"[]=", "method_name"}
+        when DiagnosticOperatorProduction::Setter
+          raise ArgumentError.new(invalid) unless witnesses.size == 2 && operator_plain?(witnesses[1], "=")
+          name = witnesses[0]
+          unless {"IDENT", "CONST"}.includes?(name.token_kind) && name.selection.whole? &&
+                 !name.raw_text.ends_with?("?") && !name.raw_text.ends_with?("!") &&
+                 DiagnosticSourceNameToken.valid_token?(name.token_kind, name.raw_text, lexical_mode, "method_name")
+            raise ArgumentError.new(invalid)
+          end
+          {"#{name.raw_text}=", "method_name"}
+        when DiagnosticOperatorProduction::Command
+          raise ArgumentError.new(invalid) unless witnesses.size == 1
+          witness = witnesses[0]
+          raise ArgumentError.new(invalid) unless witness.token_kind == "DELIMITER_START" && witness.selection.whole?
+          raise ArgumentError.new("invalid command opener") unless OPERATOR_COMMAND_OPENERS.includes?(witness.raw_text)
+          {"`", "method_name"}
+        else
+          raise ArgumentError.new("invalid operator production")
+        end
+      end
+
+      def self.check_operator_witnesses!(production : DiagnosticOperatorProduction,
+                                         witnesses : Array(DiagnosticOperatorWitness), input_bytesize : Int32) : Nil
+        check_witness_spans!(witnesses, input_bytesize, production.signed_number?, "operator")
+      end
+
+      # Spans, order and selection for every witness-bearing derivation. Only a signed-number
+      # sign may be a non-whole selection, and only on witness 0.
+      def self.check_witness_spans!(witnesses : Array(DiagnosticOperatorWitness), input_bytesize : Int32,
+                                    signed_allowed : Bool, label : String) : Nil
+        witnesses.each_with_index do |witness, index|
+          unless witness.input_start >= 0 && witness.input_end > witness.input_start &&
+                 witness.input_end <= input_bytesize && witness.input_end - witness.input_start == witness.raw_text.bytesize &&
+                 witness.raw_text.valid_encoding?
+            raise ArgumentError.new("invalid #{label} witness span")
+          end
+          unless witness.selection.whole? || (signed_allowed && index == 0)
+            raise ArgumentError.new("invalid #{label} witness selection")
+          end
+          if index > 0 && witnesses[index - 1].input_end > witness.input_start
+            raise ArgumentError.new("#{label} witnesses overlap or are out of order")
+          end
+        end
+      end
+
+      # Full-source anchors carry no token events. Macro anchors carry one event per witness, and
+      # every later witness must satisfy amendment A1. Labels keep operator and structural messages apart.
+      def self.check_witness_chain!(anchor : DiagnosticOrigin, witnesses : Array(DiagnosticOperatorWitness),
+                                    input_sha256 : String, lexical_mode : String, label : String) : Nil
+        first = witnesses[0]
+        case anchor
+        when Written
+          raise ArgumentError.new("#{label} witness has a token event for written source") if witnesses.any? { |witness| !witness.event.nil? }
+        when Expanded
+          anchor_event = anchor.token_event
+          unless anchor_event.input_start == first.input_start && anchor_event.input_end == first.input_end &&
+                 anchor_event.token_kind == first.token_kind && anchor_event.token_text == first.raw_text &&
+                 anchor_event.lexical_mode == lexical_mode && anchor_event.selection == first.selection
+            raise ArgumentError.new("#{label} anchor event differs from first witness")
+          end
+          raise ArgumentError.new("#{label} witnesses use different inputs") unless anchor.expansion_guard == "sha256:#{input_sha256}"
+          raise ArgumentError.new("invalid #{label} witness provenance") unless first.event.nil?
+          first_claim = anchor_event.byte_parts.compact_map { |part| part.as?(DiagnosticEmissionPart::AstAnchor) }
+          witnesses.each_with_index do |witness, index|
+            next if index == 0
+            event = witness.event || raise ArgumentError.new("invalid #{label} witness provenance")
+            raise ArgumentError.new("#{label} witnesses use different inputs") unless event.lexical_mode == lexical_mode
+            unless event.input_start == witness.input_start && event.input_end == witness.input_end &&
+                   event.token_kind == witness.token_kind && event.token_text == witness.raw_text &&
+                   event.selection.whole?
+              raise ArgumentError.new("invalid #{label} witness provenance")
+            end
+            check_witness_provenance!(event, witness, first_claim, label)
+          end
+        else
+          raise ArgumentError.new("invalid #{label} anchor")
+        end
+      end
+
+      # Amendment A1: a later witness has raw-producer parts only, or exactly one AstAnchor part from
+      # the claim that covers it, sharing witness 0's claim source. Mixed parts are refused as mixed.
+      def self.check_witness_provenance!(event : DiagnosticTokenEvent, witness : DiagnosticOperatorWitness,
+                                         first_claim : Array(DiagnosticEmissionPart::AstAnchor), label : String) : Nil
+        parts = event.byte_parts
+        return if parts.all? { |part| part.is_a?(DiagnosticEmissionPart::Generated) && raw_producer?(part.producer) }
+        claims = parts.select(&.is_a?(DiagnosticEmissionPart::AstAnchor))
+        raise ArgumentError.new("mixed #{label} witness provenance") if !claims.empty? && claims.size != parts.size
+        claim = parts.size == 1 ? parts[0].as?(DiagnosticEmissionPart::AstAnchor) : nil
+        source = first_claim.size == 1 ? first_claim[0].source_origin : nil
+        unless claim && source && claim.source_origin == source &&
+               claim.start_offset <= witness.input_start && claim.end_offset >= witness.input_end
+          raise ArgumentError.new("invalid #{label} witness provenance")
+        end
+      end
+
+      def self.check_operator_anchor!(anchor : DiagnosticOrigin, witnesses : Array(DiagnosticOperatorWitness),
+                                      input_sha256 : String, lexical_mode : String) : Nil
+        if anchor.is_a?(Written) && anchor.input_byte_offset != witnesses[0].input_start
+          raise ArgumentError.new("operator anchor offset mismatch")
+        end
+        check_witness_chain!(anchor, witnesses, input_sha256, lexical_mode, "operator")
+      end
+
+      # An unnamed parameter's anchor is the FunDef keyword, which precedes its separator. Written source
+      # carries no token events. An expansion anchors on the keyword token, and no witness is the anchor.
+      def self.check_structural_anchor!(production : DiagnosticStructuralProduction, anchor : DiagnosticOrigin,
+                                        witnesses : Array(DiagnosticOperatorWitness),
+                                        input_sha256 : String, lexical_mode : String) : Nil
+        case production
+        when DiagnosticStructuralProduction::UnnamedFunParameter
+          if anchor.is_a?(Expanded)
+            check_unnamed_expanded!(anchor, witnesses, input_sha256, lexical_mode)
+            return
+          end
+          if anchor.is_a?(Written) && anchor.input_byte_offset >= witnesses[0].input_start
+            raise ArgumentError.new("structural anchor offset mismatch")
+          end
+        when DiagnosticStructuralProduction::ShortBlockArgument
+          if anchor.is_a?(Written) && anchor.input_byte_offset != witnesses[0].input_start
+            raise ArgumentError.new("structural anchor offset mismatch")
+          end
+        else
+          raise ArgumentError.new("invalid structural production")
+        end
+        check_witness_chain!(anchor, witnesses, input_sha256, lexical_mode, "structural")
+      end
+
+      # Expanded unnamed parameter. The keyword is the anchor token: its text must be "fun", it must lie
+      # before the separator, and it must carry the expansion guard. Its AstAnchor claim is the reference
+      # for amendment A1. Every witness is a later witness and must carry its own event with that provenance.
+      def self.check_unnamed_expanded!(anchor : Expanded, witnesses : Array(DiagnosticOperatorWitness),
+                                       input_sha256 : String, lexical_mode : String) : Nil
+        keyword = anchor.token_event
+        unless keyword.token_text == "fun" && keyword.selection.whole? && keyword.lexical_mode == lexical_mode
+          raise ArgumentError.new("structural anchor event is not the fun keyword")
+        end
+        if keyword.input_end > witnesses[0].input_start
+          raise ArgumentError.new("structural anchor follows its witnesses")
+        end
+        raise ArgumentError.new("structural witnesses use different inputs") unless anchor.expansion_guard == "sha256:#{input_sha256}"
+        first_claim = keyword.byte_parts.compact_map { |part| part.as?(DiagnosticEmissionPart::AstAnchor) }
+        witnesses.each do |witness|
+          event = witness.event || raise ArgumentError.new("invalid structural witness provenance")
+          raise ArgumentError.new("structural witnesses use different inputs") unless event.lexical_mode == lexical_mode
+          unless event.input_start == witness.input_start && event.input_end == witness.input_end &&
+                 event.token_kind == witness.token_kind && event.token_text == witness.raw_text &&
+                 event.selection.whole?
+            raise ArgumentError.new("invalid structural witness provenance")
+          end
+          check_witness_provenance!(event, witness, first_claim, "structural")
+        end
+      end
+
+      # Shape and spelling per structural production. Returns {rendered text, producer context}.
+      def self.structural_rendering(production : DiagnosticStructuralProduction,
+                                    witnesses : Array(DiagnosticOperatorWitness), fresh_index : Int32?) : Tuple(String, String)
+        case production
+        when DiagnosticStructuralProduction::UnnamedFunParameter
+          raise ArgumentError.new("structural witness differs") unless witnesses.size == 2 && fresh_index.nil?
+          separator = witnesses[0]
+          raise ArgumentError.new("structural witness differs") unless {"(", ","}.includes?(separator.raw_text) && operator_plain?(separator, separator.raw_text)
+          type_head = witnesses[1]
+          unless type_head.token_kind != "IDENT" && !type_head.raw_text.empty? && type_head.selection.whole?
+            raise ArgumentError.new("structural witness differs")
+          end
+          {"", "parameter"}
+        when DiagnosticStructuralProduction::ShortBlockArgument
+          raise ArgumentError.new("structural witness differs") unless operator_sequence?(witnesses, ["&", "."])
+          index = fresh_index
+          raise ArgumentError.new("invalid short block fresh index") if index.nil? || index < 0
+          {"__arg#{index.not_nil!}", "local_reference"}
+        else
+          raise ArgumentError.new("invalid structural production")
+        end
+      end
+
+      def self.witness_graph(input_sha256 : String, lexical_mode : String,
+                             witnesses : Array(DiagnosticOperatorWitness)) : Tuple(UInt64, Int32)
+        own = 1024_u64 + input_sha256.bytesize.to_u64 * 6 + lexical_mode.bytesize.to_u64 * 6
+        depth = 0
+        witnesses.each do |witness|
+          own += 512_u64 + witness.raw_text.bytesize.to_u64 * 6 + witness.token_kind.bytesize.to_u64 * 6
+          if event = witness.event
+            own += event.graph_bytes
+            depth = Math.max(depth, event.graph_depth + 1)
+          end
+        end
+        {own, depth}
+      end
+
+      def self.raw_producer?(producer : DiagnosticMacroProducer) : Bool
+        {DiagnosticMacroProducer::MacroTemplate, DiagnosticMacroProducer::MacroId, DiagnosticMacroProducer::MacroVar,
+         DiagnosticMacroProducer::MacroVerbatim, DiagnosticMacroProducer::YieldWrapper,
+         DiagnosticMacroProducer::SemanticPrinter}.includes?(producer)
+      end
+
+      def self.structural_name(production : DiagnosticStructuralProduction, anchor_origin : DiagnosticOrigin,
+                               input_sha256 : String, input_bytesize : Int32, lexical_mode : String,
+                               witnesses : Array(DiagnosticOperatorWitness), fresh_index : Int32?) : DerivedName
+        new(production, anchor_origin, input_sha256, input_bytesize, lexical_mode, witnesses, fresh_index)
+      end
+
+      def initialize(production : DiagnosticStructuralProduction, anchor_origin : DiagnosticOrigin,
+                     input_sha256 : String, input_bytesize : Int32, lexical_mode : String,
+                     witnesses : Array(DiagnosticOperatorWitness), fresh_index : Int32?)
+        @source_token = nil
+        @derivation_kind = "StructuralName"
+        @definition_origin = nil
+        @parameter_slot = nil
+        @parameter_index = nil
+        @result = ""
+        @projection = nil
+        @fresh_index = nil
+        @production = nil
+        @sugar_result = nil
+        @lowering_index = nil
+        @witnesses = [] of DiagnosticSourceSyntaxToken
+        DerivedName.check_operator_digest!(input_sha256)
+        unless input_bytesize >= 1 && {"Crystal", "Iyi"}.includes?(lexical_mode)
+          raise ArgumentError.new("invalid structural input")
+        end
+        unless anchor_origin.is_a?(Written) || anchor_origin.is_a?(Expanded)
+          raise ArgumentError.new("invalid structural anchor")
+        end
+        role = case production
+               when DiagnosticStructuralProduction::UnnamedFunParameter then {"FunDef", "keyword"}
+               when DiagnosticStructuralProduction::ShortBlockArgument then {"Block", "ampersand"}
+               else raise ArgumentError.new("invalid structural production")
+               end
+        raise ArgumentError.new("invalid structural anchor role") unless anchor_origin.valid_for_anchor?(role[0], role[1])
+        rendered_value, producer_value = DerivedName.structural_rendering(production, witnesses, fresh_index)
+        DerivedName.check_witness_spans!(witnesses, input_bytesize, false, "structural")
+        DerivedName.check_structural_anchor!(production, anchor_origin, witnesses, input_sha256, lexical_mode)
+        @rendered_text = rendered_value
+        @producer_context = producer_value
+        @structural_production = production
+        @structural_witnesses = witnesses.dup
+        @structural_input_sha256 = input_sha256
+        @structural_input_bytesize = input_bytesize
+        @structural_lexical_mode = lexical_mode
+        @structural_anchor = anchor_origin
+        @structural_fresh_index = fresh_index
+        own, event_depth = DerivedName.witness_graph(input_sha256, lexical_mode, witnesses)
+        set_graph_bounds!(own, [anchor_origin] of DiagnosticOrigin)
+        raise ArgumentError.new("structural name graph exceeds depth limit") if event_depth > MAX_DEPTH
+        @graph_depth = Math.max(@graph_depth, event_depth)
+      end
+
+      getter operator_production : DiagnosticOperatorProduction? = nil
+      getter operator_input_sha256 : String? = nil
+      getter operator_input_bytesize : Int32? = nil
+      getter operator_lexical_mode : String? = nil
+      getter operator_anchor : DiagnosticOrigin? = nil
+      @operator_witnesses : Array(DiagnosticOperatorWitness) = [] of DiagnosticOperatorWitness
+      OPERATOR_OP_ASSIGNS = ["+=", "-=", "*=", "/=", "//=", "%=", "|=", "&=", "^=", "**=", "<<=", ">>=", "||=", "&&=", "&+=", "&-=", "&*="]
+      OPERATOR_COMMAND_OPENERS = ["`", "%x(", "%x[", "%x{", "%x<", "%x|"]
+      @structural_production : DiagnosticStructuralProduction? = nil
+      @structural_witnesses : Array(DiagnosticOperatorWitness) = [] of DiagnosticOperatorWitness
+      @structural_input_sha256 : String? = nil
+      @structural_input_bytesize : Int32? = nil
+      @structural_lexical_mode : String? = nil
+      @structural_anchor : DiagnosticOrigin? = nil
+      @structural_fresh_index : Int32? = nil
+
+      def operator_witnesses : Array(DiagnosticOperatorWitness); @operator_witnesses.dup; end
       def self.type_sugar(production : DiagnosticTypeSugar, witnesses : Array(DiagnosticSourceSyntaxToken),
                           result : DiagnosticTypeSugarResult, lowering_index : Int32) : DerivedName
         new(production, witnesses, result, lowering_index)
@@ -2614,7 +3128,7 @@ module Iyi
         end
       end
 
-      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index, @production, @sugar_result, @lowering_index, @witnesses, @bound_data, @module_header_origin, @source_segments, @package_name, @result_index
+      def_equals_and_hash @derivation_kind, @source_token, @definition_origin, @parameter_slot, @parameter_index, @result, @projection, @fresh_index, @production, @sugar_result, @lowering_index, @witnesses, @bound_data, @module_header_origin, @source_segments, @package_name, @result_index, @operator_production, @operator_witnesses, @operator_input_sha256, @operator_input_bytesize, @operator_lexical_mode, @operator_anchor, @structural_production, @structural_witnesses, @structural_input_sha256, @structural_input_bytesize, @structural_lexical_mode, @structural_anchor, @structural_fresh_index
 
       def to_json(json : JSON::Builder) : Nil
         json.object do
@@ -2650,6 +3164,29 @@ module Iyi
             end
             json.field "result", @result
             json.field "lowering_index", @lowering_index
+          elsif @derivation_kind == "OperatorName"
+            json.field "production", @operator_production.not_nil!.to_s
+            json.field "anchor_origin", @operator_anchor
+            json.field "input_sha256", @operator_input_sha256
+            json.field "input_bytesize", @operator_input_bytesize
+            json.field "lexical_mode", @operator_lexical_mode
+            json.field "witnesses" do
+              json.array { @operator_witnesses.each { |witness| witness.to_json(json) } }
+            end
+            json.field "rendered_text", @rendered_text
+            json.field "producer_context", @producer_context
+          elsif @derivation_kind == "StructuralName"
+            json.field "production", @structural_production.not_nil!.to_s
+            json.field "anchor_origin", @structural_anchor
+            json.field "input_sha256", @structural_input_sha256
+            json.field "input_bytesize", @structural_input_bytesize
+            json.field "lexical_mode", @structural_lexical_mode
+            json.field "witnesses" do
+              json.array { @structural_witnesses.each { |witness| witness.to_json(json) } }
+            end
+            json.field "fresh_index", @structural_fresh_index
+            json.field "rendered_text", @rendered_text
+            json.field "producer_context", @producer_context
           else
             json.field "source_token", @source_token
             if @derivation_kind == "ParameterLowering"
