@@ -1637,9 +1637,28 @@ def test_s8_literal_and_name_controls():
 
 
 
+def test_bound_projection_source_gate():
+    # The frame reader refuses source-bearing projections until the authoritative source inventory
+    # is supplied by the capture-authority resolver. This pins that refusal; it does not bind anything.
+    source = "Root::Thing"
+    value = {"kind": "DerivedName", "derivation_kind": "BoundProjection",
+             "producer": {"kind": "StripRoot", "root": "Root"},
+             "source_fragment_sha256": hashlib.sha256(source.encode()).hexdigest(),
+             "source_text": source, "source_names": [], "output_text": "Thing",
+             "lexical_mode": "Crystal", "result_start": 0, "result_end": 5,
+             "token_kind": "CONST", "context": "path_segment"}
+    try: frames.checked_origin(value)
+    except ValueError as exc:
+        assert str(exc) == "bound projection requires authoritative source inventory", str(exc)
+    else:
+        raise AssertionError("source-bearing bound projection accepted without authority")
+
+
+
 def run_all_tests() -> int:
     tests = [
         ("test_composed_origin_controls", test_composed_origin_controls),
+        ("test_bound_projection_source_gate", test_bound_projection_source_gate),
         ("test_s8_literal_and_name_controls", test_s8_literal_and_name_controls),
         ("test_capture_authority_pin_controls", test_capture_authority_pin_controls),
         ("test_macho_reader_controls", test_macho_reader_controls),
