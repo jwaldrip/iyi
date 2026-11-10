@@ -181,9 +181,17 @@ private def literal_emission_splice(macro_source : String)
   definition = macro_node.diagnostic_origin.not_nil!
   program = Iyi::Program.new
   program.diagnostic_capture = true
-  text, pragmas = program.expand_macro(macro_node.body, program, program)
+  if macro_node.args.empty?
+    text, pragmas = program.expand_macro(macro_node.body, program, program)
+    invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 1, "Call", "method")
+  else
+    call = literal_emission_parse("literal_form(`ls`)", "/src/main.cr").as(Iyi::Call)
+    command = call.args.first.as(Iyi::Call)
+    command.name.should eq("`")
+    text, pragmas = program.expand_macro(macro_node, call, program, program)
+    invocation = call.diagnostic_origin.not_nil!
+  end
   emissions = (pragmas || {} of Int32 => Array(Iyi::Lexer::LocPragma)).values.flatten.compact_map(&.as?(Iyi::Lexer::LocDiagnosticEmission))
-  invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 1, "Call", "method")
   parser = Iyi::Parser.new(text)
   parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
   expanded = parser.parse
@@ -200,7 +208,7 @@ private def literal_emission_splice_forms : Hash(String, {String, String})
     "char"             => {%(macro literal_form\n  {{ 'c' }}\nend\n), %('c')},
     "regex"            => {%(macro literal_form\n  {{ /a\\/b/i }}\nend\n), %(a\\/b)},
     "percent regex"    => {%(macro literal_form\n  {{ %r() }}\nend\n), ""},
-    "command"          => {%(macro literal_form\n  {{ `ls` }}\nend\n), "ls"},
+    "command"          => {%(macro literal_form(value)\n  {{ value }}\nend\n), "ls"},
     "interpolation"    => {%(macro literal_form\n  {{ "e\#{1}f" }}\nend\n), "e"},
     "heredoc argument" => {"macro literal_form\n  {{ <<-EOS\n  a\n  EOS\n  }}\nend\n", %("a\\n")},
     "verbatim text"    => {"macro literal_form\nx = \"v\"\ny = :w\nz = 'c'\nend\n", %(x = "v")},
@@ -348,6 +356,15 @@ describe "literal emission through macro splices" do
       expanded.to_s.strip.should eq(text.strip)
       generated = emissions.flat_map(&.generated_text)
       claims = emissions.flat_map(&.claims)
+      if form == "command"
+        expanded.as(Iyi::Call).name.should eq("`")
+        opener = text.byte_index('`').not_nil!
+        claims.any? do |claim|
+          claim.key.kind == "Call" && claim.key.role == "method" &&
+            claim.key.writer.start_offset == opener && claim.key.writer.end_offset == opener + 1 &&
+            claim.attachment.is_a?(Iyi::DiagnosticMacroAttachment::Direct)
+        end.should be_true
+      end
       literal_emission_check_disjoint(generated, claims)
       literal_emission_covers?(text, generated, snippet).should be_true unless snippet.empty?
     end
