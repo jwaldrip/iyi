@@ -124,7 +124,9 @@ module Iyi
       copy = node.clone_without_location
       copy.diagnostic_origin = node.diagnostic_origin
       copy.diagnostic_macro_lineage = node.diagnostic_macro_lineage
-      copy.diagnostic_name_slots = node.diagnostic_name_slots
+      if slots = node.diagnostic_name_slots?
+        copy.diagnostic_name_slots = slots
+      end
       copy
     end
 
