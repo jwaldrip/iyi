@@ -3277,15 +3277,49 @@ module Iyi
     @source : String
 
     def initialize(@input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal? = nil,
-                   @identity : DiagnosticModuleIdentity? = nil, structural : Set(UInt64)? = nil)
+                   @identity : DiagnosticModuleIdentity? = nil, structural : Set(UInt64)? = nil,
+                   @literal_bundle : DiagnosticLiteralReplayAssociations? = nil)
       raise ArgumentError.new("bound evidence requires both a replay journal and module identity") unless @journal.nil? == @identity.nil?
       @source = @input.input
       @structural = structural || Set(UInt64).new
+      @literal_fields = Set(DiagnosticCaptureFieldRef).new
+      @scalar_verified = Set(UInt64).new
     end
 
     def verify!(root : ASTNode) : Nil
+      if bound?
+        reject_unbound_scalar_literals!(root, Set(UInt64).new, Set(UInt64).new, 0)
+      end
+      if bundle = @literal_bundle
+        raise ArgumentError.new("literal replay input differs") unless bundle.input_key == @input.capture_key
+        raise ArgumentError.new("literal replay journal differs") unless bundle.journal.same?(@journal)
+        bundle.verify_graph!(root)
+        reducer = DiagnosticLiteralReplay.new(@input, bundle.journal, bundle.folds, bundle.interpolations, bundle.literal_owners)
+        owners = DiagnosticLiteralOwnerBinding.new(reducer, bundle.literal_owners)
+        @scalar_verified = DiagnosticScalarGrammarReplay.new(@input, bundle.journal, owners, bundle.scalar_owners).verify!(root)
+        @literal_fields = owners.verify!(root, @scalar_verified, bundle)
+      end
       verify_lib_order!(root, @input.input_bytesize, 0)
       visit(root, 0)
+    end
+
+    private def reject_unbound_scalar_literals!(node : ASTNode, visited : Set(UInt64),
+                                               active : Set(UInt64), depth : Int32) : Nil
+      raise ArgumentError.new("recorded evidence exceeds depth limit") if depth > MAX_DEPTH
+      id = node.object_id
+      raise ArgumentError.new("cyclic recorded evidence graph") if active.includes?(id)
+      return unless visited.add?(id)
+      if node.is_a?(NumberLiteral) || node.is_a?(MacroLiteral)
+        raise ArgumentError.new("numeric and macro literal journal binding is not implemented")
+      end
+      active.add(id)
+      begin
+        DiagnosticDirectChildFields.each(node) do |_, _, _, child|
+          reject_unbound_scalar_literals!(child, visited, active, depth + 1)
+        end
+      ensure
+        active.delete(id)
+      end
     end
 
     # D4, the order of lib funs. A fun's `fun` anchor lies after its own lib's name
@@ -3396,12 +3430,23 @@ module Iyi
           end
         end
         if bound?
-          literal_class = node.is_a?(StringLiteral) || node.is_a?(SymbolLiteral) || node.is_a?(CharLiteral)
-          # Require and Asm keep their source text as plain fields with no literal
-          # evidence (D2). Until that binding lands they are refused, not accepted.
+          if node.is_a?(NumberLiteral) || node.is_a?(MacroLiteral)
+            raise ArgumentError.new("numeric and macro literal journal binding is not implemented")
+          end
+          bundle = @literal_bundle
+          literal_class = node.is_a?(StringLiteral) || node.is_a?(SymbolLiteral) || node.is_a?(CharLiteral) ||
+                          node.is_a?(StringInterpolation) || node.is_a?(RegexLiteral)
           text_class = node.is_a?(Require) || node.is_a?(Asm) || node.is_a?(AsmOperand)
           if literal_class || text_class || (node.diagnostic_literal_names_count || 0) > 0 || (node.diagnostic_literal_productions_count || 0) > 0
-            raise ArgumentError.new("literal evidence requires journal literal binding")
+            raise ArgumentError.new("literal evidence requires journal literal binding") unless bundle
+            if text_class && !@scalar_verified.includes?(node.object_id)
+              raise ArgumentError.new("scalar grammar binding missing")
+            end
+            node.each_diagnostic_literal_name do |key, _|
+              unless @literal_fields.includes?(bundle.field_ref(node, key[0], key[1]))
+                raise ArgumentError.new("literal field occurrence not bound")
+              end
+            end
           end
         else
           validate_literals(node)
@@ -4072,6 +4117,14 @@ module Iyi
       @input_key = input.capture_key
       @mode = input.lexical_mode
       @literal_owners = parser.diagnostic_literal_owner_observations.map { |item| copy_owner(item) }
+      @numbers = parser.diagnostic_number_observations.map do |item|
+        DiagnosticNumberObservation.new(item.owner, String.new(item.role.to_slice), item.token,
+          String.new(item.value.to_slice), String.new(item.number_kind.to_slice))
+      end
+      @macro_literals = parser.diagnostic_macro_literal_observations.map do |item|
+        DiagnosticMacroLiteralObservation.new(item.owner, item.token, String.new(item.lexical_mode.to_slice),
+          String.new(item.value.to_slice))
+      end
       @scalar_owners = parser.diagnostic_scalar_grammar_observations
       @folds = parser.diagnostic_folded_string_observations
       @interpolations = parser.diagnostic_interpolation_observations
@@ -4087,7 +4140,6 @@ module Iyi
       @coordinates = {} of UInt64 => String
       @path = [] of DiagnosticCaptureRefs::Step
       @active = Set(UInt64).new
-      @remaining = DiagnosticOrigin::MAX_UNFOLDED_BYTES
       freeze_graph!(@root, 0)
     end
 
@@ -4137,6 +4189,20 @@ module Iyi
 
     def regex_options : Array(DiagnosticRegexOptionsObservation)
       @regex_options.map { |item| DiagnosticRegexOptionsObservation.new(item.owner, item.opener, item.close, item.after, item.modifiers.dup) }
+    end
+
+    def numbers : Array(DiagnosticNumberObservation)
+      @numbers.map do |item|
+        DiagnosticNumberObservation.new(item.owner, String.new(item.role.to_slice), item.token,
+          String.new(item.value.to_slice), String.new(item.number_kind.to_slice))
+      end
+    end
+
+    def macro_literals : Array(DiagnosticMacroLiteralObservation)
+      @macro_literals.map do |item|
+        DiagnosticMacroLiteralObservation.new(item.owner, item.token, String.new(item.lexical_mode.to_slice),
+          String.new(item.value.to_slice))
+      end
     end
 
     def field_ref(owner : ASTNode, field : String, index : Int32) : DiagnosticCaptureFieldRef
@@ -4207,7 +4273,7 @@ module Iyi
       end
       @interpolations.each do |item|
         opener = relationship_token!(item.open, "INTERPOLATION_START")
-        closer = relationship_token!(item.close, "OP_RCURLY")
+        closer = relationship_token!(item.close, "}")
         first = @journal.entry!(item.expression_first)
         unless first.lexical_mode == @mode && opener.input_end <= first.input_start &&
                first.input_end <= closer.input_start
@@ -4421,7 +4487,7 @@ module Iyi
         end
         token.input_end
       when "INTERPOLATION_START"
-        ending = relationship_token!(piece.last, "OP_RCURLY")
+        ending = relationship_token!(piece.last, "}")
         matches = @interpolations.select { |item| @journal.entry!(item.open) == token && @journal.entry!(item.close) == ending }
         raise ArgumentError.new("interpolation piece association differs") unless matches.size == 1
         source = matches[0].expression
@@ -4470,7 +4536,7 @@ module Iyi
       while cursor < first.input_start
         token = @journal.entry_at!(cursor, @mode)
         raise ArgumentError.new("interpolation association differs") unless token.input_end > cursor && token.input_end <= first.input_start
-        if token.token_kind == "OP_STAR"
+        if token.token_kind == "*"
           raise ArgumentError.new("interpolation association differs") if star || splats.empty?
           star = true
         elsif !{"SPACE", "NEWLINE", "SKIPPED_COMMENT", "SKIPPED_DOC_COMMENT", "SKIPPED_LOC_PRAGMA"}.includes?(token.token_kind)
@@ -4578,16 +4644,15 @@ module Iyi
       id = node.object_id
       raise ArgumentError.new("cyclic literal replay graph") if @active.includes?(id)
       return if @graph.has_key?(id)
-      raise ArgumentError.new("literal replay graph exceeds size limit") if @remaining < 128_u64
-      @remaining -= 128_u64
+      remaining = DiagnosticOrigin::MAX_UNFOLDED_BYTES - 128_u64
       @active.add(id)
       begin
         DiagnosticAstFieldSchema.validate_node_fields(node)
         edges = [] of Edge
         DiagnosticDirectChildFields.each(node) do |field, index, key, child|
           charge = 64_u64 + field.bytesize.to_u64 + (key.try(&.bytesize) || 0).to_u64
-          raise ArgumentError.new("literal replay graph exceeds size limit") if charge > @remaining
-          @remaining -= charge
+          raise ArgumentError.new("literal replay node exceeds size limit") if charge > remaining
+          remaining -= charge
           edges << Edge.new(String.new(field.to_slice), index, key.try { |value| String.new(value.to_slice) }, child)
         end
         @graph[id] = NodeEdges.new(node, edges)
@@ -4739,17 +4804,18 @@ module Iyi
           witness!(witness, token, DiagnosticLiteralWitnessKind::InterpolationStart)
           ending = witnesses[index + 1]? || raise ArgumentError.new("unwitnessed heredoc body token")
           raise ArgumentError.new("unwitnessed heredoc body token") unless ending.kind.interpolation_end?
-          closing_expression = @journal.literal_entry!(ending.start_offset, ending.end_offset, "OP_RCURLY", @input.lexical_mode)
+          closing_expression = @journal.literal_entry!(ending.start_offset, ending.end_offset, "}", @input.lexical_mode)
           associations = @interpolations.select do |observation|
             @journal.entry!(observation.open) == token && @journal.entry!(observation.close) == closing_expression
           end
           raise ArgumentError.new("heredoc interpolation association differs") unless associations.size == 1
           expressions << associations[0].expression
-          first_expression = @journal.entries.select do |entry|
-            entry.input_start >= token.input_end && entry.input_end <= ending.start_offset &&
-              entry.lexical_mode == @input.lexical_mode &&
-              !{"SPACE", "NEWLINE", "SKIPPED_COMMENT", "SKIPPED_DOC_COMMENT", "SKIPPED_LOC_PRAGMA"}.includes?(entry.token_kind)
-          end.min_by?(&.input_start) || raise ArgumentError.new("heredoc interpolation has no expression")
+          first_expression = @journal.entry!(associations[0].expression_first)
+          unless first_expression.lexical_mode == @input.lexical_mode &&
+                 first_expression.input_start >= token.input_end && first_expression.input_end <= ending.start_offset
+            raise ArgumentError.new("heredoc interpolation association differs")
+          end
+          @journal.literal_trivia!(token.input_end, first_expression.input_start, @input.lexical_mode, true)
           line = first_expression.line || raise ArgumentError.new("heredoc expression lacks line")
           pieces << HeredocIndent::Piece(Int32).new(marker, line)
           marker += 1
@@ -4915,7 +4981,7 @@ module Iyi
     private def folded_value!(opening : DiagnosticRenderedToken, closing : DiagnosticLiteralWitness,
                               depth : Int32) : String
       raise ArgumentError.new("literal fold exceeds depth limit") if depth > 128
-      closer = @journal.literal_entry!(closing.start_offset, closing.end_offset, "OP_RCURLY", @input.lexical_mode)
+      closer = @journal.literal_entry!(closing.start_offset, closing.end_offset, "}", @input.lexical_mode)
       matches = @folds.select do |fold|
         @journal.entry!(fold.open) == opening && @journal.entry!(fold.close) == closer
       end
@@ -5012,7 +5078,8 @@ module Iyi
       bundle.verify_graph!(root)
       bundle.verify_relationships!
       verified = Set(DiagnosticCaptureFieldRef).new
-      visit!(root, scalar_verified, bundle, verified, {} of UInt64 => String, Set(UInt64).new, Set(UInt64).new, 0)
+      heredocs = {} of UInt64 => String
+      visit!(root, scalar_verified, bundle, verified, heredocs, Set(UInt64).new, Set(UInt64).new, 0)
       verified
     end
 
@@ -5222,7 +5289,9 @@ module Iyi
     private def verify_intervals! : Nil
       stack = [] of AsmInterval
       @intervals.sort_by { |item| {item.start, -item.finish} }.each do |item|
-        stack.pop while !stack.empty? && stack.last.finish <= item.start
+        while !stack.empty? && stack.last.finish <= item.start
+          stack.pop
+        end
         unless stack.empty?
           outer = stack.last
           unless item.start > outer.start && item.finish <= outer.finish && item.ancestors.includes?(outer.owner)
@@ -5293,7 +5362,7 @@ module Iyi
       observation = observation!(node, DiagnosticScalarGrammarKind::Asm)
       first = ref!(observation.first, "IDENT", "asm")
       opening_ref = observation.open || raise ArgumentError.new("asm opening association missing")
-      opening = ref!(opening_ref, "OP_LPAREN")
+      opening = ref!(opening_ref, "(")
       raise ArgumentError.new("asm opening differs") unless opening.input_start == skip!(first.input_end, false)
       cursor = skip!(opening.input_end, true)
       text, finish = scalar!(node, "text", 0, cursor)
@@ -5307,10 +5376,10 @@ module Iyi
       flags = Set(String).new
       loop do
         token = @journal.entry_at!(cursor, @input.lexical_mode)
-        break if token.token_kind == "OP_RPAREN"
+        break if token.token_kind == ")"
         case token.token_kind
-        when "OP_COLON"       then section += 1
-        when "OP_COLON_COLON" then section += 2
+        when ":"  then section += 1
+        when "::" then section += 2
         else                       raise ArgumentError.new("invalid asm section separator")
         end
         raise ArgumentError.new("invalid asm section separator") unless token.input_end > cursor
@@ -5341,10 +5410,10 @@ module Iyi
             raise ArgumentError.new("invalid asm section")
           end
           comma = @journal.entry_at!(cursor, @input.lexical_mode)
-          cursor = skip!(comma.input_end, true) if comma.token_kind == "OP_COMMA"
+          cursor = skip!(comma.input_end, true) if comma.token_kind == ","
         end
       end
-      close = ref!(observation.close, "OP_RPAREN")
+      close = ref!(observation.close, ")")
       raise ArgumentError.new("asm closing differs") unless close.input_start == cursor
       raise ArgumentError.new("asm outputs differ") unless (node.outputs.try(&.size) || 0) == outputs && (outputs > 0 || node.outputs.nil?)
       raise ArgumentError.new("asm inputs differ") unless (node.inputs.try(&.size) || 0) == inputs && (inputs > 0 || node.inputs.nil?)
@@ -5367,7 +5436,7 @@ module Iyi
       value, finish = scalar!(node, "constraint", 0, cursor)
       raise ArgumentError.new("asm constraint differs") unless value == node.constraint
       opening_ref = observation.open || raise ArgumentError.new("asm operand opening missing")
-      opening = ref!(opening_ref, "OP_LPAREN")
+      opening = ref!(opening_ref, "(")
       raise ArgumentError.new("asm operand opening differs") unless opening.input_start == skip!(finish, false)
       expression = observation.expression || raise ArgumentError.new("asm expression association missing")
       raise ArgumentError.new("asm expression association differs") unless node.exp.same?(expression)
@@ -5376,7 +5445,7 @@ module Iyi
       unless expression_first == @journal.entry_at!(skip!(opening.input_end, true), @input.lexical_mode)
         raise ArgumentError.new("asm expression start differs")
       end
-      closing = ref!(observation.close, "OP_RPAREN")
+      closing = ref!(observation.close, ")")
       raise ArgumentError.new("asm expression bounds differ") unless closing.input_start >= expression_first.input_start
       after_cursor = skip!(closing.input_end, true)
       after = @journal.entry!(observation.after)
@@ -5454,13 +5523,13 @@ module Iyi
     end
   end
 
-  # The replay-bound evidence walk (C-B step 4). The byte checks in the base class
-  # accept nothing alone. This walk accepts only what the replay journal and
-  # identity bind. Literal and operator evidence stays refused until C-L and C-OPJ.
+  # The replay-bound walk accepts literal fields only when the independently
+  # recorded owner, grammar and lexical evidence bind their exact occurrences.
   class DiagnosticEvidenceBinding < DiagnosticRecordedEvidenceInputCheck
     def initialize(input : AcceptedCaptureInput, journal : DiagnosticReplayJournal,
-                   identity : DiagnosticModuleIdentity, structural : Set(UInt64))
-      super(input, journal, identity, structural)
+                   identity : DiagnosticModuleIdentity, structural : Set(UInt64),
+                   bundle : DiagnosticLiteralReplayAssociations? = nil)
+      super(input, journal, identity, structural, bundle)
     end
   end
 
@@ -5580,7 +5649,8 @@ module Iyi
       journal = DiagnosticReplayJournal.new(parser.diagnostic_lexical_observations)
       identity = DiagnosticModuleIdentity.from(root, input, journal)
       structural = DiagnosticUnnamedParamBinder.new(input, journal).verify!(root)
-      DiagnosticEvidenceBinding.new(input, journal, identity, structural).verify!(root)
+      bundle = DiagnosticLiteralReplayAssociations.new(input, journal, parser, root)
+      DiagnosticEvidenceBinding.new(input, journal, identity, structural, bundle).verify!(root)
       DiagnosticBoundCapture.new(input, authority, root, identity, journal)
     end
   end

@@ -1,5 +1,12 @@
 require "../support/syntax"
 
+class Iyi::ASTNode
+  def literal_binding_spec_delete(field : String, index : Int32) : Nil
+    @diagnostic_literal_names.try &.delete({field, index})
+    @diagnostic_literal_productions.try &.delete({field, index})
+  end
+end
+
 private def literal_binding_source(source : String, suffix : String, & : Iyi::DiagnosticBoundCapture ->)
   path = File.tempname("literal-binding", suffix)
   File.write(path, source)
@@ -51,6 +58,24 @@ describe Iyi::DiagnosticLiteralReplay do
     end
   end
 
+  it "derives nested constant folds from their own replayed associations" do
+    literal_binding_replay("\"a\#{\"b\#{\"c\"}\"}d\"") do |root, reducer, parser, _journal, _claim|
+      node = root.as(Iyi::StringLiteral)
+      binder = Iyi::DiagnosticLiteralOwnerBinding.new(reducer, parser.diagnostic_literal_owner_observations)
+      binder.verify_node!(node)
+      node.value.should eq("abcd")
+    end
+  end
+
+  it "derives each percent array element from its own separator-bounded span" do
+    literal_binding_replay("%w(same same)") do |root, reducer, parser, _journal, _claim|
+      elements = root.as(Iyi::ArrayLiteral).elements
+      binder = Iyi::DiagnosticLiteralOwnerBinding.new(reducer, parser.diagnostic_literal_owner_observations)
+      elements.each { |element| binder.verify_node!(element) }
+      elements.map { |element| element.as(Iyi::StringLiteral).value }.should eq(["same", "same"])
+    end
+  end
+
   it "rejects a missing opener even when the original source bytes still match" do
     literal_binding_replay("\"hello\"") do |root, reducer, parser, journal, claim|
       node = root.as(Iyi::StringLiteral)
@@ -79,6 +104,19 @@ describe Iyi::DiagnosticLiteralReplay do
     end
   end
 
+  it "rejects a literal mutation through the full post-replay evidence walk" do
+    literal_binding_replay("\"hello\"") do |root, _reducer, parser, journal, claim|
+      identity = Iyi::DiagnosticModuleIdentity.from(root, claim, journal)
+      structural = Iyi::DiagnosticUnnamedParamBinder.new(claim, journal).verify!(root)
+      bundle = Iyi::DiagnosticLiteralReplayAssociations.new(claim, journal, parser, root)
+      Iyi::DiagnosticEvidenceBinding.new(claim, journal, identity, structural, bundle).verify!(root)
+      root.as(Iyi::StringLiteral).value = "other"
+      expect_raises(ArgumentError, "literal decoded value differs from scanned tokens") do
+        Iyi::DiagnosticEvidenceBinding.new(claim, journal, identity, structural, bundle).verify!(root)
+      end
+    end
+  end
+
   it "rejects a changed asm option flag after replay" do
     literal_binding_replay("asm(\"nop\" : : : : \"volatile\")") do |root, reducer, parser, journal, claim|
       node = root.as(Iyi::Asm)
@@ -90,6 +128,28 @@ describe Iyi::DiagnosticLiteralReplay do
       expect_raises(ArgumentError, "asm options differ") { mutated.verify!(root) }
     end
   end
+
+  it "rejects deletion of one repeated asm option while the flag remains true" do
+    literal_binding_replay("asm(\"nop\" : : : : \"volatile\", \"volatile\")") do |root, reducer, parser, journal, claim|
+      node = root.as(Iyi::Asm)
+      binder = Iyi::DiagnosticLiteralOwnerBinding.new(reducer, parser.diagnostic_literal_owner_observations)
+      Iyi::DiagnosticScalarGrammarReplay.new(claim, journal, binder, parser.diagnostic_scalar_grammar_observations).verify!(root)
+      node.literal_binding_spec_delete("options", 1)
+      expect_raises(ArgumentError, "literal owner observation missing") do
+        Iyi::DiagnosticScalarGrammarReplay.new(claim, journal, binder, parser.diagnostic_scalar_grammar_observations).verify!(root)
+      end
+    end
+  end
+
+  it "rejects complete removal of a literal field's metadata after replay" do
+    literal_binding_replay("\"hello\"") do |root, reducer, parser, _journal, _claim|
+      node = root.as(Iyi::StringLiteral)
+      binder = Iyi::DiagnosticLiteralOwnerBinding.new(reducer, parser.diagnostic_literal_owner_observations)
+      binder.verify_node!(node)
+      node.literal_binding_spec_delete("value", 0)
+      expect_raises(ArgumentError, "literal owner association differs") { binder.verify_node!(node) }
+    end
+  end
 end
 
 describe Iyi::DiagnosticLiteralReplayAssociations do
@@ -98,6 +158,26 @@ describe Iyi::DiagnosticLiteralReplayAssociations do
       bundle = Iyi::DiagnosticLiteralReplayAssociations.new(claim, journal, parser, root)
       bundle.verify_graph!(root)
       root.as(Iyi::Expressions).expressions.reverse!
+      expect_raises(ArgumentError, "literal replay graph differs") { bundle.verify_graph!(root) }
+    end
+  end
+
+  it "rejects collapsing two distinct equal-valued owners into one alias" do
+    literal_binding_replay("\"same\"\n\"same\"\n") do |root, _reducer, parser, journal, claim|
+      bundle = Iyi::DiagnosticLiteralReplayAssociations.new(claim, journal, parser, root)
+      bundle.verify_graph!(root)
+      expressions = root.as(Iyi::Expressions).expressions
+      expressions[1] = expressions[0]
+      expect_raises(ArgumentError, "literal replay graph differs") { bundle.verify_graph!(root) }
+    end
+  end
+
+  it "rejects replacing a source owner with a metadata-preserving clone" do
+    literal_binding_replay("\"same\"\n\"other\"\n") do |root, _reducer, parser, journal, claim|
+      bundle = Iyi::DiagnosticLiteralReplayAssociations.new(claim, journal, parser, root)
+      bundle.verify_graph!(root)
+      expressions = root.as(Iyi::Expressions).expressions
+      expressions[0] = expressions[0].clone
       expect_raises(ArgumentError, "literal replay graph differs") { bundle.verify_graph!(root) }
     end
   end
@@ -156,11 +236,37 @@ describe "direct capture binding" do
       File.delete(path) if File.file?(path)
     end
   end
+
+  it "holds numeric literals rather than accepting unchecked numeric values" do
+    expect_raises(ArgumentError, "numeric and macro literal journal binding is not implemented") do
+      literal_binding_source("42\n", ".cr") { |_| }
+    end
+  end
+
+  it "holds macro body literals rather than accepting unchecked macro text" do
+    expect_raises(ArgumentError, "numeric and macro literal journal binding is not implemented") do
+      literal_binding_source("macro example\n  hello\nend\n", ".cr") { |_| }
+    end
+  end
 end
 
 describe "literal source binding" do
   it "binds ordinary, folded, continued and array literals in both lexical modes" do
     source = "a = \"hello\"\nb = \"pre\#{\"mid\"}post\"\nc = \"a\" \\\n  \"b\"\nd = %w(one two)\ne = %i(one two)\nf = 'x'\n"
+    [".cr", ".iyi"].each do |suffix|
+      literal_binding_source(source, suffix) { |bound| bound.root.should_not be_nil }
+    end
+  end
+
+  it "binds quoted names, symbols, binary escapes and dynamic percent elements" do
+    source = "a = {\"quoted name\": \"x\"}\nb = :\"quoted symbol\"\nc = \"\\xff\"\nd = %W(one \#{name} \#{*items})\n"
+    [".cr", ".iyi"].each do |suffix|
+      literal_binding_source(source, suffix) { |bound| bound.root.should_not be_nil }
+    end
+  end
+
+  it "binds multiple equal-valued heredoc results by their sequence positions" do
+    source = "a = <<-TEXT\n  same\#{left}same\#{right}same\n  TEXT\n"
     [".cr", ".iyi"].each do |suffix|
       literal_binding_source(source, suffix) { |bound| bound.root.should_not be_nil }
     end
