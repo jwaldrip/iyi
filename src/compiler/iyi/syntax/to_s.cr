@@ -7,11 +7,12 @@ module Iyi
              diagnostic_anchors : Array(DiagnosticAnchor)? = nil,
              diagnostic_emissions : Array(DiagnosticMacroAnchor)? = nil,
              diagnostic_generated_text : Array(DiagnosticGeneratedText)? = nil,
-             diagnostic_emitter : DiagnosticOrigin? = nil) : Nil
+             diagnostic_emitter : DiagnosticOrigin? = nil,
+             diagnostic_name_fragments : Array(DiagnosticMacroNameFragment)? = nil) : Nil
       visitor = ToSVisitor.new(io, macro_expansion_pragmas: macro_expansion_pragmas, emit_doc: emit_doc,
         emit_location_pragmas: emit_location_pragmas, diagnostic_anchors: diagnostic_anchors,
         diagnostic_emissions: diagnostic_emissions, diagnostic_generated_text: diagnostic_generated_text,
-        diagnostic_emitter: diagnostic_emitter)
+        diagnostic_emitter: diagnostic_emitter, diagnostic_name_fragments: diagnostic_name_fragments)
       self.accept visitor
     end
   end
@@ -42,16 +43,17 @@ module Iyi
                    @diagnostic_anchors : Array(DiagnosticAnchor)? = nil,
                    @diagnostic_emissions : Array(DiagnosticMacroAnchor)? = nil,
                    @diagnostic_generated_text : Array(DiagnosticGeneratedText)? = nil,
-                   @diagnostic_emitter : DiagnosticOrigin? = nil)
+                   @diagnostic_emitter : DiagnosticOrigin? = nil,
+                   @diagnostic_name_fragments : Array(DiagnosticMacroNameFragment)? = nil)
       @indent = 0
       @inside_macro = 0
     end
 
-    private def diagnostic_anchor(node : ASTNode, kind : String, role : String) : Nil
+    private def diagnostic_anchor(node : ASTNode, kind : String, role : String, name_splice = false) : Nil
       if anchors = @diagnostic_anchors
-        anchors << DiagnosticAnchor.new(@str.pos.to_i32, kind, role, node.diagnostic_origin)
+        anchors << DiagnosticAnchor.new(@str.pos.to_i32, kind, role, node.diagnostic_origin, node.diagnostic_name_slots)
       end
-      if emissions = @diagnostic_emissions
+      if (emissions = @diagnostic_emissions) && !(name_splice && @diagnostic_name_fragments)
         case node.diagnostic_macro_lineage
         when .preserved?
           origin = node.diagnostic_origin || raise ArgumentError.new("preserved macro node lacks origin")
@@ -71,6 +73,42 @@ module Iyi
       if generated = @diagnostic_generated_text
         finish = @str.pos.to_i32
         generated << DiagnosticGeneratedText.new(start.not_nil!, finish, @diagnostic_emitter, producer) if finish > start.not_nil!
+      end
+    end
+
+    private def diagnostic_name(node : ASTNode, text : String, context : String,
+                                slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary),
+                                artifact_anchor = true) : Nil
+      unless @diagnostic_name_fragments || @diagnostic_anchors
+        @str << text
+        return
+      end
+      tokens = node.diagnostic_name_slots[slot]?
+      if tokens && !tokens.empty?
+        unless tokens.join(&.raw_text) == text
+          raise ArgumentError.new("diagnostic name was renamed without a recorded projection")
+        end
+        if (anchors = @diagnostic_anchors) && artifact_anchor
+          origin = tokens.first.lexical_origin
+          if origin.valid_for_anchor?("Name", context)
+            anchors << DiagnosticAnchor.new(@str.pos.to_i32, "Name", context, origin, {slot => tokens})
+          elsif origin.valid_for_anchor?("Call", "method")
+            anchors << DiagnosticAnchor.new(@str.pos.to_i32, "Call", "method", origin, {slot => tokens})
+          else
+            raise ArgumentError.new("diagnostic name lacks an artifact anchor for #{context}")
+          end
+        end
+        tokens.each do |token|
+          start = @str.pos.to_i32
+          @str << token.raw_text
+          @diagnostic_name_fragments.try &.<< DiagnosticMacroNameFragment.new(start, @str.pos.to_i32, @diagnostic_emitter, token)
+        end
+      elsif node.diagnostic_macro_lineage.constructed?
+        diagnostic_raw(node, DiagnosticMacroProducer::ConstructedAst) { @str << text }
+      elsif @diagnostic_name_fragments
+        raise ArgumentError.new("preserved macro name lacks token evidence for #{context}")
+      else
+        @str << text
       end
     end
 
@@ -732,8 +770,8 @@ module Iyi
           @str << " = "
           node.args.join(@str, ", ") { |arg| accept_as_expression arg }
         else
-          diagnostic_anchor(node, "Call", "method")
-          @str << node.name
+          diagnostic_anchor(node, "Call", "method", name_splice: true)
+          diagnostic_name(node, node.name, "method_name", artifact_anchor: false)
           in_parenthesis(node.has_parentheses? || !node.args.empty? || node.block_arg || node.named_args || short_block_call) do
             visit_args(node)
 
@@ -932,7 +970,6 @@ module Iyi
       target = node.target
       @str << "pub " if target.is_a?(Path) && target.exported?
       diagnostic_anchor(node, "Assign", "constant") if target.is_a?(Path)
-      diagnostic_local_binding_emission(target) if target.is_a?(Var)
       node.target.accept self
       @str << " = "
 
@@ -953,7 +990,6 @@ module Iyi
     def visit(node : MultiAssign)
       diagnostic_anchor(node, "Literal", "multiassign")
       node.targets.join(@str, ", ") do |target|
-        diagnostic_local_binding_emission(target) if target.is_a?(Var)
         target.accept self
       end
       @str << " = "
@@ -986,24 +1022,9 @@ module Iyi
       false
     end
 
-    private def diagnostic_local_binding_emission(node : Var) : Nil
-      if (emissions = @diagnostic_emissions) &&
-         (origin = node.diagnostic_origin).is_a?(DiagnosticOrigin::Synthetic) &&
-         origin.synthesis_kind == "local_binding" && origin.structural_slot == "assignment"
-        parent = origin.parent_origin
-        unless node.diagnostic_macro_lineage.preserved? && parent.valid_for_anchor?("Call", "method")
-          raise ArgumentError.new("local binding lacks preserved call origin")
-        end
-        emissions << DiagnosticMacroAnchor.new(@str.pos.to_i32, "Call", "method", @diagnostic_emitter, parent, nil)
-      end
-    end
 
     def visit(node : Var)
-      if (anchors = @diagnostic_anchors) && (origin = node.diagnostic_origin).is_a?(DiagnosticOrigin::Synthetic) &&
-         origin.synthesis_kind == "local_binding" && origin.structural_slot == "assignment"
-        anchors << DiagnosticAnchor.new(@str.pos.to_i32, "Call", "method", origin.parent_origin)
-      end
-      @str << node.name
+      diagnostic_name(node, node.name, "local_reference")
       false
     end
 
@@ -1053,7 +1074,7 @@ module Iyi
         node_receiver.accept self
         @str << '.'
       end
-      @str << node.name
+      diagnostic_name(node, node.name, "definition_name")
       if node.args.size > 0 || node.block_arity || node.double_splat
         @str << '('
         printed_arg = false
@@ -1105,7 +1126,7 @@ module Iyi
       @str << "pub " if node.exported?
       diagnostic_anchor(node, "Macro", "keyword")
       @str << "macro "
-      @str << node.name.to_s
+      diagnostic_name(node, node.name.to_s, "macro_name")
       if node.args.size > 0 || node.block_arg || node.double_splat
         @str << '('
         printed_arg = false
@@ -1307,11 +1328,15 @@ module Iyi
       end
 
       if node.external_name != node.name
-        visit_named_arg_name(node.external_name)
+        if @diagnostic_name_fragments || @diagnostic_anchors
+          diagnostic_name(node, node.external_name, "named_entry", DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName))
+        else
+          visit_named_arg_name(node.external_name)
+        end
         @str << ' '
       end
-      if node.name
-        @str << node.name
+      if name = node.name
+        diagnostic_name(node, name, "parameter")
       else
         @str << '?'
       end
@@ -1357,7 +1382,10 @@ module Iyi
 
     def visit(node : Path)
       @str << "::" if node.global?
-      node.names.join(@str, "::")
+      node.names.each_with_index do |name, index|
+        @str << "::" if index > 0
+        diagnostic_name(node, name, "path_segment", DiagnosticNameSlot.new(DiagnosticNameSlotKind::PathSegment, index))
+      end
       false
     end
 
@@ -1433,7 +1461,7 @@ module Iyi
     end
 
     def visit(node : InstanceVar)
-      @str << node.name
+      diagnostic_name(node, node.name, "instance_variable")
       false
     end
 
@@ -1445,7 +1473,7 @@ module Iyi
     end
 
     def visit(node : ClassVar)
-      @str << node.name
+      diagnostic_name(node, node.name, "class_variable")
       false
     end
 

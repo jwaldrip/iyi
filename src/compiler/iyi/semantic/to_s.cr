@@ -17,11 +17,15 @@ module Iyi
       end
 
       if node.external_name != node.name
-        visit_named_arg_name(node.external_name)
+        if @diagnostic_name_fragments || @diagnostic_anchors
+          diagnostic_name(node, node.external_name, "named_entry", DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName))
+        else
+          visit_named_arg_name(node.external_name)
+        end
         @str << ' '
       end
-      if node.name
-        @str << node.name
+      if name = node.name
+        diagnostic_name(node, name, "parameter")
       else
         @str << '?'
       end
