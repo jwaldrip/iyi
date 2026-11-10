@@ -362,11 +362,14 @@ module Iyi::IyiMod
           when DiagnosticEmissionPart::AstAnchor
             intern(part.source_origin)
           when DiagnosticEmissionPart::NameSplice
-            intern_source_token(part.source_token)
+            intern_name_value(part.source_name)
           end
         end
       when DiagnosticOrigin::Synthetic
         intern(origin.parent_origin)
+      when DiagnosticOrigin::DerivedName
+        intern_source_token(origin.source_token)
+        intern(origin.definition_origin)
       end
       index = @entries.size.to_u32
       @entries << origin
@@ -377,6 +380,44 @@ module Iyi::IyiMod
     def intern_source_token(token : DiagnosticSourceNameToken) : Nil
       intern(token.lexical_origin)
       token.binding_origin.try { |origin| intern(origin) }
+    end
+
+    def intern_name_value(value : DiagnosticNameValue) : Nil
+      case value
+      when DiagnosticNameValue::Observed
+        intern_source_token(value.source_token)
+      when DiagnosticNameValue::Derived
+        intern(value.origin)
+      else
+        raise ArgumentError.new("unknown diagnostic name value")
+      end
+    end
+
+    def write_name_value(io : IO, value : DiagnosticNameValue) : Nil
+      case value
+      when DiagnosticNameValue::Observed
+        io.write_byte 1_u8
+        write_source_token(io, value.source_token)
+      when DiagnosticNameValue::Derived
+        io.write_byte 2_u8
+        io.write_bytes @indices[value.origin], FORMAT
+      else
+        raise ArgumentError.new("unknown diagnostic name value")
+      end
+    end
+
+    def read_name_value(io : IO) : DiagnosticNameValue
+      case io.read_byte
+      when 1_u8
+        DiagnosticNameValue::Observed.new(read_source_token(io))
+      when 2_u8
+        origin = parent(io.read_bytes(UInt32, FORMAT))
+        derived = origin.as?(DiagnosticOrigin::DerivedName) ||
+                  raise ArgumentError.new("diagnostic name value is not derived")
+        DiagnosticNameValue::Derived.new(derived)
+      else
+        raise ArgumentError.new("unknown diagnostic name value tag")
+      end
     end
 
     def write_source_token(io : IO, token : DiagnosticSourceNameToken) : Nil
@@ -458,10 +499,7 @@ module Iyi::IyiMod
             when DiagnosticEmissionPart::AstAnchor
               io.write_bytes @indices[part.source_origin], FORMAT
             when DiagnosticEmissionPart::NameSplice
-              write_source_token(io, part.source_token)
-              io.write_bytes part.slice_start.to_u32, FORMAT
-              io.write_bytes part.slice_end.to_u32, FORMAT
-              DiagnosticOrigins.write_string io, part.projection
+              write_name_value(io, part.source_name)
             end
           end
         when DiagnosticOrigin::Synthetic
@@ -469,6 +507,20 @@ module Iyi::IyiMod
           io.write_bytes @indices[origin.parent_origin], FORMAT
           DiagnosticOrigins.write_string io, origin.synthesis_kind
           DiagnosticOrigins.write_string io, origin.structural_slot
+        when DiagnosticOrigin::DerivedName
+          io.write_byte 4_u8
+          write_source_token(io, origin.source_token)
+          io.write_bytes @indices[origin.definition_origin], FORMAT
+          DiagnosticOrigins.write_string io, origin.parameter_slot
+          io.write_bytes origin.parameter_index.to_u32, FORMAT
+          DiagnosticOrigins.write_string io, origin.result
+          DiagnosticOrigins.write_string io, origin.projection
+          if fresh_index = origin.fresh_index
+            io.write_byte 1_u8
+            io.write_bytes fresh_index.to_u32, FORMAT
+          else
+            io.write_byte 0_u8
+          end
         else
           raise ArgumentError.new("unknown diagnostic origin")
         end
@@ -521,10 +573,7 @@ module Iyi::IyiMod
                      when 2_u8
                        DiagnosticEmissionPart::AstAnchor.new(start_offset, part_end, emitter, table.parent(io.read_bytes(UInt32, FORMAT)))
                      when 3_u8
-                       token = table.read_source_token(io)
-                       slice_start = io.read_bytes(UInt32, FORMAT).to_i32
-                       slice_end = io.read_bytes(UInt32, FORMAT).to_i32
-                       DiagnosticEmissionPart::NameSplice.new(start_offset, part_end, emitter, token, slice_start, slice_end, read_string(io))
+                       DiagnosticEmissionPart::NameSplice.new(start_offset, part_end, emitter, table.read_name_value(io))
                      else
                        raise ArgumentError.new("unknown macro emission part tag")
                      end
@@ -534,6 +583,19 @@ module Iyi::IyiMod
                  when 3_u8
                    parent = table.parent(io.read_bytes(UInt32, FORMAT))
                    DiagnosticOrigin::Synthetic.new(parent, read_string(io), read_string(io))
+                 when 4_u8
+                   token = table.read_source_token(io)
+                   definition = table.parent(io.read_bytes(UInt32, FORMAT))
+                   slot = read_string(io)
+                   index = io.read_bytes(UInt32, FORMAT).to_i32
+                   result = read_string(io)
+                   projection = read_string(io)
+                   fresh = case io.read_byte
+                           when 0_u8 then nil
+                           when 1_u8 then io.read_bytes(UInt32, FORMAT).to_i32
+                           else raise ArgumentError.new("invalid fresh parameter index marker")
+                           end
+                   DiagnosticOrigin::DerivedName.new(token, definition, slot, index, result, projection, fresh)
                  else
                    raise ArgumentError.new("unknown diagnostic origin tag")
                  end
@@ -704,8 +766,8 @@ module Iyi::IyiMod
       @fragments.keys.sort!.each do |key|
         @fragments[key].anchors.each do |anchor|
           table.intern(anchor.origin.not_nil!)
-          anchor.name_slots.each_value do |tokens|
-            tokens.each { |token| table.intern_source_token(token) }
+          anchor.name_slots.each_value do |values|
+            values.each { |value| table.intern_name_value(value) }
           end
         end
       end
@@ -733,11 +795,11 @@ module Iyi::IyiMod
           io.write_bytes table.intern(anchor.origin.not_nil!), FORMAT
           slots = anchor.name_slots.to_a.sort_by { |slot, _| {slot.kind.value, slot.index} }
           io.write_bytes slots.size.to_u32, FORMAT
-          slots.each do |slot, tokens|
+          slots.each do |slot, values|
             io.write_bytes slot.kind.value.to_u32, FORMAT
             io.write_bytes slot.index.to_u32, FORMAT
-            io.write_bytes tokens.size.to_u32, FORMAT
-            tokens.each { |token| table.write_source_token(io, token) }
+            io.write_bytes values.size.to_u32, FORMAT
+            values.each { |value| table.write_name_value(io, value) }
           end
         end
       end
@@ -780,7 +842,7 @@ module Iyi::IyiMod
           kind = DiagnosticOrigins.read_string(io)
           role = DiagnosticOrigins.read_string(io)
           origin = table.parent(io.read_bytes(UInt32, FORMAT))
-          slots = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+          slots = {} of DiagnosticNameSlot => Array(DiagnosticNameValue)
           previous_slot = nil.as(Tuple(Int32, Int32)?)
           read_count(io, 12).times do
             value = io.read_bytes(UInt32, FORMAT)
@@ -793,9 +855,9 @@ module Iyi::IyiMod
               raise ArgumentError.new("noncanonical diagnostic name slot order")
             end
             previous_slot = slot_key
-            tokens = Array(DiagnosticSourceNameToken).new(read_count(io, 40)) { table.read_source_token(io) }
-            raise ArgumentError.new("empty diagnostic name slot") if tokens.empty?
-            slots[slot] = tokens
+            values = Array(DiagnosticNameValue).new(read_count(io, 5)) { table.read_name_value(io) }
+            raise ArgumentError.new("empty diagnostic name slot") if values.empty?
+            slots[slot] = values
           end
           DiagnosticAnchor.new(offset, kind, role, origin, slots)
         end
