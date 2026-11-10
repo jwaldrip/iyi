@@ -4051,7 +4051,8 @@ module Iyi
       DiagnosticRenderedToken.new(entry.input_start, entry.input_end, String.new(entry.token_kind.to_slice),
         String.new(entry.token_text.to_slice), String.new(entry.lexical_mode.to_slice),
         entry.value_base64.try { |value| String.new(value.to_slice) }, delimiter,
-        entry.passed_backslash_newline, entry.invalid_escape, entry.line)
+        entry.passed_backslash_newline, entry.invalid_escape, entry.line,
+        entry.number_kind.try { |kind| String.new(kind.to_slice) })
     end
 
     # Derive an atomic value from the lexer; callers must also bind its owner.
