@@ -244,7 +244,7 @@ module Iyi::DiagnosticProvenance
         name = context.as_s
         raise "unknown name context" unless NAME_CONTEXTS.includes?(name)
         kind, role = expansion["anchor_kind"].as_s, expansion["role"].as_s
-        raise "invalid receiving name role" unless (kind == "Name" && role == name) || (kind == "Call" && role == "method")
+        raise "invalid receiving name role" unless (kind == "Name" && role == name) || (kind == "Call" && role == "method" && name == "method_name")
         raise "invalid receiving name token" unless name_token?(expansion["token_kind"].as_s, token, mode, name)
       end
       parts = expansion["emission_parts"].as_a

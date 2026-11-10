@@ -1046,7 +1046,7 @@ def test_composed_origin_controls():
         assert frames.emission_identity(changed) != baseline, mutation
 
     for mutation in ("missing", "overlap", "short", "source_role", "input_bound", "slice", "projection",
-                     "utf8", "unknown_part", "unknown_context", "unknown_mode", "unknown_token", "token_text", "old_shape"):
+                     "utf8", "unknown_part", "unknown_context", "wrong_call_context", "unknown_mode", "unknown_token", "token_text", "old_shape"):
         changed = copy.deepcopy(emission)
         node = changed["origin"]["invocation_origin"]
         parts = node["emission_parts"]
@@ -1061,6 +1061,7 @@ def test_composed_origin_controls():
         elif mutation == "utf8": token["raw_text"] = "\ud800"
         elif mutation == "unknown_part": parts[0]["kind"] = "Other"
         elif mutation == "unknown_context": node["name_context"] = "unknown"
+        elif mutation == "wrong_call_context": node["name_context"] = "local_reference"
         elif mutation == "unknown_mode": token["lexical_mode"] = "unknown"
         elif mutation == "unknown_token": token["token_kind"] = "unknown"
         elif mutation == "token_text": token["token_kind"] = "CONST"

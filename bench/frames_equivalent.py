@@ -275,7 +275,8 @@ def origin(value, depth=0):
         context = value["name_context"]
         if value["anchor_kind"] == "Name" and context is None: raise ValueError("missing name context")
         if context is not None and context not in NAME_CONTEXTS: raise ValueError("unknown name context")
-        if context is not None and (value["anchor_kind"], value["role"]) not in (("Name", context), ("Call", "method")):
+        if context is not None and not ((value["anchor_kind"], value["role"]) == ("Name", context) or
+                                        (value["anchor_kind"], value["role"], context) == ("Call", "method", "method_name")):
             raise ValueError("name context on structural anchor")
         if context is not None and not name_token(value["token_kind"], value["token_text"], value["lexical_mode"], context):
             raise ValueError("receiving token disagrees with name context")
