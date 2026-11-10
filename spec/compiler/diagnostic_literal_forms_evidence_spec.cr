@@ -94,7 +94,7 @@ describe "literal form parser evidence" do
   end
 
   it "leaves literal syntax and heredoc indentation errors unchanged with capture enabled" do
-    sources = [%q("plain"), %q(%q(a\)b)), %q(%Q(x)), %q(%[x]), %q(:name),
+    sources = [%q("plain"), "%q(a\\)b)", %q(%Q(x)), %q(%[x]), %q(:name),
                %q(:"quoted name"), %q("a#{"b"}"), %q(%w(a b)), %q(%i(a b)),
                %q(/a\/b/i), %q(`a#{x}`), "<<-'EOS'\n  text\n  EOS\n"]
     [false, true].each do |iyi|
