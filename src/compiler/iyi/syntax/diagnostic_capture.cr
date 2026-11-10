@@ -3091,7 +3091,7 @@ module Iyi
       verify_input_bytes!(literal, production, owner_value(node, field, index), input)
     end
 
-    private def self.owner_value(node : ASTNode, field : String, index : Int32) : String
+    def self.owner_value(node : ASTNode, field : String, index : Int32) : String
       raise ArgumentError.new("negative literal owner index") if index < 0
       case node
       when NamedArgument
@@ -3926,19 +3926,55 @@ module Iyi
   # The replay's own lexical journal, indexed by start offset. Membership here
   # is the only evidence that a span was scanned. Byte equality alone is not.
   class DiagnosticReplayJournal
-    getter entries : Array(DiagnosticRenderedToken)
+    @entries : Array(DiagnosticRenderedToken)
     @by_start : Hash(Int32, Array(DiagnosticRenderedToken))
+    @by_end : Hash(Int32, Array(DiagnosticRenderedToken))
 
     def initialize(entries : Array(DiagnosticRenderedToken))
-      @entries = entries.dup
+      @entries = entries.map { |entry| copy_entry(entry) }
       @by_start = {} of Int32 => Array(DiagnosticRenderedToken)
+      @by_end = {} of Int32 => Array(DiagnosticRenderedToken)
       @entries.each do |entry|
         (@by_start[entry.input_start] ||= [] of DiagnosticRenderedToken) << entry
+        (@by_end[entry.input_end] ||= [] of DiagnosticRenderedToken) << entry
       end
     end
 
+    def entries : Array(DiagnosticRenderedToken)
+      @entries.map { |entry| copy_entry(entry) }
+    end
+
     def starts_at(start : Int32) : Array(DiagnosticRenderedToken)
-      @by_start[start]? || [] of DiagnosticRenderedToken
+      @by_start[start]?.try { |entries| entries.map { |entry| copy_entry(entry) } } || [] of DiagnosticRenderedToken
+    end
+
+    def ends_at(finish : Int32) : Array(DiagnosticRenderedToken)
+      @by_end[finish]?.try { |entries| entries.map { |entry| copy_entry(entry) } } || [] of DiagnosticRenderedToken
+    end
+
+    # Ordinals belong to the parser's fresh replay journal, not to serialized
+    # claims. Resolve them before using a parser association as a boundary.
+    def entry!(reference : DiagnosticReplayTokenRef) : DiagnosticRenderedToken
+      ordinal = reference.ordinal
+      raise ArgumentError.new("invalid replay token reference") if ordinal < 0
+      entry = @entries[ordinal]? || raise ArgumentError.new("invalid replay token reference")
+      copy_entry(entry)
+    end
+
+    private def unique_at(start : Int32) : DiagnosticRenderedToken?
+      entries = @by_start[start]?
+      return nil unless entries
+      first = entries.first?
+      entries.each do |entry|
+        raise ArgumentError.new("ambiguous scanned token") unless entry == first
+      end
+      first
+    end
+
+    def entry_at!(start : Int32, mode : String) : DiagnosticRenderedToken
+      entry = unique_at(start) || raise ArgumentError.new("literal span is not tiled by scanned tokens")
+      raise ArgumentError.new("literal token mode differs") unless entry.lexical_mode == mode
+      copy_entry(entry)
     end
 
     def scanned?(token : DiagnosticSourceNameToken) : Bool
@@ -3946,7 +3982,7 @@ module Iyi
     end
 
     def scanned_span?(start : Int32, finish : Int32, kind : String, raw : String, mode : String) : Bool
-      starts_at(start).any? do |entry|
+      (@by_start[start]? || [] of DiagnosticRenderedToken).any? do |entry|
         entry.input_end == finish && entry.token_kind == kind && entry.token_text == raw && entry.lexical_mode == mode
       end
     end
@@ -3955,13 +3991,22 @@ module Iyi
     # selected merely because its bytes happen to match. Repeated identical
     # observations are possible when the lexer revisits a token.
     def literal_entry!(start : Int32, finish : Int32, kind : String, mode : String) : DiagnosticRenderedToken
-      entries = starts_at(start).uniq
-      raise ArgumentError.new("ambiguous scanned token") if entries.size > 1
-      entry = entries.first? || raise ArgumentError.new("literal witness is not a scanned token")
+      entry = unique_at(start) || raise ArgumentError.new("literal witness is not a scanned token")
       unless entry.input_end == finish && entry.token_kind == kind && entry.lexical_mode == mode
         raise ArgumentError.new("literal witness is not a scanned token")
       end
-      entry
+      copy_entry(entry)
+    end
+
+    private def copy_entry(entry : DiagnosticRenderedToken) : DiagnosticRenderedToken
+      delimiter = entry.delimiter.try do |state|
+        DiagnosticRenderedDelimiter.new(String.new(state.kind.to_slice), String.new(state.nest.to_slice),
+          String.new(state.end_delimiter.to_slice), state.allow_escapes, state.heredoc_indent)
+      end
+      DiagnosticRenderedToken.new(entry.input_start, entry.input_end, String.new(entry.token_kind.to_slice),
+        String.new(entry.token_text.to_slice), String.new(entry.lexical_mode.to_slice),
+        entry.value_base64.try { |value| String.new(value.to_slice) }, delimiter,
+        entry.passed_backslash_newline, entry.invalid_escape, entry.line)
     end
 
     # Derive an atomic value from the lexer; callers must also bind its owner.
@@ -3992,6 +4037,1352 @@ module Iyi
       encoded = entry.value_base64 || raise ArgumentError.new("literal scanned token lacks a value")
       String.new(DiagnosticRenderedToken.decode_value(encoded,
         DiagnosticRenderedToken.value_bound(entry.token_kind, entry.token_text)))
+    end
+
+    # Cover a grammar gap only with observations emitted by the lexer. Skipped
+    # comments and pragmas are observations, not grammar tokens.
+    def literal_trivia!(start : Int32, finish : Int32, mode : String, allow_newline : Bool) : Nil
+      raise ArgumentError.new("invalid trivia span") unless start >= 0 && finish >= start
+      cursor = start
+      while cursor < finish
+        entry = unique_at(cursor) || raise ArgumentError.new("unwitnessed grammar gap")
+        permitted = entry.token_kind == "SPACE" ||
+                    (allow_newline && entry.token_kind == "NEWLINE") ||
+                    {"SKIPPED_COMMENT", "SKIPPED_DOC_COMMENT", "SKIPPED_LOC_PRAGMA"}.includes?(entry.token_kind)
+        unless permitted && entry.lexical_mode == mode && entry.input_end > cursor && entry.input_end <= finish
+          raise ArgumentError.new("unwitnessed grammar gap")
+        end
+        cursor = entry.input_end
+      end
+    end
+  end
+
+  # Snapshot of one completed replay, before callers can mutate its tree.
+  # It supplies evidence to binding; constructing one is not authority.
+  class DiagnosticLiteralReplayAssociations
+    record Edge, field : String, index : Int32?, key : String?, child : ASTNode
+    record NodeEdges, owner : ASTNode, edges : Array(Edge)
+
+    def input_key : String
+      String.new(@input_key.to_slice)
+    end
+    getter journal : DiagnosticReplayJournal
+
+    def initialize(input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal, parser : Parser, @root : ASTNode)
+      @input_key = input.capture_key
+      @mode = input.lexical_mode
+      @literal_owners = parser.diagnostic_literal_owner_observations.map { |item| copy_owner(item) }
+      @scalar_owners = parser.diagnostic_scalar_grammar_observations
+      @folds = parser.diagnostic_folded_string_observations
+      @interpolations = parser.diagnostic_interpolation_observations
+      @wrappers = parser.diagnostic_interpolation_wrapper_observations
+      @wrapper_pieces = parser.diagnostic_interpolation_piece_observations
+      @transfers = parser.diagnostic_literal_transfer_observations
+      @heredoc_groups = parser.diagnostic_heredoc_group_observations
+      @percent_groups = parser.diagnostic_percent_group_observations
+      @percent_elements = parser.diagnostic_percent_element_observations
+      @payloads = parser.diagnostic_literal_payload_observations
+      @regex_options = parser.diagnostic_regex_options_observations
+      @graph = {} of UInt64 => NodeEdges
+      @coordinates = {} of UInt64 => String
+      @path = [] of DiagnosticCaptureRefs::Step
+      @active = Set(UInt64).new
+      @remaining = DiagnosticOrigin::MAX_UNFOLDED_BYTES
+      freeze_graph!(@root, 0)
+    end
+
+    def literal_owners : Array(DiagnosticLiteralOwnerObservation)
+      @literal_owners.map { |item| copy_owner(item) }
+    end
+
+    def scalar_owners : Array(DiagnosticScalarGrammarObservation)
+      @scalar_owners.dup
+    end
+
+    def folds : Array(DiagnosticFoldedStringObservation)
+      @folds.dup
+    end
+
+    def interpolations : Array(DiagnosticInterpolationObservation)
+      @interpolations.dup
+    end
+
+    def wrappers : Array(DiagnosticInterpolationWrapperObservation)
+      @wrappers.map { |item| DiagnosticInterpolationWrapperObservation.new(item.owner, item.delimiters.dup, item.expressions.dup) }
+    end
+
+    def wrapper_pieces : Array(DiagnosticInterpolationPieceObservation)
+      @wrapper_pieces.dup
+    end
+
+    def transfers : Array(DiagnosticLiteralTransferObservation)
+      @transfers.dup
+    end
+
+    def heredoc_groups : Array(DiagnosticHeredocGroupObservation)
+      @heredoc_groups.map { |item| DiagnosticHeredocGroupObservation.new(item.placeholder, item.opener, item.body, item.close, item.results.dup) }
+    end
+
+    def percent_groups : Array(DiagnosticPercentGroupObservation)
+      @percent_groups.map { |item| DiagnosticPercentGroupObservation.new(item.owner, item.opener, item.close, item.elements.dup) }
+    end
+
+    def percent_elements : Array(DiagnosticPercentElementObservation)
+      @percent_elements.dup
+    end
+
+    def payloads : Array(DiagnosticLiteralPayloadObservation)
+      @payloads.dup
+    end
+
+    def regex_options : Array(DiagnosticRegexOptionsObservation)
+      @regex_options.map { |item| DiagnosticRegexOptionsObservation.new(item.owner, item.opener, item.close, item.after, item.modifiers.dup) }
+    end
+
+    def field_ref(owner : ASTNode, field : String, index : Int32) : DiagnosticCaptureFieldRef
+      snapshot = @graph[owner.object_id]? || raise ArgumentError.new("literal owner is outside replay graph")
+      raise ArgumentError.new("literal owner is outside replay graph") unless snapshot.owner.same?(owner)
+      DiagnosticCaptureFieldRef.new(@input_key, @coordinates[owner.object_id], field, index)
+    end
+
+    def verify_graph!(root : ASTNode) : Nil
+      raise ArgumentError.new("literal replay root differs") unless @root.same?(root)
+      @graph.each_value do |snapshot|
+        current = [] of Edge
+        DiagnosticDirectChildFields.each(snapshot.owner) do |field, index, key, child|
+          current << Edge.new(field, index, key, child)
+        end
+        raise ArgumentError.new("literal replay graph differs") unless current.size == snapshot.edges.size
+        current.each_with_index do |edge, index|
+          expected = snapshot.edges[index]
+          unless edge.field == expected.field && edge.index == expected.index && edge.key == expected.key &&
+                 edge.child.same?(expected.child)
+            raise ArgumentError.new("literal replay graph differs")
+          end
+        end
+      end
+    end
+
+    def verify_relationships! : Nil
+      interpolation_owners = Set(UInt64).new
+      @wrappers.each do |wrapper|
+        raise ArgumentError.new("duplicate interpolation wrapper") unless interpolation_owners.add?(wrapper.owner.object_id)
+      end
+      @heredoc_groups.each do |group|
+        raise ArgumentError.new("duplicate interpolation wrapper") unless interpolation_owners.add?(group.placeholder.object_id)
+      end
+      @graph.each_value do |snapshot|
+        if snapshot.owner.is_a?(StringInterpolation) && !interpolation_owners.includes?(snapshot.owner.object_id)
+          raise ArgumentError.new("interpolation wrapper association missing")
+        end
+      end
+      @wrapper_pieces.each do |piece|
+        matches = @wrappers.select { |wrapper| wrapper.owner.same?(piece.owner) }
+        unless matches.size == 1 && piece.index >= 0 && piece.index < matches[0].expressions.size &&
+               matches[0].expressions[piece.index].same?(piece.expression)
+          raise ArgumentError.new("orphan interpolation piece association")
+        end
+      end
+      @percent_elements.each do |element|
+        count = @percent_groups.count { |group| group.elements.any?(&.same?(element.owner)) }
+        raise ArgumentError.new("orphan percent element association") unless count == 1
+      end
+      @wrappers.each { |wrapper| verify_wrapper!(wrapper) }
+      @transfers.each do |transfer|
+        source = @literal_owners.select do |item|
+          item.owner.same?(transfer.source) && item.field == "value" && item.index == 0
+        end
+        target = @literal_owners.select do |item|
+          item.owner.same?(transfer.target) && item.field == transfer.field && item.index == transfer.index
+        end
+        unless source.size == 1 && target.size == 1 && source[0].ranges == target[0].ranges
+          raise ArgumentError.new("literal transfer association differs")
+        end
+        from = source[0].productions
+        to = target[0].productions
+        unless from && to && from.size == to.size &&
+               from.zip(to).all? { |pair| same_literal_production?(pair[0], pair[1]) }
+          raise ArgumentError.new("literal transfer association differs")
+        end
+      end
+      @interpolations.each do |item|
+        opener = relationship_token!(item.open, "INTERPOLATION_START")
+        closer = relationship_token!(item.close, "OP_RCURLY")
+        first = @journal.entry!(item.expression_first)
+        unless first.lexical_mode == @mode && opener.input_end <= first.input_start &&
+               first.input_end <= closer.input_start
+          raise ArgumentError.new("interpolation association differs")
+        end
+        verify_interpolation_prefix!(item, opener, first)
+      end
+      @folds.each do |fold|
+        matches = @interpolations.select do |item|
+          item.open == fold.open && item.close == fold.close && item.expression.same?(fold.expression)
+        end
+        raise ArgumentError.new("fold association differs") unless matches.size == 1
+      end
+      @heredoc_groups.each do |group|
+        unless @graph.has_key?(group.placeholder.object_id) &&
+               same_nodes?(group.placeholder.expressions, group.results)
+          raise ArgumentError.new("heredoc result association differs")
+        end
+        opener = relationship_token!(group.opener, "DELIMITER_START")
+        closer = relationship_token!(group.close, "DELIMITER_END")
+        body = @journal.entry!(group.body)
+        unless opener.delimiter.try(&.kind) == "HEREDOC" && opener.input_end <= body.input_start &&
+               body.input_start <= closer.input_start && closer.input_end > closer.input_start
+          raise ArgumentError.new("heredoc group boundaries differ")
+        end
+        group.results.each_with_index do |result, index|
+          observations = @literal_owners.select { |item| item.owner.same?(result) && item.field == "value" && item.index == 0 }
+          next if observations.empty?
+          raise ArgumentError.new("heredoc result association differs") unless observations.size == 1
+          observation = observations[0]
+          parts = observation.productions
+          next unless parts && parts.any? { |part| part.production.heredoc? }
+          unless observation.heredoc_result_index == index && parts.size == 1 &&
+                 parts[0].start_offset == opener.input_start && parts[0].end_offset == closer.input_end
+            raise ArgumentError.new("heredoc result association differs")
+          end
+        end
+      end
+      @percent_groups.each do |group|
+        unless @graph.has_key?(group.owner.object_id) && same_nodes?(group.owner.elements, group.elements)
+          raise ArgumentError.new("percent array association differs")
+        end
+        opener = @journal.entry!(group.opener)
+        unless {"STRING_ARRAY_START", "SYMBOL_ARRAY_START"}.includes?(opener.token_kind)
+          raise ArgumentError.new("percent array opener differs")
+        end
+        relationship_token!(group.opener, opener.token_kind)
+        closer = relationship_token!(group.close, "STRING_ARRAY_END")
+        raise ArgumentError.new("percent array boundaries differ") unless opener.input_end <= closer.input_start
+        previous = opener.input_end
+        group.elements.each do |element|
+          associations = @percent_elements.select { |item| item.owner.same?(element) }
+          raise ArgumentError.new("percent array element association differs") unless associations.size == 1
+          association = associations[0]
+          first = @journal.entry!(association.first)
+          ending = @journal.entry!(association.after)
+          unless {"STRING", "INTERPOLATION_START"}.includes?(first.token_kind) &&
+                 {"SPACE", "STRING_ARRAY_END"}.includes?(ending.token_kind) &&
+                 first.lexical_mode == @mode && ending.lexical_mode == @mode &&
+                 first.input_start >= previous && ending.input_start > first.input_start &&
+                 ending.input_start <= closer.input_start
+            raise ArgumentError.new("percent array element association differs")
+          end
+          relationship_token!(association.first, first.token_kind)
+          relationship_token!(association.after, ending.token_kind)
+          array_gap!(previous, first.input_start)
+          observations = @literal_owners.select { |item| item.owner.same?(element) && item.field == "value" && item.index == 0 }
+          raise ArgumentError.new("percent array element association differs") if observations.size > 1
+          if observation = observations.first?
+            if observation.productions.try { |parts| parts.any? { |part| part.production.percent_string_element? || part.production.percent_symbol_element? } }
+              unless observation.ranges == [{first.input_start, ending.input_start}]
+                raise ArgumentError.new("percent array element association differs")
+              end
+            end
+          end
+          previous = ending.input_start
+        end
+        array_gap!(previous, closer.input_start)
+      end
+      @payloads.each do |item|
+        unless @graph.has_key?(item.owner.object_id) && @graph.has_key?(item.payload.object_id)
+          raise ArgumentError.new("literal payload owner differs")
+        end
+        actual = case owner = item.owner
+                 when RegexLiteral then owner.value
+                 when Call
+                   raise ArgumentError.new("literal payload owner differs") unless owner.name == "`"
+                   owner.args.first? || raise ArgumentError.new("literal payload owner differs")
+                 else
+                   raise ArgumentError.new("literal payload owner differs")
+                 end
+        raise ArgumentError.new("literal payload owner differs") unless actual.same?(item.payload)
+        opener = relationship_token!(item.opener, "DELIMITER_START")
+        closer = relationship_token!(item.close, "DELIMITER_END")
+        raise ArgumentError.new("literal payload bounds differ") unless opener.input_start < closer.input_end
+      end
+      verify_regex_options!
+    end
+
+    private def verify_wrapper!(wrapper : DiagnosticInterpolationWrapperObservation) : Nil
+      unless @graph.has_key?(wrapper.owner.object_id) && same_nodes?(wrapper.owner.expressions, wrapper.expressions)
+        raise ArgumentError.new("interpolation wrapper differs")
+      end
+      raise ArgumentError.new("interpolation wrapper lacks delimiters") if wrapper.delimiters.empty?
+      pieces = @wrapper_pieces.select { |piece| piece.owner.same?(wrapper.owner) }.sort_by(&.index)
+      unless pieces.size == wrapper.expressions.size
+        raise ArgumentError.new("interpolation piece count differs")
+      end
+      if @journal.entry!(wrapper.delimiters.first[0]).token_kind == "STRING_ARRAY_START"
+        verify_percent_wrapper!(wrapper, pieces)
+        return
+      end
+      piece_index = 0
+      previous_end : Int32? = nil
+      wrapper.delimiters.each do |opening_ref, closing_ref|
+        opening = relationship_token!(opening_ref, "DELIMITER_START")
+        closing = relationship_token!(closing_ref, "DELIMITER_END")
+        state = opening.delimiter || raise ArgumentError.new("interpolation delimiter state differs")
+        raise ArgumentError.new("interpolation delimiter state differs") unless {"STRING", "REGEX", "COMMAND"}.includes?(state.kind)
+        close_state = closing.delimiter
+        unless close_state && close_state.kind == state.kind && close_state.nest == state.nest &&
+               close_state.end_delimiter == state.end_delimiter && close_state.allow_escapes == state.allow_escapes
+          raise ArgumentError.new("interpolation delimiter state differs")
+        end
+        if prior = previous_end
+          continuation_gap!(prior, opening.input_start)
+        end
+        cursor = opening.input_end
+        while cursor < closing.input_start
+          token = @journal.entry_at!(cursor, @mode)
+          unless token.input_end > cursor && token.input_end <= closing.input_start
+            raise ArgumentError.new("interpolation span is not tiled")
+          end
+          token_state = token.delimiter
+          unless token_state && token_state.kind == state.kind && token_state.nest == state.nest &&
+                 token_state.end_delimiter == state.end_delimiter && token_state.allow_escapes == state.allow_escapes
+            raise ArgumentError.new("interpolation delimiter state differs")
+          end
+          if token.token_kind == "STRING_CONTINUATION"
+            cursor = token.input_end
+            next
+          end
+          piece = pieces[piece_index]? || raise ArgumentError.new("interpolation piece count differs")
+          cursor = verify_wrapper_piece!(wrapper, piece, piece_index, token)
+          piece_index += 1
+        end
+        raise ArgumentError.new("interpolation span is not tiled") unless cursor == closing.input_start
+        previous_end = closing.input_end
+      end
+      raise ArgumentError.new("interpolation piece count differs") unless piece_index == pieces.size
+    end
+
+    private def verify_percent_wrapper!(wrapper : DiagnosticInterpolationWrapperObservation,
+                                        pieces : Array(DiagnosticInterpolationPieceObservation)) : Nil
+      raise ArgumentError.new("percent interpolation delimiters differ") unless wrapper.delimiters.size == 1
+      group = @percent_groups.select { |item| item.elements.any?(&.same?(wrapper.owner)) }
+      bounds = @percent_elements.select { |item| item.owner.same?(wrapper.owner) }
+      unless group.size == 1 && bounds.size == 1 &&
+             wrapper.delimiters[0] == {group[0].opener, group[0].close}
+        raise ArgumentError.new("percent interpolation delimiters differ")
+      end
+      opening = relationship_token!(group[0].opener, "STRING_ARRAY_START")
+      closing = relationship_token!(group[0].close, "STRING_ARRAY_END")
+      first = @journal.entry!(bounds[0].first)
+      ending = @journal.entry!(bounds[0].after)
+      state = opening.delimiter || raise ArgumentError.new("interpolation delimiter state differs")
+      unless state.kind == "STRING_ARRAY" && first.input_start >= opening.input_end &&
+             ending.input_start <= closing.input_start
+        raise ArgumentError.new("percent interpolation delimiters differ")
+      end
+      cursor = first.input_start
+      index = 0
+      while cursor < ending.input_start
+        token = @journal.entry_at!(cursor, @mode)
+        token_state = token.delimiter
+        unless token.input_end > cursor && token.input_end <= ending.input_start &&
+               token_state && token_state.kind == state.kind && token_state.nest == state.nest &&
+               token_state.end_delimiter == state.end_delimiter && token_state.allow_escapes == state.allow_escapes
+          raise ArgumentError.new("interpolation delimiter state differs")
+        end
+        if token.token_kind == "STRING_CONTINUATION"
+          cursor = token.input_end
+          next
+        end
+        piece = pieces[index]? || raise ArgumentError.new("interpolation piece count differs")
+        cursor = verify_wrapper_piece!(wrapper, piece, index, token)
+        index += 1
+      end
+      unless cursor == ending.input_start && index == pieces.size
+        raise ArgumentError.new("interpolation piece count differs")
+      end
+    end
+
+    private def verify_wrapper_piece!(wrapper : DiagnosticInterpolationWrapperObservation,
+                                      piece : DiagnosticInterpolationPieceObservation,
+                                      index : Int32, token : DiagnosticRenderedToken) : Int32
+      unless piece.index == index && piece.expression.same?(wrapper.expressions[index]) &&
+             @journal.entry!(piece.first) == token
+        raise ArgumentError.new("interpolation piece association differs")
+      end
+      case token.token_kind
+      when "STRING"
+        unless @journal.entry!(piece.last) == token && piece.expression.is_a?(StringLiteral)
+          raise ArgumentError.new("interpolation piece association differs")
+        end
+        observations = @literal_owners.select do |item|
+          item.owner.same?(piece.expression) && item.field == "value" && item.index == 0
+        end
+        unless observations.size == 1 && observations[0].ranges == [{token.input_start, token.input_end}]
+          raise ArgumentError.new("interpolation piece association differs")
+        end
+        token.input_end
+      when "INTERPOLATION_START"
+        ending = relationship_token!(piece.last, "OP_RCURLY")
+        matches = @interpolations.select { |item| @journal.entry!(item.open) == token && @journal.entry!(item.close) == ending }
+        raise ArgumentError.new("interpolation piece association differs") unless matches.size == 1
+        source = matches[0].expression
+        transferred = @transfers.any? { |item| item.source.same?(source) && item.target.same?(piece.expression) }
+        unless piece.expression.same?(source) || transferred
+          raise ArgumentError.new("interpolation piece association differs")
+        end
+        ending.input_end
+      else
+        raise ArgumentError.new("interpolation span is not tiled")
+      end
+    end
+
+    private def continuation_gap!(start : Int32, finish : Int32) : Nil
+      cursor = start
+      first = true
+      while cursor < finish
+        token = @journal.entry_at!(cursor, @mode)
+        unless token.token_kind == "SPACE" && token.input_end > cursor && token.input_end <= finish &&
+               (!first || token.passed_backslash_newline)
+          raise ArgumentError.new("continuation lacks a backslash-newline")
+        end
+        first = false
+        cursor = token.input_end
+      end
+      raise ArgumentError.new("continuation lacks a backslash-newline") if first
+    end
+
+    private def verify_interpolation_prefix!(item : DiagnosticInterpolationObservation,
+                                             opener : DiagnosticRenderedToken,
+                                             first : DiagnosticRenderedToken) : Nil
+      splats = @percent_elements.select do |element|
+        element.first == item.open && element.owner.is_a?(Splat) &&
+          @percent_groups.any? { |group| group.elements.any?(&.same?(element.owner)) }
+      end
+      raise ArgumentError.new("interpolation association differs") if splats.size > 1
+      unless splats.empty?
+        value = splats[0].owner.as(Splat).exp
+        transferred = @transfers.any? { |transfer| transfer.source.same?(item.expression) && transfer.target.same?(value) }
+        unless value.same?(item.expression) || transferred
+          raise ArgumentError.new("interpolation association differs")
+        end
+      end
+      cursor = opener.input_end
+      star = false
+      while cursor < first.input_start
+        token = @journal.entry_at!(cursor, @mode)
+        raise ArgumentError.new("interpolation association differs") unless token.input_end > cursor && token.input_end <= first.input_start
+        if token.token_kind == "OP_STAR"
+          raise ArgumentError.new("interpolation association differs") if star || splats.empty?
+          star = true
+        elsif !{"SPACE", "NEWLINE", "SKIPPED_COMMENT", "SKIPPED_DOC_COMMENT", "SKIPPED_LOC_PRAGMA"}.includes?(token.token_kind)
+          raise ArgumentError.new("interpolation association differs")
+        end
+        cursor = token.input_end
+      end
+      raise ArgumentError.new("interpolation association differs") unless star == !splats.empty?
+    end
+
+    private def array_gap!(start : Int32, finish : Int32) : Nil
+      cursor = start
+      while cursor < finish
+        token = @journal.entry_at!(cursor, @mode)
+        unless token.token_kind == "SPACE" && token.input_end > cursor && token.input_end <= finish
+          raise ArgumentError.new("percent array separator differs")
+        end
+        cursor = token.input_end
+      end
+    end
+
+    private def same_nodes?(actual : Indexable(ASTNode), expected : Indexable(ASTNode)) : Bool
+      return false unless actual.size == expected.size
+      actual.each_with_index { |node, index| return false unless node.same?(expected[index]) }
+      true
+    end
+
+    private def same_literal_production?(left : DiagnosticLiteralProductionSegment,
+                                         right : DiagnosticLiteralProductionSegment) : Bool
+      left.production == right.production && left.start_offset == right.start_offset &&
+        left.end_offset == right.end_offset && left.raw_base64 == right.raw_base64 &&
+        left.delimiter_kind == right.delimiter_kind && left.nest == right.nest &&
+        left.end_delimiter == right.end_delimiter && left.allow_escapes == right.allow_escapes &&
+        left.witnesses == right.witnesses
+    end
+
+    def verify_regex_options! : Nil
+      seen = Set(UInt64).new
+      @regex_options.each do |observation|
+        node = observation.owner
+        raise ArgumentError.new("duplicate regex options association") unless seen.add?(node.object_id)
+        raise ArgumentError.new("regex owner is not reachable") unless @graph.has_key?(node.object_id)
+        opener = relationship_token!(observation.opener, "DELIMITER_START")
+        closer = relationship_token!(observation.close, "DELIMITER_END")
+        unless opener.delimiter.try(&.kind) == "REGEX" && opener.input_start < closer.input_start
+          raise ArgumentError.new("regex delimiter association differs")
+        end
+        payloads = @payloads.select do |item|
+          item.owner.same?(node) && item.payload.same?(node.value) &&
+            item.opener == observation.opener && item.close == observation.close
+        end
+        raise ArgumentError.new("regex payload association differs") unless payloads.size == 1
+        raise ArgumentError.new("regex modifier association differs") if observation.modifiers.size > 1
+        cursor = closer.input_end
+        options = RegexOptions::None
+        if reference = observation.modifiers.first?
+          modifier = relationship_token!(reference, "REGEX_OPTIONS")
+          unless modifier.input_start == cursor && modifier.input_end > cursor
+            raise ArgumentError.new("regex modifier association differs")
+          end
+          modifier.token_text.each_byte do |byte|
+            case byte
+            when 'i'.ord then options |= RegexOptions::IGNORE_CASE
+            when 'm'.ord then options |= RegexOptions::MULTILINE
+            when 'x'.ord then options |= RegexOptions::EXTENDED
+            else              raise ArgumentError.new("invalid regex option")
+            end
+          end
+          cursor = modifier.input_end
+        end
+        after = @journal.entry!(observation.after)
+        unless after.lexical_mode == @mode && after.input_start >= cursor
+          raise ArgumentError.new("regex return token differs")
+        end
+        @journal.literal_trivia!(cursor, after.input_start, @mode, true)
+        raise ArgumentError.new("regex options differ") unless node.options == options
+      end
+      @graph.each_value do |snapshot|
+        if snapshot.owner.is_a?(RegexLiteral) && !seen.includes?(snapshot.owner.object_id)
+          raise ArgumentError.new("regex options association missing")
+        end
+      end
+    end
+
+    private def relationship_token!(reference : DiagnosticReplayTokenRef, kind : String) : DiagnosticRenderedToken
+      token = @journal.entry!(reference)
+      @journal.literal_entry!(token.input_start, token.input_end, kind, @mode)
+    end
+
+    private def copy_owner(item : DiagnosticLiteralOwnerObservation) : DiagnosticLiteralOwnerObservation
+      productions = item.productions.try do |items|
+        items.map do |part|
+          DiagnosticLiteralProductionSegment.new(part.production, part.start_offset, part.end_offset,
+            String.new(part.raw_base64.to_slice), part.delimiter_kind.try { |s| String.new(s.to_slice) },
+            part.nest.try { |s| String.new(s.to_slice) }, part.end_delimiter.try { |s| String.new(s.to_slice) },
+            part.allow_escapes, part.witnesses)
+        end
+      end
+      DiagnosticLiteralOwnerObservation.new(item.owner, String.new(item.field.to_slice), item.index,
+        item.ranges.dup, productions, item.heredoc_result_index)
+    end
+
+    private def freeze_graph!(node : ASTNode, depth : Int32) : Nil
+      raise ArgumentError.new("literal replay graph exceeds depth limit") if depth > 128
+      id = node.object_id
+      raise ArgumentError.new("cyclic literal replay graph") if @active.includes?(id)
+      return if @graph.has_key?(id)
+      raise ArgumentError.new("literal replay graph exceeds size limit") if @remaining < 128_u64
+      @remaining -= 128_u64
+      @active.add(id)
+      begin
+        DiagnosticAstFieldSchema.validate_node_fields(node)
+        edges = [] of Edge
+        DiagnosticDirectChildFields.each(node) do |field, index, key, child|
+          charge = 64_u64 + field.bytesize.to_u64 + (key.try(&.bytesize) || 0).to_u64
+          raise ArgumentError.new("literal replay graph exceeds size limit") if charge > @remaining
+          @remaining -= charge
+          edges << Edge.new(String.new(field.to_slice), index, key.try { |value| String.new(value.to_slice) }, child)
+        end
+        @graph[id] = NodeEdges.new(node, edges)
+        @coordinates[id] = @path.to_json
+        edges.each do |edge|
+          @path << {edge.field, edge.index, edge.key.try { |value| Base64.strict_encode(value) }}
+          begin
+            freeze_graph!(edge.child, depth + 1)
+          ensure
+            @path.pop
+          end
+        end
+      ensure
+        @active.delete(id)
+      end
+    end
+  end
+
+  # Reconstructs literal values from the replay journal. This does not by
+  # itself establish the association between a literal and its AST owner.
+  class DiagnosticLiteralReplay
+    def initialize(@input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal,
+                   @folds : Array(DiagnosticFoldedStringObservation),
+                   @interpolations : Array(DiagnosticInterpolationObservation),
+                   @literal_observations : Array(DiagnosticLiteralOwnerObservation))
+      @source = @input.input
+    end
+
+    # Structural expectations come from the parser's private observation,
+    # never from the metadata being checked.
+    def derive!(ranges : Indexable({Int32, Int32}), productions : Indexable(DiagnosticLiteralProductionSegment),
+                depth : Int32 = 0, heredoc_value : String? = nil) : String
+      raise ArgumentError.new("literal fold exceeds depth limit") if depth > 128
+      raise ArgumentError.new("literal production evidence missing") if productions.empty?
+      raise ArgumentError.new("literal constituent and production counts differ") unless ranges.size == productions.size
+      output = IO::Memory.new
+      previous_end : Int32? = nil
+      ranges.each_with_index do |range, index|
+        start_offset, end_offset = range
+        unless start_offset >= 0 && end_offset > start_offset && end_offset <= @source.bytesize
+          raise ArgumentError.new("literal constituent span invalid")
+        end
+        raw = @source.byte_slice(start_offset, end_offset - start_offset)
+        segment = DiagnosticLiteralSegment.new(start_offset, end_offset, Base64.strict_encode(raw.to_slice))
+        production = productions[index]
+        unless @input.matches_encoded_span?(production.start_offset, production.end_offset, production.raw_base64)
+          raise ArgumentError.new("literal production input bytes mismatch")
+        end
+        if production.production.percent_symbol_element? || production.production.percent_string_element?
+          unless start_offset >= production.start_offset && end_offset <= production.end_offset
+            raise ArgumentError.new("percent element lies outside production")
+          end
+        elsif start_offset != production.start_offset || end_offset != production.end_offset
+          raise ArgumentError.new("literal constituent and production span mismatch")
+        end
+        case production.production
+        when .symbol_token?, .char_token?, .magic_file?, .magic_dir?, .string_piece?
+          raise ArgumentError.new("invalid atomic literal continuation") if previous_end
+          output << @journal.literal_atom!(production, @input.lexical_mode)
+        when .delimiter?
+          output << delimiter_value!(production, previous_end, depth)
+        when .percent_symbol_element?, .percent_string_element?
+          raise ArgumentError.new("invalid percent literal continuation") if previous_end
+          output << percent_value!(segment, production, depth)
+        when .heredoc?
+          raise ArgumentError.new("heredoc literal outside its heredoc") if previous_end
+          output << (heredoc_value || raise ArgumentError.new("heredoc literal outside its heredoc"))
+        else
+          raise ArgumentError.new("literal production requires complete journal reconstruction")
+        end
+        previous_end = production.end_offset
+      end
+      output.to_s
+    end
+
+    # Low-level check for tests. Registry authorization uses derive! with the
+    # parser-owned structural association, then compares the claimed fields.
+    def value!(literal : DiagnosticParsedLiteral, productions : Indexable(DiagnosticLiteralProductionSegment),
+               depth : Int32 = 0, heredoc_value : String? = nil) : String
+      segments = literal.segments
+      value = derive!(segments.map { |segment| {segment.start_offset, segment.end_offset} }, productions, depth, heredoc_value)
+      verify_claim!(literal, value)
+      value
+    end
+
+    def verify_claim!(literal : DiagnosticParsedLiteral, value : String) : Nil
+      unless literal.input_sha256 == @input.input_sha256 && literal.input_bytesize == @input.input_bytesize &&
+             literal.lexical_mode == @input.lexical_mode
+        raise ArgumentError.new("literal input identity mismatch")
+      end
+      raise ArgumentError.new("literal expansion requires independent expansion authority") if literal.expansion
+      literal.each_segment do |segment|
+        unless @input.matches_encoded_span?(segment.start_offset, segment.end_offset, segment.raw_base64)
+          raise ArgumentError.new("literal constituent input bytes mismatch")
+        end
+      end
+      unless literal.decoded_bytesize == value.bytesize && literal.decoded_base64 == Base64.strict_encode(value.to_slice)
+        raise ArgumentError.new("literal decoded value differs from scanned tokens")
+      end
+    end
+
+    # A heredoc can yield several string nodes sharing one production. Derive
+    # all of them together, so a repeated value cannot select a different part.
+    def heredoc_values!(parent : StringInterpolation, production : DiagnosticLiteralProductionSegment) : Hash(UInt64, String)
+      raise ArgumentError.new("invalid heredoc production") unless production.production.heredoc?
+      witnesses = production.witnesses
+      opener = witnesses.first? || raise ArgumentError.new("heredoc opener is not a scanned token")
+      closer = witnesses.last? || raise ArgumentError.new("heredoc closer differs")
+      unless opener.kind.opener? && opener.start_offset == production.start_offset &&
+             closer.kind.closing_delimiter? && closer.end_offset == production.end_offset
+        raise ArgumentError.new("heredoc closer differs")
+      end
+      opening_token = @journal.literal_entry!(opener.start_offset, opener.end_offset, "DELIMITER_START", @input.lexical_mode)
+      closing_token = @journal.literal_entry!(closer.start_offset, closer.end_offset, "DELIMITER_END", @input.lexical_mode)
+      state!(opening_token, production)
+      state!(closing_token, production)
+      closing_state = closing_token.delimiter.not_nil!
+      raise ArgumentError.new("heredoc closer differs") unless closing_state.heredoc_indent == parent.heredoc_indent
+      pieces = [] of HeredocIndent::Piece(Int32)
+      expressions = [] of ASTNode
+      index = 1
+      marker = 0
+      cursor = witnesses[index]?.try(&.start_offset) || closing_token.input_start
+      @journal.ends_at(cursor).each do |entry|
+        next unless {"STRING", "STRING_CONTINUATION", "INTERPOLATION_START"}.includes?(entry.token_kind)
+        state = entry.delimiter
+        if state && state.kind == production.delimiter_kind && state.nest == production.nest &&
+           state.end_delimiter == production.end_delimiter && state.allow_escapes == production.allow_escapes
+          raise ArgumentError.new("unwitnessed heredoc body token")
+        end
+      end
+      while cursor < closing_token.input_start
+        token = @journal.entry_at!(cursor, @input.lexical_mode)
+        unless token.input_end > cursor && token.input_end <= closing_token.input_start
+          raise ArgumentError.new("unwitnessed heredoc body token")
+        end
+        state!(token, production)
+        case token.token_kind
+        when "STRING"
+          witness = witnesses[index]? || raise ArgumentError.new("unwitnessed heredoc body token")
+          witness!(witness, token, DiagnosticLiteralWitnessKind::StringPiece)
+          raise ArgumentError.new("literal string token has an invalid escape") if token.invalid_escape
+          line = token.line || raise ArgumentError.new("heredoc token lacks line")
+          pieces << HeredocIndent::Piece(Int32).new(String.new(token_value!(token)), line)
+          index += 1
+        when "STRING_CONTINUATION"
+        when "INTERPOLATION_START"
+          witness = witnesses[index]? || raise ArgumentError.new("unwitnessed heredoc body token")
+          witness!(witness, token, DiagnosticLiteralWitnessKind::InterpolationStart)
+          ending = witnesses[index + 1]? || raise ArgumentError.new("unwitnessed heredoc body token")
+          raise ArgumentError.new("unwitnessed heredoc body token") unless ending.kind.interpolation_end?
+          closing_expression = @journal.literal_entry!(ending.start_offset, ending.end_offset, "OP_RCURLY", @input.lexical_mode)
+          associations = @interpolations.select do |observation|
+            @journal.entry!(observation.open) == token && @journal.entry!(observation.close) == closing_expression
+          end
+          raise ArgumentError.new("heredoc interpolation association differs") unless associations.size == 1
+          expressions << associations[0].expression
+          first_expression = @journal.entries.select do |entry|
+            entry.input_start >= token.input_end && entry.input_end <= ending.start_offset &&
+              entry.lexical_mode == @input.lexical_mode &&
+              !{"SPACE", "NEWLINE", "SKIPPED_COMMENT", "SKIPPED_DOC_COMMENT", "SKIPPED_LOC_PRAGMA"}.includes?(entry.token_kind)
+          end.min_by?(&.input_start) || raise ArgumentError.new("heredoc interpolation has no expression")
+          line = first_expression.line || raise ArgumentError.new("heredoc expression lacks line")
+          pieces << HeredocIndent::Piece(Int32).new(marker, line)
+          marker += 1
+          cursor = ending.end_offset
+          index += 2
+          next
+        else
+          raise ArgumentError.new("unwitnessed heredoc body token")
+        end
+        cursor = token.input_end
+      end
+      unless cursor == closing_token.input_start && index == witnesses.size - 1
+        raise ArgumentError.new("unwitnessed heredoc body token")
+      end
+      values = begin
+                 HeredocIndent.remove(pieces, parent.heredoc_indent)
+               rescue HeredocIndent::Error
+                 raise ArgumentError.new("heredoc indentation invalid")
+               end
+      derived = {} of UInt64 => String
+      if marker == 0
+        child = parent.expressions.first?
+        unless parent.expressions.size == 1 && child.is_a?(StringLiteral)
+          raise ArgumentError.new("heredoc value differs from replayed indentation")
+        end
+        value = values.join { |part| part.as(String) }
+        derived[child.object_id] = value
+      else
+        raise ArgumentError.new("heredoc value differs from replayed indentation") unless parent.expressions.size == values.size
+        values.each_with_index do |part, i|
+          child = parent.expressions[i]
+          if part.is_a?(String)
+            raise ArgumentError.new("heredoc value differs from replayed indentation") unless child.is_a?(StringLiteral)
+            derived[child.object_id] = part
+          else
+            unless child.same?(expressions[part])
+              raise ArgumentError.new("heredoc interpolation association differs")
+            end
+          end
+        end
+      end
+      derived
+    end
+
+    private def percent_value!(segment : DiagnosticLiteralSegment, production : DiagnosticLiteralProductionSegment,
+                               depth : Int32) : String
+      witnesses = production.witnesses
+      opener = witnesses.first? || raise ArgumentError.new("literal witness is not a scanned token")
+      closer = witnesses.last? || raise ArgumentError.new("literal witness is not a scanned token")
+      unless opener.kind.opener? && opener.start_offset == production.start_offset &&
+             closer.kind.closing_delimiter? && closer.end_offset == production.end_offset
+        raise ArgumentError.new("literal witness is not a scanned token")
+      end
+      opener_kind = production.production.percent_symbol_element? ? "SYMBOL_ARRAY_START" : "STRING_ARRAY_START"
+      opening_token = @journal.literal_entry!(opener.start_offset, opener.end_offset, opener_kind, @input.lexical_mode)
+      closing_token = @journal.literal_entry!(closer.start_offset, closer.end_offset, "STRING_ARRAY_END", @input.lexical_mode)
+      state!(opening_token, production)
+      state!(closing_token, production)
+      unless segment.start_offset >= opening_token.input_end && segment.end_offset <= closing_token.input_start
+        raise ArgumentError.new("percent element lies outside production")
+      end
+      preceding = @journal.ends_at(segment.start_offset).select do |token|
+        token.input_end == segment.start_offset && token.lexical_mode == @input.lexical_mode &&
+          (token == opening_token || token.token_kind == "SPACE")
+      end.uniq
+      following = @journal.entry_at!(segment.end_offset, @input.lexical_mode)
+      unless preceding.size == 1 && (following == closing_token || following.token_kind == "SPACE")
+        raise ArgumentError.new("percent element is not delimited by separators")
+      end
+      output = IO::Memory.new
+      cursor = segment.start_offset
+      index = 1
+      while cursor < segment.end_offset
+        token = @journal.entry_at!(cursor, @input.lexical_mode)
+        unless token.input_end > cursor && token.input_end <= segment.end_offset
+          raise ArgumentError.new("literal span is not tiled by scanned tokens")
+        end
+        state!(token, production)
+        case token.token_kind
+        when "STRING"
+          witness = witnesses[index]? || raise ArgumentError.new("unwitnessed scanned string token")
+          witness!(witness, token, DiagnosticLiteralWitnessKind::StringPiece)
+          raise ArgumentError.new("literal string token has an invalid escape") if token.invalid_escape
+          output.write(token_value!(token))
+          index += 1
+        when "STRING_CONTINUATION"
+        when "INTERPOLATION_START"
+          witness = witnesses[index]? || raise ArgumentError.new("literal witness is not a scanned token")
+          witness!(witness, token, DiagnosticLiteralWitnessKind::InterpolationStart)
+          ending = witnesses[index + 1]? || raise ArgumentError.new("literal witness is not a scanned token")
+          raise ArgumentError.new("literal witness is not a scanned token") unless ending.kind.interpolation_end?
+          output << folded_value!(token, ending, depth + 1)
+          cursor = ending.end_offset
+          index += 2
+          next
+        else
+          raise ArgumentError.new("literal span is not tiled by scanned tokens")
+        end
+        cursor = token.input_end
+      end
+      raise ArgumentError.new("unwitnessed scanned string token") unless index == witnesses.size - 1
+      output.to_s
+    end
+
+    private def delimiter_value!(production : DiagnosticLiteralProductionSegment, previous_end : Int32?,
+                                 depth : Int32) : String
+      witnesses = production.witnesses
+      index = 0
+      if previous_end
+        witness = witnesses[index]? || raise ArgumentError.new("continuation lacks a backslash-newline")
+        unless witness.kind.continuation? && witness.start_offset == previous_end && witness.end_offset == production.start_offset
+          raise ArgumentError.new("continuation lacks a backslash-newline")
+        end
+        continuation!(witness.start_offset, witness.end_offset)
+        index += 1
+      end
+      opener = witnesses[index]? || raise ArgumentError.new("literal witness is not a scanned token")
+      unless opener.kind.opener? && opener.start_offset == production.start_offset
+        raise ArgumentError.new("literal witness is not a scanned token")
+      end
+      entry = @journal.literal_entry!(opener.start_offset, opener.end_offset, "DELIMITER_START", @input.lexical_mode)
+      state!(entry, production)
+      cursor = entry.input_end
+      index += 1
+      output = IO::Memory.new
+      while cursor < production.end_offset
+        token = @journal.entry_at!(cursor, @input.lexical_mode)
+        raise ArgumentError.new("literal span is not tiled by scanned tokens") unless token.input_end > cursor && token.input_end <= production.end_offset
+        state!(token, production)
+        case token.token_kind
+        when "STRING"
+          witness = witnesses[index]? || raise ArgumentError.new("unwitnessed scanned string token")
+          witness!(witness, token, DiagnosticLiteralWitnessKind::StringPiece)
+          raise ArgumentError.new("literal string token has an invalid escape") if token.invalid_escape
+          output.write(token_value!(token))
+          index += 1
+        when "STRING_CONTINUATION"
+          # Continuations contribute no decoded bytes.
+        when "INTERPOLATION_START"
+          witness = witnesses[index]? || raise ArgumentError.new("literal witness is not a scanned token")
+          witness!(witness, token, DiagnosticLiteralWitnessKind::InterpolationStart)
+          closing = witnesses[index + 1]? || raise ArgumentError.new("literal witness is not a scanned token")
+          raise ArgumentError.new("literal witness is not a scanned token") unless closing.kind.interpolation_end?
+          output << folded_value!(token, closing, depth + 1)
+          cursor = closing.end_offset
+          index += 2
+          next
+        when "DELIMITER_END"
+          witness = witnesses[index]? || raise ArgumentError.new("literal witness is not a scanned token")
+          witness!(witness, token, DiagnosticLiteralWitnessKind::ClosingDelimiter)
+          unless token.input_end == production.end_offset && index + 1 == witnesses.size
+            raise ArgumentError.new("literal span is not tiled by scanned tokens")
+          end
+          return output.to_s
+        else
+          raise ArgumentError.new("literal span is not tiled by scanned tokens")
+        end
+        cursor = token.input_end
+      end
+      raise ArgumentError.new("literal span is not tiled by scanned tokens")
+    end
+
+    private def folded_value!(opening : DiagnosticRenderedToken, closing : DiagnosticLiteralWitness,
+                              depth : Int32) : String
+      raise ArgumentError.new("literal fold exceeds depth limit") if depth > 128
+      closer = @journal.literal_entry!(closing.start_offset, closing.end_offset, "OP_RCURLY", @input.lexical_mode)
+      matches = @folds.select do |fold|
+        @journal.entry!(fold.open) == opening && @journal.entry!(fold.close) == closer
+      end
+      raise ArgumentError.new("folded interpolation is not a literal") unless matches.size == 1
+      expression = matches[0].expression
+      observations = @literal_observations.select do |item|
+        item.owner.same?(expression) && item.field == "value" && item.index == 0
+      end
+      raise ArgumentError.new("folded literal owner association differs") unless observations.size == 1
+      association = observations[0]
+      expected = association.productions || raise ArgumentError.new("folded literal owner association differs")
+      raise ArgumentError.new("folded interpolation is not a literal") if association.ranges.empty?
+      first = association.ranges.first[0]
+      last = association.ranges.last[1]
+      unless opening.input_end <= first && last <= closer.input_start
+        raise ArgumentError.new("folded interpolation is not a literal")
+      end
+      @journal.literal_trivia!(opening.input_end, first, @input.lexical_mode, true)
+      @journal.literal_trivia!(last, closer.input_start, @input.lexical_mode, true)
+      value = derive!(association.ranges, expected, depth)
+      literal = expression.diagnostic_literal_names[{"value", 0}]? ||
+                raise ArgumentError.new("folded interpolation is not a literal")
+      productions = expression.diagnostic_literal_productions[{"value", 0}]? ||
+                    raise ArgumentError.new("folded interpolation is not a literal")
+      unless literal.segments.map { |segment| {segment.start_offset, segment.end_offset} } == association.ranges &&
+             productions.size == expected.size && productions.zip(expected).all? { |pair| same_production?(pair[0], pair[1]) }
+        raise ArgumentError.new("folded literal owner association differs")
+      end
+      verify_claim!(literal, value)
+      raise ArgumentError.new("literal decoded value differs from scanned tokens") unless value == expression.value
+      value
+    end
+
+    private def continuation!(start : Int32, finish : Int32) : Nil
+      cursor = start
+      first = true
+      while cursor < finish
+        token = @journal.entry_at!(cursor, @input.lexical_mode)
+        unless token.token_kind == "SPACE" && token.input_end > cursor && token.input_end <= finish &&
+               (!first || token.passed_backslash_newline)
+          raise ArgumentError.new("continuation lacks a backslash-newline")
+        end
+        first = false
+        cursor = token.input_end
+      end
+      raise ArgumentError.new("continuation lacks a backslash-newline") if first
+    end
+
+    private def state!(token : DiagnosticRenderedToken, production : DiagnosticLiteralProductionSegment) : Nil
+      state = token.delimiter
+      unless state && state.kind == production.delimiter_kind && state.nest == production.nest &&
+             state.end_delimiter == production.end_delimiter && state.allow_escapes == production.allow_escapes
+        raise ArgumentError.new("literal delimiter state differs from scanned token")
+      end
+    end
+
+    private def witness!(witness : DiagnosticLiteralWitness, token : DiagnosticRenderedToken,
+                         kind : DiagnosticLiteralWitnessKind) : Nil
+      unless witness.kind == kind && witness.start_offset == token.input_start && witness.end_offset == token.input_end
+        raise ArgumentError.new("literal witness is not a scanned token")
+      end
+    end
+
+    private def same_production?(left : DiagnosticLiteralProductionSegment,
+                                 right : DiagnosticLiteralProductionSegment) : Bool
+      left.production == right.production && left.start_offset == right.start_offset &&
+        left.end_offset == right.end_offset && left.raw_base64 == right.raw_base64 &&
+        left.delimiter_kind == right.delimiter_kind && left.nest == right.nest &&
+        left.end_delimiter == right.end_delimiter && left.allow_escapes == right.allow_escapes &&
+        left.witnesses == right.witnesses
+    end
+
+    private def token_value!(token : DiagnosticRenderedToken) : Bytes
+      encoded = token.value_base64 || raise ArgumentError.new("literal scanned token lacks a value")
+      DiagnosticRenderedToken.decode_value(encoded, DiagnosticRenderedToken.value_bound(token.token_kind, token.token_text))
+    end
+  end
+
+  # Binds literal metadata to parser-owned observations before considering its
+  # value. The observations bind the owner and occurrence, not decoded bytes.
+  class DiagnosticLiteralOwnerBinding
+    def initialize(@replay : DiagnosticLiteralReplay, observations : Array(DiagnosticLiteralOwnerObservation))
+      @by_owner = {} of UInt64 => Hash({String, Int32}, DiagnosticLiteralOwnerObservation)
+      observations.each do |item|
+        keys = (@by_owner[item.owner.object_id] ||= {} of {String, Int32} => DiagnosticLiteralOwnerObservation)
+        key = {item.field, item.index}
+        raise ArgumentError.new("duplicate literal owner association") if keys.has_key?(key)
+        keys[key] = item
+      end
+    end
+
+    def verify!(root : ASTNode, scalar_verified : Set(UInt64),
+                bundle : DiagnosticLiteralReplayAssociations) : Set(DiagnosticCaptureFieldRef)
+      bundle.verify_graph!(root)
+      bundle.verify_relationships!
+      verified = Set(DiagnosticCaptureFieldRef).new
+      visit!(root, scalar_verified, bundle, verified, {} of UInt64 => String, Set(UInt64).new, Set(UInt64).new, 0)
+      verified
+    end
+
+    private def visit!(node : ASTNode, scalar_verified : Set(UInt64), bundle : DiagnosticLiteralReplayAssociations,
+                       verified : Set(DiagnosticCaptureFieldRef), heredocs : Hash(UInt64, String),
+                       visited : Set(UInt64), active : Set(UInt64), depth : Int32) : Nil
+      raise ArgumentError.new("literal binding exceeds depth limit") if depth > 128
+      raise ArgumentError.new("cyclic literal owner graph") if active.includes?(node.object_id)
+      return unless visited.add?(node.object_id)
+      active.add(node.object_id)
+      begin
+        if node.is_a?(Require) || node.is_a?(Asm) || node.is_a?(AsmOperand)
+          raise ArgumentError.new("scalar grammar binding missing") unless scalar_verified.includes?(node.object_id)
+        end
+        if node.is_a?(StringInterpolation)
+          heredoc_values!(node).each do |id, value|
+            raise ArgumentError.new("duplicate heredoc output owner") if heredocs.has_key?(id)
+            heredocs[id] = value
+          end
+        end
+        verify_node!(node, heredocs[node.object_id]?)
+        node.each_diagnostic_literal_name do |key, _|
+          verified.add(bundle.field_ref(node, key[0], key[1]))
+        end
+        DiagnosticDirectChildFields.each(node) do |_, _, _, child|
+          visit!(child, scalar_verified, bundle, verified, heredocs, visited, active, depth + 1)
+        end
+      ensure
+        active.delete(node.object_id)
+      end
+    end
+
+    def verify_key!(node : ASTNode, field : String, index : Int32, expected : String,
+                    heredoc_value : String? = nil) : Nil
+      value, _, _ = derive_key!(node, field, index, heredoc_value)
+      raise ArgumentError.new("literal decoded value differs from scanned tokens") unless value == expected
+    end
+
+    def derive_key!(node : ASTNode, field : String, index : Int32,
+                    heredoc_value : String? = nil) : {String, Int32, Int32}
+      observation = @by_owner[node.object_id]?.try(&.[{field, index}]?) ||
+                    raise ArgumentError.new("literal owner association differs")
+      raise ArgumentError.new("literal owner association differs") unless observation.owner.same?(node)
+      expected_productions = observation.productions ||
+                             raise ArgumentError.new("literal owner production missing")
+      value = @replay.derive!(observation.ranges, expected_productions, heredoc_value: heredoc_value)
+      literal = node.diagnostic_literal_names[{field, index}]? ||
+                raise ArgumentError.new("literal owner observation missing")
+      productions = node.diagnostic_literal_productions[{field, index}]? ||
+                    raise ArgumentError.new("literal owner production missing")
+      actual_ranges = literal.segments.map { |segment| {segment.start_offset, segment.end_offset} }
+      unless actual_ranges == observation.ranges && productions.size == expected_productions.size
+        raise ArgumentError.new("literal owner association differs")
+      end
+      productions.each_with_index do |production, i|
+        unless same_production?(production, expected_productions[i])
+          raise ArgumentError.new("literal owner association differs")
+        end
+      end
+      @replay.verify_claim!(literal, value)
+      {value, observation.ranges.first[0], observation.ranges.last[1]}
+    end
+
+    def heredoc_values!(parent : StringInterpolation) : Hash(UInt64, String)
+      common : DiagnosticLiteralProductionSegment? = nil
+      parent.expressions.each_with_index do |child, index|
+        observation = @by_owner[child.object_id]?.try(&.[{"value", 0}]?)
+        next unless observation
+        productions = observation.productions
+        next unless productions && productions.any? { |production| production.production.heredoc? }
+        unless observation.owner.same?(child) && observation.heredoc_result_index == index &&
+               productions.size == 1 && productions[0].production.heredoc?
+          raise ArgumentError.new("heredoc literal outside its heredoc")
+        end
+        if prior = common
+          raise ArgumentError.new("heredoc productions differ") unless same_production?(prior, productions[0])
+        else
+          common = productions[0]
+        end
+      end
+      return {} of UInt64 => String unless common
+      values = @replay.heredoc_values!(parent, common)
+      values.each do |id, value|
+        child = parent.expressions.find { |item| item.object_id == id } ||
+                raise ArgumentError.new("heredoc literal outside its heredoc")
+        observation = @by_owner[id]?.try(&.[{"value", 0}]?) ||
+                      raise ArgumentError.new("heredoc literal outside its heredoc")
+        expected = observation.productions
+        unless expected && expected.size == 1 && same_production?(expected[0], common)
+          raise ArgumentError.new("heredoc productions differ")
+        end
+        verify_key!(child, "value", 0, value, value)
+      end
+      values
+    end
+
+    def verify_node!(node : ASTNode, heredoc_value : String? = nil) : Nil
+      names = node.diagnostic_literal_names
+      productions = node.diagnostic_literal_productions
+      unless node.diagnostic_literal_names_present? == node.diagnostic_literal_productions_present?
+        raise ArgumentError.new("literal observations and productions differ in presence or count")
+      end
+      observed_keys = @by_owner[node.object_id]?.try(&.keys) || [] of {String, Int32}
+      unless observed_keys.to_set == names.keys.to_set
+        raise ArgumentError.new("literal owner association differs")
+      end
+      unless names.keys.to_set == productions.keys.to_set
+        raise ArgumentError.new("literal observations and productions differ in presence or count")
+      end
+      if node.is_a?(StringLiteral) || node.is_a?(SymbolLiteral) || node.is_a?(CharLiteral)
+        unless names.size == 1 && names.has_key?({"value", 0})
+          raise ArgumentError.new("literal value lacks source or construction evidence")
+        end
+      end
+      names.each_key do |key|
+        field, index = key
+        # Asm options have no string collection in the AST. Their expected
+        # values must be supplied by the independent scalar grammar replay.
+        next if node.is_a?(Asm) && field == "options"
+        expected = DiagnosticLiteralInputChecks.owner_value(node, field, index)
+        verify_key!(node, field, index, expected, heredoc_value)
+      end
+    end
+
+    private def same_production?(left : DiagnosticLiteralProductionSegment,
+                                 right : DiagnosticLiteralProductionSegment) : Bool
+      left.production == right.production && left.start_offset == right.start_offset &&
+        left.end_offset == right.end_offset && left.raw_base64 == right.raw_base64 &&
+        left.delimiter_kind == right.delimiter_kind && left.nest == right.nest &&
+        left.end_delimiter == right.end_delimiter && left.allow_escapes == right.allow_escapes &&
+        left.witnesses == right.witnesses
+    end
+  end
+
+  # Replays the scalar grammar from lexer observations. Owner associations
+  # delimit parser invocations; they do not supply occurrence counts or values.
+  class DiagnosticScalarGrammarReplay
+    record AsmInterval, owner : UInt64, start : Int32, finish : Int32, ancestors : Set(UInt64)
+
+    def initialize(@input : AcceptedCaptureInput, @journal : DiagnosticReplayJournal,
+                   @owners : DiagnosticLiteralOwnerBinding, observations : Array(DiagnosticScalarGrammarObservation))
+      @observations = {} of UInt64 => DiagnosticScalarGrammarObservation
+      observations.each do |observation|
+        id = observation.owner.object_id
+        raise ArgumentError.new("duplicate scalar owner association") if @observations.has_key?(id)
+        @observations[id] = observation
+      end
+      @verified = Set(UInt64).new
+      @active = Set(UInt64).new
+      @path = [] of ASTNode
+      @intervals = [] of AsmInterval
+    end
+
+    def verify!(root : ASTNode) : Set(UInt64)
+      visit!(root, 0)
+      verify_intervals!
+      unless @verified.size == @observations.size
+        raise ArgumentError.new("orphan scalar owner association")
+      end
+      @verified
+    end
+
+    private def visit!(node : ASTNode, depth : Int32) : Nil
+      raise ArgumentError.new("scalar grammar exceeds depth limit") if depth > 128
+      raise ArgumentError.new("cyclic scalar grammar") unless @active.add?(node.object_id)
+      @path << node
+      begin
+        case node
+        when Require
+          verify_require!(node)
+        when Asm
+          record_interval!(node)
+          verify_asm!(node)
+        when AsmOperand
+          observation!(node, DiagnosticScalarGrammarKind::AsmOperand)
+          raise ArgumentError.new("asm operand is not owned by an asm section") unless @verified.includes?(node.object_id)
+        end
+        DiagnosticDirectChildFields.each(node) { |_, _, _, child| visit!(child, depth + 1) }
+      ensure
+        @path.pop
+        @active.delete(node.object_id)
+      end
+    end
+
+    private def record_interval!(node : Asm) : Nil
+      observation = observation!(node, DiagnosticScalarGrammarKind::Asm)
+      first = @journal.entry!(observation.first)
+      close = @journal.entry!(observation.close)
+      raise ArgumentError.new("asm interval differs") unless close.input_end > first.input_start
+      ancestor_nodes = @path[0...-1].select { |item| item.is_a?(Asm) }
+      if parent = ancestor_nodes.last?
+        parent_index = @path.index { |item| item.same?(parent) }.not_nil!
+        operand_index = ((parent_index + 1)...(@path.size - 1)).find { |i| @path[i].is_a?(AsmOperand) }
+        raise ArgumentError.new("nested asm is not in an operand") unless operand_index
+        operand = @path[operand_index].as(AsmOperand)
+        outer = parent.as(Asm)
+        owned = (outer.outputs || [] of AsmOperand).any?(&.same?(operand)) ||
+                (outer.inputs || [] of AsmOperand).any?(&.same?(operand))
+        unless owned && @path[operand_index + 1].same?(operand.exp)
+          raise ArgumentError.new("nested asm is not in an operand")
+        end
+      end
+      @intervals << AsmInterval.new(node.object_id, first.input_start, close.input_end,
+        ancestor_nodes.map(&.object_id).to_set)
+    end
+
+    private def verify_intervals! : Nil
+      stack = [] of AsmInterval
+      @intervals.sort_by { |item| {item.start, -item.finish} }.each do |item|
+        stack.pop while !stack.empty? && stack.last.finish <= item.start
+        unless stack.empty?
+          outer = stack.last
+          unless item.start > outer.start && item.finish <= outer.finish && item.ancestors.includes?(outer.owner)
+            raise ArgumentError.new("overlapping asm owner intervals")
+          end
+        end
+        stack << item
+      end
+    end
+
+    private def observation!(node : ASTNode, kind : DiagnosticScalarGrammarKind) : DiagnosticScalarGrammarObservation
+      observation = @observations[node.object_id]? || raise ArgumentError.new("scalar owner association missing")
+      unless observation.owner.same?(node) && observation.kind == kind
+        raise ArgumentError.new("scalar owner association differs")
+      end
+      observation
+    end
+
+    private def ref!(reference : DiagnosticReplayTokenRef, kind : String, text : String? = nil) : DiagnosticRenderedToken
+      entry = @journal.entry!(reference)
+      unless entry.lexical_mode == @input.lexical_mode && entry.token_kind == kind && (text.nil? || entry.token_text == text)
+        raise ArgumentError.new("scalar grammar token differs")
+      end
+      @journal.literal_entry!(entry.input_start, entry.input_end, kind, @input.lexical_mode)
+    end
+
+    private def skip!(cursor : Int32, allow_newline : Bool) : Int32
+      loop do
+        token = @journal.entry_at!(cursor, @input.lexical_mode)
+        permitted = token.token_kind == "SPACE" || (allow_newline && token.token_kind == "NEWLINE") ||
+                    {"SKIPPED_COMMENT", "SKIPPED_DOC_COMMENT", "SKIPPED_LOC_PRAGMA"}.includes?(token.token_kind)
+        return cursor unless permitted
+        raise ArgumentError.new("unwitnessed grammar gap") unless token.input_end > cursor
+        cursor = token.input_end
+      end
+    end
+
+    private def token!(cursor : Int32, kind : String) : DiagnosticRenderedToken
+      token = @journal.entry_at!(cursor, @input.lexical_mode)
+      raise ArgumentError.new("scalar grammar token differs") unless token.token_kind == kind && token.input_end > cursor
+      token
+    end
+
+    private def scalar!(node : ASTNode, field : String, index : Int32, cursor : Int32) : {String, Int32}
+      token = token!(cursor, "DELIMITER_START")
+      state = token.delimiter
+      raise ArgumentError.new("scalar literal is not a string") unless state && state.kind == "STRING"
+      value, start, finish = @owners.derive_key!(node, field, index)
+      raise ArgumentError.new("scalar literal owner differs") unless start == cursor && finish > start
+      {value, finish}
+    end
+
+    private def verify_require!(node : Require) : Nil
+      observation = observation!(node, DiagnosticScalarGrammarKind::Require)
+      first = ref!(observation.first, "IDENT", "require")
+      raise ArgumentError.new("invalid require association") unless observation.open.nil? && observation.expression.nil?
+      cursor = skip!(first.input_end, false)
+      value, finish = scalar!(node, "string", 0, cursor)
+      raise ArgumentError.new("require value differs") unless value == node.string
+      close = ref!(observation.close, "DELIMITER_END")
+      raise ArgumentError.new("require literal close differs") unless close.input_end == finish
+      after = @journal.entry!(observation.after)
+      raise ArgumentError.new("require return token differs") unless after == @journal.entry_at!(skip!(finish, false), @input.lexical_mode)
+      @verified.add(node.object_id)
+    end
+
+    private def verify_asm!(node : Asm) : Nil
+      observation = observation!(node, DiagnosticScalarGrammarKind::Asm)
+      first = ref!(observation.first, "IDENT", "asm")
+      opening_ref = observation.open || raise ArgumentError.new("asm opening association missing")
+      opening = ref!(opening_ref, "OP_LPAREN")
+      raise ArgumentError.new("asm opening differs") unless opening.input_start == skip!(first.input_end, false)
+      cursor = skip!(opening.input_end, true)
+      text, finish = scalar!(node, "text", 0, cursor)
+      raise ArgumentError.new("asm text differs") unless text == node.text
+      cursor = skip!(finish, true)
+      section = 0
+      outputs = 0
+      inputs = 0
+      clobbers = 0
+      options = 0
+      flags = Set(String).new
+      loop do
+        token = @journal.entry_at!(cursor, @input.lexical_mode)
+        break if token.token_kind == "OP_RPAREN"
+        case token.token_kind
+        when "OP_COLON"       then section += 1
+        when "OP_COLON_COLON" then section += 2
+        else                       raise ArgumentError.new("invalid asm section separator")
+        end
+        raise ArgumentError.new("invalid asm section separator") unless token.input_end > cursor
+        cursor = skip!(token.input_end, true)
+        break if section > 4
+        while @journal.entry_at!(cursor, @input.lexical_mode).token_kind == "DELIMITER_START"
+          case section
+          when 1
+            operand = node.outputs.try(&.[outputs]?) || raise ArgumentError.new("asm outputs differ")
+            cursor = verify_operand!(operand, cursor)
+            outputs += 1
+          when 2
+            operand = node.inputs.try(&.[inputs]?) || raise ArgumentError.new("asm inputs differ")
+            cursor = verify_operand!(operand, cursor)
+            inputs += 1
+          when 3
+            value, end_offset = scalar!(node, "clobbers", clobbers, cursor)
+            raise ArgumentError.new("asm clobbers differ") unless node.clobbers.try(&.[clobbers]?) == value
+            clobbers += 1
+            cursor = skip!(end_offset, true)
+          when 4
+            value, end_offset = scalar!(node, "options", options, cursor)
+            raise ArgumentError.new("unknown asm option") unless {"volatile", "alignstack", "intel", "unwind"}.includes?(value)
+            flags.add(value)
+            options += 1
+            cursor = skip!(end_offset, true)
+          else
+            raise ArgumentError.new("invalid asm section")
+          end
+          comma = @journal.entry_at!(cursor, @input.lexical_mode)
+          cursor = skip!(comma.input_end, true) if comma.token_kind == "OP_COMMA"
+        end
+      end
+      close = ref!(observation.close, "OP_RPAREN")
+      raise ArgumentError.new("asm closing differs") unless close.input_start == cursor
+      raise ArgumentError.new("asm outputs differ") unless (node.outputs.try(&.size) || 0) == outputs && (outputs > 0 || node.outputs.nil?)
+      raise ArgumentError.new("asm inputs differ") unless (node.inputs.try(&.size) || 0) == inputs && (inputs > 0 || node.inputs.nil?)
+      raise ArgumentError.new("asm clobbers differ") unless (node.clobbers.try(&.size) || 0) == clobbers && (clobbers > 0 || node.clobbers.nil?)
+      unless node.volatile? == flags.includes?("volatile") && node.alignstack? == flags.includes?("alignstack") &&
+             node.intel? == flags.includes?("intel") && node.can_throw? == flags.includes?("unwind")
+        raise ArgumentError.new("asm options differ")
+      end
+      option_keys = node.diagnostic_literal_names.keys.select { |key| key[0] == "options" }.to_set
+      raise ArgumentError.new("asm option occurrences differ") unless option_keys == (0...options).map { |i| {"options", i} }.to_set
+      after = @journal.entry!(observation.after)
+      raise ArgumentError.new("asm return token differs") unless after == @journal.entry_at!(skip!(close.input_end, false), @input.lexical_mode)
+      @verified.add(node.object_id)
+    end
+
+    private def verify_operand!(node : AsmOperand, cursor : Int32) : Int32
+      observation = observation!(node, DiagnosticScalarGrammarKind::AsmOperand)
+      first = ref!(observation.first, "DELIMITER_START")
+      raise ArgumentError.new("asm operand owner differs") unless first.input_start == cursor
+      value, finish = scalar!(node, "constraint", 0, cursor)
+      raise ArgumentError.new("asm constraint differs") unless value == node.constraint
+      opening_ref = observation.open || raise ArgumentError.new("asm operand opening missing")
+      opening = ref!(opening_ref, "OP_LPAREN")
+      raise ArgumentError.new("asm operand opening differs") unless opening.input_start == skip!(finish, false)
+      expression = observation.expression || raise ArgumentError.new("asm expression association missing")
+      raise ArgumentError.new("asm expression association differs") unless node.exp.same?(expression)
+      expression_ref = observation.expression_first || raise ArgumentError.new("asm expression association missing")
+      expression_first = @journal.entry!(expression_ref)
+      unless expression_first == @journal.entry_at!(skip!(opening.input_end, true), @input.lexical_mode)
+        raise ArgumentError.new("asm expression start differs")
+      end
+      closing = ref!(observation.close, "OP_RPAREN")
+      raise ArgumentError.new("asm expression bounds differ") unless closing.input_start >= expression_first.input_start
+      after_cursor = skip!(closing.input_end, true)
+      after = @journal.entry!(observation.after)
+      raise ArgumentError.new("asm operand return token differs") unless after == @journal.entry_at!(after_cursor, @input.lexical_mode)
+      raise ArgumentError.new("duplicate asm operand") unless @verified.add?(node.object_id)
+      after_cursor
     end
   end
 
@@ -4169,6 +5560,11 @@ module Iyi
   # replay reproduces that key, runs the same entry and yields the same digest.
   module DiagnosticCaptureBinding
     def self.bind!(input : AcceptedCaptureInput, authority : DiagnosticCaptureAuthority) : DiagnosticBoundCapture
+      ledger = authority.ledger
+      raise ArgumentError.new("capture ledger must be frozen before binding") unless ledger.frozen?
+      unless ledger.authorities.any? { |recorded| recorded.same?(authority) }
+        raise ArgumentError.new("capture authority is not in its ledger")
+      end
       raise ArgumentError.new("capture key differs from its authority") unless input.capture_key == authority.capture_key
       raise ArgumentError.new("EntryBuffer capture has no written identity rule") unless authority.kind.source_file?
       parser = input.replay_parser
