@@ -79,13 +79,13 @@ describe "Iyi::Lexer literal journal" do
         location = Iyi::Location.new(filename, 1, 1, nil)
 
         observations = lex_literal_journal("__FILE__", iyi, filename)
-        observations.map(&.token_kind).should eq ["MAGIC_FILE"]
+        observations.map(&.token_kind).should eq ["__FILE__"]
         observations[0].token_text.should eq "__FILE__"
         observations[0].delimiter.should be_nil
         literal_bytes(observations[0]).should eq Iyi::MagicConstant.expand_file(location).to_slice
 
         observations = lex_literal_journal("__DIR__", iyi, filename)
-        observations.map(&.token_kind).should eq ["MAGIC_DIR"]
+        observations.map(&.token_kind).should eq ["__DIR__"]
         observations[0].token_text.should eq "__DIR__"
         literal_bytes(observations[0]).should eq Iyi::MagicConstant.expand_dir(location).to_slice
       end

@@ -954,7 +954,7 @@ module Iyi
                    @passed_backslash_newline : Bool = false, @invalid_escape : Bool = false,
                    @line : Int32? = nil)
       if value = @value_base64
-        raise ArgumentError.new("rendered value on a non-string token") unless {"STRING", "SYMBOL", "CHAR", "MAGIC_FILE", "MAGIC_DIR"}.includes?(@token_kind)
+        raise ArgumentError.new("rendered value on a non-string token") unless {"STRING", "SYMBOL", "CHAR", "__FILE__", "__DIR__"}.includes?(@token_kind)
         DiagnosticRenderedToken.decode_value(value, DiagnosticRenderedToken.value_bound(@token_kind, @token_text))
       end
       if @delimiter && !{"DELIMITER_START", "STRING", "STRING_CONTINUATION", "DELIMITER_END", "INTERPOLATION_START", "STRING_ARRAY_START", "SYMBOL_ARRAY_START", "STRING_ARRAY_END"}.includes?(@token_kind)
@@ -980,7 +980,7 @@ module Iyi
 
     # Magic constants expand to a path, so they are bounded by the unfolded limit rather than their token text.
     def self.value_bound(token_kind : String, token_text : String) : Int32
-      {"MAGIC_FILE", "MAGIC_DIR"}.includes?(token_kind) ? DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i32 : token_text.bytesize
+      {"__FILE__", "__DIR__"}.includes?(token_kind) ? DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i32 : token_text.bytesize
     end
   end
 

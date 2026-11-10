@@ -111,7 +111,7 @@ module Iyi
       expanded = kind.magic_file? ? MagicConstant.expand_file(location) : MagicConstant.expand_dir(location)
       limit = DiagnosticOrigin::MAX_UNFOLDED_BYTES
       size = expanded.bytesize.to_u64
-      raise DiagnosticLexicalBudgetError.new("magic constant expansion", limit, size) if size > limit
+      ::raise DiagnosticLexicalBudgetError.new("magic constant expansion", limit, size) if size > limit
       Base64.strict_encode(expanded.to_slice)
     end
 

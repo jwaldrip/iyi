@@ -33,10 +33,13 @@ describe "S1 literal journal model" do
 
   it "accepts a magic value longer than its token text, bounded by the unfolded limit" do
     long = "/some/long/dir/" * 40
-    token = Iyi::DiagnosticRenderedToken.new(0, 8, "MAGIC_FILE", "__FILE__", "Crystal", Base64.strict_encode(long.to_slice))
+    token = Iyi::DiagnosticRenderedToken.new(0, 8, "__FILE__", "__FILE__", "Crystal", Base64.strict_encode(long.to_slice))
     token.value_base64.should eq(Base64.strict_encode(long.to_slice))
-    Iyi::DiagnosticRenderedToken.value_bound("MAGIC_FILE", "__FILE__").should eq(Iyi::DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i32)
+    Iyi::DiagnosticRenderedToken.value_bound("__FILE__", "__FILE__").should eq(Iyi::DiagnosticOrigin::MAX_UNFOLDED_BYTES.to_i32)
     Iyi::DiagnosticRenderedToken.value_bound("STRING", "\"ab\"").should eq(4)
+    expect_raises(ArgumentError, "rendered value on a non-string token") do
+      Iyi::DiagnosticRenderedToken.new(0, 8, "MAGIC_FILE", "__FILE__", "Crystal", Base64.strict_encode(long.to_slice))
+    end
   end
 
   it "refuses a value on STRING_CONTINUATION" do
