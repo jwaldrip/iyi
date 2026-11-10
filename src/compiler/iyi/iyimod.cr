@@ -356,8 +356,15 @@ module Iyi::IyiMod
       when DiagnosticOrigin::Expanded
         intern(origin.invocation_origin)
         intern(origin.macro_definition_origin)
-        origin.spliced_origin.try { |spliced| intern(spliced) }
-        origin.emission_parts.each { |part| part.emitter_origin.try { |emitter| intern(emitter) } }
+        origin.emission_parts.each do |part|
+          part.emitter_origin.try { |emitter| intern(emitter) }
+          case part
+          when DiagnosticEmissionPart::AstAnchor
+            intern(part.source_origin)
+          when DiagnosticEmissionPart::NameSplice
+            intern_source_token(part.source_token)
+          end
+        end
       when DiagnosticOrigin::Synthetic
         intern(origin.parent_origin)
       end
@@ -365,6 +372,40 @@ module Iyi::IyiMod
       @entries << origin
       @indices[origin] = index
       index
+    end
+
+    def intern_source_token(token : DiagnosticSourceNameToken) : Nil
+      intern(token.lexical_origin)
+      token.binding_origin.try { |origin| intern(origin) }
+    end
+
+    def write_source_token(io : IO, token : DiagnosticSourceNameToken) : Nil
+      io.write_bytes @indices[token.lexical_origin], FORMAT
+      io.write_bytes(token.binding_origin.try { |origin| @indices[origin] } || UInt32::MAX, FORMAT)
+      DiagnosticOrigins.write_string io, token.context
+      DiagnosticOrigins.write_string io, token.input_sha256
+      io.write_bytes token.input_bytesize.to_u32, FORMAT
+      io.write_bytes token.input_start.to_u32, FORMAT
+      io.write_bytes token.input_end.to_u32, FORMAT
+      DiagnosticOrigins.write_string io, token.lexical_mode
+      DiagnosticOrigins.write_string io, token.token_kind
+      DiagnosticOrigins.write_string io, token.raw_text
+    end
+
+    def read_source_token(io : IO) : DiagnosticSourceNameToken
+      lexical = parent(io.read_bytes(UInt32, FORMAT))
+      binding_index = io.read_bytes(UInt32, FORMAT)
+      binding = binding_index == UInt32::MAX ? nil : parent(binding_index)
+      context = DiagnosticOrigins.read_string(io)
+      guard = DiagnosticOrigins.read_string(io)
+      input_size = io.read_bytes(UInt32, FORMAT).to_i32
+      start_offset = io.read_bytes(UInt32, FORMAT).to_i32
+      end_offset = io.read_bytes(UInt32, FORMAT).to_i32
+      mode = DiagnosticOrigins.read_string(io)
+      kind = DiagnosticOrigins.read_string(io)
+      text = DiagnosticOrigins.read_string(io)
+      DiagnosticSourceNameToken.new(lexical, binding, context, guard, input_size,
+        start_offset, end_offset, mode, kind, text)
     end
 
     def write(io : IO) : Nil
@@ -384,14 +425,44 @@ module Iyi::IyiMod
           io.write_bytes @indices[origin.macro_definition_origin], FORMAT
           DiagnosticOrigins.write_string io, origin.expansion_guard
           io.write_bytes origin.generated_byte_offset.to_u32, FORMAT
+          io.write_bytes origin.generated_byte_end.to_u32, FORMAT
+          DiagnosticOrigins.write_string io, origin.token_kind
+          DiagnosticOrigins.write_string io, origin.token_text
+          DiagnosticOrigins.write_string io, origin.lexical_mode
           DiagnosticOrigins.write_string io, origin.anchor_kind
           DiagnosticOrigins.write_string io, origin.role
-          io.write_bytes(origin.spliced_origin.try { |value| @indices[value] } || UInt32::MAX, FORMAT)
+          if context = origin.name_context
+            io.write_byte 1_u8
+            DiagnosticOrigins.write_string io, context
+          else
+            io.write_byte 0_u8
+          end
           io.write_bytes origin.emission_parts.size.to_u32, FORMAT
           origin.emission_parts.each do |part|
+            case part
+            when DiagnosticEmissionPart::Generated
+              io.write_byte 1_u8
+            when DiagnosticEmissionPart::AstAnchor
+              io.write_byte 2_u8
+            when DiagnosticEmissionPart::NameSplice
+              io.write_byte 3_u8
+            else
+              raise ArgumentError.new("unknown macro emission part")
+            end
             io.write_bytes part.start_offset.to_u32, FORMAT
             io.write_bytes part.end_offset.to_u32, FORMAT
             io.write_bytes(part.emitter_origin.try { |emitter| @indices[emitter] } || UInt32::MAX, FORMAT)
+            case part
+            when DiagnosticEmissionPart::Generated
+              io.write_bytes part.producer.value.to_u32, FORMAT
+            when DiagnosticEmissionPart::AstAnchor
+              io.write_bytes @indices[part.source_origin], FORMAT
+            when DiagnosticEmissionPart::NameSplice
+              write_source_token(io, part.source_token)
+              io.write_bytes part.slice_start.to_u32, FORMAT
+              io.write_bytes part.slice_end.to_u32, FORMAT
+              DiagnosticOrigins.write_string io, part.projection
+            end
           end
         when DiagnosticOrigin::Synthetic
           io.write_byte 3_u8
@@ -420,22 +491,46 @@ module Iyi::IyiMod
                    definition = table.parent(io.read_bytes(UInt32, FORMAT))
                    guard = read_string(io)
                    offset = io.read_bytes(UInt32, FORMAT).to_i32
+                   end_offset = io.read_bytes(UInt32, FORMAT).to_i32
+                   token_kind = read_string(io)
+                   token_text = read_string(io)
+                   mode = read_string(io)
                    kind = read_string(io)
                    role = read_string(io)
-                   splice_index = io.read_bytes(UInt32, FORMAT)
-                   splice = splice_index == UInt32::MAX ? nil : table.parent(splice_index)
+                   context = case io.read_byte
+                             when 0_u8 then nil
+                             when 1_u8 then read_string(io)
+                             else raise ArgumentError.new("invalid diagnostic name context marker")
+                             end
                    part_count = io.read_bytes(UInt32, FORMAT)
-                   if io.is_a?(IO::Memory) && part_count.to_u64 > ((io.size - io.pos) // 12).to_u64
+                   if io.is_a?(IO::Memory) && part_count.to_u64 > ((io.size - io.pos) // 17).to_u64
                      raise ArgumentError.new("macro emission parts exceed remaining bytes")
                    end
                    parts = Array(DiagnosticEmissionPart).new(part_count) do
+                     tag = io.read_byte
                      start_offset = io.read_bytes(UInt32, FORMAT).to_i32
-                     end_offset = io.read_bytes(UInt32, FORMAT).to_i32
+                     part_end = io.read_bytes(UInt32, FORMAT).to_i32
                      emitter_index = io.read_bytes(UInt32, FORMAT)
                      emitter = emitter_index == UInt32::MAX ? nil : table.parent(emitter_index)
-                     DiagnosticEmissionPart.new(start_offset, end_offset, emitter)
+                     case tag
+                     when 1_u8
+                       value = io.read_bytes(UInt32, FORMAT)
+                       producer = DiagnosticMacroProducer.values.find { |candidate| candidate.value.to_u32 == value } ||
+                                  raise ArgumentError.new("unknown macro emission producer")
+                       DiagnosticEmissionPart::Generated.new(start_offset, part_end, emitter, producer)
+                     when 2_u8
+                       DiagnosticEmissionPart::AstAnchor.new(start_offset, part_end, emitter, table.parent(io.read_bytes(UInt32, FORMAT)))
+                     when 3_u8
+                       token = table.read_source_token(io)
+                       slice_start = io.read_bytes(UInt32, FORMAT).to_i32
+                       slice_end = io.read_bytes(UInt32, FORMAT).to_i32
+                       DiagnosticEmissionPart::NameSplice.new(start_offset, part_end, emitter, token, slice_start, slice_end, read_string(io))
+                     else
+                       raise ArgumentError.new("unknown macro emission part tag")
+                     end
                    end
-                   DiagnosticOrigin::Expanded.new(invocation, definition, guard, offset, kind, role, parts, splice)
+                   DiagnosticOrigin::Expanded.new(invocation, definition, guard, offset, end_offset,
+                     token_kind, token_text, mode, kind, role, context, parts)
                  when 3_u8
                    parent = table.parent(io.read_bytes(UInt32, FORMAT))
                    DiagnosticOrigin::Synthetic.new(parent, read_string(io), read_string(io))
@@ -482,7 +577,7 @@ module Iyi::IyiMod
   # The section is built and decoded independently of the ordinary source
   # positions. Its caller must also prove complete fragment and object coverage.
   class DiagnosticSection
-    SCHEMA = 3_u32
+    SCHEMA = 4_u32
 
     getter fragments = {} of String => DiagnosticFragment
     getter objects = {} of Int32 => DiagnosticObjectRecords
@@ -542,6 +637,19 @@ module Iyi::IyiMod
         origin = anchor.origin || raise ArgumentError.new("missing diagnostic fragment origin")
         unless anchor.offset >= 0 && origin.valid_for_anchor?(anchor.kind, anchor.role)
           raise ArgumentError.new("invalid diagnostic fragment anchor")
+        end
+        size = origin.graph_bytes
+        anchor.name_slots.each do |slot, tokens|
+          DiagnosticNameSlot.new(slot.kind, slot.index)
+          raise ArgumentError.new("empty diagnostic name slot") if tokens.empty?
+          tokens.each do |token|
+            size += token.lexical_origin.graph_bytes
+            size += token.binding_origin.try(&.graph_bytes) || 0_u64
+            size += token.context.bytesize.to_u64 + token.input_sha256.bytesize.to_u64 +
+                    token.lexical_mode.bytesize.to_u64 + token.token_kind.bytesize.to_u64 +
+                    token.raw_text.bytesize.to_u64 + 64_u64
+            raise ArgumentError.new("diagnostic name graph exceeds size limit") if size > DiagnosticOrigin::MAX_UNFOLDED_BYTES
+          end
         end
         raise ArgumentError.new("duplicate diagnostic fragment anchor") unless seen.add?({anchor.offset, anchor.kind, anchor.role})
       end
@@ -606,7 +714,12 @@ module Iyi::IyiMod
       end
       table = DiagnosticOrigins.new
       @fragments.keys.sort!.each do |key|
-        @fragments[key].anchors.each { |anchor| table.intern(anchor.origin.not_nil!) }
+        @fragments[key].anchors.each do |anchor|
+          table.intern(anchor.origin.not_nil!)
+          anchor.name_slots.each_value do |tokens|
+            tokens.each { |token| table.intern_source_token(token) }
+          end
+        end
       end
       @objects.keys.sort!.each do |key|
         @objects[key].definitions.each { |definition| table.intern(DiagnosticOrigin.from_json(definition.emission.origin)) }
@@ -630,6 +743,14 @@ module Iyi::IyiMod
           DiagnosticOrigins.write_string(io, anchor.kind)
           DiagnosticOrigins.write_string(io, anchor.role)
           io.write_bytes table.intern(anchor.origin.not_nil!), FORMAT
+          slots = anchor.name_slots.to_a.sort_by { |slot, _| {slot.kind.value, slot.index} }
+          io.write_bytes slots.size.to_u32, FORMAT
+          slots.each do |slot, tokens|
+            io.write_bytes slot.kind.value.to_u32, FORMAT
+            io.write_bytes slot.index.to_u32, FORMAT
+            io.write_bytes tokens.size.to_u32, FORMAT
+            tokens.each { |token| table.write_source_token(io, token) }
+          end
         end
       end
       io.write_bytes @objects.size.to_u32, FORMAT
@@ -671,7 +792,24 @@ module Iyi::IyiMod
           kind = DiagnosticOrigins.read_string(io)
           role = DiagnosticOrigins.read_string(io)
           origin = table.parent(io.read_bytes(UInt32, FORMAT))
-          DiagnosticAnchor.new(offset, kind, role, origin)
+          slots = {} of DiagnosticNameSlot => Array(DiagnosticSourceNameToken)
+          previous_slot = nil.as(Tuple(Int32, Int32)?)
+          read_count(io, 12).times do
+            value = io.read_bytes(UInt32, FORMAT)
+            slot_kind = DiagnosticNameSlotKind.values.find { |candidate| candidate.value.to_u32 == value } ||
+                        raise ArgumentError.new("unknown diagnostic name slot kind")
+            slot_index = io.read_bytes(UInt32, FORMAT).to_i32
+            slot = DiagnosticNameSlot.new(slot_kind, slot_index)
+            slot_key = {slot.kind.value, slot.index}
+            if previous_slot && previous_slot >= slot_key
+              raise ArgumentError.new("noncanonical diagnostic name slot order")
+            end
+            previous_slot = slot_key
+            tokens = Array(DiagnosticSourceNameToken).new(read_count(io, 40)) { table.read_source_token(io) }
+            raise ArgumentError.new("empty diagnostic name slot") if tokens.empty?
+            slots[slot] = tokens
+          end
+          DiagnosticAnchor.new(offset, kind, role, origin, slots)
         end
         result.add_fragment(DiagnosticFragment.new(key, guard, anchors))
       end
@@ -872,7 +1010,7 @@ module Iyi::IyiMod
           raise ArgumentError.new("invalid macro anchor")
         end
         offset = anchor.offset >= insertion ? anchor.offset + 4 : anchor.offset
-        DiagnosticAnchor.new(offset, anchor.kind, anchor.role, origin)
+        DiagnosticAnchor.new(offset, anchor.kind, anchor.role, origin, anchor.name_slots)
       end
       transformed = DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(rendered), adjusted)
       memory = io.as?(IO::Memory) || raise ArgumentError.new("diagnostic rendering requires an in-memory input")
@@ -959,7 +1097,7 @@ module Iyi::IyiMod
           while (anchor = anchors[index]?) && anchor.offset < source_start + raw.bytesize
             within = anchor.offset - source_start
             raise ArgumentError.new("diagnostic anchor on a removed line ending") if within >= line.bytesize
-            mapped << DiagnosticAnchor.new(output_start + prefix.bytesize + within, anchor.kind, anchor.role, anchor.origin)
+            mapped << DiagnosticAnchor.new(output_start + prefix.bytesize + within, anchor.kind, anchor.role, anchor.origin, anchor.name_slots)
             index += 1
           end
           source_start += raw.bytesize
@@ -968,7 +1106,7 @@ module Iyi::IyiMod
         raise ArgumentError.new("unmapped diagnostic fragment anchor") unless index == anchors.size
       else
         anchors.each do |anchor|
-          mapped << DiagnosticAnchor.new(start + anchor.offset, anchor.kind, anchor.role, anchor.origin)
+          mapped << DiagnosticAnchor.new(start + anchor.offset, anchor.kind, anchor.role, anchor.origin, anchor.name_slots)
         end
       end
       rendered = io.to_slice[start, finish - start]
@@ -4343,7 +4481,7 @@ module Iyi::IyiMod
     anchors = [] of DiagnosticAnchor
     io << signature.visibility << ' ' unless signature.visibility.empty?
     io << "abstract " if signature.required
-    anchors << DiagnosticAnchor.new(io.pos.to_i32, "Def", "keyword", a_def.diagnostic_origin)
+    anchors << DiagnosticAnchor.new(io.pos.to_i32, "Def", "keyword", a_def.diagnostic_origin, a_def.diagnostic_name_slots)
     io << "def "
     if receiver = a_def.receiver
       receiver.to_s(io, diagnostic_anchors: anchors)

@@ -150,6 +150,59 @@ def number(value):
         raise ValueError("invalid provenance integer")
 
 
+NAME_CONTEXTS = frozenset("method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter named_entry".split())
+PRODUCERS = frozenset("ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter".split())
+TOKEN_KINDS = frozenset(("EOF SPACE NEWLINE IDENT CONST INSTANCE_VAR CLASS_VAR CHAR STRING SYMBOL NUMBER _ COMMENT "
+    "DELIMITER_START DELIMITER_END STRING_ARRAY_START INTERPOLATION_START SYMBOL_ARRAY_START STRING_ARRAY_END "
+    "GLOBAL GLOBAL_MATCH_DATA_INDEX __DIR__ __END_LINE__ __FILE__ __LINE__ MACRO_LITERAL MACRO_EXPRESSION_START "
+    "MACRO_CONTROL_START MACRO_VAR MACRO_END").split()) | frozenset(
+    "! != !~ $? $~ % %= %} & && &&= &* &** &*= &+ &+= &- &-= &= ( ) * ** **= *= + += , - -= -> . .. ... / // //= /= : :: ; < << <<= <= <=> = == === => =~ > >= >> >>= ? @[ [ [] []= []? ] ^ ^= ` { {% {{ | |= || ||= } ~".split())
+
+
+def guard(value, prefix=""):
+    if not isinstance(value, str) or not re.fullmatch(prefix + r"[0-9a-f]{64}", value):
+        raise ValueError("invalid input guard")
+
+
+def token_fields(value):
+    if value["lexical_mode"] not in ("Crystal", "Iyi") or value["token_kind"] not in TOKEN_KINDS:
+        raise ValueError("invalid token classification")
+
+
+def source_name(value, depth):
+    fields(value, "lexical_origin binding_origin context input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text")
+    lexical = value["lexical_origin"]
+    anchor = origin(lexical, depth + 1)
+    context = value["context"]
+    if context not in NAME_CONTEXTS or anchor not in (("Call", "method"), ("Name", context)):
+        raise ValueError("invalid source name role")
+    binding = value["binding_origin"]
+    if binding is not None:
+        origin(binding, depth + 1)
+        if (binding.get("kind") != "Synthetic" or binding.get("synthesis_kind") != "local_binding" or
+                binding.get("structural_slot") != "assignment" or binding.get("parent_origin") != lexical or
+                anchor != ("Call", "method")):
+            raise ValueError("invalid source binding ancestry")
+    guard(value["input_sha256"])
+    for key in ("input_bytesize", "input_start", "input_end"): number(value[key])
+    token_fields(value)
+    text(value["raw_text"])
+    raw = value["raw_text"].encode("utf-8")
+    start, end = value["input_start"], value["input_end"]
+    if not 0 <= start < end <= value["input_bytesize"] or end - start != len(raw):
+        raise ValueError("invalid source token span")
+    if lexical["kind"] == "Written":
+        if lexical["input_byte_offset"] != start: raise ValueError("source origin offset mismatch")
+    elif lexical["kind"] == "Expanded":
+        if (lexical["generated_byte_offset"] != start or lexical["generated_byte_end"] != end or
+                lexical["expansion_guard"] != "sha256:" + value["input_sha256"] or
+                lexical["token_text"] != value["raw_text"]):
+            raise ValueError("expanded source token mismatch")
+    else:
+        raise ValueError("invalid lexical name origin")
+    return raw
+
+
 def origin(value, depth=0):
     if depth > 128 or not isinstance(value, dict):
         raise ValueError("invalid origin depth")
@@ -171,31 +224,61 @@ def origin(value, depth=0):
             return ("Macro", "keyword")
         return ("Synthetic", value["synthesis_kind"])
     elif kind == "Expanded":
-        fields(value, "kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset anchor_kind role emission_parts spliced_origin")
+        fields(value, "kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset generated_byte_end token_kind token_text lexical_mode anchor_kind role name_context emission_parts")
         invocation = origin(value["invocation_origin"], depth + 1)
         definition = origin(value["macro_definition_origin"], depth + 1)
         if invocation not in (("Call", "method"), ("MacroDirective", "expression"), ("MacroDirective", "control"),
                               ("Include", "keyword"), ("Extend", "keyword"), ("ClassDef", "keyword"),
                               ("Def", "keyword"), ("Macro", "keyword")) or definition != ("Macro", "keyword"):
             raise ValueError("invalid macro ancestry")
-        if not isinstance(value["expansion_guard"], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value["expansion_guard"]):
-            raise ValueError("invalid expansion guard")
-        number(value["generated_byte_offset"])
+        guard(value["expansion_guard"], "sha256:")
+        number(value["generated_byte_offset"]); number(value["generated_byte_end"])
+        token_fields(value)
+        text(value["anchor_kind"]); text(value["role"]); text(value["token_text"])
+        output = value["token_text"].encode("utf-8")
+        start, finish = value["generated_byte_offset"], value["generated_byte_end"]
+        if finish <= start or finish - start != len(output): raise ValueError("invalid generated token span")
+        context = value["name_context"]
+        if context is not None and context not in NAME_CONTEXTS: raise ValueError("unknown name context")
+        if context is not None and (value["anchor_kind"], value["role"]) not in (("Name", context), ("Call", "method")):
+            raise ValueError("name context on structural anchor")
         parts = value["emission_parts"]
         if not isinstance(parts, list) or not parts: raise ValueError("missing emission parts")
-        end, previous = value["generated_byte_offset"], object()
+        end = start
         for part in parts:
-            fields(part, "start_offset end_offset emitter_origin")
+            if not isinstance(part, dict): raise ValueError("invalid emission part")
+            tag = part.get("kind")
+            if tag == "Generated":
+                fields(part, "kind start_offset end_offset emitter_origin producer")
+                if part["producer"] not in PRODUCERS: raise ValueError("unknown producer")
+            elif tag == "AstAnchor":
+                fields(part, "kind start_offset end_offset emitter_origin source_origin")
+                if len(parts) != 1 or origin(part["source_origin"], depth + 1) != (value["anchor_kind"], value["role"]):
+                    raise ValueError("invalid structural source")
+            elif tag == "NameSplice":
+                fields(part, "kind start_offset end_offset emitter_origin source_token slice_start slice_end projection")
+                if context is None: raise ValueError("name contribution without receiving context")
+                raw = source_name(part["source_token"], depth)
+                number(part["slice_start"]); number(part["slice_end"])
+                lo, hi = part["slice_start"], part["slice_end"]
+                if part["projection"] != "Whole" or lo != 0 or hi != len(raw):
+                    raise ValueError("unsupported name projection")
+                try: raw[lo:hi].decode("utf-8")
+                except UnicodeDecodeError as exc: raise ValueError("invalid UTF-8 slice") from exc
+            else:
+                raise ValueError("unknown emission part")
             number(part["start_offset"]); number(part["end_offset"])
             emitter = part["emitter_origin"]
-            if part["start_offset"] != end or part["end_offset"] <= end or emitter == previous:
-                raise ValueError("invalid emission part")
+            if part["start_offset"] != end or not end < part["end_offset"] <= finish:
+                raise ValueError("invalid emission part extent")
+            try: output[part["start_offset"]-start:part["end_offset"]-start].decode("utf-8")
+            except UnicodeDecodeError as exc: raise ValueError("emission splits UTF-8") from exc
             if emitter is not None and origin(emitter, depth + 1) not in (("MacroDirective", "expression"), ("MacroDirective", "control")):
                 raise ValueError("invalid emitter")
-            end, previous = part["end_offset"], emitter
-        splice = value["spliced_origin"]
-        if splice is not None and origin(splice, depth + 1) != (value["anchor_kind"], value["role"]):
-            raise ValueError("invalid spliced origin")
+            if tag == "NameSplice" and output[end-start:part["end_offset"]-start] != raw[lo:hi]:
+                raise ValueError("name contribution bytes differ")
+            end = part["end_offset"]
+        if end != finish: raise ValueError("incomplete token coverage")
     else:
         raise ValueError("unknown origin")
     text(value["anchor_kind"]); text(value["role"])
@@ -207,9 +290,8 @@ def checked_origin(value):
     stack, size = [(value, 0)], 0
     while stack:
         node, depth = stack.pop()
-        # Each origin edge contributes at most three JSON container levels
-        # (Expanded -> emission_parts -> part -> emitter_origin).
-        if depth > 3 * 128 + 3: raise ValueError("origin nesting too deep")
+        # Source-token parents add another container level to an origin edge.
+        if depth > 5 * 128 + 5: raise ValueError("origin nesting too deep")
         if isinstance(node, dict):
             size += 2 + max(0, len(node) - 1)
             for key, child in node.items():
@@ -504,7 +586,7 @@ class FrameManifest:
         with open(path, encoding="utf-8") as stream:
             manifest = json.load(stream, object_pairs_hook=no_duplicate_keys)
         fields(manifest, "schema object_input_scope executable_sha256 executable_symbols object_inputs bindings")
-        if type(manifest["schema"]) is not int or manifest["schema"] != 4 or manifest["object_input_scope"] != "compiler_supplied_link_inputs":
+        if type(manifest["schema"]) is not int or manifest["schema"] != 5 or manifest["object_input_scope"] != "compiler_supplied_link_inputs":
             raise ValueError("unsupported manifest schema or scope")
         with open(executable, "rb") as stream: binary = stream.read()
         if hashlib.sha256(binary).hexdigest() != manifest["executable_sha256"]:

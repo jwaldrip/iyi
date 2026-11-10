@@ -386,8 +386,8 @@ if mode == "artifact-consumer" and not any(item["producer"]["kind"] == "artifact
     raise ValueError("consumer did not import a native artifact object")
 with (root / "frame-provenance.json").open("rb") as f:
     manifest = json.load(f)
-if manifest.get("schema") != 4 or not manifest.get("bindings") or not manifest.get("object_inputs"):
-    raise ValueError("missing schema-4 closure bindings")
+if manifest.get("schema") != 5 or not manifest.get("bindings") or not manifest.get("object_inputs"):
+    raise ValueError("missing schema-5 closure bindings")
 bound_inputs = [manifest["object_inputs"][binding["link_input_id"]] for binding in manifest["bindings"]]
 if mode == "source-4" and not any(item["partition"] and item["partition"]["count"] == 4 for item in bound_inputs):
     raise ValueError("partitioned build lacks a closure definition in a partition")

@@ -71,8 +71,8 @@ describe Iyi::DiagnosticOrigin do
     call = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 8, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 3, "Macro", "keyword")
     splice = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 20, "Block", "opener")
-    expansion = Iyi::DiagnosticOrigin::Expanded.new(call, definition, "sha256:" + "0" * 64, 17, "Block", "opener",
-      [Iyi::DiagnosticEmissionPart.new(17, 18, nil)], splice)
+    expansion = Iyi::DiagnosticOrigin::Expanded.new(call, definition, "sha256:" + "0" * 64, 17, 18, "LBrace", "{", "Iyi", "Block", "opener", nil,
+      [Iyi::DiagnosticEmissionPart::AstAnchor.new(17, 18, nil, splice)] of Iyi::DiagnosticEmissionPart)
     origin = Iyi::DiagnosticOrigin::Synthetic.new(expansion, "block_to_proc", "proc")
     node = Iyi::Nop.new
     node.diagnostic_origin = origin
@@ -80,7 +80,7 @@ describe Iyi::DiagnosticOrigin do
     Iyi::Nop.new.at(node).diagnostic_origin.should eq(origin)
     json = node.diagnostic_origin_json.not_nil!
     json["parent_origin"]["generated_byte_offset"].as_i.should eq(17)
-    json["parent_origin"]["spliced_origin"]["source_identity"]["module"].as_s.should eq("app/main")
+    json["parent_origin"]["emission_parts"][0]["source_origin"]["source_identity"]["module"].as_s.should eq("app/main")
     json["parent_origin"]["macro_definition_origin"]["input_byte_offset"].as_i.should eq(3)
     Iyi::DiagnosticOrigin.from_json(json).should eq(origin)
   end
@@ -176,7 +176,7 @@ describe Iyi::DiagnosticOrigin do
       {0 => [emission] of Iyi::Lexer::LocPragma})
     restored = parser.parse.as(Iyi::Assign).target.as(Iyi::Var).diagnostic_origin.as(Iyi::DiagnosticOrigin::Synthetic)
     expanded = restored.parent_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    expanded.spliced_origin.should eq(binding.parent_origin)
+    expanded.emission_parts.first.as(Iyi::DiagnosticEmissionPart::NameSplice).source_token.lexical_origin.should eq(binding.parent_origin)
     expanded.emission_parts.first.emitter_origin.should eq(emitter)
     parser.diagnostic_check_consumed
 
@@ -226,18 +226,18 @@ describe Iyi::DiagnosticOrigin do
       Iyi::IyiMod::DiagnosticOrigins.read(io).parent(index).should eq(origin)
     end
 
-    parts = [Iyi::DiagnosticEmissionPart.new(0, 1, nil)]
+    parts = [Iyi::DiagnosticEmissionPart::Generated.new(0, 2, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart
     [{"Include", "method"}, {"Extend", "control"}, {"ClassDef", "method"},
      {"Def", "method"}, {"Macro", "control"}, {"Module", "keyword"}].each do |kind, role|
       invalid = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 0, kind, role)
       expect_raises(ArgumentError) do
-        Iyi::DiagnosticOrigin::Expanded.new(invalid, definition, "sha256:" + "0" * 64, 0, "ProcLiteral", "arrow", parts)
+        Iyi::DiagnosticOrigin::Expanded.new(invalid, definition, "sha256:" + "0" * 64, 0, 2, "Arrow", "->", "Iyi", "ProcLiteral", "arrow", nil, parts)
       end
     end
     valid = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 0, "Include", "keyword")
     wrong_definition = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.cr", 1, "Def", "keyword")
     expect_raises(ArgumentError) do
-      Iyi::DiagnosticOrigin::Expanded.new(valid, wrong_definition, "sha256:" + "0" * 64, 0, "ProcLiteral", "arrow", parts)
+      Iyi::DiagnosticOrigin::Expanded.new(valid, wrong_definition, "sha256:" + "0" * 64, 0, 2, "Arrow", "->", "Iyi", "ProcLiteral", "arrow", nil, parts)
     end
   end
 
@@ -329,8 +329,8 @@ describe Iyi::DiagnosticOrigin do
     macro_origin = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.cr", 2, "Macro", "keyword")
     origins = [
       Iyi::DiagnosticOrigin::Written.new("app/main", "/src/literals.cr", 4, "Literal", "regex"),
-      Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin, "sha256:" + "0" * 64, 8, "Literal", "regex",
-        [Iyi::DiagnosticEmissionPart.new(8, 9, nil)]),
+      Iyi::DiagnosticOrigin::Expanded.new(invocation, macro_origin, "sha256:" + "0" * 64, 8, 9, "Regex", "/", "Iyi", "Literal", "regex", nil,
+        [Iyi::DiagnosticEmissionPart::Generated.new(8, 9, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart),
     ] of Iyi::DiagnosticOrigin
     references = origins.map do |origin|
       literal = Iyi::RegexLiteral.new(Iyi::StringLiteral.new("same")).at(location)
@@ -911,7 +911,7 @@ describe Iyi::DiagnosticOrigin do
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
     expanded = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
     expanded.generated_byte_offset.should eq(0)
-    expanded.spliced_origin.should eq(original)
+    expanded.emission_parts.first.as(Iyi::DiagnosticEmissionPart::AstAnchor).source_origin.should eq(original)
     expanded.emission_parts.first.emitter_origin.should eq(emitter)
     expanded.invocation_origin.should eq(invocation)
   end
@@ -927,8 +927,7 @@ describe Iyi::DiagnosticOrigin do
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
     origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart.new(0, 2, emitter)])
-    origin.spliced_origin.should be_nil
+    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart::Generated.new(0, 2, emitter, Iyi::DiagnosticMacroProducer::MacroId)])
 
     missing = Iyi::Parser.new(text)
     missing.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", nil)
@@ -946,7 +945,7 @@ describe Iyi::DiagnosticOrigin do
     parser.diagnostic_expansion(invocation, definition, "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}",
       {0 => [emission] of Iyi::Lexer::LocPragma})
     origin = parser.parse.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart.new(1, 2, emitter)])
+    origin.emission_parts.should eq([Iyi::DiagnosticEmissionPart::Generated.new(1, 2, emitter, Iyi::DiagnosticMacroProducer::MacroId)])
   end
 
   it "rejects a spliced anchor that overlaps generated text" do
@@ -987,9 +986,9 @@ describe Iyi::DiagnosticOrigin do
       "sha256:#{::Crystal::Digest::SHA256.hexdigest(text)}", pragmas)
     array = parser.parse.as(Iyi::ArrayLiteral)
     array_origin = array.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    array_origin.spliced_origin.should be_nil
+    array_origin.emission_parts.any? { |part| part.is_a?(Iyi::DiagnosticEmissionPart::AstAnchor) }.should be_false
     closure_origin = array.elements.first.diagnostic_origin.as(Iyi::DiagnosticOrigin::Expanded)
-    closure_origin.spliced_origin.should eq(original)
+    closure_origin.emission_parts.first.as(Iyi::DiagnosticEmissionPart::AstAnchor).source_origin.should eq(original)
     closure_origin.emission_parts.first.emitter_origin.should_not be_nil
 
     fragment_io = IO::Memory.new
@@ -1028,8 +1027,8 @@ describe Iyi::DiagnosticOrigin do
   it "distinguishes an inline macro directive and its synthetic definition" do
     directive = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "MacroDirective", "control")
     definition = Iyi::DiagnosticOrigin::Synthetic.new(directive, "inline_macro_definition", "macro")
-    expanded = Iyi::DiagnosticOrigin::Expanded.new(directive, definition, "sha256:" + "0" * 64, 4, "ProcLiteral", "arrow",
-      [Iyi::DiagnosticEmissionPart.new(4, 6, nil)])
+    expanded = Iyi::DiagnosticOrigin::Expanded.new(directive, definition, "sha256:" + "0" * 64, 4, 6, "Arrow", "->", "Iyi", "ProcLiteral", "arrow", nil,
+      [Iyi::DiagnosticEmissionPart::Generated.new(4, 6, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart)
     expanded.valid_for_anchor?("ProcLiteral", "arrow").should be_true
     Iyi::DiagnosticOrigin.from_json(expanded.as_json).should eq(expanded)
   end
@@ -1038,8 +1037,8 @@ describe Iyi::DiagnosticOrigin do
     invocation = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 5, "Call", "method")
     definition = Iyi::DiagnosticOrigin::Written.new("app/macros", "/src/macros.iyi", 9, "Macro", "keyword")
     splice = Iyi::DiagnosticOrigin::Written.new("app/main", "/src/main.iyi", 35, "Block", "opener")
-    expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64, 4, "Block", "opener",
-      [Iyi::DiagnosticEmissionPart.new(4, 5, nil)], splice)
+    expanded = Iyi::DiagnosticOrigin::Expanded.new(invocation, definition, "sha256:" + "0" * 64, 4, 5, "LBrace", "{", "Iyi", "Block", "opener", nil,
+      [Iyi::DiagnosticEmissionPart::AstAnchor.new(4, 5, nil, splice)] of Iyi::DiagnosticEmissionPart)
     origin = Iyi::DiagnosticOrigin::Synthetic.new(expanded, "block_to_proc", "proc")
     table = Iyi::IyiMod::DiagnosticOrigins.new
     index = table.intern(origin)
@@ -3644,7 +3643,7 @@ describe Iyi::IyiMod do
           consumer.compile source, File.expand_path("consumer/program")
           `./consumer/program`.chomp.should eq("42")
           manifest = JSON.parse(File.read("consumer-frames.json"))
-          manifest["schema"].as_i.should eq(4)
+          manifest["schema"].as_i.should eq(5)
           inputs = manifest["object_inputs"].as_a
           bound_ids = manifest["bindings"].as_a.map { |binding| binding["link_input_id"].as_i }.to_set
           bound = inputs.select { |input| bound_ids.includes?(input["link_input_id"].as_i) }
@@ -3661,7 +3660,7 @@ describe Iyi::IyiMod do
           rewritten_consumer.compile source, File.expand_path("rewritten/program")
           `./rewritten/program`.chomp.should eq("42")
           rewritten_manifest = JSON.parse(File.read("rewritten-frames.json"))
-          rewritten_manifest["schema"].as_i.should eq(4)
+          rewritten_manifest["schema"].as_i.should eq(5)
           rewritten_inputs = rewritten_manifest["object_inputs"].as_a
           rewritten_ids = rewritten_manifest["bindings"].as_a.map { |binding| binding["link_input_id"].as_i }.to_set
           rewritten_bound = rewritten_inputs.select { |input| rewritten_ids.includes?(input["link_input_id"].as_i) }

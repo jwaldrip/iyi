@@ -3,6 +3,7 @@ require "base64"
 require "set"
 require "crystal/digest/sha256"
 require "../syntax/diagnostic_origin"
+require "../syntax/token"
 
 module Iyi::DiagnosticProvenance
   struct Emission
@@ -167,47 +168,125 @@ module Iyi::DiagnosticProvenance
     end
   end
 
-  # Reject the superseded Expanded wire shape while the shared decoder is
-  # upgraded. The decoder owns semantic and bounded-graph validation.
-  private def self.origin_schema3!(value : JSON::Any, depth : Int32 = 0) : Nil
+  NAME_CONTEXTS = %w(method_name definition_name macro_name local_reference instance_variable class_variable parameter path_segment type_parameter named_entry)
+  MACRO_PRODUCERS = %w(ConstructedAst EmptyTupleProjection EmptyNamedTupleProjection MacroTemplate MacroId MacroVar MacroVerbatim YieldWrapper SemanticPrinter)
+
+  private def self.origin_schema4!(value : JSON::Any, depth : Int32 = 0) : Nil
     raise "diagnostic origin nesting too deep" if depth > 128
     object = value.as_h
     case object["kind"].as_s
     when "Written"
-      fields(value, %w(kind source_identity input_byte_offset anchor_kind role))
+      written = fields(value, %w(kind source_identity input_byte_offset anchor_kind role))
+      fields(written["source_identity"], %w(module file))
     when "Synthetic"
       synthetic = fields(value, %w(kind parent_origin synthesis_kind structural_slot))
-      origin_schema3!(synthetic["parent_origin"], depth + 1)
+      origin_schema4!(synthetic["parent_origin"], depth + 1)
     when "Expanded"
-      expansion = fields(value, %w(kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset anchor_kind role emission_parts spliced_origin))
-      origin_schema3!(expansion["invocation_origin"], depth + 1)
-      origin_schema3!(expansion["macro_definition_origin"], depth + 1)
-      unless expansion["spliced_origin"].raw.nil?
-        origin_schema3!(expansion["spliced_origin"], depth + 1)
+      expansion = fields(value, %w(kind invocation_origin macro_definition_origin expansion_guard generated_byte_offset generated_byte_end token_kind token_text lexical_mode anchor_kind role name_context emission_parts))
+      origin_schema4!(expansion["invocation_origin"], depth + 1)
+      origin_schema4!(expansion["macro_definition_origin"], depth + 1)
+      guard = expansion["expansion_guard"].as_s
+      raise "invalid expansion guard" unless guard.matches?(/\Asha256:[0-9a-f]{64}\z/)
+      mode = expansion["lexical_mode"].as_s
+      raise "invalid lexical mode" unless mode == "Crystal" || mode == "Iyi"
+      raise "unknown token kind" unless Iyi::Token::Kind.values.any? { |kind| kind.to_s == expansion["token_kind"].as_s }
+      token = expansion["token_text"].as_s
+      raise "invalid token text" if token.empty? || !token.valid_encoding?
+      first = expansion["generated_byte_offset"].as_i64
+      last = expansion["generated_byte_end"].as_i64
+      raise "invalid token extent" unless first >= 0 && last <= Int32::MAX && last - first == token.bytesize && last > first
+      context = expansion["name_context"]
+      unless context.raw.nil?
+        name = context.as_s
+        raise "unknown name context" unless NAME_CONTEXTS.includes?(name)
+        kind, role = expansion["anchor_kind"].as_s, expansion["role"].as_s
+        raise "invalid receiving name role" unless (kind == "Name" && role == name) || (kind == "Call" && role == "method")
       end
       parts = expansion["emission_parts"].as_a
       raise "expanded origin has no emission parts" if parts.empty?
-      next_offset = expansion["generated_byte_offset"].as_i64
-      previous_emitter = nil.as(JSON::Any?)
-      parts.each_with_index do |part, index|
-        item = fields(part, %w(start_offset end_offset emitter_origin))
-        start_offset = item["start_offset"].as_i64
-        end_offset = item["end_offset"].as_i64
-        raise "invalid origin emission part range" unless start_offset == next_offset && end_offset > start_offset
-        emitter = item["emitter_origin"]
-        origin_schema3!(emitter, depth + 1) unless emitter.raw.nil?
-        raise "uncoalesced origin emission parts" if index > 0 && previous_emitter == emitter
-        previous_emitter = emitter
-        next_offset = end_offset
+      cursor = first
+      parts.each do |part|
+        entry = part.as_h
+        case entry["kind"].as_s
+        when "Generated"
+          fields(part, %w(kind start_offset end_offset emitter_origin producer))
+          raise "unknown macro producer" unless MACRO_PRODUCERS.includes?(entry["producer"].as_s)
+        when "AstAnchor"
+          fields(part, %w(kind start_offset end_offset emitter_origin source_origin))
+          raise "structural source must cover token" unless parts.size == 1
+          origin_schema4!(entry["source_origin"], depth + 1)
+          source = Iyi::DiagnosticOrigin.from_json(entry["source_origin"])
+          raise "structural source role mismatch" unless source.valid_for_anchor?(expansion["anchor_kind"].as_s, expansion["role"].as_s)
+        when "NameSplice"
+          fields(part, %w(kind start_offset end_offset emitter_origin source_token slice_start slice_end projection))
+          raise "name contribution without context" if context.raw.nil?
+          source_name_schema4!(entry["source_token"], depth + 1)
+          source = entry["source_token"].as_h
+          raw = source["raw_text"].as_s
+          lo, hi = entry["slice_start"].as_i64, entry["slice_end"].as_i64
+          raise "unsupported name projection" unless entry["projection"].as_s == "Whole" && lo == 0 && hi == raw.bytesize
+          offset = entry["start_offset"].as_i64 - first
+          length = entry["end_offset"].as_i64 - entry["start_offset"].as_i64
+          raise "invalid name contribution" unless offset >= 0 && length == hi && offset + length <= token.bytesize
+          raise "name contribution differs" unless token.byte_slice(offset.to_i, length.to_i) == raw
+        else
+          raise "unknown emission part"
+        end
+        start_offset = entry["start_offset"].as_i64
+        end_offset = entry["end_offset"].as_i64
+        raise "invalid origin emission part range" unless start_offset == cursor && end_offset > cursor && end_offset <= last
+        raise "emission splits UTF-8" unless token.byte_slice((start_offset - first).to_i, (end_offset - start_offset).to_i).valid_encoding?
+        emitter = entry["emitter_origin"]
+        unless emitter.raw.nil?
+          origin_schema4!(emitter, depth + 1)
+          directive = Iyi::DiagnosticOrigin.from_json(emitter)
+          raise "invalid emitter" unless directive.valid_for_anchor?("MacroDirective", "control") || directive.valid_for_anchor?("MacroDirective", "expression")
+        end
+        cursor = end_offset
       end
+      raise "incomplete token coverage" unless cursor == last
     else
       raise "unknown diagnostic origin kind"
     end
   end
 
+  private def self.source_name_schema4!(value : JSON::Any, depth : Int32) : Nil
+    source = fields(value, %w(lexical_origin binding_origin context input_sha256 input_bytesize input_start input_end lexical_mode token_kind raw_text))
+    context = source["context"].as_s
+    raise "unknown source name context" unless NAME_CONTEXTS.includes?(context)
+    lexical = source["lexical_origin"]
+    origin_schema4!(lexical, depth)
+    origin = Iyi::DiagnosticOrigin.from_json(lexical)
+    raise "invalid source name role" unless origin.valid_for_anchor?("Call", "method") || origin.valid_for_anchor?("Name", context)
+    binding = source["binding_origin"]
+    unless binding.raw.nil?
+      origin_schema4!(binding, depth)
+      b = fields(binding, %w(kind parent_origin synthesis_kind structural_slot))
+      raise "invalid source binding" unless b["kind"].as_s == "Synthetic" && b["synthesis_kind"].as_s == "local_binding" && b["structural_slot"].as_s == "assignment" && b["parent_origin"] == lexical && origin.valid_for_anchor?("Call", "method")
+    end
+    digest = source["input_sha256"].as_s
+    raise "invalid source input digest" unless digest.matches?(/\A[0-9a-f]{64}\z/)
+    mode = source["lexical_mode"].as_s
+    raise "invalid lexical mode" unless mode == "Crystal" || mode == "Iyi"
+    raise "unknown token kind" unless Iyi::Token::Kind.values.any? { |kind| kind.to_s == source["token_kind"].as_s }
+    raw = source["raw_text"].as_s
+    raise "invalid source token text" if raw.empty? || !raw.valid_encoding?
+    size, first, last = source["input_bytesize"].as_i64, source["input_start"].as_i64, source["input_end"].as_i64
+    raise "invalid source token span" unless first >= 0 && last > first && last <= size && size <= Int32::MAX && last - first == raw.bytesize
+    case lexical.as_h["kind"].as_s
+    when "Written"
+      raise "source offset mismatch" unless lexical.as_h["input_byte_offset"].as_i64 == first
+    when "Expanded"
+      expanded = lexical.as_h
+      raise "expanded source mismatch" unless expanded["generated_byte_offset"].as_i64 == first && expanded["generated_byte_end"].as_i64 == last && expanded["expansion_guard"].as_s == "sha256:#{digest}" && expanded["token_text"].as_s == raw
+    else
+      raise "invalid source lexical origin"
+    end
+  end
+
   private def self.validated_origin(value : JSON::Any) : Iyi::DiagnosticOrigin
     bound_origin!(value)
-    origin_schema3!(value)
+    origin_schema4!(value)
     Iyi::DiagnosticOrigin.from_json(value)
   end
 
@@ -700,7 +779,7 @@ module Iyi::DiagnosticProvenance
     end
     manifest = JSON.build do |json|
       json.object do
-        json.field "schema", 4
+        json.field "schema", 5
         json.field "object_input_scope", "compiler_supplied_link_inputs"
         json.field "executable_sha256", ::Crystal::Digest::SHA256.hexdigest(before)
         json.field "executable_symbols", evidence

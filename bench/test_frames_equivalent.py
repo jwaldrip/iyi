@@ -612,7 +612,7 @@ def test_strict_manifest_synthetic_controls():
         binary, executable_evidence = macho_fixture(2, entry)
         obj, object_evidence = macho_fixture(1, entry)
         emission = {"requested_symbol": raw_name, "actual_llvm_symbol": raw_name, "unit_name": "unit", "linkage": "external", **copy.deepcopy(identity)}
-        manifest = {"schema": 4, "object_input_scope": "compiler_supplied_link_inputs",
+        manifest = {"schema": 5, "object_input_scope": "compiler_supplied_link_inputs",
                     "executable_sha256": hashlib.sha256(binary).hexdigest(), "executable_symbols": executable_evidence,
                     "object_inputs": [{"link_input_id": 0, "producer": {"kind": "current_unit", "unit_ordinal": 0},
                                        "unit_name": "unit", "partition": None, "sha256": hashlib.sha256(obj).hexdigest(),
@@ -666,7 +666,7 @@ def test_strict_manifest_synthetic_controls():
                 elif mutation == "missing-binding": altered["bindings"] = []
                 elif mutation == "object": altered["object_inputs"][0]["bytes_base64"] = base64.b64encode(b"changed").decode()
                 elif mutation == "binary": altered["executable_sha256"] = "0" * 64
-                elif mutation == "schema": altered["schema"] = 2
+                elif mutation == "schema": altered["schema"] = 4
                 elif mutation == "symbol": altered["bindings"][0]["definition"]["native_object_symbol"] = "_fake"
                 else: record["displayed_source_location"]["line"] = 10
                 if mutation in ("origin", "specialization", "capture", "location"):
@@ -850,7 +850,7 @@ def test_strict_manifest_synthetic_controls():
             other = load(same_manifest, executable_b)
             assert capture_violation(compare_same_opt, [line_a], [line_a], manifests=(left, other))[0] == 1
             valid_json = json.dumps(same_manifest)
-            duplicated_json = valid_json.replace('"schema": 4', '"schema": 4, "schema": 4', 1)
+            duplicated_json = valid_json.replace('"schema": 5', '"schema": 5, "schema": 5', 1)
             assert duplicated_json != valid_json
             with open(path, "w", encoding="utf-8") as f: f.write(duplicated_json)
             try: frames.FrameManifest(path, executable_b)
@@ -861,9 +861,10 @@ def test_strict_manifest_synthetic_controls():
     definition = written("Macro", "keyword", 4)
     emitter = written("MacroDirective", "expression", 6)
     expanded = {"kind": "Expanded", "invocation_origin": invocation, "macro_definition_origin": definition,
-                "expansion_guard": "sha256:" + "a" * 64, "generated_byte_offset": 8,
-                "anchor_kind": "ProcLiteral", "role": "arrow", "spliced_origin": closure,
-                "emission_parts": [{"start_offset": 8, "end_offset": 10, "emitter_origin": emitter}]}
+                "expansion_guard": "sha256:" + "a" * 64, "generated_byte_offset": 8, "generated_byte_end": 10,
+                "token_kind": "->", "token_text": "->", "lexical_mode": "Crystal",
+                "anchor_kind": "ProcLiteral", "role": "arrow", "name_context": None,
+                "emission_parts": [{"kind": "AstAnchor", "start_offset": 8, "end_offset": 10, "emitter_origin": emitter, "source_origin": closure}]}
     assert frames.checked_origin(expanded) == ("ProcLiteral", "arrow")
     for kind in ("Include", "Extend", "ClassDef", "Def", "Macro"):
         hook = copy.deepcopy(expanded)
@@ -894,9 +895,10 @@ def test_strict_manifest_synthetic_controls():
     nested_emitter = emitter
     for _ in range(128):
         nested_emitter = {"kind": "Expanded", "invocation_origin": invocation, "macro_definition_origin": definition,
-                          "expansion_guard": "sha256:" + "a" * 64, "generated_byte_offset": 0,
-                          "anchor_kind": "MacroDirective", "role": "expression", "spliced_origin": None,
-                          "emission_parts": [{"start_offset": 0, "end_offset": 1, "emitter_origin": nested_emitter}]}
+                          "expansion_guard": "sha256:" + "a" * 64, "generated_byte_offset": 0, "generated_byte_end": 1,
+                          "token_kind": "IDENT", "token_text": "x", "lexical_mode": "Crystal",
+                          "anchor_kind": "MacroDirective", "role": "expression", "name_context": None,
+                          "emission_parts": [{"kind": "Generated", "start_offset": 0, "end_offset": 1, "emitter_origin": nested_emitter, "producer": "MacroTemplate"}]}
     assert frames.checked_origin(nested_emitter) == ("MacroDirective", "expression")
     deep = copy.deepcopy(closure)
     for _ in range(129):
@@ -917,14 +919,17 @@ def test_strict_manifest_synthetic_controls():
     for change in ("directive", "part", "splice", "occurrence", "nested"):
         altered = copy.deepcopy(expanded)
         if change == "directive": altered["emission_parts"][0]["emitter_origin"]["input_byte_offset"] += 1
-        elif change == "part": altered["emission_parts"][0]["end_offset"] += 1
-        elif change == "splice": altered["spliced_origin"]["input_byte_offset"] += 1
+        elif change == "part":
+            altered["emission_parts"][0] = {"kind": "Generated", "start_offset": 8, "end_offset": 10,
+                                             "emitter_origin": emitter, "producer": "MacroTemplate"}
+        elif change == "splice": altered["emission_parts"][0]["source_origin"]["input_byte_offset"] += 1
         elif change == "occurrence":
             altered["generated_byte_offset"] += 2
+            altered["generated_byte_end"] += 2
             altered["emission_parts"][0]["start_offset"] += 2
             altered["emission_parts"][0]["end_offset"] += 2
         else:
-            altered["spliced_origin"] = copy.deepcopy(expanded)
+            altered["emission_parts"][0]["source_origin"] = copy.deepcopy(expanded)
         frames.checked_origin(altered)
         assert not frames.compare_functions(left_symbol.encode(), left_symbol.encode(), (IdentityMap(expanded), IdentityMap(altered))), change
     binding = {"name": "x", "binding_origin": {"kind": "Synthetic", "parent_origin": written("Call", "method", 30),
@@ -971,8 +976,82 @@ def test_strict_manifest_synthetic_controls():
     else: raise AssertionError("unknown capture type accepted")
 
 
+def test_composed_origin_controls():
+    def written(kind, role, offset):
+        return {"kind": "Written", "source_identity": {"module": "Example", "file": "example.iyi"},
+                "input_byte_offset": offset, "anchor_kind": kind, "role": role}
+
+    def source(offset):
+        lexical = written("Call", "method", offset)
+        return {"lexical_origin": lexical, "binding_origin": None, "context": "method_name",
+                "input_sha256": "a" * 64, "input_bytesize": 100, "input_start": offset,
+                "input_end": offset + 1, "lexical_mode": "Crystal", "token_kind": "IDENT", "raw_text": "a"}
+
+    def contribution(start, source_token):
+        return {"kind": "NameSplice", "start_offset": start, "end_offset": start + 1,
+                "emitter_origin": None, "source_token": source_token, "slice_start": 0,
+                "slice_end": 1, "projection": "Whole"}
+
+    invocation = {"kind": "Expanded", "invocation_origin": written("Call", "method", 1),
+                  "macro_definition_origin": written("Macro", "keyword", 2), "expansion_guard": "sha256:" + "b" * 64,
+                  "generated_byte_offset": 10, "generated_byte_end": 12, "token_kind": "IDENT",
+                  "token_text": "aa", "lexical_mode": "Crystal", "anchor_kind": "Call", "role": "method",
+                  "name_context": "method_name", "emission_parts": [contribution(10, source(20)), contribution(11, source(30))]}
+    closure = {"kind": "Expanded", "invocation_origin": invocation, "macro_definition_origin": written("Macro", "keyword", 3),
+               "expansion_guard": "sha256:" + "c" * 64, "generated_byte_offset": 4, "generated_byte_end": 6,
+               "token_kind": "->", "token_text": "->", "lexical_mode": "Crystal",
+               "anchor_kind": "ProcLiteral", "role": "arrow", "name_context": None,
+               "emission_parts": [{"kind": "AstAnchor", "start_offset": 4, "end_offset": 6,
+                                   "emitter_origin": None, "source_origin": written("ProcLiteral", "arrow", 40)}]}
+    proc = {"kind": "Iyi::ProcInstanceType", "arguments": [], "return": {"kind": "Iyi::IntegerType", "name": "Int32"}}
+    emission = {"requested_symbol": "~proc", "actual_llvm_symbol": "~proc", "unit_name": "unit", "linkage": "external",
+                "origin": closure, "specialization": {"kind": "program_scope", "source_identity": {"module": "Example", "file": "example.iyi"}},
+                "capture_descriptor": {"proc_type": proc, "is_closure": False, "environment": None},
+                "displayed_source_location": {"file": "example.iyi", "line": 1, "column": 1}}
+    baseline = frames.emission_identity(emission)
+    for mutation in ("file", "offset", "digest", "binding", "emitter", "order"):
+        changed = copy.deepcopy(emission)
+        parts = changed["origin"]["invocation_origin"]["emission_parts"]
+        token = parts[0]["source_token"]
+        if mutation == "file": token["lexical_origin"]["source_identity"]["file"] = "other.iyi"
+        elif mutation == "offset":
+            token["input_start"] += 1; token["input_end"] += 1
+            token["lexical_origin"]["input_byte_offset"] += 1
+        elif mutation == "digest": token["input_sha256"] = "d" * 64
+        elif mutation == "binding":
+            token["binding_origin"] = {"kind": "Synthetic", "parent_origin": copy.deepcopy(token["lexical_origin"]),
+                                       "synthesis_kind": "local_binding", "structural_slot": "assignment"}
+        elif mutation == "emitter": parts[0]["emitter_origin"] = written("MacroDirective", "expression", 50)
+        else: parts[0]["source_token"], parts[1]["source_token"] = parts[1]["source_token"], parts[0]["source_token"]
+        assert frames.emission_identity(changed) != baseline, mutation
+
+    for mutation in ("missing", "overlap", "short", "source_role", "input_bound", "slice", "projection",
+                     "utf8", "unknown_part", "unknown_context", "unknown_mode", "unknown_token", "old_shape"):
+        changed = copy.deepcopy(emission)
+        node = changed["origin"]["invocation_origin"]
+        parts = node["emission_parts"]
+        token = parts[0]["source_token"]
+        if mutation == "missing": parts.pop()
+        elif mutation == "overlap": parts[1]["start_offset"] = 10
+        elif mutation == "short": node["generated_byte_end"] = 11
+        elif mutation == "source_role": token["lexical_origin"]["role"] = "keyword"
+        elif mutation == "input_bound": token["input_bytesize"] = 20
+        elif mutation == "slice": parts[0]["slice_end"] = 0
+        elif mutation == "projection": parts[0]["projection"] = "arbitrary"
+        elif mutation == "utf8": token["raw_text"] = "\ud800"
+        elif mutation == "unknown_part": parts[0]["kind"] = "Other"
+        elif mutation == "unknown_context": node["name_context"] = "unknown"
+        elif mutation == "unknown_mode": token["lexical_mode"] = "unknown"
+        elif mutation == "unknown_token": token["token_kind"] = "unknown"
+        else: node["spliced_origin"] = None
+        try: frames.emission_identity(changed)
+        except (ValueError, UnicodeError, TypeError, KeyError): pass
+        else: raise AssertionError("accepted malformed composition: " + mutation)
+
+
 def run_all_tests() -> int:
     tests = [
+        ("test_composed_origin_controls", test_composed_origin_controls),
         ("test_macho_reader_controls", test_macho_reader_controls),
         ("test_strict_manifest_synthetic_controls", test_strict_manifest_synthetic_controls),
         ("test_captured_linux_equivalence", test_captured_linux_equivalence),
