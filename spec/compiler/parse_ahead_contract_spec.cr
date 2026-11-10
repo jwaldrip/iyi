@@ -75,6 +75,18 @@ describe "parse-ahead parser contract" do
     end
   end
 
+  it "parses the consumer input when it differs from the supplied worker source" do
+    with_ahead_contract_fixture do |program, ahead, filename, source|
+      input = "module app/left\npub def different : Int32\n  2\nend\n"
+      parser = program.new_parser(input)
+      parser.filename = filename
+      parser.diagnostic_source_file = filename
+      result = ahead.parse(parser, filename, source)
+      result.to_s.should contain("different")
+      parser.reader.pos.should be > 0
+    end
+  end
+
   it "rejects a worker result when warning policy differs" do
     with_ahead_contract_fixture do |program, ahead, filename, source|
       parser = program.new_parser(source)

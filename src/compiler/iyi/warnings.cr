@@ -106,6 +106,7 @@ module Iyi
     # can override warning behavior and cannot be authenticated by these fields.
     def parse_ahead_policy : String?
       return nil unless self.class == WarningCollection
+      return nil unless @excluded_paths.all?(&.valid_encoding?) && (@lib_path.nil? || @lib_path.not_nil!.valid_encoding?)
       JSON.build do |json|
         json.object do
           json.field "level", @level.to_s

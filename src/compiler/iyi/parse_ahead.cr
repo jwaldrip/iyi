@@ -4,18 +4,17 @@ module Iyi
   #
   # The top-level visitor reads a file when it reaches the `import` or
   # `require` that names it, depth first and load-once, and parses it there:
-  # parsing was most of the stage, one file after another on one core. A
-  # parse is a function of the file's bytes, its name, whether docs are kept
-  # and the package its module header is read under (`Parser`), and not of
-  # anything the walk has done, so it can happen before the walk gets there.
+  # parsing was most of the stage, one file after another on one core.
+  # Reuse depends on the actual parser input and preparse configuration, not
+  # merely the filename or module path.
   # Workers parse the files the program names, find the files *those* name,
   # and parse them in turn, while the walk does everything else.
   #
   # Nothing here decides what is read. The walk resolves every import and
   # require exactly as it did, reads the file, sets up its parser, and then
   # asks for the file (`#parse`): a worker's nodes are taken only when the
-  # worker read the same bytes under the same name, package and doc setting,
-  # and otherwise the walk parses the file itself, as it always did. A file
+  # input bytes, parser contract and warning policy match. Otherwise the walk
+  # parses the file itself, as it always did. A file
   # the workers guessed wrong is parsed for nothing; a file they did not
   # find is parsed by the walk, which then hands what it names to the
   # workers. The nodes are the same nodes either way, and the warnings a
@@ -119,13 +118,13 @@ module Iyi
     # up for: a worker's when it parsed the same thing, else *parser*'s.
     def parse(parser : Parser, filename : String, source : String) : ASTNode
       contract = parser.parse_ahead_contract
-      candidate = parser.diagnostic_capture && contract ? capture_candidate(parser) : nil
+      candidate = @diagnostic_capture && parser.diagnostic_capture && contract ? capture_candidate(parser) : nil
       recipient = parser.warnings
       warning_policy = recipient.class == WarningCollection ? recipient.parse_ahead_policy : nil
       if contract && warning_policy && (!@diagnostic_capture || candidate) &&
-         parser.diagnostic_capture == @diagnostic_capture &&
+         parser.parse_ahead_input_matches?(source) && parser.diagnostic_capture == @diagnostic_capture &&
          (!@diagnostic_capture || parser.diagnostic_source_unit == "source-file:#{filename}")
-        if nodes = take(filename, source, parser.iyi_package_name, parser.wants_doc?, contract, recipient, warning_policy, candidate)
+        if nodes = take(parser, filename, source, parser.iyi_package_name, parser.wants_doc?, contract, recipient, warning_policy, candidate)
           Prof.count("parse ahead: taken")
           return nodes
         end
@@ -158,7 +157,7 @@ module Iyi
       Prof.count("parse ahead: unused", unused)
     end
 
-    private def take(filename, source, package, wants_doc, contract : String,
+    private def take(parser : Parser, filename, source, package, wants_doc, contract : String,
                      recipient : WarningCollection, warning_policy : String, candidate : AcceptedCaptureInput?) : ASTNode?
       entry = @mutex.synchronize do
         return nil unless found = @entries[filename]?
@@ -179,11 +178,12 @@ module Iyi
 
       return nil unless (nodes = entry.nodes) && entry.source == source &&
                         entry.package == package && @wants_doc == wants_doc && entry.contract == contract &&
-                        entry.warning_policy == warning_policy && recipient.class == WarningCollection &&
-                        recipient.parse_ahead_policy == warning_policy
+                        entry.warning_policy == warning_policy && parser.warnings.same?(recipient) &&
+                        parser.parse_ahead_contract == contract && parser.parse_ahead_input_matches?(source) &&
+                        recipient.class == WarningCollection && recipient.parse_ahead_policy == warning_policy
       if @diagnostic_capture
         worker_input = entry.capture_input
-        return nil unless worker_input && candidate && same_capture_candidate?(worker_input, candidate, source)
+        return nil unless worker_input && candidate && worker_input.same_candidate?(candidate, source)
       end
       if @diagnostic_capture
         raise ArgumentError.new("parse-ahead capture acceptance requires an authenticated frozen registry")
@@ -199,16 +199,6 @@ module Iyi
       nil
     end
 
-    private def same_capture_candidate?(left : AcceptedCaptureInput, right : AcceptedCaptureInput, source : String) : Bool
-      left.input == source && right.input == source && left.kind == right.kind &&
-        left.logical_module == right.logical_module && left.package == right.package &&
-        left.original_file == right.original_file && left.lexical_mode == right.lexical_mode &&
-        left.entry == right.entry && left.mode == right.mode &&
-        left.module_extends_written == right.module_extends_written && left.source_only == right.source_only &&
-        left.visibility == right.visibility && left.def_nest == right.def_nest &&
-        left.fun_nest == right.fun_nest && left.type_nest == right.type_nest &&
-        left.wants_doc == right.wants_doc && left.scopes == right.scopes
-    end
 
     private def queue(filename : String, package : String?) : Nil
       return if @entries.has_key?(filename)
