@@ -1,0 +1,993 @@
+#!/usr/bin/env python3
+"""Streaming verifier for iyi.capture.v1 AST frame streams.
+
+Checks one byte stream written by DiagnosticAstFrameStream
+(src/compiler/iyi/syntax/diagnostic_capture_frames.cr) against an
+iyi-field-schema/1 document and a caller-supplied expected digest. Standard
+library only. There is no unpinned mode: the expected digest is required.
+
+Wire format, integers big-endian:
+
+  N  tag, u64 length, JSON node object        one per node, preorder
+  F  tag, u64 length, JSON filename snapshot  emitted before the first N that references it
+  A  tag, u64 owner id                        child already emitted (alias)
+
+  digest = SHA-256 over the ASCII bytes "iyi.capture.v1.ast", one NUL byte,
+           then every frame byte in stream order.
+
+Schema rows mirror DiagnosticFieldTable::Row (src/compiler/iyi/syntax/
+diagnostic_field_table.cr). The checks below follow that file's verify_row!,
+check_presence!, check_scalars! and check_stubs!:
+
+- klass maps to role through role_for. Classes and roles are checked as a pair.
+- coordinate and presence follow the class rules in verify_row!.
+- Framed rows are the rows that are not base and not Infrastructure. The node's
+  presence array lists exactly the framed rows, in table order.
+- The scalars array holds exactly one entry per Scalar row. Null is allowed only
+  where the tag is nilable. The shape comes from the tag through shape_for.
+- Child and name stubs carry field "base" or "base.sub", with an index for
+  Indexed rows and a key for Keyed rows. Counts follow the presence state.
+
+Authority: a stream verifies only when every framed row has a non-null
+type_expression, and only against a digest the caller supplies. A schema with
+any null framed type_expression gets no verdict at all.
+
+REMAINING_BEYOND_PARSER lists what this module does not establish.
+"""
+
+import argparse
+import base64
+import binascii
+import hashlib
+import hmac
+import json
+import re
+import sys
+from dataclasses import dataclass
+
+DIGEST_TAG = b"iyi.capture.v1.ast\x00"
+TAG_NODE = ord("N")
+TAG_FILENAME = ord("F")
+TAG_ALIAS = ord("A")
+HEADER_BYTES = 9
+MAX_DEPTH = 128
+MAX_FRAME_BYTES = 8 * 1024 * 1024
+MAX_INPUT_BYTES = 64 * 1024 * 1024
+MAX_INDEX_BYTES = 64 * 1024 * 1024
+MAX_JSON_NESTING = 128
+MAX_SCHEMA_BYTES = 8 * 1024 * 1024
+READ_CHUNK_BYTES = 1024 * 1024
+NODE_INDEX_COST = 64
+STUB_INDEX_COST = 32
+FILENAME_INDEX_COST = 96
+
+SCHEMA_VERSION = "iyi-field-schema/1"
+ROW_KEYS = frozenset({
+    "field", "klass", "role", "coordinate", "presence", "nilable",
+    "scalar", "provenance", "base", "type_expression",
+})
+# DiagnosticAstFieldClass members and their roles, as role_for maps them.
+KLASS_ROLE = {
+    "Child": "Child",
+    "ChildList": "Child",
+    "NamedChildMap": "Child",
+    "IndexedChildMap": "Child",
+    "Record": "Child",
+    "RecordList": "Child",
+    "NamedValue": "Name",
+    "SyntaxScalar": "Scalar",
+    "OriginEvidence": "Evidence",
+    "Infrastructure": "Infrastructure",
+}
+ROLE_NAMES = ("Child", "Name", "Scalar", "Evidence", "Infrastructure")
+COORDINATES = ("Single", "Indexed", "Keyed")
+PRESENCE_STATES = {
+    "Always": ("Present",),
+    "Optional": ("Absent", "Present"),
+    "Collection": ("Absent", "Empty", "Nonempty"),
+}
+PRESENCE_NILABLE = {"Always": False, "Optional": True}
+PROVENANCES = ("Syntax", "Semantic")
+# Scalar writer tags (without the nilable '?') and the shape each must produce.
+SCALAR_SHAPES = {
+    "bool": "Flag",
+    "int32": "Number",
+    "char": "Number",
+    "RegexOptions": "Number",
+    "bytes": "Text",
+    "Visibility": "Text",
+    "Expressions::Keyword": "Text",
+    "NumberKind": "Text",
+    "Generic::Suffix": "Text",
+    "Token::Kind": "Text",
+    "bytes_array": "TextList",
+    "bytes_pair": "TextList",
+}
+PROVEN_TYPES = frozenset({"Node", "String", "Bool", "Int32", "Int64", "UInt64", "Array(String)"})
+INT32_RANGE = (-(2 ** 31), 2 ** 31 - 1)
+ENTRY_KEYS = {
+    "Presence": frozenset({"field", "state"}),
+    "Scalar": frozenset({"field", "type", "value"}),
+    "Name": frozenset({"field", "index", "map_key_base64", "value_base64"}),
+    "Child": frozenset({"field", "index", "map_key_base64", "node"}),
+}
+NODE_KEYS = frozenset({
+    "owner_id", "kind", "presence", "scalars", "location", "end_location",
+    "extra_locations", "origin", "macro_lineage", "external_name_explicit",
+    "name_slots", "literal_names", "literal_productions", "names", "children",
+})
+HEX64 = re.compile(r"[0-9a-f]{64}")
+JSON_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|[\[\]{}]')
+
+REMAINING_BEYOND_PARSER = (
+    "Digest authority: the expected digest must come from a trusted index or capture "
+    "ledger that binds it to one compile and one source. This module checks bytes "
+    "against the digest it is given; it cannot tell a right digest from a wrong one.",
+    "Capture ledger: which streams exist, their retention, and which run or source "
+    "each belongs to are not checked here.",
+    "Schema provenance: the iyi-field-schema/1 document is not generated by this "
+    "module and is not compared with the Crystal field table at runtime. Provenance "
+    "'Syntax' is a label this module trusts. The actual schema file is not in this "
+    "worktree.",
+    "type_expression is null for every row today. Until each framed row has a proven "
+    "type_expression, verify_capture_stream issues no verdict. This is deliberate.",
+    "Scalar shapes come from the writer's shape_for mapping, and the Number shape is "
+    "checked against the Int32 range for every Number tag. That range is an "
+    "assumption; char and RegexOptions are not checked more tightly.",
+    "Evidence rows are checked for presence state only. Their field names are not "
+    "mapped to the top-level JSON keys (location, origin, and so on), which are "
+    "checked for JSON shape only.",
+    "Cross-row order of child slots is the children array order. The verifier "
+    "follows that order for slots, but does not check it against the Crystal walk "
+    "order.",
+    "Lex replay: tokens, positions and the parse itself are not replayed. Locations, "
+    "end locations, origins, extra locations and literal fields are checked for JSON "
+    "shape and filename references only.",
+    "Name and scalar values are checked for type and encoding, not meaning.",
+    "Filename snapshots are checked for well-formed JSON, nesting, absence of "
+    "references and matching size for a repeated digest. Byte equality for a repeated "
+    "digest rests on SHA-256 collision resistance.",
+    "Base and Infrastructure rows are never framed. A stream carrying one fails "
+    "closed as an unknown field.",
+    "Index budget is an estimate from fixed per-entry costs, not a measurement of "
+    "retained memory.",
+    "Completeness against the real tree: the verifier checks internal consistency of "
+    "one stream. It cannot know which AST should have been emitted.",
+)
+
+
+class VerifyError(Exception):
+    """A rejected stream or schema. ``code`` names the failure class."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+    def __str__(self) -> str:
+        return f"{self.code}: {self.message}"
+
+
+@dataclass(frozen=True)
+class FieldRow:
+    field: str
+    klass: str
+    role: str
+    coordinate: str
+    presence: object
+    nilable: object
+    scalar: object
+    provenance: str
+    base: bool
+    type_expression: object
+
+
+@dataclass(frozen=True)
+class KindSchema:
+    name: str
+    framed: tuple
+    by_key: dict
+
+
+@dataclass(frozen=True)
+class FieldSchema:
+    kinds: dict
+
+
+@dataclass(frozen=True)
+class CaptureSummary:
+    sha256: str
+    nodes: int
+    aliases: int
+    filename_frames: int
+    stream_bytes: int
+    index_bytes: int
+    max_depth: int
+
+
+def _exact_keys(obj: dict, keys: frozenset, where: str, missing: str, excess: str) -> None:
+    present = set(obj)
+    absent = sorted(keys - present)
+    if absent:
+        raise VerifyError(missing, f"{where} is missing {absent}")
+    extra = sorted(present - keys)
+    if extra:
+        raise VerifyError(excess, f"{where} has unknown keys {extra}")
+
+
+def _as_object(value: object, where: str, code: str) -> dict:
+    if not isinstance(value, dict):
+        raise VerifyError(code, f"{where} must be a JSON object")
+    return value
+
+
+def _non_empty_string(value: object, where: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise VerifyError("schema_malformed", f"{where} must be a non-empty string")
+    return value
+
+
+def _enum(value: object, allowed, where: str, label: str) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        raise VerifyError("schema_malformed", f"{where} {label} {value!r} is not one of {sorted(allowed)}")
+    return value
+
+
+def _schema_bool(value: object, where: str) -> bool:
+    if type(value) is not bool:
+        raise VerifyError("schema_malformed", f"{where} must be a boolean")
+    return value
+
+
+def _optional_bool(value: object, where: str):
+    if value is None:
+        return None
+    return _schema_bool(value, where)
+
+
+def _is_framed(row: FieldRow) -> bool:
+    return not row.base and row.role != "Infrastructure"
+
+
+def _check_class_rule(where: str, row: FieldRow) -> None:
+    """verify_row!'s class rules for framed rows."""
+    klass, coordinate, presence = row.klass, row.coordinate, row.presence
+    if klass in ("ChildList", "RecordList", "IndexedChildMap"):
+        ok = coordinate == "Indexed" and presence == "Collection"
+    elif klass == "NamedChildMap":
+        ok = coordinate == "Keyed" and presence == "Collection"
+    elif klass in ("Child", "Record"):
+        ok = coordinate == "Single" and presence != "Collection"
+    elif klass == "NamedValue":
+        ok = coordinate != "Keyed" and ((coordinate == "Indexed") == (presence == "Collection"))
+    elif klass == "SyntaxScalar":
+        ok = coordinate == "Single"
+    elif klass == "OriginEvidence":
+        ok = (coordinate == "Indexed") == (presence == "Collection")
+    else:
+        ok = False
+    if not ok:
+        raise VerifyError(
+            "schema_malformed",
+            f"{where} field {row.field!r}: class {klass} is not valid with coordinate {coordinate} and presence {presence}",
+        )
+
+
+def _check_framed_row(where: str, row: FieldRow) -> None:
+    if row.provenance != "Syntax":
+        raise VerifyError("schema_malformed", f"{where} field {row.field!r} is framed but not declared in syntax")
+    if row.presence is None or row.nilable is None:
+        raise VerifyError("unproven_field", f"{where} framed field {row.field!r} lacks presence or nilability")
+    if row.presence in PRESENCE_NILABLE and row.nilable != PRESENCE_NILABLE[row.presence]:
+        raise VerifyError(
+            "schema_malformed",
+            f"{where} field {row.field!r}: presence {row.presence} requires nilable {PRESENCE_NILABLE[row.presence]}",
+        )
+    _check_class_rule(where, row)
+    if row.role == "Scalar":
+        if row.scalar is None:
+            raise VerifyError("unproven_field", f"{where} scalar field {row.field!r} has no type tag")
+        tag_nilable = row.scalar.endswith("?")
+        if tag_nilable != row.nilable:
+            raise VerifyError(
+                "schema_malformed",
+                f"{where} field {row.field!r}: type tag {row.scalar!r} disagrees with nilability {row.nilable}",
+            )
+        base_tag = row.scalar[:-1] if tag_nilable else row.scalar
+        if base_tag not in SCALAR_SHAPES:
+            raise VerifyError("unknown_scalar_type", f"{where} field {row.field!r}: unknown scalar type {row.scalar!r}")
+    elif row.scalar is not None:
+        raise VerifyError("schema_malformed", f"{where} non-scalar field {row.field!r} carries a scalar type")
+
+
+def _check_unframed_row(where: str, row: FieldRow) -> None:
+    if row.presence is not None or row.scalar is not None or row.coordinate != "Single":
+        raise VerifyError("schema_malformed", f"{where} unframed field {row.field!r} carries framing data")
+    if row.role == "Infrastructure" and row.nilable is not None:
+        raise VerifyError("schema_malformed", f"{where} infrastructure field {row.field!r} is nilable")
+
+
+def _load_row(kind: str, raw: object) -> FieldRow:
+    where = f"schema kind {kind!r} row"
+    obj = _as_object(raw, where, "schema_malformed")
+    _exact_keys(obj, ROW_KEYS, where, "schema_missing_key", "schema_unknown_key")
+    field = _non_empty_string(obj["field"], f"{where} field")
+    klass = obj["klass"]
+    if not isinstance(klass, str) or klass not in KLASS_ROLE:
+        raise VerifyError("schema_malformed", f"{where} klass {klass!r} is not a DiagnosticAstFieldClass")
+    role = obj["role"]
+    if not isinstance(role, str) or role not in ROLE_NAMES or KLASS_ROLE[klass] != role:
+        raise VerifyError("schema_malformed", f"{where} role {role!r} does not match klass {klass!r}")
+    coordinate = _enum(obj["coordinate"], COORDINATES, where, "coordinate")
+    presence = obj["presence"]
+    if presence is not None:
+        presence = _enum(presence, PRESENCE_STATES, where, "presence")
+    nilable = _optional_bool(obj["nilable"], f"{where} nilable")
+    scalar = obj["scalar"]
+    if scalar is not None and (not isinstance(scalar, str) or not scalar):
+        raise VerifyError("schema_malformed", f"{where} scalar must be a non-empty string or null")
+    provenance = _enum(obj["provenance"], PROVENANCES, where, "provenance")
+    base = _schema_bool(obj["base"], f"{where} base")
+    type_expression = obj["type_expression"]
+    if type_expression is not None:
+        if not isinstance(type_expression, str) or type_expression not in PROVEN_TYPES:
+            raise VerifyError(
+                "unproven_type_expression",
+                f"{where} field {field!r} has type_expression {type_expression!r}",
+            )
+    row = FieldRow(
+        field=field,
+        klass=klass,
+        role=role,
+        coordinate=coordinate,
+        presence=presence,
+        nilable=nilable,
+        scalar=scalar,
+        provenance=provenance,
+        base=base,
+        type_expression=type_expression,
+    )
+    if _is_framed(row):
+        _check_framed_row(where, row)
+    else:
+        _check_unframed_row(where, row)
+    return row
+
+
+def _load_kind(name: str, rows: object) -> KindSchema:
+    if not isinstance(rows, list):
+        raise VerifyError("schema_malformed", f"schema kind {name!r} must be an ordered array of rows")
+    fields = set()
+    framed = []
+    for raw in rows:
+        row = _load_row(name, raw)
+        if row.field in fields:
+            raise VerifyError("schema_duplicate_field", f"schema kind {name!r} repeats field {row.field!r}")
+        fields.add(row.field)
+        if _is_framed(row):
+            framed.append(row)
+    by_key = {row.field: (position, row) for position, row in enumerate(framed)}
+    return KindSchema(name=name, framed=tuple(framed), by_key=by_key)
+
+
+def load_schema(doc: object) -> FieldSchema:
+    """Validates an iyi-field-schema/1 document (already parsed JSON).
+
+    A null type_expression loads, but verify_capture_stream refuses to issue a
+    verdict against it.
+    """
+    top = _as_object(doc, "schema", "schema_malformed")
+    _exact_keys(top, frozenset({"schema", "kinds"}), "schema", "schema_missing_key", "schema_unknown_key")
+    if top["schema"] != SCHEMA_VERSION:
+        raise VerifyError("schema_malformed", f"schema version {top['schema']!r} is not {SCHEMA_VERSION!r}")
+    kinds_doc = _as_object(top["kinds"], "schema.kinds", "schema_malformed")
+    if not kinds_doc:
+        raise VerifyError("schema_malformed", "schema.kinds is empty")
+    kinds = {}
+    for name, rows in kinds_doc.items():
+        if not name:
+            raise VerifyError("schema_malformed", "schema kind name is empty")
+        kinds[name] = _load_kind(name, rows)
+    return FieldSchema(kinds=kinds)
+
+
+def _require_authority(schema: FieldSchema) -> None:
+    for kschema in schema.kinds.values():
+        for row in kschema.framed:
+            if row.type_expression is None:
+                raise VerifyError(
+                    "unproven_type_expression",
+                    f"kind {kschema.name!r} field {row.field!r} has no proven type_expression; no verdict is issued",
+                )
+
+
+def _object_no_duplicates(pairs: list) -> dict:
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise VerifyError("duplicate_key", f"JSON object repeats key {key!r}")
+        obj[key] = value
+    return obj
+
+
+def _reject_float(literal: str) -> object:
+    raise VerifyError("float_number", f"floating-point literal {literal!r} is not allowed")
+
+
+def _reject_constant(literal: str) -> object:
+    raise VerifyError("nonfinite_number", f"non-finite literal {literal!r} is not allowed")
+
+
+def _parse_json(payload: bytes, where: str) -> object:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise VerifyError("malformed_json", f"{where} is not UTF-8") from exc
+    depth = 0
+    for match in JSON_TOKEN.finditer(text):
+        token = match.group()
+        if token[0] == '"':
+            continue
+        if token in "[{":
+            depth += 1
+            if depth > MAX_JSON_NESTING:
+                raise VerifyError("depth_exceeded", f"{where} nests deeper than {MAX_JSON_NESTING}")
+        else:
+            depth -= 1
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=_object_no_duplicates,
+            parse_float=_reject_float,
+            parse_constant=_reject_constant,
+        )
+    except VerifyError:
+        raise
+    except (ValueError, RecursionError) as exc:
+        raise VerifyError("malformed_json", f"{where}: {exc}") from exc
+
+
+def _json_pairs(root: object):
+    """Yields every (key, value) pair of every object reachable from root."""
+    stack = [root]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                yield key, item
+                stack.append(item)
+        elif isinstance(value, list):
+            stack.extend(value)
+
+
+def _check_b64(value: object, where: str) -> None:
+    if not isinstance(value, str):
+        raise VerifyError("malformed_node", f"{where} must be a base64 string")
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise VerifyError("malformed_node", f"{where} is not base64") from exc
+    if base64.b64encode(raw).decode("ascii") != value:
+        raise VerifyError("malformed_node", f"{where} is not canonical base64")
+
+
+def _check_scalar_value(shape: str, nilable: bool, value: object, where: str) -> None:
+    if value is None:
+        if nilable:
+            return
+        raise VerifyError("scalar_value", f"{where} is null but the field is not nilable")
+    if shape == "Flag":
+        if type(value) is not bool:
+            raise VerifyError("scalar_value", f"{where} must be a boolean")
+        return
+    if shape == "Number":
+        if type(value) is not int or not INT32_RANGE[0] <= value <= INT32_RANGE[1]:
+            raise VerifyError("scalar_value", f"{where} must be an Int32 integer")
+        return
+    if shape == "Text":
+        _check_b64(value, where)
+        return
+    if not isinstance(value, list):
+        raise VerifyError("scalar_value", f"{where} must be an array of base64 strings")
+    for item in value:
+        _check_b64(item, where)
+
+
+def _check_presence_list(kind: str, kschema: KindSchema, entries: object) -> dict:
+    """check_presence!: exactly the framed rows, in table order, with allowed states."""
+    where = f"node {kind!r} presence"
+    if not isinstance(entries, list):
+        raise VerifyError("malformed_node", f"{where} must be an array")
+    parsed = []
+    for entry in entries:
+        obj = _as_object(entry, f"{where} entry", "malformed_node")
+        _exact_keys(obj, ENTRY_KEYS["Presence"], f"{where} entry", "missing_field", "excess_field")
+        field = obj["field"]
+        if not isinstance(field, str) or not field:
+            raise VerifyError("malformed_node", f"{where} entry has no field name")
+        parsed.append((field, obj))
+    seen = set()
+    for field, _obj in parsed:
+        if field in seen:
+            raise VerifyError("duplicate_coordinate", f"node {kind!r} presence field {field!r} appears twice")
+        seen.add(field)
+    for field, _obj in parsed:
+        if field not in kschema.by_key:
+            raise VerifyError("unknown_field", f"node {kind!r} presence field {field!r} is not a framed row")
+    framed_fields = [row.field for row in kschema.framed]
+    for field in framed_fields:
+        if field not in seen:
+            raise VerifyError("missing_field", f"node {kind!r} presence field {field!r} is required")
+    if [field for field, _obj in parsed] != framed_fields:
+        raise VerifyError("field_order", f"node {kind!r} presence fields differ from table order")
+    states = {}
+    for field, obj in parsed:
+        row = kschema.by_key[field][1]
+        state = obj["state"]
+        if not isinstance(state, str) or state not in PRESENCE_STATES[row.presence]:
+            raise VerifyError(
+                "presence_state",
+                f"node {kind!r} field {field!r} state {state!r} is not valid for presence {row.presence}",
+            )
+        states[field] = state
+    return states
+
+
+def _check_scalars(kind: str, kschema: KindSchema, entries: object) -> None:
+    """check_scalars!: one entry per scalar row, with its tag and an allowed shape."""
+    where = f"node {kind!r} scalars"
+    if not isinstance(entries, list):
+        raise VerifyError("malformed_node", f"{where} must be an array")
+    seen = {}
+    for entry in entries:
+        obj = _as_object(entry, f"{where} entry", "malformed_node")
+        _exact_keys(obj, ENTRY_KEYS["Scalar"], f"{where} entry", "missing_field", "excess_field")
+        field = obj["field"]
+        if not isinstance(field, str) or not field:
+            raise VerifyError("malformed_node", f"{where} entry has no field name")
+        found = kschema.by_key.get(field)
+        if found is None or found[1].role != "Scalar":
+            raise VerifyError("unknown_field", f"node {kind!r} scalar field {field!r} is not a framed Scalar row")
+        if field in seen:
+            raise VerifyError("duplicate_coordinate", f"node {kind!r} scalar field {field!r} appears twice")
+        seen[field] = obj
+    for row in kschema.framed:
+        if row.role != "Scalar":
+            continue
+        if row.field not in seen:
+            raise VerifyError("missing_field", f"node {kind!r} scalar field {row.field!r} is omitted")
+        obj = seen[row.field]
+        if obj["type"] != row.scalar:
+            raise VerifyError(
+                "scalar_type",
+                f"node {kind!r} scalar {row.field!r} type {obj['type']!r} differs from {row.scalar!r}",
+            )
+        base_tag = row.scalar[:-1] if row.scalar.endswith("?") else row.scalar
+        _check_scalar_value(SCALAR_SHAPES[base_tag], row.nilable, obj["value"], f"node {kind!r} scalar {row.field!r}")
+
+
+def _stub_field(value: object, where: str):
+    if not isinstance(value, str) or not value:
+        raise VerifyError("malformed_node", f"{where} has no field name")
+    base, _, sub = value.partition(".")
+    return base, sub
+
+
+def _stub_index(value: object, where: str):
+    if value is None:
+        return None
+    if type(value) is not int or value < 0:
+        raise VerifyError("malformed_node", f"{where} index must be a non-negative integer or null")
+    return value
+
+
+def _stub_key(value: object, where: str):
+    if value is None:
+        return None
+    _check_b64(value, f"{where} map_key_base64")
+    return value
+
+
+def _check_child_stub(obj: dict, where: str, schema: FieldSchema) -> str:
+    node = _as_object(obj["node"], f"{where} node", "malformed_node")
+    _exact_keys(node, frozenset({"kind"}), f"{where} node", "missing_field", "excess_field")
+    kind = node["kind"]
+    if not isinstance(kind, str) or kind not in schema.kinds:
+        raise VerifyError("unknown_kind", f"{where} stub kind {kind!r} is not in the schema")
+    return kind
+
+
+def _check_stubs(kind: str, kschema: KindSchema, children: object, names: object, states: dict, schema: FieldSchema) -> list:
+    """check_stubs!: membership, coordinates and counts. Returns child kinds in array order."""
+    where = f"node {kind!r}"
+    if not isinstance(children, list) or not isinstance(names, list):
+        raise VerifyError("malformed_node", f"{where} children and names must be arrays")
+    slots = []
+    stubs = []  # (base, sub, index, key, child); children first, then names, as the writer checks them
+    for entry in children:
+        obj = _as_object(entry, f"{where} child entry", "malformed_node")
+        _exact_keys(obj, ENTRY_KEYS["Child"], f"{where} child entry", "missing_field", "excess_field")
+        base, sub = _stub_field(obj["field"], f"{where} child entry")
+        index = _stub_index(obj["index"], f"{where} child entry")
+        key = _stub_key(obj["map_key_base64"], f"{where} child entry")
+        slots.append(_check_child_stub(obj, f"{where} child entry", schema))
+        stubs.append((base, sub, index, key, True))
+    for entry in names:
+        obj = _as_object(entry, f"{where} name entry", "malformed_node")
+        _exact_keys(obj, ENTRY_KEYS["Name"], f"{where} name entry", "missing_field", "excess_field")
+        base, sub = _stub_field(obj["field"], f"{where} name entry")
+        index = _stub_index(obj["index"], f"{where} name entry")
+        key = _stub_key(obj["map_key_base64"], f"{where} name entry")
+        _check_b64(obj["value_base64"], f"{where} name entry value_base64")
+        stubs.append((base, sub, index, key, False))
+
+    for base, sub, index, key, child in stubs:
+        found = kschema.by_key.get(base)
+        if found is None or found[1].role not in ("Child", "Name"):
+            raise VerifyError("unknown_field", f"{where} stub {base!r} is not a framed child or name row")
+        row = found[1]
+        if row.klass in ("Record", "RecordList"):
+            allowed = sub == "key" or (sub == "value" and child)
+        elif row.klass == "NamedChildMap":
+            allowed = (sub == "" and child) or (sub == "key" and not child)
+        else:
+            allowed = sub == "" and child == (row.role == "Child")
+        if not allowed:
+            raise VerifyError("stub_field", f"{where} stub {base}.{sub} is not a field of this kind")
+        if row.coordinate == "Single":
+            ok = index is None and key is None
+        elif row.coordinate == "Indexed":
+            ok = index is not None and key is None
+        else:
+            ok = key is not None and index is None
+        if not ok:
+            raise VerifyError("stub_coordinate", f"{where} stub {base} does not match coordinate {row.coordinate}")
+
+    for row in kschema.framed:
+        if row.role not in ("Child", "Name"):
+            continue
+        state = states[row.field]
+        if row.klass in ("Record", "RecordList"):
+            subs = ["key", "value"]
+        elif row.klass == "NamedChildMap":
+            subs = ["", "key"]
+        else:
+            subs = [""]
+        mine = [stub for stub in stubs if stub[0] == row.field]
+        counts = [sum(1 for stub in mine if stub[1] == sub) for sub in subs]
+        if row.coordinate == "Single":
+            expected = 1 if state == "Present" else 0
+            for count in counts:
+                if count != expected:
+                    raise VerifyError("stub_count", f"{where} field {row.field!r} is {state} but has {count} entries")
+            continue
+        if state == "Present":
+            raise VerifyError("presence_state", f"{where} collection field {row.field!r} cannot be Present")
+        for sub in subs:
+            group = [stub for stub in mine if stub[1] == sub]
+            if row.coordinate == "Keyed":
+                keys = [stub[3] for stub in group]
+                if len(set(keys)) != len(keys):
+                    raise VerifyError("duplicate_coordinate", f"{where} field {row.field!r} repeats a map key")
+            else:
+                for position, stub in enumerate(group):
+                    if stub[2] != position:
+                        raise VerifyError("stub_index", f"{where} field {row.field!r} indexes are not 0..n-1 in order")
+        if len(set(counts)) != 1:
+            raise VerifyError("stub_count", f"{where} field {row.field!r} key and value counts differ")
+        total = counts[0]
+        if state in ("Absent", "Empty"):
+            if total != 0:
+                raise VerifyError("stub_count", f"{where} field {row.field!r} is {state} but has {total} entries")
+        elif total < 1:
+            raise VerifyError("stub_count", f"{where} field {row.field!r} is Nonempty but has no entries")
+    return slots
+
+
+def _check_opaque_top(obj: dict, kind: str) -> None:
+    where = f"node {kind!r}"
+    for key in ("location", "end_location", "origin"):
+        if obj[key] is not None and not isinstance(obj[key], dict):
+            raise VerifyError("malformed_node", f"{where} {key} must be an object or null")
+    for key in ("extra_locations", "name_slots", "literal_names", "literal_productions"):
+        if not isinstance(obj[key], list):
+            raise VerifyError("malformed_node", f"{where} {key} must be an array")
+    if not isinstance(obj["macro_lineage"], str):
+        raise VerifyError("malformed_node", f"{where} macro_lineage must be a string")
+    if type(obj["external_name_explicit"]) is not bool:
+        raise VerifyError("malformed_node", f"{where} external_name_explicit must be a boolean")
+
+
+def _check_node(doc: object, owner: int, schema: FieldSchema):
+    obj = _as_object(doc, f"node {owner}", "malformed_node")
+    _exact_keys(obj, NODE_KEYS, f"node {owner}", "missing_field", "excess_field")
+    if type(obj["owner_id"]) is not int or obj["owner_id"] != owner:
+        raise VerifyError(
+            "owner_id_mismatch",
+            f"node owner_id {obj['owner_id']!r} is not contiguous position {owner}",
+        )
+    kind = obj["kind"]
+    if not isinstance(kind, str) or kind not in schema.kinds:
+        raise VerifyError("unknown_kind", f"node {owner} kind {kind!r} is not in the schema")
+    _check_opaque_top(obj, kind)
+    kschema = schema.kinds[kind]
+    states = _check_presence_list(kind, kschema, obj["presence"])
+    _check_scalars(kind, kschema, obj["scalars"])
+    slots = _check_stubs(kind, kschema, obj["children"], obj["names"], states, schema)
+    refs = set()
+    for key, value in _json_pairs(obj):
+        if key == "filename_snapshot":
+            raise VerifyError("inline_filename", f"node {owner} carries an inline filename snapshot")
+        if key == "filename_sha256":
+            if not isinstance(value, str) or not HEX64.fullmatch(value):
+                raise VerifyError("filename_malformed", f"node {owner} filename_sha256 is not a SHA-256 hex digest")
+            refs.add(value)
+    return kind, slots, refs
+
+
+class _Reader:
+    """Exact, bounded reads from a binary stream."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+        self.consumed = 0
+
+    def _add(self, count: int) -> None:
+        self.consumed += count
+        if self.consumed > MAX_INPUT_BYTES:
+            raise VerifyError("input_budget", f"stream exceeds {MAX_INPUT_BYTES} bytes")
+
+    def read_header(self):
+        head = self._stream.read(HEADER_BYTES)
+        if not head:
+            return None
+        self._add(len(head))
+        if len(head) < HEADER_BYTES:
+            head += self.read_exact(HEADER_BYTES - len(head), "frame header")
+        return head
+
+    def read_exact(self, count: int, what: str) -> bytes:
+        if self.consumed + count > MAX_INPUT_BYTES:
+            raise VerifyError("input_budget", f"stream exceeds {MAX_INPUT_BYTES} bytes")
+        parts = []
+        remaining = count
+        while remaining:
+            want = min(READ_CHUNK_BYTES, remaining)
+            chunk = self._stream.read(want)
+            if not chunk:
+                raise VerifyError("truncated", f"{what}: stream ended after {count - remaining} of {count} bytes")
+            if len(chunk) > want:
+                raise VerifyError("truncated", f"{what}: stream returned more bytes than requested")
+            parts.append(chunk)
+            remaining -= len(chunk)
+        self._add(count)
+        return b"".join(parts)
+
+
+class _Open:
+    """A node whose child slots are being filled, in children-array order."""
+
+    __slots__ = ("owner", "stubs", "cursor")
+
+    def __init__(self, owner: int, stubs: list) -> None:
+        self.owner = owner
+        self.stubs = stubs
+        self.cursor = 0
+
+    def has_slot(self) -> bool:
+        return self.cursor < len(self.stubs)
+
+    def take(self) -> str:
+        kind = self.stubs[self.cursor]
+        self.cursor += 1
+        return kind
+
+
+class _Walk:
+    """Frame-by-frame state for one stream. Holds ids and digests, not payloads."""
+
+    def __init__(self, schema: FieldSchema) -> None:
+        self._schema = schema
+        self._kinds: list = []
+        self._completed: list = []
+        self._stack: list = []
+        self._filenames: dict = {}
+        self._pending: list = []
+        self.index_bytes = 0
+        self.nodes = 0
+        self.aliases = 0
+        self.filename_frames = 0
+        self.max_depth = 0
+
+    def _charge(self, cost: int) -> None:
+        self.index_bytes += cost
+        if self.index_bytes > MAX_INDEX_BYTES:
+            raise VerifyError("index_budget", f"retained index exceeds {MAX_INDEX_BYTES} bytes")
+
+    def _require_open(self, desc: str) -> None:
+        if self._kinds and not self._stack:
+            raise VerifyError("trailing_data", f"{desc} follows the completed root subtree")
+
+    def _settle(self) -> None:
+        while self._stack and not self._stack[-1].has_slot():
+            finished = self._stack.pop()
+            self._completed[finished.owner] = True
+
+    def filename(self, payload: bytes) -> None:
+        self._require_open("F frame")
+        doc = _parse_json(payload, "filename snapshot")
+        if not isinstance(doc, dict):
+            raise VerifyError("filename_malformed", "filename snapshot must be a JSON object")
+        for key, _value in _json_pairs(doc):
+            if key == "filename_sha256":
+                raise VerifyError("filename_nested_ref", "filename snapshot references another snapshot")
+        digest = hashlib.sha256(payload).hexdigest()
+        size = len(payload)
+        known = self._filenames.get(digest)
+        if known is None:
+            self._filenames[digest] = size
+            self._charge(FILENAME_INDEX_COST)
+        elif known != size:
+            raise VerifyError("filename_digest_conflict", f"digest {digest} seen with two sizes")
+        self._pending.append(digest)
+        self.filename_frames += 1
+
+    def node(self, payload: bytes) -> None:
+        self._require_open("N frame")
+        owner = len(self._kinds)
+        depth = len(self._stack)
+        if depth > MAX_DEPTH:
+            raise VerifyError("depth_exceeded", f"node {owner} at depth {depth} exceeds {MAX_DEPTH}")
+        doc = _parse_json(payload, f"node {owner}")
+        kind, slots, refs = _check_node(doc, owner, self._schema)
+        if self._stack:
+            slot = self._stack[-1].take()
+            if slot != kind:
+                raise VerifyError(
+                    "kind_mismatch",
+                    f"node {owner} is {kind!r} but its parent slot expects {slot!r}",
+                )
+        unresolved = [digest for digest in refs if digest not in self._filenames]
+        if unresolved:
+            raise VerifyError(
+                "filename_unresolved",
+                f"node {owner} references {len(unresolved)} snapshot digest(s) with no F frame",
+            )
+        unreferenced = set(self._pending) - refs
+        if unreferenced:
+            raise VerifyError(
+                "filename_excess",
+                f"node {owner} does not reference {len(unreferenced)} F frame(s) before it",
+            )
+        self._pending = []
+        self._kinds.append(kind)
+        self._completed.append(False)
+        self._charge(NODE_INDEX_COST + len(kind) + sum(STUB_INDEX_COST + len(stub) for stub in slots))
+        self._stack.append(_Open(owner, slots))
+        self.nodes += 1
+        self.max_depth = max(self.max_depth, depth)
+        self._settle()
+
+    def alias(self, target: int) -> None:
+        self._require_open("A frame")
+        if self._pending:
+            raise VerifyError("filename_orphan", f"{len(self._pending)} F frame(s) precede an alias")
+        if target >= len(self._kinds):
+            raise VerifyError("alias_forward", f"alias to owner {target} precedes its node")
+        if not self._completed[target]:
+            raise VerifyError("alias_cycle", f"alias to owner {target} which is still open")
+        slot = self._stack[-1].take()
+        if slot != self._kinds[target]:
+            raise VerifyError(
+                "kind_mismatch",
+                f"alias to owner {target} ({self._kinds[target]!r}) fills a {slot!r} slot",
+            )
+        self.aliases += 1
+        self._settle()
+
+    def finish(self) -> None:
+        if self._pending:
+            raise VerifyError("filename_orphan", f"{len(self._pending)} F frame(s) are not followed by a node")
+        if not self._kinds:
+            raise VerifyError("empty_stream", "stream holds no node frames")
+        if self._stack:
+            open_node = self._stack[-1]
+            expected = open_node.stubs[open_node.cursor]
+            raise VerifyError(
+                "missing_frame",
+                f"stream ended with {len(self._stack)} node(s) open; node {open_node.owner} still awaits a {expected!r} child",
+            )
+
+
+def _expected_digest(value: object) -> str:
+    if value is None:
+        raise VerifyError("unpinned_stream", "an expected stream sha256 is required; unpinned streams are refused")
+    if not isinstance(value, str) or not HEX64.fullmatch(value):
+        raise VerifyError("unpinned_stream", "expected stream sha256 must be 64 lowercase hex characters")
+    return value
+
+
+def verify_capture_stream(stream, *, expected_sha256: str, schema: FieldSchema) -> CaptureSummary:
+    """Verifies one frame stream read from a binary file-like object.
+
+    Raises VerifyError with a stable ``code`` on the first failure. Refuses
+    before reading when the digest is not pinned or any framed row lacks a
+    proven type_expression. The digest comparison happens after the structure
+    verifies.
+    """
+    expected = _expected_digest(expected_sha256)
+    if not isinstance(schema, FieldSchema):
+        raise VerifyError("schema_malformed", "schema must be the result of load_schema()")
+    _require_authority(schema)
+    reader = _Reader(stream)
+    digest = hashlib.sha256(DIGEST_TAG)
+    walk = _Walk(schema)
+    while True:
+        header = reader.read_header()
+        if header is None:
+            break
+        digest.update(header)
+        tag = header[0]
+        number = int.from_bytes(header[1:], "big")
+        if tag == TAG_ALIAS:
+            walk.alias(number)
+            continue
+        if tag not in (TAG_NODE, TAG_FILENAME):
+            raise VerifyError("unknown_frame", f"tag 0x{tag:02x} at byte {reader.consumed - HEADER_BYTES}")
+        if number > MAX_FRAME_BYTES:
+            raise VerifyError("frame_too_large", f"frame payload of {number} bytes exceeds {MAX_FRAME_BYTES}")
+        payload = reader.read_exact(number, "frame payload")
+        digest.update(payload)
+        if tag == TAG_FILENAME:
+            walk.filename(payload)
+        else:
+            walk.node(payload)
+    walk.finish()
+    actual = digest.hexdigest()
+    if not hmac.compare_digest(actual, expected):
+        raise VerifyError("digest_mismatch", f"stream sha256 {actual} differs from pinned {expected}")
+    return CaptureSummary(
+        sha256=actual,
+        nodes=walk.nodes,
+        aliases=walk.aliases,
+        filename_frames=walk.filename_frames,
+        stream_bytes=reader.consumed,
+        index_bytes=walk.index_bytes,
+        max_depth=walk.max_depth,
+    )
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Verify an iyi.capture.v1 AST frame stream against a pinned digest and an iyi-field-schema/1 document.",
+    )
+    parser.add_argument("stream", help="frame stream path, or - for standard input")
+    parser.add_argument("--schema", required=True, help="iyi-field-schema/1 JSON path")
+    parser.add_argument("--sha256", required=True, help="expected stream digest from a trusted source")
+    args = parser.parse_args(argv)
+    try:
+        with open(args.schema, "rb") as handle:
+            text = handle.read(MAX_SCHEMA_BYTES + 1)
+        if len(text) > MAX_SCHEMA_BYTES:
+            raise VerifyError("schema_malformed", f"schema file exceeds {MAX_SCHEMA_BYTES} bytes")
+        schema = load_schema(_parse_json(text, "schema"))
+        if args.stream == "-":
+            summary = verify_capture_stream(sys.stdin.buffer, expected_sha256=args.sha256, schema=schema)
+        else:
+            with open(args.stream, "rb") as handle:
+                summary = verify_capture_stream(handle, expected_sha256=args.sha256, schema=schema)
+    except VerifyError as error:
+        print(f"REJECT {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"ERROR {error}", file=sys.stderr)
+        return 2
+    print(
+        f"OK sha256={summary.sha256} nodes={summary.nodes} aliases={summary.aliases} "
+        f"filename_frames={summary.filename_frames} stream_bytes={summary.stream_bytes}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
