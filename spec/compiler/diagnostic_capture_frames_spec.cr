@@ -186,6 +186,18 @@ describe "diagnostic capture frame stream" do
     expanded.should eq(frame_spec_json(Iyi::DiagnosticAstInventorySnapshot.new(root).bytes))
   end
 
+  it "reconstructs equal virtual filenames with distinct identities" do
+    definition = frame_spec_parse("macro sample\nend\n").as(Iyi::Macro)
+    file_a = Iyi::VirtualFile.new(definition, "expanded", nil)
+    file_b = Iyi::VirtualFile.new(definition, "expanded", nil)
+    left = Iyi::Var.new("a").at(Iyi::Location.new(file_a, 1, 1))
+    right = Iyi::Var.new("b").at(Iyi::Location.new(file_b, 1, 1))
+    root = Iyi::Expressions.new([left, right] of Iyi::ASTNode)
+    bytes, _, _ = frame_spec_stream(root)
+    expanded = FrameSpecExpander.new(frame_spec_decode(bytes)).run
+    expanded.should eq(frame_spec_json(Iyi::DiagnosticAstInventorySnapshot.new(root).bytes))
+  end
+
   it "keeps the snapshot bytes stable for the same tree" do
     root = frame_spec_parse("x = 1\ny = x + 2\n")
     first = Iyi::DiagnosticAstInventorySnapshot.new(root).bytes

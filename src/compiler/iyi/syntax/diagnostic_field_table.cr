@@ -85,6 +85,43 @@ module Iyi
 
     BASE_FIELDS = SYNTAX_BASE + SEMANTIC_BASE
 
+    # Fields that compiler files add to reopened syntax nodes. Each was checked
+    # against its declaration, which is noted by file. They are infrastructure, so
+    # they are never framed. Their types and nilability are not claimed.
+    SEMANTIC_FIELDS = {
+      # semantic/ast.cr: ExpandableNode is included by these kinds (lines 788-801)
+      "And" => %w(expanded), "Or" => %w(expanded), "ArrayLiteral" => %w(expanded),
+      "HashLiteral" => %w(expanded), "RegexLiteral" => %w(expanded), "RangeLiteral" => %w(expanded),
+      "Case" => %w(expanded), "StringInterpolation" => %w(expanded),
+      "MacroExpression" => %w(expanded), "MacroIf" => %w(expanded), "MacroFor" => %w(expanded),
+      "MacroVerbatim" => %w(expanded), "MultiAssign" => %w(expanded),
+      "SizeOf" => %w(expanded), "InstanceSizeOf" => %w(expanded), "AlignOf" => %w(expanded),
+      "InstanceAlignOf" => %w(expanded), "OffsetOf" => %w(expanded), "Global" => %w(expanded),
+      "Require" => %w(expanded), "Select" => %w(expanded), "ImportDecl" => %w(expanded),
+      # semantic/bindings.cr:871
+      "Block" => %w(binder),
+      # semantic/call.cr:6-12 and 1965
+      "Call" => %w(scope with_scope parent_visitor target_defs expanded expanded_macro uses_with_scope subclass_notifier),
+      # codegen/ast.cr:11, 121-122; semantic/hooks.cr:49-50 (HookExpansionsContainer, lines 90, 108, 125)
+      "Def" => %w(hook_expansions c_calling_convention abi_info),
+      # semantic/hooks.cr:72 (ClassDef); 90 (Include); 108 (Extend)
+      "ClassDef" => %w(hook_expansions resolved_type),
+      "Include" => %w(hook_expansions), "Extend" => %w(hook_expansions),
+      # semantic/ast.cr:803-831
+      "TraitDef" => %w(resolved_type), "ImplDef" => %w(resolved_type), "ModuleDef" => %w(resolved_type),
+      "LibDef" => %w(resolved_type), "CStructOrUnionDef" => %w(resolved_type), "Alias" => %w(resolved_type),
+      # semantic/ast.cr:833-837 (includes Annotatable, which declares annotations in src/compiler/iyi/annotatable.cr:4)
+      "AnnotationDef" => %w(annotations resolved_type),
+      # semantic/ast.cr:772-782
+      "Return" => %w(target), "Break" => %w(target), "Next" => %w(target),
+      # semantic/bindings.cr:479, 535-536
+      "Cast" => %w(upcast), "NilableCast" => %w(upcast non_nilable_type),
+      # semantic/ast.cr:785
+      "IsA" => %w(syntax_replacement),
+      # semantic/ast.cr:907
+      "Asm" => %w(output_ptrofs),
+    } of String => Array(String)
+
     def self.role_for(klass : DiagnosticAstFieldClass) : Role
       case klass
       when DiagnosticAstFieldClass::Child, DiagnosticAstFieldClass::ChildList,
@@ -821,7 +858,7 @@ module Iyi
       } of String => Array(Row)
 
       result = {} of String => Array(Row)
-      raw.each { |kind, rows| result[kind] = rows + base_rows(kind) }
+      raw.each { |kind, rows| result[kind] = rows + base_rows(kind) + infras(SEMANTIC_FIELDS.fetch(kind, [] of String)) }
       result
     end
 
