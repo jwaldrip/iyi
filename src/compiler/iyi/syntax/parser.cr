@@ -42,6 +42,24 @@ module Iyi
   record DiagnosticLiteralPayloadObservation, owner : ASTNode, payload : ASTNode,
     opener : DiagnosticReplayTokenRef, close : DiagnosticReplayTokenRef
 
+  # How a NumberLiteral was derived from its replay token. Identity and token
+  # references only: the value and kind come from the replayed journal.
+  enum DiagnosticNumberRole : UInt8
+    Literal = 1        # parse_atomic NUMBER
+    TypeArgument = 2   # parse_type_arg NUMBER
+    Offset = 3         # parse_offsetof NUMBER (i32 only)
+    Backreference = 4  # `$n` / `$n?`, index into `call`
+    Line = 5           # `__LINE__`
+  end
+
+  record DiagnosticNumberObservation, owner : NumberLiteral, role : DiagnosticNumberRole,
+    token : DiagnosticReplayTokenRef, call : Call? = nil
+  # A signed number split `a -1` into `a - 1`: the signed token before its sign
+  # was consumed, and the unsigned token that follows it.
+  record DiagnosticSignedNumberObservation, call : Call,
+    signed : DiagnosticReplayTokenRef, unsigned : DiagnosticReplayTokenRef
+  record DiagnosticMacroLiteralObservation, owner : MacroLiteral, token : DiagnosticReplayTokenRef
+
   # A raw token a derived operator name is built from: its start, the parser's
   # snapshot of it (nil outside diagnostic modes), and the selection it keeps.
   record ParsedOperatorToken, start : Int32, snapshot : {Int32, String, String}?,
@@ -295,6 +313,9 @@ module Iyi
     @diagnostic_percent_group_observations = [] of DiagnosticPercentGroupObservation
     @diagnostic_percent_element_observations = [] of DiagnosticPercentElementObservation
     @diagnostic_literal_payload_observations = [] of DiagnosticLiteralPayloadObservation
+    @diagnostic_number_observations = [] of DiagnosticNumberObservation
+    @diagnostic_signed_number_observations = [] of DiagnosticSignedNumberObservation
+    @diagnostic_macro_literal_observations = [] of DiagnosticMacroLiteralObservation
     @diagnostic_last_literal_close : DiagnosticReplayTokenRef? = nil
 
     def diagnostic_scalar_grammar_observations : Array(DiagnosticScalarGrammarObservation)
@@ -345,6 +366,18 @@ module Iyi
       @diagnostic_literal_payload_observations.dup
     end
 
+    def diagnostic_number_observations : Array(DiagnosticNumberObservation)
+      @diagnostic_number_observations.dup
+    end
+
+    def diagnostic_macro_literal_observations : Array(DiagnosticMacroLiteralObservation)
+      @diagnostic_macro_literal_observations.dup
+    end
+
+    def diagnostic_signed_number_observations : Array(DiagnosticSignedNumberObservation)
+      @diagnostic_signed_number_observations.dup
+    end
+
     def diagnostic_literal_owner_observations : Array(DiagnosticLiteralOwnerObservation)
       @diagnostic_literal_owner_observations.map do |item|
         DiagnosticLiteralOwnerObservation.new(item.owner, item.field, item.index, item.ranges.dup,
@@ -389,6 +422,9 @@ module Iyi
       percent_count = @diagnostic_percent_group_observations.size
       percent_element_count = @diagnostic_percent_element_observations.size
       payload_count = @diagnostic_literal_payload_observations.size
+      number_count = @diagnostic_number_observations.size
+      macro_literal_count = @diagnostic_macro_literal_observations.size
+      signed_number_count = @diagnostic_signed_number_observations.size
       heredoc_openers = @diagnostic_lexical_observations ? @diagnostic_heredoc_openers.dup : nil
       literal_snapshot = @diagnostic_lexical_observations ? @diagnostic_literal_owner_observations.dup : nil
       literal_close = @diagnostic_last_literal_close
@@ -405,12 +441,31 @@ module Iyi
         @diagnostic_percent_group_observations.pop(@diagnostic_percent_group_observations.size - percent_count)
         @diagnostic_percent_element_observations.pop(@diagnostic_percent_element_observations.size - percent_element_count)
         @diagnostic_literal_payload_observations.pop(@diagnostic_literal_payload_observations.size - payload_count)
+        @diagnostic_number_observations.pop(@diagnostic_number_observations.size - number_count)
+        @diagnostic_macro_literal_observations.pop(@diagnostic_macro_literal_observations.size - macro_literal_count)
+        @diagnostic_signed_number_observations.pop(@diagnostic_signed_number_observations.size - signed_number_count)
         @diagnostic_heredoc_openers = heredoc_openers if heredoc_openers
         @diagnostic_literal_owner_observations = literal_snapshot if literal_snapshot
         @diagnostic_last_literal_close = literal_close
       end
       result
     end
+
+
+    # Identity and token references only; the value and kind are left to the
+    # replayed journal. A NUMBER token is the token the parser was on.
+    private def diagnostic_record_number(node : NumberLiteral, role : DiagnosticNumberRole, call : Call? = nil) : Nil
+      return unless @diagnostic_lexical_observations
+      ref = diagnostic_replay_token_ref || ::raise ArgumentError.new("number token is absent from replay journal")
+      @diagnostic_number_observations << DiagnosticNumberObservation.new(node, role, ref, call)
+    end
+
+    private def diagnostic_record_macro_literal(node : MacroLiteral) : Nil
+      return unless @diagnostic_lexical_observations
+      ref = diagnostic_replay_token_ref || ::raise ArgumentError.new("macro literal token is absent from replay journal")
+      @diagnostic_macro_literal_observations << DiagnosticMacroLiteralObservation.new(node, ref)
+    end
+
     getter diagnostic_capture = false
 
     def diagnostic_capture=(@diagnostic_capture : Bool)
@@ -2519,11 +2574,17 @@ module Iyi
                        end
 
             # Go back to the +/-, advance one char and continue from there
+            signed_ref = diagnostic_replay_token_ref if @diagnostic_lexical_observations
             self.current_pos = @token.start + 1
             next_token
+            unsigned_ref = diagnostic_replay_token_ref if @diagnostic_lexical_observations
 
             right = parse_mul_or_div
-            left = Call.new(left, method, right).at(location).at_end(right)
+            call = Call.new(left, method, right).at(location).at_end(right)
+            if signed_ref && unsigned_ref
+              @diagnostic_signed_number_observations << DiagnosticSignedNumberObservation.new(call, signed_ref, unsigned_ref)
+            end
+            left = call
             left.name_location = name_location
             left.diagnostic_origin = diagnostic_anchor("Call", "method", name_offset, name_end, token_snapshot: name_snapshot)
             diagnostic_operator_name(left, DiagnosticOperatorProduction::SignedNumber,
@@ -3149,7 +3210,9 @@ module Iyi
         parse_annotation
       when .number?
         @wants_regex = false
-        node_and_next_token NumberLiteral.new(@token.value.to_s, @token.number_kind)
+        literal = NumberLiteral.new(@token.value.to_s, @token.number_kind)
+        diagnostic_record_number(literal, DiagnosticNumberRole::Literal)
+        node_and_next_token literal
       when .char?
         node = CharLiteral.new(@token.value.as(Char))
         if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
@@ -3212,7 +3275,9 @@ module Iyi
         index = value.to_i?
         raise "Index $#{value} doesn't fit in an Int32" unless index
         match_data = Global.new("$~").at(location)
-        call = Call.new(match_data, method, NumberLiteral.new(index))
+        backreference = NumberLiteral.new(index)
+        call = Call.new(match_data, method, backreference)
+        diagnostic_record_number(backreference, DiagnosticNumberRole::Backreference, call)
         if @diagnostic_capture || @diagnostic_expansion || @diagnostic_regions
           source_node = Var.new(@token.to_s)
           diagnostic_name(source_node, @token.input_offset, "regex_match_index")
@@ -3225,7 +3290,9 @@ module Iyi
         end
         node_and_next_token call
       when .magic_line?
-        node_and_next_token MagicConstant.expand_line_node(@token.location)
+        magic_line = MagicConstant.expand_line_node(@token.location)
+        diagnostic_record_number(magic_line, DiagnosticNumberRole::Line)
+        node_and_next_token magic_line
       when .magic_end_line?
         raise "__END_LINE__ can only be used in default parameter value", @token
       when .magic_file?, .magic_dir?
@@ -6929,7 +6996,9 @@ module Iyi
 
         case @token.type
         when .macro_literal?
-          pieces << MacroLiteral.new(@token.value.to_s).at(@token.location).at_end(token_end_location)
+          macro_literal = MacroLiteral.new(@token.value.to_s).at(@token.location).at_end(token_end_location)
+          diagnostic_record_macro_literal(macro_literal)
+          pieces << macro_literal
         when .macro_expression_start?
           location = @token.location
           origin = diagnostic_anchor("MacroDirective", "expression", @token.input_offset)
@@ -9617,6 +9686,7 @@ module Iyi
     def parse_type_arg
       if @token.type.number?
         num = NumberLiteral.new(@token.value.to_s, @token.number_kind).at(@token.location)
+        diagnostic_record_number(num, DiagnosticNumberRole::TypeArgument)
         next_token_skip_space
         return num
       end
@@ -10420,7 +10490,9 @@ module Iyi
                  node
                when .number?
                  raise "expecting an integer offset, not '#{@token}'", @token if !@token.number_kind.i32?
-                 NumberLiteral.new(@token.value.to_s, @token.number_kind)
+                 offset_node = NumberLiteral.new(@token.value.to_s, @token.number_kind)
+                 diagnostic_record_number(offset_node, DiagnosticNumberRole::Offset)
+                 offset_node
                else
                  raise "expecting an instance variable or a integer offset, not '#{@token}'", @token
                end
