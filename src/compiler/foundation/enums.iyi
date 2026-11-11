@@ -1,14 +1,10 @@
 module compiler/foundation/enums
 
 class ::String
-  def byte_at(index : Int32) : UInt8
-    byte_at?(index) || raise "Index #{index} out of range for string of bytesize #{bytesize}"
-  end
-
   def byte_at?(index : Int32) : UInt8?
     index = bytesize + index if index < 0
     return nil if index < 0 || index >= bytesize
-    to_unsafe[index]
+    byte_at(index)
   end
 
   def rchop : String
