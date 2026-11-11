@@ -1032,6 +1032,22 @@ describe "diagnostic bound projection authority" do
       error.message.should eq("bound projection replacement was not issued for this edit")
     end
 
+    it "refuses a composed projection whose token mode differs from its issued render" do
+      ledger = Iyi::DiagnosticProjectionLedger.new(SpecBoundAuthority.new)
+      site = ledger.open_site("initialiser", "")
+      before, _ = spec_names(ledger, "Root::Thing", [{0, 4}, {6, 11}])
+      rendered = spec_render(ledger, site, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11)
+      events = rendered.data.events
+      event = events.first
+      events[0] = Iyi::DiagnosticTokenEvent.new(event.input_start, event.input_end, event.token_kind,
+        event.token_text, "Iyi", event.selection, event.byte_parts)
+      altered = Iyi::DiagnosticRenderedFragment.new(rendered.text,
+        Iyi::DiagnosticFragmentData.new(rendered.text, events, rendered.data.anchors))
+      expect_raises(ArgumentError, Iyi::DiagnosticBoundProjection::MSG_R8) do
+        ledger.compose(site, altered, [rendered])
+      end
+    end
+
     it "refuses a low-level rewrite that splices an issued render into a registered part through compose" do
       ledger = Iyi::DiagnosticProjectionLedger.new(SpecBoundAuthority.new)
       site = ledger.open_site("initialiser", "")
