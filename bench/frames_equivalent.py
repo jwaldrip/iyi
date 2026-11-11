@@ -854,6 +854,19 @@ def bound_projection(value, depth):
         if producer["add_global"] and (resolved.startswith("::") or not resolved.partition("::")[0] or resolved.partition("::")[0] == producer["root"]):
             raise ValueError("invalid global restriction")
         actual = ("::" if producer["add_global"] else "") + resolved
+    elif kind == "SynthesizedConstructor":
+        fields(producer, "kind definition_origin part")
+        if source or names or origin(producer["definition_origin"], depth + 1) != ("Def", "keyword"):
+            raise ValueError("invalid synthesized constructor producer")
+        if producer["part"] == "definition_name": actual, permitted = "new", ("definition_name",)
+        elif producer["part"] == "local_reference": actual, permitted = "self", ("local_reference",)
+        else: raise ValueError("invalid synthesized constructor part")
+    elif kind == "ConstantTarget":
+        fields(producer, "kind declaration_origin path"); text(producer["path"])
+        if (source or names or origin(producer["declaration_origin"], depth + 1) != ("Assign", "constant") or
+                not all(name_token("CONST", segment, "Crystal", "path_segment") for segment in producer["path"].split("::"))):
+            raise ValueError("invalid constant target projection")
+        actual, permitted = producer["path"], ("path_segment",)
     else: raise ValueError("unknown bound producer")
     if output != actual or value["context"] not in permitted: raise ValueError("invalid bound projection result")
     if value["lexical_mode"] not in ("Crystal", "Iyi"): raise ValueError("invalid projection lexical mode")

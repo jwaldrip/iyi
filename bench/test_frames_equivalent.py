@@ -1701,6 +1701,42 @@ def test_bare_splat_structural_controls() -> None:
             raise AssertionError("bare splat accepted: " + message)
 
 
+def test_constant_target_projection_controls() -> None:
+    """Producer 10: one CONST path segment is the projection; a whole-path or separator token is refused."""
+
+    def target(path, selected, output=None, context="path_segment", declaration=None, start=None):
+        output = path if output is None else output
+        first = output.index(selected) if start is None else start
+        return {"kind": "DerivedName", "derivation_kind": "BoundProjection",
+                "producer": {"kind": "ConstantTarget", "declaration_origin": declaration or written("Assign", "constant", 3), "path": path},
+                "source_fragment_sha256": hashlib.sha256(b"").hexdigest(), "source_text": "", "source_names": [],
+                "output_text": output, "lexical_mode": "Crystal", "result_start": first, "result_end": first + len(selected),
+                "token_kind": "CONST", "context": context}
+
+    for path, selected in (("Alpha", "Alpha"), ("Alpha::Beta::Gamma", "Alpha"),
+                           ("Alpha::Beta::Gamma", "Beta"), ("Alpha::Beta::Gamma", "Gamma")):
+        assert frames.checked_origin(target(path, selected)) == ("Name", "path_segment"), (path, selected)
+
+    separator = target("Alpha::Beta", "Alpha")
+    separator["result_start"], separator["result_end"] = 5, 7
+    refusals = (
+        (target("Alpha::beta", "Alpha"), "invalid constant target projection"),
+        (target("Alpha::Beta", "Alpha::Beta"), "invalid projection result token"),
+        (separator, "invalid projection result token"),
+        (target("Alpha::Beta", "Alpha", declaration=written("Name", "constant", 3)), "invalid constant target projection"),
+        (target("Alpha::Gamma", "Alpha", output="Alpha::Beta"), "invalid bound projection result"),
+        (target("Alpha::Beta", "Alpha", context="named_entry"), "invalid bound projection result"),
+    )
+    for node, message in refusals:
+        try:
+            frames.checked_origin(node)
+        except ValueError as error:
+            assert str(error) == message, (message, str(error))
+        else:
+            raise AssertionError("constant target accepted: " + message)
+
+
+
 def run_all_tests() -> int:
     tests = [
         ("test_composed_origin_controls", test_composed_origin_controls),
@@ -1720,6 +1756,7 @@ def run_all_tests() -> int:
         ("test_captured_darwin_proc_and_collisions", test_captured_darwin_proc_and_collisions),
         ("test_cross_format_mismatch", test_cross_format_mismatch),
         ("test_bare_splat_structural_controls", test_bare_splat_structural_controls),
+        ("test_constant_target_projection_controls", test_constant_target_projection_controls),
     ]
     failed = 0
     for name, test in tests:

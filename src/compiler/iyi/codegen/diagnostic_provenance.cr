@@ -719,6 +719,31 @@ module Iyi::DiagnosticProvenance
                  raise "invalid global restriction"
                end
                add_global ? "::#{resolved}" : resolved
+             when "SynthesizedConstructor"
+               fields(producer_value, %w(kind definition_origin part))
+               definition = producer["definition_origin"]
+               origin_schema4!(definition, depth + 1)
+               raise "invalid synthesized constructor producer" unless source.empty? && names.empty? &&
+                     Iyi::DiagnosticOrigin.from_json(definition).valid_for_anchor?("Def", "keyword")
+               case producer["part"].as_s
+               when "definition_name"
+                 permitted = %w(definition_name)
+                 "new"
+               when "local_reference"
+                 permitted = %w(local_reference)
+                 "self"
+               else raise "invalid synthesized constructor part"
+               end
+             when "ConstantTarget"
+               fields(producer_value, %w(kind declaration_origin path))
+               declaration = producer["declaration_origin"]
+               origin_schema4!(declaration, depth + 1)
+               path = producer["path"].as_s
+               raise "invalid constant target projection" unless source.empty? && names.empty? &&
+                     Iyi::DiagnosticOrigin.from_json(declaration).valid_for_anchor?("Assign", "constant") &&
+                     path.split("::").all? { |segment| name_token?("CONST", segment, "Crystal", "path_segment") }
+               permitted = %w(path_segment)
+               path
              else raise "unknown bound producer"
              end
     context, mode = item["context"].as_s, item["lexical_mode"].as_s
@@ -737,7 +762,7 @@ module Iyi::DiagnosticProvenance
     end
     named_entry = following.starts_with?(":") && !following.starts_with?("::")
     raise "invalid projected type position" unless (context == "named_entry") == named_entry
-    unless kind == "ConstantAccessor"
+    unless {"ConstantAccessor", "SynthesizedConstructor"}.includes?(kind)
       prefix = kind == "UninitializedClassVar" ? "uninitialized ".bytesize : 0
       type_text = output.byte_slice(prefix, output.bytesize - prefix)
       parser = Iyi::Parser.new(type_text)

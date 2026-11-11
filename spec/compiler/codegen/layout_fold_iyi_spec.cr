@@ -36,6 +36,10 @@ private def growing_module_program(body : String) : String
 
       def initialize(@v : T)
       end
+
+      def v : T
+        @v
+      end
     end
 
     #{body}
@@ -182,7 +186,7 @@ describe "Codegen: iyi layout folds" do
 
   it "runs the array dup that aborts under upstream Crystal to completion (P5)" do
     with_tempdir("layout-fold-iyi-p5") do
-      run_iyi("layout_fold_p5", growing_module_program(<<-CODE)).should eq("2\n1\n2\ntrue\ntrue\ntrue\ntrue\n")
+      output = run_iyi("layout_fold_p5", growing_module_program(<<-CODE)).lines
         arr = [{1, G(Int8).new(1_i8).as(M)}]
         d1 = arr.dup
         arr << {2, G({Int64, Int64}).new({3_i64, 4_i64}).as(M)}
@@ -190,11 +194,29 @@ describe "Codegen: iyi layout folds" do
         puts d2.size
         puts d2[0][0]
         puts d2[1][0]
-        puts d2 == arr
+        puts d2[0][1].is_a?(G(Int8))
+        puts d2[1][1].is_a?(G({Int64, Int64}))
+        puts d2[0][1].as(G(Int8)).v
+        puts d2[1][1].as(G({Int64, Int64})).v[0]
+        puts d2[1][1].as(G({Int64, Int64})).v[1]
+        puts arr[0][1].as(G(Int8)).v
+        puts arr[1][1].as(G({Int64, Int64})).v[0]
+        puts arr[1][1].as(G({Int64, Int64})).v[1]
         puts arr == arr
+        puts d2 == arr
         puts arr[0] == arr[0]
+        puts d2[0] == arr[0]
         puts arr[1] == arr[1]
+        puts d2[1] == arr[1]
         CODE
+      output.size.should eq 17
+      # Fields and type values of the copy and of the original, read independently of `==`.
+      output[0, 11].should eq %w(2 1 2 true true 1 3 4 1 3 4)
+      # Equality contract: a copy compares as its original does with itself. The
+      # baseline is what this build gives, so nothing here assumes `true`.
+      output[12].should eq output[11]
+      output[14].should eq output[13]
+      output[16].should eq output[15]
     end
   end
 end

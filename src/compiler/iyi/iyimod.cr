@@ -384,9 +384,9 @@ module Iyi::IyiMod
         origin.structural_witnesses.each { |witness| witness.event.try { |event| intern_token_event(event) } }
         if producer = origin.producer
           case producer
-          when DiagnosticBoundProducer::SemanticSignatureType, DiagnosticBoundProducer::ConstantAccessor
+          when DiagnosticBoundProducer::SemanticSignatureType, DiagnosticBoundProducer::ConstantAccessor, DiagnosticBoundProducer::SynthesizedConstructor
             intern(producer.definition_origin)
-          when DiagnosticBoundProducer::UninitializedClassVar
+          when DiagnosticBoundProducer::UninitializedClassVar, DiagnosticBoundProducer::ConstantTarget
             intern(producer.declaration_origin)
           end
         end

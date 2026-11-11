@@ -695,3 +695,153 @@ describe "Iyi::DiagnosticProvenance derived name consumer" do
     end
   end
 end
+
+DCT_EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+def dct_target(path : String, declaration : String = dcn_written(0, "Assign", "constant")) : String
+  %({"kind":"ConstantTarget","declaration_origin":#{declaration},"path":"#{path}"})
+end
+
+def dsc_constructor(part : String, definition : String = dcn_written(0, "Def", "keyword")) : String
+  %({"kind":"SynthesizedConstructor","definition_origin":#{definition},"part":"#{part}"})
+end
+
+def dct_bound(producer : String, output : String, first : Int32, last : Int32, token_kind : String = "CONST",
+              context : String = "path_segment", source : String = "") : String
+  %({"kind":"DerivedName","derivation_kind":"BoundProjection","producer":#{producer},"source_fragment_sha256":"#{DCT_EMPTY_SHA256}","source_text":"#{source}","source_names":[],"output_text":"#{output}","lexical_mode":"Crystal","result_start":#{first},"result_end":#{last},"token_kind":"#{token_kind}","context":"#{context}"})
+end
+
+def dct_span(output : String, selected : String) : {Int32, Int32}
+  first = output.index(selected).not_nil!
+  {first, first + selected.bytesize}
+end
+
+describe "producers 9 and 10 bound projections (schema4)" do
+  it "accepts each CONST segment of a multi-segment ConstantTarget path" do
+    path = "Alpha::Beta::Gamma"
+    {"Alpha", "Beta", "Gamma"}.each do |selected|
+      first, last = dct_span(path, selected)
+      dcn_validate(dct_bound(dct_target(path), path, first, last)).should eq({"path_segment", selected})
+    end
+  end
+
+  it "accepts a single-segment ConstantTarget path" do
+    dcn_validate(dct_bound(dct_target("Alpha"), "Alpha", 0, 5)).should eq({"path_segment", "Alpha"})
+  end
+
+  it "refuses a ConstantTarget path with a non-CONST segment in the middle" do
+    expect_raises(Exception, "invalid constant target projection") do
+      dcn_validate(dct_bound(dct_target("Alpha::beta::Gamma"), "Alpha::beta::Gamma", 0, 5))
+    end
+  end
+
+  it "refuses a ConstantTarget path with an empty segment" do
+    expect_raises(Exception, "invalid constant target projection") do
+      dcn_validate(dct_bound(dct_target("Alpha::::Beta"), "Alpha::::Beta", 0, 5))
+    end
+  end
+
+  it "refuses a leading separator on a ConstantTarget path" do
+    expect_raises(Exception, "invalid constant target projection") do
+      dcn_validate(dct_bound(dct_target("::Alpha"), "::Alpha", 2, 7))
+    end
+  end
+
+  it "refuses a trailing separator on a ConstantTarget path" do
+    expect_raises(Exception, "invalid constant target projection") do
+      dcn_validate(dct_bound(dct_target("Alpha::"), "Alpha::", 0, 5))
+    end
+  end
+
+  it "refuses a ConstantTarget whose declaration is not an Assign constant" do
+    expect_raises(Exception, "invalid constant target projection") do
+      dcn_validate(dct_bound(dct_target("Alpha", dcn_written(0, "Def", "keyword")), "Alpha", 0, 5))
+    end
+  end
+
+  it "refuses a ConstantTarget whose output differs from its path" do
+    expect_raises(Exception, "invalid bound projection result") do
+      dcn_validate(dct_bound(dct_target("Alpha::Gamma"), "Alpha::Beta", 0, 5))
+    end
+  end
+
+  it "refuses a ConstantTarget segment in the named-entry context" do
+    expect_raises(Exception, "invalid bound projection result") do
+      dcn_validate(dct_bound(dct_target("Alpha::Beta"), "Alpha::Beta", 0, 5, "CONST", "named_entry"))
+    end
+  end
+
+  it "refuses a ConstantTarget result span past the output" do
+    expect_raises(Exception, "invalid projection result span") do
+      dcn_validate(dct_bound(dct_target("Alpha"), "Alpha", 0, 9))
+    end
+  end
+
+  it "refuses an empty ConstantTarget result span" do
+    expect_raises(Exception, "invalid projection result span") do
+      dcn_validate(dct_bound(dct_target("Alpha"), "Alpha", 2, 2))
+    end
+  end
+
+  it "refuses a ConstantTarget segment whose token kind is not the one observed" do
+    expect_raises(Exception, "invalid projection result token") do
+      dcn_validate(dct_bound(dct_target("Alpha::Beta"), "Alpha::Beta", 0, 5, "IDENT"))
+    end
+  end
+
+  it "refuses a whole multi-segment path selected as one token" do
+    expect_raises(Exception) do
+      dcn_validate(dct_bound(dct_target("Alpha::Beta"), "Alpha::Beta", 0, 11))
+    end
+  end
+
+  it "refuses a result span that selects the separator" do
+    expect_raises(Exception) do
+      dcn_validate(dct_bound(dct_target("Alpha::Beta"), "Alpha::Beta", 5, 7))
+    end
+  end
+
+  it "refuses a ConstantTarget that carries source text" do
+    expect_raises(Exception, "bound projection requires authoritative source inventory") do
+      dcn_validate(dct_bound(dct_target("Alpha"), "Alpha", 0, 5, "CONST", "path_segment", "Alpha"))
+    end
+  end
+
+  it "accepts a SynthesizedConstructor definition name as new" do
+    dcn_validate(dct_bound(dsc_constructor("definition_name"), "new", 0, 3, "IDENT", "definition_name")).should eq({"definition_name", "new"})
+  end
+
+  it "accepts a SynthesizedConstructor receiver as self" do
+    dcn_validate(dct_bound(dsc_constructor("local_reference"), "self", 0, 4, "IDENT", "local_reference")).should eq({"local_reference", "self"})
+  end
+
+  it "refuses a SynthesizedConstructor with an unknown part" do
+    expect_raises(Exception, "invalid synthesized constructor part") do
+      dcn_validate(dct_bound(dsc_constructor("other"), "new", 0, 3, "IDENT", "definition_name"))
+    end
+  end
+
+  it "refuses a SynthesizedConstructor whose definition is not a Def keyword" do
+    expect_raises(Exception, "invalid synthesized constructor producer") do
+      dcn_validate(dct_bound(dsc_constructor("definition_name", dcn_written(0, "Assign", "constant")), "new", 0, 3, "IDENT", "definition_name"))
+    end
+  end
+
+  it "refuses a SynthesizedConstructor whose output is not the constructor name" do
+    expect_raises(Exception, "invalid bound projection result") do
+      dcn_validate(dct_bound(dsc_constructor("definition_name"), "old", 0, 3, "IDENT", "definition_name"))
+    end
+  end
+
+  it "refuses a SynthesizedConstructor in the named-entry context" do
+    expect_raises(Exception, "invalid bound projection result") do
+      dcn_validate(dct_bound(dsc_constructor("definition_name"), "new", 0, 3, "IDENT", "named_entry"))
+    end
+  end
+
+  it "refuses a SynthesizedConstructor that carries source text" do
+    expect_raises(Exception, "bound projection requires authoritative source inventory") do
+      dcn_validate(dct_bound(dsc_constructor("definition_name"), "new", 0, 3, "IDENT", "definition_name", "new"))
+    end
+  end
+end
