@@ -410,10 +410,11 @@ describe "Semantic: layout fold uses" do
 
     it "keeps the read of a macro that left by `skip_file`" do
       program = fold_use_program(true)
-      # The rest of the file was skipped because X read as 8. The expansion gave no output to
-      # replay, and the skip stands, so the stale read is refused.
+      # The macro runs at the top level, where X still reads 8, and skips the rest of the file. The
+      # main code then grows M. The expansion gave no output to replay, and the skip stands, so the
+      # stale read is refused.
       expect_raises(Iyi::TypeException, /a macro read/) do
-        fold_use_two_passes(program, fold_use_x, "", fold_use_growth + "{% skip_file if X == 8 %}\nz = 1\n")
+        fold_use_two_passes(program, fold_use_x, fold_use_growth + "{% skip_file if X == 8 %}\nz = 1\n", "")
       end
     end
 
