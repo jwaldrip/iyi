@@ -1,6 +1,7 @@
 require "./ast"
 require "./to_s"
 require "./diagnostic_origin"
+require "./bound_path_index"
 require "../iyimod"
 
 module Iyi
@@ -18,16 +19,6 @@ module Iyi
       @rendered.text
     end
   end
-
-  # One path, found from its PathSegment anchors. Offsets are byte offsets into
-  # the fragment text, which is the coordinate system both
-  # DiagnosticFragmentRewrite.apply and DiagnosticProjectionLedger#render use.
-  #
-  # `before` and `after` are the bytes either side of the whole path. `after_first`
-  # is the byte after its first segment, which is where the text-level rules
-  # looked for `::` or a name continuation.
-  private record PathOccurrence, start : Int32, finish : Int32, names : Array(String),
-    before : UInt8?, after_first : UInt8?, after : UInt8?
 
   # Every bound rewrite of a diagnostic fragment, token-aware, for one declaration site.
   #
@@ -194,7 +185,7 @@ module Iyi
       segments = root.split("::")
       return f if segments.any?(&.empty?)
       rewrite_paths(f, DiagnosticBoundProducer::StripRoot.new(root)) do |path|
-        path.names.size > segments.size && path.names[0, segments.size] == segments && !continued_before?(path)
+        BoundPathRules.rooted_at?(path, segments)
       end
     end
 
@@ -206,7 +197,7 @@ module Iyi
       return f if qualified == name
       producer = DiagnosticBoundProducer::ForeignType.new(module_name, name, qualified)
       rewrite_paths(f, producer) do |path|
-        path.names[0] == name && !continued_before?(path) && !identifier_byte_at?(path.after_first)
+        BoundPathRules.headed_by?(path, name)
       end
     end
 
@@ -216,7 +207,7 @@ module Iyi
       registered!(f)
       return f if resolved == name
       rewrite_paths(f, DiagnosticBoundProducer::AliasType.new(owner, name, resolved)) do |path|
-        path.names.size == 1 && path.names[0] == name && !continued_before?(path) && !scope_or_identifier_at?(path.after)
+        BoundPathRules.alias_of?(path, name)
       end
     end
 
@@ -226,7 +217,7 @@ module Iyi
       segments = owner_type.split("::")
       producer = DiagnosticBoundProducer::SelfReturn.new(owner_type, "new", "self")
       rewrite_paths(f, producer) do |path|
-        path.names == segments && !continued_before?(path) && !scope_or_identifier_at?(path.after)
+        BoundPathRules.exactly?(path, segments)
       end
     end
 
@@ -287,9 +278,9 @@ module Iyi
     # are applied in one pass over *f*, and each replacement is an output this
     # site rendered from the exact bytes it replaces.
     private def rewrite_paths(f : DiagnosticBoundFragment, producer : DiagnosticBoundProducer,
-                              & : PathOccurrence -> Bool) : DiagnosticBoundFragment
+                              & : BoundPathOccurrence -> Bool) : DiagnosticBoundFragment
       rendered = registered!(f)
-      selected = [] of PathOccurrence
+      selected = [] of BoundPathOccurrence
       paths_in(rendered).each { |path| selected << path if yield path }
       return f if selected.empty?
       edits = selected.map { |path| edit_for(rendered, path, producer) }
@@ -299,7 +290,7 @@ module Iyi
     # The edit for one path. Its replacement is the projection of the path's
     # bytes. Each touched name anchor is carried by that projection's first
     # anchor, which holds every source name of the path.
-    private def edit_for(rendered : DiagnosticRenderedFragment, path : PathOccurrence,
+    private def edit_for(rendered : DiagnosticRenderedFragment, path : BoundPathOccurrence,
                          producer : DiagnosticBoundProducer) : DiagnosticByteEdit
       span = DiagnosticByteSpan.new(path.start, path.finish)
       touched = touched_anchors(rendered, path.start, path.finish)
@@ -329,8 +320,9 @@ module Iyi
     end
 
     # Groups PathSegment anchors into their paths, by consecutive segment
-    # indices from 0. A segment that does not continue a path fails closed.
-    private def paths_in(rendered : DiagnosticRenderedFragment) : Array(PathOccurrence)
+    # indices from 0. A segment that does not continue a path fails closed. Offsets are byte offsets
+    # into the fragment text, the coordinates DiagnosticFragmentRewrite.apply and the ledger's render use.
+    private def paths_in(rendered : DiagnosticRenderedFragment) : Array(BoundPathOccurrence)
       text = rendered.text
       events = rendered.data.events
       segments = [] of {Int32, Int32, Int32}
@@ -361,34 +353,10 @@ module Iyi
         after_first = first[2] < text.bytesize ? text.to_unsafe[first[2]] : nil
         after = final[2] < text.bytesize ? text.to_unsafe[final[2]] : nil
         before = first[1] > 0 ? text.to_unsafe[first[1] - 1] : nil
-        PathOccurrence.new(first[1], final[2],
+        BoundPathOccurrence.new(first[1], final[2],
           group.map { |segment| text.byte_slice(segment[1], segment[2] - segment[1]) },
           before, after_first, after)
       end
-    end
-
-    # The text-level rule: a name does not start right after `:` or an
-    # identifier byte.
-    private def continued_before?(path : PathOccurrence) : Bool
-      byte = path.before
-      return false unless byte
-      byte == 0x3A_u8 || identifier_byte?(byte)
-    end
-
-    private def identifier_byte_at?(byte : UInt8?) : Bool
-      byte ? identifier_byte?(byte) : false
-    end
-
-    private def scope_or_identifier_at?(byte : UInt8?) : Bool
-      return false unless byte
-      byte == 0x3A_u8 || identifier_byte?(byte)
-    end
-
-    private def identifier_byte?(byte : UInt8) : Bool
-      byte == 0x5F_u8 ||
-        (byte >= 0x30_u8 && byte <= 0x39_u8) ||
-        (byte >= 0x41_u8 && byte <= 0x5A_u8) ||
-        (byte >= 0x61_u8 && byte <= 0x7A_u8)
     end
   end
 end

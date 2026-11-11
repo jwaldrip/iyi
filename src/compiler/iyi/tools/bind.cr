@@ -1063,11 +1063,11 @@ module Iyi
     if module_root? program, root
       ordinals = IyiMod.mono_body_ordinals(exported)
       exported = exported.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text| strip_root(text, root) }
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text| strip_root(text, root, :body) }
       end
       ordinals = IyiMod.mono_body_ordinals(carried_functions)
       carried_functions = carried_functions.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text| strip_root(text, root) }
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text| strip_root(text, root, :body) }
       end
       ordinals = IyiMod.mono_body_ordinals(top_exported)
       top_exported = top_exported.map_with_index do |signature, index|
@@ -1080,8 +1080,8 @@ module Iyi
       end
       carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
       root_class_vars = root_class_vars.map do |class_var|
-        rewritten = transform_bound_classvar(root, IyiMod::DIAGNOSTIC_ROOT_CONTAINER, class_var, [root_rewrite(root)]) { |text| strip_root(text, root) }
-        class_var.copy_with(type: strip_root(class_var.type, root), value: rewritten)
+        rewritten = transform_bound_classvar(root, IyiMod::DIAGNOSTIC_ROOT_CONTAINER, class_var, [root_rewrite(root)]) { |text| strip_root(text, root, :expression) }
+        class_var.copy_with(type: strip_root(class_var.type, root, :type), value: rewritten)
       end
     end
 
@@ -1102,21 +1102,21 @@ module Iyi
     unless @@bound_prefix.empty?
       ordinals = IyiMod.mono_body_ordinals(exported)
       exported = exported.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text) }
+        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text, :body) }
       end
       ordinals = IyiMod.mono_body_ordinals(carried_functions)
       carried_functions = carried_functions.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text) }
+        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text, :body) }
       end
       ordinals = IyiMod.mono_body_ordinals(top_exported)
       top_exported = top_exported.map_with_index do |signature, index|
-        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text) }
+        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text, :body) }
       end
       reopened = reopened.map { |declaration| map_names_declaration declaration }
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
       root_class_vars = root_class_vars.map do |class_var|
-        rewritten = transform_bound_classvar(root, IyiMod::DIAGNOSTIC_ROOT_CONTAINER, class_var, map_rewrites) { |text| map_names(text) }
-        class_var.copy_with(type: map_names(class_var.type), value: rewritten)
+        rewritten = transform_bound_classvar(root, IyiMod::DIAGNOSTIC_ROOT_CONTAINER, class_var, map_rewrites) { |text| map_names(text, :expression) }
+        class_var.copy_with(type: map_names(class_var.type, :type), value: rewritten)
       end
     end
 
@@ -2812,212 +2812,54 @@ module Iyi
     before === 0x3A_u8 || identifier_byte?(before) # :
   end
 
-  # The byte ranges of *text* that are literals or comments (strings, heredocs, percent literals,
-  # regexes, character literals, and comments), excluding code inside #{ ... } interpolations.
-  # Tokenized by the compiler's own Lexer, so every literal form, escape sequence, and nested
-  # interpolation is parsed exactly as the compiler parses it.
-  private class LiteralSpanCollector
-    getter spans = [] of {Int32, Int32}
+  # The paths of *text*, as the parser reads them. See `BoundPathIndex`.
+  #
+  # Every rewrite of printed text below goes through here. It used to search the text for a name, and a
+  # search also finds the name inside a string, a regex or a comment: `"Kemal::Config"` in a log message
+  # came out `"Config"`. A lexer on its own cannot tell those apart either - whether `/` divides or opens a
+  # regex is the parser's call - so the text is parsed and only a path is rewritten. A build with
+  # diagnostic capture rewrites the same paths, by the same rules (`BoundPathRules`).
+  private def self.bound_paths(text : String, entry : BoundPathIndex::Entry) : Array(BoundPathOccurrence)
+    BoundPathIndex.paths(text, entry, @@diagnostic_mode == "Iyi")
+  end
 
-    def self.collect(text : String, mode : String = "Crystal") : Array({Int32, Int32})
-      collector = new(text, mode)
-      collector.scan
-      collector.spans
-    end
-
-    def initialize(@text : String, @mode : String)
-      @lexer = Lexer.new(@text)
-      @lexer.comments_enabled = true
-      @lexer.count_whitespace = true
-      @lexer.wants_raw = true
-      @lexer.iyi = (@mode == "Iyi")
-    end
-
-    def scan : Nil
-      scan_normal(break_on_rcurly: false)
-    rescue CodeError | InvalidByteSequenceError
-    end
-
-    private def add_span(token : Token) : Nil
-      start = token.input_offset
-      finish = token.input_end
-      @spans << {start, finish} if finish > start
-    end
-
-    private def scan_normal(break_on_rcurly : Bool) : Nil
-      last_is_def = false
-      heredocs = [] of Token
-      last_type : Token::Kind? = nil
-      space_before = false
-      curly_depth = 0
-
-      while true
-        previous_delimiter_state = @lexer.token.delimiter_state
-        token = @lexer.next_token
-
-        case token.type
-        when .eof?
-          break
-        when .op_lcurly?
-          curly_depth += 1 if break_on_rcurly
-        when .op_rcurly?
-          if break_on_rcurly
-            break if curly_depth == 0
-            curly_depth -= 1
-          end
-        when .comment?, .char?
-          add_span token
-        when .delimiter_start?
-          case
-          when last_is_def && token.raw.in?("`", "/")
-            # `def /` names a method
-          when token.raw == "/" && slash_is_not_regex?(last_type, space_before)
-            # division operator
-          when token.delimiter_state.kind.heredoc?
-            heredocs << token.dup
-          else
-            add_span token
-            scan_delimited token
-            token.delimiter_state = previous_delimiter_state
-          end
-        when .string_array_start?, .symbol_array_start?
-          add_span token
-          scan_string_array token
-        end
-
-        if token.type.newline? && !heredocs.empty?
-          heredocs.each_with_index do |heredoc, index|
-            scan_delimited heredoc, heredoc: true
-            unless index == heredocs.size - 1
-              between = @lexer.next_token
-              break if between.type.eof?
-            end
-          end
-          heredocs.clear
-        end
-
-        unless token.type.space?
-          last_type = token.type
-          last_is_def = token.keyword?(Keyword::DEF)
-        end
-        space_before = token.type.space?
+  # *text* with each edit made. An edit is the bytes `start...finish` of *text* and what replaces them,
+  # and the edits are in order.
+  private def self.splice(text : String, edits : Array({Int32, Int32, String})) : String
+    return text if edits.empty?
+    source = text.to_slice
+    String.build(text.bytesize) do |io|
+      cursor = 0
+      edits.each do |(start, finish, replacement)|
+        io.write source[cursor, start - cursor]
+        io << replacement
+        cursor = finish
       end
-    end
-
-    private def scan_delimited(token : Token, heredoc : Bool = false) : Nil
-      while true
-        token = @lexer.next_string_token(token.delimiter_state)
-        case token.type
-        when .delimiter_end?
-          add_span token
-          break
-        when .eof?
-          break
-        when .interpolation_start?
-          add_span token
-          scan_normal(break_on_rcurly: true)
-        else
-          add_span token
-        end
-      end
-    end
-
-    private def scan_string_array(token : Token) : Nil
-      while true
-        consume_space_or_newline
-        token = @lexer.next_string_token(token.delimiter_state)
-        case token.type
-        when .string?
-          add_span token
-        when .string_array_end?
-          add_span token
-          break
-        when .interpolation_start?
-          add_span token
-          scan_normal(break_on_rcurly: true)
-        when .eof?
-          break
-        else
-          break
-        end
-      end
-    end
-
-    private def consume_space_or_newline : Nil
-      while true
-        char = @lexer.current_char
-        if char == '\n'
-          @lexer.next_char
-          @lexer.incr_line_number 1
-        elsif char.ascii_whitespace?
-          @lexer.next_char
-        else
-          break
-        end
-      end
-    end
-
-    private def slash_is_not_regex?(last_type : Token::Kind?, space_before : Bool) : Bool
-      case last_type
-      when Nil
-        false
-      when .number?, .const?, .instance_var?, .class_var?, .op_rparen?, .op_rsquare?, .op_rcurly?
-        true
-      when .op_lparen?, .op_lsquare?, .op_lcurly?
-        false
-      else
-        !space_before
-      end
+      io.write source[cursor, source.size - cursor]
     end
   end
 
-  private def self.literal_spans(text : String) : Array({Int32, Int32})
-    LiteralSpanCollector.collect(text, @@diagnostic_mode)
-  end
-  private def self.literal_at?(spans : Array({Int32, Int32}), offset : Int32) : Bool
-    spans.any? { |(start, finish)| offset >= start && offset < finish }
-  end
+  # `MyLib::Entry` becomes `Entry`, and `MyLibOther::X` is left alone — the prefix has to be whole
+  # segments of a path or this renames types it never owned.
+  private def self.strip_root(text : String, root : String, entry : BoundPathIndex::Entry) : String
+    segments = root.split("::")
+    return text if segments.any?(&.empty?) || !text.includes?("#{root}::")
 
-  # Every place *needle* appears in *text* on a name boundary and outside a literal, replaced by what the block
-  # answers. `nil` from the block leaves the occurrence alone.
-  private def self.replace_on_boundary(text : String, needle : String, trailing_name_ends : Bool, & : -> String) : String
-    return text if needle.empty? || !text.includes?(needle)
-
-    spans = literal_spans(text)
-    result = String::Builder.new(text.bytesize)
-    index = 0
-    while index < text.bytesize
-      if text.byte_index(needle, index) == index && !after_name_byte?(text, index) && !literal_at?(spans, index)
-        after = index + needle.bytesize
-        ends_name = !trailing_name_ends ||
-                    after >= text.bytesize ||
-                    !identifier_byte?(text.to_unsafe[after])
-        if ends_name
-          replacement = yield
-          result << replacement
-          index = after
-          next
-        end
-      end
-      result.write_byte text.to_unsafe[index]
-      index += 1
+    prefix = root.bytesize + 2
+    edits = [] of {Int32, Int32, String}
+    bound_paths(text, entry).each do |path|
+      edits << {path.start, path.start + prefix, ""} if BoundPathRules.rooted_at?(path, segments)
     end
-    result.to_s
-  end
-
-  # `MyLib::Entry` becomes `Entry`, and `MyLibOther::X` is left alone — the prefix has to end at a name
-  # boundary or this renames types it never owned.
-  private def self.strip_root(text : String, root : String) : String
-    replace_on_boundary(text, "#{root}::", trailing_name_ends: false) { "" }
+    splice(text, edits)
   end
 
   private def self.strip_root(signature : IyiMod::Signature, root : String) : IyiMod::Signature
     changed = IyiMod::Signature.new(
       name: signature.name,
       receiver: signature.receiver,
-      parameters: signature.parameters.map { |parameter| strip_root parameter, root },
-      block_parameter: strip_root(signature.block_parameter, root),
-      return_type: strip_root(signature.return_type, root),
+      parameters: signature.parameters.map { |parameter| strip_root parameter, root, :parameter },
+      block_parameter: strip_root(signature.block_parameter, root, :parameter),
+      return_type: strip_root(signature.return_type, root, :type),
       free_variables: signature.free_variables,
       required: signature.required,
     )
@@ -3049,15 +2891,15 @@ module Iyi
     # The header line is not inside it. A superclass, an `include` and an
     # `alias`'s value are read in the enclosing scope, so they keep the root's.
     inside = "#{root}::#{declaration.name}"
-    scoped = ->(text : String) { strip_root(strip_root(text, inside), root) }
+    scoped = ->(text : String, entry : BoundPathIndex::Entry) { strip_root(strip_root(text, inside, entry), root, entry) }
     scoped_rewrites = [root_rewrite(inside), root_rewrite(root)] of BindRewrite
 
     # `copy_with`, for the reason `prune_declaration` gives.
     declaration.copy_with(
       fields: declaration.fields.map do |(name, type, value)|
         owner = path.starts_with?("::") ? path.lchop("::") : "#{@@root}::#{path}"
-        rewritten = transform_bound_field(owner, path, name, value, scoped_rewrites) { |text| strip_root(strip_root(text, inside), root) }
-        {name, scoped.call(type), rewritten}
+        rewritten = transform_bound_field(owner, path, name, value, scoped_rewrites) { |text| scoped.call(text, BoundPathIndex::Entry::Expression) }
+        {name, scoped.call(type, BoundPathIndex::Entry::Type), rewritten}
       end,
       # `map_with_index` over the ordinals, because two definitions of one
       # signature are two bodies and each has to move to its own new key. The
@@ -3066,7 +2908,7 @@ module Iyi
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body(path, signature, strip_root(strip_root(signature, inside), root), ordinals[index], scoped_rewrites, scoped_rewrites) { |text| strip_root(strip_root(text, inside), root) }
+          rekey_body(path, signature, strip_root(strip_root(signature, inside), root), ordinals[index], scoped_rewrites, scoped_rewrites) { |text| scoped.call(text, BoundPathIndex::Entry::Body) }
         end
       end,
       # Deeper for what is inside it, because a name is read from where it is
@@ -3077,21 +2919,21 @@ module Iyi
       types: declaration.types.map do |nested|
         strip_root_declaration nested, "#{root}::#{declaration.name}", "#{path}::#{nested.name}"
       end,
-      value: strip_root(declaration.value, root),
+      value: strip_root(declaration.value, root, :type),
       # The value as well as the type. It is an expression that names types —
       # `@@config = Config.new` — and it is rendered inside the module the same
       # way an alias's right-hand side is.
       class_vars: declaration.class_vars.map do |class_var|
         owner = path.starts_with?("::") ? path.lchop("::") : "#{@@root}::#{path}"
-        rewritten = transform_bound_classvar(owner, path, class_var, scoped_rewrites) { |text| strip_root(strip_root(text, inside), root) }
-        class_var.copy_with(type: scoped.call(class_var.type), value: rewritten)
+        rewritten = transform_bound_classvar(owner, path, class_var, scoped_rewrites) { |text| scoped.call(text, BoundPathIndex::Entry::Expression) }
+        class_var.copy_with(type: scoped.call(class_var.type, BoundPathIndex::Entry::Type), value: rewritten)
       end,
-      superclass: strip_root(declaration.superclass, root),
-      includes: declaration.includes.map { |name| strip_root(name, root) },
+      superclass: strip_root(declaration.superclass, root, :type),
+      includes: declaration.includes.map { |name| strip_root(name, root, :type) },
       # A `fun` line is text and the types in it are the shard's like any
       # other: `fun open_v2 = sqlite3_open_v2(… flags : SQLite3::Flag …)` is
       # `flags : Flag` once the declaration is inside the module.
-      funs: declaration.funs.map { |source| scoped.call(source) },
+      funs: declaration.funs.map { |source| scoped.call(source, BoundPathIndex::Entry::FunLine) },
     )
   end
 
@@ -3499,17 +3341,23 @@ module Iyi
 
   # Rewrites every bound name in *text* to what the consumer calls it. The name
   # has to stand alone on both sides: `JSON` is bound, `JSONThing` is not.
-  private def self.map_names(text : String) : String
+  private def self.map_names(text : String, entry : BoundPathIndex::Entry) : String
     mapped = @@bound_prefix.reduce(text) do |carried, (name, qualified)|
+      next carried unless carried.includes?(name)
+
       # Recorded where the name is *met* rather than where the text changed. A
       # class root needs no rewriting — the consumer names its types exactly as
       # it declares them — so `mapped != carried` would have said "this
       # boundary is not depended on" of every one of them, and the import edge
       # that reads off this went missing.
-      replace_on_boundary(carried, name, trailing_name_ends: true) do
-        @@bound_used << @@bound_module[name]
-        qualified
+      @@bound_used << @@bound_module[name] if names_on_boundary?(carried, name)
+      next carried if qualified == name
+
+      edits = [] of {Int32, Int32, String}
+      bound_paths(carried, entry).each do |path|
+        edits << {path.start, path.start + name.bytesize, qualified} if BoundPathRules.headed_by?(path, name)
       end
+      splice(carried, edits)
     end
 
     # And a name the producer already wrote in full, which the rewrite above
@@ -3527,8 +3375,8 @@ module Iyi
     mapped
   end
 
-  # Whether *needle* stands in *text* as a whole name, by the rule
-  # `replace_on_boundary` replaces on.
+  # Whether *needle* stands in *text* as a whole name: not inside a longer name on either side. It
+  # reads the text, so a string that spells the name counts, which records an import edge and changes no text.
   private def self.names_on_boundary?(text : String, needle : String) : Bool
     return false if needle.empty?
     index = 0
@@ -3547,9 +3395,9 @@ module Iyi
     changed = IyiMod::Signature.new(
       name: signature.name,
       receiver: signature.receiver,
-      parameters: signature.parameters.map { |parameter| map_names parameter },
-      block_parameter: map_names(signature.block_parameter),
-      return_type: map_names(signature.return_type),
+      parameters: signature.parameters.map { |parameter| map_names parameter, :parameter },
+      block_parameter: map_names(signature.block_parameter, :parameter),
+      return_type: map_names(signature.return_type, :type),
       free_variables: signature.free_variables,
       required: signature.required,
     )
@@ -3566,25 +3414,25 @@ module Iyi
     declaration.copy_with(
       fields: declaration.fields.map do |(name, type, value)|
         owner = path.starts_with?("::") ? path.lchop("::") : "#{@@root}::#{path}"
-        rewritten = transform_bound_field(owner, path, name, value, map_rewrites) { |text| map_names(text) }
-        {name, map_names(type), rewritten}
+        rewritten = transform_bound_field(owner, path, name, value, map_rewrites) { |text| map_names(text, :expression) }
+        {name, map_names(type, :type), rewritten}
       end,
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body(path, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text) }
+          rekey_body(path, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text, :body) }
         end
       end,
       types: declaration.types.map { |nested| map_names_declaration nested, "#{path}::#{nested.name}" },
-      value: map_names(declaration.value),
+      value: map_names(declaration.value, :type),
       class_vars: declaration.class_vars.map do |class_var|
         owner = path.starts_with?("::") ? path.lchop("::") : "#{@@root}::#{path}"
-        rewritten = transform_bound_classvar(owner, path, class_var, map_rewrites) { |text| map_names(text) }
-        class_var.copy_with(type: map_names(class_var.type), value: rewritten)
+        rewritten = transform_bound_classvar(owner, path, class_var, map_rewrites) { |text| map_names(text, :expression) }
+        class_var.copy_with(type: map_names(class_var.type, :type), value: rewritten)
       end,
-      superclass: map_names(declaration.superclass),
-      includes: declaration.includes.map { |name| map_names(name) },
-      funs: declaration.funs.map { |source| map_names(source) },
+      superclass: map_names(declaration.superclass, :type),
+      includes: declaration.includes.map { |name| map_names(name, :type) },
+      funs: declaration.funs.map { |source| map_names(source, :fun_line) },
     )
   end
 
@@ -4899,30 +4747,18 @@ module Iyi
     )
   end
 
-  # *text* with every whole-word *name* replaced by *replacement*.
+  # *text* with every path that is just *name* replaced by *replacement*.
   #
-  # Whole-word, for the reason `calls?` is: `StoreTypes` inside `MyStoreTypes`
-  # is a different name and rewriting it would invent one.
-  private def self.replace_word(text : String, name : String, replacement : String) : String
+  # The whole path, for the reason `calls?` reads whole words: `StoreTypes` in `MyStoreTypes` or in
+  # `Other::StoreTypes` is a different name and rewriting it would invent one.
+  private def self.replace_word(text : String, name : String, replacement : String, entry : BoundPathIndex::Entry) : String
     return text unless text.includes?(name)
 
-    spans = literal_spans(text)
-    result = String.build do |io|
-      index = 0
-      while (found = text.index(name, index))
-        before = found == 0 ? nil : text[found - 1]
-        after = found + name.size >= text.size ? nil : text[found + name.size]
-        byte_offset = text[0...found].bytesize
-        word = (before.nil? || !(before.alphanumeric? || before == '_' || before == ':')) &&
-               (after.nil? || !(after.alphanumeric? || after == '_' || after == ':')) &&
-               !literal_at?(spans, byte_offset)
-        io << text[index...found]
-        io << (word ? replacement : name)
-        index = found + name.size
-      end
-      io << text[index..]
+    edits = [] of {Int32, Int32, String}
+    bound_paths(text, entry).each do |path|
+      edits << {path.start, path.finish, replacement} if BoundPathRules.alias_of?(path, name)
     end
-    result
+    splice(text, edits)
   end
 
   # Whether *body* names *method* as a word rather than as part of one.
@@ -5653,7 +5489,7 @@ module Iyi
     if type.responds_to?(:instance_vars_initializers)
       type.instance_vars_initializers.try &.each do |initializer|
         written = initializer.written
-        aliases.each { |simple, resolved| written = replace_word(written, simple, resolved) }
+        aliases.each { |simple, resolved| written = replace_word(written, simple, resolved, :expression) }
         if type.program.diagnostic_capture && !written.empty?
           fragment = initializer.written_diagnostic || raise "bound field lacks diagnostic fragment"
           type.program.record_field_diagnostic(type.to_s(generic_args: false), initializer.name, written, fragment)

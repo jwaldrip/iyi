@@ -443,6 +443,7 @@ module Iyi
       macro_literal_count = @diagnostic_macro_literal_observations.size
       signed_number_count = @diagnostic_signed_number_observations.size
       bare_splat_count = @diagnostic_bare_splat_observations.try(&.size) || 0
+      name_count = @diagnostic_name_observations.try(&.size)
       heredoc_openers = @diagnostic_lexical_observations ? @diagnostic_heredoc_openers.dup : nil
       literal_snapshot = @diagnostic_lexical_observations ? @diagnostic_literal_owner_observations.dup : nil
       literal_close = @diagnostic_last_literal_close
@@ -464,6 +465,10 @@ module Iyi
         @diagnostic_signed_number_observations.pop(@diagnostic_signed_number_observations.size - signed_number_count)
         if bare_splat_observations = @diagnostic_bare_splat_observations
           bare_splat_observations.pop(bare_splat_observations.size - bare_splat_count)
+        end
+        # A name read inside a lookahead that failed is read again by the parse that follows it.
+        if (names = @diagnostic_name_observations) && name_count && names.size > name_count
+          names.pop(names.size - name_count)
         end
         @diagnostic_heredoc_openers = heredoc_openers if heredoc_openers
         @diagnostic_literal_owner_observations = literal_snapshot if literal_snapshot
