@@ -455,20 +455,72 @@ module Iyi
       end
     end
 
-    # The text a bound declaration writes for one parameter: its annotations, its prefix
-    # (`*`, `**`, `&`, or none), then its external name where it differs and its name. A bare
-    # splat has no name, so it is its prefix alone. The writer's prefix order holds, but an
-    # external name keeps the spelling the source wrote: the printer quotes names that need it
-    # (`_`, `é`), and that would change valid bound text such as `_ x` into `"_" x`.
+    # Writes the bound text of one parameter: its annotations, its prefix (`*`, `**`, `&`, or
+    # none), then its external name where it differs and its name. The prefix is the caller's:
+    # the bind builders pass `*` at the splat index, `**` for the double splat and `&` for the
+    # block. With a builder, the same bytes are recorded as the printer records them:
+    # annotations through the printer, a bare `*` as StructuredSyntax, and names as anchors.
+    # Without one the bytes are identical, and an external name keeps the spelling the source
+    # wrote. The printer quotes names that need it (`_`, `é`), and that would change valid bound
+    # text such as `_ x` into `"_" x`.
+    def self.write_bound_parameter_name(io : IO, node : Arg, prefix : String,
+                                        diagnostic_fragment : DiagnosticFragmentBuilder? = nil) : Nil
+      new(io, diagnostic_fragment: diagnostic_fragment).write_bound_parameter_name(node, prefix)
+    end
+
     def self.bound_parameter_name(node : Arg, prefix : String) : String
+      String.build { |io| write_bound_parameter_name(io, node, prefix) }
+    end
+
+    def write_bound_parameter_name(node : Arg, prefix : String) : Nil
       unless {"", "*", "**", "&"}.includes?(prefix)
         raise ArgumentError.new("invalid bound parameter prefix")
       end
-      String.build do |io|
-        io << bound_annotation_prefix(node)
-        io << prefix
-        io << node.external_name << ' ' unless node.external_name == node.name
-        io << node.name
+      if parsed_annotations = node.parsed_annotations
+        parsed_annotations.each do |ann|
+          ann.accept self
+          @str << ' '
+        end
+      end
+      if ToSVisitor.bare_splat?(node, prefix)
+        write_bound_syntax("*")
+        return
+      end
+      @str << prefix
+      if node.external_name != node.name
+        write_bound_external_name(node)
+        @str << ' '
+      end
+      diagnostic_arg_name(node, node.name, false) unless node.name.empty?
+    end
+
+    # The star of a bare splat is structured syntax. A fragment builder records it as one
+    # StructuredSyntax event, and the claims path keeps its generated text.
+    private def write_bound_syntax(text : String) : Nil
+      fragment = @diagnostic_fragment
+      unless fragment
+        diagnostic_structured_syntax(text)
+        return
+      end
+      io = @str.as?(IO::Memory) || raise ArgumentError.new("fragment capture requires a readable output buffer")
+      start = @str.pos.to_i32
+      @str << text
+      fragment.add_written_syntax(start, @str.pos.to_i32, io.to_s, DiagnosticRenderedLexContext::Operator,
+        DiagnosticMacroProducer::StructuredSyntax)
+    end
+
+    # An external name is an anchor only when the parser recorded it as the source's own token.
+    # A string-literal external name has no such evidence, so its bytes are plain. The external
+    # name is written through the name anchor, not `diagnostic_external_name`, because that path
+    # quotes the name and would change `_ x` into `"_" x`.
+    private def write_bound_external_name(node : Arg) : Nil
+      slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::ExternalName)
+      tokens = node.diagnostic_name_slots[slot]?
+      if (@diagnostic_fragment || @diagnostic_name_fragments) && tokens && !tokens.empty? &&
+         tokens.join(&.rendered_text) == node.external_name
+        diagnostic_name(node, node.external_name, "named_entry", slot)
+      else
+        @str << node.external_name
       end
     end
 
@@ -2574,7 +2626,7 @@ module Iyi
 
     def visit(node : Annotation)
       @str << "@["
-      @str << node.path
+      node.path.accept self
       if !node.args.empty? || node.named_args
         @str << '('
         printed_arg = false
