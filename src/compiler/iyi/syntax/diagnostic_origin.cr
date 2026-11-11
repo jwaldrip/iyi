@@ -2170,6 +2170,12 @@ module Iyi
       !registered_entry(fragment).nil?
     end
 
+    # Sources have no owning site until they are composed into one.
+    def registered_source?(fragment : DiagnosticRenderedFragment) : Bool
+      entry = registered_entry(fragment)
+      !entry.nil? && entry.site.nil?
+    end
+
     # Renders one producer at a site, after validation and the live recompute. The result is registered
     # and every projection in it is issued by this ledger.
     def render(site : DiagnosticBoundSite, producer : DiagnosticBoundProducer, before : DiagnosticRenderedFragment,

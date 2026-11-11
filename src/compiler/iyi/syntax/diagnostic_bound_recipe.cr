@@ -242,7 +242,11 @@ module Iyi
     # key must be the one the IyiMod builder produces for the site, and a
     # signature site's signature must have this site's declaration origin.
     def finish(f : DiagnosticBoundFragment, key : String, signature : IyiMod::Signature? = nil) : IyiMod::DiagnosticFragment
-      @ledger.finish(@site, registered!(f), key, signature)
+      rendered = registered!(f)
+      if @ledger.registered_source?(rendered)
+        rendered = registered!(join([f], ""))
+      end
+      @ledger.finish(@site, rendered, key, signature)
     end
 
     # Counts and verification delegate to the section's ledger.

@@ -64,6 +64,15 @@ private def restricted(recipe : Iyi::DiagnosticBoundRecipe, resolved : String,
 end
 
 describe Iyi::DiagnosticBoundRecipe do
+  it "finishes an unchanged source at its owning class variable site" do
+    ledger = ledger_under_test
+    recipe = Iyi::DiagnosticBoundRecipe.open(ledger, "Iyi", "class_var", "Owner", "value")
+    source = recipe.plain("42")
+    section = Iyi::IyiMod::DiagnosticSection.new
+    section.add_fragment(recipe.finish(source, Iyi::IyiMod.class_var_fragment_key("Owner", "value")))
+    recipe.verify_section!(section).should eq(0)
+  end
+
   it "strips the root from a rooted path and counts the projection it minted" do
     recipe = signature_recipe
     signature = spec_signature
