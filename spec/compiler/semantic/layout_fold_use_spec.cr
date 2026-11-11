@@ -323,16 +323,23 @@ describe "Semantic: layout fold uses" do
 
     it "accepts a fresh use of the corrected value made after the first settle (control 10, fresh use)" do
       program = fold_use_program(true)
-      fold_use_semantic(program, fold_use_module + "X = sizeof({Int32, M})\n" + fold_use_growth, cleanup: false)
+      fold_use_semantic(program, fold_use_module + "x = sizeof({Int32, M})\n" + fold_use_growth, cleanup: false)
       program.settle_layout_folds(patch: true)
 
-      # The fold typed with 8 is X's; it is the last one recorded with that value.
+      # A sizeof in main code is typed, and so recorded, with the value it measured
+      # before growth. A constant is typed only when a use reaches it, so an unused
+      # `X = sizeof(...)` records no fold here, which is why this is a plain expression.
       literal = fold_use_size_folds(program, 8_u64).last.node.as(ExpandableNode).expanded.as(NumberLiteral)
       literal.value.should eq "32"
 
       fold_use_semantic(program, "buf = StaticArray(UInt8, sizeof({Int32, M})).new\n", cleanup: false)
       program.settle_layout_folds(patch: true)
 
+      # The fresh use measured 32 when typed, after growth. It is recorded with 32, so
+      # it is judged fresh: no refusal, and the first literal stays 32.
+      fresh = fold_use_size_folds(program, 32_u64)
+      fresh.empty?.should be_false
+      fresh.last.node.as(ExpandableNode).expanded.as(NumberLiteral).value.should eq "32"
       literal.value.should eq "32"
       fold_use_census(program)
     end
@@ -447,8 +454,15 @@ describe "Semantic: layout fold uses" do
         shared.node.as(ExpandableNode).expanded.as(NumberLiteral).value.should eq "8"
         literal_x.value.should eq "8"
 
-        tied = program.layout_fold_lines.select(&.includes?("in main: folded 8, final 32: kept (tied to type argument"))
-        tied.size.should eq 2
+        # One line per distinct judgement. X is read by the harmful type-argument use,
+        # so its line names that use. `s` is read by no use: it is pinned only through
+        # the component it shares with X, so its line is the tie. The harmful use has
+        # its own line.
+        lines = program.layout_fold_lines
+        lines.count(&.includes?("in main: folded 8, final 32: kept (type argument)")).should eq 1
+        lines.count(&.includes?("in main: folded 8, final 32: kept (tied to type argument at")).should eq 1
+        lines.count(&.includes?("layout fold use stale:")).should eq 1
+        lines.count { |line| line.includes?("layout fold use stale:") && line.includes?("type argument read") }.should eq 1
       ensure
         if previous
           ENV["IYI_LAYOUT_FOLD_REPORT"] = previous
