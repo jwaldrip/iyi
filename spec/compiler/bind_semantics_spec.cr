@@ -131,7 +131,7 @@ describe Iyi::BindSemantics do
     end
 
     it "refuses a block that was never annotated, and says why" do
-      yields = thing.lookup_first_def("yields", false).not_nil!
+      yields = thing.lookup_first_def("yields", true).not_nil!
       call, refused, uncompilable = Iyi::BindSemantics.instantiate(thing, yields, "Probe", crystal)
       call.should be_nil
       refused.should eq "block is not annotated"

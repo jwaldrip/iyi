@@ -823,7 +823,10 @@ module Iyi
       # However this slash must be a start delimiter of regex because
       # this is parsed as regex literal once before.
       if @token.type.op_slash?
-        @lexer.reader.previous_char
+        # Through the lexer's own position, not `@lexer.reader`: a reader is a struct, and
+        # stepping the copy the accessor returns leaves the lexer where it was. The slash
+        # is one byte.
+        @lexer.current_pos -= 1
         @lexer.column_number -= 1
         slash_is_regex!
         next_token

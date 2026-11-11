@@ -94,14 +94,14 @@ describe "parse-ahead parser contract" do
     end
   end
 
-  it "refuses captured worker acceptance without an authenticated registry" do
+  it "parses locally under capture rather than take a worker's unauthenticated result" do
     with_ahead_contract_fixture do |program, ahead, filename, source|
       parser = program.new_parser(source)
       parser.filename = filename
       parser.diagnostic_source_file = filename
-      expect_raises(ArgumentError, /authenticated frozen registry/) do
-        ahead.parse(parser, filename, source)
-      end
+      parser.parse_ahead_contract.should_not be_nil
+      ahead.parse(parser, filename, source).to_s.should contain("value")
+      parser.reader.pos.should be > 0
     end
   end
 

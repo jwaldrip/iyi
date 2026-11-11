@@ -378,7 +378,9 @@ describe "Semantic: iyi import" do
       end
     end
 
-    it "retains exact origins from the parallel worker parser" do
+    # A worker's tree is not taken under capture (`ParseAhead#take`): the walk parses
+    # the file, and what it holds is what a serial parse of the same file holds.
+    it "parses a captured file on the walk, with the origins a serial parse gives it" do
       source = "module app/left\n\npub def f\n  -> { 1 }\nend\n"
       with_iyi_modules({"main.iyi" => "module main\nimport app/left\n", "app/left.iyi" => source}) do
         program = Iyi::Program.new
@@ -393,7 +395,7 @@ describe "Semantic: iyi import" do
           parser.filename = filename
           parser.diagnostic_source_file = filename
           worker_nodes = ahead.parse(parser, filename, source)
-          parser.reader.pos.should eq(0)
+          parser.reader.pos.should be > 0
 
           serial = program.new_parser(source)
           serial.filename = filename

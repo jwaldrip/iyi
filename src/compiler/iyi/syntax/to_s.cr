@@ -281,6 +281,21 @@ module Iyi
       end
     end
 
+    # A setter's name is derived from two tokens, the identifier and the `=` (contract
+    # C-OP), and neither is the name. So it is written as an operator is: the identifier
+    # under the call's own anchor, which is the token the parser anchored the call at, and
+    # the `=` as structural syntax after it. Writing the identifier as a name compared it
+    # with the derived `x=` and refused every setter a captured body holds.
+    private def diagnostic_setter_name(node : Call) : Nil
+      if @diagnostic_name_fragments || @diagnostic_fragment
+        tokens = node.diagnostic_name_slots[DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)]?
+        if tokens && !tokens.empty? && tokens.join(&.rendered_text) != node.name
+          raise ArgumentError.new("diagnostic name was renamed without a recorded projection")
+        end
+      end
+      diagnostic_anchor(node, "Call", "method") { @str << node.name.rchop }
+    end
+
     private def diagnostic_name(node : ASTNode, text : String, context : String,
                                 slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary),
                                 artifact_anchor = true) : Nil
@@ -1260,8 +1275,7 @@ module Iyi
           @str << '.'
         end
         if Lexer.setter?(node.name)
-          diagnostic_anchor(node, "Call", "method", name_splice: true)
-          diagnostic_name(node, node.name.rchop, "method_name")
+          diagnostic_setter_name(node)
           @str << ' '
           diagnostic_structured_syntax("=")
           @str << ' '

@@ -190,9 +190,12 @@ module Iyi
         worker_input = entry.capture_input
         return nil unless worker_input && candidate && worker_input.same_candidate?(candidate, source)
       end
-      if @diagnostic_capture
-        raise ArgumentError.new("parse-ahead capture acceptance requires an authenticated frozen registry")
-      end
+      # A worker's tree is not taken under diagnostic capture. Its capture evidence was
+      # recorded on another parser, and nothing yet authenticates that record against a
+      # frozen registry, so the walk parses the file itself and holds the evidence it
+      # made. Declining is the hold: raising here ended every captured build whose
+      # worker finished a file before the walk asked for it.
+      return nil if @diagnostic_capture
       recipient.reports.concat(entry.reports)
       recipient.notes.concat(entry.notes)
       nodes
