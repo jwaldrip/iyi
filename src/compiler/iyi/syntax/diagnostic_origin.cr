@@ -2099,9 +2099,11 @@ module Iyi
     SITE_KINDS = %w(signature signature_body signature_annotation field class_var macro top_fun initialiser constant)
 
     record Issue, before : DiagnosticFragmentData, span : DiagnosticByteSpan, site : DiagnosticBoundSite,
-      producer : DiagnosticBoundProducer
+      producer : DiagnosticBoundProducer, rendered_data : DiagnosticFragmentData, rendered_text : String
     record Entry, text : String, site : DiagnosticBoundSite?
-    record Finished, key : String, projections : Array(DiagnosticOrigin)
+    record Finished, key : String, projections : Array(DiagnosticOrigin), data : DiagnosticFragmentData
+    record VerifiedFragmentSnapshot, key : String, text_sha256 : String,
+      events : Array(DiagnosticTokenEvent), anchors : Array(DiagnosticAnchor)
     record Part, first : Int32, last : Int32, token_kind : String, context : String,
       slot : DiagnosticNameSlot, lex_context : DiagnosticRenderedLexContext
 
@@ -2115,6 +2117,7 @@ module Iyi
     @sealed : Bool
     @attesting : DiagnosticBoundProjectionData?
     @verified_section : IyiMod::DiagnosticSection?
+    @verified_fragments : Hash(String, VerifiedFragmentSnapshot)?
 
     def initialize(@authority : DiagnosticProjectionAuthority)
       @fragments = Hash(DiagnosticFragmentData, Entry).new.compare_by_identity
@@ -2127,6 +2130,7 @@ module Iyi
       @sealed = false
       @attesting = nil
       @verified_section = nil
+      @verified_fragments = nil
     end
 
     # Creates a site handle. A constant site must sit under an open initialiser site.
@@ -2230,7 +2234,7 @@ module Iyi
       rendered = DiagnosticRenderedFragment.new(output, builder.finish_data(output))
       @fragments[rendered.data] = Entry.new(output, site)
       origins.each do |origin|
-        @issued[origin] = Issue.new(before.data, span, site, live)
+        @issued[origin] = Issue.new(before.data, span, site, live, rendered.data, output)
         @counts[kind_name(live)] += 1
       end
       rendered
@@ -2247,12 +2251,15 @@ module Iyi
         raise ArgumentError.new(DiagnosticBoundProjection::MSG_R7)
       end
       edits.each do |edit|
-        edit.replacement.data.anchors.each do |anchor|
-          origin = anchor.origin
-          next unless origin.is_a?(DiagnosticOrigin::DerivedName) && origin.bound_projection_data
+        hits = DiagnosticProjectionReach.hits(edit.replacement.data.events, edit.replacement.data.anchors)
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R5) if hits.empty?
+        hits.each do |hit|
+          origin = hit.origin
           issue = @issued[origin]?
           unless issue && issue.before.same?(before.data) && issue.span == edit.span &&
-                 issue.site.same?(site) && issue.producer == edit.producer
+                 issue.site.same?(site) && issue.producer == edit.producer &&
+                 issue.rendered_data.same?(edit.replacement.data) &&
+                 issue.rendered_text == edit.replacement.text
             raise ArgumentError.new(DiagnosticBoundProjection::MSG_R5)
           end
         end
@@ -2287,6 +2294,7 @@ module Iyi
         raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8) unless part_projections.has_key?(origin)
         raise ArgumentError.new(DiagnosticBoundProjection::MSG_R19) unless belongs?(issue.site, site)
       end
+      validate_composed_parts!(fragment, parts, site, owners)
       @fragments[fragment.data] = Entry.new(fragment.text, site)
       fragment
     end
@@ -2311,7 +2319,7 @@ module Iyi
         raise ArgumentError.new(DiagnosticBoundProjection::MSG_R19) unless belongs?(issue.site, site)
         projections << origin
       end
-      record = Finished.new(key, projections)
+      record = Finished.new(key, projections, fragment.data)
       @finished_by_site[site] = record
       @finished_by_key[key] = record
       fragment.data.to_fragment(key)
@@ -2355,6 +2363,11 @@ module Iyi
           unless expected.projections.size == owners.size && expected.projections.all? { |origin| owners.has_key?(origin) }
             raise ArgumentError.new(DiagnosticBoundProjection::MSG_R11)
           end
+          unless expected.data.text_sha256 == fragment.text_sha256 &&
+                 expected.data.events == fragment.events &&
+                 expected.data.anchors == fragment.anchors
+            raise ArgumentError.new(DiagnosticBoundProjection::MSG_R11)
+          end
         end
       end
       @finished_by_key.each_key do |key|
@@ -2362,12 +2375,163 @@ module Iyi
       end
       @sealed = true
       @verified_section = section
+      snapshot = Hash(String, VerifiedFragmentSnapshot).new
+      section.fragments.each do |key, fragment|
+        snapshot[key] = VerifiedFragmentSnapshot.new(fragment.key, fragment.text_sha256, fragment.events.dup, fragment.anchors.dup)
+      end
+      @verified_fragments = snapshot
       seen.size
     end
 
     def verified?(section : IyiMod::DiagnosticSection) : Bool
       verified = @verified_section
-      !verified.nil? && verified.same?(section)
+      return false unless !verified.nil? && verified.same?(section)
+      snapshot = @verified_fragments
+      return false if snapshot.nil?
+      return false unless section.fragments.size == snapshot.size
+
+      snapshot.each do |key, expected|
+        fragment = section.fragments[key]?
+        return false if fragment.nil?
+        return false unless fragment.key == expected.key
+        return false unless fragment.text_sha256 == expected.text_sha256
+        return false unless fragment.events.size == expected.events.size
+        return false unless fragment.anchors.size == expected.anchors.size
+        return false unless fragment.events == expected.events
+        return false unless fragment.anchors == expected.anchors
+        expected.anchors.each_with_index do |expected_anchor, idx|
+          anchor = fragment.anchors[idx]
+          return false unless anchor.origin.same?(expected_anchor.origin)
+        end
+      end
+
+      true
+    end
+
+    private def validate_composed_parts!(fragment : DiagnosticRenderedFragment,
+                                         parts : Array(DiagnosticRenderedFragment),
+                                         site : DiagnosticBoundSite,
+                                         owners : Hash(DiagnosticOrigin, Int32)) : Nil
+      return if parts.empty? && fragment.text.empty? && fragment.data.anchors.empty?
+
+      accounted_anchors = Set(Int32).new
+      placed_spans = [] of {Int32, Int32}
+
+      parts.each do |part|
+        next if part.text.empty? && part.data.anchors.empty?
+
+        at : Int32? = nil
+
+        part.data.anchors.each do |part_anchor|
+          if origin = part_anchor.origin
+            if frag_idx = owners[origin]?
+              at = fragment.data.anchors[frag_idx].offset - part_anchor.offset
+              break
+            end
+          end
+        end
+
+        if at.nil?
+          if part.text.empty?
+            at = 0
+          else
+            cursor = 0
+            while cursor <= fragment.text.bytesize - part.text.bytesize
+              if fragment.text.byte_slice(cursor, part.text.bytesize) == part.text
+                matches_anchors = part.data.anchors.all? do |part_a|
+                  expected_offset = cursor + part_a.offset
+                  fragment.data.anchors.any? do |frag_a|
+                    frag_a.offset == expected_offset &&
+                      frag_a.kind == part_a.kind &&
+                      frag_a.role == part_a.role &&
+                      frag_a.origin == part_a.origin &&
+                      frag_a.name_slots == part_a.name_slots
+                  end
+                end
+                matches_events = part.data.events.all? do |part_e|
+                  expected_start = cursor + part_e.input_start
+                  expected_end = cursor + part_e.input_end
+                  fragment.data.events.any? do |frag_e|
+                    frag_e.input_start == expected_start &&
+                      frag_e.input_end == expected_end &&
+                      frag_e.token_kind == part_e.token_kind &&
+                      frag_e.token_text == part_e.token_text
+                  end
+                end
+                if matches_anchors && matches_events
+                  at = cursor
+                  break
+                end
+              end
+              cursor += 1
+            end
+          end
+        end
+
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8) if at.nil?
+        placed_at = at.not_nil!
+
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8) unless placed_at >= 0 &&
+          placed_at + part.text.bytesize <= fragment.text.bytesize
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8) unless fragment.text.byte_slice(placed_at, part.text.bytesize) == part.text
+
+        start_pos = placed_at
+        end_pos = placed_at + part.text.bytesize
+        if start_pos < end_pos
+          if placed_spans.any? { |s, e| Math.max(s, start_pos) < Math.min(e, end_pos) }
+            raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8)
+          end
+          placed_spans << {start_pos, end_pos}
+        end
+
+        part.data.anchors.each do |part_anchor|
+          if origin = part_anchor.origin
+            if frag_idx = owners[origin]?
+              frag_anchor = fragment.data.anchors[frag_idx]
+              unless frag_anchor.offset == placed_at + part_anchor.offset &&
+                     frag_anchor.kind == part_anchor.kind &&
+                     frag_anchor.role == part_anchor.role &&
+                     frag_anchor.origin.same?(part_anchor.origin) &&
+                     frag_anchor.name_slots == part_anchor.name_slots
+                raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8)
+              end
+              if part_event = part.data.events[part_anchor.event_index]?
+                frag_event = fragment.data.events[frag_anchor.event_index]?
+                unless frag_event &&
+                       frag_event.input_start == placed_at + part_event.input_start &&
+                       frag_event.input_end == placed_at + part_event.input_end &&
+                       frag_event.token_text == part_event.token_text &&
+                       frag_event.token_kind == part_event.token_kind
+                 raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8)
+               end
+             end
+           end
+         end
+
+        part.data.anchors.each do |part_anchor|
+          expected_offset = placed_at + part_anchor.offset
+          fragment.data.anchors.each_with_index do |frag_anchor, frag_idx|
+            if frag_anchor.offset == expected_offset &&
+               frag_anchor.kind == part_anchor.kind &&
+               frag_anchor.role == part_anchor.role &&
+               frag_anchor.origin == part_anchor.origin &&
+               frag_anchor.name_slots == part_anchor.name_slots
+              accounted_anchors << frag_idx
+            end
+          end
+        end
+      end
+
+      fragment.data.anchors.each_with_index do |frag_anchor, frag_idx|
+        next if accounted_anchors.includes?(frag_idx)
+        origin = frag_anchor.origin
+        valid_declaration = !origin.nil? && (
+          site.declaration_origin.try(&.same?(origin)) ||
+          site.parent.try(&.declaration_origin.try(&.same?(origin))) ||
+          @sites.keys.any? { |s| belongs?(s, site) && s.declaration_origin.try(&.same?(origin)) }
+        )
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8) unless valid_declaration
+      end
     end
 
     # True only while render constructs this exact data object.

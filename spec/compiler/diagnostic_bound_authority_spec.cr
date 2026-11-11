@@ -155,6 +155,29 @@ private def spec_shared_fragment(text : String, spans : Array({Int32, Int32}), o
   Iyi::DiagnosticRenderedFragment.new(text, builder.finish_data(text))
 end
 
+private def spec_with_temporary_file(&)
+  path = File.tempname("authority", ".iyimod")
+  begin
+    yield path
+  ensure
+    File.delete(path) if File.exists?(path)
+  end
+end
+
+private def spec_artifact(initialiser : String = "") : Iyi::IyiMod::Artifact
+  Iyi::IyiMod::Artifact.new(
+    module_name: "app/main",
+    source_path: "/src/app/main.cr",
+    compiler_version: "1.22.0-dev+abc1234",
+    target_triple: "x86_64-pc-linux-gnu",
+    flags: ["bits64", "linux"],
+    imports: [] of Iyi::IyiMod::ImportEdge,
+    exports: Iyi::IyiMod::Exports.empty,
+    initialiser: initialiser,
+  )
+end
+
+
 describe "diagnostic bound projection authority" do
   describe "positive controls minted through the ledger" do
     it "P1 mints StripRoot from a source-bearing fragment" do
@@ -837,6 +860,189 @@ describe "diagnostic bound projection authority" do
       # A refused compose leaves nothing behind: the doubled fragment is not registered, and the projection stays issued.
       ledger.registered?(doubled).should be_false
       ledger.issued?(projection).should be_true
+    end
+
+    # Adversarial controls: ledger integrity validations
+    it "invalidates a verified section on array or hash mutation" do
+      authority = SpecBoundAuthority.new
+      ledger = Iyi::DiagnosticProjectionLedger.new(authority)
+      initialiser = ledger.open_site("initialiser", "")
+      origin = spec_written(0, "Assign", "constant")
+      child = ledger.open_site("constant", "", nil, nil, origin, initialiser)
+      rendered = spec_mint(ledger, authority, child, Iyi::DiagnosticBoundProducer::ConstantTarget.new(origin, "Inner::NAME"),
+        spec_empty(ledger), 0, "Inner::NAME")
+      joined = ledger.compose(initialiser, spec_copy_fragment(rendered), [rendered])
+      finished = ledger.finish(initialiser, joined, "initialiser")
+
+      section = Iyi::IyiMod::DiagnosticSection.new
+      section.add_fragment(finished)
+      ledger.verify_section!(section).should eq(2)
+      ledger.verified?(section).should be_true
+
+      artifact = spec_artifact("Inner::NAME")
+      artifact.diagnostic_provenance = section
+
+      # Array mutation 1: mutate anchors array by appending an anchor
+      extra_anchor = finished.anchors.first.copy_with(offset: 99)
+      section.fragments["initialiser"].anchors << extra_anchor
+      ledger.verified?(section).should be_false
+      spec_with_temporary_file do |path|
+        expect_raises(Iyi::IyiMod::Error, "bound section was not verified by its issuer") do
+          Iyi::IyiMod.write(artifact, path, ledger)
+        end
+      end
+      section.fragments["initialiser"].anchors.pop
+      ledger.verified?(section).should be_true
+
+      # Array mutation 2: mutate events array by popping an event
+      popped_event = section.fragments["initialiser"].events.pop
+      ledger.verified?(section).should be_false
+      spec_with_temporary_file do |path|
+        expect_raises(Iyi::IyiMod::Error, "bound section was not verified by its issuer") do
+          Iyi::IyiMod.write(artifact, path, ledger)
+        end
+      end
+      section.fragments["initialiser"].events << popped_event
+      ledger.verified?(section).should be_true
+
+      # Hash mutation 1: add a new fragment key to section.fragments
+      stray_frag = Iyi::IyiMod::DiagnosticFragment.new("stray", finished.text_sha256, finished.events.dup, finished.anchors.dup)
+      section.fragments["stray"] = stray_frag
+      ledger.verified?(section).should be_false
+      spec_with_temporary_file do |path|
+        expect_raises(Iyi::IyiMod::Error, "bound section was not verified by its issuer") do
+          Iyi::IyiMod.write(artifact, path, ledger)
+        end
+      end
+      section.fragments.delete("stray")
+      ledger.verified?(section).should be_true
+
+      # Hash mutation 2: replace fragment with a substituted fragment
+      other_frag = Iyi::IyiMod::DiagnosticFragment.new("initialiser", ::Crystal::Digest::SHA256.hexdigest("x"),
+        [] of Iyi::DiagnosticTokenEvent, [] of Iyi::DiagnosticAnchor)
+      section.fragments["initialiser"] = other_frag
+      ledger.verified?(section).should be_false
+      spec_with_temporary_file do |path|
+        expect_raises(Iyi::IyiMod::Error, "bound section was not verified by its issuer") do
+          Iyi::IyiMod.write(artifact, path, ledger)
+        end
+      end
+      section.fragments["initialiser"] = finished
+      ledger.verified?(section).should be_true
+
+      # Mutation 3: move an issued projection across keys
+      moved_anchor = section.fragments["initialiser"].anchors.pop
+      section.fragments["other"] = Iyi::IyiMod::DiagnosticFragment.new("other", finished.text_sha256, finished.events.dup, [moved_anchor])
+      ledger.verified?(section).should be_false
+      spec_with_temporary_file do |path|
+        expect_raises(Iyi::IyiMod::Error, "bound section was not verified by its issuer") do
+          Iyi::IyiMod.write(artifact, path, ledger)
+        end
+      end
+      section.fragments.delete("other")
+      section.fragments["initialiser"].anchors << moved_anchor
+      ledger.verified?(section).should be_true
+
+      # Mutation 4: duplicate an issued projection across fragments
+      section.fragments["dup"] = Iyi::IyiMod::DiagnosticFragment.new("dup", finished.text_sha256, finished.events.dup, [finished.anchors.first])
+      ledger.verified?(section).should be_false
+      spec_with_temporary_file do |path|
+        expect_raises(Iyi::IyiMod::Error, "bound section was not verified by its issuer") do
+          Iyi::IyiMod.write(artifact, path, ledger)
+        end
+      end
+    end
+
+    it "R11 refuses same-key fragment substitution with altered content or shifted anchor offset" do
+      authority = SpecBoundAuthority.new
+      ledger = Iyi::DiagnosticProjectionLedger.new(authority)
+      initialiser = ledger.open_site("initialiser", "")
+      before, _ = spec_names(ledger, "Root::Thing", [{0, 4}, {6, 11}])
+      rendered = spec_render(ledger, initialiser, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11)
+      joined = ledger.compose(initialiser, spec_copy_fragment(rendered), [rendered])
+      finished = ledger.finish(initialiser, joined, "initialiser")
+
+      # Substitution 1: Same key and projection identity, but altered text hash
+      section1 = Iyi::IyiMod::DiagnosticSection.new
+      altered_hash_frag = Iyi::IyiMod::DiagnosticFragment.new("initialiser",
+        ::Crystal::Digest::SHA256.hexdigest("altered_text"), finished.events.dup, finished.anchors.dup)
+      section1.add_fragment(altered_hash_frag)
+      expect_raises(ArgumentError, "bound section differs from finished fragments") do
+        ledger.verify_section!(section1)
+      end
+
+      # Substitution 2: Same key and projection identity, but shifted anchor offset
+      ledger2 = Iyi::DiagnosticProjectionLedger.new(authority)
+      initialiser2 = ledger2.open_site("initialiser", "")
+      before2, _ = spec_names(ledger2, "Root::Thing", [{0, 4}, {6, 11}])
+      rendered2 = spec_render(ledger2, initialiser2, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before2, 11)
+      joined2 = ledger2.compose(initialiser2, spec_copy_fragment(rendered2), [rendered2])
+      finished2 = ledger2.finish(initialiser2, joined2, "initialiser")
+
+      section2 = Iyi::IyiMod::DiagnosticSection.new
+      shifted_anchors = [finished2.anchors.first.copy_with(offset: finished2.anchors.first.offset + 1)]
+      shifted_frag = Iyi::IyiMod::DiagnosticFragment.new("initialiser", finished2.text_sha256, finished2.events.dup, shifted_anchors)
+      section2.add_fragment(shifted_frag)
+      expect_raises(ArgumentError, "bound section differs from finished fragments") do
+        ledger2.verify_section!(section2)
+      end
+    end
+
+    it "R5 refuses an apply whose replacement pads or alters the issued render" do
+      ledger = Iyi::DiagnosticProjectionLedger.new(SpecBoundAuthority.new)
+      site = ledger.open_site("initialiser", "")
+      before, _ = spec_names(ledger, "Root::Thing", [{0, 4}, {6, 11}])
+      producer = Iyi::DiagnosticBoundProducer::StripRoot.new("Root")
+      rendered = spec_render(ledger, site, producer, before, 11)
+      projection_origin = rendered.data.anchors.first.origin.not_nil!
+
+      # Construct a replacement whose text is padded ("Evil::Thing" instead of "Thing")
+      # but embedding the exact issued projection origin for the edit
+      padded_text = "Evil::Thing"
+      builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+      slot = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::PathSegment, 0)
+      name = Iyi::DiagnosticNameValue::Derived.new(projection_origin.as(Iyi::DiagnosticOrigin::DerivedName))
+      builder.add_written_anchor(6, 11, padded_text, Iyi::DiagnosticRenderedLexContext::TypeName, "Name", "path_segment",
+        projection_origin, {slot => [name] of Iyi::DiagnosticNameValue})
+      padded_replacement = Iyi::DiagnosticRenderedFragment.new(padded_text, builder.finish_data(padded_text))
+
+      edit = Iyi::DiagnosticByteEdit.new(Iyi::DiagnosticByteSpan.new(0, 11), "Root::Thing", padded_replacement, producer, [
+        Iyi::DiagnosticAnchorTransfer::Project.new(0, [0], 0),
+        Iyi::DiagnosticAnchorTransfer::Project.new(1, [0], 0),
+      ])
+
+      error = expect_raises(ArgumentError) do
+        ledger.apply(site, before, [edit], "Crystal")
+      end
+      error.message.should eq("bound projection replacement was not issued for this edit")
+    end
+
+    it "refuses a low-level rewrite that splices an issued render into a registered part through compose" do
+      ledger = Iyi::DiagnosticProjectionLedger.new(SpecBoundAuthority.new)
+      site = ledger.open_site("initialiser", "")
+      before, _ = spec_names(ledger, "Root::Thing", [{0, 4}, {6, 11}])
+      producer = Iyi::DiagnosticBoundProducer::StripRoot.new("Root")
+      rendered = spec_render(ledger, site, producer, before, 11)
+
+      # Low-level rewrite: splice rendered into before using DiagnosticFragmentRewrite.apply directly
+      edit = Iyi::DiagnosticByteEdit.new(Iyi::DiagnosticByteSpan.new(0, 4), "Root", rendered, producer, [
+        Iyi::DiagnosticAnchorTransfer::Project.new(0, [0], 0),
+      ])
+      spliced = Iyi::DiagnosticFragmentRewrite.apply(before, [edit], "Crystal")
+
+      # Attempting to register this spliced fragment through compose must be refused
+      expect_raises(ArgumentError) do
+        ledger.compose(site, spliced, [before, rendered])
+      end
+      expect_raises(ArgumentError) do
+        ledger.compose(site, spliced, [rendered, before])
+      end
+      expect_raises(ArgumentError) do
+        ledger.compose(site, spliced, [rendered])
+      end
+      expect_raises(ArgumentError) do
+        ledger.compose(site, spliced, [before])
+      end
     end
   end
 end
