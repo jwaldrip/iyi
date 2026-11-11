@@ -107,9 +107,9 @@ describe Iyi::DiagnosticBoundRecipe do
     generic = recipe.printed(captured_type("Array(Root::X)"))
     recipe.project_whole(generic, Iyi::DiagnosticBoundProducer::ResolvedRestriction.new(
       "Owner", "Array(Root::X)", "Array(X)", "Root", false)).text.should eq("Array(X)")
-    proc = recipe.printed(captured_type("Root::X -> Int32"))
+    proc = recipe.printed(captured_type("(Root::X -> Int32)"))
     recipe.project_whole(proc, Iyi::DiagnosticBoundProducer::ResolvedRestriction.new(
-      "Owner", "Root::X -> Int32", "X -> Int32", "Root", false)).text.should eq("X -> Int32")
+      "Owner", "(Root::X -> Int32)", "X -> Int32", "Root", false)).text.should eq("X -> Int32")
   end
 
   it "joins and finishes a fragment that a section accepts, and verifies the section count" do
