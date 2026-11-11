@@ -312,6 +312,13 @@ module Iyi
   # The mode the section's sources are lexed in, the way the section itself reads it.
   @@diagnostic_mode = "Crystal"
   @@diagnostic_binding = false
+  @@diagnostic_bodies = {} of String => BindDiagnostic
+  @@diagnostic_headers = {} of String => BindDiagnostic
+  @@diagnostic_classvars = {} of {String, String} => BindDiagnostic
+  @@diagnostic_fields = {} of {String, String} => BindDiagnostic
+  @@raw_classvars = {} of {String, String} => {String, DiagnosticModeCaptures}
+  @@raw_fields = {} of {String, String} => {String, DiagnosticModeCaptures}
+  @@uninitialized_classvars = {} of {String, String} => {DiagnosticOrigin, String}
 
   # The methods whose bodies travel, keyed the way `keep_type` reads them:
   # the container and the signature *as collected*, before the rewrites that
