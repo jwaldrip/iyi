@@ -141,22 +141,27 @@ module Iyi
     # Path target: an Assign/constant anchor on the path's head token, which
     # points at the path's first name anchor. The origin is this constant
     # site's declaration origin.
-    def constant_line(path : DiagnosticBoundFragment, value : DiagnosticBoundFragment) : DiagnosticBoundFragment
+    def constant_line(path : DiagnosticBoundFragment, value : DiagnosticBoundFragment, pub : Bool = false) : DiagnosticBoundFragment
       declaration_origin = @site.declaration_origin || raise ArgumentError.new("constant line lacks a declaration origin")
       raise ArgumentError.new("constant line must be written at a constant site") unless @site.kind == "constant"
       path_rendered = registered!(path)
       value_rendered = registered!(value)
       io = IO::Memory.new
       builder = DiagnosticFragmentBuilder.new(@lexical_mode)
+      offset = 0
+      if pub
+        io << "pub "
+        offset = 4
+      end
       DiagnosticFragmentRewrite.append_into(builder, io, path_rendered)
-      head_event = (0...builder.event_count).find { |index| builder.event_at(index).selected_start == 0 }
+      head_event = (0...builder.event_count).find { |index| builder.event_at(index).selected_start == offset }
       raise ArgumentError.new("constant line lacks a path head") unless head_event
       child = (0...builder.anchor_count).find { |index| builder.anchor_at(index).event_index == head_event }
       raise ArgumentError.new("constant line head lacks a path name") unless child
       io << " = "
       DiagnosticFragmentRewrite.append_into(builder, io, value_rendered)
       head = DiagnosticFragmentHead::Anchor.new(child).as(DiagnosticFragmentHead)
-      builder.add_anchor(DiagnosticAnchor.new(0, "Assign", "constant", declaration_origin,
+      builder.add_anchor(DiagnosticAnchor.new(offset, "Assign", "constant", declaration_origin,
         {} of DiagnosticNameSlot => Array(DiagnosticNameValue), head_event,
         DiagnosticFragmentAttachment::HeadOf.new(DiagnosticHeadRule::ConstantAssignHead, head)))
       text = io.to_s
@@ -212,6 +217,16 @@ module Iyi
       return f if resolved == name
       rewrite_paths(f, DiagnosticBoundProducer::AliasType.new(owner, name, resolved)) do |path|
         path.names.size == 1 && path.names[0] == name && !continued_before?(path) && !scope_or_identifier_at?(path.after)
+      end
+    end
+
+    # Replaces the return type *owner_type* of a metaclass `new` with `self`.
+    def self_return(f : DiagnosticBoundFragment, owner_type : String) : DiagnosticBoundFragment
+      registered!(f)
+      segments = owner_type.split("::")
+      producer = DiagnosticBoundProducer::SelfReturn.new(owner_type, "new", "self")
+      rewrite_paths(f, producer) do |path|
+        path.names == segments && !continued_before?(path) && !scope_or_identifier_at?(path.after)
       end
     end
 

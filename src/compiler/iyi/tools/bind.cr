@@ -1051,6 +1051,8 @@ module Iyi
     @@raw_classvars = program.iyi_class_var_diagnostics.dup if program.diagnostic_capture
     @@raw_fields = program.iyi_field_diagnostics.dup if program.diagnostic_capture
 
+    carried_types = carried_types.map { |declaration| qualify_self_references declaration, @@self_shadowed }
+
     if module_root? program, root
       ordinals = IyiMod.mono_body_ordinals(exported)
       exported = exported.map_with_index do |signature, index|
@@ -1110,11 +1112,6 @@ module Iyi
         class_var.copy_with(type: map_names(class_var.type), value: rewritten)
       end
     end
-
-    # Last, once every name is written the way the consumer will read it: a
-    # declaration inside a type refers to that type absolutely.
-    # Last, once every name is written the way the consumer will read it.
-    carried_types = carried_types.map { |declaration| qualify_self_references declaration, @@self_shadowed }
 
     # The files this boundary is written from, each with what it hashed to
     # (IV.3). Without them the artifact said nothing a staleness check could
@@ -1413,9 +1410,16 @@ module Iyi
           origin = DiagnosticOrigin::Synthetic.new(parent, "constant_accessor", "getter")
           raise "constant accessor has invalid declaration origin" unless origin.valid_for_anchor?("Def", "keyword")
           signature.diagnostic_origin = origin
-          key = IyiMod.signature_fragment_key(iyi_module_name(root), signature)
-          raise "duplicate constant accessor origin" if @@diagnostic_headers.has_key?(key)
-          @@diagnostic_headers[key] = {IyiMod.render_signature(signature), [DiagnosticAnchor.new(0, "Def", "keyword", origin)]}
+          container = iyi_module_name(root)
+          ledger = @@ledger || raise "bound signature recorded without a section ledger"
+          text = IyiMod.render_signature(signature)
+          builder = DiagnosticFragmentBuilder.new(@@diagnostic_mode)
+          builder.add_written_anchor(0, 3, text, DiagnosticRenderedLexContext::Operand,
+            "Def", "keyword", origin, {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
+          rendered = ledger.register_source(DiagnosticRenderedFragment.new(text, builder.finish_data(text)))
+          index = @@diagnostic_headers.values.count { |held| held.container == container && held.origin == origin }
+          recipe = DiagnosticBoundRecipe.open(ledger, @@diagnostic_mode, "signature", container, nil, index, origin)
+          @@diagnostic_headers[key] = BindDiagnostic.new(recipe, DiagnosticBoundFragment.new(rendered), container, origin)
         end
         accessors << {signature, constant}
       when NamedType
@@ -3046,15 +3050,24 @@ module Iyi
       raise "bound parameter projection changed" unless text == bind_parameter(name, restriction, default)
       parameter_fragment(recipe, arguments[index], name, restriction, default, text)
     end
-    pieces << recipe.plain(signature.block_parameter) unless signature.block_parameter.empty?
+    unless signature.block_parameter.empty?
+      pieces << block_parameter_fragment(recipe, definition.block_arg, signature.block_parameter)
+    end
     unless pieces.empty?
       list = recipe.join(pieces, ", ")
       head = recipe.join([head, recipe.join([recipe.plain("("), list, recipe.plain(")")], "")], "")
     end
 
     unless signature.return_type.empty?
-      head = recipe.join([head, recipe.plain(" : "),
-        header_piece(recipe, definition.return_type, signature.return_type)], "")
+      return_fragment = if definition.return_type
+                          header_piece(recipe, definition.return_type, signature.return_type)
+                        elsif origin.valid_for_anchor?("Def", "keyword")
+                          producer = DiagnosticBoundProducer::SemanticSignatureType.new(origin, "return_type", nil, signature.return_type)
+                          recipe.insert(producer)
+                        else
+                          recipe.plain(signature.return_type)
+                        end
+      head = recipe.join([head, recipe.plain(" : "), return_fragment], "")
     end
 
     unless signature.free_variables.empty?
@@ -3104,6 +3117,15 @@ module Iyi
     written
   end
 
+  # A block parameter: its name and annotations prefix, joined with its restriction if present.
+  private def self.block_parameter_fragment(recipe : DiagnosticBoundRecipe, block : Arg?,
+                                            text : String) : DiagnosticBoundFragment
+    return recipe.plain(text) if block.nil? || !text.includes?(" : ")
+    prefix_and_name, _, restriction = text.partition(" : ")
+    restriction_fragment = header_piece(recipe, block.restriction, restriction)
+    recipe.join([recipe.plain(prefix_and_name), restriction_fragment], " : ")
+  end
+
   # The rewrites in order, each applied by the recipe of the held site, so every projection it issues is issued
   # at the site that finishes the declaration.
   private def self.apply_rewrites(held : BindDiagnostic, rewrites : Array(BindRewrite)) : BindDiagnostic
@@ -3129,6 +3151,13 @@ module Iyi
 
   private def self.map_rewrites : Array(BindRewrite)
     @@bound_prefix.map { |name, qualified| map_rewrite(name, qualified) }
+  end
+
+  # A metaclass `new` returning its owner becomes `self`.
+  private def self.self_return_rewrite(owner_type : String) : BindRewrite
+    ->(recipe : DiagnosticBoundRecipe, fragment : DiagnosticBoundFragment) {
+      recipe.self_return(fragment, owner_type)
+    }
   end
 
   private def self.record_bind_diagnostic_body(container : String, signature : IyiMod::Signature,
@@ -3863,8 +3892,12 @@ module Iyi
   # insertion-ordered and holds the resolved path of everything this build
   # read, so the shard's own files are the ones under its directory.
   private def self.initialiser_source(program : Program, root : String) : String
-    parts = [] of {String, Array(DiagnosticAnchor)?}
-    constants = constant_source(program, root)
+    recipe = if program.diagnostic_capture
+               ledger = @@ledger || raise "bound initialiser recorded without a section ledger"
+               DiagnosticBoundRecipe.initialiser(ledger, @@diagnostic_mode)
+             end
+    parts = [] of {String, DiagnosticBoundFragment?}
+    constants = constant_source(program, root, recipe)
     parts << constants unless constants[0].empty?
 
     source = program.filename
@@ -3873,37 +3906,19 @@ module Iyi
       unless directory.empty?
         program.requires.each do |path|
           next unless path.starts_with?(directory)
-          statements = top_level_statements(program, path)
+          statements = top_level_statements(program, path, recipe)
           parts << statements unless statements[0].empty?
         end
       end
     end
 
-    text, anchors = join_diagnostic_text(parts)
-    @@initialiser_anchors = anchors
-    text
-  end
-
-  private def self.join_diagnostic_text(parts : Array({String, Array(DiagnosticAnchor)?})) : {String, Array(DiagnosticAnchor)?}
-    io = IO::Memory.new
-    anchors = nil.as(Array(DiagnosticAnchor)?)
-    parts.each_with_index do |(text, local), index|
-      io << '\n' if index > 0
-      if local
-        into = anchors ||= [] of DiagnosticAnchor
-        local.each { |anchor| into << anchor.copy_with(offset: anchor.offset + io.pos.to_i32) }
-      end
-      io << text
+    text = parts.map(&.[0]).join('\n')
+    if recipe && !parts.empty?
+      fragments = parts.compact_map(&.[1])
+      joined = recipe.join(fragments, "\n")
+      @@initialiser_diagnostic = BindDiagnostic.new(recipe, joined, "")
     end
-    {io.to_s, anchors}
-  end
-
-  private def self.bound_diagnostic_text(program : Program, node : ASTNode) : {String, Array(DiagnosticAnchor)?}
-    return {node.to_s, nil} unless program.diagnostic_capture
-    io = IO::Memory.new
-    anchors = [] of DiagnosticAnchor
-    node.to_s(io, diagnostic_anchors: anchors)
-    {io.to_s, anchors}
+    text
   end
 
   # Whether this call names a macro rather than a method.
@@ -4017,16 +4032,21 @@ module Iyi
   # `enum`, an `alias`, a macro, an `annotation` — and neither is a `require`,
   # which `Requires` already carries, nor a constant, which `constant_source`
   # does. What is left is code, and code is what has to run.
-  private def self.top_level_statements(program : Program, path : String) : {String, Array(DiagnosticAnchor)?}
+  private def self.top_level_statements(program : Program, path : String,
+                                        recipe : DiagnosticBoundRecipe? = nil) : {String, DiagnosticBoundFragment?}
     source = File.read(path)
     parser = program.new_parser(source)
     parser.filename = path
     parser.diagnostic_source_file = path if program.diagnostic_capture
     nodes = parser.parse
 
-    lines = [] of {String, Array(DiagnosticAnchor)?}
-    collect_runnable program, nodes, "", lines
-    join_diagnostic_text(lines)
+    lines = [] of {String, DiagnosticBoundFragment?}
+    collect_runnable program, nodes, "", lines, recipe: recipe
+    text = lines.map(&.[0]).join('\n')
+    fragment = if recipe && !lines.empty?
+                 recipe.join(lines.compact_map(&.[1]), "\n")
+               end
+    {text, fragment}
   rescue ex
     raise ex if program.diagnostic_capture
     {"", nil}
@@ -4047,9 +4067,10 @@ module Iyi
   # that wrote them: `register_decoder` is `PG::Decoders`' own and its
   # argument names a class beside it.
   private def self.collect_runnable(program : Program, node : ASTNode,
-                                    namespace : String, lines : Array({String, Array(DiagnosticAnchor)?}),
+                                    namespace : String, lines : Array({String, DiagnosticBoundFragment?}),
                                     assigned : Array(String)? = nil,
-                                    calls : Array(Bool)? = nil) : Nil
+                                    calls : Array(Bool)? = nil,
+                                    recipe : DiagnosticBoundRecipe? = nil) : Nil
     flat_expressions(node).each do |inner|
       # Inside a declaration, a *call* is the only thing that is code.
       #
@@ -4072,7 +4093,7 @@ module Iyi
       # is initialised exactly once and in the order the shard wrote.
       if !namespace.empty? && inner.is_a?(Assign) && (target = inner.target).is_a?(ClassVar)
         assigned.try &.<< "#{namespace}::#{target.name}"
-        lines << bound_diagnostic_text(program, inner)
+        lines << {inner.to_s, recipe.try(&.printed(inner))}
         next
       end
 
@@ -4091,14 +4112,10 @@ module Iyi
         # resolves to nothing: `undefined constant PG::Decoders::Decoder`.
         next unless inside == @@root || inside.starts_with?("#{@@root}::") ||
                     @@root.starts_with?("#{inside}::")
-        nested = [] of {String, Array(DiagnosticAnchor)?}
+        nested = [] of {String, DiagnosticBoundFragment?}
         nested_assigned = [] of String
         nested_calls = [] of Bool
-        collect_runnable program, inner.body, inside, nested, nested_assigned, nested_calls
-        # Only where something *runs*. A body whose whole content is a class
-        # variable's assignment has nothing this text is for — the
-        # declaration carries the value — and reopening the type to say it
-        # again is a name R-2 refuses: `Shard does not export Shard::Part`.
+        collect_runnable program, inner.body, inside, nested, nested_assigned, nested_calls, recipe: recipe
         next if nested.empty? || nested_calls.empty?
         @@assigned_class_vars.concat nested_assigned
         calls.try &.<< true
@@ -4107,21 +4124,19 @@ module Iyi
           when ClassDef then inner.struct? ? "struct" : "class"
           else               "module"
           end
-        # Written relative to the shard's own root, because that is where
-        # this text is read: the initialiser is rendered *inside* the
-        # artifact's module, and an absolute `::PG::Decoders` from in there
-        # declares a second type of that name at the top level — one whose
-        # `@@decoders` is a different global from the one the object code
-        # writes to. The root itself needs no wrapper at all; its body is
-        # already the text's own scope.
         relative = inside == @@root ? "" : inside.lchop("#{@@root}::")
-        text, anchors = join_diagnostic_text(nested)
+        text = nested.map(&.[0]).join('\n')
+        nested_fragment = if recipe && !nested.empty?
+                            recipe.join(nested.compact_map(&.[1]), "\n")
+                          end
         unless relative.empty?
           prefix = "#{keyword} #{relative}\n"
-          anchors = anchors.try &.map { |anchor| anchor.copy_with(offset: anchor.offset + prefix.bytesize) }
           text = "#{prefix}#{text}\nend"
+          if recipe && nested_fragment
+            nested_fragment = recipe.join([recipe.plain("#{keyword} #{relative}"), nested_fragment, recipe.plain("end")], "\n")
+          end
         end
-        lines << {text, anchors}
+        lines << {text, nested_fragment}
       when VisibilityModifier
         # `private def` and `protected getter` are declarations wearing a
         # modifier. Read as "not a declaration" — which is what falling
@@ -4155,11 +4170,11 @@ module Iyi
         # `ECR.embed` with nothing in it: `wrong number of arguments for macro
         # 'embed' (given 0, expected 2)`, from a file nobody wrote.
         unless macro_call?(program, inner, namespace)
-          lines << bound_diagnostic_text(program, inner)
+          lines << {inner.to_s, recipe.try(&.printed(inner))}
           calls.try &.<< true
         end
       else
-        lines << bound_diagnostic_text(program, inner)
+        lines << {inner.to_s, recipe.try(&.printed(inner))}
       end
     end
   end
@@ -4181,65 +4196,54 @@ module Iyi
     found
   end
 
-  private def self.constant_source(program : Program, root : String) : {String, Array(DiagnosticAnchor)?}
+  private def self.constant_source(program : Program, root : String,
+                                   recipe : DiagnosticBoundRecipe? = nil) : {String, DiagnosticBoundFragment?}
     root_type = program.types?.try &.[]?(root)
     return {"", nil} unless root_type.is_a?(NamedType)
 
-    lines = [] of {String, Array(DiagnosticAnchor)?}
-    collect_constant_source root_type, "", root, lines, library_root(program)
+    lines = [] of {String, DiagnosticBoundFragment?}
+    collect_constant_source root_type, "", root, lines, library_root(program), recipe: recipe
     lines.sort_by! { |entry| entry[0] }
-    join_diagnostic_text(lines)
+    text = lines.map(&.[0]).join('\n')
+    fragment = if recipe && !lines.empty?
+                 recipe.join(lines.compact_map(&.[1]), "\n")
+               end
+    {text, fragment}
   end
 
   private def self.collect_constant_source(owner : NamedType, prefix : String,
-                                           root : String, lines : Array({String, Array(DiagnosticAnchor)?}),
-                                           library : String?) : Nil
+                                           root : String, lines : Array({String, DiagnosticBoundFragment?}),
+                                           library : String?,
+                                           recipe : DiagnosticBoundRecipe? = nil) : Nil
     owner.types?.try &.each do |name, type|
-      # The library's own, where the shard reopened a namespace that has some.
-      # A consumer under `--crystal` replays the requires and already has it, and
-      # assigning it again is `already initialized constant
-      # OpenSSL::BIO::CRYSTAL_BIO`.
       next if library_type?(type, library)
 
       case type
       when Const
-        # Not the compiler's own. A regex literal is cached in a constant named
-        # `$Regex:0`, which is not a name anybody wrote and not one anybody can
-        # write — the consumer makes its own when it compiles the body that
-        # needed it.
         next if name.starts_with?('$')
-        # A value the consumer cannot name is one it cannot rebuild, and a
-        # constant it cannot rebuild is better left undefined than defined wrong.
         answer = type.value.type?.try(&.devirtualize.to_s)
         next if answer && !nameable_value?(answer, root)
         written = type.iyi_value_source
-        # A constant with none is one nobody wrote — see `Const#iyi_value_source`
-        # — and the node is the best answer left.
-        # `pub`, because a Crystal shard has no other word for it: every
-        # constant it writes is one a program requiring it can name, and R-2
-        # reads an unmarked one as the module's own business. `kilt` writes
-        # `ENGINES` and its `render` macro — which travels — expands to code
-        # that reads it, so a consumer stopped inside an expansion it never
-        # wrote: `Kilt does not export Kilt::ENGINES`.
         value = written.empty? ? type.value.to_s : written
-        line_prefix = "pub #{prefix}#{name} = "
-        anchors = if owner.program.diagnostic_capture
-                    raise "constant has no written diagnostic source" if written.empty?
-                    declaration = type.iyi_declaration_origin || raise "constant has no declaration origin"
-                    result = [DiagnosticAnchor.new(4, "Assign", "constant", declaration)]
-                    (type.iyi_value_anchors || raise "constant has no diagnostic anchors").each do |anchor|
-                      result << anchor.copy_with(offset: anchor.offset + line_prefix.bytesize)
-                    end
-                    result
-                  end
-        lines << {"#{line_prefix}#{value}", anchors}
+        line_text = "pub #{prefix}#{name} = #{value}"
+        fragment = if recipe && owner.program.diagnostic_capture
+                     declaration = type.iyi_declaration_origin || raise "constant has no declaration origin"
+                     const_recipe = DiagnosticBoundRecipe.constant(recipe.ledger, @@diagnostic_mode, declaration, recipe)
+                     path_node = Path.new("#{prefix}#{name}".split("::"))
+                     path_fragment = const_recipe.printed(path_node)
+                     value_fragment = if captures = type.iyi_value_fragment
+                                        const_recipe.captured(captures)
+                                      else
+                                        const_recipe.plain(value)
+                                      end
+                     const_recipe.constant_line(path_fragment, value_fragment, pub: true)
+                   end
+        lines << {line_text, fragment}
       when NamedType
         next if type.is_a?(GenericType)
         next if type.private?
-        # An enum's members are its own and travel with it. Written out here
-        # they would be assignments into a type that already has them.
         next if type.is_a?(EnumType)
-        collect_constant_source type, "#{prefix}#{name}::", root, lines, library
+        collect_constant_source type, "#{prefix}#{name}::", root, lines, library, recipe: recipe
       end
     end
   end
@@ -4764,53 +4768,24 @@ module Iyi
     declaration.copy_with(
       methods: declaration.methods.map_with_index do |signature, index|
         next signature unless signature.name == "new" && signature.receiver == "self"
-        next signature unless signature.return_type == name
+        owner_type = BindSemantics.site_owner(here, @@root, iyi_module_name(@@root)) || here
+        next signature unless signature.return_type == name || signature.return_type == owner_type
         changed = signature.copy_with(return_type: "self")
         changed.diagnostic_origin = signature.diagnostic_origin
         ordinal = ordinals[index]
-        rekey_body(here, signature, changed, ordinal) do |text, anchors, header|
-          if header
-            bound_replace_exact_header(text, IyiMod.render_signature(changed), anchors)
-          else
-            text
-          end
-        end
+        rekey_body(here, signature, changed, ordinal, [self_return_rewrite(owner_type)], [] of BindRewrite) { |body| body }
       end,
       types: nested,
     )
-  end
-
-  private def self.bound_replace_exact_header(before : String, after : String, anchors : Array(DiagnosticAnchor)?) : String
-    start = 0
-    maximum = Math.min(before.bytesize, after.bytesize)
-    while start < maximum && before.to_unsafe[start] == after.to_unsafe[start]
-      start += 1
-    end
-    old_end = before.bytesize
-    new_end = after.bytesize
-    while old_end > start && new_end > start && before.to_unsafe[old_end - 1] == after.to_unsafe[new_end - 1]
-      old_end -= 1
-      new_end -= 1
-    end
-    if anchors
-      mapped = anchors.map do |anchor|
-        raise "diagnostic anchor overlaps changed signature" if anchor.offset >= start && anchor.offset < old_end
-        anchor.offset >= old_end ? anchor.copy_with(offset: anchor.offset + new_end - old_end) : anchor
-      end
-      anchors.replace(mapped)
-    end
-    after
   end
 
   # *text* with every whole-word *name* replaced by *replacement*.
   #
   # Whole-word, for the reason `calls?` is: `StoreTypes` inside `MyStoreTypes`
   # is a different name and rewriting it would invent one.
-  private def self.replace_word(text : String, name : String, replacement : String,
-                                anchors : Array(DiagnosticAnchor)? = nil) : String
+  private def self.replace_word(text : String, name : String, replacement : String) : String
     return text unless text.includes?(name)
 
-    edits = anchors ? [] of {Int32, Int32, Int32} : nil
     result = String.build do |io|
       index = 0
       while (found = text.index(name, index))
@@ -4818,26 +4793,11 @@ module Iyi
         after = found + name.size >= text.size ? nil : text[found + name.size]
         word = (before.nil? || !(before.alphanumeric? || before == '_' || before == ':')) &&
                (after.nil? || !(after.alphanumeric? || after == '_' || after == ':'))
-        if word && edits
-          byte_start = text[0...found].bytesize
-          edits << {byte_start, byte_start + name.bytesize, replacement.bytesize}
-        end
         io << text[index...found]
         io << (word ? replacement : name)
         index = found + name.size
       end
       io << text[index..]
-    end
-    if anchors && edits
-      mapped = anchors.map do |anchor|
-        delta = 0
-        edits.each do |start_offset, end_offset, length|
-          raise "diagnostic anchor falls inside a rewritten name" if anchor.offset >= start_offset && anchor.offset < end_offset
-          delta += length - (end_offset - start_offset) if end_offset <= anchor.offset
-        end
-        anchor.copy_with(offset: anchor.offset + delta)
-      end
-      anchors.replace(mapped)
     end
     result
   end
@@ -5570,12 +5530,10 @@ module Iyi
     if type.responds_to?(:instance_vars_initializers)
       type.instance_vars_initializers.try &.each do |initializer|
         written = initializer.written
-        anchors = if type.program.diagnostic_capture
-                    (initializer.written_anchors || raise "bound field lacks diagnostic anchors").dup
-                  end
-        aliases.each { |simple, resolved| written = replace_word(written, simple, resolved, anchors) }
-        if anchors && !written.empty?
-          type.program.record_field_diagnostic(type.to_s(generic_args: false), initializer.name, written, anchors)
+        aliases.each { |simple, resolved| written = replace_word(written, simple, resolved) }
+        if type.program.diagnostic_capture && !written.empty?
+          fragment = initializer.written_diagnostic || raise "bound field lacks diagnostic fragment"
+          type.program.record_field_diagnostic(type.to_s(generic_args: false), initializer.name, written, fragment)
         end
         defaults[initializer.name] = written
       end
