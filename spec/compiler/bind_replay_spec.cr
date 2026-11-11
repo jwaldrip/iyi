@@ -208,7 +208,7 @@ describe Iyi::BindReplayAuthority do
 
     it "issues the bind root at a macro site" do
       program = probe_program
-      shout = named(program, "Probe::Thing").as(Iyi::ClassType).macros["shout"].first.diagnostic_origin.not_nil!
+      shout = named(program, "Probe::Thing").as(Iyi::ClassType).macros.not_nil!["shout"].first.diagnostic_origin.not_nil!
       ledger = live_ledger(program)
       recipe = recipe_at(ledger, "macro", "Thing", origin: shout)
       recipe.strip_root(recipe.printed(captured_node("Probe::Thing")), "Probe")
