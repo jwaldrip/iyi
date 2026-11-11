@@ -344,6 +344,8 @@ describe "Semantic: layout fold uses" do
       fold_use_two_passes(program, fold_use_x + "W = sizeof({Int32, M})\nw = W\n", "", fold_use_growth + macro_code)
 
       fold_use_literal(program, "X").value.should eq "32"
+      # The expansion is the one macro use. The replay read X and W again and recorded neither.
+      program.layout_fold_uses.count(&.kind.macro?).should eq 1
     end
 
     it "replays with the final value of a layout the expansion never read (refuses a changed output)" do

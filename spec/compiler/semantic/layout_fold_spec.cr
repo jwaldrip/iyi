@@ -47,6 +47,7 @@ private def layout_fold_header : String
     end
 
     a = G(Int8).new(1_i8).as(M)
+
     CODE
 end
 
@@ -151,7 +152,8 @@ describe "Semantic: layout folds" do
 
   describe "constants" do
     it "writes a constant's stale value in place" do
-      program = layout_fold_program(layout_fold_header + "CONST = sizeof({Int32, M})\n" + layout_fold_growth)
+      # A constant is cleaned only once the cleanup meets a reference to it, so the program reads it.
+      program = layout_fold_program(layout_fold_header + "CONST = sizeof({Int32, M})\nc = CONST\n" + layout_fold_growth)
       const = program.types["CONST"].as(Iyi::Const)
       const.value.should be_a(Iyi::NumberLiteral)
       const.value.as(Iyi::NumberLiteral).value.should eq "32"

@@ -187,19 +187,19 @@ describe "Codegen: iyi layout folds" do
   it "runs the array dup that aborts under upstream Crystal to completion (P5)" do
     with_tempdir("layout-fold-iyi-p5") do
       output = run_iyi("layout_fold_p5", growing_module_program(<<-CODE)).lines
-        arr = [{1, G(Int8).new(1_i8).as(M)}]
+        arr = [{1, G(UInt8).new(1_u8).as(M)}]
         d1 = arr.dup
         arr << {2, G({Int64, Int64}).new({3_i64, 4_i64}).as(M)}
         d2 = arr.dup
         puts d2.size
         puts d2[0][0]
         puts d2[1][0]
-        puts d2[0][1].is_a?(G(Int8))
+        puts d2[0][1].is_a?(G(UInt8))
         puts d2[1][1].is_a?(G({Int64, Int64}))
-        puts d2[0][1].as(G(Int8)).v
+        puts d2[0][1].as(G(UInt8)).v
         puts d2[1][1].as(G({Int64, Int64})).v[0]
         puts d2[1][1].as(G({Int64, Int64})).v[1]
-        puts arr[0][1].as(G(Int8)).v
+        puts arr[0][1].as(G(UInt8)).v
         puts arr[1][1].as(G({Int64, Int64})).v[0]
         puts arr[1][1].as(G({Int64, Int64})).v[1]
         puts arr == arr
@@ -210,7 +210,9 @@ describe "Codegen: iyi layout folds" do
         puts d2[1] == arr[1]
         CODE
       output.size.should eq 17
-      # Fields and type values of the copy and of the original, read independently of `==`.
+      # Fields and type values of the copy and of the original, read independently of `==`. The
+      # one-byte implementor is a `UInt8` because the prelude gives `Int8` neither `to_s` nor `==`
+      # (those are `std/int`), so an `Int8` field could not be checked here.
       output[0, 11].should eq %w(2 1 2 true true 1 3 4 1 3 4)
       # Equality contract: a copy compares as its original does with itself. The
       # baseline is what this build gives, so nothing here assumes `true`.
