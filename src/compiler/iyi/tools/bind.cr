@@ -2804,56 +2804,162 @@ module Iyi
     before === 0x3A_u8 || identifier_byte?(before) # :
   end
 
-  # The byte ranges of *text* that are not code a name can be read from: string literals, the text parts of
-  # their interpolations, character literals and comments. The token-level rewrite never touches them, so the
-  # text rewrite leaves them alone too, and capture on and off write the same bytes.
-  private def self.literal_spans(text : String) : Array({Int32, Int32})
-    spans = [] of {Int32, Int32}
-    bytes = text.to_unsafe
-    size = text.bytesize
-    index = 0
-    while index < size
-      byte = bytes[index]
-      if byte === 0x23_u8                              # # a comment runs to the end of its line
-        finish = index
-        finish += 1 while finish < size && bytes[finish] !== 0x0A_u8
-        spans << {index, finish}
-        index = finish
-      elsif byte === 0x27_u8                           # ' a character literal
-        finish = index + 1
-        finish += 1 while finish < size && finish - index < 12 && bytes[finish] !== 0x27_u8
-        spans << {index, Math.min(finish + 1, size)}
-        index = finish + 1
-      elsif byte === 0x22_u8                           # " a string, minus the code of its interpolations
-        start = index + 1
-        cursor = start
-        while cursor < size && bytes[cursor] !== 0x22_u8
-          if bytes[cursor] === 0x5C_u8                 # \ escapes the byte after it
-            cursor += 2
-          elsif bytes[cursor] === 0x23_u8 && cursor + 1 < size && bytes[cursor + 1] === 0x7B_u8
-            spans << {start, cursor}
-            depth = 0
-            while cursor < size
-              depth += 1 if bytes[cursor] === 0x7B_u8
-              depth -= 1 if bytes[cursor] === 0x7D_u8
-              cursor += 1
-              break if depth == 0
-            end
-            start = cursor
+  # The byte ranges of *text* that are literals or comments (strings, heredocs, percent literals,
+  # regexes, character literals, and comments), excluding code inside #{ ... } interpolations.
+  # Tokenized by the compiler's own Lexer, so every literal form, escape sequence, and nested
+  # interpolation is parsed exactly as the compiler parses it.
+  private class LiteralSpanCollector
+    getter spans = [] of {Int32, Int32}
+
+    def self.collect(text : String, mode : String = "Crystal") : Array({Int32, Int32})
+      collector = new(text, mode)
+      collector.scan
+      collector.spans
+    end
+
+    def initialize(@text : String, @mode : String)
+      @lexer = Lexer.new(@text)
+      @lexer.comments_enabled = true
+      @lexer.count_whitespace = true
+      @lexer.wants_raw = true
+      @lexer.iyi = (@mode == "Iyi")
+    end
+
+    def scan : Nil
+      scan_normal(break_on_rcurly: false)
+    rescue CodeError | InvalidByteSequenceError
+    end
+
+    private def add_span(token : Token) : Nil
+      start = token.input_offset
+      finish = token.input_end
+      @spans << {start, finish} if finish > start
+    end
+
+    private def scan_normal(break_on_rcurly : Bool) : Nil
+      last_is_def = false
+      heredocs = [] of Token
+      last_type : Token::Kind? = nil
+      space_before = false
+
+      while true
+        previous_delimiter_state = @lexer.token.delimiter_state
+        token = @lexer.next_token
+
+        case token.type
+        when .eof?
+          break
+        when .op_rcurly?
+          break if break_on_rcurly
+        when .comment?, .char?
+          add_span token
+        when .delimiter_start?
+          case
+          when last_is_def && token.raw.in?("`", "/")
+            # `def /` names a method
+          when token.raw == "/" && slash_is_not_regex?(last_type, space_before)
+            # division operator
+          when token.delimiter_state.kind.heredoc?
+            heredocs << token.dup
           else
-            cursor += 1
+            add_span token
+            scan_delimited token
+            token.delimiter_state = previous_delimiter_state
           end
+        when .string_array_start?, .symbol_array_start?
+          add_span token
+          scan_string_array token
         end
-        cursor = size if cursor > size
-        spans << {start, cursor} if start < cursor
-        index = cursor + 1
-      else
-        index += 1
+
+        if token.type.newline? && !heredocs.empty?
+          heredocs.each_with_index do |heredoc, index|
+            scan_delimited heredoc, heredoc: true
+            unless index == heredocs.size - 1
+              between = @lexer.next_token
+              break if between.type.eof?
+            end
+          end
+          heredocs.clear
+        end
+
+        unless token.type.space?
+          last_type = token.type
+          last_is_def = token.keyword?(Keyword::DEF)
+        end
+        space_before = token.type.space?
       end
     end
-    spans
+
+    private def scan_delimited(token : Token, heredoc : Bool = false) : Nil
+      while true
+        token = @lexer.next_string_token(token.delimiter_state)
+        case token.type
+        when .delimiter_end?
+          add_span token
+          break
+        when .eof?
+          break
+        when .interpolation_start?
+          add_span token
+          scan_normal(break_on_rcurly: true)
+        else
+          add_span token
+        end
+      end
+    end
+
+    private def scan_string_array(token : Token) : Nil
+      while true
+        consume_space_or_newline
+        token = @lexer.next_string_token(token.delimiter_state)
+        case token.type
+        when .string?
+          add_span token
+        when .string_array_end?
+          add_span token
+          break
+        when .interpolation_start?
+          add_span token
+          scan_normal(break_on_rcurly: true)
+        when .eof?
+          break
+        else
+          break
+        end
+      end
+    end
+
+    private def consume_space_or_newline : Nil
+      while true
+        char = @lexer.current_char
+        if char == '\n'
+          @lexer.next_char
+          @lexer.incr_line_number 1
+        elsif char.ascii_whitespace?
+          @lexer.next_char
+        else
+          break
+        end
+      end
+    end
+
+    private def slash_is_not_regex?(last_type : Token::Kind?, space_before : Bool) : Bool
+      case last_type
+      when Nil
+        false
+      when .number?, .const?, .instance_var?, .class_var?, .op_rparen?, .op_rsquare?, .op_rcurly?
+        true
+      when .op_lparen?, .op_lsquare?, .op_lcurly?
+        false
+      else
+        !space_before
+      end
+    end
   end
 
+  private def self.literal_spans(text : String) : Array({Int32, Int32})
+    LiteralSpanCollector.collect(text, @@diagnostic_mode)
+  end
   private def self.literal_at?(spans : Array({Int32, Int32}), offset : Int32) : Bool
     spans.any? { |(start, finish)| offset >= start && offset < finish }
   end
@@ -4786,13 +4892,16 @@ module Iyi
   private def self.replace_word(text : String, name : String, replacement : String) : String
     return text unless text.includes?(name)
 
+    spans = literal_spans(text)
     result = String.build do |io|
       index = 0
       while (found = text.index(name, index))
         before = found == 0 ? nil : text[found - 1]
         after = found + name.size >= text.size ? nil : text[found + name.size]
+        byte_offset = text[0...found].bytesize
         word = (before.nil? || !(before.alphanumeric? || before == '_' || before == ':')) &&
-               (after.nil? || !(after.alphanumeric? || after == '_' || after == ':'))
+               (after.nil? || !(after.alphanumeric? || after == '_' || after == ':')) &&
+               !literal_at?(spans, byte_offset)
         io << text[index...found]
         io << (word ? replacement : name)
         index = found + name.size
