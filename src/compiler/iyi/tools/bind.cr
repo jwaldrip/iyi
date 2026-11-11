@@ -3382,8 +3382,8 @@ module Iyi
       return held
     end
     ledger = @@ledger || raise "bound #{kind} recorded without a section ledger"
-    if kind == "class_var" && (uninitialized = @@uninitialized_classvars[{owner, name}]?)
-      origin, type = uninitialized
+    if kind == "class_var" && (uninitialized_classvar = @@uninitialized_classvars[{owner, name}]?)
+      origin, type = uninitialized_classvar
       recipe = DiagnosticBoundRecipe.open(ledger, @@diagnostic_mode, kind, container, name, declaration_origin: origin)
       producer = DiagnosticBoundProducer::UninitializedClassVar.new(origin, owner, name, type)
       return table[{owner, name}] = BindDiagnostic.new(recipe, recipe.insert(producer), container, origin)
