@@ -64,7 +64,7 @@ module Iyi
     path_lookup : Type,
     free_vars : Hash(String, TypeVar)?,
     a_def : Def?,
-    temp_vars_start : Int32,
+    temp_vars_start : Hash(String, Int32),
     original_output : String
 
   class LayoutFoldMacroFrame
@@ -376,7 +376,7 @@ module Iyi
     def layout_fold_macro_expand(macro_def : Macro?, call : Call?, node : ASTNode?, scope : Type, path_lookup : Type, free_vars : Hash(String, TypeVar)?, a_def : Def?, &)
       frame = LayoutFoldMacroFrame.new
       @layout_fold_macro_frames << frame
-      temp_vars_start = @temp_vars
+      temp_vars_start = @temp_vars.dup
       begin
         result = yield
         output = result[0]
@@ -739,7 +739,7 @@ module Iyi
       end
 
       saved_temp_vars = @temp_vars
-      @temp_vars = derivation.temp_vars_start
+      @temp_vars = derivation.temp_vars_start.dup
       begin
         if a_macro = derivation.macro_def
           call = derivation.call.not_nil!.clone
