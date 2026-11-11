@@ -805,20 +805,26 @@ describe Iyi::DiagnosticOrigin do
 
   it "distinguishes equal class-variable text in different owners" do
     program = Iyi::Program.new
-    anchors = [] of Iyi::DiagnosticAnchor
-    program.record_class_var_diagnostic("A", "@@x", "1", anchors)
-    program.record_class_var_diagnostic("B", "@@x", "1", anchors)
+    captures = ->(text : String) {
+      Iyi::DiagnosticModeCaptures.capture(text, [] of Iyi::SourcePosition) do |mode|
+        {text, [] of Iyi::SourcePosition, Iyi::DiagnosticFragmentBuilder.new(mode)}
+      end
+    }
+    program.record_class_var_diagnostic("A", "@@x", "1", captures.call("1"))
+    program.record_class_var_diagnostic("B", "@@x", "1", captures.call("1"))
     program.iyi_class_var_diagnostics.size.should eq(2)
     Iyi::IyiMod.class_var_fragment_key("A", "@@x").should_not eq(Iyi::IyiMod.class_var_fragment_key("B", "@@x"))
-    expect_raises(Exception) { program.record_class_var_diagnostic("A", "@@x", "2", anchors) }
+    expect_raises(Exception) { program.record_class_var_diagnostic("A", "@@x", "2", captures.call("2")) }
   end
 
   it "distinguishes equal macro text in different owners" do
     program = Iyi::Program.new
-    anchors = [] of Iyi::DiagnosticAnchor
     source = "macro example\nend"
-    program.record_macro_diagnostic("A", source, anchors)
-    program.record_macro_diagnostic("B", source, anchors)
+    captures = Iyi::DiagnosticModeCaptures.capture(source, [] of Iyi::SourcePosition) do |mode|
+      {source, [] of Iyi::SourcePosition, Iyi::DiagnosticFragmentBuilder.new(mode)}
+    end
+    program.record_macro_diagnostic("A", source, captures)
+    program.record_macro_diagnostic("B", source, captures)
     program.iyi_macro_diagnostics.size.should eq(2)
     Iyi::IyiMod.macro_fragment_key("A", source).should_not eq(Iyi::IyiMod.macro_fragment_key("B", source))
   end
@@ -1643,9 +1649,9 @@ describe Iyi::DiagnosticOrigin do
         restored = consumer.parse
         consumer.diagnostic_check_consumed
         if source.starts_with?("enum")
-          enum = restored.as(Iyi::EnumDef)
-          enum.members.size.should eq(2)
-          enum.members.each do |member|
+          restored_enum = restored.as(Iyi::EnumDef)
+          restored_enum.members.size.should eq(2)
+          restored_enum.members.each do |member|
             value = member.as(Iyi::Arg).diagnostic_name_slots[
               Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::EnumMember)].first
             value.as(Iyi::DiagnosticNameValue::Observed).source_token.context.should eq("enum_member")

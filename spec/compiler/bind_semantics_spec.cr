@@ -44,7 +44,8 @@ SEMANTICS_PROBE = <<-CR
     class Square
       include Shape
 
-      def area(scale)
+      # The return type is written: Crystal refuses an override of a typed abstract def without one.
+      def area(scale) : Int32
         scale
       end
     end
@@ -139,7 +140,7 @@ describe Iyi::BindSemantics do
   end
 
   describe ".with_ancestor_types" do
-    it "copies the parameter and return types an abstract ancestor wrote" do
+    it "copies the parameter type an abstract ancestor wrote and keeps the return type" do
       area = square.lookup_first_def("area", false).not_nil!
       copy = Iyi::BindSemantics.with_ancestor_types(square, area)
       copy.args[0].restriction.to_s.should eq "Int32"
@@ -150,7 +151,7 @@ describe Iyi::BindSemantics do
       area = square.lookup_first_def("area", false).not_nil!
       Iyi::BindSemantics.with_ancestor_types(square, area)
       area.args[0].restriction.should be_nil
-      area.return_type.should be_nil
+      area.return_type.to_s.should eq "Int32"
     end
 
     it "returns the same def when no ancestor answers it" do

@@ -745,7 +745,7 @@ describe "bare splat forged association controls" do
   it "refuses an association that no walk claims" do
     bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat association unclaimed") do |context|
       original = context.observations[0]
-      orphan = Iyi::DiagnosticBareSplatObservation.new(original.owner, Iyi::Arg.new(""), 0, original.keyword, original.star, original.comma)
+      orphan = Iyi::DiagnosticBareSplatObservation.new(original.owner.as(Iyi::Def), Iyi::Arg.new(""), 0, original.keyword, original.star, original.comma)
       [original, orphan]
     end
   end
@@ -777,35 +777,35 @@ describe "bare splat forged association controls" do
   it "refuses an association whose index is not the parameter's position" do
     bare_splat_forged_refusal("def f(x, *, y)\nend\n", "bare splat evidence outside its parameter") do |context|
       original = context.observations[0]
-      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, 0, original.keyword, original.star, original.comma)]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner.as(Iyi::Def), original.argument, 0, original.keyword, original.star, original.comma)]
     end
   end
 
   it "refuses an association with a negative index" do
     bare_splat_forged_refusal("def f(x, *, y)\nend\n", "bare splat evidence outside its parameter") do |context|
       original = context.observations[0]
-      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, -1, original.keyword, original.star, original.comma)]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner.as(Iyi::Def), original.argument, -1, original.keyword, original.star, original.comma)]
     end
   end
 
   it "refuses an association whose keyword is not the declaration keyword" do
     bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat witness differs from replay") do |context|
       original = context.observations[0]
-      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, original.index, original.star, original.star, original.comma)]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner.as(Iyi::Def), original.argument, original.index, original.star, original.star, original.comma)]
     end
   end
 
   it "refuses an association whose star is not the star token" do
     bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat witness differs from replay") do |context|
       original = context.observations[0]
-      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, original.index, original.keyword, original.comma, original.comma)]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner.as(Iyi::Def), original.argument, original.index, original.keyword, original.comma, original.comma)]
     end
   end
 
   it "refuses an association whose comma is not the comma token" do
     bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat witness differs from replay") do |context|
       original = context.observations[0]
-      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, original.index, original.keyword, original.star, original.star)]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner.as(Iyi::Def), original.argument, original.index, original.keyword, original.star, original.star)]
     end
   end
 
@@ -885,7 +885,7 @@ describe "bare splat origin and anchor controls" do
       mode = context.claim.lexical_mode
       invocation = Iyi::DiagnosticOrigin::Written.new("expanded", "expanded.cr", 0, "Macro", "keyword")
       keyword = Iyi::DiagnosticOrigin::Expanded.new(invocation, invocation, "sha256:#{context.claim.input_sha256}", "Def", "keyword",
-        bare_splat_event(mode, 0, 3, "IDENT", "def"), Iyi::DiagnosticAnchorUse::Direct.new)
+        nil, bare_splat_event(mode, 0, 3, "IDENT", "def"), Iyi::DiagnosticAnchorUse::Direct.new)
       witnesses = origin.structural_witnesses.map do |witness|
         event = bare_splat_event(mode, witness.input_start, witness.input_end, witness.token_kind, witness.raw_text)
         Iyi::DiagnosticOperatorWitness.new(witness.input_start, witness.input_end, witness.token_kind, witness.raw_text, Iyi::DiagnosticTokenSelection::Whole, event)
