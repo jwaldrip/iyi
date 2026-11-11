@@ -54,6 +54,11 @@ module Iyi
         strip_root(source, "Root").should eq(%("outer \#{"inner \#{X} more"} end"))
       end
 
+      it "preserves surrounding literal text when interpolation contains a hash" do
+        source = %("before \#{ {x: Root::X} } after Root::X")
+        strip_root(source, "Root").should eq(%("before \#{ {x: X} } after Root::X"))
+      end
+
       it "handles escaped quotes inside nested interpolation" do
         source = %("a \#{"b \\"nested\\" \#{Root::X}"} c")
         strip_root(source, "Root").should eq(%("a \#{"b \\"nested\\" \#{X}"} c"))

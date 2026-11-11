@@ -119,6 +119,7 @@ CR
 private def capture_program(source : String) : Iyi::Program
   compiler = create_spec_compiler
   compiler.no_codegen = true
+  compiler.emit_bind = Dir.current
   compiler.capture_diagnostic_provenance = true
   file = Iyi::Compiler::Source.new(File.expand_path("bind_replay_probe.cr"), source)
   compiler.compile(file, File.expand_path("bind-replay-probe")).program
