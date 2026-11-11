@@ -2502,12 +2502,12 @@ module Iyi
                        frag_event.input_end == placed_at + part_event.input_end &&
                        frag_event.token_text == part_event.token_text &&
                        frag_event.token_kind == part_event.token_kind
-                 raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8)
-               end
-             end
-           end
-         end
-
+                  raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8)
+                end
+              end
+            end
+          end
+        end
         part.data.anchors.each do |part_anchor|
           expected_offset = placed_at + part_anchor.offset
           fragment.data.anchors.each_with_index do |frag_anchor, frag_idx|
