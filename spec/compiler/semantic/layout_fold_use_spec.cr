@@ -16,6 +16,11 @@ require "../../spec_helper"
 # raw `sizeof`. Every fixture here therefore runs in two passes, as a finished
 # top-level pass does: the first declares and uses the constants, which settles
 # and cleans them, and the second is the program under test.
+#
+# Folds are found by identity (the literal a fold expanded to) or by the value it
+# recorded when typed, never by the printed name of its subject: a tuple that
+# holds a module is a struct whose sizeof subject prints differently from
+# `{Int32, M}` (types.cr:879-887).
 
 private def fold_use_program(iyi_prelude : Bool) : Program
   program = Program.new
@@ -121,12 +126,16 @@ private def fold_use_literal(program : Program, name : String) : NumberLiteral
   fold_use_const(program, name).value.as(NumberLiteral)
 end
 
-# The literal a `sizeof` of `subject` was expanded to, found by its fold record.
-# Unlike the constant's value, this is a literal as soon as the fold is typed,
-# so it is read here before cleanup has replaced the constant's `sizeof`.
-private def fold_use_fold_literal(program : Program, subject : String) : NumberLiteral
-  fold = program.layout_folds.values.find! { |f| f.kind == LayoutFoldKind::Size && f.subject.to_s == subject }
-  fold.node.as(ExpandableNode).expanded.as(NumberLiteral)
+# The fold whose expansion is `literal`, by identity. Nil when no recorded fold
+# expanded to that object, which is itself a finding.
+private def fold_use_fold_of(program : Program, literal : NumberLiteral) : LayoutFold?
+  program.layout_folds.values.find { |fold| fold.node.as(ExpandableNode).expanded.same?(literal) }
+end
+
+# The `sizeof` folds that recorded `value` when typed, in the order typing recorded
+# them. Matched by the value measured, since the printed subject is not stable.
+private def fold_use_size_folds(program : Program, value : UInt64) : Array(LayoutFold)
+  program.layout_folds.values.select { |fold| fold.kind == LayoutFoldKind::Size && fold.value == value }
 end
 
 private def fold_use_static_array(program : Program, size : Int32) : GenericInstanceType
@@ -246,15 +255,17 @@ describe "Semantic: layout fold uses" do
       end
     end
 
-    it "does not refuse a fold whose value no type takes (control 9)" do
+    # The form the plan names, `Foo(sizeof({Int32, M}) &+ 1)`, is not reachable:
+    # type arguments take no operators, and a sizeof inside `typeof(...)` in a
+    # type argument is never recorded as a fold (main_visitor.cr:3223-3247). So the
+    # computed size is held in a constant, and the type argument reads its type.
+    it "does not refuse a type built from a computed fold's type, whose value no type takes (control 9)" do
       program = fold_use_program(true)
-      # A type argument whose value no type takes: `Foo` is built from the type of
-      # the computed size, `Int32`. Type arguments take no operators, so the
-      # computed size is given through `typeof`.
-      body = "struct Foo(T)\nend\nf = Foo(typeof(sizeof({Int32, M}) &+ 1)).new\n" + fold_use_growth
-      fold_use_semantic(program, fold_use_source(body))
+      fold_use_two_passes(program, "N = sizeof({Int32, M}) &+ 1\nn = N\n", "struct Foo(T)\nend\nf = Foo(typeof(N)).new\n", fold_use_growth)
 
-      fold_use_fold_literal(program, "{Int32, M}").value.should eq "32"
+      folds = fold_use_size_folds(program, 8_u64)
+      folds.size.should eq 1
+      folds.last.node.as(ExpandableNode).expanded.as(NumberLiteral).value.should eq "32"
       fold_use_census(program)
     end
 
@@ -301,7 +312,7 @@ describe "Semantic: layout fold uses" do
 
       literal = fold_use_literal(program, "X")
       literal.value.should eq "32"
-      literal.should be(fold_use_fold_literal(program, "{Int32, M}"))
+      fold_use_fold_of(program, literal).should_not be_nil
 
       fold_use_semantic(program, fold_use_cleanup_source("", "buf = StaticArray(UInt8, X).new\n"))
 
@@ -314,7 +325,9 @@ describe "Semantic: layout fold uses" do
       program = fold_use_program(true)
       fold_use_semantic(program, fold_use_module + "X = sizeof({Int32, M})\n" + fold_use_growth, cleanup: false)
       program.settle_layout_folds(patch: true)
-      literal = fold_use_fold_literal(program, "{Int32, M}")
+
+      # The fold typed with 8 is X's; it is the last one recorded with that value.
+      literal = fold_use_size_folds(program, 8_u64).last.node.as(ExpandableNode).expanded.as(NumberLiteral)
       literal.value.should eq "32"
 
       fold_use_semantic(program, "buf = StaticArray(UInt8, sizeof({Int32, M})).new\n", cleanup: false)
@@ -423,11 +436,16 @@ describe "Semantic: layout fold uses" do
 
         program.layout_fold_lines.any?(&.includes?("layout fold use stale")).should be_true
 
-        folds = program.layout_folds.values.select { |f| f.kind == LayoutFoldKind::Size && f.subject.to_s == "{Int32, M}" }
-        folds.size.should eq 2
-        shared = folds.last
+        literal_x = fold_use_literal(program, "X")
+        fold_x = fold_use_fold_of(program, literal_x)
+        fold_x.should_not be_nil
+
+        # Every fold measured 8 when typed: X's and `s`'s. `s` is the one that is not X's.
+        folds = fold_use_size_folds(program, 8_u64)
+        folds.size.should be >= 2
+        shared = folds.reject { |fold| fold.same?(fold_x.not_nil!) }.last
         shared.node.as(ExpandableNode).expanded.as(NumberLiteral).value.should eq "8"
-        fold_use_literal(program, "X").value.should eq "8"
+        literal_x.value.should eq "8"
 
         tied = program.layout_fold_lines.select(&.includes?("in main: folded 8, final 32: kept (tied to type argument"))
         tied.size.should eq 2
