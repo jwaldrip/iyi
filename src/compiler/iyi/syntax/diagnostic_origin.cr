@@ -1966,7 +1966,9 @@ module Iyi
       found = [] of Hit
       anchors.each_with_index do |anchor, index|
         visited = Hash(DiagnosticOrigin, Bool).new.compare_by_identity
-        visit(anchor.origin, :anchor_origin, index, found, visited)
+        if origin = anchor.origin
+          visit(origin, :anchor_origin, index, found, visited)
+        end
         anchor.name_slots.each_value do |values|
           values.each { |value| visit_name(value, :name_slot, index, found, visited) }
         end

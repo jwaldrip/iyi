@@ -30,6 +30,17 @@ class SpecRefusingAuthority < Iyi::DiagnosticProjectionAuthority
   end
 end
 
+# Attests exactly one data object, by identity. Equal values do not attest.
+class SpecInventory < Iyi::DiagnosticSourceInventory
+  def initialize(@attested : Iyi::DiagnosticBoundProjectionData?)
+  end
+
+  def attests?(data : Iyi::DiagnosticBoundProjectionData) : Bool
+    attested = @attested
+    !attested.nil? && attested.same?(data)
+  end
+end
+
 # A subclass of a closed producer class. It is not a closed class, so R3 refuses it.
 class SpecStripRootSubclass < Iyi::DiagnosticBoundProducer::StripRoot
 end
@@ -129,6 +140,19 @@ private def spec_mint(ledger : Iyi::DiagnosticProjectionLedger, authority : Spec
   result = spec_render(ledger, site, producer, before, span_end)
   spec_expect_minted(ledger, authority, producer, result, text)
   result
+end
+
+# A fragment whose anchors all name `projection` in their slots, one anchor per span. Each origin is given
+# separately, so the same projection can be an anchor's origin, or another anchor's name, or both.
+private def spec_shared_fragment(text : String, spans : Array({Int32, Int32}), origins : Array(Iyi::DiagnosticOrigin),
+                                 projection : Iyi::DiagnosticOrigin::DerivedName) : Iyi::DiagnosticRenderedFragment
+  builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+  spans.each_with_index do |(first, last), index|
+    slot = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::PathSegment, 0)
+    builder.add_written_anchor(first, last, text, Iyi::DiagnosticRenderedLexContext::TypeName, "Name", "path_segment",
+      origins[index], {slot => [Iyi::DiagnosticNameValue::Derived.new(projection)] of Iyi::DiagnosticNameValue})
+  end
+  Iyi::DiagnosticRenderedFragment.new(text, builder.finish_data(text))
 end
 
 describe "diagnostic bound projection authority" do
@@ -259,7 +283,9 @@ describe "diagnostic bound projection authority" do
       joined = ledger.compose(initialiser, spec_copy_fragment(rendered), [rendered])
       section = Iyi::IyiMod::DiagnosticSection.new
       section.add_fragment(ledger.finish(initialiser, joined, "initialiser"))
-      ledger.verify_section!(section).should eq(1)
+      # Inner::NAME has two path segments, and the parser mints one projection for each.
+      ledger.verify_section!(section).should eq(2)
+      ledger.counts.should eq({"ConstantTarget" => 2})
       ledger.verified?(section).should be_true
     end
 
@@ -430,12 +456,22 @@ describe "diagnostic bound projection authority" do
       empty = Iyi::DiagnosticBoundProjectionData.new(producer, ::Crystal::Digest::SHA256.hexdigest(""), "", [] of Iyi::DiagnosticBoundNameSource,
         "", "Crystal", 0, 0, "CONST", "path_segment")
       Iyi::DiagnosticBoundProjection.require_source_inventory!(empty, nil).should be_nil
+      Iyi::DiagnosticBoundProjection.require_source_inventory!(empty, SpecInventory.new(nil)).should be_nil
       sourced = Iyi::DiagnosticBoundProjectionData.new(producer, ::Crystal::Digest::SHA256.hexdigest("Root::Thing"),
         "Root::Thing", [] of Iyi::DiagnosticBoundNameSource, "Thing", "Crystal", 0, 5, "CONST", "path_segment")
-      error = expect_raises(ArgumentError) do
+      twin = Iyi::DiagnosticBoundProjectionData.new(producer, ::Crystal::Digest::SHA256.hexdigest("Root::Thing"),
+        "Root::Thing", [] of Iyi::DiagnosticBoundNameSource, "Thing", "Crystal", 0, 5, "CONST", "path_segment")
+      expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
         Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, nil)
       end
-      error.message.should eq("bound projection requires authoritative source inventory")
+      expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
+        Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, SpecInventory.new(nil))
+      end
+      # Attestation is by identity: an equal twin does not attest the data object that was built.
+      expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
+        Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, SpecInventory.new(twin))
+      end
+      Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, SpecInventory.new(sourced)).should be_nil
     end
 
     # N8: inputs refused before the authority never reach it. Each case is a separate refusal.
@@ -558,20 +594,16 @@ describe "diagnostic bound projection authority" do
       error.message.should eq("bound fragment belongs to another site")
     end
 
-    # N14: a projection nested under a non-projection anchor origin is outside its anchor (R10).
-    it "N14 refuses a projection nested under an anchor origin" do
+    # N14: a projection named in another anchor's slot lies outside the anchor it belongs to (R10).
+    it "N14 refuses a projection placed outside its own anchor" do
       ledger = Iyi::DiagnosticProjectionLedger.new(SpecBoundAuthority.new)
-      site = ledger.open_site("initialiser", "")
+      initialiser = ledger.open_site("initialiser", "")
       before, _ = spec_names(ledger, "Root::Thing", [{0, 4}, {6, 11}])
-      issued = spec_render(ledger, site, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11)
-      projection = issued.data.anchors.first.origin.not_nil!
-      wrapper = Iyi::DiagnosticOrigin::Synthetic.new(projection, "constant_accessor", "getter")
-      builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
-      builder.add_written_anchor(0, 5, "Thing", Iyi::DiagnosticRenderedLexContext::TypeName, "Name", "path_segment", wrapper,
-        Hash(Iyi::DiagnosticNameSlot, Array(Iyi::DiagnosticNameValue)).new)
-      wrapped = Iyi::DiagnosticRenderedFragment.new("Thing", builder.finish_data("Thing"))
+      projection = spec_render(ledger, initialiser, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11).data.anchors.first.origin.not_nil!.as(Iyi::DiagnosticOrigin::DerivedName)
+      written = spec_written(6, "Name", "path_segment")
+      misplaced = spec_shared_fragment("Root::Thing", [{0, 4}, {6, 11}], [projection.as(Iyi::DiagnosticOrigin), written], projection)
       error = expect_raises(ArgumentError) do
-        ledger.compose(site, wrapped, [issued])
+        ledger.compose(initialiser, misplaced, [] of Iyi::DiagnosticRenderedFragment)
       end
       error.message.should eq("bound projection lies outside its anchor")
     end
@@ -580,13 +612,12 @@ describe "diagnostic bound projection authority" do
     it "N15 refuses a composition that places one projection twice" do
       ledger = Iyi::DiagnosticProjectionLedger.new(SpecBoundAuthority.new)
       initialiser = ledger.open_site("initialiser", "")
-      origin = spec_written(0, "Assign", "constant")
-      child = ledger.open_site("constant", "", nil, nil, origin, initialiser)
-      rendered = spec_render(ledger, child, Iyi::DiagnosticBoundProducer::ConstantTarget.new(origin, "Inner::NAME"),
-        spec_empty(ledger), 0)
-      doubled = Iyi::DiagnosticFragmentData.new(rendered.text, rendered.data.events, rendered.data.anchors + rendered.data.anchors)
+      before, _ = spec_names(ledger, "Root::Thing", [{0, 4}, {6, 11}])
+      projection = spec_render(ledger, initialiser, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11).data.anchors.first.origin.not_nil!.as(Iyi::DiagnosticOrigin::DerivedName)
+      # One issued projection is the origin of two anchors. Both spans are well formed, so only R9 refuses the fragment.
+      doubled = spec_shared_fragment("Root::Thing", [{0, 4}, {6, 11}], [projection.as(Iyi::DiagnosticOrigin), projection.as(Iyi::DiagnosticOrigin)], projection)
       error = expect_raises(ArgumentError) do
-        ledger.compose(initialiser, Iyi::DiagnosticRenderedFragment.new(rendered.text, doubled), [rendered])
+        ledger.compose(initialiser, doubled, [] of Iyi::DiagnosticRenderedFragment)
       end
       error.message.should eq("bound projection appears more than once")
     end
@@ -634,9 +665,17 @@ describe "diagnostic bound projection authority" do
         spec_render(ledger, signature, Iyi::DiagnosticBoundProducer::SynthesizedConstructor.new(elsewhere, "definition_name"),
           spec_empty(ledger), 0)
       end
+      # ConstantTarget needs an Assign origin. It is refused here by its site kind, since a signature site is not a constant site.
+      assign = spec_written(0, "Assign", "constant")
       expect_raises(ArgumentError, "bound projection is not at its declaration site: ConstantTarget") do
-        spec_render(ledger, signature, Iyi::DiagnosticBoundProducer::ConstantTarget.new(declared, "Inner::NAME"),
-          spec_empty(ledger), 0)
+        spec_render(ledger, signature, Iyi::DiagnosticBoundProducer::ConstantTarget.new(assign, "Inner::NAME"), spec_empty(ledger), 0)
+      end
+      # A constant site under its own initialiser, whose declaration is a different Assign: the declaration tie refuses it.
+      initialiser = ledger.open_site("initialiser", "")
+      other_assign = spec_written(9, "Assign", "constant")
+      constant = ledger.open_site("constant", "", nil, nil, other_assign, initialiser)
+      expect_raises(ArgumentError, "bound projection is not at its declaration site: ConstantTarget") do
+        spec_render(ledger, constant, Iyi::DiagnosticBoundProducer::ConstantTarget.new(assign, "Inner::NAME"), spec_empty(ledger), 0)
       end
       classvar = ledger.open_site("class_var", "Owner", "@@other", nil, spec_written(0, "Name", "class_variable"))
       expect_raises(ArgumentError, "bound projection is not at its declaration site: UninitializedClassVar") do
@@ -700,15 +739,15 @@ describe "diagnostic bound projection authority" do
       authority = SpecBoundAuthority.new
       ledger = Iyi::DiagnosticProjectionLedger.new(authority)
       initialiser = ledger.open_site("initialiser", "")
-      origin = spec_written(0, "Assign", "constant")
-      child = ledger.open_site("constant", "", nil, nil, origin, initialiser)
-      rendered = spec_render(ledger, child, Iyi::DiagnosticBoundProducer::ConstantTarget.new(origin, "Inner::NAME"),
-        spec_empty(ledger), 0)
-      joined = ledger.compose(initialiser, spec_copy_fragment(rendered), [rendered])
+      first_origin = spec_written(0, "Assign", "constant")
+      first = spec_render(ledger, ledger.open_site("constant", "", nil, nil, first_origin, initialiser),
+        Iyi::DiagnosticBoundProducer::ConstantTarget.new(first_origin, "Inner::NAME"), spec_empty(ledger), 0)
+      # The stray site is opened while the initialiser is still open. Once it is finished, R14 refuses any new site.
+      stray_origin = spec_written(1, "Assign", "constant")
+      stray = spec_render(ledger, ledger.open_site("constant", "", nil, nil, stray_origin, initialiser),
+        Iyi::DiagnosticBoundProducer::ConstantTarget.new(stray_origin, "Other::NAME"), spec_empty(ledger), 0)
+      joined = ledger.compose(initialiser, spec_copy_fragment(first), [first])
       finished = ledger.finish(initialiser, joined, "initialiser")
-      stray = spec_render(ledger, ledger.open_site("constant", "", nil, nil, spec_written(1, "Assign", "constant"), initialiser),
-        Iyi::DiagnosticBoundProducer::ConstantTarget.new(spec_written(1, "Assign", "constant"), "Other::NAME"),
-        spec_empty(ledger), 0)
       section = Iyi::IyiMod::DiagnosticSection.new
       section.add_fragment(finished)
       section.add_fragment(stray.data.to_fragment("stray"))
