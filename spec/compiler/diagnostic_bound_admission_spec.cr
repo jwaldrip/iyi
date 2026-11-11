@@ -6,12 +6,14 @@ require "../spec_helper"
 #    and the source-bearing classification. The spec reopens Iyi::IyiMod, as
 #    diagnostic_consumer_operator_structural_spec.cr does, so production gains no entry point.
 # 2. Captured artifacts: real ledger fixtures, built the way diagnostic_bound_authority_spec.cr builds them,
-#    run through IyiMod.validate_diagnostic_fragments! and IyiMod.write.
+#    run through IyiMod.validate_diagnostic_fragments! and IyiMod.write. Each fixture runs in the lexical mode
+#    its source file is in: Crystal (.cr) for the native and --crystal shapes, and Iyi (.iyi) for iyi source. The
+#    mode is set once, by the source path, and every event and builder in a fixture carries that mode.
 #
-# Fixture facts that matter here. The artifact's source is a Crystal file, so its fragments are in Crystal
-# lexical mode; an `.iyi` path would make every fragment in Iyi mode and every event would be refused. The
-# constant head is built as the landed constant-line recipe builds it: an Assign/constant anchor that shares
-# the first path segment's token event and carries a HeadOf attachment (ConstantAssignHead).
+# Fixture facts that matter here. The artifact's source path picks the fragment's lexical mode, and an event in
+# any other mode is refused. The constant head is built as the landed constant-line recipe builds it: an
+# Assign/constant anchor that shares the first path segment's token event and carries a HeadOf attachment
+# (ConstantAssignHead).
 #
 # A claim whose token does not match the bytes it is placed over never becomes a fragment: the fragment
 # builder refuses it while it measures the bytes (ArgumentError "fragment name differs from measured bytes",
@@ -28,6 +30,7 @@ H3_MESSAGE = "bound projection requires authoritative source inventory"
 A1_PREFIX  = "bound projection is not at its declaration site: "
 ADM_MODULE = "app/greeter"
 ADM_SOURCE = "/src/app/greeter.cr"
+ADM_IYI_SOURCE = "/src/app/greeter.iyi"
 MEASURED_NAME_MESSAGE = "fragment name differs from measured bytes"
 MEASURED_TOKEN_MESSAGE = "rendered token does not match measured writer extent"
 
@@ -59,8 +62,8 @@ def adm_copy(producer : Iyi::DiagnosticBoundProducer) : Iyi::DiagnosticBoundProd
   end
 end
 
-def adm_written(offset : Int32, kind : String, role : String) : Iyi::DiagnosticOrigin::Written
-  Iyi::DiagnosticOrigin::Written.new(ADM_MODULE, ADM_SOURCE, offset, kind, role)
+def adm_written(offset : Int32, kind : String, role : String, source : String = ADM_SOURCE) : Iyi::DiagnosticOrigin::Written
+  Iyi::DiagnosticOrigin::Written.new(ADM_MODULE, source, offset, kind, role)
 end
 
 # A registered source with no text. Every source-free producer renders from it.
@@ -69,16 +72,18 @@ def adm_empty(ledger : Iyi::DiagnosticProjectionLedger) : Iyi::DiagnosticRendere
     Iyi::DiagnosticFragmentData.new("", [] of Iyi::DiagnosticTokenEvent, [] of Iyi::DiagnosticAnchor)))
 end
 
-# A registered source whose spans are CONST path segments, each anchored to its own source token.
+# A registered source whose spans are CONST path segments, each anchored to its own source token, in the lexical
+# mode of the file the text is written in.
 def adm_names(ledger : Iyi::DiagnosticProjectionLedger, text : String,
-              spans : Array({Int32, Int32})) : {Iyi::DiagnosticRenderedFragment, Array(Iyi::DiagnosticBoundNameSource)}
+              spans : Array({Int32, Int32}), mode : String = "Crystal",
+              source : String = ADM_SOURCE) : {Iyi::DiagnosticRenderedFragment, Array(Iyi::DiagnosticBoundNameSource)}
   guard = ::Crystal::Digest::SHA256.hexdigest(text)
-  builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+  builder = Iyi::DiagnosticFragmentBuilder.new(mode)
   names = [] of Iyi::DiagnosticBoundNameSource
   spans.each do |first, last|
-    origin = adm_written(first, "Name", "path_segment")
+    origin = adm_written(first, "Name", "path_segment", source)
     raw = text.byte_slice(first, last - first)
-    token = Iyi::DiagnosticSourceNameToken.new(origin, nil, "path_segment", guard, text.bytesize, first, last, "Crystal", "CONST", raw)
+    token = Iyi::DiagnosticSourceNameToken.new(origin, nil, "path_segment", guard, text.bytesize, first, last, mode, "CONST", raw)
     value = Iyi::DiagnosticNameValue::Observed.new(token)
     slot = Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::PathSegment, 0)
     builder.add_written_anchor(first, last, text, Iyi::DiagnosticRenderedLexContext::TypeName, "Name", "path_segment",
@@ -89,13 +94,15 @@ def adm_names(ledger : Iyi::DiagnosticProjectionLedger, text : String,
 end
 
 # The artifact a section is checked in. Its initialiser, class variables and functions are the ones the fixtures
-# render. Functions are written under the module's name, which is the container their header keys use.
+# render. Functions are written under the module's name, which is the container their header keys use. The source
+# path sets the artifact's lexical mode, so it must be the file the fixture's events were built for.
 def adm_artifact(initialiser : String = "",
                  class_vars : Array(Iyi::IyiMod::ClassVarDecl) = [] of Iyi::IyiMod::ClassVarDecl,
-                 functions : Array(Iyi::IyiMod::Signature) = [] of Iyi::IyiMod::Signature) : Iyi::IyiMod::Artifact
+                 functions : Array(Iyi::IyiMod::Signature) = [] of Iyi::IyiMod::Signature,
+                 source : String = ADM_SOURCE) : Iyi::IyiMod::Artifact
   Iyi::IyiMod::Artifact.new(
     module_name: ADM_MODULE,
-    source_path: ADM_SOURCE,
+    source_path: source,
     compiler_version: "1.22.0-dev+abc1234",
     target_triple: "x86_64-pc-linux-gnu",
     flags: ["bits64", "linux"],
@@ -124,10 +131,10 @@ end
 # The constant target "Inner::NAME" rendered at its own site under the initialiser. Its segment anchors are
 # the projections the ledger issued.
 def adm_constant_rendered(ledger : Iyi::DiagnosticProjectionLedger, origin : Iyi::DiagnosticOrigin::Written,
-                          initialiser : Iyi::DiagnosticBoundSite) : Iyi::DiagnosticRenderedFragment
+                          initialiser : Iyi::DiagnosticBoundSite, mode : String = "Crystal") : Iyi::DiagnosticRenderedFragment
   child = ledger.open_site("constant", "", nil, nil, origin, initialiser)
   producer = Iyi::DiagnosticBoundProducer::ConstantTarget.new(origin, "Inner::NAME")
-  ledger.render(child, producer, adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
+  ledger.render(child, producer, adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), mode)
 end
 
 # The initialiser fragment a constant target is written in, built as the landed constant-line recipe builds it.
@@ -135,9 +142,9 @@ end
 # first kept segment must start at 0; the Assign/constant head then shares that segment's token event and
 # points at it through a ConstantAssignHead attachment.
 def adm_constant_fragment(rendered : Iyi::DiagnosticRenderedFragment, origin : Iyi::DiagnosticOrigin::Written,
-                          head : Bool, keep : Array(Int32)) : Iyi::DiagnosticRenderedFragment
+                          head : Bool, keep : Array(Int32), mode : String = "Crystal") : Iyi::DiagnosticRenderedFragment
   text = rendered.text
-  builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+  builder = Iyi::DiagnosticFragmentBuilder.new(mode)
   rendered.data.anchors.each_with_index do |anchor, index|
     next unless keep.includes?(index)
     token = anchor.name_slots.values.flatten.first.rendered_text
@@ -173,8 +180,9 @@ end
 # The header's data: the keyword root at *root_offset*, and each placement's projection anchors moved by its base.
 # The anchors keep the ledger's issued origins, so each projection is the one the ledger minted.
 def adm_header_data(text : String, root : Iyi::DiagnosticOrigin, root_offset : Int32,
-                    placements : Array({Iyi::DiagnosticRenderedFragment, Int32})) : Iyi::DiagnosticFragmentData
-  builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
+                    placements : Array({Iyi::DiagnosticRenderedFragment, Int32}),
+                    mode : String = "Crystal") : Iyi::DiagnosticFragmentData
+  builder = Iyi::DiagnosticFragmentBuilder.new(mode)
   builder.add_written_anchor(root_offset, root_offset + 3, text, Iyi::DiagnosticRenderedLexContext::DefOrMacroName,
     "Def", "keyword", root, {} of Iyi::DiagnosticNameSlot => Array(Iyi::DiagnosticNameValue))
   placements.each do |rendered, base|
@@ -190,9 +198,10 @@ end
 
 # The accepted header: composed from the ledger's parts and finished under its signature site, as bind does.
 def adm_accepted(ledger : Iyi::DiagnosticProjectionLedger, site : Iyi::DiagnosticBoundSite, signature : Iyi::IyiMod::Signature,
-                 placements : Array({Iyi::DiagnosticRenderedFragment, Int32})) : Iyi::IyiMod::DiagnosticSection
+                 placements : Array({Iyi::DiagnosticRenderedFragment, Int32}),
+                 mode : String = "Crystal") : Iyi::IyiMod::DiagnosticSection
   text = Iyi::IyiMod.render_signature(signature)
-  data = adm_header_data(text, signature.diagnostic_origin.not_nil!, 0, placements)
+  data = adm_header_data(text, signature.diagnostic_origin.not_nil!, 0, placements, mode)
   joined = ledger.compose(site, Iyi::DiagnosticRenderedFragment.new(text, data), placements.map { |rendered, _| rendered })
   key = Iyi::IyiMod.signature_fragment_key(ADM_MODULE, signature)
   adm_section(ledger.finish(site, joined, key, signature))
@@ -202,9 +211,10 @@ end
 # reads the section; the ledger's own refusals are not the subject of these controls. Where a claim's token does
 # not match the bytes it lands on, the builder refuses here, before admission.
 def adm_misplaced(signature : Iyi::IyiMod::Signature,
-                  placements : Array({Iyi::DiagnosticRenderedFragment, Int32})) : Iyi::IyiMod::DiagnosticSection
+                  placements : Array({Iyi::DiagnosticRenderedFragment, Int32}),
+                  mode : String = "Crystal") : Iyi::IyiMod::DiagnosticSection
   text = Iyi::IyiMod.render_signature(signature)
-  data = adm_header_data(text, signature.diagnostic_origin.not_nil!, 0, placements)
+  data = adm_header_data(text, signature.diagnostic_origin.not_nil!, 0, placements, mode)
   adm_section(Iyi::IyiMod::DiagnosticFragment.new(Iyi::IyiMod.signature_fragment_key(ADM_MODULE, signature),
     data.text_sha256, data.events, data.anchors))
 end
@@ -739,5 +749,105 @@ describe "S6 admission over captured artifacts" do
         adm_misplaced(signature, [{rendered, name.start_offset}])
       end
     end
+  end
+end
+
+# Iyi lexical mode. Each fixture here is a .iyi source: its artifact, its builders, its ledger renders, and its
+# origins all carry the Iyi mode, so every event is mode-correct. Valid fixtures reach H1; tampered fixtures are
+# refused by admission (A1, or H3 for a source-bearing projection without an issuer).
+describe "S6 admission over captured artifacts in Iyi lexical mode (.iyi)" do
+  it "accepts a ConstantTarget group whose head and segments are Iyi-mode events and reaches H1" do
+    ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+    initialiser = ledger.open_site("initialiser", "")
+    origin = adm_written(0, "Assign", "constant", ADM_IYI_SOURCE)
+    rendered = adm_constant_rendered(ledger, origin, initialiser, "Iyi")
+    joined = ledger.compose(initialiser, adm_constant_fragment(rendered, origin, true, [0, 1], "Iyi"), [rendered])
+    section = adm_section(ledger.finish(initialiser, joined, "initialiser"))
+    ledger.verify_section!(section).should eq(2)
+    artifact = adm_artifact("Inner::NAME", source: ADM_IYI_SOURCE)
+    artifact.diagnostic_provenance = section
+    Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+    adm_with_temporary_file do |path|
+      expect_raises(Iyi::IyiMod::Error, H1_MESSAGE) { Iyi::IyiMod.write(artifact, path, ledger) }
+    end
+  end
+
+  it "refuses an Iyi-mode ConstantTarget group whose segments carry no head as A1" do
+    ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+    initialiser = ledger.open_site("initialiser", "")
+    origin = adm_written(0, "Assign", "constant", ADM_IYI_SOURCE)
+    rendered = adm_constant_rendered(ledger, origin, initialiser, "Iyi")
+    joined = ledger.compose(initialiser, adm_constant_fragment(rendered, origin, false, [0, 1], "Iyi"), [rendered])
+    artifact = adm_artifact("Inner::NAME", source: ADM_IYI_SOURCE)
+    artifact.diagnostic_provenance = adm_section(ledger.finish(initialiser, joined, "initialiser"))
+    expect_raises(ArgumentError, A1_PREFIX + "ConstantTarget") do
+      Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+    end
+  end
+
+  it "accepts a return type at the return field in Iyi mode and reaches H1" do
+    ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+    origin = adm_written(0, "Def", "keyword", ADM_IYI_SOURCE)
+    signature = adm_signature("greet", origin, return_type: "Int32")
+    site = ledger.open_site("signature", ADM_MODULE, nil, nil, origin)
+    producer = Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "return_type", nil, "Int32")
+    rendered = ledger.render(site, producer, adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Iyi")
+    field = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::ReturnType, -1)
+    section = adm_accepted(ledger, site, signature, [{rendered, field.start_offset}], "Iyi")
+    ledger.verify_section!(section).should eq(1)
+    artifact = adm_artifact(functions: [signature], source: ADM_IYI_SOURCE)
+    artifact.diagnostic_provenance = section
+    Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+    adm_with_temporary_file do |path|
+      expect_raises(Iyi::IyiMod::Error, H1_MESSAGE) { Iyi::IyiMod.write(artifact, path, ledger) }
+    end
+  end
+
+  it "refuses an Iyi-mode return type anchored on a parameter restriction as A1" do
+    ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+    origin = adm_written(0, "Def", "keyword", ADM_IYI_SOURCE)
+    signature = adm_signature("greet", origin, parameters: ["x : Int32"], return_type: "Int32")
+    producer = Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "return_type", nil, "Int32")
+    rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
+      adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Iyi")
+    param = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::Parameter, 0)
+    base = param.start_offset + param.text.byte_index(" : ").not_nil! + 3
+    artifact = adm_artifact(functions: [signature], source: ADM_IYI_SOURCE)
+    artifact.diagnostic_provenance = adm_misplaced(signature, [{rendered, base}], "Iyi")
+    expect_raises(ArgumentError, A1_PREFIX + "SemanticSignatureType") do
+      Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+    end
+  end
+
+  it "accepts an uninitialised class variable finished at its own site in Iyi mode and reaches H1" do
+    ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+    origin = adm_written(0, "Name", "class_variable", ADM_IYI_SOURCE)
+    root = Iyi::IyiMod::DIAGNOSTIC_ROOT_CONTAINER
+    site = ledger.open_site("class_var", root, "@@cache", nil, origin)
+    producer = Iyi::DiagnosticBoundProducer::UninitializedClassVar.new(origin, "Owner", "@@cache", "Int32")
+    rendered = ledger.render(site, producer, adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Iyi")
+    section = adm_section(ledger.finish(site, rendered, Iyi::IyiMod.class_var_fragment_key(root, "@@cache")))
+    ledger.verify_section!(section).should eq(1)
+    class_var = Iyi::IyiMod::ClassVarDecl.new("@@cache", "Int32", "uninitialized Int32", [] of String)
+    artifact = adm_artifact("", [class_var], source: ADM_IYI_SOURCE)
+    artifact.diagnostic_provenance = section
+    Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+    adm_with_temporary_file do |path|
+      expect_raises(Iyi::IyiMod::Error, H1_MESSAGE) { Iyi::IyiMod.write(artifact, path, ledger) }
+    end
+  end
+
+  it "accepts a source-bearing projection with an issuer in Iyi mode and refuses it without one as H3" do
+    ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+    site = ledger.open_site("initialiser", "")
+    before, _ = adm_names(ledger, "Root::Thing", [{0, 4}, {6, 11}], "Iyi", ADM_IYI_SOURCE)
+    rendered = ledger.render(site, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before,
+      Iyi::DiagnosticByteSpan.new(0, 11), "Iyi")
+    section = adm_section(ledger.finish(site, rendered, "initialiser"))
+    ledger.verify_section!(section).should eq(1)
+    artifact = adm_artifact("Thing", source: ADM_IYI_SOURCE)
+    artifact.diagnostic_provenance = section
+    Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+    expect_raises(ArgumentError, H3_MESSAGE) { Iyi::IyiMod.validate_diagnostic_fragments!(artifact) }
   end
 end
