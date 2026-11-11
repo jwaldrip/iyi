@@ -31,6 +31,8 @@ module Iyi
     getter module_name : String
     getter artifact_dir : String?
 
+    @foreign_bindings : Hash(String, {String, String})? = nil
+
     def initialize(@program : Program, @root : String, @module_name : String, @artifact_dir : String? = nil)
       super()
     end
@@ -332,9 +334,14 @@ module Iyi
     end
 
     # The bare names each `--use-iyimod` artifact in the approved directory
-    # contributes, with the module and qualified name they map to. Recomputed per call
-    # from the artifacts, with bind's rule. Later artifacts win, as in bind.
+    # contributes, with the module and qualified name they map to. Read once per
+    # authority (SafeProjectionPlan §3.6), then answered from memory. Later artifacts
+    # win, as in bind.
     private def foreign_bindings : Hash(String, {String, String})
+      @foreign_bindings ||= read_foreign_bindings
+    end
+
+    private def read_foreign_bindings : Hash(String, {String, String})
       bindings = {} of String => {String, String}
       dir = @artifact_dir
       return bindings unless dir

@@ -172,11 +172,10 @@ private def expect_r2(kind : String, &)
   expect_raises(ArgumentError, "bound projection replay refused: #{kind}") { yield }
 end
 
-# R4: a live answer differs from the claim. Its exact text is SafeProjectionPlan's
-# (§3.8), so this asserts that the refusal is not R2 and that one is raised.
+# R4: a live answer differs from the claim. The exact text is SafeProjectionPlan
+# §3.8, which the ledger raises when the recomputed producer is not the claim.
 private def expect_r4(&)
-  error = expect_raises(ArgumentError) { yield }
-  error.message.to_s.should_not contain "bound projection replay refused"
+  expect_raises(ArgumentError, "bound projection replay differs from claimed producer") { yield }
 end
 
 # A1: the render-time site tie, which precedes recompute.
@@ -356,24 +355,24 @@ describe Iyi::BindReplayAuthority do
       ledger.counts["SemanticSignatureType"]?.should eq 1
     end
 
-    it "refuses an unannotated return whose block is not annotated (no answer, R2)" do
+    it "keeps an unannotated block-yielding def valid: bind records no return for it" do
       program = probe_program
-      origin = def_origin(named(program, "Probe::Thing"), "yields")
-      ledger = live_ledger(program)
-      recipe = recipe_at(ledger, "signature", "Thing", origin: origin)
-      expect_r2("SemanticSignatureType") do
-        recipe.insert(Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "return_type", nil, "Int32"))
-      end
+      thing = named(program, "Probe::Thing")
+      yields = thing.lookup_first_def("yields", false).not_nil!
+      type, refused, uncompilable = Iyi::BindSemantics.infer_return(thing, yields, "Probe", Set(String).new)
+      type.should be_nil
+      refused.should eq "block is not annotated"
+      uncompilable.should be_false
     end
 
-    it "refuses an unannotated return of an abstract def (no answer, R2)" do
+    it "keeps an unannotated abstract def valid: bind records no return for it" do
       program = probe_program
-      origin = def_origin(named(program, "Probe::Pending"), "pending")
-      ledger = live_ledger(program)
-      recipe = recipe_at(ledger, "signature", "Pending", origin: origin)
-      expect_r2("SemanticSignatureType") do
-        recipe.insert(Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "return_type", nil, "Int32"))
-      end
+      waiting = named(program, "Probe::Pending")
+      abstract_def = waiting.lookup_first_def("pending", false).not_nil!
+      type, refused, uncompilable = Iyi::BindSemantics.infer_return(waiting, abstract_def, "Probe", Set(String).new)
+      type.should be_nil
+      refused.should eq "abstract"
+      uncompilable.should be_false
     end
 
     it "refuses a signature site the claimed origin does not declare (A1, not R2)" do
@@ -697,10 +696,72 @@ describe Iyi::BindReplayAuthority do
       ledger = live_ledger(program, artifact_dir: nil)
       recipe = recipe_at(ledger, "top_fun", "")
       expect_r2("ForeignType") do
-        recipe.map_foreign(recipe.printed(captured_node("Thing")), "shard/thing", "Thing", "Shard::Thing")
+        recipe.map_foreign(recipe.printed(captured_node("Thing")), "dep_mod", "Thing", "DepMod::Thing")
       end
     end
 
-    pending "issues a foreign alias that an approved artifact declares (needs an .iyimod fixture writer)"
+    it "issues a foreign alias that a real approved .iyimod declares" do
+      dir = File.tempname("bind-replay-foreign")
+      write_dep_artifact(dir)
+      program = dep_probe_program
+      ledger = live_ledger(program, artifact_dir: dir)
+      recipe = recipe_at(ledger, "top_fun", "")
+      recipe.map_foreign(recipe.printed(captured_node("Thing")), "dep_mod", "Thing", "DepMod::Thing")
+      ledger.counts["ForeignType"]?.should eq 1
+    end
+
+    it "refuses a foreign alias naming another module than the artifact carries (R4)" do
+      dir = File.tempname("bind-replay-foreign")
+      write_dep_artifact(dir)
+      program = dep_probe_program
+      ledger = live_ledger(program, artifact_dir: dir)
+      recipe = recipe_at(ledger, "top_fun", "")
+      expect_r4 do
+        recipe.map_foreign(recipe.printed(captured_node("Thing")), "other_mod", "Thing", "DepMod::Thing")
+      end
+    end
+
+    it "refuses a foreign alias naming another qualified path than the artifact carries (R4)" do
+      dir = File.tempname("bind-replay-foreign")
+      write_dep_artifact(dir)
+      program = dep_probe_program
+      ledger = live_ledger(program, artifact_dir: dir)
+      recipe = recipe_at(ledger, "top_fun", "")
+      expect_r4 do
+        recipe.map_foreign(recipe.printed(captured_node("Thing")), "dep_mod", "Thing", "DepMod::Other")
+      end
+    end
   end
+end
+
+# The dependency artifact the ForeignType controls read. It is written by the same
+# path bind takes (capture-on bind with `emit_bind`, then `Iyi.print_bind` into the
+# artifact directory), not hand-built, so the authority reads what bind writes.
+private def write_dep_artifact(dir : String) : String
+  Dir.mkdir_p(dir)
+  compiler = create_spec_compiler
+  compiler.no_codegen = true
+  compiler.emit_bind = dir
+  compiler.capture_diagnostic_provenance = true
+  source = Iyi::Compiler::Source.new(File.expand_path("dep_mod.cr"),
+    "module DepMod\n  class Thing\n  end\nend\n")
+  result = compiler.compile source, File.expand_path("dep-mod-probe")
+  Iyi.print_bind result.program, "DepMod", IO::Memory.new, artifact_dir: dir
+  File.join(dir, "dep_mod.iyimod")
+end
+
+# The program the foreign alias is written against. DepMod::Thing is declared, and
+# nothing declares a bare Thing or Probe::Thing, so bind's bare-name rule applies.
+private def dep_probe_program : Iyi::Program
+  capture_program(<<-CR)
+    module DepMod
+      class Thing
+      end
+    end
+
+    module Probe
+      class Holder
+      end
+    end
+  CR
 end
