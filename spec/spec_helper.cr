@@ -249,7 +249,8 @@ def compile(*codes, prelude = "empty", debug = Iyi::Debug::None, target = nil)
   end
 end
 
-private def new_program
+# Public, because the macro specs that check diagnostic capture build their own program.
+def new_program
   program = Program.new
   program.color = false
   apply_program_flags(program.flags)
