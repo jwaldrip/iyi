@@ -80,6 +80,9 @@ module Iyi
     end
   end
 
+  # One rewrite of a held fragment: the recipe of its site applies it to the fragment, and the rewritten fragment comes out.
+  alias BindRewrite = Proc(DiagnosticBoundRecipe, DiagnosticBoundFragment, DiagnosticBoundFragment)
+
   record BindMethod,
     owner : String,
     name : String,
@@ -414,6 +417,9 @@ module Iyi
     @@diagnostic_headers = {} of String => BindDiagnostic
     @@diagnostic_classvars = {} of {String, String} => BindDiagnostic
     @@diagnostic_fields = {} of {String, String} => BindDiagnostic
+    @@raw_classvars = {} of {String, String} => {String, DiagnosticModeCaptures}
+    @@raw_fields = {} of {String, String} => {String, DiagnosticModeCaptures}
+    @@uninitialized_classvars = {} of {String, String} => {DiagnosticOrigin, String}
     @@initialiser_diagnostic = nil
     @@ledger = program.diagnostic_capture ? DiagnosticProjectionLedger.new(BindReplayAuthority.new(program, root, iyi_module_name(root), artifact_dir)) : nil
     @@diagnostic_binding = program.diagnostic_capture
@@ -1042,17 +1048,17 @@ module Iyi
       else
         [] of IyiMod::ClassVarDecl
       end
-    @@diagnostic_classvars = program.iyi_class_var_diagnostics.dup if program.diagnostic_capture
-    @@diagnostic_fields = program.iyi_field_diagnostics.dup if program.diagnostic_capture
+    @@raw_classvars = program.iyi_class_var_diagnostics.dup if program.diagnostic_capture
+    @@raw_fields = program.iyi_field_diagnostics.dup if program.diagnostic_capture
 
     if module_root? program, root
       ordinals = IyiMod.mono_body_ordinals(exported)
       exported = exported.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index]) { |text, anchors, _header| strip_root(text, root, anchors) }
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text| strip_root(text, root) }
       end
       ordinals = IyiMod.mono_body_ordinals(carried_functions)
       carried_functions = carried_functions.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index]) { |text, anchors, _header| strip_root(text, root, anchors) }
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text| strip_root(text, root) }
       end
       ordinals = IyiMod.mono_body_ordinals(top_exported)
       top_exported = top_exported.map_with_index do |signature, index|
@@ -1061,11 +1067,11 @@ module Iyi
         # module — that is what makes it top-level — so a name inside its body
         # has to be the one the module is known by from out there:
         # `Kemal::Utils` rather than `Utils`, which is nothing at that level.
-        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, strip_root(signature, root), ordinals[index]) { |text, anchors, header| header ? strip_root(text, root, anchors) : text }
+        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [] of BindRewrite) { |text| text }
       end
       carried_types = carried_types.map { |declaration| strip_root_declaration declaration, root }
       root_class_vars = root_class_vars.map do |class_var|
-        rewritten = transform_bound_classvar(root, class_var) { |text, anchors| strip_root(text, root, anchors) }
+        rewritten = transform_bound_classvar(root, IyiMod::DIAGNOSTIC_ROOT_CONTAINER, class_var, [root_rewrite(root)]) { |text| strip_root(text, root) }
         class_var.copy_with(type: strip_root(class_var.type, root), value: rewritten)
       end
     end
@@ -1087,20 +1093,20 @@ module Iyi
     unless @@bound_prefix.empty?
       ordinals = IyiMod.mono_body_ordinals(exported)
       exported = exported.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index]) { |text, anchors, _header| map_names(text, anchors) }
+        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text) }
       end
       ordinals = IyiMod.mono_body_ordinals(carried_functions)
       carried_functions = carried_functions.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index]) { |text, anchors, _header| map_names(text, anchors) }
+        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text) }
       end
       ordinals = IyiMod.mono_body_ordinals(top_exported)
       top_exported = top_exported.map_with_index do |signature, index|
-        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature), ordinals[index]) { |text, anchors, _header| map_names(text, anchors) }
+        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text) }
       end
       reopened = reopened.map { |declaration| map_names_declaration declaration }
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
       root_class_vars = root_class_vars.map do |class_var|
-        rewritten = transform_bound_classvar(root, class_var) { |text, anchors| map_names(text, anchors) }
+        rewritten = transform_bound_classvar(root, IyiMod::DIAGNOSTIC_ROOT_CONTAINER, class_var, map_rewrites) { |text| map_names(text) }
         class_var.copy_with(type: map_names(class_var.type), value: rewritten)
       end
     end
@@ -1185,7 +1191,7 @@ module Iyi
     artifact.hashes = IyiMod.hashes_for(artifact, inputs.join('\n'))
 
     path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}.iyimod")
-    IyiMod.write artifact, path
+    IyiMod.write artifact, path, @@ledger
 
     keep_path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}_keep.cr")
     File.write keep_path, keep_file(program, root, signatures, types, accessors, dir)
@@ -2794,18 +2800,70 @@ module Iyi
     before === 0x3A_u8 || identifier_byte?(before) # :
   end
 
-  # Every place *needle* appears in *text* on a name boundary, replaced by what
-  # *replacement_for* answers. `nil` from the block leaves the occurrence alone.
-  private def self.replace_on_boundary(text : String, needle : String,
-                                       trailing_name_ends : Bool, anchors : Array(DiagnosticAnchor)? = nil,
-                                       & : -> String) : String
+  # The byte ranges of *text* that are not code a name can be read from: string literals, the text parts of
+  # their interpolations, character literals and comments. The token-level rewrite never touches them, so the
+  # text rewrite leaves them alone too, and capture on and off write the same bytes.
+  private def self.literal_spans(text : String) : Array({Int32, Int32})
+    spans = [] of {Int32, Int32}
+    bytes = text.to_unsafe
+    size = text.bytesize
+    index = 0
+    while index < size
+      byte = bytes[index]
+      if byte === 0x23_u8                              # # a comment runs to the end of its line
+        finish = index
+        finish += 1 while finish < size && bytes[finish] !== 0x0A_u8
+        spans << {index, finish}
+        index = finish
+      elsif byte === 0x27_u8                           # ' a character literal
+        finish = index + 1
+        finish += 1 while finish < size && finish - index < 12 && bytes[finish] !== 0x27_u8
+        spans << {index, Math.min(finish + 1, size)}
+        index = finish + 1
+      elsif byte === 0x22_u8                           # " a string, minus the code of its interpolations
+        start = index + 1
+        cursor = start
+        while cursor < size && bytes[cursor] !== 0x22_u8
+          if bytes[cursor] === 0x5C_u8                 # \ escapes the byte after it
+            cursor += 2
+          elsif bytes[cursor] === 0x23_u8 && cursor + 1 < size && bytes[cursor + 1] === 0x7B_u8
+            spans << {start, cursor}
+            depth = 0
+            while cursor < size
+              depth += 1 if bytes[cursor] === 0x7B_u8
+              depth -= 1 if bytes[cursor] === 0x7D_u8
+              cursor += 1
+              break if depth == 0
+            end
+            start = cursor
+          else
+            cursor += 1
+          end
+        end
+        cursor = size if cursor > size
+        spans << {start, cursor} if start < cursor
+        index = cursor + 1
+      else
+        index += 1
+      end
+    end
+    spans
+  end
+
+  private def self.literal_at?(spans : Array({Int32, Int32}), offset : Int32) : Bool
+    spans.any? { |(start, finish)| offset >= start && offset < finish }
+  end
+
+  # Every place *needle* appears in *text* on a name boundary and outside a literal, replaced by what the block
+  # answers. `nil` from the block leaves the occurrence alone.
+  private def self.replace_on_boundary(text : String, needle : String, trailing_name_ends : Bool, & : -> String) : String
     return text if needle.empty? || !text.includes?(needle)
 
+    spans = literal_spans(text)
     result = String::Builder.new(text.bytesize)
     index = 0
-    replacements = anchors ? [] of {Int32, Int32, Int32} : nil
     while index < text.bytesize
-      if text.byte_index(needle, index) == index && !after_name_byte?(text, index)
+      if text.byte_index(needle, index) == index && !after_name_byte?(text, index) && !literal_at?(spans, index)
         after = index + needle.bytesize
         ends_name = !trailing_name_ends ||
                     after >= text.bytesize ||
@@ -2813,7 +2871,6 @@ module Iyi
         if ends_name
           replacement = yield
           result << replacement
-          replacements.try(&.<<({index, after, replacement.bytesize}))
           index = after
           next
         end
@@ -2821,28 +2878,13 @@ module Iyi
       result.write_byte text.to_unsafe[index]
       index += 1
     end
-    if anchors && replacements
-      mapped = anchors.map do |anchor|
-        offset = anchor.offset
-        delta = 0
-        replacements.each do |start_offset, end_offset, length|
-          if offset >= start_offset && offset < end_offset
-            raise "diagnostic anchor falls inside a rewritten name"
-          end
-          delta += length - (end_offset - start_offset) if end_offset <= offset
-        end
-        anchor.copy_with(offset: offset + delta)
-      end
-      anchors.clear
-      anchors.concat(mapped)
-    end
     result.to_s
   end
 
-  # `MyLib::Entry` becomes `Entry`, and `MyLibOther::X` is left alone — the
-  # prefix has to end at a name boundary or this renames types it never owned.
-  private def self.strip_root(text : String, root : String, anchors : Array(DiagnosticAnchor)? = nil) : String
-    replace_on_boundary(text, "#{root}::", trailing_name_ends: false, anchors: anchors) { "" }
+  # `MyLib::Entry` becomes `Entry`, and `MyLibOther::X` is left alone — the prefix has to end at a name
+  # boundary or this renames types it never owned.
+  private def self.strip_root(text : String, root : String) : String
+    replace_on_boundary(text, "#{root}::", trailing_name_ends: false) { "" }
   end
 
   private def self.strip_root(signature : IyiMod::Signature, root : String) : IyiMod::Signature
@@ -2884,14 +2926,13 @@ module Iyi
     # `alias`'s value are read in the enclosing scope, so they keep the root's.
     inside = "#{root}::#{declaration.name}"
     scoped = ->(text : String) { strip_root(strip_root(text, inside), root) }
+    scoped_rewrites = [root_rewrite(inside), root_rewrite(root)] of BindRewrite
 
     # `copy_with`, for the reason `prune_declaration` gives.
     declaration.copy_with(
       fields: declaration.fields.map do |(name, type, value)|
         owner = path.starts_with?("::") ? path.lchop("::") : "#{@@root}::#{path}"
-        rewritten = transform_bound_field(owner, name, value) do |text, anchors|
-          strip_root(strip_root(text, inside, anchors), root, anchors)
-        end
+        rewritten = transform_bound_field(owner, path, name, value, scoped_rewrites) { |text| strip_root(strip_root(text, inside), root) }
         {name, scoped.call(type), rewritten}
       end,
       # `map_with_index` over the ordinals, because two definitions of one
@@ -2901,9 +2942,7 @@ module Iyi
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body(path, signature, strip_root(strip_root(signature, inside), root), ordinals[index]) do |text, anchors, _header|
-            strip_root(strip_root(text, inside, anchors), root, anchors)
-          end
+          rekey_body(path, signature, strip_root(strip_root(signature, inside), root), ordinals[index], scoped_rewrites, scoped_rewrites) { |text| strip_root(strip_root(text, inside), root) }
         end
       end,
       # Deeper for what is inside it, because a name is read from where it is
@@ -2920,9 +2959,7 @@ module Iyi
       # way an alias's right-hand side is.
       class_vars: declaration.class_vars.map do |class_var|
         owner = path.starts_with?("::") ? path.lchop("::") : "#{@@root}::#{path}"
-        rewritten = transform_bound_classvar(owner, class_var) do |text, anchors|
-          strip_root(strip_root(text, inside, anchors), root, anchors)
-        end
+        rewritten = transform_bound_classvar(owner, path, class_var, scoped_rewrites) { |text| strip_root(strip_root(text, inside), root) }
         class_var.copy_with(type: scoped.call(class_var.type), value: rewritten)
       end,
       superclass: strip_root(declaration.superclass, root),
@@ -2951,9 +2988,11 @@ module Iyi
     body.blank? ? "nil" : body
   end
 
-  # The header as the ledger holds it. The `def` keyword is the one anchor the source gives, and the
-  # signature is held as bind rendered it. A name or restriction is carried by its own projection once
-  # bind issues one for it; until then the header is intrinsic source, which the ledger accepts.
+  # The header as the ledger holds it, rebuilt from anchored pieces. The pieces are composed in the order
+  # `IyiMod.write_signature` writes its fields, so the result is `render_signature` byte for byte, and the
+  # caller refuses any difference. A field is printed from the node it was written from when that node prints
+  # exactly as bind wrote the field, so a path inside it carries its PathSegment anchors and a rewrite reaches
+  # it. Any other field is held as its own text: no rewrite reaches it, so a rewrite that needs it fails loudly.
   private def self.record_bind_diagnostic_signature(container : String, signature : IyiMod::Signature,
                                                     method : BindMethod) : Nil
     return unless method.diagnostic_def
@@ -2966,14 +3005,130 @@ module Iyi
       raise "ambiguous bound signature origin" unless previous.text == text && previous.origin == origin
       return
     end
-    root_offset = (signature.visibility.empty? ? 0 : signature.visibility.bytesize + 1) + (signature.required ? 9 : 0)
-    builder = DiagnosticFragmentBuilder.new(@@diagnostic_mode)
-    builder.add_written_anchor(root_offset, root_offset + 3, text, DiagnosticRenderedLexContext::Operand,
-      "Def", "keyword", origin, {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
-    rendered = ledger.register_source(DiagnosticRenderedFragment.new(text, builder.finish_data(text)))
     index = @@diagnostic_headers.values.count { |held| held.container == container && held.origin == origin }
     recipe = DiagnosticBoundRecipe.open(ledger, @@diagnostic_mode, "signature", container, nil, index, origin)
-    @@diagnostic_headers[key] = BindDiagnostic.new(recipe, DiagnosticBoundFragment.new(rendered), container, origin)
+    fragment = header_fragment(recipe, ledger, method, signature, origin)
+    raise "bound signature header rebuilt differently" unless fragment.text == text
+    @@diagnostic_headers[key] = BindDiagnostic.new(recipe, fragment, container, origin)
+  end
+
+  # The header's fields as anchored pieces, composed the way `IyiMod.write_signature` composes them.
+  private def self.header_fragment(recipe : DiagnosticBoundRecipe, ledger : DiagnosticProjectionLedger,
+                                   method : BindMethod, signature : IyiMod::Signature,
+                                   origin : DiagnosticOrigin) : DiagnosticBoundFragment
+    definition = method.diagnostic_def || raise "bound header has no written definition"
+
+    # The keyword is the one anchor the source gives: the `Def` anchor the ledger's origin check needs.
+    keyword_builder = DiagnosticFragmentBuilder.new(@@diagnostic_mode)
+    keyword_builder.add_written_anchor(0, 3, "def", DiagnosticRenderedLexContext::Operand,
+      "Def", "keyword", origin, {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
+    keyword = DiagnosticBoundFragment.new(
+      ledger.register_source(DiagnosticRenderedFragment.new("def", keyword_builder.finish_data("def"))))
+
+    prefix = [] of DiagnosticBoundFragment
+    prefix << recipe.plain(signature.visibility) unless signature.visibility.empty?
+    prefix << recipe.plain("abstract") if signature.required
+    prefix << keyword
+    head = recipe.join(prefix, " ")
+
+    named = recipe.plain(signature.name)
+    unless signature.receiver.empty?
+      named = recipe.join([header_piece(recipe, definition.receiver, signature.receiver), named], ".")
+    end
+    head = recipe.join([head, named], " ")
+
+    arguments = definition.args.dup
+    arguments << definition.double_splat.not_nil! if definition.double_splat
+    raise "bound signature parameter shape differs from definition" unless arguments.size == signature.parameters.size && arguments.size == method.params.size
+
+    pieces = signature.parameters.map_with_index do |text, index|
+      name, restriction, default = method.params[index]
+      raise "bound parameter projection changed" unless text == bind_parameter(name, restriction, default)
+      parameter_fragment(recipe, arguments[index], name, restriction, default, text)
+    end
+    pieces << recipe.plain(signature.block_parameter) unless signature.block_parameter.empty?
+    unless pieces.empty?
+      list = recipe.join(pieces, ", ")
+      head = recipe.join([head, recipe.join([recipe.plain("("), list, recipe.plain(")")], "")], "")
+    end
+
+    unless signature.return_type.empty?
+      head = recipe.join([head, recipe.plain(" : "),
+        header_piece(recipe, definition.return_type, signature.return_type)], "")
+    end
+
+    unless signature.free_variables.empty?
+      bounds = signature.free_variable_bounds.to_h
+      names = signature.free_variables.map do |name|
+        bound = bounds[name]?
+        next recipe.plain(name) unless bound
+        recipe.join([recipe.plain(name), header_piece(recipe, bound_node(definition.free_var_bounds, name), bound)], " : ")
+      end
+      head = recipe.join([head, recipe.plain(" forall "), recipe.join(names, ", ")], "")
+    end
+
+    unless signature.where_bounds.empty?
+      clauses = signature.where_bounds.map do |(name, bound)|
+        recipe.join([recipe.plain(name), header_piece(recipe, bound_node(definition.where_bounds, name), bound)], " : ")
+      end
+      head = recipe.join([head, recipe.plain(" where "), recipe.join(clauses, ", ")], "")
+    end
+
+    head
+  end
+
+  # A field's piece: its node printed when the node prints as bind wrote the field, else the field's own text.
+  private def self.header_piece(recipe : DiagnosticBoundRecipe, node : ASTNode?, text : String) : DiagnosticBoundFragment
+    if node
+      printed = recipe.printed(node)
+      return printed if printed.text == text
+    end
+    recipe.plain(text)
+  end
+
+  private def self.bound_node(bounds : Hash(String, ASTNode)?, name : String) : ASTNode?
+    bounds.try { |found| found[name]? }
+  end
+
+  # One parameter as `bind_parameter` writes it: its name, then its restriction and default when there are any.
+  private def self.parameter_fragment(recipe : DiagnosticBoundRecipe, arg : Arg?, name : String,
+                                      restriction : String, default : String, text : String) : DiagnosticBoundFragment
+    return recipe.plain(text) if name.empty? || arg.nil?
+    written = recipe.plain(name)
+    unless restriction == "?"
+      written = recipe.join([written, header_piece(recipe, arg.restriction, restriction)], " : ")
+    end
+    unless default.empty?
+      written = recipe.join([written, header_piece(recipe, arg.default_value, default)], " = ")
+    end
+    written
+  end
+
+  # The rewrites in order, each applied by the recipe of the held site, so every projection it issues is issued
+  # at the site that finishes the declaration.
+  private def self.apply_rewrites(held : BindDiagnostic, rewrites : Array(BindRewrite)) : BindDiagnostic
+    rewritten = rewrites.reduce(held.fragment) { |fragment, rewrite| rewrite.call(held.recipe, fragment) }
+    held.with_fragment(rewritten)
+  end
+
+  # `Root::X` becomes `X`, for a root of one or more segments. See `DiagnosticBoundRecipe#strip_root`.
+  private def self.root_rewrite(root : String) : BindRewrite
+    ->(recipe : DiagnosticBoundRecipe, fragment : DiagnosticBoundFragment) { recipe.strip_root(fragment, root) }
+  end
+
+  # A bound name becomes what the consumer calls it. Recorded as `map_names` recorded it: a name met on its
+  # boundary is used even when it maps to itself, and so is a qualified name the text already spells.
+  private def self.map_rewrite(name : String, qualified : String) : BindRewrite
+    module_name = @@bound_module[name]
+    ->(recipe : DiagnosticBoundRecipe, fragment : DiagnosticBoundFragment) {
+      mapped = recipe.map_foreign(fragment, module_name, name, qualified)
+      @@bound_used << module_name if names_on_boundary?(fragment.text, name) || names_on_boundary?(mapped.text, qualified)
+      mapped
+    }
+  end
+
+  private def self.map_rewrites : Array(BindRewrite)
+    @@bound_prefix.map { |name, qualified| map_rewrite(name, qualified) }
   end
 
   private def self.record_bind_diagnostic_body(container : String, signature : IyiMod::Signature,
@@ -3064,9 +3219,8 @@ module Iyi
     ledger = @@ledger || raise "bound value finished without a section ledger"
     variables.each do |variable|
       next if variable.value.empty?
-      held = @@diagnostic_classvars[{owner, variable.name}]? || raise "missing bound class variable diagnostics"
+      held = held_value(@@diagnostic_classvars, @@raw_classvars, "class_var", owner, variable.name, container)
       raise "bound class variable text changed" unless held.text == variable.value
-      raise "bound class variable container differs" unless held.container == container
       key = IyiMod.class_var_fragment_key(container, variable.name)
       seal_once(section, key, held)
     end
@@ -3083,28 +3237,48 @@ module Iyi
     end
   end
 
-  private def self.transform_bound_classvar(owner : String, variable : IyiMod::ClassVarDecl,
-                                            & : String, Array(DiagnosticAnchor)? -> String) : String
-    return yield variable.value, nil if !@@diagnostic_binding || variable.value.empty?
-    key = {owner, variable.name}
-    source, original = @@diagnostic_classvars[key]? || raise "missing bound class variable origin"
-    raise "bound class variable source mismatch" unless source == variable.value
-    anchors = original.dup
-    transformed = yield source, anchors
-    @@diagnostic_classvars[key] = {transformed, anchors}
-    transformed
+  # The held value of a class variable or a field, opened at its container the first time it is needed. The
+  # site is opened here, not at seal, so a rewrite issues its projections at the site that finishes the value.
+  private def self.held_value(table : Hash({String, String}, BindDiagnostic),
+                              raw : Hash({String, String}, {String, DiagnosticModeCaptures}),
+                              kind : String, owner : String, name : String, container : String) : BindDiagnostic
+    if held = table[{owner, name}]?
+      raise "bound #{kind} container differs" unless held.container == container
+      return held
+    end
+    ledger = @@ledger || raise "bound #{kind} recorded without a section ledger"
+    if kind == "class_var" && (uninitialized = @@uninitialized_classvars[{owner, name}]?)
+      origin, type = uninitialized
+      recipe = DiagnosticBoundRecipe.open(ledger, @@diagnostic_mode, kind, container, name, declaration_origin: origin)
+      producer = DiagnosticBoundProducer::UninitializedClassVar.new(origin, owner, name, type)
+      return table[{owner, name}] = BindDiagnostic.new(recipe, recipe.insert(producer), container, origin)
+    end
+    source, captures = raw[{owner, name}]? || raise "missing bound #{kind} origin"
+    raise "bound #{kind} text changed" unless captures.text == source
+    recipe = DiagnosticBoundRecipe.open(ledger, @@diagnostic_mode, kind, container, name)
+    table[{owner, name}] = BindDiagnostic.new(recipe, recipe.captured(captures), container)
   end
 
-  private def self.transform_bound_field(owner : String, name : String, value : String,
-                                         & : String, Array(DiagnosticAnchor)? -> String) : String
-    return yield value, nil if !@@diagnostic_binding || value.empty?
-    key = {owner, name}
-    source, original = @@diagnostic_fields[key]? || raise "missing bound field origin"
-    raise "bound field source mismatch" unless source == value
-    anchors = original.dup
-    transformed = yield source, anchors
-    @@diagnostic_fields[key] = {transformed, anchors}
-    transformed
+  # Rewrite a class variable at its own diagnostic site.
+  private def self.transform_bound_classvar(owner : String, container : String, variable : IyiMod::ClassVarDecl,
+                                            rewrites : Array(BindRewrite), & : String -> String) : String
+    return yield variable.value if !@@diagnostic_binding || variable.value.empty?
+    held = held_value(@@diagnostic_classvars, @@raw_classvars, "class_var", owner, variable.name, container)
+    raise "bound class variable source mismatch" unless held.text == variable.value
+    transformed = apply_rewrites(held, rewrites)
+    @@diagnostic_classvars[{owner, variable.name}] = transformed
+    transformed.text
+  end
+
+  # A field's value, rewritten the same way a class variable's is.
+  private def self.transform_bound_field(owner : String, container : String, name : String, value : String,
+                                         rewrites : Array(BindRewrite), & : String -> String) : String
+    return yield value if !@@diagnostic_binding || value.empty?
+    held = held_value(@@diagnostic_fields, @@raw_fields, "field", owner, name, container)
+    raise "bound field source mismatch" unless held.text == value
+    transformed = apply_rewrites(held, rewrites)
+    @@diagnostic_fields[{owner, name}] = transformed
+    transformed.text
   end
 
   private def self.bound_diagnostic_type(program : Program, section : IyiMod::DiagnosticSection,
@@ -3115,7 +3289,7 @@ module Iyi
     bound_diagnostic_signatures(section, artifact, here, type.methods)
     type.fields.each do |field, _, value|
       next if value.empty?
-      held = @@diagnostic_fields[{owner, field}]? || raise "missing bound field diagnostics"
+      held = held_value(@@diagnostic_fields, @@raw_fields, "field", owner, field, here)
       raise "bound field text changed" unless held.text == value
       key = IyiMod.field_fragment_key(here, field)
       seal_once(section, key, held)
@@ -3133,51 +3307,42 @@ module Iyi
   # the consumer reads it as a method somebody else compiled, and the link ends
   # on `undefined symbol: *Radix::Tree(Kemal::Route)^Radix::Tree(T)#add<…>`.
   private def self.rekey_body(container : String, before : IyiMod::Signature,
-                              after : IyiMod::Signature,
-                              ordinal : Int32 = 0,
-                              & : String, Array(DiagnosticAnchor)?, Bool -> String) : IyiMod::Signature
+                              after : IyiMod::Signature, ordinal : Int32 = 0,
+                              header_rewrites : Array(BindRewrite) = [] of BindRewrite,
+                              body_rewrites : Array(BindRewrite) = [] of BindRewrite,
+                              & : String -> String) : IyiMod::Signature
     old_key = IyiMod.mono_body_key(container, before, ordinal)
     new_key = IyiMod.mono_body_key(container, after, ordinal)
     if before.diagnostic_origin
       old_header_key = IyiMod.signature_fragment_key(container, before)
-      header, anchors = @@diagnostic_headers.delete(old_header_key) || raise "missing bound signature diagnostic"
-      transformed = yield header, anchors, true
-      raise "bound signature transform changed untracked text" unless transformed == IyiMod.render_signature(after)
+      held = @@diagnostic_headers.delete(old_header_key) || raise "missing bound signature diagnostic"
+      transformed = apply_rewrites(held, header_rewrites)
+      raise "bound signature transform changed untracked text" unless transformed.text == IyiMod.render_signature(after)
       new_header_key = IyiMod.signature_fragment_key(container, after)
       raise "ambiguous transformed bound signature" if @@diagnostic_headers.has_key?(new_header_key)
-      @@diagnostic_headers[new_header_key] = {transformed, anchors}
+      @@diagnostic_headers[new_header_key] = transformed
     end
 
-    # The body's *text* takes the same rewrite its signature does, and it was
-    # not taking it. A body is the module's own code and names things the way
-    # the module wrote them — `SQLite3::TIME_ZONE`, absolute — and the
-    # declarations are read inside a module where the root has been stripped,
-    # so that path is the module's *public* name and R-2 answers for it:
-    # `SQLite3 does not export SQLite3::TIME_ZONE`. Stripped, it is
-    # `TIME_ZONE`, which is what the shard's own file means by it.
+    # A body is found again by its signature, so it moves with its header. Its text takes the rewrites the
+    # header takes, and it is held on the site the body was opened at.
     if body = @@mono_bodies.delete(old_key)
       if old_key != new_key && @@mono_bodies.has_key?(new_key)
         raise "bound body rewrite would collapse distinct semantic definitions"
       end
       if before.diagnostic_origin
         old_diagnostic_key = IyiMod.signature_body_fragment_key(container, before)
-        if diagnostic = @@diagnostic_bodies.delete(old_diagnostic_key)
-          source, anchors = diagnostic
-          raise "bound body and diagnostic text disagree" unless source == body
-          transformed = yield body, anchors, false
-          new_diagnostic_key = IyiMod.signature_body_fragment_key(container, after)
-          entry = {transformed, anchors}
-          if previous = @@diagnostic_bodies[new_diagnostic_key]?
-            raise "ambiguous transformed diagnostic body" unless previous == entry
-          else
-            @@diagnostic_bodies[new_diagnostic_key] = entry
-          end
-          @@mono_bodies[new_key] = transformed
+        held = @@diagnostic_bodies.delete(old_diagnostic_key) || raise "missing bound diagnostic body"
+        raise "bound body and diagnostic text disagree" unless held.text == body
+        transformed = apply_rewrites(held, body_rewrites)
+        new_diagnostic_key = IyiMod.signature_body_fragment_key(container, after)
+        if previous = @@diagnostic_bodies[new_diagnostic_key]?
+          raise "ambiguous transformed diagnostic body" unless previous.text == transformed.text
         else
-          raise "missing bound diagnostic body"
+          @@diagnostic_bodies[new_diagnostic_key] = transformed
         end
+        @@mono_bodies[new_key] = transformed.text
       else
-        @@mono_bodies[new_key] = yield body, nil, false
+        @@mono_bodies[new_key] = yield body
       end
     end
     after
@@ -3185,14 +3350,14 @@ module Iyi
 
   # Rewrites every bound name in *text* to what the consumer calls it. The name
   # has to stand alone on both sides: `JSON` is bound, `JSONThing` is not.
-  private def self.map_names(text : String, anchors : Array(DiagnosticAnchor)? = nil) : String
+  private def self.map_names(text : String) : String
     mapped = @@bound_prefix.reduce(text) do |carried, (name, qualified)|
       # Recorded where the name is *met* rather than where the text changed. A
       # class root needs no rewriting — the consumer names its types exactly as
       # it declares them — so `mapped != carried` would have said "this
       # boundary is not depended on" of every one of them, and the import edge
       # that reads off this went missing.
-      replace_on_boundary(carried, name, trailing_name_ends: true, anchors: anchors) do
+      replace_on_boundary(carried, name, trailing_name_ends: true) do
         @@bound_used << @@bound_module[name]
         qualified
       end
@@ -3252,20 +3417,20 @@ module Iyi
     declaration.copy_with(
       fields: declaration.fields.map do |(name, type, value)|
         owner = path.starts_with?("::") ? path.lchop("::") : "#{@@root}::#{path}"
-        rewritten = transform_bound_field(owner, name, value) { |text, anchors| map_names(text, anchors) }
+        rewritten = transform_bound_field(owner, path, name, value, map_rewrites) { |text| map_names(text) }
         {name, map_names(type), rewritten}
       end,
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body(path, signature, map_names(signature), ordinals[index]) { |text, anchors, _header| map_names(text, anchors) }
+          rekey_body(path, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text) }
         end
       end,
       types: declaration.types.map { |nested| map_names_declaration nested, "#{path}::#{nested.name}" },
       value: map_names(declaration.value),
       class_vars: declaration.class_vars.map do |class_var|
         owner = path.starts_with?("::") ? path.lchop("::") : "#{@@root}::#{path}"
-        rewritten = transform_bound_classvar(owner, class_var) { |text, anchors| map_names(text, anchors) }
+        rewritten = transform_bound_classvar(owner, path, class_var, map_rewrites) { |text| map_names(text) }
         class_var.copy_with(type: map_names(class_var.type), value: rewritten)
       end,
       superclass: map_names(declaration.superclass),
@@ -3483,10 +3648,6 @@ module Iyi
   # The bodies a generic's methods travel as, keyed the way the reader looks
   # them up. Reset per run with everything else this file accumulates.
   @@mono_bodies = {} of String => String
-  @@diagnostic_bodies = {} of String => {String, Array(DiagnosticAnchor)}
-  @@diagnostic_headers = {} of String => {String, Array(DiagnosticAnchor)}
-  @@diagnostic_classvars = {} of {String, String} => {String, Array(DiagnosticAnchor)}
-  @@diagnostic_fields = {} of {String, String} => {String, Array(DiagnosticAnchor)}
 
   # A generic type: its parameters, its fields, and its methods with bodies.
   #
@@ -4832,29 +4993,18 @@ module Iyi
         synthesized_initialiser = true
       end
       if type.program.diagnostic_capture && !initialiser.empty?
-        captures = if synthesized_initialiser
-                     origin = variable.iyi_class_var_declaration_origin
-                     crystal = bound_uninitialized_capture(origin, owner, name, written, "Crystal")
-                     iyi = bound_uninitialized_capture(origin, owner, name, written, "Iyi")
-                     DiagnosticModeCaptures.new(initialiser, [] of Iyi::SourcePosition, crystal, iyi)
-                   else
-                     variable.iyi_initialiser_diagnostic || raise "bound class variable initializer lacks diagnostic capture"
-                   end
-        type.program.record_class_var_diagnostic(type.to_s(generic_args: false), name, initialiser, captures)
+        if synthesized_initialiser
+          @@uninitialized_classvars[{type.to_s(generic_args: false), name}] = {variable.iyi_class_var_declaration_origin, written}
+        else
+          captures = variable.iyi_initialiser_diagnostic || raise "bound class variable initializer lacks diagnostic capture"
+          type.program.record_class_var_diagnostic(type.to_s(generic_args: false), name, initialiser, captures)
+        end
       end
       class_vars << IyiMod::ClassVarDecl.new(name, written, initialiser, annotations)
     end
     class_vars
   end
 
-  private def self.bound_uninitialized_capture(origin : DiagnosticOrigin, owner : String, name : String,
-                                               type : String, mode : String) : DiagnosticModeCaptureResult
-    rendered = DiagnosticBoundProjection.uninitialized(origin, owner, name, type, mode)
-    DiagnosticModeCaptureResult::Success.new(rendered.data)
-  rescue ex : DiagnosticDestinationSyntaxError
-    raise ex unless ex.lexical_mode == mode
-    DiagnosticModeCaptureResult::Failure.new(ex)
-  end
 
   # One parameter, as the declaration writes it.
   #
