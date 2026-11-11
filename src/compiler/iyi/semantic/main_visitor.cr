@@ -10,10 +10,10 @@ module Iyi
       Prof.span("  main: missing types") { node.accept missing_types }
       program.process_finished_hooks(missing_types) if process_finished_hooks
 
-      # iyi: a layout fold taken while typing is settled to the final layout
-      # before cleanup reads it, so a fold whose layout moved is corrected here
-      # (layout_folds.cr).
-      Prof.span("  main: layout folds") { settle_layout_folds(patch: true) } if cleanup
+      # iyi: the cleanup below types some code of its own, so layout folds are
+      # settled after it, in semantic_after_top_level (layout_folds.cr). A native
+      # program's cleanup folds with a typer that cached nothing while typing.
+      fresh_layout_typer_for_cleanup if cleanup
 
       # iyi: unsafe code is code in a module that says so (SPEC.md III.13),
       # read off the typed program before the cleanup inlines what the

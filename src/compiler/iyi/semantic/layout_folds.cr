@@ -175,48 +175,152 @@ module Iyi
     getter layout_fold_lines = [] of String
     property layout_fold_state = LayoutFoldState::Unsettled
 
+    # Every record bumps the epoch. A patched settle keeps the epoch it saw and
+    # whether a fold reached a layout that can still move, so a later call settles
+    # again only when there is something new (a second `semantic_after_top_level`,
+    # as the fork probe runs one).
+    @layout_fold_epoch = 0
+    @layout_fold_settled_epoch = -1
+    @layout_fold_open = false
+    # Set while codegen types code of its own (`codegen_visit_main`).
+    @layout_fold_codegen = false
+    # Whether the cleanup's typer has been replaced since the last settle.
+    @layout_fold_typer_fresh = false
+    # The open layouts that a settled fold reaches, each with its fingerprint at
+    # settle time. The code codegen types afterwards is checked against them.
+    @layout_fold_watch : Hash(Type, String)? = nil
+    # Fold literals by identity, and the value of every read of one by the
+    # MathInterpreter, so a read before settling can be judged against the final value.
+    @layout_fold_literals = Hash(NumberLiteral, LayoutFold).new.compare_by_identity
+    @layout_fold_reads = [] of {NumberLiteral, String}
+
     # Records what a fold site folded during typing. The latest record for a node
     # wins, and settling compares that record with the final layout.
     def record_layout_fold(fold : LayoutFold) : Nil
       @layout_folds[fold.node] = fold
+      if literal = fold.node.as(ExpandableNode).expanded.as?(NumberLiteral)
+        @layout_fold_literals[literal] = fold
+      end
+      @layout_fold_epoch += 1
+    end
+
+    # The MathInterpreter hook calls this for every literal it reads
+    # (math_interpreter.cr, `interpret(node : NumberLiteral)`). A read of a fold
+    # literal records the value read, which settling checks against the final value.
+    def note_layout_fold_read(literal : NumberLiteral) : Nil
+      return unless @layout_fold_literals[literal]?
+      @layout_fold_reads << {literal, literal.value}
     end
 
     # Settles every recorded fold against the final layout.
     #
-    # Each fold is recomputed with a fresh typer, which lowers the layouts as they
-    # are now. A fold whose value differs is stale, and then:
+    # `semantic_after_top_level` calls this after the last code the compiler types,
+    # including what the cleanup types itself: the raise it writes for an
+    # unreachable enum branch or an untyped expression, a tuple or proc literal it
+    # retypes, a splat it expands. It runs after `RecursiveStructChecker`, since the
+    # fresh typer lowers every folded type.
+    #
+    # Each fold is recomputed with a fresh typer. A fold whose value differs is
+    # stale, and then:
     # - a stale fold inside a type argument keeps its value, because a type was
     #   built from it; a native program refuses it with a compile error instead;
-    # - a stale expression fold that shares an open layout with such a type
+    # - a literal that code typed after the cleanup inlined can hold is judged as a
+    #   type argument: a generic type variable, or a literal whose cast changed its
+    #   kind or type. It is kept, and a native program refuses it;
+    # - a stale expression fold that shares an open layout with a stale type
     #   argument keeps its value, so it agrees with the type;
-    # - any other stale expression fold is replaced by a new literal with the
-    #   final value. The old literal is never mutated, because a generic instance
-    #   may hold it as a type variable.
+    # - any other stale expression fold takes the final value, written into the
+    #   literal the program holds. The write is in place, because the cleanup has
+    #   already put that literal everywhere the fold was used.
     #
     # A fold that cannot be recomputed keeps its value and is reported. With
-    # `patch: false`, nothing in the AST changes; only the dispositions are
-    # decided. A patched settle runs once, and a native program then gets a fresh
-    # shared typer, so the GC tables and the barrier read the final layouts.
+    # `patch: false`, nothing in the AST changes. A patched settle gives a native
+    # program the settling typer as its shared typer, so the GC tables and the
+    # barrier read final layouts.
     def settle_layout_folds(patch : Bool) : Nil
-      return if layout_fold_state == LayoutFoldState::Patched
-      return if !patch && layout_fold_state == LayoutFoldState::Reported
+      if layout_fold_state == LayoutFoldState::Patched
+        return unless patch
+        return if @layout_fold_settled_epoch == @layout_fold_epoch && !@layout_fold_open
+      elsif !patch && layout_fold_state == LayoutFoldState::Reported
+        return
+      end
 
       {% if flag?(:without_llvm) %}
         # The LLVM-free front end has no layouts to settle against. Its layout
         # queries raise before any fold is recorded (program.cr), so there is
-        # nothing to settle and the front end is unchanged by this pass.
+        # nothing to settle, and the front end is unchanged by this pass.
         self.layout_fold_state = patch ? LayoutFoldState::Patched : LayoutFoldState::Reported
       {% else %}
         settle_with_layouts(patch)
       {% end %}
     end
 
+    # A native program's cleanup folds the layouts it types with a typer that
+    # cached nothing while typing, so a module that grew while typing is lowered as
+    # it is now. `--crystal` keeps the shared typer, so a type argument its cleanup
+    # folds keeps the value Crystal 1.21.0 gives it. Codegen's own typing keeps the
+    # typer that settling left.
+    def fresh_layout_typer_for_cleanup : Nil
+      {% unless flag?(:without_llvm) %}
+        return unless iyi_prelude?
+        return if @layout_fold_codegen || @layout_fold_typer_fresh
+        @layout_fold_typer_fresh = true
+        @llvm_typer = LLVMTyper.new(self, LLVM::Context.new)
+      {% end %}
+    end
+
+    # Codegen types code of its own through `visit_main` (the raise for a cast, and
+    # the raise for a proc passed to C). That typing can grow an open layout that a
+    # settled fold reaches. The fold's value was settled before, and codegen has
+    # already read it, so nothing can correct it now. A native program is refused,
+    # since iyi owns that rule. `--crystal` keeps the value Crystal 1.21.0 gives,
+    # which its own codegen gives too, and reports it under IYI_LAYOUT_FOLD_REPORT.
+    def codegen_visit_main(node : ASTNode, visitor : MainVisitor = MainVisitor.new(self)) : Nil
+      watch = @layout_fold_watch
+      previous = @layout_fold_codegen
+      @layout_fold_codegen = true
+      begin
+        visit_main node, visitor: visitor
+      ensure
+        @layout_fold_codegen = previous
+      end
+      return unless watch
+
+      watch.each do |type, stamp|
+        next if layout_fingerprint(type) == stamp
+        if iyi_prelude?
+          node.raise "codegen types code that grows #{type}, a layout that a layout fold settled before codegen reaches, so that fold's value would be stale, and codegen can't correct a value it has already read"
+        elsif ENV["IYI_LAYOUT_FOLD_REPORT"]?
+          location = node.location.try(&.to_s) || "unknown location"
+          STDERR.puts "layout fold codegen grew: #{location}: codegen typed code that grows #{type}, a layout a settled fold reaches: kept (--crystal, as Crystal 1.21.0 keeps it)"
+        end
+      end
+    end
+
+    # What a layout's implementors are now, as a string. A new implementor or a new
+    # subtype changes it.
+    private def layout_fingerprint(type : Type) : String
+      if type.is_a?(VirtualType)
+        type.subtypes.map(&.to_s).join(",")
+      elsif type.module?
+        type.including_types.to_s
+      else
+        type.subclasses.map(&.to_s).join(",")
+      end
+    end
+
+    # Prints the settled folds on stderr when IYI_LAYOUT_FOLD_REPORT is set. A
+    # program not yet settled is settled here without patching, so a `--crystal`
+    # run reports what it would keep.
+    def report_layout_folds : Nil
+      return unless ENV["IYI_LAYOUT_FOLD_REPORT"]?
+
+      settle_layout_folds(patch: false)
+      layout_fold_lines.each { |line| STDERR.puts line }
+    end
+
     {% unless flag?(:without_llvm) %}
     private def settle_with_layouts(patch : Bool) : Nil
-      # The fresh typer lowers every folded type, so a recursive struct is refused
-      # here, before the typer could recur on it.
-      RecursiveStructChecker.new(self).run if patch
-
       native = iyi_prelude?
       report = ENV["IYI_LAYOUT_FOLD_REPORT"]?
       typer = LLVMTyper.new(self, LLVM::Context.new)
@@ -237,45 +341,98 @@ module Iyi
           # A raise can leave the typer holding a half-lowered type: a tuple is
           # cached as an opaque struct before its elements are lowered
           # (llvm_typer.cr, `create_llvm_type(TupleInstanceType)`), so a later
-          # fold in the same typer would read that struct. Later folds get a
-          # fresh typer, and the native shared typer is that fresh one.
+          # fold in the same typer would read that struct. Later folds get a fresh one.
           typer = LLVMTyper.new(self, LLVM::Context.new)
         end
-        {fold, own, roots, final, failure}
+        literal = fold.node.as(ExpandableNode).expanded.as?(NumberLiteral)
+        {fold, own, roots, final, failure, literal}
       end
 
-      # Every stale type argument pins its layout, and everything that shares an
-      # open layout with it, before any expression is decided.
+      # Only a literal this settle would write is examined, and the type variables
+      # are gathered only when there is one.
+      held = Set(NumberLiteral).new.compare_by_identity
+      if patch
+        writable = [] of NumberLiteral
+        settled.each do |fold, _, _, final, _, literal|
+          next unless literal && final && !fold.type_argument
+          next unless final != fold.value || literal.value != fold.value.to_s
+          writable << literal
+        end
+        unless writable.empty?
+          type_variables = layout_fold_type_variables
+          writable.each do |literal|
+            held << literal if type_variables.includes?(literal) || layout_fold_literal_altered?(literal)
+          end
+        end
+      end
+
+      # Every stale type argument, and every held literal gone stale, pins its layout
+      # and everything that shares an open layout with it, before any expression is
+      # decided.
       pinned = {} of Int32 => String
-      settled.each do |fold, own, roots, final, failure|
-        next unless fold.type_argument
-        next unless final.nil? || final != fold.value
+      settled.each do |fold, own, roots, final, failure, literal|
+        held_here = literal ? held.includes?(literal) : false
+        next unless fold.type_argument || held_here
+        next if final && final == fold.value
 
         if native && patch
-          fold.node.raise native_type_argument_message(fold, final, failure)
+          fold.node.raise native_type_argument_message(fold, final, held_here, failure)
         end
         ([own] + roots).each { |id| pinned[graph.find(id)] ||= layout_fold_location(fold) }
       end
 
+      # A literal read before settling (by constant arithmetic, or as a type argument
+      # through TypeLookup) that settled to another value gives a derived value that
+      # can't be corrected. A native program refuses it. `--crystal` keeps the value
+      # the read computed, as Crystal 1.21.0 does, and reports it.
       lines = [] of String
-      settled.each do |fold, own, roots, final, failure|
+      if patch && !@layout_fold_reads.empty?
+        read_values = Hash(NumberLiteral, Array(String)).new.compare_by_identity
+        @layout_fold_reads.each do |literal, value|
+          (read_values[literal] ||= [] of String) << value
+        end
+        settled.each do |fold, _, _, final, _, literal|
+          next unless literal && final && (reads = read_values[literal]?)
+          next if reads.all? { |read| read == final.to_s }
+
+          if native
+            fold.node.raise "#{layout_fold_node(fold)} folded to #{fold.value}, and code typed before it settled read it as #{reads.first}, but its final value is #{final}. That derived value can't be corrected, so measure it after the layout is final"
+          end
+          if report
+            lines << "layout fold read early: #{layout_fold_location(fold)}: #{layout_fold_node(fold)} in #{layout_fold_owner(fold)}: folded #{fold.value}, read as #{reads.first}, final #{final}: kept (--crystal, the read's value stands)"
+          end
+        end
+        @layout_fold_reads.clear
+      end
+      settled.each do |fold, own, roots, final, failure, literal|
         if report && !roots.empty?
           lines << "layout fold open: #{layout_fold_location(fold)}: #{layout_fold_node(fold)} in #{layout_fold_owner(fold)}: #{fold.subject} holds #{graph.witness_of(roots.first)} by value"
         end
+
+        held_here = literal ? held.includes?(literal) : false
+        tie = ([own] + roots).compact_map { |id| pinned[graph.find(id)]? }.first?
+
+        if patch && final && literal && !fold.type_argument && !held_here
+          target = (tie ? fold.value : final).to_s
+          literal.value = target unless literal.value == target
+        end
+
         next if final && final == fold.value
 
-        tie = ([own] + roots).compact_map { |id| pinned[graph.find(id)]? }.first?
         disposition =
           if final.nil?
             "kept (cannot recompute: #{failure})"
           elsif fold.type_argument
             "kept (type argument)"
+          elsif held_here
+            "kept (used by later typing)"
           elsif tie
             "kept (tied to type argument at #{tie})"
+          elsif literal.nil?
+            "kept (no literal)"
           elsif !patch
             "kept (--crystal)"
           else
-            correct_layout_fold(fold, final.not_nil!)
             "corrected"
           end
 
@@ -285,19 +442,22 @@ module Iyi
         lines << "layout fold stale: #{layout_fold_location(fold)}: #{layout_fold_node(fold)} in #{layout_fold_owner(fold)}: folded #{fold.value}, final #{final_text}: #{disposition}"
       end
 
-      @llvm_typer = typer if patch && native
+      if patch
+        watch = Hash(Type, String).new.compare_by_identity
+        walked.each do |_, _, roots|
+          roots.each do |id|
+            witness = graph.witness_of(id)
+            watch[witness] ||= layout_fingerprint(witness)
+          end
+        end
+        @layout_fold_watch = watch
+        @llvm_typer = typer if native
+        @layout_fold_typer_fresh = false
+        @layout_fold_settled_epoch = @layout_fold_epoch
+        @layout_fold_open = walked.any? { |_, _, roots| !roots.empty? }
+      end
       @layout_fold_lines = lines
       self.layout_fold_state = patch ? LayoutFoldState::Patched : LayoutFoldState::Reported
-    end
-
-    # Prints the settled folds on stderr when IYI_LAYOUT_FOLD_REPORT is set. A
-    # program not yet settled is settled here without patching, so a `--crystal`
-    # run reports what it would keep.
-    def report_layout_folds : Nil
-      return unless ENV["IYI_LAYOUT_FOLD_REPORT"]?
-
-      settle_layout_folds(patch: false)
-      layout_fold_lines.each { |line| STDERR.puts line }
     end
 
     private def instance_layout_kind?(kind : LayoutFoldKind) : Bool
@@ -326,23 +486,51 @@ module Iyi
         instance_offset_of(subject, fold.index.not_nil!, typer).to_u64
       end
     end
-
     {% end %}
 
-    private def correct_layout_fold(fold : LayoutFold, final : UInt64) : Nil
-      expanded = NumberLiteral.new(final.to_s, :i32)
-      expanded.type = int32
-      fold.node.as(ExpandableNode).expanded = expanded
+    # A literal whose kind or type code typed later changed (a cast): it is no
+    # longer the `Int32` literal the fold made.
+    private def layout_fold_literal_altered?(literal : NumberLiteral) : Bool
+      return true unless literal.kind.i32?
+      type = literal.type?
+      type.nil? || !type.same?(int32)
     end
 
-    private def native_type_argument_message(fold : LayoutFold, final : UInt64?, failure : String?) : String
+    # Every number literal a generic instance holds as a type variable, by identity:
+    # `StaticArray(UInt8, 8)` holds its `8`.
+    private def layout_fold_type_variables : Set(NumberLiteral)
+      literals = Set(NumberLiteral).new.compare_by_identity
+      collect_layout_fold_type_variables(self, literals)
+      file_modules.each_value { |file_module| collect_layout_fold_type_variables(file_module, literals) }
+      literals
+    end
+
+    private def collect_layout_fold_type_variables(type : Type, literals : Set(NumberLiteral)) : Nil
+      nested_types = type.types?
+      return unless nested_types
+
+      nested_types.each_value do |nested|
+        if nested.is_a?(GenericType)
+          nested.each_instantiated_type do |instance|
+            next unless instance.is_a?(GenericInstanceType)
+            instance.type_vars.each_value { |var| literals << var if var.is_a?(NumberLiteral) }
+          end
+        end
+        collect_layout_fold_type_variables(nested, literals)
+      end
+    end
+
+    private def native_type_argument_message(fold : LayoutFold, final : UInt64?, held : Bool, failure : String?) : String
       label = layout_fold_node(fold)
-      if final
+      if final.nil?
+        "#{label} is used as a type argument, but its final value can't be checked (#{failure}), so the type argument can't be verified"
+      elsif fold.type_argument
         "#{label} folded to #{fold.value} when it was used as a type argument, but its final value is #{final}. " \
         "A type argument can't be corrected after it is used, so measure it after the layout is final, " \
         "or use the value as an expression"
       else
-        "#{label} is used as a type argument, but its final value can't be checked (#{failure}), so the type argument can't be verified"
+        "#{label} folded to #{fold.value}, and code typed after that used the value as a type argument or a cast, but its final value is #{final}. " \
+        "That use can't be corrected, so measure it after the layout is final"
       end
     end
 

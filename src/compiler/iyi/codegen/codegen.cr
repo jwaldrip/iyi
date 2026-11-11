@@ -2049,7 +2049,7 @@ module Iyi
       meta_vars = MetaVars.new
       meta_vars[var_name] = MetaVar.new(var_name, type: from_type)
       visitor = MainVisitor.new(@program, meta_vars)
-      @program.visit_main call, visitor: visitor
+      @program.codegen_visit_main call, visitor: visitor
       call
     end
 
@@ -2102,7 +2102,7 @@ module Iyi
     def cant_pass_closure_to_c_exception_call
       @cant_pass_closure_to_c_exception_call ||= begin
         call = Call.global("raise", StringLiteral.new("passing a closure to C is not allowed")).at(UNKNOWN_LOCATION)
-        @program.visit_main call
+        @program.codegen_visit_main call
         call.raise "::raise must be of NoReturn return type!" unless call.type.is_a?(NoReturnType)
         call
       end
