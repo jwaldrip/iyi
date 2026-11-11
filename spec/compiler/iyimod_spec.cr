@@ -208,6 +208,39 @@ describe Iyi::IyiMod do
     end
   end
 
+  # What each function reaches of module state (SPEC.md III.4.15): absent
+  # and empty mean opposite things to a consumer, so both survive the
+  # trip, and the record is in the interface hash, since a dependent's
+  # spawn placement is compiled from it.
+  it "round-trips what each function reaches, absent, empty and recorded" do
+    dumped = ->(path : String) do
+      io = IO::Memory.new
+      Iyi::IyiMod.dump Iyi::IyiMod.read(path), io
+      io.to_s
+    end
+    with_temporary_file do |path|
+      artifact = sample_artifact
+      Iyi::IyiMod.write artifact, path
+      Iyi::IyiMod.read(path).reaches.should be_nil
+      dumped.call(path).should contain "reaches       (not recorded)"
+
+      artifact.reaches = [] of Iyi::IyiMod::ReachRecord
+      Iyi::IyiMod.write artifact, path
+      Iyi::IyiMod.read(path).reaches.should eq [] of Iyi::IyiMod::ReachRecord
+      dumped.call(path).should contain "reaches       (nothing unsafe)"
+      empty = Iyi::IyiMod.hashes_for(artifact, "").interface
+
+      record = Iyi::IyiMod::ReachRecord.new("App::Greeter#note", "SEEN", "Array(Int32)", "the constant",
+        "SEEN.<<", ["helper"], "Array(Int32)'s field @size is assigned in `append`", "app/greeter")
+      artifact.reaches = [record]
+      Iyi::IyiMod.write artifact, path
+      Iyi::IyiMod.read(path).reaches.should eq [record]
+      dumped.call(path).should contain \
+        "App::Greeter#note reaches the constant `SEEN : Array(Int32)` (module `app/greeter`) through `helper` → `SEEN.<<`"
+      Iyi::IyiMod.hashes_for(artifact, "").interface.should_not eq empty
+    end
+  end
+
   # Atomic replacement is the property IV.1 picks a single-file container for:
   # a half-written artifact that a later build reads as valid is the worst
   # failure a cache has, because it is wrong and nothing about it looks broken.
@@ -2111,6 +2144,7 @@ describe Iyi::IyiMod do
     with_tempdir("iyimod_lib_and_macro") do
       Dir.mkdir_p "boot"
       File.write "boot/plat.iyi", <<-IYI
+        @[Unsafe("declares the platform's C library")]
         module boot/plat
 
         lib LibPlat
@@ -2806,6 +2840,7 @@ describe Iyi::IyiMod do
     with_tempdir("iyimod_primitive") do
       Dir.mkdir_p "boot"
       File.write "boot/f32.iyi", <<-IYI
+        @[Unsafe("declares a float operator as a compiler primitive")]
         module boot/f32
 
         struct ::Float32
@@ -3169,7 +3204,7 @@ describe Iyi::IyiMod do
   #   as `square<Int32>:Shape+`, where the producer, whose body returns
   #   exactly a `Square`, wrote the answer it had;
   # * the **receiver** — `shape.twice` on a `Shape+` is dispatched through a
-  #   unit of its own, `Shape+@Shape#twice`, and the producer emits the ones
+  #   unit of its own, `Shape+^Shape#twice`, and the producer emits the ones
   #   its own program dispatched virtually;
   # * the **parameter** — `doubled(shape : Shape)` was asked for as
   #   `doubled<Shape+>`.
@@ -3269,7 +3304,7 @@ describe Iyi::IyiMod do
   # include ObjectExtensions; end` over a `Colorize::Object(T)` — so a
   # consumer reading it from its artifact was told `undefined method
   # 'colorize' for String`, and once that was found, `undefined reference
-  # to Object(String)@Object(T)#to_s`.
+  # to Object(String)^Object(T)#to_s`.
   it "carries the bodies of a module it included into a type it does not own" do
     with_tempdir("iyimod_stencilled_module") do
       Dir.mkdir_p "boot"
@@ -3611,6 +3646,7 @@ describe Iyi::IyiMod do
   it "carries what an annotation decides, on a type and on a def" do
     with_tempdir("iyimod_primitive_annotation") do
       File.write "main.iyi", <<-IYI
+        @[Unsafe("builds a Point in ReferenceStorage it allocates uninitialized")]
         module main
 
         import std/reference_storage::{ReferenceStorage}
@@ -3663,6 +3699,7 @@ describe Iyi::IyiMod do
     with_tempdir("iyimod_own_lib") do
       Dir.mkdir_p "boot"
       File.write "boot/clock.iyi", <<-IYI
+        @[Unsafe("declares the C clock library")]
         module boot/clock
 
         lib LibC
@@ -4890,6 +4927,85 @@ describe Iyi::IyiMod do
     end
   end
 
+  # A private type is carried rather than exported, and wears the marker
+  # all the same: a body that travels reaches it, and a consumer's reach
+  # walk asks of it what it asks of an exported one. iyi-db's
+  # `AROUND_HOOKS`, an `AroundHooks` of a `Mutex` and an `Atomic` read by
+  # every query, arrived bare: built from db's artifacts, a plain spawn that
+  # runs in parallel built from source stayed in its unit, and every
+  # `spawn(unit: :new)` that queried was warned about it.
+  it "carries a private type's Share marker, so a travelling body's reach sees it" do
+    with_tempdir("iyimod_share_private") do
+      Dir.mkdir_p "dep"
+      File.write "dep/hooks.iyi", <<-IYI
+        module dep/hooks
+
+        class Hooks
+          @count : Atomic(Int32)
+
+          def initialize
+            @count = Atomic(Int32).new(0)
+          end
+
+          def any? : Bool
+            @count.get > 0
+          end
+        end
+
+        class Tally
+          @count : Int32
+
+          def initialize
+            @count = 0
+          end
+
+          def bump : Nil
+            @count = 1
+          end
+        end
+
+        HOOKS = Hooks.new
+
+        pub def busy?(x : T) : Bool forall T
+          HOOKS.any?
+        end
+        IYI
+      File.write "main.iyi", <<-IYI
+        module main
+
+        import dep/hooks::{busy?}
+
+        group do |g|
+          g.spawn(unit: :new) { busy?(1) }
+        end
+        IYI
+
+      source = Iyi::Compiler::Source.new(File.expand_path("main.iyi"), File.read("main.iyi"))
+
+      producer = create_spec_compiler
+      producer.prelude = "iyi/prelude"
+      producer.emit_iyimod = "mods"
+      producer.no_codegen = true
+      producer.compile source, File.expand_path("unused")
+      producer.warnings.reports.should be_empty
+
+      types = Iyi::IyiMod.read(File.join("mods", "dep", "hooks.iyimod")).exports.types
+      types.find! { |candidate| candidate.name == "Hooks" }.annotations.should eq ["@[Share]"]
+      types.find! { |candidate| candidate.name == "Tally" }.annotations.should eq [] of String
+
+      File.delete "dep/hooks.iyi"
+
+      # Read back from the artifact alone, `Hooks` is Share: the block that
+      # reaches `HOOKS` through `busy?`'s body is not warned about.
+      consumer = create_spec_compiler
+      consumer.prelude = "iyi/prelude"
+      consumer.use_iyimod = "mods"
+      consumer.no_codegen = true
+      consumer.compile source, File.expand_path("unused")
+      consumer.warnings.reports.map(&.to_s).should eq [] of String
+    end
+  end
+
   # An owning type travels as one: read back as `@[Share]` alone it would be
   # Share only when its argument is, and `Guard(Counter)` - the escape the
   # marker exists for - would stop being Share at the artifact's edge.
@@ -4897,6 +5013,7 @@ describe Iyi::IyiMod do
     with_tempdir("iyimod_share_owns") do
       Dir.mkdir_p "std"
       File.write "std/guard.iyi", <<-IYI
+        @[Unsafe("a guard is trusted to cross threads under @[Share(owns: true)] because only its locked blocks reach the value")]
         module std/guard
 
         pub class Counter
@@ -5813,6 +5930,67 @@ describe Iyi::IyiMod do
     end
   end
 
+  # The producer lays out Holder's trait field with a definition witness.
+  # A consumer recompiling its generic forwarding body must restore that
+  # witness too; a smaller trait representation reads the stored value with
+  # the wrong ABI and can segfault.
+  it "preserves a trait field layout when a consumer recompiles a generic forwarding body" do
+    with_tempdir("iyimod_witness_field") do
+      modules = {"app/values.iyi" => <<-IYI, "app/holder.iyi" => <<-IYI}
+        module app/values
+
+        pub trait Value
+          abstract def value : Int32
+        end
+
+        pub class Number
+          getter value : Int32
+
+          def initialize(@value : Int32)
+          end
+        end
+
+        impl Value for Number
+        end
+
+        # A fully declared trait parameter creates the producer-only witness.
+        pub def check_value(value : Value) : Int32
+          value.value
+        end
+        IYI
+        module app/holder
+
+        import app/values::{Value}
+
+        pub def forward(value : Value, &block : Int32 -> T) : T forall T
+          block.call(value.value)
+        end
+
+        pub class Holder
+          @value : Value
+
+          def initialize(@value : Value)
+          end
+
+          def apply(&block : Int32 -> T) : T forall T
+            forward(@value) { |value| block.call(value) }
+          end
+        end
+        IYI
+      main = <<-IYI
+        module main
+
+        import app/values::{Number}
+        import app/holder::{Holder}
+
+        puts Holder.new(Number.new(40)).apply { |value| value + 2 }
+        IYI
+      from_source, from_artifact = iyimod_round_trip(modules, main)
+      from_source.should eq "42\n"
+      from_artifact.should eq from_source
+    end
+  end
+
   # Definition-site typing gave `Named` a witness type in the producing build,
   # so `names`'s dispatch over `Named` tests for it and the object code
   # numbers it. The consumer has no witness - nothing in its own source is
@@ -6069,6 +6247,119 @@ describe Iyi::IyiMod do
       from_source, from_artifact = iyimod_round_trip(modules, main)
       from_source.should eq "[8, 8]\n[\"s\", \"s\"]\n"
       from_artifact.should eq from_source
+    end
+  end
+
+  # The producer's is_a? uses a union match containing a definition witness.
+  # Execute both real-member and non-member branches from source-free code.
+  it "round-trips object code matching a trait union containing a witness" do
+    with_tempdir("iyimod_witness_union_round_trip") do
+      modules = {"app/values.iyi" => <<-IYI}
+        module app/values
+
+        pub trait Value
+          abstract def value : Int32
+        end
+
+        pub struct Number
+          getter value : Int32
+
+          def initialize(@value : Int32)
+          end
+        end
+
+        impl Value for Number
+        end
+
+        # A direct trait restriction ensures definition typing builds a witness.
+        pub def check_value(item : Value) : Int32
+          item.value
+        end
+
+        pub class Reader
+          @item : Value | Bool
+
+          def initialize(@item : Value | Bool)
+          end
+
+          def read : Int32
+            item = @item
+            if item.is_a?(Value)
+              item.value
+            else
+              -1
+            end
+          end
+        end
+        IYI
+      main = <<-IYI
+        module main
+
+        import app/values::{Number, Reader}
+
+        puts Reader.new(Number.new(42)).read
+        puts Reader.new(false).read
+        IYI
+      from_source, from_artifact = iyimod_round_trip(modules, main)
+      from_source.should eq "42\n-1\n"
+      from_artifact.should eq from_source
+      artifact = Iyi::IyiMod.read(File.join("mods", "app", "values.iyimod"))
+      artifact.match_types.select(&.includes?(" | ")).join("\n")
+        .should contain(Iyi::DefinitionTyping::WITNESS_PREFIX)
+    end
+  end
+
+  # Carried matches may embed witnesses in unions or generic arguments.
+  # Restore those members without accepting missing ordinary types.
+  it "restores witnesses needed by union matches before resolving carried references" do
+    with_tempdir("iyimod_witness_match_refs") do
+      text = <<-IYI
+        module app/witness
+
+        pub trait Value
+          abstract def value : Int32
+        end
+
+        pub class Number
+          def value : Int32
+            40
+          end
+        end
+
+        impl Value for Number
+        end
+
+        pub class Box(T)
+        end
+        IYI
+      File.write "main.iyi", text
+      witness = "IyiDefTypeWitness_App_Witness_Value"
+      names = ["(App::Witness::Number | #{witness})", "App::Witness::Box(#{witness})"]
+      program = Iyi::Program.new
+      program.filename = File.expand_path("main.iyi")
+      parser = program.new_parser(text)
+      parser.filename = program.filename
+      node = program.normalize(parser.parse)
+      names.each do |name|
+        program.iyi_artifact_refs << Iyi::Program::IyiArtifactRef.new("app/carried", name, node, true)
+      end
+      program.semantic node
+      names.each { |name| program.iyi_artifact_match_types.has_key?(name).should be_true }
+      program.types.has_key?(witness).should be_true
+      program.iyi_artifact_refs.should be_empty
+
+      # The witness may be restored, but a missing real union member must
+      # still be refused; the compound type is not an unmatchable phantom.
+      rejecting = Iyi::Program.new
+      rejecting.filename = File.expand_path("main.iyi")
+      reject_parser = rejecting.new_parser(text)
+      reject_parser.filename = rejecting.filename
+      reject_node = rejecting.normalize(reject_parser.parse)
+      name = "(#{witness} | MissingRealType)"
+      rejecting.iyi_artifact_refs << Iyi::Program::IyiArtifactRef.new("app/carried", name, reject_node, true)
+      expect_raises(Iyi::CodeError, /MissingRealType/) do
+        rejecting.semantic reject_node
+      end
     end
   end
 end

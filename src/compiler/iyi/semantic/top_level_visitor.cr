@@ -237,6 +237,11 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
         # synchronised type that owns its contents: shareable whatever its
         # arguments are, its blocks checked at every call instead.
         type.iyi_share_trusted = true
+        # A claim, so it is kept for a module that says it handles what the
+        # compiler does not check (SPEC.md III.13).
+        @program.iyi_unsafe_site(ann, "@[Share] on `#{type}` is a claim the compiler takes on trust",
+          "make its fields Share (`Atomic`, `Mutex`, `List`) and `#{type}` is Share without it (SPEC.md III.4.4), ",
+          "trusts @[Share] on `#{type}`")
         unless ann.args.empty?
           ann.raise "Share annotation can't have positional arguments, only named arguments: 'owns'"
         end
@@ -252,12 +257,19 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
         end
       end
 
+      if annotation_type == @program.unsafe_annotation
+        ann.raise "@[Unsafe(call: \"...\")] is the promise a def's caller keeps, and `#{type}` is a type: " \
+                  "write it on the def, or mark the module with `@[Unsafe(\"why\")]` above its header (SPEC.md III.13)"
+      end
+
       if node.struct? && type.is_a?(NonGenericClassType)
         case annotation_type
         when @program.extern_annotation
           unless type.is_a?(NonGenericClassType)
             node.raise "can only use Extern annotation with non-generic structs"
           end
+          @program.iyi_unsafe_site(ann, "@[Extern] makes `#{type}` a C struct the compiler does not check", "",
+            "declares the C struct `#{type}`")
 
           unless ann.args.empty?
             ann.raise "Extern annotation can't have positional arguments, only named arguments: 'union'"
@@ -1626,15 +1638,52 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
       # iyi: `@[Share]` on a def says its block crosses threads (SPEC.md
       # III.4.13): what the block captures is checked at every call, as a
       # parallel task's block is. Only a def that keeps its block has one
-      # to send anywhere.
+      # to send anywhere - or that hands arguments named by `crossing` to
+      # other threads, each checked at every call with the sentence given
+      # for it. `serial: workers` names the parameter whose literal `1` at
+      # a call keeps the def on the caller's thread: that call is not
+      # checked (std/http's `Server.serve(..., workers: 1)`). `elements:`
+      # says the values the def hands its block are read on several
+      # threads at once, so the block's parameters must be Share too
+      # (std/parallel's `map_parallel`, SPEC.md III.4.14).
       if annotation_type == @program.share_annotation
-        unless ann.args.empty? && ann.named_args.nil?
-          ann.raise "Share on a def takes no arguments: it says the block the def keeps may run on other threads"
+        unless ann.args.empty?
+          ann.raise "Share on a def takes only named arguments, 'serial', 'crossing' and 'elements': it says the block the def keeps may run on other threads"
         end
-        unless node.block_arg.try(&.name.presence)
+        ann.named_args.try &.each do |named_arg|
+          value = named_arg.value
+          case named_arg.name
+          when "serial"
+            param = value.name if value.is_a?(Call) && value.obj.nil? && value.args.empty? && value.block.nil?
+            unless param && node.args.any? { |arg| arg.external_name == param }
+              named_arg.raise "Share's 'serial' names a parameter of `#{node.name}`, as `serial: workers`: a call that passes it the literal 1 keeps the def on one thread"
+            end
+            node.iyi_share_serial = param
+          when "crossing"
+            unless value.is_a?(NamedTupleLiteral) && value.entries.all? { |entry| entry.value.is_a?(StringLiteral) && node.args.any? { |arg| arg.external_name == entry.key } }
+              named_arg.raise "Share's 'crossing' names parameters of `#{node.name}` it hands to other threads, each with what to pass instead of a value that is not Share: `crossing: {tls: \"Pass `config.frozen`\"}`"
+            end
+            node.iyi_share_crossing = value.entries.to_h { |entry| {entry.key, entry.value.as(StringLiteral).value} }
+          when "elements"
+            unless value.is_a?(StringLiteral) && node.block_arg.try(&.name.presence)
+              named_arg.raise "Share's 'elements' says the values `#{node.name}` hands its block are read on other threads, with what to do instead when they are not Share: `elements: \"Make them Share\"`, on a def that keeps its block, `&block : T -> R`"
+            end
+            node.iyi_share_elements = value.as(StringLiteral).value
+          else
+            named_arg.raise "unknown Share named argument on a def, valid arguments are: 'serial', 'crossing', 'elements'"
+          end
+        end
+        block_kept = !!node.block_arg.try(&.name.presence)
+        unless block_kept || node.iyi_share_crossing
           ann.raise "Share on a def says the block it keeps may run on other threads, and `#{node.name}` keeps no block: name one, `&block : A -> R`"
         end
-        node.iyi_share_block = true
+        node.iyi_share_block = block_kept
+      end
+
+      if annotation_type == @program.no_preempt_annotation
+        unless ann.args.empty? && ann.named_args.nil?
+          ann.raise "NoPreempt takes no arguments: it says no loop in this def gives its worker up (SPEC.md III.4.13)"
+        end
       end
 
       node.add_annotation(annotation_type, ann)
@@ -2084,6 +2133,8 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     primitive.location = node.location
 
     node.body = primitive
+    @program.iyi_unsafe_site(ann, "@[Primitive] makes `#{node.name}` the compiler's own code, which nothing checks", "",
+      "declares the primitive `#{node.name}`")
   end
 
   def visit(node : Include)
@@ -2491,6 +2542,12 @@ class Iyi::TopLevelVisitor < Iyi::SemanticVisitor
     process_annotations(annotations) do |annotation_type, ann|
       # annotations on constants are inaccessible in macros so we only add deprecations
       const.add_annotation(annotation_type, ann) if annotation_type == @program.deprecated_annotation
+      # iyi: the program's word that every thread may reach the constant
+      # through a call (SPEC.md III.4.4): proven by `ReachProof` when it is
+      # `SafeReach`, taken on trust where `UnsafeReach` is allowed.
+      if annotation_type == @program.safe_reach_annotation || annotation_type == @program.unsafe_reach_annotation
+        iyi_mark_reach(const, "`#{name}`", ann, annotation_type == @program.unsafe_reach_annotation)
+      end
     end
 
     check_ditto node, node.location

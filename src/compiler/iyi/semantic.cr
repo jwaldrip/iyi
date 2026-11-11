@@ -29,8 +29,9 @@ class Iyi::Program
 
   # The passes that follow the top-level ones, split out so that the prelude
   # fork probe can run the top-level pass over the prelude and over the user
-  # file separately and then finish over the combined tree. Calling
-  # `top_level_semantic` and then this is exactly `semantic`.
+  # file separately and then finish over the combined tree.
+  # `semantic` also appends definition-typing probes between these passes;
+  # the fork probe currently omits that step.
   #
   # *also_check* is for the fork probe, whose prelude was processed by a
   # different `TypeDeclarationProcessor` in the parent. Its class-var check has
@@ -56,6 +57,10 @@ class Iyi::Program
     processor.check_non_nilable_class_vars_without_initializers
     also_check.try &.check_non_nilable_class_vars_without_initializers
 
+    # Definition typing has now declared the imported witnesses. Resolve
+    # deferred union/generic matches strictly before typing consumer bodies.
+    Prof.span("restored artifact references") { resolve_iyi_artifact_refs }
+
     result = @progress_tracker.stage("Semantic (main)") do
       Prof.span("main: visit_main") do
         visit_main(node, process_finished_hooks: true, cleanup: cleanup, visitor: main_visitor)
@@ -68,6 +73,26 @@ class Iyi::Program
         cleanup_files
       end
     end
+
+    # iyi: every shared block is checked by now, so each piece of state
+    # they reach is warned about once, with how many blocks reach it
+    # (SPEC.md III.4.4).
+    @cleanup_transformer.try &.report_share_reach
+    # And every `@[SafeReach]` is proven, or refused naming the write that
+    # breaks it (`ReachProof`, SPEC.md III.4.4): the whole typed program is
+    # final only once the cleanup has met every def.
+    if cleanup && !iyi_reach_claims.empty?
+      @progress_tracker.stage("Semantic (reach proof)") { ReachProof.run(self, result) }
+    end
+    # A spawn of a module this build writes an artifact for, placed in
+    # parallel on a claim that holds only for this program, goes back to
+    # its unit (III.4.15).
+    iyi_settle_claimed_spawns unless iyi_claimed_spawns.empty?
+    # And every spawn is classified (III.4.15): `--explain-spawn`'s notes.
+    iyi_note_spawns
+    # And beside a parallel one, the unsafe modules its block reaches
+    # (III.13), which the placement takes at their word.
+    iyi_note_unsafe_spawns
 
     @progress_tracker.stage("Semantic (recursive struct check)") do
       Prof.span("recursive struct check") { RecursiveStructChecker.new(self).run }
@@ -108,7 +133,15 @@ class Iyi::Program
       # use a new MainVisitor which will have no vars.
       visitor.vars = main_visitor.vars.dup unless main_visitor.vars.empty?
 
-      Prof.span("top level: node.accept") { node.accept visitor }
+      # The files this walk will read are parsed ahead of it, on threads of
+      # their own, for as long as the walk runs (`ParseAhead`).
+      @parse_ahead = ParseAhead.start(self, node, parse_ahead_threads)
+      begin
+        Prof.span("top level: node.accept") { node.accept visitor }
+      ensure
+        @parse_ahead.try &.stop
+        @parse_ahead = nil
+      end
       Prof.span("top level: finished hooks") { visitor.process_finished_hooks }
       visitor.new_expansions
     end
@@ -121,7 +154,7 @@ class Iyi::Program
     # by name. Asked per import it was a stricter order than the question: `pg`
     # declares `PG` and `PQ`, each names the other, and no order of two
     # boundaries answers both. See `Program::IyiArtifactRef`.
-    Prof.span("artifact references") { resolve_iyi_artifact_refs }
+    Prof.span("artifact references") { resolve_iyi_artifact_refs(defer_witness_matches: true) }
 
     @progress_tracker.stage("Semantic (new)") do
       Prof.span("new methods") { define_new_methods(new_expansions) }

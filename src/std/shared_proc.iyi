@@ -16,15 +16,16 @@
 #
 #     doubled = SharedProc(Int32, Int32).of { |n| n * 2 }
 #     group do |g|
-#       4.times { |i| g.spawn_parallel { doubled.call(i) } }
+#       4.times { |i| g.spawn(unit: :new) { doubled.call(i) } }
 #     end
 #
 # A def that keeps a block and is itself `@[Share]` - std/http's
-# `Server.serve_parallel { }`, std/router's `SharedRouter#handle` - hands
+# `Server.serve { }`, std/router's `SharedRouter#handle` - hands
 # its block on with `SharedProc(...).of(&block)`: that block was checked
 # where the def was given it, and it is the one proc a boundary takes on
 # trust. Any other `&proc` is refused there.
 
+@[Unsafe("a proc is trusted to cross tasks under @[Share] because the def it came from was checked to be shareable")]
 module std/shared_proc
 
 @[Share(owns: true)]
