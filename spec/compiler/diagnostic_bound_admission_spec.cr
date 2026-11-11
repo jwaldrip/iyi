@@ -88,7 +88,8 @@ def adm_artifact(initialiser : String = "",
     target_triple: "x86_64-pc-linux-gnu",
     flags: ["bits64", "linux"],
     imports: [] of Iyi::IyiMod::ImportEdge,
-    exports: Iyi::IyiMod::Exports.new(functions, [] of Iyi::IyiMod::TypeDecl, [] of Iyi::IyiMod::ImplRecord, class_vars),
+    exports: Iyi::IyiMod::Exports.new(functions, [] of Iyi::IyiMod::TypeDecl, [] of Iyi::IyiMod::ImplRecord,
+      [] of Iyi::IyiMod::Signature, class_vars),
     initialiser: initialiser,
   )
 end

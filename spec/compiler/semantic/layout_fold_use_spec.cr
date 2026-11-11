@@ -459,7 +459,7 @@ describe "Semantic: layout fold uses" do
         # the component it shares with X, so its line is the tie. The harmful use has
         # its own line.
         lines = program.layout_fold_lines
-        lines.count(&.includes?("in main: folded 8, final 32: kept (type argument)")).should eq 1
+        lines.count(&.includes?("in const: folded 8, final 32: kept (type argument)")).should eq 1
         lines.count(&.includes?("in main: folded 8, final 32: kept (tied to type argument at")).should eq 1
         lines.count(&.includes?("layout fold use stale:")).should eq 1
         lines.count { |line| line.includes?("layout fold use stale:") && line.includes?("type argument read") }.should eq 1
