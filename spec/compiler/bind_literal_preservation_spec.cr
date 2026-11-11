@@ -119,6 +119,31 @@ module Iyi
         strip_root("&block : Root::A -> Root::B", "Root", :type).should eq("&block : A -> B")
       end
 
+      it "reads a body where the parameters of its signature are variables" do
+        strip_root("x = x.abs\nRoot::A.new(x)", "Root", :body, ["x : Int32"]).should eq("x = x.abs\nA.new(x)")
+        strip_root("n -= 1\nRoot::A.new(n)", "Root", :body, ["n"]).should eq("n -= 1\nA.new(n)")
+        strip_root("Root::A.each(&->obj.call)", "Root", :body, ["obj"]).should eq("A.each(&->obj.call)")
+        strip_root("yield Root::A.new(x)", "Root", :body, ["x", "&block"]).should eq("yield A.new(x)")
+      end
+
+      it "reads a slash after a parameter as the division the parser reads" do
+        strip_root(%(half = total /2; puts "Root::A"; Root::A.new), "Root", :body, ["total : Int32"])
+          .should eq(%(half = total /2; puts "Root::A"; A.new))
+      end
+
+      it "reads a parameter among the parameters beside it" do
+        parameters = ["obj : Root::H", "@[Root::Ann] *", "cb : Root::H = ->obj.call", "key : Root::K"]
+        strip_root(parameters[1], "Root", :parameter, parameters, 1).should eq("@[Ann] *")
+        strip_root(parameters[2], "Root", :parameter, parameters, 2).should eq("cb : H = ->obj.call")
+        strip_root(parameters[0], "Root", :parameter, parameters, 0).should eq("obj : H")
+        strip_root(parameters[3], "Root", :parameter, parameters, 3).should eq("key : K")
+      end
+
+      it "rewrites only the parameter it was given, not the ones beside it" do
+        parameters = ["a : Root::A", "b : Root::B = Root::B.new(a)"]
+        strip_root(parameters[1], "Root", :parameter, parameters, 1).should eq("b : B = B.new(a)")
+      end
+
       it "leaves the text of a macro literal as written and rewrites a macro expression" do
         source = "{% if flag?(:linux) %}\n  Root::A.call(\"Root::B\")\n{% end %}\n{{ Root::C }}"
         strip_root(source, "Root", :body).should eq("{% if flag?(:linux) %}\n  Root::A.call(\"Root::B\")\n{% end %}\n{{ C }}")

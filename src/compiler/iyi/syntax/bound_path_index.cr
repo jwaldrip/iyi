@@ -86,11 +86,19 @@ module Iyi
     # The paths of *text*, in order. *entry* is tried first and the other entries after
     # it, because a caller holding text does not always know which of them it is. Text
     # that parses as none of them raises: rewriting it by search would be a guess.
-    def self.paths(text : String, entry : Entry, iyi : Bool) : Array(BoundPathOccurrence)
+    #
+    # *parameters* are the parameters of the signature the text belongs to, the block
+    # parameter last. A body is read inside a def that declares them, because the parser
+    # reads `x = x.abs`, `n -= 1` and `->obj.call` only where `x`, `n` and `obj` are
+    # variables. A parameter is read at *index* among them, because a default may name an
+    # earlier parameter and a bare `*` must be followed by one.
+    def self.paths(text : String, entry : Entry, iyi : Bool,
+                   parameters : Array(String) = [] of String, index : Int32? = nil) : Array(BoundPathOccurrence)
       failure = nil
       ([entry] + Entry.values.reject { |other| other == entry }).each do |candidate|
         begin
-          return read(text, candidate, iyi)
+          before, after = wrapper(candidate, parameters, index)
+          return read(text, candidate, iyi, before, after)
         rescue error : CodeError | ArgumentError | InvalidByteSequenceError
           failure ||= error
         end
@@ -98,19 +106,24 @@ module Iyi
       raise ArgumentError.new("bound text cannot be read as source: #{failure.try(&.message)}: #{text.inspect}")
     end
 
-    # The source *text* is parsed inside, as what stands before and after it.
-    private def self.wrapper(entry : Entry) : {String, String}
+    # The source *text* is parsed inside: what stands before it and what stands after it.
+    private def self.wrapper(entry : Entry, parameters : Array(String), index : Int32?) : {String, String}
       case entry
-      in .body?       then {"def __iyi_bound__\n", "\nend"}
-      in .expression? then {"", ""}
-      in .type?       then {"", ""}
-      in .parameter?  then {"def __iyi_bound__(", ")\nend"}
-      in .fun_line?   then {"lib LibIyiBound\n", "\nend"}
+      in .body?
+        {"def __iyi_bound__(#{parameters.join(", ")})\n", "\nend"}
+      in .expression?, .type?
+        {"", ""}
+      in .parameter?
+        earlier = index ? parameters[0, index] : [] of String
+        later = index ? parameters[index + 1..] : [] of String
+        {"def __iyi_bound__(#{earlier.map { |parameter| "#{parameter}, " }.join}",
+         "#{later.map { |parameter| ", #{parameter}" }.join})\nend"}
+      in .fun_line?
+        {"lib LibIyiBound\n", "\nend"}
       end
     end
 
-    private def self.read(text : String, entry : Entry, iyi : Bool) : Array(BoundPathOccurrence)
-      before, after = wrapper(entry)
+    private def self.read(text : String, entry : Entry, iyi : Bool, before : String, after : String) : Array(BoundPathOccurrence)
       parser = Parser.new("#{before}#{text}#{after}")
       parser.iyi = iyi
       parser.enable_diagnostic_name_observations

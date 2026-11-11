@@ -168,6 +168,57 @@ describe "tool bind" do
     end
   end
 
+  # A carried body is read as source before a name in it is rewritten, and it is source only
+  # where its parameters are variables: `x = x.abs`, `n -= 1` and `->obj.call` are not
+  # otherwise. Without diagnostic capture, which is the build every shard gets.
+  it "carries a body that assigns, steps and takes a method pointer of its parameters" do
+    with_tempdir("bind_parameter_bodies") do
+      Dir.mkdir_p "mods"
+      File.write "shard.cr", <<-CR
+        module MyLib
+          extend self
+
+          class Entry
+            @size : Int32
+
+            def initialize(@size : Int32)
+            end
+
+            def size : Int32
+              @size
+            end
+          end
+
+          def assigns(x : Int32, &block : MyLib::Entry -> Int32) : Int32
+            x = x.abs
+            yield MyLib::Entry.new(x)
+          end
+
+          def steps(n : Int32, &block : MyLib::Entry -> Int32) : Int32
+            n -= 1
+            yield MyLib::Entry.new(n)
+          end
+
+          def points(obj : MyLib::Entry, &block : MyLib::Entry -> Int32) : Int32
+            size = ->obj.size
+            yield MyLib::Entry.new(size.call)
+          end
+        end
+        CR
+
+      artifact = Iyi::IyiMod.read(bind_artifact("shard.cr", "MyLib", "mods"))
+      body_of = ->(name : String) do
+        method = artifact.exports.functions.find { |candidate| candidate.name == name }.not_nil!
+        artifact.mono_bodies[Iyi::IyiMod.mono_body_key(artifact.module_name, method, 0)]
+      end
+      body_of.call("assigns").should eq("x = x.abs\nyield Entry.new(x)\n")
+      # The body is printed after the compiler has read it, and that spells `n -= 1` out.
+      body_of.call("steps").should eq("n = n - 1\nyield Entry.new(n)\n")
+      body_of.call("points").should eq("size = ->obj.size\nyield Entry.new(size.call)\n")
+      consume "mods", "my_lib"
+    end
+  end
+
   it "refuses source projections without an authoritative original field" do
     producer = Iyi::DiagnosticBoundProducer::StripRoot.new("Root")
     ["Root::Thing", "Other::Thing"].each do |source|

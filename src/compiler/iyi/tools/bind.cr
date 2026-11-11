@@ -1063,11 +1063,11 @@ module Iyi
     if module_root? program, root
       ordinals = IyiMod.mono_body_ordinals(exported)
       exported = exported.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text| strip_root(text, root, :body) }
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text, parameters| strip_root(text, root, :body, parameters) }
       end
       ordinals = IyiMod.mono_body_ordinals(carried_functions)
       carried_functions = carried_functions.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text| strip_root(text, root, :body) }
+        rekey_body(iyi_module_name(root), signature, strip_root(signature, root), ordinals[index], [root_rewrite(root)], [root_rewrite(root)]) { |text, parameters| strip_root(text, root, :body, parameters) }
       end
       ordinals = IyiMod.mono_body_ordinals(top_exported)
       top_exported = top_exported.map_with_index do |signature, index|
@@ -1102,15 +1102,15 @@ module Iyi
     unless @@bound_prefix.empty?
       ordinals = IyiMod.mono_body_ordinals(exported)
       exported = exported.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text, :body) }
+        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text, parameters| map_names(text, :body, parameters) }
       end
       ordinals = IyiMod.mono_body_ordinals(carried_functions)
       carried_functions = carried_functions.map_with_index do |signature, index|
-        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text, :body) }
+        rekey_body(iyi_module_name(root), signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text, parameters| map_names(text, :body, parameters) }
       end
       ordinals = IyiMod.mono_body_ordinals(top_exported)
       top_exported = top_exported.map_with_index do |signature, index|
-        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text, :body) }
+        rekey_body(IyiMod::TOP_LEVEL_CONTAINER, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text, parameters| map_names(text, :body, parameters) }
       end
       reopened = reopened.map { |declaration| map_names_declaration declaration }
       carried_types = carried_types.map { |declaration| map_names_declaration declaration }
@@ -2819,8 +2819,17 @@ module Iyi
   # came out `"Config"`. A lexer on its own cannot tell those apart either - whether `/` divides or opens a
   # regex is the parser's call - so the text is parsed and only a path is rewritten. A build with
   # diagnostic capture rewrites the same paths, by the same rules (`BoundPathRules`).
-  private def self.bound_paths(text : String, entry : BoundPathIndex::Entry) : Array(BoundPathOccurrence)
-    BoundPathIndex.paths(text, entry, @@diagnostic_mode == "Iyi")
+  #
+  # *parameters* and *index* place the text in its signature: a body is read where its parameters are
+  # variables, and a parameter among the ones beside it (`BoundPathIndex.paths`).
+  private def self.bound_paths(text : String, entry : BoundPathIndex::Entry,
+                               parameters : Array(String) = [] of String, index : Int32? = nil) : Array(BoundPathOccurrence)
+    BoundPathIndex.paths(text, entry, @@diagnostic_mode == "Iyi", parameters, index)
+  end
+
+  # A signature's parameters as a def writes them, the block parameter last.
+  private def self.signature_parameters(signature : IyiMod::Signature) : Array(String)
+    signature.block_parameter.empty? ? signature.parameters : signature.parameters + [signature.block_parameter]
   end
 
   # *text* with each edit made. An edit is the bytes `start...finish` of *text* and what replaces them,
@@ -2841,24 +2850,26 @@ module Iyi
 
   # `MyLib::Entry` becomes `Entry`, and `MyLibOther::X` is left alone — the prefix has to be whole
   # segments of a path or this renames types it never owned.
-  private def self.strip_root(text : String, root : String, entry : BoundPathIndex::Entry) : String
+  private def self.strip_root(text : String, root : String, entry : BoundPathIndex::Entry,
+                              parameters : Array(String) = [] of String, index : Int32? = nil) : String
     segments = root.split("::")
     return text if segments.any?(&.empty?) || !text.includes?("#{root}::")
 
     prefix = root.bytesize + 2
     edits = [] of {Int32, Int32, String}
-    bound_paths(text, entry).each do |path|
+    bound_paths(text, entry, parameters, index).each do |path|
       edits << {path.start, path.start + prefix, ""} if BoundPathRules.rooted_at?(path, segments)
     end
     splice(text, edits)
   end
 
   private def self.strip_root(signature : IyiMod::Signature, root : String) : IyiMod::Signature
+    all = signature_parameters(signature)
     changed = IyiMod::Signature.new(
       name: signature.name,
       receiver: signature.receiver,
-      parameters: signature.parameters.map { |parameter| strip_root parameter, root, :parameter },
-      block_parameter: strip_root(signature.block_parameter, root, :parameter),
+      parameters: signature.parameters.map_with_index { |parameter, index| strip_root(parameter, root, :parameter, all, index) },
+      block_parameter: strip_root(signature.block_parameter, root, :parameter, all, signature.parameters.size),
       return_type: strip_root(signature.return_type, root, :type),
       free_variables: signature.free_variables,
       required: signature.required,
@@ -2892,6 +2903,7 @@ module Iyi
     # `alias`'s value are read in the enclosing scope, so they keep the root's.
     inside = "#{root}::#{declaration.name}"
     scoped = ->(text : String, entry : BoundPathIndex::Entry) { strip_root(strip_root(text, inside, entry), root, entry) }
+    scoped_body = ->(text : String, parameters : Array(String)) { strip_root(strip_root(text, inside, :body, parameters), root, :body, parameters) }
     scoped_rewrites = [root_rewrite(inside), root_rewrite(root)] of BindRewrite
 
     # `copy_with`, for the reason `prune_declaration` gives.
@@ -2908,7 +2920,7 @@ module Iyi
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body(path, signature, strip_root(strip_root(signature, inside), root), ordinals[index], scoped_rewrites, scoped_rewrites) { |text| scoped.call(text, BoundPathIndex::Entry::Body) }
+          rekey_body(path, signature, strip_root(strip_root(signature, inside), root), ordinals[index], scoped_rewrites, scoped_rewrites) { |text, parameters| scoped_body.call(text, parameters) }
         end
       end,
       # Deeper for what is inside it, because a name is read from where it is
@@ -3301,7 +3313,7 @@ module Iyi
                               after : IyiMod::Signature, ordinal : Int32 = 0,
                               header_rewrites : Array(BindRewrite) = [] of BindRewrite,
                               body_rewrites : Array(BindRewrite) = [] of BindRewrite,
-                              & : String -> String) : IyiMod::Signature
+                              & : String, Array(String) -> String) : IyiMod::Signature
     old_key = IyiMod.mono_body_key(container, before, ordinal)
     new_key = IyiMod.mono_body_key(container, after, ordinal)
     if before.diagnostic_origin
@@ -3333,7 +3345,8 @@ module Iyi
         end
         @@mono_bodies[new_key] = transformed.text
       else
-        @@mono_bodies[new_key] = yield body
+        # The body with the parameters of the signature it was written under, which are its variables.
+        @@mono_bodies[new_key] = yield body, signature_parameters(before)
       end
     end
     after
@@ -3341,7 +3354,8 @@ module Iyi
 
   # Rewrites every bound name in *text* to what the consumer calls it. The name
   # has to stand alone on both sides: `JSON` is bound, `JSONThing` is not.
-  private def self.map_names(text : String, entry : BoundPathIndex::Entry) : String
+  private def self.map_names(text : String, entry : BoundPathIndex::Entry,
+                             parameters : Array(String) = [] of String, index : Int32? = nil) : String
     mapped = @@bound_prefix.reduce(text) do |carried, (name, qualified)|
       next carried unless carried.includes?(name)
 
@@ -3354,7 +3368,7 @@ module Iyi
       next carried if qualified == name
 
       edits = [] of {Int32, Int32, String}
-      bound_paths(carried, entry).each do |path|
+      bound_paths(carried, entry, parameters, index).each do |path|
         edits << {path.start, path.start + name.bytesize, qualified} if BoundPathRules.headed_by?(path, name)
       end
       splice(carried, edits)
@@ -3392,11 +3406,12 @@ module Iyi
   end
 
   private def self.map_names(signature : IyiMod::Signature) : IyiMod::Signature
+    all = signature_parameters(signature)
     changed = IyiMod::Signature.new(
       name: signature.name,
       receiver: signature.receiver,
-      parameters: signature.parameters.map { |parameter| map_names parameter, :parameter },
-      block_parameter: map_names(signature.block_parameter, :parameter),
+      parameters: signature.parameters.map_with_index { |parameter, index| map_names(parameter, :parameter, all, index) },
+      block_parameter: map_names(signature.block_parameter, :parameter, all, signature.parameters.size),
       return_type: map_names(signature.return_type, :type),
       free_variables: signature.free_variables,
       required: signature.required,
@@ -3420,7 +3435,7 @@ module Iyi
       methods: begin
         ordinals = IyiMod.mono_body_ordinals(declaration.methods)
         declaration.methods.map_with_index do |signature, index|
-          rekey_body(path, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text| map_names(text, :body) }
+          rekey_body(path, signature, map_names(signature), ordinals[index], map_rewrites, map_rewrites) { |text, parameters| map_names(text, :body, parameters) }
         end
       end,
       types: declaration.types.map { |nested| map_names_declaration nested, "#{path}::#{nested.name}" },
