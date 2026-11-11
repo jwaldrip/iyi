@@ -1,3 +1,4 @@
+require "../spec_helper"
 require "../support/syntax"
 
 # BoundProvenancePlan §3.2 (S1): the projection authority seam.

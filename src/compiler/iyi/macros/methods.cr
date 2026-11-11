@@ -2237,7 +2237,7 @@ module Iyi
       when "constant"
         interpret_check_args do |arg|
           value = arg.to_string("argument to 'TypeNode#constant'")
-          TypeNode.constant(type, value)
+          TypeNode.constant(type, value, interpreter)
         end
       when "has_constant?"
         interpret_check_args do |arg|
@@ -2556,10 +2556,11 @@ module Iyi
       BoolLiteral.new(type.types.has_key?(name))
     end
 
-    def self.constant(type, name)
+    def self.constant(type, name, interpreter)
       type = type.types[name]?
       case type
       when Const
+        interpreter.program.layout_fold_constant_read(type, nil)
         type.value
       when Type
         TypeNode.new(type)

@@ -1158,6 +1158,7 @@ module Iyi
         literal_type = NumberAutocastType.new(program, value)
         restricted = literal_type.restrict(var_type, MatchContext.new(value.type, value.type))
         if restricted.is_a?(IntegerType) || restricted.is_a?(FloatType)
+          program.layout_fold_use(value, LayoutFoldUseKind::Typing, assign, adopted: true)
           value.type = restricted
           value.kind = restricted.kind
           assign.value = value if assign
