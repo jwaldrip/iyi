@@ -2849,6 +2849,7 @@ module Iyi
       heredocs = [] of Token
       last_type : Token::Kind? = nil
       space_before = false
+      curly_depth = 0
 
       while true
         previous_delimiter_state = @lexer.token.delimiter_state
@@ -2857,8 +2858,13 @@ module Iyi
         case token.type
         when .eof?
           break
+        when .op_lcurly?
+          curly_depth += 1 if break_on_rcurly
         when .op_rcurly?
-          break if break_on_rcurly
+          if break_on_rcurly
+            break if curly_depth == 0
+            curly_depth -= 1
+          end
         when .comment?, .char?
           add_span token
         when .delimiter_start?
