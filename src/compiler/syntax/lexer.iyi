@@ -1,3 +1,4 @@
+@[Unsafe("reads the source's bytes straight from its buffer by index, for speed")]
 module compiler/syntax/lexer
 
 pub import std/text

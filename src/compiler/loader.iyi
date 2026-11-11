@@ -6,6 +6,7 @@
 #
 # Ports the behavior of Crystal's src/compiler/iyi/loader.cr and iyi_path.cr.
 
+@[Unsafe("reads source files through the C library's file calls declared in its lib, which the compiler does not check")]
 module compiler/loader
 
 import compiler/syntax/parser::{Parser}

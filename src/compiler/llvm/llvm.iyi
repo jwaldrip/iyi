@@ -1,3 +1,4 @@
+@[Unsafe("re-exports LLVM's bindings and asks LLVM for its version through a C function the compiler does not check")]
 module compiler/llvm/llvm
 
 pub import compiler/llvm/lib_llvm

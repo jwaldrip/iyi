@@ -1,3 +1,4 @@
+@[Unsafe("declares LLVM's C functions and handles in its lib, which the compiler does not check")]
 module compiler/llvm/lib_llvm
 
 {% begin %}

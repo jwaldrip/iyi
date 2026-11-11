@@ -3,6 +3,7 @@
 # Thin CLI wrapper around the Compiler pipeline orchestrator (compiler/compiler).
 # Produces an executable binary linking only the platform libc.
 
+@[Unsafe("declares the C calls the tool makes in its lib, LibC's process and file functions, which the compiler does not check")]
 module compiler/tools/compile
 
 import compiler/compiler::{Compiler, CompilerConfig}
