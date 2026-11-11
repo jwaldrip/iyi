@@ -1101,7 +1101,7 @@ module Iyi
     # from its own emission (E2).
     private def diagnostic_unnamed_param(arg : Arg, fun_origin : DiagnosticOrigin?,
                                          separator : ParsedOperatorToken?, head : ParsedOperatorToken?) : Nil
-      raise DiagnosticRestorationAuthorityError.new("unnamed parameter restoration requires B2 producer authority") if @diagnostic_regions
+      ::raise DiagnosticRestorationAuthorityError.new("unnamed parameter restoration requires B2 producer authority") if @diagnostic_regions
       return unless fun_origin && separator && head
       witnesses = diagnostic_witness_list(fun_origin, [separator, head])
       return unless witnesses
@@ -1120,7 +1120,7 @@ module Iyi
       # from the consumer text. Pairing those coordinates would forge evidence (contract 3.4), and restored acceptance
       # needs B2 producer authority. Until B2 lands this refuses by name rather than returning silently, since other
       # region consumers would otherwise receive a partial tree. Source and expansion parses never run under regions.
-      raise DiagnosticRestorationAuthorityError.new("bare splat restoration requires B2 producer authority") if @diagnostic_regions
+      ::raise DiagnosticRestorationAuthorityError.new("bare splat restoration requires B2 producer authority") if @diagnostic_regions
       return unless anchor
       argument = params[index]
       witnesses = diagnostic_witness_list(anchor, [tokens.star, tokens.comma])
