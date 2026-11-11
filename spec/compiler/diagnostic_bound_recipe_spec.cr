@@ -42,6 +42,19 @@ private def captured_path(text : String) : Iyi::ASTNode
   parser.parse.as(Iyi::Path)
 end
 
+# A capture-on parse of one written type (a generic or a proc notation), read the
+# way the replay authority reads a written type: bare proc type, one canonical text.
+private def captured_type(text : String) : Iyi::ASTNode
+  parser = Iyi::Parser.new(text)
+  parser.filename = "/spec/bound_recipe.cr"
+  parser.diagnostic_source_file = "/spec/bound_recipe.cr"
+  parser.diagnostic_capture = true
+  parser.diagnostic_capture_input(Iyi::DiagnosticCaptureInputKind::SourceFile,
+    nil, Iyi::DiagnosticCaptureParseEntry::Parse, Iyi::Parser::ParseMode::Normal)
+  parser.next_token
+  parser.parse_bare_proc_type
+end
+
 # A registered restriction at a signature site: the captured path, projected as a ResolvedRestriction.
 private def restricted(recipe : Iyi::DiagnosticBoundRecipe, resolved : String,
                        add_global : Bool = false, root : String = "Root") : Iyi::DiagnosticBoundFragment
@@ -59,12 +72,16 @@ describe Iyi::DiagnosticBoundRecipe do
     stripped.text.should eq("X")
     fragment = recipe.finish(stripped, key, signature)
     fragment.key.should eq(key)
-    recipe.counts.should eq({"ResolvedRestriction" => 1, "StripRoot" => 1})
+    # One ResolvedRestriction projection per path segment (Root, X), then one StripRoot.
+    recipe.counts.should eq({"ResolvedRestriction" => 2, "StripRoot" => 1})
   end
 
   it "leaves a global ::Root::X and an interior Other::Root::Z untouched" do
     recipe = signature_recipe
-    recipe.strip_root(restricted(recipe, "Root::X", add_global: true), "Root").text.should eq("::Root::X")
+    # A global restriction is only minted for a head that is not the root (bind's global_name rule).
+    recipe.strip_root(restricted(recipe, "JSON::Parser", add_global: true), "Root").text.should eq("::JSON::Parser")
+    # A global written path rooted at Root keeps its prefix: the text rule refuses a name after `::`.
+    recipe.strip_root(recipe.printed(captured_path("::Root::X")), "Root").text.should eq("::Root::X")
     interior = restricted(recipe, "Other::Root::Z")
     recipe.strip_root(interior, "Root").text.should eq("Other::Root::Z")
     recipe.map_foreign(interior, "Json", "Root", "Json::Root").text.should eq("Other::Root::Z")
@@ -87,10 +104,10 @@ describe Iyi::DiagnosticBoundRecipe do
 
   it "projects a whole generic and a whole proc notation" do
     recipe = signature_recipe
-    generic = recipe.plain("Array(Root::X)")
+    generic = recipe.printed(captured_type("Array(Root::X)"))
     recipe.project_whole(generic, Iyi::DiagnosticBoundProducer::ResolvedRestriction.new(
       "Owner", "Array(Root::X)", "Array(X)", "Root", false)).text.should eq("Array(X)")
-    proc = recipe.plain("Root::X -> Int32")
+    proc = recipe.printed(captured_type("Root::X -> Int32"))
     recipe.project_whole(proc, Iyi::DiagnosticBoundProducer::ResolvedRestriction.new(
       "Owner", "Root::X -> Int32", "X -> Int32", "Root", false)).text.should eq("X -> Int32")
   end
