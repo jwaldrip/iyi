@@ -981,9 +981,9 @@ describe "diagnostic bound projection authority" do
       finished2 = ledger2.finish(initialiser2, joined2, "initialiser")
 
       section2 = Iyi::IyiMod::DiagnosticSection.new
-      shifted_frag = Iyi::IyiMod::DiagnosticFragment.new("initialiser", finished2.text_sha256, finished2.events.dup, finished2.anchors.dup)
-      shifted_frag.anchors[0] = shifted_frag.anchors.first.copy_with(offset: shifted_frag.anchors.first.offset + 1)
-      section2.add_fragment(shifted_frag)
+      prefix = Iyi::DiagnosticRenderedFragment.new(" ", Iyi::DiagnosticFragmentData.new(" ", [] of Iyi::DiagnosticTokenEvent, [] of Iyi::DiagnosticAnchor))
+      shifted = Iyi::DiagnosticFragmentRewrite.concat([prefix, rendered2], "", "Crystal")
+      section2.add_fragment(shifted.data.to_fragment("initialiser"))
       expect_raises(ArgumentError, "bound section differs from finished fragments") do
         ledger2.verify_section!(section2)
       end
@@ -997,6 +997,7 @@ describe "diagnostic bound projection authority" do
         ledger.register_source(mismatched)
       end
       site = ledger.open_site("initialiser", "")
+      mismatched = Iyi::DiagnosticRenderedFragment.new("different", Iyi::DiagnosticFragmentData.new("", [] of Iyi::DiagnosticTokenEvent, [] of Iyi::DiagnosticAnchor))
       expect_raises(ArgumentError, "composed fragment guard mismatch") do
         ledger.compose(site, mismatched, [source])
       end
