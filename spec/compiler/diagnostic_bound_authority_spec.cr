@@ -463,6 +463,9 @@ describe "diagnostic bound projection authority" do
         "Root::Thing", [] of Iyi::DiagnosticBoundNameSource, "Thing", "Crystal", 0, 5, "CONST", "path_segment")
       twin = Iyi::DiagnosticBoundProjectionData.new(producer, ::Crystal::Digest::SHA256.hexdigest("Root::Thing"),
         "Root::Thing", [] of Iyi::DiagnosticBoundNameSource, "Thing", "Crystal", 0, 5, "CONST", "path_segment")
+      expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
+        Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, none)
+      end
       # Rejections go through the constructor, the path a raw claim takes and the one N1 already exercises.
       expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
         Iyi::DiagnosticOrigin::DerivedName.new(sourced)

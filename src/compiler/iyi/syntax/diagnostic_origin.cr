@@ -1948,6 +1948,7 @@ module Iyi
     end
 
     # H3 unless the source is empty or the inventory attests this exact data object.
+    @[Raises]
     def self.require_source_inventory!(data : DiagnosticBoundProjectionData, inventory : DiagnosticSourceInventory?) : Nil
       return if data.source_text.empty?
       return if inventory && inventory.attests?(data)
