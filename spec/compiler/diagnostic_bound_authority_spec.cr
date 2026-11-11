@@ -931,8 +931,9 @@ describe "diagnostic bound projection authority" do
       ledger.verified?(section).should be_true
 
       # Mutation 3: move an issued projection across keys
+      moved_fragment = Iyi::IyiMod::DiagnosticFragment.new("other", finished.text_sha256, finished.events.dup, finished.anchors.dup)
       moved_anchor = section.fragments["initialiser"].anchors.pop
-      section.fragments["other"] = Iyi::IyiMod::DiagnosticFragment.new("other", finished.text_sha256, finished.events.dup, [moved_anchor])
+      section.fragments["other"] = moved_fragment
       ledger.verified?(section).should be_false
       spec_with_temporary_file do |path|
         expect_raises(Iyi::IyiMod::Error, "bound section was not verified by its issuer") do
@@ -944,7 +945,7 @@ describe "diagnostic bound projection authority" do
       ledger.verified?(section).should be_true
 
       # Mutation 4: duplicate an issued projection across fragments
-      section.fragments["dup"] = Iyi::IyiMod::DiagnosticFragment.new("dup", finished.text_sha256, finished.events.dup, [finished.anchors.first])
+      section.fragments["dup"] = Iyi::IyiMod::DiagnosticFragment.new("dup", finished.text_sha256, finished.events.dup, finished.anchors.dup)
       ledger.verified?(section).should be_false
       spec_with_temporary_file do |path|
         expect_raises(Iyi::IyiMod::Error, "bound section was not verified by its issuer") do
@@ -980,11 +981,24 @@ describe "diagnostic bound projection authority" do
       finished2 = ledger2.finish(initialiser2, joined2, "initialiser")
 
       section2 = Iyi::IyiMod::DiagnosticSection.new
-      shifted_anchors = [finished2.anchors.first.copy_with(offset: finished2.anchors.first.offset + 1)]
-      shifted_frag = Iyi::IyiMod::DiagnosticFragment.new("initialiser", finished2.text_sha256, finished2.events.dup, shifted_anchors)
+      shifted_frag = Iyi::IyiMod::DiagnosticFragment.new("initialiser", finished2.text_sha256, finished2.events.dup, finished2.anchors.dup)
+      shifted_frag.anchors[0] = shifted_frag.anchors.first.copy_with(offset: shifted_frag.anchors.first.offset + 1)
       section2.add_fragment(shifted_frag)
       expect_raises(ArgumentError, "bound section differs from finished fragments") do
         ledger2.verify_section!(section2)
+      end
+    end
+
+    it "rejects mismatched fragment text at source registration and composition" do
+      ledger = Iyi::DiagnosticProjectionLedger.new(SpecBoundAuthority.new)
+      source = spec_empty(ledger)
+      mismatched = Iyi::DiagnosticRenderedFragment.new("different", source.data)
+      expect_raises(ArgumentError, "source fragment guard mismatch") do
+        ledger.register_source(mismatched)
+      end
+      site = ledger.open_site("initialiser", "")
+      expect_raises(ArgumentError, "composed fragment guard mismatch") do
+        ledger.compose(site, mismatched, [source])
       end
     end
 

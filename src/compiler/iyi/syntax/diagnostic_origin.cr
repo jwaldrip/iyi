@@ -2153,6 +2153,9 @@ module Iyi
 
     # Registers a source fragment. A source may not carry a bound projection (R6).
     def register_source(fragment : DiagnosticRenderedFragment) : DiagnosticRenderedFragment
+      unless ::Crystal::Digest::SHA256.hexdigest(fragment.text) == fragment.data.text_sha256
+        raise ArgumentError.new("source fragment guard mismatch")
+      end
       return fragment if registered?(fragment)
       raise ArgumentError.new(DiagnosticBoundProjection::MSG_R1) if @fragments.has_key?(fragment.data)
       unless DiagnosticProjectionReach.hits(fragment.data.events, fragment.data.anchors).empty?
@@ -2276,6 +2279,9 @@ module Iyi
       raise ArgumentError.new(DiagnosticBoundProjection::MSG_R12) if @sealed
       raise ArgumentError.new(DiagnosticBoundProjection::MSG_R14) unless open_site?(site)
       raise ArgumentError.new(DiagnosticBoundProjection::MSG_R1) if @fragments.has_key?(fragment.data)
+      unless ::Crystal::Digest::SHA256.hexdigest(fragment.text) == fragment.data.text_sha256
+        raise ArgumentError.new("composed fragment guard mismatch")
+      end
       part_projections = Hash(DiagnosticOrigin, Int32).new(0).compare_by_identity
       parts.each do |part|
         entry = registered_entry(part) || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R1)
@@ -2501,7 +2507,9 @@ module Iyi
                        frag_event.input_start == placed_at + part_event.input_start &&
                        frag_event.input_end == placed_at + part_event.input_end &&
                        frag_event.token_text == part_event.token_text &&
-                       frag_event.token_kind == part_event.token_kind
+                       frag_event.token_kind == part_event.token_kind &&
+                       frag_event.lexical_mode == part_event.lexical_mode &&
+                       frag_event.selection == part_event.selection
                   raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8)
                 end
               end
