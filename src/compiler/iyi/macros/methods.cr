@@ -46,7 +46,13 @@ module Iyi
       filename
     end
 
-    delegate warnings, to: @program
+    def warnings
+      if @replay
+        @temp_warnings ||= Iyi::Warnings.new
+      else
+        @program.warnings
+      end
+    end
 
     def interpret_top_level_call(node)
       interpret_top_level_call?(node) ||
@@ -54,6 +60,15 @@ module Iyi
     end
 
     def interpret_top_level_call?(node)
+      if @replay
+        case node.name
+        when "compare_versions", "flag?", "host_flag?", "raise"
+          # allowed in replay
+        else
+          raise ReplayUnknownException.new("top-level macro call `#{node.name}` cannot be safely evaluated during layout fold settlement")
+        end
+      end
+
       iyi_tell_recorder(node)
 
       # Please order method names in lexicographical order
@@ -2560,6 +2575,14 @@ module Iyi
       type = type.types[name]?
       case type
       when Const
+        if interpreter.replay?
+          if layout_values = interpreter.layout_values
+            return interpreter.program.replace_layout_fold_values(type.value, layout_values)
+          else
+            return type.value
+          end
+        end
+
         interpreter.program.layout_fold_constant_read(type, nil)
         type.value
       when Type

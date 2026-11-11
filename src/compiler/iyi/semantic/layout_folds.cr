@@ -50,10 +50,35 @@ module Iyi
   # it gave for `root`, interpreted in `scope` for the `target` integer type.
   record LayoutFoldDerivation, root : ASTNode, scope : Type, target : IntegerType?, result : String
 
+  enum MacroRerunOutcome
+    Equal
+    Changed
+    Unknown
+  end
+
+  record LayoutFoldMacroDerivation,
+    macro_def : Macro?,
+    call : Call?,
+    node : ASTNode?,
+    scope : Type,
+    path_lookup : Type,
+    free_vars : Hash(String, TypeVar)?,
+    a_def : Def?,
+    temp_vars_start : Int32,
+    original_output : String
+
+  class LayoutFoldMacroFrame
+    getter reads = [] of LayoutFoldRead
+
+    def initialize
+    end
+  end
+
   # A decision that took fold values. `derivation` is set when the decision took
   # a computed value, and then `reads` are the literals that computation read.
   record LayoutFoldUse, kind : LayoutFoldUseKind, site : ASTNode?, reads : Array(LayoutFoldRead),
-    derivation : LayoutFoldDerivation?
+    derivation : LayoutFoldDerivation?,
+    macro_derivation : LayoutFoldMacroDerivation? = nil
 
   # One entry on the reader stack. A derive frame collects the reads of one
   # computation. A consumer frame collects, as pending uses, what its block took.
@@ -248,6 +273,8 @@ module Iyi
     getter layout_fold_uses = [] of LayoutFoldUse
     # The readers in progress, innermost last (`layout_fold_consumer`, `layout_fold_derive`).
     @layout_fold_frames = [] of LayoutFoldFrame
+    # The macro expansion frames in progress (`layout_fold_macro_expand`).
+    @layout_fold_macro_frames = [] of LayoutFoldMacroFrame
 
     # Records what a fold site folded during typing. The latest record for a node
     # wins, and settling compares that record with the final layout.
@@ -328,6 +355,11 @@ module Iyi
       read = LayoutFoldRead.new(fold, literal, literal.value, adopted)
       if (frame = @layout_fold_frames.last?) && frame.derive
         layout_fold_take([read], nil)
+        if kind == LayoutFoldUseKind::Macro && !@layout_fold_macro_frames.empty?
+          @layout_fold_macro_frames.each { |f| f.reads << read }
+        end
+      elsif kind == LayoutFoldUseKind::Macro && !@layout_fold_macro_frames.empty?
+        @layout_fold_macro_frames.each { |f| f.reads << read }
       else
         @layout_fold_uses << LayoutFoldUse.new(kind, site, [read], nil)
         @layout_fold_epoch += 1
@@ -339,6 +371,41 @@ module Iyi
     def layout_fold_constant_read(const : Const, site : ASTNode?) : Nil
       return if @layout_fold_literals.empty? || !const.cleaned_up?
       const.value.accept LayoutFoldLiteralReads.new(self, site)
+    end
+
+    def layout_fold_macro_expand(macro_def : Macro?, call : Call?, node : ASTNode?, scope : Type, path_lookup : Type, free_vars : Hash(String, TypeVar)?, a_def : Def?, &)
+      frame = LayoutFoldMacroFrame.new
+      @layout_fold_macro_frames << frame
+      temp_vars_start = @temp_vars
+      begin
+        result = yield
+        output = result[0]
+        unless frame.reads.empty?
+          reads = frame.reads.uniq(&.literal.object_id)
+          derivation = LayoutFoldMacroDerivation.new(
+            macro_def: macro_def,
+            call: call.try(&.clone),
+            node: node.try(&.clone),
+            scope: scope,
+            path_lookup: path_lookup,
+            free_vars: free_vars.try(&.dup),
+            a_def: a_def,
+            temp_vars_start: temp_vars_start,
+            original_output: output
+          )
+          @layout_fold_uses << LayoutFoldUse.new(
+            kind: LayoutFoldUseKind::Macro,
+            site: (call || node),
+            reads: reads,
+            derivation: nil,
+            macro_derivation: derivation
+          )
+          @layout_fold_epoch += 1
+        end
+        result
+      ensure
+        @layout_fold_macro_frames.pop
+      end
     end
 
     # Gives reads to the innermost reader. A derive frame keeps them for its own
@@ -529,6 +596,16 @@ module Iyi
           rerun = layout_fold_rerun(use, derivation, finals)
           next if rerun && rerun == derivation.result
           harms << LayoutFoldHarm.new(use, changed, rerun)
+        elsif macro_derivation = use.macro_derivation
+          outcome = layout_fold_macro_rerun(use, macro_derivation, finals)
+          case outcome
+          when MacroRerunOutcome::Equal
+            next
+          when MacroRerunOutcome::Changed
+            harms << LayoutFoldHarm.new(use, changed, "changed")
+          when MacroRerunOutcome::Unknown
+            harms << LayoutFoldHarm.new(use, changed, "unknown")
+          end
         else
           harms << LayoutFoldHarm.new(use, changed, nil)
         end
@@ -653,6 +730,129 @@ module Iyi
       nil
     end
 
+    private def layout_fold_macro_rerun(use : LayoutFoldUse, derivation : LayoutFoldMacroDerivation, finals : Array(UInt64?)) : MacroRerunOutcome
+      values = Hash(NumberLiteral, String).new.compare_by_identity
+      use.reads.each_with_index do |read, i|
+        final = finals[i]
+        return MacroRerunOutcome::Unknown unless final
+        values[read.literal] = final.to_s
+      end
+
+      saved_temp_vars = @temp_vars
+      @temp_vars = derivation.temp_vars_start
+      begin
+        if a_macro = derivation.macro_def
+          call = derivation.call.not_nil!.clone
+          call.args = call.args.map { |arg| replace_layout_fold_values(arg, values) }
+          if named_args = call.named_args
+            call.named_args = named_args.map do |named_arg|
+              NamedArgument.new(named_arg.name, replace_layout_fold_values(named_arg.value, values))
+            end
+          end
+          interpreter = MacroInterpreter.new(
+            self,
+            derivation.scope,
+            derivation.path_lookup,
+            a_macro,
+            call,
+            derivation.a_def,
+            in_macro: true
+          )
+          interpreter.replay = true
+          interpreter.layout_values = values
+          a_macro.body.accept interpreter
+        elsif node = derivation.node
+          node = replace_layout_fold_values(node.clone, values)
+          interpreter = MacroInterpreter.new(
+            self,
+            derivation.scope,
+            derivation.path_lookup,
+            node.location,
+            def: derivation.a_def,
+            in_macro: false
+          )
+          interpreter.free_vars = derivation.free_vars
+          interpreter.replay = true
+          interpreter.layout_values = values
+          node.accept interpreter
+        else
+          return MacroRerunOutcome::Unknown
+        end
+
+        new_output = interpreter.to_s
+        if new_output == derivation.original_output
+          MacroRerunOutcome::Equal
+        else
+          MacroRerunOutcome::Changed
+        end
+      rescue ex : ReplayUnknownException
+        MacroRerunOutcome::Unknown
+      rescue ex
+        MacroRerunOutcome::Changed
+      ensure
+        @temp_vars = saved_temp_vars
+      end
+    end
+
+    def replace_layout_fold_values(node : ASTNode, layout_values : Hash(NumberLiteral, String)) : ASTNode
+      case node
+      when NumberLiteral
+        if final_val = layout_values[node]?
+          NumberLiteral.new(final_val, node.kind)
+        else
+          node
+        end
+      when MacroExpression
+        MacroExpression.new(replace_layout_fold_values(node.exp, layout_values), node.output?)
+      when MacroIf
+        MacroIf.new(
+          replace_layout_fold_values(node.cond, layout_values),
+          replace_layout_fold_values(node.then, layout_values),
+          replace_layout_fold_values(node.else, layout_values),
+          node.is_unless?
+        )
+      when MacroFor
+        MacroFor.new(
+          node.vars,
+          replace_layout_fold_values(node.exp, layout_values),
+          replace_layout_fold_values(node.body, layout_values)
+        )
+      when Assign
+        Assign.new(
+          node.target,
+          replace_layout_fold_values(node.value, layout_values)
+        )
+      when Call
+        args = node.args.map { |arg| replace_layout_fold_values(arg, layout_values) }
+        named_args = node.named_args.try &.map do |named_arg|
+          NamedArgument.new(named_arg.name, replace_layout_fold_values(named_arg.value, layout_values))
+        end
+        obj = node.obj.try { |o| replace_layout_fold_values(o, layout_values) }
+        Call.new(obj, node.name, args, node.block, node.block_arg, named_args, node.global?)
+      when Expressions
+        Expressions.new(node.expressions.map { |e| replace_layout_fold_values(e, layout_values) })
+      when TupleLiteral
+        TupleLiteral.new(node.elements.map { |e| replace_layout_fold_values(e, layout_values) })
+      when ArrayLiteral
+        ArrayLiteral.new(node.elements.map { |e| replace_layout_fold_values(e, layout_values) }, of: node.of)
+      when HashLiteral
+        entries = node.entries.map do |entry|
+          HashLiteral::Entry.new(
+            replace_layout_fold_values(entry.key, layout_values),
+            replace_layout_fold_values(entry.value, layout_values)
+          )
+        end
+        HashLiteral.new(entries)
+      when NamedTupleLiteral
+        entries = node.entries.map do |entry|
+          NamedTupleLiteral::Entry.new(entry.key, replace_layout_fold_values(entry.value, layout_values))
+        end
+        NamedTupleLiteral.new(entries)
+      else
+        node
+      end
+    end
+
     # `MathInterpreter#interpret` is overloaded by node type, so the root is dispatched
     # on its type here. A root of any other type reaches the generic overload, which raises.
     private def layout_fold_interpret(interpreter : MathInterpreter, root : ASTNode)
@@ -748,6 +948,10 @@ module Iyi
       when LayoutFoldUseKind::Macro
         if final.nil?
           "a macro read #{label} as #{read.value}, but its final value can't be checked (#{failure}), so the macro's output can't be verified"
+        elsif harm.rerun == "unknown"
+          "a macro read #{label} as #{read.value}, but its final value is #{final}. " \
+          "Whether that changes the macro's output cannot be safely verified without external effects or unisolated state. " \
+          "Measure it after the layout is final, or use the value as an expression"
         else
           "a macro read #{label} as #{read.value}, but its final value is #{final}. " \
           "A macro's output can't be corrected, so measure it after the layout is final"
@@ -768,6 +972,8 @@ module Iyi
       computed = ""
       if derivation = harm.use.derivation
         computed = ", computed #{derivation.result}, final gives #{harm.rerun || "no value"}"
+      elsif harm.use.macro_derivation
+        computed = ", macro output #{harm.rerun || "unknown"}"
       end
       final_text = final ? final.to_s : "unknown"
       "layout fold use stale: #{layout_fold_at(site)}: #{layout_fold_use_kind_name(harm.use.kind)} read #{layout_fold_node(read.fold)} at #{layout_fold_location(read.fold)} as #{read.value}, final #{final_text}#{computed}: kept (--crystal, as Crystal 1.21.0 keeps it)"

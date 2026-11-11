@@ -248,6 +248,85 @@ describe "Semantic: layout fold uses" do
       fold_use_census(program)
     end
 
+    it "does not refuse a macro with an external effect in an unchosen branch (effects in unchosen branch)" do
+      program = fold_use_program(true)
+      # The macro has an external command in the unchosen branch, but X * 0 == 0 is always true,
+      # so the unchosen branch is never evaluated during settlement and output remains 42.
+      macro_code = <<-CODE
+        {% if X * 0 == 0 %}
+          z = 42
+        {% else %}
+          z = {{ `echo should_never_run` }}
+        {% end %}
+        CODE
+      fold_use_two_passes(program, fold_use_x, "", fold_use_growth + macro_code)
+
+      fold_use_literal(program, "X").value.should eq "32"
+      fold_use_census(program)
+    end
+
+    it "does not refuse a macro with nested pure calls producing the same output (nested calls)" do
+      program = fold_use_program(true)
+      # Nested arithmetic calls where output is always 0.
+      fold_use_two_passes(program, fold_use_x, "", fold_use_growth + "z = {{ (X * 0) + (X - X) }}\n")
+
+      fold_use_literal(program, "X").value.should eq "32"
+      fold_use_census(program)
+    end
+
+    it "does not refuse a macro with a loop producing the same output (loops)" do
+      program = fold_use_program(true)
+      # Loop over a range whose output depends on X * 0 (always 0).
+      macro_code = <<-CODE
+        {% for i in 0...2 %}
+          v_{{ i }} = {{ X * 0 }}
+        {% end %}
+        CODE
+      fold_use_two_passes(program, fold_use_x, "", fold_use_growth + macro_code)
+
+      fold_use_literal(program, "X").value.should eq "32"
+      fold_use_census(program)
+    end
+
+    it "refuses as unknown and does not execute a command during settlement (command not run during settlement)" do
+      program = fold_use_program(true)
+      sentinel = "/tmp/iyi_test_sentinel_#{Process.pid}_#{Time.utc.to_unix_ms}"
+      begin
+        # During typing X was 8, so X == 8 was true and output was 1.
+        # Under final layout X is 32, so X == 8 is false and settlement enters the branch
+        # with `touch sentinel`. The guard must report unknown and refuse before executing the command.
+        macro_code = <<-CODE
+          {% if X == 8 %}
+            z = 1
+          {% else %}
+            z = {{ `touch #{sentinel}` }}
+          {% end %}
+          CODE
+        expect_raises(Iyi::TypeException, /a macro read/) do
+          fold_use_two_passes(program, fold_use_x, "", fold_use_growth + macro_code)
+        end
+        File.exists?(sentinel).should be_false
+      ensure
+        File.delete(sentinel) if File.exists?(sentinel)
+      end
+    end
+
+    it "does not falsely refuse safe macro logic producing the same output (no false positives)" do
+      program = fold_use_program(true)
+      # Safe conditional and arithmetic producing identical output under both layouts.
+      macro_code = <<-CODE
+        {% if X >= 8 %}
+          val = {{ (X // X) * 10 }}
+        {% else %}
+          val = 0
+        {% end %}
+        CODE
+      fold_use_two_passes(program, fold_use_x, "", fold_use_growth + macro_code)
+
+      fold_use_literal(program, "X").value.should eq "32"
+      fold_use_census(program)
+    end
+
     it "refuses a tuple index that a stale constant selects (control 8)" do
       program = fold_use_program(true)
       expect_raises(Iyi::TypeException, /typing read/) do
