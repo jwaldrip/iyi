@@ -1009,7 +1009,7 @@ describe "diagnostic bound projection authority" do
       edit = Iyi::DiagnosticByteEdit.new(Iyi::DiagnosticByteSpan.new(0, 11), "Root::Thing", padded_replacement, producer, [
         Iyi::DiagnosticAnchorTransfer::Project.new(0, [0], 0),
         Iyi::DiagnosticAnchorTransfer::Project.new(1, [0], 0),
-      ])
+      ] of Iyi::DiagnosticAnchorTransfer)
 
       error = expect_raises(ArgumentError) do
         ledger.apply(site, before, [edit], "Crystal")
@@ -1027,7 +1027,7 @@ describe "diagnostic bound projection authority" do
       # Low-level rewrite: splice rendered into before using DiagnosticFragmentRewrite.apply directly
       edit = Iyi::DiagnosticByteEdit.new(Iyi::DiagnosticByteSpan.new(0, 4), "Root", rendered, producer, [
         Iyi::DiagnosticAnchorTransfer::Project.new(0, [0], 0),
-      ])
+      ] of Iyi::DiagnosticAnchorTransfer)
       spliced = Iyi::DiagnosticFragmentRewrite.apply(before, [edit], "Crystal")
 
       # Attempting to register this spliced fragment through compose must be refused
