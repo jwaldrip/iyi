@@ -318,17 +318,32 @@ module Iyi
     end
   end
 
-  record DiagnosticBoundProjectionData,
-    producer : DiagnosticBoundProducer,
-    source_fragment_sha256 : String,
-    source_text : String,
-    source_names : Array(DiagnosticBoundNameSource),
-    output_text : String,
-    lexical_mode : String,
-    result_start : Int32,
-    result_end : Int32,
-    token_kind : String,
-    context : String
+  # Immutable once built. The ledger builds one for a render; a decode builds a claim.
+  class DiagnosticBoundProjectionData
+    getter producer : DiagnosticBoundProducer
+    getter source_fragment_sha256 : String
+    getter source_text : String
+    getter output_text : String
+    getter lexical_mode : String
+    getter result_start : Int32
+    getter result_end : Int32
+    getter token_kind : String
+    getter context : String
+    @source_names : Array(DiagnosticBoundNameSource)
+
+    def initialize(@producer : DiagnosticBoundProducer, @source_fragment_sha256 : String, @source_text : String,
+                   source_names : Array(DiagnosticBoundNameSource), @output_text : String, @lexical_mode : String,
+                   @result_start : Int32, @result_end : Int32, @token_kind : String, @context : String)
+      @source_names = source_names.dup
+    end
+
+    def source_names : Array(DiagnosticBoundNameSource)
+      @source_names.dup
+    end
+
+    def_equals_and_hash @producer, @source_fragment_sha256, @source_text, @source_names, @output_text,
+      @lexical_mode, @result_start, @result_end, @token_kind, @context
+  end
 
   abstract class DiagnosticBoundProducer
     def to_json(json : JSON::Builder) : Nil
@@ -1745,10 +1760,6 @@ module Iyi
                            carrier = replacements[transfer.carrier_index]
                            derived = carrier.origin.as?(DiagnosticOrigin::DerivedName) || raise ArgumentError.new("projection carrier is not derived")
                            names = derived.source_names || raise ArgumentError.new("projection carrier lacks source names")
-                           unless derived.derivation_kind == "BoundProjection" && derived.producer == edit.producer &&
-                                  derived.source_text == edit.expected_old && derived.source_fragment_sha256 == ::Crystal::Digest::SHA256.hexdigest(edit.expected_old)
-                             raise ArgumentError.new("projection carrier does not match edit")
-                           end
                            old_names = old.name_slots.values.flat_map { |values| values }
                            expected_start = event.selected_start - edit.span.start_offset
                            expected_end = event.selected_end - edit.span.start_offset
@@ -1764,10 +1775,7 @@ module Iyi
         replacements.each_with_index do |replacement, index|
           next if claimed_new.includes?(index)
           derived = replacement.origin.as?(DiagnosticOrigin::DerivedName)
-          unless derived && derived.derivation_kind == "BoundProjection" && derived.producer == edit.producer &&
-                 derived.source_text == edit.expected_old && derived.source_fragment_sha256 == ::Crystal::Digest::SHA256.hexdigest(edit.expected_old)
-            raise ArgumentError.new("replacement anchor lacks a closed projection")
-          end
+          raise ArgumentError.new("replacement anchor lacks a closed projection") unless derived && derived.bound_projection_data
         end
       end
       source_anchors.each_with_index do |anchor, index|
@@ -1805,64 +1813,387 @@ module Iyi
     end
   end
 
-  # The authority that admits a source-bearing bound projection. A projection is minted
-  # only by an authority that can recompute it from the live program. The raw constructor
-  # admits through UNAVAILABLE, which takes empty source only.
-  abstract class DiagnosticProjectionAuthority
-    @registered : Hash(DiagnosticRenderedFragment, Bool)
+  # In-process trust root. A claim (a raw constructor, or a JSON or binary decode) is never issued.
+  # Only the ledger that bind constructs can issue, and it asks the live authority first.
+  abstract class DiagnosticSourceInventory
+    abstract def attests?(data : DiagnosticBoundProjectionData) : Bool
+  end
 
-    def initialize
-      @registered = Hash(DiagnosticRenderedFragment, Bool).new.compare_by_identity
+  # A declaration site. Only DiagnosticProjectionLedger#open_site creates one that the ledger knows.
+  # The object is the handle, so sites compare by identity.
+  class DiagnosticBoundSite
+    getter kind : String
+    getter container : String
+    getter name : String?
+    getter index : Int32?
+    getter declaration_origin : DiagnosticOrigin?
+    getter parent : DiagnosticBoundSite?
+
+    def initialize(@kind : String, @container : String, @name : String?, @index : Int32?,
+                   @declaration_origin : DiagnosticOrigin?, @parent : DiagnosticBoundSite?)
+    end
+  end
+
+  # What a recomputing authority sees. Built only inside DiagnosticProjectionLedger#render.
+  class DiagnosticProjectionRequest
+    getter site : DiagnosticBoundSite
+    getter producer : DiagnosticBoundProducer
+    getter before_text_sha256 : String
+    getter span : DiagnosticByteSpan
+    getter source_text : String
+    getter output_text : String
+    getter lexical_mode : String
+    @source_names : Array(DiagnosticBoundNameSource)
+
+    def initialize(@site : DiagnosticBoundSite, @producer : DiagnosticBoundProducer, @before_text_sha256 : String,
+                   @span : DiagnosticByteSpan, @source_text : String, source_names : Array(DiagnosticBoundNameSource),
+                   @output_text : String, @lexical_mode : String)
+      @source_names = source_names.dup
     end
 
+    def source_names : Array(DiagnosticBoundNameSource)
+      @source_names.dup
+    end
+  end
+
+  # Returns a fresh producer of the claim's exact class, built from live answers. Any failure raises R2.
+  abstract class DiagnosticProjectionAuthority
     def self.refused(producer : DiagnosticBoundProducer) : ArgumentError
       ArgumentError.new("bound projection replay refused: #{producer.class.name.rpartition("::").last}")
     end
 
-    def register(fragment : DiagnosticRenderedFragment) : DiagnosticRenderedFragment
-      @registered[fragment] = true
+    abstract def recompute(request : DiagnosticProjectionRequest) : DiagnosticBoundProducer
+  end
+
+  module DiagnosticBoundProjection
+    MSG_H3 = "bound projection requires authoritative source inventory"
+    MSG_R1 = "bound projection source is not registered with its authority"
+    MSG_R3 = "bound producer is not a closed producer class"
+    MSG_R4 = "bound projection replay differs from claimed producer"
+    MSG_R5 = "bound projection replacement was not issued for this edit"
+    MSG_R6 = "bound source fragment carries a bound projection"
+    MSG_R7 = "bound fragment belongs to another site"
+    MSG_R8 = "bound projection was not issued by this ledger"
+    MSG_R9 = "bound projection appears more than once"
+    MSG_R10 = "bound projection lies outside its anchor"
+    MSG_R11 = "bound section differs from finished fragments"
+    MSG_R11A = "bound projection count differs from minted"
+    MSG_R12 = "bound projection ledger is sealed"
+    MSG_R13 = "bound site is already open"
+    MSG_R14 = "bound site is not open in this ledger"
+    MSG_R15 = "bound site key differs from its declaration"
+    MSG_R16 = "bound projection source splits a token"
+    MSG_R17 = "bound projection would drop a non-name anchor"
+    MSG_R18 = "bound site was already finished"
+    MSG_R19 = "bound projection was issued for another site"
+    MSG_A1 = "bound projection is not at its declaration site"
+
+    # The producer classes the ledger may mint. A subclass is not one of them (R3).
+    def self.closed_class?(producer : DiagnosticBoundProducer) : Bool
+      {DiagnosticBoundProducer::StripRoot, DiagnosticBoundProducer::ForeignType, DiagnosticBoundProducer::AliasType,
+       DiagnosticBoundProducer::SelfReturn, DiagnosticBoundProducer::SemanticSignatureType,
+       DiagnosticBoundProducer::UninitializedClassVar, DiagnosticBoundProducer::ConstantAccessor,
+       DiagnosticBoundProducer::ResolvedRestriction, DiagnosticBoundProducer::SynthesizedConstructor,
+       DiagnosticBoundProducer::ConstantTarget}.any? { |klass| producer.class == klass }
+    end
+
+    # The one closed output function, shared by the ledger and DerivedName validation.
+    def self.closed_output(producer : DiagnosticBoundProducer, source : String) : String
+      case producer
+      when DiagnosticBoundProducer::StripRoot
+        prefix = "#{producer.root}::"
+        raise ArgumentError.new("missing source root") unless source.starts_with?(prefix)
+        source.byte_slice(prefix.bytesize, source.bytesize - prefix.bytesize)
+      when DiagnosticBoundProducer::ForeignType
+        prefix = producer.source_name
+        raise ArgumentError.new("missing foreign type source") unless source == prefix || source.starts_with?("#{prefix}::")
+        producer.qualified_name + source.byte_slice(prefix.bytesize, source.bytesize - prefix.bytesize)
+      when DiagnosticBoundProducer::AliasType then producer.resolved_type
+      when DiagnosticBoundProducer::SelfReturn then "self"
+      when DiagnosticBoundProducer::SemanticSignatureType then producer.semantic_type
+      when DiagnosticBoundProducer::UninitializedClassVar then "uninitialized #{producer.semantic_type}"
+      when DiagnosticBoundProducer::ConstantAccessor
+        case producer.part
+        when "Name" then "#{producer.prefix}#{producer.constant_name}".downcase
+        when "Receiver" then "self"
+        else raise ArgumentError.new("invalid constant accessor part")
+        end
+      when DiagnosticBoundProducer::ResolvedRestriction
+        producer.add_global ? "::#{producer.resolved_type}" : producer.resolved_type
+      when DiagnosticBoundProducer::SynthesizedConstructor then producer.part == "definition_name" ? "new" : "self"
+      when DiagnosticBoundProducer::ConstantTarget then producer.path
+      else raise ArgumentError.new("unknown bound projection producer")
+      end
+    end
+
+    # The ledger column of the site table. Empty-source producers are tied to their declaration here;
+    # the live ties (owners, class variables, signature answers) are enforced by the authority.
+    def self.site_tie?(producer : DiagnosticBoundProducer, site_kind : String,
+                       declaration_origin : DiagnosticOrigin?, name : String?) : Bool
+      case producer
+      when DiagnosticBoundProducer::StripRoot, DiagnosticBoundProducer::ForeignType, DiagnosticBoundProducer::AliasType
+        true
+      when DiagnosticBoundProducer::SelfReturn, DiagnosticBoundProducer::ResolvedRestriction
+        site_kind == "signature"
+      when DiagnosticBoundProducer::SemanticSignatureType, DiagnosticBoundProducer::SynthesizedConstructor,
+           DiagnosticBoundProducer::ConstantAccessor
+        site_kind == "signature" && declaration_origin == producer.definition_origin
+      when DiagnosticBoundProducer::UninitializedClassVar
+        site_kind == "class_var" && name == producer.variable_name && declaration_origin == producer.declaration_origin
+      when DiagnosticBoundProducer::ConstantTarget
+        site_kind == "constant" && declaration_origin == producer.declaration_origin
+      else
+        false
+      end
+    end
+
+    # H3 unless the source is empty or the inventory attests this exact data object.
+    def self.require_source_inventory!(data : DiagnosticBoundProjectionData, inventory : DiagnosticSourceInventory?) : Nil
+      return if data.source_text.empty?
+      return if inventory && inventory.attests?(data)
+      raise ArgumentError.new(MSG_H3)
+    end
+  end
+
+  # Every BoundProjection reachable from a fragment's events and anchors. The walk uses the edges that
+  # IyiMod::DiagnosticOrigins#intern uses. A projection is a leaf, because its own inputs were checked
+  # when it was issued. Each hit records where it was found: as an anchor's origin, in an anchor's name
+  # slot, in an event part, or nested under some other origin, which is never inside an anchor.
+  module DiagnosticProjectionReach
+    record Hit, origin : DiagnosticOrigin::DerivedName, place : Symbol, index : Int32
+
+    def self.hits(events : Array(DiagnosticTokenEvent), anchors : Array(DiagnosticAnchor)) : Array(Hit)
+      found = [] of Hit
+      anchors.each_with_index do |anchor, index|
+        visited = Hash(DiagnosticOrigin, Bool).new.compare_by_identity
+        visit(anchor.origin, :anchor_origin, index, found, visited)
+        anchor.name_slots.each_value do |values|
+          values.each { |value| visit_name(value, :name_slot, index, found, visited) }
+        end
+      end
+      events.each_with_index do |event, index|
+        visited = Hash(DiagnosticOrigin, Bool).new.compare_by_identity
+        visit_event(event, :event_part, index, found, visited)
+      end
+      found
+    end
+
+    # Checks R9 and R10 and returns each anchored projection's anchor index. Raises for a projection
+    # that is an anchor's origin twice, or that is reached anywhere it does not belong.
+    def self.owners(hits : Array(Hit), anchors : Array(DiagnosticAnchor)) : Hash(DiagnosticOrigin, Int32)
+      owners = Hash(DiagnosticOrigin, Int32).new.compare_by_identity
+      hits.each do |hit|
+        next unless hit.place == :anchor_origin
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R9) if owners.has_key?(hit.origin)
+        owners[hit.origin] = hit.index
+      end
+      hits.each do |hit|
+        next if hit.place == :anchor_origin
+        owner = owners[hit.origin]? || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R10)
+        placed = case hit.place
+                 when :name_slot then owner == hit.index
+                 when :event_part then anchors[owner].event_index == hit.index
+                 else false
+                 end
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R10) unless placed
+      end
+      owners
+    end
+
+    def self.visit(origin : DiagnosticOrigin, place : Symbol, index : Int32, found : Array(Hit),
+                   visited : Hash(DiagnosticOrigin, Bool)) : Nil
+      if origin.is_a?(DiagnosticOrigin::DerivedName) && origin.bound_projection_data
+        found << Hit.new(origin, place, index)
+        return
+      end
+      return if visited.has_key?(origin)
+      visited[origin] = true
+      child = place == :anchor_origin ? :nested : place
+      case origin
+      when DiagnosticOrigin::Expanded
+        visit(origin.invocation_origin, child, index, found, visited)
+        visit(origin.macro_definition_origin, child, index, found, visited)
+        visit_event(origin.token_event, child, index, found, visited)
+        visit_use(origin.anchor_use, child, index, found, visited)
+      when DiagnosticOrigin::Synthetic
+        visit(origin.parent_origin, child, index, found, visited)
+      when DiagnosticOrigin::DerivedName
+        origin.source_token.try { |token| visit_token(token, child, index, found, visited) }
+        origin.witnesses.each { |token| visit(token.lexical_origin, child, index, found, visited) }
+        origin.definition_origin.try { |definition| visit(definition, child, index, found, visited) }
+        origin.module_header_origin.try { |header| visit(header, child, index, found, visited) }
+        origin.source_segments.each { |token| visit_token(token, child, index, found, visited) }
+        origin.source_names.try { |names| names.each { |source| visit_name(source.name, child, index, found, visited) } }
+        origin.operator_anchor.try { |anchor| visit(anchor, child, index, found, visited) }
+        origin.operator_witnesses.each { |witness| witness.event.try { |event| visit_event(event, child, index, found, visited) } }
+        origin.structural_anchor.try { |anchor| visit(anchor, child, index, found, visited) }
+        origin.structural_witnesses.each { |witness| witness.event.try { |event| visit_event(event, child, index, found, visited) } }
+      end
+    end
+
+    def self.visit_token(token : DiagnosticSourceNameToken, place : Symbol, index : Int32, found : Array(Hit),
+                         visited : Hash(DiagnosticOrigin, Bool)) : Nil
+      visit(token.lexical_origin, place, index, found, visited)
+      token.binding_origin.try { |origin| visit(origin, place, index, found, visited) }
+    end
+
+    def self.visit_name(value : DiagnosticNameValue, place : Symbol, index : Int32, found : Array(Hit),
+                        visited : Hash(DiagnosticOrigin, Bool)) : Nil
+      case value
+      when DiagnosticNameValue::Observed then visit_token(value.source_token, place, index, found, visited)
+      when DiagnosticNameValue::Derived then visit(value.origin, place, index, found, visited)
+      end
+    end
+
+    def self.visit_event(event : DiagnosticTokenEvent, place : Symbol, index : Int32, found : Array(Hit),
+                         visited : Hash(DiagnosticOrigin, Bool)) : Nil
+      event.byte_parts.each do |part|
+        part.emitter_origin.try { |emitter| visit(emitter, place, index, found, visited) }
+        case part
+        when DiagnosticEmissionPart::AstAnchor
+          visit(part.source_origin, place, index, found, visited)
+        when DiagnosticEmissionPart::NameSplice
+          visit_name(part.source_name, place, index, found, visited)
+        end
+      end
+    end
+
+    def self.visit_use(use : DiagnosticAnchorUse, place : Symbol, index : Int32, found : Array(Hit),
+                       visited : Hash(DiagnosticOrigin, Bool)) : Nil
+      case use
+      when DiagnosticAnchorUse::HeadOf
+        use.emitter_origin.try { |origin| visit(origin, place, index, found, visited) }
+        visit_evidence(use.evidence, place, index, found, visited)
+        case head = use.head
+        when DiagnosticHead::Anchor
+          visit(head.origin, place, index, found, visited)
+        when DiagnosticHead::Syntax
+          head.adjacent_name_origin.try { |origin| visit(origin, place, index, found, visited) }
+        end
+      when DiagnosticAnchorUse::PayloadOf
+        use.emitter_origin.try { |origin| visit(origin, place, index, found, visited) }
+        visit_evidence(use.evidence, place, index, found, visited)
+        visit(use.owner_origin, place, index, found, visited)
+      end
+    end
+
+    def self.visit_evidence(evidence : DiagnosticAnchorEvidence, place : Symbol, index : Int32, found : Array(Hit),
+                            visited : Hash(DiagnosticOrigin, Bool)) : Nil
+      case evidence
+      when DiagnosticAnchorEvidence::Spliced
+        visit(evidence.source_origin, place, index, found, visited)
+      when DiagnosticAnchorEvidence::RawSyntax
+        evidence.witnesses.each { |witness| visit_event(witness.event, place, index, found, visited) }
+      end
+    end
+  end
+
+  # Declaration sites, rendering, composition, finishing and section verification for one artifact section.
+  #
+  # Every issued DerivedName is registered by identity, with the before fragment, span, site and the
+  # producer the live authority recomputed. A claim is never issued. Equal data is not a registration.
+  class DiagnosticProjectionLedger < DiagnosticSourceInventory
+    SITE_KINDS = %w(signature signature_body signature_annotation field class_var macro top_fun initialiser constant)
+
+    record Issue, before : DiagnosticFragmentData, span : DiagnosticByteSpan, site : DiagnosticBoundSite,
+      producer : DiagnosticBoundProducer
+    record Entry, text : String, site : DiagnosticBoundSite?
+    record Finished, key : String, projections : Array(DiagnosticOrigin)
+    record Part, first : Int32, last : Int32, token_kind : String, context : String,
+      slot : DiagnosticNameSlot, lex_context : DiagnosticRenderedLexContext
+
+    @fragments : Hash(DiagnosticFragmentData, Entry)
+    @sites : Hash(DiagnosticBoundSite, Bool)
+    @site_keys : Hash({String, String, String?, Int32?, DiagnosticOrigin?}, Bool)
+    @issued : Hash(DiagnosticOrigin, Issue)
+    @finished_by_site : Hash(DiagnosticBoundSite, Finished)
+    @finished_by_key : Hash(String, Finished)
+    @counts : Hash(String, Int32)
+    @sealed : Bool
+    @attesting : DiagnosticBoundProjectionData?
+    @verified_section : IyiMod::DiagnosticSection?
+
+    def initialize(@authority : DiagnosticProjectionAuthority)
+      @fragments = Hash(DiagnosticFragmentData, Entry).new.compare_by_identity
+      @sites = Hash(DiagnosticBoundSite, Bool).new.compare_by_identity
+      @site_keys = Hash({String, String, String?, Int32?, DiagnosticOrigin?}, Bool).new
+      @issued = Hash(DiagnosticOrigin, Issue).new.compare_by_identity
+      @finished_by_site = Hash(DiagnosticBoundSite, Finished).new.compare_by_identity
+      @finished_by_key = Hash(String, Finished).new
+      @counts = Hash(String, Int32).new(0)
+      @sealed = false
+      @attesting = nil
+      @verified_section = nil
+    end
+
+    # Creates a site handle. A constant site must sit under an open initialiser site.
+    def open_site(kind : String, container : String, name : String? = nil, index : Int32? = nil,
+                  declaration_origin : DiagnosticOrigin? = nil, parent : DiagnosticBoundSite? = nil) : DiagnosticBoundSite
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R12) if @sealed
+      raise ArgumentError.new("invalid bound site kind") unless SITE_KINDS.includes?(kind)
+      key = {kind, container, name, index, declaration_origin}
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R13) if @site_keys.has_key?(key)
+      if kind == "constant"
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R14) unless parent && parent.kind == "initialiser" && open_site?(parent)
+      elsif parent
+        raise ArgumentError.new("only constant sites have a parent")
+      end
+      site = DiagnosticBoundSite.new(kind, container, name, index, declaration_origin, parent)
+      @sites[site] = true
+      @site_keys[key] = true
+      site
+    end
+
+    # Registers a source fragment. A source may not carry a bound projection (R6).
+    def register_source(fragment : DiagnosticRenderedFragment) : DiagnosticRenderedFragment
+      return fragment if registered?(fragment)
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R1) if @fragments.has_key?(fragment.data)
+      unless DiagnosticProjectionReach.hits(fragment.data.events, fragment.data.anchors).empty?
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R6)
+      end
+      @fragments[fragment.data] = Entry.new(fragment.text, nil)
       fragment
     end
 
+    # Identity of the data object, and equal text. A twin built from equal values is not registered.
     def registered?(fragment : DiagnosticRenderedFragment) : Bool
-      @registered.has_key?(fragment)
+      !registered_entry(fragment).nil?
     end
 
-    abstract def replay!(producer : DiagnosticBoundProducer, source_text : String) : Nil
-
-    def admit!(data : DiagnosticBoundProjectionData) : Nil
-      replay!(data.producer, data.source_text)
-    end
-  end
-
-  class DiagnosticUnavailableProjectionAuthority < DiagnosticProjectionAuthority
-    def replay!(producer : DiagnosticBoundProducer, source_text : String) : Nil
-      return if source_text.empty?
-      raise ArgumentError.new("bound projection requires authoritative source inventory")
-    end
-  end
-
-  DiagnosticProjectionAuthority::UNAVAILABLE = DiagnosticUnavailableProjectionAuthority.new
-
-  module DiagnosticBoundProjection
-    def self.render(authority : DiagnosticProjectionAuthority, producer : DiagnosticBoundProducer,
-                    before : DiagnosticRenderedFragment, span : DiagnosticByteSpan,
-                    lexical_mode : String) : DiagnosticRenderedFragment
-      unless authority.registered?(before)
-        raise ArgumentError.new("bound projection source is not registered with its authority")
+    # Renders one producer at a site, after validation and the live recompute. The result is registered
+    # and every projection in it is issued by this ledger.
+    def render(site : DiagnosticBoundSite, producer : DiagnosticBoundProducer, before : DiagnosticRenderedFragment,
+               span : DiagnosticByteSpan, lexical_mode : String) : DiagnosticRenderedFragment
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R12) if @sealed
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R14) unless open_site?(site)
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R3) unless DiagnosticBoundProjection.closed_class?(producer)
+      before_entry = registered_entry(before) || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R1)
+      if (before_site = before_entry.site) && !belongs?(before_site, site)
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R7)
       end
-      DiagnosticFragmentValidation.validate_text!(before.text, before.data.events, before.data.anchors)
+      unless DiagnosticBoundProjection.site_tie?(producer, site.kind, site.declaration_origin, site.name)
+        raise ArgumentError.new("#{DiagnosticBoundProjection::MSG_A1}: #{kind_name(producer)}")
+      end
+      events = before.data.events
+      anchors = before.data.anchors
+      DiagnosticFragmentValidation.validate_text!(before.text, events, anchors)
       unless ::Crystal::Digest::SHA256.hexdigest(before.text) == before.data.text_sha256 &&
              span.start_offset >= 0 && span.end_offset >= span.start_offset && span.end_offset <= before.text.bytesize &&
              before.text.byte_slice(0, span.start_offset).valid_encoding? && before.text.byte_slice(0, span.end_offset).valid_encoding?
         raise ArgumentError.new("invalid bound projection source span")
       end
+      events.each do |event|
+        next unless event.input_start < span.end_offset && span.start_offset < event.input_end
+        unless span.start_offset <= event.input_start && event.input_end <= span.end_offset
+          raise ArgumentError.new(DiagnosticBoundProjection::MSG_R16)
+        end
+      end
       source = before.text.byte_slice(span.start_offset, span.end_offset - span.start_offset)
       source_names = [] of DiagnosticBoundNameSource
-      events = before.data.events
-      before.data.anchors.each do |anchor|
+      anchors.each do |anchor|
         event = events[anchor.event_index]
         next unless span.start_offset <= event.input_start && event.input_end <= span.end_offset
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R17) if anchor.name_slots.values.all?(&.empty?)
         anchor.name_slots.each_value do |values|
           values.each do |value|
             source_names << DiagnosticBoundNameSource.new(event.selected_start - span.start_offset,
@@ -1871,33 +2202,233 @@ module Iyi
         end
       end
       source_names.sort_by! { |entry| {entry.start_offset, entry.end_offset} }
-      output = case producer
-               when DiagnosticBoundProducer::StripRoot
-                 prefix = "#{producer.root}::"
-                 raise ArgumentError.new("missing source root") unless source.starts_with?(prefix)
-                 source.byte_slice(prefix.bytesize, source.bytesize - prefix.bytesize)
-               when DiagnosticBoundProducer::ForeignType
-                 prefix = producer.source_name
-                 raise ArgumentError.new("missing foreign type source") unless source == prefix || source.starts_with?("#{prefix}::")
-                 producer.qualified_name + source.byte_slice(prefix.bytesize, source.bytesize - prefix.bytesize)
-               when DiagnosticBoundProducer::AliasType then producer.resolved_type
-               when DiagnosticBoundProducer::SelfReturn then "self"
-               when DiagnosticBoundProducer::SemanticSignatureType then producer.semantic_type
-               when DiagnosticBoundProducer::UninitializedClassVar then "uninitialized #{producer.semantic_type}"
-               when DiagnosticBoundProducer::ConstantAccessor
-                 case producer.part
-                 when "Name" then "#{producer.prefix}#{producer.constant_name}".downcase
-                 when "Receiver" then "self"
-                 else raise ArgumentError.new("invalid constant accessor part")
-                 end
-               when DiagnosticBoundProducer::ResolvedRestriction
-                 producer.add_global ? "::#{producer.resolved_type}" : producer.resolved_type
-               when DiagnosticBoundProducer::SynthesizedConstructor then producer.part == "definition_name" ? "new" : "self"
-               when DiagnosticBoundProducer::ConstantTarget then producer.path
-               else raise ArgumentError.new("unknown bound projection producer")
-               end
+      output = DiagnosticBoundProjection.closed_output(producer, source)
       digest = ::Crystal::Digest::SHA256.hexdigest(source)
+      parts = render_parts(producer, output, lexical_mode)
+
+      # Structural validation of the claim, before the authority is called.
+      parts.each { |part| new_projection(bound_data(producer, digest, source, source_names, output, lexical_mode, part)) }
+
+      request = DiagnosticProjectionRequest.new(site, producer, ::Crystal::Digest::SHA256.hexdigest(before.text),
+        span, source, source_names, output, lexical_mode)
+      live = recompute(producer, request)
+      unless live.class == producer.class && live == producer
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R4)
+      end
+      origins = parts.map { |part| new_projection(bound_data(live, digest, source, source_names, output, lexical_mode, part)) }
+
       builder = DiagnosticFragmentBuilder.new(lexical_mode)
+      origins.each_with_index do |origin, index|
+        part = parts[index]
+        name = DiagnosticNameValue::Derived.new(origin)
+        builder.add_written_anchor(part.first, part.last, output, part.lex_context, "Name", part.context, origin,
+          {part.slot => [name] of DiagnosticNameValue})
+      end
+      rendered = DiagnosticRenderedFragment.new(output, builder.finish_data(output))
+      @fragments[rendered.data] = Entry.new(output, site)
+      origins.each do |origin|
+        @issued[origin] = Issue.new(before.data, span, site, live)
+        @counts[kind_name(live)] += 1
+      end
+      rendered
+    end
+
+    # Replaces spans of a registered fragment. Each replacement projection must have been issued for
+    # this exact edit: the same before object, span, site and producer (R5).
+    def apply(site : DiagnosticBoundSite, before : DiagnosticRenderedFragment, edits : Array(DiagnosticByteEdit),
+              lexical_mode : String) : DiagnosticRenderedFragment
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R12) if @sealed
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R14) unless open_site?(site)
+      before_entry = registered_entry(before) || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R1)
+      if (before_site = before_entry.site) && !belongs?(before_site, site)
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R7)
+      end
+      edits.each do |edit|
+        edit.replacement.data.anchors.each do |anchor|
+          origin = anchor.origin
+          next unless origin.is_a?(DiagnosticOrigin::DerivedName) && origin.bound_projection_data
+          issue = @issued[origin]?
+          unless issue && issue.before.same?(before.data) && issue.span == edit.span &&
+                 issue.site.same?(site) && issue.producer == edit.producer
+            raise ArgumentError.new(DiagnosticBoundProjection::MSG_R5)
+          end
+        end
+      end
+      result = DiagnosticFragmentRewrite.apply(before, edits, lexical_mode)
+      @fragments[result.data] = Entry.new(result.text, site)
+      result
+    end
+
+    # Joins parts into a fragment the caller built. Parts are sources, or outputs of this site or of a
+    # child site. Each projection in the result is issued, placed once, and present among the parts (R8).
+    def compose(site : DiagnosticBoundSite, fragment : DiagnosticRenderedFragment,
+                parts : Array(DiagnosticRenderedFragment)) : DiagnosticRenderedFragment
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R12) if @sealed
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R14) unless open_site?(site)
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R1) if @fragments.has_key?(fragment.data)
+      part_projections = Hash(DiagnosticOrigin, Int32).new(0).compare_by_identity
+      parts.each do |part|
+        entry = registered_entry(part) || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R1)
+        if (part_site = entry.site) && !belongs?(part_site, site)
+          raise ArgumentError.new(DiagnosticBoundProjection::MSG_R7)
+        end
+        DiagnosticProjectionReach.hits(part.data.events, part.data.anchors).each do |hit|
+          part_projections[hit.origin] += 1 if hit.place == :anchor_origin
+        end
+      end
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R9) if part_projections.values.any? { |count| count > 1 }
+      owners = DiagnosticProjectionReach.owners(DiagnosticProjectionReach.hits(fragment.data.events, fragment.data.anchors),
+        fragment.data.anchors)
+      owners.each_key do |origin|
+        issue = @issued[origin]? || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8)
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8) unless part_projections.has_key?(origin)
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R19) unless belongs?(issue.site, site)
+      end
+      @fragments[fragment.data] = Entry.new(fragment.text, site)
+      fragment
+    end
+
+    # Seals one site as a finished fragment under its key. The key must be the one the IyiMod builder
+    # produces for that site (R15). A signature site must cite its own declaration origin.
+    def finish(site : DiagnosticBoundSite, fragment : DiagnosticRenderedFragment, key : String,
+               signature : IyiMod::Signature? = nil) : IyiMod::DiagnosticFragment
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R12) if @sealed
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R14) unless @sites.has_key?(site)
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R18) if @finished_by_site.has_key?(site)
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R18) if @finished_by_key.has_key?(key)
+      entry = registered_entry(fragment) || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R1)
+      fragment_site = entry.site || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R7)
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R7) unless belongs?(fragment_site, site)
+      check_key!(site, entry.text, key, signature)
+      owners = DiagnosticProjectionReach.owners(DiagnosticProjectionReach.hits(fragment.data.events, fragment.data.anchors),
+        fragment.data.anchors)
+      projections = [] of DiagnosticOrigin
+      owners.each_key do |origin|
+        issue = @issued[origin]? || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8)
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R19) unless belongs?(issue.site, site)
+        projections << origin
+      end
+      record = Finished.new(key, projections)
+      @finished_by_site[site] = record
+      @finished_by_key[key] = record
+      fragment.data.to_fragment(key)
+    end
+
+    def issued?(origin : DiagnosticOrigin) : Bool
+      @issued.has_key?(origin)
+    end
+
+    def counts : Hash(String, Int32)
+      @counts.dup
+    end
+
+    # Checks the whole section against the ledger's records, then seals it. Returns the number of
+    # distinct projections it holds.
+    def verify_section!(section : IyiMod::DiagnosticSection) : Int32
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R12) if @sealed
+      hits_by_key = {} of String => Array(DiagnosticProjectionReach::Hit)
+      reached = Hash(DiagnosticOrigin, Bool).new.compare_by_identity
+      section.fragments.each do |key, fragment|
+        hits = DiagnosticProjectionReach.hits(fragment.events, fragment.anchors)
+        hits_by_key[key] = hits
+        hits.each { |hit| reached[hit.origin] = true }
+      end
+      finished_total = @finished_by_key.values.sum { |record| record.projections.size }
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R11A) unless reached.size == finished_total
+      seen = Hash(DiagnosticOrigin, Bool).new.compare_by_identity
+      section.fragments.each do |key, fragment|
+        owners = DiagnosticProjectionReach.owners(hits_by_key[key], fragment.anchors)
+        owners.each_key do |origin|
+          raise ArgumentError.new(DiagnosticBoundProjection::MSG_R8) unless issued?(origin)
+          record = finished_record(@issued[origin].site)
+          raise ArgumentError.new(DiagnosticBoundProjection::MSG_R19) unless record && record.key == key
+          raise ArgumentError.new(DiagnosticBoundProjection::MSG_R9) if seen.has_key?(origin)
+          seen[origin] = true
+        end
+        expected = @finished_by_key[key]?
+        if expected.nil?
+          raise ArgumentError.new(DiagnosticBoundProjection::MSG_R11) unless owners.empty?
+        else
+          unless expected.projections.size == owners.size && expected.projections.all? { |origin| owners.has_key?(origin) }
+            raise ArgumentError.new(DiagnosticBoundProjection::MSG_R11)
+          end
+        end
+      end
+      @finished_by_key.each_key do |key|
+        raise ArgumentError.new(DiagnosticBoundProjection::MSG_R11) unless section.fragments.has_key?(key)
+      end
+      @sealed = true
+      @verified_section = section
+      seen.size
+    end
+
+    def verified?(section : IyiMod::DiagnosticSection) : Bool
+      verified = @verified_section
+      !verified.nil? && verified.same?(section)
+    end
+
+    # True only while render constructs this exact data object.
+    def attests?(data : DiagnosticBoundProjectionData) : Bool
+      attesting = @attesting
+      !attesting.nil? && attesting.same?(data)
+    end
+
+    private def open_site?(site : DiagnosticBoundSite) : Bool
+      @sites.has_key?(site) && !@finished_by_site.has_key?(site)
+    end
+
+    private def registered_entry(fragment : DiagnosticRenderedFragment) : Entry?
+      entry = @fragments[fragment.data]?
+      entry if entry && entry.text == fragment.text
+    end
+
+    # A site belongs to itself, and a constant site belongs to its initialiser.
+    private def belongs?(issued : DiagnosticBoundSite, site : DiagnosticBoundSite) : Bool
+      return true if issued.same?(site)
+      parent = issued.parent
+      !parent.nil? && parent.same?(site)
+    end
+
+    # The record for a site, or for its parent when the site is a constant.
+    private def finished_record(site : DiagnosticBoundSite) : Finished?
+      if record = @finished_by_site[site]?
+        return record
+      end
+      parent = site.parent
+      parent ? @finished_by_site[parent]? : nil
+    end
+
+    private def kind_name(producer : DiagnosticBoundProducer) : String
+      producer.class.name.rpartition("::").last
+    end
+
+    # Builds one data object for a part. Source and names are fixed by the render.
+    private def bound_data(producer : DiagnosticBoundProducer, digest : String, source : String,
+                           source_names : Array(DiagnosticBoundNameSource), output : String,
+                           lexical_mode : String, part : Part) : DiagnosticBoundProjectionData
+      DiagnosticBoundProjectionData.new(producer, digest, source, source_names, output, lexical_mode,
+        part.first, part.last, part.token_kind, part.context)
+    end
+
+    # The one place a DerivedName is built for a render. It is attested only while it is built.
+    private def new_projection(data : DiagnosticBoundProjectionData) : DiagnosticOrigin::DerivedName
+      @attesting = data
+      DiagnosticOrigin::DerivedName.new(data, self)
+    ensure
+      @attesting = nil
+    end
+
+    # The live authority. Any failure that is not an ArgumentError raises R2.
+    private def recompute(producer : DiagnosticBoundProducer, request : DiagnosticProjectionRequest) : DiagnosticBoundProducer
+      @authority.recompute(request)
+    rescue error : ArgumentError
+      raise error
+    rescue
+      raise DiagnosticProjectionAuthority.refused(producer)
+    end
+
+    # Parses the output into its name parts. Pure: it runs before the authority is called.
+    private def render_parts(producer : DiagnosticBoundProducer, output : String, lexical_mode : String) : Array(Part)
       if producer.is_a?(DiagnosticBoundProducer::ConstantAccessor) || producer.is_a?(DiagnosticBoundProducer::SynthesizedConstructor)
         context = case producer
                   when DiagnosticBoundProducer::ConstantAccessor
@@ -1909,38 +2440,57 @@ module Iyi
                   end
         lex_context = context == "definition_name" ? DiagnosticRenderedLexContext::DefOrMacroName : DiagnosticRenderedLexContext::Operand
         observed = DiagnosticRenderedTokens.observe_one(output, 0, output.bytesize, lexical_mode, lex_context)
-        data = DiagnosticBoundProjectionData.new(producer, digest, source, source_names, output, lexical_mode,
-          0, output.bytesize, observed.token_kind, context)
-        origin = DiagnosticOrigin::DerivedName.new(data, authority)
         slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
-        name = DiagnosticNameValue::Derived.new(origin)
-        builder.add_written_anchor(0, output.bytesize, output, lex_context, "Name", context, origin, {slot => [name] of DiagnosticNameValue})
-      else
-        prefix = producer.is_a?(DiagnosticBoundProducer::UninitializedClassVar) ? "uninitialized ".bytesize : 0
-        type_text = output.byte_slice(prefix, output.bytesize - prefix)
-        parser = Parser.new(type_text)
-        parser.iyi = lexical_mode == "Iyi"
-        parser.enable_diagnostic_name_observations
-        parser.next_token
-        parser.parse_bare_proc_type
-        parser.check :EOF
-        if parser.diagnostic_lexical_observations.any? { |token| {"*", "**", "?", "[", "]", "{", "}", "self?", "nil?"}.includes?(token.token_text) }
-          raise ArgumentError.new("bound type syntax requires explicit type-sugar witness transfer")
-        end
-        parser.diagnostic_name_observations.each do |observation|
-          next unless {"path_segment", "named_entry", "type_self"}.includes?(observation.context)
-          first = observation.input_start + prefix
-          last = observation.input_end + prefix
-          data = DiagnosticBoundProjectionData.new(producer, digest, source, source_names, output, lexical_mode,
-            first, last, observation.token_kind, observation.context)
-          origin = DiagnosticOrigin::DerivedName.new(data, authority)
-          name = DiagnosticNameValue::Derived.new(origin)
-          lex_context = observation.context == "path_segment" ? DiagnosticRenderedLexContext::TypeName : DiagnosticRenderedLexContext::Operand
-          builder.add_written_anchor(first, last, output, lex_context, "Name", observation.context, origin,
-            {observation.slot => [name] of DiagnosticNameValue})
-        end
+        return [Part.new(0, output.bytesize, observed.token_kind, context, slot, lex_context)]
       end
-      authority.register(DiagnosticRenderedFragment.new(output, builder.finish_data(output)))
+      prefix = producer.is_a?(DiagnosticBoundProducer::UninitializedClassVar) ? "uninitialized ".bytesize : 0
+      type_text = output.byte_slice(prefix, output.bytesize - prefix)
+      parser = Parser.new(type_text)
+      parser.iyi = lexical_mode == "Iyi"
+      parser.enable_diagnostic_name_observations
+      parser.next_token
+      parser.parse_bare_proc_type
+      parser.check :EOF
+      if parser.diagnostic_lexical_observations.any? { |token| {"*", "**", "?", "[", "]", "{", "}", "self?", "nil?"}.includes?(token.token_text) }
+        raise ArgumentError.new("bound type syntax requires explicit type-sugar witness transfer")
+      end
+      parts = [] of Part
+      parser.diagnostic_name_observations.each do |observation|
+        next unless {"path_segment", "named_entry", "type_self"}.includes?(observation.context)
+        first = observation.input_start + prefix
+        last = observation.input_end + prefix
+        lex_context = observation.context == "path_segment" ? DiagnosticRenderedLexContext::TypeName : DiagnosticRenderedLexContext::Operand
+        parts << Part.new(first, last, observation.token_kind, observation.context, observation.slot, lex_context)
+      end
+      parts
+    end
+
+    # Site ties for the keys the IyiMod builders produce. Signature keys need the signature itself.
+    private def check_key!(site : DiagnosticBoundSite, text : String, key : String, signature : IyiMod::Signature?) : Nil
+      expected = case site.kind
+                 when "signature"
+                   IyiMod.signature_fragment_key(site.container, checked_signature(site, signature))
+                 when "signature_body"
+                   IyiMod.signature_body_fragment_key(site.container, checked_signature(site, signature))
+                 when "signature_annotation"
+                   index = site.index || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R15)
+                   IyiMod.signature_annotation_fragment_key(site.container, checked_signature(site, signature), index)
+                 when "field"
+                   IyiMod.field_fragment_key(site.container, site.name || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R15))
+                 when "class_var"
+                   IyiMod.class_var_fragment_key(site.container, site.name || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R15))
+                 when "macro" then IyiMod.macro_fragment_key(site.container, text)
+                 when "top_fun" then IyiMod.top_fun_fragment_key(text)
+                 when "initialiser" then "initialiser"
+                 else raise ArgumentError.new(DiagnosticBoundProjection::MSG_R15)
+                 end
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R15) unless key == expected
+    end
+
+    private def checked_signature(site : DiagnosticBoundSite, signature : IyiMod::Signature?) : IyiMod::Signature
+      sig = signature || raise ArgumentError.new(DiagnosticBoundProjection::MSG_R15)
+      raise ArgumentError.new(DiagnosticBoundProjection::MSG_R15) unless sig.diagnostic_origin == site.declaration_origin
+      sig
     end
   end
 
@@ -3117,10 +3667,10 @@ module Iyi
                                 source_names : Array(DiagnosticBoundNameSource), output_text : String, lexical_mode : String,
                                 result_start : Int32, result_end : Int32, token_kind : String, context : String) : DerivedName
         new(DiagnosticBoundProjectionData.new(producer, source_fragment_sha256, source_text, source_names.dup,
-          output_text, lexical_mode, result_start, result_end, token_kind, context), DiagnosticProjectionAuthority::UNAVAILABLE)
+          output_text, lexical_mode, result_start, result_end, token_kind, context))
       end
 
-      def initialize(data : DiagnosticBoundProjectionData, authority : DiagnosticProjectionAuthority)
+      def initialize(data : DiagnosticBoundProjectionData, inventory : DiagnosticSourceInventory? = nil)
         @source_token = nil
         @derivation_kind = "BoundProjection"
         @definition_origin = nil
@@ -3140,7 +3690,7 @@ module Iyi
                data.source_fragment_sha256 == ::Crystal::Digest::SHA256.hexdigest(data.source_text)
           raise ArgumentError.new("invalid bound projection inputs")
         end
-        authority.admit!(data)
+        DiagnosticBoundProjection.require_source_inventory!(data, inventory)
         parents = [] of DiagnosticOrigin
         own = 2048_u64 + data.source_text.bytesize.to_u64 * 6 + data.output_text.bytesize.to_u64 * 6
         bound_strings = case producer = data.producer

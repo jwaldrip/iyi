@@ -298,5 +298,37 @@ module Iyi
     return false if name == root
     !yield name
   end
+
+  # The owner type a site's key container belongs to (SafeProjectionPlan §3.5).
+  #
+  # `module_name` or the root container maps to the bind root. The top-level
+  # container has no owner (nil). A container that starts with `::` is absolute
+  # and is written without the leading `::`. Any other container sits under the
+  # root. This replaces the inline mapping at `bind.cr:3112`.
+  def self.site_owner(container : String, root : String, module_name : String) : String?
+    return root if container == IyiMod::DIAGNOSTIC_ROOT_CONTAINER || container == module_name
+    return nil if container == IyiMod::TOP_LEVEL_CONTAINER
+    return container.lchop("::") if container.starts_with?("::")
+    "#{root}::#{container}"
+  end
+
+  # The type a def returns when a caller is handed it (K10).
+  #
+  # Instantiating the def is the only live answer for a return nobody wrote.
+  # The caller decides whether a written return is used instead; this answers
+  # the instantiated one only. Returns `{type, refused, uncompilable}` with the
+  # same meaning as `instantiate`.
+  def self.infer_return(owner : Type, a_def : Def, root : String,
+                        crystal_types : Set(String)) : {String?, String?, Bool}
+    call, refused, uncompilable = instantiate(owner, a_def, root, crystal_types)
+    return {nil, refused, uncompilable} unless call
+
+    type = call.type?
+    return {nil, "no type", false} unless type
+
+    # `Foo+` prints a virtual type, which is a fact about this build's dispatch
+    # rather than a name a declaration can write. A declaration says `Foo`.
+    {type.devirtualize.to_s, nil, false}
+  end
   end
 end
