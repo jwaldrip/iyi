@@ -262,8 +262,8 @@ describe "Semantic: layout fold uses" do
 
     it "does not refuse a macro whose output is the same under the final layout (control 7, same output)" do
       program = fold_use_program(true)
-      # `&*` by zero: the macro's output is 0 whatever X is.
-      fold_use_after_cleanup(program, fold_use_growth + "z = {{ X &* 0 }}\n")
+      # Multiplying by zero produces the same output for either layout.
+      fold_use_after_cleanup(program, fold_use_growth + "z = {{ X * 0 }}\n")
 
       fold_use_literal(program, "X").value.should eq "32"
       fold_use_census(program)
