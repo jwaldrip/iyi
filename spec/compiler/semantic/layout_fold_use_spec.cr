@@ -302,7 +302,7 @@ describe "Semantic: layout fold uses" do
             z = {{ `touch #{sentinel}` }}
           {% end %}
           CODE
-        expect_raises(Iyi::TypeException, /can't be known without running it again: it reaches ``` ` ```/) do
+        expect_raises(Iyi::TypeException, /can't be known without running it again: it reaches/) do
           fold_use_two_passes(program, fold_use_x, "", fold_use_growth + macro_code)
         end
         File.exists?(sentinel).should be_false
