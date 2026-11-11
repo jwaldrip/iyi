@@ -593,3 +593,436 @@ describe "bare splat binding controls" do
     })
   end
 end
+
+# ---- Guard-level mutation controls (ReviewBareSplat F3-F5) ----
+#
+# Every control first proves the unmutated walk binds, then changes one piece of
+# evidence. Forged association lists and origin slots leave the replayed tree
+# unchanged, so the named guard is the first refusal. Tree edits change the frozen
+# graph, so those controls assert the graph refusal first, then call the guard
+# directly on the mutated occurrence, as the scoped controls above do.
+
+record BareSplatMutantContext,
+  claim : Iyi::AcceptedCaptureInput,
+  root : Iyi::ASTNode,
+  journal : Iyi::DiagnosticReplayJournal,
+  identity : Iyi::DiagnosticModuleIdentity,
+  structural : Set(UInt64),
+  replay : Iyi::Parser,
+  observations : Array(Iyi::DiagnosticBareSplatObservation)
+
+# One replayed source, built as the recorder builds it. The file is needed only while recording.
+private def bare_splat_mutant_context(source : String, suffix : String) : BareSplatMutantContext
+  path = File.tempname("bare-splat-mutant", suffix)
+  File.write(path, source)
+  begin
+    parser = Iyi::Parser.new(source, nil, [Set(String).new], Iyi::WarningCollection.new)
+    parser.filename = path
+    ledger = Iyi::DiagnosticCaptureLedger.new
+    _, claim, authority = Iyi::DiagnosticCaptureAuthority.record_source(ledger, parser)
+    ledger.freeze!
+    replay = claim.replay_parser
+    replay.enable_diagnostic_observations
+    root = claim.replay_entry(replay)
+    Iyi::DiagnosticCaptureRefs.stamp!(root, authority.capture_key)
+    journal = Iyi::DiagnosticReplayJournal.new(replay.diagnostic_lexical_observations)
+    identity = Iyi::DiagnosticModuleIdentity.from(root, claim, journal)
+    structural = Iyi::DiagnosticUnnamedParamBinder.new(claim, journal).verify!(root)
+    BareSplatMutantContext.new(claim, root, journal, identity, structural, replay, replay.diagnostic_bare_splat_observations)
+  ensure
+    File.delete(path) if File.file?(path)
+  end
+end
+
+# Spec-only hook. Production takes the association list from the parser alone. A control
+# replaces that list on a bundle it built itself, so the binder meets forged evidence while
+# the production constructor, its API and its callers stay as they are.
+class Iyi::DiagnosticLiteralReplayAssociations
+  def spec_replace_bare_splats!(observations : Array(Iyi::DiagnosticBareSplatObservation)) : Nil
+    @bare_splats = observations.dup
+    nil
+  end
+end
+
+# The checker for one context. A list of observations replaces the parser's own list.
+private def bare_splat_mutant_checker(context : BareSplatMutantContext,
+                                      observations : Array(Iyi::DiagnosticBareSplatObservation)? = nil) : Iyi::DiagnosticRecordedEvidenceInputCheck
+  bundle = Iyi::DiagnosticLiteralReplayAssociations.new(context.claim, context.journal, context.replay, context.root)
+  bundle.spec_replace_bare_splats!(observations) if observations
+  Iyi::DiagnosticRecordedEvidenceInputCheck.new(context.claim, context.journal, context.identity, context.structural, bundle)
+end
+
+# A checker with no association evidence at all.
+private def bare_splat_bundleless_checker(context : BareSplatMutantContext) : Iyi::DiagnosticRecordedEvidenceInputCheck
+  Iyi::DiagnosticRecordedEvidenceInputCheck.new(context.claim, context.journal, context.identity, context.structural)
+end
+
+private def bare_splat_def(root : Iyi::ASTNode) : Iyi::Def
+  derived_name_nodes(root).find { |node| node.is_a?(Iyi::Def) }.as(Iyi::Def)
+end
+
+private def bare_splat_macro(root : Iyi::ASTNode) : Iyi::Macro
+  derived_name_nodes(root).find { |node| node.is_a?(Iyi::Macro) }.as(Iyi::Macro)
+end
+
+private def bare_splat_star(root : Iyi::ASTNode) : Iyi::Arg
+  derived_name_nodes(root).find { |node| node.is_a?(Iyi::Arg) && node.name.empty? }.as(Iyi::Arg)
+end
+
+private def bare_splat_star_origin(star : Iyi::Arg) : Iyi::DiagnosticOrigin::DerivedName
+  derived_name_origin(star, derived_name_primary)
+end
+
+# A structural origin built through the constructor, which runs the anchor, witness and input checks.
+private def bare_splat_rebuilt(context : BareSplatMutantContext, production : Iyi::DiagnosticStructuralProduction,
+                               anchor : Iyi::DiagnosticOrigin, digest : String, bytesize : Int32,
+                               witnesses : Array(Iyi::DiagnosticOperatorWitness),
+                               fresh_index : Int32? = nil) : Iyi::DiagnosticOrigin::DerivedName
+  Iyi::DiagnosticOrigin::DerivedName.structural_name(production, anchor, digest, bytesize, context.claim.lexical_mode, witnesses, fresh_index)
+end
+
+private def bare_splat_assign(node : Iyi::ASTNode, origin : Iyi::DiagnosticOrigin::DerivedName) : Nil
+  node.diagnostic_name_slots = {derived_name_primary => [Iyi::DiagnosticNameValue::Derived.new(origin)] of Iyi::DiagnosticNameValue}
+end
+
+# A generated token event, as the expansion records it.
+private def bare_splat_event(mode : String, start : Int32, finish : Int32, kind : String, raw : String) : Iyi::DiagnosticTokenEvent
+  parts = [Iyi::DiagnosticEmissionPart::Generated.new(start, finish, nil, Iyi::DiagnosticMacroProducer::MacroTemplate)] of Iyi::DiagnosticEmissionPart
+  Iyi::DiagnosticTokenEvent.new(start, finish, kind, raw, mode, Iyi::DiagnosticTokenSelection::Whole, parts)
+end
+
+# Baseline: the unmutated walk binds. The forged association list must make the full walk
+# refuse with `message`. The tree is untouched, so no graph check can preempt the guard.
+private def bare_splat_forged_refusal(source : String, message : String,
+                                      &forge : BareSplatMutantContext -> Array(Iyi::DiagnosticBareSplatObservation)) : Nil
+  [".cr", ".iyi"].each do |suffix|
+    context = bare_splat_mutant_context(source, suffix)
+    bare_splat_mutant_checker(context).verify!(context.root)
+    forged = forge.call(context)
+    expect_raises(ArgumentError, message) { bare_splat_mutant_checker(context, forged).verify!(context.root) }
+  end
+end
+
+# Baseline, then one origin or slot edit that leaves the graph unchanged. The full walk must refuse.
+private def bare_splat_slot_refusal(source : String, message : String, &mutate : BareSplatMutantContext -> Nil) : Nil
+  [".cr", ".iyi"].each do |suffix|
+    context = bare_splat_mutant_context(source, suffix)
+    bare_splat_mutant_checker(context).verify!(context.root)
+    mutate.call(context)
+    expect_raises(ArgumentError, message) { bare_splat_mutant_checker(context).verify!(context.root) }
+  end
+end
+
+# Baseline, then a tree edit to the star. The graph refusal must come first, and the guard
+# must then refuse the mutated occurrence on its own.
+private def bare_splat_scoped_refusal(source : String, message : String, &mutate : Iyi::Arg -> Nil) : Nil
+  [".cr", ".iyi"].each do |suffix|
+    context = bare_splat_mutant_context(source, suffix)
+    checker = bare_splat_mutant_checker(context)
+    checker.verify!(context.root)
+    star = bare_splat_star(context.root)
+    owner = bare_splat_def(context.root)
+    mutate.call(star)
+    expect_raises(ArgumentError, "literal replay graph differs") { checker.verify!(context.root) }
+    expect_raises(ArgumentError, message) { checker.spec_bind_bare_splat!(star, owner, derived_name_arg_index(owner, star)) }
+  end
+end
+
+describe "bare splat forged association controls" do
+  it "refuses a bare splat with no parser association" do
+    bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat requires parser replay association") do |context|
+      [] of Iyi::DiagnosticBareSplatObservation
+    end
+  end
+
+  it "refuses a bare splat whose association is duplicated" do
+    bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat association is duplicated") do |context|
+      original = context.observations[0]
+      [original, original]
+    end
+  end
+
+  it "refuses an association that no walk claims" do
+    bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat association unclaimed") do |context|
+      original = context.observations[0]
+      orphan = Iyi::DiagnosticBareSplatObservation.new(original.owner, Iyi::Arg.new(""), 0, original.keyword, original.star, original.comma)
+      [original, orphan]
+    end
+  end
+
+  it "refuses an association whose owner is outside the frozen replay graph" do
+    bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat evidence outside its parameter") do |context|
+      original = context.observations[0]
+      unfrozen = Iyi::DiagnosticBareSplatObservation.new(Iyi::Def.new("f"), original.argument, original.index, original.keyword, original.star, original.comma)
+      [unfrozen]
+    end
+  end
+
+  it "refuses a def parameter whose association names a macro owner" do
+    bare_splat_forged_refusal("def f(*, y)\nend\nmacro g(z)\nend\n", "bare splat evidence outside its parameter") do |context|
+      original = context.observations[0]
+      macro_owner = bare_splat_macro(context.root)
+      [Iyi::DiagnosticBareSplatObservation.new(macro_owner, original.argument, original.index, original.keyword, original.star, original.comma)]
+    end
+  end
+
+  it "refuses a macro parameter whose association names a def owner" do
+    bare_splat_forged_refusal("macro g(*, y)\nend\ndef f(z)\nend\n", "bare splat evidence outside its parameter") do |context|
+      original = context.observations[0]
+      def_owner = bare_splat_def(context.root)
+      [Iyi::DiagnosticBareSplatObservation.new(def_owner, original.argument, original.index, original.keyword, original.star, original.comma)]
+    end
+  end
+
+  it "refuses an association whose index is not the parameter's position" do
+    bare_splat_forged_refusal("def f(x, *, y)\nend\n", "bare splat evidence outside its parameter") do |context|
+      original = context.observations[0]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, 0, original.keyword, original.star, original.comma)]
+    end
+  end
+
+  it "refuses an association with a negative index" do
+    bare_splat_forged_refusal("def f(x, *, y)\nend\n", "bare splat evidence outside its parameter") do |context|
+      original = context.observations[0]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, -1, original.keyword, original.star, original.comma)]
+    end
+  end
+
+  it "refuses an association whose keyword is not the declaration keyword" do
+    bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat witness differs from replay") do |context|
+      original = context.observations[0]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, original.index, original.star, original.star, original.comma)]
+    end
+  end
+
+  it "refuses an association whose star is not the star token" do
+    bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat witness differs from replay") do |context|
+      original = context.observations[0]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, original.index, original.keyword, original.comma, original.comma)]
+    end
+  end
+
+  it "refuses an association whose comma is not the comma token" do
+    bare_splat_forged_refusal("def f(*, y)\nend\n", "bare splat witness differs from replay") do |context|
+      original = context.observations[0]
+      [Iyi::DiagnosticBareSplatObservation.new(original.owner, original.argument, original.index, original.keyword, original.star, original.star)]
+    end
+  end
+
+  it "refuses bare splat evidence when the association list is absent from the walk" do
+    [".cr", ".iyi"].each do |suffix|
+      context = bare_splat_mutant_context("def f(*, y)\nend\n", suffix)
+      bare_splat_mutant_checker(context).verify!(context.root)
+      expect_raises(ArgumentError, "bare splat requires parser replay association") do
+        bare_splat_bundleless_checker(context).verify!(context.root)
+      end
+    end
+  end
+end
+
+describe "bare splat origin and anchor controls" do
+  it "refuses a bare splat origin that names another input digest" do
+    bare_splat_slot_refusal("def f(*, y)\nend\n", "structural witnesses use different inputs") do |context|
+      star = bare_splat_star(context.root)
+      origin = bare_splat_star_origin(star)
+      rebuilt = bare_splat_rebuilt(context, Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+        origin.structural_anchor.as(Iyi::DiagnosticOrigin), "0" * 64, context.claim.input_bytesize, origin.structural_witnesses)
+      bare_splat_assign(star, rebuilt)
+      nil
+    end
+  end
+
+  it "refuses a bare splat origin that names another input length" do
+    bare_splat_slot_refusal("def f(*, y)\nend\n", "structural witnesses use different inputs") do |context|
+      star = bare_splat_star(context.root)
+      origin = bare_splat_star_origin(star)
+      rebuilt = bare_splat_rebuilt(context, Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+        origin.structural_anchor.as(Iyi::DiagnosticOrigin), context.claim.input_sha256, context.claim.input_bytesize + 1, origin.structural_witnesses)
+      bare_splat_assign(star, rebuilt)
+      nil
+    end
+  end
+
+  it "refuses a bare splat anchor from another source module" do
+    bare_splat_slot_refusal("def f(*, y)\nend\n", "invalid structural anchor") do |context|
+      star = bare_splat_star(context.root)
+      origin = bare_splat_star_origin(star)
+      anchor = origin.structural_anchor.as(Iyi::DiagnosticOrigin::Written)
+      foreign = Iyi::DiagnosticOrigin::Written.new("elsewhere", "elsewhere.cr", anchor.input_byte_offset, "Def", "keyword")
+      rebuilt = bare_splat_rebuilt(context, Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+        foreign, context.claim.input_sha256, context.claim.input_bytesize, origin.structural_witnesses)
+      bare_splat_assign(star, rebuilt)
+      nil
+    end
+  end
+
+  it "refuses a bare splat anchor that is not the declaration keyword" do
+    bare_splat_slot_refusal("def f(*, y)\nend\n", "invalid structural anchor") do |context|
+      star = bare_splat_star(context.root)
+      origin = bare_splat_star_origin(star)
+      anchor = origin.structural_anchor.as(Iyi::DiagnosticOrigin::Written)
+      call_role = Iyi::DiagnosticOrigin::Written.new(anchor.source_module, anchor.source_file, anchor.input_byte_offset, "Call", "method")
+      rebuilt = bare_splat_rebuilt(context, Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+        call_role, context.claim.input_sha256, context.claim.input_bytesize, origin.structural_witnesses)
+      bare_splat_assign(star, rebuilt)
+      nil
+    end
+  end
+
+  it "refuses a bare splat whose declaration origin is not its anchor" do
+    bare_splat_slot_refusal("def f(*, y)\nend\n", "bare splat evidence outside its parameter") do |context|
+      owner = bare_splat_def(context.root)
+      anchor = owner.diagnostic_origin.as(Iyi::DiagnosticOrigin::Written)
+      owner.diagnostic_origin = Iyi::DiagnosticOrigin::Written.new(anchor.source_module, anchor.source_file, anchor.input_byte_offset + 1, "Def", "keyword")
+      nil
+    end
+  end
+
+  it "refuses an expanded bare splat until its expansion authority is integrated" do
+    bare_splat_slot_refusal("def f(*, y)\nend\n", "expanded bare splat requires resolved expansion ancestry (contract X)") do |context|
+      star = bare_splat_star(context.root)
+      origin = bare_splat_star_origin(star)
+      mode = context.claim.lexical_mode
+      invocation = Iyi::DiagnosticOrigin::Written.new("expanded", "expanded.cr", 0, "Macro", "keyword")
+      keyword = Iyi::DiagnosticOrigin::Expanded.new(invocation, invocation, "sha256:#{context.claim.input_sha256}", "Def", "keyword",
+        bare_splat_event(mode, 0, 3, "IDENT", "def"), Iyi::DiagnosticAnchorUse::Direct.new)
+      witnesses = origin.structural_witnesses.map do |witness|
+        event = bare_splat_event(mode, witness.input_start, witness.input_end, witness.token_kind, witness.raw_text)
+        Iyi::DiagnosticOperatorWitness.new(witness.input_start, witness.input_end, witness.token_kind, witness.raw_text, Iyi::DiagnosticTokenSelection::Whole, event)
+      end
+      rebuilt = bare_splat_rebuilt(context, Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+        keyword, context.claim.input_sha256, context.claim.input_bytesize, witnesses)
+      bare_splat_assign(star, rebuilt)
+      nil
+    end
+  end
+
+  it "refuses a bare splat origin whose anchor does not precede its star at construction" do
+    [".cr", ".iyi"].each do |suffix|
+      context = bare_splat_mutant_context("def f(*, y)\nend\n", suffix)
+      origin = bare_splat_star_origin(bare_splat_star(context.root))
+      anchor = origin.structural_anchor.as(Iyi::DiagnosticOrigin::Written)
+      late = Iyi::DiagnosticOrigin::Written.new(anchor.source_module, anchor.source_file, origin.structural_witnesses[0].input_start, "Def", "keyword")
+      expect_raises(ArgumentError, "anchor does not precede witnesses") do
+        bare_splat_rebuilt(context, Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+          late, context.claim.input_sha256, context.claim.input_bytesize, origin.structural_witnesses)
+      end
+    end
+  end
+
+  it "refuses a bare splat origin that carries a fresh index at construction" do
+    [".cr", ".iyi"].each do |suffix|
+      context = bare_splat_mutant_context("def f(*, y)\nend\n", suffix)
+      origin = bare_splat_star_origin(bare_splat_star(context.root))
+      expect_raises(ArgumentError, "structural witness differs") do
+        bare_splat_rebuilt(context, Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+          origin.structural_anchor.as(Iyi::DiagnosticOrigin), context.claim.input_sha256, context.claim.input_bytesize,
+          origin.structural_witnesses, 0)
+      end
+    end
+  end
+
+  it "refuses a bare splat origin whose witnesses are out of order at construction" do
+    [".cr", ".iyi"].each do |suffix|
+      context = bare_splat_mutant_context("def f(*, y)\nend\n", suffix)
+      origin = bare_splat_star_origin(bare_splat_star(context.root))
+      expect_raises(ArgumentError, "structural witness differs") do
+        bare_splat_rebuilt(context, Iyi::DiagnosticStructuralProduction::BareSplatParameter,
+          origin.structural_anchor.as(Iyi::DiagnosticOrigin), context.claim.input_sha256, context.claim.input_bytesize,
+          origin.structural_witnesses.reverse)
+      end
+    end
+  end
+end
+
+describe "bare splat parameter guard controls" do
+  it "refuses a bare splat that gains a default value" do
+    bare_splat_scoped_refusal("def f(*, y)\nend\n", "bare splat evidence outside its parameter") do |star|
+      star.default_value = Iyi::Path.global(["Int32"])
+      nil
+    end
+  end
+
+  it "refuses bare splat evidence on a node that is not a parameter" do
+    [".cr", ".iyi"].each do |suffix|
+      context = bare_splat_mutant_context("def f(*, y)\nend\n", suffix)
+      checker = bare_splat_mutant_checker(context)
+      checker.verify!(context.root)
+      star = bare_splat_star(context.root)
+      owner = bare_splat_def(context.root)
+      var = Iyi::Var.new("z")
+      var.diagnostic_name_slots = {derived_name_primary => star.diagnostic_name_slots[derived_name_primary]}
+      expect_raises(ArgumentError, "bare splat evidence outside its parameter") do
+        checker.spec_bind_bare_splat!(var, owner, derived_name_arg_index(owner, star))
+      end
+    end
+  end
+
+  it "refuses bare splat evidence that also carries an ExternalName slot" do
+    [".cr", ".iyi"].each do |suffix|
+      context = bare_splat_mutant_context("def f(*, y)\nend\n", suffix)
+      checker = bare_splat_mutant_checker(context)
+      checker.verify!(context.root)
+      star = bare_splat_star(context.root)
+      owner = bare_splat_def(context.root)
+      values = star.diagnostic_name_slots[derived_name_primary]
+      star.diagnostic_name_slots = {derived_name_primary => values,
+                                    Iyi::DiagnosticNameSlot.new(Iyi::DiagnosticNameSlotKind::ExternalName) => values}
+      expect_raises(ArgumentError, "bare splat evidence outside its parameter") do
+        checker.spec_bind_bare_splat!(star, owner, derived_name_arg_index(owner, star))
+      end
+    end
+  end
+
+  it "refuses a second claim of the same bare splat association" do
+    [".cr", ".iyi"].each do |suffix|
+      context = bare_splat_mutant_context("def f(*, y)\nend\n", suffix)
+      checker = bare_splat_mutant_checker(context)
+      checker.verify!(context.root)
+      star = bare_splat_star(context.root)
+      owner = bare_splat_def(context.root)
+      index = derived_name_arg_index(owner, star)
+      checker.spec_bind_bare_splat!(star, owner, index)
+      expect_raises(ArgumentError, "bare splat association consumed twice") do
+        checker.spec_bind_bare_splat!(star, owner, index)
+      end
+    end
+  end
+
+  it "refuses a bare splat whose star and comma are separated by a newline" do
+    [".cr", ".iyi"].each do |suffix|
+      expect_raises(ArgumentError, "unwitnessed grammar gap") do
+        derived_name_bind("def f(*\n, y)\nend\n", suffix) { |_| nil }
+      end
+    end
+  end
+end
+
+describe "bare splat binding positives, F5 shapes" do
+  it "binds a spaced bare splat in both modes" do
+    derived_name_accept("def f(* , y)\nend\n")
+  end
+
+  it "binds an escaped newline between the star and comma in both modes" do
+    derived_name_accept("def f(*\\\n, y)\nend\n")
+  end
+
+  it "binds a bare splat with downstream positional arguments in both modes" do
+    derived_name_accept("def f(*, y, z)\nend\n")
+  end
+
+  it "binds a bare splat before a double splat and a block argument in both modes" do
+    derived_name_accept("def f(*, y, **o)\nend\n")
+    derived_name_accept("def f(*, y, &b)\nend\n")
+  end
+
+  it "binds an annotated bare splat in both modes" do
+    derived_name_accept("def f(@[Foo] *, y)\nend\n")
+    derived_name_accept("macro f(x, @[Foo] *, y)\nend\n")
+  end
+
+  it "binds the macro fixture shapes in both modes" do
+    derived_name_accept("macro foo(*, __var var)\nend\n")
+    derived_name_accept("macro foo(*, var)\nend\n")
+  end
+end
