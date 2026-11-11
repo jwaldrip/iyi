@@ -65,8 +65,8 @@ module Iyi
       end
 
       it "reads a hash inside an interpolation to the brace that closes the interpolation" do
-        source = %("before \#{ {x: Root::X}; Root::Y } after Root::X")
-        strip_root(source, "Root", :expression).should eq(%("before \#{ {x: X}; Y } after Root::X"))
+        source = %("before \#{ {x: Root::X, y: {Root::Y}} } after Root::X")
+        strip_root(source, "Root", :expression).should eq(%("before \#{ {x: X, y: {Y}} } after Root::X"))
       end
 
       it "reads a block inside an interpolation to the brace that closes the interpolation" do
@@ -126,7 +126,7 @@ module Iyi
 
       it "refuses text the parser cannot read rather than rewriting part of it" do
         expect_raises(ArgumentError, "bound text cannot be read as source") do
-          strip_root(%(Root::X.new("unterminated Root::Y), "Root", :body)
+          strip_root(%[Root::X.new("unterminated Root::Y], "Root", :body)
         end
       end
 
