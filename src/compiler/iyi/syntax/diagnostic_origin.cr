@@ -304,6 +304,8 @@ module Iyi
     UninitializedClassVar = 6
     ConstantAccessor = 7
     ResolvedRestriction = 8
+    SynthesizedConstructor = 9
+    ConstantTarget = 10
   end
 
   record DiagnosticBoundNameSource, start_offset : Int32, end_offset : Int32, name : DiagnosticNameValue do
@@ -375,6 +377,14 @@ module Iyi
           json.field "resolved_type", self.resolved_type
           json.field "root", self.root
           json.field "add_global", self.add_global
+        when SynthesizedConstructor
+          json.field "kind", "SynthesizedConstructor"
+          json.field "definition_origin", self.definition_origin
+          json.field "part", self.part
+        when ConstantTarget
+          json.field "kind", "ConstantTarget"
+          json.field "declaration_origin", self.declaration_origin
+          json.field "path", self.path
         end
       end
     end
@@ -436,6 +446,28 @@ module Iyi
       getter add_global : Bool
       def initialize(@owner_type : String, @written_type : String, @resolved_type : String, @root : String, @add_global : Bool); end
       def_equals_and_hash @owner_type, @written_type, @resolved_type, @root, @add_global
+    end
+    class SynthesizedConstructor < DiagnosticBoundProducer
+      getter definition_origin : DiagnosticOrigin
+      getter part : String
+      def initialize(@definition_origin : DiagnosticOrigin, @part : String)
+        unless {"definition_name", "local_reference"}.includes?(@part) && @definition_origin.valid_for_anchor?("Def", "keyword")
+          raise ArgumentError.new("invalid synthesized constructor producer")
+        end
+      end
+      def_equals_and_hash @definition_origin, @part
+    end
+    class ConstantTarget < DiagnosticBoundProducer
+      getter declaration_origin : DiagnosticOrigin
+      getter path : String
+      def initialize(@declaration_origin : DiagnosticOrigin, @path : String)
+        segments = @path.split("::")
+        unless @declaration_origin.valid_for_anchor?("Assign", "constant") &&
+               segments.all? { |segment| DiagnosticSourceNameToken.valid_token?("CONST", segment, "Crystal", "path_segment") }
+          raise ArgumentError.new("invalid constant target producer")
+        end
+      end
+      def_equals_and_hash @declaration_origin, @path
     end
   end
 
@@ -1773,9 +1805,52 @@ module Iyi
     end
   end
 
+  # The authority that admits a source-bearing bound projection. A projection is minted
+  # only by an authority that can recompute it from the live program. The raw constructor
+  # admits through UNAVAILABLE, which takes empty source only.
+  abstract class DiagnosticProjectionAuthority
+    @registered : Hash(DiagnosticRenderedFragment, Bool)
+
+    def initialize
+      @registered = Hash(DiagnosticRenderedFragment, Bool).new.compare_by_identity
+    end
+
+    def self.refused(producer : DiagnosticBoundProducer) : ArgumentError
+      ArgumentError.new("bound projection replay refused: #{producer.class.name.rpartition("::").last}")
+    end
+
+    def register(fragment : DiagnosticRenderedFragment) : DiagnosticRenderedFragment
+      @registered[fragment] = true
+      fragment
+    end
+
+    def registered?(fragment : DiagnosticRenderedFragment) : Bool
+      @registered.has_key?(fragment)
+    end
+
+    abstract def replay!(producer : DiagnosticBoundProducer, source_text : String) : Nil
+
+    def admit!(data : DiagnosticBoundProjectionData) : Nil
+      replay!(data.producer, data.source_text)
+    end
+  end
+
+  class DiagnosticUnavailableProjectionAuthority < DiagnosticProjectionAuthority
+    def replay!(producer : DiagnosticBoundProducer, source_text : String) : Nil
+      return if source_text.empty?
+      raise ArgumentError.new("bound projection requires authoritative source inventory")
+    end
+  end
+
+  DiagnosticProjectionAuthority::UNAVAILABLE = DiagnosticUnavailableProjectionAuthority.new
+
   module DiagnosticBoundProjection
-    def self.render(producer : DiagnosticBoundProducer, before : DiagnosticRenderedFragment, span : DiagnosticByteSpan,
-                    source_names : Array(DiagnosticBoundNameSource), lexical_mode : String) : DiagnosticRenderedFragment
+    def self.render(authority : DiagnosticProjectionAuthority, producer : DiagnosticBoundProducer,
+                    before : DiagnosticRenderedFragment, span : DiagnosticByteSpan,
+                    lexical_mode : String) : DiagnosticRenderedFragment
+      unless authority.registered?(before)
+        raise ArgumentError.new("bound projection source is not registered with its authority")
+      end
       DiagnosticFragmentValidation.validate_text!(before.text, before.data.events, before.data.anchors)
       unless ::Crystal::Digest::SHA256.hexdigest(before.text) == before.data.text_sha256 &&
              span.start_offset >= 0 && span.end_offset >= span.start_offset && span.end_offset <= before.text.bytesize &&
@@ -1783,22 +1858,19 @@ module Iyi
         raise ArgumentError.new("invalid bound projection source span")
       end
       source = before.text.byte_slice(span.start_offset, span.end_offset - span.start_offset)
-      recorded = [] of DiagnosticBoundNameSource
+      source_names = [] of DiagnosticBoundNameSource
       events = before.data.events
       before.data.anchors.each do |anchor|
         event = events[anchor.event_index]
         next unless span.start_offset <= event.input_start && event.input_end <= span.end_offset
         anchor.name_slots.each_value do |values|
           values.each do |value|
-            recorded << DiagnosticBoundNameSource.new(event.selected_start - span.start_offset,
+            source_names << DiagnosticBoundNameSource.new(event.selected_start - span.start_offset,
               event.selected_end - span.start_offset, value)
           end
         end
       end
-      recorded.sort_by! { |entry| {entry.start_offset, entry.end_offset} }
-      unless recorded == source_names
-        raise ArgumentError.new("bound projection source names differ from captured fragment")
-      end
+      source_names.sort_by! { |entry| {entry.start_offset, entry.end_offset} }
       output = case producer
                when DiagnosticBoundProducer::StripRoot
                  prefix = "#{producer.root}::"
@@ -1820,16 +1892,26 @@ module Iyi
                  end
                when DiagnosticBoundProducer::ResolvedRestriction
                  producer.add_global ? "::#{producer.resolved_type}" : producer.resolved_type
+               when DiagnosticBoundProducer::SynthesizedConstructor then producer.part == "definition_name" ? "new" : "self"
+               when DiagnosticBoundProducer::ConstantTarget then producer.path
                else raise ArgumentError.new("unknown bound projection producer")
                end
       digest = ::Crystal::Digest::SHA256.hexdigest(source)
       builder = DiagnosticFragmentBuilder.new(lexical_mode)
-      if producer.is_a?(DiagnosticBoundProducer::ConstantAccessor)
-        context = producer.part == "Name" ? "definition_name" : "local_reference"
-        lex_context = producer.part == "Name" ? DiagnosticRenderedLexContext::DefOrMacroName : DiagnosticRenderedLexContext::Operand
+      if producer.is_a?(DiagnosticBoundProducer::ConstantAccessor) || producer.is_a?(DiagnosticBoundProducer::SynthesizedConstructor)
+        context = case producer
+                  when DiagnosticBoundProducer::ConstantAccessor
+                    producer.part == "Name" ? "definition_name" : "local_reference"
+                  when DiagnosticBoundProducer::SynthesizedConstructor
+                    producer.part
+                  else
+                    raise ArgumentError.new("unknown bound projection producer")
+                  end
+        lex_context = context == "definition_name" ? DiagnosticRenderedLexContext::DefOrMacroName : DiagnosticRenderedLexContext::Operand
         observed = DiagnosticRenderedTokens.observe_one(output, 0, output.bytesize, lexical_mode, lex_context)
-        origin = DiagnosticOrigin::DerivedName.bound_projection(producer, digest, source, source_names, output, lexical_mode,
+        data = DiagnosticBoundProjectionData.new(producer, digest, source, source_names, output, lexical_mode,
           0, output.bytesize, observed.token_kind, context)
+        origin = DiagnosticOrigin::DerivedName.new(data, authority)
         slot = DiagnosticNameSlot.new(DiagnosticNameSlotKind::Primary)
         name = DiagnosticNameValue::Derived.new(origin)
         builder.add_written_anchor(0, output.bytesize, output, lex_context, "Name", context, origin, {slot => [name] of DiagnosticNameValue})
@@ -1849,22 +1931,16 @@ module Iyi
           next unless {"path_segment", "named_entry", "type_self"}.includes?(observation.context)
           first = observation.input_start + prefix
           last = observation.input_end + prefix
-          origin = DiagnosticOrigin::DerivedName.bound_projection(producer, digest, source, source_names, output, lexical_mode,
+          data = DiagnosticBoundProjectionData.new(producer, digest, source, source_names, output, lexical_mode,
             first, last, observation.token_kind, observation.context)
+          origin = DiagnosticOrigin::DerivedName.new(data, authority)
           name = DiagnosticNameValue::Derived.new(origin)
           lex_context = observation.context == "path_segment" ? DiagnosticRenderedLexContext::TypeName : DiagnosticRenderedLexContext::Operand
           builder.add_written_anchor(first, last, output, lex_context, "Name", observation.context, origin,
             {observation.slot => [name] of DiagnosticNameValue})
         end
       end
-      DiagnosticRenderedFragment.new(output, builder.finish_data(output))
-    end
-
-    def self.uninitialized(declaration_origin : DiagnosticOrigin, owner_type : String, variable_name : String,
-                           semantic_type : String, lexical_mode : String) : DiagnosticRenderedFragment
-      empty = DiagnosticRenderedFragment.new("", DiagnosticFragmentData.new("", [] of DiagnosticTokenEvent, [] of DiagnosticAnchor))
-      producer = DiagnosticBoundProducer::UninitializedClassVar.new(declaration_origin, owner_type, variable_name, semantic_type)
-      render(producer, empty, DiagnosticByteSpan.new(0, 0), [] of DiagnosticBoundNameSource, lexical_mode)
+      authority.register(DiagnosticRenderedFragment.new(output, builder.finish_data(output)))
     end
   end
 
@@ -2303,6 +2379,14 @@ module Iyi
         %w(owner_type written_type resolved_type root).each { |key| budget.text(data[key].as_s) }
         DiagnosticBoundProducer::ResolvedRestriction.new(data["owner_type"].as_s, data["written_type"].as_s,
           data["resolved_type"].as_s, data["root"].as_s, data["add_global"].as_bool)
+      when "SynthesizedConstructor"
+        expected_keys(data, %w(kind definition_origin part))
+        budget.text(data["part"].as_s)
+        DiagnosticBoundProducer::SynthesizedConstructor.new(from_json(data["definition_origin"], depth + 1, budget), data["part"].as_s)
+      when "ConstantTarget"
+        expected_keys(data, %w(kind declaration_origin path))
+        budget.text(data["path"].as_s)
+        DiagnosticBoundProducer::ConstantTarget.new(from_json(data["declaration_origin"], depth + 1, budget), data["path"].as_s)
       else
         raise ArgumentError.new("unknown bound producer")
       end
@@ -2378,6 +2462,7 @@ module Iyi
       def result_end : Int32?; @bound_data.try(&.result_end); end
       def token_kind : String?; @bound_data.try(&.token_kind); end
       def context : String?; @bound_data.try(&.context); end
+      def bound_projection_data : DiagnosticBoundProjectionData?; @bound_data; end
 
       def witnesses : Array(DiagnosticSourceSyntaxToken); @witnesses.dup; end
 
@@ -3032,10 +3117,10 @@ module Iyi
                                 source_names : Array(DiagnosticBoundNameSource), output_text : String, lexical_mode : String,
                                 result_start : Int32, result_end : Int32, token_kind : String, context : String) : DerivedName
         new(DiagnosticBoundProjectionData.new(producer, source_fragment_sha256, source_text, source_names.dup,
-          output_text, lexical_mode, result_start, result_end, token_kind, context))
+          output_text, lexical_mode, result_start, result_end, token_kind, context), DiagnosticProjectionAuthority::UNAVAILABLE)
       end
 
-      def initialize(data : DiagnosticBoundProjectionData)
+      def initialize(data : DiagnosticBoundProjectionData, authority : DiagnosticProjectionAuthority)
         @source_token = nil
         @derivation_kind = "BoundProjection"
         @definition_origin = nil
@@ -3055,9 +3140,7 @@ module Iyi
                data.source_fragment_sha256 == ::Crystal::Digest::SHA256.hexdigest(data.source_text)
           raise ArgumentError.new("invalid bound projection inputs")
         end
-        unless data.source_text.empty?
-          raise ArgumentError.new("bound projection requires authoritative source inventory")
-        end
+        authority.admit!(data)
         parents = [] of DiagnosticOrigin
         own = 2048_u64 + data.source_text.bytesize.to_u64 * 6 + data.output_text.bytesize.to_u64 * 6
         bound_strings = case producer = data.producer
@@ -3069,6 +3152,8 @@ module Iyi
                         when DiagnosticBoundProducer::UninitializedClassVar then [producer.owner_type, producer.variable_name, producer.semantic_type]
                         when DiagnosticBoundProducer::ConstantAccessor then [producer.prefix, producer.constant_name, producer.part]
                         when DiagnosticBoundProducer::ResolvedRestriction then [producer.owner_type, producer.written_type, producer.resolved_type, producer.root]
+                        when DiagnosticBoundProducer::SynthesizedConstructor then [producer.part]
+                        when DiagnosticBoundProducer::ConstantTarget then [producer.path]
                         else raise ArgumentError.new("unknown bound projection producer")
                         end
         (bound_strings + [data.lexical_mode, data.token_kind, data.context]).each do |text|
@@ -3163,6 +3248,18 @@ module Iyi
                      end
                    end
                    producer.add_global ? "::#{producer.resolved_type}" : producer.resolved_type
+                when DiagnosticBoundProducer::SynthesizedConstructor
+                  unless producer.definition_origin.valid_for_anchor?("Def", "keyword") && data.source_text.empty? && data.source_names.empty?
+                    raise ArgumentError.new("invalid synthesized constructor projection")
+                  end
+                  parents << producer.definition_origin
+                  producer.part == "definition_name" ? "new" : "self"
+                when DiagnosticBoundProducer::ConstantTarget
+                  unless producer.declaration_origin.valid_for_anchor?("Assign", "constant") && data.source_text.empty? && data.source_names.empty?
+                    raise ArgumentError.new("invalid constant target projection")
+                  end
+                  parents << producer.declaration_origin
+                  producer.path
                  else
                    raise ArgumentError.new("unknown bound projection producer")
                  end
@@ -3174,6 +3271,8 @@ module Iyi
                       {"path_segment"}
                     when DiagnosticBoundProducer::SelfReturn
                       {"type_self"}
+                    when DiagnosticBoundProducer::SynthesizedConstructor then {producer.part}
+                    when DiagnosticBoundProducer::ConstantTarget then {"path_segment"}
                     else
                       {"path_segment", "named_entry", "type_self"}
                     end
@@ -3203,7 +3302,7 @@ module Iyi
         if (data.context == "named_entry") != is_key
           raise ArgumentError.new("bound result has incorrect named-entry role")
         end
-        unless data.producer.is_a?(DiagnosticBoundProducer::ConstantAccessor)
+        unless data.producer.is_a?(DiagnosticBoundProducer::ConstantAccessor) || data.producer.is_a?(DiagnosticBoundProducer::SynthesizedConstructor)
           prefix = data.producer.is_a?(DiagnosticBoundProducer::UninitializedClassVar) ? "uninitialized ".bytesize : 0
           type_text = data.output_text.byte_slice(prefix, data.output_text.bytesize - prefix)
           parser = Parser.new(type_text)

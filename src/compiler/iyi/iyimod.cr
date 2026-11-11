@@ -532,6 +532,14 @@ module Iyi::IyiMod
         io.write_byte 8_u8
         {producer.owner_type, producer.written_type, producer.resolved_type, producer.root}.each { |text| DiagnosticOrigins.write_string(io, text) }
         io.write_byte(producer.add_global ? 1_u8 : 0_u8)
+      when DiagnosticBoundProducer::SynthesizedConstructor
+        io.write_byte 9_u8
+        io.write_bytes @indices[producer.definition_origin], FORMAT
+        DiagnosticOrigins.write_string(io, producer.part)
+      when DiagnosticBoundProducer::ConstantTarget
+        io.write_byte 10_u8
+        io.write_bytes @indices[producer.declaration_origin], FORMAT
+        DiagnosticOrigins.write_string(io, producer.path)
       else
         raise ArgumentError.new("unknown diagnostic bound producer")
       end
@@ -572,6 +580,12 @@ module Iyi::IyiMod
                      else raise ArgumentError.new("invalid restriction global marker")
                      end
         DiagnosticBoundProducer::ResolvedRestriction.new(owner, written, resolved, root, add_global)
+      when 9_u8
+        definition = parent(io.read_bytes(UInt32, FORMAT))
+        DiagnosticBoundProducer::SynthesizedConstructor.new(definition, DiagnosticOrigins.read_string(io))
+      when 10_u8
+        declaration = parent(io.read_bytes(UInt32, FORMAT))
+        DiagnosticBoundProducer::ConstantTarget.new(declaration, DiagnosticOrigins.read_string(io))
       else
         raise ArgumentError.new("unknown diagnostic bound producer tag")
       end
