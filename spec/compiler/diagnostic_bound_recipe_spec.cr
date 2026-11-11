@@ -1,20 +1,30 @@
 require "../support/syntax"
 require "../../src/compiler/iyi/syntax/diagnostic_bound_recipe"
 
-# Spec-only issuance authority: every projection replays as admitted.
+# Spec-only issuance authority: every producer recomputes to itself, so the
+# ledger issues whatever the recipe rendered.
 class SpecBoundRecipeAuthority < Iyi::DiagnosticProjectionAuthority
-  def replay!(producer : Iyi::DiagnosticBoundProducer, source_text : String) : Nil
+  def recompute(request : Iyi::DiagnosticProjectionRequest) : Iyi::DiagnosticBoundProducer
+    request.producer
   end
 end
 
-private def recipe_under_test(mode : String = "Iyi") : Iyi::DiagnosticBoundRecipe
-  Iyi::DiagnosticBoundRecipe.new(SpecBoundRecipeAuthority.new, mode)
+private def ledger_under_test : Iyi::DiagnosticProjectionLedger
+  Iyi::DiagnosticProjectionLedger.new(SpecBoundRecipeAuthority.new)
 end
 
-# A registered fragment whose path names come from a real restriction projection.
+# The recipe works at an initialiser site, whose key is "initialiser".
+private def recipe_under_test(mode : String = "Iyi") : Iyi::DiagnosticBoundRecipe
+  Iyi::DiagnosticBoundRecipe.initialiser(ledger_under_test, mode)
+end
+
+# A registered fragment whose path names come from a real, printed restriction.
 private def restricted(recipe : Iyi::DiagnosticBoundRecipe, resolved : String,
                        add_global : Bool = false, root : String = "Root") : Iyi::DiagnosticBoundFragment
-  recipe.insert(Iyi::DiagnosticBoundProducer::ResolvedRestriction.new("Owner", resolved, resolved, root, add_global))
+  source_text = add_global ? "::#{resolved}" : resolved
+  source = recipe.printed(parse(source_text))
+  recipe.project_whole(source, Iyi::DiagnosticBoundProducer::ResolvedRestriction.new(
+    "Owner", source_text, source_text, root, add_global))
 end
 
 describe Iyi::DiagnosticBoundRecipe do
@@ -22,8 +32,8 @@ describe Iyi::DiagnosticBoundRecipe do
     recipe = recipe_under_test
     stripped = recipe.strip_root(restricted(recipe, "Root::X"), "Root")
     stripped.text.should eq("X")
-    fragment = recipe.finish(stripped, "signature")
-    fragment.key.should eq("signature")
+    fragment = recipe.finish(stripped, "initialiser")
+    fragment.key.should eq("initialiser")
     recipe.counts.should eq({"StripRoot" => 1})
   end
 
@@ -66,14 +76,14 @@ describe Iyi::DiagnosticBoundRecipe do
     joined = recipe.join([head, recipe.plain(" -> Int32")], "")
     joined.text.should eq("X -> Int32")
     section = IyiMod::DiagnosticSection.new
-    section.add_fragment(recipe.finish(joined, "signature"))
+    section.add_fragment(recipe.finish(joined, "initialiser"))
     recipe.verify_section!(section).should eq(1)
   end
 
   it "refuses a section holding projections this recipe did not finish" do
     minting = recipe_under_test
     section = IyiMod::DiagnosticSection.new
-    section.add_fragment(minting.finish(restricted(minting, "Root::X"), "foreign"))
+    section.add_fragment(minting.finish(restricted(minting, "Root::X"), "initialiser"))
     expect_raises(ArgumentError, "bound projection count differs from minted") do
       recipe_under_test.verify_section!(section)
     end
@@ -96,20 +106,55 @@ describe Iyi::DiagnosticBoundRecipe do
 
   it "refuses a touched event that carries a non-name anchor" do
     recipe = recipe_under_test
-    root = restricted(recipe, "Root")
-    origin = root.rendered.data.anchors.first.origin.not_nil!
-    line = recipe.constant_line(origin, root, recipe.plain("1"))
+    ledger = recipe.ledger
+    path = recipe.printed(parse("Root"))
+    origin = path.rendered.data.anchors.first.origin.not_nil!
+    constant = Iyi::DiagnosticBoundRecipe.constant(ledger, "Iyi", origin, recipe)
+    line = constant.constant_line(constant.printed(parse("Root")), constant.plain("1"))
     expect_raises(ArgumentError, "bound projection would drop a non-name anchor") do
       recipe.replace_alias(line, "Owner", "Root", "Other")
     end
   end
 
-  it "refuses fragments the recipe's authority did not register" do
+  it "refuses fragments the recipe's ledger did not register" do
     recipe = recipe_under_test
     builder = Iyi::DiagnosticFragmentBuilder.new("Iyi")
     foreign = Iyi::DiagnosticBoundFragment.new(Iyi::DiagnosticRenderedFragment.new("X", builder.finish_data("X")))
     expect_raises(ArgumentError, /not registered/) do
       recipe.strip_root(foreign, "Root")
+    end
+  end
+
+  it "composes constant lines from separate constant sites into one initialiser fragment" do
+    ledger = ledger_under_test
+    initialiser = Iyi::DiagnosticBoundRecipe.initialiser(ledger, "Iyi")
+    first = Iyi::DiagnosticBoundRecipe.constant(ledger, "Iyi",
+      initialiser.printed(parse("A")).rendered.data.anchors.first.origin.not_nil!, initialiser)
+    second = Iyi::DiagnosticBoundRecipe.constant(ledger, "Iyi",
+      initialiser.printed(parse("B")).rendered.data.anchors.first.origin.not_nil!, initialiser)
+    line_one = first.constant_line(first.printed(parse("A")), first.plain("1"))
+    line_two = second.constant_line(second.printed(parse("B")), second.plain("2"))
+    joined = initialiser.join([line_one, line_two], "\n")
+    joined.text.should eq("A = 1\nB = 2")
+    section = IyiMod::DiagnosticSection.new
+    section.add_fragment(initialiser.finish(joined, "initialiser"))
+    initialiser.verify_section!(section).should eq(0)
+  end
+
+  it "refuses a join whose part belongs to a different site (R7)" do
+    ledger = ledger_under_test
+    owner = Iyi::DiagnosticBoundRecipe.initialiser(ledger, "Iyi")
+    other = Iyi::DiagnosticBoundRecipe.initialiser(ledger, "Iyi")
+    foreign_part = owner.strip_root(restricted(owner, "Root::X"), "Root")
+    expect_raises(ArgumentError) do
+      other.join([foreign_part], "")
+    end
+  end
+
+  it "refuses a finish whose key does not match the site (R15)" do
+    recipe = recipe_under_test
+    expect_raises(ArgumentError) do
+      recipe.finish(recipe.plain("X"), "not-the-initialiser")
     end
   end
 end

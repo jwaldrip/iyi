@@ -5,8 +5,9 @@ require "../iyimod"
 
 module Iyi
   # Bound text together with the registered fragment that carries its
-  # provenance. Only fragments registered by the recipe's authority are used as
-  # sources, so a fragment built outside the seam cannot pass as bound output.
+  # provenance. Only fragments registered with the recipe's ledger are used as
+  # sources or parts, so a fragment built outside the seam cannot pass as bound
+  # output.
   class DiagnosticBoundFragment
     getter rendered : DiagnosticRenderedFragment
 
@@ -20,7 +21,7 @@ module Iyi
 
   # One path, found from its PathSegment anchors. Offsets are byte offsets into
   # the fragment text, which is the coordinate system both
-  # DiagnosticFragmentRewrite.apply and DiagnosticBoundProjection.render use.
+  # DiagnosticFragmentRewrite.apply and DiagnosticProjectionLedger#render use.
   #
   # `before` and `after` are the bytes either side of the whole path. `after_first`
   # is the byte after its first segment, which is where the text-level rules
@@ -28,32 +29,59 @@ module Iyi
   private record PathOccurrence, start : Int32, finish : Int32, names : Array(String),
     before : UInt8?, after_first : UInt8?, after : UInt8?
 
-  # Every bound rewrite of a diagnostic fragment, token-aware.
+  # Every bound rewrite of a diagnostic fragment, token-aware, for one declaration site.
   #
   # The text-level rewriters in tools/bind.cr (`strip_root`, `map_names`,
   # `replace_word`) are replaced here by edits on name tokens. A rewrite never
   # searches the text, so a literal that happens to spell `Root::X` stays as
-  # written (D1-B). Each edit goes through DiagnosticFragmentRewrite.apply, and
-  # its replacement is a projection that DiagnosticBoundProjection.render minted
-  # from the exact bytes it replaces.
+  # written (D1-B). Every source is registered with the section's ledger, and
+  # every projection is rendered at this recipe's site, so it is issued only
+  # after the live authority recomputed it there.
   class DiagnosticBoundRecipe
-    getter authority : DiagnosticProjectionAuthority
+    getter ledger : DiagnosticProjectionLedger
+    getter site : DiagnosticBoundSite
     getter lexical_mode : String
-    # Projections that finish has handed out, by producer kind.
-    getter counts = {} of String => Int32
     @empty : DiagnosticRenderedFragment
 
-    def initialize(@authority : DiagnosticProjectionAuthority, @lexical_mode : String)
+    def initialize(@ledger : DiagnosticProjectionLedger, @site : DiagnosticBoundSite, @lexical_mode : String)
       # Raises unless the mode is Crystal or Iyi.
       DiagnosticFragmentBuilder.new(@lexical_mode)
-      @empty = @authority.register(DiagnosticRenderedFragment.new("",
-        DiagnosticFragmentData.new("", [] of DiagnosticTokenEvent, [] of DiagnosticAnchor)))
+      @empty = DiagnosticRenderedFragment.new("",
+        DiagnosticFragmentData.new("", [] of DiagnosticTokenEvent, [] of DiagnosticAnchor))
+      @ledger.register_source(@empty)
     end
 
-    # Sources
+    # Site factories. Each opens one site on *ledger* and returns its recipe.
+
+    def self.open(ledger : DiagnosticProjectionLedger, mode : String, kind : String, container : String,
+                  name : String? = nil, index : Int32? = nil,
+                  declaration_origin : DiagnosticOrigin? = nil,
+                  parent : DiagnosticBoundRecipe? = nil) : DiagnosticBoundRecipe
+      site = ledger.open_site(kind, container, name, index, declaration_origin, parent.try(&.site))
+      new(ledger, site, mode)
+    end
+
+    def self.signature(ledger : DiagnosticProjectionLedger, mode : String, container : String,
+                       declaration_origin : DiagnosticOrigin) : DiagnosticBoundRecipe
+      open(ledger, mode, "signature", container, declaration_origin: declaration_origin)
+    end
+
+    def self.initialiser(ledger : DiagnosticProjectionLedger, mode : String) : DiagnosticBoundRecipe
+      open(ledger, mode, "initialiser", "")
+    end
+
+    # A constant line's site is a child of its file's initialiser, so the
+    # initialiser can compose the line into its single fragment.
+    def self.constant(ledger : DiagnosticProjectionLedger, mode : String,
+                      declaration_origin : DiagnosticOrigin,
+                      initialiser : DiagnosticBoundRecipe) : DiagnosticBoundRecipe
+      open(ledger, mode, "constant", "", declaration_origin: declaration_origin, parent: initialiser)
+    end
+
+    # Sources. Each is registered with the ledger before it is returned.
 
     def captured(captures : DiagnosticModeCaptures) : DiagnosticBoundFragment
-      wrap(DiagnosticRenderedFragment.new(captures.text, captures.data(@lexical_mode)))
+      source(DiagnosticRenderedFragment.new(captures.text, captures.data(@lexical_mode)))
     end
 
     def printed(node : ASTNode) : DiagnosticBoundFragment
@@ -97,19 +125,25 @@ module Iyi
 
     def plain(text : String) : DiagnosticBoundFragment
       builder = DiagnosticFragmentBuilder.new(@lexical_mode)
-      wrap(DiagnosticRenderedFragment.new(text, builder.finish_data(text)))
+      source(DiagnosticRenderedFragment.new(text, builder.finish_data(text)))
     end
+
+    # Compositions. The parts are sources, outputs of this site, or outputs of a
+    # child site; the ledger refuses any other part (R7).
 
     def join(parts : Array(DiagnosticBoundFragment), separator : String) : DiagnosticBoundFragment
       renders = parts.map { |part| registered!(part) }
-      wrap(DiagnosticFragmentRewrite.concat(renders, separator, @lexical_mode))
+      assembled = DiagnosticFragmentRewrite.concat(renders, separator, @lexical_mode)
+      compose_output(assembled, renders)
     end
 
     # `path = value`, anchored as the printer anchors a constant Assign with a
     # Path target: an Assign/constant anchor on the path's head token, which
-    # points at the path's first name anchor.
-    def constant_line(declaration_origin : DiagnosticOrigin, path : DiagnosticBoundFragment,
-                      value : DiagnosticBoundFragment) : DiagnosticBoundFragment
+    # points at the path's first name anchor. The origin is this constant
+    # site's declaration origin.
+    def constant_line(path : DiagnosticBoundFragment, value : DiagnosticBoundFragment) : DiagnosticBoundFragment
+      declaration_origin = @site.declaration_origin || raise ArgumentError.new("constant line lacks a declaration origin")
+      raise ArgumentError.new("constant line must be written at a constant site") unless @site.kind == "constant"
       path_rendered = registered!(path)
       value_rendered = registered!(value)
       io = IO::Memory.new
@@ -126,14 +160,14 @@ module Iyi
         {} of DiagnosticNameSlot => Array(DiagnosticNameValue), head_event,
         DiagnosticFragmentAttachment::HeadOf.new(DiagnosticHeadRule::ConstantAssignHead, head)))
       text = io.to_s
-      wrap(DiagnosticRenderedFragment.new(text, builder.finish_data(text)))
+      compose_output(DiagnosticRenderedFragment.new(text, builder.finish_data(text)), [path_rendered, value_rendered])
     end
 
-    # Projections. Each returns a registered fragment.
+    # Projections. Each is rendered at this site and returns an issued fragment.
 
     def insert(producer : DiagnosticBoundProducer) : DiagnosticBoundFragment
-      DiagnosticBoundFragment.new(DiagnosticBoundProjection.render(@authority, producer, @empty,
-        DiagnosticByteSpan.new(0, 0), @lexical_mode))
+      output = @ledger.render(@site, producer, @empty, DiagnosticByteSpan.new(0, 0), @lexical_mode)
+      DiagnosticBoundFragment.new(output)
     end
 
     # Rewrites the whole of *f* as *producer* says it is, for example a restriction
@@ -141,7 +175,7 @@ module Iyi
     def project_whole(f : DiagnosticBoundFragment, producer : DiagnosticBoundProducer) : DiagnosticBoundFragment
       rendered = registered!(f)
       touched_anchors(rendered, 0, rendered.text.bytesize)
-      projected = DiagnosticBoundProjection.render(@authority, producer, rendered,
+      projected = @ledger.render(@site, producer, rendered,
         DiagnosticByteSpan.new(0, rendered.text.bytesize), @lexical_mode)
       DiagnosticBoundFragment.new(projected)
     end
@@ -186,73 +220,50 @@ module Iyi
       f
     end
 
-    # Finishes *f* as a section fragment and counts its projections by producer.
-    def finish(f : DiagnosticBoundFragment, key : String) : IyiMod::DiagnosticFragment
-      rendered = registered!(f)
-      rendered.data.anchors.each do |anchor|
-        origin = projection_origin(anchor.origin) || next
-        kind = origin.producer.not_nil!.class.name.split("::").last
-        @counts[kind] = (@counts[kind]? || 0) + 1
-      end
-      rendered.data.to_fragment(key)
+    # Finishes *f* as this site's section fragment. The ledger enforces R15: the
+    # key must be the one the IyiMod builder produces for the site, and a
+    # signature site's signature must have this site's declaration origin.
+    def finish(f : DiagnosticBoundFragment, key : String, signature : IyiMod::Signature? = nil) : IyiMod::DiagnosticFragment
+      @ledger.finish(@site, registered!(f), key, signature)
     end
 
-    # Re-admits every projection reachable from *section*, and refuses unless
-    # their count equals the projections this recipe finished.
+    # Counts and verification delegate to the section's ledger.
+
+    def counts : Hash(String, Int32)
+      @ledger.counts
+    end
+
     def verify_section!(section : IyiMod::DiagnosticSection) : Int32
-      reached = 0
-      section.fragments.each_value do |fragment|
-        fragment.anchors.each do |anchor|
-          if origin = projection_origin(anchor.origin)
-            admit!(origin)
-            reached += 1
-          end
-          anchor.name_slots.each_value do |values|
-            values.each do |value|
-              next unless value.is_a?(DiagnosticNameValue::Derived)
-              if origin = projection_origin(value.origin)
-                admit!(origin)
-              end
-            end
-          end
-        end
-      end
-      unless reached == @counts.values.sum
-        raise ArgumentError.new("bound projection count differs from minted")
-      end
-      reached
+      @ledger.verify_section!(section)
     end
 
     # Internals
 
-    private def wrap(rendered : DiagnosticRenderedFragment) : DiagnosticBoundFragment
-      DiagnosticBoundFragment.new(@authority.register(rendered))
+    private def source(rendered : DiagnosticRenderedFragment) : DiagnosticBoundFragment
+      @ledger.register_source(rendered)
+      DiagnosticBoundFragment.new(rendered)
+    end
+
+    private def compose_output(assembled : DiagnosticRenderedFragment,
+                               parts : Array(DiagnosticRenderedFragment)) : DiagnosticBoundFragment
+      DiagnosticBoundFragment.new(@ledger.compose(@site, assembled, parts))
     end
 
     private def rendered_text(io : IO::Memory, builder : DiagnosticFragmentBuilder) : DiagnosticBoundFragment
       text = io.to_s
-      wrap(DiagnosticRenderedFragment.new(text, builder.finish_data(text)))
+      source(DiagnosticRenderedFragment.new(text, builder.finish_data(text)))
     end
 
     private def registered!(f : DiagnosticBoundFragment) : DiagnosticRenderedFragment
-      unless @authority.registered?(f.rendered)
-        raise ArgumentError.new("bound fragment is not registered with this recipe's authority")
+      unless @ledger.registered?(f.rendered)
+        raise ArgumentError.new("bound fragment is not registered with this recipe's ledger")
       end
       f.rendered
     end
 
-    private def projection_origin(origin : DiagnosticOrigin?) : DiagnosticOrigin::DerivedName?
-      return nil unless origin.is_a?(DiagnosticOrigin::DerivedName)
-      origin.derivation_kind == "BoundProjection" ? origin : nil
-    end
-
-    private def admit!(origin : DiagnosticOrigin::DerivedName) : Nil
-      data = origin.bound_projection_data || raise ArgumentError.new("bound projection lacks its data")
-      @authority.admit!(data)
-    end
-
     # Every path whose segments satisfy the block gets its own edit. The edits
-    # are applied in one pass over *f*.
+    # are applied in one pass over *f*, and each replacement is an output this
+    # site rendered from the exact bytes it replaces.
     private def rewrite_paths(f : DiagnosticBoundFragment, producer : DiagnosticBoundProducer,
                               & : PathOccurrence -> Bool) : DiagnosticBoundFragment
       rendered = registered!(f)
@@ -260,11 +271,7 @@ module Iyi
       paths_in(rendered).each { |path| selected << path if yield path }
       return f if selected.empty?
       edits = selected.map { |path| edit_for(rendered, path, producer) }
-      wrap_applied(DiagnosticFragmentRewrite.apply(rendered, edits, @lexical_mode))
-    end
-
-    private def wrap_applied(rendered : DiagnosticRenderedFragment) : DiagnosticBoundFragment
-      wrap(rendered)
+      DiagnosticBoundFragment.new(@ledger.apply(@site, rendered, edits, @lexical_mode))
     end
 
     # The edit for one path. Its replacement is the projection of the path's
@@ -274,7 +281,7 @@ module Iyi
                          producer : DiagnosticBoundProducer) : DiagnosticByteEdit
       span = DiagnosticByteSpan.new(path.start, path.finish)
       touched = touched_anchors(rendered, path.start, path.finish)
-      replacement = DiagnosticBoundProjection.render(@authority, producer, rendered, span, @lexical_mode)
+      replacement = @ledger.render(@site, producer, rendered, span, @lexical_mode)
       if !touched.empty? && replacement.data.anchors.empty?
         raise ArgumentError.new("bound projection would drop a name anchor")
       end
