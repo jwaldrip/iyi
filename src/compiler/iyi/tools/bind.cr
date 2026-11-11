@@ -1418,6 +1418,7 @@ module Iyi
           raise "constant accessor has invalid declaration origin" unless origin.valid_for_anchor?("Def", "keyword")
           signature.diagnostic_origin = origin
           container = iyi_module_name(root)
+          key = IyiMod.signature_fragment_key(container, signature)
           ledger = @@ledger || raise "bound signature recorded without a section ledger"
           text = IyiMod.render_signature(signature)
           builder = DiagnosticFragmentBuilder.new(@@diagnostic_mode)
