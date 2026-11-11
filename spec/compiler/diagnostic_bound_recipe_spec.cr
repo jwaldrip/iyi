@@ -202,4 +202,27 @@ describe Iyi::DiagnosticBoundRecipe do
       recipe.finish(joined, "not-the-initialiser")
     end
   end
+
+  it "strips a nested root token by token, and an ordinary root as before" do
+    recipe = signature_recipe
+    recipe.strip_root(restricted(recipe, "Root::Decl::X"), "Root::Decl").text.should eq("X")
+    recipe.strip_root(restricted(recipe, "Root::Decl::X"), "Root").text.should eq("Decl::X")
+    recipe.strip_root(restricted(recipe, "Root::X"), "Root").text.should eq("X")
+  end
+
+  it "leaves a nested root alone when the path is not that root's own name" do
+    recipe = signature_recipe
+    recipe.strip_root(restricted(recipe, "Root::Decl"), "Root::Decl").text.should eq("Root::Decl")
+    recipe.strip_root(restricted(recipe, "Root::Declared::X"), "Root::Decl").text.should eq("Root::Declared::X")
+    recipe.strip_root(restricted(recipe, "Root::Other::X"), "Root::Decl").text.should eq("Root::Other::X")
+    recipe.strip_root(restricted(recipe, "Other::Root::Decl::X"), "Root::Decl").text.should eq("Other::Root::Decl::X")
+    recipe.strip_root(restricted(recipe, "Root::Decl::X"), "Root::").text.should eq("Root::Decl::X")
+  end
+
+  it "keeps a global nested path and a literal spelling a nested root as written" do
+    recipe = signature_recipe
+    recipe.strip_root(recipe.printed(captured_path("::Root::Decl::X")), "Root::Decl").text.should eq("::Root::Decl::X")
+    literal = recipe.printed(Iyi::StringLiteral.new("Root::Decl::X"))
+    recipe.strip_root(literal, "Root::Decl").text.should eq("\"Root::Decl::X\"")
+  end
 end

@@ -184,9 +184,12 @@ module Iyi
     # `Other::Root::Z` are not rooted at `Root`, so they stay as written.
     def strip_root(f : DiagnosticBoundFragment, root : String) : DiagnosticBoundFragment
       registered!(f)
-      return f if root.empty?
+      # A root is one or more name segments. Matching is token by token, so `Root::Decl` never
+      # matches `Root::Declared`, and a path that is the root itself is not stripped to nothing.
+      segments = root.split("::")
+      return f if segments.any?(&.empty?)
       rewrite_paths(f, DiagnosticBoundProducer::StripRoot.new(root)) do |path|
-        path.names.size >= 2 && path.names[0] == root && !continued_before?(path)
+        path.names.size > segments.size && path.names[0, segments.size] == segments && !continued_before?(path)
       end
     end
 
