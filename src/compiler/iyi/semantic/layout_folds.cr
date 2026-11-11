@@ -32,6 +32,57 @@ module Iyi
     Patched
   end
 
+  # What took a fold literal's value. `TypeArgument` built a type from it,
+  # `EnumValue` is an enum member's value, `Macro` is a macro's output, and
+  # `Typing` is any other typing decision the value shaped.
+  enum LayoutFoldUseKind
+    TypeArgument
+    EnumValue
+    Macro
+    Typing
+  end
+
+  # One value a reader took from a fold literal. `adopted` is set when a type
+  # variable took the literal itself, which keeps the literal.
+  record LayoutFoldRead, fold : LayoutFold, literal : NumberLiteral, value : String, adopted : Bool
+
+  # A value the MathInterpreter computed from fold literals. `result` is what
+  # it gave for `root`, interpreted in `scope` for the `target` integer type.
+  record LayoutFoldDerivation, root : ASTNode, scope : Type, target : IntegerType?, result : String
+
+  # A decision that took fold values. `derivation` is set when the decision took
+  # a computed value, and then `reads` are the literals that computation read.
+  record LayoutFoldUse, kind : LayoutFoldUseKind, site : ASTNode?, reads : Array(LayoutFoldRead),
+    derivation : LayoutFoldDerivation?
+
+  # One entry on the reader stack. A derive frame collects the reads of one
+  # computation. A consumer frame collects, as pending uses, what its block took.
+  # Lists are created on the first read, so a frame that meets no fold allocates nothing.
+  record LayoutFoldFrame, derive : Bool,
+    pending : Array({Array(LayoutFoldRead), LayoutFoldDerivation?})? = nil,
+    reads : Array(LayoutFoldRead)? = nil
+
+  # A use whose value no longer matches the final layout. `changed` are the reads
+  # that differ. `rerun` is what the use's derivation gives from the final values,
+  # or nil when it gives none.
+  record LayoutFoldHarm, use : LayoutFoldUse, changed : Array(LayoutFoldRead), rerun : String?
+
+  # Finds the fold literals in a constant's value. `Program#layout_fold_constant_read`
+  # reads each one as a macro's use.
+  private class LayoutFoldLiteralReads < Visitor
+    def initialize(@program : Program, @site : ASTNode?)
+    end
+
+    def visit(node : ASTNode)
+      true
+    end
+
+    def visit(node : NumberLiteral)
+      @program.layout_fold_use(node, LayoutFoldUseKind::Macro, @site)
+      false
+    end
+  end
+
   # The by-value containment of the folded layouts. Each open container is a
   # node, joined to every open container it holds by value. Joined nodes form a
   # component whose layouts move together, so a type argument that pins one
@@ -189,10 +240,14 @@ module Iyi
     # The open layouts that a settled fold reaches, each with its fingerprint at
     # settle time. The code codegen types afterwards is checked against them.
     @layout_fold_watch : Hash(Type, String)? = nil
-    # Fold literals by identity, and the value of every read of one by the
-    # MathInterpreter, so a read before settling can be judged against the final value.
+    # Fold literals by identity. A reader that takes one of their values records a
+    # use (`layout_fold_uses`), and settling judges every use taken so far.
     @layout_fold_literals = Hash(NumberLiteral, LayoutFold).new.compare_by_identity
-    @layout_fold_reads = [] of {NumberLiteral, String}
+    # Every use of a fold value, in the order it was taken. A later settle keeps
+    # them, so the uses taken before it are judged again.
+    getter layout_fold_uses = [] of LayoutFoldUse
+    # The readers in progress, innermost last (`layout_fold_consumer`, `layout_fold_derive`).
+    @layout_fold_frames = [] of LayoutFoldFrame
 
     # Records what a fold site folded during typing. The latest record for a node
     # wins, and settling compares that record with the final layout.
@@ -204,15 +259,107 @@ module Iyi
       @layout_fold_epoch += 1
     end
 
-    # The MathInterpreter hook calls this for every literal it reads
-    # (math_interpreter.cr, `interpret(node : NumberLiteral)`). A read of a fold
-    # literal records the value read, which settling checks against the final value.
-    def note_layout_fold_read(literal : NumberLiteral) : Nil
-      return unless @layout_fold_literals[literal]?
-      @layout_fold_reads << {literal, literal.value}
+    # The fold a literal holds, if it is a fold literal.
+    def layout_fold_of(literal : NumberLiteral) : LayoutFold?
+      @layout_fold_literals[literal]?
     end
 
-    # Settles every recorded fold against the final layout.
+    # A consumer takes the fold values its block reads. A truthy value from the
+    # block means the block built the decision, so its reads become uses of `kind`
+    # at `site`. Anything else drops them, so a failed lookup takes nothing.
+    def layout_fold_consumer(kind : LayoutFoldUseKind, site : ASTNode?, &)
+      frames = @layout_fold_frames
+      frames << LayoutFoldFrame.new(derive: false)
+      begin
+        value = yield
+      ensure
+        frame = frames.pop
+      end
+      if value && (pending = frame.pending)
+        pending.each { |reads, derivation| @layout_fold_uses << LayoutFoldUse.new(kind, site, reads, derivation) }
+        @layout_fold_epoch += 1
+      end
+      value
+    end
+
+    # The MathInterpreter computes `root` in `scope` for `target`, and its reads are
+    # gathered here. Inside a consumer the computed value becomes the derivation of
+    # that consumer's uses. Inside another derivation the reads pass up to it. With
+    # neither, the reads are dropped.
+    def layout_fold_derive(root : ASTNode, scope : Type, target : IntegerType?, &)
+      frames = @layout_fold_frames
+      frames << LayoutFoldFrame.new(derive: true)
+      begin
+        value = yield
+      ensure
+        frame = frames.pop
+      end
+      if (reads = frame.reads) && (parent = frames.last?)
+        derivation = parent.derive ? nil : LayoutFoldDerivation.new(root, scope, target, value.to_s)
+        layout_fold_take(reads, derivation)
+      end
+      value
+    end
+
+    # The MathInterpreter read a fold literal. With no reader open, nothing is taken.
+    def layout_fold_read(literal : NumberLiteral) : Nil
+      return if @layout_fold_frames.empty?
+      fold = @layout_fold_literals[literal]? || return
+      layout_fold_take([LayoutFoldRead.new(fold, literal, literal.value, false)], nil)
+    end
+
+    # A type variable took a fold literal itself. Inside a reader, that reader takes
+    # it. With none open, it is a type argument use at once.
+    def layout_fold_adopt(literal : NumberLiteral) : Nil
+      fold = @layout_fold_literals[literal]? || return
+      read = LayoutFoldRead.new(fold, literal, literal.value, true)
+      if @layout_fold_frames.empty?
+        @layout_fold_uses << LayoutFoldUse.new(LayoutFoldUseKind::TypeArgument, nil, [read], nil)
+        @layout_fold_epoch += 1
+      else
+        layout_fold_take([read], nil)
+      end
+    end
+
+    # A decision took a fold literal's value at `site`. Inside a derivation the read
+    # joins it. Otherwise it is a use at once, and a consumer does not take it.
+    def layout_fold_use(literal : NumberLiteral, kind : LayoutFoldUseKind, site : ASTNode?, adopted : Bool = false) : Nil
+      fold = @layout_fold_literals[literal]? || return
+      read = LayoutFoldRead.new(fold, literal, literal.value, adopted)
+      if (frame = @layout_fold_frames.last?) && frame.derive
+        layout_fold_take([read], nil)
+      else
+        @layout_fold_uses << LayoutFoldUse.new(kind, site, [read], nil)
+        @layout_fold_epoch += 1
+      end
+    end
+
+    # A macro reads a constant. Once the constant is cleaned, each fold literal in
+    # its value is a macro use at `site`.
+    def layout_fold_constant_read(const : Const, site : ASTNode?) : Nil
+      return if @layout_fold_literals.empty? || !const.cleaned_up?
+      const.value.accept LayoutFoldLiteralReads.new(self, site)
+    end
+
+    # Gives reads to the innermost reader. A derive frame keeps them for its own
+    # derivation. A consumer keeps them as one pending use, with the derivation if
+    # there is one.
+    private def layout_fold_take(reads : Array(LayoutFoldRead), derivation : LayoutFoldDerivation?) : Nil
+      frames = @layout_fold_frames
+      frame = frames[-1]
+      if frame.derive
+        own = frame.reads || [] of LayoutFoldRead
+        own.concat reads
+        frames[-1] = LayoutFoldFrame.new(derive: true, reads: own)
+      else
+        pending = frame.pending || [] of {Array(LayoutFoldRead), LayoutFoldDerivation?}
+        pending << {reads, derivation}
+        frames[-1] = LayoutFoldFrame.new(derive: false, pending: pending)
+      end
+    end
+
+    # Settles every recorded fold, and every use of a fold value taken so far,
+    # against the final layout.
     #
     # `semantic_after_top_level` calls this after the last code the compiler types,
     # including what the cleanup types itself: the raise it writes for an
@@ -220,18 +367,21 @@ module Iyi
     # retypes, a splat it expands. It runs after `RecursiveStructChecker`, since the
     # fresh typer lowers every folded type.
     #
-    # Each fold is recomputed with a fresh typer. A fold whose value differs is
-    # stale, and then:
-    # - a stale fold inside a type argument keeps its value, because a type was
-    #   built from it; a native program refuses it with a compile error instead;
-    # - a literal that code typed after the cleanup inlined can hold is judged as a
-    #   type argument: a generic type variable, or a literal whose cast changed its
-    #   kind or type. It is kept, and a native program refuses it;
-    # - a stale expression fold that shares an open layout with a stale type
-    #   argument keeps its value, so it agrees with the type;
-    # - any other stale expression fold takes the final value, written into the
-    #   literal the program holds. The write is in place, because the cleanup has
-    #   already put that literal everywhere the fold was used.
+    # A use is harmful when a value it read differs from the final value of its fold
+    # and the decision that value shaped would change. A use with a derivation is
+    # harmful only when recomputing the derivation from the final values gives a
+    # different result. Then:
+    # - a native program refuses the first harmful use, at the use, before anything
+    #   is written;
+    # - `--crystal` keeps the value the use read and pins the layouts it read. Every
+    #   fold sharing one of them keeps its value too, so the expressions agree with
+    #   the decision. The use is reported;
+    # - a literal a type variable adopted is never written, since a type was built
+    #   from its value.
+    #
+    # Any other fold takes its final value, written in place into the literal the
+    # program holds. The cleanup has already put that literal wherever the fold was
+    # used.
     #
     # A fold that cannot be recomputed keeps its value and is reported. With
     # `patch: false`, nothing in the AST changes. A patched settle gives a native
@@ -326,108 +476,128 @@ module Iyi
       typer = LLVMTyper.new(self, LLVM::Context.new)
       graph = LayoutFoldGraph.new
 
-      walked = layout_folds.values.map do |fold|
+      # The final value of each fold, computed once per subject and kind. A raise
+      # can leave the typer holding a half-lowered type: a tuple is cached as an
+      # opaque struct before its elements are lowered (llvm_typer.cr,
+      # `create_llvm_type(TupleInstanceType)`), so a later fold in the same typer
+      # would read that struct. Later folds get a fresh one.
+      final_values = {} of {LayoutFoldKind, UInt64, Int32?} => {UInt64?, String?}
+      final_of = ->(fold : LayoutFold) {
+        key = {fold.kind, fold.subject.object_id, fold.index}
+        final_values[key]? || begin
+          final : UInt64? = nil
+          failure : String? = nil
+          begin
+            final = recompute_layout_fold(fold, typer)
+          rescue error : Exception
+            failure = error.message || error.class.name
+            typer = LLVMTyper.new(self, LLVM::Context.new)
+          end
+          final_values[key] = {final, failure}
+        end
+      }
+
+      # The own and root node ids of a fold's subject, once per subject and layout kind.
+      nodes = {} of {UInt64, Bool} => {Int32, Array(Int32)}
+      walk = ->(fold : LayoutFold) {
         instance = instance_layout_kind?(fold.kind)
-        {fold, graph.id_for(fold.subject, instance), graph.roots_of(fold.subject, instance, [] of Type)}
+        nodes[{fold.subject.object_id, instance}] ||= {graph.id_for(fold.subject, instance), graph.roots_of(fold.subject, instance, [] of Type)}
+      }
+
+      # Every record, and every fold a use read, is walked before anything is pinned,
+      # so the graph is complete when the pins look up their components.
+      current = layout_folds.values
+      current.each { |fold| walk.call(fold) }
+      layout_fold_uses.each do |use|
+        use.reads.each { |read| walk.call(read.fold) }
       end
 
-      settled = walked.map do |fold, own, roots|
-        final : UInt64? = nil
-        failure : String? = nil
-        begin
-          final = recompute_layout_fold(fold, typer)
-        rescue error : Exception
-          failure = error.message || error.class.name
-          # A raise can leave the typer holding a half-lowered type: a tuple is
-          # cached as an opaque struct before its elements are lowered
-          # (llvm_typer.cr, `create_llvm_type(TupleInstanceType)`), so a later
-          # fold in the same typer would read that struct. Later folds get a fresh one.
-          typer = LLVMTyper.new(self, LLVM::Context.new)
+      # Judges every use in the order it was taken. A read whose final value differs
+      # makes its use harmful, unless the use's derivation gives the same result from
+      # the final values.
+      harms = [] of LayoutFoldHarm
+      layout_fold_uses.each do |use|
+        finals = use.reads.map { |read| final_of.call(read.fold)[0] }
+        changed = [] of LayoutFoldRead
+        use.reads.each_with_index do |read, i|
+          final = finals[i]
+          changed << read if final.nil? || final.to_s != read.value
         end
-        literal = fold.node.as(ExpandableNode).expanded.as?(NumberLiteral)
-        {fold, own, roots, final, failure, literal}
+        next if changed.empty?
+
+        if derivation = use.derivation
+          rerun = layout_fold_rerun(use, derivation, finals)
+          next if rerun && rerun == derivation.result
+          harms << LayoutFoldHarm.new(use, changed, rerun)
+        else
+          harms << LayoutFoldHarm.new(use, changed, nil)
+        end
       end
 
-      # Only a literal this settle would write is examined, and the type variables
-      # are gathered only when there is one.
+      # A native program refuses the first harmful use, before anything is written.
+      if native && patch && (refused = harms.first?)
+        refused_read = refused.changed.first
+        refused_final, refused_failure = final_of.call(refused_read.fold)
+        refused_inner = TypeException.for_node(refused_read.fold.node, "#{layout_fold_node(refused_read.fold)} measured #{refused_read.value} here")
+        (refused.use.site || refused_read.fold.node).raise layout_fold_harm_message(refused, refused_read, refused_final, refused_failure), inner: refused_inner
+      end
+
+      # Every harmful use pins the layouts of each fold it read. The first use to pin
+      # a component gives the tie that is reported.
+      pinned = {} of Int32 => {String, LayoutFoldUseKind}
+      harms.each do |harm|
+        harm.changed.each do |read|
+          own, roots = walk.call(read.fold)
+          site = layout_fold_at(harm.use.site || read.fold.node)
+          ([own] + roots).each { |id| pinned[graph.find(id)] ||= {site, harm.use.kind} }
+        end
+      end
+
+      # The kind of harmful use that kept each fold literal. A type argument is named first.
+      kept_by = Hash(NumberLiteral, LayoutFoldUseKind).new.compare_by_identity
+      harms.each do |harm|
+        harm.changed.each do |read|
+          kind = harm.use.kind
+          kept_by[read.literal] = kind if kept_by[read.literal]?.nil? || kind == LayoutFoldUseKind::TypeArgument
+        end
+      end
+
+      # A literal a type variable adopted is never written.
       held = Set(NumberLiteral).new.compare_by_identity
-      if patch
-        writable = [] of NumberLiteral
-        settled.each do |fold, _, _, final, _, literal|
-          next unless literal && final && !fold.type_argument
-          next unless final != fold.value || literal.value != fold.value.to_s
-          writable << literal
-        end
-        unless writable.empty?
-          type_variables = layout_fold_type_variables
-          writable.each do |literal|
-            held << literal if type_variables.includes?(literal) || layout_fold_literal_altered?(literal)
-          end
-        end
+      layout_fold_uses.each do |use|
+        use.reads.each { |read| held << read.literal if read.adopted }
       end
 
-      # Every stale type argument, and every held literal gone stale, pins its layout
-      # and everything that shares an open layout with it, before any expression is
-      # decided.
-      pinned = {} of Int32 => String
-      settled.each do |fold, own, roots, final, failure, literal|
-        held_here = literal ? held.includes?(literal) : false
-        next unless fold.type_argument || held_here
-        next if final && final == fold.value
-
-        if native && patch
-          fold.node.raise native_type_argument_message(fold, final, held_here, failure)
-        end
-        ([own] + roots).each { |id| pinned[graph.find(id)] ||= layout_fold_location(fold) }
-      end
-
-      # A literal read before settling (by constant arithmetic, or as a type argument
-      # through TypeLookup) that settled to another value gives a derived value that
-      # can't be corrected. A native program refuses it. `--crystal` keeps the value
-      # the read computed, as Crystal 1.21.0 does, and reports it.
       lines = [] of String
-      if patch && !@layout_fold_reads.empty?
-        read_values = Hash(NumberLiteral, Array(String)).new.compare_by_identity
-        @layout_fold_reads.each do |literal, value|
-          (read_values[literal] ||= [] of String) << value
-        end
-        settled.each do |fold, _, _, final, _, literal|
-          next unless literal && final && (reads = read_values[literal]?)
-          next if reads.all? { |read| read == final.to_s }
-
-          if native
-            fold.node.raise "#{layout_fold_node(fold)} folded to #{fold.value}, and code typed before it settled read it as #{reads.first}, but its final value is #{final}. That derived value can't be corrected, so measure it after the layout is final"
-          end
-          if report
-            lines << "layout fold read early: #{layout_fold_location(fold)}: #{layout_fold_node(fold)} in #{layout_fold_owner(fold)}: folded #{fold.value}, read as #{reads.first}, final #{final}: kept (--crystal, the read's value stands)"
-          end
-        end
-        @layout_fold_reads.clear
-      end
-      settled.each do |fold, own, roots, final, failure, literal|
-        if report && !roots.empty?
-          lines << "layout fold open: #{layout_fold_location(fold)}: #{layout_fold_node(fold)} in #{layout_fold_owner(fold)}: #{fold.subject} holds #{graph.witness_of(roots.first)} by value"
-        end
-
-        held_here = literal ? held.includes?(literal) : false
+      current.each do |fold|
+        literal = fold.node.as(ExpandableNode).expanded.as?(NumberLiteral)
+        final, failure = final_of.call(fold)
+        own, roots = walk.call(fold)
         tie = ([own] + roots).compact_map { |id| pinned[graph.find(id)]? }.first?
+        held_here = literal ? held.includes?(literal) : false
 
-        if patch && final && literal && !fold.type_argument && !held_here
-          target = (tie ? fold.value : final).to_s
+        # A pinned literal keeps the value its uses read.
+        if patch && final && literal && !held_here && !tie
+          target = final.to_s
           literal.value = target unless literal.value == target
         end
 
+        if report && !roots.empty?
+          lines << "layout fold open: #{layout_fold_location(fold)}: #{layout_fold_node(fold)} in #{layout_fold_owner(fold)}: #{fold.subject} holds #{graph.witness_of(roots.first)} by value"
+        end
         next if final && final == fold.value
+        next unless report
 
+        kind = literal ? kept_by[literal]? : nil
         disposition =
           if final.nil?
             "kept (cannot recompute: #{failure})"
-          elsif fold.type_argument
+          elsif kind == LayoutFoldUseKind::TypeArgument
             "kept (type argument)"
-          elsif held_here
+          elsif kind == LayoutFoldUseKind::Typing || held_here
             "kept (used by later typing)"
           elsif tie
-            "kept (tied to type argument at #{tie})"
+            "kept (tied to #{layout_fold_pin_name(tie[1])} at #{tie[0]})"
           elsif literal.nil?
             "kept (no literal)"
           elsif !patch
@@ -436,15 +606,21 @@ module Iyi
             "corrected"
           end
 
-        next unless report
-
         final_text = final ? final.to_s : "unknown"
         lines << "layout fold stale: #{layout_fold_location(fold)}: #{layout_fold_node(fold)} in #{layout_fold_owner(fold)}: folded #{fold.value}, final #{final_text}: #{disposition}"
       end
 
+      if report
+        harms.each do |harm|
+          read = harm.changed.first
+          lines << layout_fold_harm_line(harm, read, final_of.call(read.fold)[0])
+        end
+      end
+
       if patch
         watch = Hash(Type, String).new.compare_by_identity
-        walked.each do |_, _, roots|
+        current.each do |fold|
+          _, roots = walk.call(fold)
           roots.each do |id|
             witness = graph.witness_of(id)
             watch[witness] ||= layout_fingerprint(witness)
@@ -454,10 +630,39 @@ module Iyi
         @llvm_typer = typer if native
         @layout_fold_typer_fresh = false
         @layout_fold_settled_epoch = @layout_fold_epoch
-        @layout_fold_open = walked.any? { |_, _, roots| !roots.empty? }
+        @layout_fold_open = current.any? { |fold| !walk.call(fold)[1].empty? }
       end
       @layout_fold_lines = lines
       self.layout_fold_state = patch ? LayoutFoldState::Patched : LayoutFoldState::Reported
+    end
+
+    # Recomputes a derivation from the final values of the literals its use read.
+    # The rerun has no visitor and no reader open, so it takes nothing. A macro
+    # call in it raises, and a missing final value gives no result. Either way the
+    # rerun gives nil.
+    private def layout_fold_rerun(use : LayoutFoldUse, derivation : LayoutFoldDerivation, finals : Array(UInt64?)) : String?
+      values = Hash(NumberLiteral, String).new.compare_by_identity
+      use.reads.each_with_index do |read, i|
+        final = finals[i]
+        return nil unless final
+        values[read.literal] = final.to_s
+      end
+      interpreter = MathInterpreter.new(derivation.scope, nil, derivation.target, layout_values: values)
+      layout_fold_interpret(interpreter, derivation.root).to_s
+    rescue CodeError
+      nil
+    end
+
+    # `MathInterpreter#interpret` is overloaded by node type, so the root is dispatched
+    # on its type here. A root of any other type reaches the generic overload, which raises.
+    private def layout_fold_interpret(interpreter : MathInterpreter, root : ASTNode)
+      case root
+      when NumberLiteral then interpreter.interpret(root)
+      when Call          then interpreter.interpret(root)
+      when Path          then interpreter.interpret(root)
+      when Expressions   then interpreter.interpret(root)
+      else                    interpreter.interpret(root)
+      end
     end
 
     private def instance_layout_kind?(kind : LayoutFoldKind) : Bool
@@ -488,50 +693,84 @@ module Iyi
     end
     {% end %}
 
-    # A literal whose kind or type code typed later changed (a cast): it is no
-    # longer the `Int32` literal the fold made.
-    private def layout_fold_literal_altered?(literal : NumberLiteral) : Bool
-      return true unless literal.kind.i32?
-      type = literal.type?
-      type.nil? || !type.same?(int32)
+    # The place a node is written, as a report names it.
+    private def layout_fold_at(node : ASTNode) : String
+      node.location.try(&.to_s) || "unknown location"
     end
 
-    # Every number literal a generic instance holds as a type variable, by identity:
-    # `StaticArray(UInt8, 8)` holds its `8`.
-    private def layout_fold_type_variables : Set(NumberLiteral)
-      literals = Set(NumberLiteral).new.compare_by_identity
-      collect_layout_fold_type_variables(self, literals)
-      file_modules.each_value { |file_module| collect_layout_fold_type_variables(file_module, literals) }
-      literals
+    # What a harmful use is, in a report line.
+    private def layout_fold_use_kind_name(kind : LayoutFoldUseKind) : String
+      case kind
+      when LayoutFoldUseKind::TypeArgument then "a type argument"
+      when LayoutFoldUseKind::EnumValue    then "an enum value"
+      when LayoutFoldUseKind::Macro        then "a macro"
+      else                                      "typing"
+      end
     end
 
-    private def collect_layout_fold_type_variables(type : Type, literals : Set(NumberLiteral)) : Nil
-      nested_types = type.types?
-      return unless nested_types
+    # What a use that tied a layout is, in a fold's disposition.
+    private def layout_fold_pin_name(kind : LayoutFoldUseKind) : String
+      case kind
+      when LayoutFoldUseKind::TypeArgument then "type argument"
+      when LayoutFoldUseKind::EnumValue    then "an enum value"
+      when LayoutFoldUseKind::Macro        then "a macro read"
+      else                                      "typing"
+      end
+    end
 
-      nested_types.each_value do |nested|
-        if nested.is_a?(GenericType)
-          nested.each_instantiated_type do |instance|
-            next unless instance.is_a?(GenericInstanceType)
-            instance.type_vars.each_value { |var| literals << var if var.is_a?(NumberLiteral) }
-          end
+    # The refusal for a harmful use, from the read that changed. It says what the
+    # final layout would change, and why nothing can correct that after the fact.
+    private def layout_fold_harm_message(harm : LayoutFoldHarm, read : LayoutFoldRead, final : UInt64?, failure : String?) : String
+      label = layout_fold_node(read.fold)
+      derivation = harm.use.derivation
+      case harm.use.kind
+      when LayoutFoldUseKind::TypeArgument
+        built = derivation ? "#{derivation.result} was computed from #{label} = #{read.value}" : "#{label} was #{read.value}"
+        if final.nil?
+          "#{built} when it was used as a type argument, but its final value can't be checked (#{failure}), so the type argument can't be verified"
+        elsif derivation
+          "#{built} when it was used as a type argument, but its final value is #{final}, which gives #{harm.rerun || "no value"}. " \
+          "A type argument can't be corrected after it is used, so measure it after the layout is final, or use the value as an expression"
+        else
+          "#{built} when it was used as a type argument, but its final value is #{final}. " \
+          "A type argument can't be corrected after it is used, so measure it after the layout is final, or use the value as an expression"
         end
-        collect_layout_fold_type_variables(nested, literals)
+      when LayoutFoldUseKind::EnumValue
+        shown = derivation ? derivation.result : read.value
+        source = derivation ? "computed from #{label} = #{read.value}" : "read from #{label}"
+        if final.nil?
+          "this enum value is #{shown}, #{source}, but its final value can't be checked (#{failure}), so the enum value can't be verified"
+        else
+          gives = derivation ? ", which gives #{harm.rerun || "no value"}" : ""
+          "this enum value is #{shown}, #{source}, but its final value is #{final}#{gives}. " \
+          "An enum's values are fixed when it is declared, so measure the layout after it is final"
+        end
+      when LayoutFoldUseKind::Macro
+        if final.nil?
+          "a macro read #{label} as #{read.value}, but its final value can't be checked (#{failure}), so the macro's output can't be verified"
+        else
+          "a macro read #{label} as #{read.value}, but its final value is #{final}. " \
+          "A macro's output can't be corrected, so measure it after the layout is final"
+        end
+      else
+        if final.nil?
+          "typing read #{label} as #{read.value} here, but its final value can't be checked (#{failure}), so the decision can't be verified"
+        else
+          "typing read #{label} as #{read.value} here, but its final value is #{final}. " \
+          "That decision can't be undone, so measure it after the layout is final"
+        end
       end
     end
 
-    private def native_type_argument_message(fold : LayoutFold, final : UInt64?, held : Bool, failure : String?) : String
-      label = layout_fold_node(fold)
-      if final.nil?
-        "#{label} is used as a type argument, but its final value can't be checked (#{failure}), so the type argument can't be verified"
-      elsif fold.type_argument
-        "#{label} folded to #{fold.value} when it was used as a type argument, but its final value is #{final}. " \
-        "A type argument can't be corrected after it is used, so measure it after the layout is final, " \
-        "or use the value as an expression"
-      else
-        "#{label} folded to #{fold.value}, and code typed after that used the value as a type argument or a cast, but its final value is #{final}. " \
-        "That use can't be corrected, so measure it after the layout is final"
+    # The report line for one harmful use, from the read that changed.
+    private def layout_fold_harm_line(harm : LayoutFoldHarm, read : LayoutFoldRead, final : UInt64?) : String
+      site = harm.use.site || read.fold.node
+      computed = ""
+      if derivation = harm.use.derivation
+        computed = ", computed #{derivation.result}, final gives #{harm.rerun || "no value"}"
       end
+      final_text = final ? final.to_s : "unknown"
+      "layout fold use stale: #{layout_fold_at(site)}: #{layout_fold_use_kind_name(harm.use.kind)} read #{layout_fold_node(read.fold)} at #{layout_fold_location(read.fold)} as #{read.value}, final #{final_text}#{computed}: kept (--crystal, as Crystal 1.21.0 keeps it)"
     end
 
     private def layout_fold_node(fold : LayoutFold) : String
