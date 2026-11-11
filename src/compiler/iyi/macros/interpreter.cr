@@ -1,6 +1,14 @@
 module Iyi
+  # A replay of a macro under final layout values (`Program#layout_fold_macro_rerun`) reached
+  # something it must not do or cannot answer, so the replay proves nothing about the output.
+  #
+  # `external?` is true when the answer lies outside the compiler: a command, a file, the
+  # environment. Running those again is an effect the first expansion did not have. Everything
+  # else is a limit of the replay itself, and the refusal that follows says so.
   class ReplayUnknownException < Exception
-    def initialize(message : String = "cannot be safely evaluated during layout fold settlement")
+    getter? external : Bool
+
+    def initialize(message : String, @external : Bool = false)
       super(message)
     end
   end
@@ -15,8 +23,6 @@ module Iyi
     property free_vars : Hash(String, TypeVar)?
     property macro_expansion_pragmas : Hash(Int32, Array(Lexer::LocPragma))? = nil
     property? replay : Bool = false
-    property layout_values : Hash(NumberLiteral, String)? = nil
-    property loop_iterations : Int32 = 0
     @temp_warnings : WarningCollection? = nil
     def iyi_derive_def? : Bool
       !!@def.try(&.iyi_from_derive?)
@@ -373,12 +379,6 @@ module Iyi
     end
 
     def visit(node : MacroFor)
-      if @replay
-        @loop_iterations += 1
-        if @loop_iterations > 10_000
-          raise ReplayUnknownException.new("loop iteration limit exceeded during layout fold settlement")
-        end
-      end
       self.interpreted_hook node.exp
 
       node.exp.accept self
@@ -408,12 +408,6 @@ module Iyi
         end
 
         range.each_with_index do |element, index|
-          if @replay
-            @loop_iterations += 1
-            if @loop_iterations > 10_000
-              raise ReplayUnknownException.new("loop iteration limit exceeded during layout fold settlement")
-            end
-          end
           @vars[element_var.name] = element
           if index_var
             @vars[index_var.name] = NumberLiteral.new(index)
@@ -458,12 +452,6 @@ module Iyi
       end
 
       entries.each_with_index do |element, index|
-        if @replay
-          @loop_iterations += 1
-          if @loop_iterations > 10_000
-            raise ReplayUnknownException.new("loop iteration limit exceeded during layout fold settlement")
-          end
-        end
         @vars[element_var.name] = yield element
         if index_var
           @vars[index_var.name] = NumberLiteral.new(index)
@@ -485,12 +473,6 @@ module Iyi
       end
 
       entries.each_with_index do |entry, i|
-        if @replay
-          @loop_iterations += 1
-          if @loop_iterations > 10_000
-            raise ReplayUnknownException.new("loop iteration limit exceeded during layout fold settlement")
-          end
-        end
         key, value = yield entry, value_var
         @vars[key_var.name] = key
         @vars[value_var.name] = value if value_var
@@ -643,14 +625,12 @@ module Iyi
         args = node.args.map { |arg| accept arg }
         named_args = node.named_args.try &.to_h { |arg| {arg.name, accept arg.value} }
 
-        # normalize needed for param unpacking
-        block = node.block.try { |b| @program.normalize(b) }
-
-        if @replay
-          unless is_safe_receiver_method?(receiver, node.name)
-            raise ReplayUnknownException.new("method `#{receiver.class}##{node.name}` cannot be safely evaluated during layout fold settlement")
-          end
+        if @replay && !is_safe_receiver_method?(receiver, node.name)
+          raise ReplayUnknownException.new("it calls `#{node.name}` on a #{receiver.class_desc}, which the replay has not classified as reading nothing but its own arguments")
         end
+
+        # normalize needed for param unpacking. It rewrites the block in place, so a replay works on a copy.
+        block = node.block.try { |b| @program.normalize(@replay ? b.clone : b) }
 
         begin
           @last = receiver.interpret(node.name, args, named_args, block, self, node.name_location)
@@ -758,10 +738,11 @@ module Iyi
         end
       when TypeNode
         case method
+        # What a type is, fixed where it is declared. What it holds - constants, methods, subclasses,
+        # instance variables, annotations - grows as the program is read, so a replay asking now is
+        # not the expansion asking then.
         when "abstract?", "class?", "struct?", "module?", "union?", "nilable?",
-             "name", "type_vars", "instance_vars", "methods", "all_methods",
-             "subclasses", "all_subclasses", "has_attribute?", "annotation",
-             "constants", "constant", "has_constant?", "size", "type", "stringify", "to_s", "id"
+             "name", "type_vars", "size", "stringify", "to_s", "id"
           true
         else
           false
@@ -858,11 +839,10 @@ module Iyi
       case matched_type
       when Const
         if @replay
-          if layout_values = @layout_values
-            return @program.replace_layout_fold_values(matched_type.value, layout_values)
-          else
-            return matched_type.value
-          end
+          # Nothing is recorded and no warning is given twice. The value is the constant's own, which
+          # the replay holds at its final layout values.
+          @program.layout_fold_constant_read(matched_type, node)
+          return matched_type.value
         end
 
         @program.check_deprecated_constant(matched_type, node)
@@ -913,8 +893,16 @@ module Iyi
     end
 
     def resolve(node : Generic | Metaclass | ProcNotation)
+      replay_refuses_type(node)
       type = @path_lookup.lookup_type(node, self_type: @scope, free_vars: @free_vars)
       TypeNode.new(type)
+    end
+
+    # Looking a written type up can make it: a generic instance, a metaclass, a union. A replay makes
+    # nothing, so it stops here.
+    private def replay_refuses_type(node : ASTNode) : Nil
+      return unless @replay
+      raise ReplayUnknownException.new("it names the type `#{node}`, and looking that up could create it")
     end
 
     def resolve?(node : Generic | Metaclass | ProcNotation)
@@ -924,6 +912,7 @@ module Iyi
     end
 
     def resolve(node : Union)
+      replay_refuses_type(node)
       union_type = @program.union_of(node.types.map do |type|
         resolve(type).type
       end)
@@ -931,6 +920,7 @@ module Iyi
     end
 
     def resolve?(node : Union)
+      replay_refuses_type(node)
       union_type = @program.union_of(node.types.map do |type|
         resolved = resolve?(type)
         return nil unless resolved
@@ -950,7 +940,7 @@ module Iyi
 
     def visit(node : SizeOf)
       if @replay
-        raise ReplayUnknownException.new("`sizeof` inside macros cannot be safely evaluated during layout fold settlement")
+        raise ReplayUnknownException.new("it measures `sizeof` inside the macro, which the replay does not recompute")
       end
       type_node = resolve(node.exp)
       unless type_node.is_a?(TypeNode) && stable_abi?(type_node.type)
@@ -963,7 +953,7 @@ module Iyi
 
     def visit(node : AlignOf)
       if @replay
-        raise ReplayUnknownException.new("`alignof` inside macros cannot be safely evaluated during layout fold settlement")
+        raise ReplayUnknownException.new("it measures `alignof` inside the macro, which the replay does not recompute")
       end
       type_node = resolve(node.exp)
       unless type_node.is_a?(TypeNode) && stable_abi?(type_node.type)

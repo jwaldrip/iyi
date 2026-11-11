@@ -50,12 +50,19 @@ module Iyi
   # it gave for `root`, interpreted in `scope` for the `target` integer type.
   record LayoutFoldDerivation, root : ASTNode, scope : Type, target : IntegerType?, result : String
 
+  # What replaying a macro under the final layout values showed about its output.
   enum MacroRerunOutcome
+    # The output is the text the program compiled.
     Equal
+    # The output differs, or the macro raises where it did not.
     Changed
+    # The replay could not finish, so it shows nothing. The reason travels beside it.
     Unknown
   end
 
+  # A macro expansion that read fold literals, kept so settling can replay it: the macro and its
+  # call, or the inline macro node, as they were expanded, and the text the expansion gave.
+  # `temp_vars_start` is where the compiler's temporary-name counters stood when it began.
   record LayoutFoldMacroDerivation,
     macro_def : Macro?,
     call : Call?,
@@ -67,11 +74,9 @@ module Iyi
     temp_vars_start : Hash(String, Int32),
     original_output : String
 
+  # One macro expansion in progress, with the fold literals it has read so far.
   class LayoutFoldMacroFrame
     getter reads = [] of LayoutFoldRead
-
-    def initialize
-    end
   end
 
   # A decision that took fold values. `derivation` is set when the decision took
@@ -275,6 +280,9 @@ module Iyi
     @layout_fold_frames = [] of LayoutFoldFrame
     # The macro expansion frames in progress (`layout_fold_macro_expand`).
     @layout_fold_macro_frames = [] of LayoutFoldMacroFrame
+    # Set while a macro is replayed under the final layout values (`layout_fold_macro_rerun`): the
+    # fold literals that have no final value. A replay records nothing, and reading one of these stops it.
+    @layout_fold_replay : Set(NumberLiteral)? = nil
 
     # Records what a fold site folded during typing. The latest record for a node
     # wins, and settling compares that record with the final layout.
@@ -330,14 +338,29 @@ module Iyi
 
     # The MathInterpreter read a fold literal. With no reader open, nothing is taken.
     def layout_fold_read(literal : NumberLiteral) : Nil
+      return if layout_fold_replaying?(literal)
       return if @layout_fold_frames.empty?
       fold = @layout_fold_literals[literal]? || return
       layout_fold_take([LayoutFoldRead.new(fold, literal, literal.value, false)], nil)
     end
 
+    # Whether a macro replay is running, in which case nothing is recorded. A replay that reads a
+    # fold literal with no final value has no value to read, so it stops.
+    private def layout_fold_replaying?(literal : NumberLiteral) : Bool
+      missing = @layout_fold_replay
+      return false unless missing
+      if missing.includes?(literal) && (fold = @layout_fold_literals[literal]?)
+        raise ReplayUnknownException.new("it reads #{layout_fold_node(fold)}, whose final value can't be computed")
+      end
+      true
+    end
+
     # A type variable took a fold literal itself. Inside a reader, that reader takes
     # it. With none open, it is a type argument use at once.
     def layout_fold_adopt(literal : NumberLiteral) : Nil
+      if @layout_fold_replay
+        raise ReplayUnknownException.new("it gives a layout to a type as an argument")
+      end
       fold = @layout_fold_literals[literal]? || return
       read = LayoutFoldRead.new(fold, literal, literal.value, true)
       if @layout_fold_frames.empty?
@@ -351,6 +374,7 @@ module Iyi
     # A decision took a fold literal's value at `site`. Inside a derivation the read
     # joins it. Otherwise it is a use at once, and a consumer does not take it.
     def layout_fold_use(literal : NumberLiteral, kind : LayoutFoldUseKind, site : ASTNode?, adopted : Bool = false) : Nil
+      return if layout_fold_replaying?(literal)
       fold = @layout_fold_literals[literal]? || return
       read = LayoutFoldRead.new(fold, literal, literal.value, adopted)
       if (frame = @layout_fold_frames.last?) && frame.derive
@@ -373,30 +397,35 @@ module Iyi
       const.value.accept LayoutFoldLiteralReads.new(self, site)
     end
 
+    # Runs one macro expansion and keeps what it read. An expansion that read a fold literal is one
+    # use, kept with what settling needs to replay it. With no fold literal in the program there is
+    # nothing to read, so nothing is kept.
     def layout_fold_macro_expand(macro_def : Macro?, call : Call?, node : ASTNode?, scope : Type, path_lookup : Type, free_vars : Hash(String, TypeVar)?, a_def : Def?, &)
+      return yield if @layout_fold_literals.empty? || @layout_fold_replay
+
       frame = LayoutFoldMacroFrame.new
       @layout_fold_macro_frames << frame
       temp_vars_start = @temp_vars.dup
+      finished = false
       begin
         result = yield
-        output = result[0]
+        finished = true
         unless frame.reads.empty?
-          reads = frame.reads.uniq(&.literal.object_id)
           derivation = LayoutFoldMacroDerivation.new(
             macro_def: macro_def,
-            call: call.try(&.clone),
-            node: node.try(&.clone),
+            call: call,
+            node: node,
             scope: scope,
             path_lookup: path_lookup,
             free_vars: free_vars.try(&.dup),
             a_def: a_def,
             temp_vars_start: temp_vars_start,
-            original_output: output
+            original_output: result[0]
           )
           @layout_fold_uses << LayoutFoldUse.new(
             kind: LayoutFoldUseKind::Macro,
             site: (call || node),
-            reads: reads,
+            reads: frame.reads.uniq(&.literal.object_id),
             derivation: nil,
             macro_derivation: derivation
           )
@@ -405,6 +434,14 @@ module Iyi
         result
       ensure
         @layout_fold_macro_frames.pop
+        # An expansion that left by an exception still read what it read, and what it did before it
+        # left stands: `skip_file` skips the rest of its file. It gave no output to replay, so the
+        # read is a use that any change makes harmful.
+        if !finished && !frame.reads.empty?
+          @layout_fold_uses << LayoutFoldUse.new(LayoutFoldUseKind::Macro, call || node,
+            frame.reads.uniq(&.literal.object_id), nil)
+          @layout_fold_epoch += 1
+        end
       end
     end
 
@@ -583,6 +620,8 @@ module Iyi
       # makes its use harmful, unless the use's derivation gives the same result from
       # the final values.
       harms = [] of LayoutFoldHarm
+      # The macro uses a replay found unchanged, each with the reads that changed.
+      unchanged_macros = [] of {LayoutFoldUse, Array(LayoutFoldRead)}
       layout_fold_uses.each do |use|
         finals = use.reads.map { |read| final_of.call(read.fold)[0] }
         changed = [] of LayoutFoldRead
@@ -597,17 +636,54 @@ module Iyi
           next if rerun && rerun == derivation.result
           harms << LayoutFoldHarm.new(use, changed, rerun)
         elsif macro_derivation = use.macro_derivation
-          outcome = layout_fold_macro_rerun(use, macro_derivation, finals)
+          outcome, reason = layout_fold_macro_rerun(macro_derivation, final_of)
           case outcome
-          when MacroRerunOutcome::Equal
-            next
-          when MacroRerunOutcome::Changed
-            harms << LayoutFoldHarm.new(use, changed, "changed")
-          when MacroRerunOutcome::Unknown
-            harms << LayoutFoldHarm.new(use, changed, "unknown")
+          in .equal?   then unchanged_macros << {use, changed}
+          in .changed? then harms << LayoutFoldHarm.new(use, changed, "changed")
+          in .unknown? then harms << LayoutFoldHarm.new(use, changed, reason || "unproven: the replay gave no reason")
           end
         else
           harms << LayoutFoldHarm.new(use, changed, nil)
+        end
+      end
+
+      # A literal a type variable adopted is never written.
+      held = Set(NumberLiteral).new.compare_by_identity
+      layout_fold_uses.each do |use|
+        use.reads.each { |read| held << read.literal if read.adopted }
+      end
+
+      # Every harmful use pins the layouts of each fold it read. The first use to pin
+      # a component gives the tie that is reported.
+      pinned = {} of Int32 => {String, LayoutFoldUseKind}
+      pin = ->(harm : LayoutFoldHarm) {
+        harm.changed.each do |read|
+          own, roots = walk.call(read.fold)
+          site = layout_fold_at(harm.use.site || read.fold.node)
+          ([own] + roots).each { |id| pinned[graph.find(id)] ||= {site, harm.use.kind} }
+        end
+      }
+      harms.each { |harm| pin.call(harm) }
+
+      # A replay ran with every layout at its final value. A literal that is held, pinned or without
+      # a final value keeps the value it folded instead. So a macro that read one of those and one
+      # that is corrected was replayed with values the program will not have: its output is unproven,
+      # and it pins what it read. A pin can make another macro mixed, so this runs until none is.
+      keeps = ->(read : LayoutFoldRead) {
+        own, roots = walk.call(read.fold)
+        held.includes?(read.literal) || final_of.call(read.fold)[0].nil? ||
+          ([own] + roots).any? { |id| pinned.has_key?(graph.find(id)) }
+      }
+      loop do
+        mixed, unchanged_macros = unchanged_macros.partition do |(_, changed)|
+          kept = changed.count { |read| keeps.call(read) }
+          kept > 0 && kept < changed.size
+        end
+        break if mixed.empty?
+        mixed.each do |(use, changed)|
+          harm = LayoutFoldHarm.new(use, changed, "unproven: another use keeps one of the layouts it read at the value it folded")
+          harms << harm
+          pin.call(harm)
         end
       end
 
@@ -619,17 +695,6 @@ module Iyi
         (refused.use.site || refused_read.fold.node).raise layout_fold_harm_message(refused, refused_read, refused_final, refused_failure), inner: refused_inner
       end
 
-      # Every harmful use pins the layouts of each fold it read. The first use to pin
-      # a component gives the tie that is reported.
-      pinned = {} of Int32 => {String, LayoutFoldUseKind}
-      harms.each do |harm|
-        harm.changed.each do |read|
-          own, roots = walk.call(read.fold)
-          site = layout_fold_at(harm.use.site || read.fold.node)
-          ([own] + roots).each { |id| pinned[graph.find(id)] ||= {site, harm.use.kind} }
-        end
-      end
-
       # The kind of harmful use that kept each fold literal. A type argument is named first.
       kept_by = Hash(NumberLiteral, LayoutFoldUseKind).new.compare_by_identity
       harms.each do |harm|
@@ -637,12 +702,6 @@ module Iyi
           kind = harm.use.kind
           kept_by[read.literal] = kind if kept_by[read.literal]?.nil? || kind == LayoutFoldUseKind::TypeArgument
         end
-      end
-
-      # A literal a type variable adopted is never written.
-      held = Set(NumberLiteral).new.compare_by_identity
-      layout_fold_uses.each do |use|
-        use.reads.each { |read| held << read.literal if read.adopted }
       end
 
       lines = [] of String
@@ -730,127 +789,76 @@ module Iyi
       nil
     end
 
-    private def layout_fold_macro_rerun(use : LayoutFoldUse, derivation : LayoutFoldMacroDerivation, finals : Array(UInt64?)) : MacroRerunOutcome
-      values = Hash(NumberLiteral, String).new.compare_by_identity
-      use.reads.each_with_index do |read, i|
-        final = finals[i]
-        return MacroRerunOutcome::Unknown unless final
-        values[read.literal] = final.to_s
-      end
-
+    # Replays a macro expansion with every fold literal at its final value, and says whether its
+    # output is the text the program compiled.
+    #
+    # It is the same interpreter over the same macro and the same call. What differs is held here.
+    # Every fold literal carries its final value while the replay runs and has its own back after
+    # it, so a constant reads as it will once settling is done whatever shape its value has. The
+    # temporary-name counters start where the expansion started them and are put back.
+    # `@layout_fold_replay` stops every recorder, and the interpreter refuses whatever would reach
+    # outside the compiler or change the program (`MacroInterpreter#replay?`). A replay that
+    # stops says nothing about the output, and the reason it stopped travels with the outcome:
+    # `external:` when the answer lies outside the compiler, `unproven:` when the replay is the limit.
+    private def layout_fold_macro_rerun(derivation : LayoutFoldMacroDerivation,
+                                        final_of : Proc(LayoutFold, {UInt64?, String?})) : {MacroRerunOutcome, String?}
+      missing = Set(NumberLiteral).new.compare_by_identity
+      restore = [] of {NumberLiteral, String}
       saved_temp_vars = @temp_vars
-      @temp_vars = derivation.temp_vars_start.dup
       begin
-        if a_macro = derivation.macro_def
-          call = derivation.call.not_nil!.clone
-          call.args = call.args.map { |arg| replace_layout_fold_values(arg, values) }
-          if named_args = call.named_args
-            call.named_args = named_args.map do |named_arg|
-              NamedArgument.new(named_arg.name, replace_layout_fold_values(named_arg.value, values))
-            end
+        @layout_fold_literals.each do |literal, fold|
+          if final = final_of.call(fold)[0]
+            target = final.to_s
+            next if literal.value == target
+            restore << {literal, literal.value}
+            literal.value = target
+          else
+            missing << literal
           end
-          interpreter = MacroInterpreter.new(
-            self,
-            derivation.scope,
-            derivation.path_lookup,
-            a_macro,
-            call,
-            derivation.a_def,
-            in_macro: true
-          )
+        end
+        @temp_vars = derivation.temp_vars_start.dup
+        @layout_fold_replay = missing
+
+        if a_macro = derivation.macro_def
+          call = derivation.call
+          return {MacroRerunOutcome::Unknown, "unproven: the expansion kept no call to replay"} unless call
+          interpreter = MacroInterpreter.new(self, derivation.scope, derivation.path_lookup, a_macro, call, derivation.a_def, in_macro: true)
           interpreter.replay = true
-          interpreter.layout_values = values
           a_macro.body.accept interpreter
         elsif node = derivation.node
-          node = replace_layout_fold_values(node.clone, values)
-          interpreter = MacroInterpreter.new(
-            self,
-            derivation.scope,
-            derivation.path_lookup,
-            node.location,
-            def: derivation.a_def,
-            in_macro: false
-          )
+          interpreter = MacroInterpreter.new(self, derivation.scope, derivation.path_lookup, node.location, def: derivation.a_def, in_macro: false)
           interpreter.free_vars = derivation.free_vars
           interpreter.replay = true
-          interpreter.layout_values = values
           node.accept interpreter
         else
-          return MacroRerunOutcome::Unknown
+          return {MacroRerunOutcome::Unknown, "unproven: the expansion kept no macro to replay"}
         end
 
-        new_output = interpreter.to_s
-        if new_output == derivation.original_output
-          MacroRerunOutcome::Equal
+        output = interpreter.to_s
+        if output == derivation.original_output
+          {MacroRerunOutcome::Equal, nil}
+        elsif layout_fold_temp_name?(output) || layout_fold_temp_name?(derivation.original_output)
+          {MacroRerunOutcome::Unknown, "unproven: its output holds names the compiler numbers as it goes, and the replay numbered them differently"}
         else
-          MacroRerunOutcome::Changed
+          {MacroRerunOutcome::Changed, nil}
         end
-      rescue ex : ReplayUnknownException
-        MacroRerunOutcome::Unknown
-      rescue ex
-        MacroRerunOutcome::Changed
+      rescue error : ReplayUnknownException
+        {MacroRerunOutcome::Unknown, "#{error.external? ? "external" : "unproven"}: #{error.message}"}
+      rescue MacroRaiseException
+        # The macro raises under the final layout, and it did not when it ran.
+        {MacroRerunOutcome::Changed, nil}
+      rescue error : CodeError
+        {MacroRerunOutcome::Unknown, "unproven: the replay stopped on an error the expansion did not meet: #{error.message}"}
       ensure
+        @layout_fold_replay = nil
         @temp_vars = saved_temp_vars
+        restore.each { |(literal, value)| literal.value = value }
       end
     end
 
-    def replace_layout_fold_values(node : ASTNode, layout_values : Hash(NumberLiteral, String)) : ASTNode
-      case node
-      when NumberLiteral
-        if final_val = layout_values[node]?
-          NumberLiteral.new(final_val, node.kind)
-        else
-          node
-        end
-      when MacroExpression
-        MacroExpression.new(replace_layout_fold_values(node.exp, layout_values), node.output?)
-      when MacroIf
-        MacroIf.new(
-          replace_layout_fold_values(node.cond, layout_values),
-          replace_layout_fold_values(node.then, layout_values),
-          replace_layout_fold_values(node.else, layout_values),
-          node.is_unless?
-        )
-      when MacroFor
-        MacroFor.new(
-          node.vars,
-          replace_layout_fold_values(node.exp, layout_values),
-          replace_layout_fold_values(node.body, layout_values)
-        )
-      when Assign
-        Assign.new(
-          node.target,
-          replace_layout_fold_values(node.value, layout_values)
-        )
-      when Call
-        args = node.args.map { |arg| replace_layout_fold_values(arg, layout_values) }
-        named_args = node.named_args.try &.map do |named_arg|
-          NamedArgument.new(named_arg.name, replace_layout_fold_values(named_arg.value, layout_values))
-        end
-        obj = node.obj.try { |o| replace_layout_fold_values(o, layout_values) }
-        Call.new(obj, node.name, args, node.block, node.block_arg, named_args, node.global?)
-      when Expressions
-        Expressions.new(node.expressions.map { |e| replace_layout_fold_values(e, layout_values) })
-      when TupleLiteral
-        TupleLiteral.new(node.elements.map { |e| replace_layout_fold_values(e, layout_values) })
-      when ArrayLiteral
-        ArrayLiteral.new(node.elements.map { |e| replace_layout_fold_values(e, layout_values) }, of: node.of)
-      when HashLiteral
-        entries = node.entries.map do |entry|
-          HashLiteral::Entry.new(
-            replace_layout_fold_values(entry.key, layout_values),
-            replace_layout_fold_values(entry.value, layout_values)
-          )
-        end
-        HashLiteral.new(entries)
-      when NamedTupleLiteral
-        entries = node.entries.map do |entry|
-          NamedTupleLiteral::Entry.new(entry.key, replace_layout_fold_values(entry.value, layout_values))
-        end
-        NamedTupleLiteral.new(entries)
-      else
-        node
-      end
+    # Whether *text* holds a name `new_temp_var_name` gives.
+    private def layout_fold_temp_name?(text : String) : Bool
+      text.includes?("__temp_") || @temp_vars.each_key.any? { |prefix| text.includes?(prefix) }
     end
 
     # `MathInterpreter#interpret` is overloaded by node type, so the root is dispatched
@@ -946,11 +954,16 @@ module Iyi
           "An enum's values are fixed when it is declared, so measure the layout after it is final"
         end
       when LayoutFoldUseKind::Macro
+        rerun = harm.rerun
         if final.nil?
           "a macro read #{label} as #{read.value}, but its final value can't be checked (#{failure}), so the macro's output can't be verified"
-        elsif harm.rerun == "unknown"
+        elsif rerun && rerun.starts_with?("external: ")
           "a macro read #{label} as #{read.value}, but its final value is #{final}. " \
-          "Whether that changes the macro's output cannot be safely verified without external effects or unisolated state. " \
+          "Whether that changes the macro's output can't be known without running it again: #{rerun.lchop("external: ")}. " \
+          "Measure it after the layout is final, or use the value as an expression"
+        elsif rerun && rerun.starts_with?("unproven: ")
+          "a macro read #{label} as #{read.value}, but its final value is #{final}. " \
+          "The compiler could not show that the macro's output is unchanged: #{rerun.lchop("unproven: ")}. " \
           "Measure it after the layout is final, or use the value as an expression"
         else
           "a macro read #{label} as #{read.value}, but its final value is #{final}. " \

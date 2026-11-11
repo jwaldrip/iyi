@@ -63,13 +63,16 @@ module Iyi
       if @replay
         case node.name
         when "compare_versions", "flag?", "host_flag?", "raise"
-          # allowed in replay
+          # Answered from the compiler's own flags and arguments.
+        when "`", "system", "run", "env", "read_file", "read_file?", "file_exists?"
+          # The first expansion's answer was not kept, and asking again is a second command, read or lookup.
+          raise ReplayUnknownException.new("it reaches `#{node.name}`, whose answer lies outside the compiler", external: true)
         else
-          raise ReplayUnknownException.new("top-level macro call `#{node.name}` cannot be safely evaluated during layout fold settlement")
+          raise ReplayUnknownException.new("it reaches `#{node.name}`, which the replay does not perform")
         end
+      else
+        iyi_tell_recorder(node)
       end
-
-      iyi_tell_recorder(node)
 
       # Please order method names in lexicographical order
       case node.name
@@ -2575,14 +2578,6 @@ module Iyi
       type = type.types[name]?
       case type
       when Const
-        if interpreter.replay?
-          if layout_values = interpreter.layout_values
-            return interpreter.program.replace_layout_fold_values(type.value, layout_values)
-          else
-            return type.value
-          end
-        end
-
         interpreter.program.layout_fold_constant_read(type, nil)
         type.value
       when Type

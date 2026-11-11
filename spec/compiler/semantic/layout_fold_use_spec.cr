@@ -288,7 +288,7 @@ describe "Semantic: layout fold uses" do
       fold_use_census(program)
     end
 
-    it "refuses as unknown and does not execute a command during settlement (command not run during settlement)" do
+    it "refuses, without running it, a command the final layout reaches (command not run during settlement)" do
       program = fold_use_program(true)
       sentinel = "/tmp/iyi_test_sentinel_#{Process.pid}_#{Time.utc.to_unix_ms}"
       begin
@@ -302,7 +302,7 @@ describe "Semantic: layout fold uses" do
             z = {{ `touch #{sentinel}` }}
           {% end %}
           CODE
-        expect_raises(Iyi::TypeException, /a macro read/) do
+        expect_raises(Iyi::TypeException, /can't be known without running it again: it reaches ``` ` ```/) do
           fold_use_two_passes(program, fold_use_x, "", fold_use_growth + macro_code)
         end
         File.exists?(sentinel).should be_false
@@ -325,6 +325,96 @@ describe "Semantic: layout fold uses" do
 
       fold_use_literal(program, "X").value.should eq "32"
       fold_use_census(program)
+    end
+
+    # The replay controls below each fail if the replay keeps a stale value, asks the program a
+    # question whose answer has moved since the expansion, or makes something.
+
+    it "replays with the final value of a layout the expansion never read (accepts the same output)" do
+      program = fold_use_program(true)
+      # The expansion took the first branch and never read W. Under the final layout it takes the
+      # second, where W is 32 and the output is still 4. With W left at 8 the replay would say 1.
+      macro_code = <<-CODE
+        {% if X == 8 %}
+          z = 4
+        {% else %}
+          z = {{ W // 8 }}
+        {% end %}
+        CODE
+      fold_use_two_passes(program, fold_use_x + "W = sizeof({Int32, M})\nw = W\n", "", fold_use_growth + macro_code)
+
+      fold_use_literal(program, "X").value.should eq "32"
+    end
+
+    it "replays with the final value of a layout the expansion never read (refuses a changed output)" do
+      program = fold_use_program(true)
+      # Under the final layout the second branch runs and W is 32, so the output is 2, not 1.
+      macro_code = <<-CODE
+        {% if X == 8 %}
+          z = 1
+        {% else %}
+          z = {{ W == 8 ? 1 : 2 }}
+        {% end %}
+        CODE
+      expect_raises(Iyi::TypeException, /A macro's output can't be corrected/) do
+        fold_use_two_passes(program, fold_use_x + "W = sizeof({Int32, M})\nw = W\n", "", fold_use_growth + macro_code)
+      end
+    end
+
+    it "replays a constant whose value holds the layout under a node of any kind" do
+      program = fold_use_program(true)
+      # Y's value is a conditional over the fold. The macro prints it, so its output changes with X.
+      expect_raises(Iyi::TypeException, /A macro's output can't be corrected/) do
+        fold_use_two_passes(program, fold_use_x + "Y = sizeof({Int32, M}) == 8 ? 1 : 2\ny = Y\n", "", fold_use_growth + "z = {{ Y }}\n")
+      end
+    end
+
+    it "refuses a macro that asks what a type holds, which has moved since it ran" do
+      program = fold_use_program(true)
+      # When `pick` ran, Foo had no `Later`, so X == 8 chose the branch. By settling Foo has one,
+      # and a replay that asked would take the first branch for another reason and call it unchanged.
+      body = <<-CODE
+        macro pick
+          {% if @type.has_constant?("Later") || X == 8 %}
+            A = 1
+          {% else %}
+            A = 2
+          {% end %}
+        end
+
+        class Foo
+          pick
+          Later = 0
+        end
+        CODE
+      expect_raises(Iyi::TypeException, /could not show that the macro's output is unchanged: it calls `has_constant\?`/) do
+        fold_use_two_passes(program, fold_use_x, body, fold_use_growth)
+      end
+    end
+
+    it "refuses a macro whose replay would name a type, and makes none" do
+      program = fold_use_program(true)
+      macro_code = <<-CODE
+        {% if X == 8 %}
+          z = 1
+        {% else %}
+          z = {{ G({Int64, Int64, Int64}).struct? ? 1 : 2 }}
+        {% end %}
+        CODE
+      expect_raises(Iyi::TypeException, /looking that up could create it/) do
+        fold_use_two_passes(program, fold_use_x, "", fold_use_growth + macro_code)
+      end
+      generic = program.types["G"].as(Iyi::GenericType)
+      generic.generic_types.values.map(&.to_s).should_not contain("G(Tuple(Int64, Int64, Int64))")
+    end
+
+    it "keeps the read of a macro that left by `skip_file`" do
+      program = fold_use_program(true)
+      # The rest of the file was skipped because X read as 8. The expansion gave no output to
+      # replay, and the skip stands, so the stale read is refused.
+      expect_raises(Iyi::TypeException, /a macro read/) do
+        fold_use_two_passes(program, fold_use_x, "", fold_use_growth + "{% skip_file if X == 8 %}\nz = 1\n")
+      end
     end
 
     it "refuses a tuple index that a stale constant selects (control 8)" do
