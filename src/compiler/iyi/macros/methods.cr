@@ -48,7 +48,7 @@ module Iyi
 
     def warnings
       if @replay
-        @temp_warnings ||= Iyi::Warnings.new
+        @temp_warnings ||= WarningCollection.new
       else
         @program.warnings
       end

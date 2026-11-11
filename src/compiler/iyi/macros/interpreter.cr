@@ -17,7 +17,7 @@ module Iyi
     property? replay : Bool = false
     property layout_values : Hash(NumberLiteral, String)? = nil
     property loop_iterations : Int32 = 0
-    @temp_warnings : Iyi::Warnings? = nil
+    @temp_warnings : WarningCollection? = nil
     def iyi_derive_def? : Bool
       !!@def.try(&.iyi_from_derive?)
     end
