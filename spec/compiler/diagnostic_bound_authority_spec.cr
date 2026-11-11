@@ -455,21 +455,24 @@ describe "diagnostic bound projection authority" do
       producer = Iyi::DiagnosticBoundProducer::StripRoot.new("Root")
       empty = Iyi::DiagnosticBoundProjectionData.new(producer, ::Crystal::Digest::SHA256.hexdigest(""), "", [] of Iyi::DiagnosticBoundNameSource,
         "", "Crystal", 0, 0, "CONST", "path_segment")
-      Iyi::DiagnosticBoundProjection.require_source_inventory!(empty, nil).should be_nil
+      # Typed as the production caller types it, DiagnosticSourceInventory?, rather than a literal nil.
+      none : Iyi::DiagnosticSourceInventory? = nil
+      Iyi::DiagnosticBoundProjection.require_source_inventory!(empty, none).should be_nil
       Iyi::DiagnosticBoundProjection.require_source_inventory!(empty, SpecInventory.new(nil)).should be_nil
       sourced = Iyi::DiagnosticBoundProjectionData.new(producer, ::Crystal::Digest::SHA256.hexdigest("Root::Thing"),
         "Root::Thing", [] of Iyi::DiagnosticBoundNameSource, "Thing", "Crystal", 0, 5, "CONST", "path_segment")
       twin = Iyi::DiagnosticBoundProjectionData.new(producer, ::Crystal::Digest::SHA256.hexdigest("Root::Thing"),
         "Root::Thing", [] of Iyi::DiagnosticBoundNameSource, "Thing", "Crystal", 0, 5, "CONST", "path_segment")
+      # Rejections go through the constructor, the path a raw claim takes and the one N1 already exercises.
       expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
-        Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, nil)
+        Iyi::DiagnosticOrigin::DerivedName.new(sourced)
       end
       expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
-        Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, SpecInventory.new(nil))
+        Iyi::DiagnosticOrigin::DerivedName.new(sourced, SpecInventory.new(nil))
       end
       # Attestation is by identity: an equal twin does not attest the data object that was built.
       expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
-        Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, SpecInventory.new(twin))
+        Iyi::DiagnosticOrigin::DerivedName.new(sourced, SpecInventory.new(twin))
       end
       inventory = SpecInventory.new(sourced)
       inventory.attests?(sourced).should be_true

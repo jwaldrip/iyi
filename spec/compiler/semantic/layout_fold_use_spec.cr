@@ -129,7 +129,7 @@ end
 # The fold whose expansion is `literal`, by identity. Nil when no recorded fold
 # expanded to that object, which is itself a finding.
 private def fold_use_fold_of(program : Program, literal : NumberLiteral) : LayoutFold?
-  program.layout_folds.values.find { |fold| fold.node.as(ExpandableNode).expanded.same?(literal) }
+  program.layout_folds.values.find { |fold| fold.node.as(ExpandableNode).expanded.try(&.same?(literal)) }
 end
 
 # The `sizeof` folds that recorded `value` when typed, in the order typing recorded
@@ -443,7 +443,7 @@ describe "Semantic: layout fold uses" do
         # Every fold measured 8 when typed: X's and `s`'s. `s` is the one that is not X's.
         folds = fold_use_size_folds(program, 8_u64)
         folds.size.should be >= 2
-        shared = folds.reject { |fold| fold.same?(fold_x.not_nil!) }.last
+        shared = folds.reject { |fold| fold.node.same?(fold_x.not_nil!.node) }.last
         shared.node.as(ExpandableNode).expanded.as(NumberLiteral).value.should eq "8"
         literal_x.value.should eq "8"
 
