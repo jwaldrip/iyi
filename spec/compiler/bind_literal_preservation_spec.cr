@@ -157,6 +157,10 @@ module Iyi
         replace_word("Old::X.new(Other::Old, MyOld, Old)", "Old", "New", :expression)
           .should eq("Old::X.new(Other::Old, MyOld, New)")
       end
+
+      it "leaves a named argument's label as written" do
+        replace_word("call(Old: Old)", "Old", "New", :expression).should eq("call(Old: New)")
+      end
     end
   end
 end
