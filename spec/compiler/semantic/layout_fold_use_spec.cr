@@ -48,10 +48,9 @@ private def fold_use_growth : String
   "b = G({Int64, Int64}).new({1_i64, 2_i64}).as(M)\n"
 end
 
-# The cleanup-typing program: the exhaustive `case` makes the cleanup write a
-# `raise(String)` for its unreachable branch, and the cleanup types the body of
-# that user `raise`. Whatever `raise_body` grows is therefore typed after the
-# main code has read its folds.
+# One program: the header, the main code `body`, and the cleanup-typing code. The
+# exhaustive `case` makes the cleanup write a `raise(String)` for its unreachable
+# branch, and the cleanup types the body of that user `raise`.
 private def fold_use_source(body : String, raise_body : String = "") : String
   <<-CODE
     require "primitives"
@@ -95,6 +94,50 @@ private def fold_use_source(body : String, raise_body : String = "") : String
     CODE
 end
 
+# The cleanup-typing code alone, for a second pass over a program whose header
+# and constants an earlier pass has already typed and cleaned.
+private def fold_use_cleanup_source(raise_body : String) : String
+  <<-CODE
+    enum Color
+      Red
+      Green
+    end
+
+    struct Enum
+      def ==(other : self)
+        value == other.value
+      end
+    end
+
+    def raise(message : String) : NoReturn
+      #{raise_body}
+      while true
+      end
+    end
+
+    c = Color::Red
+    case c
+    in .red?
+      1
+    in .green?
+      2
+    end
+    CODE
+end
+
+# Declares `X = sizeof({Int32, M})` in a first pass, which settles and cleans it,
+# as a finished top-level pass does. `growth` runs in the same pass, after `X`.
+private def fold_use_declare_x(program : Program, growth : String = "") : Nil
+  fold_use_semantic(program, "require \"primitives\"\n" + fold_use_module + "X = sizeof({Int32, M})\n" + growth)
+end
+
+# A second pass whose cleanup types `raise_body`. `X` is already a cleaned constant
+# when that body is typed, so a read of it there sees the literal the constant holds.
+private def fold_use_after_cleanup(program : Program, raise_body : String) : ASTNode
+  fold_use_declare_x(program)
+  fold_use_semantic(program, fold_use_cleanup_source(raise_body))
+end
+
 # `X` folds to 8 and is 32 after growth. `Y` derives from it.
 private def fold_use_derived : String
   "X = sizeof({Int32, M})\nY = X &+ 1\nx = X\ny = Y\n"
@@ -109,6 +152,8 @@ private def fold_use_literal(program : Program, name : String) : NumberLiteral
 end
 
 # The literal a `sizeof` of `subject` was expanded to, found by its fold record.
+# Unlike the constant's value, this is a literal as soon as the fold is typed,
+# so it is read here before cleanup has replaced the constant's `sizeof`.
 private def fold_use_fold_literal(program : Program, subject : String) : NumberLiteral
   fold = program.layout_folds.values.find! { |f| f.kind == LayoutFoldKind::Size && f.subject.to_s == subject }
   fold.node.as(ExpandableNode).expanded.as(NumberLiteral)
@@ -163,7 +208,9 @@ describe "Semantic: layout fold uses" do
 
     it "does not refuse a derived type argument whose result is still equal (control 4)" do
       program = fold_use_program(true)
-      fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\nW = (X & 16) &+ 4\n", fold_use_growth + "buf = StaticArray(UInt8, W).new\n"))
+      # `&*` by zero reads X and gives 0 whatever X is, so W is 4 both before and
+      # after growth. Written without parentheses or a bitwise mask.
+      fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\nW = X &* 0 &+ 4\n", fold_use_growth + "buf = StaticArray(UInt8, W).new\n"))
 
       fold_use_literal(program, "X").value.should eq "32"
       fold_use_const(program, "W").compile_time_value.should eq 4
@@ -188,29 +235,53 @@ describe "Semantic: layout fold uses" do
 
     it "refuses a def return type built from a stale constant (control 6)" do
       program = fold_use_program(true)
-      body = fold_use_derived + "def make : StaticArray(UInt8, Y)\n  uninitialized StaticArray(UInt8, 9)\nend\n"
+      body = fold_use_derived + "def make : StaticArray(UInt8, Y)\n  StaticArray(UInt8, 9).new\nend\n"
       expect_raises(Iyi::TypeException, /when it was used as a type argument, but/) do
         fold_use_semantic(program, fold_use_source(body, fold_use_growth + "make\n"))
       end
     end
 
-    it "refuses a macro that reads a stale constant (control 7)" do
+    it "refuses a macro that consumed a stale value after cleanup (control 7)" do
       program = fold_use_program(true)
+      # The macro is in the `raise` the cleanup types, after X is a cleaned
+      # constant and after the growth. Its output `8` differs from `32`.
       expect_raises(Iyi::TypeException, /a macro read/) do
-        fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\n", fold_use_growth + "z = {{ X }}\n"))
+        fold_use_after_cleanup(program, fold_use_growth + "z = {{ X }}\n")
       end
     end
 
-    it "refuses a tuple index that a stale constant selects (control 8)" do
+    it "does not refuse a macro that reads a changed value and never uses it (control 7, unused read)" do
+      program = fold_use_program(true)
+      # The macro reads X into a macro variable and never uses it, so its output
+      # `1` is the same whatever X is. Only a read whose value is consumed can differ.
+      fold_use_after_cleanup(program, fold_use_growth + "{% unused = X %}z = {{ 1 }}\n")
+
+      fold_use_literal(program, "X").value.should eq "32"
+      fold_use_census(program)
+    end
+
+    it "does not refuse a macro whose output is the same under the final layout (control 7, same output)" do
+      program = fold_use_program(true)
+      # `&*` by zero: the macro's output is 0 whatever X is.
+      fold_use_after_cleanup(program, fold_use_growth + "z = {{ X &* 0 }}\n")
+
+      fold_use_literal(program, "X").value.should eq "32"
+      fold_use_census(program)
+    end
+
+    it "refuses a tuple index that a stale constant selects after cleanup (control 8)" do
       program = fold_use_program(true)
       expect_raises(Iyi::TypeException, /typing read/) do
-        fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\n", fold_use_growth + "t = {1, 2, 3, 4, 5, 6, 7, 8, 9}\nt[X]\n"))
+        fold_use_after_cleanup(program, fold_use_growth + "t = {1, 2, 3, 4, 5, 6, 7, 8, 9}\nt[X]\n")
       end
     end
 
     it "does not refuse a fold whose value no type takes (control 9)" do
       program = fold_use_program(true)
-      body = "struct Foo(T)\nend\nf = Foo(sizeof({Int32, M}) &+ 1)\n" + fold_use_growth
+      # A type argument whose value no type takes: `Foo` is built from the type of
+      # the computed size, `Int32`. Type arguments take no operators, so the
+      # computed size is given through `typeof`.
+      body = "struct Foo(T)\nend\nf = Foo(typeof(sizeof({Int32, M}) &+ 1)).new\n" + fold_use_growth
       fold_use_semantic(program, fold_use_source(body))
 
       fold_use_fold_literal(program, "{Int32, M}").value.should eq "32"
@@ -227,8 +298,10 @@ describe "Semantic: layout fold uses" do
 
     it "refuses a nested derivation whose input moved (nested)" do
       program = fold_use_program(true)
+      # Z derives from Y, which derives from X. Each step is a constant read by
+      # name, so no parentheses are needed.
       expect_raises(Iyi::TypeException, /when it was used as a type argument, but/) do
-        fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\nZ = (X &+ 1) &* 2\n", fold_use_growth + "buf = StaticArray(UInt8, Z).new\n"))
+        fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\nY = X &+ 1\nZ = Y &* 2\n", fold_use_growth + "buf = StaticArray(UInt8, Z).new\n"))
       end
     end
 
@@ -242,22 +315,39 @@ describe "Semantic: layout fold uses" do
       error.inner.try(&.message).to_s.should contain "measured 8 here"
     end
 
-    it "refuses an adoption made before the first settle (control 10, native half)" do
+    it "refuses an adopted literal that is still stale (control 10, adoption)" do
       program = fold_use_program(true)
+      # X is cleaned in the first pass, so the second pass's type argument adopts
+      # the very literal the constant holds. Growth in the second pass makes it stale.
+      fold_use_semantic(program, "require \"primitives\"\n" + fold_use_module + "X = sizeof({Int32, M})\n")
       expect_raises(Iyi::TypeException, /when it was used as a type argument, but/) do
-        fold_use_semantic(program, fold_use_module + "X = sizeof({Int32, M})\nbuf = StaticArray(UInt8, X).new\n" + fold_use_growth, cleanup: false)
-        program.settle_layout_folds(patch: true)
+        fold_use_semantic(program, fold_use_growth + "buf = StaticArray(UInt8, X).new\n")
       end
     end
 
-    it "accepts an adoption after a correction, and a second settle (control 10)" do
+    it "accepts an adopted literal that was corrected before it was adopted (control 10, adoption after correction)" do
+      program = fold_use_program(true)
+      fold_use_declare_x(program, fold_use_growth)
+
+      literal = fold_use_literal(program, "X")
+      literal.value.should eq "32"
+      literal.should be(fold_use_fold_literal(program, "{Int32, M}"))
+
+      fold_use_semantic(program, "buf = StaticArray(UInt8, X).new\n")
+
+      literal.value.should eq "32"
+      fold_use_static_array(program, 32).type_vars["N"].should be(literal)
+      fold_use_census(program)
+    end
+
+    it "accepts a fresh use of the corrected value made after the first settle (control 10, fresh use)" do
       program = fold_use_program(true)
       fold_use_semantic(program, fold_use_module + "X = sizeof({Int32, M})\n" + fold_use_growth, cleanup: false)
       program.settle_layout_folds(patch: true)
-      literal = fold_use_literal(program, "X")
+      literal = fold_use_fold_literal(program, "{Int32, M}")
       literal.value.should eq "32"
 
-      fold_use_semantic(program, "buf = StaticArray(UInt8, X).new\n", cleanup: false)
+      fold_use_semantic(program, "buf = StaticArray(UInt8, sizeof({Int32, M})).new\n", cleanup: false)
       program.settle_layout_folds(patch: true)
 
       literal.value.should eq "32"
@@ -267,7 +357,7 @@ describe "Semantic: layout fold uses" do
     it "refuses an enum value computed from a stale constant (control 11)" do
       program = fold_use_program(true)
       first, first_processor = program.top_level_semantic(program.normalize(parse(fold_use_module + "X = sizeof({Int32, M})\n")))
-      program.semantic_after_top_level(first, first_processor)
+      first = program.semantic_after_top_level(first, first_processor)
 
       second, second_processor = program.top_level_semantic(program.normalize(parse("enum E\n  A = X\nend\n" + fold_use_growth + "e = E::A\n")))
       expect_raises(Iyi::TypeException, /enum value/) do
@@ -299,30 +389,41 @@ describe "Semantic: layout fold uses" do
 
     it "does not refuse a stale def return type, and keeps its input (control 6, crystal)" do
       program = fold_use_program(false)
-      body = fold_use_derived + "def make : StaticArray(UInt8, Y)\n  uninitialized StaticArray(UInt8, 9)\nend\n"
+      body = fold_use_derived + "def make : StaticArray(UInt8, Y)\n  StaticArray(UInt8, 9).new\nend\n"
       fold_use_semantic(program, fold_use_source(body, fold_use_growth + "make\n"))
 
       fold_use_literal(program, "X").value.should eq "8"
     end
 
-    it "does not refuse a stale macro, and keeps its input (control 7, crystal)" do
+    it "does not refuse a stale macro after cleanup, and keeps its input (control 7, crystal)" do
       program = fold_use_program(false)
-      fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\n", fold_use_growth + "z = {{ X }}\n"))
+      fold_use_after_cleanup(program, fold_use_growth + "z = {{ X }}\n")
 
       fold_use_literal(program, "X").value.should eq "8"
     end
 
-    it "does not refuse a stale tuple index, and keeps its input (control 8, crystal)" do
+    it "does not refuse a stale tuple index after cleanup, and keeps its input (control 8, crystal)" do
       program = fold_use_program(false)
-      fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\n", fold_use_growth + "t = {1, 2, 3, 4, 5, 6, 7, 8, 9}\nt[X]\n"))
+      fold_use_after_cleanup(program, fold_use_growth + "t = {1, 2, 3, 4, 5, 6, 7, 8, 9}\nt[X]\n")
 
       fold_use_literal(program, "X").value.should eq "8"
+    end
+
+    it "keeps an adopted stale literal and the type argument that holds it (control 10, crystal)" do
+      program = fold_use_program(false)
+      fold_use_semantic(program, "require \"primitives\"\n" + fold_use_module + "X = sizeof({Int32, M})\n")
+      fold_use_semantic(program, fold_use_growth + "buf = StaticArray(UInt8, X).new\n")
+
+      literal = fold_use_literal(program, "X")
+      literal.value.should eq "8"
+      fold_use_static_array(program, 8).type_vars["N"].should be(literal)
+      fold_use_census(program)
     end
 
     it "keeps the enum value and the constant it was computed from (control 11, crystal)" do
       program = fold_use_program(false)
       first, first_processor = program.top_level_semantic(program.normalize(parse(fold_use_module + "X = sizeof({Int32, M})\n")))
-      program.semantic_after_top_level(first, first_processor)
+      first = program.semantic_after_top_level(first, first_processor)
 
       second, second_processor = program.top_level_semantic(program.normalize(parse("enum E\n  A = X\nend\n" + fold_use_growth + "e = E::A\n")))
       program.semantic_after_top_level(second, second_processor)
@@ -333,22 +434,33 @@ describe "Semantic: layout fold uses" do
 
     it "keeps a nested derivation's input and computes its value from it (nested, crystal)" do
       program = fold_use_program(false)
-      fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\nZ = (X &+ 1) &* 2\n", fold_use_growth + "buf = StaticArray(UInt8, Z).new\n"))
+      fold_use_semantic(program, fold_use_source("X = sizeof({Int32, M})\nY = X &+ 1\nZ = Y &* 2\n", fold_use_growth + "buf = StaticArray(UInt8, Z).new\n"))
 
       fold_use_literal(program, "X").value.should eq "8"
       fold_use_const(program, "Z").compile_time_value.should eq 18
       fold_use_census(program)
     end
 
-    it "reports each stale use it keeps, with the layouts it pins (control 12)" do
+    it "reports each stale use it keeps, and pins the expression fold that shares its layout (control 12)" do
       previous = ENV["IYI_LAYOUT_FOLD_REPORT"]?
       ENV["IYI_LAYOUT_FOLD_REPORT"] = "1"
       begin
         program = fold_use_program(false)
-        fold_use_semantic(program, fold_use_source(fold_use_derived, fold_use_growth + "buf = StaticArray(UInt8, Y).new\n"))
+        # `s` is a second expression fold of the same layout as X. It is not a use,
+        # so it is pinned only because it shares the component that the type
+        # argument through Y pins.
+        fold_use_semantic(program, fold_use_source(fold_use_derived + "s = sizeof({Int32, M})\n", fold_use_growth + "buf = StaticArray(UInt8, Y).new\n"))
 
         program.layout_fold_lines.any?(&.includes?("layout fold use stale")).should be_true
-        program.layout_fold_lines.any?(&.includes?("tied to type argument")).should be_true
+
+        folds = program.layout_folds.values.select { |f| f.kind == LayoutFoldKind::Size && f.subject.to_s == "{Int32, M}" }
+        folds.size.should eq 2
+        shared = folds.last
+        shared.node.as(ExpandableNode).expanded.as(NumberLiteral).value.should eq "8"
+        fold_use_literal(program, "X").value.should eq "8"
+
+        tied = program.layout_fold_lines.select(&.includes?("in main: folded 8, final 32: kept (tied to type argument"))
+        tied.size.should eq 2
       ensure
         if previous
           ENV["IYI_LAYOUT_FOLD_REPORT"] = previous
