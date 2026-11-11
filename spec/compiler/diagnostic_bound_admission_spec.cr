@@ -6,18 +6,30 @@ require "../spec_helper"
 #    and the source-bearing classification. The spec reopens Iyi::IyiMod, as
 #    diagnostic_consumer_operator_structural_spec.cr does, so production gains no entry point.
 # 2. Captured artifacts: real ledger fixtures, built the way diagnostic_bound_authority_spec.cr builds them,
-#    run through IyiMod.validate_diagnostic_fragments! and IyiMod.write. These cover A4, the full validate pass
-#    with and without an issuer, the ConstantTarget group, the class-variable check, and the signature producers
-#    (SemanticSignatureType return and parameter, SynthesizedConstructor, ConstantAccessor) over Def-rooted headers.
+#    run through IyiMod.validate_diagnostic_fragments! and IyiMod.write.
 #
-# Refusals raise the §3.9 text. A1 names the producer kind. H1 is the expected result of a correct section, and
-# it stays the capture hold: no fixture here calls an artifact validated.
+# Fixture facts that matter here. The artifact's source is a Crystal file, so its fragments are in Crystal
+# lexical mode; an `.iyi` path would make every fragment in Iyi mode and every event would be refused. The
+# constant head is built as the landed constant-line recipe builds it: an Assign/constant anchor that shares
+# the first path segment's token event and carries a HeadOf attachment (ConstantAssignHead).
+#
+# A claim whose token does not match the bytes it is placed over never becomes a fragment: the fragment
+# builder refuses it while it measures the bytes (ArgumentError "fragment name differs from measured bytes",
+# or DiagnosticDestinationSyntaxError "rendered token does not match measured writer extent"). Those controls
+# assert the builder's refusal, which is the authentic refusal, and they say so. Admission's own A1 checks
+# are reached by byte-consistent misplacements, which the controls below also cover.
+#
+# Refusals raise the §3.9 text. A1 names the producer kind. H1 is the expected result of a correct section,
+# and it stays the capture hold: no fixture here calls an artifact validated.
 
 H1_MESSAGE = "artifact diagnostic capture authority is unavailable"
 A4_MESSAGE = "bound section was not verified by its issuer"
 H3_MESSAGE = "bound projection requires authoritative source inventory"
 A1_PREFIX  = "bound projection is not at its declaration site: "
 ADM_MODULE = "app/greeter"
+ADM_SOURCE = "/src/app/greeter.cr"
+MEASURED_NAME_MESSAGE = "fragment name differs from measured bytes"
+MEASURED_TOKEN_MESSAGE = "rendered token does not match measured writer extent"
 
 class AdmRecomputingAuthority < Iyi::DiagnosticProjectionAuthority
   def recompute(request : Iyi::DiagnosticProjectionRequest) : Iyi::DiagnosticBoundProducer
@@ -48,7 +60,7 @@ def adm_copy(producer : Iyi::DiagnosticBoundProducer) : Iyi::DiagnosticBoundProd
 end
 
 def adm_written(offset : Int32, kind : String, role : String) : Iyi::DiagnosticOrigin::Written
-  Iyi::DiagnosticOrigin::Written.new(ADM_MODULE, "/src/app/greeter.iyi", offset, kind, role)
+  Iyi::DiagnosticOrigin::Written.new(ADM_MODULE, ADM_SOURCE, offset, kind, role)
 end
 
 # A registered source with no text. Every source-free producer renders from it.
@@ -83,7 +95,7 @@ def adm_artifact(initialiser : String = "",
                  functions : Array(Iyi::IyiMod::Signature) = [] of Iyi::IyiMod::Signature) : Iyi::IyiMod::Artifact
   Iyi::IyiMod::Artifact.new(
     module_name: ADM_MODULE,
-    source_path: "/src/app/greeter.iyi",
+    source_path: ADM_SOURCE,
     compiler_version: "1.22.0-dev+abc1234",
     target_triple: "x86_64-pc-linux-gnu",
     flags: ["bits64", "linux"],
@@ -118,21 +130,26 @@ def adm_constant_rendered(ledger : Iyi::DiagnosticProjectionLedger, origin : Iyi
   ledger.render(child, producer, adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
 end
 
-# The initialiser fragment a constant target is written in: the assignment's head, when *head* is set, and the
-# segment anchors at the indices in *keep*. The segments keep the ledger's issued origins and offsets.
+# The initialiser fragment a constant target is written in, built as the landed constant-line recipe builds it.
+# The segments at the indices in *keep* keep the ledger's issued origins and offsets. When *head* is set, the
+# first kept segment must start at 0; the Assign/constant head then shares that segment's token event and
+# points at it through a ConstantAssignHead attachment.
 def adm_constant_fragment(rendered : Iyi::DiagnosticRenderedFragment, origin : Iyi::DiagnosticOrigin::Written,
                           head : Bool, keep : Array(Int32)) : Iyi::DiagnosticRenderedFragment
   text = rendered.text
   builder = Iyi::DiagnosticFragmentBuilder.new("Crystal")
-  if head
-    builder.add_written_anchor(0, 5, text, Iyi::DiagnosticRenderedLexContext::TypeName, "Assign", "constant", origin,
-      {} of Iyi::DiagnosticNameSlot => Array(Iyi::DiagnosticNameValue))
-  end
   rendered.data.anchors.each_with_index do |anchor, index|
     next unless keep.includes?(index)
     token = anchor.name_slots.values.flatten.first.rendered_text
     builder.add_written_anchor(anchor.offset, anchor.offset + token.bytesize, text,
       Iyi::DiagnosticRenderedLexContext::TypeName, "Name", "path_segment", anchor.origin.not_nil!, anchor.name_slots)
+  end
+  if head
+    first = builder.anchor_at(0)
+    head_attachment = Iyi::DiagnosticFragmentAttachment::HeadOf.new(Iyi::DiagnosticHeadRule::ConstantAssignHead,
+      Iyi::DiagnosticFragmentHead::Anchor.new(0).as(Iyi::DiagnosticFragmentHead))
+    builder.add_anchor(Iyi::DiagnosticAnchor.new(0, "Assign", "constant", origin,
+      {} of Iyi::DiagnosticNameSlot => Array(Iyi::DiagnosticNameValue), first.event_index, head_attachment))
   end
   Iyi::DiagnosticRenderedFragment.new(text, builder.finish_data(text))
 end
@@ -182,7 +199,8 @@ def adm_accepted(ledger : Iyi::DiagnosticProjectionLedger, site : Iyi::Diagnosti
 end
 
 # A misplaced header: the same anchors at the wrong fields, held directly as the section's fragment. Admission
-# reads the section; the ledger's own refusals are not the subject of these controls.
+# reads the section; the ledger's own refusals are not the subject of these controls. Where a claim's token does
+# not match the bytes it lands on, the builder refuses here, before admission.
 def adm_misplaced(signature : Iyi::IyiMod::Signature,
                   placements : Array({Iyi::DiagnosticRenderedFragment, Int32})) : Iyi::IyiMod::DiagnosticSection
   text = Iyi::IyiMod.render_signature(signature)
@@ -213,7 +231,7 @@ module Iyi::IyiMod
 end
 
 def dab_producer(type : String = "Int32") : Iyi::DiagnosticBoundProducer::SemanticSignatureType
-  origin = Iyi::DiagnosticOrigin::Written.new(ADM_MODULE, "/src/app/greeter.iyi", 0, "Def", "keyword")
+  origin = Iyi::DiagnosticOrigin::Written.new(ADM_MODULE, ADM_SOURCE, 0, "Def", "keyword")
   Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "parameter_restriction", 0, type)
 end
 
@@ -593,39 +611,11 @@ describe "S6 admission over captured artifacts" do
       end
     end
 
-    # Misplaced controls. Each builds the claim through the ledger, then places it at a field it does not belong to.
+    # Misplaced controls. Byte-consistent misplacements reach admission and must raise its A1. A claim whose
+    # token does not match the bytes it lands on is refused by the fragment builder while the header is built,
+    # so those controls assert the builder's refusal instead.
 
-    it "refuses a return type whose written return differs from the claim" do
-      ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
-      origin = adm_written(0, "Def", "keyword")
-      signature = adm_signature("greet", origin, return_type: "Int64")
-      producer = Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "return_type", nil, "Int32")
-      rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
-        adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
-      field = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::ReturnType, -1)
-      artifact = adm_artifact(functions: [signature])
-      artifact.diagnostic_provenance = adm_misplaced(signature, [{rendered, field.start_offset}])
-      expect_raises(ArgumentError, A1_PREFIX + "SemanticSignatureType") do
-        Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
-      end
-    end
-
-    it "refuses a return type anchored one byte before the return field" do
-      ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
-      origin = adm_written(0, "Def", "keyword")
-      signature = adm_signature("greet", origin, return_type: "Int32")
-      producer = Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "return_type", nil, "Int32")
-      rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
-        adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
-      field = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::ReturnType, -1)
-      artifact = adm_artifact(functions: [signature])
-      artifact.diagnostic_provenance = adm_misplaced(signature, [{rendered, field.start_offset - 1}])
-      expect_raises(ArgumentError, A1_PREFIX + "SemanticSignatureType") do
-        Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
-      end
-    end
-
-    it "refuses a return type anchored on a parameter restriction" do
+    it "refuses a return type anchored on a parameter restriction (byte-consistent, reaches admission)" do
       ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
       origin = adm_written(0, "Def", "keyword")
       signature = adm_signature("greet", origin, parameters: ["x : Int32"], return_type: "Int32")
@@ -641,26 +631,10 @@ describe "S6 admission over captured artifacts" do
       end
     end
 
-    it "refuses a parameter restriction whose written type differs from the claim" do
+    it "refuses a parameter restriction anchored on the return type (byte-consistent, reaches admission)" do
       ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
       origin = adm_written(0, "Def", "keyword")
-      signature = adm_signature("greet", origin, parameters: ["x : Int64"])
-      producer = Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "parameter_restriction", 0, "Int32")
-      rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
-        adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
-      param = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::Parameter, 0)
-      base = param.start_offset + param.text.byte_index(" : ").not_nil! + 3
-      artifact = adm_artifact(functions: [signature])
-      artifact.diagnostic_provenance = adm_misplaced(signature, [{rendered, base}])
-      expect_raises(ArgumentError, A1_PREFIX + "SemanticSignatureType") do
-        Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
-      end
-    end
-
-    it "refuses a parameter restriction anchored on the return type" do
-      ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
-      origin = adm_written(0, "Def", "keyword")
-      signature = adm_signature("greet", origin, parameters: ["x : Int32"], return_type: "Int64")
+      signature = adm_signature("greet", origin, parameters: ["x : Int32"], return_type: "Int32")
       producer = Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "parameter_restriction", 0, "Int32")
       rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
         adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
@@ -672,7 +646,62 @@ describe "S6 admission over captured artifacts" do
       end
     end
 
-    it "refuses a definition name anchored on the receiver" do
+    it "refuses a ConstantAccessor name anchored on the receiver (byte-consistent, reaches admission)" do
+      ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+      origin = Iyi::DiagnosticOrigin::Synthetic.new(adm_written(0, "Assign", "constant"), "constant_accessor", "getter")
+      signature = adm_signature("self", origin, receiver: "self")
+      producer = Iyi::DiagnosticBoundProducer::ConstantAccessor.new(origin, "", "SELF", "Name")
+      rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
+        adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
+      receiver = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::Receiver, -1)
+      artifact = adm_artifact(functions: [signature])
+      artifact.diagnostic_provenance = adm_misplaced(signature, [{rendered, receiver.start_offset}])
+      expect_raises(ArgumentError, A1_PREFIX + "ConstantAccessor") do
+        Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+      end
+    end
+
+    it "refuses a return type whose written return differs from the claim (builder refuses the bytes)" do
+      ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+      origin = adm_written(0, "Def", "keyword")
+      signature = adm_signature("greet", origin, return_type: "Int64")
+      producer = Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "return_type", nil, "Int32")
+      rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
+        adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
+      field = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::ReturnType, -1)
+      expect_raises(ArgumentError, MEASURED_NAME_MESSAGE) do
+        adm_misplaced(signature, [{rendered, field.start_offset}])
+      end
+    end
+
+    it "refuses a return type anchored one byte before the return field (builder refuses the extent)" do
+      ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+      origin = adm_written(0, "Def", "keyword")
+      signature = adm_signature("greet", origin, return_type: "Int32")
+      producer = Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "return_type", nil, "Int32")
+      rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
+        adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
+      field = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::ReturnType, -1)
+      expect_raises(Iyi::DiagnosticDestinationSyntaxError, MEASURED_TOKEN_MESSAGE) do
+        adm_misplaced(signature, [{rendered, field.start_offset - 1}])
+      end
+    end
+
+    it "refuses a parameter restriction whose written type differs from the claim (builder refuses the bytes)" do
+      ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
+      origin = adm_written(0, "Def", "keyword")
+      signature = adm_signature("greet", origin, parameters: ["x : Int64"])
+      producer = Iyi::DiagnosticBoundProducer::SemanticSignatureType.new(origin, "parameter_restriction", 0, "Int32")
+      rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
+        adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
+      param = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::Parameter, 0)
+      base = param.start_offset + param.text.byte_index(" : ").not_nil! + 3
+      expect_raises(ArgumentError, MEASURED_NAME_MESSAGE) do
+        adm_misplaced(signature, [{rendered, base}])
+      end
+    end
+
+    it "refuses a definition name anchored on the receiver (builder refuses the extent)" do
       ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
       origin = adm_written(0, "Def", "keyword")
       signature = adm_signature("new", origin, receiver: "self")
@@ -680,14 +709,12 @@ describe "S6 admission over captured artifacts" do
       rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
         adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
       receiver = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::Receiver, -1)
-      artifact = adm_artifact(functions: [signature])
-      artifact.diagnostic_provenance = adm_misplaced(signature, [{rendered, receiver.start_offset}])
-      expect_raises(ArgumentError, A1_PREFIX + "SynthesizedConstructor") do
-        Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+      expect_raises(Iyi::DiagnosticDestinationSyntaxError, MEASURED_TOKEN_MESSAGE) do
+        adm_misplaced(signature, [{rendered, receiver.start_offset}])
       end
     end
 
-    it "refuses a definition name whose constructor is not named new" do
+    it "refuses a definition name whose constructor is not named new (builder refuses the extent)" do
       ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
       origin = adm_written(0, "Def", "keyword")
       signature = adm_signature("build", origin, receiver: "self")
@@ -695,29 +722,12 @@ describe "S6 admission over captured artifacts" do
       rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
         adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
       name = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::Name, -1)
-      artifact = adm_artifact(functions: [signature])
-      artifact.diagnostic_provenance = adm_misplaced(signature, [{rendered, name.start_offset}])
-      expect_raises(ArgumentError, A1_PREFIX + "SynthesizedConstructor") do
-        Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+      expect_raises(Iyi::DiagnosticDestinationSyntaxError, MEASURED_TOKEN_MESSAGE) do
+        adm_misplaced(signature, [{rendered, name.start_offset}])
       end
     end
 
-    it "refuses a ConstantAccessor name anchored on the receiver" do
-      ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
-      origin = Iyi::DiagnosticOrigin::Synthetic.new(adm_written(0, "Assign", "constant"), "constant_accessor", "getter")
-      signature = adm_signature("value", origin, receiver: "self")
-      producer = Iyi::DiagnosticBoundProducer::ConstantAccessor.new(origin, "", "VALUE", "Name")
-      rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
-        adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
-      receiver = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::Receiver, -1)
-      artifact = adm_artifact(functions: [signature])
-      artifact.diagnostic_provenance = adm_misplaced(signature, [{rendered, receiver.start_offset}])
-      expect_raises(ArgumentError, A1_PREFIX + "ConstantAccessor") do
-        Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
-      end
-    end
-
-    it "refuses a ConstantAccessor name whose signature is not the accessor's name" do
+    it "refuses a ConstantAccessor name whose signature is not the accessor's name (builder refuses the bytes)" do
       ledger = Iyi::DiagnosticProjectionLedger.new(AdmRecomputingAuthority.new)
       origin = Iyi::DiagnosticOrigin::Synthetic.new(adm_written(0, "Assign", "constant"), "constant_accessor", "getter")
       signature = adm_signature("other", origin, receiver: "self")
@@ -725,10 +735,8 @@ describe "S6 admission over captured artifacts" do
       rendered = ledger.render(ledger.open_site("signature", ADM_MODULE, nil, nil, origin), producer,
         adm_empty(ledger), Iyi::DiagnosticByteSpan.new(0, 0), "Crystal")
       name = adm_field(signature, Iyi::IyiMod::DiagnosticSignatureFieldKind::Name, -1)
-      artifact = adm_artifact(functions: [signature])
-      artifact.diagnostic_provenance = adm_misplaced(signature, [{rendered, name.start_offset}])
-      expect_raises(ArgumentError, A1_PREFIX + "ConstantAccessor") do
-        Iyi::IyiMod.validate_diagnostic_fragments!(artifact, ledger)
+      expect_raises(ArgumentError, MEASURED_NAME_MESSAGE) do
+        adm_misplaced(signature, [{rendered, name.start_offset}])
       end
     end
   end
