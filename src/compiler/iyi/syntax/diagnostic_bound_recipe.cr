@@ -141,7 +141,7 @@ module Iyi
     # Path target: an Assign/constant anchor on the path's head token, which
     # points at the path's first name anchor. The origin is this constant
     # site's declaration origin.
-    def constant_line(path : DiagnosticBoundFragment, value : DiagnosticBoundFragment, pub : Bool = false) : DiagnosticBoundFragment
+    def constant_line(path : DiagnosticBoundFragment, value : DiagnosticBoundFragment, exported : Bool = false) : DiagnosticBoundFragment
       declaration_origin = @site.declaration_origin || raise ArgumentError.new("constant line lacks a declaration origin")
       raise ArgumentError.new("constant line must be written at a constant site") unless @site.kind == "constant"
       path_rendered = registered!(path)
@@ -149,7 +149,7 @@ module Iyi
       io = IO::Memory.new
       builder = DiagnosticFragmentBuilder.new(@lexical_mode)
       offset = 0
-      if pub
+      if exported
         io << "pub "
         offset = 4
       end

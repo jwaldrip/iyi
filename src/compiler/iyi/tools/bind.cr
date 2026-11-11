@@ -4342,7 +4342,7 @@ module Iyi
                                       else
                                         const_recipe.plain(value)
                                       end
-                     const_recipe.constant_line(path_fragment, value_fragment, pub: true)
+                     const_recipe.constant_line(path_fragment, value_fragment, exported: true)
                    end
         lines << {line_text, fragment}
       when NamedType
