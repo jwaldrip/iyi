@@ -471,7 +471,9 @@ describe "diagnostic bound projection authority" do
       expect_raises(ArgumentError, "bound projection requires authoritative source inventory") do
         Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, SpecInventory.new(twin))
       end
-      Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, SpecInventory.new(sourced)).should be_nil
+      inventory = SpecInventory.new(sourced)
+      inventory.attests?(sourced).should be_true
+      Iyi::DiagnosticBoundProjection.require_source_inventory!(sourced, inventory).should be_nil
     end
 
     # N8: inputs refused before the authority never reach it. Each case is a separate refusal.
@@ -594,18 +596,33 @@ describe "diagnostic bound projection authority" do
       error.message.should eq("bound fragment belongs to another site")
     end
 
-    # N14: a projection named in another anchor's slot lies outside the anchor it belongs to (R10).
+    # N14: a projection placed outside the anchor that owns it is refused (R10). A valid fragment cannot name a
+    # projection from an anchor it does not belong to: validate_canonical! refuses that first. So the guard is
+    # exercised on the reach walk's hits, which is where the ledger reads them.
     it "N14 refuses a projection placed outside its own anchor" do
       ledger = Iyi::DiagnosticProjectionLedger.new(SpecBoundAuthority.new)
       initialiser = ledger.open_site("initialiser", "")
       before, _ = spec_names(ledger, "Root::Thing", [{0, 4}, {6, 11}])
-      projection = spec_render(ledger, initialiser, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11).data.anchors.first.origin.not_nil!.as(Iyi::DiagnosticOrigin::DerivedName)
-      written = spec_written(6, "Name", "path_segment")
-      misplaced = spec_shared_fragment("Root::Thing", [{0, 4}, {6, 11}], [projection.as(Iyi::DiagnosticOrigin), written], projection)
-      error = expect_raises(ArgumentError) do
-        ledger.compose(initialiser, misplaced, [] of Iyi::DiagnosticRenderedFragment)
+      issued = spec_render(ledger, initialiser, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11)
+      projection = issued.data.anchors.first.origin.not_nil!.as(Iyi::DiagnosticOrigin::DerivedName)
+      anchors = issued.data.anchors
+      # Anchor 1 names the projection that anchor 0 owns.
+      expect_raises(ArgumentError, "bound projection lies outside its anchor") do
+        Iyi::DiagnosticProjectionReach.owners([
+          Iyi::DiagnosticProjectionReach::Hit.new(projection, :anchor_origin, 0),
+          Iyi::DiagnosticProjectionReach::Hit.new(projection, :name_slot, 1),
+        ], anchors)
       end
-      error.message.should eq("bound projection lies outside its anchor")
+      # The projection is nested under an origin that is not an anchor's own origin, so no anchor owns it.
+      expect_raises(ArgumentError, "bound projection lies outside its anchor") do
+        Iyi::DiagnosticProjectionReach.owners([Iyi::DiagnosticProjectionReach::Hit.new(projection, :nested, 0)], anchors)
+      end
+      # Control: the owner's own name slot is placed correctly, and the owner map records it.
+      owners = Iyi::DiagnosticProjectionReach.owners([
+        Iyi::DiagnosticProjectionReach::Hit.new(projection, :anchor_origin, 0),
+        Iyi::DiagnosticProjectionReach::Hit.new(projection, :name_slot, 0),
+      ], anchors)
+      owners[projection]?.should eq(0)
     end
 
     # N15: a projection placed twice in one fragment is refused (R9).
@@ -614,8 +631,8 @@ describe "diagnostic bound projection authority" do
       initialiser = ledger.open_site("initialiser", "")
       before, _ = spec_names(ledger, "Root::Thing", [{0, 4}, {6, 11}])
       projection = spec_render(ledger, initialiser, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11).data.anchors.first.origin.not_nil!.as(Iyi::DiagnosticOrigin::DerivedName)
-      # One issued projection is the origin of two anchors. Both spans are well formed, so only R9 refuses the fragment.
-      doubled = spec_shared_fragment("Root::Thing", [{0, 4}, {6, 11}], [projection.as(Iyi::DiagnosticOrigin), projection.as(Iyi::DiagnosticOrigin)], projection)
+      # One issued projection is the origin of two anchors at two distinct positions. Each span holds its rendered bytes.
+      doubled = spec_shared_fragment("Thing::Thing", [{0, 5}, {7, 12}], [projection.as(Iyi::DiagnosticOrigin), projection.as(Iyi::DiagnosticOrigin)], projection)
       error = expect_raises(ArgumentError) do
         ledger.compose(initialiser, doubled, [] of Iyi::DiagnosticRenderedFragment)
       end
@@ -806,11 +823,14 @@ describe "diagnostic bound projection authority" do
       ledger = Iyi::DiagnosticProjectionLedger.new(SpecBoundAuthority.new)
       initialiser = ledger.open_site("initialiser", "")
       before, _ = spec_names(ledger, "Root::Thing", [{0, 4}, {6, 11}])
-      issued = spec_render(ledger, initialiser, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11)
-      doubled = Iyi::DiagnosticFragmentData.new(issued.text, issued.data.events, issued.data.anchors + issued.data.anchors)
+      projection = spec_render(ledger, initialiser, Iyi::DiagnosticBoundProducer::StripRoot.new("Root"), before, 11).data.anchors.first.origin.not_nil!.as(Iyi::DiagnosticOrigin::DerivedName)
+      doubled = spec_shared_fragment("Thing::Thing", [{0, 5}, {7, 12}], [projection.as(Iyi::DiagnosticOrigin), projection.as(Iyi::DiagnosticOrigin)], projection)
       expect_raises(ArgumentError, "bound projection appears more than once") do
-        ledger.compose(initialiser, Iyi::DiagnosticRenderedFragment.new(issued.text, doubled), [issued])
+        ledger.compose(initialiser, doubled, [] of Iyi::DiagnosticRenderedFragment)
       end
+      # A refused compose leaves nothing behind: the doubled fragment is not registered, and the projection stays issued.
+      ledger.registered?(doubled).should be_false
+      ledger.issued?(projection).should be_true
     end
   end
 end

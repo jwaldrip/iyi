@@ -1622,6 +1622,11 @@ module Iyi::IyiMod
     end
   end
 
+  # Where a carried diagnostic fragment sits in the artifact, recorded by the writer as it renders the key.
+  # The admission pass (S6) checks an empty-source claim against the site its producer names, from the
+  # artifact alone. *signature* is set for a signature header; *name* is the class variable's name.
+  record DiagnosticFragmentPlacement, site_kind : String, signature : Signature? = nil, name : String? = nil
+
   # The travelling bodies a declarations text is written with, and — when the
   # text is for a parser — the location pragmas that put each node of them
   # back where it was written (`SourcePosition`).
@@ -1645,13 +1650,16 @@ module Iyi::IyiMod
     getter travelled_lines = {} of String => Hash(Int32, String)
     @missing = {} of String => Bool
     @diagnostic_seen : Set(String)? = nil
+    @diagnostic_placements : Hash(String, DiagnosticFragmentPlacement)? = nil
 
     # *path* is the artifact's own, which a placed node keeps as its
     # `Location#artifact`.
     def initialize(@artifact : Artifact, @pragmas : Hash(Int32, Array(Lexer::LocPragma))? = nil,
                    @path : String? = nil, @diagnostic_regions : Array(DiagnosticRegion)? = nil,
-                   diagnostic_seen : Set(String)? = nil)
+                   diagnostic_seen : Set(String)? = nil,
+                   diagnostic_placements : Hash(String, DiagnosticFragmentPlacement)? = nil)
       @diagnostic_seen = diagnostic_seen || Set(String).new if @diagnostic_regions
+      @diagnostic_placements = diagnostic_placements if @diagnostic_regions
     end
 
     def diagnostic? : Bool
@@ -1667,12 +1675,15 @@ module Iyi::IyiMod
     end
 
     def write_carried(io : IO, key : String, text : String, positions : Array(Iyi::SourcePosition),
-                      prefix : String = "", lines : Bool = true) : Nil
+                      prefix : String = "", lines : Bool = true, placement : DiagnosticFragmentPlacement? = nil) : Nil
       if regions = @diagnostic_regions
         raise ArgumentError.new("duplicate diagnostic fragment use #{key}") unless @diagnostic_seen.not_nil!.add?(key)
         section = @artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
         fragment = section.fragments[key]? || raise ArgumentError.new("missing diagnostic fragment #{key}")
         memory = io.as?(IO::Memory) || raise ArgumentError.new("diagnostic rendering requires an in-memory input")
+        if placement && (placements = @diagnostic_placements)
+          placements[key] = placement
+        end
         regions << write_diagnostic(memory, text, positions, fragment, prefix, lines)
       else
         write(io, text, positions, prefix, lines)
@@ -2284,10 +2295,14 @@ module Iyi::IyiMod
     private def initialize(@definition : Def, @signature : Signature,
                            parameters : Array(DiagnosticSignatureParameterRecipe),
                            @block : DiagnosticSignatureParameterRecipe?,
-                           return_type_projections : Array(DiagnosticBoundProducer))
+                           return_type_projections : Array(DiagnosticBoundProducer),
+                           @header : DiagnosticFragment? = nil)
       @parameters = parameters.dup
       @return_type_projections = return_type_projections.dup
     end
+
+    # The header as the ledger issued it, when the recipe came from bind; nil for a source-only recipe.
+    getter header : DiagnosticFragment?
 
     def parameters : Array(DiagnosticSignatureParameterRecipe)
       @parameters.dup
@@ -2323,7 +2338,9 @@ module Iyi::IyiMod
     def self.from_bind(definition : Def, signature : Signature,
                        parameters : Array(DiagnosticSignatureParameterRecipe),
                        block : DiagnosticSignatureParameterRecipe?,
-                       return_type_projections : Array(DiagnosticBoundProducer)) : DiagnosticSignatureRecipe
+                       return_type_projections : Array(DiagnosticBoundProducer),
+                       header : DiagnosticFragment? = nil,
+                       issuer : Iyi::DiagnosticProjectionLedger? = nil) : DiagnosticSignatureRecipe
       validate_origin!(definition, signature)
       unless definition.name == signature.name && (definition.receiver.try(&.to_s) || "") == signature.receiver
         raise ArgumentError.new("bound signature name or receiver differs from definition")
@@ -2339,13 +2356,35 @@ module Iyi::IyiMod
       unless (definition.return_type.try(&.to_s) || "") == signature.return_type
         raise ArgumentError.new("bound return type projection lacks authoritative source validation")
       end
-      new(definition, signature, parameters, block, return_type_projections)
+      validate_issued_header!(definition, signature, header, issuer) if header
+      new(definition, signature, parameters, block, return_type_projections, header)
     end
 
     private def self.validate_origin!(definition : Def, signature : Signature) : Nil
       origin = definition.diagnostic_origin
       unless origin && origin.valid_for_anchor?("Def", "keyword") && origin == signature.diagnostic_origin
         raise ArgumentError.new("signature recipe lacks matching definition origin")
+      end
+    end
+
+    # An issued header is the signature's own rendering, with each projection in it issued by the ledger
+    # that minted it. Its root is the definition keyword, as validate_signature requires of every header.
+    private def self.validate_issued_header!(definition : Def, signature : Signature, header : DiagnosticFragment,
+                                             issuer : Iyi::DiagnosticProjectionLedger?) : Nil
+      ledger = issuer || raise ArgumentError.new("issued signature header requires its projection issuer")
+      unless header.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(IyiMod.render_signature(signature))
+        raise ArgumentError.new("issued signature header differs from its signature")
+      end
+      origin = definition.diagnostic_origin || raise ArgumentError.new("signature recipe lacks matching definition origin")
+      root_offset = (signature.visibility.empty? ? 0 : signature.visibility.bytesize + 1) + (signature.required ? 9 : 0)
+      roots = header.anchors.select { |anchor| anchor.offset == root_offset && anchor.kind == "Def" && anchor.role == "keyword" }
+      unless roots.size == 1 && roots.first.origin == origin
+        raise ArgumentError.new("signature diagnostic root does not match its intrinsic origin")
+      end
+      owners = Iyi::DiagnosticProjectionReach.owners(
+        Iyi::DiagnosticProjectionReach.hits(header.events, header.anchors), header.anchors)
+      owners.each_key do |projection|
+        raise ArgumentError.new(Iyi::DiagnosticBoundProjection::MSG_R8) unless ledger.issued?(projection)
       end
     end
 
@@ -3311,10 +3350,12 @@ module Iyi::IyiMod
   # the worst failure a build cache has: it is wrong, it is cached, and nothing
   # about it looks broken. Written to a sibling temporary and renamed, so a
   # reader sees either the old file or the new one.
-  def self.write(artifact : Artifact, path : String) : Nil
+  def self.write(artifact : Artifact, path : String, issuer : Iyi::DiagnosticProjectionLedger? = nil) : Nil
     sections = [] of {Section, Bytes}
     if diagnostic = artifact.diagnostic_provenance
-      validate_diagnostic_fragments!(artifact)
+      # A4: with an issuer, only a section the issuer verified is admitted.
+      raise Error.new("bound section was not verified by its issuer") if issuer && !issuer.verified?(diagnostic)
+      validate_diagnostic_fragments!(artifact, issuer)
       diagnostic.validate_objects!(artifact.object_code)
       diagnostic.validate_regexes!(artifact.regexes)
       raise Error.new("artifact diagnostic capture authority is unavailable")
@@ -3706,7 +3747,7 @@ module Iyi::IyiMod
         when Section::DiagnosticProvenance
           raise ArgumentError.new("duplicate diagnostic provenance section") if diagnostic
           diagnostic = DiagnosticSection.decode(payload)
-          raise Error.new("artifact diagnostic capture authority is unavailable")
+          # Admitted after Artifact.new (below), then refused as H2.
         else
           # Written by a later compiler, or a section this one does not need.
           # Skipping is the point of the table.
@@ -3734,6 +3775,8 @@ module Iyi::IyiMod
         validate_diagnostic_fragments!(artifact)
         section.validate_objects!(object_code) if want_object_code
         section.validate_regexes!(artifact.regexes)
+        # H2, after admission: a crafted or misplaced claim is refused by its placement first (A1).
+        raise Error.new("artifact diagnostic capture authority is unavailable")
       end
       artifact
     end
@@ -4023,8 +4066,10 @@ module Iyi::IyiMod
   # Empty for every module that has none, which is every iyi module: iyi has no
   # top level to write a `def` at. This is a `--crystal` shard's shape.
   def self.top_level_declarations(artifact : Artifact, io : IO, diagnostic_regions : Array(DiagnosticRegion)? = nil,
-                                  diagnostic_seen : Set(String)? = nil) : Nil
-    bodies = Bodies.new(artifact, diagnostic_regions: diagnostic_regions, diagnostic_seen: diagnostic_seen)
+                                  diagnostic_seen : Set(String)? = nil,
+                                  diagnostic_placements : Hash(String, DiagnosticFragmentPlacement)? = nil) : Nil
+    bodies = Bodies.new(artifact, diagnostic_regions: diagnostic_regions, diagnostic_seen: diagnostic_seen,
+      diagnostic_placements: diagnostic_placements)
     # The `fun`s first, and with their bodies: this is the one text outside the
     # module, which is the only scope a `fun` can be declared in. See
     # `Artifact#top_level_funs`.
@@ -4199,7 +4244,8 @@ module Iyi::IyiMod
     # puts the module's own code back in the namespace it was written in.
     unless artifact.initialiser.empty?
       io << '\n'
-      bodies.write_carried io, "initialiser", artifact.initialiser, artifact.initialiser_positions, lines: false
+      bodies.write_carried io, "initialiser", artifact.initialiser, artifact.initialiser_positions, lines: false,
+        placement: DiagnosticFragmentPlacement.new("initialiser")
       io << '\n'
     end
   end
@@ -4711,7 +4757,8 @@ module Iyi::IyiMod
     signature.annotations.each_with_index do |source, index|
       io << indent
       if bodies.diagnostic?
-        bodies.write_carried io, signature_annotation_fragment_key(container, signature, index), source, Bodies::NO_POSITIONS, lines: false
+        bodies.write_carried io, signature_annotation_fragment_key(container, signature, index), source, Bodies::NO_POSITIONS, lines: false,
+          placement: DiagnosticFragmentPlacement.new("signature_annotation")
       else
         io << source
       end
@@ -4722,7 +4769,8 @@ module Iyi::IyiMod
     header = render_signature(signature)
     if bodies.diagnostic?
       bodies.validate_signature container, signature
-      bodies.write_carried io, signature_fragment_key(container, signature), header, Bodies::NO_POSITIONS, lines: false
+      bodies.write_carried io, signature_fragment_key(container, signature), header, Bodies::NO_POSITIONS, lines: false,
+        placement: DiagnosticFragmentPlacement.new("signature", signature)
     else
       io << header
     end
@@ -4748,7 +4796,8 @@ module Iyi::IyiMod
         io << indent << "  nil\n"
       else
         if bodies.diagnostic?
-          bodies.write_carried io, signature_body_fragment_key(container, signature), body, bodies.positions(key), indent + "  "
+          bodies.write_carried io, signature_body_fragment_key(container, signature), body, bodies.positions(key), indent + "  ",
+            placement: DiagnosticFragmentPlacement.new("signature_body")
         else
           bodies.write io, body, bodies.positions(key), indent + "  "
         end
@@ -4812,7 +4861,8 @@ module Iyi::IyiMod
       io << " : " << class_var.type
     end
     io << " = "
-    bodies.write_carried(io, class_var_fragment_key(container, class_var.name), value, Bodies::NO_POSITIONS, lines: false)
+    bodies.write_carried(io, class_var_fragment_key(container, class_var.name), value, Bodies::NO_POSITIONS, lines: false,
+      placement: DiagnosticFragmentPlacement.new("class_var", name: class_var.name))
   end
 
   # The same line for a *dump*, where the annotations go beside it rather than
@@ -5411,16 +5461,207 @@ module Iyi::IyiMod
     "signature-body:#{signature_key.bytesize}:#{signature_key}"
   end
 
-  def self.validate_diagnostic_fragments!(artifact : Artifact) : Nil
+  # S6 admission. Every fragment key is walked as the writer walks it, which records where each carried
+  # fragment sits. Then every bound projection a fragment reaches is checked (§3.8): issued when an issuer
+  # is given, refused as H3 when source-bearing and unissued, and placed at its declaration site when it
+  # is an empty-source claim. Read and write both run this with the same placement rules.
+  def self.validate_diagnostic_fragments!(artifact : Artifact, issuer : Iyi::DiagnosticProjectionLedger? = nil) : Nil
     validate_signature_diagnostics!(artifact)
     section = artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
     seen = Set(String).new
     regions = [] of DiagnosticRegion
+    placements = {} of String => DiagnosticFragmentPlacement
     io = IO::Memory.new
-    write_declarations(artifact, io, Bodies.new(artifact, diagnostic_regions: regions, diagnostic_seen: seen))
-    top_level_declarations(artifact, IO::Memory.new, regions, seen)
+    write_declarations(artifact, io, Bodies.new(artifact, diagnostic_regions: regions, diagnostic_seen: seen, diagnostic_placements: placements))
+    top_level_declarations(artifact, IO::Memory.new, regions, seen, placements)
     section.validate_fragment_keys!(seen)
+    validate_projection_placements!(artifact, section, placements, issuer)
   end
+
+  # Producers that carry source text. Without an issuer they are H3, as decode refuses them.
+  def self.source_bearing_producer?(producer : Iyi::DiagnosticBoundProducer) : Bool
+    case producer
+    when Iyi::DiagnosticBoundProducer::StripRoot, Iyi::DiagnosticBoundProducer::ForeignType,
+         Iyi::DiagnosticBoundProducer::AliasType, Iyi::DiagnosticBoundProducer::SelfReturn,
+         Iyi::DiagnosticBoundProducer::ResolvedRestriction
+      true
+    else
+      false
+    end
+  end
+
+  private def self.validate_projection_placements!(artifact : Artifact, section : DiagnosticSection,
+                                                   placements : Hash(String, DiagnosticFragmentPlacement),
+                                                   issuer : Iyi::DiagnosticProjectionLedger?) : Nil
+    section.fragments.each do |key, fragment|
+      owners = Iyi::DiagnosticProjectionReach.owners(
+        Iyi::DiagnosticProjectionReach.hits(fragment.events, fragment.anchors), fragment.anchors)
+      owners.each do |origin, index|
+        derived = origin.as?(Iyi::DiagnosticOrigin::DerivedName) || raise ArgumentError.new(Iyi::DiagnosticBoundProjection::MSG_R8)
+        producer = derived.producer || raise ArgumentError.new(Iyi::DiagnosticBoundProjection::MSG_R3)
+        if issuer
+          raise ArgumentError.new(Iyi::DiagnosticBoundProjection::MSG_R8) unless issuer.issued?(origin)
+        elsif source_bearing_producer?(producer)
+          raise ArgumentError.new(Iyi::DiagnosticBoundProjection::MSG_H3)
+        end
+        # Source-bearing projections are placed only by their issuer (the table's "as above" rows).
+        next if source_bearing_producer?(producer)
+        admit_claim_placement!(artifact, producer, placements[key]?, fragment, owners, index)
+      end
+    end
+  end
+
+  private def self.placement_refused!(producer : Iyi::DiagnosticBoundProducer) : NoReturn
+    raise ArgumentError.new("bound projection is not at its declaration site: #{producer.class.name.split("::").last}")
+  end
+
+  # The rendered header and the one field of *kind* at *index*, from the same observer the header used.
+  private def self.signature_field!(producer : Iyi::DiagnosticBoundProducer, signature : Signature,
+                                    kind : DiagnosticSignatureFieldKind, index : Int32) : {String, DiagnosticSignatureFieldWrite}
+    text, fields = render_signature_observed(signature)
+    field = fields.find { |candidate| candidate.kind == kind && candidate.index == index } || placement_refused!(producer)
+    {text, field}
+  end
+
+  # The token an anchor covers: its one name value's rendered text, whose byte width is the anchor's width.
+  private def self.anchor_token!(producer : Iyi::DiagnosticBoundProducer, anchor : Iyi::DiagnosticAnchor) : String
+    values = anchor.name_slots.values.flatten
+    placement_refused!(producer) unless values.size == 1
+    token = values.first.rendered_text
+    placement_refused!(producer) if token.empty? || !token.valid_encoding?
+    token
+  end
+
+  # The anchor's token lies inside [lo, hi) of the header, and the header's bytes there are the token.
+  private def self.anchor_token_within!(producer : Iyi::DiagnosticBoundProducer, text : String,
+                                        anchor : Iyi::DiagnosticAnchor, lo : Int32, hi : Int32) : Nil
+    token = anchor_token!(producer, anchor)
+    width = token.bytesize
+    placement_refused!(producer) unless lo <= anchor.offset && anchor.offset + width <= hi && hi <= text.bytesize
+    placement_refused!(producer) unless text.byte_slice(anchor.offset, width) == token
+  end
+
+  # The anchor's token is exactly [lo, hi) of the header: same start, same width, same bytes.
+  private def self.anchor_token_spans!(producer : Iyi::DiagnosticBoundProducer, text : String,
+                                       anchor : Iyi::DiagnosticAnchor, lo : Int32, hi : Int32) : Nil
+    token = anchor_token!(producer, anchor)
+    placement_refused!(producer) unless anchor.offset == lo && token.bytesize == hi - lo && hi <= text.bytesize
+    placement_refused!(producer) unless text.byte_slice(lo, hi - lo) == token
+  end
+
+  # A parameter renders as `name : restriction`, with ` = default` after the restriction when it has one.
+  # The restriction is the text after the first " : ", and it must be exactly the projection's type.
+  private def self.parameter_restriction_span!(producer : Iyi::DiagnosticBoundProducer, field : DiagnosticSignatureFieldWrite,
+                                               semantic_type : String) : {Int32, Int32}
+    separator = field.text.byte_index(" : ") || placement_refused!(producer)
+    rest_start = separator + 3
+    rest = field.text.byte_slice(rest_start, field.text.bytesize - rest_start)
+    placement_refused!(producer) unless rest == semantic_type || rest.starts_with?("#{semantic_type} = ")
+    first = field.start_offset + rest_start
+    {first, first + semantic_type.bytesize}
+  end
+
+  private def self.bytes_at?(text : String, start : Int32, expected : String) : Bool
+    start >= 0 && start + expected.bytesize <= text.bytesize && text.byte_slice(start, expected.bytesize) == expected
+  end
+
+  # §3.5 admission column for empty-source claims, with exact spans in the artifact's own text. The owner and
+  # class-variable origin ties are checked live by the authority: the artifact carries neither.
+  private def self.admit_claim_placement!(artifact : Artifact, producer : Iyi::DiagnosticBoundProducer,
+                                          placement : DiagnosticFragmentPlacement?, fragment : DiagnosticFragment,
+                                          owners : Hash(Iyi::DiagnosticOrigin, Int32), index : Int32) : Nil
+    anchor = fragment.anchors[index]
+    case producer
+    when Iyi::DiagnosticBoundProducer::SemanticSignatureType
+      signature = signature_site!(producer, placement, producer.definition_origin)
+      case producer.field
+      when "return_type"
+        text, field = signature_field!(producer, signature, DiagnosticSignatureFieldKind::ReturnType, -1)
+        placement_refused!(producer) unless field.text == producer.semantic_type
+        anchor_token_within!(producer, text, anchor, field.start_offset, field.end_offset)
+      when "parameter_restriction"
+        parameter = producer.parameter_index || placement_refused!(producer)
+        text, field = signature_field!(producer, signature, DiagnosticSignatureFieldKind::Parameter, parameter)
+        lo, hi = parameter_restriction_span!(producer, field, producer.semantic_type)
+        anchor_token_within!(producer, text, anchor, lo, hi)
+      else
+        placement_refused!(producer)
+      end
+    when Iyi::DiagnosticBoundProducer::SynthesizedConstructor
+      signature = signature_site!(producer, placement, producer.definition_origin)
+      placement_refused!(producer) unless signature.name == "new" && signature.receiver == "self"
+      kind = producer.part == "definition_name" ? DiagnosticSignatureFieldKind::Name : DiagnosticSignatureFieldKind::Receiver
+      text, field = signature_field!(producer, signature, kind, -1)
+      anchor_token_spans!(producer, text, anchor, field.start_offset, field.end_offset)
+    when Iyi::DiagnosticBoundProducer::ConstantAccessor
+      signature = signature_site!(producer, placement, producer.definition_origin)
+      placement_refused!(producer) unless signature.receiver == "self"
+      if producer.part == "Name"
+        placement_refused!(producer) unless signature.name == (producer.prefix + producer.constant_name).downcase
+        text, field = signature_field!(producer, signature, DiagnosticSignatureFieldKind::Name, -1)
+      elsif producer.part == "Receiver"
+        text, field = signature_field!(producer, signature, DiagnosticSignatureFieldKind::Receiver, -1)
+      else
+        placement_refused!(producer)
+      end
+      anchor_token_spans!(producer, text, anchor, field.start_offset, field.end_offset)
+    when Iyi::DiagnosticBoundProducer::UninitializedClassVar
+      refused = placement.nil? || placement.site_kind != "class_var" || placement.name != producer.variable_name
+      placement_refused!(producer) if refused
+      expected = ::Crystal::Digest::SHA256.hexdigest("uninitialized #{producer.semantic_type}")
+      placement_refused!(producer) unless fragment.text_sha256 == expected
+    when Iyi::DiagnosticBoundProducer::ConstantTarget
+      admit_constant_target!(artifact, producer, placement, fragment, owners)
+    else
+      placement_refused!(producer)
+    end
+  end
+
+  # The initialiser is the one fragment a constant target is written in. Its segments are the anchors of every
+  # projection of this same target: one CONST token each, in order, joined by "::" on one line, with the path's
+  # first segment headed by the declaration's own origin.
+  private def self.admit_constant_target!(artifact : Artifact, producer : Iyi::DiagnosticBoundProducer::ConstantTarget,
+                                          placement : DiagnosticFragmentPlacement?, fragment : DiagnosticFragment,
+                                          owners : Hash(Iyi::DiagnosticOrigin, Int32)) : Nil
+    placement_refused!(producer) unless placement && placement.site_kind == "initialiser"
+    text = artifact.initialiser
+    placement_refused!(producer) unless fragment.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(text)
+    path = producer.path
+    placement_refused!(producer) if path.includes?('\n')
+    segments = path.split("::")
+    group = [] of Iyi::DiagnosticAnchor
+    owners.each do |origin, owner_index|
+      derived = origin.as?(Iyi::DiagnosticOrigin::DerivedName) || next
+      candidate = derived.producer
+      next unless candidate.is_a?(Iyi::DiagnosticBoundProducer::ConstantTarget) && candidate == producer
+      group << fragment.anchors[owner_index]
+    end
+    placement_refused!(producer) unless group.size == segments.size
+    group.sort_by! { |anchor| anchor.offset }
+    tokens = group.map { |anchor| anchor_token!(producer, anchor) }
+    placement_refused!(producer) unless tokens == segments
+    start = group.first.offset
+    placement_refused!(producer) unless bytes_at?(text, start, path)
+    group.each_with_index do |anchor, position|
+      next if position == group.size - 1
+      following = anchor.offset + tokens[position].bytesize
+      placement_refused!(producer) unless group[position + 1].offset == following + 2 && bytes_at?(text, following, "::")
+    end
+    declaration = producer.declaration_origin
+    placement_refused!(producer) unless fragment.anchors.any? { |anchor| anchor.origin == declaration && anchor.offset == start }
+  end
+
+  # The signature a signature producer names: its key must be the header of that signature, and the
+  # signature's own origin must be the producer's definition origin.
+  private def self.signature_site!(producer : Iyi::DiagnosticBoundProducer, placement : DiagnosticFragmentPlacement?,
+                                   definition : Iyi::DiagnosticOrigin) : Signature
+    refused = placement.nil? || placement.site_kind != "signature"
+    placement_refused!(producer) if refused
+    signature = placement.not_nil!.signature || placement_refused!(producer)
+    placement_refused!(producer) unless signature.diagnostic_origin == definition
+    signature
+  end
+
 
   def self.validate_signature_diagnostics!(artifact : Artifact) : Nil
     section = artifact.diagnostic_provenance || raise ArgumentError.new("missing artifact diagnostic section")
