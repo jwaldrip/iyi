@@ -58,6 +58,28 @@ module Iyi
     Dispatched
   end
 
+  # A declaration's captured fragment, held with the recipe of the site it was opened at. Every
+  # rewrite and the finish stay on that one site, so the ledger sees one declaration once.
+  class BindDiagnostic
+    getter recipe : DiagnosticBoundRecipe
+    getter fragment : DiagnosticBoundFragment
+    getter container : String
+    getter origin : DiagnosticOrigin?
+
+    def initialize(@recipe : DiagnosticBoundRecipe, @fragment : DiagnosticBoundFragment,
+                   @container : String, @origin : DiagnosticOrigin? = nil)
+    end
+
+    def text : String
+      @fragment.text
+    end
+
+    # The same site, carrying a new registered fragment.
+    def with_fragment(fragment : DiagnosticBoundFragment) : BindDiagnostic
+      BindDiagnostic.new(@recipe, fragment, @container, @origin)
+    end
+  end
+
   record BindMethod,
     owner : String,
     name : String,
@@ -281,7 +303,11 @@ module Iyi
   # The class variables a module body assigns, which the initialiser carries
   # and the declaration therefore must not. See `collect_runnable`.
   @@assigned_class_vars = Set(String).new
-  @@initialiser_anchors : Array(DiagnosticAnchor)? = nil
+  @@initialiser_diagnostic : BindDiagnostic? = nil
+  # The section ledger for the artifact being bound. Nil unless diagnostic capture is on.
+  @@ledger : DiagnosticProjectionLedger? = nil
+  # The mode the section's sources are lexed in, the way the section itself reads it.
+  @@diagnostic_mode = "Crystal"
   @@diagnostic_binding = false
 
   # The methods whose bodies travel, keyed the way `keep_type` reads them:
@@ -384,12 +410,14 @@ module Iyi
     @@unwritable = unwritable_types program
     @@bound_prefix = {} of String => String
     @@mono_bodies = {} of String => String
-    @@diagnostic_bodies = {} of String => {String, Array(DiagnosticAnchor)}
-    @@diagnostic_headers = {} of String => {String, Array(DiagnosticAnchor)}
-    @@diagnostic_classvars = {} of {String, String} => {String, Array(DiagnosticAnchor)}
-    @@diagnostic_fields = {} of {String, String} => {String, Array(DiagnosticAnchor)}
-    @@initialiser_anchors = nil
+    @@diagnostic_bodies = {} of String => BindDiagnostic
+    @@diagnostic_headers = {} of String => BindDiagnostic
+    @@diagnostic_classvars = {} of {String, String} => BindDiagnostic
+    @@diagnostic_fields = {} of {String, String} => BindDiagnostic
+    @@initialiser_diagnostic = nil
+    @@ledger = program.diagnostic_capture ? DiagnosticProjectionLedger.new(BindReplayAuthority.new(program, root, iyi_module_name(root), artifact_dir)) : nil
     @@diagnostic_binding = program.diagnostic_capture
+    @@diagnostic_mode = Lexer.iyi_source?(program.filename || "") ? "Iyi" : "Crystal"
     @@bound_module = {} of String => String
     @@bound_used = Set(String).new
     @@bound = bound_dir ? bound_names(program, bound_dir, io) : Set(String).new
@@ -2923,128 +2951,93 @@ module Iyi
     body.blank? ? "nil" : body
   end
 
+  # The header as the ledger holds it. The `def` keyword is the one anchor the source gives, and the
+  # signature is held as bind rendered it. A name or restriction is carried by its own projection once
+  # bind issues one for it; until then the header is intrinsic source, which the ledger accepts.
   private def self.record_bind_diagnostic_signature(container : String, signature : IyiMod::Signature,
                                                     method : BindMethod) : Nil
-    definition = method.diagnostic_def || return
+    return unless method.diagnostic_def
+    ledger = @@ledger || raise "bound signature recorded without a section ledger"
     origin = signature.diagnostic_origin || raise "bound signature has no definition origin"
     raise "bound signature origin is not a definition" unless origin.valid_for_anchor?("Def", "keyword")
-    header = IyiMod.render_signature(signature)
-    root_offset = (signature.visibility.empty? ? 0 : signature.visibility.bytesize + 1) + (signature.required ? 9 : 0)
-    anchors = [DiagnosticAnchor.new(root_offset, "Def", "keyword", origin)]
-    offset = root_offset + 4
-    if receiver = definition.receiver
-      append_bound_node_anchors(receiver, signature.receiver, offset, anchors)
-    end
-    offset += signature.receiver.bytesize + 1 unless signature.receiver.empty?
-    offset += signature.name.bytesize
-    args = definition.args.dup
-    args << definition.double_splat.not_nil! if definition.double_splat
-    raise "bound signature parameter shape differs from definition" unless args.size == signature.parameters.size && args.size == method.params.size
-    unless signature.parameters.empty? && signature.block_parameter.empty?
-      offset += 1
-      args.each_with_index do |arg, index|
-        offset += 2 if index > 0
-        name, restriction, default = method.params[index]
-        parameter = signature.parameters[index]
-        raise "bound parameter projection changed" unless parameter == bind_parameter(name, restriction, default)
-        if node = arg.restriction
-          target = restriction == "?" ? "" : restriction
-          append_bound_node_anchors(node, target, offset + name.bytesize + 3, anchors)
-        end
-        if node = arg.default_value
-          append_bound_node_anchors(node, default, offset + parameter.bytesize - default.bytesize, anchors)
-        end
-        offset += parameter.bytesize
-      end
-      unless signature.block_parameter.empty?
-        offset += 2 unless signature.parameters.empty?
-        if block = definition.block_arg
-          # The bound block is its annotations, then `&`, then its name and restriction. The node's own
-          # text has no `&`, so the target drops that `&`, and the anchor base is the annotations' start.
-          lead = ToSVisitor.bound_annotation_prefix(block)
-          target = lead + signature.block_parameter.lchop(lead + "&")
-          append_bound_node_anchors(block, target, lead.empty? ? offset + 1 : offset, anchors)
-        end
-        offset += signature.block_parameter.bytesize
-      end
-      offset += 1
-    end
-    if signature.block_parameter.empty? && (block = definition.block_arg)
-      append_bound_node_anchors(block, "", 0, anchors)
-    end
-    if return_type = definition.return_type
-      append_bound_node_anchors(return_type, signature.return_type, offset + 3, anchors)
-    end
-    definition.free_var_bounds.try &.each_value do |bound|
-      append_bound_node_anchors(bound, "", 0, anchors)
-    end
-    definition.where_bounds.try &.each_value do |bound|
-      append_bound_node_anchors(bound, "", 0, anchors)
-    end
-    definition.all_annotations.try &.each do |annotation_node|
-      append_bound_node_anchors(annotation_node, "", 0, anchors)
-    end
     key = IyiMod.signature_fragment_key(container, signature)
-    entry = {header, anchors}
+    text = IyiMod.render_signature(signature)
     if previous = @@diagnostic_headers[key]?
-      raise "ambiguous bound signature origin" unless previous == entry
-    else
-      @@diagnostic_headers[key] = entry
+      raise "ambiguous bound signature origin" unless previous.text == text && previous.origin == origin
+      return
     end
-  end
-
-  private def self.append_bound_node_anchors(node : ASTNode, target : String, offset : Int32,
-                                             into : Array(DiagnosticAnchor)) : Nil
-    io = IO::Memory.new
-    anchors = [] of DiagnosticAnchor
-    node.to_s(io, diagnostic_anchors: anchors)
-    return if anchors.empty?
-    source = io.to_s
-    bound_replace_exact_header(source, target, anchors) unless source == target
-    anchors.each { |anchor| into << anchor.copy_with(offset: anchor.offset + offset) }
+    root_offset = (signature.visibility.empty? ? 0 : signature.visibility.bytesize + 1) + (signature.required ? 9 : 0)
+    builder = DiagnosticFragmentBuilder.new(@@diagnostic_mode)
+    builder.add_written_anchor(root_offset, root_offset + 3, text, DiagnosticRenderedLexContext::Operand,
+      "Def", "keyword", origin, {} of DiagnosticNameSlot => Array(DiagnosticNameValue))
+    rendered = ledger.register_source(DiagnosticRenderedFragment.new(text, builder.finish_data(text)))
+    index = @@diagnostic_headers.values.count { |held| held.container == container && held.origin == origin }
+    recipe = DiagnosticBoundRecipe.open(ledger, @@diagnostic_mode, "signature", container, nil, index, origin)
+    @@diagnostic_headers[key] = BindDiagnostic.new(recipe, DiagnosticBoundFragment.new(rendered), container, origin)
   end
 
   private def self.record_bind_diagnostic_body(container : String, signature : IyiMod::Signature,
                                                method : BindMethod, body : String) : Nil
     return unless method.diagnostic_def
-    source, anchors = method.diagnostic_body || raise "missing written diagnostic body"
+    ledger = @@ledger || raise "bound body recorded without a section ledger"
+    source, captures = method.diagnostic_body || raise "missing written diagnostic body"
     raise "bound body differs from its origin's written body" unless source == body
+    origin = signature.diagnostic_origin || raise "bound body has no definition origin"
     emitted = travelling_body(body)
-    raise "cannot map anchors into a synthesized empty body" if emitted != body && !anchors.empty?
     key = IyiMod.signature_body_fragment_key(container, signature)
-    entry = {emitted, anchors.dup}
     if previous = @@diagnostic_bodies[key]?
-      raise "ambiguous bound diagnostic body" unless previous == entry
-    else
-      @@diagnostic_bodies[key] = entry
+      raise "ambiguous bound diagnostic body" unless previous.text == emitted && previous.origin == origin
+      return
     end
+    index = @@diagnostic_bodies.values.count { |held| held.container == container && held.origin == origin }
+    recipe = DiagnosticBoundRecipe.open(ledger, @@diagnostic_mode, "signature_body", container, nil, index, origin)
+    # A synthesized empty body has no captured tokens, so it is held as plain source.
+    fragment = emitted == body ? recipe.captured(captures) : recipe.plain(emitted)
+    @@diagnostic_bodies[key] = BindDiagnostic.new(recipe, fragment, container, origin)
   end
 
+  # Every held declaration is sealed on its own site, once, under the key the IyiMod builders produce. The
+  # ledger then checks the whole section against what it issued, and only a verified section is written.
   private def self.bound_diagnostic_section(program : Program, artifact : IyiMod::Artifact, root : String) : IyiMod::DiagnosticSection
+    ledger = @@ledger || raise "bound section finished without a section ledger"
     section = IyiMod::DiagnosticSection.new
-    mode = Lexer.iyi_source?(artifact.source_path) ? "Iyi" : "Crystal"
     bound_diagnostic_signatures(section, artifact, artifact.module_name, artifact.exports.functions)
     bound_diagnostic_signatures(section, artifact, artifact.module_name, artifact.exports.carried_functions)
     bound_diagnostic_signatures(section, artifact, IyiMod::TOP_LEVEL_CONTAINER, artifact.top_level)
     bound_diagnostic_values(program, section, root, IyiMod::DIAGNOSTIC_ROOT_CONTAINER,
-      artifact.exports.class_vars, artifact.macro_bodies, mode)
+      artifact.exports.class_vars, artifact.macro_bodies)
     artifact.exports.types.each { |type| bound_diagnostic_type(program, section, artifact, root, type) }
     artifact.reopened.each { |type| bound_diagnostic_type(program, section, artifact, root, type) }
     artifact.top_level_funs.each do |source|
       captures = program.iyi_top_fun_diagnostics[source]? || raise "missing bound top-level fun diagnostics"
       raise "bound top-level fun text changed" unless captures.text == source
-      section.add_fragment(captures.fragment(IyiMod.top_fun_fragment_key(source), mode))
+      key = IyiMod.top_fun_fragment_key(source)
+      if prior = section.fragments[key]?
+        raise "ambiguous bound top-level fun fragment: #{key}" unless prior.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(source)
+        next
+      end
+      recipe = DiagnosticBoundRecipe.open(ledger, @@diagnostic_mode, "top_fun", "")
+      section.add_fragment(recipe.finish(recipe.captured(captures), key))
     end
     unless artifact.initialiser.empty?
-      anchors = @@initialiser_anchors || raise "missing bound initialiser diagnostics"
-      bound_add_fragment(section, "initialiser", artifact.initialiser, anchors)
+      held = @@initialiser_diagnostic || raise "missing bound initialiser diagnostics"
+      raise "bound initialiser text changed" unless held.text == artifact.initialiser
+      section.add_fragment(held.recipe.finish(held.fragment, "initialiser"))
     end
+    ledger.verify_section!(section)
     section
   end
 
-  private def self.bound_add_fragment(section : IyiMod::DiagnosticSection, key : String, source : String,
-                                      anchors : Array(DiagnosticAnchor)) : Nil
-    section.add_fragment(IyiMod::DiagnosticFragment.new(key, ::Crystal::Digest::SHA256.hexdigest(source), anchors))
+  # Seals a held declaration under its key. A key already sealed is accepted only when it carries the same
+  # text, which is an identical duplicate; a different one is an ambiguity and is refused, never skipped.
+  private def self.seal_once(section : IyiMod::DiagnosticSection, key : String, held : BindDiagnostic,
+                             signature : IyiMod::Signature? = nil) : Nil
+    digest = held.fragment.rendered.data.text_sha256
+    if prior = section.fragments[key]?
+      raise "ambiguous bound diagnostic fragment: #{key}" unless prior.text_sha256 == digest
+      return
+    end
+    section.add_fragment(held.recipe.finish(held.fragment, key, signature))
   end
 
   private def self.bound_diagnostic_signatures(section : IyiMod::DiagnosticSection, artifact : IyiMod::Artifact,
@@ -3052,32 +3045,41 @@ module Iyi
     ordinals = IyiMod.mono_body_ordinals(signatures)
     signatures.each_with_index do |signature, index|
       key = IyiMod.signature_fragment_key(container, signature)
-      text, anchors = @@diagnostic_headers[key]? || raise "missing final bound signature diagnostics"
-      raise "bound signature text changed" unless text == IyiMod.render_signature(signature)
-      bound_add_fragment(section, key, text, anchors)
+      held = @@diagnostic_headers[key]? || raise "missing final bound signature diagnostics"
+      raise "bound signature text changed" unless held.text == IyiMod.render_signature(signature)
       raise "bound signature annotations have no provenance" unless signature.annotations.empty?
+      seal_once(section, key, held, signature)
       if body = artifact.mono_bodies[IyiMod.mono_body_key(container, signature, ordinals[index])]?
         body_key = IyiMod.signature_body_fragment_key(container, signature)
-        source, body_anchors = @@diagnostic_bodies[body_key]? || raise "missing final bound body diagnostics"
-        raise "bound body text changed" unless source == body
-        bound_add_fragment(section, body_key, source, body_anchors)
+        held_body = @@diagnostic_bodies[body_key]? || raise "missing final bound body diagnostics"
+        raise "bound body text changed" unless held_body.text == body
+        seal_once(section, body_key, held_body, signature)
       end
     end
   end
 
   private def self.bound_diagnostic_values(program : Program, section : IyiMod::DiagnosticSection,
                                            owner : String, container : String,
-                                           variables : Array(IyiMod::ClassVarDecl), macros : Array(String), mode : String) : Nil
+                                           variables : Array(IyiMod::ClassVarDecl), macros : Array(String)) : Nil
+    ledger = @@ledger || raise "bound value finished without a section ledger"
     variables.each do |variable|
       next if variable.value.empty?
-      source, anchors = @@diagnostic_classvars[{owner, variable.name}]? || raise "missing bound class variable diagnostics"
-      raise "bound class variable text changed" unless source == variable.value
-      bound_add_fragment(section, IyiMod.class_var_fragment_key(container, variable.name), source, anchors)
+      held = @@diagnostic_classvars[{owner, variable.name}]? || raise "missing bound class variable diagnostics"
+      raise "bound class variable text changed" unless held.text == variable.value
+      raise "bound class variable container differs" unless held.container == container
+      key = IyiMod.class_var_fragment_key(container, variable.name)
+      seal_once(section, key, held)
     end
     macros.each do |source|
       captures = program.iyi_macro_diagnostics[{owner, source}]? || raise "missing bound macro diagnostics"
       raise "bound macro text changed" unless captures.text == source
-      section.add_fragment(captures.fragment(IyiMod.macro_fragment_key(container, source), mode))
+      key = IyiMod.macro_fragment_key(container, source)
+      if prior = section.fragments[key]?
+        raise "ambiguous bound macro fragment: #{key}" unless prior.text_sha256 == ::Crystal::Digest::SHA256.hexdigest(source)
+        next
+      end
+      recipe = DiagnosticBoundRecipe.open(ledger, @@diagnostic_mode, "macro", container)
+      section.add_fragment(recipe.finish(recipe.captured(captures), key))
     end
   end
 
@@ -3113,12 +3115,12 @@ module Iyi
     bound_diagnostic_signatures(section, artifact, here, type.methods)
     type.fields.each do |field, _, value|
       next if value.empty?
-      source, anchors = @@diagnostic_fields[{owner, field}]? || raise "missing bound field diagnostics"
-      raise "bound field text changed" unless source == value
-      bound_add_fragment(section, IyiMod.field_fragment_key(here, field), source, anchors)
+      held = @@diagnostic_fields[{owner, field}]? || raise "missing bound field diagnostics"
+      raise "bound field text changed" unless held.text == value
+      key = IyiMod.field_fragment_key(here, field)
+      seal_once(section, key, held)
     end
-    mode = Lexer.iyi_source?(artifact.source_path) ? "Iyi" : "Crystal"
-    bound_diagnostic_values(program, section, owner, here, type.class_vars, type.macros, mode)
+    bound_diagnostic_values(program, section, owner, here, type.class_vars, type.macros)
     type.types.each { |nested| bound_diagnostic_type(program, section, artifact, root, nested, here) }
   end
 
