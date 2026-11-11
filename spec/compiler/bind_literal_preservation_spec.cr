@@ -55,8 +55,8 @@ module Iyi
       end
 
       it "preserves surrounding literal text when interpolation contains a hash" do
-        source = %("before \#{ {x: Root::X} } after Root::X")
-        strip_root(source, "Root").should eq(%("before \#{ {x: X} } after Root::X"))
+        source = %("before \#{ {x: Root::X}; Root::Y } after Root::X")
+        strip_root(source, "Root").should eq(%("before \#{ {x: X}; Y } after Root::X"))
       end
 
       it "handles escaped quotes inside nested interpolation" do
