@@ -1,0 +1,5 @@
+# root-refusals ceilings for the fixtures whose class, module or lib body is one macro node
+# (bench/selfhost_semantic_inline_macros_exercise.sh section 9). A ceiling may only fall.
+bench/fixtures/seminl_reach/body_single_for.iyi 14
+bench/fixtures/seminl_reach/body_single_if.iyi 14
+bench/fixtures/seminl_reach/body_nested_if.iyi 14

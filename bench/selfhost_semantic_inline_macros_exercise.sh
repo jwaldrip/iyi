@@ -418,6 +418,66 @@ prove_mutation "a require looks up the pipeline's tree under a key that is never
   -- check_reach_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# 9. Single-macro-node bodies: a class, module or lib body that is one macro node is spliced, so the typer never refuses its
+# macro node. Each fixture's top-level refusal count (root-refusals) stays at or below its ceiling in
+# bench/selfhost_inline_refusals.floor. A ceiling is lowered only with SEMINL_RAISE=1, never raised.
+REFUSAL_FLOOR="$REPO/bench/selfhost_inline_refusals.floor"
+MUT_INL="$REPO/src/compiler/semantic/inline_macros.iyi"
+MUT_TOP="$REPO/src/compiler/semantic/top_level.iyi"
+
+check_refusals() {
+  local tool="$1" fail=0 root ceiling tag log refusals
+  while read -r root ceiling; do
+    case "$root" in ""|\#*) continue ;; esac
+    tag=$(basename "$root" .iyi)
+    log="$WORK/refusals_$tag.log"
+    (cd "$REPO" && IYI_PATH="$REPO/src" "$tool" "$root" -o "$WORK/refusals_exe_$tag" --pipeline typed --prelude --probe-phase --keep-going > "$log" 2>&1)
+    refusals=$(awk '/^table: .* root-refusals=/ { sub(/.*root-refusals=/, ""); print $1 }' "$log")
+    echo "  $root: root-refusals ${refusals:-none} (ceiling $ceiling)"
+    if [ -z "$refusals" ] || [ "$refusals" -gt "$ceiling" ]; then
+      echo "  ABOVE CEILING: $root. A single macro node body is refused again: restore its splice."
+      fail=1
+    elif [ "$refusals" -lt "$ceiling" ]; then
+      if [ "$RAISE" = 1 ]; then
+        awk -v r="$root" -v n="$refusals" '$1 == r { $2 = n } { print }' "$REFUSAL_FLOOR" > "$WORK/refusal.floor.tmp" && mv "$WORK/refusal.floor.tmp" "$REFUSAL_FLOOR"
+      else
+        echo "  LOWER THE CEILING: $root refuses $refusals, ceiling $ceiling (SEMINL_RAISE=1)."
+        fail=1
+      fi
+    fi
+  done < "$REFUSAL_FLOOR"
+  return "$fail"
+}
+
+# The check the single-node mutations must fail: the refusal ceilings through a pipeline tool built from the tree as it is.
+check_body_fixture() {
+  local RAISE=0 probe="$WORK/mut_body_tool"
+  "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_body_build.log" 2>&1 || return 1
+  check_refusals "$probe" > "$WORK/mut_body.txt" 2>&1
+}
+
+if [ -x "$WORK/reach_tool" ]; then
+  check_refusals "$WORK/reach_tool" || status=1
+else
+  status=1
+fi
+
+prove_mutation "a single macro node body is returned unchanged, so the typer refuses its macro node" "$MUT_INL" \
+  "return body unless body.is_a?(MacroIf) || body.is_a?(MacroFor) || body.is_a?(MacroExpression)" \
+  "return body" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# Not "wrapped but not spliced": visit(Expressions) splices the wrapper again, so that mutant is equivalent.
+prove_mutation "a single macro node body loses its expansion: the wrapper is empty" "$MUT_INL" \
+  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib))" \
+  "Expressions.new([] of ASTNode)" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a class, module or lib body that is one macro node is not passed to the splice" "$MUT_TOP" \
+  "splice_body_node(body, @current_type.full_name, @file || \"\", @current_type.is_a?(LibType))" \
+  "body" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

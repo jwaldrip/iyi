@@ -103,3 +103,11 @@ pub def splice_inline_sites(nodes : Array(ASTNode), scope_name : String, filenam
   end
   out
 end
+
+# A body that is one inline macro node (a class, module or lib body) has no Expressions
+# around it, so splice_inline_sites is never asked about it. Wrap it in an Expressions
+# and splice it as a body of several nodes is spliced. A site the engine refuses stays.
+pub def splice_body_node(body : ASTNode, scope_name : String, filename : String, in_lib : Bool) : ASTNode
+  return body unless body.is_a?(MacroIf) || body.is_a?(MacroFor) || body.is_a?(MacroExpression)
+  Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib))
+end
