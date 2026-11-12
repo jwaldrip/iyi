@@ -18,6 +18,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 COMPILE_TOOL_SRC="$REPO/src/compiler/tools/compile.iyi"
 COMPILER_SRC="$REPO/src/compiler/compiler.iyi"
+LLVM_BACKEND_SRC="$REPO/src/compiler/backend/llvm/llvm_backend.iyi"
 LOADER_SRC="$REPO/src/compiler/loader.iyi"
 CODEGEN_SRC="$REPO/src/compiler/codegen/codegen.iyi"
 WORK="$(mktemp -d)"
@@ -552,7 +553,7 @@ clean_must_pass "compile_resolve_order expects 20 under the load order" check_co
 clean_must_pass "compile_ivar_infer expects 12" check_compile_rc "$REPO/bench/fixtures/compile_ivar_infer.iyi" 12
 
 mutate_compiler_source "corrupt linker placeholder substitution" \
-  "$COMPILER_SRC" \
+  "$LLVM_BACKEND_SRC" \
   '"\"${@}\""' \
   '"__WRONG_PLACEHOLDER__"' \
   -- check_compile_rc "$REPO/bench/fixtures/compile_arith.iyi" 26
