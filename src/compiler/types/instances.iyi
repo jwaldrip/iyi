@@ -40,6 +40,7 @@ pub class TypeInstances
       end
     end
     @generic_cache[key] = inst
+    generic_type.instantiated_types << inst
     inst
   end
 
