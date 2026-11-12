@@ -16,7 +16,7 @@ module compiler/lower/lower
 # folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
 # `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA, Yield}
+import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -36,7 +36,7 @@ import compiler/lower/call::{codegen_call_node, codegen_responds_to, responds_to
 import compiler/lower/block::{branch_to_phi, lower_yield}
 import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun}
 import compiler/lower/proc::{lower_proc_literal}
-import compiler/lower/cast::{assign, union_temp}
+import compiler/lower/cast::{assign, to_lhs, union_temp}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
@@ -429,6 +429,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_type_declaration(low, node.as(TypeDeclaration))
     return
   end
+  if node.is_a?(UninitializedVar)
+    codegen_uninitialized_var(low, node.as(UninitializedVar))
+    return
+  end
   if node.is_a?(Nop)
     # The hosted `visit(Nop)`: an empty body (an empty class or module) emits nothing and its value is nil.
     low.last = llvm_nil(low)
@@ -472,6 +476,41 @@ pub def codegen_type_declaration(low : Lowerer, node : TypeDeclaration) : Nil
     return
   end
   pending_visit_node("TypeDeclaration of an unknown kind (hosted codegen.cr: visit(TypeDeclaration))")
+end
+
+# The hosted `visit(UninitializedVar)` (codegen.cr:1824): the variable is declared (hosted `declare_var`, which keeps the
+# slot a name already has), and the node's value is a load of that slot at the node's own type, or nil when that type
+# is Nil or no value is needed. A target that is not a variable has no slot and is nil. A variable of the no-return
+# type has no alloca in the hosted code, so it is refused by name here.
+pub def codegen_uninitialized_var(low : Lowerer, node : UninitializedVar) : Nil
+  var_node = node.var
+  if !var_node.is_a?(Var)
+    low.last = llvm_nil(low)
+    return
+  end
+  var = var_node.as(Var)
+  decl = low.analysed.type_of?(var)
+  raise "BUG: the analysed program has no type for an uninitialized variable (hosted codegen.cr: declare_var)" if decl.nil?
+  dt = decl.as(Type)
+  if dt.is_a?(NoReturnType)
+    refuse_port("lower: uninitialized variable #{var.name} has the no-return type (hosted declare_var: no alloca)")
+  end
+  slot_entry = low.current_context.vars[var.name]?
+  if slot_entry.nil?
+    declare_assign_var(low, var.name, dt)
+    slot_entry = low.current_context.vars[var.name]?
+  end
+  raise "BUG: uninitialized variable #{var.name} has no slot (hosted declare_var)" if slot_entry.nil?
+  slot = slot_entry.as(LowerVar)
+  refuse_port("lower: uninitialized variable #{var.name} names an argument that is already loaded (hosted declare_var)") if slot.already_loaded
+  node_type = low.analysed.type_of?(node)
+  raise "BUG: the analysed program has no type for an uninitialized value (hosted codegen.cr: visit(UninitializedVar))" if node_type.nil?
+  nt = node_type.as(Type)
+  if nt.is_a?(NilType) || !low.needs_value
+    low.last = llvm_nil(low)
+    return
+  end
+  low.last = to_lhs(low, slot.pointer, nt)
 end
 
 # The hosted `declare_var` and the value of the declaration (codegen.cr:1800, codegen_assign): the variable's alloca is
