@@ -43,6 +43,9 @@ import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{Type}
+import compiler/types/types::{VirtualType}
+import compiler/lower/helpers::{store_aligned}
+import compiler/lower/typer::{passed_by_value?}
 
 # An integer operand as the hosted codegen reads it: its width in bytes, its signedness and
 # its IR type. A mixed-signedness operation biases one operand to the other signedness at the
@@ -499,6 +502,31 @@ pub def primitive_name_of(target : Def) : String?
     return text unless text.nil?
   end
   nil
+end
+
+# The hosted `codegen_primitive_allocate` for the `allocate` primitive that the generated `new`
+# calls (`_ = allocate`). `t` is the instance type of the metaclass the call is on (the Point in
+# `Point.new`), and the value is a pointer to a fresh instance, zeroed. Ported for a struct: an
+# alloca of the struct type, zeroed by a store of the zero constant. Hosted codegen emits
+# `llvm.memset` there (codegen.cr pre_initialize_aggregate), so the zeroing is the same value, but
+# not the same IR; the module comparison of a fixture that allocates a struct therefore names the
+# difference and is not claimed identical. Refused by name: a class (the arena or malloc path, the
+# header type id, and `__iyi_new`, codegen.cr allocate_aggregate 2758-2798) and a virtual type (the
+# hosted upcast of the instance). The header store is decided from codegen.cr 2790-2806, not from
+# the core's pointer function, which covers fields only.
+pub def primitive_allocate(low : Lowerer, t : Type) : Value
+  if t.is_a?(VirtualType)
+    pending_visit_node("allocate of a virtual type (hosted codegen_primitive_allocate, upcast of the instance)")
+    return low.builder.const_undef(low.typer.llvm_type(t))
+  end
+  unless passed_by_value?(t)
+    pending_visit_node("allocate of class #{t.full_name} (hosted allocate_aggregate: the arena or malloc path, the header type id, and __iyi_new)")
+    return low.builder.const_undef(low.typer.llvm_type(t))
+  end
+  struct_ir = low.typer.llvm_type(t)
+  ptr = low.alloca(struct_ir, "")
+  store_aligned(low, low.builder.const_zero(struct_ir), ptr)
+  ptr
 end
 
 # The name in a `# primitive: <name>` text, or nil for any other text.
