@@ -1215,6 +1215,19 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # A trait's body is typed in the trait's own type (hosted semantic_visitor.cr 1849-1856).
+  def visit(node : TraitDef) : Bool
+    t = @program.lookup_type_path?(node.name, @current_type)
+    if t && t.is_a?(TraitType)
+      old_type = @current_type
+      @current_type = t.as(TraitType)
+      node.body.accept(self)
+      @current_type = old_type
+    end
+    set_type(node, @program.nil_type)
+    false
+  end
+
   def visit(node : Def) : Bool
     set_type(node, @program.nil_type)
     false
