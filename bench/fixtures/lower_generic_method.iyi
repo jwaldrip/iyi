@@ -1,0 +1,10 @@
+struct Box(T)
+  def initialize(@value : T)
+  end
+
+  def get : Int32
+    7
+  end
+end
+
+Box(Int32).new(5).get

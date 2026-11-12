@@ -1,0 +1,7 @@
+struct Box(T)
+  def self.get : Int32
+    7
+  end
+end
+
+Box(Int32).get
