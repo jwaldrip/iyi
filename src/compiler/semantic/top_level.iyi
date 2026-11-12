@@ -1064,6 +1064,11 @@ pub class SemanticProgram < NonGenericModuleType
   # The lowercase names the importing file imports (`import a/b::{refuse_port}`), as
   # the defs they name. Swapped per file like current_imports.
   property current_import_defs : Hash(String, Array(Def))
+  # iyi: each file's two import tables, by the file name its nodes carry (`import` records them).
+  # The body typing reads them: a def's body is typed long after its file was declared, and the
+  # names it may write are its own file's (the hosted pass keeps a scope per file).
+  getter file_imports : Hash(String, Hash(String, Type)) = Hash(String, Hash(String, Type)).new
+  getter file_import_defs : Hash(String, Hash(String, Array(Def))) = Hash(String, Hash(String, Array(Def))).new
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
   # iyi: the directory of the entry file: the first root an import is resolved from, as
@@ -1946,6 +1951,10 @@ pub class TopLevelVisitor < Visitor
   # order the hosted pass tries), and brings the listed types into this file.
   def visit(node : ImportDecl) : Bool
     written = node.path.join("/")
+    if loc = node.location
+      @program.file_imports[loc.filename] = @program.current_imports
+      @program.file_import_defs[loc.filename] = @program.current_import_defs
+    end
     file = import_file(written)
     unless file
       refuse_port("can't find module '#{written}'")
