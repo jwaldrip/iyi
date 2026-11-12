@@ -107,7 +107,7 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
   end
 
   if t.is_a?(Iyi::InstanceVarContainer)
-    t.instance_vars.keys.sort.each do |ivar_name|
+    t.instance_vars.keys.each do |ivar_name|
       io << indent << "  Ivar: " << full_name << "#" << ivar_name << "\n"
       io << indent << "    type: " << t.instance_vars[ivar_name].type.to_s << "\n"
     end
