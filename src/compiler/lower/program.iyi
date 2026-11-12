@@ -229,3 +229,15 @@ pub def builtin_binary_def(op : String, operand : String, result : String) : Def
   d.free_vars = ["# primitive: binary"] of String
   d
 end
+
+# The slice that owns a refusal, from the words it carries: the table's owner column (PIPELINE.md). A reason no
+# rule names is "unassigned", so it shows in the table rather than hiding under another owner.
+pub def typed_owner(reason : String) : String
+  return "macros" if reason.includes?("macro control")
+  return "calls" if reason.includes?("undefined method") || reason.includes?("cannot resolve the call")
+  return "declarations" if reason.includes?("undefined constant")
+  return "bodies" if reason.includes?("no type") || reason.includes?("undefined local variable")
+  return "lowering core" if reason.includes?("is not ported")
+  return "lowering" if reason.includes?("port limitation")
+  "unassigned"
+end
