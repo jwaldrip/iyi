@@ -10,6 +10,7 @@ import compiler/ir/layout::{DataLayout, LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper, passed_by_value?, primitive_kind}
 import compiler/lower/type_id::{LowerTypeIds}
+import compiler/lower/layouts::{GcLayouts}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/syntax/ast::{ClassDef, Expressions}
 import compiler/semantic/top_level::{ModuleType}
@@ -148,6 +149,7 @@ module BenchSelfhostLowerTypesExercise
     out = out + "align: #{typer.align_of(typer.llvm_type(t))}\n"
     out = out + "passed_by_value: #{bool_text(passed_by_value?(t))}\n"
     out = out + "ivars: #{ivars_text(t)}\n"
+    out = out + "layout: #{layout_text(t, typer)}\n"
     out = out + "passed_indirectly: #{bool_text(typer.passed_indirectly?(t))}\n"
     if t.is_a?(ProcInstanceType)
       out = out + "proc_function: #{typer.proc_function(t).to_s}\n"
@@ -166,6 +168,19 @@ module BenchSelfhostLowerTypesExercise
     end
     return "-" if parts.size == 0
     parts.join(" ")
+  end
+
+  # The pointer map of a user class under iyi's object layout, as `alloc`, `cap` and the scan
+  # offsets; the hosted type id is not printed (NEEDS.md row 16).
+  def self.layout_text(t : Type, typer : LowerTyper) : String
+    return "-" unless typer.iyi_layout && t.is_a?(NonGenericClassType) && !t.is_a?(NilType)
+    row = GcLayouts.new(typer).gc_type_layout(t)
+    parts = [] of String
+    row.scan_offsets.each do |o|
+      parts << o.to_s
+    end
+    scan = parts.size == 0 ? "-" : parts.join(" ")
+    "alloc=#{row.alloc_size} cap=#{row.scan_cap} scan=#{scan}"
   end
 
   def self.bool_text(b : Bool) : String

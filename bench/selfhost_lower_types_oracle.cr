@@ -116,7 +116,16 @@ def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
   end
 end
 
-def block_text(name : String, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
+# The pointer map of a user class under iyi's object layout, as `alloc`, `cap` and the scan
+# offsets; the hosted type id is not printed (it is numbered differently, NEEDS.md row 16).
+def layout_text(program : Iyi::Program, type : Iyi::Type) : String
+  return "-" unless type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType) && program.iyi_object_layout?
+  row = program.gc_type_layout(type)
+  scan = row.scan_offsets.map { |o| o.to_s }.join(" ")
+  "alloc=#{row.alloc_size} cap=#{row.scan_cap} scan=#{scan.empty? ? "-" : scan}"
+end
+
+def block_text(name : String, program : Iyi::Program, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
   String.build do |io|
     io << "== " << name << "\n"
     io << "llvm_type: " << llvm_text(typer.llvm_type(type)) << "\n"
@@ -139,6 +148,7 @@ def block_text(name : String, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
     io << "align: " << typer.align_of(typer.llvm_type(type)) << "\n"
     io << "passed_by_value: " << (type.passed_by_value? ? "true" : "false") << "\n"
     io << "ivars: " << ivars_text(type) << "\n"
+    io << "layout: " << layout_text(program, type) << "\n"
     io << "passed_indirectly: " << (typer.passed_indirectly?(type) ? "true" : "false") << "\n"
     if type.is_a?(Iyi::ProcInstanceType)
       io << "proc_function: " << llvm_function_text(typer.proc_type(type)) << "\n"
@@ -238,7 +248,7 @@ begin
     if mode == "ids"
       puts ids_block(expr, program, resolve(program, expr))
     else
-      puts block_text(expr, typer, resolve(program, expr))
+      puts block_text(expr, program, typer, resolve(program, expr))
     end
   end
 rescue ex : Exception

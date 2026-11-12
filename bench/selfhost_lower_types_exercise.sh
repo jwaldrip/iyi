@@ -21,6 +21,7 @@ IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 TYPER_FILE="$REPO/src/compiler/lower/typer.iyi"
 TYPE_ID_FILE="$REPO/src/compiler/lower/type_id.iyi"
+LAYOUTS_FILE="$REPO/src/compiler/lower/layouts.iyi"
 UNIONS_FILE="$REPO/src/compiler/lower/unions.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -261,6 +262,24 @@ prove_mutation "leaves take no id of their own" "$TYPE_ID_FILE" \
   "    if subtypes.size == 0" \
   "    if subtypes.size == 99" \
   -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a class reference holds no pointer" "$LAYOUTS_FILE" \
+  "    return true unless type.struct?" \
+  "    return false unless type.struct?" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "scan cap ignores the last field" "$LAYOUTS_FILE" \
+  "    @typer.offset_of(struct_type, last) + @typer.size_of(element)" \
+  "    @typer.offset_of(struct_type, last) + 0_i64" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "pointer map reads field offsets by the wrong index" "$LAYOUTS_FILE" \
+  "      index = index + 1" \
+  "      index = index + 2" \
+  -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
