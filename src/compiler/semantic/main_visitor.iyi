@@ -6,6 +6,7 @@ import compiler/syntax/token::{NumberKind, TokenKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
+import compiler/semantic/inline_macros::{splice_body_node, splice_inline_sites}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
@@ -19,8 +20,6 @@ import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericCla
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/new::{define_new_methods}
-import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of}
-import compiler/types/types::{GenericInstanceType, NamedArgumentType}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
 # One construct the body typing could not type or refused, as the pipeline's
@@ -1021,7 +1020,39 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # An inline macro site (`{% if %}`, `{% for %}`, `{{ }}`) written in the body of the def being typed
+  # is expanded in place, as the declarations pass expands one at the top level and in a type body
+  # (inline_macros.iyi). The scope is the receiver's type and the file is the one the def is written in.
+  # Outside a def (top level, a fun body) nothing is spliced here.
+  def def_inline_scope_name : String
+    if scope = @scope
+      return scope.full_name
+    end
+    ""
+  end
+
+  def def_inline_file : String
+    if cd = @current_def
+      if loc = cd.location
+        return loc.filename
+      end
+    end
+    ""
+  end
+
+  def splice_def_inline_sites(node : Expressions) : Nil
+    return nil if @current_def.nil?
+    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false)
+    nil
+  end
+
+  def splice_def_body(node : ASTNode) : ASTNode
+    return node if @current_def.nil?
+    splice_body_node(node, def_inline_scope_name, def_inline_file, false)
+  end
+
   def visit(node : Expressions) : Bool
+    splice_def_inline_sites(node)
     if node.expressions.empty?
       set_type(node, @program.nil_type)
     else
@@ -1056,7 +1087,9 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : If) : Bool
     node.cond.accept(self)
+    node.then = splice_def_body(node.then)
     node.then.accept(self)
+    node.else = splice_def_body(node.else)
     node.else.accept(self)
     then_type = child_type(node.then)
     else_type = child_type(node.else)
@@ -1076,6 +1109,7 @@ pub class MainVisitor < TypeNodeHost
     old_next_types = @next_types
     @break_types = nil
     @next_types = nil
+    node.body = splice_def_body(node.body)
     node.body.accept(self)
     @break_types = old_break_types
     @next_types = old_next_types
@@ -1867,6 +1901,8 @@ pub class MainVisitor < TypeNodeHost
       end
       @typed_instances << TypedInstance.new(target_def, self_t, inst_args)
     end
+    body = splice_def_body(body.as(ASTNode))
+    target_def.body = body.as(ASTNode)
     body.as(ASTNode).accept(self)
     body_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)
 

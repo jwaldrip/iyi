@@ -224,7 +224,7 @@ src/std/json.iyi 277
 src/std/kernel.iyi 10
 src/std/levenshtein.iyi 19
 src/std/list.iyi 29
-src/std/log.iyi 145
+src/std/log.iyi 148
 src/std/mail.iyi 191
 src/std/math.iyi 832
 src/std/mime.iyi 27
