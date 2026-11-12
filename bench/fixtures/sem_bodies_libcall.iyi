@@ -5,5 +5,5 @@ lib LibC
 end
 
 n = LibC.abs(3)
-x = 0
-m = LibC.fill(pointerof(x))
+m = LibC.fill(out v)
+w = v
