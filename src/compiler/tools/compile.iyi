@@ -3,11 +3,12 @@
 # Thin CLI wrapper around the Compiler pipeline orchestrator (compiler/compiler).
 # Produces an executable binary linking only the platform libc.
 
+@[Unsafe("declares the C calls the tool makes in its lib, LibC's process and file functions, which the compiler does not check")]
 module compiler/tools/compile
 
-import compiler/compiler
-
-using compiler/compiler::{Compiler, CompilerConfig}
+import compiler/compiler::{Compiler, CompilerConfig}
+import compiler/loader::{Loader}
+import compiler/backend/llvm/llvm_backend::{LlvmBackend}
 
 lib LibC
   fun exit(status : Int32) : NoReturn
@@ -37,6 +38,7 @@ module CompileTool
     output_file = "a.out"
     emit_obj_only = false
     obj_output_file : String? = nil
+    target_arg : String? = nil
     verbose = false
     probe_phase = false
     single_file = false
@@ -57,6 +59,15 @@ module CompileTool
         single_file = true
       when "--probe-verify"
         probe_verify = true
+      when "--target"
+        i = i + 1
+        if i < args.size
+          target_arg = args[i]
+        else
+          STDERR.puts "Error: --target requires a triple"
+          LibC.exit(1)
+          return
+        end
       when "--emit-obj"
         emit_obj_only = true
         i = i + 1
@@ -100,8 +111,8 @@ module CompileTool
       return
     end
 
-    config = CompilerConfig.new(output_file, emit_obj_only, obj_output_file, verbose, nil, probe_phase, single_file, probe_verify)
-    compiler = Compiler.new(config)
+    config = CompilerConfig.new(output_file, emit_obj_only, obj_output_file, verbose, target_arg, probe_phase, single_file, probe_verify)
+    compiler = Compiler.new(config, Loader.new, LlvmBackend.new)
     compiler.compile(in_file)
   end
 end

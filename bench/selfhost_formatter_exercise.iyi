@@ -4,8 +4,7 @@
 # would replace and requires the two outputs identical. Nothing here checks
 # anything on its own: it is one half of a comparison.
 
-import compiler/tools/formatter
-using compiler/tools/formatter::{Formatter}
+import compiler/tools/formatter::{Formatter}
 
 module BenchSelfhostFormatterExercise
   def self.run : Nil

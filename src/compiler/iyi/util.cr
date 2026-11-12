@@ -22,6 +22,326 @@ module Iyi
     filename
   end
 
+  # iyi: the character a symbol joins two names with, and never `@` (SPEC.md
+  # IV.1g, *A symbol has no `@` in it*).
+  #
+  # An inherited method is `*Derived^Base#hi` and a proc literal is
+  # `~procProc(Int32, Int32)^src/a.iyi:3`. Both were joined with `@`, which
+  # GNU ld reads as a symbol version: every distinct suffix in a definition
+  # became a version definition of the executable, and the loader keeps 15
+  # bits of a version index. Built at 9f0d82076 and linked with GNU ld 2.46,
+  # `std_spec` had 39,376 of them, so glibc 2.34's index was 39,384, read
+  # back as 6,616, and the program stopped before `main` on
+  # `__libc_start_main` wanting version `Object::==<Pointer(SpecEnumFlags).
+  # class>:Bool` (Linux). lld drops the suffix instead and leaves
+  # `*Array(Int32)` for every method an array inherits. The compiler itself
+  # defined 41,263 such symbols (40,901 inherited methods and 362 procs).
+  #
+  # `^` because neither side of it can hold one. Before it is a type and
+  # after it a type (a method) or a file and a line (a proc). The type names
+  # in those 41,263 symbols use letters, digits and `_`, `:`, `(`, `)`, ` `,
+  # `,`, `+`, `|`, `*` and `.` of their own; everything else in them, `/`,
+  # `-`, `"`, `\` and `'`, was text a person wrote — a file's path, a quoted
+  # `NamedTuple` key — and that goes through `symbol_text`, which escapes
+  # `^`. A method's own name comes after `#` or `::`, past the join. Every
+  # target takes it as written: ELF, Mach-O and wasm symbols are any bytes
+  # but NUL, and on MSVC `safe_mangling` spells it `.5E.` as it spelled `@`
+  # `.40.`.
+  SYMBOL_JOIN = '^'
+
+  # Writes *text*, which somebody other than the compiler chose, into a
+  # symbol: a file's path (a private def's owner, a proc literal's place), a
+  # quoted `NamedTuple` key, a `Symbol`'s name. `@` is escaped for the reason
+  # above, and the package cache is where it is common: every file of a
+  # dependency lives under `<cache>/mod/<path>@v<version>`. `^` is escaped so
+  # that `SYMBOL_JOIN` is never the person's, and `%` so that the escape is
+  # one: two texts that differ give two names, `a@b` and `a%40b` included.
+  def self.symbol_text(io : IO, text : String) : Nil
+    unless text.each_byte.any? &.unsafe_chr.in?('%', '@', '^')
+      io << text
+      return
+    end
+    text.each_char do |char|
+      case char
+      when '%' then io << "%25"
+      when '@' then io << "%40"
+      when '^' then io << "%5E"
+      else          io << char
+      end
+    end
+  end
+
+  # iyi: whether *name* names a variable this compiler wrote rather than one
+  # somebody typed.
+  #
+  # Three spellings, because two compilers wrote them. Crystal's internal
+  # variables are `#`-prefixed — a name no source can produce — or
+  # `__temp_`; iyi's definition typing writes `__iyi_dt_*`, the
+  # `uninitialized` receiver, arguments and return value it puts in an `if
+  # false` to check a def against its own declaration. Those probes live in
+  # the scope the file's top level lives in, which is where every surface
+  # that answers "what is in scope here" reads from: `iyi tool types` on
+  # `samples/iyi/calc.iyi` answered with twenty-three of them and one
+  # variable the author wrote, `tool context` printed them in its table,
+  # and the language server offered `__iyi_dt_1_r` and `__iyi_dt_1_v` to an
+  # editor as the first two completions in the list, kind "Variable" on
+  # each.
+  #
+  # One predicate rather than a prefix test at each surface, because the
+  # two that existed — `'#'` in the types visitor, `__temp_` in the context
+  # visitor — were each written for the other language's names and neither
+  # knew this one's.
+  def self.compiler_variable?(name : String) : Bool
+    name.starts_with?("__iyi_") || name.starts_with?("__temp_") ||
+      name.starts_with?('#')
+  end
+
+  # iyi: the diagnostic inside the wrappers around it.
+  #
+  # An error raised while an import is read arrives wrapped in `while
+  # importing "X"` (`SemanticVisitor#import_file`), and the first line of
+  # *that* names the file the author already typed and nothing they can
+  # act on. `iyi doc` unwrapped it and `iyi mod context` did not, so the
+  # grounding answer for a module with a bad line in it was `(does not
+  # compile alone: while importing "kit/all")` where `iyi check` said
+  # ``can't apply `pub` to const``, with the line and the column.
+  #
+  # `inner` before `cause`, because a `TypeException` carries what it
+  # wrapped in `inner`.
+  def self.deepest_error(error : Exception) : Exception
+    deepest = error
+    loop do
+      nested = deepest.responds_to?(:inner) ? deepest.inner : nil
+      nested ||= deepest.cause
+      break unless nested.is_a?(Iyi::Error | Iyi::CodeError)
+      deepest = nested
+    end
+    deepest
+  end
+
+  # iyi: *path* written with the separators this platform uses.
+  #
+  # A module path is posix by grammar (R-1) and `File.join` translates nothing
+  # inside a part it is handed, so `mods` and `m1/a` came out as
+  # `mods\m1/a.iyimod` — half native, half not, in a sentence naming a file the
+  # reader has to go and open. `Dir.glob` needs none of this: it splits its
+  # pattern on `/` and rejoins with `File.join`, so a posix pattern still
+  # answers in the platform's own separators.
+  #
+  # Swapped rather than normalised: `Path#normalize` also collapses `./` and
+  # `//`, which would change what a POSIX build prints, and `Path#to_native`
+  # translates no separators at all — it only relabels the kind.
+  # iyi: *dir* as the literal start of a glob pattern: posix, since a
+  # backslash is an escape in a pattern and not a separator, and with the
+  # pattern's own characters escaped, since a directory's name is a name.
+  # `proj [v2]` and `x{a,b}` were read as a character class and a brace,
+  # matched nothing, and `iyi test` found no tests there while `iyi fmt
+  # --check` passed having checked nothing. And without a verbatim prefix,
+  # whose `?` is a pattern character too (see `unverbatim`).
+  def self.glob_root(dir : String | ::Path) : ::Path
+    posix = ::Path[unverbatim(dir.to_s)].to_posix.to_s
+    escaped = String.build do |io|
+      posix.each_char do |char|
+        io << '\\' if char.in?('*', '?', '[', ']', '{', '}')
+        io << char
+      end
+    end
+    ::Path.posix(escaped)
+  end
+
+  # iyi: *path* without the Win32 prefix that says "take this verbatim" or
+  # "this is a device": `\\?\C:\p` and `\\.\C:\p` are `C:\p`, and
+  # `\\?\UNC\server\share\p` is `\\server\share\p`. Rust's
+  # `fs::canonicalize`, which editors and agents written in it use, hands
+  # every path over in this form, and each verb that walks or compares
+  # paths treated the prefix as part of the name: `fmt --check` and `test`
+  # of a `\\?\` directory globbed `//\?/C:/...`, which matches nothing, and
+  # answered exit 0 and "no *_test.iyi found"; `check --affected` and `test
+  # --affected` of a `\\?\` file compared `\\?\c:\...` with `c:\...`, chose
+  # no consumer and called that a clean verdict; and `run` of a `\\?\` entry
+  # named its cache directory `\-C:-...`, which Windows refuses for the
+  # colon. Any other prefixed path - a pipe, a volume - is left as it is.
+  def self.unverbatim(path : String) : String
+    {% if flag?(:win32) %}
+      separator = {'\\', '/'}
+      return path unless path.size > 4 && path[0].in?(separator) && path[1].in?(separator) &&
+                         path[2].in?('?', '.') && path[3].in?(separator)
+      rest = path[4..]
+      if rest.size > 4 && rest[0, 3].compare("UNC", case_insensitive: true) == 0 && rest[3].in?(separator)
+        return "\\\\#{rest[4..]}"
+      end
+      return rest if rest.size > 2 && rest[0].ascii_letter? && rest[1] == ':' && rest[2].in?(separator)
+    {% end %}
+    path
+  end
+
+  def self.native_path(path : String) : String
+    {% if flag?(:win32) %}
+      return path.tr("/", "\\") if path.includes?('/')
+    {% end %}
+    path
+  end
+
+  # iyi: whether *filename* is the prelude's or a module of the standard
+  # library beside it: a file under an `iyi/` or `std/` directory whose
+  # parent holds `iyi/prelude.iyi`. A project's own `std/` is its own.
+  def self.library_source?(filename : String) : Bool
+    posix = ::Path[filename].to_posix.to_s
+    {"/iyi/", "/std/"}.any? do |marker|
+      (index = posix.rindex(marker)) && File.file?(File.join(posix[0, index], "iyi", "prelude.iyi"))
+    end
+  end
+
+  # iyi: *path* as it reads from under *base*, or nil when it is not under it.
+  #
+  # Both sides are filesystem paths, so the question is `Path`'s and not a
+  # string's. `path.lchop(base + "/")` is the same sentence on posix and
+  # answers nothing on Windows: `File.expand_path` and `Dir.current` both
+  # spell a path with `\` there, the prefix never matched, and every verb that
+  # chops a root off a path to print it short printed the absolute path
+  # instead — `migrate` said `C:\...\out\app.iyi` where it meant `app.iyi`,
+  # and copied an asset under a name still carrying its leading separator.
+  #
+  # A path that is not under *base* answers nil rather than a `../..` climb,
+  # because the callers print what they get: the short name when there is one
+  # and the full path when there is not.
+  def self.path_under?(path : String, base : String) : String?
+    return nil unless relative = ::Path[path].relative_to?(base)
+    first = relative.parts.first?
+    return nil if first.nil? || first == ".."
+    relative.to_s
+  end
+
+  # iyi: *path* spelled the way the platform's file system compares names:
+  # as it is on Linux, and on Windows with one separator and one case,
+  # because NTFS does not tell `C:\App\Util.iyi` from `c:/app/util.iyi`,
+  # and without a verbatim prefix, which names the same file (`unverbatim`).
+  # For a path that may not exist yet, or a set of them, where
+  # `same_file?` cannot ask. Every comparison that did not do this
+  # answered differently for a drive letter an editor lowercased.
+  def self.path_key(path : String) : String
+    {% if flag?(:win32) %}
+      unverbatim(path).tr("/", "\\").downcase
+    {% else %}
+      path
+    {% end %}
+  end
+
+  # iyi: whether a file can be made in *directory*. `File.writable?` of a
+  # directory answers from its attributes, and on Windows the permission
+  # is an ACL they do not carry: a directory that refused this user every
+  # new file answered yes, and `-o` there came back as the linker's
+  # LNK1104 after a whole compilation. So Windows is asked by making a
+  # file, which is the question.
+  # iyi: on Windows, *path* made free for a new file: false only when it is
+  # there, cannot be opened for writing - a running program, a read-only
+  # file - and cannot be renamed either, for `BUSY_WAIT`. Moved to `*.old`,
+  # or `*.old-<pid>` when an earlier one is still running and cannot be
+  # deleted.
+  #
+  # The wait is for a holder that lets go. With Smart App Control
+  # evaluating (Windows 11), a program that has just run is opened by
+  # `CryptSvc`, `AppIDSvc` and the `applockerfltr` filter, shared for
+  # reading only, so it can be neither written nor renamed: the Restart
+  # Manager named those three after each run, held 0.1 to 1.1 s, and a
+  # build begun at once over 30 seeds of `bench/rebuild_reuse.py`'s probe
+  # stopped at "LNK1104: cannot open file" in 6 of 60 builds, or here at
+  # "in use and cannot be replaced". Go's `cmd/go` waits the same way
+  # for the same holders (`robustio`, two seconds).
+  BUSY_WAIT = 2.seconds
+
+  def self.move_aside_if_busy(path : String) : Bool
+    deadline = Time.instant + BUSY_WAIT
+    while true
+      return true unless File.file?(path)
+      begin
+        File.open(path, "r+") { }
+        return true
+      rescue File::Error
+      end
+      aside = "#{path}.old"
+      begin
+        File.delete(aside) if File.exists?(aside)
+      rescue File::Error
+        aside = "#{path}.old-#{Process.pid}"
+      end
+      begin
+        File.rename(path, aside)
+        return true
+      rescue File::Error
+        return false if Time.instant >= deadline
+        sleep 20.milliseconds
+      end
+    end
+  end
+
+  def self.writable_directory?(directory : String) : Bool
+    {% if flag?(:win32) %}
+      probe = File.join(directory, ".iyi-write-probe-#{Process.pid}")
+      begin
+        File.write(probe, "")
+      rescue File::AccessDeniedError
+        return false
+      rescue File::Error
+        # Not a refusal: the probe's own name is longer than the output's,
+        # and in a directory near MAX_PATH it was the probe that did not
+        # fit - "no permission to write there", from a directory that
+        # takes the program, and only for a five-digit process id. The
+        # linker answers for the file itself.
+        return true
+      end
+      File.delete?(probe)
+      true
+    {% else %}
+      File::Info.writable?(directory)
+    {% end %}
+  end
+
+  # iyi: *path* with each 8.3 short name in it spelled out, on Windows,
+  # when the file is there; *path* otherwise. Only the file system knows
+  # `APPLIC~1` is `applications_dir`.
+  def self.long_path(path : String) : String
+    {% if flag?(:win32) %}
+      wide = Crystal::System.to_wstr(path)
+      buffer = Slice(UInt16).new(260)
+      length = LibC.GetLongPathNameW(wide, buffer, buffer.size)
+      if length >= buffer.size
+        buffer = Slice(UInt16).new(length)
+        length = LibC.GetLongPathNameW(wide, buffer, buffer.size)
+      end
+      return String.from_utf16(buffer[0, length]) if 0 < length < buffer.size
+    {% end %}
+    path
+  end
+
+  # iyi: `path_key` of the file's real path, when there is a file: Windows
+  # has one more spelling a string cannot fold, the 8.3 short name - a CI
+  # runner's temporary directory is `C:\Users\RUNNER~1\...` to `mktemp`
+  # and `C:\Users\runneradmin\...` to `Dir.current` - and only the file
+  # system knows the two are one. A path that is not there keeps its own.
+  def self.file_key(path : String) : String
+    return path_key(path) unless File.exists?(path)
+    # `realpath` on Windows is `GetFullPathNameW`, which keeps a short name
+    # as it is; `long_path` spells every component out.
+    path_key(long_path(File.realpath(path)))
+  rescue File::Error
+    path_key(path)
+  end
+
+  # iyi: whether *a* and *b* name one file - asked of the file system,
+  # which is the only thing that knows. A string compare of the expanded
+  # paths is the same answer on Linux and wrong on Windows, where NTFS
+  # ignores case and Win32 drops a trailing space or dot: `-o PROG.iyi
+  # prog.iyi`, `-o c:\...\main.iyi` and `-o "prog.iyi "` each linked the
+  # program over its only source, exit 0. Two paths that do not both
+  # exist are the same file only if they are the same string.
+  def self.same_file?(a : String, b : String) : Bool
+    return true if File.expand_path(a) == File.expand_path(b)
+    File.exists?(a) && File.exists?(b) && File.same?(a, b, follow_symlinks: true)
+  rescue File::Error
+    false
+  end
+
   def self.print_error(msg, color, stderr = STDERR, leading_error = true)
     stderr.print "Error: ".colorize.toggle(color).red.bold if leading_error
     stderr.puts msg.colorize.toggle(color).bright
@@ -31,12 +351,64 @@ module Iyi
     CacheDir.instance.join("#{Iyi::Command.program_name}-run-#{basename}.tmp")
   end
 
+  # iyi: the temporary programs runners left behind: a runner removes its
+  # own when the program ends, and one ended from outside - `taskkill /F`,
+  # an editor's stop button, which is `TerminateProcess` and runs nothing -
+  # leaves its program and its `.pdb` in the cache. Named one per runner
+  # (below), they would pile up; so each run takes away what an hour-old
+  # runner left. An hour, because a younger file may be a program another
+  # runner has just linked and not yet started; on Windows a running one
+  # refuses the delete anyway.
+  def self.sweep_run_leftovers : Nil
+    dir = CacheDir.instance.dir
+    prefix = "#{Iyi::Command.program_name}-run-"
+    cutoff = Time.utc - 1.hour
+    Dir.each_child(dir) do |name|
+      next unless name.starts_with?(prefix) && name.includes?(".tmp")
+      path = File.join(dir, name)
+      next unless (info = File.info?(path)) && info.modification_time < cutoff
+      File.delete?(path) rescue nil
+    end
+  rescue File::Error
+  end
+
+  # iyi: one per runner, by its process id. It was one per basename, and
+  # Windows will not write over an executable that is running: two `iyi
+  # run main.iyi` at once - two different programs in two directories,
+  # or one twice - and the second failed to link, `LNK1104: cannot open
+  # file ...\iyi-run-main.exe.tmp.exe`.
   def self.temp_executable(basename)
-    name = tempfile(basename)
+    name = tempfile("#{basename}-#{Process.pid}")
     {% if flag?(:win32) %}
       name += ".exe"
     {% end %}
     name
+  end
+
+  # iyi: a runner's own program and what the link wrote beside it, once the
+  # program has exited. Windows refused the delete for a moment after the
+  # exit - "being used by another process", whatever still held the image -
+  # and the refusal, raised out of the runner's `ensure`, replaced the
+  # program's own verdict: `std_http_latency.iyi` printed ALL CHECKS PASSED
+  # and `iyi run` exited 1 (CI job 130381353157). Asked again for two
+  # seconds: one second failed once on a CI runner against a gate's 300 ms
+  # hold (CI job 130589942769), the cause not recorded, and two leave room.
+  # A file still held then is left for `sweep_run_leftovers`, whose next run
+  # past the hour takes it. Elsewhere a refusal is not the platform's habit,
+  # and raises.
+  def self.delete_run_output(path : String) : Nil
+    {% if flag?(:win32) %}
+      40.times do |attempt|
+        begin
+          File.delete?(path)
+          return
+        rescue File::Error
+          sleep 50.milliseconds unless attempt == 39
+        end
+      end
+    {% else %}
+      File.delete?(path)
+    {% end %}
   end
 
   def self.with_line_numbers(

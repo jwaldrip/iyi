@@ -6,7 +6,37 @@ class Iyi::Location
   getter column_number
   getter filename
 
-  def initialize(@filename : String | VirtualFile | Nil, @line_number : Int32, @column_number : Int32)
+  # iyi: the `.iyimod` this build read the node out of, or nil for a node of
+  # a file it read. A body that travelled in an artifact is located in its
+  # module's source (`IyiMod::SourcePosition`), which is what a person and a
+  # macro's `@caller` see; this is what says it came from the artifact all
+  # the same, for every decision about *which file this build read*: import
+  # edges, file-private names, and the refusals a module's own build already
+  # made of its own source (`read_from`).
+  getter artifact : String?
+
+  def initialize(@filename : String | VirtualFile | Nil, @line_number : Int32, @column_number : Int32,
+                 @artifact : String? = nil)
+  end
+
+  # iyi: the `artifact` of `expanded_location`: what a node a macro wrote
+  # was read out of is what the call that expanded it was.
+  def original_artifact : String?
+    expanded_location.try &.artifact
+  end
+
+  # iyi: the file this build read the node out of: the artifact, for a node
+  # read from one, and the filename otherwise. The question a decision about
+  # the build asks, where `filename` is the one a person is shown.
+  def read_from : String | VirtualFile | Nil
+    filename = @filename
+    filename.is_a?(String) ? (@artifact || filename) : filename
+  end
+
+  # iyi: `read_from` of `expanded_location`, as `original_filename` is its
+  # filename.
+  def original_read_from : String?
+    original_artifact || original_filename
   end
 
   # Returns a location from a string representation. Used by compiler tools like
@@ -91,11 +121,42 @@ class Iyi::Location
   def <=>(other)
     self_file = @filename
     other_file = other.filename
-    if self_file.is_a?(String) && other_file.is_a?(String) && self_file == other_file
+    if self_file.is_a?(String) && other_file.is_a?(String) && Location.same_file?(self_file, other_file)
       {@line_number, @column_number} <=> {other.line_number, other.column_number}
     else
       nil
     end
+  end
+
+  # iyi: whether two filenames name one file. On POSIX that is string
+  # equality. On Windows a file has spellings: an imported module's is
+  # `File.join(root, "calc/lexer.iyi")`, which keeps the module path's `/`
+  # inside a backslashed root, while the same file opened in an editor is
+  # all backslashes — and the filesystem ignores case besides. Comparing
+  # the strings, every location in an importer's compile was unordered
+  # against the cursor, so the language server's references, call
+  # hierarchy and implementations never reached a file nobody had opened
+  # (step 32 of `bench/lsp_session.py`, the first time it ran there).
+  # Byte by byte, so asking allocates nothing: it is asked for every node
+  # a cursor visitor walks.
+  def self.same_file?(a : String, b : String) : Bool
+    return true if a == b
+    {% if flag?(:win32) %}
+      return false unless a.bytesize == b.bytesize
+      a.bytesize.times do |index|
+        x = a.to_unsafe[index]
+        y = b.to_unsafe[index]
+        next if x == y
+        x = '/'.ord.to_u8 if x == '\\'.ord.to_u8
+        y = '/'.ord.to_u8 if y == '\\'.ord.to_u8
+        x = x + 32 if 'A'.ord <= x <= 'Z'.ord
+        y = y + 32 if 'A'.ord <= y <= 'Z'.ord
+        return false unless x == y
+      end
+      true
+    {% else %}
+      false
+    {% end %}
   end
 
   def equals?(other)

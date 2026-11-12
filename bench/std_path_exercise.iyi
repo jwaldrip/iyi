@@ -1,0 +1,289 @@
+# Exercises `std/path`: `Path` on POSIX and Windows names.
+#
+# Proves:
+#   * normalize, dirname, basename, extension, stem, parts, parents on a
+#     corpus, printed as `oracle` lines the shell script replays through
+#     python3's posixpath.
+#   * join and `/`, with an anchored right-hand side winning, and on
+#     Windows a root or a drive-relative name read on the left's drive.
+#   * relative_to on a corpus (replayed through posixpath.relpath), and
+#     the two refusals: different anchors, a base that climbs through `..`.
+#   * expand under an explicit base and under `PWD`, `home:` under `HOME`.
+#   * Windows kind: drive, root, UNC share, rooted-but-not-absolute,
+#     case-insensitive equality and hashing.
+#   * Comparable: sorted, <, ==.
+#
+# Run via:
+#     ./bin/iyi run bench/std_path_exercise.iyi
+
+module bench/std_path_exercise
+
+import std/path::{Path}
+
+def assert_true(cond : Bool, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}" unless cond
+end
+
+def assert_str(expected : String, actual : String, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg} (expected #{expected.inspect}, got #{actual.inspect})" if expected != actual
+end
+
+# `Path[]` and `Path.new` take the platform's own kind, so a joined name
+# is separated with `\` on Windows: an expectation spelled with `/` was
+# pinning POSIX rather than checking the join.
+def native_sep : String
+  {% if flag?(:win32) %}
+    "\\"
+  {% else %}
+    "/"
+  {% end %}
+end
+
+# `expand(home: true)` reads the home directory from the variable the
+# platform names: `USERPROFILE` on Windows, `HOME` everywhere else.
+def home_env : String | Nil
+  {% if flag?(:win32) %}
+    Program.env("USERPROFILE") || Program.env("HOME")
+  {% else %}
+    Program.env("HOME")
+  {% end %}
+end
+
+# ---------------------------------------------------------------------------
+# Lexical corpus, checked here against known values and replayed by the
+# script through python3 (posixpath.normpath / relpath).
+# ---------------------------------------------------------------------------
+
+puts "== normalize corpus"
+corpus = [
+  "a/b/../c/./d/", "/a/../../b", "../../a", "a/../..", "", ".", "/", "a", "/a",
+  "a/./b", "./a", "a/", "a//b///c", "/a/b/c/..", "..", "../..", "a/b/../../..",
+  "/..", "/./", "x/y/z/../../w", "./././a", "a/b/.", "/a/./b/../c/",
+]
+corpus.each do |name|
+  n = Path.posix(name).normalize.to_s
+  puts "oracle normpath\t#{name}\t#{n}"
+end
+assert_str("a/c/d", Path.posix("a/b/../c/./d/").normalize.to_s, "normalize folds . and ..")
+assert_str("/b", Path.posix("/a/../../b").normalize.to_s, ".. under the root is dropped")
+assert_str("../../a", Path.posix("../../a").normalize.to_s, "leading .. of a relative path stays")
+assert_str("..", Path.posix("a/../..").normalize.to_s, "a/../.. is ..")
+assert_str(".", Path.posix("").normalize.to_s, "empty normalizes to .")
+assert_str("/a/b", Path.posix("//a//b//").normalize.to_s, "repeated separators collapse")
+puts "  #{corpus.size} names normalized"
+
+puts "\n== components"
+rows = [
+  {"/a/b/", "/a", "b", "", "b"},
+  {"/", "/", "/", "", "/"},
+  {"a", ".", "a", "", "a"},
+  {"/a", "/", "a", "", "a"},
+  {"a.tar.gz", ".", "a.tar.gz", ".gz", "a.tar"},
+  {".bashrc", ".", ".bashrc", "", ".bashrc"},
+  {"foo.", ".", "foo.", "", "foo."},
+  {"/x/y.txt", "/x", "y.txt", ".txt", "y"},
+  {"", ".", "", "", ""},
+  {"a/b/c.d.e", "a/b", "c.d.e", ".e", "c.d"},
+  {"/a//b//", "/a", "b", "", "b"},
+]
+rows.each do |row|
+  p = Path.posix(row[0])
+  assert_str(row[1], p.dirname, "dirname of #{row[0].inspect}")
+  assert_str(row[2], p.basename, "basename of #{row[0].inspect}")
+  assert_str(row[3], p.extension, "extension of #{row[0].inspect}")
+  assert_str(row[4], p.stem, "stem of #{row[0].inspect}")
+  puts "oracle dirname\t#{row[0]}\t#{p.dirname}"
+end
+assert_str("a", Path.posix("a.txt").basename(".txt"), "basename strips a suffix")
+assert_str(".txt", Path.posix(".txt").basename(".txt"), "a suffix that is the whole name stays")
+assert_str("/|a|b|c", Path.posix("/a//b/c/").parts.join("|"), "parts with the root first")
+assert_str("a|b", Path.posix("a/b").parts.join("|"), "parts of a relative path")
+assert_str("/,/a,/a/b", Path.posix("/a/b/c").parents.map { |p| p.to_s }.join(","), "parents of an absolute path, outermost first")
+assert_str(".,a,a/b", Path.posix("a/b/c").parents.map { |p| p.to_s }.join(","), "parents of a relative path start at .")
+assert_str("", Path.posix("/").parents.map { |p| p.to_s }.join(","), "the root has no parent")
+# Each ancestor keeps the spelling `parent` keeps: rebuilt and joined with
+# `\`, `Path.windows("C:/a/b/c")` had `C:/a\b` where its `parent` is `C:/a/b`.
+assert_str("C:/,C:/a,C:/a/b", Path.windows("C:/a/b/c").parents.map { |p| p.to_s }.join(","), "parents keep the separators they were written with")
+assert_str(".,a,a/.", Path.windows("a/./b").parents.map { |p| p.to_s }.join(","), "parents of a relative Windows path written with /")
+assert_str(Path.windows("C:/a/b/c").parent.to_s, Path.windows("C:/a/b/c").parents.last.to_s, "the last parent is parent")
+assert_str("/a", Path.posix("/a/b").parent.to_s, "parent")
+seen = 0
+Path.posix("/a/b").each_part { |part| seen += 1 }
+assert_true(seen == 3, "each_part yields every part")
+puts "  #{rows.size} rows of dirname/basename/extension/stem, parts and parents agree"
+
+puts "\n== join"
+joins = [
+  {"a", "b", "a/b"}, {"a/", "b", "a/b"}, {"a", "/b", "/b"}, {"a", "", "a"},
+  {"", "b", "b"}, {"/", "b", "/b"}, {"a/b", "../c", "a/b/../c"},
+]
+joins.each do |row|
+  assert_str(row[2], Path.posix(row[0]).join(row[1]).to_s, "join #{row[0].inspect} #{row[1].inspect}")
+  puts "oracle join\t#{row[0]}\t#{row[1]}\t#{row[2]}"
+end
+assert_str(["a", "b", "c"].join(native_sep), Path["a", "b", "c"].to_s, "Path[a, b, c]")
+assert_str("usr/local/bin", (Path.posix("usr") / "local" / Path.posix("bin")).to_s, "/ joins")
+assert_str("/a/c", Path.posix("/a/b").sibling("c").to_s, "sibling")
+assert_str("x/y/z", Path.posix("x").join(["y", "z"]).to_s, "join an array")
+puts "  #{joins.size} joins, Path[], /, sibling verified"
+
+puts "\n== relative_to"
+rels = [
+  {"/a/b/c", "/a/d", "../b/c"}, {"/a/b", "/a/b", "."}, {"a/b", "a", "b"},
+  {"a", "a/b/c", "../.."}, {"/a/b/c", "/", "a/b/c"}, {"/", "/a/b", "../.."},
+  {"a/b/../c", "a", "c"}, {"x/y", "z/w", "../../x/y"},
+]
+rels.each do |row|
+  assert_str(row[2], Path.posix(row[0]).relative_to(row[1]).to_s, "relative_to #{row[0].inspect} #{row[1].inspect}")
+  puts "oracle relpath\t#{row[0]}\t#{row[1]}\t#{row[2]}"
+end
+assert_true(Path.posix("/a").relative_to?("b").nil?, "absolute against relative has no relative path")
+assert_true(Path.posix("a/b").relative_to?("../c").nil?, "a base that climbs through .. is refused")
+assert_true(Path.posix("a/b").relative_to?(Path.posix("c/../../d")).nil?, "a base that normalizes into .. is refused")
+assert_true(Path.windows("C:\\a").relative_to?("D:\\a").nil?, "different drives have no relative path")
+puts "  #{rels.size} relative paths and 4 refusals verified"
+
+puts "\n== expand"
+assert_str("/x/b", Path.posix("a/../b").expand("/x").to_s, "expand under a base")
+assert_str("/x/b", Path.posix("a/../b").expand(Path.posix("/x")).to_s, "expand under a Path base")
+assert_str("/a/b", Path.posix("/a/./b").expand("/ignored").to_s, "an absolute path ignores the base")
+home = home_env
+raise "no home directory is named in the environment" if home.nil?
+pwd = Program.env("PWD")
+raise "PWD is not set" if pwd.nil?
+# The home directory comes from the platform, in the platform's own form,
+# so these two read the native kind rather than pinning POSIX: on POSIX
+# the native kind *is* POSIX and the answers are the same strings as
+# before. `PWD` below is a value the driver pins, and it pins a POSIX one,
+# so that check keeps the POSIX kind on every platform.
+assert_str(Path.new(home).join("x").normalize.to_s, Path.new("~/x").expand(home: true).to_s, "~ expands from the home variable")
+assert_str(Path.new(home).normalize.to_s, Path.new("~").expand(home: true).to_s, "~ alone is the home directory")
+assert_str("/cwd/~/x", Path.posix("~/x").expand("/cwd").to_s, "~ is a name unless home: true")
+{% if flag?(:win32) %}
+  # On Windows the process's own directory, whatever `PWD` says: only Git
+  # Bash sets it there, and nothing keeps it true after a `cd` in another
+  # shell or a child started elsewhere. The driver pins a `PWD` naming no
+  # directory, and it is not read.
+  own = Program.cwd || raise "the process's own directory does not answer"
+  assert_str(Path.new(own).join("z").normalize.to_s, Path.new("z").expand.to_s, "no base reads the process's own directory, not PWD")
+{% else %}
+  assert_str(Path.posix(pwd).join("z").normalize.to_s, Path.posix("z").expand.to_s, "no base reads PWD")
+{% end %}
+puts "  base, Path base, absolute, ~, PWD verified"
+
+puts "\n== windows kind"
+w = Path.windows("C:\\a\\..\\b")
+assert_str("C:\\b", w.normalize.to_s, "drive path normalizes")
+assert_str("C:", w.drive.to_s, "drive")
+assert_str("\\", w.root.to_s, "root")
+assert_str("C:\\", w.anchor.to_s, "anchor")
+assert_true(Path.windows("C:\\a").absolute?, "C:\\a is absolute")
+assert_true(!Path.windows("C:a").absolute?, "C:a is drive-relative, not absolute")
+assert_true(!Path.windows("\\a").absolute?, "\\a is rooted, not absolute")
+assert_str("\\", Path.windows("\\a").root.to_s, "\\a has a root and no drive")
+assert_true(Path.windows("\\a").drive.nil?, "\\a has no drive")
+unc = Path.windows("\\\\server\\share\\x\\y")
+assert_str("\\\\server\\share", unc.drive.to_s, "UNC share is the drive")
+assert_str("\\", unc.root.to_s, "UNC root")
+assert_true(unc.absolute?, "UNC path with a root is absolute")
+# A share's root without a separator after it is still absolute, as
+# Windows reads it: after `Dir.cd` to one, every `expand` panicked.
+assert_true(Path.windows("\\\\server\\share").root.nil? && Path.windows("\\\\server\\share").absolute?, "a bare UNC share has no root and is absolute")
+assert_str("\\\\server\\share\\y", Path.windows("y").expand("\\\\server\\share").to_s, "expand under a share's root")
+assert_str("a", Path.windows("//server/share/a").relative_to("\\\\server\\share").to_s, "relative to a share's root")
+assert_str("\\\\server\\share\\|x|y", unc.parts.join("|"), "UNC parts")
+assert_str("\\\\server\\share\\x", unc.dirname, "UNC dirname")
+assert_str("C:\\", Path.windows("C:\\a").dirname, "dirname under a drive root")
+assert_str("C:..", Path.windows("C:a\\..\\..").normalize.to_s, "drive-relative .. stays")
+assert_str("C:\\a", Path.windows("C:\\..\\a").normalize.to_s, ".. under a drive root is dropped")
+assert_str("a\\b", Path.windows("a").join("b").to_s, "windows join")
+assert_str("a/b", Path.windows("a/b").to_s, "/ is a separator on windows too")
+assert_str("x|y", Path.windows("x/y").parts.join("|"), "/ splits windows parts")
+assert_str("C:/a", Path.windows("C:\\a").to_posix.to_s, "to_posix turns \\ into /")
+assert_str("/a/b", Path.posix("/a/b").to_windows.to_s, "to_windows keeps the name")
+assert_true(Path.posix("/a/b").to_windows.windows?, "to_windows changes the kind")
+assert_true(Path.windows("C:\\A") == Path.windows("c:\\a"), "windows names fold case")
+assert_true(Path.posix("/a") != Path.windows("/a"), "kinds differ")
+h = Hash(Path, Int32).new
+h[Path.windows("C:\\A")] = 1
+assert_true(h[Path.windows("c:\\a")]? == 1, "hash folds case on windows")
+# An anchored path that is not absolute: expand answered it as it was,
+# `\a` and `C:a`, where the answer promised is absolute. And a bare drive
+# joined with a name is drive-relative still, not the drive's root.
+base = Path.windows("C:\\base")
+assert_str("C:\\a", Path.windows("\\a").expand(base).to_s, "\\a expands onto the base's drive")
+assert_str("C:\\base\\a", Path.windows("C:a").expand(base).to_s, "C:a expands under a base on C:")
+assert_str("C:\\base\\a", Path.windows("c:a").expand(base).to_s, "a drive letter matches in either case")
+assert_str("D:\\a", Path.windows("D:a").expand(base).to_s, "D:a expands under D:'s root from a base on C:")
+assert_true(Path.windows("\\a").expand(base).absolute?, "an expanded rooted path is absolute")
+assert_str("C:a", Path.windows("C:").join("a").to_s, "a bare drive joined is drive-relative")
+assert_str("C:b", Path.windows("C:a").sibling("b").to_s, "a drive-relative sibling stays on the drive")
+# The anchor is spelled the kind's own way by normalize: `C:/` stayed as
+# written, `C:/a/b` normalized to `C:/a\b`, and relative_to refused a base
+# that named the same drive root with the other separator.
+assert_str("C:\\a\\b", Path.windows("C:/a/b").normalize.to_s, "a windows anchor normalizes to its own separator")
+assert_str("\\a", Path.windows("/a").normalize.to_s, "a windows root normalizes to \\")
+assert_str("\\\\srv\\sh\\x", Path.windows("//srv/sh//x").normalize.to_s, "a UNC anchor normalizes to one \\ root")
+assert_str("b", Path.windows("C:/a/b").relative_to("C:\\a").to_s, "C:/ and C:\\ are one anchor to relative_to")
+# A UNC share is an anchor, not a file name: `\\srv\a.\` had the
+# extension `.\`, with a stem and extension that did not spell it.
+assert_str("", Path.windows("\\\\srv\\a.\\").extension, "a UNC share has no extension")
+assert_str("\\\\srv\\a.\\", Path.windows("\\\\srv\\a.\\").stem, "a UNC share is its own stem")
+# The rest of a drive-relative name was cut by characters, not bytes.
+assert_str("C:\\base\\\u00e9", Path.windows("C:\u00e9").expand(base).to_s, "a drive-relative non-ASCII name expands whole")
+assert_str("D:\\\u00e9x", Path.windows("D:\u00e9x").expand(base).to_s, "a non-ASCII name on another drive expands whole")
+# Only a bare drive joins without a separator; `foo:` is a name.
+assert_str("foo:\\bar", Path.windows("foo:").join("bar").to_s, "only a bare drive joins without a separator")
+# A Windows anchor can be half of one, and the other half is the left
+# side's, as ntpath joins: `C:\a` joined with `\b` was `\b`, a root on
+# whatever drive is current, and with `C:b` it was `C:b`.
+assert_str("C:\\b", Path.windows("C:\\a").join("\\b").to_s, "a root joined onto a drive path stays on the drive")
+assert_str("\\\\srv\\sh\\y", Path.windows("\\\\srv\\sh\\x").join("/y").normalize.to_s, "a root joined onto a share stays on the share")
+# `\\?\UNC\server\share` is `\\server\share` written long, and the share
+# is its drive, as Python reads it: the drive was `\\?\UNC`, and a path on
+# one share was relative to another.
+long_unc = Path.windows("\\\\?\\UNC\\srv\\sh\\x")
+assert_str("\\\\?\\UNC\\srv\\sh", long_unc.drive.to_s, "a long UNC path's drive runs through the share")
+assert_str("//?/unc/srv/sh", Path.windows("//?/unc/srv/sh/x").drive.to_s, "in any case, with either separator")
+assert_str("x", long_unc.relative_to("\\\\?\\UNC\\srv\\sh").to_s, "a long UNC path relative to its own share")
+assert_true(Path.windows("\\\\?\\UNC\\srv\\other\\x").relative_to?("\\\\?\\UNC\\srv\\sh").nil?, "is not relative to another share")
+puts "  \\\\?\\UNC\\server\\share is a share's drive"
+assert_str("C:\\a\\b", Path.windows("C:\\a").join("c:b").to_s, "a drive-relative name on the same drive goes under the left side")
+assert_str("D:b", Path.windows("C:\\a").join("D:b").to_s, "a drive-relative name on another drive is the answer by itself")
+assert_str("\\b", Path.windows("a").join("\\b").to_s, "a root joined onto a name with no drive is the answer by itself")
+# `/` and `\` are one separator to `==` and to a hash as well.
+assert_true(Path.windows("C:/a") == Path.windows("C:\\a"), "/ and \\ are one separator in ==")
+assert_true(h[Path.windows("c:/a")]? == 1, "and in the hash")
+{% if flag?(:win32) %}
+  # In every script, as NTFS folds a name: ASCII alone was folded, and
+  # `C:\Ä` and `c:\ä` were two paths for one file. In the hash, in
+  # `relative_to`'s parts and in order too; and a fold is a letter for a
+  # letter, so `ß` is not `SS`.
+  assert_true(Path.windows("C:\\\u00c4") == Path.windows("c:\\\u00e4"), "windows names fold case beyond ASCII")
+  h[Path.windows("C:\\\u00c4\u0416")] = 2
+  assert_true(h[Path.windows("c:/\u00e4\u0436")]? == 2, "and the hash folds them")
+  assert_str("c", Path.windows("C:\\\u00c4b\\c").relative_to(Path.windows("c:\\\u00e4B")).to_s, "relative_to folds them")
+  assert_true(Path.windows("C:\\\u00c4\\a") < Path.windows("c:\\\u00e4\\b"), "a folded name orders by what follows")
+  assert_true(Path.windows("\u00df") != Path.windows("SS"), "a fold is one letter for one")
+  puts "  windows names fold case in every script"
+{% end %}
+puts "  drive, root, UNC, rooted, normalize, conversions, case folding verified"
+
+puts "\n== path comparison via Comparable"
+assert_true(Path.posix("a") < Path.posix("b"), "Path <")
+assert_true(Path.posix("b") > Path.posix("a"), "Path >")
+assert_str("a,b,c", [Path.posix("c"), Path.posix("a"), Path.posix("b")].sorted.map { |p| p.to_s }.join(","), "sorted")
+assert_true((Path.posix("a") <=> Path.posix("a")) == 0, "<=> equal")
+assert_str("Path[\"a\"]", Path["a"].inspect, "inspect of a native path")
+# A path of the kind this platform does not use names its constructor, as
+# the other library writes it: `Path.posix("/usr/bin")` on Windows was
+# `Path["/usr/bin"]`, which names a Windows path.
+posix_said = Path.posix("/usr/bin").native? ? "Path[\"/usr/bin\"]" : "Path.posix(\"/usr/bin\")"
+windows_said = Path.windows("C:\\x").native? ? "Path[\"C:\\\\x\"]" : "Path.windows(\"C:\\\\x\")"
+assert_str(posix_said, Path.posix("/usr/bin").inspect, "inspect of a POSIX path")
+assert_str(windows_said, Path.windows("C:\\x").inspect, "inspect of a Windows path")
+assert_true(Path.posix("").empty?, "empty?")
+assert_true(Path.new("x").native?, "Path.new is native")
+puts "  <, >, <=>, sorted, inspect verified, a path of the other kind naming its constructor"
+
+puts "\nALL CHECKS PASSED"

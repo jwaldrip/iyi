@@ -1,12 +1,8 @@
-import compiler/foundation/location
-import compiler/syntax/ast
-import compiler/syntax/parser
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Visibility}
+import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor
-import compiler/tools/bind
-using compiler/syntax/ast::{ASTNode, Visibility}
-using compiler/foundation/location::{Location}
-using compiler/syntax/parser::{Parser}
-using compiler/tools/bind::{BindCheck, BindCollector, BindMethod, BindParam, BindTool, BindVerdict}
+import compiler/tools/bind::{BindCheck, BindCollector, BindMethod, BindParam, BindTool, BindVerdict}
 
 module BenchSelfhostBindExercise
   def self.assert(cond : Bool, msg : String)

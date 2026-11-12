@@ -20,18 +20,13 @@ BOOTSTRAP="$REPO/bin/iyi"
 ENTRY="$REPO/src/compiler/stage1.iyi"
 MUT_TARGET="$REPO/src/compiler/command/driver.iyi"
 WORK="$(mktemp -d)"
-mut_active=0
+. "$REPO/bench/lib/mutation.sh"
 cleanup() {
-  if [ "$mut_active" -eq 1 ] && [ -f "$MUT_TARGET.orig" ]; then
-    cp "$MUT_TARGET.orig" "$MUT_TARGET"
-    rm -f "$MUT_TARGET.orig"
-  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
-export IYI_CACHE_DIR="${IYI_CACHE_DIR:-/tmp/iyi-s1e-cache}"
+if command -v brew >/dev/null 2>&1; then LIBRARY_PATH="$(brew --prefix bdw-gc)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"; export LIBRARY_PATH; fi
+export IYI_CACHE_DIR="${IYI_CACHE_DIR:-${TMPDIR:-/tmp}/iyi-s1e-cache}"
 
 echo "== 1. Building the stage-one executable from src/compiler/stage1.iyi"
 cd "$REPO"
@@ -49,26 +44,44 @@ echo "  built .build/iyi-stage1 successfully"
 
 echo
 echo "== 2. Dependency floor on the stage-one binary itself"
-if command -v otool >/dev/null 2>&1; then
-  libs="$(otool -L "$REPO/.build/iyi-stage1" 2>/dev/null | awk 'NR>1 {print $1}' | grep -v '^$')"
-  echo "$libs" | sed 's/^/    /'
-  if [ -z "$libs" ] || echo "$libs" | grep -qv '/usr/lib/libSystem.B.dylib'; then
-    echo "  FLOOR BROKEN: the stage-one binary links more than the platform libc"
-    status=1
-  else
-    echo "  stage-one binary links only the platform libc"
-  fi
-else
-  libs="$(readelf -d "$REPO/.build/iyi-stage1" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | sort -u)"
-  echo "$libs" | sed 's/^/    /'
-  bad="$(echo "$libs" | grep -v -E '^(libc\.so|ld-linux|libgcc_s)' || true)"
-  if [ -z "$libs" ] || [ -n "$bad" ]; then
-    echo "  FLOOR BROKEN: the stage-one binary links more than the platform libc"
-    status=1
-  else
-    echo "  stage-one binary links only the platform libc"
-  fi
-fi
+# Darwin lists links with otool -L; Linux lists NEEDED entries with readelf -d.
+# Any other system has no dependency reader here, so the gate fails.
+case "$(uname -s)" in
+  Darwin)
+    if ! command -v otool >/dev/null 2>&1; then
+      echo "  ERROR: otool not found; the Darwin dependency floor needs otool -L"
+      exit 1
+    fi
+    libs="$(otool -L "$REPO/.build/iyi-stage1" 2>/dev/null | awk 'NR>1 {print $1}' | grep -v '^$')"
+    echo "$libs" | sed 's/^/    /'
+    if [ -z "$libs" ] || echo "$libs" | grep -qv '/usr/lib/libSystem.B.dylib'; then
+      echo "  FLOOR BROKEN: the stage-one binary links more than the platform libc"
+      status=1
+    else
+      echo "  stage-one binary links only the platform libc"
+    fi
+    ;;
+  Linux)
+    if ! command -v readelf >/dev/null 2>&1; then
+      echo "  ERROR: readelf not found; the Linux dependency floor needs readelf -d"
+      exit 1
+    fi
+    # NEEDED entries print as "Shared library: [name]" in readelf -d output.
+    libs="$(readelf -d "$REPO/.build/iyi-stage1" 2>/dev/null | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | sort -u)"
+    echo "$libs" | sed 's/^/    /'
+    bad="$(echo "$libs" | grep -v -E '^(libc\.so|ld-linux|libgcc_s)' || true)"
+    if [ -z "$libs" ] || [ -n "$bad" ]; then
+      echo "  FLOOR BROKEN: the stage-one binary links more than the platform libc"
+      status=1
+    else
+      echo "  stage-one binary links only the platform libc"
+    fi
+    ;;
+  *)
+    echo "  ERROR: unsupported system $(uname -s): no dependency reader for the floor (Darwin uses otool -L, Linux uses readelf -d)"
+    exit 1
+    ;;
+esac
 
 echo
 echo "== 3. Measuring the stage-one phase against the committed floor"
@@ -140,33 +153,25 @@ echo "== 4. Guarded mutation proof: the gate must go red when dispatch regresses
 mutations_caught=0
 mutations_run=0
 
-mutations_run=$((mutations_run + 1))
-echo "  [version banner severed from the driver]"
-MUT_TARGET="$REPO/src/compiler/command/driver.iyi"
-cp "$MUT_TARGET" "$MUT_TARGET.orig"
-mut_active=1
-sed -e 's|puts CommandDriver.version_description|puts "mutated"|' \
-  "$MUT_TARGET" > "$WORK/mutated_driver.iyi"
-if cmp -s "$MUT_TARGET" "$WORK/mutated_driver.iyi"; then
-  echo "    FAIL: patch did not change the file"
-  status=1
-else
-  cp "$WORK/mutated_driver.iyi" "$MUT_TARGET"
+# Rebuilds the stage-one binary from the mutated driver and probes it.
+# Returns non-zero when dispatch regresses below the floor (the catch).
+check_dispatch_regresses() {
   "$BOOTSTRAP" build -o "$REPO/.build/iyi-stage1" "$ENTRY" > "$WORK/mut_build.log" 2>&1 || true
   mut_phase="$(probe_stage1)"
-  cp "$MUT_TARGET.orig" "$MUT_TARGET"
-  rm -f "$MUT_TARGET.orig"
-  mut_active=0
-  "$BOOTSTRAP" build -o "$REPO/.build/iyi-stage1" "$ENTRY" > /dev/null 2>&1 || true
   mut_rank="$(phase_rank "$mut_phase")"
-  if [ "$mut_rank" -lt "$floor_rank" ]; then
-    echo "    caught: mutation caused regression ($STAGE1_FLOOR -> $mut_phase) as expected"
-    mutations_caught=$((mutations_caught + 1))
-  else
-    echo "    FAIL: mutation did not cause regression ($mut_phase >= $STAGE1_FLOOR)"
-    status=1
-  fi
+  [ "$mut_rank" -ge "$floor_rank" ]
+}
+
+mutations_run=$((mutations_run + 1))
+if prove_mutation "version banner severed from the driver" "$MUT_TARGET" \
+  "puts CommandDriver.version_description" 'puts "mutated"' \
+  -- check_dispatch_regresses; then
+  mutations_caught=$((mutations_caught + 1))
+else
+  status=1
 fi
+# The helper has restored the driver; rebuild the stage-one binary from it.
+"$BOOTSTRAP" build -o "$REPO/.build/iyi-stage1" "$ENTRY" > /dev/null 2>&1 || true
 
 echo "  Mutation summary: $mutations_caught/$mutations_run regressions caught"
 

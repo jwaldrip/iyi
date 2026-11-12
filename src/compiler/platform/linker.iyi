@@ -1,7 +1,6 @@
 module compiler/platform/linker
 
-import compiler/platform/target
-using compiler/platform/target::{Target}
+import compiler/platform/target::{Target}
 
 # Record of a link annotation attached to a library or function binding.
 pub class LinkAnnotation
@@ -44,7 +43,7 @@ pub class Linker
     end
     i = 0
     while i < arg.bytesize
-      b = arg.to_unsafe[i]
+      b = arg.byte_at(i)
       is_safe = (b >= 48_u8 && b <= 57_u8) ||
                 (b >= 65_u8 && b <= 90_u8) ||
                 (b >= 97_u8 && b <= 122_u8) ||
@@ -71,7 +70,7 @@ pub class Linker
     res = "'"
     i = 0
     while i < arg.bytesize
-      b = arg.to_unsafe[i]
+      b = arg.byte_at(i)
       if b == 39_u8
         res = res + "'\\''"
       else
@@ -102,7 +101,7 @@ pub class Linker
     slashes = 0
     i = 0
     while i < arg.bytesize
-      b = arg.to_unsafe[i]
+      b = arg.byte_at(i)
       if b == 92_u8
         slashes = slashes + 1
       elsif b == 34_u8

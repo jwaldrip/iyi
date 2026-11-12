@@ -1,0 +1,9 @@
+# In macro text a single `{` is text and does not open an expression. The `{` of
+# `#{` inside a string in macro text is text as well. `{{` still opens one.
+macro inspect_call(cl)
+  raise "cannot read #{path}: it is a directory"
+  {
+    name: {{cl.name.stringify}},
+    tag: "{rax}"
+  }
+end

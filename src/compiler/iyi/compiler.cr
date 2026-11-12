@@ -3,6 +3,9 @@ require "file_utils"
 require "colorize"
 require "crystal/digest/md5"
 require "./optimization_mode"
+require "./wasm_roots"
+require "./release_partition"
+require "./preempt_checks"
 require "./mod/installer"
 {% if flag?(:msvc) %}
   require "./loader"
@@ -89,7 +92,13 @@ module Iyi
     property mattr : String?
 
     # If `false`, color won't be used in output messages.
-    property? color = true
+    #
+    # iyi: the colour is off unless a command turns it on, which `Command`
+    # does when its output is a terminal. On by default, it reached every
+    # compiler made without a command - the language server's, `fix`'s,
+    # `check --affected`'s - and the messages they hand on as data carried
+    # `\u001b[33;1m (compile-time type is (String | Nil))\u001b[39;22m`.
+    property? color = false
 
     # If `true`, skip cleanup process on semantic analysis.
     property? no_cleanup = false
@@ -117,6 +126,8 @@ module Iyi
     # `require "prelude"` (or whatever name is set here) to
     # the source file to compile.
     property prelude = "prelude"
+    # iyi: true when building with `--crystal`, targeting Crystal's standard library and ABI.
+    property? crystal_library = false
 
     # iyi: directory to write a `.iyimod` per imported module into, or nil
     # (SPEC.md IV.1). Set by `--emit-iyimod`.
@@ -162,6 +173,11 @@ module Iyi
     # compiled against it and never opens the module's source, which is R-1's
     # contract and the reason the file exists.
     property use_iyimod : String? = nil
+
+    # iyi: read an artifact only for a module whose source is not there —
+    # the language server's order, and nobody else's. See
+    # `Program#iyi_prefers_source`.
+    property iyi_prefers_source = false
 
     # Sets the Optimization mode.
     property optimization_mode = OptimizationMode::O0
@@ -242,35 +258,129 @@ module Iyi
     # Raises `InvalidByteSequenceError` if the source code is not
     # valid UTF-8.
     def compile(source : Source | Array(Source), output_filename : String) : Result
-      # iyi: IV.6 read backwards, for every build and not only the server's.
-      # A module's path is its file's path, so an entry whose header ends
-      # its own path names the project root above both, and `import a/b`
-      # from `<root>/x/y.iyi` resolves the way a build from the root would.
-      # A tool that knows better has set the root already; an entry whose
-      # header and path disagree, or that has none, keeps the entry-dir rule.
+      adopt_header_root(source)
+      compile_configure_program(source, output_filename) { }
+    end
+
+    # iyi: IV.6 read backwards, for every build and not only the server's.
+    # A module's path is its file's path, so an entry whose header ends
+    # its own path names the project root above both, and `import a/b`
+    # from `<root>/x/y.iyi` resolves the way a build from the root would.
+    # A tool that knows better has set the root already; an entry whose
+    # header and path disagree, or that has none, keeps the entry-dir rule.
+    #
+    # Asked by the front end alone as well (`top_level_semantic`): it was
+    # asked in `compile` only, so `iyi tool dependencies app/main.iyi` and
+    # `tool hierarchy` of it answered "can't find module 'app/util'" about
+    # the import `run` and `check` of the same file resolve.
+    private def adopt_header_root(source : Source | Array(Source)) : Nil
       if @iyi_header_root.nil? && (entry = source.is_a?(Source) ? source : source.first?)
         @iyi_header_root = Compiler.header_root_of(entry.filename, entry.code)
       end
-      compile_configure_program(source, output_filename) { }
+    end
+
+    # iyi: the directory a workspace keeps its artifacts in.
+    #
+    # One name, probed, because the alternative to one name is a setting
+    # every editor has to be told and no agent knows. It is the name the
+    # README, the SPEC and every bench in the tree already write, and the
+    # verbs that read it — the language server, `check`, `doc`, `mod
+    # context` — read a module's artifact only where its source is not
+    # there (`Program#iyi_prefers_source`). A build is told with a flag and
+    # asks nothing of this.
+    ARTIFACT_DIR = "mods"
+
+    def self.workspace_artifacts(root : String) : String?
+      candidate = File.join(root, ARTIFACT_DIR)
+      Dir.exists?(candidate) ? candidate : nil
+    end
+
+    # The module path a file's header declares, or nil: its first line that
+    # is neither blank nor a comment, when that line is `module x`. The one
+    # reading - the build's root, `iyi doc` and the language server each
+    # had their own copy - and past a byte order mark, which the lexer
+    # skips and every copy read as part of the line: a file a Windows
+    # editor saved with one ran as a script whose imports could not be
+    # found, and `iyi doc` said it declared no module. A module's
+    # `@[Unsafe("why")]` stands above its header (SPEC.md III.13), so that
+    # line is read past as a comment is.
+    def self.module_header_of(text : String) : String?
+      text.lchop('\uFEFF').each_line do |line|
+        line = line.strip
+        next if line.empty? || line.starts_with?('#') || unsafe_mark_line?(line)
+        return nil unless line.starts_with?("module ")
+        module_path = line.lchop("module ").strip
+        return nil if module_path.empty? || module_path.includes?(' ')
+        return module_path
+      end
+      nil
+    end
+
+    # Whether *line*, stripped, is a module's `@[Unsafe("why")]` mark: one
+    # line, the spelling without the `call:` a def's contract takes.
+    def self.unsafe_mark_line?(line : String) : Bool
+      (line == "@[Unsafe]" || line.starts_with?("@[Unsafe(")) && !line.includes?("call:")
     end
 
     # The root the entry's header names, or nil: `module calc/parser` in
     # `/p/calc/parser.iyi` is `/p`.
     def self.header_root_of(path : String, text : String) : String?
-      header = nil
-      text.each_line do |line|
-        line = line.strip
-        next if line.empty? || line.starts_with?('#')
-        header = line
-        break
-      end
-      return nil unless header && header.starts_with?("module ")
-      module_path = header.lchop("module ").strip
-      return nil if module_path.empty? || module_path.includes?(' ')
+      module_path = module_header_of(text)
+      return nil unless module_path
       suffix = "/#{module_path}.iyi"
-      return nil unless path.ends_with?(suffix)
+      # Asked of the posix reading: a module path is posix by grammar (R-1) and
+      # a path is the platform's, so on Windows no entry ever ended with its own
+      # header — every build fell back to the entry-dir rule and `import
+      # shared/helper` from `pkg/eps_test.iyi` could not be found.
+      # And asked the way the file system compares: on Windows `APP\main.iyi`
+      # is `app/main.iyi`, and a path typed in another case found no root
+      # and then no module its header's imports named.
+      unless Iyi.path_key(::Path[path].to_posix.to_s).ends_with?(Iyi.path_key(suffix))
+        # And asked of the long spelling, which only the file system knows:
+        # `APPLIC~1\main.iyi` is `applications_dir\main.iyi`, and an entry
+        # reached through the 8.3 name - a CI runner's `RUNNER~1`, a working
+        # directory a `cmd` window spelled short - found no root, and `run`,
+        # `check` and `test` of it said "can't find module
+        # 'applications_dir/util'" where the long spelling printed 42.
+        long = Iyi.long_path(File.expand_path(path))
+        unless Iyi.path_key(::Path[long].to_posix.to_s).ends_with?(Iyi.path_key(suffix))
+          return nil unless header_spelling_same_file?(long, suffix)
+        end
+        path = long
+      end
       root = path[0, path.size - suffix.size]
       root.empty? ? "/" : root
+    end
+
+    # Whether *path*, which ends in *suffix* only when case is folded, is the
+    # file its root joined to *suffix* opens - on a Mac, asked of the volume.
+    # APFS folds case by default but can be formatted not to, so the string
+    # cannot say: `iyi run HDR/APP/MAIN.IYI` of a stored `hdr/app/main.iyi`
+    # found no root, and its `import app/util` was "can't find module
+    # 'app/util'" (macOS 26.6, Apple M2 Pro, the user's machine) where
+    # Windows, whose `path_key` folds case, printed 42. Linux volumes are
+    # left to the string.
+    private def self.header_spelling_same_file?(path : String, suffix : String) : Bool
+      {% if flag?(:darwin) %}
+        return false unless path.size >= suffix.size
+        return false unless path[-suffix.size..].compare(suffix, case_insensitive: true) == 0
+        Iyi.same_file?(path[0, path.size - suffix.size] + suffix, path)
+      {% else %}
+        false
+      {% end %}
+    end
+
+    # The directory a build of *path* is answered from: the root its header
+    # names, or its own directory when the header names none. The manifest
+    # is read there, and a workspace keeps `mods` there, for every verb
+    # that compiles - a build, `check`, `test`, `mod context`, the language
+    # server. The manifest was read beside the entry, so in a project whose
+    # `iyi.mod` sits above `greet/`, `iyi run main.iyi` built
+    # `greet/greeter.iyi` and `iyi check greet/greeter.iyi` refused it with
+    # "no requirement covers 'example.test/user/liba'"; the test beside it
+    # "does not build", and `check --affected` said two consumers broke.
+    def self.entry_root_of(path : String, text : String) : String
+      header_root_of(path, text) || File.dirname(path)
     end
 
     # Compiles against an already-analysed prelude. This is the same split the
@@ -280,6 +390,10 @@ module Iyi
     private def compile_with_preanalysed_prelude(pre : Preanalysed, sources : Array(Source),
                                                  output_filename : String, & : Program -> Nil) : Result
       program = pre.program
+
+      # What the prelude was read from belongs to this build's record too:
+      # it was read before this build began, under the analysis's own.
+      BuildInputs.current.try &.merge(pre.inputs)
 
       # The prelude was analysed against a placeholder filename. Adopt this
       # build's, so that anything derived from it — `__temp_` prefixes, error
@@ -312,6 +426,7 @@ module Iyi
       # and ignored, and the build compiled every module from source while
       # saying nothing.
       program.iyi_module_dir = @use_iyimod
+      program.iyi_prefers_source = @iyi_prefers_source
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
       # An emitting build parses docs whatever the adopted analysis wanted:
@@ -323,21 +438,23 @@ module Iyi
       # never computed is not one it can be said to have decided against.
       if table = @iyi_mod_table
         program.iyi_mod_table = table
-      elsif filename = program.filename
+      elsif entry = sources.first?
         begin
-          program.iyi_mod_table = Mod::Installer.table_for(File.dirname(filename))
+          program.iyi_mod_table = Mod::Installer.table_for(Compiler.entry_root_of(entry.filename, entry.code))
         rescue ex : Mod::ModError
           raise Error.new(ex.message)
         end
       end
+      program.iyi_root_package = iyi_root_package_of(sources)
       program.warnings = @warnings
       program.iyi_file_overrides = @iyi_file_overrides
       program.iyi_project_root = @iyi_project_root
       program.iyi_header_root = @iyi_header_root
+      program.parse_ahead_threads = @n_threads.clamp(..ParseAhead::THREADS)
       program.color = color?
       program.stdout = stdout
       program.show_error_trace = show_error_trace?
-
+      program.crystal_library = crystal_library?
       yield program
 
       node = @progress_tracker.stage("Parse") do
@@ -349,6 +466,13 @@ module Iyi
       end
 
       begin
+        # Definition typing does not run here: `Program#semantic` calls
+        # `DefinitionTyping.append_probes` between these two passes, and this
+        # path does not. So an imported artifact's witnesses are not restored.
+        # Under `--use-iyimod` a witness the producer numbered stays an
+        # unmatchable phantom id, which keeps dispatch but not a trait-valued
+        # field's layout, and a carried union or generic match naming one is
+        # refused when `semantic_after_top_level` resolves the deferred refs.
         node, processor = program.top_level_semantic(node, processor: pre.processor)
         node = program.semantic_after_top_level(
           Expressions.from([pre.node, node] of ASTNode), processor,
@@ -387,7 +511,11 @@ module Iyi
       # be silently, confusingly wrong.
       getter fingerprint : Hash(String, Time)
 
-      def initialize(@program, @node, @processor, @key)
+      # What the analysis read, for the up-to-date record of each build that
+      # adopts it.
+      getter inputs : BuildInputs
+
+      def initialize(@program, @node, @processor, @key, @inputs)
         @fingerprint = {} of String => Time
         @program.requires.each do |filename|
           if info = File.info?(filename)
@@ -434,8 +562,7 @@ module Iyi
 
     # Re-applied by the adopt path above. `new_program` is what would otherwise
     # have set them, and adoption skips it.
-    APPLIED_ON_ADOPT = %w(use_iyimod no_codegen emit_iyimod warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root iyi_header_root)
-
+    APPLIED_ON_ADOPT = %w(use_iyimod iyi_prefers_source no_codegen emit_iyimod warnings color stdout show_error_trace iyi_mod_table iyi_file_overrides iyi_project_root iyi_header_root crystal_library)
     # Neither, and two of these are judgements rather than facts. `mcpu`,
     # `mattr` and `mcmodel` reach the target machine and the target machine
     # reaches codegen, not analysis — a prelude analysed for one `-mcpu` is the
@@ -477,12 +604,19 @@ module Iyi
     # The filename is a placeholder: the build that adopts this has its own, and
     # sets it before compiling.
     def preanalyse_prelude : Preanalysed
-      program = new_program([Source.new("", "")] of Source)
-      location = Location.new(program.filename, 1, 1)
-      node = program.normalize(Expressions.new([Require.new(prelude).tap(&.iyi_prelude=(true)).at(location)] of ASTNode))
-      node, processor = program.top_level_semantic(node)
+      inputs = BuildInputs.new(CacheDir.instance.dir)
+      held = BuildInputs.current
+      BuildInputs.current = inputs
+      begin
+        program = new_program([Source.new("", "")] of Source)
+        location = Location.new(program.filename, 1, 1)
+        node = program.normalize(Expressions.new([Require.new(prelude).tap(&.iyi_prelude=(true)).at(location)] of ASTNode))
+        node, processor = program.top_level_semantic(node)
+      ensure
+        BuildInputs.current = held
+      end
       @progress_tracker.clear
-      Preanalysed.new(program, node, processor, prelude_cache_key)
+      Preanalysed.new(program, node, processor, prelude_cache_key, inputs)
     end
 
     # :ditto:
@@ -571,6 +705,7 @@ module Iyi
       type = program.types?.try &.[]?(root)
       return unless type.is_a?(ModuleType)
 
+      program.iyi_fills_boundary = true
       program.iyi_exported_owners << type
       collect_iyi_owners type, program.iyi_exported_owners
     end
@@ -625,6 +760,7 @@ module Iyi
         # First, because collecting the surface is also what records which of
         # its bodies have to travel.
         exports = collect_iyi_exports(program, module_name, filename)
+        reopened = collect_iyi_reopened(program, module_name, filename)
 
         artifact = IyiMod::Artifact.new(
           module_name: module_name,
@@ -639,8 +775,10 @@ module Iyi
           exports: exports,
           has_initialiser: program.iyi_module_initialisers.includes?(filename),
           mono_bodies: program.iyi_mono_bodies[filename]? || {} of String => String,
+          body_positions: program.iyi_mono_body_positions[filename]? || {} of String => Array(IyiMod::SourcePosition),
           macro_bodies: collect_iyi_macros(program, module_name),
           initialiser: program.iyi_module_initialiser_source[filename]? || "",
+          initialiser_positions: program.iyi_module_initialiser_positions[filename]? || [] of IyiMod::SourcePosition,
           requires: program.iyi_module_requires[filename]? || [] of String,
           crystal_library: !program.iyi_prelude?,
           # Always, for a module of iyi's own: the header it was written under
@@ -649,7 +787,20 @@ module Iyi
           # says so now — the header a consumer reads them under supplies
           # nothing. See `Artifact#module_extends_self`.
           module_extends_self: true,
+          reopened: reopened,
+          package_name: program.iyi_module_packages[module_name]? || "",
+          # The module's `@[Unsafe("why")]`, so its travelling bodies are
+          # allowed in a consumer what they were here (SPEC.md III.13).
+          unsafe: program.iyi_unsafe_files[filename]? || "",
         )
+
+        # What each of its functions reaches of module state, for the walk
+        # a consumer's spawn makes into them (SPEC.md III.4.15). Before the
+        # hashes, whose interface it is part of. `IYI_SPAWN_BROKEN=reaches`
+        # leaves it out: the gate's artifact that does not say.
+        unless SPAWN_BROKEN.includes?("reaches")
+          artifact.reaches = program.iyi_share_reach.summarise(filename)
+        end
 
         # Here rather than in `write_iyimods`, so that they are taken from the
         # front end alone: an artifact from a `--no-codegen` build and one from
@@ -658,7 +809,11 @@ module Iyi
         # generated code had just written (IV.3).
         artifact.hashes = IyiMod.hashes_for(artifact, File.read(filename))
 
-        {File.join(dir, "#{module_name}.iyimod"), artifact}
+        path = File.join(dir, "#{module_name}.iyimod")
+        artifact.spawns = collect_iyi_spawns(program, filename)
+        note_iyi_spawn_moves(program, path, artifact) unless module_name.includes?('.')
+
+        {path, artifact}
       end
 
       # Now that every module in this build has been hashed, each edge can say
@@ -678,6 +833,72 @@ module Iyi
       end
 
       prepared
+    end
+
+    # iyi: the spawns written in *filename*, as the cleanup placed them, for
+    # the artifact's `Spawns` (SPEC.md III.4.16): one record per place, in
+    # the order they are written, in parallel only if every instantiation
+    # of the def it is in ran it so, with the first reason one did not.
+    private def collect_iyi_spawns(program : Program, filename : String) : Array(IyiMod::SpawnRecord)
+      by_place = {} of {Int32, Int32} => IyiMod::SpawnRecord
+      program.iyi_spawn_sites.each do |site|
+        location = site.location.expanded_location || site.location
+        next unless location.filename == filename
+        key = {location.line_number, location.column_number}
+        reason = site.reason || ""
+        if known = by_place[key]?
+          next unless known.parallel && !site.parallel?
+          by_place[key] = known.copy_with(parallel: false, reason: reason)
+        else
+          by_place[key] = IyiMod::SpawnRecord.new(site.owner, site.digest, key[0], key[1], site.parallel?, site.asked, reason)
+        end
+      end
+      by_place.keys.sort!.map { |key| by_place[key] }
+    end
+
+    # iyi: a spawn this build placed other than the build that last wrote
+    # the module's artifact did (SPEC.md III.4.16), as one note each: the
+    # cliff a spawn falls off when a type it captures, declared in a module
+    # it imports, stops being Share - a change made elsewhere, and silent
+    # until now. Said in both directions, since a spawn that starts running
+    # in parallel may start beside its spawner and break an order the code
+    # relied on. A spawn is matched by the def it is written in and its
+    # block's text, the n-th of those alike, so a spawn whose text was
+    # edited is a new one and not a move; one that spelled its placement
+    # cannot move. An artifact built under other flags or for another
+    # target describes another program, and is not compared.
+    private def note_iyi_spawn_moves(program : Program, path : String, artifact : IyiMod::Artifact) : Nil
+      return if artifact.spawns.empty? || !File.file?(path) || SPAWN_BROKEN.includes?("moves")
+      before = IyiMod.read_spawns(path)
+      return unless before
+      flags, target, records = before
+      return unless flags == artifact.flags && target == artifact.target_triple
+      earlier = iyi_spawns_by_name(records)
+      iyi_spawns_by_name(artifact.spawns).each do |name, now|
+        was = earlier[name]?
+        next unless was && !was.asked && !now.asked && was.parallel != now.parallel
+        where = now.owner.empty? ? "at #{artifact.module_name}'s top level" : "in `#{now.owner}`"
+        location = Location.new(artifact.source_path, now.line, now.column)
+        if was.parallel
+          program.warnings.add_note(location, "spawn #{where} ran in parallel when #{artifact.module_name} was last built, and stays in its spawner's unit now (SPEC.md III.4.18): #{now.reason}")
+        else
+          program.warnings.add_note(location, "spawn #{where} stayed in its spawner's unit when #{artifact.module_name} was last built, and runs in parallel now, in a unit of its own: it may start beside its spawner, and `unit: :same` keeps it where it was (SPEC.md III.4.16)")
+        end
+      end
+    end
+
+    # Each record by the name it keeps across builds: the def it is
+    # written in, its block's text, and which of those alike it is.
+    private def iyi_spawns_by_name(records : Array(IyiMod::SpawnRecord)) : Hash({String, String, Int32}, IyiMod::SpawnRecord)
+      seen = Hash({String, String}, Int32).new(0)
+      named = {} of {String, String, Int32} => IyiMod::SpawnRecord
+      records.each do |record|
+        next if record.digest.empty?
+        index = seen[{record.owner, record.digest}]
+        seen[{record.owner, record.digest}] = index + 1
+        named[{record.owner, record.digest, index}] = record
+      end
+      named
     end
 
     # iyi: the object code of a namespace `tool bind` wrote a boundary for.
@@ -712,11 +933,12 @@ module Iyi
       artifact = IyiMod.read path
       units_by_name = units.to_h { |unit| {unit.original_name, unit} }
       artifact.object_code = collect_iyi_object_code(names, units_by_name)
-      artifact.type_ids = collect_iyi_type_ids(program, names)
+      artifact.type_ids = collect_iyi_type_ids(program, names, type)
       artifact.constants = collect_iyi_constants(program, names)
       artifact.regexes = collect_iyi_regexes(program, artifact.constants)
       artifact.class_vars = collect_iyi_unit_class_vars(program, names)
       artifact.match_types = collect_iyi_match_types(program, names)
+      artifact.symbol_literals = collect_iyi_symbol_literals(program, names)
       artifact.symbols = collect_iyi_symbols(program, names)
       artifact.libs = collect_iyi_libs(program, names)
       artifact.layouts = collect_iyi_layouts(program, type)
@@ -748,7 +970,7 @@ module Iyi
     private def add_bind_boundary_imports(artifact : IyiMod::Artifact, dir : String,
                                           own : String) : Nil
       edges = artifact.imports.map(&.module_name).to_set
-      Dir.glob(File.join(dir, "*.iyimod")).sort.each do |path|
+      Dir.glob(Iyi.glob_root(dir).join("*.iyimod")).sort.each do |path|
         next if File.expand_path(path) == File.expand_path(own)
 
         begin
@@ -844,7 +1066,7 @@ module Iyi
         # answering for the whole of `unit_names` — so an artifact could
         # *claim* a symbol it did not carry. `db` claims
         # `*DB::SessionMethods::UnpreparedQuery(DB::Connection+,
-        # DB::Statement+)@…#build<String>`, a generic's instantiation whose
+        # DB::Statement+)^…#build<String>`, a generic's instantiation whose
         # object file is nobody's, and a consumer reading that claim skipped
         # compiling one of its own: `undefined symbol`, about a method whose
         # body was in the declarations all along.
@@ -852,11 +1074,12 @@ module Iyi
         # A list of what a module defines is only worth having if it is the
         # list of what it *has*.
         carried = artifact.object_code.map(&.name)
-        artifact.type_ids = collect_iyi_type_ids(program, unit_names)
+        artifact.type_ids = collect_iyi_type_ids(program, unit_names, program.iyi_module_type(artifact.module_name))
         artifact.constants = collect_iyi_constants(program, unit_names)
         artifact.regexes = collect_iyi_regexes(program, artifact.constants)
         artifact.class_vars = collect_iyi_unit_class_vars(program, unit_names)
         artifact.match_types = collect_iyi_match_types(program, unit_names)
+        artifact.symbol_literals = collect_iyi_symbol_literals(program, unit_names)
         artifact.symbols = collect_iyi_symbols(program, carried)
         artifact.libs = collect_iyi_libs(program, unit_names)
         # With the object code, because it is about the object code's types:
@@ -867,6 +1090,10 @@ module Iyi
           end
         end
         artifact.filled = true
+        # Said in the file, because the file is what a consumer has: one from
+        # a build that generated nothing is refused where a build links
+        # (`Artifact#declarations_only`).
+        artifact.declarations_only = units.nil?
         IyiMod.write artifact, path
       end
     end
@@ -898,10 +1125,13 @@ module Iyi
             signatures.each do |item|
               signature = IyiMod.signature(item.def)
               functions << signature
-              # A module's own `pub def` that takes a block is the consumer's
-              # to compile for the same reason, and the module name is the
-              # container the far side looks it up under.
-              if iyi_takes_block?(item.def) && !item.def.abstract?
+              # A module's own `pub def` that takes a block, or has `forall`
+              # parameters, is the consumer's to compile for the same reason,
+              # and the module name is the container the far side looks it up
+              # under.
+              if !item.def.abstract? &&
+                 (IyiMod.caller_instantiated?(item.def) || iyi_widened_parameters?(type, item.def) ||
+                 IyiMod.answer_travels?(item.def))
                 iyi_record_mono_body program, filename, module_name, signature, item.def
               end
             end
@@ -928,7 +1158,11 @@ module Iyi
 
             signature = IyiMod.signature(item.def, check_block: false)
             carried_functions << signature
-            if iyi_takes_block?(item.def)
+            # A widened one too: an exported body that travels calls it at
+            # what it holds, and the consumer keys that call on the
+            # declaration (`iyi_widened_parameters?`).
+            if IyiMod.caller_instantiated?(item.def) || iyi_widened_parameters?(type, item.def) ||
+               IyiMod.answer_travels?(item.def)
               iyi_record_mono_body program, filename, module_name, signature, item.def
             end
           end
@@ -948,6 +1182,243 @@ module Iyi
       module_class_vars = type ? collect_iyi_class_vars(type) : [] of IyiMod::ClassVarDecl
 
       IyiMod::Exports.new(functions, types, impls, carried_functions, module_class_vars)
+    end
+
+    # iyi: what this module added to types it does not own, for
+    # `Section::Reopened` — `struct ::Int` in `std/int`, `class ::String`
+    # in `std/text`. Twelve std modules are nothing but this, and their
+    # artifacts carried nothing: `exports (none)`, `object code (none)`, so
+    # a program reading `std/int` from its artifact was told `12.gcd` is an
+    # undefined method, which is R-1 broken for every one of them.
+    #
+    # Every def written in this file on a type outside the module, both
+    # sides (`def self.` is on the metaclass), declared under the type's
+    # absolute name so the consumer reopens the same one. Every body
+    # travels: the machine code sits in the *owner's* unit — `Int32`'s —
+    # which is the prelude's and not this module's to ship, so the consumer
+    # compiles it the way it compiles a block-taking def (IV.1g). An impl's
+    # methods are not here; they travel in the impl record.
+    #
+    # R-2's type rule is not asked of them, for the reason `iyi_carried_methods`
+    # gives: the rule is "nothing can be recovered from a body that stays
+    # behind", and these bodies do not stay behind. `Tuple#first` answers
+    # `T[0]`, which no annotation can say and no consumer needs said.
+    private def collect_iyi_reopened(program : Program, module_name : String,
+                                     filename : String) : Array(IyiMod::TypeDecl)
+      declarations = [] of IyiMod::TypeDecl
+      own = program.iyi_module_type(module_name)
+      own_prefix = own ? "#{own}::" : ""
+
+      iyi_each_named_type(program) do |type|
+        next if own && (type == own || type.to_s.starts_with?(own_prefix))
+        next if type.is_a?(MetaclassType) || type.is_a?(GenericInstanceType)
+
+        methods = [] of IyiMod::Signature
+        # Without the type arguments: the header carries them itself.
+        container = "::#{type.to_s(generic_args: false)}"
+
+        # A name outside the module's namespace is usually a type somebody
+        # else declared and this file added methods to. Sometimes it is a
+        # type this file *declares* at an absolute name — `struct
+        # ::BitArray` is the whole of `std/bit_array`, and `class ::File`
+        # holds an `enum Type` nobody else wrote — and then the methods are
+        # not the whole of what has to travel: what the consumer cannot
+        # infer is the *state*. `can't infer the type of instance variable
+        # '@size' of BitArray`, and `enum ::File::Type must have at least
+        # one member`.
+        #
+        # Told apart by where it is declared. A type reopened here has
+        # locations in the file that declared it as well; one declared here
+        # has this file and nothing else.
+        #
+        # State only, and not the rest of a declaration. A primitive is
+        # reopened by `std/float` and `std/int` and has no location of its
+        # own either, so it reads as declared here — and it has no field to
+        # carry, which is what makes the narrow question the safe one. Ask
+        # the wide one and `struct ::Float32` arrives with the prelude's
+        # methods and macros attached.
+        declared_here = iyi_declared_here?(type, filename)
+        if declared_here && type.is_a?(EnumType)
+          declarations << iyi_enum_declaration(program, filename, type, container, "", container,
+            travels: true)
+          next
+        end
+        # Whether this file writes the type down at all. A def that uses
+        # `{{@type}}` is copied onto each subclass a call reaches, and the copy
+        # keeps the location of the def it was copied from, so the producing
+        # program's own `class User < Model` gave kit/lib a `User#type_name`
+        # located in kit/lib. Carried, `class ::Main::User` ended up in the
+        # library's artifact: the same program built from it was refused with
+        # `superclass mismatch for class Main::User`, and a consumer with a
+        # `struct User` of its own with `User is not a struct, it's a class`.
+        named_here = type.locations.try &.any? { |location| location.original_read_from == filename }
+        {type, type.metaclass}.each do |side|
+          side.as?(ModuleType).try &.defs.try &.each_value do |items|
+            items.each do |item|
+              a_def = item.def
+              # `original_filename`, through the macro: the integer tower is
+              # written once as `{% for %}` over eleven types, and a def a
+              # macro wrote is located in its expansion, not in the file.
+              next unless a_def.location.try(&.original_read_from) == filename
+              next if a_def.iyi_from_impl? || a_def.new? || a_def.abstract?
+              next if a_def.macro_def? && !named_here
+              # The compiler's instructions are not this module's to describe;
+              # the ones it wrote `@[Primitive]` above are. `std/float` writes
+              # the whole matrix for `::Float32` this way.
+              primitive = a_def.body.is_a?(Primitive)
+              next if primitive && !iyi_primitive_written?(a_def)
+              signature = IyiMod.signature(a_def, check_block: false)
+              methods << signature
+              # An instruction has no body to carry — it *is* the body — and
+              # the annotation travelling on the signature is what makes the
+              # consumer's copy the same instruction.
+              iyi_record_mono_body program, filename, container, signature, a_def unless primitive
+            end
+          end
+        end
+        # And what this module *included* into a type it does not own, which
+        # is the whole of what some of them do. `std/colorize` writes `class
+        # ::Object; include ObjectExtensions; end` and nothing else outside
+        # its own namespace, so read for defs alone it added nothing to
+        # `::Object` and the consumer was told `undefined method 'colorize'
+        # for String`.
+        #
+        # This module's own modules only. A foreign type's other ancestors
+        # are the prelude's or another module's, and either way they arrive
+        # with the type; an include under this module's namespace could not
+        # have been written anywhere but here.
+        included = own ? iyi_included_modules(type).select(&.lchop("::").starts_with?(own_prefix)) : [] of String
+        # The fields of a type this file declares under a foreign name.
+        # Nothing else on this side carries a field: a type the module does
+        # not own arrives with its own, and one it owns is declared in the
+        # exported or the carried section. `::BitArray` is neither.
+        #
+        # The ones written *here*, which is narrower than the type's. A
+        # `StaticArray(T, N)` has a `@buffer` its own compiler makes and
+        # refuses to be given — "can't declare instance variables in
+        # StaticArray(T, N)" — and it reads as declared here for the reason
+        # a primitive does: the file that reopens it is the only file that
+        # mentions it.
+        fields = declared_here ? iyi_fields_written_in(type, filename) : [] of {String, String, String}
+        # Whoever declared the type. A class variable is a global, its
+        # global is defined in the build that compiled it, and the methods
+        # that read it travel as machine code naming it — so a `@@temp_counter
+        # = 1000_u64` written on a reopened `::File` is this module's to
+        # carry however little of `::File` is.
+        class_vars = iyi_class_vars_written_in(type, filename)
+        # And the macros written here on it, which are its surface as its
+        # methods are: `std/static_array` writes `macro [](*args)` on
+        # `::StaticArray`, and neither a consumer of the artifact nor `iyi
+        # doc` had it.
+        macros = iyi_macros_on(type, filename)
+        next if methods.empty? && included.empty? && fields.empty? && class_vars.empty? && macros.empty?
+        methods.sort_by! &.name
+
+        # `Tuple` and `NamedTuple` describe themselves as "tuple" and "named
+        # tuple", which are not keywords; reopened, they are structs.
+        kind = type.type_desc
+        kind = "struct" if kind == "tuple" || kind == "named tuple"
+        declarations << IyiMod::TypeDecl.new(
+          name: container,
+          kind: kind,
+          type_parameters: iyi_type_parameters(type),
+          assoc_types: [] of String,
+          supertraits: [] of String,
+          fields: fields,
+          class_vars: class_vars,
+          methods: methods,
+          visibility: "",
+          includes: included,
+          usings: iyi_type_usings(program, type, filename),
+          types: [] of IyiMod::TypeDecl,
+          macros: macros,
+        )
+      end
+      declarations.sort_by! &.name
+    end
+
+    # iyi: whether *type* was declared in this file and nowhere else.
+    #
+    # A type this module reopens has locations in the file that declared it
+    # as well as here, and one the compiler built in has none — so "every
+    # location is this file" is the question, and both of those answer no.
+    private def iyi_declared_here?(type : Type, filename : String) : Bool
+      locations = type.locations
+      return false if locations.nil? || locations.empty?
+      locations.all? { |location| location.original_read_from == filename }
+    end
+
+    # iyi: the imports' names written inside *type*'s own body, as the
+    # file wrote them (SPEC.md R-2b).
+    #
+    # For a type reopened under a foreign name, which is the one place they
+    # have to travel: the unit's own imports do not reach inside `class
+    # ::File`, so `src/std/file.iyi` writes a second one there, and a
+    # consumer reading the reopened section without it said `undefined
+    # constant Path`.
+    #
+    # Only directives naming a module this file imports. A foreign type is
+    # reopened by whoever likes — `::Object` by four std modules — and they
+    # all share one type, so its list of imported names is every reopener's together.
+    # Carrying another module's would write a directive for a module this
+    # artifact never imported.
+    private def iyi_type_usings(program : Program, type : Type,
+                                filename : String) : Array(String)
+      directives = type.using_modules?
+      return [] of String unless directives
+      imported = program.iyi_module_imports[filename]?.try do |dependencies|
+        dependencies.compact_map { |dependency| program.iyi_module_paths[dependency]? }.to_set
+      end
+      return [] of String unless imported
+
+      names = [] of String
+      directives.each do |directive|
+        path = iyi_module_path_of(directive.type)
+        next unless imported.includes?(path)
+        selected = directive.names
+        written = selected ? "#{path}::{#{selected.join(", ")}}" : path
+        names << written unless names.includes?(written)
+      end
+      names
+    end
+
+    # iyi: the module path a module type was declared under — `Std::Path` is
+    # `std/path`, which is how an import names it.
+    private def iyi_module_path_of(type : Type) : String
+      type.to_s.split("::").map(&.underscore).join('/')
+    end
+
+    # Every named type the program has, depth first, `Program` itself aside.
+    private def iyi_each_named_type(program : Program, &block : Type ->) : Nil
+      walk = uninitialized Proc(Type, Nil)
+      walk = ->(type : Type) do
+        type.types?.try &.each_value do |nested|
+          next if nested.is_a?(Const) || nested.is_a?(AliasType)
+          block.call(nested)
+          walk.call(nested)
+        end
+      end
+      walk.call(program)
+    end
+
+    # iyi: a generic type's parameters, with the splat one marked.
+    #
+    # `*T` and `T` are different declarations, and the parser says so:
+    # `struct ::Tuple(T)` is "type var must be *T, not T". `Tuple` and
+    # `NamedTuple` are the two the prelude declares that way and both are
+    # reopened by `src/std`, so `std/tuple` and `std/named_tuple` could not
+    # be consumed as artifacts at all.
+    #
+    # Written into the list rather than carried beside it, which is the
+    # convention `Signature#parameters` already uses for a def's splat: the
+    # renderer joins these verbatim, so the marker is the text.
+    private def iyi_type_parameters(type : Type) : Array(String)
+      generic = type.as?(GenericType)
+      return [] of String unless generic
+      splat = generic.splat_index
+      generic.type_vars.map_with_index do |name, index|
+        index == splat ? "*#{name}" : name
+      end
     end
 
     # iyi: the machine code for a module's own definitions, for `ObjectCode`
@@ -1047,7 +1518,7 @@ module Iyi
     #
     # The cost is a longer list — `Kemal` goes from 303 names to 642 — and a
     # name is a string.
-    private def collect_iyi_type_ids(program : Program, unit_names : Array(String)) : Array(String)
+    private def collect_iyi_type_ids(program : Program, unit_names : Array(String), module_type : ModuleType?) : Array(String)
       names = Set(String).new
       unit_names.each do |unit_name|
         program.iyi_unit_type_ids[unit_name]?.try &.each do |type|
@@ -1060,9 +1531,28 @@ module Iyi
         end
       end
 
+      # A witness can affect a trait-valued field's ABI even when no carried
+      # instruction numbers it. Walk the module's declarations directly: unit
+      # names also include virtual types and are not a source-type lookup API.
+      if module_type
+        collect_iyi_witness_type_ids(program, module_type, names)
+      end
+
       # Sorted, because a set's order is not a fact about the module and an
       # artifact that changed between two identical builds would defeat IV.3.
       names.to_a.sort!
+    end
+
+    private def collect_iyi_witness_type_ids(program : Program, owner : ModuleType, names : Set(String)) : Nil
+      owner.types?.try &.each_value do |declared|
+        if declared.is_a?(TraitType)
+          witness = DefinitionTyping.witness_name(declared)
+          names << witness if program.types?.try(&.has_key?(witness))
+        end
+        if declared.is_a?(ModuleType)
+          collect_iyi_witness_type_ids(program, declared, names)
+        end
+      end
     end
 
     # iyi: the constants the module's object code reads, by name, for
@@ -1092,6 +1582,18 @@ module Iyi
       names = Set(String).new
       unit_names.each do |unit_name|
         program.iyi_unit_symbols[unit_name]?.try &.each { |symbol| names << symbol }
+      end
+      names.to_a.sort!
+    end
+
+    # iyi: the symbols the module's object code reads the value of, by name,
+    # for `SymbolLiterals` (SPEC.md IV.1g). `collect_iyi_type_ids`' question
+    # asked of a symbol, and sorted for the same reason.
+    private def collect_iyi_symbol_literals(program : Program,
+                                            unit_names : Array(String)) : Array(String)
+      names = Set(String).new
+      unit_names.each do |unit_name|
+        program.iyi_unit_symbol_literals[unit_name]?.try &.each { |name| names << name }
       end
       names.to_a.sort!
     end
@@ -1191,56 +1693,6 @@ module Iyi
       end
     end
 
-    # iyi: the pointer maps of the types this module owns, for the `Layouts`
-    # section (GC_DESIGN.md Stage 1).
-    #
-    # The set is the walk `collect_iyi_unit_names` does, kept as types rather
-    # than names, with one relaxation: a generic the module declares
-    # contributes each instantiation this build has, because an instantiation
-    # is monomorphic and has a layout. An uninstantiated generic contributes
-    # nothing: one entry serving two instantiations by shape is R-4's
-    # per-GC-shape keying, which nothing implements yet, so no entry pretends.
-    #
-    # Only a type laid out as an object gets a map: a class, a struct, or an
-    # instantiation of one. `InstanceVarContainer` is not that filter, because
-    # a module and a trait are containers too, and a trait's indirection is
-    # the union of its implementors, which is exactly not a layout. A module,
-    # an enum and an alias declare no fields of their own to scan in any
-    # case.
-    private def collect_iyi_layouts(program : Program, module_type : ModuleType) : Array({String, IyiMod::TypeLayout})
-      types = [] of Type
-      collect_iyi_layout_types module_type, types
-
-      layouts = [] of {String, IyiMod::TypeLayout}
-      types.each do |type|
-        next unless type.is_a?(NonGenericClassType) || type.is_a?(GenericClassInstanceType)
-        next if type.is_a?(GenericType) || type.is_a?(StaticArrayInstanceType)
-        layouts << {type.to_s, program.gc_type_layout(type)}
-      end
-
-      # Sorted, for the reason `mono_bodies` is: a walk's order is not a fact
-      # about the module, and an artifact that changed between two identical
-      # builds would defeat IV.3.
-      layouts.sort_by! &.[0]
-      layouts
-    end
-
-    # The walk `collect_iyi_unit_names` does, keeping the types. A generic is
-    # not collected itself (it has no layout); each instantiation of it in
-    # this build is.
-    private def collect_iyi_layout_types(type : ModuleType, types : Array(Type)) : Nil
-      type.types?.try &.each_value do |declared|
-        if declared.is_a?(GenericType)
-          declared.instantiated_types.each do |instance|
-            types << instance unless instance.unbound?
-          end
-        else
-          types << declared
-        end
-        collect_iyi_layout_types declared, types if declared.is_a?(ModuleType)
-      end
-    end
-
     # The unit names of every type declared under *type*, recursively.
     #
     # A unit is named after the type that owns the methods in it, and **a
@@ -1257,8 +1709,14 @@ module Iyi
     # fails on a duplicate symbol. Carrying an instantiation would also be true
     # only while the two builds are the same build, which is the arrangement
     # this file exists to end.
+    #
+    # A module with a `module` header of its own is not walked into: `pkg/child`
+    # is the namespace `Pkg::Child`, inside `pkg`'s `Pkg`, and it has an
+    # artifact of its own. Walked into, `pkg.iyimod` carried the child's units
+    # a second time and a program built from both failed to link.
     private def collect_iyi_unit_names(type : ModuleType, names : Array(String)) : Nil
       type.types?.try &.each_value do |declared|
+        next if declared.iyi_unit?
         unless declared.is_a?(GenericType)
           names << declared.to_s
           virtual = iyi_virtual_unit_name(declared)
@@ -1272,7 +1730,7 @@ module Iyi
     #
     # A value of a class that something inherits from is held as that class's
     # *virtual* type, and codegen puts the methods reached through one in a
-    # module of their own — `*Shard::Base+@Shard::Base#describe` lives in
+    # module of their own — `*Shard::Base+^Shard::Base#describe` lives in
     # `Shard::Base+`, not in `Shard::Base`. Naming only the plain form carried
     # the wrong half: the artifact held a `Shard::Base` unit with the
     # constructor in it and left every inherited method behind, and a consumer
@@ -1291,6 +1749,7 @@ module Iyi
     # their names — `try_inline_call` is handed an owner, not a string.
     private def collect_iyi_owners(type : ModuleType, owners : Set(Type)) : Nil
       type.types?.try &.each_value do |declared|
+        next if declared.iyi_unit?
         unless declared.is_a?(GenericType)
           owners << declared
           # And the virtual form, for the reason `iyi_virtual_unit_name` gives:
@@ -1347,6 +1806,7 @@ module Iyi
     # this build is.
     private def collect_iyi_layout_types(type : ModuleType, types : Array(Type)) : Nil
       type.types?.try &.each_value do |declared|
+        next if declared.iyi_unit?
         if declared.is_a?(GenericType)
           declared.instantiated_types.each do |instance|
             types << instance unless instance.unbound?
@@ -1376,11 +1836,8 @@ module Iyi
       # below for an annotation's instance variables ended the build on
       # "BUG: Shapes::Marked doesn't implement instance_vars".
       # iyi: an exported `alias` has neither a layout nor an id either, and
-      # travels as what it resolved to - the same rule `iyi_carried_types`
-      # applies to one declared *under* an exported type, because a name
-      # that resolved where the module was read may not resolve here.
+      # travels as what the module *wrote* — see `iyi_alias_value`.
       if type.is_a?(AliasType)
-        type.process_value
         return IyiMod::TypeDecl.new(
           name: name,
           kind: type.type_desc,
@@ -1390,7 +1847,7 @@ module Iyi
           fields: [] of {String, String, String},
           methods: [] of IyiMod::Signature,
           visibility: "pub",
-          value: type.aliased_type?.try(&.to_s) || type.@value.to_s,
+          value: iyi_alias_value(type, name),
           doc: type.doc || "",
         )
       end
@@ -1410,47 +1867,9 @@ module Iyi
       end
 
       # iyi: an `enum` travels as its members and the integer they are
-      # numbered on (SPEC.md IV.2).
-      #
-      # Its *members* are the whole of what a consumer needs, and they travel
-      # with their numbers rather than being renumbered: the module's own
-      # object code was compiled against these, and a consumer that counted
-      # from zero again would agree with it only by luck. Everything else an
-      # enum has, the consumer's own compiler makes from this declaration —
-      # `value`, `new` and a question method per member — so carrying them
-      # would declare each of them twice.
-      #
-      # Fields are nobody's: an enum has no instance variables, and the walk
-      # below asked for them anyway — `BUG: Level::Level doesn't implement
-      # instance_vars`, on the first `pub enum` that reached an artifact.
+      # numbered on (SPEC.md IV.2). See `iyi_enum_declaration`.
       if type.is_a?(EnumType)
-        members = [] of {String, String}
-        type.types?.try &.each do |member, constant|
-          next unless constant.is_a?(Const)
-          # `None` and `All` are the compiler's, not the author's: a `@[Flags]`
-          # enum gets both wherever it is declared, so writing them down means
-          # the consumer is handed them twice — "flags enum can't redefine All
-          # member. None and All are autogenerated", on its own copy.
-          next if type.flags? && (member == "None" || member == "All")
-          members << {member, constant.value.to_s}
-        end
-
-        return IyiMod::TypeDecl.new(
-          name: name,
-          kind: type.type_desc,
-          type_parameters: [] of String,
-          assoc_types: [] of String,
-          supertraits: [] of String,
-          fields: [] of {String, String, String},
-          methods: [] of IyiMod::Signature,
-          visibility: "pub",
-          # Written even when it is the default, because a member's number is
-          # only the same number if the width is.
-          value: type.base_type.to_s,
-          members: members,
-          annotations: type.flags? ? ["@[Flags]"] : [] of String,
-          doc: type.doc || "",
-        )
+        return iyi_enum_declaration(program, filename, type, name, "pub", name)
       end
 
       travels = iyi_bodies_travel?(type)
@@ -1464,7 +1883,10 @@ module Iyi
       # The two are told apart by the signature's receiver, which
       # `render_signature` already writes back as `def self.zero`. Nothing else
       # needs to know: to a consumer it is one more name on the type.
-      iyi_collect_type_methods program, filename, name, type, travels, methods
+      # The instance side alone: a `def self.` on a module is owned by the
+      # module's own metaclass and its code is in this module's units.
+      iyi_collect_type_methods program, filename, name, type,
+        travels || iyi_stencilled_module?(program, type, filename), methods
       iyi_collect_type_methods program, filename, name, type.metaclass, travels, methods
       methods.sort_by! &.name
 
@@ -1477,37 +1899,165 @@ module Iyi
         type_parameters = generic_trait.trait_params
         assoc_types = generic_trait.assoc_types
       else
-        type_parameters = type.as?(GenericType).try(&.type_vars) || [] of String
+        type_parameters = iyi_type_parameters(type)
         assoc_types = [] of String
       end
 
-      # iyi: the `Share` marker travels with the declaration (SPEC.md
-      # III.4.4): a type this build found shareable is exported wearing
-      # `@[Share]`, and a consumer trusts that rather than recomputing
-      # something it cannot — the bodies that said no field is assigned
-      # outside `initialize` are not in the artifact. Only a struct or a
-      # class has fields to be shareable over; a trait, alias or lib does
-      # not carry the marker.
-      annotations = [] of String
-      if type.is_a?(ClassType) && Iyi::Share.shareable?(type)
-        annotations << "@[Share]"
+      annotations = iyi_share_marker(type)
+      # And `@[Primitive(:ReferenceStorageType)]`, which is not decoration
+      # either: the annotation is what makes the compiler create this
+      # declaration as the special type whose size is the instance size of
+      # its parameter, rather than as the struct the declaration looks
+      # like. `std/reference_storage` promises `sizeof(ReferenceStorage(T))
+      # == instance_sizeof(T)`, and read from an artifact it answered 4 for
+      # a `T` whose instances are 0 — a module that built, linked and ran,
+      # and was wrong.
+      #
+      # Read off the type the compiler made rather than out of an
+      # annotation record, which is the same thing said once instead of
+      # twice: the annotation's only effect is to make this class of type.
+      if type.is_a?(GenericReferenceStorageType)
+        annotations << "@[Primitive(:ReferenceStorageType)]"
       end
+      annotations.concat iyi_read_annotations(type)
+
+      IyiMod::TypeDecl.new(
+        name: name,
+        kind: iyi_type_kind(type),
+        type_parameters: type_parameters,
+        assoc_types: assoc_types,
+        # The trait's own parameters stay bare: `trait Ord(T) : Cmp(T)` was
+        # written `::Lib::Ord::Cmp(::T)`, and the consumer stopped on
+        # "undefined constant ::T".
+        supertraits: type.responds_to?(:supertraits) ? type.supertraits.map { |supertrait| IyiMod.absolute_type(supertrait.to_s, type.is_a?(GenericType) ? type.type_vars : [] of String) } : [] of String,
+        # None for the type the annotation above makes: its `@type_id` is
+        # the compiler's, and a compiler handed one back refuses it —
+        # "can't declare instance variables in ReferenceStorage(T)". What
+        # the author wrote is the header, the annotation and the methods;
+        # the state is made from the parameter.
+        fields: type.is_a?(GenericReferenceStorageType) ? [] of {String, String, String} : collect_iyi_fields(type),
+        class_vars: collect_iyi_class_vars(type),
+        methods: methods,
+        visibility: "pub",
+        types: iyi_carried_types(program, filename, type, path: name),
+        macros: iyi_macros_on(type),
+        annotations: annotations,
+        doc: type.doc || "",
+        superclass: iyi_superclass_name(type),
+      )
+    end
+
+    # iyi: one `enum`, exported or carried (SPEC.md IV.2).
+    #
+    # Its *members* are the whole of what a consumer needs, and they travel
+    # with their numbers rather than being renumbered: the module's own object
+    # code was compiled against these, and a consumer that counted from zero
+    # again would agree with it only by luck. Everything else an enum has, the
+    # consumer's own compiler makes from this declaration — `value`, `new` and
+    # a question method per member — so carrying them would declare each of
+    # them twice. The methods the *author* wrote on it are not among those and
+    # do travel: `Path::Kind.native` is one, and a consumer without it said
+    # `undefined method 'native' for Std::Path::Path::Kind.class` — which is
+    # what kept `std/path` and `std/dir` out of an artifact build. The two are
+    # told apart by `Def#iyi_compiler_made`, set where the question methods
+    # are written.
+    #
+    # Fields are nobody's: an enum has no instance variables, and the walk in
+    # `iyi_type_declaration` asked for them anyway — `BUG: Level::Level
+    # doesn't implement instance_vars`, on the first `pub enum` that reached
+    # an artifact.
+    #
+    # Shared with `iyi_carried_types` because the carried side had none of
+    # this: an enum the module keeps to itself arrived with its question
+    # methods and *no members*, and the consumer said `enum Kind must have at
+    # least one member` — about a type it could not name, in a module whose
+    # own code was the only thing using it. Seven of the sixty
+    # `bench/std_*_exercise.iyi` failed that way, `std/path` and `std/dir`
+    # among them.
+    #
+    # *container* is the key a travelling body of one of its methods is
+    # recorded under — the enum's own name where it is declared at the
+    # module's top level, and the path it is nested under otherwise.
+    private def iyi_enum_declaration(program : Program, filename : String,
+                                     type : EnumType, name : String,
+                                     visibility : String,
+                                     container : String = name,
+                                     travels : Bool = false) : IyiMod::TypeDecl
+      members = [] of {String, String}
+      type.types?.try &.each do |member, constant|
+        next unless constant.is_a?(Const)
+        # `None` and `All` are the compiler's, not the author's: a `@[Flags]`
+        # enum gets both wherever it is declared, so writing them down means
+        # the consumer is handed them twice — "flags enum can't redefine All
+        # member. None and All are autogenerated", on its own copy.
+        next if type.flags? && (member == "None" || member == "All")
+        members << {member, constant.value.to_s}
+      end
+
+      # Both sides, and through the same walk every other type's methods go
+      # through, so an enum's method gets the block, open-type and widened
+      # rules the rest of the library gets. Its bodies do not travel by being
+      # an enum's: it is a non-generic type with a unit of its own in the
+      # object code.
+      #
+      # Unless it is declared under a foreign name, and then they do, for the
+      # reason every reopened body travels: the unit is named after the type
+      # and this module ships the units under its own namespace only.
+      # `src/std/file.iyi` writes `enum Type` inside `class ::File` and its
+      # eight question methods by hand, and the link ended on
+      # `File::Type#file?`.
+      methods = [] of IyiMod::Signature
+      iyi_collect_type_methods program, filename, container, type, travels, methods
+      iyi_collect_type_methods program, filename, container, type.metaclass, travels, methods
+      methods.sort_by! &.name
 
       IyiMod::TypeDecl.new(
         name: name,
         kind: type.type_desc,
-        type_parameters: type_parameters,
-        assoc_types: assoc_types,
-        supertraits: type.responds_to?(:supertraits) ? type.supertraits.map(&.to_s) : [] of String,
-        fields: collect_iyi_fields(type),
-        class_vars: collect_iyi_class_vars(type),
+        type_parameters: [] of String,
+        assoc_types: [] of String,
+        supertraits: [] of String,
+        fields: [] of {String, String, String},
         methods: methods,
-        visibility: "pub",
-        types: iyi_carried_types(program, filename, type),
-        macros: iyi_macros_on(type),
-        annotations: annotations,
+        visibility: visibility,
+        # Written even when it is the default, because a member's number is
+        # only the same number if the width is.
+        value: type.base_type.to_s,
+        members: members,
+        annotations: type.flags? ? ["@[Flags]"] : [] of String,
         doc: type.doc || "",
       )
+    end
+
+    # iyi: what an `alias` travels as — the type expression the module wrote.
+    #
+    # It used to travel as what the name *resolved to*, on the argument that a
+    # name resolved where the module was read may not resolve where the
+    # artifact is. That argument is the wrong way round: the declarations text
+    # replays the module's imports, the names they bring in and its requires,
+    # and declares its own nested types, so a name the module could write is a
+    # name that text can write — and a resolved type is not always writable at
+    # all. Two ways it was not:
+    #
+    # * A generic prints with its type variables. `pub alias Ary = ::Array`
+    #   came back `alias Ary = Array(T)`, and the consumer said `undefined
+    #   constant T` about a letter nobody wrote.
+    # * A resolved name has no `::` on it. `pub alias BitArray = ::BitArray`
+    #   came back `alias BitArray = BitArray` inside `module Std::BitArray`,
+    #   where that name is the alias being declared: `infinite recursive
+    #   definition of alias Std::BitArray::BitArray`. `std/annotations`,
+    #   `std/bit_array` and `std/static_array` each hand a prelude type out
+    #   under its own name, and all three were unusable as artifacts.
+    #
+    # The resolved type is kept for the one case the written value cannot be
+    # read back: a `typeof` or any other expression the parser does not take
+    # as a type. *name* is the alias's own name, which a value equal to it
+    # would be a definition of itself.
+    private def iyi_alias_value(type : AliasType, name : String) : String
+      type.process_value
+      written = type.@value.to_s
+      return written unless written.empty? || written == name
+      type.aliased_type?.try { |aliased| IyiMod.absolute_type(aliased.to_s) } || written
     end
 
     # iyi: the types declared under *type* that a consumer needs to have rather
@@ -1528,58 +2078,451 @@ module Iyi
     # them would make R-2's block rule refuse a module over a *private*
     # method's unannotated block, which is a rule about what another module
     # reads.
+    #
+    # *path* is the container half of a travelling body's key: the names this
+    # type is nested inside, joined the way `render_type_declaration` joins
+    # them on the way back. Without it a nested type's body was recorded
+    # under its own bare name and the renderer looked for
+    # `ByteFormat::BigEndian#…`, so the body never came out and the link
+    # ended on a symbol nobody emitted.
     private def iyi_carried_types(program : Program, filename : String, type : Type,
-                                  carried : Set(String)? = nil) : Array(IyiMod::TypeDecl)
+                                  carried : Set(String)? = nil,
+                                  path : String = "") : Array(IyiMod::TypeDecl)
       declarations = [] of IyiMod::TypeDecl
       type.types?.try &.each do |name, declared|
         next if carried.try &.includes?(name)
+        # Another module's: it carries its own declarations (see
+        # `collect_iyi_unit_names`), and carrying them here declared its
+        # aliases twice.
+        next if declared.iyi_unit?
+        container = path.empty? ? name : "#{path}::#{name}"
 
         # An alias has neither a layout nor an id, and it travels for the other
         # reason a declaration does: the text that travels names it. A carried
         # record's `handler : Handler` is what the module was written with, and
-        # a consumer without the alias reads it as an undefined constant. It
-        # arrives as what it resolved to, which is also how a field's type
-        # arrives — the name it was written as resolved where the module was
-        # read from source, and this file is read somewhere else.
+        # a consumer without the alias reads it as an undefined constant.
         if declared.is_a?(AliasType)
-          declared.process_value
-          if aliased = declared.aliased_type?
-            declarations << IyiMod::TypeDecl.new(
-              name: name,
-              kind: declared.type_desc,
-              type_parameters: [] of String,
-              assoc_types: [] of String,
-              supertraits: [] of String,
-              fields: [] of {String, String, String},
-              methods: [] of IyiMod::Signature,
-              visibility: declared.private? ? "private" : "",
-              types: [] of IyiMod::TypeDecl,
-              value: aliased.to_s,
-            )
-          end
+          declarations << IyiMod::TypeDecl.new(
+            name: name,
+            kind: declared.type_desc,
+            type_parameters: [] of String,
+            assoc_types: [] of String,
+            supertraits: [] of String,
+            fields: [] of {String, String, String},
+            methods: [] of IyiMod::Signature,
+            visibility: declared.private? ? "private" : "",
+            types: [] of IyiMod::TypeDecl,
+            value: iyi_alias_value(declared, name),
+            # The doc comment, as an exported type carries it: a nested
+            # type is reached through its container and documented there
+            # (`iyi doc` showed `Outer::Inner` without its `# Inner.`).
+            doc: declared.doc || "",
+          )
+          next
+        end
+
+        # An annotation the module keeps to itself, because what travels is
+        # written under it: `iyi_read_annotations` puts `@[Zone]` above a type
+        # and a travelling body asks `{{ @type.annotation(Zone) }}`, and a
+        # consumer without it said `undefined constant Zone`. It has nothing
+        # but its name, as an exported one has, and no `private` in front:
+        # unmarked is what keeps it the module's own, and `private annotation`
+        # is refused with "can't apply visibility modifier".
+        if declared.is_a?(AnnotationType)
+          declarations << IyiMod::TypeDecl.new(
+            name: name,
+            kind: declared.type_desc,
+            type_parameters: [] of String,
+            assoc_types: [] of String,
+            supertraits: [] of String,
+            fields: [] of {String, String, String},
+            methods: [] of IyiMod::Signature,
+            visibility: "",
+            doc: declared.doc || "",
+          )
+          next
+        end
+
+        # An enum, which travels as its members whichever side it is on. This
+        # is the same declaration the exported path writes, and the carried
+        # side used to fall through to the class branch below: it wrote the
+        # question methods the consumer's own compiler generates and none of
+        # the members, and the consumer refused the file.
+        if declared.is_a?(EnumType)
+          declarations << iyi_enum_declaration(program, filename, declared, name,
+            declared.private? ? "private" : "", container)
+          next
+        end
+
+        # A `module` the module keeps to itself. It has no layout and no id,
+        # and it travels for the reason a private type does: this module's own
+        # machine code names it, and so does a body that travels. `std/float`
+        # writes its single printer as `module Float32Text` and calls it from
+        # `::Float32#to_s`, whose body is a reopened type's and therefore the
+        # consumer's to compile — which said `undefined constant
+        # Std::Float::Float32Text` about a module nothing outside the file can
+        # name. `std/float` and `std/math` both stopped there.
+        if declared.is_a?(NonGenericModuleType)
+          declarations << IyiMod::TypeDecl.new(
+            name: name,
+            kind: declared.type_desc,
+            type_parameters: [] of String,
+            assoc_types: [] of String,
+            supertraits: [] of String,
+            fields: [] of {String, String, String},
+            class_vars: collect_iyi_class_vars(declared),
+            annotations: iyi_read_annotations(declared),
+            methods: iyi_carried_methods(program, filename, container, declared),
+            visibility: declared.private? ? "private" : "",
+            types: iyi_carried_types(program, filename, declared, path: container),
+            macros: iyi_macros_on(declared),
+            # Read the way `Iyi::Bind` reads it: a module that extends itself
+            # is one whose metaclass has it as an ancestor, which is what
+            # makes `Helper.twice` and `Helper#twice` the same method.
+            extends_self: declared.metaclass.ancestors.includes?(declared),
+            includes: iyi_included_modules(declared),
+            doc: declared.doc || "",
+          )
+          next
+        end
+
+        # A `lib` the module declares. Its `fun`s are what a travelling body
+        # calls: `std/dir` writes `lib LibC` with `opendir` in it and calls
+        # it from a body the consumer compiles, which said `undefined fun
+        # 'opendir' for LibC` — and `std/file` keeps a `struct Stat` inside
+        # one, which was `undefined constant Std::File::LibC::Stat`. A
+        # `LibType` is a `ModuleType` and not a `ClassType`, so it fell
+        # through every branch here and was dropped whole.
+        if declared.is_a?(LibType)
+          declarations << iyi_lib_declaration(program, filename, declared, name, container)
           next
         end
 
         # A class or a struct, which is what has a layout and an id. A constant
         # lives in the same namespace and is neither, and it is IV.2's business
         # rather than this.
-        next unless declared.is_a?(ClassType) || declared.is_a?(EnumType)
+        next unless declared.is_a?(ClassType)
 
         declarations << IyiMod::TypeDecl.new(
           name: name,
-          kind: declared.type_desc,
-          type_parameters: declared.as?(GenericType).try(&.type_vars) || [] of String,
+          kind: iyi_type_kind(declared),
+          type_parameters: iyi_type_parameters(declared),
           assoc_types: [] of String,
           supertraits: [] of String,
           fields: collect_iyi_fields(declared),
           class_vars: collect_iyi_class_vars(declared),
-          methods: iyi_carried_methods(program, filename, name, declared),
+          # The Share marker as an exported type wears it: a private type is
+          # still reached by a body that travels, and by the reach a spawn's
+          # walk follows through one (iyi-db's `AROUND_HOOKS`, an
+          # `AroundHooks` of a `Mutex` and an `Atomic`, read by every query),
+          # and without the marker the consumer read it as not Share - a
+          # plain spawn that runs in parallel built from source stayed in its
+          # unit built from the artifact, and `spawn(unit: :new)` warned.
+          annotations: iyi_share_marker(declared) + iyi_read_annotations(declared),
+          methods: iyi_carried_methods(program, filename, container, declared),
           visibility: declared.private? ? "private" : "",
-          types: iyi_carried_types(program, filename, declared),
+          types: iyi_carried_types(program, filename, declared, path: container),
           macros: iyi_macros_on(declared),
+          superclass: iyi_superclass_name(declared),
+          includes: iyi_included_modules(declared),
+          doc: declared.doc || "",
         )
       end
       declarations.sort_by! &.name
+    end
+
+    # iyi: a `lib` the module declares, as the lines that declare it.
+    #
+    # A `fun` is not a symbol this artifact's object code answers for — the
+    # system linker resolves `opendir` against libc — but a consumer that
+    # compiles a body calling one needs the declaration to make the call
+    # with, which is the same reason `Iyi::Bind` carries them for a shard
+    # (`TypeDecl#funs`). The types nested inside travel with it: `std/file`
+    # writes `struct Stat` in its `lib`, and a field typed `LibC::Stat` is
+    # a name the consumer has to have.
+    #
+    # As text, for the reason `Iyi::Bind` writes them as text: a `fun` has
+    # a shape no `def` has, and it is rendered back inside the same `lib`
+    # in the same module, where each restriction means what it meant where
+    # it was written.
+    private def iyi_lib_declaration(program : Program, filename : String,
+                                    type : LibType, name : String,
+                                    container : String) : IyiMod::TypeDecl
+      funs = [] of String
+      type.defs.try &.each_value do |overloads|
+        overloads.each do |entry|
+          a_def = entry.def
+          next unless a_def.is_a?(External)
+          # An external *variable* — libc's `$errno` — is not a `fun`.
+          next if a_def.external_var?
+          # Through the macro, like every other location question here: a
+          # platform's `lib` is written inside `{% if flag?(:darwin) %}`.
+          next unless a_def.location.try(&.original_read_from) == filename
+          funs << iyi_render_fun(a_def)
+        end
+      end
+      funs.sort!
+
+      # A `lib`'s constants, which are the same shape as an enum's members
+      # and render on the same line.
+      members = [] of {String, String}
+      type.types?.try &.each do |member, declared|
+        next unless declared.is_a?(Const)
+        members << {member, declared.value.to_s}
+      end
+      members.sort_by! &.[0]
+
+      IyiMod::TypeDecl.new(
+        name: name,
+        kind: "lib",
+        type_parameters: [] of String,
+        assoc_types: [] of String,
+        supertraits: [] of String,
+        fields: [] of {String, String, String},
+        methods: [] of IyiMod::Signature,
+        # Not a thing a consumer writes against: it is here so a body that
+        # travels can call into it.
+        visibility: "",
+        # The types nested in it, without the methods: inside a `lib` a
+        # struct is C's, its accessors are the compiler's, and written back
+        # they were `expecting token ':', not 'initialize'`.
+        types: iyi_carried_types(program, filename, type, path: container)
+          .map { |nested| nested.copy_with(methods: [] of IyiMod::Signature) },
+        members: members,
+        funs: funs,
+        annotations: iyi_link_annotations(type),
+      )
+    end
+
+    # iyi: one `fun` line, as the module wrote it.
+    #
+    # The restriction where the node still has one and the resolved type
+    # where it does not, which is the distinction `Iyi::Bind`'s renderer
+    # found: an `External`'s args come out of semantic typed and, for some
+    # of them, stripped.
+    private def iyi_render_fun(a_def : External) : String
+      String.build do |io|
+        io << "fun " << a_def.name
+        unless a_def.name == a_def.real_name
+          # Quoted where the C name is not an identifier: `std/math` binds
+          # `llvm.copysign.f32`, and written bare the parser stopped on the
+          # first dot.
+          real = a_def.real_name
+          plain = !real.empty? && real.each_char.with_index.all? do |(character, index)|
+            character.ascii_letter? || character == '_' || (index > 0 && character.ascii_number?)
+          end
+          io << " = " << (plain ? real : real.inspect)
+        end
+        unless a_def.args.empty? && !a_def.varargs?
+          io << '('
+          a_def.args.join(io, ", ") do |argument, inner|
+            written = argument.restriction || argument.type?
+            # A `fun` parameter may have no name, and written with the
+            # colon anyway it is `unexpected token: ":"`.
+            inner << argument.name << " : " unless argument.name.empty?
+            inner << written
+          end
+          io << ", ..." if a_def.varargs?
+          io << ')'
+        end
+        if return_type = a_def.return_type
+          io << " : " << return_type
+        end
+      end
+    end
+
+    # iyi: a `lib`'s `@[Link]` annotations, written back as source.
+    #
+    # Rebuilt from what the compiler parsed rather than kept as text,
+    # because the text is not kept. Carried for the reason the `fun`s are:
+    # a consumer compiling a travelling body makes the call itself, so the
+    # library has to reach its link line.
+    private def iyi_link_annotations(type : Type) : Array(String)
+      return [] of String unless type.responds_to?(:link_annotations)
+      (type.link_annotations || [] of LinkAnnotation).map do |written|
+        parts = [] of String
+        if name = written.lib
+          parts << name.inspect
+          pkg = written.pkg_config
+          parts << "pkg_config: #{pkg.inspect}" if pkg && pkg != name
+        elsif pkg = written.pkg_config
+          parts << "pkg_config: #{pkg.inspect}"
+        end
+        written.ldflags.try { |flags| parts << "ldflags: #{flags.inspect}" }
+        written.framework.try { |framework| parts << "framework: #{framework.inspect}" }
+        written.wasm_import_module.try { |name| parts << "wasm_import_module: #{name.inspect}" }
+        written.dll.try { |dll| parts << "dll: #{dll.inspect}" }
+        parts << "static: true" if written.static?
+        "@[Link(#{parts.join(", ")})]"
+      end
+    end
+
+    # iyi: a type's kind, with `abstract` in front of it where it is one.
+    #
+    # The word is part of the declaration and not decoration: an `abstract
+    # def` is only allowed on an abstract type, so a class that lost the word
+    # arrived carrying a requirement it could not hold — `can't define
+    # abstract def on non-abstract class`, which is where `std/log` stopped.
+    # `Iyi::Bind` writes it into `kind` the same way, and
+    # `render_type_header` prints the string as it is.
+    #
+    # Less the word `generic`, which is the description and not the keyword:
+    # `render_type_header` takes it off the front, and behind `abstract` it
+    # stayed, so `pub abstract class GA(T)` came back as `pub abstract generic
+    # class GA(T)` — "pub abstract takes a class, a struct or a def" from the
+    # artifact reader, and the same line in `iyi doc` and `mod context`.
+    private def iyi_type_kind(type : Type) : String
+      abstract_type = type.responds_to?(:abstract?) && type.abstract?
+      abstract_type ? "abstract #{type.type_desc.lchop("generic ")}" : type.type_desc
+    end
+
+    # iyi: what a class inherits from, empty where it inherits from the root
+    # its kind implies.
+    #
+    # The edge, and not decoration either. A subclass's `fields` are its
+    # *own* — the inherited ones come with the superclass — so a class that
+    # lost its `<` arrived missing both the fields and the methods above it:
+    # `pub class Memory < IyiIO` came back as `pub class Memory` and the
+    # consumer said `undefined method 'puts' for Std::Io::Memory`. Worse, a
+    # type id is assigned by walking that same tree, so a consumer with a
+    # missing edge numbers the tree differently and a match against a virtual
+    # type answers wrongly and links cleanly (`TypeDecl#superclass`).
+    #
+    # `Reference`, `Struct` and `Value` are what a `class` and a `struct`
+    # inherit from when the author wrote no `<`, so writing them down would
+    # be writing what the keyword already says. Devirtualised, for the reason
+    # `iyi_type_name` gives.
+    #
+    # Written relative to the namespace the class is declared in when it is
+    # declared there too, which is what makes `inheritance_order` able to
+    # place it: that walk matches the names in a declaration against its
+    # *siblings*, so a superclass spelled `Std::Io::Reader` beside a sibling
+    # called `Reader` matched nothing and `pub class Sized < Std::Io::Reader`
+    # was rendered above the class it names — `undefined constant
+    # Std::Io::Reader`, about a type eleven lines below. See `iyi_edge_name`.
+    private def iyi_superclass_name(type : Type) : String
+      return "" unless type.responds_to?(:superclass)
+      superclass = type.superclass
+      return "" unless superclass
+      name = superclass.devirtualize.to_s
+      # Except on a `@[Primitive(:ReferenceStorageType)]` struct, where the
+      # compiler reads the written superclass and refuses anything but
+      # `Value`: "BUG: Expected reference_storage_type to inherit from
+      # Value". The word is implied for every other struct and required
+      # here, which is the one place the rule below is wrong.
+      return name if type.is_a?(GenericReferenceStorageType)
+      return "" if name == "Reference" || name == "Struct" || name == "Value"
+      iyi_edge_name(type, name)
+    end
+
+    # iyi: a type a declaration of *type* is written in terms of - its
+    # superclass, an include - as the declaration's text names it.
+    #
+    # Relative to *type*'s namespace where it is a sibling, for
+    # `inheritance_order`, and global everywhere else, because the text is
+    # read inside the module: `pub class Oops < ::Exception` beside an
+    # `app/exception` came back `< Exception`, which there is
+    # `App::Exception`. See `IyiMod.absolute_type`.
+    private def iyi_edge_name(type : Type, name : String) : String
+      absolute = IyiMod.absolute_type(name, iyi_parameter_names(type))
+      type.is_a?(NamedType) ? absolute.lchop("::#{type.namespace}::") : absolute
+    end
+
+    # iyi: the type parameters *type* declares, which a name written inside
+    # it may use and which name no type.
+    private def iyi_parameter_names(type : Type) : Array(String)
+      type.as?(GenericType).try(&.type_vars) || [] of String
+    end
+
+    # iyi: the modules a type includes, written back as the renderer's
+    # `include` lines.
+    #
+    # An edge like `superclass` and for the same reason: a consumer
+    # re-declares this type from what arrives, so an include that did not
+    # arrive is a set of methods the type no longer has. What it costs is
+    # not an error at the boundary but one at the callsite — `std/colorize`
+    # is a module whose whole surface is `class ::Object; include
+    # ObjectExtensions; end`, and a consumer reading it from its artifact
+    # was told `undefined method 'colorize' for String`.
+    #
+    # `parents` is the superclass and the includes together in resolution
+    # order, so the superclass comes off and what is left is what was
+    # written. A `GenericModuleInstanceType` — `Comparable(T)` — is an
+    # include as much as a plain module is and is not a `ModuleType`, which
+    # is the distinction `Iyi::Bind` learned the same way.
+    #
+    # Relative to the namespace where they are siblings, for the reason
+    # `iyi_superclass_name` is: `inheritance_order` places a declaration by
+    # matching these names against its siblings.
+    private def iyi_included_modules(type : Type) : Array(String)
+      names = [] of String
+      return names unless type.responds_to?(:parents)
+      parents = type.parents
+      return names unless parents
+
+      superclass = type.responds_to?(:superclass) ? type.superclass : nil
+      parents.each do |parent|
+        next if superclass && parent.same?(superclass)
+        next unless parent.is_a?(ModuleType) || parent.is_a?(GenericModuleInstanceType)
+        next if parent.is_a?(ClassType)
+        # A trait is a module underneath, and an `impl` installs it as one —
+        # so read for parents alone, every `impl Hashable for Bool` in
+        # `std/traits` came back as `include Std::Traits::Hashable`, which is
+        # the one thing R-3 says a trait is not. The impl travels in its own
+        # record; this is for what the author wrote `include` above.
+        next if parent.trait?
+
+        name = iyi_edge_name(type, parent.devirtualize.to_s)
+        names << name unless names.includes?(name)
+      end
+      names
+    end
+
+    # iyi: the annotations written above *type* that only a macro reads, as
+    # the lines `render_type_declaration` writes back above it.
+    #
+    # A def using `{{@type}}` travels and is expanded again on the far side,
+    # so what it asks of `@type` has to arrive with the type.
+    # `bench/migrate_fixture`'s `Report#priced?` is `{{
+    # @type.annotation(Shop::Priced) ? true : false }}` over an
+    # `@[Shop::Priced] class Report`; the declaration arrived bare, and the
+    # program built from the artifacts printed `priced? false` where the
+    # source build printed `priced? true`.
+    #
+    # Not the compiler's own, which `Program` declares at the top: each does
+    # something besides being read, and the ones a declaration needs are
+    # written by their own rules (`@[Share]` in `iyi_share_marker`,
+    # `@[Flags]` on an enum, `@[Link]` on a lib). The path is an edge, for
+    # `inheritance_order`: an annotation has to be declared above the type it
+    # is written over.
+    private def iyi_read_annotations(type : Type) : Array(String)
+      written = [] of String
+      type.annotations.try &.each do |annotation_type, values|
+        next if annotation_type.namespace.is_a?(Program)
+        name = iyi_edge_name(type, annotation_type.to_s)
+        path = Path.new(name.lchop("::").split("::"), name.starts_with?("::"))
+        values.each do |value|
+          copy = value.clone
+          copy.path = path
+          written << copy.to_s
+        end
+      end
+      written
+    end
+
+    # iyi: the `Share` marker travels with the declaration (SPEC.md
+    # III.4.4): a type this build found shareable is written wearing
+    # `@[Share]`, exported or carried, and a consumer trusts that rather
+    # than recomputing something it cannot — the bodies that said no field
+    # is assigned outside `initialize` are not in the artifact. Only a
+    # struct or a class has fields to be shareable over; a trait, alias or
+    # lib does not carry the marker.
+    private def iyi_share_marker(type : Type) : Array(String)
+      return [] of String unless type.is_a?(ClassType) && Iyi::Share.shareable?(type)
+      # An owning type says so, or its consumer would read it as trusted
+      # only when its arguments are, and `Mutex(Array(Int32))` would stop
+      # being Share at the artifact's edge.
+      [type.iyi_share_owns? ? "@[Share(owns: true)]" : "@[Share]"]
     end
 
     # One side of a type's methods — its own, or its metaclass's.
@@ -1606,21 +2549,47 @@ module Iyi
           # whose body is a `Primitive` is the compiler's rather than the
           # module's, and describing it as part of the module's surface would
           # be describing this compiler instead.
-          next if item.def.body.is_a?(Primitive)
+          #
+          # Unless the module asked for it. `@[Primitive]` is a declaration a
+          # module makes — `std/float` writes the whole matrix for `Float32`
+          # the way the prelude writes it for `Float64` — and the body it has
+          # no need of is the instruction itself. Dropped, a consumer got a
+          # `Float32` with no arithmetic: `wrong number of arguments for
+          # 'Float32#+' (given 1, expected 0)`, about the prelude's unary
+          # plus, the only `+` left. The annotation travels with the
+          # signature, which is what makes the consumer's copy the same
+          # instruction rather than a promise of a symbol nobody emitted.
+          next if item.def.body.is_a?(Primitive) && !iyi_primitive_written?(item.def)
+
+          # And an enum's question methods, for the same reason one line up
+          # and a different mechanism: their bodies are ordinary code, so
+          # `Primitive` does not catch them, and the consumer's own compiler
+          # writes one per member out of the members it reads. See
+          # `Def#iyi_compiler_made`.
+          next if item.def.iyi_compiler_made?
 
           signature = IyiMod.signature(item.def)
           methods << signature
-          # A block-taking def travels whatever type it is on: it is
-          # instantiated with the caller's block inside it, so the consumer is
-          # what compiles it — the same reason a generic's method and a trait's
-          # default travel (SPEC.md IV.1g).
+          # A block-taking or `forall` def travels whatever type it is on: it
+          # is instantiated with the caller's block inside it, or at the
+          # caller's types, so the consumer is what compiles it — the same
+          # reason a generic's method and a trait's default travel (SPEC.md
+          # IV.1g).
           #
           # And a def whose machine code enumerates an open type's members, or
           # which calls one that does, for the reason III.6 gives: the set is
           # the whole program's, so the answer is too. `Iyi::OpenTravel` marked
           # it before this ran.
-          if (travels || iyi_takes_block?(item.def) || item.def.iyi_open_travel?) &&
-             !item.def.abstract?
+          #
+          # And a def whose body uses `{{@type}}` and the like, which is
+          # expanded again for each receiver a call reaches: a consumer's
+          # `class User < Model` is a receiver this build never saw, so only
+          # its own expansion can answer. Kept behind, `type_name` was a header
+          # and the consumer's link ended on `Model+^Model#type_name:String`,
+          # where the source build printed `Main::User`.
+          if (travels || IyiMod.caller_instantiated?(item.def) || item.def.iyi_open_travel? ||
+             item.def.macro_def? || iyi_widened_parameters?(type, item.def) ||
+             IyiMod.answer_travels?(item.def)) && !item.def.abstract?
             iyi_record_mono_body program, filename, container, signature, item.def
           end
         end
@@ -1634,10 +2603,42 @@ module Iyi
     # generic type's method exists once per instantiation, and instantiations
     # belong to whoever writes them. A trait's default is stencilled onto the
     # implementing type, which the producer has never heard of —
-    # `Samples::Collections::Nums@Std::Enumerable::Enumerable#to_a` is not a
+    # `Samples::Collections::Nums^Std::Enumerable::Enumerable#to_a` is not a
     # symbol any producer could have emitted under any name.
     private def iyi_bodies_travel?(type : Type) : Bool
       type.is_a?(GenericType) || type.is_a?(TraitType)
+    end
+
+    # iyi: whether *type* is a module this file included into a type declared
+    # somewhere else, which makes its instance methods travel for the reason
+    # a trait's defaults do.
+    #
+    # A module's instance method has no unit of its own: it is stencilled
+    # onto whatever includes it, and codegen files the result under the
+    # *includer*. Include it into a type this module declares and the result
+    # is in this module's object code; include it into `::Object` and the
+    # result is in the prelude's, which is not this module's to ship.
+    # `std/colorize` is nothing but that — `class ::Object; include
+    # ObjectExtensions; end` — and the link ended on
+    # `String^Std::Colorize::Colorize::ObjectExtensions#colorize`.
+    #
+    # Asked of the *namespace* and not of the file. A reopen counts as a
+    # location, so `class ::Object` written here put this file among
+    # `Object`'s and the question answered itself wrongly: what decides is
+    # whose object code the includer's unit lands in, and that is the
+    # module that declared it.
+    private def iyi_stencilled_module?(program : Program, type : Type,
+                                       filename : String) : Bool
+      return false if type.is_a?(ClassType)
+      including = type.as?(NonGenericModuleType).try &.raw_including_types
+      return false unless including
+      own = program.iyi_module_paths[filename]?.try { |name| program.iyi_module_type(name) }
+      return false unless own
+      prefix = "#{own}::"
+      including.any? do |includer|
+        name = includer.devirtualize.to_s
+        name != own.to_s && !name.starts_with?(prefix)
+      end
     end
 
     # iyi: the methods of a type the module keeps to itself.
@@ -1659,33 +2660,189 @@ module Iyi
     # another module reads and nothing here is readable. It costs nothing to
     # skip: the annotation is what types a call to a def whose body stayed
     # behind, and these bodies do not stay behind.
+    #
+    # Both sides of it, because a `def self.` is stored on the metaclass and
+    # that is where a module keeps everything: `module Float32Text` is three
+    # `def self.` and nothing else, and walking the instance side alone
+    # carried none of them.
     private def iyi_carried_methods(program : Program, filename : String,
                                     container : String, type : Type) : Array(IyiMod::Signature)
       signatures = [] of IyiMod::Signature
-      type.as?(ModuleType).try &.defs.try &.each_value do |items|
-        items.each do |item|
-          next if item.def.new?
-          next if item.def.body.is_a?(Primitive)
-          next if item.def.abstract?
+      # A generic's methods and a trait's defaults, for the reason the
+      # exported side carries them: the consumer is what compiles them, so
+      # no machine code here could serve it. Asked of the carried side too
+      # because a type is nested rather than exported by the author's
+      # choice, not by any property a consumer can see —
+      # `std/colorize`'s whole surface is `Colorize::Object(T)` nested
+      # inside an exported module, and the link ended on
+      # `Object(String)^Object(T)#to_s`.
+      travels = iyi_bodies_travel?(type)
+      # And a module this file included into a type declared elsewhere has
+      # no unit of its own for its instance methods — see
+      # `iyi_stencilled_module?`. The metaclass side keeps its code here.
+      stencilled = iyi_stencilled_module?(program, type, filename)
+      {type, type.metaclass}.each do |side|
+        side.as?(ModuleType).try &.defs.try &.each_value do |items|
+          items.each do |item|
+            next if item.def.new?
+            # The module's own `@[Primitive]` is not the compiler's — see the
+            # exported side.
+            next if item.def.body.is_a?(Primitive) && !iyi_primitive_written?(item.def)
+            next if item.def.abstract?
+            next if item.def.iyi_compiler_made?
 
-          signature = IyiMod.signature(item.def, check_block: false)
-          signatures << signature
-          # The same two reasons the exported side travels for: a block-taking
-          # body is the caller's, and one whose code answers for an open set is
-          # the program's (SPEC.md III.6). A header for either would promise a
-          # symbol nobody emitted.
-          if iyi_takes_block?(item.def) || item.def.iyi_open_travel?
-            iyi_record_mono_body program, filename, container, signature, item.def
+            signature = IyiMod.signature(item.def, check_block: false)
+            signatures << signature
+            # The same reasons the exported side travels for: a block-taking
+            # or `forall` body is the caller's, one whose code answers for
+            # an open set is the program's (SPEC.md III.6), and one whose
+            # parameter is written wider than its callers has no symbol the
+            # consumer can ask for. A header for any of them would promise a
+            # symbol nobody emitted — `std/io` writes
+            # `ByteFormat::BigEndian.decode_int32(io : IyiIO)` inside a
+            # module it keeps to itself, and the link ended on
+            # `decode_int32<IyiIO+>`.
+            if travels || (stencilled && side.same?(type)) ||
+               IyiMod.caller_instantiated?(item.def) || item.def.iyi_open_travel? || item.def.macro_def? ||
+               iyi_widened_parameters?(type, item.def) || IyiMod.answer_travels?(item.def)
+              iyi_record_mono_body program, filename, container, signature, item.def
+            end
           end
         end
       end
       signatures.sort_by! &.name
     end
 
-    # iyi: whether a def is instantiated per call site because it takes a
-    # block — `&block : …` or a bare `yield` (SPEC.md IV.1g).
-    private def iyi_takes_block?(a_def : Def) : Bool
-      !!(a_def.block_arg || a_def.block_arity)
+    # iyi: whether the *module* asked for this def's `Primitive` body.
+    #
+    # `allocate` and the prelude's instructions arrive with one and no
+    # annotation on the `Def` node, because the compiler puts them there. A
+    # `@[Primitive(:binary)]` in a module's own source is on the node, which
+    # is the difference. Written absolutely or not — `@[::Primitive]` is how
+    # `src/std` spells it — so the last name is what is compared.
+    private def iyi_primitive_written?(a_def : Def) : Bool
+      !!a_def.all_annotations.try &.any? { |ann| ann.path.names.last? == "Primitive" }
+    end
+
+    # iyi: whether a consumer would ask for a symbol this build had no reason
+    # to emit (SPEC.md IV.1g).
+    #
+    # A consumer keys a call on what the *declaration* says, not on what it
+    # passes: `Call#iyi_artifact_arg_types` widens every argument to the
+    # parameter's written type, because that is the contract and because the
+    # producer's object code is supposed to have been keyed the same way.
+    # Inside an ordinary build it is not. Codegen is demand-driven, so a
+    # parameter written `Path | String` and called with a `String` is compiled
+    # as `cd<String>` and the consumer asks the linker for
+    # `cd<(Std::Path::Path | String)>` — a symbol nobody emitted. Five of the
+    # library's own modules linked no further: `std/dir`, `std/env`,
+    # `std/gc`, `std/big` and `std/capsule`, each on a union or on an
+    # abstract number's `Int+`.
+    #
+    # What `iyi bind` does about it is a keep file — a second build that names
+    # every declared signature — and an `--emit-iyimod` build has no second
+    # build to do it in. So the body travels instead, the way a block-taking
+    # def's already does: the consumer compiles it at the types it asked for,
+    # and there is no symbol to miss. The producer's own narrow instantiation
+    # stays in the object code for its own callers; the two have different
+    # names and do not collide. Where the parameter admits a type it does not
+    # name — a trait, a class with subclasses — that instantiation is private
+    # to the unit that called it instead (`IyiMod.open_parameter?`), because
+    # the type may be another module's and the module's own unit would then
+    # call into code nothing ties it to (issue #134).
+    #
+    # Three places the declaration can be wider than what this build
+    # compiled, and a symbol carries all three:
+    #
+    # * a **parameter**, which is where this started;
+    # * the **receiver**, because a method on a class something inherits from
+    #   is reached through the virtual type wherever a declaration names the
+    #   base — `@sink : Sink` holds a `Sink+` — and codegen puts those calls
+    #   in a unit of their own, `Sink+^Sink#take`. The producer emits the
+    #   ones its own program dispatched virtually and no others, so
+    #   `std/io`'s `Reader` has two subclasses and the link ended on
+    #   `Reader+^Std::Io::Reader#read_all`;
+    # * the **return**, because it is in the name too. A consumer types a
+    #   call from the declaration's return annotation and holds the answer as
+    #   its virtual type, so `def self.new_element(name : String) : Node`
+    #   was asked for as `new_element<String>:Std::Xml::Node+` where the
+    #   producer, whose body returns exactly a `Node`, wrote
+    #   `…:Std::Xml::Node`.
+    #
+    # Only where the two can disagree. A signature written in leaf types is
+    # the one every call to it has, so the ordinary method is untouched and
+    # keeps its body behind — which is the whole point of IV.2 and most of
+    # what an artifact saves.
+    private def iyi_widened_parameters?(scope : Type, a_def : Def) : Bool
+      owner = a_def.owner? || scope
+
+      # The receiver. Asked of the instance side, because a `def self.` is
+      # stored on the metaclass and it is the instance's subclasses that make
+      # either of them virtual.
+      instance = owner.is_a?(MetaclassType) ? owner.instance_type : owner
+      return true if instance.is_a?(ClassType) && instance.virtual_type != instance
+
+      # The return. A class with subclasses disagrees by shape: the consumer
+      # holds the answer as its virtual type. A union disagrees only where the
+      # body answers fewer members than were written - codegen keys the
+      # producer's symbol on the type the body inferred and a consumer keys
+      # the call on the declaration, so `def mixed(flag : Bool) : Int32 |
+      # String | Nil` over `flag ? 4 : "four"` was emitted as
+      # `…mixed<Bool>:(Int32 | String)` and asked for with `| Nil` on the end.
+      # Asked of the instances this build typed, because reading every union
+      # as a widening shipped the bodies of every module that returns one,
+      # and a `def scan(source : String) : Array(Token) | BadCharacter` whose
+      # body answers both has nothing to disagree about.
+      if return_type = a_def.return_type
+        declared = owner.lookup_type?(return_type)
+        if declared.is_a?(Type) && !declared.is_a?(TypeParameter)
+          return true if declared.virtual_type != declared
+          return true if declared.is_a?(UnionType) && iyi_answers_narrower?(owner, a_def, declared)
+        end
+      end
+
+      a_def.args.each do |arg|
+        restriction = arg.restriction
+        next unless restriction
+        return true if iyi_widened_type?(owner, restriction)
+      end
+      false
+    end
+
+    # iyi: whether an instance of *a_def* this build typed answers a narrower
+    # type than the union its return annotation wrote. Instances live on the
+    # type a call was made through, which for a module's own function is the
+    # module's metaclass, so both sides are asked.
+    private def iyi_answers_narrower?(owner : Type, a_def : Def, declared : Type) : Bool
+      {owner, owner.metaclass}.any? do |container|
+        container.is_a?(DefInstanceContainer) &&
+          container.def_instances.each_value.any? do |instance|
+            next false unless instance.iyi_origin.same?(a_def)
+            answered = instance.type?
+            !answered.nil? && answered != declared
+          end
+      end
+    end
+
+    # One written parameter type, asked whether the consumer would key a
+    # symbol on something else. A free variable is bound per call and is not
+    # a widening; a name this scope cannot resolve is not this check's to
+    # guess at.
+    #
+    # A trait or module is one: no value has it as its type, so the producer
+    # instantiated `area_of(x : Shape)` at each type its callers passed -
+    # `area_of<Sq>`, and `area_of<Main::Tri>` for the consumer's own type -
+    # while a consumer reading the declaration asked for `area_of<Shape>`.
+    #
+    # So is a class with subclasses written `.class`. `Base.class` already
+    # looks up as `Base+.class`, its own virtual type, and the producer
+    # emitted `name_of<Main::Sub.class>` for a call passing `Sub`.
+    private def iyi_widened_type?(owner : Type, written : ASTNode) : Bool
+      declared = owner.lookup_type?(written)
+      return false unless declared.is_a?(Type)
+      return false if declared.is_a?(TypeParameter)
+      declared.is_a?(UnionType) || declared.module? || declared.is_a?(VirtualMetaclassType) ||
+        declared.virtual_type != declared
     end
 
     # Records one body against `IyiMod.mono_body_key`.
@@ -1721,20 +2878,40 @@ module Iyi
 
     # The macros declared on one type, which is the same question one level in:
     # a class may declare a macro and a method of that class may call it, and
-    # the method's body is what travels.
-    private def iyi_macros_on(type : Type?) : Array(String)
-      sources = [] of String
-      type.try &.metaclass.as?(ModuleType).try &.macros.try &.each_value do |overloads|
-        overloads.each { |a_macro| sources << a_macro.to_s }
+    # the method's body is what travels. Each with its doc comment
+    # (`IyiMod.macro_source`), in the order of the macros themselves. With
+    # *filename*, only those written there: a type this module reopens has
+    # the macros of whoever declared it too.
+    #
+    # Its hooks as well — `macro inherited`, `included`, `extended`,
+    # `method_added` — which `add_macro` files under `hooks` and not under
+    # `macros`, so reading the one table carried none of them. Written back
+    # as the macros they were, the consumer's own reading registers them
+    # again, and a consumer's `class Mine < P` runs P's hook the way the
+    # source build does: without it `Mine.new.kind` was `undefined method
+    # 'kind' for Main::Mine`, and a registry hook added nothing and printed
+    # `[]` where the source build printed `["Main::Mine"]`.
+    private def iyi_macros_on(type : Type?, filename : String? = nil) : Array(String)
+      macros = [] of Macro
+      metaclass = type.try &.metaclass.as?(ModuleType)
+      metaclass.try &.macros.try &.each_value do |overloads|
+        overloads.each do |a_macro|
+          macros << a_macro if filename.nil? || a_macro.location.try(&.original_read_from) == filename
+        end
       end
-      sources.sort!
+      metaclass.try &.hooks.try &.each do |hook|
+        macros << hook.macro if filename.nil? || hook.macro.location.try(&.original_read_from) == filename
+      end
+      macros.sort_by!(&.to_s).map { |a_macro| IyiMod.macro_source(a_macro) }
     end
 
     private def iyi_record_mono_body(program : Program, filename : String,
                                      container : String, signature : IyiMod::Signature,
                                      a_def : Def) : Nil
-      bodies = program.iyi_mono_bodies[filename] ||= {} of String => String
-      bodies[IyiMod.mono_body_key(container, signature)] = a_def.body.to_s
+      key = IyiMod.mono_body_key(container, signature)
+      text, positions = IyiMod.located_source(a_def.body)
+      (program.iyi_mono_bodies[filename] ||= {} of String => String)[key] = text
+      (program.iyi_mono_body_positions[filename] ||= {} of String => Array(IyiMod::SourcePosition))[key] = positions
     end
 
     # iyi: a type's own instance variables, for `TypeDecl#fields` (IV.2).
@@ -1761,7 +2938,11 @@ module Iyi
     # the module's author wrote them.
     private def collect_iyi_fields(type : Type) : Array({String, String, String})
       fields = [] of {String, String, String}
-      return fields unless type.responds_to?(:instance_vars)
+      # `is_a?`, not `responds_to?`: every type answers `responds_to?(:instance_vars)`
+      # because the base declares it as a raise, and an `enum` declared inside
+      # an exported class (`Path::Kind`, `Colorize::ColorANSI`) ended `iyi doc`
+      # on "BUG: ... doesn't implement instance_vars".
+      return fields unless type.is_a?(InstanceVarContainer)
 
       # The default the module wrote, where it wrote one. In place beside the
       # field rather than after the others, because a field's position in this
@@ -1777,9 +2958,61 @@ module Iyi
         # A variable whose type never resolved is a rule broken elsewhere, and
         # recorded as `?` rather than guessed at — the same convention an
         # unannotated signature takes, and equally visible in `mod dump`.
-        fields << {name, variable.type?.try(&.to_s) || "?", defaults[name]? || ""}
+        resolved = variable.type?
+        fields << {name, resolved ? iyi_type_name(resolved, type) : "?", defaults[name]? || ""}
       end
       fields
+    end
+
+    # iyi: the fields of *type* that this file declared, for a type the
+    # module wrote under a name outside its own namespace.
+    #
+    # An instance variable the compiler makes for itself — `StaticArray`'s
+    # `@buffer` — has no location in any file, and writing one back is
+    # refused by the compiler that makes it. What this file wrote has a
+    # location and it is this file.
+    private def iyi_fields_written_in(type : Type,
+                                      filename : String) : Array({String, String, String})
+      return [] of {String, String, String} unless type.is_a?(InstanceVarContainer)
+      written = type.instance_vars.each_with_object(Set(String).new) do |(name, variable), names|
+        names << name if variable.location.try(&.original_read_from) == filename
+      end
+      collect_iyi_fields(type).select { |field| written.includes?(field[0]) }
+    end
+
+    # iyi: a resolved type as a *name*, which is not always how it prints.
+    #
+    # `IyiIO+` is how a virtual type prints and not a name anybody can write.
+    # Rendered into a field declaration the parser read `IyiIO`, then `+` as
+    # an operator, and the line after it as its operand: `@out : IyiIO+`
+    # above a `def` was `can't declare def dynamically`, pointing at the def.
+    # `std/io`'s `Hexdump` holds an `IyiIO+`, and `std/io` and `std/symbol`
+    # both stopped there.
+    #
+    # Declaring the base is not a narrowing: an instance variable of a class
+    # type holds that class *or a subclass*, so the consumer's own front end
+    # puts the `+` back when it reads the declaration.
+    #
+    # The top level and a union's members, which is where the two shapes
+    # measured are. A virtual type inside a generic argument —
+    # `Array(IyiIO+)` — would still print as it prints; a rule that covers
+    # what was measured is the one worth having.
+    #
+    # And global, every name in it, because the declaration is read inside
+    # the module: `@pair : ::Tuple(Int32, Int32)` beside an `app/tuple` came
+    # back `@pair : Tuple(Int32, Int32)` and the consumer said "App::Tuple is
+    # not a generic type". *owner* is the type the name is written in, whose
+    # parameters stay as they are. See `IyiMod.absolute_type`.
+    private def iyi_type_name(type : Type, owner : Type) : String
+      text =
+        if type.is_a?(UnionType) && type.union_types.any? { |member| member.devirtualize != member }
+          names = [] of String
+          type.union_types.each { |member| names << member.devirtualize.to_s }
+          names.join(" | ")
+        else
+          type.devirtualize.to_s
+        end
+      IyiMod.absolute_type(text, iyi_parameter_names(owner))
     end
 
     # iyi: a type's own class variables, for `TypeDecl#class_vars` (SPEC.md
@@ -1815,10 +3048,38 @@ module Iyi
         # variable without it writes to a different global than this module's
         # object code does. See `IyiMod::ClassVarDecl`.
         annotations = variable.thread_local? ? ["@[ThreadLocal]"] : [] of String
-        class_vars << IyiMod::ClassVarDecl.new(name, variable.type?.try(&.to_s) || "?",
+        # The same reading a field's type gets, and for the same reason.
+        resolved = variable.type?
+        class_vars << IyiMod::ClassVarDecl.new(name, resolved ? iyi_type_name(resolved, type) : "?",
           initialiser, annotations)
       end
       class_vars
+    end
+
+    # iyi: the class variables of *type* that this file declared, for a type
+    # the module wrote under a name outside its own namespace. The same
+    # question `iyi_fields_written_in` asks, and for the same reason: a
+    # consumer cannot infer `@@temp_counter` from methods alone, and the
+    # ones the compiler makes for itself are not this module's to write.
+    private def iyi_class_vars_written_in(type : Type,
+                                          filename : String) : Array(IyiMod::ClassVarDecl)
+      return [] of IyiMod::ClassVarDecl unless type.responds_to?(:class_vars?)
+      written = type.class_vars?.try &.each_with_object(Set(String).new) do |(name, variable), names|
+        # The declaration's location, or the initialiser's where there is no
+        # declaration: `@@temp_counter = 1000_u64` is written as an
+        # assignment and has no `location` of its own, and it is exactly the
+        # shape a consumer cannot infer.
+        location = variable.location || variable.initializer.try(&.node.location)
+        next unless location.try(&.original_read_from) == filename
+        # A subclass's copy of an ancestor's variable carries the ancestor's
+        # location. It is declared where the subclass is: a base class's
+        # artifact reopening `class ::Lib::Sub::Sub` for it declared `Sub`
+        # with no superclass, and `lib/sub`'s own artifact was refused.
+        next if type.ancestors.any? { |ancestor| ancestor.responds_to?(:class_vars?) && ancestor.class_vars?.try &.has_key?(name) }
+        names << name
+      end
+      return [] of IyiMod::ClassVarDecl unless written
+      collect_iyi_class_vars(type).select { |class_var| written.includes?(class_var.name) }
     end
 
     # Measures what a compile costs when the prelude has already been analysed,
@@ -2024,6 +3285,7 @@ module Iyi
     # valid UTF-8.
     def top_level_semantic(source : Source | Array(Source)) : Result
       source = [source] unless source.is_a?(Array)
+      adopt_header_root(source)
       program = new_program(source)
       node = parse program, source
       node, _ = program.top_level_semantic(node)
@@ -2044,6 +3306,44 @@ module Iyi
       @optimization_mode.o3? && @single_module
     end
 
+    # iyi: how many partitions an optimised single module is cut into, when
+    # `IYI_RELEASE_PARTITIONS` says; otherwise nil, and the module's size
+    # decides (`ReleasePartition.partition_count`). `1` keeps the one module
+    # of every build before partitioning, which is the broken copy
+    # `bench/release_cores.sh` holds the default against; `0` is the size's
+    # count anywhere.
+    #
+    # Windows keeps the one module unless told: there the JSON benchmark
+    # still ran 1.015x its one-module time cut at the default, best of 45
+    # interleaved runs, and the median of three bests of 15 was 1.033x, on
+    # Windows 11, 12 logical processors (the user's machine), where the
+    # same one-module binary run against itself came out at 0.995x and
+    # 1.002x. On macOS 26.6, Apple M2 Pro, 10 cores (the user's machine),
+    # 1.012x and 1.011x.
+    private def release_partitions : Int32?
+      if count = ENV["IYI_RELEASE_PARTITIONS"]?.try(&.to_i?)
+        return count == 0 ? nil : count.clamp(1, ReleasePartition::MAX_PARTITIONS)
+      end
+      1 if @codegen_target.win32?
+    end
+
+    # iyi: the largest function, in instructions before optimisation, a
+    # partition gets a local copy of to inline
+    # (`ReleasePartition::IMPORT_LIMIT`), when `IYI_RELEASE_IMPORT` says.
+    private def release_import : Int32
+      ENV["IYI_RELEASE_IMPORT"]?.try(&.to_i?).try { |limit| Math.max(limit, 0) } || ReleasePartition::IMPORT_LIMIT
+    end
+
+    # iyi: the same for an `available_externally` copy
+    # (`ReleasePartition::INLINE_LIMIT`), when `IYI_RELEASE_INLINE` says.
+    # `IYI_RELEASE_IMPORT=0 IYI_RELEASE_INLINE=0` copies nothing but what
+    # LLVM must inline and what goes with a copy, and `IYI_RELEASE_INLINE=0`
+    # nothing external: the broken copies `bench/release_cores.sh` holds the
+    # import against.
+    private def release_inline : Int32
+      ENV["IYI_RELEASE_INLINE"]?.try(&.to_i?).try { |limit| Math.max(limit, 0) } || ReleasePartition::INLINE_LIMIT
+    end
+
     private def new_program(sources)
       @program = program = Program.new
       program.iyi_prelude = prelude.ends_with?("iyi/prelude")
@@ -2051,6 +3351,7 @@ module Iyi
       program.filename = sources.first.filename
       program.codegen_target = codegen_target
       program.target_machine = create_target_machine
+      program.crystal_library = crystal_library?
       program.flags << "release" if release?
       program.flags << "debug" unless debug.none?
       program.flags << "static" if static?
@@ -2065,25 +3366,45 @@ module Iyi
       program.iyi_file_overrides = @iyi_file_overrides
       program.iyi_project_root = @iyi_project_root
       program.iyi_header_root = @iyi_header_root
+      program.parse_ahead_threads = @n_threads.clamp(..ParseAhead::THREADS)
       program.optimization_mode = @optimization_mode
       program.iyi_module_dir = @use_iyimod
+      program.iyi_prefers_source = @iyi_prefers_source
       program.iyi_wants_object_code = !@no_codegen
       program.iyi_rewrites_artifacts = !@emit_iyimod.nil?
-      # iyi: the manifest, if the entry file's directory has one (III.7) —
-      # or the table a tool prepared, which wins because the tool resolved
-      # the *user's* manifest and the entry may be a dependency with none.
+      # iyi: the manifest, if the root the entry is answered from has one
+      # (III.7, `Compiler.entry_root_of`) — or the table a tool prepared,
+      # which wins because the tool resolved the *user's* manifest and the
+      # entry may be a dependency with none.
       # A manifest failure is a build error with the manifest's name in it,
       # not a compiler bug banner.
       if table = @iyi_mod_table
         program.iyi_mod_table = table
-      elsif filename = program.filename
+      elsif entry = sources.first?
         begin
-          program.iyi_mod_table = Mod::Installer.table_for(File.dirname(filename))
+          program.iyi_mod_table = Mod::Installer.table_for(Compiler.entry_root_of(entry.filename, entry.code))
         rescue ex : Mod::ModError
           raise Error.new(ex.message)
         end
       end
+      program.iyi_root_package = iyi_root_package_of(sources)
       program
+    end
+
+    # iyi: the program's own package (`Program#iyi_root_package`): the
+    # module path the manifest at the root names - the root a tool set, or
+    # the one the entry is answered from, which is where the table above
+    # was read - and that directory. Nil where there is no manifest; one
+    # that does not parse was refused by the table already, or is a tool's
+    # to refuse.
+    private def iyi_root_package_of(sources : Array(Source)) : {String, String}?
+      root = @iyi_project_root || sources.first?.try { |entry| Compiler.entry_root_of(entry.filename, entry.code) }
+      return nil unless root
+      manifest = File.join(root, Mod::Installer::MANIFEST)
+      return nil unless File.file?(manifest)
+      {Mod::ModFile.parse(File.read(manifest), manifest).path, root}
+    rescue Mod::ModError
+      nil
     end
 
     private def parse(program, sources : Array)
@@ -2109,6 +3430,12 @@ module Iyi
       parser = program.new_parser(source.code)
       parser.filename = source.filename
       parser.wants_doc = program.wants_doc?
+      # The entry is a module of the program's own package as much as a
+      # file it imports is (`SemanticVisitor#import_file`).
+      if module_path = Compiler.module_header_of(source.code)
+        parser.iyi_package_name = program.iyi_record_module_package(module_path,
+          program.iyi_root_package_name_for(module_path, source.filename))
+      end
       parser.parse
     rescue ex : InvalidByteSequenceError
       # iyi: whichever language the file is written in. A `.iyi` file full of
@@ -2116,15 +3443,23 @@ module Iyi
       # file", which names the other language for a file this one was asked
       # to read - the identity `bench/identity_floor.py` exists to keep.
       language = source.filename.ends_with?(".iyi") ? "iyi" : "Crystal"
-      stderr.print colorize("Error: ").red.bold
-      stderr.print colorize("file '#{Iyi.relative_filename(source.filename)}' is not a valid #{language} source file: ").bold
-      stderr.puts ex.message
-      exit 1
+      # iyi: raised, never printed and exited on here. `Lsp::Analysis`
+      # compiles in the language server's own worker, and one `.iyi` file
+      # saved as Windows-1254 ended that worker with exit 1 and its sentence
+      # written to a buffer nobody read; and `check -f json`, which writes
+      # data (`Command#json_report`), got the sentence as text. Whoever
+      # compiles says it their way.
+      raise Error.new("file '#{Iyi.relative_filename(source.filename)}' is not a valid #{language} source file: #{ex.message}")
     end
 
     private def bc_flags_changed?(output_dir)
       bc_flags_changed = true
       current_bc_flags = "#{@codegen_target}|#{@mcpu}|#{@mattr}|#{@link_flags}|#{@mcmodel}"
+      # iyi: the back-edge checks go in after the bitcode is compared, so
+      # the flags that change their form change no bitcode, and a build
+      # with one reused the objects of one without (`preempt_checks`).
+      current_bc_flags += "|preempt_check_accessor" if @flags.includes?("preempt_check_accessor")
+      current_bc_flags += "|preempt_anchor_entry" if @flags.includes?("preempt_anchor_entry")
       bc_flags_filename = "#{output_dir}/bc_flags#{optimization_mode.suffix}"
       if File.file?(bc_flags_filename)
         previous_bc_flags = File.read(bc_flags_filename).strip
@@ -2142,9 +3477,40 @@ module Iyi
         end
       {% end %}
 
+      # iyi: the output must not be a file this build read. The command
+      # layer refuses an entry named as its own output before anything
+      # runs; a module the entry imports, or an artifact it compiled
+      # against, is only known now - and linking the program over either
+      # would replace it in silence, which is what `-o good.iyi good.iyi`
+      # did to its source. Before the first object is written.
+      if File.exists?(output_filename) && (read = program.requires.find { |filename| Iyi.same_file?(filename, output_filename) })
+        raise Iyi::Error.new("#{Iyi.relative_filename(read)} is a file this build read, and linking the program " \
+                             "over it would replace it. Name the program something else")
+      end
+
+      # iyi: a `--release` build that writes artifacts keeps a unit per type:
+      # an artifact's object code is its type's unit, and under one module
+      # there is none - the `.iyimod` said "object code (none)" and a
+      # consumer failed to link against it. A cross-compile and an `--emit`
+      # still write one module, which is the one file they answer.
+      #
+      # iyi: a `--release` build that *links* artifacts keeps a unit per type
+      # too. One module gives every symbol the program defines internal
+      # linkage - the type ids, the class variables, `__iyi_raise_overflow`, the
+      # collector's globals - and an artifact's object code refers to them by
+      # name from outside that module, so `a + b` in an imported module's
+      # body was `undefined reference to '__iyi_raise_overflow'` at link.
+      single_module = @cross_compile || !@emit_targets.none? ||
+                      (@single_module && @emit_iyimod.nil? && program.iyi_artifact_objects.empty?)
       llvm_modules = @progress_tracker.stage("Codegen (crystal)") do
-        program.codegen node, debug: debug, frame_pointers: frame_pointers,
-          single_module: @single_module || @cross_compile || !@emit_targets.none?
+        modules = program.codegen node, debug: debug, frame_pointers: frame_pointers,
+          single_module: single_module
+        # iyi: recursion's checks go in before optimisation (SPEC.md
+        # III.4.13, part 9; `PreemptChecks.mark_recursion`).
+        if program.iyi_preempt_flag
+          Prof.span("  codegen: mark recursion") { PreemptChecks.mark_recursion(modules.values.map(&.mod), program.iyi_preempt_funs) }
+        end
+        modules
       end
 
       output_dir = CacheDir.instance.directory_for(sources)
@@ -2155,8 +3521,20 @@ module Iyi
       units = llvm_modules.map do |type_name, info|
         llvm_mod = info.mod
         llvm_mod.target = target_triple
-        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed)
+        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, verify: !single_module)
       end
+
+      # iyi: one optimised module is cut into partitions that are optimised
+      # on as many cores (`ReleasePartition`). Not for a cross-compile or an
+      # `--emit`, which each answer with the one module's file, and not
+      # where the partitions would need LLVM's legacy pass manager.
+      {% unless LibLLVM::IS_LT_130 %}
+        if single_module && !@cross_compile && @emit_targets.none? && !@optimization_mode.o0? && units.size == 1
+          @progress_tracker.stage("Codegen (partition)") do
+            units.first.partition(release_partitions, release_import, release_inline)
+          end
+        end
+      {% end %}
 
       {% if LibLLVM::IS_LT_170 %}
         # initialize the legacy pass manager once in the main thread/process
@@ -2209,7 +3587,11 @@ module Iyi
       program.each_dll_path do |path, found|
         if found
           dest = File.join(output_directory, File.basename(path))
-          File.copy(path, dest) unless File.exists?(dest)
+          begin
+            place_dll(path, dest)
+          rescue ex : File::Error
+            stderr << "Warning: " << dest << " is not the DLL the program was linked against (" << path << ") and could not be replaced: " << ex.message << '\n'
+          end
         else
           not_found ||= [] of String
           not_found << path
@@ -2222,12 +3604,51 @@ module Iyi
       end
     end
 
+    # iyi: a DLL already beside the program is kept only when it is the one
+    # the link resolved. Crystal's #14315 kept whatever stood there by that
+    # name, so that a DLL a running program holds did not fail the write,
+    # and so it kept an older build's DLL too. `crystal spec` and `iyi run`
+    # link into the cache directory, and `iyi test` into %TEMP%, one each
+    # for the machine: on Windows 11, 12 logical processors (the user's
+    # machine) the cache's LLVM-C.dll, 53,079,552 bytes and copied there on
+    # 2026-09-17, stood beside the compiler spec program linked against
+    # .build's, 55,308,800 bytes (LLVM 23.1.1), which then died before its
+    # first line with 0xC0000139, STATUS_ENTRYPOINT_NOT_FOUND - "Process
+    # terminated abnormally, the cause is unknown" from `crystal spec` - and
+    # passed with .build's DLL beside it. The copy carries its source's
+    # modification time, so the same size and time is the same DLL, at two
+    # stats a build. A loaded DLL refuses a delete but not a rename, so one
+    # a running program holds is moved aside, and the asides a replacement
+    # left before go once nothing holds them.
+    private def place_dll(source : String, dest : String) : Nil
+      info = File.info(source)
+      if existing = File.info?(dest)
+        return if existing.size == info.size && existing.modification_time == info.modification_time
+
+        directory = File.dirname(dest)
+        aside = "#{File.basename(dest)}.old-"
+        Dir.each_child(directory) do |name|
+          next unless name.starts_with?(aside)
+          File.delete?(File.join(directory, name)) rescue nil
+        end
+        begin
+          File.delete(dest)
+        rescue File::Error
+          File.rename(dest, "#{dest}.old-#{Process.pid}")
+        end
+      end
+      File.copy(source, dest)
+      File.utime(info.modification_time, info.modification_time, dest)
+    end
+
     private def cross_compile(program, units, output_filename)
       unit = units.first
       llvm_mod = unit.llvm_mod
 
       @progress_tracker.stage("Codegen (bc+obj)") do
         optimize llvm_mod, target_machine unless @optimization_mode.o0?
+        WasmRoots.run(llvm_mod) if @codegen_target.architecture == "wasm32"
+        preempt_checks llvm_mod, program.iyi_preempt_flag
 
         unit.emit(@emit_targets, emit_base_filename || output_filename)
 
@@ -2248,10 +3669,15 @@ module Iyi
         lib_flags = program.lib_flags(@cross_compile)
         lib_flags = expand_lib_flags(lib_flags) if expand
 
-        object_arg = Process.quote_windows(object_names)
-        output_arg = Process.quote_windows("/Fe#{output_filename}")
-
         linker, link_args = program.msvc_compiler_and_flags
+        # `link.exe` is spoken to directly; anything else in `%CC%` is taken
+        # to be a driver in `cl.exe`'s shape, which passes what follows
+        # `/link` through to the linker it starts.
+        direct = File.basename(linker).compare("link.exe", case_insensitive: true) == 0
+
+        object_arg = Process.quote_windows(object_names)
+        output_arg = Process.quote_windows(direct ? "/OUT:#{output_filename}" : "/Fe#{output_filename}")
+
         linker = Process.quote_windows(linker)
         link_args.map! { |arg| Process.quote_windows(arg) }
 
@@ -2272,13 +3698,26 @@ module Iyi
           end
         {% end %}
 
-        args = %(/nologo #{object_arg} #{output_arg} /link #{link_args.join(' ')}).gsub("\n", " ")
+        args = %(/nologo #{object_arg} #{output_arg} #{direct ? "" : "/link "}#{link_args.join(' ')}).gsub("\n", " ")
         cmd = "#{linker} #{args}"
 
         if cmd.to_utf16.size > 32000
           # The command line would be too big, pass the args through a UTF-16-encoded file instead.
           # TODO: Use a proper way to write encoded text to a file when that's supported.
           # The first character is the BOM; it will be converted in the same endianness as the rest.
+          #
+          # iyi: one argument to a line when it is `link.exe` that reads it.
+          # The linker refuses a line of 131,072 characters or more - "LNK1170:
+          # line in command file contains 135135 or more characters", linking
+          # Crystal's library specs - where `cl.exe` read the same one-line
+          # file and wrote its own for the linker it started.
+          if direct
+            lines = ["/nologo"]
+            object_names.each { |name| lines << Process.quote_windows(name) }
+            lines << output_arg
+            link_args.each { |arg| lines << arg.gsub("\n", " ") }
+            args = lines.join("\r\n")
+          end
           args_16 = "\ufeff#{args}".to_utf16
           args_bytes = args_16.to_unsafe_bytes
 
@@ -2401,8 +3840,11 @@ module Iyi
 
     # The linker command the driver would have built, as {linker, before, after}.
     private def iyi_link_template(link_flags, lib_flags)
+      # The trailing number is the template's format: 2 since a `$`, `"` or `\`
+      # the driver printed escaped stopped keeping its backslash, so a template
+      # written by a compiler that kept it is not read as this one's.
       key = ::Crystal::Digest::MD5.hexdigest(
-        "#{DEFAULT_LINKER}\n#{link_flags}\n#{lib_flags}\n#{codegen_target}\n1")
+        "#{DEFAULT_LINKER}\n#{link_flags}\n#{lib_flags}\n#{codegen_target}\n2")
       # One file per set of flags, rather than one file: two programs in a
       # directory that link different libraries would otherwise take turns
       # overwriting each other's answer and asking the driver again each time.
@@ -2508,7 +3950,7 @@ module Iyi
     # try it. Called after a direct link failed and the driver succeeded.
     private def iyi_disable_direct_link(link_flags, lib_flags) : Nil
       key = ::Crystal::Digest::MD5.hexdigest(
-        "#{DEFAULT_LINKER}\n#{link_flags}\n#{lib_flags}\n#{codegen_target}\n1")
+        "#{DEFAULT_LINKER}\n#{link_flags}\n#{lib_flags}\n#{codegen_target}\n2")
       # An empty fingerprint, which is what a template with no inputs has: the
       # reader computes the same for this file and so believes it.
       File.write(CacheDir.instance.join("link-template-#{key}"), "#{key}\n\nunusable") rescue nil
@@ -2594,6 +4036,7 @@ module Iyi
       Rx.gsub(lib_flags, BACKTICK_SUBCOMMAND) do |match|
         # The group sits between the two backticks, so it always participated.
         command = match[1].not_nil!
+        BuildInputs.current.try &.cannot("a linker flag runs `#{command}`, and what that read cannot be listed")
         begin
           error_io = IO::Memory.new
           output = Process.run(command, shell: true, output: :pipe, error: error_io) do |process|
@@ -2611,22 +4054,26 @@ module Iyi
     end
 
     private def codegen(program, units : Array(CompilationUnit), output_filename, output_dir)
-      object_names = units.map &.object_filename
+      object_names = units.flat_map &.object_filenames
       object_names.concat write_iyi_artifact_objects(program, output_dir)
 
       @progress_tracker.stage("Codegen (bc+obj)") do
-        @progress_tracker.stage_progress_total = units.size
-
-        n_threads = @n_threads.clamp(1..units.size)
-
-        if n_threads == 1
-          sequential_codegen(units)
+        if units.size == 1 && units.first.partitioned?
+          partitioned_codegen(units.first)
         else
-          parallel_codegen(units, n_threads)
-        end
+          @progress_tracker.stage_progress_total = units.size
 
-        if units.size == 1
-          units.first.emit(@emit_targets, emit_base_filename || output_filename)
+          n_threads = @n_threads.clamp(1..units.size)
+
+          if n_threads == 1
+            sequential_codegen(units)
+          else
+            parallel_codegen(units, n_threads)
+          end
+
+          if units.size == 1
+            units.first.emit(@emit_targets, emit_base_filename || output_filename)
+          end
         end
       end
 
@@ -2655,14 +4102,14 @@ module Iyi
       @progress_tracker.stage("Codegen (linking)") do
         Dir.cd(output_dir) do
           begin
-            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true), busy_output: output_filename
           rescue ex : CompilerError
             # A link the compiler built itself, on a machine where that does
             # not work: the driver is asked to do it instead and the template
             # is marked unusable, so this is paid once rather than every build.
             raise ex unless @iyi_direct_link
             iyi_disable_direct_link(@link_flags || "", program.lib_flags(@cross_compile))
-            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true)
+            run_linker *linker_command(program, object_names, output_filename, output_dir, expand: true), busy_output: output_filename
           end
         end
       end
@@ -2745,10 +4192,89 @@ module Iyi
       {% end %}
     end
 
+    # iyi: the partitions of one optimised module (`ReleasePartition`), on as
+    # many threads as there are partitions or `--threads` allows. Each reads
+    # the module's bitcode into a context of its own, so nothing is shared
+    # but the bitcode, which nobody writes.
+    private def partitioned_codegen(unit)
+      @progress_tracker.stage_progress_total = unit.partitions
+      if unit.prepare_partitions
+        partitions = Array.new(unit.partitions) { |index| index }
+        n_threads = @n_threads.clamp(1..unit.partitions)
+        {% if !flag?(:without_mt) %}
+          if n_threads > 1
+            raise "LLVM isn't multithreaded and cannot fork compiler in multithread mode." unless LLVM.multithreaded?
+            mt_run(partitions, n_threads) { |index| unit.compile_partition(index) }
+            partitions.clear
+          end
+        {% end %}
+        partitions.each do |index|
+          unit.compile_partition(index)
+          @progress_tracker.stage_progress += 1
+        end
+      end
+      unit.finish_partitions
+    end
+
+    # iyi: two rounds on the same threads. Measured on samples/iyi/cores.iyi,
+    # a debug build from a cold cache on Linux (12 vCPU VM, release compiler,
+    # `IYI_PROF=1` and five interleaved builds per row, 2026-11-04).
+    #
+    # The first prepares every unit (`CompilationUnit#prepare`): verifies its
+    # module, writes its bitcode and compares that with the cache's. Crystal
+    # did the last two on the main thread, one unit after another, feeding the
+    # workers as it went, and then had each worker read the bitcode back into a
+    # fresh context before compiling, because its modules once shared contexts.
+    # Here each has its own (`CodeGenVisitor#type_module`), so a worker
+    # compiles the module the visitor built. Writing 404 units' bitcode was
+    # 155 ms of the main thread, and verifying them 64 ms more before it; the
+    # round that does both takes 25 ms. Reading the bitcode back cost 38 ms of
+    # the stage (0.361 s against 0.323, best of five).
+    #
+    # The second compiles the units whose bitcode changed, the largest first.
+    # The order they came in is the order the visitor met their types, and
+    # left the largest unit (`Std::Tls::TlsClient`, 212 ms of a 3.3 s round)
+    # to start whenever it came up. Bitcode size is the measure of a unit's
+    # work that is known before it starts, and taking the largest first is
+    # what bounds a round by its largest unit rather than by where that unit
+    # stood: in the order they came the stage took 0.373 s, largest first
+    # 0.323.
+    #
+    # What is written does not change: a unit's object is a function of its
+    # module alone, and the order only decides which thread writes it. The
+    # 404 objects of the build are the same bytes as before the change.
     private def mt_codegen(units, n_threads)
-      channel = Channel(CompilationUnit).new(n_threads * 2)
-      wg = WaitGroup.new
-      mutex = Sync::Mutex.new
+      Prof.span("bc+obj: prepare") { mt_run(units, n_threads, progress: false, &.prepare) }
+      compiled, reused = units.partition(&.compiles?)
+      # A unit whose bitcode did not change still goes through `compile`,
+      # which writes no object for it: that is what marks it reused for
+      # `--stats` and writes its `.ll` under `--emit llvm-ir`.
+      reused.each(&.compile)
+      @progress_tracker.stage_progress += reused.size
+      compiled = compiled.map_with_index { |unit, index| {unit, index} }
+        .sort_by! { |(unit, index)| {-unit.bitcode_size, index} }
+        .map(&.[0])
+      Prof.span("bc+obj: compile") { mt_run(compiled, n_threads, &.compile) }
+    end
+
+    # *jobs* done by *work* on *n_threads* threads of their own, taken in the
+    # order given, each counted in the stage's progress when *progress* is
+    # set.
+    #
+    # iyi: threads of their own (`Fiber::ExecutionContext::Isolated`), each
+    # taking the next index from one counter, rather than fibers of the
+    # default context receiving from a channel. A fiber the channel wakes is
+    # queued on the waking thread, and the default context wakes another
+    # thread to steal it only when none is spinning (`Parallel#wake_scheduler`):
+    # the round that prepares samples/iyi/cores.iyi's 405 units, 171 ms of
+    # work all told and none of it over 8 ms, took 103 ms on 12 vCPUs (Linux,
+    # VM) and as long whatever count of fibers it was given (2, 4, 8 and 12:
+    # 139, 136, 141 and 140 ms), so about two ran at once. On threads it takes
+    # 25 ms, and the whole stage went from 0.605 s to 0.323 (best of five
+    # cold builds).
+    private def mt_run(jobs : Array(T), n_threads, progress = true, &work : T ->) forall T
+      following = Atomic(Int32).new(0)
+      mutex = Thread::Mutex.new
 
       # iyi: kept, and raised after the workers are done.
       #
@@ -2758,43 +4284,31 @@ module Iyi
       # codegen failure told as a link failure, and it cost an hour of reading
       # linker output. The forking path already reports its workers' failures;
       # this is the same, for the threads.
-      failure = nil.as(Exception?)
+      #
+      # The first job's failure in *jobs*' order, not the first to happen:
+      # which thread fails first is the machine's choice, and two builds of
+      # one broken program have to say the same thing.
+      failure = nil.as({Int32, Exception}?)
 
-      n_threads.times do
-        wg.spawn do
-          while unit = channel.receive?
+      workers = Array.new(n_threads.clamp(..jobs.size)) do |worker|
+        Fiber::ExecutionContext::Isolated.new("codegen-#{worker}") do
+          while (index = following.add(1)) < jobs.size
             begin
-              unit.compile(isolate_context: true)
+              work.call(jobs[index])
             rescue ex
-              # Kept receiving rather than returning: a worker that stops
-              # leaves the sender blocked on a channel nobody drains.
-              mutex.synchronize { failure ||= ex }
+              mutex.synchronize do
+                failure = {index, ex} if failure.nil? || index < failure.not_nil![0]
+              end
               next
             end
-            mutex.synchronize { @progress_tracker.stage_progress += 1 }
+            mutex.synchronize { @progress_tracker.stage_progress += 1 } if progress
           end
         end
       end
+      workers.each &.wait
 
-      units.each do |unit|
-        # We generate the bitcode in the main thread because LLVM contexts
-        # must be unique per compilation unit, but we share different contexts
-        # across many modules (or rely on the global context); trying to
-        # codegen in parallel would segfault!
-        #
-        # Luckily generating the bitcode is quick and once the bitcode is
-        # generated we don't need the global LLVM contexts anymore but can
-        # parse the bitcode in an isolated context and we can parallelize the
-        # slowest part: the optimization pass & compiling the object file.
-        unit.generate_bitcode
-
-        channel.send(unit)
-      end
-      channel.close
-
-      wg.wait
-
-      if ex = failure
+      if found = failure
+        ex = found[1]
         raise CompilerError.new("a codegen thread failed: #{ex.message} (#{ex.class})")
       end
     end
@@ -2813,6 +4327,10 @@ module Iyi
           print "reused previous compilation (#{compiled_macro_run.elapsed})"
         else
           print compiled_macro_run.elapsed
+        end
+        if stats = program.macro_run_stats[filename]?
+          print ", #{stats.runs} #{stats.runs == 1 ? "run" : "runs"} in #{stats.elapsed - compiled_macro_run.elapsed}"
+          print ", #{stats.reused} reused" if stats.reused > 0
         end
         puts
       end
@@ -2846,7 +4364,28 @@ module Iyi
       create_target_machine
     end
 
+    # iyi: on x86 an innermost loop starts on a 32-byte boundary, where LLVM
+    # aligns every loop to 16. Where a hot loop lands decides how fast it
+    # runs, and any change before it moves it: `bench/runtime.py`'s
+    # arithmetic loop, the same instructions, ran 0.32 s at offsets 0 to 12
+    # of a 64-byte line, 0.43 s at 13 to 16 and 0.30 s from 17 on. Cut into
+    # partitions it drew one of the slow offsets, 1.29x its one-module time
+    # best of 30 interleaved on a shared 12-vCPU Linux VM, and aligned the
+    # same cut ran 0.99x. What alignment leaves is 0 against 32: 1.07x in
+    # one cut on Windows 11, 12 logical processors (the user's machine).
+    # The padding is 1.5% of `samples/iyi/cores.iyi`'s text on Linux,
+    # 1480302 bytes to 1502862, and 1.1% of its binary on Windows. LLVM's
+    # own option, there since LLVM 12 and read as code is generated; parsed
+    # once a process, before its first target machine.
+    @@loops_aligned = false
+
     def create_target_machine
+      {% unless LibLLVM::IS_LT_120 %}
+        if !@@loops_aligned && @codegen_target.architecture.in?("x86_64", "i386")
+          @@loops_aligned = true
+          LLVM.parse_command_line_options({"", "-x86-experimental-pref-innermost-loop-alignment=5"})
+        end
+      {% end %}
       @codegen_target.to_target_machine(@mcpu || "", @mattr || "", @optimization_mode, @mcmodel)
     rescue ex : ArgumentError
       stderr.print colorize("Error: ").red.bold
@@ -2901,6 +4440,22 @@ module Iyi
       end
     {% end %}
 
+    # iyi: the back-edge checks of a program with a pool, put in after
+    # optimisation so they keep no loop from being vectorised (SPEC.md
+    # III.4.13, part 9; `PreemptChecks`). `-Dpreempt_check_accessor` builds
+    # darwin's and Windows' checks as they were first, an accessor call at
+    # every back-edge: the broken copy bench/parallel_exercise.sh catches in
+    # the release build's IR, its tight loops' checks calling the accessor.
+    # `-Dpreempt_anchor_entry` makes darwin's anchor in the entry block, as
+    # it was before it moved to where loops are entered: the broken copy
+    # the same gate's short-copy step catches calling the accessor there.
+    protected def preempt_checks(llvm_mod, flag : String?) : Nil
+      return unless flag
+      PreemptChecks.accessor_only = @flags.includes?("preempt_check_accessor")
+      PreemptChecks.anchor_at_entry = @flags.includes?("preempt_anchor_entry")
+      PreemptChecks.run(llvm_mod, flag, @codegen_target.linux?, @codegen_target.architecture == "aarch64")
+    end
+
     protected def optimize(llvm_mod, target_machine)
       {% if LibLLVM::IS_LT_130 %}
         optimize_with_pass_manager(llvm_mod)
@@ -2914,12 +4469,32 @@ module Iyi
       {% end %}
     end
 
-    private def run_linker(linker_name, command, args)
+    # iyi: *busy_output*, on Windows, is the program the link writes. A
+    # program that ran just before the build is held by Smart App Control's
+    # services from a moment after it exits (`Iyi.move_aside_if_busy`), so
+    # the check the build began with can find it free and the link then
+    # stop at "LNK1104: cannot open file": 6 of 60 builds begun right after
+    # a run of the program, on a Windows 11 machine whose Smart App Control
+    # evaluates, and 0 of 60 with this. That link's output is held back,
+    # the program waited for, and the link run once more; its words are
+    # printed only if it is not.
+    private def run_linker(linker_name, command, args, busy_output : String? = nil)
       print_command(command, args) if verbose?
+      # iyi: the files the linker will read, for the up-to-date check.
+      BuildInputs.current.try &.linked(command, args)
 
+      said = nil
+      complained = nil
+      {% if flag?(:win32) %}
+        if busy_output && !@cross_compile
+          said = IO::Memory.new
+          complained = IO::Memory.new
+        end
+      {% end %}
+      errors = complained || STDERR
       begin
         Process.run(command, args, shell: true,
-          input: Process::Redirect::Close, output: Process::Redirect::Inherit, error: Process::Redirect::Pipe) do |process|
+          input: Process::Redirect::Close, output: said || Process::Redirect::Inherit, error: Process::Redirect::Pipe) do |process|
           process.error.each_line(chomp: false) do |line|
             # iyi: the three `gsub(/... -l(\S+)\b/, "... \\1 hint")` rewrites,
             # by hand — the compiler's own code must not be what links pcre2
@@ -2928,7 +4503,7 @@ module Iyi
             line = linker_library_hint(line, "cannot find -l")
             line = linker_library_hint(line, "unable to find library -l")
             line = linker_library_hint(line, "library not found for -l")
-            STDERR << line
+            errors << line
           end
         end
       rescue exc : File::AccessDeniedError | File::NotFoundError
@@ -2936,6 +4511,11 @@ module Iyi
       end
 
       status = $?
+      if said && busy_output && status.exit_code? == 1104 && Iyi.move_aside_if_busy(busy_output)
+        return run_linker(linker_name, command, args)
+      end
+      STDOUT << said.to_s if said
+      STDERR << complained.to_s if complained
       unless status.success?
         exit_code = status.exit_code?
         case exit_code
@@ -3011,8 +4591,17 @@ module Iyi
       end
     end
 
+    # iyi: `color?` says whether the *caller* wants colour; this says whether
+    # anything can read it. The three error paths that print through here —
+    # a source file that is not text, a missing linker, a missing library —
+    # colourised whatever they were writing into, so `iyi check` down a pipe
+    # answered `\e[31;1mError: \e[39;22m…`, and those bytes reached a JSON
+    # payload an agent parses (`iyi mcp`'s tool results) and every log a
+    # redirect keeps. The `CodeError` path one screen up has consulted
+    # `Colorize.default_enabled?` all along; this is the same question,
+    # asked of the streams this compiler was actually given.
     private def colorize(obj)
-      obj.colorize.toggle(@color)
+      obj.colorize.toggle(@color && Colorize.default_enabled?(stdout, stderr))
     end
 
     # An LLVM::Module with information to compile it.
@@ -3024,11 +4613,20 @@ module Iyi
       property? reused_previous_compilation = false
       getter object_extension : String
       @memory_buffer : LLVM::MemoryBuffer?
+      @must_compile : Bool?
+      # The bytes of the unit's bitcode, which is what `mt_codegen` orders
+      # units by: known once `prepare` has run.
+      getter bitcode_size = 0
       @object_name : String?
       @bc_name : String?
+      @preempt_flag : String?
+      @plan : ReleasePartition::Plan?
 
+      # *verify*: whether `prepare` verifies the module, which it does for a
+      # unit per type; one module is verified by `CodeGenVisitor#finish`.
       def initialize(@compiler : Compiler, program : Program, @name : String,
-                     @llvm_mod : LLVM::Module, @output_dir : String, @bc_flags_changed : Bool)
+                     @llvm_mod : LLVM::Module, @output_dir : String, @bc_flags_changed : Bool,
+                     @verify : Bool = false)
         @name = "_main" if @name == ""
         @original_name = @name
         @name = String.build do |str|
@@ -3053,10 +4651,32 @@ module Iyi
 
         @name = "#{@name}#{@compiler.optimization_mode.suffix}"
         @object_extension = compiler.codegen_target.object_extension
+        @preempt_flag = program.iyi_preempt_flag
       end
 
       def generate_bitcode
-        @memory_buffer ||= llvm_mod.write_bitcode_to_memory_buffer
+        @memory_buffer ||= llvm_mod.write_bitcode_to_memory_buffer.tap do |buffer|
+          @bitcode_size = buffer.to_slice.size
+        end
+      end
+
+      # iyi: everything that happens to the module the visitor built before it
+      # is compiled: verified, when the visitor did not, its bitcode written,
+      # and that compared with the last build's, which decides whether it is
+      # compiled at all. It touches this unit's module alone, and that module
+      # has a context of its own (`CodeGenVisitor#type_module`), so any thread
+      # may run it, every unit's at once (`mt_codegen`).
+      def prepare : Nil
+        return unless @must_compile.nil?
+        @llvm_mod.verify if @verify
+        @must_compile = must_compile?
+      end
+
+      # Whether `compile` will write an object rather than reuse the last
+      # build's. Asks `prepare` first.
+      def compiles? : Bool
+        prepare
+        @must_compile.not_nil!
       end
 
       # To compile a file we first generate a `.bc` file and then create an
@@ -3076,9 +4696,8 @@ module Iyi
       # interrupted while the `.o` file is being generated, leading to a
       # corrupted file that later would cause compilation issues. Moving a file
       # is an atomic operation so no corrupted `.o` file should be generated.
-      def compile(isolate_context = false)
-        if must_compile?
-          isolate_module_context if isolate_context
+      def compile
+        if compiles?
           update_bitcode_cache
           compile_to_object
         else
@@ -3087,17 +4706,95 @@ module Iyi
         dump_llvm_ir
       end
 
+      # iyi: cuts the module into partitions (`ReleasePartition`), which then
+      # stand in for it: each is optimised and compiled on its own, and their
+      # objects are what links. Nothing changes when the module is too small
+      # to be worth cutting.
+      def partition(count : Int32?, import_limit : Int32, inline_limit : Int32) : Nil
+        named = @preempt_flag.try { |flag| PreemptChecks.named(flag) } || [] of String
+        @plan = ReleasePartition.plan(llvm_mod, count, named, import_limit, inline_limit)
+      end
+
+      def partitions : Int32
+        @plan.try(&.count) || 1
+      end
+
+      def partitioned? : Bool
+        !@plan.nil?
+      end
+
+      # Whether the partitions have to be compiled, on the main thread before
+      # any is, with the bitcode cache brought up to date when they do. The
+      # whole module's bitcode is what is compared: the partitions are a
+      # function of it.
+      def prepare_partitions : Bool
+        unless compiles?
+          @reused_previous_compilation = true
+          return false
+        end
+        object_names.each { |name| File.delete?(name) }
+        File.write(bc_name, @memory_buffer.not_nil!.to_slice)
+        true
+      end
+
+      # Partition *index*, read from the module's bitcode into a context of
+      # its own, optimised and written to its object. Safe on any thread.
+      def compile_partition(index : Int32) : Nil
+        plan = @plan.not_nil!
+        object_name = object_names[index]
+        temporary_object_name = "#{object_name}.tmp"
+        target_machine = compiler.create_target_machine
+        mod = ReleasePartition.materialize(@memory_buffer.not_nil!, plan, index, target_machine)
+        begin
+          compiler.optimize mod, target_machine
+          WasmRoots.run(mod) if compiler.codegen_target.architecture == "wasm32"
+          compiler.preempt_checks mod, @preempt_flag
+          mod.print_to_file "#{@output_dir}/#{@name}.part#{index}.ll" if compiler.dump_ll?
+          target_machine.emit_obj_to_file mod, temporary_object_name
+          File.rename(temporary_object_name, object_name)
+        rescue ex
+          raise CompilerError.new(
+            "#{ex.message} while writing #{temporary_object_name} for partition #{index} of unit #{@name}")
+        ensure
+          LibLLVM.dispose_context(mod.context)
+        end
+      end
+
+      def finish_partitions : Nil
+        @memory_buffer.try &.dispose
+      end
+
       private def must_compile?
         memory_buffer = generate_bitcode
 
         return true unless compiler.emit_targets.none?
         return true if @bc_flags_changed
         return true unless File.exists?(bc_name)
-        return true unless File.exists?(object_name)
 
-        # If the user cancelled a previous compilation
-        # it might be that the .o file is empty
-        return true if File.size(object_name) == 0
+        object_names.each do |object_name|
+          return true unless File.exists?(object_name)
+
+          # If the user cancelled a previous compilation
+          # it might be that the .o file is empty
+          return true if File.size(object_name) == 0
+
+          # iyi: or that it is short, or that it is not an object at all.
+          # The line above guards the one corruption this cache was known
+          # to produce; the cache produces others. A directory deleted
+          # mid-codegen by another build's cleanup (see
+          # `CacheDir#directory_in_use?`, which exists because that
+          # happened), a full disk, a killed process between `emit_obj` and
+          # `File.rename` - each leaves bytes that are not an object, and
+          # every later build linked them: `ld.lld: error: <file>:1:
+          # unknown directive: garbage`, forever, until somebody thought to
+          # run `clear_cache`. A cache is a cache. Anything in it that we
+          # did not write is a miss.
+          unless object_file_intact?(object_name)
+            STDERR.puts "#{Iyi::Command.program_name}: #{object_name} was in the cache but is not an object file; compiling it again"
+            STDERR.flush
+            return true
+          end
+        end
 
         memory_io = IO::Memory.new(memory_buffer.to_slice)
 
@@ -3106,13 +4803,6 @@ module Iyi
         memory_buffer.dispose unless changed
 
         changed
-      end
-
-      # Parse the previously generated bitcode into the LLVM module using a
-      # dedicated context, so we can safely optimize & compile the module in
-      # multiple threads (llvm contexts can't be shared across threads).
-      private def isolate_module_context
-        @llvm_mod = LLVM::Module.parse(@memory_buffer.not_nil!, LLVM::Context.new)
       end
 
       private def update_bitcode_cache
@@ -3129,6 +4819,8 @@ module Iyi
         temporary_object_name = self.temporary_object_name
         target_machine = compiler.create_target_machine
         compiler.optimize llvm_mod, target_machine unless compiler.optimization_mode.o0?
+        WasmRoots.run(llvm_mod) if compiler.codegen_target.architecture == "wasm32"
+        compiler.preempt_checks llvm_mod, @preempt_flag
         target_machine.emit_obj_to_file llvm_mod, temporary_object_name
         File.rename(temporary_object_name, object_name)
       rescue ex
@@ -3166,8 +4858,57 @@ module Iyi
         @name + @object_extension
       end
 
+      # The objects this unit links: its own, or one per partition, named
+      # with the count so that a cut into a different number never reuses
+      # another cut's objects.
+      def object_filenames : Array(String)
+        if plan = @plan
+          Array.new(plan.count) { |index| "#{@name}.part#{index}of#{plan.count}#{@object_extension}" }
+        else
+          [object_filename]
+        end
+      end
+
+      def object_names : Array(String)
+        object_filenames.map { |filename| Iyi.relative_filename("#{@output_dir}/#{filename}") }
+      end
+
       def temporary_object_name
         Iyi.relative_filename("#{@output_dir}/#{object_filename}.tmp")
+      end
+
+      # Four bytes: whether what the cache holds under `object_name` has
+      # the shape of an object file for this target. COFF has no fixed
+      # magic, so it is judged by the one thing its first two bytes must
+      # be, the target's machine number; a guess that refused a good object
+      # would recompile the world on every build, so that is the whole of
+      # the COFF test.
+      private def object_file_intact?(object_name : String) : Bool
+        header = Bytes.new(4)
+        # `read_fully?` rather than `read`, which is allowed to answer with
+        # fewer bytes than it was asked for: a short read is not a verdict
+        # about the four bytes, and the four bytes are the question.
+        return false unless File.open(object_name, "rb") { |file| file.read_fully?(header) }
+
+        target = compiler.codegen_target
+        if target.macos?
+          # Mach-O, thin or fat, either endianness.
+          {0xfeedfacf_u32, 0xcffaedfe_u32,
+           0xfeedface_u32, 0xcefaedfe_u32,
+           0xcafebabe_u32, 0xbebafeca_u32}
+            .includes?(IO::ByteFormat::BigEndian.decode(UInt32, header))
+        elsif target.architecture == "wasm32"
+          header == "\0asm".to_slice
+        elsif target.windows?
+          # IMAGE_FILE_MACHINE_AMD64 and _ARM64, little-endian, which is what
+          # LLVM writes first for these two targets (`win.obj` begins `64 86`).
+          machine = IO::ByteFormat::LittleEndian.decode(UInt16, header)
+          target.architecture == "aarch64" ? machine == 0xaa64_u16 : machine == 0x8664_u16
+        else
+          header == "\x7fELF".to_slice
+        end
+      rescue File::Error
+        false
       end
 
       def bc_name

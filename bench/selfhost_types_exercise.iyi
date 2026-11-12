@@ -1,14 +1,11 @@
-import compiler/syntax/ast
-import compiler/syntax/parser
-import compiler/semantic/top_level
+import compiler/syntax/ast::{ASTNode}
+import compiler/syntax/parser::{Parser}
+import compiler/semantic/top_level::{AliasType, ClassType, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType}
 import compiler/semantic/main_visitor
 import compiler/types
 
-using compiler/syntax/ast::{ASTNode}
-using compiler/syntax/parser::{Parser}
-using compiler/semantic/top_level::{AliasType, ClassType, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType}
-using compiler/types/types::{FloatType, GenericClassInstanceType, IntegerType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, PrimitiveType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualType}
-using compiler/types/type_system::{TypeSystem}
+import compiler/types/types::{FloatType, GenericClassInstanceType, IntegerType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, PrimitiveType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualType}
+import compiler/types/type_system::{TypeSystem}
 
 module BenchSelfhostTypesExercise
   def self.type_kind_name(t : Type) : String

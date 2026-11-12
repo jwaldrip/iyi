@@ -458,8 +458,53 @@ module Iyi
       NumberLiteral.new(@value, @kind)
     end
 
-    def_equals value.to_f64, kind
-    def_hash value, kind
+    # Integers are equal by value: `value.to_f64` has 53 bits, so 2^55 - 1
+    # and 2^55 were one literal - a `case` refused the pair as a duplicate
+    # `when`, and the macro `==` answered true. `<=>` is already exact. The
+    # hash follows the same key, so equal literals hash alike.
+    def ==(other : self)
+      return false unless kind == other.kind
+      if (mine = exact_integer?) && (theirs = other.exact_integer?)
+        mine == theirs
+      elsif (mine = float_value?) && (theirs = other.float_value?)
+        mine == theirs
+      else
+        value == other.value
+      end
+    end
+
+    def hash(hasher)
+      hasher = kind.hash(hasher)
+      if integer = exact_integer?
+        integer.hash(hasher)
+      elsif float = float_value?
+        float.hash(hasher)
+      else
+        value.hash(hasher)
+      end
+    end
+
+    # iyi: an integer literal's value read off its text, not cast to its kind.
+    # The kind does not always hold the text: `StringLiteral#to_i` answers an
+    # Int32-kind literal for any Int64, and `integer_value` raised on it, so
+    # `"99999999999".to_i == "99999999999".to_i` failed the compile where the
+    # other compiler answers true. Every integer text fits Int128 or UInt128,
+    # and reading the same number always takes the same branch, so equal
+    # literals still hash alike. Nil for a float kind.
+    protected def exact_integer? : Int128 | UInt128 | Nil
+      return nil unless kind.signed_int? || kind.unsigned_int?
+      value.to_i128? || value.to_u128?
+    end
+
+    # iyi: a float literal's value, or nil when it is out of Float64's range.
+    # `1e400` parses, and `==` and `hash` raised `ArgumentError` on it: the
+    # parser's check for a duplicate `when` puts the literals in a set, so
+    # `case x when 1e400 ... end` was an unhandled exception in the parser,
+    # in `fmt` and in the compiler alike. Out of range, the text is the
+    # value; `<=>` still raises, for the macro interpreter to report.
+    protected def float_value? : Float64?
+      value.to_f64?
+    end
 
     def pretty_print(pp) : Nil
       pp_type(pp, "NumberLiteral[", "]") do
@@ -905,6 +950,12 @@ module Iyi
     # References and every other "who calls this" answer skip them: a
     # person is never asking about the compiler's own probe.
     property? iyi_synthetic = false
+    # iyi: true on a call whose `expanded` is the compiler's own lowering
+    # rather than a macro's - the slice literal, which takes the address of
+    # the constant holding its elements. The unsafe check (SPEC.md III.13)
+    # reads what the person wrote, so it follows the calls of such an
+    # expansion and refuses nothing in it.
+    property? iyi_compiler_expansion = false
     @name_size = -1
     property doc : String?
     property visibility = Visibility::Public
@@ -917,6 +968,18 @@ module Iyi
     # normalizer can expand the typed form without guessing from the name
     # of a call a Crystal file is free to mean differently.
     property? iyi_group = false
+
+    # iyi: written with an attached `!`, which propagates here and is the
+    # other library's mutating spelling, so `a.sort!` is asked of `sort`
+    # and the undefined-method hint names `sort_in_place` (SPEC.md III.1.7a).
+    property? iyi_banged = false
+
+    # iyi: where the `//` this receiverless call stands to the right of
+    # begins. `x = 1 // the answer` is a comment in the languages people
+    # come from and integer division here, so the words after it are calls,
+    # and "undefined local variable or method 'answer'" pointed at the last
+    # word of the comment without a word about the `//`.
+    property iyi_after_floor_div : Location?
 
     # iyi: this call's answer came out of an *open* set — a module's including
     # types, or a generic's instantiations (SPEC.md III.6).
@@ -980,6 +1043,8 @@ module Iyi
       clone.expansion = expansion?
       clone.iyi_group = iyi_group?
       clone.iyi_open_dispatch = iyi_open_dispatch?
+      clone.iyi_banged = iyi_banged?
+      clone.iyi_after_floor_div = iyi_after_floor_div
       clone
     end
 
@@ -987,7 +1052,7 @@ module Iyi
       loc = @name_location
       return unless loc
 
-      Location.new(loc.filename, loc.line_number, loc.column_number + name_size - 1)
+      Location.new(loc.filename, loc.line_number, loc.column_number + name_size - 1, loc.artifact)
     end
 
     # Returns `true` if this call has any arguments.
@@ -1069,6 +1134,12 @@ module Iyi
 
     # The location of the `else` keyword if present.
     property else_location : Location?
+
+    # iyi: the `if false` a definition-site probe is wrapped in
+    # (semantic/definition_typing.cr). The main visitor types each one on
+    # its own and keeps going past an error, so every def that does not
+    # type is reported rather than the first.
+    property? iyi_definition_probe = false
 
     def initialize(@cond, a_then = nil, a_else = nil, @ternary = false)
       @then = Expressions.from a_then
@@ -1551,6 +1622,17 @@ module Iyi
     # longer enough to say whose machine code this is.
     property? iyi_body_travelled = false
 
+    # iyi: written by the compiler rather than by the module (SPEC.md IV.2).
+    #
+    # An `enum` gets a question method per member wherever it is declared, so
+    # a consumer that read one out of an artifact would be handed a second
+    # copy of a method its own compiler already made. The author's own methods
+    # on that enum are a different thing entirely and have to travel — `Path::
+    # Kind.native` is one, and without it `std/path` and `std/dir` could not
+    # be consumed as artifacts — so the two have to be told apart, and the
+    # place that knows is the one that writes them.
+    property? iyi_compiler_made = false
+
     # iyi: the *written* def this one was instantiated from (SPEC.md III.6).
     #
     # A typed def is a clone of it, and the clone is what holds the body every
@@ -1569,6 +1651,17 @@ module Iyi
     # matches none of its cases and falls off the end of one.
     property? iyi_open_travel = false
 
+    # iyi: the proc `defer` registers for the panic walk (normalizer.cr's
+    # `apply_defers`). It runs only when its frame will never resume, so a
+    # variable it captures keeps narrowing outside it, and a `return`,
+    # `next` or `break` leaving it is refused as leaving the `defer`.
+    property? iyi_defer = false
+
+    # iyi: generated by a `derive` (SPEC.md II.4). A macro inside the body
+    # expands when the def is typed, long after the derive has returned, and
+    # the program-wide questions a derive may not ask are refused there too.
+    property? iyi_from_derive = false
+
     property? macro_def : Bool
     property? calls_super = false
     property? calls_initialize = false
@@ -1576,6 +1669,28 @@ module Iyi
     property? uses_block_arg = false
     property? assigns_special_var = false
     property? abstract : Bool
+    # iyi: `@[Share]` on the def: the block it keeps may run on other
+    # threads, several at once, so every block given to it is checked where
+    # it is written as a parallel task's is (SPEC.md III.4.4, III.4.13), and
+    # inside the def the proc it became is the one non-`Share` value a
+    # parallel block may capture or pass on. A flag rather than the
+    # annotation because an instance is a clone, and a clone carries no
+    # annotations.
+    property? iyi_share_block = false
+    # iyi: `@[Share(serial: workers)]`: the parameter whose literal `1` at a
+    # call runs the def on the caller's thread alone, so that call's block
+    # and crossing arguments are not checked (SPEC.md III.4.13). Nil when
+    # every call crosses.
+    property iyi_share_serial : String? = nil
+    # iyi: `@[Share(crossing: {tls: "..."})]`: parameters whose values the
+    # def hands to other threads, each with the sentence that says what to
+    # pass instead when a call's value is not `Share`.
+    property iyi_share_crossing : Hash(String, String)? = nil
+    # iyi: `@[Share(elements: "...")]`: the values the def hands its block
+    # are read on other threads, several at once - std/parallel's
+    # `map_parallel` - so each block parameter's type must be `Share`; the
+    # sentence says what to do instead when one is not.
+    property iyi_share_elements : String? = nil
 
     def initialize(@name, @args = [] of Arg, body = nil, @receiver = nil, @block_arg = nil, @return_type = nil, @macro_def = false, @block_arity = nil, @abstract = false, @splat_index = nil, @double_splat = nil, @free_vars = nil)
       @body = Expressions.from body
@@ -1604,10 +1719,17 @@ module Iyi
       a_def.iyi_from_impl = iyi_from_impl?
       a_def.iyi_from_artifact = iyi_from_artifact?
       a_def.iyi_body_travelled = iyi_body_travelled?
+      a_def.iyi_compiler_made = iyi_compiler_made?
       # The clone of an instance answers for the same written def: an expansion
       # of one is still that method's code.
       a_def.iyi_origin = iyi_origin
       a_def.iyi_open_travel = iyi_open_travel?
+      a_def.iyi_defer = iyi_defer?
+      a_def.iyi_from_derive = iyi_from_derive?
+      a_def.iyi_share_block = iyi_share_block?
+      a_def.iyi_share_serial = iyi_share_serial
+      a_def.iyi_share_crossing = iyi_share_crossing
+      a_def.iyi_share_elements = iyi_share_elements
       a_def.name_location = name_location
       a_def.visibility = visibility
       a_def.free_var_bounds = @free_var_bounds.clone
@@ -1839,6 +1961,10 @@ module Iyi
     # leaves this nil; one a compiler-known construct wrote has rules
     # (SPEC.md III.1.1).
     property error_construct : String? = nil
+    # iyi: for `xs.uniq!`, the method's name and its receiver's source -
+    # a `!` attached to a method call, which is the other library's in-place
+    # spelling when the call answers no error (SPEC.md III.1.7a).
+    property iyi_bang_call : {String, String}? = nil
 
     def initialize(@obj, @const, @nil_check = false)
     end
@@ -1851,6 +1977,7 @@ module Iyi
     def clone_without_location
       clone = IsA.new(@obj.clone, @const.clone, @nil_check)
       clone.error_construct = error_construct
+      clone.iyi_bang_call = iyi_bang_call
       clone
     end
 
@@ -2072,6 +2199,13 @@ module Iyi
     # who did not already have it in their object code.
     property? iyi_from_artifact = false
 
+    # iyi: written by the definition-site typing probe (R-2c) rather than by
+    # an author. The probe is a def's own site asking about itself, so it
+    # names a type the def's module keeps to itself the way the module's
+    # own code can: `Call#check_visibility` lets its call through for the
+    # same reason.
+    property? iyi_synthetic = false
+
     def initialize(@names : Array, @global = false)
     end
 
@@ -2105,6 +2239,7 @@ module Iyi
     def clone_without_location
       ident = Path.new(@names.clone, @global)
       ident.iyi_from_artifact = @iyi_from_artifact
+      ident.iyi_synthetic = @iyi_synthetic
       ident
     end
 
@@ -2405,7 +2540,12 @@ module Iyi
     def_equals_and_hash @path
   end
 
-  # iyi: `import std/json`
+  # iyi: `import std/json`, `import std/json::{parse, Any}`, `import
+  # std/json::*` (SPEC.md R-2b, II.3). The module is loaded by all three;
+  # the second brings the names it lists into unqualified scope and the
+  # third every name the module exports. The parser adds a `UsingDecl`
+  # beside an import that names anything, and that node is what scope is
+  # made of.
   class ImportDecl < ASTNode
     property path : Array(String)
 
@@ -2415,28 +2555,42 @@ module Iyi
     # include its dependencies, but only by saying so.
     property exported = false
 
-    def initialize(@path)
+    # The names `::{a, b}` brings into scope, or nil.
+    property names : Array(String)?
+    # Where each name sits, parallel to `names` - a rename reaches them.
+    property name_locations : Array(Location)?
+    # `::*`: every name the module exports.
+    property? glob = false
+
+    def initialize(@path, @names = nil, @name_locations = nil, @glob = false)
+    end
+
+    # Whether this import brings names into scope as well as the module.
+    def scopes? : Bool
+      @glob || !@names.nil?
     end
 
     def clone_without_location
-      decl = ImportDecl.new(@path.dup)
+      decl = ImportDecl.new(@path.dup, @names.dup, @name_locations.dup, @glob)
       decl.exported = @exported
       decl
     end
 
-    def_equals_and_hash @path, @exported
+    def_equals_and_hash @path, @exported, @names, @glob
   end
 
-  # iyi: `using kemal::dsl` / `using kemal::dsl::{get, post}`
-  #
-  # Brings exported names into unqualified scope. Written by the consumer,
-  # never by the library; see SPEC.md II.3.
+  # iyi: the scope half of `import x::{a, b}` and `import x::*`, made by
+  # the parser beside the import (`Parser#iyi_scope_imported_names`) -
+  # there is no `using` keyword; it is the one name the source has no
+  # spelling for. Brings exported names into unqualified scope where it
+  # stands. Written by the consumer, never by the library; see SPEC.md
+  # II.3.
   class UsingDecl < ASTNode
     property path : Array(String)
     # nil means "everything exported"; otherwise the selected names.
     property names : Array(String)?
-    # Where each selected name sits, parallel to `names` — a `using` line
-    # is a reference to the defs it selects, and rename has to reach it.
+    # Where each selected name sits, parallel to `names` — an import's names
+    # are references to the defs they select, and rename has to reach them.
     property name_locations : Array(Location)?
 
     def initialize(@path, @names = nil, @name_locations = nil)
@@ -2798,8 +2952,19 @@ module Iyi
       ex = ExceptionHandler.new(@body.clone, @rescues.clone, @else.clone, @ensure.clone)
       ex.implicit = implicit
       ex.suffix = suffix
+      ex.iyi_defer = iyi_defer?
+      # iyi: a def's body is cloned when it is typed, and the `ensure` it
+      # carries is refused at its keyword (MainVisitor, ExceptionHandler).
+      ex.else_location = else_location
+      ex.ensure_location = ensure_location
       ex
     end
+
+    # iyi: the handler `defer` lowers to (normalizer.cr, `apply_defers`),
+    # which is the one `ensure` an iyi program may carry: a written
+    # `ensure` is refused, because a panic unwinds by registry and skips
+    # it, and this one is the registry's own pop.
+    property? iyi_defer = false
 
     def_equals_and_hash @body, @rescues, @else, @ensure
 
@@ -3438,6 +3603,11 @@ module Iyi
     property args : Array(ASTNode)
     property named_args : Array(NamedArgument)?
     property doc : String?
+    # iyi: true on `@[Unsafe("why")]` when it is its file's first statement,
+    # the mark that says the module handles raw memory (SPEC.md III.13).
+    # The parser sets it, and only there is the mark a mark: elsewhere a
+    # positional `@[Unsafe]` is refused.
+    property? iyi_file_mark = false
 
     def initialize(@path, @args = [] of ASTNode, @named_args = nil)
     end
@@ -3689,6 +3859,10 @@ module Iyi
     end
 
     def self.expand_line(location)
+      # An inline macro's text knows its own line (`VirtualFile#line_origins`).
+      if location && (file = location.filename).is_a?(VirtualFile) && (line = file.line_origins.try &.[location.line_number]?)
+        return line
+      end
       (location.try(&.expanded_location) || location).try(&.line_number) || 0
     end
 

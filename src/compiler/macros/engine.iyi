@@ -1,31 +1,115 @@
 module compiler/macros/engine
 
-import compiler/syntax/ast
-import compiler/syntax/parser
-import compiler/semantic/normalizer
+import compiler/syntax/ast::{ASTNode, Call, Expressions, Macro, MacroLiteral}
+import compiler/syntax/parser::{Parser}
+import compiler/semantic/normalizer::{Normalizer}
 import compiler/macros/ast
-import compiler/macros/methods
-import compiler/macros/interpreter
-import compiler/macros/macro_parser
+import compiler/macros/methods::{MacroMethods}
+import compiler/macros/target_flags::{MacroTargetFlags}
+import compiler/macros/interpreter::{MacroInterpreter, MacroFailure}
+import compiler/macros/macro_parser::{MacroParser}
 
-using compiler/syntax/ast::{ASTNode, Call, Macro}
-using compiler/syntax/parser::{Parser}
-using compiler/semantic/normalizer::{Normalizer}
-using compiler/macros/interpreter::{MacroInterpreter}
-using compiler/macros/macro_parser::{MacroParser}
+# One `{% %}` or `{{ }}` site at the top of a macro body that ran to its end,
+# with the text it expanded to and where it is written.
+pub class MacroSite
+  property kind : String
+  property line : Int32
+  property column : Int32
+  property text : String
+
+  def initialize(@kind : String, @line : Int32, @column : Int32, @text : String)
+  end
+end
+
+# How one expansion went: its sites in source order, the whole output, and how
+# it ended. An expansion ends early on `skip_file` (`skipped`) or on a failure.
+pub class MacroReport
+  property sites : Array(MacroSite)
+  property output : String
+  property skipped : Bool
+  property failure : MacroFailure?
+
+  def initialize(@sites : Array(MacroSite), @output : String, @skipped : Bool, @failure : MacroFailure?)
+  end
+end
 
 pub class MacroEngine
   property interpreter : MacroInterpreter
+  property flags : Array(String)
 
-  def initialize
-    @interpreter = MacroInterpreter.new
+  # `flags` is the flag set `flag?` answers from, built by `MacroTargetFlags` for
+  # the target being compiled for. Left out, it is the host's.
+  def initialize(flags : Array(String)? = nil)
+    if f = flags
+      @flags = f
+    else
+      @flags = MacroTargetFlags.host([] of String)
+    end
+    @interpreter = MacroInterpreter.new(nil, @flags)
+  end
+
+  # Expands one call of a macro and reports each top-level site with the text
+  # it expanded to. The sites share one interpreter, so variables and fresh
+  # names carry from one site to the next, as they do within one expansion.
+  def report(a_macro : Macro, call : Call) : MacroReport
+    interp = MacroInterpreter.new(call.block, @flags)
+    interp.bind_args(a_macro, call)
+
+    body = a_macro.body
+    nodes = [] of ASTNode
+    if body.is_a?(Expressions)
+      nodes = body.as(Expressions).expressions
+    else
+      nodes << body
+    end
+
+    sites = [] of MacroSite
+    i = 0
+    while i < nodes.size && !interp.halted?
+      node = nodes[i]
+      before = interp.to_s
+      interp.interpret(node)
+      if !interp.halted? && !node.is_a?(MacroLiteral)
+        after = interp.to_s
+        line = 0
+        column = 0
+        if loc = node.location
+          line = loc.line_number
+          column = loc.column_number
+        end
+        text = after[before.bytesize, after.bytesize - before.bytesize]
+        sites << MacroSite.new(MacroMethods.node_class_name(node), line, column, text)
+      end
+      i = i + 1
+    end
+
+    MacroReport.new(sites, interp.to_s, interp.skipped, interp.failure)
+  end
+
+  # Expands one top-level site as the hosted compiler expands an inline macro:
+  # with a fresh interpreter, so no variable carries from one site to the next.
+  # `scope_name` is what `@type` and `@top_level` name.
+  def site_report(site : ASTNode, scope_name : String = "<Program>") : MacroReport
+    interp = MacroInterpreter.new(nil, @flags, scope_name)
+    interp.interpret(site)
+
+    line = 0
+    column = 0
+    if loc = site.location
+      line = loc.line_number
+      column = loc.column_number
+    end
+    sites = [] of MacroSite
+    sites << MacroSite.new(MacroMethods.node_class_name(site), line, column, interp.to_s)
+    MacroReport.new(sites, interp.to_s, interp.skipped, interp.failure)
   end
 
   def expand_to_s(a_macro : Macro, call : Call) : String
-    interp = MacroInterpreter.new(call.block)
-    interp.bind_args(a_macro, call)
-    interp.interpret(a_macro.body)
-    interp.to_s
+    rep = report(a_macro, call)
+    if f = rep.failure
+      raise f.message
+    end
+    rep.output
   end
 
   def expand(a_macro : Macro, call : Call) : ASTNode

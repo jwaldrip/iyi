@@ -1,14 +1,8 @@
-import compiler/syntax/ast
-import compiler/syntax/parser
-import compiler/semantic/top_level
-import compiler/semantic/main_visitor
-import compiler/semantic/recursive_struct_checker
-
-using compiler/syntax/ast::{ASTNode, Expressions}
-using compiler/syntax/parser::{Parser}
-using compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, TypeException, dump_program_declarations}
-using compiler/semantic/main_visitor::{MainVisitor, dump_program_expressions}
-using compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
+import compiler/syntax/ast::{ASTNode, Expressions}
+import compiler/syntax/parser::{Parser}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, TypeException, dump_program_declarations}
+import compiler/semantic/main_visitor::{MainVisitor, dump_program_expressions}
+import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 
 module BenchSelfhostSemanticExercise
   def self.run_source(src : String, filename : String = "eval.iyi") : String

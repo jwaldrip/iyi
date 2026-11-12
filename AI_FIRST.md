@@ -144,11 +144,17 @@ LSP session):
   same probe: one verdict, two verbs.
 - `check --affected CHANGED` compiles every consumer of a change alone
   and names what broke: `test --affected`'s sibling, for types.
-- The did-you-mean pool includes `using`-imported names, walked the way
+- The did-you-mean pool includes names an `import X::{...}` brought, walked the way
   the call's real lookup walks.
 - `Program.args` / `Program.env` in the own prelude: a pure-iyi tool
   reads its args, its environment and the disk. On wasm32 `env` is nil
   for every name — the absence is III.12's sandbox.
+- `test --chaos[=SEED] [--chaos-runs N]` covers the bug the compiler
+  cannot rule out, a test green only because its tasks ran in one order.
+  It runs each test under N seeded schedules (100 by default), names the
+  seed that failed, and `--chaos=SEED` runs that schedule again. The seed
+  and run go into `--json` as data (SPEC.md III.4.17,
+  `bench/chaos_exercise.sh`).
 
 Free advertising, no work: `iyi mod diff --exit-code` already answers the
 agent question "did I break the API"; document it as a harness contract.
@@ -241,8 +247,9 @@ three trials per arm:
 Tokens won by 37%, inside the 35–43% the first two runs put down. Rounds
 lost, 5 to 3, and the two lost rounds were read rather than averaged
 away. One is the pack's: the model wrote `import kemal/dsl` and called
-`before_all` bare, and the compiler refused it for the missing `using` —
-the raw sources carry their own `using` lines, so raw grounding shows
+`before_all` bare, and the compiler refused it for the name the import
+never brought — the raw sources carry their own import lines with the names on
+them, so raw grounding shows
 the consumer's spelling by accident and the pack, which renders a
 module's surface and nothing about how a consumer names it, does not.
 The other is a prelude guess, `String#split("/")` where the prelude has
@@ -250,15 +257,17 @@ The other is a prelude guess, `String#split("/")` where the prelude has
 pay it. Fourteen model calls now: tokens track the grounding, by 35–43%,
 every time; rounds tied twice and lost once, to a line the pack could
 have carried. The bar stays as written and the run fails it; the README
-says so beside the number, and the pack carrying the `import`/`using`
-pair a consumer writes — what the language server's completion already
+says so beside the number, and the pack carrying the import line
+a consumer writes, names included — what the language server's completion already
 attaches to every export — is the next thing this arm asks for.
 
-**The fourth run, after the pack carries the pair: still a refusal, by
+**The fourth run, after the pack carries the line: still a refusal, by
 one round, and the round is a body's.** `iyi mod context` now opens
-every block with the two lines a consumer writes — `import kemal/dsl`,
-`using kemal/dsl::{after_all, app, before_all, …}` — and in six
-pack-grounded attempts read one by one, no model wrote the `using` wrong
+every block with the line a consumer writes — `import
+kemal/dsl::{after_all, app, before_all, …}`, or `import kemal/dsl::*` for
+every name; when this run was measured it was two lines, `import` and the
+keyword `import X::{...}` has since replaced — and in six
+pack-grounded attempts read one by one, no model wrote the names wrong
 again. The gate was corrected on the way: an empty file compiles, and a
 raw trial had been seen to answer nothing and score a one-round win for
 it, so green now means the build passes on a program that mentions the

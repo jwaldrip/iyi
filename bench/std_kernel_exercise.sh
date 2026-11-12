@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+# Exercises `std/kernel`.
+#
+#     bash bench/std_kernel_exercise.sh
+#
+# Proves the exercise holds plain and --release, that a broken module is
+# caught, that output helpers emit expected content, and that abort
+# terminates execution with status codes and stderr messages, a message
+# that ends in a newline written as one line, and ends as `exit` does:
+# what was deferred runs and what the streams buffered is written.
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# The gate runs the compiler the caller names; bin/iyi is a POSIX shell
+# wrapper a Windows build cannot run.
+IYI="${IYI:-$REPO/bin/iyi}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` is silently ignored on that path, so the
+# patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+# The negative proofs are patched by python, and a machine can answer
+# `python3` with a store stub that prints a refusal instead of running, so
+# the interpreter is resolved once and proven to run before it is trusted.
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+    PY="$candidate"
+    break
+  fi
+done
+
+status=0
+export IYI_PATH="$REPO/src${PSEP}$REPO/samples/iyi"
+
+build_and_run() {
+  local label="$1" name="$2"
+  shift 2
+  if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_kernel_exercise.iyi" \
+       >"$WORK/$name.build.log" 2>&1; then
+    echo "$label: build failed"
+    tail -12 "$WORK/$name.build.log"
+    status=1
+    return 1
+  fi
+  "$WORK/$name" >"$WORK/$name.out" 2>&1
+  local exit_code=$?
+  sed 's/^/  /' "$WORK/$name.out"
+  if [ "$exit_code" -ne 0 ]; then
+    echo "$label: exited $exit_code"
+    status=1
+    return 1
+  fi
+  return 0
+}
+
+echo "== the std/kernel exercise, plain build"
+build_and_run "plain" kernel-plain
+if ! grep -q "ALL CHECKS PASSED" "$WORK/kernel-plain.out" 2>/dev/null; then
+  echo "plain: missing pass sentinel"
+  status=1
+fi
+
+echo
+echo "== every kernel section reported"
+for phrase in "== p" "== pp" "== puts_all" "== print_all" "== loop" "== sleep"; do
+  if ! grep -q "$phrase" "$WORK/kernel-plain.out" 2>/dev/null; then
+    echo "  missing section: $phrase"
+    status=1
+  fi
+done
+[ "$status" -eq 0 ] && echo "  sections reported"
+
+echo
+echo "== output helpers emitted expected text"
+for phrase in "42" '"kernel test"' "line1" "12345" "line3" "chunkA-987"; do
+  if ! grep -qF -- "$phrase" "$WORK/kernel-plain.out" 2>/dev/null; then
+    echo "  missing captured output: $phrase"
+    status=1
+  fi
+done
+[ "$status" -eq 0 ] && echo "  output helpers captured"
+
+echo
+echo "== the same program with optimisation on (--release)"
+build_and_run "release" kernel-release --release >/dev/null
+if ! grep -q "ALL CHECKS PASSED" "$WORK/kernel-release.out" 2>/dev/null; then
+  echo "release: missing pass sentinel"
+  status=1
+else
+  echo "  every check holds under --release"
+fi
+
+echo
+echo "== proving the checks can fail when the module is broken"
+if [ -z "$PY" ]; then
+  echo "  skipped: no working python3, so the broken copy could not be made"
+else
+  mkdir -p "$WORK/patched/std"
+  "$PY" - <<PY
+from pathlib import Path
+src = Path("$REPO/src/std/kernel.iyi").read_text()
+old = '  while true\n    yield\n  end'
+if old not in src:
+    raise SystemExit("patch site missing")
+Path("$WORK/patched/std/kernel.iyi").write_text(src.replace(old, '  return nil', 1))
+PY
+  if [ $? -ne 0 ]; then
+    echo "  the patch did not apply"
+    status=1
+  elif IYI_PATH="$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" run "$REPO/bench/std_kernel_exercise.iyi" >"$WORK/mut.out" 2>&1; then
+    echo "  the exercise PASSED on a broken module"
+    status=1
+  else
+    echo "  a broken kernel is caught"
+  fi
+fi
+
+echo
+echo "== one sleep, and it is the prelude's milliseconds"
+# The module declared `sleep(seconds : Float64)` beside the prelude's
+# `sleep(ms : Int32)`, so the unit was decided by whether the argument was
+# written `2` or `2.0` — and the seconds one busy-waited on the monotonic
+# clock, burning a core and starving every other fiber on the thread. Three
+# things are checked: `std/kernel` exports no `sleep`, a `Float64` argument
+# is refused by the prelude's own sentence, and a 2 ms sleep costs 2 ms of
+# wall clock and no core.
+if "$IYI" doc "$REPO/src/std/kernel.iyi" 2>/dev/null | grep -q "def sleep"; then
+  echo "  std/kernel declares a sleep again"
+  status=1
+else
+  echo "  std/kernel declares no sleep"
+fi
+
+printf '%s\n' 'module kernel_sleep_using' 'import std/kernel' 'import std/kernel::{sleep}' 'puts "USING_OK"' > "$WORK/sleep_using.iyi"
+if "$IYI" build -o "$WORK/sleep_using" "$WORK/sleep_using.iyi" >"$WORK/sleep_using.build" 2>&1; then
+  echo "  \`import std/kernel::{sleep}\` still compiles, so the name is still there"
+  status=1
+elif grep -q "no \`sleep\`" "$WORK/sleep_using.build"; then
+  echo "  \`import std/kernel::{sleep}\` is refused by name"
+else
+  echo "  \`import std/kernel::{sleep}\` failed for a different reason"
+  sed -n '1,12p' "$WORK/sleep_using.build"
+  status=1
+fi
+
+printf '%s\n' 'module kernel_sleep_seconds' 'sleep(0.005)' > "$WORK/sleep_seconds.iyi"
+if "$IYI" build -o "$WORK/sleep_seconds" "$WORK/sleep_seconds.iyi" >"$WORK/sleep_seconds.build" 2>&1; then
+  echo "  a Float64 sleep compiled: two units for one name are back"
+  status=1
+elif grep -q "takes milliseconds" "$WORK/sleep_seconds.build"; then
+  echo "  a Float64 sleep is refused, and the sentence names the unit"
+else
+  echo "  a Float64 sleep failed for a different reason"
+  sed -n '1,12p' "$WORK/sleep_seconds.build"
+  status=1
+fi
+
+echo
+echo "== abort paths"
+check_abort() { # check_abort <label> <name> <expected_code> <expected_stderr> <code>
+  local label="$1" name="$2" expected_code="$3" expected_stderr="$4" code="$5"
+  printf 'module main\n\nimport std/kernel::{abort}\n\n%s\n' "$code" > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,10p' "$WORK/$name.build"
+    status=1
+    return
+  fi
+  "$WORK/$name" > "$WORK/$name.out" 2> "$WORK/$name.err"
+  local exit_code=$?
+  if [ "$exit_code" -eq 0 ]; then
+    echo "  $label: it exited 0 instead of terminating"
+    status=1
+    return
+  fi
+  if [ "$exit_code" -ne "$expected_code" ]; then
+    echo "  $label: expected exit code $expected_code, got $exit_code"
+    status=1
+    return
+  fi
+  if [ -n "$expected_stderr" ]; then
+    if ! grep -qF -- "$expected_stderr" "$WORK/$name.err"; then
+      echo "  $label: missing expected stderr '$expected_stderr'"
+      status=1
+      return
+    fi
+  fi
+  printf '  %s: exits %s with expected message\n' "$label" "$exit_code"
+}
+
+check_abort "default abort" abort_default 1 "" 'abort()'
+check_abort "abort with message and custom status" abort_msg 3 "kernel abort: fatal condition" 'abort("kernel abort: fatal condition", 3)'
+check_abort "abort with nil message and custom status" abort_nil 42 "" 'abort(nil, 42)'
+
+# A message that already ends in a newline is one line, as `puts` writes
+# it: the newline after it was written regardless, so the message came out
+# followed by an empty line. The whole error stream is compared, byte for
+# byte, because a `grep` for the message finds it either way.
+abort_stream_is() { # abort_stream_is <label> <name> <expected stream> <code>
+  local label="$1" name="$2" expected="$3" code="$4"
+  printf 'module main\n\nimport std/kernel::{abort}\n\n%s\n' "$code" > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,10p' "$WORK/$name.build"
+    return 1
+  fi
+  "$WORK/$name" > /dev/null 2> "$WORK/$name.err"
+  printf '%s' "$expected" > "$WORK/$name.want"
+  if ! cmp -s "$WORK/$name.err" "$WORK/$name.want"; then
+    echo "  $label: the error stream was $(od -An -c "$WORK/$name.err" | tr -s ' ')"
+    return 1
+  fi
+  echo "  $label: the error stream is exactly the message"
+}
+abort_stream_is "a message ending in a newline is one line" abort_nl "line one
+" 'abort("line one\n", 2)' || status=1
+abort_stream_is "a message without one gets one" abort_no_nl "line two
+" 'abort("line two", 2)' || status=1
+
+if [ -n "$PY" ]; then
+  mkdir -p "$WORK/doubled/std"
+  "$PY" - <<PY
+from pathlib import Path
+src = Path("$REPO/src/std/kernel.iyi").read_text()
+old = r'unless message.ends_with?("\\n")'
+if old not in src:
+    raise SystemExit("patch site missing")
+Path("$WORK/doubled/std/kernel.iyi").write_text(src.replace(old, 'unless false', 1))
+PY
+  if [ $? -ne 0 ]; then
+    echo "  the doubled-newline patch did not apply"
+    status=1
+  elif IYI_PATH="$WORK/doubled${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" \
+       abort_stream_is "doubled newline (broken copy)" abort_doubled "line one
+" 'abort("line one\n", 2)' >/dev/null; then
+    echo "  a newline written after one already there PASSED"
+    status=1
+  else
+    echo "  a newline written after one already there is caught"
+  fi
+fi
+
+# The ending is `exit`'s, as the other library's `abort` is its `exit`:
+# what was deferred runs, and what a stream set to `sync = false` holds is
+# written, standard error's line before the message. `abort` ended with the
+# runtime's own `__iyi_exit`: standard output came back empty, the cleanup
+# never ran and the buffered error line was lost.
+abort_ends_as_exit() { # abort_ends_as_exit <label> <name>
+  local label="$1" name="$2"
+  printf 'module main\n\nimport std/kernel::{abort}\n\ndef work : Nil\n  defer { puts "cleanup ran" }\n  STDOUT.sync = false\n  STDERR.sync = false\n  puts "buffered line"\n  STDERR.puts "buffered error"\n  abort("the message", 4)\nend\n\nwork\n' > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,10p' "$WORK/$name.build"
+    return 1
+  fi
+  "$WORK/$name" > "$WORK/$name.out" 2> "$WORK/$name.err"
+  local exit_code=$?
+  printf 'buffered line\ncleanup ran\n' > "$WORK/$name.want_out"
+  printf 'buffered error\nthe message\n' > "$WORK/$name.want_err"
+  if [ "$exit_code" -ne 4 ]; then
+    echo "  $label: exited $exit_code, not 4"
+    return 1
+  fi
+  if ! cmp -s "$WORK/$name.out" "$WORK/$name.want_out"; then
+    echo "  $label: standard output was $(od -An -c "$WORK/$name.out" | tr -s ' ')"
+    return 1
+  fi
+  if ! cmp -s "$WORK/$name.err" "$WORK/$name.want_err"; then
+    echo "  $label: standard error was $(od -An -c "$WORK/$name.err" | tr -s ' ')"
+    return 1
+  fi
+  echo "  $label: the cleanup ran and both buffered streams were written, the message last"
+}
+abort_ends_as_exit "abort ends as exit does" abort_exit || status=1
+
+if [ -n "$PY" ]; then
+  mkdir -p "$WORK/rawexit/std"
+  "$PY" - <<PY
+from pathlib import Path
+src = Path("$REPO/src/std/kernel.iyi").read_text()
+old = '  exit(status)\n'
+if src.count(old) != 1:
+    raise SystemExit("patch site missing")
+Path("$WORK/rawexit/std/kernel.iyi").write_text(src.replace(old, '  __iyi_exit(status)\n', 1))
+PY
+  if [ $? -ne 0 ]; then
+    echo "  the raw-exit patch did not apply"
+    status=1
+  elif IYI_PATH="$WORK/rawexit${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" \
+       abort_ends_as_exit "raw exit (broken copy)" abort_rawexit >/dev/null; then
+    echo "  an abort that skips the cleanups and the flush PASSED"
+    status=1
+  else
+    echo "  an abort that skips the cleanups and the flush is caught"
+  fi
+fi
+
+echo
+if [ "$status" -eq 0 ]; then
+  echo "ALL CHECKS PASSED"
+else
+  echo "SOME CHECKS FAILED"
+fi
+exit $status

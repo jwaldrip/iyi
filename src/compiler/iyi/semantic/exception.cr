@@ -34,6 +34,12 @@ module Iyi
     # against carrying the name we already computed.
     property suggestion : String?
 
+    # iyi: where the suggestion goes when that is not the error's own span:
+    # {line, column, size} in the same file. The unsafe check (SPEC.md
+    # III.13) refuses an operation where it is written and suggests the mark
+    # above the module's header.
+    property edit_at : {Int32, Int32, Int32}?
+
     # `size` overrides the node's own `name_size` — a literal has no name,
     # and a suggestion that replaces one needs the literal's whole span.
     def self.for_node(node, message, inner = nil, suggestion = nil, size : Int32? = nil)
@@ -74,11 +80,10 @@ module Iyi
 
     def to_json_single(json)
       json.object do
-        json.field "file", true_filename
-        json.field "line", @line_number
-        json.field "column", @column_number
-        json.field "size", @size
+        # A frame in a macro's expansion is placed at the call it came from.
+        in_file = json_location(json, @line_number, @column_number, @size)
         json.field "message", @message
+        json.field "severity", "warning" if warning?
         # iyi: the SPEC sections the message cites, as data (AI_FIRST.md §2
         # item 3). The house style writes "see SPEC.md III.1" into the
         # prose; a machine acting on the error gets the reference without
@@ -94,14 +99,19 @@ module Iyi
         # `line`:`column` (1-indexed) of `file` with `replacement`. Only
         # when the span really delimits the offending token — a
         # locationless error has no edit, and saying so beats guessing.
-        if (replacement = @suggestion) && @size > 0 && (line = @line_number)
-          json.field "suggested_edit" do
-            json.object do
-              json.field "file", true_filename
-              json.field "line", line
-              json.field "column", @column_number
-              json.field "size", @size
-              json.field "replacement", replacement
+        # Nor has a frame in a macro's expansion: the token is in text the
+        # macro wrote, not in any file an edit can open.
+        if in_file && (replacement = @suggestion) && (line = @line_number)
+          edit_line, edit_column, edit_size = @edit_at || {line, @column_number, @size}
+          if edit_size > 0
+            json.field "suggested_edit" do
+              json.object do
+                json.field "file", @filename.as?(String) || ""
+                json.field "line", edit_line
+                json.field "column", edit_column
+                json.field "size", edit_size
+                json.field "replacement", replacement
+              end
             end
           end
         end
@@ -193,9 +203,14 @@ module Iyi
       end
     end
 
+    # iyi: the innermost message there is. A chain can end in a
+    # MethodTraceException - the `Int32 trace:` frame under `undefined
+    # method 'abss' for Int32` - which has no message, and returning its nil
+    # made `iyi fix` report the remaining error as "" with only `(in
+    # util.iyi:4)` after it. The frame above it says what went wrong.
     def deepest_error_message
       if inner = @inner
-        inner.deepest_error_message
+        inner.deepest_error_message || @message
       else
         @message
       end
@@ -286,7 +301,7 @@ module Iyi
         lines = filename.source.lines.to_a
         filename = "macro #{filename.macro.name} (in #{filename.macro.location.try &.filename}:#{filename.macro.location.try &.line_number})"
       when String
-        lines = File.read_lines(filename) if File.file?(filename)
+        lines = source_file_lines(filename) if File.file?(filename)
       else
         return
       end
@@ -296,21 +311,22 @@ module Iyi
       io << relative_filename(filename) << ':' << line_number
       io << "\n\n"
 
-      return unless lines
-
-      line = lines[line_number - 1]
+      # A body read from an artifact is located in the module's source, which
+      # may since have changed under it.
+      return unless lines && (line = lines[line_number - 1]?)
 
       name_location = node.name_location
       name_size = node.name_size
 
+      shown = replace_leading_tabs_with_spaces(line.chomp)
       io << "    "
-      io << replace_leading_tabs_with_spaces(line.chomp)
+      io << shown
       io.puts
 
       return unless name_location
 
       io << "    "
-      io << (" " * (name_location.column_number - 1))
+      caret_padding(io, shown[0, (name_location.column_number - 1).clamp(0, shown.size)])
       with_color.green.bold.surround(io) do
         io << '^'
         if name_size > 0

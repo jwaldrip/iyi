@@ -1,7 +1,7 @@
 module compiler/platform/target
 
 # Target platform error raised when a triple cannot be parsed or normalized.
-pub class TargetError < Exception
+pub class TargetError
   getter message : String
 
   def initialize(@message : String)
@@ -26,7 +26,7 @@ pub class Target
     dash_count = 0
     i = 0
     while i < normalized.bytesize
-      if normalized.to_unsafe[i] == 45_u8
+      if normalized.byte_at(i) == 45_u8
         dash_count = dash_count + 1
       end
       i = i + 1
@@ -113,7 +113,7 @@ pub class Target
     dash_count = 0
     i = 0
     while i < normalized.bytesize
-      if normalized.to_unsafe[i] == 45_u8
+      if normalized.byte_at(i) == 45_u8
         dash_count = dash_count + 1
       end
       i = i + 1
@@ -202,14 +202,14 @@ pub class Target
       start_pos = idx + 7
       pos = start_pos
       while pos < @environment.bytesize
-        b = @environment.to_unsafe[pos]
+        b = @environment.byte_at(pos)
         if b >= 48_u8 && b <= 57_u8
           pos = pos + 1
         else
           break
         end
       end
-      if pos > start_pos && pos < @environment.bytesize && @environment.to_unsafe[pos] == 46_u8
+      if pos > start_pos && pos < @environment.bytesize && @environment.byte_at(pos) == 46_u8
         num_str = @environment[start_pos, pos - start_pos]
         return num_str.to_i
       end
@@ -320,7 +320,7 @@ pub class Target
       matched = true
       j = 0
       while j < n_len
-        if haystack.to_unsafe[i + j] != needle.to_unsafe[j]
+        if haystack.byte_at(i + j) != needle.byte_at(j)
           matched = false
           break
         end

@@ -5,8 +5,10 @@ require "semantic_version"
 module Iyi
   class MacroInterpreter
     private def find_source_file(filename, &)
-      # Support absolute paths
-      if filename.starts_with?('/')
+      # Whether the path names a root is `Path`'s question: a leading `/` is
+      # only the whole of it on posix, so `run("C:/tools/gen")` was taken for
+      # a name to look for down the search path, where a drive is not a shard.
+      if !::Path[filename].root.nil?
         filename = "#{filename}.cr" unless filename.ends_with?(".cr")
 
         if File.exists?(filename)
@@ -19,6 +21,13 @@ module Iyi
       else
         begin
           relative_to = @location.try &.original_filename
+          # A macro that travelled in a `.iyimod` names its program the way
+          # the file that wrote it could, and that file is not the artifact:
+          # `std/eiy` writes `run("./eiy/process", …)`, which is beside
+          # `src/std/eiy.iyi`. See `Program#iyi_artifact_source_paths`.
+          if relative_to
+            relative_to = @program.iyi_artifact_source_paths[relative_to]? || relative_to
+          end
           found_filenames = @program.find_in_path(filename, relative_to)
         rescue ex
           return yield ex.message
@@ -45,6 +54,8 @@ module Iyi
     end
 
     def interpret_top_level_call?(node)
+      iyi_tell_recorder(node)
+
       # Please order method names in lexicographical order
       case node.name
       when "compare_versions"
@@ -90,6 +101,21 @@ module Iyi
       end
     end
 
+    # iyi: the macro calls a skipped build could not repeat, told to the
+    # up-to-date check (SPEC.md V.9 (e)). A command's output is an input
+    # nothing here can list, and a macro that prints prints while it compiles,
+    # which a build that does not compile would not do.
+    private def iyi_tell_recorder(node) : Nil
+      return unless inputs = BuildInputs.current
+      where = node.location.try { |location| " at #{Iyi.relative_filename(location.original_filename.to_s)}:#{location.line_number}" }
+      case node.name
+      when "system", "`"
+        inputs.cannot("a macro runs a command#{where}, and what it read cannot be listed")
+      when "debug", "puts", "print", "p", "pp", "p!", "pp!"
+        inputs.cannot("a macro prints while it compiles#{where}, which a skipped build would not")
+      end
+    end
+
     def interpret_compare_versions(node)
       interpret_check_args_toplevel do |first_arg, second_arg|
         first = accept first_arg
@@ -130,7 +156,12 @@ module Iyi
 
       if format
         begin
-          @program.stdout.puts Iyi::Formatter.format(@str.to_s)
+          # iyi: in the language of the file the macro is expanding in. The
+          # generated code is that file's, and `!` is one token there and
+          # another in the other language, so without the name the rescue
+          # below caught a syntax error and printed the code unformatted.
+          @program.stdout.puts Iyi::Formatter.format(
+            @str.to_s, filename: node.location.try(&.original_filename))
         rescue
           @program.stdout.puts @str
         end
@@ -375,6 +406,9 @@ module Iyi
     end
 
     def interpret_run(node)
+      # iyi: what another program prints is not a fact of the declaration, and
+      # II.10 measured `run` at +7.4 s per distinct script on a cold build.
+      TypeNode.refuse_in_derive(self, "run", "runs another program")
       if node.args.size == 0
         node.wrong_number_of_arguments "macro '::run'", 0, "1+"
       end
@@ -394,7 +428,7 @@ module Iyi
         run_args << @last.to_macro_id
       end
 
-      result = @program.macro_run(filename, run_args)
+      result = @program.cached_macro_run(filename, run_args)
       if result.status.success?
         @last = MacroId.new(result.stdout)
       else
@@ -599,11 +633,17 @@ module Iyi
       when "/"
         num_bin_op(method, args, named_args, block) { |me, other| me / other }
       when "//"
-        num_bin_op(method, args, named_args, block) { |me, other| me // other }
+        # iyi: `{{ -7 // 2 }}` written in an iyi source is -3, as the line
+        # that computes it at run time; it was -4 (`MathInterpreter.iyi_rules?`).
+        iyi = MathInterpreter.iyi_rules?(interpreter.program, name_loc)
+        num_bin_op(method, args, named_args, block) do |me, other|
+          iyi && me.is_a?(Int) && other.is_a?(Int) ? me.tdiv(other) : me // other
+        end
       when "**"
         num_bin_op(method, args, named_args, block) { |me, other| me ** other }
       when "%"
-        int_bin_op(method, args, named_args, block) { |me, other| me % other }
+        iyi = MathInterpreter.iyi_rules?(interpreter.program, name_loc)
+        int_bin_op(method, args, named_args, block) { |me, other| iyi ? me.remainder(other) : me % other }
       when "&"
         int_bin_op(method, args, named_args, block) { |me, other| me & other }
       when "|"
@@ -611,9 +651,11 @@ module Iyi
       when "^"
         int_bin_op(method, args, named_args, block) { |me, other| me ^ other }
       when "<<"
-        int_bin_op(method, args, named_args, block) { |me, other| me << other }
+        iyi = MathInterpreter.iyi_rules?(interpreter.program, name_loc)
+        int_bin_op(method, args, named_args, block) { |me, other| iyi ? MathInterpreter.iyi_shl(me, other) : me << other }
       when ">>"
-        int_bin_op(method, args, named_args, block) { |me, other| me >> other }
+        iyi = MathInterpreter.iyi_rules?(interpreter.program, name_loc)
+        int_bin_op(method, args, named_args, block) { |me, other| iyi ? MathInterpreter.iyi_shr(me, other) : me >> other }
       when "~"
         interpret_check_args do
           num = to_number
@@ -687,6 +729,26 @@ module Iyi
       in .f32?  then @value.to_f32
       in .f64?  then @value.to_f64
       end
+    end
+
+    # iyi: this integer literal as one of *kind*, or nil when either kind is
+    # not an integer one or the value does not fit *kind*.
+    def integer_in?(kind : NumberKind) : NumberLiteral?
+      return nil unless self.kind.signed_int? || self.kind.unsigned_int?
+      value = case kind
+              in .i8?         then @value.to_i8?
+              in .i16?        then @value.to_i16?
+              in .i32?        then @value.to_i32?
+              in .i64?        then @value.to_i64?
+              in .i128?       then @value.to_i128?
+              in .u8?         then @value.to_u8?
+              in .u16?        then @value.to_u16?
+              in .u32?        then @value.to_u32?
+              in .u64?        then @value.to_u64?
+              in .u128?       then @value.to_u128?
+              in .f32?, .f64? then nil
+              end
+      value && NumberLiteral.new(value)
     end
   end
 
@@ -1501,6 +1563,25 @@ module Iyi
     end
 
     def interpret_to_range(from : NumberLiteral, to : NumberLiteral)
+      # iyi: the elements take the begin's kind, and the stdlib's Range reaches
+      # an inclusive end by `==`, which compares kinds, so `(0_i8..0).to_a` was
+      # `[]` and `(-1..4_u8).to_a` stopped at 3. An integer end that fits the
+      # begin's kind is read in that kind.
+      # A begin too small for the end is read in the end's kind instead:
+      # `(0_i8..300)` stepped an `Int8` and stopped on "Arithmetic overflow".
+      if to.kind != from.kind
+        if in_kind = to.integer_in?(from.kind)
+          to = in_kind
+        elsif in_kind = from.integer_in?(to.kind)
+          from = in_kind
+        end
+      end
+      # iyi: the walk steps from the begin, and a float has no next value:
+      # `(0.0..2).to_a` said "BUG: called 'succ' for non-integer literal". A
+      # float end only bounds the walk, `(1..3.5)` being `[1, 2, 3]`.
+      unless from.kind.signed_int? || from.kind.unsigned_int?
+        raise "a macro range steps from an integer, and #{from} is a float"
+      end
       Range.new(from, to, self.exclusive?)
     end
 
@@ -2493,12 +2574,16 @@ module Iyi
     # type is not a fact the type's own module can carry, so a derive that read
     # one would generate different code depending on what else was compiled, and
     # could not be cached against the declaration. R-5 forbids them.
-    def self.refuse_in_derive(interpreter : MacroInterpreter, method : String) : Nil
-      return unless interpreter.program.expanding_derive?
+    #
+    # A def the derive generated is its code as well. Its macros expand when
+    # it is typed, after the derive has returned: `\{{ Base.all_subclasses }}`
+    # in one answered `A,B` beside a `B` declared after the derived struct.
+    def self.refuse_in_derive(interpreter : MacroInterpreter, method : String, what : String = "answers with the whole program") : Nil
+      return unless interpreter.program.expanding_derive? || interpreter.iyi_derive_def?
 
       raise Iyi::TypeException.new(
-        "`#{method}` is not available to a derive: it answers with the whole " \
-        "program, and a derive may only read the declaration it is attached to " \
+        "`#{method}` is not available to a derive: it #{what}, " \
+        "and a derive may only read the declaration it is attached to " \
         "and what that declaration's types implement — see SPEC.md II.4")
     end
 

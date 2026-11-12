@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Exercises `std/base64`.
+#
+#     bash bench/std_base64_exercise.sh
+#
+# Proves the exercise holds plain and --release, that a broken encoder or
+# decoder is caught, and what `decode` refuses: a byte outside the alphabet, data after
+# the padding, data inside it, more `=` than the group needs, `=` with no
+# group to close, and a final group of one character - each a panic with a
+# sentence, where before the data was silently dropped.
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+# the patches and oracles below are written in python, and windows answers
+# `python3` with a store stub that prints and exits rather than running it, so
+# the interpreter is measured here instead of assumed.
+PY=""
+for candidate in python3 python; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+    PY="$candidate"
+    break
+  fi
+done
+
+IYI="${IYI:-$REPO/bin/iyi}"
+WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from `pwd` is `/c/...` and finds no prelude at all, and a
+# scratch directory named `/tmp/tmp.X` is silently ignored on that path, so
+# the patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
+trap 'rm -rf "$WORK"' EXIT
+
+status=0
+export IYI_PATH="$REPO/src${PSEP}$REPO/samples/iyi"
+
+build_and_run() {
+  local label="$1" name="$2"
+  shift 2
+  if ! "$IYI" build "$@" -o "$WORK/$name" "$REPO/bench/std_base64_exercise.iyi" \
+       >"$WORK/$name.build.log" 2>&1; then
+    echo "$label: build failed"
+    tail -12 "$WORK/$name.build.log"
+    status=1
+    return 1
+  fi
+  "$WORK/$name" >"$WORK/$name.out" 2>&1
+  local exit_code=$?
+  sed 's/^/  /' "$WORK/$name.out"
+  if [ "$exit_code" -ne 0 ]; then
+    echo "$label: exited $exit_code"
+    status=1
+    return 1
+  fi
+  return 0
+}
+
+echo "== the std/base64 exercise, plain build"
+build_and_run "plain" base64-plain
+if ! grep -q "ALL CHECKS PASSED" "$WORK/base64-plain.out" 2>/dev/null; then
+  echo "plain: missing pass sentinel"
+  status=1
+fi
+
+echo
+echo "== every base64 section reported"
+for phrase in "== encode" "== decode"; do
+  if ! grep -q "$phrase" "$WORK/base64-plain.out" 2>/dev/null; then
+    echo "  missing section: $phrase"
+    status=1
+  fi
+done
+[ "$status" -eq 0 ] && echo "  sections reported"
+
+echo
+echo "== the same program with optimisation on (--release)"
+build_and_run "release" base64-release --release >/dev/null
+if ! grep -q "ALL CHECKS PASSED" "$WORK/base64-release.out" 2>/dev/null; then
+  echo "release: missing pass sentinel"
+  status=1
+fi
+
+echo
+echo "== proving the checks can fail when the module is broken"
+# With a <phrase>, the exercise must fail at it: at the check written for
+# that break, not at an earlier one.
+mutations=0
+broken() { # broken <label> <old> <new> [<phrase>]
+  # A binary of its own each: on Windows the last one's file can still be
+  # held a moment after it ended, and the next link over it failed with
+  # LNK1104.
+  mutations=$((mutations + 1))
+  local label="$1" phrase="${4:-}"
+  if [ -z "$PY" ]; then
+    echo "  $label: no python3 on this machine, so the broken-module proof is unmeasured"
+    return
+  fi
+  rm -rf "$WORK/patched"
+  mkdir -p "$WORK/patched/std"
+  if ! OLD="$2" NEW="$3" "$PY" - <<PY
+import os
+from pathlib import Path
+src = Path("$REPO/src/std/base64.iyi").read_text()
+old = os.environ["OLD"]
+if src.count(old) != 1:
+    raise SystemExit("patch site missing or not unique")
+Path("$WORK/patched/std/base64.iyi").write_text(src.replace(old, os.environ["NEW"], 1))
+PY
+  then
+    echo "  $label: the patch did not apply"
+    status=1
+  # Build first, then run: a patch that does not compile would also "fail",
+  # and that proves nothing about whether the exercise catches the break.
+  elif ! IYI_PATH="$WORK/patched${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" build -o "$WORK/mut-$mutations.bin" "$REPO/bench/std_base64_exercise.iyi" >"$WORK/mut.out" 2>&1; then
+    echo "  $label: the broken copy did not compile"
+    sed -n '1,6p' "$WORK/mut.out"
+    status=1
+  elif "$WORK/mut-$mutations.bin" >"$WORK/mut.out" 2>&1; then
+    echo "  $label: the exercise PASSED on a broken module"
+    status=1
+  elif [ -n "$phrase" ] && ! grep -qF -- "$phrase" "$WORK/mut.out"; then
+    echo "  $label: failed, but not at '$phrase'"
+    sed -n '1,4p' "$WORK/mut.out"
+    status=1
+  else
+    echo "  $label: caught"
+  fi
+}
+broken "a last group's first character" 'dst[o] = table[(triple >> 18) & 63]' 'dst[o] = 65_u8'
+broken "a whole group's last character" '        dst[o + 3] = table[triple & 63]
+' '        dst[o + 3] = 65_u8
+'
+broken "four characters decoded out of order" 'q[1] = group.unsafe_shr(8).unsafe_to_u8' 'q[1] = group.unsafe_to_u8'
+broken "the byte loop not resuming where the groups stopped" 'o = (q.address - buf.address).to_i32' 'o = 0'
+broken "a group after a line break out of order" 'buf[o + 1] = ((group >> 8) & 255).to_u8' 'buf[o + 1] = (group & 255).to_u8'
+broken "whitespace taken at the size it was guessed" 'return answer if written == size' 'return answer'
+broken "six bytes read in the wrong order" '(w.unsafe_shr(40) & 0xFF_u64)
+' '(w.unsafe_shr(32) & 0xFF_u64)
+'
+broken "a character pair written backwards" 'chars[k.unsafe_shr(6)].to_i32 | chars[k & 63].to_i32.unsafe_shl(8)' 'chars[k & 63].to_i32 | chars[k.unsafe_shr(6)].to_i32.unsafe_shl(8)'
+broken "vertical tab and form feed refused again" 'next if b == 32_u8 || (b >= 9_u8 && b <= 13_u8)' 'next if b == 32_u8 || b == 10_u8 || b == 13_u8 || b == 9_u8' "base64: invalid byte 11"
+# The byte loop is cheap enough on arm64 that it stays inside two and a half
+# byte sums there: darwin arm64 let it through. The check runs everywhere;
+# its proof on Linux x86_64, where the byte loop is twice the word loop.
+case "$(uname -s) $(uname -m)" in
+  "Linux x86_64")
+    broken "a byte and a character at a time again" 'while i &+ 8 <= n' 'while false'
+    ;;
+  *)
+    echo "  a byte and a character at a time again: not proven here, because this processor's byte loop is too cheap for its time to show"
+    ;;
+esac
+
+echo
+echo "== what decode refuses"
+refuses() { # refuses <label> <name> <phrase> <text>
+  local label="$1" name="$2" phrase="$3" text="$4"
+  printf 'module main\n\nimport std/base64::{Base64}\n\nputs Base64.decode(%s).inspect\n' "$text" > "$WORK/$name.iyi"
+  if ! "$IYI" build -o "$WORK/$name" "$WORK/$name.iyi" > "$WORK/$name.build" 2>&1; then
+    echo "  $label: the program did not build"
+    sed -n '1,10p' "$WORK/$name.build"
+    status=1
+    return
+  fi
+  "$WORK/$name" > "$WORK/$name.out" 2>&1
+  local code=$?
+  if [ "$code" -eq 0 ]; then
+    echo "  $label: it answered instead of refusing: $(cat "$WORK/$name.out")"
+    status=1
+    return
+  fi
+  if ! grep -qF -- "$phrase" "$WORK/$name.out"; then
+    echo "  $label: refused, but not with '$phrase'"
+    sed -n '1,3p' "$WORK/$name.out"
+    status=1
+    return
+  fi
+  printf '  %s: exits %s at "%s"\n' "$label" "$code" "$(sed -n '1p' "$WORK/$name.out" | sed 's/^iyi: panic: //')"
+}
+refuses "a byte outside the alphabet" bad_byte "base64: invalid byte 42" '"QU*JD"'
+refuses "data after the padding" after_pad "base64: data after padding" '"QQ==QQ=="'
+refuses "data inside the padding" inside_pad "base64: discontinuous padding" '"QU=JD"'
+refuses "more padding than the group needs" excess_pad "base64: excess padding" '"QQ==="'
+refuses "padding after a full group" full_pad "base64: padding with no group to close" '"QUJD="'
+refuses "a lone character" lone_char "base64: 1 data characters, 1 more than a multiple of 4" '"Q"'
+refuses "a final group of one character" dangling "base64: 5 data characters, 1 more than a multiple of 4" '"QUJDR"'
+refuses "a padded lone character" padded_lone "base64: 1 data characters, 1 more than a multiple of 4" '"Q="'
+
+echo
+if [ "$status" -eq 0 ]; then
+  echo "the std/base64 exercise holds"
+else
+  echo "the std/base64 exercise did not hold"
+fi
+exit $status

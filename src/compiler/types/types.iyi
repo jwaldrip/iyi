@@ -1,14 +1,9 @@
 module compiler/types/types
 
-import compiler/foundation/location
-import compiler/syntax/ast
-import compiler/syntax/token
-import compiler/semantic/top_level
-
-using compiler/foundation/location::{Location}
-using compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
-using compiler/syntax/token::{NumberKind}
-using compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TraitType, Type, TypeException, UnionType}
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
+import compiler/syntax/token::{NumberKind}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TraitType, Type, TypeException, UnionType}
 
 pub class VirtualType < Type
   property base_type : Type

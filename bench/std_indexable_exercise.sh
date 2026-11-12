@@ -18,9 +18,30 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# The gate runs the compiler the caller names; bin/iyi is a POSIX shell
+# wrapper a Windows build cannot run.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` is silently ignored on that path, so the
+# patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
 
 status=0
 
@@ -30,7 +51,7 @@ status=0
 # into the tree where the identity floor could see it.
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:$PATH"
 export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
-export IYI_PATH="$REPO/src:$REPO/samples/iyi"
+export IYI_PATH="$REPO/src${PSEP}$REPO/samples/iyi"
 
 echo "== the exercise, plain build"
 if ! "$IYI" build -o "$WORK/exercise" "$REPO/bench/std_indexable_exercise.iyi" \
@@ -57,13 +78,14 @@ echo
 echo "== every section reported"
 for section in "array surface: all passed" \
                "minimal sequence surface: all passed" \
-               "empty collection handling: all passed"; do
+               "empty collection handling: all passed" \
+               "mutable surface: all passed"; do
   if ! grep -q "$section" "$WORK/exercise.out" 2>/dev/null; then
     echo "  MISSING: $section"
     status=1
   fi
 done
-[ "$status" -eq 0 ] && echo "  array surface, minimal sequence, and empty collection all reported"
+[ "$status" -eq 0 ] && echo "  array surface, minimal sequence, empty collection and mutable surface all reported"
 
 echo
 echo "== the same program with release optimisation"
@@ -88,10 +110,11 @@ fi
 
 echo
 echo "== failure proofs: out-of-range and boundary raises"
-# Run probe modes built into bench/std_indexable_exercise.iyi
+# Run probe modes built into bench/std_indexable_exercise.iyi; a fourth
+# argument names another build of it, which the broken-library proofs use.
 run_probe() {
-  local label="$1" mode="$2" expected_phrase="$3"
-  "$WORK/exercise" "$mode" >"$WORK/probe-$mode.out" 2>&1
+  local label="$1" mode="$2" expected_phrase="$3" program="${4:-$WORK/exercise}"
+  "$program" "$mode" >"$WORK/probe-$mode.out" 2>&1
   local code=$?
   if [ "$code" -eq 0 ]; then
     echo "  $label: probe unexpectedly succeeded"
@@ -109,11 +132,25 @@ run_probe() {
   return 0
 }
 
-run_probe "positive index out of range" probe_positive_out_of_range "out of range"
-run_probe "negative index out of range" probe_negative_out_of_range "out of range"
-run_probe "empty collection first" probe_empty_first "empty"
-run_probe "empty collection last" probe_empty_last "empty"
+run_probe "positive index out of range" probe_positive_out_of_range "index 10 out of range for 5 elements"
+run_probe "negative index out of range" probe_negative_out_of_range "index -10 out of range for 5 elements"
+run_probe "trait index out of range" probe_trait_out_of_range "index 7 out of range for 5 elements"
+run_probe "empty collection first" probe_empty_first "first of an empty collection"
+run_probe "empty collection last" probe_empty_last "last of an empty collection"
 run_probe "empty collection sample" probe_empty_sample "empty"
+run_probe "update out of range" probe_update_out_of_range "index 5 out of range for 5 elements"
+run_probe "swap out of range" probe_swap_out_of_range "index -6 out of range for 5 elements"
+run_probe "fill negative count" probe_fill_negative_count "negative count: -1"
+run_probe "fill past the end" probe_fill_past_end "index 6 out of range for 5 elements"
+# A count near the top of Int32 is refused in the same sentence, not as an
+# "arithmetic overflow" of `offset + count`.
+run_probe "fill past the end with a huge count" probe_fill_huge_count "index 2147483648 out of range for 5 elements"
+# From a negative offset the end is counted from where the offset lands:
+# counted from the offset as written, `fill(0, -2, 5)` named index 3,
+# which is one of the five.
+run_probe "fill past the end from a negative offset" probe_fill_past_end_from_negative "index 8 out of range for 5 elements"
+run_probe "insert out of range" probe_insert_out_of_range "index 2 out of range for 1 elements"
+run_probe "delete_at out of range" probe_delete_at_out_of_range "index -2 out of range for 1 elements"
 
 echo
 echo "== failure proofs: checks fail when Indexable is broken"
@@ -132,7 +169,7 @@ prove_fails() {
     return
   fi
 
-  if ! IYI_PATH="$WORK/$dir:$REPO/src:$REPO/samples/iyi" "$IYI" run \
+  if ! IYI_PATH="$WORK/$dir${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" run \
        "$REPO/bench/std_indexable_exercise.iyi" >"$WORK/$dir.out" 2>&1; then
     local code=$?
     if grep -q "$expected_phrase" "$WORK/$dir.out" 2>/dev/null; then
@@ -149,6 +186,10 @@ prove_fails() {
   fi
 }
 
+# 0. The pairs of each_cartesian with the inner loop dropped.
+prove_fails "each_cartesian yields every pair" broken_cartesian "each_cartesian: every pair" \
+  's/^      other.each { |b| yield a, b }$/      yield a, other[0]/'
+
 # 1. Break negative index resolution: without wrap, a[-1] fails out of bounds
 prove_fails "negative index resolution" broken_neg "assertion failed: fetch negative in bounds" \
   's/index = size + index if index < 0/# negative wrap removed/'
@@ -164,6 +205,60 @@ prove_fails "bsearch binary search" broken_bsearch "assertion failed: bsearch fo
 # 4. Break values_at: skip last element
 prove_fails "values_at lookup" broken_values "expected .10,50,30., got" \
   's/while i < indexes.size/while i < indexes.size - 1/'
+
+# 5. Break rotate_in_place: the middle reversal skipped leaves the copy wrong
+prove_fails "rotate_in_place reversal" broken_rotate "expected .3,2,10,101,4., got" \
+  's/reverse_between(k, size - 1)/# middle reversal removed/'
+
+# 6. Break delete_if: keep everything
+prove_fails "delete_if compaction" broken_delete_if "expected .1,3,5,99., got" \
+  's/unsafe_set_size(kept)/unsafe_set_size(size)/'
+
+# 7. Break the sample of a count: an element past the first n never takes
+#    a slot, so the three are always the first three, shuffled.
+prove_fails "sample of a count" broken_sample "a collection samples three as an array does" \
+  's/picked\[j\] = unsafe_fetch(i) if j < n/picked[j] = unsafe_fetch(i) if j < 0/'
+
+# 8. Put join back on `result = result + ...`, which copies the text so far
+#    once per element: the linear-time bound beside `Array#join` catches it.
+prove_fails "join grown by + again" broken_join "indexable join in linear time" \
+  '/^  def join(separator : String = "") : String$/,/^  end$/c\
+  def join(separator : String = "") : String\
+    result = ""\
+    first = true\
+    i = 0\
+    while i < size\
+      result = result + separator unless first\
+      result = result + unsafe_fetch(i).to_s\
+      first = false\
+      i = i + 1\
+    end\
+    result\
+  end'
+
+# 9. Put the fill refusal back on `offset + count`: the probe for a huge
+#    count then reads "arithmetic overflow", not its sentence. A probe mode
+#    is not reached by `prove_fails`, so the broken copy is built here and
+#    the probe run against it must fail.
+mkdir -p "$WORK/broken_fill_end/std"
+sed 's/if count > size - offset$/if offset + count > size/' "$REPO/src/std/indexable.iyi" > "$WORK/broken_fill_end/std/indexable.iyi"
+if ! IYI_PATH="$WORK/broken_fill_end${PSEP}$REPO/src${PSEP}$REPO/samples/iyi" "$IYI" build \
+     -o "$WORK/broken_fill_end/exercise" "$REPO/bench/std_indexable_exercise.iyi" >"$WORK/broken_fill_end.build" 2>&1; then
+  echo "  fill refusal from an end: the patched library did not build"
+  sed -n '1,6p' "$WORK/broken_fill_end.build"
+  status=1
+else
+  held_status=$status
+  if run_probe "fill refusal from an end" probe_fill_huge_count "index 2147483648 out of range for 5 elements" \
+       "$WORK/broken_fill_end/exercise" >/dev/null; then
+    echo "  fill refusal from an end: the probe still passed, so it does not test this"
+    held_status=1
+  else
+    printf '  fill refusal from an end: caught, the probe read "%s"\n' \
+      "$(grep -m1 'panic' "$WORK/probe-probe_fill_huge_count.out" | sed 's/^iyi: panic: //')"
+  fi
+  status=$held_status
+fi
 
 echo
 if [ "$status" -eq 0 ]; then

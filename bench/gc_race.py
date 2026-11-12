@@ -39,10 +39,20 @@ import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-IYI = ROOT / "bin" / "iyi"
+# The exe itself where the caller names it: `bin/iyi` is a shell script,
+# which Windows' python cannot start.
+IYI = pathlib.Path(os.environ.get("IYI", ROOT / "bin" / "iyi"))
+# Windows starts a program by its `.exe`, and both compilers write the name
+# they are given, so every binary is named with it there.
+EXE = ".exe" if os.name == "nt" else ""
 RUNS = 5
 
-IYI_STATS = '''
+# Every program is this prefix and its own body, so the mark the bodies
+# need (SPEC.md III.13) is written here, first in the file: the Boehm arm
+# declares `lib LibGC`, and the two churn bodies drop raw blocks. Without
+# it binary_trees-boehm was refused for the `lib` (Windows gates job and
+# darwin's program job in CI run 42472342266).
+IYI_STATS = '''@[Unsafe("Boehm's arm reads libgc's collection count and pause total through a lib of its own, and the churn programs allocate the raw 64-byte blocks that are the garbage being raced")]
 {% if flag?(:gc_boehm) %}
   lib LibGC
     fun start_performance_measurement = GC_start_performance_measurement : Nil
@@ -333,6 +343,8 @@ def build_go(source: pathlib.Path, output: pathlib.Path) -> None:
 
 
 def run_once(binary: pathlib.Path) -> tuple[float, int, str]:
+    if os.name == "nt":
+        return run_once_nt(binary)
     read_out, write_out = os.pipe()
     start = time.perf_counter()
     pid = os.posix_spawn(str(binary), [str(binary)], os.environ,
@@ -353,6 +365,36 @@ def run_once(binary: pathlib.Path) -> tuple[float, int, str]:
     if sys.platform == "darwin":
         peak //= 1024
     return elapsed, peak, b"".join(chunks).decode()
+
+
+def run_once_nt(binary: pathlib.Path) -> tuple[float, int, str]:
+    """Windows has no `wait4`: the peak is the process's peak working set,
+    the kernel's own accounting of resident pages, read off its handle
+    after it exits and before the handle is closed - in KiB, as Linux's
+    `ru_maxrss` is."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+    start = time.perf_counter()
+    process = subprocess.Popen([str(binary)], stdout=subprocess.PIPE)
+    out, _ = process.communicate()
+    elapsed = time.perf_counter() - start
+    counters = Counters()
+    counters.cb = ctypes.sizeof(Counters)
+    if not psapi.GetProcessMemoryInfo(int(process._handle), ctypes.byref(counters), counters.cb):
+        raise SystemExit(f"{binary.name}: GetProcessMemoryInfo failed ({ctypes.get_last_error()})")
+    if process.returncode != 0:
+        raise SystemExit(f"{binary.name} exited {process.returncode}")
+    return elapsed, counters.PeakWorkingSetSize // 1024, out.decode()
 
 
 STATS = re.compile(r"stats: collections=(\d+) pause_max_us=(-|\d+) pause_total_us=(\d+)")

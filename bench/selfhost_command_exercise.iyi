@@ -3,9 +3,7 @@
 #
 # Compared against the shipped driver in bench/selfhost_command_exercise.sh.
 
-import compiler/command/driver
-
-using compiler/command/driver::{CommandDriver, CommandResult, Exit}
+import compiler/command/driver::{CommandDriver, CommandResult, Exit}
 
 module BenchSelfhostCommandExercise
   def self.corpus : Array(Array(String))
@@ -80,6 +78,149 @@ module BenchSelfhostCommandExercise
     vectors << ["test", "--timeout", "not_a_num"]
     vectors << ["test", "--timeout"]
     vectors << ["test", "--affected"]
+    # Every vector below ends in help or a refusal before any path is walked, so
+    # the oracle never runs a test. `missing_dir_xyz` is the path that ends a
+    # vector whose flags are valid; a vector that names a real file or directory
+    # would build and run whatever it found. A flag that takes a value and is
+    # given `--help` as that value consumes it, so such a vector ends in the path.
+    vectors << ["test", "-v", "--release", "-D", "FLAG", "--help"]
+    vectors << ["test", "--json", "-v", "--release", "--help"]
+    vectors << ["test", "-DFLAG", "--help"]
+    vectors << ["test", "--timeout", "1e3", "--help"]
+    vectors << ["test", "--timeout", "+5", "--help"]
+    vectors << ["test", "--timeout", "0.5", "--help"]
+    vectors << ["test", "--timeout", "0", "--help"]
+    vectors << ["test", "--timeout", "-1"]
+    vectors << ["test", "--timeout", "nan"]
+    vectors << ["test", "--timeout", "inf"]
+    vectors << ["test", "--timeout", "1e300"]
+    vectors << ["test", "--timeout", "1e400"]
+    vectors << ["test", "--timeout", "9.3e14"]
+    vectors << ["test", "--timeout", "2x", "--help"]
+    vectors << ["test", "--timeout", "1e3", "missing_dir_xyz"]
+    vectors << ["test", "--affected", "", "missing_dir_xyz"]
+    vectors << ["test", "--affected", "--help", "missing_dir_xyz"]
+    vectors << ["test", "--affected", "bench/none.iyi", "--help"]
+    vectors << ["test", "--affected", "bench/none.iyi", "missing_dir_xyz"]
+    vectors << ["test", "--chaos", "--help"]
+    vectors << ["test", "--chaos=abc", "--help"]
+    vectors << ["test", "--chaos=", "--help"]
+    vectors << ["test", "--chaos=+5", "--help"]
+    vectors << ["test", "--chaos=18446744073709551616", "--help"]
+    vectors << ["test", "--chaos=18446744073709551615", "--help"]
+    vectors << ["test", "--chaos=0", "--help"]
+    vectors << ["test", "--chaos=42", "--chaos-runs", "0", "--help"]
+    vectors << ["test", "--chaos-runs"]
+    vectors << ["test", "--chaos-runs", "x", "--help"]
+    vectors << ["test", "--chaos-runs", "-3", "--help"]
+    vectors << ["test", "--chaos-runs", "3", "--help"]
+    vectors << ["test", "--chaos-runs", "+3", "--help"]
+    vectors << ["test", "-p", "0", "--help"]
+    vectors << ["test", "-p", "x", "--help"]
+    vectors << ["test", "--parallel"]
+    vectors << ["test", "--parallel", "-1", "--help"]
+    vectors << ["test", "-p", "2", "--help"]
+    vectors << ["test", "--parallel", "3", "missing_dir_xyz"]
+    vectors << ["test", "--run"]
+    vectors << ["test", "--run", "", "--help"]
+    vectors << ["test", "--run", "--help", "missing_dir_xyz"]
+    vectors << ["test", "--run", "case", "--help"]
+    vectors << ["test", "-D"]
+    vectors << ["test", "--define"]
+    vectors << ["test", "-D", "", "--help"]
+    vectors << ["test", "--define", "--help", "missing_dir_xyz"]
+    vectors << ["test", "-x", "--help"]
+    vectors << ["test", "--nonesuch"]
+    vectors << ["test", "-"]
+    vectors << ["test", ""]
+    vectors << ["test", "missing_dir_xyz"]
+    vectors << ["test", "missing_dir_xyz", "--help"]
+    vectors << ["test", "--json", "missing_dir_xyz"]
+    vectors << ["test", "missing_a", "missing_b"]
+    vectors << ["test", "--verbose", "--help"]
+
+    # Get. Each one refuses or prints help before it reads iyi.mod or the
+    # network: a path with no iyi.mod is never named, since the working
+    # directory may hold one.
+    vectors << ["get"]
+    vectors << ["get", "--help"]
+    vectors << ["get", "-h"]
+    vectors << ["get", "--bogus"]
+    vectors << ["get", "--as"]
+    vectors << ["get", "-u", "x"]
+    vectors << ["get", "a", "b", "--as", "w"]
+    vectors << ["get", "-u", "--as", "w"]
+
+    # Lsp and mcp: arguments refused, help printed; a server is never started.
+    vectors << ["lsp", "--bogus"]
+    vectors << ["lsp", "extra"]
+    vectors << ["lsp", "--stdio", "--help"]
+    vectors << ["lsp", "--help", "--bogus"]
+    vectors << ["mcp", "extra"]
+    vectors << ["mcp", "--bogus"]
+    vectors << ["mcp", "--help", "--bogus"]
+
+    # Check: the verb's own refusals and help; a check that would compile is
+    # not run here.
+    vectors << ["check", "--selfhost"]
+    vectors << ["check", "--parse-only", "--help"]
+    vectors << ["check", "--selfhost", "--parse-only", "--help"]
+    vectors << ["check", "--affected"]
+
+    # Help and version take a verb, or refuse an argument they do not take.
+    vectors << ["help", "build"]
+    vectors << ["help", "nonesuch"]
+    vectors << ["help", "help"]
+    vectors << ["help", "tool"]
+    vectors << ["-h", "build"]
+    vectors << ["version", "extra"]
+    vectors << ["version", "--help"]
+
+    # Not a command: the repl is not one here.
+    vectors << ["repl"]
+    vectors << ["repl", "--help"]
+
+    # Fix, migrate, bind, daemon: flags and refusals.
+    vectors << ["fix", "--json"]
+    vectors << ["fix", "--bogus"]
+    vectors << ["migrate", "--bogus"]
+    vectors << ["migrate", "-v", "--help"]
+    vectors << ["migrate", "--check", "--help"]
+    vectors << ["migrate", "--annotate", "--help"]
+    vectors << ["migrate", "--verbose", "--help"]
+    vectors << ["bind", "--bogus"]
+    # Daemon start and build are not vectored: the hosted driver answers them
+    # from this machine's compilers and sockets before it reads the flags.
+    vectors << ["mod", "dump", "--json"]
+    vectors << ["mod", "dump", "x.iyimod", "y"]
+    vectors << ["mod", "dump", "--declarations", "--json", "missing.iyimod"]
+    vectors << ["check", "--affected", "bench/none.iyi", "--bogus"]
+    vectors << ["run", "--sandbox"]
+    vectors << ["run", "--sandbox", "missing_file_xyz.iyi"]
+    vectors << ["run", "--sandbox", "a", "b"]
+    vectors << ["mod", "dump", "--selfhost", "--help"]
+    vectors << ["lsp", "--worker", "--help"]
+    vectors << ["clear_cache", "--verbose", "--help"]
+    vectors << ["build", "--force", "--help"]
+    vectors << ["migrate", "-h"]
+    vectors << ["mod", "release", "1.0.0", "--help"]
+
+    # Mod: the subcommands the corpus did not reach (tidy, reach, release) and
+    # the flags of dump, diff and context.
+    vectors << ["mod", "tidy", "--help"]
+    vectors << ["mod", "tidy", "--check", "--help"]
+    vectors << ["mod", "tidy", "--bogus"]
+    vectors << ["mod", "reach", "--help"]
+    vectors << ["mod", "reach", "--bogus"]
+    vectors << ["mod", "release", "--help"]
+    vectors << ["mod", "release", "--bogus"]
+    vectors << ["mod", "dump", "--bogus"]
+    vectors << ["mod", "diff", "--exit-code", "--help"]
+    vectors << ["mod", "context", "--budget", "1", "--help"]
+    vectors << ["mod", "context", "--json", "--help"]
+
+    # Run --sandbox prints its own help.
+    vectors << ["run", "--sandbox", "--help"]
 
     # Vet
     vectors << ["vet", "--help"]
@@ -181,6 +322,7 @@ module BenchSelfhostCommandExercise
     # that reaches it.
     vectors << ["clear_cache", "--bogus-flag"]
     vectors << ["env", "--bogus-flag"]
+    vectors << ["docs", "--bogus-flag"]
 
     vectors
   end

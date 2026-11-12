@@ -1,21 +1,12 @@
-import compiler/foundation/location
-import compiler/foundation/errors
+import compiler/foundation/location::{Location}
+import compiler/foundation/errors::{SyntaxException}
 import compiler/foundation/enums
-import compiler/foundation/string_pool
-import compiler/syntax/token
-import compiler/syntax/lexer
-import compiler/syntax/ast
-import compiler/syntax/parser
-import compiler/syntax/visitor
-
-using compiler/foundation/location::{Location}
-using compiler/foundation/errors::{SyntaxException}
-using compiler/foundation/string_pool::{StringPool}
-using compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState}
-using compiler/syntax/lexer::{Lexer}
-using compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, ModuleHeader, Macro, MacroIf, MacroFor, MacroExpression, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant}
-using compiler/syntax/parser::{Parser}
-using compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
+import compiler/foundation/string_pool::{StringPool}
+import compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState}
+import compiler/syntax/lexer::{Lexer}
+import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, ModuleHeader, ImportDecl, UsingDecl, Asm, AsmOperand, ReadInstanceVar, PointerOf, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, Out, Propagate, Defer, Recover, OffsetOf, Require, Select, ExceptionHandler, Rescue, ProcLiteral, ProcPointer, Macro, MacroIf, MacroFor, MacroExpression, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 
 module BenchSelfhostParserExercise
   def self.assert(cond : Bool, msg : String)
@@ -267,7 +258,7 @@ module BenchSelfhostParserExercise
       s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
       s
     when IsA
-      s = "#{p}IsA\n"
+      s = "#{p}IsA nil_check=#{node.nil_check}\n"
       s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
       s += "#{p}  const:\n" + dump_ast(node.const, indent + 2)
       s
@@ -513,6 +504,120 @@ module BenchSelfhostParserExercise
       s
     when MagicConstant
       "#{p}MagicConstant name=#{node.name.to_s.downcase}\n"
+    when ModuleHeader
+      "#{p}ModuleHeader path=#{escape_s(node.path.join("/"))}\n"
+    when ImportDecl
+      names_s = "nil"
+      if n = node.names
+        names_s = "[" + n.join(", ") + "]"
+      end
+      "#{p}ImportDecl path=#{escape_s(node.path.join("/"))} exported=#{node.exported} glob=#{node.glob} names=#{names_s}\n"
+    when UsingDecl
+      names_s = "nil"
+      if n = node.names
+        names_s = "[" + n.join(", ") + "]"
+      end
+      "#{p}UsingDecl path=#{escape_s(node.path.join("/"))} names=#{names_s}\n"
+    when Asm
+      s = "#{p}Asm text=#{escape_s(node.text)} volatile=#{node.volatile} alignstack=#{node.alignstack} intel=#{node.intel} can_throw=#{node.can_throw}\n"
+      if outs = node.outputs
+        s += "#{p}  outputs:\n"
+        outs.each { |o| s += dump_ast(o, indent + 2) }
+      end
+      if ins = node.inputs
+        s += "#{p}  inputs:\n"
+        ins.each { |i| s += dump_ast(i, indent + 2) }
+      end
+      if cls = node.clobbers
+        s += "#{p}  clobbers=[" + cls.map { |c| escape_s(c) }.join(", ") + "]\n"
+      end
+      s
+    when AsmOperand
+      s = "#{p}AsmOperand constraint=#{escape_s(node.constraint)}\n"
+      s += dump_ast(node.exp, indent + 1)
+      s
+    when ReadInstanceVar
+      s = "#{p}ReadInstanceVar name=#{escape_s(node.name)}\n"
+      s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+      s
+    when TypeOf
+      s = "#{p}TypeOf\n"
+      node.expressions.each { |e| s += dump_ast(e, indent + 1) }
+      s
+    when PointerOf
+      "#{p}PointerOf\n" + dump_ast(node.exp, indent + 1)
+    when SizeOf
+      "#{p}SizeOf\n" + dump_ast(node.exp, indent + 1)
+    when InstanceSizeOf
+      "#{p}InstanceSizeOf\n" + dump_ast(node.exp, indent + 1)
+    when AlignOf
+      "#{p}AlignOf\n" + dump_ast(node.exp, indent + 1)
+    when InstanceAlignOf
+      "#{p}InstanceAlignOf\n" + dump_ast(node.exp, indent + 1)
+    when Out
+      "#{p}Out\n" + dump_ast(node.exp, indent + 1)
+    when Propagate
+      "#{p}Propagate\n" + dump_ast(node.exp, indent + 1)
+    when Defer
+      "#{p}Defer\n" + dump_ast(node.exp, indent + 1)
+    when Recover
+      s = "#{p}Recover\n"
+      s += "#{p}  exp:\n" + dump_ast(node.exp, indent + 2)
+      s += "#{p}  default:\n" + dump_ast(node.default, indent + 2)
+      s
+    when OffsetOf
+      s = "#{p}OffsetOf\n"
+      s += "#{p}  offsetof_type:\n" + dump_ast(node.offsetof_type, indent + 2)
+      s += "#{p}  offset:\n" + dump_ast(node.offset, indent + 2)
+      s
+    when Require
+      "#{p}Require string=#{escape_s(node.string)}\n"
+    when Select
+      s = "#{p}Select\n"
+      s += "#{p}  whens:\n"
+      node.whens.each { |w| s += dump_ast(w, indent + 2) }
+      if el = node.else
+        s += "#{p}  else:\n" + dump_ast(el, indent + 2)
+      end
+      s
+    when ExceptionHandler
+      s = "#{p}ExceptionHandler implicit=#{node.implicit} suffix=#{node.suffix}\n"
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      if rescues = node.rescues
+        s += "#{p}  rescues:\n"
+        rescues.each { |r| s += dump_ast(r, indent + 2) }
+      end
+      if el = node.else
+        s += "#{p}  else:\n" + dump_ast(el, indent + 2)
+      end
+      if en = node.ensure
+        s += "#{p}  ensure:\n" + dump_ast(en, indent + 2)
+      end
+      s
+    when Rescue
+      rname = "nil"
+      if n = node.name
+        rname = escape_s(n)
+      end
+      s = "#{p}Rescue name=#{rname}\n"
+      if types = node.types
+        s += "#{p}  types:\n"
+        types.each { |t| s += dump_ast(t, indent + 2) }
+      end
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when ProcLiteral
+      "#{p}ProcLiteral\n" + dump_ast(node.def, indent + 1)
+    when ProcPointer
+      s = "#{p}ProcPointer name=#{escape_s(node.name)} global=#{node.global}\n"
+      if o = node.obj
+        s += "#{p}  obj:\n" + dump_ast(o, indent + 2)
+      end
+      if !node.args.empty?
+        s += "#{p}  args:\n"
+        node.args.each { |a| s += dump_ast(a, indent + 2) }
+      end
+      s
     else
       "#{p}ASTNode\n"
     end
@@ -620,6 +725,41 @@ module BenchSelfhostParserExercise
     assert(def_magic.args[0].default_value.as(MagicConstant).name == TokenKind::MAGIC_FILE, "file is MAGIC_FILE")
     assert(def_magic.args[1].default_value.as(MagicConstant).name == TokenKind::MAGIC_LINE, "line is MAGIC_LINE")
     assert(def_magic.args[2].default_value.as(MagicConstant).name == TokenKind::MAGIC_DIR, "dir is MAGIC_DIR")
+
+    # A type declaration written as an argument of a call (`getter name : String`)
+    # declares no local variable, so a bare `name` after it is still a call. A parser
+    # that declared every type-declared name would answer `Var` here.
+    p_leak = Parser.new("getter name : String\nname")
+    exps_leak = p_leak.parse.as(Expressions).expressions
+    assert(exps_leak[0].is_a?(Call), "getter with a type declaration argument is a call")
+    assert(exps_leak[1].is_a?(Call), "a name after a call-argument type declaration is a call")
+    assert(exps_leak[1].as(Call).name == "name", "leaked name is the call name")
+
+    # Inline assembly: the template, the operand groups, the clobbers and the
+    # options, each read back. The `::` form leaves the middle parts empty.
+    p_asm = Parser.new("asm(\"nop\" : \"=r\"(x) : \"r\"(y) : \"memory\" : \"volatile\")\nasm(\"pause\" :::: \"volatile\")")
+    exps_asm = p_asm.parse.as(Expressions).expressions
+    asm_full = exps_asm[0].as(Asm)
+    assert(asm_full.text == "nop", "asm template")
+    assert(asm_full.volatile == true, "asm volatile option")
+    assert(asm_full.alignstack == false, "asm alignstack defaults off")
+    outs_full = asm_full.outputs.as(Array(AsmOperand))
+    assert(outs_full.size == 1 && outs_full[0].constraint == "=r", "asm output operand constraint")
+    ins_full = asm_full.inputs.as(Array(AsmOperand))
+    assert(ins_full.size == 1 && ins_full[0].constraint == "r", "asm input operand constraint")
+    clobbers_full = asm_full.clobbers.as(Array(String))
+    assert(clobbers_full.size == 1 && clobbers_full[0] == "memory", "asm clobber")
+    asm_bare = exps_asm[1].as(Asm)
+    assert(asm_bare.text == "pause", "bare asm template")
+    assert(asm_bare.volatile == true, "bare asm volatile option")
+    assert(asm_bare.outputs.nil? && asm_bare.inputs.nil?, "empty asm parts are absent")
+
+    # A concurrent select: its `when`s are an assignment of a call and a call, read back.
+    p_sel = Parser.new("select\nwhen got = ch.receive\n  got\nwhen timeout(5)\n  1\nend")
+    sel = p_sel.parse.as(Select)
+    assert(sel.whens.size == 2, "select has two whens")
+    assert(sel.whens[0].conds[0].is_a?(Assign), "select assignment when")
+    assert(sel.whens[1].conds[0].is_a?(Call), "select call when")
     puts "ok (declarations verified)"
   end
 
@@ -641,7 +781,10 @@ module BenchSelfhostParserExercise
       "bench/fixtures/expr_blocks.iyi",
       "bench/fixtures/expr_multi_assign.iyi",
       "bench/fixtures/expr_case_when.iyi",
+      "bench/fixtures/expr_asm.iyi",
+      "bench/fixtures/expr_select.iyi",
       "bench/fixtures/decl_classes_and_structs.iyi",
+      "bench/fixtures/decl_getter_type_leak.iyi",
       "bench/fixtures/decl_def.iyi",
       "bench/fixtures/decl_enums.iyi",
       "bench/fixtures/decl_lib_and_fun.iyi",
@@ -652,6 +795,13 @@ module BenchSelfhostParserExercise
       "bench/fixtures/decl_visibility_and_annotations.iyi",
       "bench/fixtures/syntax_macro_control_grammar.iyi",
       "bench/fixtures/syntax_string_concat_and_magic.iyi",
+      "bench/fixtures/syntax_macro_text_splits.iyi",
+      "bench/fixtures/syntax_macro_keywords_and_escapes.iyi",
+      "bench/fixtures/syntax_proc_literals.iyi",
+      "bench/fixtures/syntax_index_tuples_and_keyword_names.iyi",
+      "bench/fixtures/syntax_type_list_then_call.iyi",
+      "bench/fixtures/syntax_heredoc_command_and_folds.iyi",
+      "bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi",
     ]
 
     total_nodes = 0

@@ -21,8 +21,10 @@ require "./spec_helper"
 # can raise, and an iyi program cannot name that type.
 private ROOT = File.expand_path(File.join(__DIR__, "..", ".."))
 
+# The list separator is the platform's: `;` on Windows, where a drive letter
+# owns the colon.
 private def crystal_env
-  {"CRYSTAL_PATH" => "lib:#{File.join(ROOT, "src")}"}
+  {"CRYSTAL_PATH" => "lib#{Process::PATH_DELIMITER}#{File.join(ROOT, "src")}"}
 end
 
 describe "`crystal tool bind`, end to end" do
@@ -56,7 +58,7 @@ describe "`crystal tool bind`, end to end" do
 
           # Both ways a module can carry a function, because they mangle
           # differently. `extend self` puts `polite` on the module and `def
-          # self.` puts `brisk` on the metaclass, which has no `@`. Crystal's
+          # self.` puts `brisk` on the metaclass, which has no `^`. Crystal's
           # own library is written the second way throughout.
           def polite(name : String) : String
             "hello, " + name

@@ -20,20 +20,32 @@ class Iyi::CodeGenVisitor
   def target_def_fun(target_def, self_type) : LLVMTypedFunction
     self_type = iyi_artifact_self_type(target_def, self_type)
     mangled_name = target_def.mangled_name(@program, self_type)
+    iyi_record_unit_lib(target_def)
+
+    # iyi: a library def the runtime calls is compiled a second time for
+    # it, under a name of its own and with no check in it
+    # (`iyi_runtime_copy?`); a program's own calls reach the checked one.
+    runtime_copy = iyi_runtime_copy?(target_def)
+    mangled_name = "#{mangled_name}$runtime" if runtime_copy
 
     # iyi: a method that takes a block is instantiated with the caller's block
-    # inlined into it, so its machine code belongs to whoever wrote the block
-    # and not to the module that declared the method (SPEC.md IV.1g).
+    # inlined into it, and a `forall` method at the caller's types, so its
+    # machine code belongs to whoever wrote the call and not to the module
+    # that declared the method (SPEC.md IV.1g).
     #
     # Emitted here, private to this unit, and so absent from the artifact —
     # which is what the consumer needs, because it makes its own from the body
     # that travels in `MonoBodies`. Left in the module's own unit it was a
     # duplicate symbol for a block the producer happened to write, and a
-    # missing one for every block it did not.
-    if iyi_block_instantiated?(target_def, self_type)
+    # missing one for every block it did not. A `forall` def left there also
+    # took the producer's own types into the library's artifact:
+    # `wrap(Meters.new)` in a program put `Lib::Box2::Box(Q4::Meters)` in
+    # `lib/box2`'s type ids, and every other program importing it was refused
+    # because it "cannot name it".
+    if iyi_caller_instantiated?(target_def, self_type)
       here = ModuleInfo.new(@llvm_mod, @llvm_typer, self.builder)
       func = typed_fun?(@llvm_mod, mangled_name) ||
-             codegen_fun(mangled_name, target_def, self_type, fun_module_info: here, iyi_internal: true)
+             codegen_fun(mangled_name, target_def, self_type, fun_module_info: here, iyi_internal: true, iyi_runtime_copy: runtime_copy)
       return check_mod_fun @llvm_mod, mangled_name, func
     end
 
@@ -67,21 +79,40 @@ class Iyi::CodeGenVisitor
     if host = iyi_closure_host(self_type)
       internal = host.mod != type_module(self_type).mod
       func = typed_fun?(host.mod, mangled_name) ||
-             codegen_fun(mangled_name, target_def, self_type, fun_module_info: host, iyi_internal: internal)
+             codegen_fun(mangled_name, target_def, self_type, fun_module_info: host, iyi_internal: internal, iyi_runtime_copy: runtime_copy)
       return check_mod_fun host.mod, mangled_name, func
     end
 
     self_type_mod = type_module(self_type).mod
 
-    func = typed_fun?(self_type_mod, mangled_name) || codegen_fun(mangled_name, target_def, self_type)
+    func = typed_fun?(self_type_mod, mangled_name) || codegen_fun(mangled_name, target_def, self_type, iyi_runtime_copy: runtime_copy)
     check_mod_fun self_type_mod, mangled_name, func
+  end
+
+  # iyi: the `lib` a unit calls into, recorded where the call is.
+  #
+  # `codegen_fun` records it too, at the declaration — but a `lib`'s type
+  # has no unit of its own, so its funs are declared in the main module and
+  # reach a calling unit through `check_mod_fun`, which never passes that
+  # line. The list an artifact carries was empty for every module whose
+  # `lib` is its own: `std/socket`'s `LibWs2_32` on Windows, where every
+  # program built from that artifact failed to link on sixteen Winsock
+  # symbols (`bench/samples_roundtrip.sh`, the first time it ran there), and
+  # a `lib` nested in a class on Linux, where `libm` being linked anyway
+  # was all that hid it.
+  private def iyi_record_unit_lib(target_def) : Nil
+    return unless target_def.is_a?(External) && !target_def.external_var?
+    return if @program.iyi_exported_owners.empty? || @llvm_mod == @main_mod
+    owner = target_def.owner
+    return unless owner.is_a?(LibType)
+    (@program.iyi_unit_libs[@llvm_mod.name] ||= Set(String).new) << owner.to_s
   end
 
   # iyi: the receiver a def read from a `.iyimod` is keyed on (SPEC.md IV.1g).
   #
   # The type that *defines* the method, not the one it was called through. A
   # method is instantiated per receiver in an ordinary build, so calling an
-  # inherited `tag` on a `Derived` asks for `*Shard::Derived@Shard::Base#tag`
+  # inherited `tag` on a `Derived` asks for `*Shard::Derived^Shard::Base#tag`
   # — and a boundary has one symbol per method, the one the producer emitted
   # against `Base`. The consumer asked for an instantiation nobody made.
   #
@@ -111,8 +142,8 @@ class Iyi::CodeGenVisitor
     # A *module*'s method is the same exception one word over, and for the same
     # reason: it is compiled once per *including* type, so there is no single
     # symbol to key on. `db` writes `module Disposable` with a `close` in it,
-    # and its artifact defines `*DB::Connection+@DB::Disposable#close`,
-    # `*DB::Statement+@…` and `*DB::ResultSet+@…` — one apiece. Keyed on the
+    # and its artifact defines `*DB::Connection+^DB::Disposable#close`,
+    # `*DB::Statement+^…` and `*DB::ResultSet+^…` — one apiece. Keyed on the
     # module the consumer asked for `*DB::Disposable#close`, which is nobody's.
     return self_type if defining.instance_type.module?
 
@@ -123,19 +154,59 @@ class Iyi::CodeGenVisitor
     # The *virtual* form, because that is what the producer's build gave it. A
     # value of a class something inherits from is held as that class's virtual
     # type, so the one symbol behind `Base#tag` is
-    # `*Shard::Base+@Shard::Base#tag` and not `*Shard::Base#tag`. For a class
+    # `*Shard::Base+^Shard::Base#tag` and not `*Shard::Base#tag`. For a class
     # nothing inherits from the two are the same type, which is why this reads
     # as a no-op everywhere else.
     defining.responds_to?(:virtual_type) ? defining.virtual_type : defining
   end
 
   # iyi: whether this def's machine code is the caller's rather than the
-  # module's — a block-taking method of a module whose artifact is being
-  # written (SPEC.md IV.1g).
-  private def iyi_block_instantiated?(target_def, self_type) : Bool
+  # module's — a block-taking or `forall` method, one with an untyped
+  # parameter, or one whose parameter's type admits types it does not name,
+  # of a module whose artifact is being written (SPEC.md IV.1g,
+  # `IyiMod.caller_instantiated?`, `IyiMod.open_parameter?`). Not the last
+  # two in `iyi bind`'s fill build: the boundary declares such a parameter
+  # at the type its keep file passes, and the consumer links the symbol
+  # (`Program#iyi_fills_boundary?`).
+  #
+  # Asked of the def as it was written, which is what the artifact writer
+  # asks it of. A call with named arguments instantiates an expansion this
+  # compiler wrote, whose parameters carry no restriction whatever the
+  # written ones said: `FilterDefinition.new(kind: kind, …)` reached
+  # `new:kind:method:path:handler` with four untyped parameters, its code
+  # went private to the caller, and `webapp` built from its artifacts was
+  # refused on `FilterDefinition#initialize`, which "its object code has no
+  # symbol for".
+  #
+  # An impl's method is left out of the open-parameter rule. Whether its
+  # body travels is decided from the written text before any type resolves
+  # (`iyi_impl_signature_widened?` in the top-level visitor), so one with a
+  # trait-typed parameter on a type its module declares travels as a header,
+  # and moving its instantiations here would leave the consumer's call to
+  # the header with no symbol.
+  private def iyi_caller_instantiated?(target_def, self_type) : Bool
     return false if @program.iyi_exported_owners.empty?
-    return false unless target_def.block_arg || target_def.block_arity
-    @program.iyi_exported_owners.includes?(self_type.instance_type)
+    return false unless @program.iyi_exported_owners.includes?(self_type.instance_type)
+    written = target_def.iyi_origin || target_def
+    return true if IyiMod.caller_bound?(written)
+    return false if @program.iyi_fills_boundary?
+    return true if IyiMod.untyped_parameter?(written)
+    return false if written.iyi_from_impl?
+    IyiMod.open_parameter?(written.owner? || self_type, written)
+  end
+
+  # iyi: the refusal for a call to a method an artifact declares and none
+  # defines, naming the module the declaration came from — the parser read
+  # it under the artifact's path, and `iyi_artifact_modules` is keyed on that.
+  private def iyi_refuse_unreached(target_def : Def, self_type) : NoReturn
+    file = target_def.location.try(&.original_read_from)
+    module_name = file.try { |path| @program.iyi_artifact_modules[path]? } || file || "an imported module"
+    owner = target_def.owner? || self_type
+    target_def.raise "#{module_name}'s artifact declares `#{Call.def_full_name(owner, target_def)}`, " \
+                     "and its object code has no symbol for it: the build that wrote the artifact " \
+                     "never reached it. An artifact carries the machine code its producing build " \
+                     "compiled (SPEC.md IV.1g). Write #{module_name}'s artifact again from a build " \
+                     "that calls it, or build against #{module_name}'s source"
   end
 
   # The unit a callee should be copied into, or nil to route it normally.
@@ -197,7 +268,7 @@ class Iyi::CodeGenVisitor
     typed_fun
   end
 
-  def codegen_fun(mangled_name, target_def, self_type, is_exported_fun = false, fun_module_info = type_module(self_type), is_fun_literal = false, is_closure = false, iyi_internal = false)
+  def codegen_fun(mangled_name, target_def, self_type, is_exported_fun = false, fun_module_info = type_module(self_type), is_fun_literal = false, is_closure = false, iyi_internal = false, iyi_runtime_copy = false)
     old_position = insert_block
     old_entry_block = @entry_block
     old_alloca_block = @alloca_block
@@ -218,6 +289,9 @@ class Iyi::CodeGenVisitor
       context.type = self_type
       context.vars = LLVMVars.new
       context.block_context = nil
+      context.indirect_return = nil
+      context.iyi_preempt = !iyi_runtime_copy && iyi_preemptible?(target_def)
+      context.iyi_runtime = iyi_runtime_copy || ((iyi_preempt_on? || iyi_chaos?) && iyi_runtime_def?(target_def))
 
       @llvm_mod = fun_module_info.mod
       @llvm_context = @llvm_mod.context
@@ -262,9 +336,31 @@ class Iyi::CodeGenVisitor
       compiled_elsewhere = !is_fun_literal &&
                            @program.iyi_artifact_symbols.includes?(mangled_name)
 
+      # iyi: and a header no artifact defines a symbol for is a call the link
+      # cannot answer. An artifact carries the machine code its producing
+      # build reached (SPEC.md IV.1g), so a method that build never called is
+      # declared in it and compiled nowhere — and left to the linker the
+      # program ended on `LNK2019 unresolved external symbol` and a mangled
+      # `.2A.Kit.3A..3A.Lib.5E.Kit.3A..3A.Lib.3A..3A.fb_public.3C.Int32.3E.`,
+      # naming no module. Refused here, where the module is still known.
+      if target_def.iyi_from_artifact? && !compiled_elsewhere && !is_fun_literal &&
+         !target_def.is_a?(External)
+        iyi_refuse_unreached target_def, self_type
+      end
+
       needs_body = (!target_def.is_a?(External) || is_exported_fun) &&
                    !target_def.iyi_from_artifact? &&
                    !compiled_elsewhere
+
+      # iyi: a def whose body is an artifact's is external whatever the
+      # build's module count. `codegen_fun_signature` internalises every def
+      # of a single-module build, and a declaration left internal is invalid
+      # IR - "Global is external, but doesn't have external or weak
+      # linkage!", from `--release --use-iyimod` and a cross-compile against
+      # artifacts.
+      if target_def.iyi_from_artifact? || compiled_elsewhere
+        context.fun.linkage = LLVM::Linkage::External
+      end
 
       # iyi: what this unit *defines*, so the artifact can say so (SPEC.md
       # IV.1g). A consumer compiles what the artifact does not define, and
@@ -323,6 +419,17 @@ class Iyi::CodeGenVisitor
         context.fun.linkage = LLVM::Linkage::Internal
       end
 
+      # iyi: the prelude's `memcpy`, `memmove` and `memset` are there to
+      # answer the calls LLVM makes for this program's own code, and are
+      # hidden so they answer nobody else's. Linked with `-rdynamic` they
+      # were in the dynamic symbol table, and on Linux a C library the
+      # program links (`@[Link]`) bound its own copies to these simple loops
+      # rather than to libc's. Hidden, the static link still resolves the
+      # program's calls to them, and a shared library keeps libc's.
+      if is_exported_fun && needs_body && mangled_name.in?("memcpy", "memmove", "memset")
+        context.fun.visibility = LLVM::Visibility::Hidden
+      end
+
       if needs_body
         emit_def_debug_metadata target_def unless @debug.none?
         set_current_debug_location target_def if @debug.line_numbers?
@@ -343,6 +450,10 @@ class Iyi::CodeGenVisitor
         end
 
         new_entry_block
+
+        # iyi: a function that checks at its back-edges, for the recursion
+        # pass to look for call cycles among (`PreemptChecks.mark_recursion`).
+        @program.iyi_preempt_funs << context.fun.name if context.iyi_preempt? && !target_def.naked? && iyi_preempt_fun
 
         if is_closure
           clear_current_debug_location if @debug.line_numbers?
@@ -521,10 +632,17 @@ class Iyi::CodeGenVisitor
       args.push Arg.new(special_var_name, type: target_def.vars.not_nil![special_var_name].type)
     end
 
+    # iyi: an iyi function takes and returns a large value through memory
+    # (`LLVMTyper#passed_indirectly?`). An `External` keeps the shapes its
+    # declaration gives, an LLVM intrinsic's included.
+    indirect = !target_def.is_a?(External)
+
     llvm_args_types = args.map_with_index do |arg, i|
       arg_type = arg.type
       if arg_type.void?
         llvm_arg_type = llvm_context.int8
+      elsif indirect && !arg.special_var? && passed_indirectly?(arg_type)
+        llvm_arg_type = llvm_context.void_pointer
       else
         llvm_arg_type = llvm_type(arg_type)
 
@@ -558,7 +676,21 @@ class Iyi::CodeGenVisitor
       offset = 0
     end
 
+    indirect_return = indirect && passed_indirectly?(target_def.type)
+    if indirect_return
+      llvm_args_types << llvm_context.void_pointer
+      llvm_return_type = llvm_context.void
+    end
+
     setup_context_fun(mangled_name, target_def, llvm_args_types, llvm_return_type)
+
+    if indirect_return
+      # The caller's own slot, made for the call: nothing else reaches it.
+      return_param = context.fun.params[llvm_args_types.size - 1]
+      return_param.name = "return"
+      context.fun.add_attribute LLVM::Attribute::NoAlias, llvm_args_types.size
+      context.indirect_return = return_param
+    end
 
     if @debug.variables?
       context.fun_debug_params.clear
@@ -628,10 +760,25 @@ class Iyi::CodeGenVisitor
       context.fun.call_convention = call_convention
     end
 
-    if @single_module && mangled_name.starts_with?("__crystal_")
+    if iyi_internalise? && (mangled_name.starts_with?("__crystal_") || mangled_name.starts_with?("__iyi_"))
       # FIXME: macos ld fails to link when the personality fun is internal; it
       # might work with lld so we might want to check the linker?
-      unless @program.has_flag?("darwin") && mangled_name.starts_with?("__crystal_personality")
+      #
+      # `__iyi_sigreturn` joins the list for the reason `__iyi_fiber_` is on
+      # it: inline `asm` names it as a literal string, which no pass can see,
+      # so internalising it leaves a symbol with no visible reference and the
+      # optimiser strips it. On x86_64 Linux that surfaced as
+      # `ld.lld: error: undefined symbol: __iyi_sigreturn`, from the two
+      # instructions a signal handler returns through. A reference the
+      # compiler cannot read is still a reference.
+      #
+      # `__iyi_preempt` for a reason of the same kind: its calls are put in
+      # after optimisation (`PreemptChecks`), so until then nothing calls
+      # it, and internal it was stripped before they were.
+      asm_referenced = mangled_name.starts_with?("__iyi_fiber_") ||
+                       mangled_name.includes?("sigreturn") ||
+                       mangled_name == PREEMPT_NAME
+      unless (@program.has_flag?("darwin") && mangled_name.starts_with?(@personality_name)) || asm_referenced
         context.fun.linkage = LLVM::Linkage::Internal
       end
     end
@@ -722,6 +869,15 @@ class Iyi::CodeGenVisitor
         def_var = def_vars.try &.[var.name]?
         next if def_var && !def_var.closured?
 
+        # iyi: the contexts are walked from the nearest out, and a name the
+        # nearer one already gave is a different variable further out. A
+        # block's own `doomed`, captured inside the block, and a `doomed`
+        # the enclosing def assigns after the block are two variables with
+        # two slots; the def's overwrote the block's here, so the proc read
+        # the block's Int32 out of the def's String slot and the compiler
+        # died with "BUG: trying to downcast Int32 <- String".
+        next if self.context.vars.has_key?(var.name)
+
         if context.fun.naked?
           debug_variable_created = false
         else
@@ -797,10 +953,16 @@ class Iyi::CodeGenVisitor
     var_type = (target_def_var || arg).type
     return if var_type.void?
 
+    # iyi: a value passed indirectly arrives as a pointer to the caller's
+    # bytes (`LLVMTyper#passed_indirectly?`), which is the form `assign`
+    # takes it in, and is copied from there into this function's own slot
+    # before anything else runs. A block's arguments arrive the same way.
+    in_memory = arg.type.passed_by_value? && value.type.kind.pointer?
+
     if closure_var = context.vars[arg.name]?
       pointer = closure_var.pointer
 
-      if arg.type.passed_by_value?
+      if arg.type.passed_by_value? && !in_memory
         # Create an alloca and store it there, so assign works well
         pointer2 = alloca(llvm_type(arg.type))
         store value, pointer2
@@ -849,7 +1011,7 @@ class Iyi::CodeGenVisitor
 
           context.vars[arg.name] = LLVMVar.new(pointer, var_type)
 
-          if arg.type.passed_by_value? && !context.fun.attributes(index + 1).by_val?
+          if arg.type.passed_by_value? && !in_memory && !context.fun.attributes(index + 1).by_val?
             # Create an alloca and store it there, so assign works well
             pointer2 = alloca(llvm_type(arg.type))
             store value, pointer2
@@ -860,7 +1022,11 @@ class Iyi::CodeGenVisitor
             # For pass-by-value we create an alloca so the value
             # is behind a pointer, as everywhere else
             pointer = alloca(llvm_type(var_type), arg.name)
-            store value, pointer
+            if in_memory
+              copy_value pointer, value, arg.type, fresh: true
+            else
+              store value, pointer
+            end
             pointer = declare_debug_for_function_argument(arg.name, var_type, index + 1, pointer, location) unless target_def.naked?
             context.vars[arg.name] = LLVMVar.new(pointer, var_type)
             return

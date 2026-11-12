@@ -149,7 +149,7 @@ class Iyi::CodeGenVisitor
         exception_type_id = extract_value lp, 1
 
         # We call __crystal_get_exception to get the actual crystal `Exception` object.
-        get_exception_fun = main_fun(GET_EXCEPTION_NAME)
+        get_exception_fun = main_fun(get_exception_name)
         get_exception_arg_type = get_exception_fun.type.params_types.first # Void* or LibUnwind::Exception*
         get_exception_arg = pointer_cast(unwind_ex_obj, get_exception_arg_type)
 
@@ -234,13 +234,36 @@ class Iyi::CodeGenVisitor
       # or it would execute twice (and segfault).
       ensure_exception_handlers.pop
 
-      # We codegen the ensure block, unlike the rescue blocks, inside the catchpad block.
-      # This means we can re-raise efficiently, and is safe, since ensures cannot use return, next,
-      # break or any other construct to jump outside of the ensure block.
-      accept node_ensure if node_ensure
+      # On MSVC we are still inside the catchpad here. With no `ensure` the
+      # exception is re-raised from inside it, `_CxxThrowException(NULL,
+      # NULL)`, which rethrows the C++ runtime's per-thread "current
+      # exception": nothing runs in between, so nothing can replace it.
+      # iyi: an `ensure` is not run in there. A funclet is the C++ catch
+      # block, and an `ensure` that switches fibers inside it (a channel
+      # operation, IO, `sleep`, a contended mutex) leaves the runtime's
+      # per-thread exception state to the next fiber on that thread. Two
+      # fibers raising through an ensure that yields aborted the process
+      # with 0xC0000409 in 3 runs of 3, on one thread; one fiber alone
+      # passed 3 of 3 (bench/ensure_park.cr, Windows 11, 12 logical
+      # processors, the user's machine). So the pad has caught the object
+      # into `caught_exception_ptr`, `catchret` leaves the funclet, the
+      # ensure runs as ordinary code, and the object is thrown again by
+      # name (`codegen_rethrow_caught`). The path with no exception is
+      # untouched.
+      if node_ensure && msvc && (catch_pad = @catch_pad)
+        ensure_after_catch = new_block "ensure_after_catch"
+        builder.build_catch_ret catch_pad, ensure_after_catch
+        position_at_end ensure_after_catch
+        @catch_pad = old_catch_pad
 
-      # ensure finished, re-raise the current exception.
-      codegen_re_raise(node, unwind_ex_obj)
+        accept node_ensure
+        codegen_rethrow_caught(node, caught_exception_ptr)
+      else
+        accept node_ensure if node_ensure
+
+        # ensure finished, re-raise the current exception.
+        codegen_re_raise(node, unwind_ex_obj)
+      end
 
       # This is the block in which all exceptions raised in any `rescue` block end up.
       # We want to run the ensure and re-raise.
@@ -248,7 +271,9 @@ class Iyi::CodeGenVisitor
         position_at_end rescue_ensure_block
 
         # Codegen catchswitch+pad or landing pad as described above.
-        # This code is simpler because we never need to extract the exception type
+        # This code is simpler because we never need to extract the exception type.
+        # iyi: on MSVC the pad catches the object and leaves the funclet
+        # before the ensure runs, for the reason given above.
         if msvc
           rescue_ensure_body = new_block "rescue_ensure_body"
           catch_switch = builder.catch_switch(old_catch_pad || LLVM::Value.null, @rescue_block || LLVM::BasicBlock.null, 1)
@@ -256,16 +281,24 @@ class Iyi::CodeGenVisitor
 
           position_at_end rescue_ensure_body
 
-          @catch_pad = builder.catch_pad catch_switch, [void_ptr_type_descriptor, int32(0), llvm_context.void_pointer.null]
+          rescue_ensure_exception_ptr = alloca llvm_type(@program.exception.virtual_type)
+          catch_pad = builder.catch_pad catch_switch, [void_ptr_type_descriptor, int32(0), rescue_ensure_exception_ptr]
+          rescue_ensure_after_catch = new_block "rescue_ensure_after_catch"
+          builder.build_catch_ret catch_pad, rescue_ensure_after_catch
+          position_at_end rescue_ensure_after_catch
+          @catch_pad = old_catch_pad
+
+          accept node_ensure
+          codegen_rethrow_caught(node, rescue_ensure_exception_ptr)
         else
           lp_ret_type = llvm_typer.landing_pad_type
           lp = builder.landing_pad lp_ret_type, main_fun(personality_name).func, [] of LLVM::Value
           unwind_ex_obj = extract_value lp, 0
-        end
 
-        # Codegen ensure, then make sure we re-raise the exception.
-        accept node_ensure
-        codegen_re_raise(node, unwind_ex_obj)
+          # Codegen ensure, then make sure we re-raise the exception.
+          accept node_ensure
+          codegen_re_raise(node, unwind_ex_obj)
+        end
       end
 
       # We are no longer inside the catch pad
@@ -277,7 +310,10 @@ class Iyi::CodeGenVisitor
     # However, ensure blocks do not affect the return type of an exception handler, so we need to
     # save and restore @last to preserve the correct return value.
     old_last = @last
-    accept node_ensure if node_ensure
+    if node_ensure
+      old_last = preserve_across_ensure(old_last, node.type?) if @needs_value
+      accept node_ensure
+    end
     @last = old_last
 
     false
@@ -289,15 +325,30 @@ class Iyi::CodeGenVisitor
       call windows_throw_fun, [llvm_context.void_pointer.null, llvm_context.void_pointer.null]
       unreachable
     else
-      raise_fun = main_fun(RAISE_NAME)
+      raise_fun = main_fun(raise_name)
       raise_fun_arg_type = raise_fun.func.params.first.type # Void* or LibUnwind::Exception*
       raise_fun_arg = pointer_cast(unwind_ex_obj.not_nil!, raise_fun_arg_type)
       codegen_call_or_invoke(node, nil, nil, raise_fun, [raise_fun_arg], true, @program.no_return)
     end
   end
 
-  def execute_ensures_until(node)
+  # iyi: MSVC only, outside any funclet: throws again the exception object a
+  # catchpad stored at *exception_slot*, the way `raise_without_backtrace`
+  # throws it (`_CxxThrowException` of a pointer to the reference, with
+  # `void*`'s throw info). The object and its callstack are the caught
+  # ones; `raise` would only fill a callstack that is nil, and it is not.
+  # Invoked, not called, so an enclosing handler catches it.
+  private def codegen_rethrow_caught(node, exception_slot)
+    args = [cast_to_void_pointer(exception_slot), cast_to_void_pointer(void_ptr_throwinfo)]
+    codegen_call_or_invoke(node, nil, nil, windows_throw_fun, args, true, @program.no_return)
+  end
+
+  # iyi: *value_type* is the type of `@last`, the value a `return`, `break` or
+  # `next` carries past the ensures; `@last` is that value again afterwards.
+  def execute_ensures_until(node, value_type : Type? = nil)
     stop_exception_handler = @node_ensure_exception_handlers[node]?.try &.node
+    value = @last
+    preserved = false
 
     @ensure_exception_handlers.try &.reverse_each do |exception_handler|
       break if exception_handler.node.same?(stop_exception_handler)
@@ -305,10 +356,35 @@ class Iyi::CodeGenVisitor
       target_ensure = exception_handler.node.ensure
       next unless target_ensure
 
+      unless preserved
+        value = preserve_across_ensure(value, value_type)
+        preserved = true
+      end
+
       with_context(exception_handler.context) do
         accept target_ensure
       end
     end
+
+    @last = value
+  end
+
+  # iyi: a value passed by value is a pointer, and reading a variable yields a
+  # pointer to the variable's own storage. An ensure that reassigns the
+  # variable then rewrites a value that was already taken, and with another
+  # type it leaves bytes the value's type does not describe: `return u` with
+  # `u : Char | String` and `ensure u = -2` returned an `Int32` read as a
+  # `Char`. The value is evaluated before the ensure runs, so copy it out
+  # before the first ensure body.
+  private def preserve_across_ensure(value, type)
+    return value unless type && type.passed_by_value? && !builder.end
+    # Only an address can change under the ensure; a value already loaded
+    # is itself, and loading through it would be wrong.
+    return value unless value.type.kind.pointer?
+
+    copy = alloca llvm_type(type)
+    store_value value, type, copy, fresh: true
+    copy
   end
 
   def set_ensure_exception_handler(node)

@@ -16,13 +16,9 @@
 #
 # Every section prints a progress line and raises on mismatch.
 
-import std/slice
-import std/qpack
-import std/hpack
-
-using std/slice::{Slice, Bytes}
-using std/hpack::{Integer, Huffman, HpackError}
-using std/qpack::{Qpack, TableEntry, FieldLine, Encoder, Decoder, QpackError, QPACK_DECOMPRESSION_FAILED, QPACK_ENCODER_STREAM_ERROR, QPACK_DECODER_STREAM_ERROR}
+import std/slice::{Slice, Bytes}
+import std/hpack::{Integer, Huffman, HpackError}
+import std/qpack::{Qpack, TableEntry, FieldLine, Encoder, Decoder, QpackError, QPACK_DECOMPRESSION_FAILED, QPACK_ENCODER_STREAM_ERROR, QPACK_DECODER_STREAM_ERROR}
 
 # ===========================================================================
 # 1. Static Table (Appendix A, 99 entries)

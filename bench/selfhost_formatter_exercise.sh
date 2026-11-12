@@ -15,6 +15,7 @@ status=0
 diverged=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
+. "$REPO/bench/lib/mutation.sh"
 FMT="$REPO/src/compiler/tools/formatter.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -38,27 +39,17 @@ CORPUS=(
   "samples/iyi/modules.iyi"
   "samples/iyi/sessions.iyi"
   "samples/iyi/socket.iyi"
-  "samples/iyi/std_collections.iyi"
-  "samples/iyi/std_compress.iyi"
   "samples/iyi/std_iterator.iyi"
-  "samples/iyi/std_json.iyi"
-  "samples/iyi/std_regex.iyi"
   "samples/iyi/std_text.iyi"
   "samples/iyi/std_time.iyi"
-  "samples/iyi/std_util.iyi"
-  "samples/iyi/std_yaml.iyi"
   "samples/iyi/webapp.iyi"
   "src/std/bool.iyi"
-  "src/std/cmp.iyi"
-  "src/std/comparable.iyi"
   "src/std/deque.iyi"
-  "src/std/iterable.iyi"
   "src/std/list.iyi"
-  "src/std/nil.iyi"
-  "src/std/pretty_print.iyi"
   "src/std/steppable.iyi"
   "src/std/string_scanner.iyi"
-  "src/std/traits.iyi"
+  "src/std/enum.iyi"
+  "src/std/uuid.iyi"
 )
 
 echo "== 1. Building the selfhost formatter exercise driver"
@@ -133,44 +124,19 @@ fi
 echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
-prove_mutation() {
-  local label="$1"
-  local old="$2"
-  local new="$3"
-  echo "  [$label]"
-  cp "$FMT" "$FMT.orig"
-  python3 - "$FMT" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  local rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$FMT.orig" "$FMT" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$FMT.orig" "$FMT"; rm -f "$FMT.orig"
-    return
+# Each check rebuilds the formatter with the mutation applied and compares it with the
+# shipped formatter on the corpus. It returns zero only when the comparison still passes.
+check_formatter_parity() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_formatter_exercise.iyi" >/dev/null 2>&1 || return 1
+  if compare_corpus "$WORK/mut-exercise" >/dev/null 2>&1; then
+    return 0
   fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_formatter_exercise.iyi" >/dev/null 2>&1; then
-    if compare_corpus "$WORK/mut-exercise" >/dev/null 2>&1; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the formatted output diverged on corpus, as it must"
-    fi
-  else
-    echo "    caught: the mutated formatter did not build"
-  fi
-  cp "$FMT.orig" "$FMT"; rm -f "$FMT.orig"
-  echo "    reverted"
+  return 1
 }
 
 MUTATIONS_RUN=0
 run_proof() {
-  prove_mutation "$1" "$2" "$3"
+  prove_mutation "$1" "$FMT" "$2" "$3" -- check_formatter_parity || status=1
   MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 }
 

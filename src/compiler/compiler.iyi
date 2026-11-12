@@ -9,43 +9,27 @@
 # 6. Emit: native object file emission
 # 7. Link: platform linker command construction and execution
 
+@[Unsafe("reads string bytes through to_unsafe in its substring search, which the compiler does not check")]
 module compiler/compiler
 
-import compiler/syntax/parser
-import compiler/syntax/ast
-import compiler/semantic/normalizer
-import compiler/semantic/top_level
-import compiler/semantic/main_visitor
-import compiler/llvm
-import compiler/codegen/codegen
+import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
+import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
+import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/backend/backend::{Backend, BuildRequest}
+import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, refuse_exception_handlers, register_primitive_operators}
 import compiler/platform/target
-import compiler/platform/linker
-import compiler/loader
-import compiler/syntax/token
-import compiler/macros/interpreter
-import compiler/macros/methods
+import compiler/loader::{Loader, ModuleInfo, IyiPath}
+import compiler/syntax/token::{NumberKind}
+import compiler/macros/interpreter::{MacroInterpreter}
+import compiler/macros/target_flags::{MacroTargetFlags}
+import compiler/macros/methods::{MacroMethods}
 
-using compiler/syntax/parser::{Parser}
-using compiler/syntax/token::{NumberKind}
-using compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
-using compiler/macros/interpreter::{MacroInterpreter}
-using compiler/macros/methods::{MacroMethods}
-using compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
-using compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
-using compiler/semantic/main_visitor::{MainVisitor}
-using compiler/llvm/context::{Context}
-using compiler/llvm/module::{Module}
-using compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, register_primitive_operators}
-using compiler/platform/linker::{Linker}
-using compiler/loader::{Loader, ModuleInfo, IyiPath}
-
-alias LLVMTarget = ::Compiler::Llvm::Target::Target
+import compiler/ir/module::{Module}
+import compiler/ir/layout::{LayoutError}
+import compiler/ir/verifier::{verify}
+import compiler/ir/printer::{print}
 alias PlatformTarget = ::Compiler::Platform::Target::Target
-
-lib LibC
-  fun system(cmd : UInt8*) : Int32
-  fun exit(status : Int32) : NoReturn
-end
 
 # Configuration options for the compiler pipeline.
 pub struct CompilerConfig
@@ -92,30 +76,41 @@ end
 pub class Compiler
   property config : CompilerConfig
   property loader : Loader
+  property emit_ir : Bool
 
-  def initialize(@config : CompilerConfig = CompilerConfig.new, @loader : Loader = Loader.new)
+  def initialize(@config : CompilerConfig = CompilerConfig.new, @loader : Loader = Loader.new, @backend : Backend = Backend.new)
+    @emit_ir = false
   end
 
   def compile(root_filename : String) : CompileResult
     # 1. Resolve: discover all dependencies, detect cycles, produce topological order
-    resolved_modules = begin
-      if @config.single_file
-        @loader.resolve_single(root_filename)
-      else
-        @loader.resolve(root_filename)
+    parsed = group do |g|
+      task = g.spawn do
+        if @config.single_file
+          @loader.resolve_single(root_filename)
+        else
+          @loader.resolve(root_filename)
+        end
       end
-    rescue ex
+      task.value
+    end
+    if parsed.is_a?(Panicked)
       if @config.probe_phase
-        puts "parse: fail: #{ex.to_s}"
+        puts "parse: fail: #{parsed.message}"
         puts "reached: none"
         return CompileResult.new(@config.output_filename, "", [] of ModuleInfo)
-      else
-        raise ex.to_s
       end
+      raise parsed.message
     end
+    resolved_modules = parsed
     if @config.probe_phase
       puts "[phase] parse: pass"
       STDOUT.flush
+    end
+
+    # Exception handling is refused by name, before any lowering (SPEC.md III.1).
+    resolved_modules.each do |mod_info|
+      refuse_exception_handlers(mod_info.ast)
     end
 
     # 3. Normalise: run normalizer over each resolved module's AST
@@ -134,16 +129,33 @@ pub class Compiler
     libs = [] of LibDef
     top_level = [] of ASTNode
 
+    # Declarations are collected in load order. Each module's own top-level code
+    # runs in the initialiser order the oracle uses (Loader.initialiser_order),
+    # with the entry file's last.
+    module_tops = {} of String => Array(ASTNode)
     resolved_modules.each do |mod_info|
-      Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, top_level)
+      mod_top = [] of ASTNode
+      Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, mod_top, MacroTargetFlags.for_triple(@config.target_triple || @backend.default_triple, [] of String))
+      module_tops[mod_info.filename] = mod_top
     end
+    Loader.initialiser_order(resolved_modules).each do |mod_info|
+      module_tops[mod_info.filename].each { |node| top_level << node }
+    end
+    # A plain top-level def is a function, as a fun is: a receiver-less call reaches it through
+    # the program's defs and its body is emitted. The block table still serves inlining. The
+    # defs come first, as the oracle checks them before the funs' bodies.
+    def_funs = [] of FunDef
+    defs.each_value do |d|
+      # A def taking a block is inlined at each block call, and a generic def is instantiated at
+      # each call: neither has a body of its own to emit.
+      next if d.block_arg || !d.free_vars.nil?
+      def_funs << FunDef.new(d.name, d.args, d.return_type, d.body)
+    end
+    funs = def_funs + funs
     if top_level.empty? && funs.none? { |f| f.name == "main" }
       top_level << Nop.new
     end
     append_entry_point(funs, top_level)
-    if funs.none? { |f| f.name == "__crystal_raise" }
-      Compiler.append_raise_runtime(classes, funs, defs, libs, top_level)
-    end
 
     # Register funs in program
     funs.each do |fd|
@@ -152,67 +164,64 @@ pub class Compiler
       prog.add_def(d)
     end
 
-    begin
-      tl = TopLevelVisitor.new(prog)
-      tl.declare_types(classes)
-      classes.each do |cd|
-        cd.accept(tl)
-      end
-      tl.finish
+    semantic = group do |g|
+      task = g.spawn do
+        tl = TopLevelVisitor.new(prog)
+        tl.declare_types(classes)
+        classes.each do |cd|
+          cd.accept(tl)
+        end
+        tl.finish
 
-      mv = MainVisitor.new(prog)
-      funs.each do |fd|
-        ret_type = if rt = fd.return_type
-                     prog.lookup_type_node(rt, prog)
-                   else
-                     prog.int32_type
-                   end
-        mv.set_type(fd, ret_type)
+        mv = MainVisitor.new(prog)
+        funs.each do |fd|
+          ret_type = if rt = fd.return_type
+                       prog.lookup_type_node(rt, prog)
+                     else
+                       prog.int32_type
+                     end
+          mv.set_type(fd, ret_type)
+        end
+        mv
       end
-    rescue ex
+      task.value
+    end
+    if semantic.is_a?(Panicked)
       if @config.probe_phase
-        puts "semantic: fail: #{ex.to_s}"
+        puts "semantic: fail: #{semantic.message}"
         puts "reached: parse"
         return CompileResult.new(@config.output_filename, "", resolved_modules)
-      else
-        raise ex.to_s
       end
+      raise semantic.message
     end
+    mv = semantic
 
     if @config.probe_phase
       puts "[phase] semantic: pass"
       STDOUT.flush
     end
 
-    # 5. Codegen: create LLVM context, module, target machine, and compile
-    ctx = Context.new
+    # 5. Codegen: build the IR module for the target, then compile into it
     mod_name = Compiler.module_name_from_path(root_filename)
-    mod = Module.new(mod_name, ctx)
-
-    LLVMTarget.init_native_target
-    LLVMTarget.init_all_targets
-    triple = @config.target_triple || LLVMTarget.default_target_triple
-    mod.target = triple
-    native_target = LLVMTarget.from_triple(triple)
-    tm = native_target.create_target_machine(
-      triple, "", "",
-      LibLLVM::CodeGenOptLevel::Default,
-      LibLLVM::RelocMode::PIC,
-      LibLLVM::CodeModel::Default
-    )
-    mod.data_layout = tm.data_layout
+    triple = @config.target_triple || @backend.default_triple
+    built = Module.for_target(mod_name, PlatformTarget.new(triple))
+    if built.is_a?(LayoutError)
+      raise built.as(LayoutError).to_s
+    end
+    mod = built.as(Module)
 
     roots = resolved_modules.map { |mi| mi.ast.as(ASTNode) }
-    begin
-      compile_declarations_to_module(classes, funs, defs, libs, root_filename, ctx, mod, prog, mv, roots)
-    rescue ex
+    compiled = group do |g|
+      task = g.spawn { compile_declarations_to_module(classes, funs, defs, libs, root_filename, mod, prog, mv, roots) }
+      task.value
+    end
+    if compiled.is_a?(Panicked)
       if @config.probe_phase
-        puts "codegen: fail: #{ex.to_s}"
+        puts "codegen: fail: #{compiled.message}"
         puts "reached: semantic"
         return CompileResult.new(@config.output_filename, "", resolved_modules)
-      else
-        raise ex.to_s
       end
+      raise compiled.message
     end
 
     if @config.probe_phase
@@ -220,81 +229,32 @@ pub class Compiler
       STDOUT.flush
     end
 
+    # The IR verifier decides first: an IR module it refuses never reaches a backend.
+    errors = verify(mod)
     if @config.probe_verify
-      is_valid, verify_err = mod.verify_safely
-      if is_valid
+      if errors.empty?
         puts "[verify] pass"
       else
-        puts "[verify] fail: " + verify_err
+        puts "[verify] fail: " + errors[0].to_s
       end
       STDOUT.flush
       return CompileResult.new(@config.output_filename, "", resolved_modules)
     end
-    # 6. Emit: write native object file
+    unless errors.empty?
+      raise "IR verifier refused the module: " + errors[0].to_s
+    end
+    # --emit ir: the verified module is written to the output as IR text, and no backend runs.
+    if @emit_ir
+      File.write(@config.output_filename, print(mod))
+      return CompileResult.new(@config.output_filename, "", resolved_modules)
+    end
+    # 6. Emit and link: the backend writes the output. A refusal is raised here, by name, and nothing is written.
     obj_path = @config.obj_output_filename || (@config.output_filename + ".o")
-    begin
-      tm.emit_obj_to_file(mod.to_unsafe, obj_path)
-    rescue ex
-      if @config.probe_phase
-        puts "object: fail: #{ex.to_s}"
-        puts "reached: codegen"
-        return CompileResult.new(@config.output_filename, "", resolved_modules)
-      else
-        raise ex.to_s
-      end
+    request = BuildRequest.new(@config.output_filename, obj_path, !@config.obj_output_filename.nil?, @config.emit_obj_only, @config.verbose, @config.probe_phase, triple)
+    refusal = @backend.build(mod, request)
+    unless refusal.nil?
+      raise refusal.as(String)
     end
-
-    if @config.probe_phase
-      puts "[phase] object: pass"
-      STDOUT.flush
-    end
-
-    if @config.emit_obj_only
-      if @config.verbose
-        puts "Emitted object file: #{obj_path}"
-      end
-      if @config.probe_phase
-        puts "reached: object"
-      end
-      return CompileResult.new(@config.output_filename, obj_path, resolved_modules)
-    end
-
-    # 7. Link: construct platform linker command and link binary
-    plat_target = PlatformTarget.new(triple)
-    link_result = Linker.linker_command(plat_target, [obj_path], @config.output_filename)
-
-    cmd_template = link_result.cmd
-    quoted_objs = if objs = link_result.objects
-                    Linker.quote_posix(objs)
-                  else
-                    Linker.quote_posix([obj_path])
-                  end
-
-    final_cmd = Compiler.substitute_placeholder(cmd_template, "\"${@}\"", quoted_objs)
-    status = LibC.system(final_cmd.to_unsafe)
-    if @config.probe_phase
-      if status == 0
-        puts "[phase] link: pass"
-        puts "reached: link"
-      else
-        puts "link: fail: platform linker returned #{status}"
-        puts "reached: object"
-      end
-      if @config.obj_output_filename.nil? && File.exists?(obj_path)
-        File.delete(obj_path)
-      end
-      return CompileResult.new(@config.output_filename, obj_path, resolved_modules)
-    end
-
-    unless status == 0
-      STDERR.puts "Error: linking failed with exit code #{status}"
-      LibC.exit(status)
-    end
-    # Clean up temporary object file if not explicitly requested
-    if @config.obj_output_filename.nil? && File.exists?(obj_path)
-      File.delete(obj_path)
-    end
-
     CompileResult.new(@config.output_filename, obj_path, resolved_modules)
   end
 
@@ -361,10 +321,11 @@ pub class Compiler
     defs : Hash(String, Def),
     libs : Array(LibDef),
     top_level : Array(ASTNode) = [] of ASTNode,
+    flags : Array(String) = MacroTargetFlags.host([] of String),
   ) : Nil
     if node.is_a?(Expressions)
       node.as(Expressions).expressions.each do |e|
-        extract_declarations(e, classes, funs, defs, libs, top_level)
+        extract_declarations(e, classes, funs, defs, libs, top_level, flags)
       end
     elsif node.is_a?(ClassDef)
       classes << node.as(ClassDef)
@@ -402,13 +363,13 @@ pub class Compiler
       cdef.body = Expressions.new(body_nodes)
       classes << cdef
     elsif node.is_a?(VisibilityModifier)
-      extract_declarations(node.as(VisibilityModifier).exp, classes, funs, defs, libs, top_level)
+      extract_declarations(node.as(VisibilityModifier).exp, classes, funs, defs, libs, top_level, flags)
     elsif node.is_a?(MacroIf)
       mif = node.as(MacroIf)
-      interp = MacroInterpreter.new
+      interp = MacroInterpreter.new(nil, flags)
       cond_val = interp.evaluate(mif.cond)
       branch = MacroMethods.truthy?(cond_val) ? mif.then : mif.else
-      extract_declarations(branch, classes, funs, defs, libs, top_level)
+      extract_declarations(branch, classes, funs, defs, libs, top_level, flags)
     elsif node.is_a?(Alias) || node.is_a?(ImplDef) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)
       # Declarations or compile-time constructs, not top-level runtime code
     elsif node.is_a?(ImportDecl) || node.is_a?(Require)
@@ -418,157 +379,5 @@ pub class Compiler
     elsif !node.is_a?(Annotation) && !node.is_a?(Nop)
       top_level << node
     end
-  end
-
-  def self.append_raise_runtime(
-    classes : Array(ClassDef),
-    funs : Array(FunDef),
-    defs : Hash(String, Def),
-    libs : Array(LibDef),
-    top_level : Array(ASTNode),
-  ) : Nil
-    rt_source = %(
-lib LibC
-  fun exit(status : Int32) : NoReturn
-  fun malloc(size : UInt64) : Void*
-end
-
-lib LibUnwind
-  fun raise_exception = _Unwind_RaiseException(ex : Void*) : Int32
-  fun get_region_start = _Unwind_GetRegionStart(context : Void*) : UInt64
-  fun get_ip = _Unwind_GetIP(context : Void*) : UInt64
-  fun get_language_specific_data = _Unwind_GetLanguageSpecificData(context : Void*) : UInt8*
-  fun set_gr = _Unwind_SetGR(context : Void*, index : Int32, value : UInt64) : Void
-  fun set_ip = _Unwind_SetIP(context : Void*, value : UInt64) : Void
-end
-
-fun __crystal_get_exception(ex : Void*) : UInt64
-  p64 = ex.as(Pointer(UInt64))
-  p64[4]
-end
-
-@[Raises]
-fun __crystal_raise(ex : Void*) : NoReturn
-  buf = LibC.malloc(48_u64)
-  p64 = buf.as(Pointer(UInt64))
-  p64[0] = 0x4352590000000000_u64
-  p64[1] = 0_u64
-  p64[2] = 0_u64
-  p64[3] = 0_u64
-  p64[4] = ex.address
-
-  p32 = buf.as(Pointer(Int32))
-  ex_p32 = ex.as(Pointer(Int32))
-  tid = ex_p32[0]
-  p32[10] = tid
-
-  LibUnwind.raise_exception(buf)
-  LibC.exit(1)
-end
-
-fun __crystal_personality(version : Int32, actions : Int32, exception_class : UInt64, exception_object : Void*, context : Void*) : Int32
-  start = LibUnwind.get_region_start(context)
-  ip = LibUnwind.get_ip(context)
-  lsd = LibUnwind.get_language_specific_data(context)
-  if lsd.address == 0_u64
-    return 8
-  end
-
-  throw_offset = (ip &- 1_u64) &- start
-  p = lsd
-  lp_start_encoding = p[0]
-  p = p + 1_i64
-  if lp_start_encoding != 0xff_u8
-    LibC.exit(1)
-  end
-
-  ttype_encoding = p[0]
-  p = p + 1_i64
-  if ttype_encoding != 0xff_u8
-    shift = 0
-    while true
-      b = p[0]
-      p = p + 1_i64
-      break if (b & 0x80_u8) == 0_u8
-      shift = shift &+ 7
-    end
-  end
-
-  cs_encoding = p[0]
-  p = p + 1_i64
-
-  cs_table_length = 0_u64
-  shift = 0
-  while true
-    b = p[0]
-    p = p + 1_i64
-    cs_table_length = cs_table_length | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
-    break if (b & 0x80_u8) == 0_u8
-    shift = shift &+ 7
-  end
-
-  cs_table_end = p + cs_table_length.to_i64
-
-  while p.address < cs_table_end.address
-    cs_offset = 0_u64
-    cs_length = 0_u64
-    cs_addr = 0_u64
-    action = 0_u64
-
-    if cs_encoding == 3_u8
-      p32_cs = p.as(Pointer(UInt32))
-      cs_offset = p32_cs[0].to_u64
-      cs_length = p32_cs[1].to_u64
-      cs_addr = p32_cs[2].to_u64
-      p = p + 12_i64
-    else
-      shift = 0
-      while true
-        b = p[0]; p = p + 1_i64
-        cs_offset = cs_offset | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
-        break if (b & 0x80_u8) == 0_u8; shift = shift &+ 7
-      end
-      shift = 0
-      while true
-        b = p[0]; p = p + 1_i64
-        cs_length = cs_length | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
-        break if (b & 0x80_u8) == 0_u8; shift = shift &+ 7
-      end
-      shift = 0
-      while true
-        b = p[0]; p = p + 1_i64
-        cs_addr = cs_addr | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
-        break if (b & 0x80_u8) == 0_u8; shift = shift &+ 7
-      end
-    end
-
-    shift = 0
-    while true
-      b = p[0]; p = p + 1_i64
-      action = action | ((b & 0x7f_u8).to_u64.unsafe_shl(shift))
-      break if (b & 0x80_u8) == 0_u8; shift = shift &+ 7
-    end
-
-    if cs_addr != 0_u64 && cs_offset <= throw_offset && throw_offset <= (cs_offset &+ cs_length)
-      if (actions & 1) != 0
-        return 6
-      end
-      if (actions & 4) != 0
-        unwind_ip = start &+ cs_addr
-        obj_p32 = exception_object.as(Pointer(Int32))
-        tid = obj_p32[10].to_u64
-        LibUnwind.set_gr(context, 0, exception_object.address)
-        LibUnwind.set_gr(context, 1, tid)
-        LibUnwind.set_ip(context, unwind_ip)
-        return 7
-      end
-    end
-  end
-
-  8
-end
-)
-    rt_ast = Parser.new(rt_source, "runtime").parse
-    Compiler.extract_declarations(rt_ast, classes, funs, defs, libs, top_level)
   end
 end

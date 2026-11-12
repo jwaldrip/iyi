@@ -1,13 +1,10 @@
 module compiler/syntax/ast
 
-import compiler/foundation/location
+import compiler/foundation/location::{Location}
 import compiler/foundation/enums
-import compiler/syntax/token
+import compiler/syntax/token::{Keyword, TokenKind, NumberKind}
 
-using compiler/foundation/location::{Location}
-using compiler/syntax/token::{Keyword, TokenKind, NumberKind}
-
-pub enum Visibility : Int8
+pub enum Visibility : Int32
   Public    = 0
   Protected = 1
   Private   = 2
@@ -82,14 +79,22 @@ pub class StringBuilder
 end
 
 # Out-of-band side map keyed by node object_id so ASTNode types are never reopened.
+#
+# The key is the node's address, so the map holds the node as well as the value. A map that kept only the address
+# let the collector free a node nothing else referred to (a discarded clone), and the next node allocated at that
+# address then found the dead node's entry: a type or a target that belonged to another node, and at a point that
+# depended on when the collector ran, so two runs of one compiler on one program could differ.
 pub class NodeMap(V)
   @store : Hash(UInt64, V)
+  @nodes : Hash(UInt64, ASTNode)
 
   def initialize
     @store = Hash(UInt64, V).new
+    @nodes = Hash(UInt64, ASTNode).new
   end
 
   def []=(node : ASTNode, value : V) : V
+    @nodes[node.node_id] = node
     @store[node.node_id] = value
     value
   end
@@ -111,6 +116,7 @@ pub class NodeMap(V)
   end
 
   def delete(node : ASTNode) : V?
+    @nodes.delete(node.node_id)
     @store.delete(node.node_id)
   end
 
@@ -124,6 +130,7 @@ pub class NodeMap(V)
 
   def clear : Nil
     @store = Hash(UInt64, V).new
+    @nodes = Hash(UInt64, ASTNode).new
   end
 end
 
@@ -368,6 +375,45 @@ pub class Nop < ASTNode
   end
 
   def to_s(sb : StringBuilder) : Nil
+  end
+end
+
+# The body of a def declared with `@[Primitive(:name)]`: the declarations pass puts this node in place of the
+# def's own (empty) body, the main pass types it by name, and the lowering emits the operation it names. No
+# source text parses to it. The hosted compiler declares it in semantic/ast.cr; it lives with the other nodes
+# here because the visitor and the transformer dispatch over every node class.
+pub class Primitive < ASTNode
+  getter name : String
+  property extra : ASTNode?
+
+  def initialize(@name : String)
+  end
+
+  def clone_without_location : self
+    Primitive.new(@name)
+  end
+
+  def ==(other : self) : Bool
+    (@name == other.name)
+  end
+
+  def ==(other : ASTNode) : Bool
+    if other.is_a?(self)
+      self == other
+    else
+      false
+    end
+  end
+
+  def hash : Int32
+    h = 17
+    h = 31 &* h &+ hash_val(@name)
+    h
+  end
+
+  def to_s(sb : StringBuilder) : Nil
+    sb << "# primitive: "
+    sb << @name
   end
 end
 
@@ -1622,14 +1668,27 @@ pub class If < ASTNode
   property then : ASTNode
   property else : ASTNode
   property ternary : Bool
+  property from_and : Bool
+  property from_or : Bool
+  property truthy : Bool
+  property falsey : Bool
 
   def initialize(@cond : ASTNode, a_then : ASTNode? = nil, a_else : ASTNode? = nil, @ternary : Bool = false)
     @then = a_then || Nop.new
     @else = a_else || Nop.new
+    @from_and = false
+    @from_or = false
+    @truthy = false
+    @falsey = false
   end
 
   def clone_without_location : self
-    If.new(@cond.clone, @then.clone, @else.clone, @ternary)
+    copy = If.new(@cond.clone, @then.clone, @else.clone, @ternary)
+    copy.from_and = @from_and
+    copy.from_or = @from_or
+    copy.truthy = @truthy
+    copy.falsey = @falsey
+    copy
   end
 
   def accept_children(visitor) : Nil
@@ -2067,6 +2126,7 @@ pub class ExceptionHandler < ASTNode
   property else : ASTNode?
   property ensure : ASTNode?
   property suffix : Bool
+  property implicit : Bool = false
 
   def initialize(body : ASTNode? = nil, @rescues : Array(Rescue)? = nil, @else : ASTNode? = nil, @ensure : ASTNode? = nil, @suffix : Bool = false)
     @body = body || Nop.new
@@ -3478,6 +3538,10 @@ pub class ModuleDef < ASTNode
   property body : ASTNode
   property type_vars : Array(String)?
   property splat_index : Int32?
+  # iyi: true for the module a `module app/x` header makes of the rest of its
+  # file. It is not in the source: the formatter writes no keyword and looks
+  # for no `end`.
+  property iyi_unit : Bool = false
 
   def initialize(
     @name : Path = Path.new(""),
@@ -3489,12 +3553,14 @@ pub class ModuleDef < ASTNode
   end
 
   def clone_without_location : self
-    ModuleDef.new(
+    copy = ModuleDef.new(
       @name.clone.as(Path),
       @body.clone,
       clone_opt_strings(@type_vars),
       @splat_index
     )
+    copy.iyi_unit = @iyi_unit
+    copy
   end
 
   def accept_children(visitor) : Nil
@@ -3919,16 +3985,26 @@ end
 pub class ImportDecl < ASTNode
   property path : Array(String)
   property exported : Bool
+  property names : Array(String)?
+  property name_locations : Array(Location)?
+  property glob : Bool
 
-  def initialize(@path : Array(String) = [] of String, @exported : Bool = false)
+  def initialize(@path : Array(String) = [] of String, @exported : Bool = false, @names : Array(String)? = nil, @name_locations : Array(Location)? = nil, @glob : Bool = false)
+  end
+
+  def scopes? : Bool
+    @glob || !@names.nil?
   end
 
   def clone_without_location : self
-    ImportDecl.new(@path.dup, @exported)
+    names_dup = (n = @names) ? n.dup : nil
+    name_locs_dup = (nl = @name_locations) ? nl.dup : nil
+    decl = ImportDecl.new(@path.dup, @exported, names_dup, name_locs_dup, @glob)
+    decl
   end
 
   def ==(other : self) : Bool
-    (@path == other.path) && (@exported == other.exported)
+    (@path == other.path) && (@exported == other.exported) && (@names == other.names) && (@glob == other.glob)
   end
 
   def ==(other : ASTNode) : Bool

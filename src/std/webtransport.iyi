@@ -48,10 +48,8 @@
 
 module std/webtransport
 
-import std/slice
-import std/capsule
-using std/slice::{Slice, Bytes}
-using std/capsule::{VarInt, HttpDatagram, Capsule, CapsuleType, CapsuleReader, ExtendedConnect, CapsuleProtocol}
+import std/slice::{Slice, Bytes}
+import std/capsule::{VarInt, HttpDatagram, Capsule, CapsuleType, CapsuleReader, ExtendedConnect, CapsuleProtocol}
 
 # =============================================================================
 # Constants for WebTransport over HTTP/3
@@ -106,7 +104,7 @@ pub struct CloseSessionCapsule
     # UTF-8 reason string bytes
     i = 0
     while i < reason_bytesize
-      buf[4 + i] = @reason.to_unsafe[i]
+      buf[4 + i] = @reason.byte_at(i)
       i = i + 1
     end
 
@@ -131,13 +129,7 @@ pub struct CloseSessionCapsule
     code = b0.unsafe_shl(24_u64) | b1.unsafe_shl(16_u64) | b2.unsafe_shl(8_u64) | b3
     reason_len = remaining - 4
 
-    reason_str = String.new(reason_len) do |buffer|
-      i = 0
-      while i < reason_len
-        buffer[i] = bytes[offset + 4 + i]
-        i = i + 1
-      end
-    end
+    reason_str = String.new(bytes[offset + 4, reason_len])
 
     new(code, reason_str)
   end

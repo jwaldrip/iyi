@@ -26,14 +26,13 @@ nothing references, collect, 300 more allocations, and 299 of them come back
 from addresses the sweep reclaimed. A rooted object keeps every byte, comes out
 white, and its chunk is not handed out again.
 
-Finalizers and weak references are not built, and not for lack of time.
-Nothing in this language defines a finalizer, there is no `def finalize`
-anywhere in `src/iyi` or `samples/iyi`, so a finalizer queue would be a
-mechanism no program could put an entry in. Weak references are registration
-based and the standard library's `WeakRef` is on the `--crystal` side, so there
-is no table here to walk and null out. Both wait on the language having the
-feature. Statistics are the honest subset, counted as the walk goes: chunks
-swept, chunks kept, bytes freed, collections run.
+Finalizers are not built, and not for lack of time. Nothing in this language
+defines a finalizer, there is no `def finalize` anywhere in `src/iyi` or
+`samples/iyi`, so a finalizer queue would be a mechanism no program could put
+an entry in. Weak references waited on the same answer until `std/weak_ref`
+gave them a user, and are built now (Stage 6's third item, below). Statistics
+are the honest subset, counted as the walk goes: chunks swept, chunks kept,
+bytes freed, collections run.
 
 Stage 5: the mark phase. Roots go gray through Stage 3's walker, a queue in its
 own mapping drains, each object's payload is scanned to the bound its size
@@ -56,6 +55,42 @@ safe direction: a false positive retains a dead object, only a false
 negative frees a live one. `bench/mark_exercise.sh` proves the precision
 differentially and proves the check fails when the lookup is disabled.
 
+The stack is conservative too, and an optimised build decides what is on
+it. Three ways a dead structure stayed marked were measured and closed. A
+helper the top level called once was inlined into `__iyi_main`, whose
+frame lives as long as the program, and its array spilled to a slot of
+that frame nothing wrote again: 312 MB stayed marked through three
+`GC.collect` under --release, where a debug build freed it all. The
+compiler keeps a call the top level makes once out of line
+(`keep_call_out_of_main`, codegen/call.cr). The collector's own
+frames are built over what earlier, deeper calls left on the stack, so a
+slot one of them never wrote held a returned helper's 32 MB array:
+`IyiMark.collect` zeroes 2 KiB of dead stack first, as Boehm's
+`GC_clear_a_few_frames` does, from its caller's frame: it is always
+inlined, so no frame of the collection's own sits above the zeroed
+stretch. Out of line, its frame grew to 160 bytes when the stopper's
+priority became two thread-locals, and its lowest word, which nothing
+writes, kept the same 32 MB on Windows under LLVM 20.1.7. And
+`__iyi_main`'s frame is laid over the stack the loader ran on before
+`main` - dyld left 2,209 words
+down to 21,696 bytes under it on macos-15, Linux x86_64's start 5,352
+bytes deep - so a slot of it the program never wrote held the loader's
+word: on macos-15 four bytes dyld wrote, beside an `Int32` the top level
+left at 4, made a word inside a 64 MB string, and
+bench/concurrency_exercise.iyi's rendezvous check found 61 MiB kept in
+25 runs of 40 on one runner. `main` enters the program through
+`__iyi_enter`, which zeroes the 64 KiB under itself before
+`__iyi_main`'s frame is made. Two cases stay open, both
+measured. A helper inlined into a top-level *loop* can leave its last
+pass's structure in that frame (156 MB after a two-pass loop of the same
+helper), because keeping calls in a loop out of line cost a loop of a
+small function 2.6 times its time (613 ms against 240). And a debug
+build's own `collect` frame sits above the zeroed stretch, where a
+stale word kept the 32 MB. `bench/root_exercise.sh` checks the first two
+closed cases in its --release run, and the third with a top-level array
+the program never writes, which reads zero plain and --release and holds
+the loader's words in a copy of the prelude that zeroes nothing.
+
 Stage 6 sweeps what this stage decided, and the collector runs *itself*: an
 allocation-pressure trigger in the allocator's one funnel runs a collection
 when the bytes allocated since the last one cross the budget, and the budget
@@ -75,6 +110,9 @@ no live chunk hands the whole mapping back to the kernel — the class's
 free list stripped first, the arena unlinked from the heap's own walk,
 then the `munmap` — with one warm arena per class kept as the cushion
 that spares a spike-then-idle program the mmap on its next allocation.
+A class nobody has refilled for three collections and a second is
+past needing one: its cache lets the empty arena go, and its idle pages
+go cold whatever the warm budget (`IyiMark.class_idle?`).
 And the pauses have numbers rather than adjectives: a collection times
 itself on the kernel's own monotonic clock (a raw syscall on Linux into a
 page of the collector's own, libSystem's `clock_gettime_nsec_np` on
@@ -86,14 +124,18 @@ rather than asserted because a budget would be a number the gate made
 up.
 
 The default-allocator question now has its measurement (`bench/gc_default.py`,
-release builds, best of five, worst peak RSS of the same five):
+release builds, best of five, worst peak RSS of the same five). The columns
+are the arms that script passes *today*: the flip below renamed both of the
+first two — what was `default` when this was measured is `-Dgc_none` now, and
+what was `-Dgc_iyi` is the default — so the header said, for a while, to run
+a flag the script no longer has:
 
-| workload | default (bump) | `-Dgc_iyi` | `-Dgc_boehm` |
+| workload | default (the collector) | `-Dgc_none` (the bump pointer) | `-Dgc_boehm` |
 |---|---|---|---|
-| arithmetic (no allocation) | 0.038 s / 15 MiB | 0.039 s / 15 MiB | 0.046 s / 15 MiB |
-| live set (8M-element array) | 0.018 s / 66 MiB | 0.017 s / 84 MiB | 0.018 s / 74 MiB |
-| churn (512 MiB, ~64 B live) | 0.125 s / 551 MiB | **0.048 s / 15 MiB** | 0.091 s / 15 MiB |
-| string churn (40k rebuilds) | 0.387 s / 767 MiB | **0.218 s / 34 MiB** | 0.257 s / 15 MiB |
+| arithmetic (no allocation) | 0.039 s / 15 MiB | 0.038 s / 15 MiB | 0.046 s / 15 MiB |
+| live set (8M-element array) | 0.017 s / 84 MiB | 0.018 s / 66 MiB | 0.018 s / 74 MiB |
+| churn (512 MiB, ~64 B live) | **0.048 s / 15 MiB** | 0.125 s / 551 MiB | 0.091 s / 15 MiB |
+| string churn (40k rebuilds) | **0.218 s / 34 MiB** | 0.387 s / 767 MiB | 0.257 s / 15 MiB |
 
 The owned collector wins or ties every time column and holds RSS at the live
 set where the bump pointer holds it at the garbage. The first reading was not
@@ -319,29 +361,70 @@ page and a TLS block laid out from PT_TLS on Linux, `pthread_create`
 on darwin — and `join` is the futex on the tid word the kernel clears,
 or `pthread_join`. A thread gets a scheduler state and a heap cache on
 first touch, so it spawns fibers and allocates without a lock, and it
-is not a task: no group owns it, nothing cancels it, no channel
-crosses it, and what crosses threads today is `Atomic(T)` — which is
-`Share`'s obligation, now with a second thread to refuse things for.
+is not a task: no group owns it and nothing cancels it, and what
+crosses threads is what `Share` lets a thread's block capture -
+`Atomic(T)`, a `Mutex(T)`, immutable values, and since SPEC.md III.4.13
+a `Channel(T)` of `Share` values. III.4.13's pool is threads of this
+kind: the workers parallel tasks run on are `IyiThread`s the runtime
+starts, so the stop below takes them as it takes any thread. A Linux
+program that calls C itself gets `pthread_create` on the same mapping
+instead, and `pthread_join`, because C on a raw clone runs without
+libc's thread state (SPEC.md III.4.11, issue #158); the thread names its
+own tid and links its own line, darwin's order.
 
 A collection takes the runtime lock first, so no thread it stops can
 be holding it; then signals every other registered thread and waits
 for each to count itself in. The handler copies the interrupted
 general registers out of the ucontext onto the thread's line, records
-sp and pc, and parks — futex on Linux, a pipe per thread on darwin —
-and the collector scans each stopped thread's spill and its stack from
-that sp to the top of whichever mapping holds it, the thread's own or
-a fiber's, found by asking every fiber. Two threads are not parked
-where they stand, and both are the Go rule this document reached from
-the allocator's side: one inside `IyiHeap.take` — between reading a
-cache list's head and popping it, a stop would leave a chunk claimed
-by nobody the sweep could then unmap — finds the handler leaving a
-request on its cache page and parks itself on the way out, spilling
-its own callee-saved registers; and one spinning for the runtime lock
-parks inside the spin, where it holds nothing. `SA_RESTART` restarts
-the syscalls a stop interrupts, and the poller already read EINTR as
-a wakeup with no news. A thread's last act returns its cache to the
-centre, lets its fill arenas go, and leaves the list a stop walks;
-the stop that began before it left waited for it.
+sp and pc, and parks — on a futex, the kernel's on Linux and libSystem's
+on darwin — and the collector scans each stopped thread's spill and its
+stack from that sp to the top of whichever mapping holds it, the
+thread's own or a fiber's, found by asking every fiber. Two threads are
+not parked where they stand, and both are the Go rule this document
+reached from the allocator's side: one inside `IyiHeap.take` — between
+reading a cache list's head and popping it, a stop would leave a chunk
+claimed by nobody the sweep could then unmap — finds the handler
+leaving a request on its cache page and parks itself on the way out,
+spilling its own callee-saved registers; and one spinning for the
+runtime lock parks inside the spin, where it holds nothing.
+`SA_RESTART` restarts the syscalls a stop interrupts, and the poller
+already read EINTR as a wakeup with no news. A thread's last act
+returns its cache to the centre, lets its fill arenas go, and leaves
+the list a stop walks; the stop that began before it left waited for
+it. Its first act is the mirror, and the platforms differ there. On
+Linux the line is linked, the tid in it, before `clone` returns, and a
+stop that signals the thread before its first instruction finds the
+line by that tid. On darwin a thread links its own line, after its
+first touch of a thread-local: dyld makes a thread's thread-locals
+there, one `calloc` of the image's block, and the stop's handler reads
+two of them (the line and the heap's cache). Linked by its parent
+before `pthread_create`, a thread could take the stop's signal inside
+that `calloc`; the handler's read made the block again and took the
+lock the interrupted call held, and on macOS 26.6 (the M2 Pro)
+libplatform killed the process ("Trying to recursively lock an
+os_unfair_lock") - `bench/thread_exercise.sh`'s switching program in 5
+runs of 130, and threads born beside a thread collecting in a loop
+(its step 7d) in 19 of 20, each inside 4 s. No stop names a darwin
+thread before that touch now, and the handler is never the one to make
+the block. The thread counts its line where it links it, too: counted
+by its parent, a thread yet to link was one a stop's count held and its
+walk never found, and a collection in that instant released nobody,
+cleared the counts the last release's threads leave by, and left the
+next stop waiting for them for good - 3 hangs in 276 plain runs of
+`bench/std_gc_exercise.iyi` on the M2 (step 7j makes the instant at
+will). Linux's block is mapped and copied by the parent before
+`clone`, and its thread-locals are loads that allocate nothing;
+Windows' stop runs no code on the thread it suspends, and the loader
+hands a thread its TLS array when it creates it. A thread's stack top,
+which bounds the scan of its stack, is the other thing a stop needs
+before the thread holds anything: the parent writes Linux's before
+`clone`, and a darwin thread writes `pthread_get_stackaddr_np`'s as its
+first store. It wrote it after `IyiStackGuard.install`'s allocation,
+and a stop in between scanned that stack from sp up to 0: the eager
+sweep in `GC.collect`'s pause freed the thread's first chunk, the
+thread's stores into it wrote over the free batch it went onto, and the
+centre's next pop faulted - 13 runs of 342 of step 7d on macos-15's
+three cores, before the thread-local fix as after it.
 
 What the build found, and what it decided. The trigger's count moved
 off the class variable onto the centre's atomic, folded per cache
@@ -354,13 +437,16 @@ and every sweep grew with it; the centre keeps a class's chunks as a
 stack of the sweep's own per-arena batches now and a refill takes one.
 And a budget floored at a MiB met eight allocating threads as 4,000
 collections a second, each a stop of eight and a sweep of eleven
-arenas, 300 µs where one thread's was 15: **the budget is floored at
-half of what the sweep walked**, so a collection costs a bounded
+arenas, 300 µs where one thread's was 15: **the budget was floored at
+half of what the sweep walked**, so a collection cost a bounded
 amount per byte allocated however many arenas the threads carved —
-the single-thread gates keep their arithmetic exactly (64 MiB of churn
+the single-thread gates kept their arithmetic exactly (64 MiB of churn
 is 64 collections), and eight threads went from 634 ns an allocation
-to 239. The stop's own cost is the floor's table: 22 µs for seven
-threads, 7% of the pause. The frame question was answered by use
+to 239. The lazy sweep took that floor out again (its feedback took
+binary trees' heap to 160 MiB for 3 MiB live), and the budget is the
+mark's live bytes times the growth, floored at 4 MiB. The stop's own
+cost is the floor's table: 22 µs for seven threads, 7% of the pause.
+The frame question was answered by use
 rather than by a mechanism: the handler runs on whatever stack the
 thread is on, a 256 KiB fiber stack included, and the probe's 5.7 KB
 frame is what a fiber has to have spare above its guard page when a
@@ -446,6 +532,111 @@ its first touch: 2 MB resident per worker for 4 KB used, 34 MB across
 sixteen, so the stacks refused huge pages by `madvise` - and begin at
 64 KB now and grow, the footprint section says.
 
+And one thing a fuzz of `std/semantic_version` found after. The program
+frees a large chunk itself when `realloc` outgrows it, under the lock,
+and that unlinked the node and unmapped it at once. The helpers walk
+the large list without the lock - `containing_large`, for every scanned
+word no arena holds - and may have the chunk grayed and queued: a helper
+read the unmapped node's link and faulted, in one run of four of a
+program joining a 4 MB string beside a mark over 200,000 versions. Under
+a mark the chunk stays mapped and listed now, and the sweep after the
+mark frees it; the look at the flag is under the lock the mark raises
+and lowers it under. `bench/concurrent_mark.sh` outgrows blocks under
+marks, requires each still listed while the mark runs and each freed
+after, and its proof removes the look.
+
+And one thing a server on every core found (#149). The mark's workers -
+the helpers, the collector, a mutator's assist - count themselves in and
+out of one word, and a drain ends when it reads zero with the pool
+empty. Each round also *stored* that word as it began: `mark` 1, the
+first stop 0, the second stop 1, the remainder round 0. The remainder
+round runs beside the program when the second stop retreats, and
+assists run there too: an assist counted in before the store had its
+one wiped, and its own -1 afterwards took the count below zero, where
+it never reads zero again. Every helper spun in `drain`, `@@collecting`
+stayed up, no collection ran again, and the heap of an API server on a
+twelve-vCPU Windows VM grew until the machine ran out, at eight and
+twelve workers and never at four. Windows' release is a `ResumeThread`
+per thread and then a wait for every thread that parked at the stop,
+and the threads resumed first allocate all the while; Linux's is one
+futex wake, and twenty runs of fifteen seconds of the server's shape at
+twelve workers here (`bench/mark_stall.iyi`, 1,588 second stops
+retreated) never stalled. The stores hid most of it besides: an assist
+whose -1 landed after the drains had ended left a count the next stop's
+store wrote over. A copy of the prelude that paused 200 µs before the
+remainder round's store saw 253 assists begin inside the pause over 22
+rounds, the count 1 to 6 before the store, and no stall; with each of
+those assists held until the store had landed, it stalled at its 39th
+collection with the count at 2^64 - 8, ten helpers holding permits and
+none done - the issue's nine helpers in `drain`, one from
+`remainder_round`.
+
+The count moves by one now and nothing stores it. Every round starts
+from the zero the last one ended at, because its drainers are waited
+for and a stop waits out every assist; the remainder round counts
+helper 0 in by one before the permits open, as `mark` counts the
+collector. Reviewing every store and permit found one more: helper 0
+read the generation it waits past next after letting the collection
+go, so a mark another thread began in between was one it waited past,
+and with one helper nobody drained it. It reads the generation before
+the lock is let go. And Windows showed one more, in the same place:
+`@@collecting` fell after helper 0 released the threads, and on a
+four-core runner the eight released workers took helper 0's cores, so
+they allocated with no mark to assist and no trigger to cross - 19,745
+slices turned away by `pressure`, the count since the last collection at
+334 MB against a budget of 4.3; the server's shape had its watchdog end
+3 to 7 runs of 8 there, on master and with the count fixed alike. The collection is let
+go before the release now, and the first thread to cross the budget
+waits at the lock for helper 0's accounts. The collections a program's
+own thread finishes had the same order - the trigger's whose mark ends
+in its first stop, the trigger's with no helper, and `collect` - and
+there the window was the program thread's: unwidened, with 8 and 12
+threads allocating garbage beside a small live set, the longest window
+in a run lasted 1.6 to 24.2 ms on twelve Linux cores, 18.9 to 164.2 ms
+on four-core Windows runners and 23.4 to 151.5 ms on a three-core darwin
+one, and the most counted in one was 176,816,128 bytes against a budget
+of 4,194,304. `collect_locked` and `finish_stopped` let the collection
+go before their release too, and `settle` waits for the lock after the
+flag, so a program that reads the accounts after it reads them whole.
+And a mark that does not end
+says so, on standard
+error, with the count, the pool's head, the generation, the permits and
+the helpers done: a count that goes below zero is fatal at the -1 that
+took it there, a round that begins with a worker counted in or a mark
+with work in its pool is fatal at its stop, and a mark in flight past
+ten seconds is reported once per doubling of its age by an assist (every
+64th), a drain with nothing to do, or a `collect` waiting for it - the
+longest mark measured beside the server's shape was 42 ms.
+`bench/concurrent_mark.sh` runs `bench/mark_stall.iyi` at twelve
+workers with every helper and with one; its watchdog holds the tasks
+once the collections have stood still for 256 MiB of allocation and
+fails the run if none ends in five seconds. And it runs
+`bench/release_trigger.iyi`: one collection on each of the program
+thread's paths, then a second thread's slices past the budget, which
+must trigger the next. Its proofs put the store back, a retreat forced
+at every second stop and a window before the store held open until an
+assist has counted itself in, which the runtime's below-zero check
+catches at the first collection; the late generation read back with one
+helper, held until the next mark begins, which the overdue report and
+the watchdog both catch at the second; and each `@@collecting` after its
+release again, its thread held between the two - helper 0 ten seconds,
+past its unlock, the others a second - which the watchdog catches for
+helper 0 and `bench/release_trigger.iyi` names by round for the others.
+The first three were left to the machine once: the store's missed on
+four-core Windows and three-core darwin runners, the late read's on a
+four-core Windows one, and helper 0's held the tasks there at 287 and 289
+MiB against the watchdog's 256. Every proof is caught in every run now:
+12 of 12 each here held to three, four and twelve cores, and one run on
+each of three four-core Windows runners and a three-core darwin one,
+where `bench/concurrent_mark.sh` and `bench/parallel_mark.sh` passed
+whole. Helper 0's was held then until the count stood still for half a
+second, and beside #150's warm room it slipped through in 2 runs of 12 on
+twelve cores: a cache folds its allocation into the count a slice at a
+time, so the held tasks still allocated, and a slice collected once the
+flag fell. A fixed hold under the lock was worse, 2 of 36 caught; a
+fixed hold after the unlock is caught 36 of 36 on three, four and twelve
+cores.
+
 The budget is twice what survived, and what was allocated under the
 mark did not survive anything: born gray, so counted marked, but not
 live in the sense the budget wants, and counted the other way a program
@@ -511,8 +702,8 @@ and the waste is capped at eight bytes below 128 and a fifth above. A
 
 Then the pages. A collector that frees chunks but never pages has a
 resident size that is its high-water mark. The sweep hands runs of dead
-pages back to the kernel with `madvise(MADV_DONTNEED)` (darwin:
-`MADV_FREE_REUSABLE`), a bit per page in the arena's first page saying
+pages back to the kernel with `madvise(MADV_DONTNEED)` (darwin: a fresh
+`mmap(MAP_FIXED)` laid over the run; Windows: decommit and commit), a bit per page in the arena's first page saying
 so, and the carve takes a run up again as its bump region before it
 touches the frontier - which it now carves a slab at a time, 64 KB, so
 that the heap fills from its low addresses and the frontier stays cold.
@@ -658,7 +849,17 @@ run is split at the budget now. And the budget was counted in pages
 against bytes the program asks for; a 64-byte class's page holds an
 eighth less payload than its bytes, so the warm pages held an eighth
 less than the epoch's demand and the carve took the difference from the
-frontier every epoch. The count is of payload.
+frontier every epoch. The count is of payload. And the payload was
+counted at the chunk, where past 128 bytes a request rounds up by as
+much as a quarter of it: crystal-metric's Pidigits asked 40 KB of
+48 KB chunks, a fifth of every epoch's pages went back to the kernel and
+came back by a fault a page, and the loop took 680 ms against 500. A
+quarter-step class's page is counted at the least a request in it asks,
+one byte past the class below; the sweep exercise's `rounding` check
+churns 32,769-byte requests a budget at a time and requires no page of
+theirs to go back cold, which the chunk count failed with 1,928. Peak
+resident set: the probe's the same (median 119 MB against 118), Pidigits'
+14.2 MB against 13.1.
 
 The scavenge unmapped a churning class's arenas every pause - every
 one of them is dead at every mark - and every epoch mapped fresh ones
@@ -673,6 +874,22 @@ resident garbage until the sweep reaches it, and the kernel should have
 it back. Sparing only arenas holding warm pages spared nothing a churn
 leaves, since a churn consumes its kept pages. Both were built,
 measured and taken out.
+
+What those measured was a budget two arenas deep. A deep one pays the
+faults in proportion: crystal-metric's Base64Encode, run after Revcomp
+left 133 MB alive, allocated its 400 KB strings under a 266 MB budget,
+and every epoch's arenas were dead at the next mark, unmapped, mapped
+again and faulted in - 740,000 faults where it took 18,000 alone, 1.25 s
+against 0.73. So the scavenge keeps empty arenas up to the part of the
+budget past `SPARE_BELOW` = 64 MB, and hands back the rest. The floor
+is why the probe does not move: its budget is 38 MB and nothing is
+spared, where sparing every empty arena a budget covers read 148 MB
+median against 112 on it, the same verdict as before. Base64Encode after
+Revcomp takes 0.9 s, its peak 56 MB higher on 842. A kept arena is debt
+like any other, and its sweep keeps a budget's worth of pages warm and
+hands the rest back cold. The trigger exercise holds 48 MB live and
+requires the second of two epochs of garbage to map at most one arena
+afresh; handing every empty arena back maps two.
 
 Three more things were built on the way and measured out. Warm runs as
 bump regions the carve took up first, no fault and no slice: the carve
@@ -693,6 +910,32 @@ parity is a live list's and the sweep leaves it where it is, which is
 also what makes a hand-freed chunk safe from the sweep of its own
 epoch; and the sweep's own loop tests the parity first, two tests for
 a dead chunk where it was three.
+
+That covers a chunk freed in its own epoch, and not one the last mark
+kept and the program freed before the lazy sweep of its arena reached
+it: such a chunk wears the last epoch's parity, and a slice walking past
+it reads its entry, then its colour, and writes the entry back. A free
+between the two reads left it looking allocated before the mark and
+white, dead, and the slice linked it into its batch while it sat on the
+freeing thread's list, handed out twice; a free between the read and
+the write lost its free flag to the survivor's restamp. Windows' CI
+printed a kept chunk lost and then a memory fault. `free` reads the
+entry's parity now, without the lock - a slice restamping it beside the
+read has passed the chunk - and a chunk of the last parity is listed
+under the lock with no slice of its arena in flight, a claim standing
+waited out off the lock (`IyiHeap.free_unswept`); a chunk of the
+current parity takes the cache's path as before, an alloc+free pair 3.4
+ns before the look and 3.5 after, release. Under a mark there is none of
+the last parity: the debt is paid before the first stop and the epoch
+turns at the last. `bench/concurrent_mark.sh`'s bursts of frees free 64
+chunks the mark kept as soon as a slice of their arena is in flight: on
+four cores beside two busy loops the plain build faulted in 4 runs of
+1,000 and the release build in 108, and none of either after. The window
+is a few instructions, so the gate also runs the program on a copy of
+the prelude whose slice waits up to 100 us at each kept chunk of a
+kilobyte or more and exits by name if the entry changes under it; with
+the old free put back that copy failed by name in 200 runs of 200, plain
+and release alike.
 
 Two more levers on that garbage were tried in the second cycle and
 are not in the tree. A prefetch of a shaded object's line at its push:
@@ -733,6 +976,52 @@ was, its resident set moving with where its last collection falls,
 this cycle set out to cut is the mark's floating garbage and the edges
 runs lose to it, and the next cycles' terms - the pool region and the
 workers' stacks - are the heap's neighbours, not the heap.
+
+**The warm room past the budget (#150).** The budget is what an epoch
+allocates when the mark is short. Beside many workers it is not: a
+concurrent mark lasts as long as its helpers take to get a core, the
+workers allocate all the while, and what they ask past the budget is
+carved from the pages the sweep has just released - a release on the
+allocating thread's own refill (a thread inside the allocator made
+99% of them on a windows-2025 runner's four logical processors, and on
+this Linux machine at twelve workers on twelve cores, where helpers
+get no core), then a fault a page when the carve takes the run up
+again, and on Windows a decommit and a commit whose TLB flush reaches
+every core the workers run on. Twelve workers on a 4 MB budget took
+94-97% of the pages released back cold on Windows and 97-98% on
+Linux. Moving the releases to the helpers would not have saved the
+faults, and the helpers are the threads that get no core in that
+shape. So the pages the carve takes up cold in an epoch are added to
+the next epoch's warm room, fading by a sixteenth an epoch
+(`IyiMark.warm_pages`, `begin_sweep`): a steady shortfall settles at
+sixteen seventeenths kept, and a churn that slows hands its pages back
+again. `bench/release_pages.iyi` counts the releases, the ones made
+inside the allocator, their time under `-Dgc_release_timing` and the
+pages; on this 12-core machine, in-process check_version, three
+interleaved rounds of 8 s: twelve workers 1.57-1.60 million requests a
+second and 366,000-372,000 releases (14 of the 96 processor seconds in
+them, peak RSS 157-203 MB) before, 3.54-3.59 million and 70,000-74,000
+(3.2 s, 367-434 MB) after; four workers, whose releases helpers make,
+1.91-1.92 million and 34,000-36,000 (25-26 MB) against 1.94-1.96
+million and 29,000-30,000 (26-30 MB). Served over HTTP to wrk on the
+same cores at twelve workers, 215,000 a second and 854-1,037 releases
+a second, 12-15 of them inside the allocator, against 220,000-221,000
+and 450-509, at 24-26 MB either way. On a windows-2025 runner (2
+cores, 4 logical processors), the same rounds: twelve workers
+473,000-514,000 a second and 151,000-162,000 releases, 3.1-3.6 of the 32
+processor seconds inside `VirtualFree` and `VirtualAlloc`, peak working
+set 292-427 MB, against 720,000-758,000, 14,000-18,000 and 0.5-0.8 s at
+407-719 MB; four workers 689,000-831,000 against 594,000-723,000, inside
+the runner's noise (an earlier run of the same arms read 7-9% the other
+way); served to oha at 32 connections, 41,000-42,000 against
+54,000-67,000 at twelve workers and 48,000-50,000 against 67,000-72,000
+at four. The resident set is the price
+where the shortfall was large: the epoch's allocation is resident
+either way, and releasing it kept the peak lower only by the pages
+between their release and their next carve. `bench/sweep_exercise.sh`'s
+refault check churns twice the budget an epoch and allows a quarter of
+the excess back over eight steady epochs: 344 pages of 8,256, and the
+copy without the carry-over hands back 6,960.
 
 **The heap's neighbours, read from `/proc/self/smaps`.** The second
 cycle began by reading every mapping's resident size at the end of
@@ -1091,6 +1380,21 @@ the threads and wakes the helpers, and helper 0 finishes with the
 second stop as before. The bound is a thousand objects because that is
 about ten microseconds of scanning, which is the price of finding out.
 
+A mark whose last one kept fewer than `STW_MARK_SMALL` = 8192 objects
+is given that bound instead. A small live set above a thousand went
+beside the program at every collection: after crystal-metric's ring of
+503 tasks a conservative slot held its channels, 5,043 objects and
+278 KB, and Base64Encode, which ran next, woke a helper at each of its
+collections. On a loaded machine a third of those wakes were past a
+millisecond and the second stop waited on them: an allocation loop ran
+587 ms against 194, its longest pause 8 ms against 0.1. Marked in the
+stop, its 181 collections paused 110 µs each and 244 at the longest.
+The larger bound for every mark was 7,000 objects of scanning that a
+large live set pays in each first stop before going beside the program
+anyway, and binary trees' pauses summed a third more. The last mark's
+count is a guess, like the estimate before it, but a wrong guess costs
+the bound's scanning once rather than a whole mark.
+
 Both platforms measure, and darwin came to it late. It kept the
 estimate for most of this cycle on a measurement of a rule without its
 drain: `concurrent_possible?` was opened to every collection while the
@@ -1211,7 +1515,8 @@ live churn 0.095 against 0.091 at 173 MB resident against 187. That is
 where the release was cut.
 
 What the wall time was not, each measured: the helpers' park (the pipe
-was built, measured and refused; they spin as they did), the
+was built, measured and refused; they spun as they did until the
+bounded spin and the futex below), the
 thread-local (Mach-O keeps its accessor), the two hangs found on
 few-core machines (both fixed, both in this document's Stage 8 and 9
 sections), the 16-kilobyte page against `RELEASE_PAGES` (churn hands
@@ -1224,6 +1529,78 @@ once the wait is a slice. The mark's thread was not the wall either -
 it reads the same under both rules - but it was darwin's longest
 *pause*, and the rule is the measured bound there now: "Which thread a
 mark runs on is measured, not estimated" above has the numbers.
+
+**darwin's helpers park: a bounded spin, then the public futex.** The
+spin they kept had a price the race could not show: an idle program
+held a core per helper. `bench/web_cores.iyi`'s server, idle after a
+second of load, used 88.9 s of CPU in ten seconds of wall on a ten-core
+M2 Pro (macOS 26.6, nine helpers) and 19.9 s on CI's three-core
+macos-14 (two), and `sample` found the helpers in
+`IyiMark::helper_main`; under load the spinners had the workers' cores.
+darwin's helpers now do what Windows' do: spin `SPIN_BEFORE_PARK_NS` on
+the generation by the clock, then sleep - on the generation word itself,
+in `os_sync_wait_on_address`, the kernel comparing the word before it
+sleeps the helper, and the collector's wake is one
+`os_sync_wake_by_address_all`, made only when the sleepers count says
+somebody sleeps. Interleaved against the spinning helpers, best of five
+on the M2 and best (median) of nine on the three-core runner:
+
+| | M2 Pro, spinning | M2 Pro, parked | macos-14, spinning | macos-14, parked |
+|---|---|---|---|---|
+| idle CPU over 10 s after load | 88.9 s | 0.0 s | 19.9 s | 0.0 s |
+| check_version, 8 workers | 64,331 req/s, p99 44.7 ms | 114,495, p99 0.92 ms | 37,743 (33,385) | 40,870 (37,366) |
+| binary trees | 0.281 s | 0.144 s | 0.177 s (0.199) | 0.192 s (0.205) |
+| churn | 0.076 s | 0.060 s | 0.067 s (0.078) | 0.064 s (0.075) |
+
+The spin is darwin's own, a quarter of a millisecond, chosen from
+fifty microseconds to five milliseconds: on the M2 a long spin is cores
+the program wanted (binary trees 0.135 s at fifty, 0.173 at one
+millisecond, 0.274 at five; check_version 115,279, 104,986 and 81,834),
+and on three cores a short one parks a helper between a burst's
+collections and wakes it late (binary trees' median 0.257 s at fifty,
+0.230 at a hundred, 0.205 at 250). The pipe refused before parked
+between every collection with no spin first, and cost the three-core
+runner binary trees 1.07 s against 0.23; with the spin first the cost
+there is the table's. One cost seemed to stay on the M2:
+`concurrent_mark`'s stopped mark of a 200,000-cell chain, five explicit
+collections back to back with the mark alone, read 2.6 ms a pause
+beside spinning helpers and 5.1 to 6.0 ms beside parked ones in the
+interleaved runs above. It is not the park's. The gate's own program,
+built both ways and run alternately, reads 2,592 to 2,615 µs a pause
+parked and 2,594 to 2,656 spinning, each after a first run of 5.1 to
+6.6 ms, and no sweep is paid inside any of those pauses (the
+guess was that a parked sweep round left the next stop arenas to
+sweep; the count of them is zero both ways). The second stop beside
+the program fell, from 108 µs to 10.1 ms across five runs to about
+300 µs [INFERENCE: its threads no longer wait behind nine spinners for
+a core]. The wake is the program's own thread's: at most 25 µs on the
+M2.
+
+Why this futex. It is public from macOS 14.4, and a program built on
+macOS 14 says it runs on 14.0 (`minos` 14.0 on CI's macos-14 runner,
+14.8.9; 26.0 on the M2), so iyi's darwin programs need 14.4 now. A weak
+import, the old spin its fallback where the name is absent, would keep
+14.0 to 14.3, and iyi has no weak linkage: no annotation declares one and
+codegen gives a `lib` function no linkage but the external one, so the
+floor is stated (README, SPEC.md III.9) rather than worked around.
+`__ulock_wait`, the private call beneath it - a parked helper's frame
+under `sample` is `__ulock_wait2`, and the wake's disassembly is a call
+to `__ulock_wake` -
+is the same futex without the 14.4, but every program would carry a
+private name, which this document refused for the stop's park. A Mach
+semaphore is public everywhere, four names with `mach_task_self_`, and a
+trap per sleeper in a wake the program's thread pays. A condition
+variable is ruled out by the stop: no caller of the wake runs in a
+signal handler, but a program thread can be stopped inside the wake
+(`wake_sweep_round` runs after the runtime lock is let go), and a thread
+parked holding the condition's mutex would hold the collector's next
+wake. `bench/parallel_mark.sh` holds the property on all three
+platforms: a second of sleep after the marks costs the process under a
+tenth of a core's second (0 ms on Linux, Windows and both Macs). The
+same second read 8.6 to 8.9 s with nine helpers on the M2 under the
+forever spin, and the gate's copy whose spin never gives up reads 8.8 s
+with nine there, 2.0 s with two on macos-14, 3.0 s with three on
+windows-2025 and 9.2 s with eleven on a twelve-core Linux machine.
 
 **This machine's cores are not alike, and the race's numbers move
 with placement.** The Ryzen AI 9 465 has four Zen 5 cores and six Zen
@@ -1276,6 +1653,24 @@ runtime's twelve names, plus these eight — the five above, `pipe` and
 `read`, and `__tlv_bootstrap` — with each refused variant held to a
 list of its own.
 
+The pipe did not survive the runtime. Each thread's pipe was made when
+the thread was and never closed, two descriptors for every thread a
+program ever started, and under a terminal's `ulimit -n` of 256 five
+hundred short-lived threads died at "pipe failed" (macOS 26.6, Apple M2
+Pro, 10 cores, the user's machine). Once the mark helpers needed macOS
+14.4 for libSystem's public futex, the stop could park on it as Linux's
+does on the kernel's: `os_sync_wait_on_address` on the one release
+word, released by one `os_sync_wake_by_address_all`. Its disassembly
+is an argument check and one `__ulock_wait2` system call, holding no
+lock and writing nothing but errno on a failure, which the handler puts
+back — as safe there as `read`, without POSIX's list to say so. It is
+the probe's park now, and costs the floor no name, since the helpers'
+park already carries both: a thread's names are six, the five above and
+`__tlv_bootstrap`. One thread's best resume in the probe was 0.21 µs
+against the pipe's 1.75, and 10.5 and 14.6 µs against 12.5 and 19.3
+for 4 and 8 threads, in one run of each on the M2; `-Dtf_park_pipe`
+keeps the pipe measured.
+
 Go's stop was weighed too, and it is the one this probe cannot build
 without the compiler's help. Go's handler blocks nowhere: it
 rewrites the interrupted context so the thread, on return from the
@@ -1327,7 +1722,8 @@ slots are one thread's class variables and the program names the clash
 on the first thread joined. One more name appeared in a darwin
 `--release` binary and it was not the thread's: `bzero`, the aarch64
 back end's lowering of a memset it will not inline, and the compiler
-zeroes every `Pointer.malloc` with one — a plain binary has only small
+zeroed every `Pointer.malloc` with one then (under the arena it no longer
+does, SPEC.md III.4.13 part 9) — a plain binary had only small
 constant ones, a release binary inlines the allocator and keeps its
 variable-length ones, and a plain binary with a large constant one (the
 root exercise's 1.5 MiB object) named it too. A release `hello` carried
@@ -1380,7 +1776,8 @@ to 2.2. Resume is worse still past 4 threads: 3 ms mean for 8 against
 returns only once its target has been through a core and stopped, and
 the next begins after it, where N `pthread_kill`s are queued at once
 and the handlers stop in parallel as their threads get a core. So
-Stage 4's darwin stop is the signal and the per-thread pipe, and its
+Stage 4's darwin stop is the signal and a park the stop releases at
+once - the per-thread pipe then, libSystem's futex since - and its
 register capture is the handler's `ucontext`, as on Linux.
 
 **Owner's Decision:** Own the garbage collector. Concurrency, parallelism, and performance control are the reasons. gcry is prior art: measurements, design hints, and a record of what has already been tried and cost what. iyi writes the heap, the STW mechanism, root discovery, and finalizers from scratch.
@@ -1648,10 +2045,21 @@ Each stage is independently verifiable; the tree is never left broken between th
    - Then free the object.
    - Finalizers must not allocate or spawn tasks (enforce in design docs; runtime check deferred).
 
-3. **Weak References:**
-   - A weak reference is a pointer that does not prevent marking.
-   - At the end of the mark phase, before sweep, walk weak-reference tables and null out pointers to white objects.
-   - A weak reference returning `nil` after a collection is expected behavior; no finalizer or error.
+3. **Weak References:** built, as `IyiWeak` under `std/weak_ref`.
+   - A weak reference is a *cell*: eight bytes of atomic memory, which the mark
+     blackens and never scans, holding the target's address. Reading it is one
+     load into a register, where the next stop's root walk finds it, so a read
+     never races the clearing.
+   - The cells are registered in a table under the runtime lock. At the end of
+     every mark, before the epoch turns and the sweep can reuse anything
+     (`scavenge`), a cell left white is forgotten (its `WeakRef` is garbage) and
+     a live cell whose target is white is zeroed. A concurrent mark clears in its
+     second stop, after the last drain. wasm32's collector clears between its
+     mark and its sweep, and libgc does the same through
+     `GC_general_register_disappearing_link`.
+   - A weak reference returning `nil` after a collection is expected behavior;
+     no finalizer or error. `bench/std_weak_ref_exercise.sh` holds it, with
+     four threads reading beside marks that run beside the program.
 
 4. **Heap Statistics:**
    - Track: bytes allocated, bytes freed, pause time, number of collections, objects finalized.
@@ -1749,15 +2157,41 @@ Each stage is independently verifiable; the tree is never left broken between th
 
 1. **Windows Integration:** (Completed for x86_64)
    - STW: `SuspendThread()` and `GetThreadContext()` for register capture.
-   - Allocator: `VirtualAlloc()` / `VirtualFree()` arenas, MAP-aligned via reserve/release/commit loop; `PAGE_READWRITE` and `MEM_RESET` page release.
+   - Allocator: `VirtualAlloc()` / `VirtualFree()` arenas, MAP-aligned via reserve/release/commit loop; `PAGE_READWRITE`, and a page release that decommits and commits again, so a released page reads zero the way `MADV_DONTNEED` leaves one (`MEM_RESET` did not: `bench/reuse_integrity.sh`).
    - Root discovery: PE header parsing for `.data` and `.bss` ranges (omitting `.rdata` to avoid scanning read-only constants); TEB stack bounds (`StackBase` at `gs:0x08`, `StackLimit` at `gs:0x10`); callee-saved registers (rbx, rbp, rdi, rsi, r12-r15) via `spill_registers` (64 bytes).
    - Test: `bench/windows_exercise.iyi` and `bench/windows_exercise.sh`, executed in CI on `windows-2022` (`windows-collector` job).
 
 2. **wasm32 Integration:** (Completed for wasm32-wasi)
    - Allocator: linear memory watermark with 64 KiB size-classed arenas, chunk headers, and free list reuse.
-   - Root discovery: linear memory scan from stacksave to __heap_base, and globals from 0 to __data_end.
+   - Root discovery: linear memory scan from stacksave to __heap_base, and globals from 0 to __data_end; the compiler keeps in a stack slot every value a call may outlive (`src/compiler/iyi/wasm_roots.cr`), so a value held only in a wasm local is in linear memory too.
    - Mark and sweep: mark-queue with layout table traversal; sweep into free lists and large object tracking.
    - Verified: bench/wasm32_exercise.sh passes under wasmtime in default and release modes.
+   - **Locals are roots (closed).** The walk reads linear memory, and a wasm
+     local is not in it: an object held only by a value the backend kept in
+     a local was freed by a collection that came while it was held. Under
+     `--release` a top-level array of 200 objects read back empty after a
+     collection and the same in a function ended the program; a plain build
+     lost a temporary - `pair(Box.new(40), Box.new(2))` added to 1848, the
+     first box freed while the second was made. The fix is a pass the
+     compiler runs on wasm32 after optimisation, plain or not
+     (`src/compiler/iyi/wasm_roots.cr`): every parameter and instruction
+     whose type can carry an address (a pointer, an integer of 32 bits or
+     more, an aggregate) that is used past a call - in another block, by a
+     phi, or in its block with a call between - is stored to an alloca of
+     its own where it is defined, with a volatile store. SSA values do not
+     change, so one store keeps the value reachable while its frame lives.
+     LLVM's `llvm.gcroot` covers allocas only, and Binaryen's
+     `--spill-pointers` i32 locals only and is another tool to ship; this
+     covers temporaries and integers and is part of the compiler.
+     `bench/wasm32_exercise.sh` section 7 holds objects in locals alone -
+     an array at the top level and in a function, a call's arguments, a
+     chain, a union made in place - across a collection with the stack
+     scrubbed beneath it, and the weak section holds its arrays in locals
+     with the trigger on; the compiler without the pass fails both, plain
+     and `--release`, and each of four rules removed (parameters, a call in
+     the block, a use elsewhere, integers) fails one. The cost under
+     `--release`: an allocation-heavy tree build 0.14 s to 0.19 s, an
+     arithmetic loop unchanged, the binary 5% larger.
 
 3. **Platform-Specific Pointer Maps:** (Measured and verified)
    - Codegen emits target-specific TypeLayout entries for each build target based on LLVM target data.
@@ -1805,6 +2239,180 @@ III.4 defines structured concurrency: tasks are spawned inside a `group`, and th
 - A task can be cancelled by its group. Cancellation is a control-flow event (not an exception, not a signal).
 - Write barriers do not need to know about cancellation; barriers run before the write happens.
 - If a task is cancelled, it unwinds (or stops gracefully); any objects it allocated are reclaimed by the next collection.
+
+**Tasks across cores (SPEC.md III.4.13), built: nothing new in the
+collector.** Parallel tasks run on a pool of worker threads, each an
+`IyiThread` with a registered line, so a collection stops a worker with
+the same signal (a suspend on Windows) wherever it stands - running a
+task, or waiting in its poller, whose `EINTR` is a wakeup with no news -
+and scans its spill and its stack from the stopped sp to the top of the
+mapping that holds it, a fiber's or the worker's own. Parked fibers on
+every worker are on the one fiber registry the root walk already reads;
+a parallel task waiting in the pool to start has no stack yet, and is
+rooted through the registry by its proc. Nothing in the collector
+assumes a fiber stays on one thread either, now that a started task
+resumes on whichever worker is free: the registry is one list for every
+thread, a stopped thread's stack is bounded by whichever fiber's mapping
+holds its sp (`IyiScheduler.fiber_top_holding`, asked of every fiber),
+and a fiber on its way between workers - runnable in a ring, its saved sp
+on its own stack - is scanned from that sp, while the thread still
+switching away from it covers it from its own. The worker's allocator
+cache is a thread-local read through the thread pointer at every access,
+so a frame that resumes elsewhere allocates from the new thread's.
+`bench/parallel_exercise.sh` holds it: eight parallel tasks each keep a
+list of 150,000 nodes on their own stacks through the collections the
+others trigger, and find it whole by checksum; and
+`bench/parallel_migrate.iyi` checks 32 tasks' lists node by node after
+each of 30 parks, hundreds of them resumed on another worker, through
+20 to 28 stops, where a collector that skipped runnable fibers loses one.
+
+**A pool's workers and the centre: a lock per size class.** The pool
+was the first thing to put a dozen threads on the allocator's slow path
+at once, and the slow path was one lock. Every refill a cache could not
+satisfy, every claim of a sweep slice, every warm run threaded and every
+bump region set took the runtime lock and walked the whole arena list
+under it - a list that grows by a fill arena per class per worker. A
+12-worker HTTPS `check_version` server had 111 of 500 sampled thread
+stacks inside that lock (refill 38, the sweep's claim 30, `reopen_pages`
+20), and `bench/web_cores.py` answered 20,400 requests a second per core
+there against 30,500 on four workers.
+
+The split is Go's mcentral beside its heap lock. Each size class has a
+line of its own on the centre: a lock, the stack of batches the sweep
+helpers leave, and the list of the class's own arenas. A refill, a
+slice's claim and its hand-back, a warm run threaded, a region set and
+`free_unswept` take their class's lock and walk their class's arenas.
+The runtime lock keeps what is the heap's - the list of every arena and
+the directory, the large list, the caches list, the epoch and the pause
+- and is taken before a class's lock, never after: its spin parks a
+thread for a pause, and a thread parked holding a class's lock would
+hold it against the pause's own sweep. Nothing parks under a class's
+lock, so a pause finds them all free and takes none. And a thread that
+sweeps a slice for its cache keeps the slice's batch as its own list
+rather than pushing it to the centre and popping one back, the mcache
+sweeping the span it is about to use: one lock round trip fewer per
+slice, and the batch is the sweeper's. The collector's side is
+unchanged - every list is dropped at a pause, a thread's last act
+retires its cache, an object born under a mark is black - and two waits
+on another walker's claim (the refill's, `free_unswept`'s) park for a
+stop where they hold nothing, as the runtime lock's spin did when they
+waited there: the claim may be a helper's whose end waits for the
+runtime lock the stopping thread holds.
+
+Measured interleaved with the build before it, best of three, 0 to 0.2
+cores busy elsewhere: HTTPS `check_version` on twelve workers 204,526 a
+second on 599% CPU against 167,319 on 819% - 34,100 a second per core
+against 20,400, and Go's 32,200 - with no sampled stack in a lock (10
+stops, 250 stacks) and 41,000 minor faults in ten seconds against
+781,000. `bench/alloc_cache.sh` holds it: workers' cells whole through
+collections, no chunk on two lists, every list empty after a collection,
+no cache left by an ended thread, a class's dead cells handed back out
+before any of it is carved afresh, and broken copies - a sweep that
+hands nothing back, a worker that throws its swept batch away, lists
+kept across a collection, a class's lock or a walk claim that excludes
+nobody, an unretired cache - each caught.
+
+The reuse check is the second one written. The first summed every
+arena's frontier over a wave of work beside the helpers, and it was
+unsound three ways: it failed 21 runs in 120 with the runtime before the
+split and 11 with it, the frontier growing by up to 0.92 of what the wave
+allocated; the helpers' batches handed back what a worker's dropped
+batch lost; and the scavenge handed back the arenas a sweep that returns
+nothing leaves all dead, so the sum fell. The check now runs first, with
+no helper and the trigger off but for one lazy collection. The workers
+drop every other cell of an 88-byte class of their own, so no page is
+all dead and neither the warm and cold page paths nor the scavenge come
+into it; they sweep the class back themselves; and a second wave of as
+many cells may move the class's frontier by what the caches can hold
+past their need - a slice's batch and a carved page each - and no more.
+It passed 60 runs of 60 at each of four, eight and twelve workers, plain
+and release, the frontier moving 65,472 bytes at the most where twelve
+workers' caches may hold 905,216; both broken copies carve the whole
+wave, 11,555,456 bytes on eight workers, and fail at the check by name.
+
+What the split did not move is `bench/alloc_scaling.py`'s curve: twelve
+workers allocating flat out still run at 22% of one worker's rate per
+worker (24% before), with the lock gone from their stacks too (1 of 500
+against 87). Their heap grows, and the cause is measured, and it is not
+the budget. Interleaved with the build before the split, five runs each
+of 200,000 requests a worker, peak resident set, collections, minor
+faults and wall time:
+
+| workers | build | peak RSS | collections | minor faults | wall |
+|---:|---|---:|---:|---:|---:|
+| 1 | before | 11 MB | 57 | 2,531 to 2,595 | 0.106 to 0.115 s |
+| 1 | after | 11 MB | 57 | 2,526 to 2,542 | 0.103 to 0.131 s |
+| 4 | before | 89 to 114 MB | 54 to 66 | 24,300 to 29,899 | 0.223 to 0.242 s |
+| 4 | after | 79 to 114 MB | 50 to 66 | 20,878 to 30,789 | 0.200 to 0.261 s |
+| 12 | before | 593 to 899 MB | 23 to 41 | 170,676 to 267,174 | 0.419 to 0.851 s |
+| 12 | after | 637 to 925 MB | 14 to 28 | 192,093 to 301,879 | 0.398 to 0.665 s |
+
+The suspect was the budget's floor of half of what the sweep walked,
+which the Stage 4 account above describes; it went with the lazy sweep.
+A counting copy of the runtime (not committed) found the budget at its
+4 MiB floor on four workers and at 9.1 MB at the most on twelve, twice
+the 4.6 MB a mark found live. What grows the heap is allocation while a
+collection waits.
+The thread that crosses the budget pays the last epoch's sweep debt
+alone before its first stop - 1,239 to 2,794 arenas over a twelve-worker
+run, up to 71 ms at a time, 267 to 411 ms in all - and the other eleven
+allocate 1.5 to 2.3 GB beside it, unchecked, since a collection is under
+way; the stop finds the heap 281 to 478 MB past the budget, and the
+marks beside the program take 358 to 595 MB more. With no helper, every
+collection stopped, twelve workers peaked at 131 to 186 MB through 45 to
+94 collections, in 0.66 to 0.94 s against 0.43 to 0.61. A server is not
+that shape: `bench/web_cores.iyi` on twelve workers, HTTPS
+`check_version` under wrk for 20 s, three runs each, peaked at 29 to 30
+MB resident where it peaked at 47 to 75 before, through 5,309 to 5,377
+collections (1,744 to 1,904), with 81,370 to 103,065 minor faults
+(1,428,966 to 1,446,569), answering 200,022 to 201,538 requests a second
+(147,597 to 156,580). The debt paid alone is left as it is: what the
+other threads may allocate while a collection waits on it is the
+trigger's question, not the centre's.
+
+Neither build hung in 240 runs each of the scaling program and the
+first reuse check's gate at four, eight and twelve workers, plain and
+release; one four-worker run of a cut without the two parks did hang
+past ten minutes, and five more runs of that cut did not repeat it.
+
+**The collection's ceiling.** The trigger's question has an answer now.
+The debt's assist (#145) has the threads past the budget sweep while the
+triggering thread pays the debt, and the budget is floored for every
+thread; but every slice still allocated on once there was no debt left
+to take - through the stop, a mark beside the program and its second
+stop - and an object born black under a mark is swept only after the
+next mark, so the heap held the largest epoch twice. A counting copy of
+the runtime (not committed) found twelve workers of the scaling program
+on a 52 MB budget counting up to 232 MB in one epoch, and up to 85 MB
+born under a single mark of 6 to 25 ms, its second stop alone 2 to 13
+ms of one (Linux, 12 vCPUs).
+
+So an epoch has a ceiling of 125% of its budget, the budget and the
+collection's own allocation counted together - the mark's slices are
+counted where the trigger's are, and its end sets the count to what was
+born under it as it did. A thread whose slice finds a collection under
+way and the count past the ceiling holds (`IyiMark.hold`): it sweeps
+the debt, or marks while the pool has work for it, and otherwise
+sleeps until the collection is let go - on a futex on Linux, a kernel32
+semaphore on Windows, an empty kqueue's tenth of a millisecond on
+darwin - out of the allocator's bracket, where a stop takes it as it
+stands. Go's assist is the same bargain with a pacer in front of it. A
+hold lasts 100 ms at the most, so a mark that never ends slows the
+program rather than stopping it, and the watchdogs that look for one
+still get to say so. Twelve workers peak at 158 to 180 MB in 0.70 to
+0.74 s against 692 to 856 MB in 1.02 to 1.12 on the Linux machine, 154
+to 161 MB against 204 to 265 on Windows 11 with 12 logical processors,
+and 156 to 162 MB in 1.33 to 1.41 s against 408 to 481 MB in 1.68 to
+1.99 on macOS 26.6 with an M2 Pro's 10 cores (both the user's machines),
+the walls faster where the faults on fresh pages went. Servers, whose
+collections end before their ceiling, did not move: `bench/web_cores.iyi`
+on twelve workers within its run-to-run spread on both of the user's
+machines, and `bench/release_pages.iyi` in-process at 1.83M against 1.79M
+a second on the M2, peaking at 121 to 124 MB against 267 to 355.
+`bench/collect_trigger.sh` runs `bench/working_set.iyi`, the scaling
+program's load held to four budgets, and a copy without the ceiling that
+peaks past them; `bench/release_trigger.iyi` asks besides that no slice
+holds at a collection that was let go.
 
 ---
 
@@ -1923,3 +2531,366 @@ diff /tmp/expected.txt /tmp/actual.txt > /dev/null || {
 **Parallel marking as a built-in design principle (Stage 1), not an add-on (Stage 7).**
 
 The object header's mark word, the tri-color invariant, the write barrier infrastructure, and the work queue are all designed in Stage 1 to support concurrent marking. If parallel marking were an afterthought (added in Stage 7 by redesigning the mark representation), the cost would be a rewrite of Stages 1 to 6. By designing for parallelism from the start, Stage 7 is an implementation detail (adding worker threads), not a redesign. This is the difference between owning a collector and reimplementing gcry's single-threaded shape.
+
+---
+
+## Precise Stack Roots: Measured, and Not Taken
+
+Every thread and fiber stack is scanned conservatively (Stage 3): each
+word between a stack's pointer and its top that falls inside a live
+chunk keeps that chunk. Two retentions came from that.
+
+* **The loader's words.** A slot of `__iyi_main`'s frame that the
+  program never wrote still held dyld's word. On macos-15 it lay inside
+  `bench/concurrency_exercise.iyi` step 16e's 64 MB string, and 61 MiB
+  were kept in 25 runs of 40.
+* **The clock.** An integer the program kept on purpose did the same: a
+  clock reading at 0x49f9af3be, live in the top level's frame, kept
+  that string in 2 of 720 runs.
+
+A heap per unit (PARALLEL_PLAN layer 4) wants exact roots as well. This
+section is the measurement behind not building precise stack roots now
+(slice n9/precise, 2026-11-04). The prototype is not in the tree. The
+two retentions are, as gate steps that fail on conservative scanning
+(see "What is in the tree" below).
+
+### The options
+
+* **(a) Statepoints and stack maps.** LLVM's
+  `rewrite-statepoints-for-gc` (RS4GC) turns every call in a function
+  marked `gc "<strategy>"` into a `gc.statepoint`. The statepoint lists
+  the references live across the call, and code generation records
+  where each one is, per call site, in `.llvm_stackmaps`
+  (`__LLVM_STACKMAPS,__llvm_stackmaps` on darwin).
+  * The C API has `LLVMSetGC` and `LLVMGetGC`.
+  * The pass registry `LLVMRunPasses` reads knows
+    `rewrite-statepoints-for-gc`, `place-safepoints` and
+    `shadow-stack-gc-lowering` by name.
+  * A strategy of iyi's own (`GCStrategy`) needs C++, which Windows'
+    `LLVM-C.dll` cannot take. The built-in `statepoint-example` strategy
+    treats `addrspace(1)` as managed, and it worked from `opt-21` on a
+    micro test. It was not tried through iyi's own pass string or the
+    static 20.1.2 build. A static link may drop its registration, since
+    nothing in the C API references LLVM's built-in GCs. **[not
+    measured]**
+  * Stack maps were emitted for x86_64-linux, x86_64-windows-msvc,
+    aarch64-linux and arm64-macos, with a local `__LLVM_StackMaps`
+    table symbol per object.
+* **(b) A shadow stack.** One frame per function, holding every pointer
+  live across a call, chained from a thread-local head. The experiment
+  wrote its own, Linux x86-64 only, rather than use LLVM's
+  `shadow-stack-gc-lowering`.
+* **(c) Hybrid.** iyi-compiled frames precise, while C and runtime
+  frames, signal frames and a stopped thread's registers stay
+  conservative. The prototype of (a) already had that shape: the
+  prelude's runtime (`__iyi*`, `Iyi*`, prelude.iyi, concurrency.iyi,
+  thread.iyi) is left unmarked.
+
+### How it was measured
+
+The prototype was built off the tree, on the IR iyi itself optimises
+(`IYI_RELEASE_PARTITIONS=1 iyi build --release --emit llvm-ir`).
+
+* A driver linked against LLVM runs the variant's passes, then `-O3`
+  PIC code generation, then the link iyi does. On the M2 Pro, iyi's own
+  binary and the driver's `base` timed within about 2% of each other.
+* The strategy is `iyi`: statepoints, RS4GC, and `addrspace(1)` as the
+  managed space.
+* Every non-runtime function is marked, and its heap pointers are moved
+  to `addrspace(1)`. Stack, global and inline-asm pointers stay in 0.
+* The variants:
+  * `base`: no GC lowering.
+  * `sp`: pointers only.
+  * `spp`: `sp`, plus the allocator's addresses held as integers, made
+    roots.
+  * `spi`: `spp`, plus every 64-bit integer loaded or extracted. This is
+    an upper bound, because it includes ordinary integers.
+  * `spreg`: `sp` with `-max-registers-for-gc-values=8`.
+  * `shadow`: option (b).
+  * `basefp`: frame pointers on.
+* The programs:
+  * `bench/runtime.py`'s four (arithmetic, array, hash, strings).
+  * Trees, objects, JSON and bcrypt.
+  * `bench/web_cores.iyi`: its three endpoints served through wrk, 4
+    threads and 32 connections, http, by one worker and by a pool of
+    four.
+  * `samples/iyi/cores.iyi`, std/http and TLS, for size and compile
+    time.
+
+Every variant's output matched `base`'s. The web builds answered every
+endpoint with the same bytes.
+
+### What LLVM would not do, and what was done instead
+
+1. **Inline-asm calls.** They crash RS4GC in `findBaseDefiningValue`
+   (`__iyi_monotonic_ns`'s `syscall`). They are marked
+   `gc-leaf-function`.
+2. **Two other RS4GC crashes.** An alloca reaching a call crashed it
+   (`raise`'s call stack), and so did the `addrspace(257)` loads x86
+   uses for `%fs`/`%gs`. Both are avoided by moving only heap pointers
+   to `addrspace(1)`.
+3. **A call whose return value the target demotes to a hidden pointer
+   cannot be a statepoint.** That is more than three leaves on x86-64,
+   where `{ i32, [3 x i64] }` gives "Cannot select: store ... undef",
+   and more than eight on aarch64, both Linux and darwin. This was
+   measured with `llc-21` for each N of `{ i32, [N x i64] }` and
+   `[N x i64]`.
+   * iyi's unions are exactly that shape. 145 functions and 1,053 calls
+     of cores.iyi return one, and 128 and 970 of web_cores.iyi on Linux.
+   * The prototype demotes them itself: an out-pointer, and a stack
+     slot in the caller loaded after the call. That is neutral on its
+     own: cores.iyi's `.text` went from 1,480,558 to 1,479,442 bytes,
+     and its code generation from 6.13 to 6.16 s.
+4. **`invoke`, iyi's `rescue`.** It needs nothing more once the
+   demotion is in. With the 8 of 866 functions in cores.iyi that hold
+   one marked too, the build ran with `base`'s output.
+
+### Typing pointers is not precise for iyi
+
+A word-sized integer live across a call in a non-runtime function is
+sometimes a reference. The pass counted them:
+
+| program | pointers | i64 from a pointer | i64 loaded or extracted | other i64 | functions |
+|---|---:|---:|---:|---:|---:|
+| trees | 28 | 5 | 0 | 14 | 6 |
+| json | 275 | 28 | 0 | 95 | 31 |
+| bcrypt | 43 | 15 | 0 | 27 | 14 |
+| cores.iyi | 7,314 | 648 | 886 | 4,948 | 684 |
+
+* "From a pointer" is the inlined allocator, whose `IyiHeap.take`
+  answers `UInt64`.
+* "Loaded or extracted" includes union payloads, which are
+  `[N x i64]`: a payload is a reference or not depending on the tag.
+* The stack slots RS4GC does not track hold references too: anything
+  `pointerof` reaches, `byval` structs, and the demoted returns' slots.
+  These would have to be reported as regions to scan conservatively.
+  **[not measured]**
+
+So a sound build needs code generation to type those values (the
+allocator's answer as a pointer, and a union's payload by its tag).
+`spp` and `spi` bracket what that costs.
+
+### Run time
+
+Ratios against `base`, best of N interleaved runs, all outputs
+identical.
+
+**Linux x86_64** (12 vCPU, shared, LLVM 21.1.8, load average 2.6 to 9
+over the runs). Two runs of the same binaries differ by 3 to 5% here.
+
+| program | sp, run 2 (best of 11) | sp, run 3 (best of 11) | spp, run 3 | shadow, run 2 |
+|---|---:|---:|---:|---:|
+| arithmetic | 1.024 | 1.008 | 0.999 | 0.998 |
+| array | 1.047 | 0.992 | 0.990 | 1.061 |
+| bcrypt | 0.989 | 0.996 | 0.994 | 0.998 |
+| hash | 1.030 | 1.005 | 1.013 | 1.029 |
+| json | 0.980 | 0.993 | 0.975 | 1.541 |
+| objects | 0.962 | 0.975 | 1.014 | 1.296 |
+| strings | 1.029 | 1.055 | 1.056 | 0.978 |
+| trees | 0.992 | 1.007 | 0.993 | 1.156 |
+
+`basefp` cost arithmetic 1.33 to 1.34x. Statepoints do not need frame
+pointers.
+
+**macOS 26.6, Apple M2 Pro, 10 cores (the user's machine)** (LLVM
+20.1.2 static, load average 1.2 to 4.4), best of 15:
+
+| program | sp | spp | spreg |
+|---|---:|---:|---:|
+| arithmetic | 1.000 | 1.001 | 1.000 |
+| array | 0.965 | 0.951 | 0.969 |
+| bcrypt | 1.001 | 1.000 | 1.002 |
+| hash | 0.988 | 0.998 | 0.992 |
+| json | **1.047** | **1.080** | **1.068** |
+| objects | 1.001 | 0.994 | 1.043 |
+| strings | 1.009 | 0.997 | 0.988 |
+| trees | 0.963 | 0.965 | 0.975 |
+
+JSON's `sp` was also 1.050 (best of 15) and 1.047 (best of 21) in two
+earlier runs on the same machine.
+
+**web_cores**, requests a second, best of 3 interleaved:
+
+| server, endpoint | Linux base | sp | spi | M2 Pro base | sp | spi | spreg |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 worker, login | 27 | 0.999 | 0.995 | 20 | 0.994 | 1.000 | 0.999 |
+| 1 worker, check_version | 54,160 | 0.950 | 0.938 | 76,836 | 0.981 | 0.978 | 0.971 |
+| 1 worker, order | 35,732 | 0.930 | 0.969 | 61,516 | 0.969 | 0.968 | 0.950 |
+| 4 workers, login | 104 | 0.991 | 0.987 | 75 | 0.999 | 0.994 | 1.003 |
+| 4 workers, check_version | 212,118 | 0.967 | 0.950 | 128,318 | 0.993 | 0.995 | 0.997 |
+| 4 workers, order | 143,523 | 1.008 | 0.960 | 123,236 | 1.003 | 1.006 | 1.000 |
+
+### Code size
+
+`.text` bytes, and the stack map beside it:
+
+| program, machine | base | sp | spp | spi | stack map (sp) |
+|---|---:|---:|---:|---:|---:|
+| json, Linux | 202,814 | 208,830 (+3.0%) | 209,918 | 209,918 | 80,896 |
+| json, M2 Pro | 175,012 | 179,636 (+2.6%) | | | 122,080 |
+| the other seven, Linux | 139,806 to 160,270 | +0.5 to +0.7% | | | 6,112 to 11,960 |
+| web_cores, Linux | 1,418,270 | 1,635,728 (+15.3%) | 1,669,408 (+17.7%) | 1,691,040 (+19.2%) | 2,158,056 |
+| web_cores, M2 Pro | 1,338,444 | 1,432,884 (+7.1%) | 1,448,720 (+8.2%) | 1,453,596 (+8.6%) | 2,602,816 |
+| cores.iyi, Linux | 1,480,558 | 1,792,598 (+21.1%) | 1,835,222 (+24.0%) | 1,871,826 (+26.4%) | 2,664,360 |
+
+* The small programs are mostly runtime, which is unmarked. A program
+  made of std/http and TLS is not.
+* In those programs the stack map is 1.3 to 1.8 times the new code, and
+  `.text` and map together come to 2.7 to 3.0 times the old `.text`.
+* `spreg` grew web_cores' `.text` by 30.9% on Linux and 18.9% on the
+  M2 Pro: more registers are saved around calls.
+
+### Compile time
+
+**Linux, rewrite plus code generation.** These are four interleaved
+pairs on the one-module IR.
+
+* cores.iyi:
+  * `base` took 6.13, 7.14, 6.99 and 6.58 s.
+  * `sp` took 8.06, 8.74, 9.20 and 9.01 s.
+  * That is +22 to +37%, with peak memory going from 189 to 273 MB.
+  * RS4GC itself took 0.28 to 0.35 s.
+* web_cores.iyi:
+  * `base` took 5.94, 6.33, 6.10 and 6.10 s.
+  * `sp` took 7.55, 7.78, 8.16 and 7.79 s.
+  * That is +23 to +34%, with peak memory going from 193 to 246 MB.
+* On the small programs RS4GC took 2 to 19 ms.
+
+**The M2 Pro.** web_cores' code generation went from 6.64 s to
+7.88 s (+19%) for `sp`, and to 8.07 s (+22%) and 8.20 s (+24%) for
+`spp` and `spi`. Peak memory went from 394 to 581 MB.
+
+**Against a whole build.** The figures are for cores.iyi with this
+branch's compiler, a non-release build, on Linux.
+
+* `--no-codegen` took 2.44 s.
+* One module took 24.8 s wall, of which LLVM (`bc+obj`) was 22.6 s. The
+  1.6 to 2.4 s that `sp` adds is +6 to +10% of that.
+* The default partitioned build took 7.84 s wall, with `bc+obj` at
+  5.88 s wall and 40.6 s of CPU. It was not run through the prototype.
+  **[INFERENCE]** If code generation is the same share of the LLVM work
+  there as in one module (6.6 to 7.1 of 22.6 s), +28% of it adds about
+  3.4 s of CPU to 40.6 s, so about +8%.
+
+### Stops, preemption, fibers, partitions and toolchains
+
+**A stack map is valid only at a statepoint, which is a call.**
+
+* A collecting thread is always at one: its own frames are calls into
+  `GC.collect`, and allocation stops inside `IyiHeap.take`.
+* A thread stopped by signal (Linux, darwin) or `SuspendThread`
+  (Windows, `IyiThread.capture_thread_registers`) is stopped at any pc.
+* There are two ways to handle such a thread:
+  * Roll it forward to its next safepoint: the handler only marks it,
+    and it parks at its next poll. The back-edge checks of
+    `preempt_checks.cr` are such polls, and so is every call. A thread
+    in a long C call has every iyi frame of it at a call already.
+  * Option (c): scan its top frame and registers conservatively, and
+    every frame under them precisely.
+* (c) keeps a conservative window one frame deep per stopped thread.
+  Both recorded retentions were on the collecting thread's own stack,
+  so (c) would still have fixed both.
+* Walking frames without frame pointers needs each function's stack
+  size, which the map records, and an unwinder (`.eh_frame`) for the
+  runtime and C frames between iyi frames.
+
+**Preemption checks.** `PreemptChecks.run` inserts the back-edge checks
+after optimisation (compiler.cr). RS4GC has to run after it, so that
+the slow path's `__iyi_preempt` call becomes a statepoint. Its spills
+are then on the slow path only.
+
+**Fibers.** A parked fiber's `saved_sp` is inside the runtime's switch,
+which is a call. Every iyi frame above it is at a statepoint, so its
+stack is precise apart from the runtime's own frames.
+
+**Partitions.** Each partition's object has its own local
+`__LLVM_StackMaps`, and the linker concatenates the sections.
+
+* ELF gives `__start_`/`__stop_` symbols only to sections named as C
+  identifiers (GNU ld's documented rule; `.llvm_stackmaps` starts with
+  a dot), so a runtime cannot find the tables that way. **[not
+  measured]**
+* Each partition would need to register its table, or the section
+  would need renaming after code generation.
+* On Linux PIE the section carries `R_X86_64_64` relocations in a
+  read-only section. `ld` warned "relocation in read-only section" and
+  made the binary `DT_TEXTREL`. The tables would have to move to a
+  RELRO section.
+
+**LLVM on CI** (20.1.2 static on macOS, 21 on Linux, 23 on Windows).
+
+* RS4GC and statepoint lowering behaved the same on 20.1.2 (the M2 Pro)
+  and 21.1.8 (Linux), apart from the demotion limits above.
+* LLVM 23, which Windows builds with, was not tried. Neither was a
+  strategy chosen through the C API alone, which is all Windows'
+  `LLVM-C.dll` exports.
+
+### Decision: not now
+
+The bar was at most 3% run time and 10% compile time.
+
+* **Run time fails the bar even unsound.**
+  * JSON runs 1.047 to 1.050x on the M2 Pro with pointers alone, in
+    three runs. It runs 1.080x once the allocator's integer addresses
+    are roots (`spp`), which a sound build needs at least.
+  * web_cores' light endpoints lose 2 to 3% on one worker on the M2
+    Pro, and up to 7% on Linux (one row of four gained 0.8%), where the
+    noise is about the same size.
+  * The shadow stack (b) is far worse: JSON 1.52 to 1.54x, objects
+    1.30 to 1.33x, trees 1.16 to 1.24x.
+* **Code size fails, though the brief set no bar for it.** Real
+  programs' code grows 7 to 26%, and their stack maps are larger than
+  their code: code and map come to 2.7 to 3.0 times the old code.
+* **Compile time is at the bar.** It is +6 to +10% of a one-module
+  build measured, and about +8% partitioned (estimated), with LLVM's
+  code generation itself +19 to +37%.
+* **The prototype is not sound yet.** Making it sound means typed
+  integers and union payloads in code generation, conservative scanning
+  of the untracked slots, a frame walker with an unwinder, a stop that
+  reaches a safepoint, and table registration for partitions. Every one
+  of those adds cost to numbers that are already over the bar.
+
+So the collector stays conservative. The retentions it causes are
+handled one at a time, as both measured ones already are.
+
+### What would change the answer
+
+* **A need for exact roots that a targeted fix cannot meet.** That
+  means a heap per unit (layer 4) whose ownership checks must not see
+  false references, or a moving collector. A moving collector is what
+  statepoints' relocation is for. A non-moving one pays for the spills
+  and uses none of the relocation.
+* **Cheaper statepoints.** Lowering that keeps references in
+  callee-saved registers without the extra saves would help, as would
+  LLVM's demotion limit being lifted. `spreg` did not help: JSON ran
+  1.068x and the code grew more.
+* **Compressed tables.** The stack maps converted at link time to a
+  table of iyi's own would cut the size cost. LLVM's version 3 format
+  takes 12 bytes or more per live value per call site. **[not
+  measured]**
+* **Frontend typing.** With references typed in iyi's own code
+  generation instead of inferred after optimisation, `spp`'s cost on
+  JSON could be measured again on equal terms. If it comes out under
+  3%, the run-time objection goes.
+* **Partial precision instead of exact roots.** A per-call-site map of
+  dead stack slots could answer the retention cases without exact
+  roots: the collector would skip the slots instead of reading their
+  roots. **[not measured]**
+
+### What is in the tree
+
+`bench/root_exercise.sh`'s step "a word that only looks like a pointer
+keeps 64 MB, and each fix takes it back" has two cases, each built and
+run with and without its fix.
+
+* **The loader's words.** A frame laid over one that left a word into a
+  dropped 64 MB string, in a slot it never writes. The fix is
+  `__iyi_enter`'s: zero the stack under a frame before it is used.
+* **The clock.** An integer into the string, live in the top level's
+  frame across the collection. The fix is a `def` of its own.
+
+Each fix must free the string. Each case without its fix must keep it:
+64,050,705 bytes against 50,696 to 50,712, 5 runs of 5 on Linux x86_64
+and on macOS 26.6, Apple M2 Pro, 10 cores (the user's machine). Keeping
+it is conservative scanning failing the case. If precise roots are ever
+built, that assertion becomes the check.

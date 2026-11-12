@@ -1,20 +1,29 @@
 module compiler/semantic/normalizer
 
-import compiler/syntax/ast
-import compiler/syntax/transformer
-import compiler/syntax/visitor
+import compiler/syntax/ast::{ASTNode, Alias, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, CharLiteral, ClassVar, Def, Defer, DoubleSplat, ExceptionHandler, Expressions, Generic, Global, If, InstanceVar, IsA, Macro, MultiAssign, NamedArgument, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, ProcLiteral, ProcNotation, Propagate, Recover, Return, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Union, Unless, Until, Var, While}
+import compiler/syntax/transformer::{Transformer}
+import compiler/syntax/visitor::{Visitor}
 import std/digest
-
-using compiler/syntax/ast::{ASTNode, Alias, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, CharLiteral, ClassVar, Def, Defer, DoubleSplat, ExceptionHandler, Expressions, Generic, Global, If, InstanceVar, IsA, Macro, MultiAssign, NamedArgument, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, ProcLiteral, ProcNotation, Propagate, Recover, Return, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Union, Unless, Until, Var, While}
-using compiler/syntax/transformer::{Transformer}
-using compiler/syntax/visitor::{Visitor}
 
 pub class NormalizerProgram
   property iyi_prelude : Bool
   @temp_vars : Hash(String, Int32)
+  @flags : Array(String)
 
   def initialize(@iyi_prelude : Bool = true)
     @temp_vars = Hash(String, Int32).new
+    @flags = [] of String
+  end
+
+  # Flags the program was built with, read the way the hosted program's
+  # `has_flag?` reads them. The port starts with none; a driver sets the ones
+  # its fixtures need.
+  def set_flag(name : String) : Nil
+    @flags << name
+  end
+
+  def has_flag?(name : String) : Bool
+    @flags.any? { |flag| flag == name }
   end
 
   def reset_temp_vars : Nil
@@ -64,6 +73,7 @@ pub class Normalizer < Transformer
   getter program : NormalizerProgram
   property current_def : Def?
   @dead_code : Bool = false
+  @propagating_group : Bool = false
 
   def initialize(@program : NormalizerProgram = NormalizerProgram.new)
   end
@@ -119,7 +129,13 @@ pub class Normalizer < Transformer
     end
   end
 
-  private def apply_defers(exps : Array(ASTNode)) : Array(ASTNode)
+  # iyi: `defer` cleanup that runs however the scope is left (SPEC.md III.1.4).
+  # Every ordinary exit reaches the `ensure`, which disarms the cleanup proc,
+  # pops it, and runs the deferred expression inline. A panic reaches none of
+  # them, so the proc is also registered and the panic path runs what was never
+  # popped. One `live` flag serves every `defer` of a list, and a nested
+  # `defer` arms it again after its pop.
+  private def apply_defers(exps : Array(ASTNode), live : Var? = nil) : Array(ASTNode)
     index = -1
     i = 0
     while i < exps.size
@@ -138,7 +154,6 @@ pub class Normalizer < Transformer
       rest_exps << exps[j]
       j = j + 1
     end
-    rest = apply_defers(rest_exps)
 
     head = [] of ASTNode
     k = 0
@@ -148,13 +163,27 @@ pub class Normalizer < Transformer
     end
 
     if @program.iyi_prelude
-      cleanup_body = Expressions.new([deferred.exp, NilLiteral.new.at(deferred)] of ASTNode).at(deferred)
+      # An earlier `defer` of this list made the flag, and its proc is still
+      # registered when this one is popped.
+      outer = live
+      flag = live || Var.new(@program.new_temp_var_name).at(deferred)
+      rest = apply_defers(rest_exps, flag)
+      armed = If.new(flag.clone, deferred.exp.clone).at(deferred)
+      cleanup_body = Expressions.new([armed, NilLiteral.new.at(deferred)] of ASTNode).at(deferred)
       proc_literal = ProcLiteral.new(Def.new("->", [] of Arg, cleanup_body)).at(deferred)
       push = Call.new(nil, "__iyi_defer_push", [proc_literal] of ASTNode, nil, nil, nil, false, nil, true).at(deferred)
       pop = Call.new(nil, "__iyi_defer_pop_run", [] of ASTNode, nil, nil, nil, false, nil, true).at(deferred)
+      disarm = Assign.new(flag.clone, BoolLiteral.new(false).at(deferred)).at(deferred)
+      ordinary_exit = [disarm, pop] of ASTNode
+      if outer
+        ordinary_exit << Assign.new(flag.clone, BoolLiteral.new(true).at(deferred)).at(deferred)
+      end
+      ordinary_exit << deferred.exp
+      head << Assign.new(flag.clone, BoolLiteral.new(true).at(deferred)).at(deferred) unless outer
       head << push
-      head << ExceptionHandler.new(Expressions.from(rest), nil, nil, pop).at(deferred)
+      head << ExceptionHandler.new(Expressions.from(rest), nil, nil, Expressions.new(ordinary_exit).at(deferred)).at(deferred)
     else
+      rest = apply_defers(rest_exps)
       head << ExceptionHandler.new(Expressions.from(rest), nil, nil, deferred.exp).at(deferred)
     end
     head
@@ -164,7 +193,7 @@ pub class Normalizer < Transformer
     ExceptionHandler.new(Nop.new, nil, nil, node.exp.transform(self)).at(node)
   end
 
-  private def expand_iyi_group(node : Call) : ASTNode?
+  private def expand_iyi_group(node : Call, propagated : Bool) : ASTNode?
     block = node.block
     return nil unless block
     return nil if block.args.empty?
@@ -176,8 +205,13 @@ pub class Normalizer < Transformer
                  else
                    [body] of ASTNode
                  end
+    return nil if statements.empty?
+    return nil unless iyi_direct_spawn(statements[statements.size - 1], group_param.name)
 
+    # Each slot reads a handle of its own (`%h1`, `%h2`), never the author's
+    # variable: one name reused for two spawns read the last task twice.
     handles = [] of ASTNode
+    slots = [] of Bool
     rewritten = [] of ASTNode
 
     si = 0
@@ -185,48 +219,63 @@ pub class Normalizer < Transformer
       statement = statements[si]
       spawn_call = iyi_direct_spawn(statement, group_param.name)
       if spawn_call.is_a?(Call)
-        if statement.is_a?(Assign) && !statement.target.is_a?(Underscore)
-          handles << statement.target
-          rewritten << statement
-        else
-          handle = Var.new(@program.new_temp_var_name).at(statement)
-          handles << handle
-          rewritten << Assign.new(handle.clone, spawn_call).at(statement)
+        # `%h1 = g.spawn {..}`, and the author's `x = %h1` after it.
+        handle = Var.new(@program.new_temp_var_name).at(statement)
+        handles << handle
+        discarded = statement.is_a?(Assign) && statement.target.is_a?(Underscore)
+        slots << !discarded
+        rewritten << Assign.new(handle.clone, spawn_call).at(statement)
+        if statement.is_a?(Assign) && !discarded
+          rewritten << Assign.new(statement.target, handle.clone).at(statement)
         end
       else
+        # Any other use of the group parameter disqualifies: the tuple's
+        # arity has to be a fact of the text.
         return nil if iyi_uses_var?(statement, group_param.name)
         rewritten << statement
       end
       si = si + 1
     end
-    return nil if handles.empty?
 
-    rewritten << Call.new(Var.new(group_param.name).at(node), "join").at(node)
+    group_var = Var.new(group_param.name).at(node)
+    rewritten << Call.new(group_var.clone, "join").at(node) unless propagated
 
     values = [] of ASTNode
+    tuple_elements = [] of ASTNode
     hi = 0
     while hi < handles.size
       handle = handles[hi]
       value = Var.new(@program.new_temp_var_name).at(node)
       values << value
+      tuple_elements << value.clone if slots[hi]
       rewritten << Assign.new(value.clone, Call.new(handle.clone, "value").at(node)).at(node)
       hi = hi + 1
     end
 
-    tuple_elements = [] of ASTNode
-    ti = 0
-    while ti < values.size
-      tuple_elements << values[ti].clone
-      ti = ti + 1
-    end
     extraction = TupleLiteral.new(tuple_elements).at(node).as(ASTNode)
-
     vi = values.size - 1
     while vi >= 0
       val = values[vi]
       is_error = IsA.new(val.clone, Path.new(["Error"] of String, true).at(node)).at(node)
       extraction = If.new(is_error, val.clone, extraction).at(node)
       vi = vi - 1
+    end
+
+    if handles.size > 1
+      # The error that leaves is the one that stopped the group: the runtime's
+      # first failure, which is asked first.
+      first = Var.new(@program.new_temp_var_name).at(node)
+      rewritten << Assign.new(first.clone, Call.new(group_var.clone, "first_failure").at(node)).at(node)
+      vi = handles.size - 1
+      while vi >= 0
+        handle = handles[vi]
+        value = values[vi]
+        is_error = IsA.new(value.clone, Path.new(["Error"] of String, true).at(node)).at(node)
+        fiber_id = Call.new(Call.new(handle.clone, "fiber").at(node), "object_id").at(node)
+        stopped_the_group = Call.new(fiber_id, "==", first.clone).at(node)
+        extraction = If.new(And.new(is_error, stopped_the_group).at(node), value.clone, extraction).at(node)
+        vi = vi - 1
+      end
     end
     rewritten << extraction
 
@@ -235,10 +284,13 @@ pub class Normalizer < Transformer
     node
   end
 
+  # The statement's own spawn, when the statement is exactly a direct one:
+  # `g.spawn { }` bare, or assigned to a variable or an underscore. The two
+  # verbs those replaced count too.
   private def iyi_direct_spawn(statement : ASTNode, group_name : String) : Call?
     target = statement.is_a?(Assign) ? statement.value : statement
     return nil unless target.is_a?(Call)
-    return nil unless target.name == "spawn" && target.block
+    return nil unless ["spawn", "spawn_serial", "spawn_parallel"].includes?(target.name) && target.block
     receiver = target.obj
     return nil unless receiver.is_a?(Var) && receiver.name == group_name
     spawn_block = target.block
@@ -273,7 +325,9 @@ pub class Normalizer < Transformer
 
   def transform(node : Call) : ASTNode
     if node.iyi_group?
-      expanded = expand_iyi_group(node)
+      propagated = @propagating_group
+      @propagating_group = false
+      expanded = expand_iyi_group(node, propagated)
       if exp = expanded
         return exp.transform(self)
       end
@@ -382,12 +436,20 @@ pub class Normalizer < Transformer
   end
 
   def transform(node : Propagate) : ASTNode
+    group = node.exp
+    if group.is_a?(Call) && group.iyi_group?
+      @propagating_group = true
+    end
     exp = node.exp.transform(self)
     temp_var = @program.new_temp_var
 
     assign = Assign.new(temp_var.clone, exp).at(node)
     check = IsA.new(temp_var.clone, Path.new(["Error"] of String, true).at(node)).at(node)
-    check.error_construct = "!"
+    check.error_construct = if exp.is_a?(Call) && exp.iyi_group?
+                              "end!"
+                            else
+                              "!"
+                            end
     returned = Return.new(temp_var.clone).at(node)
     returned.from_propagate = true
     propagate = If.new(check, returned).at(node)
@@ -653,6 +715,7 @@ pub class Normalizer < Transformer
       extra_expressions.each { |ee| merged << ee }
       body.expressions.each { |be| merged << be }
       body.expressions = merged
+    else
       extra_expressions << node.body
       node.body = Expressions.new(extra_expressions).at(node.body)
     end

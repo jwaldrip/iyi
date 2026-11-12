@@ -39,17 +39,11 @@
 
 module std/http3
 
-pub import std/slice
-pub import std/capsule
-pub import std/qpack
-pub import std/quic
-pub import std/webtransport
-
-using std/slice::{Slice, Bytes}
-using std/capsule::{VarInt, HttpDatagram, Capsule, CapsuleType}
-using std/qpack::{FieldLine, TableEntry, Encoder, Decoder, Qpack, BlockedStream}
-using std/quic::{StreamId, QuicStream, StreamManager}
-using std/webtransport::{WebTransportSession, SessionStatus}
+import std/slice::{Slice, Bytes}
+import std/capsule::{VarInt, HttpDatagram, Capsule, CapsuleType}
+import std/qpack::{FieldLine, TableEntry, Encoder, Decoder, Qpack, BlockedStream}
+import std/quic::{StreamId, QuicStream, StreamManager}
+import std/webtransport::{WebTransportSession, SessionStatus}
 
 # =============================================================================
 # 1. HTTP/3 Constants, Stream Types, Frame Types, and Error Codes

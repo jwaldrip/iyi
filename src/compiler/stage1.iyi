@@ -8,11 +8,10 @@
 # command the driver ports (build, check, tool, mod, version, help, ...) is
 # dispatched for real, not one hardcoded path.
 
+@[Unsafe("The stage-one entry point binds libc exit(3) in lib LibC, the one C call it makes to end the process with the driver's status. The compiler does not check that C declaration.")]
 module compiler/stage1
 
-import compiler/command/driver
-
-using compiler/command/driver::{CommandDriver, OutputBuffer, CommandResult}
+import compiler/command/driver::{CommandDriver, OutputBuffer, CommandResult}
 
 lib LibC
   fun exit(status : Int32) : NoReturn

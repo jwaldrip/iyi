@@ -1,7 +1,6 @@
 module compiler/platform/flags
 
-import compiler/platform/target
-using compiler/platform/target::{Target}
+import compiler/platform/target::{Target}
 
 # Computes implied platform flags and resolves query predicates.
 pub class PlatformFlags

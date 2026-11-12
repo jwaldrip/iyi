@@ -1,15 +1,17 @@
+@[Unsafe("The build daemon speaks over a UNIX socket: it builds the C argv array and sockaddr_un bytes for execvp and connect, reads and writes raw frame bytes, and binds POSIX calls (socket, connect, stat, execvp, getcwd, mkdir, readlink) in lib LibC. The compiler does not check those pointers or their bounds.")]
 module compiler/command/daemon
 
-import std/json
-import compiler/command/driver
-
-using std/json::{JSON}
-using compiler/command/driver::{OutputBuffer, Exit}
-
+import std/json::{JSON, Any}
+import std/text
+import std/indexable
+import compiler/command/driver::{OutputBuffer, Exit}
 # Communication frame kinds between daemon and client
 pub DAEMON_FRAME_EXIT   = 0_u8
 pub DAEMON_FRAME_STDOUT = 1_u8
 pub DAEMON_FRAME_STDERR = 2_u8
+# A daemon that cannot serve this build (rebuilt compiler, other version, other
+# library) answers with its own frame: a refusal, not a failed build.
+pub DAEMON_FRAME_REFUSE = 3_u8
 
 # Platform limit on UNIX socket path size in sockaddr_un
 # 103 bytes on Darwin (macOS), 107 on Linux
@@ -198,7 +200,7 @@ pub class BuildDaemon
       abort "the socket path is #{path.bytesize} bytes and the kernel takes " \
             "#{limit}: #{path}. A unix socket's path is a fixed field in " \
             "`sockaddr_un`, so this is the machine's limit rather than " \
-            "this compiler's. Pass a shorter `--socket`, or set TMPDIR to " \
+            "this compiler's. Pass a shorter `--socket`, or set IYI_CACHE_DIR to " \
             "a shorter directory and let the default sit under it",
         Exit::FAILURE
     end
@@ -330,18 +332,16 @@ pub class BuildDaemon
 
   # --- Framing Protocol Helpers ---
 
-  def self.write_frame(io : IyiIO, kind : UInt8, bytes : Bytes) : Nil
+  def self.write_frame(io : IyiIO, kind : UInt8, text : String) : Nil
     b = kind
     io.write(pointerof(b), 1)
-    write_u32_le(io, bytes.size)
-    io.write(bytes.to_unsafe, bytes.size)
+    write_u32_le(io, text.bytesize)
+    io.write(text.to_unsafe, text.bytesize)
     io.flush
   end
 
   def self.write_refusal(io : IyiIO, message : String) : Nil
-    message.each_line do |line|
-      write_frame(io, DAEMON_FRAME_STDERR, "#{line}\n".to_slice)
-    end
+    write_frame(io, DAEMON_FRAME_REFUSE, message.chomp)
     b = DAEMON_FRAME_EXIT
     io.write(pointerof(b), 1)
     write_u32_le(io, 1)
@@ -401,9 +401,8 @@ pub class BuildDaemon
         json.field("version", @version_description)
       end
     end
-    bytes = json_payload.to_slice
-    BuildDaemon.write_u32_le(client, bytes.size)
-    client.write(bytes.to_unsafe, bytes.size)
+    BuildDaemon.write_u32_le(client, json_payload.bytesize)
+    client.write(json_payload.to_unsafe, json_payload.bytesize)
     client.flush
 
     loop do
@@ -425,6 +424,17 @@ pub class BuildDaemon
         else
           print_error(str)
         end
+      when DAEMON_FRAME_REFUSE
+        size = BuildDaemon.read_u32_le(client)
+        str = client.read_bytes(size)
+        print_error("#{str}\n")
+        # The build asked for a binary, not for this daemon.
+        if fallback
+          print_error("#{@program_name}: building without it\n")
+          client.close
+          return
+        end
+        exit(1)
       else
         abort "daemon sent an unknown frame #{kind_byte}", Exit::SOFTWARE_ERROR
         client.close
@@ -467,7 +477,7 @@ pub class BuildDaemon
   end
 
   # Reads a 4-byte size-prefixed JSON request from a client connection
-  def daemon_read_request(client : IyiIO) : JSON::Any
+  def daemon_read_request(client : IyiIO) : Any
     size = BuildDaemon.read_u32_le(client)
     str = client.read_bytes(size)
     JSON.parse(str)
@@ -476,12 +486,10 @@ pub class BuildDaemon
   # Completes a build by sending the exit frame and closing the connection
   def daemon_finish(build : DaemonBuild, exit_code : Int32 = 0) : Bool
     if client = build.client
-      begin
-        client.write_byte(DAEMON_FRAME_EXIT)
-        BuildDaemon.write_u32_le(client, exit_code)
-        client.flush
-      rescue
-      end
+      b = DAEMON_FRAME_EXIT
+      client.write(pointerof(b), 1)
+      BuildDaemon.write_u32_le(client, exit_code)
+      client.flush
       client.close
     end
     exit_code == 0
@@ -607,12 +615,15 @@ pub class BuildDaemon
   end
 
   def is_file?(path : String) : Bool
-    stat_buf = uninitialized LibC::Stat
-    ret = LibC.stat(path.to_unsafe, pointerof(stat_buf))
-    return false if ret != 0
     {% if flag?(:darwin) %}
+      stat_buf = uninitialized LibC::Stat
+      ret = LibC.stat(path.to_unsafe, pointerof(stat_buf))
+      return false if ret != 0
       (stat_buf.st_mode_nlink & 0xF000) == 0x8000
     {% elsif flag?(:linux) %}
+      stat_buf = uninitialized LibC::Stat
+      ret = LibC.stat(path.to_unsafe, pointerof(stat_buf))
+      return false if ret != 0
       (stat_buf.st_mode & 0xF000_u32) == 0x8000_u32
     {% else %}
       File.exists?(path)

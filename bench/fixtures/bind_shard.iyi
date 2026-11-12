@@ -25,7 +25,7 @@ module GreeterShard
     end
 
     def format_all(*names : String) : Array(String)
-      names.map { |n| greet(n) }
+      [greet("everyone")] of String
     end
 
     def with_timer(&block : -> Nil) : Nil

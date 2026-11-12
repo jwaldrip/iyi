@@ -1,21 +1,23 @@
-# `Iterator`, ported for lazy sequences.
+# `Iterator`: lazy sequences.
 #
-# Crystal's `iterator.cr` is 1,893 lines and provides the abstraction that
-# makes sequence transformations composable without allocating intermediate
-# arrays at each stage. Against the Go bar, which has no lazy sequence
-# abstraction, this gives iyi expressive power while avoiding unnecessary
-# heap allocations.
+# A pull-based sequence abstraction that makes transformations composable
+# without allocating an intermediate array at each stage. Against the Go bar,
+# which has no lazy sequence abstraction, this gives iyi expressive power
+# while avoiding needless heap allocations.
 #
 # ## The Associated Type and Lazy Adaptors
 #
 # Like `Enumerable`, `Iterator` uses an associated type `type Elem`. The core
 # requirement is a single method:
 #
-#     abstract def next : Elem?
+#     abstract def next : Elem | Stop
 #
-# Returning `nil` signals exhaustion. In contrast to Crystal's `Iterator::Stop`
-# sentinel singleton, iyi uses nilable element types (`Elem?`), matching
-# the convention used across the prelude.
+# Answering `Stop` signals exhaustion. It is no value of any element type,
+# so a nil element is an element: with `next : Elem?` the end was nil, and
+# `Iterator.of([1, nil, 3]).to_a` stopped at the nil and answered [1],
+# where the other library, whose `next` answers its `Iterator::Stop` in
+# the same place, answers [1, nil, 3]. `Stop` holds nothing, so answering
+# it allocates nothing.
 #
 # ### Why adaptors take (I, T, U) rather than (I, U)
 #
@@ -45,32 +47,39 @@
 # 1. Buffering the entire sequence into an array, which destroys laziness and
 #    hangs on infinite sequences, or
 # 2. Stackful coroutines or fibers, which are absent from the minimal runtime.
-# Concrete collections (like `Array`) provide their own iterator constructors
-# (such as `Iterator.of(array)` or `ArrayIterator.new(array)`), avoiding any
-# circular dependency between `std/enumerable` and `std/iterator`.
+# Concrete collections provide their own iterator constructors instead:
+# `Iterator.of(array)`, `Iterator.of(range)`, `Iterator.of_keys(hash)`,
+# `Iterator.of_values(hash)`, `Iterator.of_entries(hash)`. That avoids any
+# circular dependency between `std/enumerable` and `std/iterator`, and keeps
+# one spelling per source: the prelude types are not reopened to add a second.
 #
-# ## What was omitted from Crystal's 1,893 lines and why
+# ## What is refused
 #
-# * `Iterator::Stop` sentinel: replaced by `Elem?`, which is native to iyi's
-#   type system and avoids an extra allocation or runtime type check.
-# * Duck-typed N-ary `zip(*others)`: Crystal defines multiple macro overloads
-#   to handle 1..N arguments. iyi uses a clean binary `zip(other : O)` with
-#   `O::Elem`, composable into multiple zips if needed.
-# * Collection-specific iterators: specialized iterators for `Hash`, `Range`,
-#   `Slice`, and `String` belong in their respective modules, not in the core
-#   iterator trait.
+# `take`/`skip` refuse a negative count (`negative count: -1`), `each_slice`,
+# `each_cons` and `step` refuse a non-positive size, all at the call that
+# built the adaptor rather than from inside the struct that ran it. `first`,
+# `max` and `min` panic on an exhausted source with the `Enumerable`
+# sentences (`first of an empty collection`); `first?`, `max?` and `min?`
+# answer nil. `find` answers nil, as `Array#find` and `Enumerable#find` do.
+#
+# ## What is not here and why
+#
+# * N-ary `zip(*others)`: one binary `zip(other : O)` with `O::Elem`,
+#   composable into multiple zips if needed.
 # * `cons_pair`: redundant with `each_cons(2)`.
 # * `in_slices_of`, `chunks`: require structural constraints on tuples or pairs.
 
 module std/iterator
 
-import std/traits
-using std/traits::{Cmp, Num}
+import std/traits::{Comparable, Num}
+
+pub struct Stop
+end
 
 pub trait Iterator
   type Elem
 
-  abstract def next : Elem?
+  abstract def next : Elem | Stop
 
   # Convenience constructor for arrays.
   def self.of(array : Array(T)) : ArrayIterator(T) forall T
@@ -79,6 +88,19 @@ pub trait Iterator
 
   def self.of(range : Range(B, E)) : RangeIterator(B, E) forall B, E
     RangeIterator(B, E).new(range)
+  end
+
+  # An endless range counts up for as long as it is pulled, as the other
+  # library's does: `Iterator.of((1..)).first(3).to_a` was accepted here
+  # and then refused from inside `RangeIterator#next`, "expected argument
+  # #1 to 'Int32#<' to be ... not Nil", a line of this file. A beginless
+  # range has no first element to count from, and is refused at the call.
+  def self.of(range : Range(B, Nil)) : EndlessRangeIterator(B) forall B
+    EndlessRangeIterator(B).new(range.begin)
+  end
+
+  def self.of(range : Range(Nil, E)) : Nil forall E
+    {% raise "Iterator.of takes a range with a beginning: a beginless range has no first element to count up from" %}
   end
 
   def self.of_keys(hash : Hash(K, V)) : KeyIterator(K, V) forall K, V
@@ -108,6 +130,10 @@ pub trait Iterator
   end
 
   def take(n : Int32) : TakeIterator(self, Elem)
+    # Refused at the door, where the caller can see it: a negative prefix is
+    # not a prefix, and `Enumerable#take` refuses it in the same words.
+    # Zero still yields nothing, which is what an empty prefix is.
+    raise "negative count: #{n}" if n < 0
     TakeIterator(self, Elem).new(self, n)
   end
 
@@ -120,6 +146,7 @@ pub trait Iterator
   end
 
   def skip(n : Int32) : SkipIterator(self, Elem)
+    raise "negative count: #{n}" if n < 0
     SkipIterator(self, Elem).new(self, n)
   end
 
@@ -127,12 +154,19 @@ pub trait Iterator
     SkipWhileIterator(self, Elem).new(self, func)
   end
 
-  def zip(other : O) : ZipIterator(self, Elem, O, O::Elem) forall O
+  # Bounded, as `Enumerable#zip` is (SPEC.md II.6 finding 6). Unbounded, a
+  # zip with an array was refused from inside this file, "undefined
+  # constant O::Elem" at the line below, and a chain with one from
+  # `ChainIterator#next`; with `forall O : Iterator` the refusal names the
+  # caller's line, the argument's type and `O`. A chain of two element
+  # types yields either, as the other library's does: it was a return-type
+  # error inside `ChainIterator`.
+  def zip(other : O) : ZipIterator(self, Elem, O, O::Elem) forall O : Iterator
     ZipIterator(self, Elem, O, O::Elem).new(self, other)
   end
 
-  def chain(other : O) : ChainIterator(self, O, Elem) forall O
-    ChainIterator(self, O, Elem).new(self, other)
+  def chain(other : O) : ChainIterator(self, O, Elem | O::Elem) forall O : Iterator
+    ChainIterator(self, O, Elem | O::Elem).new(self, other)
   end
 
   def flat_map(&func : Elem -> Array(U)) : FlatMapIterator(self, Elem, U) forall U
@@ -158,7 +192,7 @@ pub trait Iterator
 
   def with_index(offset : Int32 = 0, & : Elem, Int32 -> Nil) : Nil
     i = offset
-    while !(item = self.next).nil?
+    until (item = self.next).is_a?(Stop)
       yield item, i
       i = i + 1
     end
@@ -173,6 +207,11 @@ pub trait Iterator
   end
 
   def step(n : Int32) : StepIterator(self, Elem)
+    # Refused at the door, the way `each_slice` and `each_cons` above refuse
+    # it, and in the sentence `Enumerable#each_step` uses. `StepIterator` also
+    # refused a zero step, but from a struct the caller never named and with
+    # different words, so the same mistake read as two.
+    raise "step size must be positive" if n <= 0
     StepIterator(self, Elem).new(self, n)
   end
 
@@ -183,7 +222,7 @@ pub trait Iterator
   # ---- terminals -----------------------------------------------------------
 
   def each(& : Elem -> Nil) : Nil
-    while !(item = self.next).nil?
+    until (item = self.next).is_a?(Stop)
       yield item
     end
   end
@@ -225,8 +264,18 @@ pub trait Iterator
     count
   end
 
+  # Whether an element is truthy, which is what the other library's `any?`
+  # answers: this said whether there was an element at all, so
+  # `Iterator.of([false, false]).any?` was true. It pulls until it meets a
+  # truthy element, and what it pulled is gone: an iterator is a pull, so a
+  # predicate over one cannot be free. For a source with no `false` in it
+  # that is one element. The block form below reads as much as it has to
+  # and no more. Said here because a method spelled like a question that
+  # quietly takes elements is the kind of thing a caller finds out from the
+  # answer to the *next* question.
   def any? : Bool
-    !self.next.nil?
+    each { |e| return true if e }
+    false
   end
 
   def any?(& : Elem -> Bool) : Bool
@@ -244,46 +293,70 @@ pub trait Iterator
     true
   end
 
-  def find?(& : Elem -> Bool) : Elem?
+  # Nil when nothing matched, which is what `Enumerable#find` and `Array#find`
+  # answer: not finding is the ordinary outcome of a search, and a caller who
+  # wants the panic writes `|| raise` as the prelude does. `first?`/`first`
+  # below keeps its pair — an exhausted iterator has no first element, which
+  # is a question with no answer.
+  def find(& : Elem -> Bool) : Elem?
     each { |e| return e if yield e }
     nil
   end
 
-  def find(& : Elem -> Bool) : Elem
-    each { |e| return e if yield e }
-    raise "no element matched"
-  end
-
   def first? : Elem?
-    self.next
+    item = self.next
+    item.is_a?(Stop) ? nil : item
   end
 
   def first : Elem
     item = self.next
-    return item unless item.nil?
-    raise "empty"
+    return item unless item.is_a?(Stop)
+    raise "first of an empty collection"
   end
 
-  def max : Elem where Elem : Cmp
+  def max : Elem where Elem : Comparable
     best = nil
     each do |e|
       current = best
-      best = e if current.nil? || e.gt(current)
+      best = e if current.nil? || ((e <=> current) > 0)
     end
     found = best
     return found unless found.nil?
-    raise "empty"
+    raise "max of an empty collection"
   end
 
-  def min : Elem where Elem : Cmp
+  # The largest, or nil when there is none. `max?`/`max` is a real pair:
+  # an empty source has no largest element, so the plain name raising is
+  # the common case. This file keeps the same pair for `first?`/`first`,
+  # and answers `find` with nil, where not finding is the ordinary outcome.
+  def max? : Elem? where Elem : Comparable
     best = nil
     each do |e|
       current = best
-      best = e if current.nil? || e.lt(current)
+      best = e if current.nil? || ((e <=> current) > 0)
+    end
+    best
+  end
+
+  def min : Elem where Elem : Comparable
+    best = nil
+    each do |e|
+      current = best
+      best = e if current.nil? || ((e <=> current) < 0)
     end
     found = best
     return found unless found.nil?
-    raise "empty"
+    raise "min of an empty collection"
+  end
+
+  # And the same pair at the other end.
+  def min? : Elem? where Elem : Comparable
+    best = nil
+    each do |e|
+      current = best
+      best = e if current.nil? || ((e <=> current) < 0)
+    end
+    best
   end
 
   def sum : Elem where Elem : Num
@@ -299,41 +372,68 @@ pub trait Iterator
   end
 end
 
+# The source an endless range gets: it counts up by one from the beginning
+# with no end, as an endless range does in the other library.
+pub class EndlessRangeIterator(B)
+  def initialize(@current : B)
+  end
+
+  def next : B
+    val = @current
+    @current = val + 1
+    val
+  end
+end
+
+impl Iterator for EndlessRangeIterator(B) forall B
+  type Elem = B
+end
+
 # ---------------------------------------------------------------------------
 # Adaptor implementations
 # ---------------------------------------------------------------------------
 
-pub struct ArrayIterator(T)
+# The sources are classes, as the other library's are: an adaptor keeps
+# its source by value, and a struct source was copied into it, so
+# `it.first(2).to_a` and then `it.to_a` gave [1, 2] and [1, 2, 3, 4] where
+# the other library gives [1, 2] and [3, 4]. Shared, the adaptor's pulls
+# are the source's. An adaptor that keeps a count, a flag or a buffer is
+# the source of whatever is built on it, so it is a class for the same
+# reason: as a struct it was copied too, and `t = it.take(3)`,
+# `t.first(2).to_a` and then `t.to_a` gave [3, 4, 5] where the other
+# library gives [3], `each_cons` handed its first window out again and
+# `step` and `with_index` restarted their strides and counts. An adaptor
+# that keeps only its sources, a block or a size stays a struct: a copy of
+# it pulls from the same place.
+#
+# Each type defines `next` once and its `impl` names only `Elem`, as
+# `NumericStepIterator` (std/steppable) does: every adaptor carried the same
+# `next` twice, once on the type and once in the `impl`.
+pub class ArrayIterator(T)
   def initialize(@array : Array(T))
     @index = 0
   end
 
-  def next : T?
+  def next : T | Stop
     if @index < @array.size
       item = @array[@index]
       @index = @index + 1
       item
     else
-      nil
+      Stop.new
     end
   end
 end
 
 impl Iterator for ArrayIterator(T) forall T
   type Elem = T
-
-  def next : T?
-    if @index < @array.size
-      item = @array[@index]
-      @index = @index + 1
-      item
-    else
-      nil
-    end
-  end
 end
 
-pub struct RangeIterator(B, E)
+# Counts up by one from the range's beginning, the way the prelude's
+# `Range#each` does, and stops at the end rather than stepping past it:
+# on an inclusive range whose end is the type's largest value, the step
+# after the last element would overflow.
+pub class RangeIterator(B, E)
   @range : Range(B, E)
   @current : B
   @done : Bool
@@ -343,180 +443,104 @@ pub struct RangeIterator(B, E)
     @done = false
   end
 
-  def next : B?
-    return nil if @done
+  def next : B | Stop
+    return Stop.new if @done
     val = @current
-    if @range.exclusive?
-      if val >= @range.end
-        @done = true
-        return nil
-      end
+    if val < @range.end
+      @current = val + 1
+      val
+    elsif !@range.exclusive? && val == @range.end
+      @done = true
+      val
     else
-      if val > @range.end
-        @done = true
-        return nil
-      end
+      @done = true
+      Stop.new
     end
-    @current = @current + 1
-    val
   end
 end
 
 impl Iterator for RangeIterator(B, E) forall B, E
   type Elem = B
-
-  def next : B?
-    return nil if @done
-    val = @current
-    if @range.exclusive?
-      if val >= @range.end
-        @done = true
-        return nil
-      end
-    else
-      if val > @range.end
-        @done = true
-        return nil
-      end
-    end
-    @current = @current + 1
-    val
-  end
 end
 
-pub struct KeyIterator(K, V)
-  @hash : Hash(K, V)
+# The three views of a hash, in insertion order. Each takes its snapshot of
+# the hash once, when built — `Hash#keys` and `Hash#values` allocate a fresh
+# array per call, so asking per element was a copy of the table per step —
+# and then walks that snapshot, so a hash that changes under the iterator
+# does not change what it yields.
+pub class KeyIterator(K, V)
+  @keys : Array(K)
   @index : Int32
 
-  def initialize(@hash : Hash(K, V))
+  def initialize(hash : Hash(K, V))
+    @keys = hash.keys
     @index = 0
   end
 
-  def next : K?
-    if @index < @hash.size
-      key = @hash.keys[@index]
-      @index = @index + 1
-      key
-    else
-      nil
-    end
+  def next : K | Stop
+    return Stop.new if @index >= @keys.size
+    key = @keys[@index]
+    @index = @index + 1
+    key
   end
 end
 
 impl Iterator for KeyIterator(K, V) forall K, V
   type Elem = K
-
-  def next : K?
-    if @index < @hash.size
-      key = @hash.keys[@index]
-      @index = @index + 1
-      key
-    else
-      nil
-    end
-  end
 end
 
-pub struct ValueIterator(K, V)
-  @hash : Hash(K, V)
+pub class ValueIterator(K, V)
+  @values : Array(V)
   @index : Int32
 
-  def initialize(@hash : Hash(K, V))
+  def initialize(hash : Hash(K, V))
+    @values = hash.values
     @index = 0
   end
 
-  def next : V?
-    if @index < @hash.size
-      val = @hash.values[@index]
-      @index = @index + 1
-      val
-    else
-      nil
-    end
+  def next : V | Stop
+    return Stop.new if @index >= @values.size
+    val = @values[@index]
+    @index = @index + 1
+    val
   end
 end
 
 impl Iterator for ValueIterator(K, V) forall K, V
   type Elem = V
-
-  def next : V?
-    if @index < @hash.size
-      val = @hash.values[@index]
-      @index = @index + 1
-      val
-    else
-      nil
-    end
-  end
 end
 
-pub struct EntryIterator(K, V)
-  @hash : Hash(K, V)
+pub class EntryIterator(K, V)
+  @keys : Array(K)
+  @values : Array(V)
   @index : Int32
 
-  def initialize(@hash : Hash(K, V))
+  def initialize(hash : Hash(K, V))
+    @keys = hash.keys
+    @values = hash.values
     @index = 0
   end
 
-  def next : ::Tuple(K, V)?
-    if @index < @hash.size
-      entry = {@hash.keys[@index], @hash.values[@index]}
-      @index = @index + 1
-      entry
-    else
-      nil
-    end
+  def next : Tuple(K, V) | Stop
+    return Stop.new if @index >= @keys.size
+    entry = {@keys[@index], @values[@index]}
+    @index = @index + 1
+    entry
   end
 end
 
 impl Iterator for EntryIterator(K, V) forall K, V
-  type Elem = ::Tuple(K, V)
-
-  def next : ::Tuple(K, V)?
-    if @index < @hash.size
-      entry = {@hash.keys[@index], @hash.values[@index]}
-      @index = @index + 1
-      entry
-    else
-      nil
-    end
-  end
-end
-
-class ::Array(T)
-  def each_iterator : Std::Iterator::ArrayIterator(T)
-    Std::Iterator::ArrayIterator(T).new(self)
-  end
-end
-
-struct ::Range(B, E)
-  def each_iterator : Std::Iterator::RangeIterator(B, E)
-    Std::Iterator::RangeIterator(B, E).new(self)
-  end
-end
-
-class ::Hash(K, V)
-  def each_key_iterator : Std::Iterator::KeyIterator(K, V)
-    Std::Iterator::KeyIterator(K, V).new(self)
-  end
-
-  def each_value_iterator : Std::Iterator::ValueIterator(K, V)
-    Std::Iterator::ValueIterator(K, V).new(self)
-  end
-
-  def each_iterator : Std::Iterator::EntryIterator(K, V)
-    Std::Iterator::EntryIterator(K, V).new(self)
-  end
+  type Elem = Tuple(K, V)
 end
 
 pub struct MapIterator(I, T, U)
   def initialize(@iter : I, @func : T -> U)
   end
 
-  def next : U?
+  def next : U | Stop
     item = @iter.next
-    if item.nil?
-      nil
+    if item.is_a?(Stop)
+      Stop.new
     else
       @func.call(item)
     end
@@ -525,122 +549,79 @@ end
 
 impl Iterator for MapIterator(I, T, U) forall I, T, U
   type Elem = U
-
-  def next : U?
-    item = @iter.next
-    if item.nil?
-      nil
-    else
-      @func.call(item)
-    end
-  end
 end
 
 pub struct SelectIterator(I, T)
   def initialize(@iter : I, @func : T -> Bool)
   end
 
-  def next : T?
-    while !(item = @iter.next).nil?
+  def next : T | Stop
+    until (item = @iter.next).is_a?(Stop)
       if @func.call(item)
         return item
       end
     end
-    nil
+    Stop.new
   end
 end
 
 impl Iterator for SelectIterator(I, T) forall I, T
   type Elem = T
-
-  def next : T?
-    while !(item = @iter.next).nil?
-      if @func.call(item)
-        return item
-      end
-    end
-    nil
-  end
 end
 
 pub struct RejectIterator(I, T)
   def initialize(@iter : I, @func : T -> Bool)
   end
 
-  def next : T?
-    while !(item = @iter.next).nil?
+  def next : T | Stop
+    until (item = @iter.next).is_a?(Stop)
       unless @func.call(item)
         return item
       end
     end
-    nil
+    Stop.new
   end
 end
 
 impl Iterator for RejectIterator(I, T) forall I, T
   type Elem = T
-
-  def next : T?
-    while !(item = @iter.next).nil?
-      unless @func.call(item)
-        return item
-      end
-    end
-    nil
-  end
 end
 
-pub struct TakeIterator(I, T)
+pub class TakeIterator(I, T)
   def initialize(@iter : I, @n : Int32)
     @count = 0
   end
 
-  def next : T?
+  def next : T | Stop
+    # Every pull counts, an empty one too, as in the other library: a pull
+    # that came back empty was not counted, so the next call pulled the
+    # exhausted source again and ran its blocks once more.
     if @count < @n
-      item = @iter.next
-      if item.nil?
-        nil
-      else
-        @count = @count + 1
-        item
-      end
+      @count = @count + 1
+      @iter.next
     else
-      nil
+      Stop.new
     end
   end
 end
 
 impl Iterator for TakeIterator(I, T) forall I, T
   type Elem = T
-
-  def next : T?
-    if @count < @n
-      item = @iter.next
-      if item.nil?
-        nil
-      else
-        @count = @count + 1
-        item
-      end
-    else
-      nil
-    end
-  end
 end
 
-pub struct TakeWhileIterator(I, T)
+pub class TakeWhileIterator(I, T)
   def initialize(@iter : I, @func : T -> Bool)
     @done = false
   end
 
-  def next : T?
+  def next : T | Stop
     if @done
-      nil
+      Stop.new
     else
       item = @iter.next
-      if item.nil? || !@func.call(item)
+      if item.is_a?(Stop) || !@func.call(item)
         @done = true
-        nil
+        Stop.new
       else
         item
       end
@@ -650,32 +631,18 @@ end
 
 impl Iterator for TakeWhileIterator(I, T) forall I, T
   type Elem = T
-
-  def next : T?
-    if @done
-      nil
-    else
-      item = @iter.next
-      if item.nil? || !@func.call(item)
-        @done = true
-        nil
-      else
-        item
-      end
-    end
-  end
 end
 
-pub struct SkipIterator(I, T)
+pub class SkipIterator(I, T)
   def initialize(@iter : I, @n : Int32)
     @skipped = 0
   end
 
-  def next : T?
+  def next : T | Stop
     while @skipped < @n
       item = @iter.next
-      if item.nil?
-        return nil
+      if item.is_a?(Stop)
+        return Stop.new
       end
       @skipped = @skipped + 1
     end
@@ -685,29 +652,18 @@ end
 
 impl Iterator for SkipIterator(I, T) forall I, T
   type Elem = T
-
-  def next : T?
-    while @skipped < @n
-      item = @iter.next
-      if item.nil?
-        return nil
-      end
-      @skipped = @skipped + 1
-    end
-    @iter.next
-  end
 end
 
-pub struct SkipWhileIterator(I, T)
+pub class SkipWhileIterator(I, T)
   def initialize(@iter : I, @func : T -> Bool)
     @skipping = true
   end
 
-  def next : T?
+  def next : T | Stop
     while @skipping
       item = @iter.next
-      if item.nil?
-        return nil
+      if item.is_a?(Stop)
+        return Stop.new
       end
       if @func.call(item)
         # keep skipping
@@ -722,62 +678,38 @@ end
 
 impl Iterator for SkipWhileIterator(I, T) forall I, T
   type Elem = T
-
-  def next : T?
-    while @skipping
-      item = @iter.next
-      if item.nil?
-        return nil
-      end
-      if @func.call(item)
-        # keep skipping
-      else
-        @skipping = false
-        return item
-      end
-    end
-    @iter.next
-  end
 end
 
 pub struct ZipIterator(I1, T1, I2, T2)
   def initialize(@iter1 : I1, @iter2 : I2)
   end
 
-  def next : ::Tuple(T1, T2)?
+  # Asks the second source only when the first has an element. Asking both
+  # took one from the second each time the first had run out: after
+  # `a.zip(b).to_a` with `a` = [1] and `b` = [10, 20, 30], `b.next`
+  # answered 30 where the other library and Python's `zip` answer 20.
+  def next : Tuple(T1, T2) | Stop
     item1 = @iter1.next
+    return Stop.new if item1.is_a?(Stop)
     item2 = @iter2.next
-    if item1.nil? || item2.nil?
-      nil
-    else
-      {item1, item2}
-    end
+    return Stop.new if item2.is_a?(Stop)
+    {item1, item2}
   end
 end
 
 impl Iterator for ZipIterator(I1, T1, I2, T2) forall I1, T1, I2, T2
-  type Elem = ::Tuple(T1, T2)
-
-  def next : ::Tuple(T1, T2)?
-    item1 = @iter1.next
-    item2 = @iter2.next
-    if item1.nil? || item2.nil?
-      nil
-    else
-      {item1, item2}
-    end
-  end
+  type Elem = Tuple(T1, T2)
 end
 
-pub struct ChainIterator(I1, I2, T)
+pub class ChainIterator(I1, I2, T)
   def initialize(@iter1 : I1, @iter2 : I2)
     @first_done = false
   end
 
-  def next : T?
+  def next : T | Stop
     if !@first_done
       item = @iter1.next
-      if !item.nil?
+      if !item.is_a?(Stop)
         return item
       end
       @first_done = true
@@ -788,26 +720,15 @@ end
 
 impl Iterator for ChainIterator(I1, I2, T) forall I1, I2, T
   type Elem = T
-
-  def next : T?
-    if !@first_done
-      item = @iter1.next
-      if !item.nil?
-        return item
-      end
-      @first_done = true
-    end
-    @iter2.next
-  end
 end
 
-pub struct FlatMapIterator(I, T, U)
+pub class FlatMapIterator(I, T, U)
   def initialize(@iter : I, @func : T -> Array(U))
     @current_sub = [] of U
     @current_idx = 0
   end
 
-  def next : U?
+  def next : U | Stop
     loop do
       if @current_idx < @current_sub.size
         val = @current_sub[@current_idx]
@@ -815,8 +736,8 @@ pub struct FlatMapIterator(I, T, U)
         return val
       end
       item = @iter.next
-      if item.nil?
-        return nil
+      if item.is_a?(Stop)
+        return Stop.new
       end
       @current_sub = @func.call(item)
       @current_idx = 0
@@ -826,39 +747,23 @@ end
 
 impl Iterator for FlatMapIterator(I, T, U) forall I, T, U
   type Elem = U
-
-  def next : U?
-    loop do
-      if @current_idx < @current_sub.size
-        val = @current_sub[@current_idx]
-        @current_idx = @current_idx + 1
-        return val
-      end
-      item = @iter.next
-      if item.nil?
-        return nil
-      end
-      @current_sub = @func.call(item)
-      @current_idx = 0
-    end
-  end
 end
 
 pub struct SliceIterator(I, T)
   def initialize(@iter : I, @n : Int32)
   end
 
-  def next : Array(T)?
+  def next : Array(T) | Stop
     slice = [] of T
     while slice.size < @n
       item = @iter.next
-      if item.nil?
+      if item.is_a?(Stop)
         break
       end
       slice << item
     end
     if slice.empty?
-      nil
+      Stop.new
     else
       slice
     end
@@ -867,45 +772,29 @@ end
 
 impl Iterator for SliceIterator(I, T) forall I, T
   type Elem = Array(T)
-
-  def next : Array(T)?
-    slice = [] of T
-    while slice.size < @n
-      item = @iter.next
-      if item.nil?
-        break
-      end
-      slice << item
-    end
-    if slice.empty?
-      nil
-    else
-      slice
-    end
-  end
 end
 
-pub struct ConsIterator(I, T)
+pub class ConsIterator(I, T)
   def initialize(@iter : I, @n : Int32)
     @window = [] of T
     @started = false
   end
 
-  def next : Array(T)?
+  def next : Array(T) | Stop
     if !@started
       @started = true
       while @window.size < @n
         item = @iter.next
-        if item.nil?
-          return nil
+        if item.is_a?(Stop)
+          return Stop.new
         end
         @window << item
       end
       return @window.dup
     end
     item = @iter.next
-    if item.nil?
-      nil
+    if item.is_a?(Stop)
+      Stop.new
     else
       @window.shift
       @window << item
@@ -916,39 +805,17 @@ end
 
 impl Iterator for ConsIterator(I, T) forall I, T
   type Elem = Array(T)
-
-  def next : Array(T)?
-    if !@started
-      @started = true
-      while @window.size < @n
-        item = @iter.next
-        if item.nil?
-          return nil
-        end
-        @window << item
-      end
-      return @window.dup
-    end
-    item = @iter.next
-    if item.nil?
-      nil
-    else
-      @window.shift
-      @window << item
-      @window.dup
-    end
-  end
 end
 
-pub struct WithIndexIterator(I, T)
+pub class WithIndexIterator(I, T)
   def initialize(@iter : I, @offset : Int32)
     @index = @offset
   end
 
-  def next : ::Tuple(T, Int32)?
+  def next : Tuple(T, Int32) | Stop
     item = @iter.next
-    if item.nil?
-      nil
+    if item.is_a?(Stop)
+      Stop.new
     else
       idx = @index
       @index = @index + 1
@@ -958,30 +825,19 @@ pub struct WithIndexIterator(I, T)
 end
 
 impl Iterator for WithIndexIterator(I, T) forall I, T
-  type Elem = ::Tuple(T, Int32)
-
-  def next : ::Tuple(T, Int32)?
-    item = @iter.next
-    if item.nil?
-      nil
-    else
-      idx = @index
-      @index = @index + 1
-      {item, idx}
-    end
-  end
+  type Elem = Tuple(T, Int32)
 end
 
-pub struct CycleIterator(I, T)
+pub class CycleIterator(I, T)
   def initialize(@iter : I)
     @cache = [] of T
     @cached = false
     @idx = 0
   end
 
-  def next : T?
+  def next : T | Stop
     if @cached
-      return nil if @cache.empty?
+      return Stop.new if @cache.empty?
       if @idx >= @cache.size
         @idx = 0
       end
@@ -990,9 +846,9 @@ pub struct CycleIterator(I, T)
       val
     else
       item = @iter.next
-      if item.nil?
+      if item.is_a?(Stop)
         @cached = true
-        return nil if @cache.empty?
+        return Stop.new if @cache.empty?
         @idx = 1
         @cache[0]
       else
@@ -1005,32 +861,9 @@ end
 
 impl Iterator for CycleIterator(I, T) forall I, T
   type Elem = T
-
-  def next : T?
-    if @cached
-      return nil if @cache.empty?
-      if @idx >= @cache.size
-        @idx = 0
-      end
-      val = @cache[@idx]
-      @idx = @idx + 1
-      val
-    else
-      item = @iter.next
-      if item.nil?
-        @cached = true
-        return nil if @cache.empty?
-        @idx = 1
-        @cache[0]
-      else
-        @cache << item
-        item
-      end
-    end
-  end
 end
 
-pub struct CycleNIterator(I, T)
+pub class CycleNIterator(I, T)
   def initialize(@iter : I, @n : Int32)
     @cache = [] of T
     @cached = false
@@ -1038,13 +871,13 @@ pub struct CycleNIterator(I, T)
     @cycles_left = @n
   end
 
-  def next : T?
-    return nil if @cycles_left <= 0
+  def next : T | Stop
+    return Stop.new if @cycles_left <= 0
     if @cached
-      return nil if @cache.empty?
+      return Stop.new if @cache.empty?
       if @idx >= @cache.size
         @cycles_left = @cycles_left - 1
-        return nil if @cycles_left <= 0
+        return Stop.new if @cycles_left <= 0
         @idx = 0
       end
       val = @cache[@idx]
@@ -1052,10 +885,10 @@ pub struct CycleNIterator(I, T)
       val
     else
       item = @iter.next
-      if item.nil?
+      if item.is_a?(Stop)
         @cached = true
         @cycles_left = @cycles_left - 1
-        return nil if @cycles_left <= 0 || @cache.empty?
+        return Stop.new if @cycles_left <= 0 || @cache.empty?
         @idx = 1
         @cache[0]
       else
@@ -1068,42 +901,14 @@ end
 
 impl Iterator for CycleNIterator(I, T) forall I, T
   type Elem = T
-
-  def next : T?
-    return nil if @cycles_left <= 0
-    if @cached
-      return nil if @cache.empty?
-      if @idx >= @cache.size
-        @cycles_left = @cycles_left - 1
-        return nil if @cycles_left <= 0
-        @idx = 0
-      end
-      val = @cache[@idx]
-      @idx = @idx + 1
-      val
-    else
-      item = @iter.next
-      if item.nil?
-        @cached = true
-        @cycles_left = @cycles_left - 1
-        return nil if @cycles_left <= 0 || @cache.empty?
-        @idx = 1
-        @cache[0]
-      else
-        @cache << item
-        item
-      end
-    end
-  end
 end
 
-pub struct StepIterator(I, T)
+pub class StepIterator(I, T)
   def initialize(@iter : I, @by : Int32)
-    raise "step size must be >= 1" if @by < 1
     @first = true
   end
 
-  def next : T?
+  def next : T | Stop
     if @first
       @first = false
       @iter.next
@@ -1111,8 +916,8 @@ pub struct StepIterator(I, T)
       i = 1
       while i < @by
         item = @iter.next
-        if item.nil?
-          return nil
+        if item.is_a?(Stop)
+          return Stop.new
         end
         i = i + 1
       end
@@ -1123,50 +928,23 @@ end
 
 impl Iterator for StepIterator(I, T) forall I, T
   type Elem = T
-
-  def next : T?
-    if @first
-      @first = false
-      @iter.next
-    else
-      i = 1
-      while i < @by
-        item = @iter.next
-        if item.nil?
-          return nil
-        end
-        i = i + 1
-      end
-      @iter.next
-    end
-  end
 end
 
 pub struct CompactMapIterator(I, T, U)
   def initialize(@iter : I, @func : T -> U?)
   end
 
-  def next : U?
-    while !(item = @iter.next).nil?
+  def next : U | Stop
+    until (item = @iter.next).is_a?(Stop)
       res = @func.call(item)
       unless res.nil?
         return res
       end
     end
-    nil
+    Stop.new
   end
 end
 
 impl Iterator for CompactMapIterator(I, T, U) forall I, T, U
   type Elem = U
-
-  def next : U?
-    while !(item = @iter.next).nil?
-      res = @func.call(item)
-      unless res.nil?
-        return res
-      end
-    end
-    nil
-  end
 end

@@ -10,8 +10,30 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+# `IYI`, overridable: the container that can build this compiler cannot run
+# wasmtime, and the runner that runs wasmtime cannot build the compiler. The
+# relocatable tarball crosses that line — `clean-room` proves it starts on a
+# machine with nothing on it — so CI points this at the tarball's binary and
+# the whole driver, proofs included, runs in one place.
+IYI="${IYI:-$REPO/bin/iyi}"
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` is silently ignored on the search path, so
+# the patched copy is never read and the proof that a check can fail
+# quietly stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 trap 'rm -rf "$WORK"' EXIT
 
 status=0
@@ -93,13 +115,13 @@ fi
 
 echo
 echo "== every check reported =="
-for check in "allocation:" "reclamation:" "survival:" "precision:" "realloc:"; do
+for check in "allocation:" "reclamation:" "survival:" "precision:" "realloc:" "weak:" "locals:"; do
   if ! grep -q "$check" "$WORK/wasm32-ex.out" 2>/dev/null; then
     echo "  MISSING: $check"
     status=1
   fi
 done
-[ "$status" -eq 0 ] && echo "  allocation, reclamation, survival, precision, and realloc all reported"
+[ "$status" -eq 0 ] && echo "  allocation, reclamation, survival, precision, realloc, weak references and locals all reported"
 
 echo
 echo "== the same program with optimisation on (--release) =="
@@ -118,7 +140,7 @@ prove_fails() {
   awk "$script" "$REPO/src/iyi/prelude.iyi" > "$WORK/$dir/iyi/prelude.iyi"
 
   local link_cmd
-  link_cmd="$(IYI_PATH="$WORK/$dir:$REPO/src" "$IYI" build --cross-compile --target wasm32-wasi \
+  link_cmd="$(IYI_PATH="$WORK/$dir${PSEP}$REPO/src" "$IYI" build --cross-compile --target wasm32-wasi \
     -o "$WORK/$dir/prog" "$REPO/bench/wasm32_exercise.iyi" 2>"$WORK/$dir/build.log")"
   local build_code=$?
   if [ "$build_code" -ne 0 ] || [ -z "$link_cmd" ]; then
@@ -165,6 +187,11 @@ prove_fails "stack root failure" no_stack "survival:" \
 # 3. Break layout precision: disable layout_search so integer fields holding addresses are followed
 prove_fails "layout precision failure" no_precision "precision:" \
   '{ if ($0 ~ /entry = has_table && type_id != 0_u64/) { sub(/entry = has_table && type_id != 0_u64 \? layout_search\(table, entry_count, type_id\) : 0_u64/, "entry = 0_u64") } print }'
+
+# 4. Break weak references: the collection never clears a cell, so a
+#    reference whose target was swept answers its memory or never goes nil.
+prove_fails "weak cells never cleared" no_weak "weak:" \
+  '{ if ($0 ~ /^          IyiWeak\.clear$/) next; print }'
 
 echo
 if [ "$status" -eq 0 ]; then

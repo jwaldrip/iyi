@@ -111,7 +111,7 @@ prove_fails() {
 # 1. RFC 5849 Section 1.2 initiate vector corrupted (HMAC-SHA1 replaced with corrupted constant)
 prove_fails "RFC 5849 initiate vector mismatch" rfc5849_initiate_corrupt \
   "assertion failed: RFC 5849 Section 1.2 initiate vector" "oauth.iyi" \
-  's/HMAC\.digest(:sha1,/HMAC.digest(:sha256,/'
+  's/HMAC\.digest(SHA1,/HMAC.digest(SHA256,/'
 
 # 2. RFC 5849 Section 3.4.1.1 base string form body parameter gathering corrupted
 prove_fails "RFC 5849 form body parameter gathering" rfc5849_base_corrupt \

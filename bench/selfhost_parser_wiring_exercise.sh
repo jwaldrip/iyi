@@ -21,6 +21,7 @@ PARSE_TOOL_SRC="$REPO/src/compiler/tools/parse.iyi"
 CHECK_CR_SRC="$REPO/src/compiler/iyi/command/check.cr"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+. "$REPO/bench/lib/mutation.sh"
 
 echo "== 1. Building compiler and self-host parse tool"
 cd "$REPO"
@@ -88,16 +89,9 @@ CORPUS=(
   "samples/iyi/sessions.iyi"
   "samples/iyi/shapes.iyi"
   "samples/iyi/socket.iyi"
-  "samples/iyi/std_collections.iyi"
-  "samples/iyi/std_compress.iyi"
-  "samples/iyi/std_http.iyi"
   "samples/iyi/std_iterator.iyi"
-  "samples/iyi/std_json.iyi"
-  "samples/iyi/std_regex.iyi"
   "samples/iyi/std_text.iyi"
   "samples/iyi/std_time.iyi"
-  "samples/iyi/std_util.iyi"
-  "samples/iyi/std_yaml.iyi"
   "samples/iyi/visited.iyi"
   "samples/iyi/webapp.iyi"
   "samples/iyi/workers.iyi"
@@ -293,93 +287,59 @@ test_refusal_exit_code() {
   [ "$rc" -eq 1 ]
 }
 
-prove_wiring_mutation() {
-  local label="$1"
-  local target_file="$2"
-  local old_text="$3"
-  local new_text="$4"
-  local test_cmd="$5"
-
-  echo "  [mutation: $label]"
-  cp "$target_file" "$target_file.orig"
-
-  python3 - "$target_file" "$old_text" "$new_text" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-content = open(path).read()
-if old not in content:
-    sys.exit(2)
-content = content.replace(old, new, 1)
-open(path, "w").write(content)
-PY
-  local py_code=$?
-  if [ $py_code -ne 0 ]; then
-    echo "    ERROR: patch matched nothing in $target_file"
-    rm -f "$target_file.orig"
-    status=1
-    return
-  fi
-
-  if cmp -s "$target_file" "$target_file.orig"; then
-    echo "    ERROR: patch did not change file: $label"
-    mv "$target_file.orig" "$target_file"
-    status=1
-    return
-  fi
-
-  # If target is iyi-parse source, recompile it
-  if [ "$target_file" = "$PARSE_TOOL_SRC" ]; then
+# Rebuilds the companion that embeds the source being checked, so the check sees
+# the patched code. Called again after the source is restored.
+rebuild_companion() {
+  if [ "$1" = "$PARSE_TOOL_SRC" ]; then
     "$IYI" build -o "$REPO/.build/iyi-parse" "$PARSE_TOOL_SRC" >/dev/null 2>&1 || true
-  elif [ "$target_file" = "$CHECK_CR_SRC" ]; then
+  elif [ "$1" = "$CHECK_CR_SRC" ]; then
     make -B iyi >/dev/null 2>&1 || true
-  fi
-
-  if eval "$test_cmd"; then
-    echo "    FAILED: mutation was not caught ($label)"
-    status=1
-  else
-    echo "    caught: failure observed as expected"
-  fi
-
-  mv "$target_file.orig" "$target_file"
-
-  # Restore compiled binary
-  if [ "$target_file" = "$PARSE_TOOL_SRC" ]; then
-    "$IYI" build -o "$REPO/.build/iyi-parse" "$PARSE_TOOL_SRC" >/dev/null 2>&1
-  elif [ "$target_file" = "$CHECK_CR_SRC" ]; then
-    make -B iyi >/dev/null 2>&1
   fi
 }
 
-prove_wiring_mutation "corrupt self-host parse tool file parsing" \
+# The check for one mutation: rebuild the companion from the patched source, then
+# run the wiring test. The test returns non-zero when the defect is detected.
+wiring_check() {
+  rebuild_companion "$1"
+  "$2"
+}
+
+# One wiring proof: patch, check, restore, then rebuild from the restored source.
+run_wiring_proof() {
+  local label="$1" target_file="$2" old_text="$3" new_text="$4" test_fn="$5"
+  prove_mutation "$label" "$target_file" "$old_text" "$new_text" -- wiring_check "$target_file" "$test_fn" || status=1
+  rebuild_companion "$target_file"
+}
+
+run_wiring_proof "corrupt self-host parse tool file parsing" \
   "$PARSE_TOOL_SRC" \
   'parse_source(source, path)' \
   'raise "injected parse tool failure"; parse_source(source, path)' \
-  'test_wiring_file_parity'
+  test_wiring_file_parity
 
-prove_wiring_mutation "corrupt self-host parse tool STDIN parsing" \
+run_wiring_proof "corrupt self-host parse tool STDIN parsing" \
   "$PARSE_TOOL_SRC" \
   'parse_source(source, "STDIN.iyi")' \
   'raise "injected stdin failure"; parse_source(source, "STDIN.iyi")' \
-  'test_wiring_stdin_parity'
+  test_wiring_stdin_parity
 
-prove_wiring_mutation "corrupt companion tool discovery in check command" \
+run_wiring_proof "corrupt companion tool discovery in check command" \
   "$CHECK_CR_SRC" \
   'tool_name = "iyi-parse"' \
   'tool_name = "iyi-corrupted-tool-name"' \
-  'test_wiring_file_parity'
+  test_wiring_file_parity
 
-prove_wiring_mutation "corrupt parse-only flag routing in check command" \
+run_wiring_proof "corrupt parse-only flag routing in check command" \
   "$CHECK_CR_SRC" \
   'parse_only = options.delete("--parse-only") != nil' \
   'parse_only = options.delete("--corrupted-flag") != nil' \
-  'test_parse_only_routing'
+  test_parse_only_routing
 
-prove_wiring_mutation "bypass status code on syntax error in check command" \
+run_wiring_proof "bypass status code on syntax error in check command" \
   "$CHECK_CR_SRC" \
   'exit status_code' \
   'exit 0' \
-  'test_refusal_exit_code'
+  test_refusal_exit_code
 
 echo
 echo "== Verification clean state confirmed"

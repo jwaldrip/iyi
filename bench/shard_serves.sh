@@ -23,8 +23,28 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+. "$REPO/bench/end_process.sh"
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
+
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from `pwd` is `/c/...` and finds no prelude at all, and a
+# scratch directory named `/tmp/tmp.X` is silently ignored on that path, so
+# the patched copy is never read and the proof that a check can fail quietly
+# stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
 
 # Pinned, and 1.12.0 rather than whatever is newest: SPEC.md Part V item 12
 # measured this version, so a number here is comparable to the numbers there.
@@ -35,7 +55,7 @@ KEMAL_VERSION="1.12.0"
 PORT=31871
 
 cleanup() {
-  [ -n "${SERVER_PID:-}" ] && kill "$SERVER_PID" 2>/dev/null
+  [ -n "${SERVER_PID:-}" ] && end_process "$SERVER_PID"
   wait "${SERVER_PID:-}" 2>/dev/null
 }
 trap cleanup EXIT
@@ -93,7 +113,7 @@ echo "installed $(grep -c 'Installing' install.log) shards, kemal pinned at $KEM
 # wrapper says this checkout's own path is. Asked of `iyi` rather than
 # `crystal`: the two command surfaces answer in their own vocabularies, and
 # `crystal env IYI_PATH` prints an empty line and exits 0.
-IYI_PATH="lib:$("$IYI" env IYI_PATH 2>/dev/null)"
+IYI_PATH="lib${PSEP}$("$IYI" env IYI_PATH 2>/dev/null)"
 export IYI_PATH
 
 if ! "$IYI" build --crystal -o serve serve.iyi > build.log 2>&1; then

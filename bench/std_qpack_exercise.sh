@@ -31,17 +31,7 @@ SETUP_INCLUDE() {
   ln -sf "$REPO/src/std/traits.iyi" "$target_dir/std/traits.iyi"
   ln -sf "$REPO/src/std/enumerable.iyi" "$target_dir/std/enumerable.iyi"
 
-  # Link or fetch hpack.iyi from sibling worktree or origin ref
-  if [ -f "$REPO/../iyi-hpack/src/std/hpack.iyi" ]; then
-    ln -sf "$REPO/../iyi-hpack/src/std/hpack.iyi" "$target_dir/std/hpack.iyi"
-  elif git -C "$REPO" rev-parse --verify origin/std/hpack >/dev/null 2>&1; then
-    git -C "$REPO" show origin/std/hpack:src/std/hpack.iyi > "$target_dir/std/hpack.iyi"
-  elif [ -f "$REPO/src/std/hpack.iyi" ]; then
-    ln -sf "$REPO/src/std/hpack.iyi" "$target_dir/std/hpack.iyi"
-  else
-    echo "ERROR: std/hpack.iyi not found in sibling worktree, origin ref, or repo" >&2
-    exit 1
-  fi
+  ln -sf "$REPO/src/std/hpack.iyi" "$target_dir/std/hpack.iyi"
 }
 
 DEFAULT_INCLUDE="$WORK/default_include"

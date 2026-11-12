@@ -14,24 +14,18 @@
 # 9. OAuth2::ErrorResponse error shapes and parsing
 # 10. OAuth2::Session bearer token auto-refresh with expired token detection and callback invocation
 
-import std/oauth
-import std/oauth2
-import std/http
-import std/http1
-import std/uri
-import std/time
-import std/json
+import std/oauth::{OAuth, Consumer, RequestToken, AccessToken, Signature, AuthorizationHeader}
+import std/oauth2::{OAuth2, Bearer, Mac, AuthScheme, ErrorResponse, Session}
+import std/http::{Request, Response, Headers}
+import std/uri::{URI, Params}
+import std/time::{Time, Span}
+import std/json::{JSON, Builder, PullParser}
 
-using std/oauth::{OAuth, Consumer, RequestToken, AccessToken, Signature, AuthorizationHeader}
-using std/oauth2::{OAuth2, Client, Bearer, Mac, AuthScheme, ErrorResponse, Session}
-
+alias OAuthClient = Std::Oauth::Client
+alias Client = Std::Oauth2::Client
 alias OAuth1Error = Std::Oauth::Error
 alias OAuth2Error = Std::Oauth2::Error
 alias OAuth2AccessToken = Std::Oauth2::AccessToken
-using std/http::{Request, Response, Headers, Status}
-using std/uri::{URI, Params}
-using std/time::{Time, Span}
-using std/json::{JSON, Builder, PullParser}
 
 # -----------------------------------------------------------------------------
 # 1. RFC 5849 Section 1.2 Vectors
@@ -176,7 +170,7 @@ end
 # 5. Local Fake OAuth 1.0 Server Flow
 # -----------------------------------------------------------------------------
 
-class MockOAuth1TransportClient < HTTP::Client
+class MockOAuth1TransportClient < OAuthClient
   property last_request : Request?
   property server_step : Int32
 
@@ -265,7 +259,7 @@ def test_oauth1_flow : Nil
   assert(a_token == a_token_deser, "AccessToken JSON roundtrip")
 
   # Authentication on HTTP::Client
-  client = HTTP::Client.new("auth.local")
+  client = OAuthClient.new("auth.local")
   consumer.authenticate(client, a_token)
 
   req = Request.new("GET", "/api/profile")
@@ -282,7 +276,7 @@ end
 # 6. Local Fake OAuth 2.0 Server Flow & Client Grants
 # -----------------------------------------------------------------------------
 
-class MockOAuth2TransportClient < HTTP::Client
+class MockOAuth2TransportClient < OAuthClient
   property last_request : Request?
   property response_body : String
   property response_status : Int32
@@ -303,14 +297,14 @@ class MockOAuth2TransportClient < HTTP::Client
     req = Request.new("POST", path, headers, actual_body)
     run_before_request(req)
     @last_request = req
-    Response.new(@response_status, headers, @response_body)
+    Response.new(@response_status, @response_body, headers || Headers.new)
   end
 
   def get(path : String, headers : Headers? = nil) : Response
     req = Request.new("GET", path, headers)
     run_before_request(req)
     @last_request = req
-    Response.new(@response_status, headers, @response_body)
+    Response.new(@response_status, @response_body, headers || Headers.new)
   end
 end
 
@@ -417,7 +411,7 @@ def test_oauth2_session_refresh : Nil
     refreshed_called = true
   end
 
-  session_client = HTTP::Client.new("api.example.com")
+  session_client = OAuthClient.new("api.example.com")
   session.authenticate(session_client)
 
   assert(refreshed_called, "Session refresh callback was invoked on expired token")

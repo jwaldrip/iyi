@@ -36,13 +36,22 @@ require "socket"
 #     that many bytes
 #
 # Requests are a little-endian length followed by that many bytes of JSON,
-# `{"cwd": ..., "args": [...], "version": ...}`. The version is checked, along
+# `{"cwd": ..., "args": [...], "version": ..., "env": {...}}`. The environment
+# is the client's and the child runs with it; `IYI_PATH` is compared rather
+# than applied, because the prelude a daemon holds came from its own. The
+# version is checked, along
 # with the server's own executable, so that a rebuilt compiler cannot be served
 # from silently.
 class Iyi::Command
   DAEMON_FRAME_EXIT   = 0_u8
   DAEMON_FRAME_STDOUT = 1_u8
   DAEMON_FRAME_STDERR = 2_u8
+  # A daemon that cannot serve *this* build — rebuilt compiler, other
+  # version, other library — rather than a build that failed. Its own frame
+  # because the answer depends on who asked: `iyi daemon build` wanted this
+  # daemon and is told no, while a build that only found `IYI_DAEMON_SOCKET`
+  # in the environment wanted a binary and gets one, built without it.
+  DAEMON_FRAME_REFUSE = 3_u8
 
   private def daemon
     subcommand = options.first?
@@ -141,6 +150,17 @@ class Iyi::Command
       Process.exec(server, ["daemon", "start"] + options)
     end
 
+    # iyi: the server forks a child per build and waits with `poll(2)`,
+    # neither of which Windows has, so there is no daemon binary to build
+    # there (`Makefile.win`). The sentence below told a Windows user to
+    # `make iyi-daemon`, a target that does not exist for them. An
+    # IYI_DAEMON the user set is still run above: they named it.
+    {% if flag?(:win32) %}
+      STDERR.puts "The build daemon forks a child per build, and Windows has no fork: " \
+                  "there is no daemon on Windows, and every build runs on its own"
+      exit 1
+    {% end %}
+
     STDERR.puts <<-MSG
       The build daemon needs a single-threaded compiler, and none was found.
 
@@ -173,41 +193,117 @@ class Iyi::Command
     socket
   end
 
-  # iyi: the one place a socket path is decided, so the one place its length
-  # is checked. A unix socket's path is a fixed field in the kernel's
-  # `sockaddr_un` — 107 bytes on Linux, 103 on darwin — and handing it a
-  # longer one raised Crystal's `ArgumentError` out of `Socket::UNIXAddress`:
-  # `iyi daemon start --socket <long path>` died with "Path size exceeds the
-  # maximum size of 107 bytes (ArgumentError)" and a stack trace through
-  # `src/socket/address.cr`, which names a file the author never opened and
-  # says nothing about the socket they asked for. Every verb that takes
-  # `--socket` comes through here.
+  # iyi: the one place a socket path is decided, and every verb that opens or
+  # connects to a socket comes through here. A unix socket's path is a fixed
+  # field in the kernel's `sockaddr_un` — 107 bytes on Linux, 103 on darwin —
+  # and handing it a longer one raised Crystal's `ArgumentError` out of
+  # `Socket::UNIXAddress`: `iyi daemon start --socket <long path>` died with
+  # "Path size exceeds the maximum size of 107 bytes (ArgumentError)" and a
+  # stack trace through `src/socket/address.cr`, which names a file the author
+  # never opened and says nothing about the socket they asked for. The length
+  # check is `daemon_refuse_long_socket` below, because one verb refuses the
+  # path before it ever decides one.
   private def daemon_socket_path : String
     path = nil
     options.each_with_index do |opt, i|
       if opt == "--socket"
         path = options[i + 1]?
+        # The flag's value, not the flag after it, and not silence: with
+        # nothing behind it `--socket` fell through to the default path,
+        # so `iyi daemon build --socket` talked to a daemon the author had
+        # not named. `--out`, `--mods`, `--lib` and `--affected` refuse the
+        # same mistake in the same words.
+        # And not `""` either, which is `"$SOCK"` with `SOCK` unset: it
+        # answered "no daemon listening on " and a hole where the path goes.
+        if path.nil? || path.empty?
+          abort! "--socket takes a path", :USAGE_ERROR
+        elsif path.starts_with?('-')
+          abort! "--socket takes a path, and #{path} is a flag", :USAGE_ERROR
+        end
         options.delete_at(i, 2)
         break
       end
     end
     path ||= File.join(CacheDir.instance.dir, "daemon.sock")
 
-    limit = Socket::UNIXAddress::MAX_PATH_SIZE
-    if path.bytesize > limit
-      abort! "the socket path is #{path.bytesize} bytes and the kernel takes " \
-             "#{limit}: #{path}. A unix socket's path is a fixed field in " \
-             "`sockaddr_un`, so this is the machine's limit rather than " \
-             "this compiler's. Pass a shorter `--socket`, or set TMPDIR to " \
-             "a shorter directory and let the default sit under it",
-        :FAILURE
+    # A unix socket is neither of these, and "no daemon listening" about a
+    # directory names the wrong thing: nothing could ever listen there.
+    if Dir.exists?(path)
+      abort! "#{path} is a directory, not a socket", :USAGE_ERROR
     end
 
+    daemon_refuse_long_socket(path)
     path
+  end
+
+  # iyi: the same `--socket`, read without being consumed, for the half of
+  # `daemon start` that never opens the socket itself: it execs the server
+  # binary with these arguments, so taking the flag out here would hand the
+  # server a default path and listen somewhere the user did not ask for.
+  # The `--socket` value as typed, before the server binary is executed:
+  # whatever is wrong with it is wrong on this side of the exec too, and
+  # the far side reports it as a failure to start a daemon.
+  private def daemon_socket_option : String?
+    options.each_with_index do |opt, i|
+      next unless opt == "--socket"
+      path = options[i + 1]?
+      if path.nil? || path.empty?
+        abort! "--socket takes a path", :USAGE_ERROR
+      elsif path.starts_with?('-')
+        abort! "--socket takes a path, and #{path} is a flag", :USAGE_ERROR
+      elsif Dir.exists?(path)
+        abort! "#{path} is a directory, not a socket", :USAGE_ERROR
+      end
+      return path
+    end
+    nil
+  end
+
+  # iyi: the remedy says what moves the default socket, and on Windows that
+  # there is nothing to move it for. It said "set TMPDIR to a shorter
+  # directory", and the default is `daemon.sock` in the cache directory
+  # (`daemon_socket_path`), which TMPDIR moves on no system: with TMPDIR
+  # set to `C:\t` the refusal named the same 164-byte path again.
+  private def daemon_refuse_long_socket(path : String) : Nil
+    limit = Socket::UNIXAddress::MAX_PATH_SIZE
+    return if path.bytesize <= limit
+
+    abort! "the socket path is #{path.bytesize} bytes and the kernel takes " \
+           "#{limit}: #{path}. A unix socket's path is a fixed field in " \
+           "`sockaddr_un`, so this is the machine's limit rather than " \
+           "this compiler's. #{daemon_long_socket_remedy}",
+      :FAILURE
+  end
+
+  private def daemon_long_socket_remedy : String
+    {% if flag?(:win32) %}
+      daemon_none_on_windows
+    {% else %}
+      "Pass a shorter `--socket`, or set #{Command.program_name.upcase}_CACHE_DIR " \
+      "to a shorter directory and let the default sit under it"
+    {% end %}
+  end
+
+  # iyi: what a Windows author is told instead of how to reach a daemon:
+  # "start one with `iyi daemon start`" sent them to the verb that answers
+  # "there is no daemon on Windows", and "remove it" or "pass a shorter
+  # `--socket`" to a path no daemon will ever listen on either.
+  private def daemon_none_on_windows : String
+    "The build daemon forks a child per build and Windows has no fork, so " \
+    "there is no daemon on Windows: `#{Command.program_name} build` with the " \
+    "same arguments builds without one"
   end
 
   private def daemon_start
     {% unless flag?(:without_mt) %}
+      # iyi: the path the user typed is refused here, before a server binary
+      # is looked for. Whether this machine has a single-threaded compiler has
+      # nothing to do with whether a path fits in `sockaddr_un`, and on a
+      # machine without one the answer to a 147-byte `--socket` was a page
+      # about `make iyi-daemon` that never mentioned the socket at all.
+      if socket = daemon_socket_option
+        daemon_refuse_long_socket(socket)
+      end
       daemon_exec_server
     {% else %}
       # Before the socket exists, so that what is recorded is the compiler this
@@ -217,6 +313,32 @@ class Iyi::Command
 
       path = daemon_socket_path
       Dir.mkdir_p(File.dirname(path))
+
+      # `File.delete?` takes the path from whoever holds it, and it used to
+      # run unconditionally: a second `daemon start` on a live socket
+      # unlinked the first daemon's address and listened on a new one with
+      # the same name. The first daemon went on running — a warm prelude
+      # and a compiler, holding a socket with no name, that no client could
+      # ever reach again and nothing would ever reap.
+      #
+      # Connecting is the only way to ask a unix socket whether anyone is
+      # home. A connection that says nothing is not an error on the other
+      # side (see `daemon_accept`), so this costs the incumbent one accept
+      # and no log line.
+      if File.exists?(path)
+        live = begin
+          UNIXSocket.new(path).close
+          true
+        rescue Socket::Error
+          false
+        end
+
+        if live
+          abort! "a daemon is already listening on #{path}. " \
+                 "Build against it, or give this one its own `--socket`", :FAILURE
+        end
+      end
+
       File.delete?(path)
       server = UNIXServer.new(path)
 
@@ -359,9 +481,43 @@ class Iyi::Command
     private def daemon_accept(server, identity : String, builds : Array(DaemonBuild), &refresh) : Nil
       client = server.accept
 
-      request = daemon_read_request(client)
-      cwd = request["cwd"].as_s
-      args = request["args"].as_a.map(&.as_s)
+      # One client's mistake is one client's mistake. Every read below can
+      # fail on something the daemon does not control — a client killed
+      # mid-frame is `End of file reached`, a length header that does not
+      # match the body is the same, a body that is not JSON is a
+      # `JSON::ParseException`, a request without `cwd` is a `KeyError` —
+      # and none of it was caught, so the exception left `daemon_loop`,
+      # left `main`, and took the daemon down with the analysed prelude
+      # every other client was waiting on. Ctrl-C during a build did it.
+      # So did one connection from anything that probes ports.
+      request = begin
+        daemon_read_request(client)
+      rescue ex : IO::Error | JSON::ParseException | Socket::Error
+        # Not `daemon_refuse`: a client that could not finish a frame is
+        # usually gone, and writing to it raises in turn.
+        STDERR.puts "#{Command.program_name} daemon: a client sent no usable request (#{ex.message}); still listening"
+        STDERR.flush
+        client.close rescue nil
+        return
+      end
+
+      # Connected and said nothing: `daemon start` asking whether this
+      # socket has an incumbent, or a client that was interrupted before it
+      # wrote its first byte. Neither is worth a line in the log.
+      if request.nil?
+        client.close rescue nil
+        return
+      end
+
+      cwd = request["cwd"]?.try(&.as_s?)
+      args = request["args"]?.try(&.as_a?).try(&.map(&.as_s?))
+      if cwd.nil? || args.nil? || args.any?(&.nil?)
+        daemon_refuse(client, "That is not a build request: a daemon takes " \
+                              "{\"cwd\": <path>, \"args\": [<argument>...]}.")
+        client.close rescue nil
+        return
+      end
+      args = args.map(&.not_nil!)
 
       # A daemon holds an analysed prelude *and* the compiler that analysed it.
       # Rebuild the compiler and it would keep serving builds from the old one,
@@ -380,9 +536,32 @@ class Iyi::Command
           The build daemon and this client are different compilers.
           Daemon: #{Iyi::Config.description}
           Client: #{client_version}
+          Restart the daemon, from a build of this compiler.
           MSG
         client.close rescue nil
         return
+      end
+
+      client_env = request["env"]?.try(&.as_h?)
+      if client_env
+        # The library, not the spelling: an unset `IYI_PATH` and one naming
+        # the directory the default already resolves to are the same library,
+        # and refusing over the difference would refuse most of the gates
+        # that pass a path explicitly. `default_paths` is what an unset one
+        # means, and `expand_paths` is what the compiler itself compares.
+        theirs = client_env["IYI_PATH"]?.try(&.as_s?)
+        ours = ENV["IYI_PATH"]?
+        if daemon_library_key(theirs) != daemon_library_key(ours)
+          daemon_refuse(client, <<-MSG)
+            The build daemon analysed a different library than this build asks for.
+            Daemon: IYI_PATH=#{ours || "(unset)"} -> #{daemon_library_key(ours)}
+            Client: IYI_PATH=#{theirs || "(unset)"} -> #{daemon_library_key(theirs)}
+            The prelude is what a daemon holds, so this one cannot serve that
+            build. Start a daemon in that environment, or build without one.
+            MSG
+          client.close rescue nil
+          return
+        end
       end
 
       refresh.call
@@ -409,6 +588,30 @@ class Iyi::Command
         LibC.dup2(out_w.fd, 1)
         LibC.dup2(err_w.fd, 2)
 
+        # The request's environment, whole: every variable the compiler reads
+        # is the client's — where the cache is, which mirror a package comes
+        # from, which linker `PATH` finds — and a variable the daemon carries
+        # that the client does not is not this build's either.
+        #
+        # Except the one that names a daemon. This build *is* the daemon's
+        # build, and a client that reached here by `IYI_DAEMON_SOCKET` sends
+        # that variable along with the rest: the child then found a daemon
+        # too, connected to this very server, and was served by a fork that
+        # found it again. Nothing in that recursion ever finishes a build, so
+        # it ended as the machine running out of memory — `cli_spec`'s
+        # implicit-socket example aborted after forty seconds, and CI's job
+        # spent its whole thirty minutes there.
+        if client_env
+          ENV.keys.each { |name| ENV.delete(name) unless client_env.has_key?(name) }
+          client_env.each do |name, value|
+            if text = value.as_s?
+              ENV[name] = text
+            end
+          end
+          ENV.delete("IYI_DAEMON_SOCKET")
+          ENV.delete("CRYSTAL_DAEMON_SOCKET")
+        end
+
         Dir.cd(cwd)
         Iyi::Command.run(args)
         LibC._exit 0
@@ -418,6 +621,33 @@ class Iyi::Command
       err_w.close
 
       builds << DaemonBuild.new(client, out_r, err_r, pid.not_nil!, args, cwd)
+    end
+
+    # Which library an `IYI_PATH` means, by the one file that decides it.
+    # Comparing the paths themselves says no to builds that mean yes: unset
+    # resolves to a list — `lib`, the installed share, the tree beside the
+    # binary — and a path naming one of those directories resolves to itself,
+    # so the two spellings differ while the prelude they find is the same
+    # file. That file is what a daemon holds.
+    # Both of them, because a daemon holds both: it analyses Crystal's at
+    # start — that is the mode it is for (IV.1d) — and warms iyi's after the
+    # first `.iyi` build. A path that finds either somewhere else is another
+    # library.
+    private def daemon_library_key(value : String?) : String
+      paths =
+        if text = value.presence
+          Iyi::IyiPath.expand_paths(text.split(Process::PATH_DELIMITER, remove_empty: true))
+        else
+          Iyi::IyiPath.default_paths
+        end
+      ["iyi/prelude.iyi", "prelude.cr"].join(" ") do |name|
+        found = paths.each do |directory|
+          candidate = File.join(directory, name)
+          break candidate if File.file?(candidate)
+        end
+        resolved = found.is_a?(String) ? (File.realpath(found) rescue found) : "(none)"
+        "#{name}=#{resolved}"
+      end
     end
 
     private def daemon_finish(build : DaemonBuild) : Bool
@@ -517,17 +747,42 @@ class Iyi::Command
     "#{info.size}:#{info.modification_time.to_unix_ns}"
   end
 
+  # Writes a refusal and the exit frame. Every byte goes to a socket the
+  # daemon does not own the far end of, so all of it is `rescue`d: a client
+  # that hung up between its request and this answer is EPIPE, and EPIPE
+  # reaching `Command#run` means `::exit 0` — the `mod dump | head` rule,
+  # correct for a command writing to a pipe and fatal for a server writing
+  # to one of its clients. The daemon exited 0, quietly, mid-refusal.
   private def daemon_refuse(client, message : String) : Nil
-    message.each_line do |line|
-      daemon_frame(client, DAEMON_FRAME_STDERR, "#{line}\n".to_slice)
-    end
+    daemon_frame(client, DAEMON_FRAME_REFUSE, message.chomp.to_slice)
     client.write_byte(DAEMON_FRAME_EXIT)
     client.write_bytes(1, IO::ByteFormat::LittleEndian)
     client.flush
+  rescue IO::Error | Socket::Error
+    # Nothing left to tell it. The daemon goes on serving everyone else.
   end
 
-  private def daemon_read_request(client) : JSON::Any
-    size = client.read_bytes(UInt32, IO::ByteFormat::LittleEndian)
+  # A build request is a command line and a directory. The largest one this
+  # compiler can be handed is bounded by `ARG_MAX`, two megabytes on Linux
+  # and one on macOS, so eight is past anything real and small enough that
+  # a client claiming it costs the daemon nothing to find out. Without a
+  # bound, `Bytes.new(size)` on a 4 GB header was an `OverflowError` out of
+  # the accept loop, which killed the daemon — the same fault as a
+  # truncated frame, arriving through the allocator.
+  DAEMON_MAX_REQUEST = 8 * 1024 * 1024
+
+  # Nil when the client closed before its first byte, which is a question
+  # ("is anyone listening here?") rather than a malformed request.
+  private def daemon_read_request(client) : JSON::Any?
+    header = Bytes.new(4)
+    first = client.read(header)
+    return nil if first.zero?
+    client.read_fully(header[first, 4 - first]) if first < 4
+
+    size = IO::ByteFormat::LittleEndian.decode(UInt32, header)
+    if size > DAEMON_MAX_REQUEST
+      raise IO::Error.new("a request of #{size} bytes, past the #{DAEMON_MAX_REQUEST} a build request can be")
+    end
     bytes = Bytes.new(size)
     client.read_fully(bytes)
     JSON.parse(String.new(bytes))
@@ -545,12 +800,38 @@ class Iyi::Command
         STDERR.puts "#{Command.program_name}: daemon at #{path} did not answer, building without it"
         return
       end
-      abort! "no daemon listening on #{path} (start one with `#{Command.program_name} daemon start`)", :FAILURE
+      # A path that is there but is not a socket is a different mistake
+      # from an absent daemon, and it has a different remedy: a daemon
+      # that was killed leaves its socket file behind, and starting a new
+      # one on the same path answers "Address already in use" until the
+      # stale file goes.
+      if (info = File.info?(path)) && !info.type.socket?
+        {% if flag?(:win32) %}
+          abort! "#{path} is a file, not a socket: nothing can listen there. #{daemon_none_on_windows}", :FAILURE
+        {% else %}
+          abort! "#{path} is a file, not a socket: nothing can listen there. " \
+                 "Remove it, or pass a `--socket` that is one", :FAILURE
+        {% end %}
+      end
+      {% if flag?(:win32) %}
+        abort! "no daemon listening on #{path}. #{daemon_none_on_windows}", :FAILURE
+      {% else %}
+        abort! "no daemon listening on #{path} (start one with `#{Command.program_name} daemon start`)", :FAILURE
+      {% end %}
     end
 
     # The child runs a full command line, so put back the subcommand this one
     # consumed: `crystal daemon build -o x y.cr` is `crystal build -o x y.cr`.
-    request = {cwd: Dir.current, args: ["build"] + options, version: Iyi::Config.description}.to_json
+    # The environment travels with the request. A daemon is a held prelude
+    # and not a second shell: the child it forks inherited *its* variables,
+    # so a build sent from a terminal with `IYI_CACHE_DIR` or
+    # `IYI_MOD_MIRROR` set was resolved without them — a package went to the
+    # network instead of to the mirror beside it. `IYI_PATH` is the one a
+    # daemon cannot take, because the prelude it holds came from its own;
+    # the server refuses that rather than compiling against a library this
+    # build did not ask for.
+    request = {cwd: Dir.current, args: ["build"] + options,
+               version: Iyi::Config.description, env: ENV.to_h}.to_json
     client.write_bytes(request.bytesize.to_u32, IO::ByteFormat::LittleEndian)
     client.write(request.to_slice)
     client.flush
@@ -562,6 +843,18 @@ class Iyi::Command
       case kind
       when DAEMON_FRAME_EXIT
         exit client.read_bytes(Int32, IO::ByteFormat::LittleEndian)
+      when DAEMON_FRAME_REFUSE
+        size = client.read_bytes(UInt32, IO::ByteFormat::LittleEndian)
+        bytes = Bytes.new(size)
+        client.read_fully(bytes)
+        STDERR.puts String.new(bytes)
+        # The build asked for a binary, not for this daemon.
+        if fallback
+          STDERR.puts "#{Command.program_name}: building without it"
+          client.close rescue nil
+          return
+        end
+        exit 1
       when DAEMON_FRAME_STDOUT, DAEMON_FRAME_STDERR
         size = client.read_bytes(UInt32, IO::ByteFormat::LittleEndian)
         bytes = Bytes.new(size)

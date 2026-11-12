@@ -487,6 +487,28 @@ module Iyi
     emit_module program, methods, root, io
     write_artifact program, methods, root, artifact_dir, io if artifact_dir
 
+    # iyi: the ones a consumer cannot call, whatever the boundary carries.
+    # `!` is not part of a name here (SPEC.md III.1.7), so `sort!` is
+    # spellable by nobody writing `.iyi` — the declaration travels, because
+    # a body that calls it has to typecheck, and a call written by hand
+    # cannot reach it. Said here because this is where somebody is looking
+    # at the shard: the alternative is finding out at the call, one
+    # "undefined method" at a time.
+    unspellable = methods.select do |method|
+      method.name.size > 1 && method.name.ends_with?('!') && !method.private_def
+    end
+    unless unspellable.empty?
+      io.puts
+      io.puts "names iyi cannot write (#{unspellable.size}):"
+      unspellable.sort_by { |m| {m.owner, m.name} }.first(12).each do |method|
+        io.puts "  #{method.owner}##{method.name}"
+        io.puts "    #{method.location}"
+      end
+      io.puts "  ... and #{unspellable.size - 12} more" if unspellable.size > 12
+      io.puts "  `!` cannot end a name in iyi (SPEC.md III.1.7). Each is reachable"
+      io.puts "  only through a Crystal-side method with a name this language can write."
+    end
+
     return if human.zero?
 
     # Named, because the count is the estimate and this is the work. Each line
@@ -654,11 +676,38 @@ module Iyi
     io.puts "# --- end ---"
   end
 
+  # The files this boundary was written from, `<md5> <path>` each, sorted.
+  #
+  # `Program#requires` is insertion-ordered and holds the resolved path of
+  # everything this build read, so the shard's own files are the ones under
+  # its directory — the same rule `initialiser_source` and
+  # `top_level_fun_sources` read them by. Crystal's library is not among
+  # them on purpose: which compiler built the artifact is already an equality
+  # on `compiler_version` (IV.5), and a checkout of the standard library is
+  # not a thing a consumer edits.
+  #
+  # Sorted rather than in require order, because this is a cache key: two
+  # binds of an unchanged checkout have to produce the same bytes.
+  private def self.bind_inputs(program : Program) : Array(String)
+    source = program.filename
+    return [] of String unless source.is_a?(String)
+    directory = directory_of(source)
+    return [] of String if directory.empty?
+
+    entries = [] of String
+    program.requires.each do |path|
+      next unless path.starts_with?(directory)
+      next unless File.file?(path)
+      entries << "#{IyiMod.digest(File.read(path))} #{File.expand_path(path)}"
+    end
+    entries.sort!
+  end
+
   # The artifact itself: declarations a consumer type-checks against.
   #
   # There is nothing new in it. The two sides mangle names identically, being
   # one compiler — `Lib::Greeter.polite(String) : String` is
-  # `*Lib::Greeter@Lib::Greeter::polite<String>:String` compiled from either
+  # `*Lib::Greeter^Lib::Greeter::polite<String>:String` compiled from either
   # language — so a shard's object file already defines the symbols an iyi
   # consumer would call. What was missing was a `.iyimod` saying they exist.
   #
@@ -704,9 +753,9 @@ module Iyi
         name: method.name,
         # Whose method it is, which the symbol carries. A module written
         # `extend self` defines `polite` on the module and mangles
-        # `*Widget@Widget::polite<String>:String`; one written `def self.polite`
+        # `*Widget^Widget::polite<String>:String`; one written `def self.polite`
         # defines it on the metaclass and mangles `*Widget::polite<String>:String`
-        # — no `@`. Both were recorded as the first, so every `def self.` in a
+        # — no `^`. Both were recorded as the first, so every `def self.` in a
         # shard produced a declaration the consumer called by a name nothing
         # emitted. Crystal's own library is written the second way throughout.
         receiver: method.owner == "#{root}:Module" && method.receiver.empty? ? "self" : method.receiver,
@@ -748,7 +797,7 @@ module Iyi
       # so there is no single symbol for the producer to emit. `module Gen`
       # writes `def next_pair` and `class Fixed` includes it; what a consumer
       # calling `Fixed#next_pair` wants is
-      # `*Gen::Fixed@Gen#next_pair:Tuple(UInt32, UInt32)`, and the producer
+      # `*Gen::Fixed^Gen#next_pair:Tuple(UInt32, UInt32)`, and the producer
       # emits that only for the including types *its own code* instantiated.
       # `db` has them because `db`'s code calls `close` on all three of its
       # `Disposable`s; a module whose includers the shard never uses has none,
@@ -756,9 +805,17 @@ module Iyi
       #
       # Only where the module does not `extend self`, which is the same
       # distinction the keep file takes: a module that does answers to these
-      # itself, so the producer emits `*Gen@Gen#next_pair` and the keep file
+      # itself, so the producer emits `*Gen^Gen#next_pair` and the keep file
       # keeps it alive.
-      travels = method.body_answers ||
+      #
+      # And whatever its side, a function that takes a block, for the reason
+      # a type's block-taking method carries its body below (`carries_body`):
+      # the producer inlines it at every call, the keep file's included. One
+      # whose block was written `& : Int32 -> Nil` is ready rather than
+      # answered by its body, so `body_answers` was false, the declaration
+      # crossed alone, and a program calling `Blk.each_up(3) { ... }` ended on
+      # `LNK2019: unresolved external symbol .2A.Blk.3A..3A.each_up...`.
+      travels = method.body_answers || !method.written_block.empty? ||
                 (signature.receiver.empty? && !extends_self?(program, root))
       if travels && (body = method.body) && !body.empty?
         @@mono_bodies[IyiMod.mono_body_key(iyi_module_name(root), signature)] = travelling_body(body)
@@ -982,6 +1039,16 @@ module Iyi
     # Last, once every name is written the way the consumer will read it.
     carried_types = carried_types.map { |declaration| qualify_self_references declaration, @@self_shadowed }
 
+    # The files this boundary is written from, each with what it hashed to
+    # (IV.3). Without them the artifact said nothing a staleness check could
+    # read: `iyi_compute_artifact_stale` looks for the one file at the
+    # module path, a bound shard has none, and the empty source hash was
+    # taken to mean "cannot answer" — so every consumer read the boundary as
+    # current however long ago the checkout had changed, compiled against
+    # last week's surface and linked last week's object code. The artifact is
+    # a cache and a cache that cannot go stale is a claim.
+    inputs = bind_inputs(program)
+
     artifact = IyiMod::Artifact.new(
       module_name: iyi_module_name(root),
       # The shard's own constants, as the assignments that make them.
@@ -1034,7 +1101,14 @@ module Iyi
       # travels. See `IyiMod::Artifact#top_level_funs`.
       top_level_funs: @@top_level_fun_sources,
       reopened: reopened,
+      inputs: inputs,
     )
+
+    # After construction, the way `Compiler#emit_iyi_artifacts` takes them:
+    # the interface hash is over the exports the record now carries. The
+    # source half is over `inputs`, which is this artifact's answer to "is the
+    # module still the module".
+    artifact.hashes = IyiMod.hashes_for(artifact, inputs.join('\n'))
 
     path = File.join(dir, "#{iyi_module_name(root).gsub('/', '-')}.iyimod")
     IyiMod.write artifact, path
@@ -1131,7 +1205,10 @@ module Iyi
     io.puts "library nobody calls compiles to nothing. The keep file above is what"
     io.puts "calls it. Two commands finish the boundary:"
     io.puts
-    io.puts "  crystal build --iyi-keep #{root} --emit-bind #{dir} -o keepbin #{keep_path}"
+    # This binary and the flag `iyi bind` runs it with: the line said
+    # `crystal build --iyi-keep`, and the `crystal` on a PATH is Crystal's,
+    # which answers `Error: Invalid option: --iyi-keep`.
+    io.puts "  #{Command.program_name} build --crystal --iyi-keep #{root} --emit-bind #{dir} -o keepbin #{keep_path}"
     io.puts "  iyi build --crystal --use-iyimod #{dir} -o app app.iyi"
     io.puts
     io.puts "An *ordinary* build on the first line, not `--emit obj`. Codegen"
@@ -2153,6 +2230,13 @@ module Iyi
     parts.reject(&.empty?)
   end
 
+  # *path* expanded, without a verbatim prefix, and with every 8.3 short
+  # name spelled out (`Iyi.long_path`, which also gives each name its case
+  # on disk).
+  private def self.keep_spelling(path : String) : ::Path
+    ::Path[Iyi.long_path(Iyi.unverbatim(File.expand_path(path)))]
+  end
+
   # A file that calls everything and is never called.
   #
   # Codegen is demand-driven, which is right for a program and wrong for a
@@ -2166,10 +2250,39 @@ module Iyi
                              dir : String) : String
     # Relative, and written from where this file will sit: Crystal refuses an
     # absolute path in a `require`, and the shard is not on `IYI_PATH`.
-    source = ::Path[File.expand_path(program.filename || "")]
-    base = ::Path[File.expand_path(dir)]
-    relative = source.relative_to?(base).try(&.to_s) || source.to_s
-    relative = "./#{relative}" unless relative.starts_with?(".")
+    #
+    # POSIX-form, because the next thing that happens to this path is that it
+    # is read back out of a double-quoted string in a `.cr` file. On Windows
+    # `relative_to?` answers `..\entry.cr`, and `\a` and `\e` are escapes
+    # there, so the fill build went looking for a file called `..try.cr`.
+    # `require` resolves `/` on every platform Crystal builds on.
+    #
+    # Without a `\\?\` prefix on either side: `relative_to?` answers nil for
+    # two anchors that differ, `\\?\C:\` and `C:\` among them, and the
+    # fallback wrote `require "./C:/Users/.../greet.cr"`, which resolves
+    # nowhere. Where there is still no relative path - `--emit-bind` on
+    # another drive - the shard is named from the search path it is on,
+    # the way `iyi bind`'s `lib/` is; `./` goes only in front of a path
+    # that is relative to this file.
+    #
+    # And both spelled the way the file system names them (`keep_spelling`):
+    # a CI runner's `mktemp` hands out `C:\Users\RUNNER~1\...` and its
+    # shell enters `C:\Users\runneradmin\...`, so an `--emit-bind` given the
+    # one beside a shard read through the other was seven directories away,
+    # and the keep file required `../../../../../../../runneradmin/AppData/
+    # .../greet.cr` - the home directory's name in a file that was one `../`
+    # from its shard.
+    source = keep_spelling(program.filename || "")
+    base = keep_spelling(dir)
+    relative =
+      if beside = source.relative_to?(base)
+        beside = beside.to_posix.to_s
+        beside.starts_with?(".") ? beside : "./#{beside}"
+      else
+        IyiPath.default_paths
+          .compact_map { |entry| Iyi.path_under?(source.to_s, keep_spelling(entry).to_s) }
+          .first?.try { |under| ::Path[under].to_posix.to_s } || source.to_posix.to_s
+      end
 
     String.build do |io|
       io << "# Written by `crystal tool bind`. Never called, and never edited:\n"
@@ -2181,7 +2294,7 @@ module Iyi
         io << "#\n"
         io << "# `def self.`, because that is how the declaration is written and\n"
         io << "# the two have to agree on the symbol: one spelling is\n"
-        io << "# `Kemal@Kemal::x`, the other `Kemal::x`. It was `extend self`\n"
+        io << "# `Kemal^Kemal::x`, the other `Kemal::x`. It was `extend self`\n"
         io << "# here while an iyi module header supplied one on the far side;\n"
         io << "# now the header supplies it only where the shard wrote it, so\n"
         io << "# these say for themselves which side of the type they are on.\n"
@@ -2335,7 +2448,7 @@ module Iyi
       # one, and which of the two a call has is in the symbol: `BinData::
       # VerificationException.to_s(io)` emits `*BinData::VerificationException::
       # to_s<IO+>` where a consumer holding the class asks for `*BinData::
-      # VerificationException+@BinData::VerificationException::to_s<IO+>`. A
+      # VerificationException+^BinData::VerificationException::to_s<IO+>`. A
       # consumer holds it virtually because that is what holding a class in a
       # variable is — `io << exception.class`, through `Exception+.class` — and
       # `iyi_artifact_self_type` writes the virtual form for exactly that
@@ -2437,7 +2550,7 @@ module Iyi
   # boundary silently contributing nothing is the failure worth seeing.
   private def self.bound_names(program : Program, dir : String, io : IO) : Set(String)
     names = Set(String).new
-    paths = Dir.glob(File.join(dir, "*.iyimod")).sort
+    paths = Dir.glob(Iyi.glob_root(dir).join("*.iyimod")).sort
     return names if paths.empty?
 
     io.puts "boundaries already written:"
@@ -2706,7 +2819,7 @@ module Iyi
   # is written, and `IyiMod::DeclarationMarker` reads a `Nop` body as a method
   # somebody else compiled. The consumer then promises a symbol the producer
   # never emitted, because a travelling method is left out of the keep file —
-  # `undefined symbol: *ExceptionPage+@ExceptionPage#backtracer:Nil`,
+  # `undefined symbol: *ExceptionPage+^ExceptionPage#backtracer:Nil`,
   # referenced by the consumer's own copy of the `initialize` that calls it.
   #
   # `nil` is the same method: an empty body answers `nil`, and the declaration
@@ -2722,7 +2835,7 @@ module Iyi
   # the root, then mapped to what a consumer calls another boundary's types. A
   # key left behind is a body nobody finds: the declaration arrives without one,
   # the consumer reads it as a method somebody else compiled, and the link ends
-  # on `undefined symbol: *Radix::Tree(Kemal::Route)@Radix::Tree(T)#add<…>`.
+  # on `undefined symbol: *Radix::Tree(Kemal::Route)^Radix::Tree(T)#add<…>`.
   private def self.rekey_body(container : String, before : IyiMod::Signature,
                               after : IyiMod::Signature,
                               ordinal : Int32 = 0,
@@ -2829,7 +2942,7 @@ module Iyi
   # What an iyi program calls this shard, which is not a matter of taste.
   #
   # The symbol is the whole reason. Both sides mangle alike, so `Greeter.polite`
-  # is `*Greeter@Greeter::polite<String>:String` compiled from either language —
+  # is `*Greeter^Greeter::polite<String>:String` compiled from either language —
   # but only if the consumer's module *is* `Greeter`, and the consumer builds
   # that name by camelcasing the module path it imported. `downcase` broke the
   # round trip for every name with an inner capital: `MyGreeter` became
@@ -2872,7 +2985,7 @@ module Iyi
   # in the path and `camelcase` reads two as one. The check stays because the
   # failure it catches is the worst-behaved kind: the mangled symbol carries
   # whichever name the side that compiled it had, so a producer writing
-  # `*Foo_Bar@Foo_Bar::...` and a consumer asking for `*FooBar@FooBar::...` agree
+  # `*Foo_Bar^Foo_Bar::...` and a consumer asking for `*FooBar^FooBar::...` agree
   # on everything a compiler checks and disagree only where `ld` looks.
   private def self.round_trips?(root : String) : Bool
     consumer_name(root) == root
@@ -2950,7 +3063,7 @@ module Iyi
 
     types.each do |name, type|
       next unless type.is_a?(NamedType)
-      written_here = type.locations.try(&.any? { |location| location.filename.to_s.starts_with?(root) })
+      written_here = type.locations.try(&.any? { |location| location.read_from.to_s.starts_with?(root) })
       next unless written_here || type.types?
 
       # A `private` type of the library is not a name a consumer can write.
@@ -3008,7 +3121,26 @@ module Iyi
   # its own to measure against.
   private def self.library_root(program : Program) : String?
     library = program.requires.find(&.ends_with?("prelude.cr"))
-    library ? File.dirname(library) : nil
+    library ? directory_of(library) : nil
+  end
+
+  # The directory a file sits in, *with* its separator, because every
+  # question below is `starts_with?` and a bare dirname answers it for the
+  # wrong files too: `/x/lib/radix` is a prefix of `/x/lib/radix-tree/src`,
+  # and a library root of its own neighbour. `bind_inputs`
+  # would have recorded the neighbour's files as this shard's, and a
+  # boundary read as stale whenever they changed.
+  #
+  # The separator is the one the path itself used, not `File::SEPARATOR`,
+  # which is `'/'` on every platform in this library: `File.dirname` of a
+  # Windows path answers `C:\x\lib\radix\src`, and `+ "/"` made that a
+  # prefix of nothing at all, which puts every file of the shard *outside*
+  # its own directory — the same defect the other way round.
+  private def self.directory_of(file : String) : String
+    directory = File.dirname(file)
+    return directory if directory.ends_with?('/') || directory.ends_with?('\\')
+    following = file[directory.size]?
+    directory + (following == '\\' ? "\\" : "/")
   end
 
   # Whether a type is the *library's* rather than the shard's.
@@ -3032,7 +3164,7 @@ module Iyi
   private def self.other_namespaces(program : Program, root : String) : Array(String)
     source = program.filename
     return [] of String unless source.is_a?(String)
-    directory = File.dirname(source)
+    directory = directory_of(source)
     return [] of String if directory.empty?
 
     names = [] of String
@@ -3043,7 +3175,7 @@ module Iyi
       locations = type.locations
       next unless locations && !locations.empty?
       next unless locations.all? do |location|
-                    filename = location.filename
+                    filename = location.read_from
                     filename.is_a?(String) && filename.starts_with?(directory)
                   end
       # A namespace with nothing in it is nothing to bind: `PQ` holds types
@@ -3061,7 +3193,7 @@ module Iyi
     return false unless locations && !locations.empty?
 
     locations.all? do |location|
-      filename = location.filename
+      filename = location.read_from
       filename.is_a?(String) && filename.starts_with?(root)
     end
   end
@@ -3298,7 +3430,7 @@ module Iyi
 
     source = program.filename
     if source.is_a?(String)
-      directory = File.dirname(source)
+      directory = directory_of(source)
       unless directory.empty?
         program.requires.each do |path|
           next unless path.starts_with?(directory)
@@ -3385,7 +3517,7 @@ module Iyi
   private def self.top_level_funs(program : Program) : Array(String)
     source = program.filename
     return [] of String unless source.is_a?(String)
-    directory = File.dirname(source)
+    directory = directory_of(source)
     return [] of String if directory.empty?
 
     funs = [] of String
@@ -3630,13 +3762,13 @@ module Iyi
     # is the consumer's. `abstract class ExceptionPage` fills with 0 units and
     # that is not a bug — there is no machine code, because nothing in that
     # shard subclasses it — so a consumer that writes `class Report < Sheet`
-    # asked for `*Sheet+@Sheet#render` and nobody had made one.
+    # asked for `*Sheet+^Sheet#render` and nobody had made one.
     #
     # A *module*'s methods are the fourth, and the same sentence says it: they
     # are instantiated per *including* type, and the includer may be in another
     # boundary altogether. `db` writes `module Disposable` with a `close` in
     # it; `sqlite3`'s `ResultSet` includes it through `DB::ResultSet`, and
-    # neither artifact can define `*SQLite3::ResultSet@DB::Disposable#close` —
+    # neither artifact can define `*SQLite3::ResultSet^DB::Disposable#close` —
     # db's build has no such type, and sqlite3's has the method only as a
     # header. Nobody could compile it, so nobody did.
     abstract_owner = (type.responds_to?(:abstract?) && type.abstract?) ||
@@ -4439,7 +4571,7 @@ module Iyi
   # `Location#expanded_location` is the walk, and it already exists for this.
   private def self.written_in(location : Location?) : String?
     return nil unless location
-    location.expanded_location.try(&.filename).as?(String)
+    location.expanded_location.try(&.read_from).as?(String)
   end
 
   # What the shard added to types it does not own.
@@ -4463,7 +4595,7 @@ module Iyi
     declarations = [] of IyiMod::TypeDecl
     source = program.filename
     return declarations unless source.is_a?(String)
-    directory = File.dirname(source)
+    directory = directory_of(source)
     return declarations if directory.empty?
 
     library = library_root(program)
@@ -4511,7 +4643,7 @@ module Iyi
     return nil unless type.is_a?(AliasType)
     return nil unless type.namespace.is_a?(Program)
 
-    written = type.locations.try(&.compact_map { |at| at.filename.as?(String) })
+    written = type.locations.try(&.compact_map { |at| at.read_from.as?(String) })
     return nil unless written.try(&.any?(&.starts_with?(directory)))
 
     # And this root's own only. A shard's files are read once per root it
@@ -4555,7 +4687,7 @@ module Iyi
     return nil unless type.responds_to?(:locations)
     locations = type.locations
     return nil unless locations
-    files = locations.compact_map { |location| location.filename.as?(String) }
+    files = locations.compact_map { |location| location.read_from.as?(String) }
     return nil unless files.any? &.starts_with?(directory)
     owned = !files.any?(&.starts_with?(library))
 
@@ -4831,7 +4963,7 @@ module Iyi
     return nil unless type.responds_to?(:locations)
     locations = type.locations
     return nil unless locations
-    files = locations.compact_map { |location| location.filename.as?(String) }
+    files = locations.compact_map { |location| location.read_from.as?(String) }
     return nil unless files.any? &.starts_with?(library)
     return nil unless files.any? &.starts_with?(directory)
 
@@ -4944,7 +5076,7 @@ module Iyi
                                      methods : Array(BindMethod)) : Nil
     source = program.filename
     return unless source.is_a?(String)
-    directory = File.dirname(source)
+    directory = directory_of(source)
     return if directory.empty?
 
     each_bind_def(program) do |a_def|

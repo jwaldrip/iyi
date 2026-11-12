@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # Fails when the iyi macro engine stops agreeing with the one it replaces.
 #
-# Every fixture is expanded twice, once by each implementation, dumped in one
-# text form, and required byte-identical.
+# Every fixture is expanded by each implementation site by site: the text each
+# top-level `{% %}` and `{{ }}` site expands to, in source order, with where it
+# is written. How the expansion ended (a skip, or a raise with its message and
+# location) and the whole output follow. The two dumps are required
+# byte-identical.
+#
+# A fixture whose header is `# refuse: <name>` names a macro method the port
+# refuses by name. The oracle is not run on it (it would run the command); the
+# port must report the refusal.
 #
 # The mutation proofs follow the rule the other selfhost gates use: the patched
 # file is compared against the original, and a patch that matched nothing is
@@ -16,8 +23,16 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 INTERP="$REPO/src/compiler/macros/interpreter.iyi"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+PARSER="$REPO/src/compiler/macros/macro_parser.iyi"
+ENGINE="$REPO/src/compiler/macros/engine.iyi"
+. "$REPO/bench/lib/mutation.sh"
+if [ -n "${MACRO_GATE_KEEP:-}" ]; then
+  WORK="$MACRO_GATE_KEEP"
+  mkdir -p "$WORK"
+else
+  WORK="$(mktemp -d)"
+  trap 'rm -rf "$WORK"' EXIT
+fi
 
 echo "== 1. Building and running the macro engine exercise"
 "$IYI" build -o "$WORK/exercise" "$REPO/bench/selfhost_macros_exercise.iyi"
@@ -39,6 +54,7 @@ for phrase in \
   "testing macro AST node methods... ok" \
   "testing macro fresh variable generation... ok" \
   "testing macro code and definition generation... ok" \
+  "testing @type as the enclosing class's TypeNode... ok" \
   "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -49,9 +65,25 @@ for phrase in \
 done
 
 echo
-echo "== 2. Macro expansion AST comparison against the front end being replaced"
+echo "== 2. Per-site expansion dump: the oracle and the port must print the same bytes"
 cat <<'CRYSTAL_GOLDEN_SCRIPT' > "$WORK/dump_crystal_macro.cr"
 require "compiler/requires"
+
+# iyi: the line and column a TypeException was raised at, which the hosted
+# class keeps in instance variables. The gate reads them through methods added
+# here, in the oracle driver only; `CodeError` is abstract, so its own
+# variables cannot be typed from here.
+module Iyi
+  class TypeException
+    def gate_line : Int32
+      @line_number || 0
+    end
+
+    def gate_column : Int32
+      @column_number || 0
+    end
+  end
+end
 
 def escape_s(s : String) : String
   res = "\""
@@ -70,157 +102,6 @@ def escape_s(s : String) : String
   res + "\""
 end
 
-def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
-  return ("  " * indent) + "nil\n" if node.nil?
-  p = "  " * indent
-  case node
-  when Iyi::Expressions
-    kw = case node.keyword
-         when .none? then "none"
-         when .paren? then "paren"
-         when .begin? then "begin"
-         else "none"
-         end
-    s = "#{p}Expressions keyword=#{kw}\n"
-    node.expressions.each { |e| s += dump_ast(e, indent + 1) }
-    s
-  when Iyi::Nop
-    "#{p}Nop\n"
-  when Iyi::NilLiteral
-    "#{p}NilLiteral\n"
-  when Iyi::BoolLiteral
-    "#{p}BoolLiteral value=#{node.value}\n"
-  when Iyi::NumberLiteral
-    "#{p}NumberLiteral value=\"#{node.value}\" kind=#{node.kind.to_s.downcase}\n"
-  when Iyi::CharLiteral
-    "#{p}CharLiteral value=#{node.value.ord}\n"
-  when Iyi::StringLiteral
-    "#{p}StringLiteral value=#{escape_s(node.value)}\n"
-  when Iyi::StringInterpolation
-    s = "#{p}StringInterpolation\n"
-    node.expressions.each { |e| s += dump_ast(e, indent + 1) }
-    s
-  when Iyi::SymbolLiteral
-    "#{p}SymbolLiteral value=#{escape_s(node.value)}\n"
-  when Iyi::Var
-    "#{p}Var name=#{escape_s(node.name)}\n"
-  when Iyi::InstanceVar
-    "#{p}InstanceVar name=#{escape_s(node.name)}\n"
-  when Iyi::ClassVar
-    "#{p}ClassVar name=#{escape_s(node.name)}\n"
-  when Iyi::Global
-    "#{p}Global name=#{escape_s(node.name)}\n"
-  when Iyi::Path
-    "#{p}Path names=#{node.names.join("::")} global=#{node.global?}\n"
-  when Iyi::ArrayLiteral
-    s = "#{p}ArrayLiteral\n"
-    node.elements.each { |e| s += dump_ast(e, indent + 1) }
-    s
-  when Iyi::HashLiteral
-    s = "#{p}HashLiteral\n"
-    node.entries.each do |entry|
-      s += "#{p}  entry:\n"
-      s += "#{p}    key:\n" + dump_ast(entry.key, indent + 3)
-      s += "#{p}    value:\n" + dump_ast(entry.value, indent + 3)
-    end
-    s
-  when Iyi::TupleLiteral
-    s = "#{p}TupleLiteral\n"
-    node.elements.each { |e| s += dump_ast(e, indent + 1) }
-    s
-  when Iyi::NamedTupleLiteral
-    s = "#{p}NamedTupleLiteral\n"
-    node.entries.each do |entry|
-      s += "#{p}  entry key=#{escape_s(entry.key)}:\n" + dump_ast(entry.value, indent + 2)
-    end
-    s
-  when Iyi::RangeLiteral
-    s = "#{p}RangeLiteral exclusive=#{node.exclusive?}\n"
-    s += "#{p}  from:\n" + dump_ast(node.from, indent + 2)
-    s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
-    s
-  when Iyi::Call
-    s = "#{p}Call name=#{escape_s(node.name)}\n"
-    if obj = node.obj
-      s += "#{p}  obj:\n" + dump_ast(obj, indent + 2)
-    end
-    if !node.args.empty?
-      s += "#{p}  args:\n"
-      node.args.each { |a| s += dump_ast(a, indent + 2) }
-    end
-    if named_args = node.named_args
-      s += "#{p}  named_args:\n"
-      named_args.each { |na| s += dump_ast(na, indent + 2) }
-    end
-    if block_arg = node.block_arg
-      s += "#{p}  block_arg:\n" + dump_ast(block_arg, indent + 2)
-    end
-    if block = node.block
-      s += "#{p}  block:\n" + dump_ast(block, indent + 2)
-    end
-    s
-  when Iyi::NamedArgument
-    s = "#{p}NamedArgument name=#{escape_s(node.name)}:\n"
-    s += dump_ast(node.value, indent + 1)
-    s
-  when Iyi::Block
-    arg_names = node.args.map(&.name).join(", ")
-    splat = node.splat_index ? node.splat_index.to_s : "none"
-    s = "#{p}Block args=[#{arg_names}] splat=#{splat}:\n"
-    s += dump_ast(node.body, indent + 1)
-    s
-  when Iyi::Assign
-    s = "#{p}Assign\n"
-    s += "#{p}  target:\n" + dump_ast(node.target, indent + 2)
-    s += "#{p}  value:\n" + dump_ast(node.value, indent + 2)
-    s
-  when Iyi::If
-    s = "#{p}If ternary=#{node.ternary?}\n"
-    s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
-    s += "#{p}  then:\n" + dump_ast(node.then, indent + 2)
-    s += "#{p}  else:\n" + dump_ast(node.else, indent + 2)
-    s
-  when Iyi::Def
-    receiver_s = node.receiver ? " receiver" : ""
-    abstract_s = node.abstract? ? " abstract=true" : ""
-    splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
-    s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}\n"
-    if r = node.receiver
-      s += "#{p}  receiver:\n" + dump_ast(r, indent + 2)
-    end
-    if !node.args.empty?
-      s += "#{p}  args:\n"
-      node.args.each { |a| s += dump_ast(a, indent + 2) }
-    end
-    if ds = node.double_splat
-      s += "#{p}  double_splat:\n" + dump_ast(ds, indent + 2)
-    end
-    if ba = node.block_arg
-      s += "#{p}  block_arg:\n" + dump_ast(ba, indent + 2)
-    end
-    if rt = node.return_type
-      s += "#{p}  return_type:\n" + dump_ast(rt, indent + 2)
-    end
-    if fv = node.free_vars
-      s += "#{p}  free_vars=[#{fv.join(", ")}]\n"
-    end
-    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
-    s
-  when Iyi::Arg
-    ext_s = (ext = node.external_name) && ext != node.name ? " external_name=#{escape_s(ext)}" : ""
-    s = "#{p}Arg name=#{escape_s(node.name)}#{ext_s}\n"
-    if rest = node.restriction
-      s += "#{p}  restriction:\n" + dump_ast(rest, indent + 2)
-    end
-    if def_val = node.default_value
-      s += "#{p}  default_value:\n" + dump_ast(def_val, indent + 2)
-    end
-    s
-  else
-    "#{p}#{node.class}\n"
-  end
-end
-
 class NodeCounter < Iyi::Visitor
   getter count = 0
   def visit(node : Iyi::ASTNode)
@@ -229,11 +110,214 @@ class NodeCounter < Iyi::Visitor
   end
 end
 
-filename = ARGV[0]
-src = File.read(filename)
+# The hosted parser wants `module` as the first thing in a file, and the port's
+# files put their `@[Unsafe(...)]` annotation above it. For the sites dump the
+# annotations above the header are blanked, which keeps every line where it was.
+def strip_header_annotations(src : String) : String
+  lines = src.split("\n")
+  module_at = lines.index { |l| l.starts_with?("module ") }
+  return src unless module_at
+  i = 0
+  while i < module_at
+    lines[i] = "" if lines[i].starts_with?("@[")
+    i += 1
+  end
+  lines.join("\n")
+end
 
-parser = Iyi::Parser.new(src)
+# Finds the top-level macro sites of a whole file, as the port's MacroSiteScan does.
+# Each site comes with its context, and with the qualified name and generic flag
+# of the class it is written in ("" at the top of the file).
+class SiteFinder < Iyi::Visitor
+  def visit(node : Iyi::ASTNode) : Bool
+    true
+  end
+
+  def initialize(@context : String, @sites : Array(Tuple(Iyi::ASTNode, String, String, Bool)), @type_name : String = "", @generic : Bool = false)
+  end
+
+  def visit(node : Iyi::MacroIf) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : Iyi::MacroFor) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : Iyi::MacroExpression) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : Iyi::MacroVerbatim) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : Iyi::Macro) : Bool
+    scan_body("macro", node.body, @type_name, @generic)
+    false
+  end
+
+  def visit(node : Iyi::Def) : Bool
+    scan_body("def:#{node.name}", node.body, @type_name, @generic)
+    false
+  end
+
+  def visit(node : Iyi::ClassDef) : Bool
+    scan_body("class", node.body, qualified(node.name.names), generic_names?(node.type_vars))
+    false
+  end
+
+  # A module is generic here: its `@type` is not a class.
+  def visit(node : Iyi::ModuleDef) : Bool
+    scan_body("class", node.body, qualified(node.name.names), true)
+    false
+  end
+
+  def qualified(names : Array(String)) : String
+    @type_name.empty? ? names.join("::") : "#{@type_name}::#{names.join("::")}"
+  end
+
+  def generic_names?(type_vars : Array(String)?) : Bool
+    if tv = type_vars
+      !tv.empty?
+    else
+      false
+    end
+  end
+
+  private def add_site(node : Iyi::ASTNode) : Nil
+    @sites << {node, @context, @type_name, @generic}
+  end
+
+  private def scan_body(context : String, body : Iyi::ASTNode, type_name : String, generic : Bool) : Nil
+    body.accept(SiteFinder.new(context, @sites, type_name, generic))
+  end
+end
+
+# Whether a site reads `@type`, `@top_level`, `@def` or `@caller`, and whether every
+# read of `@type` is a call of a method the port answers from the name.
+class ContextProbe < Iyi::Visitor
+  getter found = false
+  getter type_reads = 0
+  getter type_calls = 0
+  getter other_reads = false
+
+  def visit(node : Iyi::ASTNode) : Bool
+    true
+  end
+
+  def visit(node : Iyi::InstanceVar) : Bool
+    if node.name == "@type"
+      @found = true
+      @type_reads += 1
+    elsif ["@top_level", "@def", "@caller"].includes?(node.name)
+      @found = true
+      @other_reads = true
+    end
+    true
+  end
+
+  def visit(node : Iyi::Call) : Bool
+    if obj = node.obj
+      if obj.is_a?(Iyi::InstanceVar) && obj.name == "@type" && ["name", "stringify", "id"].includes?(node.name)
+        @type_calls += 1
+      end
+    end
+    true
+  end
+
+  def names_only? : Bool
+    !@other_reads && @type_reads == @type_calls
+  end
+end
+
+def line_col(node : Iyi::ASTNode) : String
+  if loc = node.location
+    "#{loc.line_number}:#{loc.column_number}"
+  else
+    "0:0"
+  end
+end
+
+
+args = ARGV.to_a
+filename = ""
+count = false
+sites = false
+host = false
+target = ""
+defines = [] of String
+i = 0
+while i < args.size
+  a = args[i]
+  if a == "--count"
+    count = true
+  elsif a == "--sites"
+    sites = true
+  elsif a == "--host-target"
+    host = true
+  elsif a == "--target"
+    i += 1
+    target = args[i]
+  elsif a == "-D"
+    i += 1
+    defines << args[i]
+  else
+    filename = a
+  end
+  i += 1
+end
+
+if host
+  puts Iyi::Config.host_target.to_s
+  exit 0
+end
+
+src = File.read(filename)
+parser = Iyi::Parser.new(sites ? strip_header_annotations(src) : src)
 node = parser.parse
+if sites
+  program = Iyi::Program.new
+  unless target.empty?
+    program.codegen_target = Iyi::Codegen::Target.new(target)
+  end
+  defines.each { |d| program.flags << d }
+  found = [] of Tuple(Iyi::ASTNode, String, String, Bool)
+  node.accept(SiteFinder.new("top", found))
+  found.each_with_index do |tuple, idx|
+    site = tuple[0]
+    context = tuple[1]
+    type_name = tuple[2]
+    generic = tuple[3]
+    head = "site #{idx} #{site.class.name.split("::").last} #{line_col(site)} #{context}"
+    probe = ContextProbe.new
+    site.accept(probe)
+    if context == "macro"
+      puts "#{head} macro-body"
+    elsif probe.found && !(probe.names_only? && !type_name.empty? && !generic)
+      puts "#{head} needs-context"
+    else
+      scope : Iyi::Type = program
+      if probe.found && !type_name.empty?
+        scope = Iyi::NonGenericClassType.new(program, program, type_name, nil, false)
+      end
+      interp = Iyi::MacroInterpreter.new(program, scope, program, site.location, in_macro: false)
+      begin
+        interp.accept(site)
+        puts "#{head} text=#{escape_s(interp.to_s)}"
+      rescue ex : Iyi::SkipMacroException
+        puts "#{head} skipped"
+      rescue ex : Iyi::TypeException
+        puts "#{head} error #{ex.gate_line}:#{ex.gate_column} message=#{escape_s(ex.message.to_s)}"
+      end
+    end
+  end
+  exit 0
+end
 
 the_macro : Iyi::Macro? = nil
 the_call : Iyi::Call? = nil
@@ -254,15 +338,59 @@ end
 
 the_macro, the_call = find_nodes(node, nil, nil)
 program = Iyi::Program.new
-expanded_str, pragmas = program.expand_macro(the_macro.not_nil!, the_call.not_nil!, program, program)
-expanded_ast = program.parse_macro_source(expanded_str, pragmas, the_macro.not_nil!, the_call.not_nil!, Set(String).new)
+unless target.empty?
+  program.codegen_target = Iyi::Codegen::Target.new(target)
+end
+defines.each { |d| program.flags << d }
 
-if ARGV.size > 1 && ARGV[1] == "--count"
-  c = NodeCounter.new
-  expanded_ast.accept(c)
-  puts c.count
+# The same interpreter `Program#expand_macro` builds, driven one top-level
+# site at a time so each site's text can be read back.
+interp = Iyi::MacroInterpreter.new(program, program, program, the_macro.not_nil!, the_call.not_nil!, nil, in_macro: true)
+body = the_macro.not_nil!.body
+nodes = [] of Iyi::ASTNode
+if body.is_a?(Iyi::Expressions)
+  body.expressions.each { |e| nodes << e }
 else
-  print dump_ast(expanded_ast)
+  nodes << body
+end
+
+lines = [] of String
+skipped = false
+failure : {Int32, Int32, String}? = nil
+nodes.each do |site|
+  break if skipped || failure
+  before = interp.to_s.bytesize
+  begin
+    interp.accept(site)
+  rescue ex : Iyi::SkipMacroException
+    skipped = true
+    next
+  rescue ex : Iyi::TypeException
+    failure = {ex.gate_line, ex.gate_column, ex.message.to_s}
+    next
+  end
+  next if site.is_a?(Iyi::MacroLiteral)
+  after = interp.to_s
+  text = after.byte_slice(before, after.bytesize - before)
+  line = 0
+  column = 0
+  if loc = site.location
+    line = loc.line_number
+    column = loc.column_number
+  end
+  kind = site.class.name.split("::").last
+  lines << "site #{lines.size} #{kind} #{line}:#{column} text=#{escape_s(text)}"
+end
+
+if count
+  puts lines.size
+else
+  lines.each { |l| puts l }
+  puts "skipped" if skipped
+  if f = failure
+    puts "error #{f[0]}:#{f[1]} message=#{escape_s(f[2])}"
+  end
+  puts "output text=#{escape_s(interp.to_s)}"
 end
 CRYSTAL_GOLDEN_SCRIPT
 
@@ -274,110 +402,249 @@ if [ ! -x "$WORK/dump_crystal" ]; then
   exit 1
 fi
 
+# The host triple is the hosted compiler's own. A fixture names another with a
+# `# target: <triple>` line and its `-D` defines with `# define: <name>` lines.
+HOST_TRIPLE="$("$WORK/dump_crystal" --host-target)"
+if [ -z "$HOST_TRIPLE" ]; then
+  echo "  THE ORACLE REPORTED NO HOST TRIPLE: this gate cannot conclude anything"
+  exit 1
+fi
+# The port's host triple is the hosted compiler's own, at run time.
+PORT_HOST="$("$WORK/exercise" --host-target)"
+if [ "$PORT_HOST" != "$HOST_TRIPLE" ]; then
+  echo "  THE PORT'S HOST TRIPLE DIFFERS: port $PORT_HOST, hosted compiler $HOST_TRIPLE"
+  status=1
+fi
+fixture_args() {
+  awk -v host="$HOST_TRIPLE" '
+    /^# target: / { t = $3 }
+    /^# define: / { d = d " -D " $3 }
+    END { printf "--target %s%s", (t == "" ? host : t), d }' "$1"
+}
+
+is_refusal() {
+  awk '/^# refuse: / { found = 1 } END { exit !found }' "$1"
+}
+
 compare_all() {
   runner="$1"
   out_status=0
   for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
-    "$runner" "$fixture" > "$WORK/a.ast" 2>/dev/null || { out_status=1; continue; }
-    "$WORK/dump_crystal" "$fixture" > "$WORK/b.ast"
-    cmp -s "$WORK/a.ast" "$WORK/b.ast" || out_status=1
+    if is_refusal "$fixture"; then
+      "$runner" $(fixture_args "$fixture") "$fixture" > "$WORK/a.dump" 2>/dev/null || { out_status=1; continue; }
+      grep -q "^error .* message=.*is refused" "$WORK/a.dump" || out_status=1
+      continue
+    fi
+    "$runner" $(fixture_args "$fixture") "$fixture" > "$WORK/a.dump" 2>/dev/null || { out_status=1; continue; }
+    "$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" > "$WORK/b.dump" 2>/dev/null || { out_status=1; continue; }
+    cmp -s "$WORK/a.dump" "$WORK/b.dump" || out_status=1
   done
   return $out_status
 }
 
 fixture_count=0
-total_matched_nodes=0
+refusal_count=0
+total_sites=0
 for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
   fixture_name="bench/fixtures/$(basename "$fixture")"
-  "$WORK/exercise" "$fixture" > "$WORK/iyi.ast"
-  "$WORK/dump_crystal" "$fixture" > "$WORK/crystal.ast"
-  if ! cmp -s "$WORK/iyi.ast" "$WORK/crystal.ast"; then
-    echo "  $fixture_name: EXPANDED TREES DIFFER"
+  fixture_count=$((fixture_count + 1))
+  if is_refusal "$fixture"; then
+    refusal_count=$((refusal_count + 1))
+    "$WORK/exercise" $(fixture_args "$fixture") "$fixture" > "$WORK/iyi.dump" 2>/dev/null || true
+    if grep -q "^error .* message=.*is refused" "$WORK/iyi.dump"; then
+      echo "  $fixture_name: refused by name, as the port's contract says"
+    else
+      echo "  $fixture_name: NOT REFUSED"
+      diverged=$((diverged + 1))
+      status=1
+    fi
+    continue
+  fi
+  if ! "$WORK/exercise" $(fixture_args "$fixture") "$fixture" > "$WORK/iyi.dump" 2> "$WORK/iyi.err"; then
+    echo "  $fixture_name: THE PORT FAILED: $(awk 'NR==1' "$WORK/iyi.err")"
     diverged=$((diverged + 1))
-    diff -u "$WORK/crystal.ast" "$WORK/iyi.ast" | head -20
+    status=1
+    continue
+  fi
+  "$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" > "$WORK/crystal.dump"
+  if ! cmp -s "$WORK/iyi.dump" "$WORK/crystal.dump"; then
+    echo "  $fixture_name: DUMPS DIFFER"
+    diff -u "$WORK/crystal.dump" "$WORK/iyi.dump" | head -30
+    diverged=$((diverged + 1))
     status=1
   else
-    nodes_count=$("$WORK/dump_crystal" "$fixture" --count)
-    echo "  $fixture_name: identical ($nodes_count expanded nodes match the front end)"
-    total_matched_nodes=$((total_matched_nodes + nodes_count))
+    nodes_count=$(grep -c '^site ' "$WORK/crystal.dump" || true)
+    echo "  $fixture_name: identical ($nodes_count sites match the hosted compiler)"
+    total_sites=$((total_sites + nodes_count))
   fi
-  fixture_count=$((fixture_count + 1))
 done
-echo "  Parity summary: $((fixture_count - diverged))/$fixture_count fixtures expand identically ($total_matched_nodes total nodes)"
+echo "  Parity summary: $((fixture_count - diverged - refusal_count))/$((fixture_count - refusal_count)) comparable fixtures identical ($total_sites sites); $refusal_count refusal fixtures"
 
+echo "== 2a. The table of macro methods the hosted compiler answers is the one generated from its source"
+python3 "$REPO/bench/macro_method_table.py" --check || status=1
+
+echo "== 2b. Macro sites in the prelude and the port's source: the oracle and the port must agree site by site"
+SITES_DIR="$WORK/sites"
+mkdir -p "$SITES_DIR"
+python3 "$REPO/bench/macro_sites.py" --list > "$SITES_DIR/list"
+while IFS="$(printf '\t')" read -r name rel; do
+  "$WORK/dump_crystal" --sites "$REPO/$rel" > "$SITES_DIR/$name.oracle" 2> "$SITES_DIR/$name.oracle.err" || echo "file-error oracle exit=$?" > "$SITES_DIR/$name.oracle"
+  "$WORK/exercise" --sites "$REPO/$rel" > "$SITES_DIR/$name.port" 2> "$SITES_DIR/$name.port.err" || echo "file-error port exit=$?" > "$SITES_DIR/$name.port"
+done < "$SITES_DIR/list"
+python3 "$REPO/bench/macro_sites.py" "$SITES_DIR" --check || status=1
+echo
 echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
-prove_mutation() {
-  label="$1"
-  old="$2"
-  new="$3"
-  echo "  [$label]"
-  cp "$INTERP" "$INTERP.orig"
-  python3 - "$INTERP" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$INTERP.orig" "$INTERP" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$INTERP.orig" "$INTERP"; rm -f "$INTERP.orig"
-    return
-  fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_macros_exercise.iyi" >/dev/null 2>&1; then
-    if compare_all "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the expanded AST outputs diverged, as they must"
-    fi
-  else
-    echo "    caught: the mutated macro engine did not build"
-  fi
-  cp "$INTERP.orig" "$INTERP"; rm -f "$INTERP.orig"
-  echo "    reverted"
+# Each check rebuilds the macro engine with the mutation applied and compares its dumps
+# with the hosted compiler's. It returns zero only when the comparison still passes.
+check_macros_still_match() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_macros_exercise.iyi" >/dev/null 2>&1 || return 1
+  compare_all "$WORK/mut-exercise" || return 1
+  # The prelude's object file has the class-scoped sites that read `@type`
+  # (`Object#to_s` among them), which no fixture reaches: their dumps must agree too.
+  "$WORK/mut-exercise" --sites "$REPO/src/iyi/object.iyi" > "$WORK/mut-sites.port" 2>/dev/null || return 1
+  "$WORK/dump_crystal" --sites "$REPO/src/iyi/object.iyi" > "$WORK/mut-sites.oracle" 2>/dev/null || return 1
+  cmp -s "$WORK/mut-sites.oracle" "$WORK/mut-sites.port"
 }
 
 MUTATIONS_RUN=0
 
-prove_mutation "macro if condition truthiness inverted" \
-  "c = evaluate(mi.cond)
-      if MacroMethods.truthy?(c)" \
-  "c = evaluate(mi.cond)
-      if !MacroMethods.truthy?(c)"
+prove_mutation "macro if condition truthiness inverted" "$INTERP" \
+  "      if MacroMethods.truthy?(c)
+        interpret(mi.then)" \
+  "      if !MacroMethods.truthy?(c)
+        interpret(mi.then)" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "splat argument gathering emits empty tuple" \
+prove_mutation "splat argument gathering emits empty tuple" "$INTERP" \
   "@vars[macro_arg.name] = TupleLiteral.new(splat_elems)" \
-  "@vars[macro_arg.name] = TupleLiteral.new([] of ASTNode)"
+  "@vars[macro_arg.name] = TupleLiteral.new([] of ASTNode)" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "macro expression output stringification suppressed" \
+prove_mutation "macro expression output stringification suppressed" "$INTERP" \
   "val.to_s(@str)" \
-  "# val.to_s(@str)"
+  "# val.to_s(@str)" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "for loop element binding corrupts loop variable" \
-  "@vars[var1.name] = elems[i]" \
-  "@vars[var1.name] = NilLiteral.new"
+prove_mutation "for loop element binding corrupts loop variable" "$INTERP" \
+  "@vars[mf.vars[0].name] = firsts[i]" \
+  "@vars[mf.vars[0].name] = NilLiteral.new" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "fresh variable temp name prefix altered" \
+prove_mutation "fresh variable temp name prefix altered" "$INTERP" \
   "temp_name = new_temp_var_name(\"__temp_\")" \
-  "temp_name = new_temp_var_name(\"__mut_\")"
+  "temp_name = new_temp_var_name(\"__mut_\")" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+METHODS="$REPO/src/compiler/macros/methods.iyi"
+TARGET_FLAGS="$REPO/src/compiler/macros/target_flags.iyi"
+prove_mutation "flag? answers from a fixed set, not the target's" "$METHODS" \
+  "PlatformFlags.has_flag?(flags, name)" \
+  "PlatformFlags.has_flag?([\"darwin\", \"aarch64\"], name)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "target triple ignored when building the flag set" "$TARGET_FLAGS" \
+  "Target.new(triple)" \
+  "Target.new(\"x86_64-unknown-linux-gnu\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "-D defines dropped from the flag set" "$TARGET_FLAGS" \
+  "        flags << define" \
+  "        flags" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "host_flag? answers from the target's set, not the host's" "$INTERP" \
+  "MacroMethods.has_flag?(MacroTargetFlags.host([] of String), flag_name_of(node))" \
+  "MacroMethods.has_flag?(@flags, flag_name_of(node))" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "verbatim nesting ignores for blocks" "$PARSER" \
+  "tag.starts_with?(\"for \") || tag.starts_with?(\"verbatim\")" \
+  "tag.starts_with?(\"verbatim\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "skip_file does not stop the expansion" "$INTERP" \
+  "@skipped = true" \
+  "@skipped = false" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "raise message altered" "$INTERP" \
+  "fail_at(node, raise_message(node.args))" \
+  "fail_at(node, raise_message(node.args) + \"!\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "@type names the wrong class" "$INTERP" \
+  "return TypeNode.new(@scope_name)" \
+  "return TypeNode.new(\"Wrong\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "TypeNode#name appends a character" "$METHODS" \
+  "return MacroId.new(rec.as(TypeNode).name)" \
+  "return MacroId.new(rec.as(TypeNode).name + \"X\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "sites expanded in the program scope, not their class" "$REPO/bench/selfhost_macros_exercise.iyi" \
+  "scope = ref.type_name.empty? ? \"<Program>\" : ref.type_name" \
+  "scope = \"<Program>\"" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "@top_level is no longer recognised" "$INTERP" \
+  "if iv.name == \"@top_level\"" \
+  "if iv.name == \"@top_levelX\"" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "hash for loop binds the value to the key variable" "$INTERP" \
+  "firsts << entries[i].key" \
+  "firsts << entries[i].value" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "range for loop drops its inclusive end" "$INTERP" \
+  "limit = rng.exclusive ? to_v : to_v + 1" \
+  "limit = rng.exclusive ? to_v : to_v" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "raise location moved to the brace" "$PARSER" \
+  "exp.location = tag_loc" \
+  "exp.location = open_loc" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "hash size counts one entry too many" "$METHODS" \
+  "return NumberLiteral.new(hash.entries.size.to_s, NumberKind::I32)" \
+  "return NumberLiteral.new((hash.entries.size + 1).to_s, NumberKind::I32)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "symbols print bare whatever their text" "$METHODS" \
+  "plain = false" \
+  "plain = plain" \
+  -- check_macros_still_match || status=1
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
 if [ "$status" -eq 0 ]; then
-  echo "== ALL SELFHOST MACRO CHECKS PASSED"
+  echo "ALL SELFHOST MACRO EXPANSION CHECKS PASSED"
 else
-  echo "== SELFHOST MACRO CHECKS FAILED"
+  echo "SELFHOST MACRO EXPANSION CHECKS FAILED"
 fi
 exit $status

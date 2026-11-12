@@ -5,9 +5,12 @@
 # shareable, where a field is mutable if any method other than `initialize`
 # assigns it or a setter `field=` is defined for it; or it is trusted
 # (`@[Share]`), shareable whenever its type arguments are, for the short
-# list that owns what it holds. Everything is a type-level fact: no
-# ownership, no borrowing, no flow — R-3's closed types are what make it
-# computable once per declaration.
+# list that owns what it holds; or it owns its contents (`@[Share(owns:
+# true)]`, `Mutex(T)`), shareable whatever its arguments are, because only
+# a block it runs reaches what it holds and each such block is checked
+# where it is written. Everything is a type-level fact: no ownership, no
+# borrowing, no flow — R-3's closed types are what make it computable
+# once per declaration.
 #
 # The mutation half reads bodies, so it can only be answered for a type
 # declared in this compilation. A type read from an artifact carries the
@@ -16,33 +19,40 @@
 # what a consumer sees of it is fields and method headers, and a header
 # cannot say whether the body assigns.
 #
-# What it gates today: the block `IyiThread.start` captures (III.4.11), in
-# `CleanupTransformer`. A channel's element type is next, with the channel
-# that crosses threads.
+# What it gates today: the block `IyiThread.start` captures (III.4.11), the
+# block `IyiGroup#spawn(unit: :new)` captures (III.4.13), the block
+# `IyiGroup#spawn(in: u)` captures (III.4.18), and the block an
+# owning type's method runs (`Mutex#lock` and the rest), in
+# `CleanupTransformer`. A channel crosses threads as a trusted type,
+# `@[Share]` on `Channel(T)`: shareable whenever its element type is.
 module Iyi::Share
   # Shareable, or a sentence saying why not: the first field that fails and
-  # the reason, one level at a time.
-  def self.reason(type : Type) : String?
-    reason(type, Set(Type).new)
+  # the reason, one level at a time. With *from*, the file of the code
+  # asking, a field whose type another module declares is said with that
+  # module: "Config's field @hits (module `dep/config`) is assigned in
+  # `bump`" - the place a spawn's verdict moved from when that module
+  # changed (SPEC.md III.4.16).
+  def self.reason(type : Type, from : String? = nil) : String?
+    reason(type, Set(Type).new, from)
   end
 
   def self.shareable?(type : Type) : Bool
     reason(type).nil?
   end
 
-  private def self.reason(type : Type, visiting : Set(Type)) : String?
+  private def self.reason(type : Type, visiting : Set(Type), from : String?) : String?
     # A recursive type reached again while its own check is open is not
     # the fault; whatever fails, fails elsewhere.
     return nil if visiting.includes?(type)
     visiting.add(type)
     begin
-      check(type, visiting)
+      check(type, visiting, from)
     ensure
       visiting.delete(type)
     end
   end
 
-  private def self.check(type : Type, visiting : Set(Type)) : String?
+  private def self.check(type : Type, visiting : Set(Type), from : String?) : String?
     case type
     when NilType, BoolType, CharType, IntegerType, FloatType, SymbolType, VoidType, NoReturnType
       nil
@@ -53,9 +63,9 @@ module Iyi::Share
       # consumer's instantiation is where the argument is checked.
       nil
     when AliasType
-      reason(type.aliased_type, visiting)
+      reason(type.aliased_type, visiting, from)
     when TypeDefType
-      reason(type.typedef, visiting)
+      reason(type.typedef, visiting, from)
     when MetaclassType, GenericClassInstanceMetaclassType, VirtualMetaclassType
       nil
     when PointerInstanceType
@@ -66,55 +76,63 @@ module Iyi::Share
       "#{type} is a closure, and what it captured is not written in its type"
     when TupleInstanceType
       type.tuple_types.each do |member|
-        if why = reason(member, visiting)
+        if why = reason(member, visiting, from)
           return "#{type} holds #{member}: #{why}"
         end
       end
       nil
     when NamedTupleInstanceType
       type.entries.each do |entry|
-        if why = reason(entry.type, visiting)
+        if why = reason(entry.type, visiting, from)
           return "#{type} holds #{entry.name} : #{entry.type}: #{why}"
         end
       end
       nil
     when UnionType
       type.union_types.each do |member|
-        if why = reason(member, visiting)
+        if why = reason(member, visiting, from)
           return "#{type} may be #{member}: #{why}"
         end
       end
       nil
     when VirtualType
       # A value typed as the base may be any subclass; every one must hold.
-      if why = reason(type.base_type, visiting)
+      if why = reason(type.base_type, visiting, from)
         return why
       end
       type.base_type.all_subclasses.each do |subclass|
-        if why = reason(subclass, visiting)
+        if why = reason(subclass, visiting, from)
           return "#{type} may be #{subclass}: #{why}"
         end
       end
       nil
     when GenericClassInstanceType
       if trusted?(type)
-        trusted_arguments(type, visiting)
+        type.generic_type.iyi_share_owns? ? nil : trusted_arguments(type, visiting, from)
       elsif type.generic_type.iyi_from_artifact?
-        "#{type} came from an artifact whose producer did not find it shareable"
+        "#{type}#{declared_in(type, from)} came from an artifact whose producer did not find it shareable"
       else
-        structural(type, type.generic_type, visiting)
+        structural(type, visiting, from)
       end
     when GenericModuleInstanceType, NonGenericModuleType, GenericModuleType
       # A module as a value's type is its including types, which the virtual
       # form above enumerates; a bare module here is a type with no fields.
       nil
     when NonGenericClassType
-      if type.iyi_share_trusted?
+      # `String` by name: its one write after construction is `size`
+      # caching the character count in `@length`, and every thread that
+      # writes it writes the same count of the same immutable bytes. Read
+      # structurally, that write refused `s = "x"; IyiThread.start { puts s }`
+      # with "String's field @length is assigned in `size`", and with it
+      # `List(String)` and every struct holding a string. Said here rather
+      # than as `@[Share]` on the prelude's `class String`, whose line count
+      # is held to a ceiling.
+      if type.iyi_share_trusted? || type == type.program.string
         nil
       elsif type.iyi_from_artifact?
-        "#{type} came from an artifact whose producer did not find it shareable"
+        "#{type}#{declared_in(type, from)} came from an artifact whose producer did not find it shareable"
       else
-        structural(type, type, visiting)
+        structural(type, visiting, from)
       end
     when GenericClassType
       # The uninstantiated generic, as a producer asks about it: shareable
@@ -123,7 +141,7 @@ module Iyi::Share
       if type.iyi_share_trusted?
         nil
       else
-        structural(type, type, visiting)
+        structural(type, visiting, from)
       end
     else
       "#{type} (#{type.class}) has no shareability rule"
@@ -135,12 +153,12 @@ module Iyi::Share
   end
 
   # `@[Share]` on the generic: shareable whenever its arguments are.
-  private def self.trusted_arguments(type : GenericClassInstanceType, visiting : Set(Type)) : String?
+  private def self.trusted_arguments(type : GenericClassInstanceType, visiting : Set(Type), from : String?) : String?
     type.type_vars.each do |name, var|
       next unless var.is_a?(Var)
       argument = var.type?
       next unless argument
-      if why = reason(argument, visiting)
+      if why = reason(argument, visiting, from)
         return "#{type}'s #{name} is #{argument}: #{why}"
       end
     end
@@ -148,38 +166,65 @@ module Iyi::Share
   end
 
   # The structural half: every field immutable after `initialize`, every
-  # field's type shareable. `declaration` is where the defs live — the
-  # generic type for an instance — and `type` is where the fields' resolved
-  # types live.
-  private def self.structural(type : Type, declaration : Type, visiting : Set(Type)) : String?
-    mutated = mutated_fields(declaration)
+  # field's type shareable. An instance's defs are its generic's, read with
+  # the instance's type arguments: a macro in one expands on the instance.
+  private def self.structural(type : Type, visiting : Set(Type), from : String?) : String?
+    mutated = mutated_fields(type)
     if type.responds_to?(:all_instance_vars)
       type.all_instance_vars.each do |name, var|
         if how = mutated[name]?
-          return "#{type}'s field #{name} is #{how}"
+          return "#{type}'s field #{name}#{declared_in(field_owner(type, name), from)} is #{how}"
         end
         var_type = var.type?
         next unless var_type
-        if why = reason(var_type, visiting)
-          return "#{type}'s field #{name} : #{var_type} is not shareable: #{why}"
+        if why = reason(var_type, visiting, from)
+          return "#{type}'s field #{name} : #{var_type}#{declared_in(field_owner(type, name), from)} is not shareable: #{why}"
         end
       end
     end
     nil
   end
 
-  # Field name -> how it is mutable: "assigned in `clear`" or "given a setter
-  # `count=`". Read off the declaration's own defs and its ancestors', once
-  # per declaration.
-  @@mutations = {} of Type => Hash(String, String)
-
-  private def self.mutated_fields(declaration : Type) : Hash(String, String)
-    @@mutations[declaration] ||= scan_mutations(declaration)
+  # The class among *type* and its superclasses that declares the field
+  # *name*: a subclass's chain names the module the field was written in.
+  private def self.field_owner(type : Type, name : String) : Type
+    current = type
+    while current
+      if current.responds_to?(:instance_vars) && current.instance_vars.has_key?(name)
+        return current
+      end
+      current = current.responds_to?(:superclass) ? current.superclass : nil
+    end
+    type
   end
 
-  private def self.scan_mutations(declaration : Type) : Hash(String, String)
+  # " (module `dep/config`)" when *type* is declared in a module other than
+  # the file *from*; empty when nothing asked, when the type is the
+  # asking file's own, and for a type no module declares - the prelude's.
+  private def self.declared_in(type : Type, from : String?) : String
+    return "" unless from && !SPAWN_BROKEN.includes?("remote")
+    type = type.generic_type.as(Type) if type.is_a?(GenericClassInstanceType)
+    location = type.locations.try(&.first?)
+    file = (location.try(&.expanded_location) || location).try(&.filename)
+    return "" unless file.is_a?(String) && file != from
+    program = type.program
+    name = program.iyi_module_paths[file]? || program.iyi_artifact_modules[file]?
+    name ? " (module `#{name}`)" : ""
+  end
+
+  # Field name -> how it is mutable: "assigned in `clear`" or "given a setter
+  # `count=`", for the structural half above. Read off the type's own defs
+  # and its ancestors' — its superclasses and the modules it includes — once
+  # per type.
+  @@mutations = {} of Type => Hash(String, String)
+
+  private def self.mutated_fields(type : Type) : Hash(String, String)
+    @@mutations[type] ||= scan_mutations(type)
+  end
+
+  private def self.scan_mutations(type : Type) : Hash(String, String)
     found = {} of String => String
-    each_declaration_and_ancestor(declaration) do |owner|
+    each_type_and_ancestor(type) do |owner|
       next unless owner.responds_to?(:defs)
       defs = owner.defs
       next unless defs
@@ -191,10 +236,22 @@ module Iyi::Share
             found[field] ||= "given a setter `#{name}`"
           end
           next if name == "initialize"
-          scanner = MutationScanner.new(name)
+          scanner = MutationScanner.new(type, owner, a_def)
           a_def.body.accept(scanner)
+          # A macro that needs more than the type to expand — one reading a
+          # `forall` variable — is read in the instances the typer kept on
+          # the type, where it has expanded. A block-taking instance is kept
+          # by its call site rather than by the type, and is not read here.
+          if scanner.unexpanded? && type.is_a?(DefInstanceContainer)
+            type.def_instances.each_value do |instance|
+              instance.body.accept(scanner) if instance.iyi_origin.same?(a_def)
+            end
+          end
           scanner.fields.each do |field|
             found[field] ||= "assigned in `#{name}`"
+          end
+          scanner.addressed.each do |field|
+            found[field] ||= "given out by `pointerof` in `#{name}`"
           end
         end
       end
@@ -202,22 +259,38 @@ module Iyi::Share
     found
   end
 
-  private def self.each_declaration_and_ancestor(declaration : Type, &block : Type -> Nil) : Nil
-    yield declaration
-    if declaration.is_a?(ClassType)
-      parent = declaration.superclass
-      while parent
-        yield parent
-        parent = parent.is_a?(ClassType) ? parent.superclass : nil
-      end
-    end
+  # The class, then everything it inherits from: its superclasses and the
+  # modules it and they include. The superclasses alone were walked, so a
+  # field assigned only by a method of an included `module` read as
+  # immutable: two threads bumping a counter through one compiled and
+  # counted 2336841 of 4000000.
+  private def self.each_type_and_ancestor(type : Type, &block : Type -> Nil) : Nil
+    yield type
+    type.ancestors.uniq!.each { |ancestor| yield ancestor }
   end
 
-  # Every instance variable a body assigns, by any spelling.
+  # Every instance variable a body assigns, by any spelling, macro code
+  # included. A macro is read as what it expands to on the type asked
+  # about: walked as written it is the macro's text, and `@n += 1` inside
+  # `{% if true %}`, or in a macro the method calls, was never seen — two
+  # threads bumping a counter that way compiled and counted 2343960 of
+  # 4000000.
   class MutationScanner < Visitor
     getter fields = Set(String).new
+    # Fields whose address a body takes. Whatever holds the pointer writes
+    # the field without an assignment the scan could see: `pointerof(@n).
+    # value += 1` in `poke` read as no write at all, and two threads poking
+    # a counter 100 million times each counted 122761325 of 200000000.
+    getter addressed = Set(String).new
+    # Some macro code here did not expand on the type alone.
+    getter? unexpanded = false
 
-    def initialize(@def_name : String)
+    # A macro that keeps calling itself is the typer's to refuse, and a
+    # method nothing calls is never typed; the scan stops instead.
+    NESTING = 32
+
+    def initialize(@scope : Type, @path_lookup : Type, @def : Def)
+      @nesting = 0
     end
 
     def visit(node : Assign) : Bool
@@ -235,8 +308,70 @@ module Iyi::Share
       true
     end
 
+    def visit(node : PointerOf) : Bool
+      exp = node.exp
+      @addressed << exp.name if exp.is_a?(InstanceVar)
+      true
+    end
+
+    def visit(node : MacroIf | MacroFor | MacroExpression) : Bool
+      if expanded = node.expanded
+        expanded.accept self
+      else
+        the_macro = Macro.new("macro_#{node.object_id}", [] of Arg, node).at(node)
+        read_expansion(the_macro, node) { program.expand_macro(node, @scope, @path_lookup, nil, @def) }
+      end
+      false
+    end
+
+    def visit(node : Call) : Bool
+      if expanded = node.expanded
+        expanded.accept self
+        return false
+      end
+      if the_macro = macro_called(node)
+        read_expansion(the_macro, node) { program.expand_macro(the_macro, node, @scope, @scope, @def) }
+        return false
+      end
+      true
+    end
+
     def visit(node : ASTNode) : Bool
       true
+    end
+
+    private def program : Program
+      @scope.program
+    end
+
+    # The macro a receiverless call names, found the way the typer finds it
+    # from inside a method of the type.
+    private def macro_called(node : Call) : Macro?
+      return nil if node.obj || node.super? || node.previous_def?
+      probe = Call.new(nil, node.name, node.args, named_args: node.named_args).at(node)
+      probe.scope = @scope
+      probe.lookup_macro
+    rescue Iyi::CodeError
+      nil
+    end
+
+    private def read_expansion(the_macro : Macro, node : ASTNode, &) : Nil
+      if @nesting >= NESTING
+        @unexpanded = true
+        return
+      end
+      source, pragmas = yield
+      locals = Set(String).new
+      @def.args.each { |arg| locals << arg.name }
+      expansion = program.parse_macro_source(source, pragmas, the_macro, node, locals, current_def: @def, inside_type: true)
+      @nesting += 1
+      begin
+        expansion.accept self
+      ensure
+        @nesting -= 1
+      end
+    rescue Iyi::CodeError | Iyi::SkipMacroException
+      @unexpanded = true
     end
 
     private def note(target : ASTNode) : Nil

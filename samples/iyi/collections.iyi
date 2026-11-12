@@ -1,6 +1,6 @@
 # The `Enumerable` port, exercised — SPEC.md II.6.
 #
-#   ./bin/crystal run samples/iyi/collections.iyi
+#   ./bin/iyi run samples/iyi/collections.iyi
 #
 # `std/enumerable.iyi` holds the trait. This file implements it twice and calls
 # every method it defines. Both matter: a default method is only typed when it
@@ -13,8 +13,7 @@
 
 module samples/collections
 
-import std/enumerable
-using std/enumerable::{Enumerable}
+import std/enumerable::{Enumerable}
 
 pub struct Nums
   def initialize(@a : Array(Int32))
@@ -53,10 +52,8 @@ puts "any?            #{n.any? { |x| x > 4 }}"
 puts "none?           #{n.none? { |x| x > 9 }}"
 puts "one?            #{n.one? { |x| x == 4 }}"
 puts "count           #{n.count { |x| x == 1 }}"
-puts "find?           #{n.find? { |x| x > 3 }} #{n.find? { |x| x > 9 }.inspect}"
-puts "find            #{n.find { |x| x > 3 }}"
-puts "index?          #{n.index? { |x| x == 4 }}"
-puts "index           #{n.index { |x| x == 4 }}"
+puts "find            #{n.find { |x| x > 3 }} #{n.find { |x| x > 9 }.inspect}"
+puts "index           #{n.index { |x| x == 4 }} #{n.index { |x| x == 9 }.inspect}"
 puts "first?/first    #{n.first?} #{n.first}"
 puts "map             #{n.map { |x| x * 2 }.join(",")}"
 puts "flat_map        #{n.flat_map { |x| [x, x] }.join(",")}"
@@ -69,7 +66,7 @@ puts "take_while      #{n.take_while { |x| x < 4 }.join(",")}"
 puts "skip_while      #{n.skip_while { |x| x < 4 }.join(",")}"
 puts "reduce          #{n.reduce(0) { |a, x| a + x }}"
 puts "each_with_index #{n.map_with_index { |x, i| i }.join(",")}"
-puts "each_with_object #{n.each_with_object([] of Int32) { |o, e| o << e * 10 }.join(",")}"
+puts "each_with_object #{n.each_with_object([] of Int32) { |e, o| o << e * 10 }.join(",")}"
 puts "join            #{n.join("-")}"
 puts "includes?       #{n.includes?(4)} #{n.includes?(9)}"
 puts "max?/max        #{n.max?} #{n.max}"
@@ -98,8 +95,10 @@ puts "tally_by        #{w.tally_by { |s| s.size }[4]}"
 puts "sum_by          #{w.sum_by { |s| s.size }}"
 
 # SPEC II.6 finding 6: one bound replaces `Indexable | Iterable | Iterator`,
-# and `O::Elem` names what the other collection yields.
-puts "zip             #{n.zip(w).map { |pair| "#{pair[0]}#{pair[1]}" }.join(" ")}"
+# and `O::Elem` names what the other collection yields. Four numbers for
+# four words: a shorter other collection is refused, as the other library
+# refuses it.
+puts "zip             #{Nums.new([3, 1, 4, 1]).zip(w).map { |pair| "#{pair[0]}#{pair[1]}" }.join(" ")}"
 
 cycled = [] of Int32
 Nums.new([1, 2]).cycle(2) { |x| cycled << x }
@@ -117,12 +116,13 @@ puts "as a type       #{describe(n)} / #{describe(w)}"
 # ---------------------------------------------------------------------------
 #
 # * `Words.new([...]).sum` — `sum` is bounded `where Elem : Num` and
-#   `String` implements `Cmp` but not `Num`. The error names the element type
-#   and the bound rather than failing somewhere inside the method body.
+#   `String` implements `Comparable` but not `Num`. The error names the element
+#   type and the bound rather than failing somewhere inside the method body.
 #
 # * A second `impl Enumerable for Nums` — a trait with an associated type is
 #   implementable once per type, because a second answer for `Elem` would make
 #   every call on `Nums` ambiguous.
 #
-# * `impl Num for X` with no `impl Cmp for X` before it — `Num : Cmp` requires
-#   it, and the impls have to be written in dependency order.
+# * `impl Num for X` with no `impl Comparable for X` before it —
+#   `Num : Comparable` requires it, and the impls have to be written in
+#   dependency order.

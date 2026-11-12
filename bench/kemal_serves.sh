@@ -27,8 +27,29 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
+. "$REPO/bench/end_process.sh"
+# The gate runs whatever compiler the caller names; `bin/iyi` is a shell
+# wrapper, and on Windows the caller has to point at the built exe itself.
+IYI="${IYI:-$REPO/bin/iyi}"
 WORK="$(mktemp -d)"
+
+# A native compiler cannot resolve this shell's own path mapping: a search
+# path built from the shell's `pwd` finds no prelude at all, and a scratch
+# directory named `/tmp/tmp.X` on it is silently ignored, so the shard the
+# boundary is built from is never read.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT)
+    REPO="$(cygpath -m "$REPO")"
+    WORK="$(cygpath -m "$WORK")"
+    ;;
+esac
+
+# The search path is a list, and the byte between its entries is the
+# platform's: `;` where a drive letter already owns the colon.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) PSEP=';' ;;
+  *) PSEP=':' ;;
+esac
 
 KEMAL_VERSION="1.12.0"
 
@@ -44,7 +65,7 @@ PORT_ARTIFACT=31882
 # gate measured.
 stop_server() {
   [ -z "${SERVER_PID:-}" ] && return
-  { kill -9 "$SERVER_PID"; wait "$SERVER_PID"; } 2>/dev/null
+  { end_process "$SERVER_PID" KILL; wait "$SERVER_PID"; } 2>/dev/null
   SERVER_PID=""
 }
 
@@ -98,8 +119,8 @@ for shard in radix backtracer exception_page kemal; do
 done
 
 # Absolute, for the arms below, which build from this directory.
-export CRYSTAL_PATH="$WORK/lib:$REPO/src"
-export IYI_PATH="$WORK/lib:$REPO/share/iyi/src:$REPO/share/iyi/crystal:$REPO/src"
+export CRYSTAL_PATH="$WORK/lib${PSEP}$REPO/src"
+export IYI_PATH="$WORK/lib${PSEP}$REPO/share/iyi/src${PSEP}$REPO/share/iyi/crystal${PSEP}$REPO/src"
 
 # The application, written the way kemal's own README writes one. `get` is a
 # top-level `def` a macro loop writes, and the block returns `_` — so neither

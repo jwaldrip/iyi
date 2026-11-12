@@ -5,8 +5,7 @@
 
 module compiler/tools/parse
 
-import compiler/syntax/parser
-using compiler/syntax/parser::{Parser}
+import compiler/syntax/parser::{Parser}
 
 module ParseTool
   def self.run : Nil

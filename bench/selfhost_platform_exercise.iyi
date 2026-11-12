@@ -1,12 +1,8 @@
 module bench/selfhost_platform_exercise
 
-import compiler/platform/target
-import compiler/platform/flags
-import compiler/platform/linker
-
-using compiler/platform/target::{Target, TargetError}
-using compiler/platform/flags::{PlatformFlags}
-using compiler/platform/linker::{Linker, LinkAnnotation, LinkCommandResult}
+import compiler/platform/target::{Target, TargetError}
+import compiler/platform/flags::{PlatformFlags}
+import compiler/platform/linker::{Linker, LinkAnnotation, LinkCommandResult}
 
 def assert_true(cond : Bool, label : String) : Nil
   if !cond

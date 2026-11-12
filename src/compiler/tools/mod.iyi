@@ -5,8 +5,7 @@
 
 module compiler/tools/mod
 
-import compiler/artifact/iyimod
-using compiler/artifact/iyimod::{IyiMod, Artifact}
+import compiler/artifact/iyimod::{IyiMod, Artifact}
 
 module ModTool
   def self.run : Nil

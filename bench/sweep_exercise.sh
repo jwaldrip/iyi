@@ -47,13 +47,13 @@ fi
 
 echo
 echo "== every check reported"
-for phrase in reclaimed warm survivor liveness large steady; do
+for phrase in reclaimed warm survivor liveness large steady refault; do
   grep -q "$phrase" "$WORK/sweep.out" 2>/dev/null || {
     echo "  MISSING: nothing reported for $phrase"
     status=1
   }
 done
-[ "$status" -eq 0 ] && echo "  reclaimed, warm, survivor, liveness, large and steady all reported"
+[ "$status" -eq 0 ] && echo "  reclaimed, warm, survivor, liveness, large, steady and refault all reported"
 
 echo
 echo "== the same program with optimisation on"
@@ -94,9 +94,9 @@ prove_fails() {
   fi
   # The phrase is the good case: the exercise survived the break, noticed it,
   # and said which check caught it.
-  if grep -q "$phrase" "$WORK/$dir/out"; then
+  if grep -qE "$phrase" "$WORK/$dir/out"; then
     printf '  %s: exits %s at "%s"\n' "$label" "$exit_code" \
-      "$(grep -m1 "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
+      "$(grep -m1 -E "$phrase" "$WORK/$dir/out" | sed 's/^iyi: panic: //')"
     return
   fi
   # A break can also be too severe to narrate. Since the prelude allocates its
@@ -105,13 +105,20 @@ prove_fails() {
   # check can report. That is the break being caught, not missed, so it counts
   # only under conditions that cannot be satisfied by a working collector: the
   # process died on a signal, and it never reached the line that says it passed.
+  # Windows delivers no signal: the runtime's vectored handler names the
+  # access violation and exits 1, which is the same death in its own words.
   if [ "$exit_code" -ge 128 ] && ! grep -q "all sweep checks passed" "$WORK/$dir/out"; then
     printf '  %s: dies on signal %s before it can report, and never passes\n' \
       "$label" "$(( exit_code - 128 ))"
     return
   fi
+  if [ "$exit_code" -eq 1 ] && grep -q "died of a memory fault" "$WORK/$dir/out" &&
+     ! grep -q "all sweep checks passed" "$WORK/$dir/out"; then
+    printf '  %s: dies of a memory fault before it can report, and never passes\n' "$label"
+    return
+  fi
   echo "  $label: failed, but not at the expected check"
-  sed -n '$p' "$WORK/$dir/out"
+  grep -v '^[0-9][0-9]* ' "$WORK/$dir/out" | tail -6 | sed 's/^/    /'
   status=1
 }
 
@@ -126,7 +133,7 @@ prove_fails "sweep frees nothing" nofree "sweep:" \
 
 # The colour test stops mattering, so a live object goes on the free list.
 prove_fails "sweep frees the live" reckless "sweep:" \
-  '{ if ($0 ~ /^          if word & IyiHeap::EPOCH_FLAG != @@epoch_flag && \(colour == WHITE \|\| word & IyiHeap::FREE_FLAG != 0\)$/) { print "          if word & IyiHeap::EPOCH_FLAG != @@epoch_flag"; next } print }'
+  '{ if ($0 ~ /^          if word & IyiHeap::EPOCH_FLAG != epoch && \(colour == WHITE \|\| word & IyiHeap::FREE_FLAG != 0\)$/) { print "          if word & IyiHeap::EPOCH_FLAG != epoch"; next } print }'
 
 # The refill stops threading idle warm runs: the pages stay idle, the
 # class carves its frontier, and the warm check names how many were left.
@@ -138,6 +145,69 @@ prove_fails "warm pages never taken up" nowarm "warm:" \
 # entry point lies, and the check reads it.
 prove_fails "warm chunks not cleared" dirtywarm "warm:" \
   '{ if ($0 ~ /^          clear_block\(head, chunk_of\(index\)\) if clear$/) { print "          # removed"; next } print }'
+
+# The allocation's fast path handing out a list chunk without clearing it:
+# every chunk after a refill's first comes that way.
+prove_fails "the fast path does not clear" dirtyfast "warm:" \
+  '{ if ($0 ~ /^                write64\(word, 0_u64\)$/) { print "                # removed"; next } print }'
+
+# A quarter-step class's warm pages counted at the full chunk again: a
+# fifth too few stay warm, and the steady churn hands pages back.
+prove_fails "warm pages counted at the full chunk" roundwarm "rounding:" \
+  '{ if ($0 ~ /^        floor = chunk > 128_u64 \?/) { print "        floor = chunk"; next } print }'
+
+# The cold reopenings not carried into the next epoch's warm room: the
+# churn that asks twice its budget hands its excess back every epoch and
+# carves it again (issue #150).
+prove_fails "cold reopenings not kept warm" refault "refault:" \
+  '{ if ($0 ~ /^        @@warm_extra = @@warm_extra - @@warm_extra.unsafe_shr\(4_u64\) \+ \(reopened_cold - @@reopened_cold\) \* IyiHeap::PAGE$/) { print "        @@warm_extra = 0_u64"; found = 1; next } print } END { if (!found) exit 3 }'
+
+# A class nobody allocates in any more kept warm within the budget, as
+# every class was: its pages hold the room the classes in use want.
+prove_fails "idle classes kept warm" idlewarm "idle class:" \
+  '{ if ($0 ~ /^        @@epoch - IyiHeap\.read64\(line \+ IyiHeap::CLASS_USED\) >= IDLE_EPOCHS &&$/) { print "        false &&"; found = 1; next } print } END { if (!found) exit 3 }'
+
+# A class idle after a few epochs however short: four collections back
+# to back hand its pages back.
+prove_fails "idle by epochs alone" idleshort "idle class:" \
+  '{ if ($0 ~ /^          @@epoch_ns - used_ns >= IDLE_NS$/) { print "          true"; found = 1; next } print } END { if (!found) exit 3 }'
+
+# A class refilled only in the first epoch read at its stamp of 0, which
+# every clock reading is more than a second past: its arenas go back three
+# collections in, however short.
+prove_fails "the first epoch's classes idle at once" idlefirst "idle class:" \
+  '{ if ($0 ~ /^        used_ns = @@first_turn_ns if used_ns == 0_u64$/) { print "        # removed"; found = 1; next } print } END { if (!found) exit 3 }'
+
+# An idle class's empty arena kept by its cache as every fill arena was:
+# its pages go cold but the mapping, its header and its tables stay.
+prove_fails "idle classes' arenas kept" idlearena "idle class:" \
+  '{ if ($0 ~ /^          IyiHeap\.let_go_fill\(arena\) if idle$/) { print "          # removed"; found = 1; next } print } END { if (!found) exit 3 }'
+
+# The carve's batch left unstamped: the listed chunks read as nothing the
+# sweep or the mark can tell from an uncarved one.
+prove_fails "a batch left unstamped" batchstamp "batch:" \
+  '{ if ($0 ~ /^            write8\(entry, CARVED_FLAG \| FREE_FLAG \| epoch\)$/) { print "            # removed"; next } print }'
+
+# And not listed at all: every allocation carves again. darwin arm64's
+# sixteen-kilobyte pages make the carving show first in the warm check's
+# high water, which catches it there.
+prove_fails "a batch not listed" batchlist "batch:|warm:" \
+  '{ if ($0 ~ /^          table\[index\] = listed$/) { print "          # removed"; next } print }'
+
+# The idle bit read for the first page of a slice and trusted to its end:
+# the chunks of idle pages after it read as dead, are linked again, and
+# the pages come back from the kernel under the batch. Proven on Linux,
+# whose four-kilobyte pages put idle ones inside the rounding check's
+# slices; darwin arm64's sixteen-kilobyte pages let it through there.
+case "$(uname -s)" in
+  Linux)
+    prove_fails "an idle bit trusted past its page" stalepage "rounding:" \
+      '{ if (sub(/page_next = \(cursor \| \(IyiHeap::PAGE &- 1_u64\)\) &\+ 1_u64 if cursor >= page_next/, "page_next = stop if cursor >= page_next")) found = 1; print } END { if (!found) exit 3 }'
+    ;;
+  *)
+    echo "  an idle bit trusted past its page: not proven here, because this platform's pages keep idle ones out of the rounding check's slices"
+    ;;
+esac
 
 echo
 if [ "$status" -eq 0 ]; then

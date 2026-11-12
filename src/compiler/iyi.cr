@@ -9,9 +9,12 @@
 # The commands left out are left out on purpose. `init` and `spec` belong to a
 # language with a package layout and a spec runner, and iyi has neither. The
 # playground and the documentation generator are not here at all: they went the
-# way the interpreter went, for the reason SPEC.md V.11 gives. The interpreter
-# itself came back as the `repl` slice, on the macro evaluator rather than the
-# removed runtime one, which is the call SPEC.md III.11 records.
+# way the interpreter went, for the reason SPEC.md V.11 gives — and so, now,
+# has the `repl` slice that briefly reopened that call: a session on the macro
+# evaluator answered iyi code with the other language's library, so `"ab" * -3`
+# came back "Negative argument" where the compiler says "negative count: -3".
+# Two implementations of the semantics is what V.11 objected to, and the
+# smaller one is still one too many.
 {% raise("Please use `make iyi` to build it, or set the i_know_what_im_doing flag if you know what you're doing") unless env("CRYSTAL_HAS_WRAPPER") || flag?("i_know_what_im_doing") %}
 
 require "log"
@@ -31,14 +34,16 @@ module Iyi
     Usage: iyi [command] [switches] [program file] [--] [arguments]
 
     Command:
+        init                     write a new project: iyi.mod and the root module it names
+        get                      add a requirement to iyi.mod, or move one; -u brings all up to date
         build                    build an executable
         run                      build and run a program (default)
-        mod                      inspect a .iyimod module artifact
+        mod                      inspect a .iyimod module artifact; `mod tidy` fixes iyi.mod
         doc                      print a module's exported surface, or a prelude type's
-        repl                     a session: one line in, its value out
         test                     run every *_test.iyi: exit 0 passes, anything else fails
         vet                      report unreachable code; findings are the exit code
         check                    type-check only; errors are the exit code, `-f json` makes them data
+        fmt                      format files in place (`tool format`); --check makes a change the exit code
         fix                      apply the compiler's did-you-mean edits until the file is clean
         bind                     put every shard under lib/ behind a boundary, as .iyimod files
         migrate                  write a Crystal tree as iyi modules, the namespace as the path
@@ -71,7 +76,7 @@ module Iyi
   # artifacts it writes and the file it arrived in cannot disagree.
   VERSION = Iyi::Config.iyi_version
 
-  DELEGATED = %w(build run mod repl env clear_cache tool daemon test doc lsp vet check fix bind migrate mcp)
+  DELEGATED = %w(init get build run mod env clear_cache tool daemon test doc lsp vet check fix bind migrate mcp)
 
   # The ones that belong to Crystal and are still in the binary underneath.
   # Named rather than swallowed, because "unknown command" would be a lie.
@@ -80,7 +85,32 @@ module Iyi
   # Crystal's prelude and Crystal's rules, and `iyi eval 'require "json"'`
   # worked. A command that answers in another language is worse than one that
   # says where it went.
-  CRYSTAL_ONLY = %w(init spec eval)
+  CRYSTAL_ONLY = %w(spec eval)
+
+  # The verb other toolchains spell at the top level, `go fmt` and `zig fmt`
+  # and `crystal tool format`'s own users' `crystal format` habit: `tool
+  # format` under the name people type. It named `tool format` and exited 1,
+  # which answered a request to format with an instruction to retype it.
+  FORMAT_VERBS = %w(fmt format)
+
+  def self.format_options(options : Array(String)) : Array(String)
+    ["tool", "format"] + options[1..]
+  end
+
+  # What this language has in place of a Crystal verb it does not carry.
+  # The refusal used to end with "run it with the `crystal` binary in this
+  # checkout" — true of a developer's tree and false of the tarball and
+  # the zip, which carry no such binary and no checkout. `init` was on
+  # this list until it became a verb of its own (command/init.cr).
+  def self.other_language_verb_sentence(verb : String) : String
+    instead =
+      case verb
+      when "spec" then "a test is a `*_test.iyi` program that exits 0 when it passes, and `iyi test` runs them (SPEC.md III.8)"
+      when "eval" then "write the line to a file and `iyi run` it; there is no evaluator to hand a string to"
+      else             "nothing here stands in for it"
+      end
+    "iyi has no `#{verb}`: it belongs to Crystal, which this compiler is also built on. Here #{instead}."
+  end
 
   def self.description : String
     String.build do |io|
@@ -103,15 +133,39 @@ module Iyi
       puts USAGE
       exit
     when "help", "--help", "-h"
+      # `iyi help nonesuch` printed the whole usage and exited 0, which read
+      # as "yes, that is a command", and `iyi help build` did the same as if
+      # the verb had no help of its own. A verb's help is the verb's.
+      if (verb = options[1]?) && verb != "help"
+        case verb
+        when .in?(DELEGATED)
+          Iyi::Command.run([verb, "--help"])
+        when .in?(FORMAT_VERBS)
+          Iyi::Command.run(["tool", "format", "--help"])
+        when .in?(CRYSTAL_ONLY)
+          STDERR.puts other_language_verb_sentence(verb)
+          exit 1
+        else
+          STDERR.puts "iyi help: there is no `#{verb}` command. Run `iyi help` for what there is."
+          exit 1
+        end
+      end
       puts USAGE
       exit
     when "version", "--version", "-v"
+      # `iyi version extra` printed the version and dropped the word, the way
+      # `clear_cache extra` used to.
+      if extra = options[1]?
+        STDERR.puts "iyi version takes no arguments, and '#{extra}' is one."
+        exit 1
+      end
       puts description
       exit
     when .in?(CRYSTAL_ONLY)
-      STDERR.puts "iyi has no `#{command}`: it belongs to Crystal, which this compiler is also built on."
-      STDERR.puts "Run it with the `crystal` binary in this checkout if you need it."
+      STDERR.puts other_language_verb_sentence(command)
       exit 1
+    when .in?(FORMAT_VERBS)
+      Iyi::Command.run(format_options(options))
     when .in?(DELEGATED)
       Iyi::Command.run(options)
     else
@@ -119,7 +173,26 @@ module Iyi
       # it is the shortest thing to type and the shell already made it a path.
       if File.file?(command)
         Iyi::Command.run(options)
+      elsif Iyi::Command.external_command(command)
+        # `git`-style: `iyi foo` runs `iyi-foo` from PATH with the rest of
+        # the line. `Command` has the lookup and the exec; this dispatch
+        # answered "unknown command" before it could get there, so the
+        # extension point was never reached from `iyi`.
+        Iyi::Command.run(options)
       else
+        {% if flag?(:win32) %}
+          # An extension written as a batch file, the shape npm's shims
+          # take on Windows: the lookup is `CreateProcess`'s, which appends
+          # `.exe` and nothing else, so `iyi bat` with `iyi-bat.cmd` on PATH
+          # answered "unknown command or missing file: bat" about a file
+          # that was right there. Said by name instead.
+          # A lookup and nothing run: the name is built first, which is
+          # how `build_tool_floor.sh` tells it from a tool the compiler runs.
+          if script = {".cmd", ".bat"}.compact_map { |ext| name = "iyi-#{command}#{ext}"; Process.find_executable(name) }.first?
+            STDERR.puts "iyi: #{script} is a batch file, and an extension must be an .exe: iyi-#{command}.exe."
+            exit 1
+          end
+        {% end %}
         STDERR.puts "iyi: unknown command or missing file: #{command}"
         STDERR.puts "Run `iyi help` for what there is."
         exit 1

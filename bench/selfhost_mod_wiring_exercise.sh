@@ -21,6 +21,7 @@ IYI="$REPO/bin/iyi"
 MOD_TOOL_SRC="$REPO/src/compiler/tools/mod.iyi"
 MOD_CR_SRC="$REPO/src/compiler/iyi/command/mod.cr"
 IYIMOD_SRC="$REPO/src/compiler/artifact/iyimod.iyi"
+. "$REPO/bench/lib/mutation.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -172,7 +173,10 @@ bad_ver = bytearray(base)
 bad_ver[8] = 99; bad_ver[9] = 0; bad_ver[10] = 0; bad_ver[11] = 0
 open(f"{out}/bad_version.iyimod", "wb").write(bad_ver)
 corrupt_payload = bytearray(base)
-corrupt_payload[85] ^= 0xff
+# The Header is the first section, so its payload begins right after the section
+# table: 16 bytes of magic, version and count, then 16 bytes per entry.
+header_at = 16 + 16 * int.from_bytes(base[12:16], "little") + 4
+corrupt_payload[header_at] ^= 0xff
 open(f"{out}/corrupt_payload.iyimod", "wb").write(corrupt_payload)
 open(f"{out}/truncated_payload.iyimod", "wb").write(base[:-5])
 PY
@@ -209,7 +213,7 @@ check_refusal() {
 
 check_refusal "truncated header" "$REFUSAL_DIR/short.iyimod" "too short to be a .iyimod"
 check_refusal "invalid magic bytes" "$REFUSAL_DIR/bad_magic.iyimod" "is not a .iyimod"
-check_refusal "mismatched format version" "$REFUSAL_DIR/bad_version.iyimod" "format v99, this compiler writes v50"
+check_refusal "mismatched format version" "$REFUSAL_DIR/bad_version.iyimod" "format v99, this compiler writes v62"
 check_refusal "damaged section payload" "$REFUSAL_DIR/corrupt_payload.iyimod" "Header section is damaged, its checksum does not match"
 check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "ends inside a section"
 
@@ -240,87 +244,59 @@ test_refusal_parity() {
   return 0
 }
 
-prove_wiring_mutation() {
-  local label="$1"
-  local target_file="$2"
-  local old_text="$3"
-  local new_text="$4"
-  local test_cmd="$5"
-
-  echo "  [mutation: $label]"
-  cp "$target_file" "$target_file.orig"
-
-  python3 - "$target_file" "$old_text" "$new_text" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-content = open(path).read()
-if old not in content:
-    sys.exit(2)
-content = content.replace(old, new, 1)
-open(path, "w").write(content)
-PY
-  local py_code=$?
-  if [ $py_code -ne 0 ]; then
-    echo "    ERROR: patch matched nothing in $target_file"
-    rm -f "$target_file.orig"
-    status=1
-    return
-  fi
-
-  if cmp -s "$target_file" "$target_file.orig"; then
-    echo "    ERROR: patch did not change file: $label"
-    mv "$target_file.orig" "$target_file"
-    status=1
-    return
-  fi
-
-  # If target is iyi-mod source, recompile it
-  if [ "$target_file" = "$MOD_TOOL_SRC" ] || [ "$target_file" = "$IYIMOD_SRC" ]; then
-    "$IYI" build -o "$REPO/.build/iyi-mod" "$MOD_TOOL_SRC" >/dev/null 2>&1 || true
-  elif [ "$target_file" = "$MOD_CR_SRC" ]; then
-    make -B iyi >/dev/null 2>&1 || true
-  fi
-
-  if eval "$test_cmd"; then
-    echo "    FAILED: mutation was not caught ($label)"
-    status=1
-  else
-    echo "    caught: failure observed as expected"
-  fi
-
-  mv "$target_file.orig" "$target_file"
-
-  # Restore compiled binary
-  if [ "$target_file" = "$MOD_TOOL_SRC" ] || [ "$target_file" = "$IYIMOD_SRC" ]; then
-    "$IYI" build -o "$REPO/.build/iyi-mod" "$MOD_TOOL_SRC" >/dev/null 2>&1
-  elif [ "$target_file" = "$MOD_CR_SRC" ]; then
-    make -B iyi >/dev/null 2>&1
-  fi
+rebuild_iyi_mod() {
+  "$IYI" build -o "$REPO/.build/iyi-mod" "$MOD_TOOL_SRC" >/dev/null 2>&1
 }
 
-prove_wiring_mutation "corrupt self-host dump output format" \
-  "$MOD_TOOL_SRC" \
+rebuild_iyi() {
+  make -B iyi >/dev/null 2>&1
+}
+
+# Each check rebuilds the tool that depends on the mutated source, then runs its parity test.
+# It returns zero only when the mutated tool still agrees with the Crystal frontend.
+check_dump_parity() {
+  rebuild_iyi_mod || true
+  test_wiring_parity
+}
+
+check_declarations_parity() {
+  rebuild_iyi_mod || true
+  test_declarations_parity
+}
+
+check_subcommand_parity() {
+  rebuild_iyi || true
+  test_wiring_parity
+}
+
+check_refusal_parity() {
+  rebuild_iyi_mod || true
+  test_refusal_parity
+}
+
+prove_mutation "corrupt self-host dump output format" "$MOD_TOOL_SRC" \
   'print IyiMod.dump_to_s(art)' \
   'puts "CORRUPTED DUMP"; print IyiMod.dump_to_s(art)' \
-  'test_wiring_parity'
+  -- check_dump_parity || status=1
+rebuild_iyi_mod
 
-prove_wiring_mutation "corrupt self-host declarations output format" \
-  "$MOD_TOOL_SRC" \
+prove_mutation "corrupt self-host declarations output format" "$MOD_TOOL_SRC" \
   'print IyiMod.declarations_to_s(art)' \
   'puts "CORRUPTED DECLS"; print IyiMod.declarations_to_s(art)' \
-  'test_declarations_parity'
+  -- check_declarations_parity || status=1
+rebuild_iyi_mod
 
-prove_wiring_mutation "corrupt subcommand dispatched in mod command" \
-  "$MOD_CR_SRC" \
+prove_mutation "corrupt subcommand dispatched in mod command" "$MOD_CR_SRC" \
   'sub = declarations ? "declarations" : "dump"' \
   'sub = "corrupted_sub"' \
-  'test_wiring_parity'
+  -- check_subcommand_parity || status=1
+rebuild_iyi
 
-prove_wiring_mutation "bypass format version validation in iyimod reader" \
-  "$IYIMOD_SRC" \
+prove_mutation "bypass format version validation in iyimod reader" "$IYIMOD_SRC" \
   'unless format_version == FORMAT_VERSION' \
   'if false' \
-  'test_refusal_parity'
+  -- check_refusal_parity || status=1
+rebuild_iyi_mod
 
 echo
 echo "== Verification clean state confirmed"

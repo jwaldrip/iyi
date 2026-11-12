@@ -1,26 +1,47 @@
+# Comparable, Num and Hashable over the prelude's scalars, and Hashable over
+# the other keys a table takes: tuples, named tuples, arrays, nil and
+# symbols.
+#
+# The imports are what makes `Hashable` true rather than declared.
+# `hash_key` forwards to the value's own `hash`, and the prelude defines
+# `hash` for `Int32`, `String` and a handful more; every other integer's
+# lives in `std/int`, both floats' in `std/float`, and a named tuple's in
+# `std/tuple`. Importing neither number module, `impl Hashable for Int16`
+# forwarded to `Object#hash` — the type's id, one slot for every value of
+# the type — so `1_i16.hash == 31337_i16.hash` was true, and
+# `1.5.hash == 31337.5.hash` with it. A trait may not promise what the
+# module implementing it has not loaded (SPEC.md II.8).
+#
+# Each named, though `std/float` imports `std/int` itself: an integer's hash
+# is not a thing to reach through a float, and a rule that holds only while
+# somebody else's import survives is not held.
 module std/traits
 
-pub trait Cmp
-  abstract def cmp(other : self) : Int32
+import std/int
+import std/float
+import std/tuple
+
+pub trait Comparable
+  abstract def <=>(other : self) : Int32
 
   def <(other : self) : Bool
-    cmp(other) < 0
+    (self <=> other) < 0
   end
 
   def <=(other : self) : Bool
-    cmp(other) <= 0
+    (self <=> other) <= 0
   end
 
   def >(other : self) : Bool
-    cmp(other) > 0
+    (self <=> other) > 0
   end
 
   def >=(other : self) : Bool
-    cmp(other) >= 0
+    (self <=> other) >= 0
   end
 
   def ==(other : self) : Bool
-    cmp(other) == 0
+    (self <=> other) == 0
   end
 
   def clamp(min : self, max : self) : self
@@ -37,17 +58,9 @@ pub trait Cmp
   def between?(min : self, max : self) : Bool
     min <= self && self <= max
   end
-
-  def lt(other : self) : Bool
-    cmp(other) < 0
-  end
-
-  def gt(other : self) : Bool
-    cmp(other) > 0
-  end
 end
 
-pub trait Num : Cmp
+pub trait Num : Comparable
   # Class-level requirements. `Enumerable#sum` and `#product` need an additive
   # and a multiplicative identity, and an identity belongs to the type, not to
   # any value of it — there is no element to ask when the collection is empty.
@@ -62,24 +75,61 @@ pub trait Hashable
   abstract def hash_key : Int32
 end
 
-impl Cmp for Int32
-  # Compared, not subtracted: a difference is only a comparison while it
-  # fits, and `2000000000.cmp(-2000000000)` left `Int32` and panicked with
-  # "arithmetic overflow" - so every `Enumerable` method that reads `cmp`
-  # (`sorted`, `min`, `max`, `includes?`, `clamp`) refused two numbers that
-  # `<` answers for.
-  def cmp(other : self) : Int32
+# Compared, not subtracted: a difference is only a comparison while it
+# fits, and `(2000000000 <=> -2000000000)` left `Int32` and panicked with
+# "arithmetic overflow" - so every `Enumerable` method that reads `<=>`
+# (`sorted`, `min`, `max`, `includes?`, `clamp`) refused two numbers that
+# `<` answers for. The same three-way is used for every prelude integer.
+{% begin %}
+  {% prelude_ints = [
+       {"Int32", "0", "1"},
+       {"Int64", "0_i64", "1_i64"},
+       {"UInt8", "0_u8", "1_u8"},
+       {"UInt64", "0_u64", "1_u64"},
+     ] %}
+  {% for t in prelude_ints %}
+    impl Comparable for {{ t[0].id }}
+      def <=>(other : self) : Int32
+        self < other ? -1 : (self == other ? 0 : 1)
+      end
+    end
+
+    # No `self.zero` here: the prelude declares these five numbers and
+    # gives each its zero (src/iyi/number.iyi), because `Array#sum` needs
+    # one for an empty array and a `.iyi` file may not redefine a method
+    # the prelude has (R-3). The requirement is satisfied by that one.
+    impl Num for {{ t[0].id }}
+      def self.one : self
+        {{ t[2].id }}
+      end
+
+      def add(other : self) : self
+        self + other
+      end
+
+      def mul(other : self) : self
+        self * other
+      end
+    end
+
+    impl Hashable for {{ t[0].id }}
+      def hash_key : Int32
+        hash
+      end
+    end
+  {% end %}
+{% end %}
+
+impl Comparable for Float64
+  def <=>(other : self) : Int32
     self < other ? -1 : (self == other ? 0 : 1)
   end
 end
 
-impl Num for Int32
-  def self.zero : self
-    0
-  end
-
+# `self.zero` is the prelude's too, as above.
+impl Num for Float64
   def self.one : self
-    1
+    1.0
   end
 
   def add(other : self) : self
@@ -91,22 +141,155 @@ impl Num for Int32
   end
 end
 
-impl Hashable for Int32
+impl Hashable for Float64
   def hash_key : Int32
-    self
+    hash
   end
 end
 
-impl Cmp for String
+impl Comparable for String
   # `<=>` is not a method the prelude's `String` has, so this was a call
   # nobody could make; `<` and `==` are what it does have.
-  def cmp(other : self) : Int32
+  def <=>(other : self) : Int32
     self < other ? -1 : (self == other ? 0 : 1)
   end
 end
 
 impl Hashable for String
   def hash_key : Int32
-    size
+    hash # FNV, not the length
+  end
+end
+
+impl Comparable for Char
+  def <=>(other : self) : Int32
+    self < other ? -1 : (self == other ? 0 : 1)
+  end
+end
+
+impl Hashable for Char
+  def hash_key : Int32
+    hash
+  end
+end
+
+impl Hashable for Bool
+  def hash_key : Int32
+    self ? 1231 : 1237
+  end
+end
+
+# The rest of the integer tower and Float32: the types are prelude-declared
+# (R-3 puts the impl next to the trait), the arithmetic that makes them
+# numbers is std/int and std/float. A program that sums `Int8` loads those.
+{% begin %}
+  {% rest = [
+       {"Int8", "0_i8", "1_i8"},
+       {"Int16", "0_i16", "1_i16"},
+       {"UInt16", "0_u16", "1_u16"},
+       {"UInt32", "0_u32", "1_u32"},
+       {"Int128", "0_i128", "1_i128"},
+       {"UInt128", "0_u128", "1_u128"},
+     ] %}
+  {% for t in rest %}
+    impl Comparable for {{ t[0].id }}
+      def <=>(other : self) : Int32
+        self < other ? -1 : (self == other ? 0 : 1)
+      end
+    end
+
+    impl Num for {{ t[0].id }}
+      def self.zero : self
+        {{ t[1].id }}
+      end
+
+      def self.one : self
+        {{ t[2].id }}
+      end
+
+      def add(other : self) : self
+        self + other
+      end
+
+      def mul(other : self) : self
+        self * other
+      end
+    end
+
+    impl Hashable for {{ t[0].id }}
+      def hash_key : Int32
+        hash
+      end
+    end
+  {% end %}
+{% end %}
+
+impl Comparable for Float32
+  def <=>(other : self) : Int32
+    self < other ? -1 : (self == other ? 0 : 1)
+  end
+end
+
+impl Num for Float32
+  def self.zero : self
+    0.0_f32
+  end
+
+  def self.one : self
+    1.0_f32
+  end
+
+  def add(other : self) : self
+    self + other
+  end
+
+  def mul(other : self) : self
+    self * other
+  end
+end
+
+impl Hashable for Float32
+  def hash_key : Int32
+    hash
+  end
+end
+
+# The keys a `Hash` takes that are not scalars. Each has the `==` and the
+# `hash` a table asks of a key - a tuple's, an array's and a symbol's in
+# the prelude, nil's the one value's - and `group_by`, `tally`, `tally_by`,
+# `index_by` and `to_h` ask `Hashable` of theirs, which none of these was:
+# `tally` of a list of arrays was refused with "Array(Int32) does not
+# implement Std::Traits::Hashable", where the table it builds takes them,
+# and `group_by { |x| {x % 2, x % 3} }`, the usual way to group by two
+# things, with "Tuple(Int32, Int32) does not implement" the same. A named
+# tuple's `==` and `hash` are `std/tuple`'s, which is the third import above:
+# without it a named tuple hashed as its type's id, every value alike.
+impl Hashable for ::Tuple(*T) forall T
+  def hash_key : Int32
+    hash
+  end
+end
+
+impl Hashable for ::NamedTuple(T) forall T
+  def hash_key : Int32
+    hash
+  end
+end
+
+impl Hashable for Array(T) forall T
+  def hash_key : Int32
+    hash
+  end
+end
+
+impl Hashable for Nil
+  def hash_key : Int32
+    hash
+  end
+end
+
+impl Hashable for Symbol
+  def hash_key : Int32
+    hash
   end
 end

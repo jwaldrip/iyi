@@ -48,8 +48,8 @@ ROUNDS = 5
 SECTIONS = {1: "header", 2: "hashes", 3: "imports", 4: "exports", 5: "macro bodies",
             6: "mono bodies", 7: "object code", 8: "initialiser", 9: "type ids",
             10: "constants", 11: "requires", 12: "regexes", 13: "class vars",
-            14: "match types", 15: "symbols", 16: "top level", 17: "libs",
-            18: "reopened", 19: "layouts"}
+            14: "match types", 15: "symbols", 16: "top level", 17: "reopened",
+            18: "libs", 19: "top level funs", 20: "inputs", 64: "layouts"}
 MAGIC = b"IYIMOD\0\0"
 
 # The entries whose imports pull the corpus's modules through the emitter.
@@ -59,6 +59,7 @@ ENTRIES = ["immutable.iyi", "collections.iyi", "derive.iyi", "calc.iyi",
 # R-4 as built, pinned on two modules at the ends of the spectrum.
 ALL_GENERIC = "std/list"    # every def is on List(T): bodies travel, no object code
 NO_GENERIC = "calc/lexer"   # no type parameter, no macro: object code, no body
+GETTER_BODIES = 512         # bytes of getter bodies that travel beside its object code
 
 # Of what a consumer's front end reads from an artifact - exports, mono
 # bodies, macro bodies; object code is the linker's - the share that is
@@ -102,19 +103,35 @@ def main():
                 if not name.endswith(".iyimod"):
                     continue
                 path = os.path.join(dirpath, name)
-                module = os.path.relpath(path, mods)[:-len(".iyimod")]
+                # A module's name is written with `/` on every platform;
+                # the path it came from is `calc\lexer.iyimod` on Windows.
+                module = os.path.relpath(path, mods)[:-len(".iyimod")].replace(os.sep, "/")
                 rows.append((module, os.path.getsize(path), sections_of(path)))
         rows.sort()
 
         print(f"{'module':<16} {'bytes':>7} {'exports':>8} {'bodies':>7} {'macros':>7} {'object':>7}  bodies/read")
         totals = {"bytes": 0, "exports": 0, "mono bodies": 0, "macro bodies": 0, "object code": 0}
         by_module = {}
+        reopening = []
         for module, size, sections in rows:
             bodies = sections.get("mono bodies", 0)
             macros = sections.get("macro bodies", 0)
             obj = sections.get("object code", 0)
             exports = sections.get("exports", 0)
             share = (bodies + macros) / (exports + bodies + macros)
+            # A module that is nothing but additions to types it does not
+            # own - `std/int` is `struct ::Int` and the tower - has no unit
+            # of its own to ship: its machine code sits in the owner's, and
+            # every body travels (`Section::Reopened`). Counted apart, since
+            # the line is about how much of a module's *own* surface travels
+            # as bodies; what would take these out is codegen owning a
+            # reopening's code by the module that wrote it, and that is the
+            # number this row keeps visible until it does.
+            if sections.get("reopened", 0) and exports <= 32:
+                reopening.append(module)
+                print(f"{module:<16} {size:>7} {exports:>8} {bodies:>7} {macros:>7} {obj:>7}  {share:>5.0%}  (reopens a prelude type; apart)")
+                by_module[module] = sections
+                continue
             print(f"{module:<16} {size:>7} {exports:>8} {bodies:>7} {macros:>7} {obj:>7}  {share:>5.0%}")
             totals["bytes"] += size
             totals["exports"] += exports
@@ -129,6 +146,8 @@ def main():
         without_code = [m for m, s in by_module.items() if s.get("object code", 0) == 0]
         print(f"\nof the {read:,} bytes a consumer's front end reads, {bodies_share:.0%} is bodies it compiles again;")
         print(f"{len(without_code)} of {len(rows)} modules ship no object code: {', '.join(sorted(without_code))}")
+        if reopening:
+            print(f"{len(reopening)} of them only reopen a prelude type, every body travelling, apart from the line: {', '.join(sorted(reopening))}")
 
         generic = by_module.get(ALL_GENERIC)
         if not generic:
@@ -138,8 +157,12 @@ def main():
         plain = by_module.get(NO_GENERIC)
         if not plain:
             failures.append(f"{NO_GENERIC} was not emitted")
-        elif plain.get("object code", 0) == 0 or plain.get("mono bodies", 0) != 0:
-            failures.append(f"{NO_GENERIC} has no generic and should ship object code and no body: {plain}")
+        # A getter's body - one instance variable, or `self` - travels, so a
+        # struct changed through it changes the original from an artifact as
+        # from source; calc/lexer's are 137 bytes. More than a few hundred is
+        # a body that should have been object code.
+        elif plain.get("object code", 0) == 0 or plain.get("mono bodies", 0) > GETTER_BODIES:
+            failures.append(f"{NO_GENERIC} has no generic and should ship object code and no body past its getters': {plain}")
         if bodies_share > BODIES_CEILING:
             failures.append(f"bodies are {bodies_share:.0%} of what a consumer reads, over the {BODIES_CEILING:.0%} line")
 

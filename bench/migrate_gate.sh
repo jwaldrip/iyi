@@ -20,10 +20,26 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-IYI="$REPO/bin/iyi"
-CRYSTAL="$REPO/bin/crystal"
+# A native compiler cannot resolve this shell's own path mapping: the
+# fixture is named to `iyi migrate` as a path, and one built from the
+# shell's `pwd` is not a directory the compiler can open.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) REPO="$(cygpath -m "$REPO")" ;;
+esac
+# Both compilers are whichever ones the caller names; `bin/crystal` and
+# `bin/iyi` are shell wrappers, and on Windows the caller has to point at
+# the built exes themselves.
+IYI="${IYI:-$REPO/bin/iyi}"
+CRYSTAL="${CRYSTAL:-$REPO/bin/crystal}"
 FIXTURE="$REPO/bench/migrate_fixture"
 WORK="$(mktemp -d)"
+# A native compiler cannot resolve this shell's own path mapping: a
+# scratch directory named `/tmp/tmp.X` is silently ignored on the search
+# path, so the patched copy is never read and the proof that a check can
+# fail quietly stops proving it.
+case "$(uname -s)" in
+  MINGW* | MSYS* | CYGWIN* | Windows_NT) WORK="$(cygpath -m "$WORK")" ;;
+esac
 trap 'rm -rf "$WORK"' EXIT
 
 status=0
@@ -36,7 +52,16 @@ step() {
   fi
 }
 holds() { # holds <name> <needle> <file>
-  if grep -qF -- "$2" "$3"; then step ok "$1"; else step fail "$1 (no '$2')"; fi
+  # Both sides with their separators folded to `/`: a needle here spells a
+  # path inside the fixture the way this file is written, and the verb
+  # prints it the way the platform does, so on Windows three cases whose
+  # refusal was exactly right reported a missing message. Folding is a
+  # no-op where the separator already is `/`.
+  if tr '\\' '/' < "$3" | grep -qF -- "$(printf '%s' "$2" | tr '\\' '/')"; then
+    step ok "$1"
+  else
+    step fail "$1 (no '$2')"
+  fi
 }
 
 echo "== the fixture, as Crystal"
@@ -61,7 +86,7 @@ holds "the import cycle is one module, and named"      "R-1 cannot separate" "$W
 holds "the reopening of Int32 stays Crystal"           'struct Int32'        "$WORK/migrate.log"
 holds "not_nil! is rewritten and named"                'not_nil!'            "$WORK/migrate.log"
 holds "sort_by! is rewritten and named"                'sort_by!'            "$WORK/migrate.log"
-holds "include of a namespace becomes using"           'include Names'       "$WORK/migrate.log"
+holds "include of a namespace becomes an import's names" 'include Names'     "$WORK/migrate.log"
 holds "the embedded template travels"                  'report.html.ecr'     "$WORK/migrate.log"
 
 # The shape of the tree: the namespace is the path, the cycle is one file,
@@ -85,6 +110,43 @@ else
   step fail "modules refused: $(grep -c ':' "$WORK/check.log") lines"
   tail -8 "$WORK/check.log"
 fi
+
+# A checkout that gives `.cr` files CRLF - this repository pins `eol=lf`,
+# which is what hid it - or an editor's byte order mark. Every rule reads a
+# line with `$` and splits on `\n`, so `module Shop\r` was never peeled as
+# a wrapper: "8 files → 4 modules", "2 of 4 modules compile". And a mark in
+# front of line 1's `require` gave "0 of 8", copied into the middle of a
+# module. Both migrate as the LF tree does now, the CRLF one written CRLF.
+echo "== CRLF and a byte order mark migrate as LF does"
+for ending in crlf bom; do
+  cp -r "$FIXTURE" "$WORK/$ending"
+  find "$WORK/$ending/src" -name '*.cr' | while read -r file; do
+    if [ "$ending" = crlf ]; then
+      awk '{ printf "%s\r\n", $0 }' "$file" > "$file.turned"
+    else
+      { printf '\357\273\277'; cat "$file"; } > "$file.turned"
+    fi
+    mv "$file.turned" "$file"
+  done
+  (cd "$WORK/$ending" && "$IYI" migrate src --out "$WORK/${ending}_out" --check > "$WORK/$ending.log" 2>&1)
+  differs=""
+  # The LF tree's module, with its lines ended as the source's were, byte
+  # for byte: Git for Windows' `grep` drops a `\r` before it matches, so
+  # asking it whether lines end CRLF is no check.
+  for module in $(cd "$WORK/checked" && find . -name '*.iyi' -o -name '*_crystal.cr'); do
+    if [ "$ending" = crlf ]; then
+      awk '{ printf "%s\r\n", $0 }' "$WORK/checked/$module" > "$WORK/want"
+    else
+      cp "$WORK/checked/$module" "$WORK/want"
+    fi
+    cmp -s "$WORK/want" "$WORK/${ending}_out/$module" || differs="$differs $module"
+  done
+  if [ -z "$differs" ] && [ "$(grep 'modules compile' "$WORK/$ending.log")" = "$(grep 'modules compile' "$WORK/check.log")" ]; then
+    step ok "$ending: $(grep 'modules compile' "$WORK/$ending.log" | cut -d';' -f1), the LF tree's modules$([ "$ending" = crlf ] && echo ', each line CRLF')"
+  else
+    step fail "$ending: $(grep -m1 'modules compile' "$WORK/$ending.log"); not as the LF tree:${differs:- (none)}"
+  fi
+done
 
 echo "== the migrated program answers what the Crystal one answered"
 if (cd "$WORK/out" && "$IYI" build --crystal -o "$WORK/iyi_shop" shop.iyi > "$WORK/iyi.err" 2>&1 &&
@@ -146,9 +208,9 @@ holds "the literal is in the module, not rewritten" "gsub(/[^a-z0-9]+/i" "$WORK/
 
 # A reopening of a type the tree does not own stays Crystal in a sidecar
 # beside its module (R-3), and it names the tree's own types too - which
-# moved. It has no `using` line to reach them through, so they are written
-# in full: Kemal's `context_crystal.cr` asked for a `Kemal::Route` that no
-# longer existed, which is `undefined constant` in a file nobody wrote.
+# moved. No import brings them into scope, so they are written in full:
+# Kemal's `context_crystal.cr` asked for a `Kemal::Route` that no longer
+# existed, which is `undefined constant` in a file nobody wrote.
 echo "== a sidecar's names follow the types that moved"
 holds "the tree's own type is named where it went" \
       "item : Shop::Models::CartItem::Item" "$WORK/out/shop/counter_crystal.cr"
@@ -310,6 +372,31 @@ else
   holds "a file a module requires is refused, with why" "none of its names" "$WORK/step_refuse.log"
 fi
 
+# A file below the source root keeps its sidecar beside its module. The
+# module path is the namespace, `sub/counter`, and the sidecar was put
+# under the directory the file is in *and* that path's own directory:
+# `src/sub/sub/counter_crystal.cr`, so the module's `require
+# "./counter_crystal.cr"` found nothing and its first check refused.
+rm -rf "$WORK/sub"
+mkdir -p "$WORK/sub/src/sub"
+printf 'name: sub\nversion: 0.1.0\n' > "$WORK/sub/shard.yml"
+printf 'struct Int32\n  def liras : String\n    "#{self} TRY"\n  end\nend\n\nmodule Sub\n  module Counter\n    def self.report(count : Int32) : String\n      count.liras\n    end\n  end\nend\n' > "$WORK/sub/src/sub/counter.cr"
+if (cd "$WORK/sub" && "$IYI" migrate src/sub/counter.cr > "$WORK/sub.log" 2>&1); then
+  if [ -f "$WORK/sub/src/sub/counter_crystal.cr" ] && [ ! -e "$WORK/sub/src/sub/sub" ]; then
+    step ok "a file below the root keeps its sidecar beside its module"
+  else
+    step fail "the sidecar went somewhere else: $(cd "$WORK/sub" && find src -name '*_crystal.cr' | head -1)"
+  fi
+  if (cd "$WORK/sub" && "$IYI" check --crystal src/sub/counter.iyi > "$WORK/sub_check.log" 2>&1); then
+    step ok "and the module it requires it from compiles"
+  else
+    step fail "the module does not compile: $(grep -m1 'Error' "$WORK/sub_check.log")"
+  fi
+else
+  step fail "migrate of a file below the root failed"
+  tail -5 "$WORK/sub.log"
+fi
+
 # A template's path is written from the directory the *original* program
 # was built from - `ECR.embed("src/views/report.html.ecr")` resolves against
 # the build's working directory - so the copy has to sit at that same path
@@ -387,6 +474,34 @@ else
   step ok "the source tree is untouched"
 fi
 
+# A file that does not parse was rewritten line by line and noted as a
+# module "left nested" - a finding about the wrong thing - and a relative
+# require of a file the tree does not have was dropped without a word.
+echo "== what is not Crystal yet, and what a require cannot reach"
+mkdir -p "$WORK/broken/src" "$WORK/dangling/src" "$WORK/dangling/other"
+printf 'module Broken\n  def self.a\n    1\n' > "$WORK/broken/src/broken.cr"
+if (cd "$WORK/broken" && "$IYI" migrate src --out out > "$WORK/broken.log" 2>&1); then
+  step fail "a tree with a file that does not parse was migrated"
+else
+  holds "a file that does not parse is refused, at its line" "src/broken.cr:4:1: does not parse as Crystal" "$WORK/broken.log"
+  holds "in the parser's words" "expecting 'end' to close the def" "$WORK/broken.log"
+fi
+if [ -e "$WORK/broken/out" ]; then
+  step fail "and nothing was written"
+else
+  step ok "and nothing was written"
+fi
+printf 'module Other\nend\n' > "$WORK/dangling/other/thing.cr"
+printf 'require "./nope"\nrequire "../other/thing"\nrequire "./sub/*"\nmodule Dangling\nend\n' > "$WORK/dangling/src/dangling.cr"
+if (cd "$WORK/dangling" && "$IYI" migrate src --out out > "$WORK/dangling.log" 2>&1); then
+  holds "a require of a file that is not there is named" 'require "./nope"` names src/nope.cr, which is not there' "$WORK/dangling.log"
+  holds "a require of a file outside the tree is named apart" 'is other/thing.cr, outside the tree' "$WORK/dangling.log"
+  holds "a glob that matches nothing is named" 'require "./sub/*"` matches no .cr the tree has' "$WORK/dangling.log"
+else
+  step fail "a tree with dangling requires did not migrate"
+  tail -5 "$WORK/dangling.log"
+fi
+
 echo "== a required file's top-level code runs before an import's initialiser"
 mkdir -p "$WORK/order"
 cat > "$WORK/order/registry.cr" <<'CR'
@@ -416,8 +531,7 @@ module main
 
 require "./registry.cr"
 
-import store
-using store::{NAMES}
+import store::{NAMES}
 
 puts NAMES.join(", ")
 IYI

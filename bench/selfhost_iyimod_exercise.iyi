@@ -1,10 +1,7 @@
 import std/int
-import std/digest
-using std/digest::{MD5}
-import std/json
-using std/json::{Builder}
-import compiler/artifact/iyimod
-using compiler/artifact/iyimod::{IyiMod, Artifact, Summary, Section, SectionEntry, Hashes, ImportEdge, Signature, TypeDecl, ImplRecord, Exports, ObjectUnit, TypeLayout, RegexConst, ClassVarRef, ClassVarDecl}
+import std/digest::{MD5}
+import std/json::{Builder}
+import compiler/artifact/iyimod::{IyiMod, Artifact, Summary, Section, SectionEntry, Hashes, ImportEdge, Signature, TypeDecl, ImplRecord, Exports, ObjectUnit, TypeLayout, RegexConst, ClassVarRef, ClassVarDecl}
 
 module BenchSelfhostIyimodExercise
   def self.assert(cond : Bool, msg : String)
@@ -17,7 +14,7 @@ module BenchSelfhostIyimodExercise
   def self.test_constants
     print "testing format constants (MAGIC, FORMAT_VERSION, Section count)... "
     assert(IyiMod::MAGIC == "IYIMOD\0\0", "MAGIC matches")
-    assert(IyiMod::FORMAT_VERSION == 50_u32, "FORMAT_VERSION matches")
+    assert(IyiMod::FORMAT_VERSION == 62_u32, "FORMAT_VERSION matches")
     assert(Section::Header.value == 1_u16, "Header section id")
     assert(Section::Hashes.value == 2_u16, "Hashes section id")
     assert(Section::Imports.value == 3_u16, "Imports section id")
@@ -37,6 +34,11 @@ module BenchSelfhostIyimodExercise
     assert(Section::Reopened.value == 17_u16, "Reopened section id")
     assert(Section::Libs.value == 18_u16, "Libs section id")
     assert(Section::TopLevelFuns.value == 19_u16, "TopLevelFuns section id")
+    assert(Section::Inputs.value == 20_u16, "Inputs section id")
+    assert(Section::SymbolLiterals.value == 21_u16, "SymbolLiterals section id")
+    assert(Section::SourcePositions.value == 65_u16, "SourcePositions section id")
+    assert(Section::Spawns.value == 66_u16, "Spawns section id")
+    assert(Section::Reaches.value == 67_u16, "Reaches section id")
     assert(Section::Layouts.value == 64_u16, "Layouts section id")
     puts "ok"
   end
@@ -96,7 +98,14 @@ module BenchSelfhostIyimodExercise
     art.top_level = [Signature.new("top_def", "", [] of String, "", "Nil")]
     art.object_code = [ObjectUnit.new("Widget", "fake_object_code_bytes")]
 
-    tmp_path = "/tmp/selfhost_all_sections_test.iyimod"
+    # Under TEST_SANDBOX when it is set: `/tmp` is not a directory on Windows,
+    # where the runtime job sets the variable and runs this file bare.
+    sandbox_env = Program.env("TEST_SANDBOX")
+    tmp_path = if sandbox_env && !sandbox_env.empty?
+                 sandbox_env + "/selfhost_all_sections_test.iyimod"
+               else
+                 "/tmp/selfhost_all_sections_test.iyimod"
+               end
     IyiMod.write(art, tmp_path)
 
     art_read = IyiMod.read(tmp_path, true)

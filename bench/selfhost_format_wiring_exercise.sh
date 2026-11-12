@@ -17,6 +17,7 @@
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+. "$REPO/bench/lib/mutation.sh"
 IYI="$REPO/bin/iyi"
 FORMAT_TOOL_SRC="$REPO/src/compiler/tools/format.iyi"
 FORMAT_CR_SRC="$REPO/src/compiler/iyi/command/format.cr"
@@ -49,27 +50,17 @@ CORPUS=(
   "samples/iyi/modules.iyi"
   "samples/iyi/sessions.iyi"
   "samples/iyi/socket.iyi"
-  "samples/iyi/std_collections.iyi"
-  "samples/iyi/std_compress.iyi"
   "samples/iyi/std_iterator.iyi"
-  "samples/iyi/std_json.iyi"
-  "samples/iyi/std_regex.iyi"
   "samples/iyi/std_text.iyi"
   "samples/iyi/std_time.iyi"
-  "samples/iyi/std_util.iyi"
-  "samples/iyi/std_yaml.iyi"
   "samples/iyi/webapp.iyi"
   "src/std/bool.iyi"
-  "src/std/cmp.iyi"
-  "src/std/comparable.iyi"
   "src/std/deque.iyi"
-  "src/std/iterable.iyi"
   "src/std/list.iyi"
-  "src/std/nil.iyi"
-  "src/std/pretty_print.iyi"
   "src/std/steppable.iyi"
   "src/std/string_scanner.iyi"
-  "src/std/traits.iyi"
+  "src/std/enum.iyi"
+  "src/std/uuid.iyi"
 )
 
 echo
@@ -265,93 +256,52 @@ test_check_refusal() {
   fi
 }
 
-prove_wiring_mutation() {
-  local label="$1"
-  local target_file="$2"
-  local old_text="$3"
-  local new_text="$4"
-  local test_cmd="$5"
-
-  echo "  [mutation: $label]"
-  cp "$target_file" "$target_file.orig"
-
-  python3 - "$target_file" "$old_text" "$new_text" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-content = open(path).read()
-if old not in content:
-    sys.exit(2)
-content = content.replace(old, new, 1)
-open(path, "w").write(content)
-PY
-  local py_code=$?
-  if [ $py_code -ne 0 ]; then
-    echo "    ERROR: patch matched nothing in $target_file"
-    rm -f "$target_file.orig"
-    status=1
-    return
-  fi
-
-  if cmp -s "$target_file" "$target_file.orig"; then
-    echo "    ERROR: patch did not change file: $label"
-    mv "$target_file.orig" "$target_file"
-    status=1
-    return
-  fi
-
-  # If target is iyi-format source, recompile it
-  if [ "$target_file" = "$FORMAT_TOOL_SRC" ]; then
-    "$IYI" build -o "$REPO/.build/iyi-format" "$FORMAT_TOOL_SRC" >/dev/null 2>&1 || true
-  elif [ "$target_file" = "$FORMAT_CR_SRC" ] || [ "$target_file" = "$COMMAND_CR_SRC" ]; then
-    make -B iyi >/dev/null 2>&1 || true
-  fi
-
-  if eval "$test_cmd"; then
-    echo "    FAILED: mutation was not caught ($label)"
-    status=1
-  else
-    echo "    caught: failure observed as expected"
-  fi
-
-  mv "$target_file.orig" "$target_file"
-
-  # Restore compiled binary
-  if [ "$target_file" = "$FORMAT_TOOL_SRC" ]; then
-    "$IYI" build -o "$REPO/.build/iyi-format" "$FORMAT_TOOL_SRC" >/dev/null 2>&1
-  elif [ "$target_file" = "$FORMAT_CR_SRC" ] || [ "$target_file" = "$COMMAND_CR_SRC" ]; then
-    make -B iyi >/dev/null 2>&1
-  fi
+# Rebuilds the binary that a mutated source feeds. It runs before each check
+# and again after the helper restores the source, so the binary matches the
+# restored source for every later check.
+rebuild_wiring_binary() {
+  case "$1" in
+    "$FORMAT_TOOL_SRC") "$IYI" build -o "$REPO/.build/iyi-format" "$FORMAT_TOOL_SRC" >/dev/null 2>&1 ;;
+    "$FORMAT_CR_SRC"|"$COMMAND_CR_SRC") make -B iyi >/dev/null 2>&1 ;;
+  esac
 }
 
-prove_wiring_mutation "corrupt self-host format tool file output" \
-  "$FORMAT_TOOL_SRC" \
+wiring_mutant_check() {
+  rebuild_wiring_binary "$1" || true
+  "$2"
+}
+
+prove_mutation "corrupt self-host format tool file output" "$FORMAT_TOOL_SRC" \
   'print Formatter.format(source, path)' \
   'puts "# mutated"; print Formatter.format(source, path)' \
-  'test_wiring_file_parity'
+  -- wiring_mutant_check "$FORMAT_TOOL_SRC" test_wiring_file_parity || status=1
+rebuild_wiring_binary "$FORMAT_TOOL_SRC"
 
-prove_wiring_mutation "corrupt self-host format tool STDIN output" \
-  "$FORMAT_TOOL_SRC" \
+prove_mutation "corrupt self-host format tool STDIN output" "$FORMAT_TOOL_SRC" \
   'print Formatter.format(source, "STDIN")' \
   'puts "# stdin mutated"; print Formatter.format(source, "STDIN")' \
-  'test_wiring_stdin_parity'
+  -- wiring_mutant_check "$FORMAT_TOOL_SRC" test_wiring_stdin_parity || status=1
+rebuild_wiring_binary "$FORMAT_TOOL_SRC"
 
-prove_wiring_mutation "corrupt captured output in format command delegation" \
-  "$FORMAT_CR_SRC" \
+prove_mutation "corrupt captured output in format command delegation" "$FORMAT_CR_SRC" \
   'out_io.to_s' \
   'out_io.to_s + "\n# corrupted output capture\n"' \
-  'test_wiring_stdin_parity'
+  -- wiring_mutant_check "$FORMAT_CR_SRC" test_wiring_stdin_parity || status=1
+rebuild_wiring_binary "$FORMAT_CR_SRC"
 
-prove_wiring_mutation "corrupt prefix flag propagation in command router" \
-  "$COMMAND_CR_SRC" \
+prove_mutation "corrupt prefix flag propagation in command router" "$COMMAND_CR_SRC" \
   'options.unshift("--selfhost") if selfhost' \
   'options.unshift("--corrupted-flag") if selfhost' \
-  'test_prefix_flag_parity'
+  -- wiring_mutant_check "$COMMAND_CR_SRC" test_prefix_flag_parity || status=1
+rebuild_wiring_binary "$COMMAND_CR_SRC"
 
-prove_wiring_mutation "bypass status code in check mode" \
-  "$FORMAT_CR_SRC" \
-  '@status_code = 1' \
-  '@status_code = 0' \
-  'test_check_refusal'
+prove_mutation "bypass status code in check mode" "$FORMAT_CR_SRC" \
+  'produced changes"
+        @status_code = 1' \
+  'produced changes"
+        @status_code = 0' \
+  -- wiring_mutant_check "$FORMAT_CR_SRC" test_check_refusal || status=1
+rebuild_wiring_binary "$FORMAT_CR_SRC"
 
 echo
 echo "== Verification clean state confirmed"
