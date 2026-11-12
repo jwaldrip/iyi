@@ -165,6 +165,7 @@ src/compiler/semantic/type_node_host.iyi parse
 src/compiler/semantic/type_nodes.iyi parse
 src/compiler/native/const_expr.iyi parse
 src/compiler/lower/block.iyi parse
+src/compiler/lower/proc.iyi parse
 src/compiler/semantic/call.iyi parse
 src/compiler/semantic/call_error.iyi parse
 src/compiler/semantic/call_nodes.iyi parse

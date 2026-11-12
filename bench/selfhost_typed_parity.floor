@@ -332,6 +332,7 @@ src/compiler/semantic/type_nodes.iyi 38
 src/compiler/native/const_expr.iyi 0
 src/compiler/lower/abi/aarch64.iyi 0
 src/compiler/lower/block.iyi 0
+src/compiler/lower/proc.iyi 0
 src/compiler/lower/instance_var.iyi 0
 src/compiler/lower/program.iyi 0
 src/compiler/lower/symbols.iyi 0
