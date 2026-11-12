@@ -95,6 +95,16 @@
 
 ### Gates
 
+- **The native back end's gates run in CI.** `bench/native_gates.sh` runs
+  the nine gates in order (the IR, the object model, the linker, the
+  encoder, register allocation, the inline assembler, code generation, the
+  LLVM round trip, and the end-to-end build with no host tool) and prints
+  one verdict per gate. Two jobs run it: `native` on Linux, where what
+  must execute an arm64 darwin program is printed as skipped, and
+  `native-darwin` on macos-15, where nothing is. `scripts/ci_plan.py`
+  selects both for a change under `src/compiler/native/`,
+  `src/compiler/ir/`, `src/compiler/backend/`, `src/compiler/tools/`, or
+  to a native gate or its fixtures, and `result` reads both.
 - **Four module exercises are tests now.** `bench/std_bool_test.iyi`,
   `std_box_test.iyi`, `std_heap_test.iyi` and `std_string_pool_test.iyi`
   are named cases over the prelude's assertions, and their drivers run
