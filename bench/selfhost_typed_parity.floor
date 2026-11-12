@@ -298,3 +298,4 @@ src/std/xz.iyi 0
 src/std/yaml.iyi 0
 src/std/zip.iyi 0
 src/std/zstd.iyi 0
+src/compiler/native/const_expr.iyi 0

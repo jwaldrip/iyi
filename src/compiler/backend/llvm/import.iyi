@@ -749,7 +749,7 @@ class ModuleImporter
     while f.address != 0
       name = string_from_c(LibLLVM.get_value_name(f))
       fn_type = type_of(LibLLVM.global_get_value_type(f))
-      fn = @ir.add_function(name, fn_type, CallConv::C)
+      fn = @ir.add_function(name, fn_type, convention_of(name))
       @values[f.address] = fn
       @ir_functions << fn
       @llvm_functions << f
@@ -1368,6 +1368,21 @@ class ModuleImporter
     value_of(personality)
   end
 
+  # LLVM has one convention for both of the IR's (SPEC 2.1): the hosted compiler emits a def and a C function
+  # alike as `ccc`, with a def's aggregates passed whole and a C function's already lowered to the platform ABI.
+  # The name tells them apart: a def or a proc is mangled with a leading `*` or `~`, and nothing C can be named
+  # so. A def is `Iyi`; a `fun`, a lib function and the runtime's entry points are `C`.
+  def convention_of(name : String) : CallConv
+    return CallConv::Iyi if name.starts_with?("*") || name.starts_with?("~")
+    CallConv::C
+  end
+
+  # A direct call has its callee's convention. A call through a pointer is to a proc, which is a def.
+  def call_convention_of(callee : Value) : CallConv
+    return callee.as(Function).cc if callee.is_a?(Function)
+    CallConv::Iyi
+  end
+
   # A call's attributes, calling convention and signature, shared by call and invoke.
   def call_like(ref : LibLLVM::ValueRef, op : Op, name : String, targets : Array(Block)) : Inst?
     if LibLLVM.get_instruction_call_conv(ref) != 0
@@ -1380,7 +1395,7 @@ class ModuleImporter
     operands = call_arguments(ref)
     return nil if failed?
     operands.each { |a| args << a }
-    aux = CallAux.new(fn_type, CallConv::C, false, attributes_at(ref, attribute_function_index, true), param_attributes(ref, fn_type.param_count, true), attributes_at(ref, attribute_return_index, true))
+    aux = CallAux.new(fn_type, call_convention_of(callee), false, attributes_at(ref, attribute_function_index, true), param_attributes(ref, fn_type.param_count, true), attributes_at(ref, attribute_return_index, true))
     Inst.new(op, fn_type.return_type, args, 0_i64, aux, targets, [] of Int64, name)
   end
 
@@ -1418,7 +1433,7 @@ class ModuleImporter
     args = [callee] of Value
     call_arguments(ref).each { |a| args << a }
     return nil if failed?
-    aux = CallAux.new(fn_type, CallConv::C, tail == 1, attributes_at(ref, attribute_function_index, true), param_attributes(ref, fn_type.param_count, true), attributes_at(ref, attribute_return_index, true))
+    aux = CallAux.new(fn_type, call_convention_of(callee), tail == 1, attributes_at(ref, attribute_function_index, true), param_attributes(ref, fn_type.param_count, true), attributes_at(ref, attribute_return_index, true))
     Inst.new(Op::Call, fn_type.return_type, args, 0_i64, aux, [] of Block, [] of Int64, name)
   end
 
