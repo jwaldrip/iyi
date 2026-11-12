@@ -291,6 +291,8 @@ pub class AsmScanner
         read_string(false)
       elsif b == 39
         skip_char
+      elsif b == 92 && byte(@pos + 1) == 123 && byte(@pos + 2) == 37
+        @pos += 3
       elsif b == 123 && byte(@pos + 1) == 37
         directive
       elsif ident_start?(b)
@@ -337,16 +339,16 @@ pub class AsmScanner
   end
 
   def current_guard : String
-    out = ""
+    acc = ""
     i = 0
     while i < @stack.size
       if @stack[i].guard.bytesize > 0
-        out = out + ";" if out.bytesize > 0
-        out = out + @stack[i].guard
+        acc = acc + ";" if acc.bytesize > 0
+        acc = acc + @stack[i].guard
       end
       i += 1
     end
-    out
+    acc
   end
 
   def skip_comment : Nil
