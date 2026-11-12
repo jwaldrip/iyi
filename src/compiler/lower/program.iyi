@@ -54,11 +54,11 @@ end
 
 # The root expression of the program: the classes, libs, defs and funs of every unit, then the top-level code
 # in initialiser order. A program with no top-level code gets `nil` as its value, as the hosted one does.
-pub def assemble_root(classes : Array(ClassDef), libs : Array(LibDef), defs : Hash(String, Def), funs : Array(FunDef), top_level : Array(ASTNode)) : ASTNode
+pub def assemble_root(classes : Array(ClassDef), libs : Array(LibDef), defs : Array(Def), funs : Array(FunDef), top_level : Array(ASTNode)) : ASTNode
   nodes = [] of ASTNode
   classes.each { |c| nodes << c }
   libs.each { |l| nodes << l }
-  defs.each_value { |d| nodes << d }
+  defs.each { |d| nodes << d }
   funs.each { |f| nodes << f }
   if top_level.empty?
     nodes << Nop.new
@@ -92,7 +92,7 @@ end
 
 # The declarations phase: every unit declared in initialiser order (dependencies first, the entry last), the
 # guessed instance variables, then the root and the body visitor. The stand-ins apply when no prelude is loaded.
-pub def declare_program(classes : Array(ClassDef), libs : Array(LibDef), defs : Hash(String, Def), funs : Array(FunDef), top_level : Array(ASTNode), links : Array(String), stand_in : Bool, prog : SemanticProgram, units : Array(ModuleInfo)) : TypedProgram
+pub def declare_program(classes : Array(ClassDef), libs : Array(LibDef), defs : Array(Def), funs : Array(FunDef), top_level : Array(ASTNode), links : Array(String), stand_in : Bool, prog : SemanticProgram, units : Array(ModuleInfo)) : TypedProgram
   units.each do |mod_info|
     declare_unit(prog, mod_info.filename, mod_info.ast)
   end

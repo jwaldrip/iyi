@@ -1,5 +1,5 @@
 # selfhost pipeline floor: <repo file> <phase reached>. A phase may only rise.
-# Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline.wip.sh (keeps the higher phase).
+# Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh (keeps the higher phase).
 bench/fixtures/lowcall_block_args.iyi run-equal
 bench/fixtures/lowcall_block_local.iyi run-equal
 bench/fixtures/lowcall_block_nested.iyi run-equal
@@ -12,7 +12,7 @@ bench/fixtures/lowcall_nested.iyi run-equal
 bench/fixtures/lowcall_nil.iyi run-equal
 bench/fixtures/lowcall_noreturn.iyi run-equal
 bench/fixtures/lowcall_pick.iyi run-equal
-bench/fixtures/lowcall_types.iyi declarations
+bench/fixtures/lowcall_types.iyi run-equal
 bench/fixtures/lower_and.iyi run-equal
 bench/fixtures/lower_assign.iyi run-equal
 bench/fixtures/lower_bool.iyi run-equal
@@ -61,5 +61,5 @@ bench/fixtures/lowprim_checked.iyi bodies
 bench/fixtures/lowprim_cmp.iyi run-equal
 bench/fixtures/lowprim_ptr.iyi declarations
 samples/iyi/hello.iyi declarations
-src/compiler/tools/compile_native.iyi parse
-src/compiler/tools/parse.iyi parse
+src/compiler/tools/compile_native.iyi declarations
+src/compiler/tools/parse.iyi declarations

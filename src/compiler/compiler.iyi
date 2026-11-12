@@ -408,6 +408,19 @@ pub class Compiler
       Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, mod_top, flags)
       module_tops[mod_info.filename] = mod_top
     end
+    # extract_declarations keeps one def per name, so an overload would be lost: every top-level def of the units is
+    # collected here, in order, and any def only the hash holds (one behind a macro condition) is added after them.
+    all_defs = [] of Def
+    resolved.each do |mod_info|
+      tops = [mod_info.ast]
+      if mod_info.ast.is_a?(Expressions)
+        tops = mod_info.ast.as(Expressions).expressions
+      end
+      Compiler.typed_top_defs(tops, all_defs)
+    end
+    defs.each_value do |d|
+      all_defs << d unless all_defs.any? { |x| x.object_id == d.object_id }
+    end
     top_level = [] of ASTNode
     Loader.initialiser_order(resolved).each do |mod_info|
       module_tops[mod_info.filename].each { |node| top_level << node }
@@ -427,7 +440,20 @@ pub class Compiler
     Loader.initialiser_order(resolved).each do |mod_info|
       units << mod_info unless mod_info.filename.ends_with?("/iyi/prelude.iyi")
     end
-    declare_program(classes, libs, defs, funs, top_level, links, !prelude, prog, units)
+    declare_program(classes, libs, all_defs, funs, top_level, links, !prelude, prog, units)
+  end
+
+  # The top-level defs among the given nodes, in order, unwrapping visibility modifiers and expression sequences.
+  def self.typed_top_defs(nodes : Array(ASTNode), collected : Array(Def)) : Nil
+    nodes.each do |node|
+      if node.is_a?(Def)
+        collected << node.as(Def)
+      elsif node.is_a?(VisibilityModifier)
+        Compiler.typed_top_defs([node.as(VisibilityModifier).exp], collected)
+      elsif node.is_a?(Expressions)
+        Compiler.typed_top_defs(node.as(Expressions).expressions, collected)
+      end
+    end
   end
 
   # --- Helper utilities ---
