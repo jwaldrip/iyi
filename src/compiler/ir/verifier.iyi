@@ -3,9 +3,9 @@ module compiler/ir/verifier
 import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/values::{Value, Param}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, AsmAux, IntrinsicAux, terminator_op?}
-import compiler/ir/function::{Function, Global, TlsModel}
+import compiler/ir/function::{Function, Global, Linkage, TlsModel, Visibility}
 import compiler/ir/module::{Module}
-import compiler/ir/intrinsics::{intrinsic_spec, intrinsic_type}
+import compiler/ir/intrinsics::{intrinsic_accepts?, intrinsic_signature, intrinsic_name}
 
 # A rule the module breaks. `kind` names the rule, so a fixture can be refused for exactly that reason.
 pub class IrError
@@ -38,6 +38,7 @@ class Verifier
 
   def run : Array(IrError)
     @module.globals.each do |g|
+      check_visibility(g.name, g.linkage, g.visibility, nil)
       init = g.initializer
       next unless init
       unless init.type == g.value_type
@@ -45,9 +46,17 @@ class Verifier
       end
     end
     @module.functions.each do |f|
+      check_visibility(f.name, f.linkage, f.visibility, f)
       check_function(f) unless f.declaration?
     end
     @errors
+  end
+
+  # A local symbol is invisible outside its module, so it has no visibility to state.
+  def check_visibility(name : String, linkage : Linkage, visibility : Visibility, fn : Function?) : Nil
+    local = linkage == Linkage::Internal || linkage == Linkage::Private
+    return if visibility == Visibility::Default
+    report("visibility", "@#{name} has local linkage and cannot have a visibility", fn) if local
   end
 
   def report(kind : String, message : String, fn : Function?) : Nil
@@ -357,17 +366,26 @@ class Verifier
     end
   end
 
+  # An intrinsic call: the overload must be one its family accepts, and the call's type and operands must
+  # be the signature that overload gives.
   def check_intrinsic(f : Function, i : Inst) : Nil
     aux = i.aux
     return unless aux.is_a?(IntrinsicAux)
-    spec = intrinsic_spec(aux.as(IntrinsicAux).id)
-    params = spec.params.map { |t| intrinsic_type(t, @types) }
+    found = aux.as(IntrinsicAux)
+    name = intrinsic_name(found.id, found.overload)
+    unless intrinsic_accepts?(found.id, found.overload)
+      report("intrinsic", "#{name} is not an intrinsic the IR accepts at these types", f)
+      return
+    end
+    signature = intrinsic_signature(found.id, found.overload, @types)
+    report("types", "#{name} returns #{signature[0]}, not #{i.type}", f) unless i.type == signature[0]
+    params = signature[1]
     if params.size != i.args.size
-      report("call-operands", "#{spec.name} takes #{params.size} operands, not #{i.args.size}", f)
+      report("call-operands", "#{name} takes #{params.size} operands, not #{i.args.size}", f)
       return
     end
     params.each_with_index do |p, k|
-      report("call-operands", "#{spec.name} operand #{k} is #{operand_type(i.args[k])}, not #{p}", f) unless operand_type(i.args[k]) == p
+      report("call-operands", "#{name} operand #{k} is #{operand_type(i.args[k])}, not #{p}", f) unless operand_type(i.args[k]) == p
     end
   end
 

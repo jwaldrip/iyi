@@ -1,11 +1,11 @@
 module compiler/ir/printer
 
 import compiler/ir/types::{IrType, ir_quote, ir_name_text, ir_hex}
-import compiler/ir/values::{Value}
+import compiler/ir/values::{Value, i128_text}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, Ordering, Attribute, IntPredicate, RealPredicate, ThreadPointerKind, DebugLoc}
-import compiler/ir/function::{Function, Global, Linkage, TlsModel}
+import compiler/ir/function::{Function, Global, Linkage, TlsModel, Visibility}
 import compiler/ir/module::{Module}
-import compiler/ir/intrinsics::{intrinsic_spec}
+import compiler/ir/intrinsics::{intrinsic_name}
 
 # The text form of a module. It is deterministic: globals and functions are written in emission order,
 # named types in creation order, flags sorted by name, and unnamed values numbered in definition order.
@@ -21,7 +21,7 @@ class IrPrinter
   def module_text : String
     String.build do |io|
       io << "; iyi-ir 1\n"
-      io << "module " << ir_quote(@module.name) << "\n"
+      io << "source_filename = " << ir_quote(@module.name) << "\n"
       io << "target triple = " << ir_quote(@module.triple) << "\n"
       io << "target datalayout = " << ir_quote(@module.layout.llvm_string) << "\n"
       @module.files.each { |f| io << "file " << ir_quote(f) << "\n" }
@@ -41,6 +41,9 @@ class IrPrinter
     empty = Hash(Value, Int32).new
     String.build do |io|
       io << "@" << ir_name_text(g.name) << " = " << linkage_word(g.linkage) << " "
+      io << "dso_local " if g.dso_local
+      vis = visibility_word(g.visibility)
+      io << vis << " " unless vis.empty?
       io << "thread_local(" << tls_word(g.tls) << ") " unless g.tls == TlsModel::None
       io << (g.constant ? "constant " : "global ")
       io << g.value_type.to_s
@@ -63,6 +66,9 @@ class IrPrinter
     String.build do |io|
       io << (f.declaration? ? "declare " : "define ")
       io << linkage_word(f.linkage) << " "
+      io << "dso_local " if f.dso_local
+      fvis = visibility_word(f.visibility)
+      io << fvis << " " unless fvis.empty?
       io << "iyicc " if f.cc == CallConv::Iyi
       f.ret_attrs.each { |a| io << attr_text(a) << " " }
       io << f.fn_type.return_type.to_s << " @" << ir_name_text(f.name) << "("
@@ -172,6 +178,7 @@ class IrPrinter
   def const_text(i : Inst, numbers : Hash(Value, Int32)) : String
     case i.op
     when Op::ConstInt
+      return i128_text(i.aux_hi, i.aux_int) if i.type.bits == 128
       return i.aux_int.to_s unless i.type.bits == 1
       i.aux_int == 0 ? "false" : "true"
     when Op::ConstFloat
@@ -321,7 +328,7 @@ class IrPrinter
       return "invoke #{cc_word(aux.cc)}#{aux.fn_type.to_s} #{callee}(#{args}) to label %#{ir_name_text(i.targets[0].name)} unwind label %#{ir_name_text(i.targets[1].name)}"
     when Op::Intrinsic
       aux = i.aux.as(IntrinsicAux)
-      name = intrinsic_spec(aux.id).name
+      name = intrinsic_name(aux.id, aux.overload)
       args = i.args.map { |a| typed(a, numbers) }.join(", ")
       return "intrinsic #{ir_name_text(name)}(#{args})"
     when Op::ThreadLocalAddr
@@ -458,6 +465,18 @@ class IrPrinter
       "weak"
     else
       "extern_weak"
+    end
+  end
+
+  # LLVM's spelling of a visibility; the default is written as nothing at all.
+  def visibility_word(v : Visibility) : String
+    case v
+    when Visibility::Hidden
+      "hidden"
+    when Visibility::Protected
+      "protected"
+    else
+      ""
     end
   end
 
