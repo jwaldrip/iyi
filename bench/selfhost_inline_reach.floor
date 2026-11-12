@@ -7,3 +7,4 @@ bench/fixtures/seminl_reach/def_body_if.iyi 571
 bench/fixtures/seminl_reach/def_body_seq.iyi 571
 bench/fixtures/seminl_reach/def_if_branch.iyi 571
 bench/fixtures/seminl_reach/def_while_body.iyi 571
+bench/fixtures/seminl_reach/top_if_class.iyi 5870
