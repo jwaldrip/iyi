@@ -1,7 +1,8 @@
 #!/bin/sh
 # Native LLVM round-trip gate (SPEC 3.3, slice B2). It builds iyi-ir, round-trips every fixture that
-# passes today, and proves the gate can fail with three mutations: dropping nsw in the translator,
-# removing an intrinsic from the importer's accepted set, and a patch that changes nothing.
+# passes today, and proves the gate can fail with four mutations: dropping nsw in the translator, writing hidden as the
+# default visibility, removing an intrinsic from the importer's accepted set, dropping the align on an intrinsic operand,
+# and a patch that changes nothing.
 # Job: native-linux (the integrator adds it to iyi.yml). The matrix over the corpus is
 # bench/native_llvm_matrix.sh, which is not part of this gate.
 set -u
@@ -80,7 +81,7 @@ fi
 step 2 "every fixture round-trips identically, and the one the translator refuses is refused by name"
 count=0
 total=0
-for name in arith control probe_switch probe_phi memory consts calls sizeof visibility wide_int overflow8_16 variadic flags_attrs; do
+for name in arith control probe_switch probe_phi memory consts calls sizeof visibility wide_int overflow8_16 variadic flags_attrs memset_param_align int192 asm_unwind; do
   total=$((total + 1))
   verdict=$("$TOOL" roundtrip "$FX/$name.ll" 2>&1)
   if [ "$verdict" = "identical" ]; then
@@ -118,6 +119,13 @@ prove_mutation "remove llvm.memcpy from the importer" \
   "found = intrinsic_match(llvm_name, @ir.types)" \
   "found = llvm_name == \"llvm.memcpy.p0.p0.i64\" ? nil : intrinsic_match(llvm_name, @ir.types)" \
   "\"$TOOL\" roundtrip \"$FX/calls.ll\" | grep -qx identical"
+
+step 4c "mutation: drop the align on an intrinsic operand in the translator"
+prove_mutation "drop align on an intrinsic operand in translate" \
+  src/compiler/backend/llvm/translate.iyi \
+  "LibLLVM.add_callsite_attribute(call, index, create_attribute(a))" \
+  "LibLLVM.add_callsite_attribute(call, index, create_attribute(a)) if a.name != \"align\"" \
+  "\"$TOOL\" roundtrip \"$FX/memset_param_align.ll\" | grep -qx identical"
 
 step 5 "mutation: a patch that changes nothing is refused"
 noop_out=$(prove_mutation "no-op patch" \
