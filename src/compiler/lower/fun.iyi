@@ -88,6 +88,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, arg_types : Arra
 
   saved = LowerSavedState.new(low.context, low.alloca_block, low.entry_block, low.builder.insert_block, low.needs_value, low.in_main)
   low.context = LowerContext.new(fn, fn_type, nil, Hash(String, LowerVar).new)
+  low.current_context.var_unions = low.analysed.def_var_unions[target]?
   low.alloca_block = nil
   low.entry_block = nil
   low.new_entry_block

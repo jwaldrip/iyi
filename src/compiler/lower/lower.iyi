@@ -25,7 +25,7 @@ import compiler/ir/function::{Linkage}
 import compiler/ir/inst::{Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/lower/typer::{LowerTyper}
+import compiler/lower/typer::{LowerTyper, passed_by_value?}
 import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerVar}
 import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?}
@@ -35,7 +35,7 @@ import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node}
 import compiler/lower/block::{lower_yield}
 import compiler/lower/fun::{block_ended?, function_attributes}
-import compiler/lower/cast::{assign}
+import compiler/lower/cast::{assign, union_temp}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
@@ -358,27 +358,28 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
       pending_visit_node("Assign to a parameter (hosted fun.cr, create_local_copy_of_arg)")
     end
   end
+  # The hosted codegen_assign declares the variable before it visits the value, so its alloca comes first.
+  if low.current_context.vars[target.name]?.nil?
+    declared = variable_storage_type(low, target)
+    if !declared.nil?
+      declare_assign_var(low, target.name, declared.as(Type))
+    end
+  end
+  wants = low.needs_value
+  low.needs_value = true
   codegen_node(low, node.value)
+  low.needs_value = wants
   value = low.last
   raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
   v = value.as(Value)
   value_type = low.analysed.type_of?(node.value)
   raise "BUG: the analysed program has no type for the assigned value (hosted codegen.cr: codegen_assign)" if value_type.nil?
   vt = value_type.as(Type)
-  # The variable's type is the analysed type of its target, not the value's (hosted: the alloca takes the variable's
-  # type); the value's type is the value's own.
-  tgt_t = low.analysed.type_of?(node.target)
-  target_t = vt
-  if !tgt_t.nil?
-    target_t = tgt_t.as(Type)
+  if low.current_context.vars[target.name]?.nil?
+    # The analysis gives the target no type: the variable takes the value's.
+    declare_assign_var(low, target.name, vt)
   end
   var = low.current_context.vars[target.name]?
-  if var.nil?
-    pointer = low.alloca(low.typer.llvm_type(target_t), target.name)
-    made = LowerVar.new(pointer, target_t, false)
-    low.current_context.vars[target.name] = made
-    var = made
-  end
   v_var = var.as(LowerVar)
   if v_var.type.full_name != vt.full_name
     # A value of another type than the variable goes through the casts slice (the hosted upcast into a union).
@@ -387,6 +388,29 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
     store_aligned(low, v, v_var.pointer)
   end
   low.last = v
+end
+
+# The type a variable is stored as. A variable the body assigns more than one type is stored as the union the analysis
+# gave it (`def_var_unions`, the context's `var_unions`); otherwise as the analysed type of its target. Nil when the
+# analysis gives the target no type.
+pub def variable_storage_type(low : Lowerer, target : Var) : Type?
+  if table = low.current_context.var_unions
+    if u = table[target.name]?
+      return u.as(Type)
+    end
+  end
+  tgt_t = low.analysed.type_of?(target)
+  if tgt_t.nil?
+    return nil
+  end
+  tgt_t.as(Type)
+end
+
+# The hosted variable declaration for an assignment: an alloca of the type, in the alloca block, recorded as the
+# variable of the context.
+pub def declare_assign_var(low : Lowerer, name : String, t : Type) : Nil
+  pointer = low.alloca(low.typer.llvm_type(t), name)
+  low.current_context.vars[name] = LowerVar.new(pointer, t, false)
 end
 
 # The hosted `visit(If)`: a literal condition folds (the hosted `truthy?` and `falsey?`), and any
@@ -442,22 +466,65 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
   low.builder.cond_br(cond_value, then_block, else_block)
 
   merge_type : IrType? = nil
+  merged_t : Type? = nil
+  union_join = false
   if wants
     merged = low.analysed.type_of?(node)
     raise "BUG: the analysed program has no type for a branch (hosted codegen.cr: visit(If))" if merged.nil?
-    merge_type = low.typer.llvm_type(merged.as(Type))
+    merged_t = merged.as(Type)
+    union_join = joins_by_pointer?(merged_t.as(Type))
+    if union_join
+      merge_type = low.module.types.ptr(0)
+    else
+      merge_type = low.typer.llvm_type(merged_t.as(Type))
+    end
   end
   phi = LowerPhi.new(wants, merge_type)
 
   low.builder.position_at_end(then_block)
   codegen_node(low, then_node)
-  phi.add(low, low.last, false)
+  branch_value(low, phi, then_node, merged_t, union_join, false)
 
   low.builder.position_at_end(else_block)
   codegen_node(low, else_node)
-  phi.add(low, low.last, true)
+  branch_value(low, phi, else_node, merged_t, union_join, true)
 
   phi.close(low)
+  if union_join && !phi.values.empty?
+    # The join is the pointer phi; the union value is loaded from the pointer it picked (hosted codegen_if).
+    union_ir = low.typer.llvm_type(merged_t.as(Type))
+    low.last = load_aligned(low, union_ir, low.last.as(Value), "")
+  end
+end
+
+# Whether a value of this type joins by pointer in the `if` phi: the hosted Phi takes a pointer to a
+# passed-by-value type (phi.cr `close`). Only the union case is ported here; another by-value type
+# (a struct) is refused by name, since its branch value needs a pointer the core does not build yet.
+pub def joins_by_pointer?(t : Type) : Bool
+  if !passed_by_value?(t)
+    return false
+  end
+  if t.is_a?(UnionType) || t.is_a?(NilableType)
+    return true
+  end
+  pending_visit_node("a phi over a passed-by-value #{t.full_name} that is not a union (hosted phi.cr: close, struct pointer)")
+  false
+end
+
+# One branch's value into the join. In a union join the branch's value is stored in a fresh alloca of the union
+# (union_temp, hosted upcast in the branch) and the pointer joins; otherwise the value joins as it is.
+pub def branch_value(low : Lowerer, phi : LowerPhi, branch : ASTNode, merged : Type?, union_join : Bool, last : Bool) : Nil
+  if union_join && !at_terminator?(low) && !low.last.nil?
+    bt = low.analysed.type_of?(branch)
+    if bt.nil?
+      pending_visit_node("a union join of a branch with no analysed type (hosted codegen.cr: visit(If))")
+    end
+    m = merged.as(Type)
+    ptr = union_temp(low, m, bt.as(Type), low.last.as(Value))
+    phi.add(low, ptr, last)
+    return
+  end
+  phi.add(low, low.last, last)
 end
 
 # The hosted `visit(Not)`: the condition's value, inverted with an `xor` against true.

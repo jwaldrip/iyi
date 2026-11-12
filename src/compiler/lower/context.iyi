@@ -65,6 +65,9 @@ pub class LowerContext
   property return_type : Type?
   # True for the unit that begin_main_function makes (`__crystal_main`): a return there has no def to leave.
   property top_level : Bool
+  # The union type of each variable the function's body assigns more than one type (the analysis's
+  # `def_var_unions` for the instantiated def, keyed by name). A variable in this table is stored as its union.
+  property var_unions : Hash(String, Type)?
   # The block frame and the phis of the context (hosted Context#return_phi, break_phi, next_phi, block, block_context).
   property return_phi : BranchPhi?
   property break_phi : BranchPhi?
@@ -75,6 +78,7 @@ pub class LowerContext
   def initialize(@fun : Function, @fun_type : IrType, @type : Type?, @vars : Hash(String, LowerVar))
     @return_type = nil
     @top_level = false
+    @var_unions = nil
     @return_phi = nil
     @break_phi = nil
     @next_phi = nil

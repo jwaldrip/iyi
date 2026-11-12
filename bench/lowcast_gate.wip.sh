@@ -36,9 +36,7 @@ echo "  driver built"
 # Fixtures waiting on another slice, by name (the reason is printed with the result).
 waiting_on() {
   case "$1" in
-    lowcast_nilable) echo "the analysis now gives the union of x's assignments in def_var_unions (S1d2Bodies, ebfa213ad); the lowering must read it for the alloca and the assign (core codegen_assign hook, S2a3Core); cast.iyi's store is ready" ;;
-    lowcast_mixed) echo "the analysis now gives the union of x's assignments in def_var_unions (S1d2Bodies, ebfa213ad); the lowering must read it for the alloca and the assign (core codegen_assign hook, S2a3Core); cast.iyi's store is ready" ;;
-    lowcast_if) echo "the if join of a union-typed branch (core codegen_if, pointer phi; cast.iyi union_temp is ready)" ;;
+    lowcast_mixed) echo "a Bool stored into the mixed union Bool | Int32: the port emits '%6 = zext i1 true to i64' where the hosted module has 'store i64 1' (a constant store: the port's builder does not fold a constant zext, cast.iyi store_bool_in_union, casts slice)" ;;
   esac
 }
 
@@ -107,6 +105,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
     fi
     "$WORK/$name.hosted" > "$WORK/$name.hosted.out" 2>&1
     hs=$?
+    if ! "$WORK/port" emit "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.ll" 2> "$WORK/$name.emit.err"; then
+      echo "  $name: the port writes no module: $(awk 'NR==1' "$WORK/$name.emit.err")"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
     if ! "$WORK/compile_native" "$WORK/$name.port.ll" -o "$WORK/$name.native" > "$WORK/$name.native.log" 2>&1; then
       echo "  $name: the native tool refuses it: $(awk 'NR==1' "$WORK/$name.native.log")"
       e2e_fail=$((e2e_fail + 1))
