@@ -26,7 +26,7 @@ CALL = re.compile(r'(?:call|invoke)\b[^@\n]*@("(?:[^"\\]|\\.)*"|[^\s(,]+)\(')
 SLICE_OWNER = {
     "bodies": "agent://S1d13Bodies",
     "declarations": "agent://S1b17Declarations",
-    "calls": "agent://S1c9Calls",
+    "calls": "agent://S1c10Calls",
     "macros": "agent://S1bInlineMacros11",
     "lowering core": "agent://S2a12Core",
     "lowering": "agent://S2a12Core",
