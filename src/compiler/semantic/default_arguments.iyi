@@ -1,0 +1,114 @@
+module compiler/semantic/default_arguments
+
+import compiler/syntax/ast::{ASTNode, Def, NamedArgument}
+
+# The port of the argument side of the hosted Def#expand_default_arguments
+# (src/compiler/iyi/semantic/default_arguments.cr). The hosted expansion is a new
+# def whose body assigns each missing parameter's default and then forwards the
+# whole list to the original def. What the forwarding call passes is the argument
+# list this module returns: one node per parameter, in declaration order. A
+# positional argument fills its parameter, a named argument fills the parameter
+# whose external name it writes, and a parameter that neither reaches takes a copy
+# of its default value.
+#
+# A default that is a magic constant (`__FILE__`, `__LINE__`) comes back as its
+# node, unevaluated. The hosted expansion makes it a parameter filled from the
+# call site, so the call site's expansion of the constant is what runs.
+#
+# Not ported, and refused by `supported?`: a def with a splat or a double splat.
+# The hosted expansion packs the extra arguments into a tuple or a named tuple
+# and forwards them differently, and a list of nodes cannot say that. Also refused:
+# a named argument that names a parameter the positional arguments already fill,
+# or names no parameter, and a parameter with no default that no argument fills
+# (the call does not match, so there is no list to build).
+#
+# The hosted expansion keeps the def's body (rather than forwarding) when a
+# default has a restriction, or the def takes a block or a special variable. That
+# changes where the defaults are evaluated, not which values reach the parameters,
+# so the list is the same and the port does not distinguish the two.
+pub class DefaultArguments
+  # True when *rec_def* can be expanded for a call with positional *args* and named
+  # *named_args*: no splat and no double splat, the positional arguments fit the
+  # parameters, every named argument names a parameter after them, and every
+  # parameter left over has a default value.
+  def self.supported?(rec_def : Def, args : Array(ASTNode), named_args : Array(NamedArgument)?) : Bool
+    return false if rec_def.splat_index
+    return false if rec_def.double_splat
+    count = rec_def.args.size
+    given = args.size
+    return false if given > count
+    seen = [] of Bool
+    i = 0
+    while i < count
+      seen << false
+      i += 1
+    end
+    if named_args
+      named_args.each do |named|
+        index = DefaultArguments.param_index(rec_def, named.name)
+        return false if index < given
+        return false if seen[index]
+        seen[index] = true
+      end
+    end
+    k = given
+    while k < count
+      if !seen[k] && rec_def.args[k].default_value.nil?
+        return false
+      end
+      k += 1
+    end
+    true
+  end
+
+  # The argument list the expanded def is called with: *args* first, then one node
+  # per further parameter, each the named argument for it or a copy of its default.
+  # Raises when the call is not supported (see `supported?`); the caller checks
+  # first, as the lookup has already matched the call.
+  def self.expand(rec_def : Def, args : Array(ASTNode), named_args : Array(NamedArgument)?) : Array(ASTNode)
+    if !DefaultArguments.supported?(rec_def, args, named_args)
+      raise "BUG: default arguments of #{rec_def.name} are not expanded for this call"
+    end
+    out = [] of ASTNode
+    count = rec_def.args.size
+    k = 0
+    while k < count
+      if k < args.size
+        out << args[k]
+      else
+        named = DefaultArguments.named_value(named_args, rec_def.args[k].external_name)
+        if named
+          out << named
+        else
+          default = rec_def.args[k].default_value
+          if default
+            out << default.clone
+          else
+            raise "BUG: no default for parameter #{rec_def.args[k].name} of #{rec_def.name}"
+          end
+        end
+      end
+      k += 1
+    end
+    out
+  end
+
+  # The position of the parameter whose external name is *name*, or -1.
+  def self.param_index(rec_def : Def, name : String) : Int32
+    i = 0
+    while i < rec_def.args.size
+      return i if rec_def.args[i].external_name == name
+      i += 1
+    end
+    -1
+  end
+
+  # The value of the named argument *name*, or nil when the call does not give it.
+  def self.named_value(named_args : Array(NamedArgument)?, name : String) : ASTNode?
+    return nil if named_args.nil?
+    named_args.each do |named|
+      return named.value if named.name == name
+    end
+    nil
+  end
+end

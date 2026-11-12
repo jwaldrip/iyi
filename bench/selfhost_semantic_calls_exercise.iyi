@@ -7,6 +7,7 @@ import compiler/semantic/method_lookup::{MethodLookup, Matches}
 import compiler/semantic/match::{CallSignature, Match}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/call::{CallReceiver, CallRecalculation}
+import compiler/semantic/default_arguments::{DefaultArguments}
 
 # Call-lookup driver for bench/selfhost_semantic_calls_exercise.sh.
 #
@@ -72,6 +73,37 @@ module BenchSelfhostSemanticCallsExercise
     end
     signature = CallSignature.new(call.name, arg_types, named_types, call.block != nil)
     MethodLookup.lookup_receiver(scope.as(Type), ts, signature)
+  end
+
+  # `# expand` line: the argument list of the one def the call matches, with its
+  # default arguments expanded (DefaultArguments.expand), or why it is not
+  # supported. Prints the text the hosted oracle prints for the same line.
+  def self.evaluate_expand(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
+    node = Parser.new(expr, "call").parse
+    if !node.is_a?(Call)
+      return "error: not a call"
+    end
+    call = node.as(Call)
+    found = lookup(prog, ts, call)
+    if found.is_a?(String)
+      return "error: #{found.as(String)}"
+    end
+    matches = found.as(Matches)
+    if matches.error
+      return "error: #{matches.error.to_s}"
+    end
+    if matches.matches.size != 1
+      return "error: expected one match"
+    end
+    definition = matches.matches[0].definition
+    if !DefaultArguments.supported?(definition, call.args, call.named_args)
+      return "error: default arguments not supported"
+    end
+    texts = [] of String
+    DefaultArguments.expand(definition, call.args, call.named_args).each do |arg|
+      texts << arg.to_s
+    end
+    texts.join(", ")
   end
 
   def self.evaluate(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
@@ -148,6 +180,9 @@ module BenchSelfhostSemanticCallsExercise
       elsif line.starts_with?("# error ")
         expr = line[8, line.bytesize - 8].strip
         out << "#{expr} => #{evaluate_error(prog, ts, expr)}"
+      elsif line.starts_with?("# expand ")
+        expr = line[9, line.bytesize - 9].strip
+        out << "#{expr} => #{evaluate_expand(prog, ts, expr)}"
       end
     end
     out.join("\n") + "\n"
