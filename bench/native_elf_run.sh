@@ -6,7 +6,8 @@
 #   sh bench/native_elf_run.sh DIR ARCH          run every program in DIR/ARCH/MANIFEST
 #   sh bench/native_elf_run.sh --list DIR ARCH   print what would run, and every file it reads, without running
 #
-# ARCH is x86_64 or aarch64. For each MANIFEST line `NAME LINK_FLAGS EXPECTED`:
+# ARCH is x86_64 or aarch64. For each MANIFEST line `NAME EXPECTED LINK_FLAGS...` (the flags are every word after
+# the second, and there may be none):
 #   1. The oracle binary is linked from DIR/ARCH/NAME.o with `cc`, using the hosted compiler's own link line
 #      (`cc OBJECT -o EXE -rdynamic` for Linux, the line `iyi build --cross-compile` prints).
 #   2. The oracle binary and DIR/ARCH/NAME.native run with the same standard input (DIR/ARCH/NAME.stdin when present,
@@ -49,7 +50,7 @@ if [ "$list_only" -eq 1 ]; then
     exit 1
   fi
   echo "file $manifest"
-  while read -r name flags expected; do
+  while read -r name expected flags; do
     [ -n "$name" ] || continue
     echo "file $set_dir/$name.o"
     echo "file $set_dir/$name.native"
@@ -104,7 +105,7 @@ check_present() {
   return 0
 }
 
-while read -r name flags expected; do
+while read -r name expected flags; do
   [ -n "$name" ] || continue
   obj="$set_dir/$name.o"
   native="$set_dir/$name.native"

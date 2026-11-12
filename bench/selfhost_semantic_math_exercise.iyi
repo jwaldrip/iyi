@@ -27,29 +27,40 @@ module BenchSemanticMathExercise
   end
 end
 
-filename = Program.args[0]
-lines = File.read_lines(filename)
-target : NumberKind? = nil
-i = 0
-while i < lines.size
-  line = lines[i]
-  if line.starts_with?("# target: ")
-    target = BenchSemanticMathExercise.target_of(line[10, line.bytesize - 10])
-  elsif line.bytesize > 0 && !line.starts_with?("#")
-    parser = Parser.new(line, filename)
-    node = parser.parse
-    result = MathInterpreter.new(target).interpret(node)
-    if result.is_a?(MathValue)
-      value = result.as(MathValue)
-      puts "#{i + 1}: value=#{value.value} kind=#{value.kind.to_s}"
-    else
-      error = result.as(MathError)
-      if error.refused
-        puts "#{i + 1}: refused=#{error.message}"
+# A bare run, with no fixture, folds one expression and checks it: the runner that executes every
+# program under bench/ with no arguments (the Windows job) then exercises the interpreter, where it
+# used to stop at the missing argument.
+if Program.args.size == 0
+  bare_result = MathInterpreter.new(nil).interpret(Parser.new("1 + 2", "bare").parse)
+  unless bare_result.is_a?(MathValue) && bare_result.as(MathValue).value.to_s == "3"
+    raise "bare run: 1 + 2 did not fold to 3"
+  end
+  puts "ok (bare run: 1 + 2 folds to 3)"
+else
+  filename = Program.args[0]
+  lines = File.read_lines(filename)
+  target : NumberKind? = nil
+  i = 0
+  while i < lines.size
+    line = lines[i]
+    if line.starts_with?("# target: ")
+      target = BenchSemanticMathExercise.target_of(line[10, line.bytesize - 10])
+    elsif line.bytesize > 0 && !line.starts_with?("#")
+      parser = Parser.new(line, filename)
+      node = parser.parse
+      result = MathInterpreter.new(target).interpret(node)
+      if result.is_a?(MathValue)
+        value = result.as(MathValue)
+        puts "#{i + 1}: value=#{value.value} kind=#{value.kind.to_s}"
       else
-        puts "#{i + 1}: error=#{error.message}"
+        error = result.as(MathError)
+        if error.refused
+          puts "#{i + 1}: refused=#{error.message}"
+        else
+          puts "#{i + 1}: error=#{error.message}"
+        end
       end
     end
+    i = i + 1
   end
-  i = i + 1
 end

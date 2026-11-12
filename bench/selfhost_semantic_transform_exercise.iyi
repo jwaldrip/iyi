@@ -627,7 +627,15 @@ class TransformKinds < Visitor
   end
 end
 
-if Program.args.size > 1 && Program.args[1] == "kinds"
+# A bare run, with no fixture, parses, normalises and dumps one small program: the runner that
+# executes every program under bench/ with no arguments (the Windows job) then exercises the
+# normaliser, where it used to stop at the missing argument.
+if Program.args.size == 0
+  bare_norm = NormalizerProgram.new.normalize(Parser.new("x = 1\ny = x\n", "bare").parse)
+  bare_dump = BenchSemanticTransformExercise.dump_ast(bare_norm)
+  raise "bare run: the normalised dump is empty" if bare_dump.bytesize == 0
+  puts "ok (bare run: a program is parsed, normalised and dumped)"
+elsif Program.args.size > 1 && Program.args[1] == "kinds"
   kinds_filename = Program.args[0]
   kinds_parser = Parser.new(File.read(kinds_filename), kinds_filename)
   kinds_visitor = TransformKinds.new
