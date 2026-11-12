@@ -153,6 +153,28 @@ else
     status=1
   fi
 fi
+echo "== 2d. Total mode with the type system installed: an unresolved superclass is carried past; the class takes the default superclass"
+total_typed_expected="$REPO/bench/selfhost_semantic_declarations_total_typed.expected"
+if ! "$PORT" --total-typed "$REPO/bench/fixtures/total_unresolved_superclass.iyi" > "$WORK/tt_p.txt" 2> "$WORK/tt_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/tt_pe.txt")"; status=1
+elif cmp -s "$WORK/tt_p.txt" "$total_typed_expected"; then
+  echo "  total_unresolved_superclass.iyi: pinned (carried refusal, default superclass)"
+else
+  echo "  total_unresolved_superclass.iyi: PIN DIFFERS"
+  diff "$total_typed_expected" "$WORK/tt_p.txt" | head -n 20
+  status=1
+fi
+echo "== 2e. A constant read in a metaclass scope is the class's own: HELD read in def self.acquire"
+scope_expected="$REPO/bench/selfhost_semantic_declarations_scope_lookup.expected"
+if ! "$PORT" --scope-lookup "$REPO/bench/fixtures/semdecl_metaclass_scope.iyi" Lock HELD > "$WORK/sl_p.txt" 2> "$WORK/sl_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/sl_pe.txt")"; status=1
+elif cmp -s "$WORK/sl_p.txt" "$scope_expected"; then
+  echo "  semdecl_metaclass_scope.iyi: Lock::HELD found from the metaclass"
+else
+  echo "  semdecl_metaclass_scope.iyi: PIN DIFFERS"
+  diff "$scope_expected" "$WORK/sl_p.txt" | head -n 20
+  status=1
+fi
 
 echo "== 2c. Prelude parent chains: Nil, Object, Reference, Value, Int32, String and a user class, identical to the oracle"
 if ! "$ORACLE" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/chain_o.txt" 2> "$WORK/chain_oe.txt"; then
@@ -402,6 +424,19 @@ check_const_facts_diverge() {
   return 0
 }
 
+check_pins_diverge() {
+  # Builds the driver as it now stands and runs the total-mode and metaclass-scope pins. Returns non-zero
+  # (caught) when the driver fails to build, a total-mode load raises on the unresolved superclass, or a
+  # metaclass scope does not find the class's constant.
+  local probe="$WORK/mut_pin_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --total-typed "$REPO/bench/fixtures/total_unresolved_superclass.iyi" > "$WORK/mut_tt.txt" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_tt.txt" "$total_typed_expected" || return 1
+  "$probe" --scope-lookup "$REPO/bench/fixtures/semdecl_metaclass_scope.iyi" Lock HELD > "$WORK/mut_sl.txt" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_sl.txt" "$scope_expected" || return 1
+  return 0
+}
+
 echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
@@ -409,7 +444,7 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
@@ -549,6 +584,22 @@ prove_mutation "the predefined constants are not found by name" "$MUT_SEM" \
   "if name == \"ARGC_UNSAFE\" || name == \"ARGV_UNSAFE\"" \
   "if name == \"NOPE\"" \
   -- check_const_facts_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+MUT_TS="$REPO/src/compiler/types/type_system.iyi"
+prove_mutation "an unresolvable written type raises once the type system is installed, even in total mode" "$MUT_TS" \
+  "      raise(message) unless @program.total_mode" \
+  "      raise(message)" \
+  -- check_pins_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "total mode raises on an unresolved superclass instead of carrying it past" "$MUT_SEM" \
+  "      if superclass.is_a?(UnresolvedType) && @program.total_mode" \
+  "      if superclass.is_a?(UnresolvedType) && !@program.total_mode" \
+  -- check_pins_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a metaclass scope does not look names up in its instance type" "$MUT_SEM" \
+  "        return lookup_type_path(path, instance.as(ModuleType))" \
+  "        return refuse_constant(path)" \
+  -- check_pins_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
