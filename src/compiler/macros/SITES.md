@@ -20,13 +20,13 @@ cannot read may only fall (`bench/macro_sites.floor`).
 | files | 136 |
 | files the hosted parser cannot read (their sites are unpaired) | 1 |
 | sites, all | 106 |
-| expanded identically | 87 |
+| expanded identically | 88 |
 | differing | 2 |
 | refused by the port | 2 |
 | unpaired | 1 |
-| needs the enclosing type (`@type`, `@top_level`, `@def`, `@caller`) | 8 |
+| needs the enclosing type (`@type`, `@top_level`, `@def`, `@caller`) | 7 |
 | in a macro body (expanded when called) | 6 |
-| compared | 92 |
+| compared | 93 |
 
 ## Top reasons
 
@@ -53,7 +53,7 @@ cannot read may only fall (`bench/macro_sites.floor`).
 | `src/iyi/io.iyi` | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/macros.iyi` | 6 | 0 | 0 | 0 | 0 | 0 | 6 |
 | `src/iyi/number.iyi` | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
-| `src/iyi/object.iyi` | 11 | 9 | 0 | 0 | 0 | 2 | 0 |
+| `src/iyi/object.iyi` | 11 | 10 | 0 | 0 | 0 | 1 | 0 |
 | `src/iyi/prelude.iyi` | 33 | 33 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/primitives.iyi` | 5 | 4 | 0 | 0 | 0 | 1 | 0 |
 | `src/iyi/range.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -191,7 +191,6 @@ left out: each is checked when its macro is called.
 | `src/iyi/enum.iyi:126:5` | MacroFor | def:names | needs-context |  |
 | `src/iyi/enum.iyi:143:5` | MacroFor | def:parse? | needs-context |  |
 | `src/iyi/enum.iyi:154:5` | MacroFor | def:from_value? | needs-context |  |
-| `src/iyi/object.iyi:8:5` | MacroExpression | def:to_s | needs-context |  |
 | `src/iyi/object.iyi:54:5` | MacroFor | def:== | needs-context |  |
 | `src/iyi/primitives.iyi:69:5` | MacroIf | def:hash | needs-context |  |
 | `src/compiler/command/driver.iyi:173:18` | MacroExpression | class | differing | oracle error "Error opening file with mode 'r': './../../IYI_VERSION': No such file or directory"; port error |

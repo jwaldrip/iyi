@@ -54,6 +54,7 @@ for phrase in \
   "testing macro AST node methods... ok" \
   "testing macro fresh variable generation... ok" \
   "testing macro code and definition generation... ok" \
+  "testing @type as the enclosing class's TypeNode... ok" \
   "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -125,12 +126,14 @@ def strip_header_annotations(src : String) : String
 end
 
 # Finds the top-level macro sites of a whole file, as the port's MacroSiteScan does.
+# Each site comes with its context, and with the qualified name and generic flag
+# of the class it is written in ("" at the top of the file).
 class SiteFinder < Iyi::Visitor
   def visit(node : Iyi::ASTNode) : Bool
     true
   end
 
-  def initialize(@context : String, @sites : Array(Tuple(Iyi::ASTNode, String)))
+  def initialize(@context : String, @sites : Array(Tuple(Iyi::ASTNode, String, String, Bool)), @type_name : String = "", @generic : Bool = false)
   end
 
   def visit(node : Iyi::MacroIf) : Bool
@@ -154,45 +157,81 @@ class SiteFinder < Iyi::Visitor
   end
 
   def visit(node : Iyi::Macro) : Bool
-    scan_body("macro", node.body)
+    scan_body("macro", node.body, @type_name, @generic)
     false
   end
 
   def visit(node : Iyi::Def) : Bool
-    scan_body("def:#{node.name}", node.body)
+    scan_body("def:#{node.name}", node.body, @type_name, @generic)
     false
   end
 
   def visit(node : Iyi::ClassDef) : Bool
-    scan_body("class", node.body)
+    scan_body("class", node.body, qualified(node.name.names), generic_names?(node.type_vars))
     false
   end
 
+  # A module is generic here: its `@type` is not a class.
   def visit(node : Iyi::ModuleDef) : Bool
-    scan_body("class", node.body)
+    scan_body("class", node.body, qualified(node.name.names), true)
     false
+  end
+
+  def qualified(names : Array(String)) : String
+    @type_name.empty? ? names.join("::") : "#{@type_name}::#{names.join("::")}"
+  end
+
+  def generic_names?(type_vars : Array(String)?) : Bool
+    if tv = type_vars
+      !tv.empty?
+    else
+      false
+    end
   end
 
   private def add_site(node : Iyi::ASTNode) : Nil
-    @sites << {node, @context}
+    @sites << {node, @context, @type_name, @generic}
   end
 
-  private def scan_body(context : String, body : Iyi::ASTNode) : Nil
-    body.accept(SiteFinder.new(context, @sites))
+  private def scan_body(context : String, body : Iyi::ASTNode, type_name : String, generic : Bool) : Nil
+    body.accept(SiteFinder.new(context, @sites, type_name, generic))
   end
 end
 
-# Whether a site reads `@type`, `@top_level`, `@def` or `@caller`.
+# Whether a site reads `@type`, `@top_level`, `@def` or `@caller`, and whether every
+# read of `@type` is a call of a method the port answers from the name.
 class ContextProbe < Iyi::Visitor
   getter found = false
+  getter type_reads = 0
+  getter type_calls = 0
+  getter other_reads = false
 
   def visit(node : Iyi::ASTNode) : Bool
     true
   end
 
   def visit(node : Iyi::InstanceVar) : Bool
-    @found = true if ["@type", "@top_level", "@def", "@caller"].includes?(node.name)
+    if node.name == "@type"
+      @found = true
+      @type_reads += 1
+    elsif ["@top_level", "@def", "@caller"].includes?(node.name)
+      @found = true
+      @other_reads = true
+    end
     true
+  end
+
+  def visit(node : Iyi::Call) : Bool
+    if obj = node.obj
+      if obj.is_a?(Iyi::InstanceVar) && obj.name == "@type" && ["name", "stringify", "id"].includes?(node.name)
+        @type_calls += 1
+      end
+    end
+    true
+  end
+
+  def names_only? : Bool
+    !@other_reads && @type_reads == @type_calls
   end
 end
 
@@ -247,20 +286,26 @@ if sites
     program.codegen_target = Iyi::Codegen::Target.new(target)
   end
   defines.each { |d| program.flags << d }
-  found = [] of Tuple(Iyi::ASTNode, String)
+  found = [] of Tuple(Iyi::ASTNode, String, String, Bool)
   node.accept(SiteFinder.new("top", found))
-  found.each_with_index do |pair, idx|
-    site = pair[0]
-    context = pair[1]
+  found.each_with_index do |tuple, idx|
+    site = tuple[0]
+    context = tuple[1]
+    type_name = tuple[2]
+    generic = tuple[3]
     head = "site #{idx} #{site.class.name.split("::").last} #{line_col(site)} #{context}"
     probe = ContextProbe.new
     site.accept(probe)
     if context == "macro"
       puts "#{head} macro-body"
-    elsif probe.found
+    elsif probe.found && !(probe.names_only? && !type_name.empty? && !generic)
       puts "#{head} needs-context"
     else
-      interp = Iyi::MacroInterpreter.new(program, program, program, site.location, in_macro: false)
+      scope : Iyi::Type = program
+      if probe.found && !type_name.empty?
+        scope = Iyi::NonGenericClassType.new(program, program, type_name, nil, false)
+      end
+      interp = Iyi::MacroInterpreter.new(program, scope, program, site.location, in_macro: false)
       begin
         interp.accept(site)
         puts "#{head} text=#{escape_s(interp.to_s)}"
@@ -452,10 +497,12 @@ echo "== 3. Mutation proofs: each one must make the comparison above fail"
 # with the hosted compiler's. It returns zero only when the comparison still passes.
 check_macros_still_match() {
   "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_macros_exercise.iyi" >/dev/null 2>&1 || return 1
-  if compare_all "$WORK/mut-exercise"; then
-    return 0
-  fi
-  return 1
+  compare_all "$WORK/mut-exercise" || return 1
+  # The prelude's object file has the class-scoped sites that read `@type`
+  # (`Object#to_s` among them), which no fixture reaches: their dumps must agree too.
+  "$WORK/mut-exercise" --sites "$REPO/src/iyi/object.iyi" > "$WORK/mut-sites.port" 2>/dev/null || return 1
+  "$WORK/dump_crystal" --sites "$REPO/src/iyi/object.iyi" > "$WORK/mut-sites.oracle" 2>/dev/null || return 1
+  cmp -s "$WORK/mut-sites.oracle" "$WORK/mut-sites.port"
 }
 
 MUTATIONS_RUN=0
@@ -533,6 +580,30 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "raise message altered" "$INTERP" \
   "fail_at(node, raise_message(node.args))" \
   "fail_at(node, raise_message(node.args) + \"!\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "@type names the wrong class" "$INTERP" \
+  "return TypeNode.new(@scope_name)" \
+  "return TypeNode.new(\"Wrong\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "TypeNode#name appends a character" "$METHODS" \
+  "return MacroId.new(rec.as(TypeNode).name)" \
+  "return MacroId.new(rec.as(TypeNode).name + \"X\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "sites expanded in the program scope, not their class" "$REPO/bench/selfhost_macros_exercise.iyi" \
+  "scope = ref.type_name.empty? ? \"<Program>\" : ref.type_name" \
+  "scope = \"<Program>\"" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "@top_level is no longer recognised" "$INTERP" \
+  "if iv.name == \"@top_level\"" \
+  "if iv.name == \"@top_levelX\"" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

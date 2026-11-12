@@ -105,10 +105,11 @@ module BenchSelfhostMacrosExercise
       head = "site #{i} #{MacroMethods.node_class_name(site)} #{BenchSelfhostMacrosExercise.line_col(site)} #{ref.context}"
       if ref.context == "macro"
         s = s + head + " macro-body\n"
-      elsif MacroSiteScan.needs_context?(site)
+      elsif MacroSiteScan.needs_context?(site, ref.type_name, ref.generic)
         s = s + head + " needs-context\n"
       else
-        rep = engine.site_report(site)
+        scope = ref.type_name.empty? ? "<Program>" : ref.type_name
+        rep = engine.site_report(site, scope)
         if f = rep.failure
           s = s + head + " error #{f.line}:#{f.column} message=#{escape_s(f.message)}\n"
         elsif rep.skipped
@@ -284,6 +285,27 @@ make_getter(answer, 42)
     puts "ok"
   end
 
+  def self.test_type_node
+    print "testing @type as the enclosing class's TypeNode... "
+    src = %(
+class Object
+  def to_s
+    {{ @type.name.stringify }}
+  end
+end
+)
+    refs = MacroSiteScan.scan(Parser.new(src).parse)
+    assert(refs.size == 1, "one site in the class")
+    ref = refs[0]
+    assert(ref.type_name == "Object", "the site is written in class Object")
+    assert(!MacroSiteScan.needs_context?(ref.node, ref.type_name, ref.generic), "a name-only site is compared, not needs-context")
+    assert(MacroSiteScan.needs_context?(ref.node, "", false), "the same site at the top of a file needs its context")
+    rep = MacroEngine.new.site_report(ref.node, ref.type_name)
+    assert(rep.failure.nil?, "the class-name expansion does not fail")
+    assert(rep.output == "\"Object\"", "the site expands to the class name as a string")
+    puts "ok"
+  end
+
   def self.run_all : Nil
     puts "Running Selfhost Macro Engine Verification Suite (pure iyi stage 0)"
     puts "============================================================="
@@ -295,6 +317,7 @@ make_getter(answer, 42)
     test_ast_methods
     test_fresh_vars
     test_code_generation
+    test_type_node
     puts "============================================================="
     puts "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"
     puts "============================================================="

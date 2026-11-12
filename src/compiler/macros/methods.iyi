@@ -3,7 +3,7 @@ module compiler/macros/methods
 import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Underscore, Unless, Until, Var, While, StringBuilder}
 import compiler/syntax/token::{NumberKind}
 import compiler/platform/flags::{PlatformFlags}
-import compiler/macros/ast::{MacroId}
+import compiler/macros/ast::{MacroId, TypeNode}
 import compiler/macros/answers::{MacroAnswers}
 
 pub class MacroMethods
@@ -337,6 +337,16 @@ pub class MacroMethods
       else
         return BoolLiteral.new(true)
       end
+    end
+
+    if rec.is_a?(TypeNode)
+      # `name(generic_args:)` changes only a generic type's name. The scan never
+      # answers a generic type from its name (MacroSiteRef.generic), so the name
+      # is the same with or without the argument.
+      if method == "name"
+        return MacroId.new(rec.as(TypeNode).name)
+      end
+      return nil
     end
 
     if rec.is_a?(StringLiteral)

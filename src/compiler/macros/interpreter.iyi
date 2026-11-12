@@ -371,8 +371,18 @@ pub class MacroInterpreter
 
     if node.is_a?(InstanceVar)
       iv = node.as(InstanceVar)
-      if iv.name == "@type" || iv.name == "@top_level"
-        return MacroId.new(@scope_name)
+      if iv.name == "@type"
+        # Inside a class, `@type` is the class's TypeNode. At the top of a file it
+        # is the program, which prints as `<Program>` (pinned by the fixture
+        # macro_instance_vars); its methods are not answered, so a call on it is
+        # refused as an undefined method on MacroId.
+        if @scope_name == "<Program>"
+          return MacroId.new("<Program>")
+        end
+        return TypeNode.new(@scope_name)
+      end
+      if iv.name == "@top_level"
+        return MacroId.new("<Program>")
       end
       if iv.name == "@def"
         return NilLiteral.new
