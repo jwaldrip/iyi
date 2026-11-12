@@ -8,6 +8,8 @@ class Gauge
 
   def initialize(@unit : String, scale : Int32)
     @level = scale
+    @high = 0_u64
+    @low = 0_u64
   end
 end
 
