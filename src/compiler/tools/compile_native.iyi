@@ -24,6 +24,7 @@ import compiler/native/emit::{to_bytes}
 import compiler/native/link/link::{LinkedImage}
 import compiler/compiler::{Compiler, CompilerConfig}
 import compiler/loader::{Loader}
+import compiler/backend/backend::{Backend}
 import compiler/backend/native::{NativeBackend}
 import std/file
 
@@ -69,14 +70,20 @@ module CompileNative
     target = TARGET
     probe = false
     prelude = false
+    emit_ir = false
+    print_backend = false
+    asked_llvm = false
     i = 3
     while i < args.size
       if args[i] == "--target" && i + 1 < args.size
         target = args[i + 1]
         i = i + 2
       elsif args[i] == "--backend" && i + 1 < args.size
-        # The native backend is the only backend this tool has. Any other name is refused by name.
-        unless args[i + 1] == "native"
+        # The native backend is the only backend this tool has. LLVM is refused once the arguments are read, with the
+        # message a compiler without it gives, so --target is known. Any other name is refused by name.
+        if args[i + 1] == "llvm"
+          asked_llvm = true
+        elsif args[i + 1] != "native"
           fail("this tool has only the native backend, and #{args[i + 1]} was asked for")
         end
         i = i + 2
@@ -86,9 +93,23 @@ module CompileNative
       elsif args[i] == "--prelude"
         prelude = true
         i = i + 1
+      elsif args[i] == "--print-backend"
+        print_backend = true
+        i = i + 1
+      elsif args[i] == "--emit" && i + 1 < args.size && args[i + 1] == "ir"
+        emit_ir = true
+        i = i + 2
       else
         fail("unknown argument #{args[i]}")
       end
+    end
+    if asked_llvm
+      STDERR.puts(Backend.no_backend_message(target))
+      LibC.exit(1)
+    end
+    if print_backend
+      print "#{Backend.backend_for(target)}\n"
+      return nil
     end
     unless target == TARGET || target == "wasm32-wasi"
       fail("the native backend builds #{TARGET} and wasm32-wasi only, and #{target} was asked for")
@@ -105,10 +126,13 @@ module CompileNative
       config = CompilerConfig.new(output, false, nil, false, target, probe, false, false)
       loader = Loader.new
       loader.load_prelude = prelude
-      Compiler.new(config, loader, NativeBackend.new).compile(input)
-      print "BUILT #{output}\n" unless probe
+      compiler = Compiler.new(config, loader, NativeBackend.new)
+      compiler.emit_ir = emit_ir
+      compiler.compile(input)
+      print "BUILT #{output}\n" unless probe || emit_ir
       return nil
     end
+    fail("--emit ir writes the IR of a source program, and #{input} is already IR") if emit_ir
     mod = module_of(File.read(input), input)
     if target == "wasm32-wasi"
       unless mod.target.architecture == "wasm32" && mod.target.wasi?

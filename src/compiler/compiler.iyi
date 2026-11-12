@@ -28,6 +28,7 @@ import compiler/macros/methods::{MacroMethods}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/ir/verifier::{verify}
+import compiler/ir/printer::{print}
 alias PlatformTarget = ::Compiler::Platform::Target::Target
 
 # Configuration options for the compiler pipeline.
@@ -75,8 +76,10 @@ end
 pub class Compiler
   property config : CompilerConfig
   property loader : Loader
+  property emit_ir : Bool
 
   def initialize(@config : CompilerConfig = CompilerConfig.new, @loader : Loader = Loader.new, @backend : Backend = Backend.new)
+    @emit_ir = false
   end
 
   def compile(root_filename : String) : CompileResult
@@ -239,6 +242,11 @@ pub class Compiler
     end
     unless errors.empty?
       raise "IR verifier refused the module: " + errors[0].to_s
+    end
+    # --emit ir: the verified module is written to the output as IR text, and no backend runs.
+    if @emit_ir
+      File.write(@config.output_filename, print(mod))
+      return CompileResult.new(@config.output_filename, "", resolved_modules)
     end
     # 6. Emit and link: the backend writes the output. A refusal is raised here, by name, and nothing is written.
     obj_path = @config.obj_output_filename || (@config.output_filename + ".o")
