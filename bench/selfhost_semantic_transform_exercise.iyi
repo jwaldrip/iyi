@@ -5,6 +5,7 @@ import compiler/foundation/string_pool::{StringPool}
 import compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState}
 import compiler/syntax/lexer::{Lexer}
 import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Metaclass, ExceptionHandler, Rescue, ProcLiteral, Propagate, Defer, Recover}
+import compiler/syntax/ast::{Select, Macro, ProcPointer, Union}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 import compiler/semantic/normalizer::{NormalizerProgram, Normalizer}
@@ -507,17 +508,76 @@ module BenchSemanticTransformExercise
         s += "#{p}  default:\n" + dump_ast(d, indent + 2)
       end
       s
+    when Select
+      s = "#{p}Select\n"
+      node.whens.each { |w| s += dump_ast(w, indent + 1) }
+      if el = node.else
+        s += "#{p}  else:\n" + dump_ast(el, indent + 2)
+      end
+      s
     when TypeOf
       s = "#{p}TypeOf\n"
       node.expressions.each { |e| s += dump_ast(e, indent + 1) }
       s
     else
-      "#{p}ASTNode\n"
+      "#{p}Node\n"
     end
   end
 end
 
-if Program.args.size > 1 && Program.args[1] == "--count"
+# The constructs one file holds, counted by the port's parser before anything
+# is transformed: the scoreboard's occurrence counts.
+class TransformKinds < Visitor
+  getter counts : Hash(String, Int32)
+
+  def initialize
+    @counts = Hash(String, Int32).new
+  end
+
+  def bump(kind : String) : Nil
+    @counts[kind] = (@counts[kind]? || 0) + 1
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    bump("MultiAssign") if node.is_a?(MultiAssign)
+    bump("Select") if node.is_a?(Select)
+    bump("RegexLiteral") if node.is_a?(RegexLiteral)
+    bump("ProcLiteral") if node.is_a?(ProcLiteral)
+    bump("ProcPointer") if node.is_a?(ProcPointer)
+    bump("And") if node.is_a?(And)
+    bump("Or") if node.is_a?(Or)
+    bump("Propagate") if node.is_a?(Propagate)
+    bump("Recover") if node.is_a?(Recover)
+    bump("Defer") if node.is_a?(Defer)
+    bump("Unless") if node.is_a?(Unless)
+    bump("Until") if node.is_a?(Until)
+    bump("OpAssign") if node.is_a?(OpAssign)
+    bump("StringInterpolation") if node.is_a?(StringInterpolation)
+    bump("RangeLiteral") if node.is_a?(RangeLiteral)
+    bump("ArrayLiteral") if node.is_a?(ArrayLiteral)
+    bump("HashLiteral") if node.is_a?(HashLiteral)
+    bump("NamedTupleLiteral") if node.is_a?(NamedTupleLiteral)
+    bump("TupleLiteral") if node.is_a?(TupleLiteral)
+    bump("Case") if node.is_a?(Case)
+    bump("Macro") if node.is_a?(Macro)
+    bump("Union") if node.is_a?(Union)
+    bump("Block") if node.is_a?(Block)
+    bump("Def") if node.is_a?(Def)
+    bump("Assign") if node.is_a?(Assign)
+    bump("If") if node.is_a?(If)
+    bump("While") if node.is_a?(While)
+    bump("Call") if node.is_a?(Call)
+    true
+  end
+end
+
+if Program.args.size > 1 && Program.args[1] == "kinds"
+  kinds_filename = Program.args[0]
+  kinds_parser = Parser.new(File.read(kinds_filename), kinds_filename)
+  kinds_visitor = TransformKinds.new
+  kinds_parser.parse.accept(kinds_visitor)
+  kinds_visitor.counts.keys.each { |kind| puts "#{kind} #{kinds_visitor.counts[kind]}" }
+elsif Program.args.size > 1 && Program.args[1] == "--count"
   filename = Program.args[0]
   source = File.read(filename)
   parser = Parser.new(source, filename)

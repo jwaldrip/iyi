@@ -491,12 +491,19 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
       s += "#{p}  default:\n" + dump_ast(d, indent + 2)
     end
     s
+  when Iyi::Select
+    s = "#{p}Select\n"
+    node.whens.each { |w| s += dump_ast(w, indent + 1) }
+    if el = node.else
+      s += "#{p}  else:\n" + dump_ast(el, indent + 2)
+    end
+    s
   when Iyi::TypeOf
     s = "#{p}TypeOf\n"
     node.expressions.each { |e| s += dump_ast(e, indent + 1) }
     s
   else
-    "#{p}#{node.class.name}\n"
+    "#{p}Node\n"
   end
 end
 
@@ -542,6 +549,10 @@ class LiteralWalk < Iyi::Transformer
   end
 
   def transform(node : Iyi::MultiAssign) : Iyi::ASTNode
+    Iyi::LiteralExpander.new(@program).expand(node).transform(self)
+  end
+
+  def transform(node : Iyi::Select) : Iyi::ASTNode
     Iyi::LiteralExpander.new(@program).expand(node).transform(self)
   end
 end

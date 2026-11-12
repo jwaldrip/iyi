@@ -49,7 +49,7 @@ module compiler/semantic/literal_expander
 # Named tuples have no expansion in the hosted expander either, so none here.
 
 import compiler/semantic/normalizer::{NormalizerProgram}
-import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, Metaclass, MultiAssign, NilLiteral, Nop, NumberLiteral, Or, Path, RangeLiteral, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
+import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, Cast, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, Metaclass, MultiAssign, NilLiteral, Nop, NumberLiteral, Or, Path, RangeLiteral, Select, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
@@ -82,6 +82,13 @@ pub class LiteralExpander < Transformer
   # Multiple assignment: the hosted expansion, then the walk continues into it.
   def transform(node : MultiAssign) : ASTNode
     expanded = expand_multi_assign(node)
+    expanded.transform(self)
+  end
+
+  # `select`: one channel `select` over every arm's operation, then a `case`
+  # on the index it answers with.
+  def transform(node : Select) : ASTNode
+    expanded = expand_select(node)
     expanded.transform(self)
   end
 
@@ -274,8 +281,11 @@ pub class LiteralExpander < Transformer
   # `case subject` as an `if` chain. The subject is bound first, then every
   # branch body in source order, then the `else`: the order the hosted pass
   # allocates its temporaries in. The chain is built from the last branch back,
-  # so each branch's `else` is the branch after it.
-  def expand_case(node : Case) : ASTNode
+  # so each branch's `else` is the branch after it. `binds_it` is true for a
+  # user's `case`, whose branches bind `it` to the subject as the parser marks
+  # them (binds_it?). A case the expander builds itself (a select's) passes
+  # false: the hosted pass leaves its branches unbound.
+  def expand_case(node : Case, binds_it : Bool = true) : ASTNode
     cond = node.cond
     if node.whens.empty?
       exps = [] of ASTNode
@@ -294,13 +304,17 @@ pub class LiteralExpander < Transformer
 
     assigns = [] of ASTNode
     subject = bind_subject(cond, assigns)
+    it_subject = subject
+    if !binds_it
+      it_subject = nil
+    end
     bodies = [] of ASTNode
     i = 0
     while i < node.whens.size
-      bodies << bind_it(node.whens[i].body, subject)
+      bodies << bind_it(node.whens[i].body, it_subject)
       i += 1
     end
-    chain = else_or_nop(node.else, subject)
+    chain = else_or_nop(node.else, it_subject)
     i = node.whens.size - 1
     while i >= 0
       chain = when_chain(node.whens[i], bodies[i], subject, chain)
@@ -684,6 +698,99 @@ pub class LiteralExpander < Transformer
       return call
     end
     Assign.new(inner, value)
+  end
+
+  # The hosted expand(Select). A call arm's operation is the channel's action of
+  # the same name (`send` is `send_select_action`), and its body runs only when
+  # that operation happened, which the iyi prelude names with a flag. An assign
+  # arm binds its target to the value, cast to the operation's type. The
+  # temporaries are taken in the hosted order: index, value, then happened.
+  def expand_select(node : Select) : ASTNode
+    index_name = @program.new_temp_var_name
+    value_name = @program.new_temp_var_name
+    has_happened = @program.iyi_prelude
+    happened_name = ""
+    if has_happened
+      happened_name = @program.new_temp_var_name
+    end
+    targets = [Var.new(index_name), Var.new(value_name)] of ASTNode
+    if has_happened
+      targets << Var.new(happened_name)
+    end
+    channel = Path.global(["Channel"] of String)
+    tuple_values = [] of ASTNode
+    case_whens = [] of When
+    first_bound = -1
+    i = 0
+    while i < node.whens.size
+      a_when = node.whens[i]
+      condition = a_when.conds[0]
+      if condition.is_a?(Call)
+        cloned_call = condition.clone.as(Call)
+        cloned_call.name = select_action_name(cloned_call.name)
+        tuple_values << cloned_call
+        body = a_when.body.clone
+        if has_happened
+          body = If.new(Var.new(happened_name), body)
+        end
+        case_whens << When.new([NumberLiteral.new(i.to_s)] of ASTNode, body)
+      elsif condition.is_a?(Assign)
+        assign = condition.as(Assign)
+        if first_bound < 0
+          first_bound = i
+        end
+        cloned_call = assign.value.clone.as(Call)
+        cloned_call.name = select_action_name(cloned_call.name)
+        tuple_values << cloned_call
+        typeof_node = TypeOf.new([assign.value.clone] of ASTNode)
+        cast = Cast.new(Var.new(value_name), typeof_node)
+        new_assign = Assign.new(assign.target.clone, cast)
+        new_body = Expressions.new([new_assign, a_when.body.clone] of ASTNode)
+        case_whens << When.new([NumberLiteral.new(i.to_s)] of ASTNode, new_body)
+      else
+        raise "BUG: expected select when expression to be Assign or Call"
+      end
+      i += 1
+    end
+    args = [TupleLiteral.new(tuple_values)] of ASTNode
+    if has_happened
+      args << NumberLiteral.new(first_bound.to_s)
+    end
+    call_name = "select"
+    if select_has_else?(node)
+      call_name = "non_blocking_select"
+    end
+    call = Call.new(channel, call_name, args)
+    multi = MultiAssign.new(targets, [call] of ASTNode)
+    a_case = Case.new(Var.new(index_name), case_whens, select_else(node), false)
+    chain = expand_case(a_case, false)
+    Expressions.new([multi, chain] of ASTNode)
+  end
+
+  def select_has_else?(node : Select) : Bool
+    else_node = node.else
+    !else_node.nil?
+  end
+
+  # The `else` of the select, cloned; without one, the hosted raise that a
+  # select index outside the arms can never reach.
+  def select_else(node : Select) : ASTNode
+    if e = node.else
+      return e.clone
+    end
+    Call.global("raise", StringLiteral.new("BUG: invalid select index"))
+  end
+
+  # `send` is `send_select_action`; a name ending in `?` or `!` keeps the mark
+  # at its end, after `_select_action`, as the hosted select_action_name does.
+  def select_action_name(name : String) : String
+    if name.ends_with?("!")
+      return name[0, name.size - 1] + "_select_action!"
+    end
+    if name.ends_with?("?")
+      return name[0, name.size - 1] + "_select_action?"
+    end
+    name + "_select_action"
   end
 end
 

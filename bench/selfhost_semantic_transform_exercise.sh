@@ -311,7 +311,72 @@ LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a negative end of a splat range does not count from the end" "$LITERAL" 'last = last + values.size' 'last = last + 0' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "several values are assigned to targets before their temporaries" "$LITERAL" 'to_temps.concat(from_temps)' 'from_temps.concat(to_temps)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "the select's first bound arm is off by one" "$LITERAL" 'first_bound = i' 'first_bound = i + 1' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a select arm's body runs whether or not its operation happened" "$LITERAL" 'body = If.new(Var.new(happened_name), body)' 'body = body' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a select action is named without its suffix" "$LITERAL" 'name + "_select_action"' 'name + "_select"' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a select with an else is not non-blocking" "$LITERAL" 'call_name = "non_blocking_select"' 'call_name = "select"' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "the select without an else raises a different bug" "$LITERAL" 'Call.global("raise", StringLiteral.new("BUG: invalid select index"))' 'Call.global("raise", StringLiteral.new("BUG"))' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "the select ignores the iyi prelude's happened flag" "$LITERAL" 'has_happened = @program.iyi_prelude' 'has_happened = false' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a select's branches bind it as a user case does" "$LITERAL" 'chain = expand_case(a_case, false)' 'chain = expand_case(a_case, true)' -- check_literals_agree || status=1
 echo "  $LIT_MUTATIONS literal mutation proofs run"
+
+echo
+echo "== 6. Corpus: the transforms over the port's own source and prelude"
+# Every .iyi file of the port's compiler and of the prelude is walked by the
+# port and by the hosted walk, in the literal mode of section 5, and the two
+# trees are compared. A file either side refuses is counted apart. The floor
+# counts the identical files and may only rise: TRANSFORM_CORPUS_RAISE=1 writes
+# the measured count to the floor file, and a count below the floor fails.
+CORPUS_FLOOR="$REPO/bench/selfhost_semantic_transform_corpus.floor"
+corpus_files=$({ find "$REPO/src/compiler" -name '*.iyi'; find "$REPO/src/iyi" -maxdepth 1 -name '*.iyi'; } | sort)
+corpus_count=0
+corpus_identical=0
+corpus_refused=0
+: > "$WORK/corpus_kinds.txt"
+for file in $corpus_files; do
+  rel="${file#$REPO/}"
+  corpus_count=$((corpus_count + 1))
+  if ! "$WORK/port_exercise" "$file" literals > "$WORK/corpus_port.ast" 2> "$WORK/corpus_port.err"; then
+    corpus_refused=$((corpus_refused + 1))
+    echo "  $rel: refused by the port: $(awk 'NR==1' "$WORK/corpus_port.err")"
+    continue
+  fi
+  if ! IYI_PATH="$REPO/src" "$WORK/dump_crystal" "$file" literals > "$WORK/corpus_oracle.ast" 2> "$WORK/corpus_oracle.err"; then
+    corpus_refused=$((corpus_refused + 1))
+    echo "  $rel: refused by the hosted walk: $(awk 'NR==1' "$WORK/corpus_oracle.err")"
+    continue
+  fi
+  "$WORK/port_exercise" "$file" kinds >> "$WORK/corpus_kinds.txt" 2> /dev/null
+  if cmp -s "$WORK/corpus_port.ast" "$WORK/corpus_oracle.ast"; then
+    corpus_identical=$((corpus_identical + 1))
+  else
+    echo "  $rel: first difference"
+    diff -u "$WORK/corpus_oracle.ast" "$WORK/corpus_port.ast" | awk '/^@@/{n++} n==1' | awk 'NR<=10'
+  fi
+done
+echo "  Corpus: $corpus_identical/$corpus_count files transform identically ($corpus_refused refused by one side)"
+echo "  Constructs in that source, counted by the port's parser before any transform:"
+awk '{t[$1]+=$2} END{for (k in t) printf "    %-22s %d\n", k, t[k]}' "$WORK/corpus_kinds.txt" | sort
+corpus_floor=0
+if [ -f "$CORPUS_FLOOR" ]; then
+  corpus_floor=$(awk 'NR==1{print $1}' "$CORPUS_FLOOR")
+fi
+if [ "$corpus_identical" -lt "$corpus_floor" ]; then
+  echo "  CORPUS FLOOR DROPPED: $corpus_identical < $corpus_floor"
+  status=1
+elif [ "${TRANSFORM_CORPUS_RAISE:-0}" = "1" ]; then
+  printf '%s\n' "$corpus_identical" > "$CORPUS_FLOOR"
+  echo "  Floor raised: $corpus_floor -> $corpus_identical"
+else
+  echo "  Floor: $corpus_identical >= $corpus_floor"
+fi
 
 echo
 if [ "$status" -eq 0 ]; then
