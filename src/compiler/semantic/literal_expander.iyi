@@ -49,7 +49,7 @@ module compiler/semantic/literal_expander
 # Named tuples have no expansion in the hosted expander either, so none here.
 
 import compiler/semantic/normalizer::{NormalizerProgram}
-import compiler/syntax/ast::{ASTNode, And, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, Cast, CharLiteral, ClassVar, Def, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, MacroExpression, MacroFor, MacroIf, Metaclass, MultiAssign, NilLiteral, Nop, Not, NumberLiteral, Or, Path, RangeLiteral, Select, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
+import compiler/syntax/ast::{ASTNode, And, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, Cast, CharLiteral, ClassVar, Def, EnumDef, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, MacroExpression, MacroFor, MacroIf, Metaclass, MultiAssign, NilLiteral, Nop, Not, NumberLiteral, Or, Path, RangeLiteral, Select, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
@@ -133,6 +133,13 @@ pub class LiteralExpander < Transformer
     end
     transform_many(node.args)
     node.body = node.body.transform(self)
+    node
+  end
+
+  # The shared transformer returns an enum as written. The hosted walk enters
+  # its members, so a case in an enum's method is lowered too.
+  def transform(node : EnumDef) : ASTNode
+    transform_many(node.members)
     node
   end
 

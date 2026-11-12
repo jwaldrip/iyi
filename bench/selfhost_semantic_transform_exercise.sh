@@ -343,6 +343,8 @@ LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a condition against a tuple subject is tested with the first element" "$LITERAL" 'case_when_comparison(TupleLiteral.new(whole), cond)' 'case_when_comparison(temps[0], cond)' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a definition's argument defaults are not lowered" "$LITERAL" 'transform_many(node.args)' 'node.args.size' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "an enum's members are not lowered" "$LITERAL" 'transform_many(node.members)' 'node.members.size' -- check_literals_agree || status=1
 echo "  $LIT_MUTATIONS literal mutation proofs run"
 
 echo
