@@ -77,6 +77,12 @@
   returns through a pointer could not be typed. `out name` declares the local and is `Out(Var)`, `out @name` is
   `Out(InstanceVar)`, `out _` is `Out(Underscore)`, also as a named argument's value, as the hosted parser builds
   them.
+- **The whole-program gate says why the bridge refused, and the refused-fixture text is the tool's.** `iyi-ir import`
+  writes a refusal to stdout, where the IR would have gone, and the gate read stderr: on a host where the import
+  refuses, every program's row read `import` with no reason. The gate reads the refusal from where it is written.
+  `bench/fixtures/native_refused/wide_int.ir` still expected the refusal text from before wide results were lowered
+  (`an i192 value is not lowered in this slice`), so the first-light gate failed on darwin since that change; it
+  expects the text the back end gives now.
 - **The IR text form reads decimal floating-point constants** (`double 1.500000e+00`), the form LLVM prints for a
   value that is exact in a few digits, as well as the bit-pattern form.
 
