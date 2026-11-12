@@ -15,7 +15,7 @@ import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/syntax/ast::{ASTNode, ClassDef, Expressions, ModuleHeader}
 import compiler/semantic/top_level::{ModuleType}
-import compiler/semantic/top_level::{dir_of, normalize_path, declared_in?, NamedType, EnumType}
+import compiler/semantic/top_level::{dir_of, normalize_path, declared_in?, NamedType, EnumType, Const}
 
 # Lowering-types driver for bench/selfhost_lower_types_exercise.sh.
 #
@@ -293,7 +293,7 @@ module BenchSelfhostLowerTypesExercise
 
   # Every type the entry declares, nested types included: the hosted dump's rule (`dump_tree_declared`).
   def self.collect_declared(t : Type, entry : String, found : Array(Type)) : Nil
-    found << t if declared_in?(t.locations, entry)
+    found << t if declared_in?(t.locations, entry) && !t.is_a?(Const)
     if t.is_a?(NamedType) && !t.is_a?(EnumType)
       nt = t.as(NamedType)
       nt.types.keys.sorted.each do |sname|
