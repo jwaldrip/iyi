@@ -37,6 +37,17 @@ expected_verify() {
     # than carrying one of its own. Fixing concurrency should clear both, and
     # the gate will say so.
     "prelude.iyi")     echo "known-fail" ;;
+    # A prelude file the port refuses by name is its own verdict, "refused", with
+    # the port's message. It is not a pass, and the gate fails if the port starts
+    # emitting IR for it that does not verify. Raise the floor when the port types
+    # the construct that refuses it.
+    # These verified before only because the port dropped the calls it could not
+    # resolve (`raise` and the prelude's own methods, which a single-file probe
+    # does not define) and emitted the rest. The port now refuses each such call
+    # by name, so the verdict is "refused" until the port resolves them. The
+    # floor moves, and nothing is counted as a pass that the port never checked.
+    "hash.iyi"|"chaos.iyi"|"array.iyi"|"enum.iyi"|"file.iyi"|"float.iyi") echo "refused" ;;
+    "io.iyi"|"number.iyi"|"object.iyi"|"primitives.iyi"|"set.iyi"|"string.iyi"|"testing.iyi") echo "refused" ;;
     *)                 echo "pass" ;;
   esac
 }
@@ -48,7 +59,8 @@ if ! "$IYI" build -o "$REPO/.build/iyi-compile" "$COMPILE_TOOL_SRC" >/dev/null 2
 fi
 echo "  built .build/iyi-compile successfully"
 
-# Reports "pass", "fail: <message>", or "absent" when codegen never ran.
+# Reports "pass", "refused: <port message>", "fail: <verifier message>", or
+# "absent" when codegen never ran.
 verify_one() {
   local src="$1"
   local out
@@ -57,6 +69,8 @@ verify_one() {
     echo "pass"
   elif printf '%s' "$out" | grep -q '\[verify\] fail'; then
     printf 'fail: %s\n' "$(printf '%s' "$out" | sed -n 's/.*\[verify\] fail: //p' | head -1)"
+  elif printf '%s' "$out" | grep -q '^Error: port limitation'; then
+    printf 'refused: %s\n' "$(printf '%s' "$out" | grep '^Error: ' | head -1 | sed 's/^Error: //')"
   else
     echo "absent"
   fi
@@ -74,20 +88,32 @@ for src in "$REPO"/src/iyi/*.iyi; do
   got="$(verify_one "$src")"
   checked=$((checked + 1))
   note=""
-  if [ "$floor" = "pass" ]; then
-    if [ "$got" = "pass" ]; then
+  case "$floor" in
+    pass)
+      if [ "$got" = "pass" ]; then
+        held=$((held + 1))
+      else
+        note="REGRESSION"
+        status=1
+      fi
+      ;;
+    refused)
+      # Held at the port's named refusal. A pass here is an improvement to record,
+      # and any other verdict (including a verifier failure) is a regression.
+      case "$got" in
+        refused:*) held=$((held + 1)) ;;
+        pass) held=$((held + 1)); note="IMPROVED: the port types it now, raise this floor" ;;
+        *) note="REGRESSION"; status=1 ;;
+      esac
+      ;;
+    *)
+      # known-fail: passing is an improvement worth surfacing, never a failure.
       held=$((held + 1))
-    else
-      note="REGRESSION"
-      status=1
-    fi
-  else
-    # known-fail: passing is an improvement worth surfacing, never a failure.
-    held=$((held + 1))
-    case "$got" in
-      pass) note="IMPROVED: raise this floor" ;;
-    esac
-  fi
+      case "$got" in
+        pass) note="IMPROVED: raise this floor" ;;
+      esac
+      ;;
+  esac
   printf '  %-20s %-10s %s %s\n' "$name" "$floor" "$got" "$note"
 done
 echo "  Validity summary: $held/$checked prelude modules meet the committed IR floor"
@@ -98,10 +124,10 @@ fx_total=0
 fx_valid=0
 for src in "$REPO"/bench/fixtures/cg_*.iyi; do
   name="$(basename "$src")"
-  # A refusal fixture has no IR to verify: iyi refuses it, and
-  # selfhost_codegen_exercise.sh checks that the port refuses it the same way.
+  # A refusal or port-limitation fixture has no IR to verify: the port refuses it by
+  # name, and selfhost_codegen_exercise.sh checks that refusal against the oracle.
   case "$name" in
-    cg_exceptions.iyi|cg_raise.iyi) continue ;;
+    cg_exceptions.iyi|cg_raise.iyi|cg_undefined_raise.iyi|cg_undefined_crystal_raise.iyi|cg_splat_loop.iyi) continue ;;
   esac
   fx_total=$((fx_total + 1))
   got="$(verify_one "$src")"
@@ -113,6 +139,24 @@ for src in "$REPO"/bench/fixtures/cg_*.iyi; do
   fi
 done
 echo "  Fixture summary: $fx_valid/$fx_total codegen fixtures emit verifying IR"
+
+echo
+echo "== 3b. Forward-reference probes: a field may name a type defined later, and the IR must verify"
+echo "   (probes, not parity fixtures: they check the layout order, not the oracle's output)"
+probe_total=0
+probe_valid=0
+for src in "$REPO"/bench/fixtures/fwd_*_probe.iyi; do
+  name="$(basename "$src")"
+  probe_total=$((probe_total + 1))
+  got="$(verify_one "$src")"
+  if [ "$got" = "pass" ]; then
+    probe_valid=$((probe_valid + 1))
+  else
+    echo "  FAIL: $name did not verify ($got)"
+    status=1
+  fi
+done
+echo "  Probe summary: $probe_valid/$probe_total forward-reference probes emit verifying IR"
 
 echo
 echo "== 4. Guarded mutation proofs: the gate must go red on invalid IR"
@@ -155,7 +199,7 @@ prove_invalid "declare a call with the wrong return type" \
   "$CODEGEN_SRC" \
   "method_fn_ty = LLVMType.function(m_param_tys, call_ret_ty, false)" \
   "method_fn_ty = LLVMType.function(m_param_tys, @context.pointer, false)" \
-  "$REPO/src/iyi/float.iyi"
+  "$REPO/bench/fixtures/cg_struct_methods.iyi"
 
 echo "  Mutation summary: $mut_caught/$mut_run invalid-IR mutations caught"
 

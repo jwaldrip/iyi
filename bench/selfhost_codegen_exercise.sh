@@ -24,10 +24,19 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 # Refusal fixtures: iyi refuses these programs, so they have no IR to compare.
-# The port must refuse each one with the oracle's message and exit status (3b).
+# Each list names the oracle it is compared with, in sections 3b, 3b2 and 3c.
+#   REFUSAL_FIXTURES: the oracle under its default prelude. It refuses `rescue`
+#     and `ensure` in an iyi file, and the port must match its whole text.
+#   EMPTY_REFUSAL_FIXTURES: the oracle under --prelude=empty, the prelude the
+#     parity lists use. There is no definition of `raise` or `__crystal_raise`,
+#     so the oracle refuses the call, and the port must match its whole text.
+#   PORT_LIMIT_FIXTURES: the oracle is not asked for a verdict. The port cannot
+#     type a construct in these, so it must refuse by name and write no IR.
 REFUSAL_FIXTURES="cg_exceptions.iyi cg_raise.iyi"
+EMPTY_REFUSAL_FIXTURES="cg_undefined_raise.iyi cg_undefined_crystal_raise.iyi"
+PORT_LIMIT_FIXTURES="cg_splat_loop.iyi"
 is_refusal() {
-  case " $REFUSAL_FIXTURES " in
+  case " $REFUSAL_FIXTURES $EMPTY_REFUSAL_FIXTURES $PORT_LIMIT_FIXTURES " in
     *" $1 "*) return 0 ;;
   esac
   return 1
@@ -205,30 +214,78 @@ for fixture in "$REPO"/bench/fixtures/cg_*.iyi; do
 done
 echo "  Parity summary: $((fixture_count - diverged))/$fixture_count codegen fixtures match 100% ($total_functions functions compared)"
 
-echo "== 3b. Refusal fixtures: the port must refuse each with the oracle's message and exit status"
+# Runs the oracle and the port on one refusal fixture from the repo root, on the
+# same relative path, so both print the same location lines. It passes only when
+# the whole stderr text and the exit status are identical. $1 is the fixture and
+# $2 the oracle's extra flags. The oracle's text is kept for check_refusal_mutant.
+refusal_check() {
+  local name="$1" flags="$2" oracle_out oracle_status port_out port_status
+  local rel="bench/fixtures/$name"
+  oracle_out="$(cd "$REPO" && "$IYI" build $flags -o "$WORK/oracle_refusal_$name" "$rel" 2>&1)"
+  oracle_status=$?
+  printf '%s\n' "$oracle_out" > "$WORK/oracle_refusal_$name.txt"
+  printf '%s\n' "$oracle_status" > "$WORK/oracle_refusal_$name.status"
+  port_out="$(cd "$REPO" && "$WORK/exercise" --dump-ir "$rel" 2>&1)"
+  port_status=$?
+  if [ "$oracle_status" -ne 0 ] && [ "$oracle_status" -eq "$port_status" ] && [ "$oracle_out" = "$port_out" ]; then
+    echo "  $name: refused with the oracle's text and exit $port_status"
+    return 0
+  fi
+  echo "  FAIL: $name: oracle exit $oracle_status, port exit $port_status"
+  echo "    oracle: $oracle_out"
+  echo "    port:   $port_out"
+  return 1
+}
+
+echo "== 3b. Refusal fixtures: the port must refuse each with the oracle's whole text and exit status"
+echo "   (oracle: its default prelude, which refuses rescue and ensure)"
 refusal_count=0
 refusal_diverged=0
 for name in $REFUSAL_FIXTURES; do
-  fixture="$REPO/bench/fixtures/$name"
   refusal_count=$((refusal_count + 1))
-  oracle_out="$("$IYI" build -o "$WORK/oracle_refusal_$name" "$fixture" 2>&1)"
-  oracle_status=$?
-  printf '%s\n' "$oracle_out" | grep '^Error: ' | head -1 > "$WORK/oracle_refusal_$name.msg"
-  printf '%s\n' "$oracle_status" > "$WORK/oracle_refusal_$name.status"
-  "$WORK/exercise" --dump-ir "$fixture" > "$WORK/port_refusal_$name.out" 2>&1
-  port_status=$?
-  grep '^Error: ' "$WORK/port_refusal_$name.out" | head -1 > "$WORK/port_refusal_$name.msg"
-  if [ "$oracle_status" -ne 0 ] && [ "$oracle_status" -eq "$port_status" ] && [ -s "$WORK/oracle_refusal_$name.msg" ] && cmp -s "$WORK/oracle_refusal_$name.msg" "$WORK/port_refusal_$name.msg"; then
-    echo "  $name: refused as the oracle refuses it (exit $port_status): $(cat "$WORK/oracle_refusal_$name.msg")"
-  else
-    echo "  FAIL: $name: oracle exit $oracle_status, port exit $port_status"
-    echo "    oracle: $(cat "$WORK/oracle_refusal_$name.msg")"
-    echo "    port:   $(cat "$WORK/port_refusal_$name.msg")"
-    refusal_diverged=$((refusal_diverged + 1))
-    status=1
-  fi
+  refusal_check "$name" "" || refusal_diverged=$((refusal_diverged + 1))
 done
 echo "  Refusal summary: $((refusal_count - refusal_diverged))/$refusal_count refusal fixtures match the oracle's message and exit status"
+[ "$refusal_diverged" -eq 0 ] || status=1
+
+echo "== 3b2. Refusal fixtures against the oracle under --prelude=empty"
+echo "   (the prelude the parity lists use, which has no raise or __crystal_raise)"
+empty_count=0
+empty_diverged=0
+for name in $EMPTY_REFUSAL_FIXTURES; do
+  empty_count=$((empty_count + 1))
+  refusal_check "$name" "--prelude=empty" || empty_diverged=$((empty_diverged + 1))
+done
+echo "  Empty-prelude refusal summary: $((empty_count - empty_diverged))/$empty_count refusal fixtures match the oracle's message and exit status"
+[ "$empty_diverged" -eq 0 ] || status=1
+
+echo "== 3c. Port limitations: the port must refuse each by name and write no IR"
+echo "   (the oracle accepts or refuses these with its own wording, so no oracle text is compared)"
+limit_count=0
+limit_diverged=0
+for name in $PORT_LIMIT_FIXTURES; do
+  limit_count=$((limit_count + 1))
+  port_out="$(cd "$REPO" && "$WORK/exercise" --dump-ir "bench/fixtures/$name" 2>&1)"
+  port_status=$?
+  if [ "$port_status" -ne 0 ] && printf '%s\n' "$port_out" | grep -q '^Error: port limitation: the port cannot '; then
+    echo "  $name: port limitation, refused by name (exit $port_status): $(printf '%s\n' "$port_out" | grep '^Error: ' | head -1)"
+  else
+    echo "  FAIL: $name: the port did not refuse by name (exit $port_status): $port_out"
+    limit_diverged=$((limit_diverged + 1))
+  fi
+done
+echo "  Port-limitation summary: $((limit_count - limit_diverged))/$limit_count port limitations refused by name"
+[ "$limit_diverged" -eq 0 ] || status=1
+
+echo "== 3d. Forward references: a struct field may name a type defined later, with no panic"
+echo "   (a probe, not a parity fixture: the port emits every method of a type, while the oracle emits the reachable ones)"
+probe_status=0
+if (cd "$REPO" && "$WORK/exercise" --dump-ir "bench/fixtures/fwd_struct_probe.iyi" >/dev/null 2>&1); then
+  echo "  fwd_struct_probe.iyi: compiles, the field's struct type is laid out before its use"
+else
+  echo "  FAIL: fwd_struct_probe.iyi did not compile"
+  status=1
+fi
 
 echo
 echo "== 4. Emitted native object linking and C driver execution comparison"
@@ -278,14 +335,21 @@ check_cg_mutant() {
 
 # Rebuilds the port with a mutated backend and asks it to refuse the fixture. The
 # check passes, meaning not caught, only while the refusal still matches the
-# oracle's message and exit status recorded in section 3b.
+# oracle's whole text and exit status recorded in section 3b or 3b2.
 check_refusal_mutant() {
+  local name="$1" got got_status
+  "$IYI" build -o "$WORK/mut_exercise" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1 || return 1
+  got="$(cd "$REPO" && "$WORK/mut_exercise" --dump-ir "bench/fixtures/$name" 2>&1)"
+  got_status=$?
+  [ "$got_status" = "$(cat "$WORK/oracle_refusal_$name.status")" ] && [ "$got" = "$(cat "$WORK/oracle_refusal_$name.txt")" ]
+}
+# Rebuilds the port with a mutated backend and runs it on a forward-reference probe.
+# The probe compiles only while the port lays out the struct before its use, so a
+# panic or a refusal is detected. Returns zero (not caught) while it compiles.
+check_probe_mutant() {
   local name="$1"
   "$IYI" build -o "$WORK/mut_exercise" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1 || return 1
-  "$WORK/mut_exercise" --dump-ir "$REPO/bench/fixtures/$name" > "$WORK/mut_refusal.out" 2>&1
-  local got_status=$?
-  grep '^Error: ' "$WORK/mut_refusal.out" | head -1 > "$WORK/mut_refusal.msg"
-  [ "$got_status" = "$(cat "$WORK/oracle_refusal_$name.status")" ] && cmp -s "$WORK/oracle_refusal_$name.msg" "$WORK/mut_refusal.msg"
+  (cd "$REPO" && "$WORK/mut_exercise" --dump-ir "bench/fixtures/$name" >/dev/null 2>&1)
 }
 
 MUTATIONS_RUN=0
@@ -408,10 +472,35 @@ prove_mutation "corrupt the ensure refusal message" "$CG_SRC" \
   -- check_refusal_mutant cg_raise.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "corrupt the refusal exit status" "$CG_SRC" \
+prove_mutation_all "corrupt the refusal exit status" "$CG_SRC" \
   'LibC.exit(1)' \
   'LibC.exit(0)' \
   -- check_refusal_mutant cg_exceptions.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "drop the exit block of a statement if with no else" "$CG_SRC" \
+  '        exit_bb = fn.append_basic_block("exit")
+        @builder.br(exit_bb)
+      end
+
+      # The false edge' \
+  '        exit_bb = nil
+      end
+
+      # The false edge' \
+  -- check_cg_mutant cg_nil_local.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "read a named struct type before it is created" "$CG_SRC" \
+  '    st = @context.struct_named(name)' \
+  '    st = @llvm_struct_types[name]' \
+  -- check_probe_mutant fwd_struct_probe.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "corrupt the undefined-method refusal wording" "$CG_SRC" \
+  "    message = \"undefined method '#{node.name}' for top-level\"" \
+  "    message = \"undefined method '#{node.name}' for toplevel\"" \
+  -- check_refusal_mutant cg_undefined_raise.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 

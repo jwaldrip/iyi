@@ -226,25 +226,106 @@ class LocalVarCollector < Visitor
   end
 end
 
+# The port refuses, by name and before it writes any IR, a call or operand it
+# cannot lower. Emitting nothing for one would leave a block unterminated and
+# hand the verifier invalid IR, so the emitter stops with exit status 1.
+def refuse_port(message : String) : NoReturn
+  STDERR.puts "Error: #{message}"
+  LibC.exit(1)
+end
+
+# The location of a clause keyword (`rescue`, `ensure`) at or after `from`. The AST
+# records the `begin` block but not its clause keywords, and the oracle points at them.
+def keyword_location(from : Location, keyword : String) : Location?
+  lines = File.read(from.filename).split('\n')
+  idx = from.line_number - 1
+  while idx >= 0 && idx < lines.size
+    text = lines[idx]
+    indent = 0
+    while indent < text.bytesize && (text[indent] == ' ' || text[indent] == '\t')
+      indent += 1
+    end
+    rest = text[indent, text.bytesize - indent]
+    if rest == keyword || rest.starts_with?(keyword + " ")
+      return Location.new(from.filename, idx + 1, indent + 1)
+    end
+    idx += 1
+  end
+  nil
+end
+
+# The oracle's refusal form: its location, the source line with its indentation
+# removed, a caret under the offending text, then the message. Exit status 1.
+def refuse_at(location : Location, caret_len : Int32, message : String) : NoReturn
+  lines = File.read(location.filename).split('\n')
+  if location.line_number < 1 || location.line_number > lines.size
+    refuse_port(message)
+  end
+  text = lines[location.line_number - 1]
+  indent = 0
+  while indent < text.bytesize && (text[indent] == ' ' || text[indent] == '\t')
+    indent += 1
+  end
+  gutter = " #{location.line_number} | "
+  caret_col = gutter.bytesize + location.column_number - 1 - indent
+  caret_col = 0 if caret_col < 0
+  pad = " " * caret_col
+  carets = "^" + ("-" * (caret_len - 1))
+  STDERR.puts "Showing last frame. Use --error-trace for full trace."
+  STDERR.puts ""
+  STDERR.puts "In #{location.filename}:#{location.line_number}:#{location.column_number}"
+  STDERR.puts ""
+  STDERR.puts "#{gutter}#{text[indent, text.bytesize - indent]}"
+  STDERR.puts "#{pad}#{carets}"
+  STDERR.puts "Error: #{message}"
+  LibC.exit(1)
+end
+
+# The source form of an operand or call, for a refusal message.
+def operand_text(node : ASTNode) : String
+  if node.is_a?(Var)
+    node.as(Var).name
+  elsif node.is_a?(Call)
+    call = node.as(Call)
+    if recv = call.obj
+      "#{operand_text(recv)}.#{call.name}"
+    else
+      call.name
+    end
+  else
+    "an expression"
+  end
+end
+
 # iyi has no `rescue` or `ensure` (SPEC.md III.1): an error is a value the caller
 # handles, and a panic is caught at a task boundary, never by a handler in the
 # body. The oracle refuses both in an iyi file with these sentences, and so does
 # the port, before it emits any IR.
 class ExceptionHandlerRefuser < Visitor
   getter refusal : String?
+  getter location : Location?
+  getter caret : Int32
+  getter keyword : String
 
   def initialize
     @refusal = nil
+    @location = nil
+    @caret = 1
+    @keyword = ""
   end
 
   def visit(node : ExceptionHandler) : Bool
     if @refusal.nil?
+      @location = node.location
       rescues = node.rescues
       else_part = node.else
       ensure_part = node.ensure
       if rescues || else_part
         @refusal = "iyi has no exceptions to rescue: an error is a value the caller handles (SPEC.md III.1), and a panic is caught at a task boundary (III.1.4), never here - this `rescue` would not run. Return the error, or read the task's `value`"
+        @keyword = "rescue"
       elsif ensure_part
+        @caret = 6
+        @keyword = "ensure"
         @refusal = "iyi has no `ensure`: a panic unwinds by registry and skips it (SPEC.md III.1.4). Write `defer`, which runs on return, on `!` and on a panic"
       end
     end
@@ -402,6 +483,7 @@ pub class CodeGenVisitor < Visitor
   property llvm_struct_types : Hash(String, LLVMType)
   property current_self : LLVMValue?
   property current_self_type : String?
+  property current_method_name : String?
   property struct_call_temps : Array(LLVMValue)
   property struct_temp_index : Int32
   property block_methods : Hash(String, Def)
@@ -439,6 +521,7 @@ pub class CodeGenVisitor < Visitor
     @llvm_struct_types = Hash(String, LLVMType).new
     @current_self = nil
     @current_self_type = nil
+    @current_method_name = nil
     @struct_call_temps = [] of LLVMValue
     @struct_temp_index = 0
     @block_methods = Hash(String, Def).new
@@ -738,6 +821,18 @@ pub class CodeGenVisitor < Visitor
     end
   end
 
+  # The LLVM named struct for a custom type, created on first reference. Its body
+  # is set where the type is defined (define_struct_body), so a field may name a
+  # type defined later in the file.
+  def named_struct_type(name : String) : LLVMType
+    if st = @llvm_struct_types[name]?
+      return st
+    end
+    st = @context.struct_named(name)
+    @llvm_struct_types[name] = st
+    st
+  end
+
   def llvm_type_from_name(name : String) : LLVMType
     clean_name = name.starts_with?("::") ? name[2, name.size - 2] : name
     case clean_name
@@ -770,7 +865,7 @@ pub class CodeGenVisitor < Visitor
         @context.pointer
       elsif info = @custom_types[clean_name]?
         if info.is_struct
-          @llvm_struct_types[clean_name]
+          named_struct_type(clean_name)
         else
           @context.pointer
         end
@@ -1218,6 +1313,7 @@ pub class CodeGenVisitor < Visitor
     @current_fn = fn
     @current_fn_return_type = ret_type
     @current_fun_def = node
+    @current_method_name = nil
 
     @vars.clear
     @last = nil
@@ -2030,9 +2126,7 @@ pub class CodeGenVisitor < Visitor
     then_bb = fn.append_basic_block("then")
     else_bb = fn.append_basic_block("else")
 
-    node.cond.accept(self)
-    cond_raw = @last
-    cond_val = cond_raw ? ensure_i1_condition(cond_raw) : @context.int1.const_int(0)
+    cond_val = ensure_i1_condition(operand_value(node.cond, "condition of 'if'"))
     @builder.cond_br(cond_val, then_bb, else_bb)
 
     if node.else.nil? || node.else.is_a?(Nop)
@@ -2040,13 +2134,20 @@ pub class CodeGenVisitor < Visitor
       @builder.position_at_end(then_bb)
       @terminated = false
       node.then.accept(self)
+      exit_bb = nil
       unless @terminated
-        @builder.br(else_bb)
+        exit_bb = fn.append_basic_block("exit")
+        @builder.br(exit_bb)
       end
 
-      # Code continues in else_bb
+      # The false edge is an empty else that joins the exit, as the oracle lowers
+      # a statement `if` with no `else`.
       @builder.position_at_end(else_bb)
       @terminated = false
+      if eb = exit_bb
+        @builder.br(eb)
+        @builder.position_at_end(eb)
+      end
       return false
     end
 
@@ -2149,9 +2250,7 @@ pub class CodeGenVisitor < Visitor
 
     @builder.position_at_end(while_bb)
     @terminated = false
-    node.cond.accept(self)
-    return false unless cond_raw = @last
-    cond_val = ensure_i1_condition(cond_raw)
+    cond_val = ensure_i1_condition(operand_value(node.cond, "loop condition"))
     @builder.cond_br(cond_val, body_bb, fail_bb)
 
     @builder.position_at_end(body_bb)
@@ -2292,6 +2391,55 @@ pub class CodeGenVisitor < Visitor
     end
     @terminated = true
     false
+  end
+
+  # The value of one operand of a binary operator. An operand that emits no
+  # value is refused by name: the port cannot type it, so it stops here rather
+  # than leave the operator's block open.
+  def binary_operand(operand : ASTNode, op_node : Call, side : String) : LLVMValue
+    @last = nil
+    operand.accept(self)
+    if val = @last
+      return val
+    end
+    refuse_port("port limitation: the port cannot type the #{side} operand '#{operand_text(operand)}' of '#{op_node.name}' in #{scope_name}, so it refuses instead of leaving the block unterminated (no IR is written)")
+  end
+
+  # The value of an operand the emitter needs a value for: a condition, or the
+  # operand of a unary operator. An operand that emits none is refused by name.
+  def operand_value(operand : ASTNode, role : String) : LLVMValue
+    @last = nil
+    operand.accept(self)
+    if val = @last
+      return val
+    end
+    refuse_port("port limitation: the port cannot type the #{role} '#{operand_text(operand)}' in #{scope_name}, so it refuses instead of leaving the block unterminated (no IR is written)")
+  end
+
+  # A call with no definition the port can lower. A receiver-less call at top level
+  # gets the oracle's own wording. A call on a receiver, or inside a type's method,
+  # is a port limitation: the port does not resolve methods of generic instances, so
+  # it cannot say the method is undefined.
+  def refuse_undefined_call(node : Call) : NoReturn
+    if node.obj || @current_self_type
+      refuse_port("port limitation: the port cannot resolve the call '#{operand_text(node)}' in #{scope_name}, so it refuses instead of leaving the call out of the IR (no IR is written)")
+    end
+    message = "undefined method '#{node.name}' for top-level"
+    if loc = node.location
+      refuse_at(loc, node.name.bytesize, message)
+    end
+    refuse_port(message)
+  end
+
+  # The function or method whose IR is being emitted, for a refusal message.
+  def scope_name : String
+    if name = @current_method_name
+      "'#{name}'"
+    elsif fd = @current_fun_def
+      "'#{fd.name}'"
+    else
+      "the top level"
+    end
   end
 
   def visit(node : Call) : Bool
@@ -3398,8 +3546,7 @@ pub class CodeGenVisitor < Visitor
 
       # Unary negation
       if node.args.empty? && node.name == "-"
-        obj.accept(self)
-        return false unless val = @last
+        val = operand_value(obj, "operand of '-'")
         is_float = (val.type.to_s == "double" || val.type.to_s == "float")
         if is_float
           @last = @builder.fneg(val)
@@ -3412,12 +3559,8 @@ pub class CodeGenVisitor < Visitor
 
       # Binary primitive operation
       if node.args.size == 1
-        @last = nil
-        obj.accept(self)
-        return false unless lhs = @last
-        @last = nil
-        node.args[0].accept(self)
-        return false unless rhs = @last
+        lhs = binary_operand(obj, node, "left")
+        rhs = binary_operand(node.args[0], node, "right")
 
         # Determine if float or signed
         is_float = (lhs.type.to_s == "double" || lhs.type.to_s == "float")
@@ -3557,11 +3700,33 @@ pub class CodeGenVisitor < Visitor
     if fn_val = fn
       callee_type = @fn_types[node.name]
       @last = @builder.call(callee_type, fn_val.to_value, arg_vals)
+    else
+      refuse_undefined_call(node)
     end
 
     @terminated = false
     false
   end
+end
+
+# Sets the body of a custom type's LLVM struct once, after the bodies of the struct
+# types it embeds by value, so a field of a type defined later is laid out
+# correctly. A struct body is set on definition, never before.
+def define_struct_body(cg : CodeGenVisitor, info : CustomTypeInfo, done : Array(String)) : Nil
+  return if done.includes?(info.name)
+  done << info.name
+  elem_types = [] of LLVMType
+  unless info.is_struct
+    elem_types << cg.context.int32
+  end
+  info.field_order.each do |fn|
+    ftype = info.field_types[fn]
+    if (dep = cg.custom_types[ftype]?) && dep.is_struct && !CodeGenVisitor.primitive_type_name?(dep.name)
+      define_struct_body(cg, dep, done)
+    end
+    elem_types << cg.llvm_type_from_name(ftype)
+  end
+  cg.named_struct_type(info.name).struct_set_body(elem_types)
 end
 
 def emit_custom_types_code(cg : CodeGenVisitor) : Nil
@@ -3660,6 +3825,7 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       cg.current_fn_return_type = init_ret_ty
       cg.current_self = self_param
       cg.current_self_type = info.name
+      cg.current_method_name = "#{info.name}#initialize"
 
       cg.param_values.clear
       cg.var_type_names.clear
@@ -4029,6 +4195,7 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       self_param.name = "self"
       cg.current_self = self_param
       cg.current_self_type = info.name
+      cg.current_method_name = "#{info.name}##{mname}"
       mdef.args.each_with_index do |a, aidx|
         m_fn.param(aidx + 1).name = a.name
       end
@@ -4196,8 +4363,13 @@ pub def compile_source_to_module(src : String, filename : String, context : Cont
   refuser = ExceptionHandlerRefuser.new
   node.accept(refuser)
   if message = refuser.refusal
-    STDERR.puts "Error: #{message}"
-    LibC.exit(1)
+    if loc = refuser.location
+      if kw = keyword_location(loc, refuser.keyword)
+        refuse_at(kw, refuser.caret, message)
+      end
+      refuse_at(loc, refuser.caret, message)
+    end
+    refuse_port(message)
   end
 
   prog = SemanticProgram.new
@@ -4244,10 +4416,14 @@ pub def compile_source_to_module(src : String, filename : String, context : Cont
     prog.add_def(d)
   end
   tl = TopLevelVisitor.new(prog)
+  plain_classes = [] of ASTNode
   classes.each do |cd|
     next if (tvars = cd.type_vars) && !tvars.empty?
-    cd.accept(tl)
+    plain_classes << cd
   end
+  # One pass over the classes: the top level resolves each field's type when the
+  # pass finishes, so every class must be registered before that point.
+  Expressions.new(plain_classes).accept(tl)
 
   mv = MainVisitor.new(prog)
   funs.each do |fd|
@@ -4578,19 +4754,16 @@ pub def compile_declarations_to_module(
     end
   end
 
-  # Create LLVM struct types
+  # Create the LLVM struct types first, so a field may name a type defined later in
+  # the file. Each body is set below, after the bodies of the types it embeds.
   cg.custom_types.each_value do |info|
     next if CodeGenVisitor.primitive_type_name?(info.name) || info.name.starts_with?("Pointer(")
-    st = context.struct_named(info.name)
-    elem_types = [] of LLVMType
-    unless info.is_struct
-      elem_types << context.int32
-    end
-    info.field_order.each do |fn|
-      elem_types << cg.llvm_type_from_name(info.field_types[fn])
-    end
-    st.struct_set_body(elem_types)
-    cg.llvm_struct_types[info.name] = st
+    cg.named_struct_type(info.name)
+  end
+  done_structs = [] of String
+  cg.custom_types.each_value do |info|
+    next if CodeGenVisitor.primitive_type_name?(info.name) || info.name.starts_with?("Pointer(")
+    define_struct_body(cg, info, done_structs)
 
     # An empty class with no fields and no methods is never allocated and
     # never dispatched on, and the shipped backend emits no type_id global
