@@ -18,6 +18,7 @@ module compiler/lower/context
 
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Function, Global}
+import compiler/syntax/ast::{ASTNode}
 import compiler/ir/inst::{Block, Inst}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{TypeKind}
@@ -26,6 +27,13 @@ import compiler/ir/types::{IrType}
 import compiler/lower/typer::{LowerTyper}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{Type}
+
+# The visitor of a node, which the calls and the functions call back into when they
+# emit an argument or a body. The core's dispatch (lower.iyi) implements it, so the
+# calls and functions files need not import the dispatch: iyi refuses import cycles.
+pub trait BodyVisit
+  abstract def visit_body(low : Lowerer, node : ASTNode) : Nil
+end
 
 # A variable of the function being lowered: its address and the analysed type it
 # was declared with (the hosted `LLVMVar`).
@@ -83,6 +91,8 @@ pub class Lowerer
   property in_main : Bool
   # The type of the program's last expression, which `__crystal_main` returns.
   property main_ret_type : Type?
+  # The node visitor the lowering calls into from functions and calls (installed by `codegen_program`).
+  property body_visitor : BodyVisit?
   # The hosted `break_phi`/`next` targets of the innermost while: the block `next` branches to, and the exit block `break` branches to (made at the first break).
   property loop_next : Block?
   property loop_break : Block?
@@ -102,6 +112,7 @@ pub class Lowerer
     @needs_value = false
     @in_main = false
     @main_ret_type = nil
+    @body_visitor = nil
     @loop_next = nil
     @loop_break = nil
     @strings = Hash(String, Global).new

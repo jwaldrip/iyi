@@ -15,18 +15,6 @@ pub def refuse_port(message : String) : Nil
   raise message
 end
 
-# Hosted `CodeGenVisitor#visit(node : FunDef)` (codegen.cr) and `codegen_fun`
-# (fun.cr): a def is compiled into a function of its own. Slice S2c.
-pub def pending_visit_fun_def : Nil
-  refuse_port("lower: visit(FunDef) (hosted codegen.cr, codegen_fun in fun.cr) is not ported yet (slice S2c)")
-end
-
-# Hosted `CodeGenVisitor#visit(node : Call)` (codegen.cr) and `codegen_call`
-# (call.cr): a call, its arguments and its target. Slice S2c.
-pub def pending_visit_call : Nil
-  refuse_port("lower: visit(Call) (hosted codegen.cr, codegen_call in call.cr) is not ported yet (slice S2c)")
-end
-
 # Any other node kind the core has not reached: the hosted `visit` overload for it
 # is named by the message, so the next slice knows which entry to write.
 pub def pending_visit_node(kind : String) : Nil

@@ -16,7 +16,7 @@ module compiler/lower/lower
 # folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
 # `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, And, Assign, BoolLiteral, Break, CharLiteral, Call, Def, Expressions, If, Next, Not, NilLiteral, NumberLiteral, Or, StringLiteral, SymbolLiteral, Unless, Var, While}
+import compiler/syntax/ast::{ASTNode, And, Assign, BoolLiteral, Break, CharLiteral, Call, Def, Expressions, If, LibDef, Next, Not, NilLiteral, NumberLiteral, Or, StringLiteral, SymbolLiteral, Unless, Var, While}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -26,11 +26,13 @@ import compiler/ir/inst::{Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper}
-import compiler/lower/context::{Lowerer, LowerVar}
+import compiler/lower/context::{BodyVisit, Lowerer, LowerVar}
 import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
-import compiler/lower/pending::{pending_visit_call, pending_visit_fun_def, pending_visit_node}
+import compiler/lower/pending::{pending_visit_node}
+import compiler/lower/call::{codegen_call_node}
+import compiler/lower/fun::{block_ended?}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType}
 
@@ -38,6 +40,7 @@ import compiler/semantic/top_level::{Type, NilType}
 # parsed tree, `analysed` the semantic pass that typed it.
 pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyper, m : Module) : Nil
   low = Lowerer.new(m, typer, analysed)
+  low.body_visitor = CoreBody.new
   i32 = m.types.int32
   ptr = m.types.ptr(0)
 
@@ -171,10 +174,19 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(Def)
-    pending_visit_fun_def
+    # The hosted `visit(Def)`: a def emits nothing where it stands. The call that reaches
+    # it makes its function (fun.iyi).
+    low.last = llvm_nil(low)
+    return
   end
   if node.is_a?(Call)
-    pending_visit_call
+    codegen_call_node(low, node.as(Call))
+    return
+  end
+  if node.is_a?(LibDef)
+    # The hosted `visit(LibDef)`: a lib declares its funs and emits nothing where it stands.
+    low.last = llvm_nil(low)
+    return
   end
   pending_visit_node(node_class_name(node))
 end
@@ -212,6 +224,11 @@ pub def codegen_var(low : Lowerer, node : Var) : Nil
   var = low.current_context.vars[node.name]?
   raise "BUG: variable #{node.name} is read before it is assigned (hosted codegen.cr: visit(Var))" if var.nil?
   v = var.as(LowerVar)
+  if v.already_loaded
+    # A parameter is read where it arrives: its value is the parameter itself (hosted visit(Var)).
+    low.last = v.pointer
+    return
+  end
   ir = low.typer.llvm_type(v.type)
   low.last = load_aligned(low, ir, v.pointer, "")
 end
@@ -224,6 +241,11 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
     pending_visit_node("Assign to a target that is not a variable")
   end
   target = node.target.as(Var)
+  if param = low.current_context.vars[target.name]?
+    if param.as(LowerVar).already_loaded
+      pending_visit_node("Assign to a parameter (hosted fun.cr, create_local_copy_of_arg)")
+    end
+  end
   codegen_node(low, node.value)
   value = low.last
   raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
@@ -384,6 +406,18 @@ pub def codegen_break(low : Lowerer, node : Break) : Nil
   low.last = llvm_nil(low)
 end
 
+# The node visitor the calls and the functions reach this dispatch through (context.iyi, BodyVisit).
+pub class CoreBody
+  def initialize
+  end
+end
+
+impl BodyVisit for CoreBody
+  def visit_body(low : Lowerer, node : ASTNode) : Nil
+    codegen_node(low, node)
+  end
+end
+
 # The hosted `visit(Next)`: a branch to the loop's condition.
 pub def codegen_next(low : Lowerer, node : Next) : Nil
   if node.exp
@@ -398,8 +432,10 @@ pub def codegen_next(low : Lowerer, node : Next) : Nil
 end
 
 # The hosted `codegen_return`: a function returning void returns nothing; any other returns the
-# value of the expression visited last.
+# value of the expression visited last. A block that already ends (a NoReturn call's unreachable)
+# gets no return (the hosted `@builder.end`, fun.iyi `block_ended?`).
 pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
+  return if block_ended?(low)
   if ret_ir.void?
     low.builder.ret_void
     return
