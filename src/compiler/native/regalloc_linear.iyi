@@ -33,7 +33,8 @@ module compiler/native/regalloc_linear
 # Determinism. Intervals are processed in (start, vreg id) order and candidate registers in a fixed order.
 # No hash table decides anything.
 
-import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/mir::{MFunction, MBlock, MInst, Operand, OperandKind, RegClass, Role}
+import compiler/native/target::{new_inst, is_role?, terminator?, leaves_block?, block_branch?, table_branch?}
 import compiler/native/aarch64/regs::{callee_saved_gprs, caller_saved_gprs, caller_saved_fprs, scratch_gprs, scratch_fprs, probe_reg, fp_reg, lr_reg, integer_arg_regs, fp_arg_regs}
 
 # x17: the encoder's veneer scratch. regs.iyi names it in a comment and has no accessor for it.
@@ -78,22 +79,16 @@ def int_row(n : Int32, value : Int32) : Array(Int32)
   acc
 end
 
-# Whether an instruction transfers control or traps, so no fallthrough or fixed value crosses it.
-def terminator?(inst : MInst) : Bool
-  op = inst.opcode
-  op == MOp::B || op == MOp::Bcond || op == MOp::Br || op == MOp::BrTable || op == MOp::Ret || op == MOp::Brk
-end
-
 # The blocks a block can transfer control to: its branch targets, and the next block when control can fall
 # through its end.
 def block_successors(fn : MFunction, b : Int32) : Array(Int32)
   acc = [] of Int32
   block = fn.blocks[b]
   block.insts.each do |inst|
-    if inst.opcode == MOp::B || inst.opcode == MOp::Bcond
+    if block_branch?(fn.isa, inst)
       acc << inst.target
     end
-    if inst.opcode == MOp::BrTable
+    if table_branch?(fn.isa, inst)
       table_targets = fn.jump_tables[inst.table].targets
       table_targets.each do |t|
         acc << t
@@ -102,8 +97,7 @@ def block_successors(fn : MFunction, b : Int32) : Array(Int32)
   end
   falls = true
   if block.insts.size > 0
-    last = block.insts[block.insts.size - 1].opcode
-    falls = !(last == MOp::B || last == MOp::Br || last == MOp::BrTable || last == MOp::Ret || last == MOp::Brk)
+    falls = !leaves_block?(fn.isa, block.insts[block.insts.size - 1])
   end
   if falls && b + 1 < fn.blocks.size
     acc << (b + 1)
@@ -154,11 +148,11 @@ def scratch_reg(fp : Bool, index : Int32) : Int32
 end
 
 # The MIR of one spill slot access: an 8-byte load or store through the frame, with its width kept whole.
-def slot_access(op : MOp, reg : Int32, slot : Int32, fp : Bool) : MInst
-  m = MInst.new(op)
+def slot_access(isa : Int32, load : Bool, reg : Int32, slot : Int32, fp : Bool) : MInst
+  m = new_inst(isa, load ? Role::SlotLoad : Role::SlotStore)
   m.size = 64
   m.fp = fp
-  if op == MOp::LdrFrame
+  if load
     m.defs << Operand.new(OperandKind::Physical, reg)
     m.uses << Operand.new(OperandKind::FrameSlot, slot, 0_i64)
   else
@@ -197,7 +191,7 @@ def rewrite_block(fn : MFunction, block : MBlock) : Nil
         else
           next_gpr = next_gpr + 1
         end
-        reloads << slot_access(MOp::LdrFrame, reg, fn.vreg_slot[v], fp)
+        reloads << slot_access(fn.isa, true, reg, fn.vreg_slot[v], fp)
         inst.uses[k] = Operand.new(OperandKind::Physical, reg)
       end
     end
@@ -214,7 +208,7 @@ def rewrite_block(fn : MFunction, block : MBlock) : Nil
         else
           next_gpr = next_gpr + 1
         end
-        stores << slot_access(MOp::StrFrame, reg, fn.vreg_slot[v], fp)
+        stores << slot_access(fn.isa, false, reg, fn.vreg_slot[v], fp)
         inst.defs[k] = Operand.new(OperandKind::Physical, reg)
       end
     end
@@ -469,7 +463,7 @@ class LinearScan
     flags = bool_row(n)
     @fn.blocks.each do |block|
       block.insts.each do |inst|
-        if inst.opcode == MOp::FMovToFp && inst.defs.size > 0 && inst.defs[0].kind == OperandKind::Virtual
+        if is_role?(@fn.isa, inst, Role::GprToFpr) && inst.defs.size > 0 && inst.defs[0].kind == OperandKind::Virtual
           flags[inst.defs[0].reg] = true
         end
       end
@@ -479,7 +473,7 @@ class LinearScan
       changed = false
       @fn.blocks.each do |block|
         block.insts.each do |inst|
-          next unless inst.opcode == MOp::FMov || inst.opcode == MOp::Mov
+          next unless is_role?(@fn.isa, inst, Role::Copy)
           next unless inst.defs.size > 0 && inst.uses.size > 0
           dst = inst.defs[0]
           src = inst.uses[0]
@@ -524,7 +518,7 @@ class LinearScan
           reserve(op.reg, clob[op.reg], pos)
           opened[op.reg] = false
         end
-        terminator_reads(opened, clob, pos) if terminator?(inst)
+        terminator_reads(opened, clob, pos) if terminator?(@fn.isa, inst)
         if inst.call
           integer_arg_regs.each do |r|
             if opened[r]

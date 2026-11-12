@@ -7,8 +7,9 @@ import compiler/native/obj/object::{RelocKind}
 # is Physical and every frame reference is resolved by the encoder.
 #
 # Deviations from the spec's sketch, each deliberate:
-#   - MInst.opcode is the typed MOp enum below, not an Int32 ordinal; there is
-#     one target (aarch64) today, so the enum is the target's enum.
+#   - MInst.opcode is the target's opcode enum value, an Int32. MOp below is the aarch64
+#     enum: aarch64/opcodes.iyi reads a value back as MOp, and the shared passes ask
+#     target.iyi for the role of an opcode (Role below), never for the enum itself.
 #   - size, fp, signed, cond, imm, sym, target and reloc live on MInst, not on
 #     each Operand: an instruction has at most one of each, and the operand
 #     then carries only what varies (its register or slot).
@@ -23,6 +24,29 @@ pub enum OperandKind
   Virtual   # reg is a virtual register id in MFunction#vreg_classes
   Physical  # reg is a physical register id (see compiler/native/aarch64/regs)
   FrameSlot # reg is an index into FrameInfo#slots; imm is a byte offset inside it
+end
+
+# What the target-independent passes need to know about an instruction: regalloc, the frame and the MIR dump.
+# Each target maps its own opcodes onto these roles (aarch64/opcodes.iyi), and target.iyi dispatches on the isa.
+pub enum Role
+  Other           # no role: an ordinary computation, load, store or call
+  Copy            # a register copy in one file: Mov and FMov on aarch64
+  GprToFpr        # a bit copy of a gpr into an fpr: FMovToFp on aarch64
+  Branch          # an unconditional branch to a block: B
+  CondBranch      # a conditional branch to a block: Bcond
+  IndirectBranch  # a branch through a register: Br
+  TableBranch     # a branch through a jump table: BrTable
+  Return          # Ret
+  Trap            # Brk
+  PushRecord      # the frame record push: StpFpLr
+  SetFramePointer # x29 <- sp: MovFp
+  Adjust          # sp <- sp + imm: SpAdjust
+  Probe           # a page touch: ZeroSp
+  SaveReg         # a callee-saved save: SpStore
+  RestoreReg      # a callee-saved restore: SpLoad
+  PopRecord       # the frame record pop: LdpFpLr
+  SlotLoad        # a frame slot load (spill reload): LdrFrame
+  SlotStore       # a frame slot store (spill store): StrFrame
 end
 
 # The aarch64 operations the selector produces. Integer operations are 64-bit on
@@ -140,11 +164,11 @@ pub class AsmBody
 end
 
 pub class MInst
-  property opcode : MOp
-  property size : Int32  # bits: 8, 16, 32, 64
-  property fp : Bool     # operates on the floating-point register file
-  property signed : Bool # loads: sign-extending
-  property cond : Int32  # aarch64 condition code 0..15
+  property opcode : Int32 # the target's opcode enum value; see target.iyi
+  property size : Int32   # bits: 8, 16, 32, 64
+  property fp : Bool      # operates on the floating-point register file
+  property signed : Bool  # loads: sign-extending
+  property cond : Int32   # aarch64 condition code 0..15
   property imm : Int64
   property defs : Array(Operand)
   property uses : Array(Operand)
@@ -157,7 +181,7 @@ pub class MInst
   property terminator : Bool
   property asm : AsmBody?
 
-  def initialize(@opcode : MOp)
+  def initialize(@opcode : Int32)
     @size = 64
     @fp = false
     @signed = false
@@ -236,6 +260,7 @@ pub class MFunction
   property vreg_slot : Array(Int32)   # regalloc: spill slot index when vreg_home is -1
   property vreg_pointer : Array(Bool) # the vreg holds a pointer or a copy of one's bits; see mark_pointer
   property naked : Bool               # a naked body: no prologue, epilogue, probe or callee-saved save
+  property isa : Int32                # the target whose opcode enum MInst#opcode holds (target.iyi)
 
   def initialize(@name : String)
     @blocks = [] of MBlock
@@ -246,6 +271,7 @@ pub class MFunction
     @vreg_slot = [] of Int32
     @vreg_pointer = [] of Bool
     @naked = false
+    @isa = 0
   end
 
   def new_vreg(cls : RegClass) : Int32

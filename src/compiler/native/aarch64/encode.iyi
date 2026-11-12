@@ -17,6 +17,7 @@ import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind
 import compiler/native/obj/object::{Reloc, RelocKind}
 import compiler/native/aarch64/regs::{cond_invert, reg_name}
 import compiler/native/aarch64/asm::{AsmAssembler}
+import compiler/native/aarch64/opcodes::{aarch64_op}
 
 pub class EncodeError
   getter message : String
@@ -167,7 +168,7 @@ pub class Encoder
 
   # Encodes one instruction. Blocks are referenced by index and resolved by `finish`.
   def emit(inst : MInst) : Nil
-    op = inst.opcode
+    op = aarch64_op(inst.opcode)
     if op == MOp::Label
       return
     elsif op == MOp::Mov

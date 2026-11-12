@@ -15,7 +15,8 @@ module compiler/native/frame
 # (the stack-probe rule, SPEC 2.2 step 5; the touch is inline on every target). Each
 # epilogue restores the saves, releases the frame and pops the record.
 
-import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, Role}
+import compiler/native/target::{new_inst, is_role?}
 import compiler/native/aarch64/regs::{fp_reg}
 
 def round_up(n : Int64, to : Int64) : Int64
@@ -42,8 +43,8 @@ pub def lay_out(fn : MFunction, stack_align : Int64) : Nil
   end
 end
 
-def sp_adjust(insts : Array(MInst), by : Int64) : Nil
-  m = MInst.new(MOp::SpAdjust)
+def sp_adjust(isa : Int32, insts : Array(MInst), by : Int64) : Nil
+  m = new_inst(isa, Role::Adjust)
   m.imm = by
   insts << m
 end
@@ -52,20 +53,20 @@ end
 def prologue_insts(fn : MFunction) : Array(MInst)
   f = fn.frame
   acc = [] of MInst
-  acc << MInst.new(MOp::StpFpLr)
-  acc << MInst.new(MOp::MovFp)
+  acc << new_inst(fn.isa, Role::PushRecord)
+  acc << new_inst(fn.isa, Role::SetFramePointer)
   remaining = f.frame_size
   while remaining >= 4096_i64
-    sp_adjust(acc, -4096_i64)
-    acc << MInst.new(MOp::ZeroSp)
+    sp_adjust(fn.isa, acc, -4096_i64)
+    acc << new_inst(fn.isa, Role::Probe)
     remaining = remaining - 4096_i64
   end
   if remaining > 0_i64
-    sp_adjust(acc, -remaining)
+    sp_adjust(fn.isa, acc, -remaining)
   end
   i = 0
   while i < f.callee_saved.size
-    m = MInst.new(MOp::SpStore)
+    m = new_inst(fn.isa, Role::SaveReg)
     m.size = 64
     m.imm = f.saves_offset + 8_i64 * i.to_i64
     m.uses << Operand.new(OperandKind::Physical, f.callee_saved[i])
@@ -86,10 +87,10 @@ def insert_epilogues(fn : MFunction, block : MBlock) : Nil
   f = fn.frame
   acc = [] of MInst
   block.insts.each do |inst|
-    if inst.opcode == MOp::Ret
+    if is_role?(fn.isa, inst, Role::Return)
       i = 0
       while i < f.callee_saved.size
-        m = MInst.new(MOp::SpLoad)
+        m = new_inst(fn.isa, Role::RestoreReg)
         m.size = 64
         m.imm = f.saves_offset + 8_i64 * i.to_i64
         m.defs << Operand.new(OperandKind::Physical, f.callee_saved[i])
@@ -97,9 +98,9 @@ def insert_epilogues(fn : MFunction, block : MBlock) : Nil
         i = i + 1
       end
       if f.frame_size > 0_i64
-        sp_adjust(acc, f.frame_size)
+        sp_adjust(fn.isa, acc, f.frame_size)
       end
-      acc << MInst.new(MOp::LdpFpLr)
+      acc << new_inst(fn.isa, Role::PopRecord)
     end
     acc << inst
   end
