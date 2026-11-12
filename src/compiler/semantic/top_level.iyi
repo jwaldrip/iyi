@@ -4,7 +4,7 @@ import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
-import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -880,6 +880,9 @@ pub class SemanticProgram < NonGenericModuleType
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
   # hosted pass keeps a scope per file; the port keeps the importing file's table here.
   property current_imports : Hash(String, Type)
+  # The lowercase names the importing file imports (`import a/b::{refuse_port}`), as
+  # the defs they name. Swapped per file like current_imports.
+  property current_import_defs : Hash(String, Array(Def))
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
   property search_path : Array(String)
@@ -1044,6 +1047,7 @@ pub class SemanticProgram < NonGenericModuleType
     @impls = [] of ImplRecord
     @global_funs = [] of LibFun
     @current_imports = Hash(String, Type).new
+    @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
     @search_path = [] of String
     @loaded_files = Set(String).new
@@ -1319,10 +1323,10 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
     if t.nil?
-      t = lookup_type(first_name)
+      t = @current_imports[first_name]?
     end
     if t.nil?
-      t = @current_imports[first_name]?
+      t = lookup_type(first_name)
     end
     if t.nil?
       return nil
@@ -1375,28 +1379,30 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
 
+    # The file's imports shadow the enclosing namespaces and the program root: a name
+    # the file imports is found before a same-named module beside the importing file.
+    if t.nil?
+      t = @current_imports[first_name]?
+    end
+
     # 4. Search enclosing namespaces
     if t.nil?
       ns = current_type.namespace
       while ns
+        # The program itself is searched last, in step 5, after the file's imports.
+        break if ns.is_a?(SemanticProgram)
         match = ns.lookup_type(first_name)
         if match
           t = match
-          break
-        end
-        if ns == self
           break
         end
         ns = ns.namespace
       end
     end
 
-    # 5. Search in program root
+    # 5. Search the program root
     if t.nil?
       t = self.lookup_type(first_name)
-    end
-    if t.nil?
-      t = @current_imports[first_name]?
     end
 
     if t.nil?
@@ -1465,10 +1471,36 @@ pub class TopLevelVisitor < Visitor
     @pending_ivars = [] of PendingIvar
   end
 
+  # `@[Primitive(:name)]` makes a def's body the compiler's own primitive, located at
+  # the def: the hosted process_def_primitive_annotation (top_level_visitor.cr). The
+  # `@[Unsafe]` site note that pass also records is not ported yet.
+  def primitive_body(node : Def, ann : Annotation) : Nil
+    if ann.args.size != 1
+      raise("expected Primitive annotation to have one argument")
+    end
+    arg = ann.args[0]
+    unless arg.is_a?(SymbolLiteral)
+      raise("expected Primitive argument to be a symbol literal")
+    end
+    primitive = Primitive.new(arg.as(SymbolLiteral).value)
+    primitive.location = node.location
+    node.body = primitive
+    nil
+  end
+
   def visit(node : Expressions) : Bool
     @exp_nest = @exp_nest + 1
-    node.expressions.each do |exp|
+    i = 0
+    while i < node.expressions.size
+      exp = node.expressions[i]
+      if exp.is_a?(Def) && i > 0 && node.expressions[i - 1].is_a?(Annotation)
+        ann = node.expressions[i - 1].as(Annotation)
+        if ann.path.names.last == "Primitive"
+          primitive_body(exp.as(Def), ann)
+        end
+      end
       exp.accept(self)
+      i = i + 1
     end
     @exp_nest = @exp_nest - 1
     if @exp_nest == 0
@@ -1515,6 +1547,14 @@ pub class TopLevelVisitor < Visitor
         found = unit.as(ModuleType).types[name]?
         if found
           @program.current_imports[name] = found.as(Type)
+        else
+          # A lowercase name is a def the file declares (`import a/b::{refuse_port}`):
+          # the calls slice resolves calls to it, so the pass records it here.
+          defs = unit.as(ModuleType).defs[name]?
+          unless defs
+            refuse_port("undefined constant #{name} in '#{written}'")
+          end
+          @program.current_import_defs[name] = defs.as(Array(Def))
         end
       end
     end
@@ -1553,10 +1593,13 @@ pub class TopLevelVisitor < Visitor
     nodes = parser.parse
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
+    saved_defs = @program.current_import_defs
     @program.current_imports = Hash(String, Type).new
+    @program.current_import_defs = Hash(String, Array(Def)).new
     nodes.accept(inner)
     inner.finish
     @program.current_imports = saved
+    @program.current_import_defs = saved_defs
     if unit = inner.unit
       @program.loaded_units[file] = unit
     end
@@ -2734,14 +2777,10 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
     end
   end
 
-  # User types
-  user_type_names = [] of String
-  program.types.keys.each do |k|
-    unless program.initial_type_names.includes?(k)
-      user_type_names << k
-    end
-  end
-  user_type_names = user_type_names.sorted
+  # Every top-level type is walked: the entry filter prints what the entry declares, and
+  # a namespace the entry shares a name with a built-in (`module enum/x` under the built-in
+  # Enum) holds declarations the built-in set would have hidden.
+  user_type_names = program.types.keys.sorted
 
   user_type_names.each do |name|
     dump_tree_declared(program.types[name], sb, "", entry)
