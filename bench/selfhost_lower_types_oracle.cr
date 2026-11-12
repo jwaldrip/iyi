@@ -119,6 +119,37 @@ def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
   end
 end
 
+# The hosted census (gc_layouts.cr 204-221): the classes a virtual type over them was made of, their
+# subclasses, and the members of the program's reference unions, with their subclasses.
+def hosted_headed_candidate?(type : Iyi::Type) : Bool
+  type.is_a?(Iyi::NonGenericClassType) || type.is_a?(Iyi::GenericClassInstanceType)
+end
+
+def hosted_headed_census(program : Iyi::Program) : Array(Iyi::Type)
+  headed = [] of Iyi::Type
+  program.llvm_id.each_type do |type|
+    next unless hosted_headed_candidate?(type) && type.virtual_type_made?
+    headed << type
+    type.all_subclasses.each { |sub| headed << sub }
+  end
+  program.unions.each_value do |union|
+    next unless union.is_a?(Iyi::ReferenceUnionType) || union.is_a?(Iyi::NilableReferenceUnionType)
+    union.union_types.each do |member|
+      member = member.remove_alias
+      next unless hosted_headed_candidate?(member)
+      headed << member
+      member.all_subclasses.each { |sub| headed << sub }
+    end
+  end
+  headed
+end
+
+# The `headed` mode's block: `1` or `0`, the hosted `iyi_headed?` (gc_layouts.cr 173-177) of the type.
+def headed_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
+  headed = type.to_s == "String" || program.llvm_id.type_id(type) > 65535 || hosted_headed_census(program).includes?(type)
+  "== #{name}\nheaded: #{headed ? "1" : "0"}\n"
+end
+
 # The pointer map of a user class under iyi's object layout, as `alloc`, `cap` and the scan
 # offsets; the hosted type id is not printed (it is numbered differently, NEEDS.md row 16).
 def layout_text(program : Iyi::Program, type : Iyi::Type) : String
@@ -328,6 +359,8 @@ begin
   pending.each do |expr, type|
     if mode == "ids"
       puts ids_block(expr, program, type)
+    elsif mode == "headed"
+      puts headed_block(expr, program, type)
     else
       puts block_text(expr, program, typer, type)
     end
