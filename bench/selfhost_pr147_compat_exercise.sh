@@ -74,7 +74,9 @@ probe_log() { echo "$WORK/probe_$(echo "$1" | tr '/' '_').log"; }
 probe_phase() {
   local target="$1" log
   log="$(probe_log "$target")"
-  "$COMPILE" --probe-phase --single-file "$target" > "$log" 2>&1
+  # From the scratch directory: a file that reaches the link phase writes a.out where the probe runs, and run from
+  # the repository that was a built binary in the tree.
+  (cd "$WORK" && "$COMPILE" --probe-phase --single-file "$target" > "$log" 2>&1)
   if grep -qF "[phase] link: pass" "$log"; then echo link
   elif grep -qF "[phase] object: pass" "$log"; then echo object
   elif grep -qF "[phase] codegen: pass" "$log"; then echo codegen
