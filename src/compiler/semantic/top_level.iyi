@@ -1,7 +1,7 @@
 module compiler/semantic/top_level
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, Generic, ImplDef, Include, InstanceVar, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, Generic, ImplDef, Include, InstanceVar, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -1306,7 +1306,7 @@ pub class TopLevelVisitor < Visitor
 
   def lookup_type_def_scope(node : ASTNode, path : Path) : ModuleType
     if path.names.size == 1
-      @current_type
+      path.global ? @program : @current_type
     else
       prefix_names = [] of String
       p_i = 0
@@ -1314,7 +1314,7 @@ pub class TopLevelVisitor < Visitor
         prefix_names << path.names[p_i]
         p_i = p_i + 1
       end
-      base = @current_type
+      base = path.global ? @program : @current_type
       i = 0
       while i < prefix_names.size
         pname = prefix_names[i]
@@ -1467,6 +1467,28 @@ pub class TopLevelVisitor < Visitor
     @current_type = type
     node.body.accept(self)
     @current_type = old_type
+    false
+  end
+
+  # A module header (`module compiler/foundation/enums`) makes the namespace the rest of
+  # the file declares into: each segment is a module, camel-cased, nested in the one
+  # before it (`Compiler::Foundation::Enums`). The hosted pass does the same, and a
+  # segment that already names a module is reopened rather than replaced.
+  def visit(node : ModuleHeader) : Bool
+    node.path.each do |segment|
+      name = camelcase_segment(segment)
+      existing = @current_type.types[name]?
+      if existing
+        unless existing.module?
+          raise("#{name} is not a module, it's a #{existing.type_desc}")
+        end
+        @current_type = existing.as(ModuleType)
+      else
+        mod = NonGenericModuleType.new(@program, @current_type, name)
+        @current_type.add_type(name, mod)
+        @current_type = mod
+      end
+    end
     false
   end
 
@@ -1861,6 +1883,27 @@ pub class TopLevelVisitor < Visitor
   def visit(node : MacroLiteral) : Bool
     false
   end
+end
+
+# The camel-cased form of one module-header segment, as the hosted `String#camelcase`
+# writes it: the first letter, and the letter after each underscore, upper-cased.
+def camelcase_segment(s : String) : String
+  sb = String::Builder.new
+  up = true
+  i = 0
+  while i < s.bytesize
+    c = s.byte_at(i).unsafe_chr
+    if c == '_'
+      up = true
+    elsif up
+      sb << c.upcase
+      up = false
+    else
+      sb << c
+    end
+    i = i + 1
+  end
+  sb.to_s
 end
 
 def underscore(s : String) : String
