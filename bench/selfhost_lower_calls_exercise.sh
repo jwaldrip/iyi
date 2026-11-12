@@ -143,6 +143,14 @@ prove_mutation "a def loses its darwin frame pointers" "$REPO/src/compiler/lower
   "  if darwin_triple?(triple)" "  if false" -- lower_calls_check || status=1
 prove_mutation "the printer writes uwtable as an attribute, not uwtable(sync)" "$REPO/src/compiler/ir/printer.iyi" \
   'return "uwtable(" + s + ")" if a.name == "uwtable"' 'return "uwtable=" + ir_quote(s) if a.name == "uwtable"' -- lower_calls_check || status=1
+prove_mutation "a NoReturn def carries no noreturn attribute" "$REPO/src/compiler/lower/fun.iyi" \
+  'Attribute.new("noreturn", 0_u64, nil, nil)' 'Attribute.new("nounwind", 0_u64, nil, nil)' -- lower_calls_check || status=1
+prove_mutation "a call to a def passes no arguments" "$REPO/src/compiler/lower/call.iyi" \
+  'inst = low.builder.call(func.fn_type, func, values, "")' 'inst = low.builder.call(func.fn_type, func, [] of Value, "")' -- lower_calls_check || status=1
+prove_mutation "a NoReturn def call is not followed by unreachable" "$REPO/src/compiler/lower/call.iyi" \
+  "  if ret.is_a?(NoReturnType)
+    low.builder.unreachable" "  if ret.is_a?(NilType)
+    low.builder.unreachable" -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

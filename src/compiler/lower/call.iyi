@@ -78,14 +78,15 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
     return
   end
-  if ret.is_a?(NoReturnType)
-    pending_visit_node("a call to a NoReturn def of the program (hosted call.cr: unreachable after the call)")
-  end
 
   arg_types, values = lower_args(low, node, def_node)
   func = target_def_fun(low, def_node, arg_types, ret)
   inst = low.builder.call(func.fn_type, func, values, "")
-  if ret.is_a?(NilType)
+  # Hosted codegen_call_or_invoke: a NoReturn call ends its block with `unreachable`, and its value is nil.
+  if ret.is_a?(NoReturnType)
+    low.builder.unreachable
+    low.last = llvm_nil(low)
+  elsif ret.is_a?(NilType)
     low.last = llvm_nil(low)
   else
     low.last = inst
