@@ -95,7 +95,12 @@ describe Iyi::Command::TestPool do
 end
 
 describe "Iyi::Stale::Runner with -p" do
-  it "accepts a parallel count with the receipt modes" do
+  # The `-p` refusal lived in the command, which the runner never sees. This
+  # runner takes a parallel count with the receipt modes; with no tests it
+  # stops at the same abort every run does, before the pool starts. The
+  # parallel behaviour itself is proven by the TestPool examples above and by
+  # `iyi test --cached -p N` runs.
+  it "takes a parallel count with the receipt modes and stops at the empty-file abort" do
     with_tempfile("runner_parallel_test") do |cache_root|
       store = Iyi::Stale::Store.new(cache_root)
       runner = Iyi::Stale::Runner.new(files: [] of String, cached: true, parallel: 4, store: store)
