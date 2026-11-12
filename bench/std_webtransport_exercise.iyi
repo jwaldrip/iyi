@@ -1,0 +1,217 @@
+# Exercises `std/webtransport` (draft-ietf-webtrans-http3) in memory: QUIC
+# variable-length integers, stream-type headers, WebTransport datagrams, the
+# CLOSE and DRAIN capsules, and the session state machine.
+#
+# Run via:
+#     ./bin/iyi run bench/std_webtransport_exercise.iyi
+#
+# Every expected byte string is written out here, from RFC 9000 Section 16 and
+# Appendix A.1 (varints), RFC 9297 Section 3 (capsules), and the draft's stream
+# and datagram framing. None is read back from this module.
+
+module bench/std_webtransport_exercise
+
+import std/slice::{Bytes}
+import std/capsule::{VarInt, Capsule, CapsuleReader}
+import std/webtransport::{CloseSessionCapsule, DrainSessionCapsule, BidiStreamHeader, UniStreamHeader, WebTransportDatagram, WebTransportSession}
+
+def assert_str(expected : String, actual : String, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}\n  expected #{expected.inspect}\n  got      #{actual.inspect}" unless expected == actual
+end
+
+def assert_true(cond : Bool, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}" unless cond
+end
+
+def hex(b : Bytes) : String
+  digits = "0123456789abcdef"
+  out = ""
+  i = 0
+  while i < b.size
+    v = b[i].to_i32
+    out = out + digits[v // 16, 1] + digits[v % 16, 1]
+    i = i + 1
+  end
+  out
+end
+
+def nibble(c : UInt8) : Int32
+  if c >= 48_u8 && c <= 57_u8
+    c.to_i32 - 48
+  else
+    c.to_i32 - 87
+  end
+end
+
+def unhex(s : String) : Bytes
+  n = s.bytesize // 2
+  b = Bytes.new(n)
+  i = 0
+  while i < n
+    b[i] = (nibble(s.byte_at(2 * i)) * 16 + nibble(s.byte_at(2 * i + 1))).to_u8
+    i = i + 1
+  end
+  b
+end
+
+def text(s : String) : Bytes
+  b = Bytes.new(s.bytesize)
+  i = 0
+  while i < s.bytesize
+    b[i] = s.byte_at(i)
+    i = i + 1
+  end
+  b
+end
+
+puts "== QUIC variable-length integers (RFC 9000 Section 16)"
+# The smallest canonical encoding of each value, at each length boundary.
+canonical = [
+  {0_u64, "00"},
+  {63_u64, "3f"},
+  {64_u64, "4040"},
+  {16383_u64, "7fff"},
+  {16384_u64, "80004000"},
+  {1073741823_u64, "bfffffff"},
+  {1073741824_u64, "c000000040000000"},
+  {4611686018427387903_u64, "ffffffffffffffff"},
+]
+canonical.each do |c|
+  enc = VarInt.encode(c[0])
+  assert_str c[1], hex(enc), "canonical varint for #{c[0]}"
+  value, used = VarInt.decode(enc)
+  assert_str c[0].to_s, value.to_s, "varint #{c[0]} decodes to itself"
+  assert_str enc.size.to_s, used.to_s, "varint #{c[0]} consumes its own length"
+end
+puts "  eight boundary values encode canonically and round-trip"
+
+# 37 in each of the four forms; the explicit length is honoured.
+assert_str "25", hex(VarInt.encode(37_u64, 1)), "37 in 1 byte"
+assert_str "4025", hex(VarInt.encode(37_u64, 2)), "37 in 2 bytes"
+assert_str "80000025", hex(VarInt.encode(37_u64, 4)), "37 in 4 bytes"
+assert_str "c000000000000025", hex(VarInt.encode(37_u64, 8)), "37 in 8 bytes"
+v2, n2 = VarInt.decode(unhex("4025"))
+assert_str "37 2", "#{v2} #{n2}", "2-byte 37 decodes"
+puts "  37 in 1, 2, 4 and 8 bytes"
+
+# RFC 9000 Appendix A.1 decoding examples.
+a1 = [
+  {"c2197c5eff14e88c", 151288809941952652_u64, 8},
+  {"9d7f3e7d", 494878333_u64, 4},
+  {"7bbd", 15293_u64, 2},
+  {"25", 37_u64, 1},
+]
+a1.each do |c|
+  value, used = VarInt.decode(unhex(c[0]))
+  assert_str "#{c[1]} #{c[2]}", "#{value} #{used}", "RFC 9000 Appendix A.1 #{c[0]}"
+end
+puts "  RFC 9000 Appendix A.1 examples decode to their values"
+
+# Truncated input is refused as nil, not read past the end.
+assert_true VarInt.decode?(unhex("40")).nil?, "2-byte varint with one byte is truncated"
+assert_true VarInt.decode?(unhex("800000")).nil?, "4-byte varint with three bytes is truncated"
+assert_true VarInt.decode?(unhex("c000000000")).nil?, "8-byte varint with five bytes is truncated"
+assert_true VarInt.decode?(Bytes.new(0)).nil?, "empty input is truncated"
+puts "  truncated varints give nil"
+
+# Strict decoding refuses an overlong encoding of a small value.
+assert_true VarInt.decode_strict?(unhex("4025")).nil?, "strict refuses 37 in 2 bytes"
+assert_true !VarInt.decode_strict?(unhex("3f")).nil?, "strict accepts 63 in 1 byte"
+puts "  strict decoding refuses overlong encodings"
+
+assert_true VarInt.valid_value?(4611686018427387903_u64), "2^62 - 1 is a valid varint"
+assert_true !VarInt.valid_value?(4611686018427387904_u64), "2^62 is not a valid varint"
+puts "  2^62 - 1 is the largest value"
+
+puts "\n== stream-type headers"
+assert_str "404104", hex(BidiStreamHeader.new(4_u64).encode), "bidi stream header bytes"
+assert_str "4041c000000040000000", hex(BidiStreamHeader.new(1073741824_u64).encode), "bidi header with an 8-byte session id"
+assert_str "405408", hex(UniStreamHeader.new(8_u64).encode), "uni stream header bytes"
+bidi_hdr, bidi_used = BidiStreamHeader.decode(unhex("404104"))
+assert_str "4 3", "#{bidi_hdr.session_id} #{bidi_used}", "bidi header decodes session id and length"
+uni_hdr, uni_used = UniStreamHeader.decode(unhex("405408"))
+assert_str "8 3", "#{uni_hdr.session_id} #{uni_used}", "uni header decodes session id and length"
+assert_true BidiStreamHeader.decode?(unhex("405408")).nil?, "a uni header is not a bidi header"
+assert_true UniStreamHeader.decode?(unhex("404104")).nil?, "a bidi header is not a uni header"
+shifted_hdr, shifted_used = BidiStreamHeader.decode(unhex("ff404104"), 1)
+assert_str "4 3", "#{shifted_hdr.session_id} #{shifted_used}", "bidi header decoded at an offset"
+puts "  bidi 0x41 and uni 0x54 headers encode, decode, and refuse each other"
+
+puts "\n== WebTransport datagrams (quarter stream id = session id // 4)"
+assert_str "026869", hex(WebTransportDatagram.new(8_u64, text("hi")).encode), "datagram bytes for session 8"
+assert_str "0170696e67", hex(WebTransportDatagram.new(4_u64, text("ping")).encode), "datagram bytes for session 4"
+assert_str "2", WebTransportDatagram.new(8_u64, text("")).quarter_stream_id.to_s, "quarter stream id of session 8"
+dg, dg_used = WebTransportDatagram.decode(unhex("026869"))
+assert_str "8 6869 3", "#{dg.session_id} #{hex(dg.payload)} #{dg_used}", "datagram decodes session, payload and length"
+assert_true WebTransportDatagram.decode?(Bytes.new(0)).nil?, "an empty datagram is refused as nil"
+puts "  datagram framing round-trips and empty input is refused"
+
+puts "\n== CLOSE_WEBTRANSPORT_SESSION and DRAIN_WEBTRANSPORT_SESSION capsules"
+close = CloseSessionCapsule.new(16909060_u64, "bye")
+assert_str "01020304627965", hex(close.encode_value), "close session error code bytes"
+assert_str "68430701020304627965", hex(close.to_capsule.encode), "close capsule on the wire (type 0x2843, length 7)"
+cap, cap_used = Capsule.decode(unhex("68430701020304627965"))
+assert_true cap.close_webtransport_session?, "0x2843 is the close capsule"
+back = CloseSessionCapsule.from_capsule(cap)
+assert_str "16909060 bye 10", "#{back.error_code} #{back.reason} #{cap_used}", "close capsule decodes code, reason and length"
+assert_str "ffffffff", hex(CloseSessionCapsule.new(4294967295_u64, "").encode_value), "maximum 32-bit error code"
+assert_str "4294967295|", "#{CloseSessionCapsule.decode(unhex("ffffffff")).error_code}|#{CloseSessionCapsule.decode(unhex("ffffffff")).reason}", "maximum error code with empty reason"
+assert_str "é", CloseSessionCapsule.decode(unhex("00000000c3a9")).reason, "UTF-8 reason"
+puts "  close capsule: code, reason, wire bytes, maximum code, UTF-8 reason"
+
+assert_str "800078ae00", hex(DrainSessionCapsule.to_capsule.encode), "drain capsule on the wire (type 0x78ae, empty)"
+puts "  drain capsule: type 0x78ae, empty value"
+
+assert_true CloseSessionCapsule.decode_value?(unhex("010203")).nil?, "a close value shorter than 4 bytes is refused as nil"
+assert_true Capsule.decode?(unhex("68430701020304")).nil?, "a capsule whose length overruns the buffer is refused as nil"
+puts "  truncated close value and length overrun give nil"
+
+unknown = Capsule.new(0x21_u64, text("x"))
+assert_str "210178", hex(unknown.encode), "unknown capsule bytes"
+seen = CapsuleReader.read_all(unhex("210178"))
+assert_str "1 33", "#{seen.size} #{seen[0].capsule_type}", "unknown capsule is read, not dropped"
+puts "  unknown capsule types are kept by the reader"
+
+puts "\n== session state machine"
+s = WebTransportSession.new(4_u64)
+assert_true s.connecting?, "a new session is connecting"
+s.on_connect_response(200)
+assert_true s.open?, "2xx CONNECT response opens the session"
+assert_str "open", s.status_name, "open session name"
+
+assert_str "40410468656c6c6f", hex(s.send_bidi_stream(text("hello"))), "bidi stream is framed with its header"
+assert_str "68656c6c6f", hex(s.receive_bidi_stream(unhex("40410468656c6c6f"))), "bidi stream payload is returned"
+assert_str "40540478", hex(s.send_uni_stream(text("x"))), "uni stream is framed with its header"
+assert_str "78", hex(s.receive_uni_stream(unhex("40540478"))), "uni stream payload is returned"
+assert_str "0170696e67", hex(s.send_datagram(text("ping"))), "datagram is framed for the session"
+assert_str "70696e67", hex(s.receive_datagram(unhex("0170696e67"))), "datagram payload is returned"
+puts "  open session: streams and datagrams framed and parsed"
+
+s.receive_capsule(DrainSessionCapsule.to_capsule)
+assert_true s.draining?, "DRAIN capsule moves an open session to draining"
+s.receive_capsule(Capsule.new(0x21_u64, text("x")))
+assert_true s.draining?, "an unknown capsule leaves the state alone"
+assert_str "68656c6c6f", hex(s.receive_bidi_stream(unhex("40410468656c6c6f"))), "a draining session still receives"
+
+c = s.close(23_u64, "done")
+assert_str "68430800000017646f6e65", hex(c.encode), "our close capsule on the wire"
+assert_true s.closed?, "close moves the session to closed"
+assert_str "23 done", "#{s.close_code} #{s.close_reason}", "close records code and reason"
+puts "  draining, unknown capsule ignored, close recorded"
+
+peer = WebTransportSession.new(8_u64, false)
+peer.on_connect_response(204)
+assert_true peer.open?, "204 is a 2xx CONNECT response"
+peer_cap, peer_used = Capsule.decode(unhex("68430800000017646f6e65"))
+peer.process_capsule(peer_cap)
+assert_true peer.closed?, "peer CLOSE capsule closes the session"
+assert_str "23 done", "#{peer.close_code} #{peer.close_reason}", "peer close records code and reason"
+puts "  a peer's CLOSE capsule closes an open session"
+
+rejected = WebTransportSession.new(12_u64)
+rejected.on_connect_response(404)
+assert_true rejected.failed?, "a non-2xx CONNECT response fails the session"
+assert_str "CONNECT rejected with status 404", rejected.close_reason, "failed session records the status"
+puts "  a 404 CONNECT response fails the session"
+
+puts "\nALL CHECKS PASSED"
