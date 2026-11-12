@@ -396,9 +396,15 @@ prove_mutation "leaves take no id of their own" "$TYPE_ID_FILE" \
   -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a metaclass id reuses its class's id" "$TYPE_ID_FILE" \
-  "      @id_to_metaclass[type_id(type)] = metaclass_type_id(meta)" \
-  "      @id_to_metaclass[type_id(type)] = type_id(type)" \
+prove_mutation_all "a metaclass id reuses its class's id" "$TYPE_ID_FILE" \
+  "      @id_to_metaclass[hosted_type_id(type)] = metaclass_type_id(meta)" \
+  "      @id_to_metaclass[hosted_type_id(type)] = hosted_type_id(type)" \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic instance's metaclass is not numbered" "$TYPE_ID_FILE" \
+  "    if type.is_a?(GenericClassInstanceType)" \
+  "    if type.is_a?(GenericClassInstanceType) && false" \
   -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -498,13 +504,6 @@ check_own_fixture_diverges() {
   return 0
 }
 
-# Caught when either the own-source probes fall below their floors or an own-source fixture's dump
-# differs from the oracle's. A mutation can leave every probe's identical count unchanged and still
-# change a fixture's dump, so the fixtures are part of the check.
-check_own_or_fixture_diverges() {
-  check_own_diverges || return 1
-  check_own_fixture_diverges
-}
 
 
 # The baseline: the unmutated port meets every probe floor. Without it a port that fails a probe would
@@ -526,9 +525,11 @@ prove_mutation "a struct's by-value answer removed (passed_by_value? of a class)
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a reference union lowered as a mixed union, not a pointer" "$TYPER_FILE" \
-  "      return @table.ptr if reference_union?(type.as(UnionType))" \
-  "      return @table.ptr if false" \
+prove_mutation "a reference union lowered as an integer, not a pointer" "$TYPER_FILE" \
+  "    if type.is_a?(ReferenceUnionType) || type.is_a?(NilableReferenceUnionType)
+      return @table.ptr" \
+  "    if type.is_a?(ReferenceUnionType) || type.is_a?(NilableReferenceUnionType)
+      return @table.int64" \
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
