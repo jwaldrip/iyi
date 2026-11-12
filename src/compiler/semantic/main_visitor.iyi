@@ -17,7 +17,7 @@ import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
-import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType}
+import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/new::{define_new_methods}
@@ -1810,10 +1810,31 @@ pub class MainVisitor < TypeNodeHost
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(target_def)
+    old_current_type = @current_type
+    enter_owner_scope(rec_type)
     result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
+    @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
     result
+  end
+
+  # iyi: a body's constants are looked up from the type the def is called on, not from the type the
+  # call is written in (hosted: the def's self type). A generic instance's constants are its generic
+  # type's, and a metaclass names its instance type: `SIZE` in a class method of Hdr is Hdr's whatever
+  # class calls it.
+  def enter_owner_scope(rec_type : Type) : Nil
+    owner : Type = rec_type
+    if owner.is_a?(MetaclassType)
+      owner = owner.as(MetaclassType).instance_type
+    end
+    if owner.is_a?(GenericInstanceType)
+      owner = owner.as(GenericInstanceType).generic_type
+    end
+    if owner.is_a?(ModuleType) && !owner.is_a?(SemanticProgram)
+      @current_type = owner.as(ModuleType)
+    end
+    nil
   end
 
   # iyi: the names a node's file imported become the names in scope (SPEC.md R-2b). A node with
@@ -2342,6 +2363,66 @@ pub class MainVisitor < TypeNodeHost
     typed = visit_fun_def(self, node)
     @fun_inline_file = saved
     typed
+  end
+
+  # `->(x : T) { body }` is typed `Proc(T, R)`, as the hosted pass types a ProcLiteral (main_visitor.cr
+  # 1373-1433 and ProcLiteral#update, bindings.cr 604-619). Its parameters are locals of its body; R is the
+  # declared return type, or else the body's type. Not ported: the closure analysis, the Proc argument
+  # check, force_nil, and the body's scope (the body is typed in the program's scope, not the literal's).
+  def visit(node : ProcLiteral) : Bool
+    return false if type_of?(node)
+    def_node = node.def
+    fun_vars = @vars.dup
+    arg_types = [] of Type
+    i = 0
+    while i < def_node.args.size
+      arg = def_node.args[i]
+      restriction = arg.restriction
+      if restriction.nil?
+        return refuse(node, "parameter '#{arg.name}' of Proc literal must have a type")
+      end
+      t = TypeQueries.virtual_type(lookup_under(restriction.as(ASTNode), @scope))
+      set_type(restriction.as(ASTNode), t)
+      set_type(arg, t)
+      arg_types << t
+      fun_vars[arg.name] = t
+      i = i + 1
+    end
+    declared = proc_literal_return(def_node)
+    body = def_node.body
+    inner = sub_visitor(fun_vars)
+    old_imports = @program.current_imports
+    old_import_defs = @program.current_import_defs
+    enter_file_scope(node)
+    body.accept(inner)
+    @program.current_imports = old_imports
+    @program.current_import_defs = old_import_defs
+    ret = declared
+    if bt = inner.child_type(body)
+      if rt = declared
+        merged = @program.type_merge(bt, rt)
+        if merged != rt
+          return refuse(node, "expected Proc to return #{rt.full_name} but it returned #{merged.full_name}")
+        end
+      else
+        ret = TypeQueries.virtual_type(bt)
+      end
+    end
+    if final = ret
+      set_type(def_node, final)
+      set_type(node, ProcInstanceType.new(@program, arg_types, final))
+    else
+      return refuse(node, "the body of the Proc literal was not typed")
+    end
+    false
+  end
+
+  # The declared return type of a Proc literal's def, or nil.
+  def proc_literal_return(def_node : Def) : Type?
+    if rt_node = def_node.return_type
+      return TypeQueries.virtual_type(lookup_under(rt_node, @scope))
+    end
+    nil
   end
 
   def visit(node : Self) : Bool
