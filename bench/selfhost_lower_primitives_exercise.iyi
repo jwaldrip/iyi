@@ -14,7 +14,7 @@ module bench/selfhost_lower_primitives_exercise
 #   port lower <fixture.iyi> <oracle.ll>    lowers the fixture and compares it with the oracle
 #   port emit <fixture.iyi> <oracle.ll>     the port's module as text, for the native tool
 
-import bench/lib/lower_gate::{analyse, ir_module, triple_of, normalised_lines, attach_attrs, oracle_attr_map, printed_attr_map, compare, split_module, run_oracle}
+import bench/lib/lower_gate::{analyse, ir_module, triple_of, normalised_lines, build_names, attach_attrs, oracle_attr_map, printed_attr_map, compare, split_module, run_oracle}
 import compiler/ir/module::{Module}
 import compiler/ir/parser::{parse, IrParseError}
 import compiler/ir/printer::{print}
@@ -31,14 +31,15 @@ def lower_bare(fixture : String, oracle_path : String) : Nil
   oracle_text = File.read(oracle_path)
   parsed = parse(oracle_text)
   raise parsed.as(IrParseError).to_s if parsed.is_a?(IrParseError)
-  oracle = attach_attrs(normalised_lines(print(parsed.as(Module)), "::"), oracle_attr_map(oracle_text))
+  builds = build_names(oracle_text, "::")
+  oracle = attach_attrs(normalised_lines(print(parsed.as(Module)), builds), oracle_attr_map(oracle_text))
   triple = triple_of(oracle_text)
 
   analysis = analyse(File.read(fixture), fixture, true)
   m = ir_module(triple)
   codegen_program(analysis.root, analysis.visitor, bare_typer(m), m)
   port_text = print(m)
-  port = attach_attrs(normalised_lines(port_text, "::"), printed_attr_map(port_text))
+  port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
   identical = compare(oracle, port)
   total = split_module(oracle)[2].size
   module_ok = split_module(oracle)[0] == split_module(port)[0]
