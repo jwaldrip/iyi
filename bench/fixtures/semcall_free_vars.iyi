@@ -1,0 +1,10 @@
+struct Slot
+  def self.pair(first : T, second : T) : T forall T
+    first
+  end
+end
+
+# error Slot.pair(1, 2)
+# error Slot.pair("a", "b")
+# error Slot.pair(1)
+# error Slot.pair(1, 2, 3)
