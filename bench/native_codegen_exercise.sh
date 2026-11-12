@@ -167,6 +167,7 @@ check_fixture() {
 check_arith() { check_fixture "$1" arith; }
 check_recursion() { check_fixture "$1" control; }
 check_iyiagg() { check_fixture "$1" iyiagg; }
+check_byval() { check_fixture "$1" byval; }
 check_probe() {
   local n
   n=$("$1" mir "$FIX/frame64k.ir" big | grep -c 'ZeroSp')
@@ -194,6 +195,17 @@ prove_mutation "iyi convention: the second leaf of a split aggregate takes the w
   'locs << LeafLoc.new(0, desc.integer_args[gpr_next], -1_i64, bits, false, leaf)' \
   'locs << LeafLoc.new(0, desc.integer_args[gpr_next + k], -1_i64, bits, false, leaf)' \
   check_iyiagg
+prove_mutation "byval: the caller passes its own object instead of a copy" \
+  src/compiler/native/aarch64/isel.iyi \
+  '    [dst]
+  end
+
+  # Copies' \
+  '    [source]
+  end
+
+  # Copies' \
+  check_byval
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \

@@ -462,11 +462,6 @@ class Isel
     @mf
   end
 
-  # Whether a parameter list carries a byval attribute. byval needs the caller's copy, which is not lowered yet.
-  def attrs_byval?(attrs : Array(Array(Attribute))) : Bool
-    attrs.any? { |p| p.any? { |a| a.name == "byval" } }
-  end
-
   # The parameter assignment of this function, by its convention.
   def param_assignment(params : Array(IrType), sret_first : Bool) : CallAssignment | String
     return assign_iyi_call(@layout, @desc, params, sret_first) if @fn.cc == CallConv::Iyi
@@ -494,12 +489,59 @@ class Isel
     aux.is_a?(CallAux) && aux.as(CallAux).cc == CallConv::Iyi
   end
 
+  # The byval attribute of argument k of a call, if it has one.
+  def byval_attr(cc : CallAux?, k : Int32) : Attribute?
+    return nil unless cc
+    attrs = cc.param_attrs
+    return nil if k >= attrs.size
+    attrs[k].find { |a| a.name == "byval" }
+  end
+
+  # The leaves one argument passes. A byval argument passes the address of a copy made here, in this frame, so the
+  # callee's writes never reach the caller's own object.
+  def arg_leaves(value : Value, attr : Attribute?) : Array(Int32)
+    return materialize(value) unless attr
+    t = attr.type_value
+    unless t
+      fail("a byval attribute names no type")
+      return [gpr]
+    end
+    source = first_leaf(value)
+    slot = @mf.frame.add_slot(@layout.alloc_size(t), @layout.abi_align(t))
+    dst = gpr
+    m = mop(MOp::AddrFrame)
+    m.defs << vop(dst)
+    m.uses << Operand.new(OperandKind::FrameSlot, slot, 0_i64)
+    emit(m)
+    copy_bytes(source, dst, @layout.alloc_size(t))
+    [dst]
+  end
+
+  # Copies n bytes from the address in src to the address in dst, in the widest chunks that fit.
+  def copy_bytes(src : Int32, dst : Int32, n : Int64) : Nil
+    off = 0_i64
+    while off < n
+      left = n - off
+      size = left >= 8_i64 ? 8 : (left >= 4_i64 ? 4 : (left >= 2_i64 ? 2 : 1))
+      v = gpr
+      load = mop(MOp::Ldr)
+      load.size = size * 8
+      load.imm = off
+      load.defs << vop(v)
+      load.uses << vop(src)
+      emit(load)
+      store = mop(MOp::Str)
+      store.size = size * 8
+      store.imm = off
+      store.uses << vop(v)
+      store.uses << vop(dst)
+      emit(store)
+      off = off + size.to_i64
+    end
+  end
+
   # Parameters arrive by the convention: registers, or the caller's outgoing area above the frame record.
   def lower_params : Nil
-    if attrs_byval?(@fn.param_attrs)
-      fail("a byval parameter is not lowered in this slice: its copy awaits the memcpy expansion")
-      return
-    end
     params = @fn.params.map { |p| p.type }
     sret_first = sret_param?(0)
     assignment = param_assignment(params, sret_first)
@@ -1250,12 +1292,6 @@ class Isel
       attrs = cc_aux.param_attrs
       sret_first = attrs.size > 0 && attrs[0].any? { |a| a.name == "sret" }
     end
-    if cc_aux
-      if attrs_byval?(cc_aux.param_attrs)
-        fail("a byval argument is not lowered in this slice: its copy awaits the memcpy expansion")
-        return
-      end
-    end
     assignment = call_assignment(types, fixed, sret_first, callee_iyi?(i))
     if assignment.is_a?(String)
       fail(assignment.as(String))
@@ -1269,7 +1305,7 @@ class Isel
     # Every argument is read from its register before the call; stack arguments are stored to the outgoing area.
     k = 0
     while k < actual.size
-      vals = materialize(actual[k])
+      vals = arg_leaves(actual[k], byval_attr(cc_aux, k))
       locs = call.args[k]
       j = 0
       while j < locs.size
