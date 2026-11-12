@@ -23,6 +23,7 @@ bench/fixtures/lowcall_pick.iyi run-equal
 bench/fixtures/lowcall_recv_arg.iyi run-equal
 bench/fixtures/lowcall_recv_block.iyi run-equal
 bench/fixtures/lowcall_recv_self.iyi run-equal
+bench/fixtures/lowcall_struct_new.iyi run-equal
 bench/fixtures/lowcall_types.iyi run-equal
 bench/fixtures/lower_and.iyi run-equal
 bench/fixtures/lower_assign.iyi run-equal
@@ -41,8 +42,8 @@ bench/fixtures/lower_instance_sizeof.iyi bodies
 bench/fixtures/lower_int.iyi run-equal
 bench/fixtures/lower_isa_same.iyi run-equal
 bench/fixtures/lower_ivar_class.iyi bodies
-bench/fixtures/lower_ivar_struct.iyi lower
-bench/fixtures/lower_ivar_struct_twice.iyi lower
+bench/fixtures/lower_ivar_struct.iyi run-equal
+bench/fixtures/lower_ivar_struct_twice.iyi run-equal
 bench/fixtures/lower_multi_assign.iyi bodies
 bench/fixtures/lower_named_tuple.iyi bodies
 bench/fixtures/lower_next.iyi run-equal
@@ -70,7 +71,7 @@ bench/fixtures/lowglob_const_bool.iyi run-equal
 bench/fixtures/lowglob_const_literal.iyi run-equal
 bench/fixtures/lowglob_const_two.iyi run-equal
 bench/fixtures/lowprim_add.iyi run-equal
-bench/fixtures/lowprim_alloc_struct.iyi lower
+bench/fixtures/lowprim_alloc_struct.iyi run-equal
 bench/fixtures/lowprim_bits.iyi run-equal
 bench/fixtures/lowprim_bool.iyi run-equal
 bench/fixtures/lowprim_char.iyi run-equal
