@@ -31,6 +31,7 @@ import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program}
 import compiler/lower/context::{Lowerer}
+import bench/lib/lower_gate::{attach_attrs, oracle_attr_map, printed_attr_map}
 
 # The parsed and analysed fixture: the tree and the semantic pass that typed it.
 pub class Analysis
@@ -93,6 +94,8 @@ def normalised_lines(text : String, builds : Array(String)) : Array(String)
     end
     if idx = line.index(" #")
       out << line[0, idx] + " {"
+    elsif line.starts_with?("define ") && (bracket = line.index(") ["))
+      out << line[0, bracket.as(Int32) + 1] + " {"
     else
       out << line
     end
@@ -190,14 +193,15 @@ def run_lower(fixture : String, oracle_path : String) : Nil
   parsed = parse(oracle_text)
   raise parsed.as(IrParseError).to_s if parsed.is_a?(IrParseError)
   builds = build_names(oracle_text)
-  oracle = normalised_lines(print(parsed.as(Module)), builds)
+  oracle = attach_attrs(normalised_lines(print(parsed.as(Module)), builds), oracle_attr_map(oracle_text))
   triple = triple_of(oracle_text)
 
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
   typer = LowerTyper.new(m.types, m.layout, true)
   codegen_program(analysis.root, analysis.visitor, typer, m)
-  port = normalised_lines(print(m), builds)
+  port_text = print(m)
+  port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
   identical = compare(oracle, port)
   total = split_module(oracle)[2].size + 1
   puts "SUMMARY identical=#{identical} total=#{total}"
