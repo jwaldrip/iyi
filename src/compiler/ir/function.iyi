@@ -13,6 +13,13 @@ pub enum Linkage
   ExternalWeak
 end
 
+# LLVM's visibility: `default` is the one nothing is printed for.
+pub enum Visibility
+  Default
+  Hidden
+  Protected
+end
+
 pub enum TlsModel
   None
   LocalExec
@@ -40,6 +47,8 @@ pub class Function < Value
   property param_attrs : Array(Array(Attribute))
   property ret_attrs : Array(Attribute)
   property import_library : String?
+  property visibility : Visibility
+  property dso_local : Bool
   property personality : Value?
   property section : String?
   property alignment : Int32
@@ -54,6 +63,8 @@ pub class Function < Value
     @param_attrs = [] of Array(Attribute)
     @ret_attrs = [] of Attribute
     @import_library = nil
+    @visibility = Visibility::Default
+    @dso_local = false
     @personality = nil
     @section = nil
     @alignment = 0
@@ -137,6 +148,8 @@ pub class Global < Value
   property section : String?
   property unnamed_addr : Bool
   property import_library : String?
+  property visibility : Visibility
+  property dso_local : Bool
 
   def initialize(name : String, @value_type : IrType, ptr_type : IrType)
     super(ptr_type, name)
@@ -148,6 +161,8 @@ pub class Global < Value
     @section = nil
     @unnamed_addr = false
     @import_library = nil
+    @visibility = Visibility::Default
+    @dso_local = false
   end
 
   def global_constant=(constant : Bool) : Nil
