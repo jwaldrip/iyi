@@ -380,7 +380,9 @@ check_tp_mask() { "$1" mir bench/fixtures/native_tp/threadpointer.ir tp_word | g
 
 check_naked() { check_fixture "$1" asm_naked_const; }
 check_bind() { check_fixture "$1" asm_addone; }
-check_clobber() { check_fixture "$1" asm_clobber; }
+# An ignored clobber shows only where a value is kept in the clobbered register across the template, which linear
+# scan does and the pin allocator never does, so this check always runs linear, whatever the gate was started with.
+check_clobber() { IYI_NATIVE_REGALLOC=linear check_fixture "$1" asm_clobber; }
 check_reloc() { check_fixture "$1" asm_reloc; }
 
 echo "== 6. mutations are each caught"
