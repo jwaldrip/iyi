@@ -1611,7 +1611,22 @@ pub class SemanticProgram < NonGenericModuleType
       lookup_type_path?(node.as(Path), current_type)
     elsif node.is_a?(Generic)
       g = node.as(Generic)
-      lookup_type_node?(g.name, current_type)
+      base_type = lookup_type_node?(g.name, current_type)
+      return nil unless base_type
+      if hook = @merge_hook
+        if base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
+          if plain_generic?(g, base_type)
+            type_args = [] of Type
+            g.type_vars.each do |t|
+              arg = lookup_type_node?(t, current_type)
+              return nil unless arg
+              type_args << arg
+            end
+            return hook.instantiate_type(base_type, type_args)
+          end
+        end
+      end
+      base_type
     elsif node.is_a?(Union)
       u = node.as(Union)
       resolved = [] of Type
@@ -1819,11 +1834,14 @@ pub class PendingIvar
   property name : String
   property restriction : ASTNode
   property initializer : ASTNode?
-  # An explicit `@x : T` is typed by T's virtual type (hosted declare_instance_var).
+  # An explicit `@x : T` or initialize-arg `@x` is typed by T's virtual type (hosted
+  # declare_instance_var / type_guess_visitor check_can_be_stored).
   property virtual : Bool
+  # Only an explicit `@x : T` declaration overrides an initialize-argument guess for the same ivar.
+  property explicit : Bool
   property imports : Hash(String, Type)? = nil
 
-  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false)
+  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false, @explicit : Bool = false)
   end
 end
 
@@ -1879,10 +1897,10 @@ pub class TopLevelVisitor < Visitor
     # variable that exists.
     explicit = [] of String
     @pending_ivars.each do |found|
-      explicit << "#{found.owner.full_name} #{found.name}" if found.virtual
+      explicit << "#{found.owner.full_name} #{found.name}" if found.explicit
     end
     @pending_ivars.each do |pi|
-      next if !pi.virtual && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
+      next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
       if imports = pi.imports
         @program.current_imports = imports
       else
@@ -2817,7 +2835,7 @@ pub class TopLevelVisitor < Visitor
       node.args.each do |arg|
         if arg.name.starts_with?("@")
           if r = arg.restriction
-            @pending_ivars << PendingIvar.new(@current_type, arg.name, r)
+            @pending_ivars << PendingIvar.new(@current_type, arg.name, r, nil, true)
           end
         end
       end
@@ -2839,7 +2857,7 @@ pub class TopLevelVisitor < Visitor
             node.args.each do |arg|
               if arg.name == vname
                 if r = arg.restriction
-                  @pending_ivars << PendingIvar.new(@current_type, ivar_name, r)
+                  @pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, true)
                 end
               end
             end
@@ -2913,7 +2931,7 @@ pub class TopLevelVisitor < Visitor
         raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
       end
       ivar_name = node.var.as(InstanceVar).name
-      @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value, true)
+      @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value, true, true)
     elsif node.var.is_a?(ClassVar)
       if @current_type.is_a?(SemanticProgram)
         raise("can't use class variables at the top level")
