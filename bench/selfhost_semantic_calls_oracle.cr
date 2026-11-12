@@ -13,7 +13,8 @@
 # superclass), or `<receiver call>.name(args)` (an instance: the receiver call
 # must have exactly one match and a declared return type, and its return is the
 # receiver). Arguments are literals: an integer is Int32, a string String, true
-# or false Bool, and nil Nil.
+# or false Bool, and nil Nil. A call may write named arguments (`name: literal`)
+# and a block (`{ ... }`).
 #
 # A `# call` line is the hosted lookup (`Type#lookup_matches`, analyze_all off),
 # the first step of the hosted call pass. Its matches are listed in the hosted
@@ -35,9 +36,9 @@
 # The port's driver (bench/selfhost_semantic_calls_exercise.iyi) prints the same
 # lines for the same fixtures, and the gate requires them byte-identical.
 #
-# Not covered here (and not written in the fixtures): named arguments, splats,
-# block arguments, autocast of literals, free variables, virtual receivers, and
-# `new`. Their hosted behaviour is later increments of slice S1c.
+# Not covered here (and not written in the fixtures): splats, block arguments,
+# autocast of literals, free variables, virtual receivers, and `new`. Their
+# hosted behaviour is later increments of slice S1c.
 require "compiler/requires"
 
 RECEIVER_ERROR = "receiver is not resolvable"
@@ -70,6 +71,15 @@ def literal_type(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
   raise "argument is not a literal"
 end
 
+# The signature of a call: its literal arguments, named arguments and block, as
+# the hosted call pass builds it.
+def signature_of(program : Iyi::Program, call : Iyi::Call) : Iyi::CallSignature
+  arg_types = call.args.map { |arg| literal_type(program, arg) }
+  named = call.named_args
+  named_types = named.nil? ? nil : named.map { |na| Iyi::NamedArgumentType.new(na.name, literal_type(program, na.value)) }
+  Iyi::CallSignature.new(call.name, arg_types, call.block, named_types)
+end
+
 # The type named by a receiver written as a path, such as `Foo` or `Outer::Foo`.
 def receiver_scope(program : Iyi::Program, name : String) : Iyi::Type
   found = program.lookup_path(Iyi::Path.new(name.split("::")))
@@ -98,8 +108,7 @@ def receiver_type(program : Iyi::Program, text : String) : Iyi::Type
   end
   call = node.as(Iyi::Call)
   scope = call_scope(program, text)
-  arg_types = call.args.map { |arg| literal_type(program, arg) }
-  matches = scope.lookup_matches(Iyi::CallSignature.new(call.name, arg_types, nil, nil))
+  matches = scope.lookup_matches(signature_of(program, call))
   found = matches.matches
   raise RECEIVER_ERROR if found.nil? || found.size != 1
   ret = found[0].def.return_type
@@ -133,9 +142,7 @@ def evaluate(program : Iyi::Program, expr : String) : String
   raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
   call = node.as(Iyi::Call)
   receiver = call_scope(program, expr)
-  arg_types = call.args.map { |arg| literal_type(program, arg) }
-  signature = Iyi::CallSignature.new(call.name, arg_types, nil, nil)
-  matches = receiver.lookup_matches(signature)
+  matches = receiver.lookup_matches(signature_of(program, call))
   found = matches.matches
   return "none" if found.nil? || found.empty?
   parts = found.map { |m| match_text(m) }

@@ -44,9 +44,9 @@ module BenchSelfhostSemanticCallsExercise
     "#{m.owner.to_s}::#{m.definition.name}(#{restrictions.join(", ")}) -> #{ret_text}"
   end
 
-  # The matches of the call with its receiver and literal arguments, or the
-  # message of why they cannot be found. A receiver or argument the call rule
-  # cannot type says so.
+  # The matches of the call with its receiver, literal arguments, named arguments
+  # and block, or the message of why they cannot be found. A receiver or argument
+  # the call rule cannot type says so.
   def self.lookup(prog : SemanticProgram, ts : TypeSystem, call : Call) : Matches | String
     scope = CallReceiver.scope(prog, ts, call.obj)
     if scope.nil?
@@ -61,7 +61,11 @@ module BenchSelfhostSemanticCallsExercise
       end
       arg_types << typed.as(Type)
     end
-    signature = CallSignature.new(call.name, arg_types)
+    named_types = CallReceiver.named_argument_types(prog, call.named_args)
+    if named_types.nil?
+      return "argument is not a literal"
+    end
+    signature = CallSignature.new(call.name, arg_types, named_types, call.block != nil)
     MethodLookup.lookup_matches(owner, ts, signature, owner, owner, [] of Match)
   end
 

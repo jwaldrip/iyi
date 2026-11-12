@@ -101,8 +101,8 @@ prove_mutation "restrictions are not applied to arguments" "$MATCH_FILE" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "missing arguments without a default are accepted" "$MATCH_FILE" \
-  "    return MatchAttempt.none if given < required" \
-  "    return MatchAttempt.none if false" \
+  "      if !mandatory[k] && definition.args[k].default_value.nil?" \
+  "      if false" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -113,8 +113,8 @@ prove_mutation "parent types are not searched for methods" "$LOOKUP_FILE" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a type path as receiver resolves to its instance, not its metaclass" "$CALL_FILE" \
-  "    named.as(ModuleType).metaclass" \
-  "    named.as(ModuleType)" \
+  "    scoped.as(ModuleType).metaclass" \
+  "    scoped.as(ModuleType)" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -133,6 +133,18 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a consecutive range of expected sizes is printed as a list" "$ERROR_FILE" \
   "    if sizes.size > 1 && sizes[sizes.size - 1] - sizes[0] == sizes.size - 1" \
   "    if false" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a def that yields accepts a call without a block" "$MATCH_FILE" \
+  "    if CallMatch.yields?(definition) != signature.block" \
+  "    if false" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a named argument may repeat a positional one" "$MATCH_FILE" \
+  "        return MatchAttempt.none if mandatory[index]" \
+  "        return MatchAttempt.none if false" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
