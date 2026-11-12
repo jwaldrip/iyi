@@ -411,6 +411,7 @@ check_const_facts_diverge() {
 echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
+MUT_IVARS="$REPO/src/compiler/semantic/instance_vars.iyi"
 MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
@@ -517,6 +518,16 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
   "return hook.virtual_of(resolved)" \
   "return resolved" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \
+  "if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)" \
+  "if owner.owner.is_a?(NonGenericClassType)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a Pointer(T).malloc guess is not a pointer instance" "$MUT_IVARS" \
+  "if ptr && ptr.is_a?(PointerInstanceType)" \
+  "if ptr && ptr.is_a?(NonGenericClassType)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \

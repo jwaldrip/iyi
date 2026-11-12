@@ -1,0 +1,23 @@
+# Instance variables of a generic class that are never declared, only assigned in initialize
+# (hosted type_guess_visitor and type_declaration_processor, GenericClassType branch). The generic
+# declares them once, and each instance takes the copy with its type arguments substituted, so
+# @size is Int32 on both instances and @buf is Pointer(T) on the generic and Pointer(Int32) or
+# Pointer(String) on the instances (Pointer(T).malloc guesses Pointer(T)).
+class Box(T)
+  def initialize(n : Int32)
+    @size = 0
+    @buf = Pointer(T).malloc(n.to_u64)
+  end
+
+  def size : Int32
+    @size
+  end
+end
+
+class Holder
+  @ints : Box(Int32)
+  @strs : Box(String)
+
+  def initialize(@ints : Box(Int32), @strs : Box(String))
+  end
+end

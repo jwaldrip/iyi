@@ -242,7 +242,7 @@ src/std/indexable.iyi 0
 src/std/ini.iyi 0
 src/std/int.iyi 10
 src/std/io.iyi 0
-src/std/iterator.iyi 175
+src/std/iterator.iyi 190
 src/std/json.iyi 301
 src/std/kernel.iyi 10
 src/std/levenshtein.iyi 0
