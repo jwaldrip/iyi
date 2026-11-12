@@ -18,29 +18,6 @@ import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Expressions, Path, Rang
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
-  # The hosted base transformer answers a list of one expression with that
-  # expression, which drops a paren group around it, and flattens a list
-  # returned into its parent. The port's base transformer does neither, so the
-  # walk does both itself until the base is brought into line.
-  def transform(node : Expressions) : ASTNode
-    exps = [] of ASTNode
-    i = 0
-    while i < node.expressions.size
-      new_exp = node.expressions[i].transform(self)
-      if new_exp.is_a?(Expressions)
-        exps.concat(new_exp.as(Expressions).expressions)
-      else
-        exps << new_exp
-      end
-      i += 1
-    end
-    if exps.size == 1
-      return exps[0]
-    end
-    node.expressions = exps
-    node
-  end
-
   def transform(node : RangeLiteral) : ASTNode
     path = Path.global(["Range"] of String)
     bool = BoolLiteral.new(node.exclusive)
