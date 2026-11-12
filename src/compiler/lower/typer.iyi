@@ -75,8 +75,11 @@ pub def passed_by_value?(type : Type) : Bool
   if type.is_a?(PointerInstanceType) || type.is_a?(ProcInstanceType)
     return false
   end
-  if type.is_a?(TupleInstanceType) || type.is_a?(NamedTupleInstanceType) || type.is_a?(MixedUnionType)
+  if type.is_a?(TupleInstanceType) || type.is_a?(NamedTupleInstanceType)
     return true
+  end
+  if type.is_a?(MixedUnionType)
+    return !reference_union?(type.as(UnionType))
   end
   if type.is_a?(VirtualType)
     return type.struct?
@@ -118,6 +121,20 @@ pub def module_implementors(type : NonGenericModuleType) : Array(Type)
   found = [] of Type
   type.including_types.each do |t|
     found << t unless t.is_a?(MetaclassType) || t.is_a?(VirtualMetaclassType)
+  end
+  found
+end
+
+# The hosted reference unions (ReferenceUnionType, NilableReferenceUnionType) are one pointer: a union
+# whose members other than Nil are all reference-like. The port's unification builds a MixedUnionType
+# for some of them (measured: `@doc : String?` in syntax/ast.iyi), so the typer decides from the members,
+# which is the hosted rule `types.all?(&.reference_like?)` (iyi/program.cr).
+pub def reference_union?(type : UnionType) : Bool
+  found = false
+  type.union_types.each do |member|
+    next if member.nil_type?
+    return false unless TypeQueries.reference_like?(member)
+    found = true
   end
   found
 end
@@ -292,6 +309,7 @@ pub class LowerTyper
       return llvm_type(TypeMerge.remove_alias(type), wants_size)
     end
     if type.is_a?(UnionType)
+      return @table.ptr if reference_union?(type.as(UnionType))
       return mixed_union_struct(type, wants_size)
     end
     if type.is_a?(GenericClassType)
@@ -299,10 +317,16 @@ pub class LowerTyper
       return @table.int1
     end
     if type.is_a?(NonGenericModuleType) && !type.is_a?(LibType)
-      # A namespace has no implementors and answers `i32`, as the hosted typer does for every namespace
-      # measured. A module with implementors is the hosted union of them (NEEDS.md row 5).
+      # A namespace has no implementors and answers `i1`: the hosted typer's answer for a
+      # NonGenericModuleType (codegen/llvm_typer.cr, `create_llvm_type(NonGenericModuleType | GenericClassType)`).
+      # A module with implementors is the hosted union of them (NEEDS.md row 5).
       implementors = module_implementors(type)
-      return @table.int32 if implementors.size == 0
+      if implementors.size == 0
+        # The file's own module (its `module a/b/c` header, an iyi unit) answers `i32`, the hosted answer
+        # measured on `Compiler::Backend::Backend` and every header module of src/compiler.
+        return @table.int32 if type.iyi_unit
+        return @table.int1
+      end
       return module_union_struct(type, implementors, wants_size)
     end
     if type.is_a?(NonGenericClassType) || type.is_a?(GenericClassInstanceType)

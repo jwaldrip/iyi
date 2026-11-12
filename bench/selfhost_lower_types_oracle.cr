@@ -253,7 +253,7 @@ end
 
 # Every type the entry declares, nested types included: the hosted dump's rule.
 def own_collect(t : Iyi::Type, entry : String, found : Array(Iyi::Type)) : Nil
-  found << t if declared_in?(t.locations, entry)
+  found << t if declared_in?(t.locations, entry) && !t.is_a?(Iyi::Const)
   if t.is_a?(Iyi::NamedType) && !t.is_a?(Iyi::EnumType)
     t.types.keys.sort.each do |sub|
       own_collect(t.types[sub], entry, found)

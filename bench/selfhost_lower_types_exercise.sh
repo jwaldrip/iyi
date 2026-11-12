@@ -148,7 +148,7 @@ while IFS= read -r file; do
   fi
   python3 "$REPO/bench/lib/lower_types_compare.py" "$WORK/$id.o" "$WORK/$id.p" > "$WORK/$id.cmp"
   read -r declared identical failed missing differs < <(awk 'NR==1' "$WORK/$id.cmp")
-  awk -v f="$file" '/^REASON/ {print f "\t" $0}' "$WORK/$id.cmp" >> "$own_reasons"
+  awk -v f="$file" '/^(REASON|EXAMPLE) / {print f "\t" $0}' "$WORK/$id.cmp" >> "$own_reasons"
   printf '%s\tOK\t%s\t%s\t%s\t%s\t%s\t\n' "$file" "$declared" "$identical" "$failed" "$missing" "$differs" >> "$own_results"
 done < "$own_list"
 own_floor="$REPO/bench/selfhost_lower_types.floor"
@@ -203,8 +203,10 @@ read -r own_measured own_port_failed own_oracle_failed own_declared own_identica
 echo "  own source: $own_files_total files, $own_measured measured, $own_oracle_failed hosted failures (not measured), $own_port_failed port failures"
 echo "  own source types: $own_identical identical of $own_declared declared ($own_differs differ) across the measured files"
 echo "  ranked reasons (types that differ or are not measured, by count):"
-awk -F'\t' '{ line = $2; sub(/^REASON /, "", line); n = line; sub(/ .*/, "", n); text = line; sub(/^[0-9]+ /, "", text); tot[text] += n }
-  END { for (t in tot) printf "%7d  %s\n", tot[t], t }' "$own_reasons" | sort -rn | awk 'NR <= 40'
+awk -F'\t' '
+  $2 ~ /^REASON / { line = $2; sub(/^REASON /, "", line); n = line; sub(/ .*/, "", n); text = line; sub(/^[0-9]+ /, "", text); tot[text] += n }
+  $2 ~ /^EXAMPLE / { text = $2; sub(/^EXAMPLE /, "", text); if (!(text in ex)) ex[text] = $3 }
+  END { for (t in tot) printf "%7d\t%s\t%s\n", tot[t], t, ex[t] }' "$own_reasons" | sort -t"$(printf '\t')" -k1,1rn | awk -F'\t' 'NR <= 40 { printf "%7d  %s   [e.g. %s]\n", $1, $2, $3 }'
 awk -F'\t' '$2 == "ORACLE" { print "  hosted: " $8 }' "$own_results" | sort | uniq -c | sort -rn | awk 'NR <= 15'
 awk -F'\t' '$2 == "PORT" { print "  port:   " $8 }' "$own_results" | sort | uniq -c | sort -rn | awk 'NR <= 15'
 
@@ -286,8 +288,8 @@ prove_mutation "mixed union aligned to 4 bytes, not the largest member" "$TYPER_
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "mixed unions not passed by value" "$TYPER_FILE" \
-  "|| type.is_a?(MixedUnionType)" \
-  "|| false" \
+  "  if type.is_a?(MixedUnionType)" \
+  "  if false" \
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -394,7 +396,7 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # The own-source probes: files whose floors a mutation of the namespace or struct rules must
 # lower below. A probe fails the check when the mutated port's identical count drops below its
 # floor, when the mutated driver does not build, or when the port fails the file.
-OWN_PROBES="src/compiler/foundation/location.iyi src/compiler/platform/target.iyi"
+OWN_PROBES="src/compiler/foundation/location.iyi src/compiler/platform/target.iyi src/compiler/syntax/ast.iyi"
 check_own_diverges() {
   "$IYI" build -o "$WORK/mut_port" "$REPO/bench/selfhost_lower_types_exercise.iyi" > /dev/null 2>&1 || return 1
   for probe in $OWN_PROBES; do
@@ -416,7 +418,7 @@ if ! check_own_diverges; then
   status=1
 fi
 
-prove_mutation "a namespace module lowered as one bit, not i32" "$TYPER_FILE" \
+prove_mutation "a namespace module's branch bypassed (namespaces fall through to the raise)" "$TYPER_FILE" \
   "    if type.is_a?(NonGenericModuleType) && !type.is_a?(LibType)" \
   "    if false" \
   -- check_own_diverges || status=1
@@ -425,6 +427,18 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a struct's by-value answer removed (passed_by_value? of a class)" "$TYPER_FILE" \
   "  if type.is_a?(ClassType)" \
   "  if type.is_a?(ClassType) && false" \
+  -- check_own_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a reference union lowered as a mixed union, not a pointer" "$TYPER_FILE" \
+  "      return @table.ptr if reference_union?(type.as(UnionType))" \
+  "      return @table.ptr if false" \
+  -- check_own_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "the file's own module answers i1, not i32" "$TYPER_FILE" \
+  "        return @table.int32 if type.iyi_unit" \
+  "        return @table.int1 if type.iyi_unit" \
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
