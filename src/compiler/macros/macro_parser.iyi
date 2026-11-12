@@ -366,6 +366,13 @@ pub class MacroParser
   def self.parse_macro_definition(source : String) : {Macro, Int32}
     scanner = MacroBodyScanner.new(source)
     scanner.skip_whitespace
+    # A fixture may open with comment lines (the gate's `# target:` directives).
+    while scanner.has_more? && scanner.current_char == '#'
+      while scanner.has_more? && scanner.current_char != '\n'
+        scanner.next_char
+      end
+      scanner.skip_whitespace
+    end
 
     # Read "macro "
     start_str = "macro"

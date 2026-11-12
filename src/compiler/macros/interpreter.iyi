@@ -3,6 +3,7 @@ module compiler/macros/interpreter
 import compiler/syntax/ast::{ASTNode, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Unless, Until, Var, While, Yield, StringBuilder}
 import compiler/syntax/token::{NumberKind}
 import compiler/macros/ast::{MacroId}
+import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
 
 pub class MacroInterpreter
@@ -12,13 +13,21 @@ pub class MacroInterpreter
   property temp_id : Int32
   property last : ASTNode
   property block : Block?
+  property flags : Array(String)
 
-  def initialize(@block : Block? = nil)
+  # `flags` is the flag set `flag?` answers from. Left out, it is the host's,
+  # as the hosted interpreter's default is.
+  def initialize(@block : Block? = nil, flags : Array(String)? = nil)
     @vars = Hash(String, ASTNode).new
     @str = StringBuilder.new
     @macro_vars = Hash(String, String).new
     @temp_id = 0
     @last = Nop.new
+    if f = flags
+      @flags = f
+    else
+      @flags = MacroTargetFlags.host([] of String)
+    end
   end
 
   def to_s : String
@@ -189,7 +198,7 @@ pub class MacroInterpreter
               nil
             end
       eval_args = cl.args.map { |a| evaluate(a) }
-      return MacroMethods.interpret_method(rec, cl.name, eval_args, nil, cl.block)
+      return MacroMethods.interpret_method(@flags, rec, cl.name, eval_args, nil, cl.block)
     end
     if node.is_a?(If)
       if_node = node.as(If)

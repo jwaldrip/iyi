@@ -5,6 +5,7 @@ import compiler/macros/methods::{MacroMethods}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/macro_parser::{MacroParser}
 import compiler/macros/engine::{MacroEngine}
+import compiler/macros/target_flags::{MacroTargetFlags}
 
 module BenchSelfhostMacrosExercise
   def self.assert(cond : Bool, msg : String) : Nil
@@ -356,19 +357,39 @@ make_getter(answer, 42)
 end
 
 if Program.args.size > 0
-  if Program.args.size > 1 && Program.args[1] == "--count"
-    filename = Program.args[0]
-    source = File.read(filename)
-    engine = MacroEngine.new
-    expanded = engine.expand(source)
+  filename = ""
+  count = false
+  triple = ""
+  defines = [] of String
+  args = Program.args
+  idx = 0
+  while idx < args.size
+    a = args[idx]
+    if a == "--count"
+      count = true
+    elsif a == "--target"
+      idx = idx + 1
+      triple = args[idx]
+    elsif a == "-D"
+      idx = idx + 1
+      defines << args[idx]
+    else
+      filename = a
+    end
+    idx = idx + 1
+  end
+  flags = MacroTargetFlags.host(defines)
+  unless triple.empty?
+    flags = MacroTargetFlags.for_triple(triple, defines)
+  end
+  source = File.read(filename)
+  engine = MacroEngine.new(flags)
+  expanded = engine.expand(source)
+  if count
     counter = NodeCounterVisitor.new
     expanded.accept(counter)
     puts counter.count
   else
-    filename = Program.args[0]
-    source = File.read(filename)
-    engine = MacroEngine.new
-    expanded = engine.expand(source)
     print BenchSelfhostMacrosExercise.dump_ast(expanded)
   end
 else

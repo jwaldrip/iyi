@@ -2,6 +2,7 @@ module compiler/macros/methods
 
 import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Underscore, Unless, Until, Var, While, StringBuilder}
 import compiler/syntax/token::{NumberKind}
+import compiler/platform/flags::{PlatformFlags}
 import compiler/macros/ast::{MacroId}
 
 pub class MacroMethods
@@ -15,15 +16,10 @@ pub class MacroMethods
     end
   end
 
-  def self.has_flag?(name : String) : Bool
-    case name
-    when "darwin", "macos", "aarch64", "arm64", "unix", "posix", "64"
-      true
-    when "linux", "win32", "windows", "x86_64", "wasm32", "wasi", "gc_none", "gc_boehm", "arm", "i386"
-      false
-    else
-      false
-    end
+  # `flag?(name)` answers from the flag set of the target the macro is expanded
+  # for (see `MacroTargetFlags`), as the hosted `Program#has_flag?` does.
+  def self.has_flag?(flags : Array(String), name : String) : Bool
+    PlatformFlags.has_flag?(flags, name)
   end
 
   def self.to_macro_id(node : ASTNode) : String
@@ -194,6 +190,7 @@ pub class MacroMethods
   end
 
   def self.interpret_method(
+    flags : Array(String),
     receiver : ASTNode?,
     method : String,
     args : Array(ASTNode),
@@ -209,7 +206,7 @@ pub class MacroMethods
         raise msg
       when "flag?"
         flag_name = args.size > 0 ? to_macro_id(args[0]).lstrip(':') : ""
-        return BoolLiteral.new(has_flag?(flag_name))
+        return BoolLiteral.new(has_flag?(flags, flag_name))
       else
         return Nop.new
       end

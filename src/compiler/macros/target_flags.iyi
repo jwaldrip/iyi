@@ -1,0 +1,33 @@
+module compiler/macros/target_flags
+
+import compiler/platform/target::{Target}
+import compiler/platform/flags::{PlatformFlags}
+import compiler/llvm/llvm::{LLVM}
+
+# The flag set a macro sees: the flags its target triple implies, then the `-D`
+# defines, as the hosted compiler builds `Program#flags` (`flags_for_target`
+# plus `program.flags << define`). `flag?(:name)` in a macro answers from this
+# set and nothing else.
+pub class MacroTargetFlags
+  # The host's triple, as LLVM reports it (the hosted `Config.host_target` starts
+  # from the same string).
+  pub def self.host_triple : String
+    LLVM.default_target_triple
+  end
+
+  pub def self.for_triple(triple : String, defines : Array(String)) : Array(String)
+    target = Target.new(triple)
+    flags = PlatformFlags.flags_for_target(target, "")
+    defines.each do |define|
+      if !flags.includes?(define)
+        flags << define
+      end
+    end
+    flags
+  end
+
+  # The flags of the host, with the same defines.
+  pub def self.host(defines : Array(String)) : Array(String)
+    MacroTargetFlags.for_triple(MacroTargetFlags.host_triple, defines)
+  end
+end

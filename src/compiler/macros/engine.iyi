@@ -5,18 +5,27 @@ import compiler/syntax/parser::{Parser}
 import compiler/semantic/normalizer::{Normalizer}
 import compiler/macros/ast
 import compiler/macros/methods
+import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/macro_parser::{MacroParser}
 
 pub class MacroEngine
   property interpreter : MacroInterpreter
+  property flags : Array(String)
 
-  def initialize
-    @interpreter = MacroInterpreter.new
+  # `flags` is the flag set `flag?` answers from, built by `MacroTargetFlags` for
+  # the target being compiled for. Left out, it is the host's.
+  def initialize(flags : Array(String)? = nil)
+    if f = flags
+      @flags = f
+    else
+      @flags = MacroTargetFlags.host([] of String)
+    end
+    @interpreter = MacroInterpreter.new(nil, @flags)
   end
 
   def expand_to_s(a_macro : Macro, call : Call) : String
-    interp = MacroInterpreter.new(call.block)
+    interp = MacroInterpreter.new(call.block, @flags)
     interp.bind_args(a_macro, call)
     interp.interpret(a_macro.body)
     interp.to_s

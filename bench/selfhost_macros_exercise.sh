@@ -230,9 +230,37 @@ class NodeCounter < Iyi::Visitor
   end
 end
 
-filename = ARGV[0]
-src = File.read(filename)
+args = ARGV.to_a
+filename = ""
+count = false
+host = false
+target = ""
+defines = [] of String
+i = 0
+while i < args.size
+  a = args[i]
+  if a == "--count"
+    count = true
+  elsif a == "--host-target"
+    host = true
+  elsif a == "--target"
+    i += 1
+    target = args[i]
+  elsif a == "-D"
+    i += 1
+    defines << args[i]
+  else
+    filename = a
+  end
+  i += 1
+end
 
+if host
+  puts Iyi::Config.host_target.to_s
+  exit 0
+end
+
+src = File.read(filename)
 parser = Iyi::Parser.new(src)
 node = parser.parse
 
@@ -255,10 +283,14 @@ end
 
 the_macro, the_call = find_nodes(node, nil, nil)
 program = Iyi::Program.new
+unless target.empty?
+  program.codegen_target = Iyi::Codegen::Target.new(target)
+end
+defines.each { |d| program.flags << d }
 expanded_str, pragmas = program.expand_macro(the_macro.not_nil!, the_call.not_nil!, program, program)
 expanded_ast = program.parse_macro_source(expanded_str, pragmas, the_macro.not_nil!, the_call.not_nil!, Set(String).new)
 
-if ARGV.size > 1 && ARGV[1] == "--count"
+if count
   c = NodeCounter.new
   expanded_ast.accept(c)
   puts c.count
@@ -275,12 +307,26 @@ if [ ! -x "$WORK/dump_crystal" ]; then
   exit 1
 fi
 
+# The host triple is the hosted compiler's own. A fixture names another with a
+# `# target: <triple>` line and its `-D` defines with `# define: <name>` lines.
+HOST_TRIPLE="$("$WORK/dump_crystal" --host-target)"
+if [ -z "$HOST_TRIPLE" ]; then
+  echo "  THE ORACLE REPORTED NO HOST TRIPLE: this gate cannot conclude anything"
+  exit 1
+fi
+fixture_args() {
+  awk -v host="$HOST_TRIPLE" '
+    /^# target: / { t = $3 }
+    /^# define: / { d = d " -D " $3 }
+    END { printf "--target %s%s", (t == "" ? host : t), d }' "$1"
+}
+
 compare_all() {
   runner="$1"
   out_status=0
   for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
-    "$runner" "$fixture" > "$WORK/a.ast" 2>/dev/null || { out_status=1; continue; }
-    "$WORK/dump_crystal" "$fixture" > "$WORK/b.ast"
+    "$runner" $(fixture_args "$fixture") "$fixture" > "$WORK/a.ast" 2>/dev/null || { out_status=1; continue; }
+    "$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" > "$WORK/b.ast"
     cmp -s "$WORK/a.ast" "$WORK/b.ast" || out_status=1
   done
   return $out_status
@@ -290,15 +336,15 @@ fixture_count=0
 total_matched_nodes=0
 for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
   fixture_name="bench/fixtures/$(basename "$fixture")"
-  "$WORK/exercise" "$fixture" > "$WORK/iyi.ast"
-  "$WORK/dump_crystal" "$fixture" > "$WORK/crystal.ast"
+  "$WORK/exercise" $(fixture_args "$fixture") "$fixture" > "$WORK/iyi.ast"
+  "$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" > "$WORK/crystal.ast"
   if ! cmp -s "$WORK/iyi.ast" "$WORK/crystal.ast"; then
     echo "  $fixture_name: EXPANDED TREES DIFFER"
     diverged=$((diverged + 1))
     diff -u "$WORK/crystal.ast" "$WORK/iyi.ast" | head -20
     status=1
   else
-    nodes_count=$("$WORK/dump_crystal" "$fixture" --count)
+    nodes_count=$("$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" --count)
     echo "  $fixture_name: identical ($nodes_count expanded nodes match the front end)"
     total_matched_nodes=$((total_matched_nodes + nodes_count))
   fi
@@ -350,6 +396,26 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "fresh variable temp name prefix altered" "$INTERP" \
   "temp_name = new_temp_var_name(\"__temp_\")" \
   "temp_name = new_temp_var_name(\"__mut_\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+METHODS="$REPO/src/compiler/macros/methods.iyi"
+TARGET_FLAGS="$REPO/src/compiler/macros/target_flags.iyi"
+prove_mutation "flag? answers from a fixed set, not the target's" "$METHODS" \
+  "PlatformFlags.has_flag?(flags, name)" \
+  "PlatformFlags.has_flag?([\"darwin\", \"aarch64\"], name)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "target triple ignored when building the flag set" "$TARGET_FLAGS" \
+  "Target.new(triple)" \
+  "Target.new(\"x86_64-unknown-linux-gnu\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "-D defines dropped from the flag set" "$TARGET_FLAGS" \
+  "        flags << define" \
+  "        flags" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
