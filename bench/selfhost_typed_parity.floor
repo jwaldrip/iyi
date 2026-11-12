@@ -19,7 +19,7 @@ samples/iyi/init_order.iyi 5
 samples/iyi/inventory.iyi 9
 samples/iyi/io.iyi 13
 samples/iyi/modules.iyi 0
-samples/iyi/sessions.iyi 31
+samples/iyi/sessions.iyi 32
 samples/iyi/shapes.iyi 21
 samples/iyi/socket.iyi 12
 samples/iyi/std_iterator.iyi 0

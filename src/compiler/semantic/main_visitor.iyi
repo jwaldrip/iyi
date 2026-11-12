@@ -267,6 +267,21 @@ pub class MainVisitor < Visitor
   def visit(node : Select) : Bool
     expand_literal(node)
   end
+  # iyi: an annotation is a sibling of the def it annotates, not an expression.
+  # The hosted pass does not type or walk it, so neither does the port; the
+  # primitive name is read from the Annotation by the lowering (S2d owns that).
+  def visit(node : Annotation) : Bool
+    false
+  end
+
+  # iyi: `x.is_a?(T)` is Bool (hosted type filter). Visit the receiver and the
+  # constant, then type the node.
+  def visit(node : IsA) : Bool
+    node.obj.accept(self)
+    node.const.accept(self)
+    set_type(node, @program.bool_type)
+    false
+  end
 
   # iyi: a node of a kind this visitor does not type yet. The walk goes on into
   # its children, so the children are typed; the node itself is recorded.
