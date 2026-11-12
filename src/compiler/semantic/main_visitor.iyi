@@ -1294,6 +1294,25 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # The type a parameter's restriction names for a call on *rec_type*. A generic instance
+  # (or its metaclass) binds its type parameters, so `v : T` on Box(Int32) is Int32, as the
+  # hosted MatchContext binds them. Anything else is the scope's own lookup.
+  def restriction_type(restriction : ASTNode, rec_type : Type) : Type
+    owner = rec_type
+    if owner.is_a?(MetaclassType)
+      owner = owner.as(MetaclassType).instance_type
+    end
+    if owner.is_a?(GenericInstanceType) && restriction.is_a?(Path)
+      names = restriction.as(Path).names
+      if names.size == 1
+        if bound = owner.as(GenericInstanceType).type_vars[names[0]]?
+          return bound
+        end
+      end
+    end
+    @program.lookup_type_node(restriction, @current_type)
+  end
+
   def collect_candidate_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
     return if visited.includes?(rec_type.full_name)
     visited.add(rec_type.full_name)
@@ -1514,7 +1533,7 @@ pub class MainVisitor < TypeNodeHost
         arg_type = type_of(args[i])
         param = d.args[i]
         if r = param.restriction
-          expected_type = lookup_under(r, rec_type)
+          expected_type = restriction_type(r, rec_type)
           unless arg_type.subtype_of?(expected_type)
             all_args_match = false
             break
