@@ -1201,6 +1201,9 @@ pub class MainVisitor < TypeNodeHost
       mod.parents.each do |p|
         collect_candidate_defs(p, name, result, visited)
       end
+    elsif rec_type.is_a?(GenericInstanceType)
+      # A generic instance's defs are its generic type's (Box(Int32) has Box(T)'s initialize).
+      collect_candidate_defs(rec_type.as(GenericInstanceType).generic_type, name, result, visited)
     end
   end
 
