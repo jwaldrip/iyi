@@ -300,3 +300,12 @@ src/compiler/lower/cond.iyi 0
 src/compiler/lower/phi.iyi 0
 src/compiler/lower/fun.iyi 0
 src/compiler/lower/call.iyi 0
+src/compiler/backend/backend.iyi 0
+src/compiler/backend/llvm/llvm_backend.iyi 0
+src/compiler/backend/native.iyi 0
+src/compiler/macros/answers.iyi 0
+src/compiler/macros/site_scan.iyi 0
+src/compiler/macros/target_flags.iyi 0
+src/compiler/semantic/cleanup.iyi 0
+src/compiler/semantic/literal_expander.iyi 0
+src/compiler/semantic/math_interpreter.iyi 0

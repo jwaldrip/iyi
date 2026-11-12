@@ -627,7 +627,7 @@ read as green for as long as nobody ran them together.
 The mechanism is guarded now rather than the two instances fixed: every
 driver that patches a source file compares the patched copy against the
 original and refuses to draw a conclusion when they are identical, across
-191 sites in 87 scripts, and patches are anchored on text
+201 sites in 88 scripts, and patches are anchored on text
 rather than on line numbers. The AES one is the reason this is recorded here
 rather than only in a commit: an AEAD that accepts a forged tag is worse than
 no AEAD, TLS and QUIC are built on it, and the exercise said it was covered.
@@ -9166,7 +9166,7 @@ it in pieces, allocating nothing.
 point; four of them (box, deque, static_array, weak_ref) are marked by
 hand outright, since only a program that instantiates their generic
 bodies types them and `iyi fix src/std` cannot see them. bench has
-86 marked programs of 198, and none of `samples/iyi`'s 28 programs
+87 marked programs of 200, and none of `samples/iyi`'s 28 programs
 needs one. The specs' snippets whose stand-in for the prelude or std (a
 `@[Primitive]`, a `lib`, a `Pointer` field, a `@[Share]` type,
 `uninitialized` storage) sits in the compiled module are marked as the
@@ -9194,7 +9194,7 @@ module of its own, the way Rust crates isolate theirs. Counted at
 2f070a01e by reading the sources, blocks (`unsafe { }`) would have
 wrapped 2,338 runs of lines in src/std, 900 in src/iyi and 607 in bench,
 and a mark per declaration 1,535, 469 and 258 defs, against 83, 13 and
-86 module marks.
+87 module marks.
 
 ---
 

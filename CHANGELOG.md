@@ -15,6 +15,25 @@
 - **`bench/native_first_light_exercise.sh` gates the path.** It builds the tool, checks it links only libSystem, builds
   every fixture with a twin under a tripwire that fails on `ld`, `cc`, `clang`, `gcc`, `codesign`, `dsymutil`,
   `llvm-config` and `as`, and checks each executable's signature, imports, build version and reproducibility.
+- **`iyi-compile-native` builds from source.** Given an `.iyi` program it runs the compiler written in iyi (parse, the
+  declaration pass, macro sites in def bodies, code generation onto iyi IR) and the native backend, and writes a signed
+  arm64 Mach-O executable with no LLVM linked and no host tool run. `bench/native_source_exercise.sh` builds every
+  `compile_*` and `cg_*` fixture that way and requires each executable that builds to run equal to the hosted
+  compiler's; a fixture the port cannot compile yet is listed with its first error, never counted as passed.
+- **`--print-backend`, `--backend` and `--emit ir`.** The tool names the backend a target builds with
+  (`NATIVE_TARGETS` is empty, so every target prints `llvm`), refuses `--backend llvm` by name in a build that links no
+  LLVM, and writes its verified IR as text that it can rebuild into the same executable
+  (`bench/native_backend_select_exercise.sh`).
+- **A self-compile scoreboard.** `bench/native_selfcompile_exercise.sh` probes every file of the prelude and of the
+  compiler's own source as a program root with the prelude loaded and records the phase each reaches (parse, semantic,
+  codegen, link) against a floor that may only rise. Today no file reaches code generation: the table in
+  `src/compiler/SELFCOMPILE.md` ranks the first refusals.
+- **A constant that holds addresses links.** The native backend placed every constant global in read-only data, and
+  a constant table of pointers (a symbol table, a table of names) was then refused at link time because the loader
+  cannot slide an address stored in read-only text. Such a constant is now placed with the writable data;
+  `bench/fixtures/native_first_light/const_ptr_table.ir` builds, runs and prints the hosted program's output.
+- **The IR text form reads decimal floating-point constants** (`double 1.500000e+00`), the form LLVM prints for a
+  value that is exact in a few digits, as well as the bit-pattern form.
 
 - **The native backend lowers thread-local globals.** On darwin a thread-local global has a TLV descriptor in
   `__DATA,__thread_vars`, bound to `__tlv_bootstrap`, and its storage in `__DATA,__thread_data` or `__DATA,__thread_bss`
