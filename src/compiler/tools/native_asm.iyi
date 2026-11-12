@@ -285,6 +285,23 @@ module NativeAsmTool
     acc.to_s
   end
 
+  # The rows a selection names: the rows of one triple, or with the selection
+  # `shared`, every aarch64 template with no adrp, which LLVM accepts on both
+  # formats (an adrp takes a page relocation only one format spells).
+  def self.selected(row_triple : String, escaped : String, triple : String) : Bool
+    return row_triple == triple unless triple == "shared"
+    row_triple.starts_with?("aarch64") && !has_text(escaped, "adrp")
+  end
+
+  def self.has_text(text : String, needle : String) : Bool
+    i = 0
+    while i + needle.bytesize <= text.bytesize
+      return true if text[i, needle.bytesize] == needle
+      i += 1
+    end
+    false
+  end
+
   # The distinct aarch64 templates of the inventory, in order of appearance,
   # each with the register every operand is pinned to: an explicit constraint
   # keeps its register, and an unconstrained register operand takes x10, x11, ...
@@ -295,7 +312,7 @@ module NativeAsmTool
     i = 0
     while i < lines.size
       fields = lines[i].split('\t')
-      if fields.size == 11 && fields[0] == "ROW" && fields[1] == triple
+      if fields.size == 11 && fields[0] == "ROW" && selected(fields[1], fields[10], triple)
         template = unescape(fields[10])
         unless seen.includes?(template)
           seen << template

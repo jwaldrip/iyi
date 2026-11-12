@@ -15,7 +15,10 @@
 # 4. For every aarch64 template, on darwin and on Linux, the assembler's bytes
 #    and relocations equal the oracle's. The oracle is the same template in a
 #    naked function, built by ./bin/iyi build --cross-compile for that triple.
-#    Mach-O is read by C1's reader, ELF by the driver's own reader.
+#    Mach-O is read by C1's reader, ELF by the driver's own reader. The twelve
+#    templates with no adrp are compared on both triples (step 4b); the four
+#    adrp templates use a page relocation one format spells, so each is compared
+#    on the triple that spells it.
 # 5. A template or constraint outside the supported set is refused by name.
 # 6. otool -L on the driver shows /usr/lib/libSystem.B.dylib alone (macOS).
 # 7. Mutation proofs: each must be caught. A patch whose text is absent, or that
@@ -160,6 +163,28 @@ for pair in "macho aarch64-apple-darwin oracle-macho" "elf aarch64-linux-gnu ora
   else
     diff "$work/oracle-$fmt.sorted" "$work/cases-$fmt.sorted" | head -n 12
     fail "the assembler's output differs from the oracle for $triple"
+  fi
+done
+echo "== 4b. the templates both formats accept: each equals the oracle on both triples"
+"$work/bin/native_asm" oracle-source "$work/inventory.txt" shared >"$work/shared.iyi" 2>"$work/shared.src.err" || fail "the shared oracle source fails"
+"$work/bin/native_asm" cases "$work/inventory.txt" shared | sort >"$work/shared-cases.sorted" 2>"$work/shared.cases.err" || fail "the assembler fails on the shared templates"
+for pair in "macho aarch64-apple-darwin oracle-macho" "elf aarch64-linux-gnu oracle-elf"; do
+  set -- $pair
+  fmt=$1
+  triple=$2
+  dump=$3
+  obj="$work/shared-$fmt.o"
+  if ! "$iyi" build --cross-compile --target "$triple" -o "$obj" "$work/shared.iyi" >"$work/shared-$fmt.build.log" 2>&1; then
+    grep -v 'ld: warning' "$work/shared-$fmt.build.log" | tail -n 8
+    fail "the shared oracle does not build for $triple"
+    continue
+  fi
+  "$work/bin/native_asm" "$dump" "$obj" | sort >"$work/shared-$fmt.sorted" || fail "the oracle reader fails on the shared set for $triple"
+  if cmp -s "$work/shared-$fmt.sorted" "$work/shared-cases.sorted"; then
+    echo "   $triple: $(grep -c '^FUNC' "$work/shared-$fmt.sorted") shared functions and $(grep -c '^RELOC' "$work/shared-$fmt.sorted") relocations equal the oracle's"
+  else
+    diff "$work/shared-$fmt.sorted" "$work/shared-cases.sorted" | head -n 12
+    fail "the shared templates differ from the oracle on $triple"
   fi
 done
 
