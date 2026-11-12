@@ -23,7 +23,7 @@ samples/iyi/modules.iyi 0
 samples/iyi/sessions.iyi 9
 samples/iyi/shapes.iyi 12
 samples/iyi/socket.iyi 0
-samples/iyi/std_iterator.iyi 0
+samples/iyi/std_iterator.iyi 5
 samples/iyi/std_text.iyi 0
 samples/iyi/std_time.iyi 0
 samples/iyi/visited.iyi 2
@@ -138,10 +138,13 @@ src/compiler/tools/typed_dump.iyi 0
 src/compiler/types.iyi 0
 src/compiler/types/filtering.iyi 0
 src/compiler/types/filters.iyi 0
+src/compiler/types/instances.iyi 0
 src/compiler/types/intersect.iyi 0
+src/compiler/types/lookup.iyi 0
 src/compiler/types/merge.iyi 0
 src/compiler/types/rendering.iyi 0
 src/compiler/types/restrictions.iyi 0
+src/compiler/types/to_restriction.iyi 0
 src/compiler/types/type_system.iyi 0
 src/compiler/types/types.iyi 0
 src/compiler/types/unification.iyi 0
@@ -198,8 +201,8 @@ src/std/eiy.iyi 52
 src/std/enum.iyi 0
 src/std/enumerable.iyi 0
 src/std/env.iyi 40
-src/std/errno.iyi 3
-src/std/file.iyi 0
+src/std/errno.iyi 36
+src/std/file.iyi 100
 src/std/file_utils.iyi 0
 src/std/fileserver.iyi 0
 src/std/float.iyi 0
@@ -256,7 +259,7 @@ src/std/semantic_version.iyi 0
 src/std/set.iyi 0
 src/std/shared_proc.iyi 6
 src/std/shlex.iyi 16
-src/std/signal.iyi 8
+src/std/signal.iyi 14
 src/std/slice.iyi 0
 src/std/smtp.iyi 0
 src/std/socket.iyi 0

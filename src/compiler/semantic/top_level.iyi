@@ -1482,7 +1482,6 @@ pub class TopLevelVisitor < Visitor
     inner.unit
   end
 
-
   def lookup_type_def_scope(node : ASTNode, path : Path) : ModuleType
     if path.names.size == 1
       path.global ? @program : @current_type
