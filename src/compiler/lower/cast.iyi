@@ -1,32 +1,40 @@
 module compiler/lower/cast
 
 # The port of the mixed-union part of `src/compiler/iyi/codegen/cast.cr` and `unions.cr`: the
-# stores that put a value into a mixed union, which is the struct `{ i32 type id, [N x i64]
-# value area }` (lower/typer.iyi mixed_union_struct, hosted `create_llvm_type(MixedUnionType)`).
+# stores that put a value into a mixed union, and the reads that take one out. The mixed union
+# is the struct `{ i32 type id, [N x i64] value area }` (lower/typer.iyi mixed_union_struct,
+# hosted `create_llvm_type(MixedUnionType)`).
 #
-# Ported (increment 4, first part):
-#   - `assign`: a store of a value of the target's type (the caller's store), a value of
+# Ported:
+#   - `assign`: a store of a value of the target's own type (the caller's store); a value of
 #     another type into a mixed union target (hosted `assign_distinct(MixedUnionType, Type)`,
-#     through `store_in_union`, `store_bool_in_union` and `store_nil_in_union`).
+#     through `store_in_union`, `store_bool_in_union` and `store_nil_in_union`); a union into a
+#     union whose members are all members of the target, with the same alignment (hosted
+#     `assign_distinct_union_types`, the copy branch).
 #   - `union_temp` and `upcast`: a fresh alloca of the union holding the value, which the
 #     hosted branch of `codegen_if` writes and joins by pointer (hosted `upcast`).
+#   - `to_lhs` and `to_rhs` (hosted codegen.cr): a load from a pointer unless the type is passed
+#     by value (a tuple or a mixed union, whose value is its aggregate).
+#   - `downcast` from a mixed union to a nil, a Bool, or any other type (hosted
+#     `downcast_distinct(MixedUnionType)`): the value area is read at the target's type.
 #   - `type_id_value`: the type id of a type, read from its global `@"<Name>:type_id"` as the
 #     hosted `type_id` does (an internal constant global, loaded).
-# Refused by name: a union value stored into a union (assign_distinct_union_types), a nilable
-# target (NilableType, `upcast` into a nilable), a reference union, a tuple or named tuple, a
-# virtual type, a proc, a pointer and a class value (their store helpers are later increments),
-# and `downcast`, `to_lhs`, `to_rhs`, `union_type_id` reads (later increments).
+# Refused by name: a union into a union whose members are not all members of the target, or with
+# a different alignment (hosted store_union_in_union, a memcpy: a later increment); a nilable
+# target (NilableType: the reference and nilable forms need class lowering); a reference union,
+# a tuple or named tuple store, a virtual type, a proc, a pointer (their helpers are later
+# increments); downcast from any other union, and downcast of a nilable or virtual type.
 
 import compiler/ir/function::{Global, Linkage}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
-import compiler/lower/helpers::{load_aligned, store_aligned}
+import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
-import compiler/lower/typer::{primitive_kind}
+import compiler/lower/typer::{primitive_kind, passed_by_value?}
 import compiler/lower/unions::{mixed_union_value_area}
-import compiler/semantic/top_level::{NilType, Type, UnionType}
-import compiler/types/types::{MixedUnionType}
+import compiler/semantic/top_level::{NilType, Type, UnionType, VoidType}
+import compiler/types/types::{MixedUnionType, NilableType}
 
 # The type id of a type as a loaded value: the hosted `type_id(type)` loads it from the
 # global `@"<full name>:type_id"`, an internal constant, created on first use.
@@ -57,6 +65,19 @@ pub def union_value_ptr(low : Lowerer, struct_type : IrType, union_pointer : Val
   low.builder.inbounds_gep(struct_type, union_pointer, [zero, index] of Value)
 end
 
+# The hosted `to_lhs`: a value of a type that is not passed by value is read from its pointer;
+# a type passed by value (a tuple, a mixed union) is already its aggregate.
+pub def to_lhs(low : Lowerer, value : Value, t : Type) : Value
+  return value if passed_by_value?(t)
+  load_aligned(low, low.typer.llvm_embedded_type(t), value)
+end
+
+# The hosted `to_rhs`: the inverse of `to_lhs`.
+pub def to_rhs(low : Lowerer, value : Value, t : Type) : Value
+  return load_aligned(low, low.typer.llvm_embedded_type(t), value) if passed_by_value?(t)
+  value
+end
+
 # The hosted `assign`: a value of `value_type` stored where a `target` lives. A value of the
 # target's own type is stored as it is; a value of another type goes into a mixed union.
 # A nil value into a union only writes the type id and the zeroed area (the caller must not
@@ -66,8 +87,19 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
     store_aligned(low, value, pointer)
     return
   end
+  if value_type.is_a?(VoidType)
+    return
+  end
+  if target.is_a?(MixedUnionType) && value_type.is_a?(MixedUnionType)
+    assign_union_in_union(low, pointer, target, value_type, value)
+    return
+  end
   if value_type.is_a?(UnionType)
-    pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (union into union, hosted assign_distinct_union_types)")
+    pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (union into a non-mixed target, hosted assign_distinct)")
+    return
+  end
+  if target.is_a?(NilableType)
+    pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (nilable target, hosted assign_distinct NilableType)")
     return
   end
   if target.is_a?(MixedUnionType)
@@ -75,6 +107,31 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
     return
   end
   pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (hosted assign_distinct, not ported)")
+end
+
+# The hosted `assign_distinct(MixedUnionType, MixedUnionType)` when every member of the value
+# union is a member of the target and the two have the same alignment: the value's bytes are
+# copied (hosted `assign_distinct_union_types`, the copy branch). A different alignment needs
+# `store_union_in_union` (a memcpy of the value area), and a member the target lacks needs a
+# compatible-type cast (tuples); both are refused by name.
+pub def assign_union_in_union(low : Lowerer, pointer : Value, target : MixedUnionType, value_type : MixedUnionType, value : Value) : Nil
+  value_type.union_types.each do |vt|
+    member = false
+    target.union_types.each do |ut|
+      member = true if ut.full_name == vt.full_name
+    end
+    unless member
+      pending_visit_node("assign #{value_type.full_name} to #{target.full_name}: #{vt.full_name} is not a member (hosted assign_distinct, cast of compatible members)")
+      return
+    end
+  end
+  to_ir = low.typer.llvm_type(target)
+  from_ir = low.typer.llvm_type(value_type)
+  if low.typer.align_of(to_ir) != low.typer.align_of(from_ir)
+    pending_visit_node("assign #{value_type.full_name} to #{target.full_name}: different alignment (hosted store_union_in_union, memcpy)")
+    return
+  end
+  store_aligned(low, load_aligned(low, from_ir, value), pointer)
 end
 
 # The hosted `assign_distinct(MixedUnionType, Type)` for a value that is one of the union's
@@ -132,4 +189,46 @@ end
 pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
   temp = union_temp(low, to, from, value)
   load_aligned(low, low.typer.llvm_type(to), temp)
+end
+
+# The hosted `downcast` (cast.cr): a value of `from_type` read as `to_type`. A void source is
+# the value as it is; an unchanged type is the value after `to_lhs` (unless already loaded).
+pub def downcast(low : Lowerer, value : Value, to_type : Type, from_type : Type, already_loaded : Bool) : Value
+  return value if from_type.is_a?(VoidType)
+  current = value
+  unless already_loaded
+    current = to_lhs(low, value, from_type)
+  end
+  return current if from_type.full_name == to_type.full_name
+  downcast_distinct(low, current, to_type, from_type)
+end
+
+# The hosted `downcast_distinct`, for the sources ported so far (a mixed union). A nil target
+# is nil; any other source is refused by name.
+pub def downcast_distinct(low : Lowerer, value : Value, to_type : Type, from_type : Type) : Value
+  if to_type.is_a?(NilType)
+    return llvm_nil(low)
+  end
+  if from_type.is_a?(MixedUnionType)
+    return downcast_from_mixed(low, value, to_type, from_type)
+  end
+  pending_visit_node("downcast #{from_type.full_name} to #{to_type.full_name} (hosted cast.cr downcast_distinct, not ported)")
+  value
+end
+
+# The hosted `downcast_distinct(to, MixedUnionType)`: the value area read at the target's type.
+# A Bool is a byte truncated to one bit; any other type is read as its embedded type (hosted
+# `to_lhs` of the area pointer, with the same passed-by-value rule).
+pub def downcast_from_mixed(low : Lowerer, value : Value, to_type : Type, from_type : MixedUnionType) : Value
+  if to_type.is_a?(NilableType)
+    pending_visit_node("downcast #{from_type.full_name} to #{to_type.full_name} (nilable target, hosted downcast_distinct NilableType)")
+    return value
+  end
+  struct_ir = low.typer.llvm_type(from_type)
+  value_ptr = union_value_ptr(low, struct_ir, value)
+  if primitive_kind(to_type) == "bool"
+    byte = load_aligned(low, low.module.types.int8, value_ptr)
+    return low.builder.trunc(byte, low.module.types.int1)
+  end
+  to_lhs(low, value_ptr, to_type)
 end
