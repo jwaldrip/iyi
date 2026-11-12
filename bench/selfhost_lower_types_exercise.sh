@@ -20,6 +20,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 TYPER_FILE="$REPO/src/compiler/lower/typer.iyi"
+UNIONS_FILE="$REPO/src/compiler/lower/unions.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -139,9 +140,9 @@ prove_mutation "Nil lowered to an i8 instead of the named empty struct" "$TYPER_
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "mixed union drops its type id word" "$TYPER_FILE" \
-  "    @table.set_body(named, [@table.int32, value_type], false)" \
-  "    @table.set_body(named, [value_type], false)" \
+prove_mutation "mixed union drops its type id word" "$UNIONS_FILE" \
+  "  [table.int32, value_type]" \
+  "  [value_type]" \
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

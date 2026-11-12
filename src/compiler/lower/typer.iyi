@@ -20,6 +20,7 @@ import compiler/ir/layout::{DataLayout}
 import compiler/semantic/top_level::{Type, ClassType, EnumType, LibType, MetaclassType, NilType, NonGenericClassType, NonGenericModuleType, GenericClassType, NoReturnType, VoidType, AliasType, TypeDefType, ModuleType, UnionType}
 import compiler/types/types::{PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, NamedTupleInstanceType, GenericClassInstanceType, GenericModuleInstanceType, MixedUnionType, VirtualType, VirtualMetaclassType, NilableType, ReferenceUnionType, NilableReferenceUnionType, NilableProcType}
 import compiler/types/merge::{TypeMerge}
+import compiler/lower/unions::{mixed_union_body, mixed_union_value_area}
 
 # The builtin primitives. The hosted semantic model makes them PrimitiveType
 # subclasses with a byte size, and a builtin is never a user type. The port's
@@ -404,11 +405,13 @@ pub class LowerTyper
       max_size = size if size > max_size
       max_alignment = align if align > max_alignment
     end
-    value_size = (max_size + max_alignment - 1) // max_alignment
-    value_size = 1_i64 if value_size < 1
-    value_type = @table.array_of(@table.int(max_alignment * 8), value_size)
-    @table.set_body(named, [@table.int32, value_type], false)
+    @table.set_body(named, mixed_union_body(@table, max_size, max_alignment), false)
     named
+  end
+
+  # The hosted `union_value_type(MixedUnionType)`: the value area of a mixed union's struct.
+  def union_value_type(type : Type) : IrType
+    mixed_union_value_area(llvm_type(type))
   end
 
   # The hosted `passed_indirectly?`: a value of more than INDIRECT_ABOVE (128) bytes travels
