@@ -64,11 +64,15 @@ pub class LowerGlobals
   getter consts : Hash(String, ConstState)
   getter class_vars : Hash(String, ClassVarState)
   getter body_scopes : Array(ModuleType)
+  # An `@[ThreadLocal]` annotation was lowered and the class variable it marks is not declared yet. The declaration takes
+  # the mark (class_var.iyi take_thread_local_annotation).
+  property thread_local_pending : Bool
 
   def initialize
     @consts = Hash(String, ConstState).new
     @class_vars = Hash(String, ClassVarState).new
     @body_scopes = [] of ModuleType
+    @thread_local_pending = false
   end
 
   # The state of the constant with this full name, created when it is first asked for.

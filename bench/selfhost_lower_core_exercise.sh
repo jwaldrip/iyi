@@ -84,9 +84,9 @@ passed=0
 # Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed (the
 # port numbers String 31, the hosted module 1: the typer slice's LowerTypeIds numbering). They are waiting
 # by name, and the gate fails if one of them starts to match, so this list is kept honest.
-# lower_fun_main: the port lowers the argv parameter of `fun main(argc, argv : UInt8**)` to i1, not ptr (the record's
-# argument type for UInt8** comes from the type nodes, not from this emitter). Waiting by name until that is fixed.
-KNOWN_DIVERGED="lower_string lower_string_nonascii lower_fun_main"
+# lower_ivar_class: the type-id constant of the class's layout differs from the hosted module (NEEDS.md row 16: the type-id
+# numbering the trunk and the typer lanes own). Waiting by name until row 16 lands.
+KNOWN_DIVERGED="lower_string lower_string_nonascii lower_ivar_class"
 e2e=""
 module_same=0
 module_differ=0
