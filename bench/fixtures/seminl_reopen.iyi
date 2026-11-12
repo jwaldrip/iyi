@@ -1,0 +1,9 @@
+# A macro loop reopens a prelude type and gives it a class method, as the prelude's
+# number table does for the five number types.
+{% for t in ["Int32", "Int64"] %}
+  struct {{ t.id }}
+    def self.zero : self
+      0
+    end
+  end
+{% end %}

@@ -3,7 +3,7 @@ module compiler/types/type_system
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Call, Generic, Metaclass, NamedArgument, NumberLiteral, Path, ProcNotation, Union}
 import compiler/syntax/token
-import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeHook, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeHook, UnionType, UnresolvedType, VoidType}
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeQueries, TypeSplat, VirtualMetaclassType, VirtualType}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/unification::{TypeUnification}
@@ -30,10 +30,19 @@ pub class TypeSystem < TypeHook
     TypeMerge.merge_all(@program, types)
   end
 
+  def virtual_of(type : Type) : Type
+    TypeQueries.virtual_type(type)
+  end
+
+  # iyi: an unresolvable written type is refused in strict mode, as before. Total mode answers
+  # an UnresolvedType, as `refuse_constant` does, so the caller records the node untyped and the
+  # pass goes on: one name the program cannot resolve no longer loses the whole file.
   def resolve_node(node : ASTNode, current_type : ModuleType) : Type
     found = TypeLookup.new(@instances).lookup(current_type, node)
     if found.is_a?(LookupError)
-      raise(found.as(LookupError).message)
+      message = found.as(LookupError).message
+      raise(message) unless @program.total_mode
+      return UnresolvedType.new(@program, node.to_s)
     end
     found.as(Type)
   end
