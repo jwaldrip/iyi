@@ -97,6 +97,16 @@ if [ "$RAISE" = 1 ]; then
 fi
 
 echo
+echo "== 2b. The def-instance cache: one def at five call sites is three typed instances"
+cache_fx="$REPO/bench/fixtures/sem_bodies_instance_cache.iyi"
+cache_count=$("$TYPED" --instances "$cache_fx" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  sem_bodies_instance_cache.iyi typed instances: ${cache_count:-none} (expected 3)"
+if [ "${cache_count:-}" != 3 ]; then
+  echo "  CACHE: expected 3 typed instances, got ${cache_count:-none}"
+  status=1
+fi
+
+echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
 . "$REPO/bench/lib/mutation.sh"
 MUT_TD="$WORK/mut_typed_dump"
@@ -104,7 +114,7 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -113,6 +123,8 @@ bodies_at_floor() {
     floor=$(awk -v r="$rel" '$1 == r { print $2 }' "$FLOOR_FILE" 2>/dev/null)
     [ "$matched" -ge "${floor:-0}" ] || return 1
   done
+  count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_instance_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
+  [ "${count:-}" = 3 ] || return 1
   return 0
 }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
@@ -128,6 +140,9 @@ prove_mutation "return value joins the def type" "$MAIN_VISITOR" \
 prove_mutation "self in a declared type names the receiver" "$MAIN_VISITOR" \
   "return o.as(Type) unless o.is_a?(SemanticProgram)" \
   "return @program.lookup_type_node(node, @current_type) unless o.is_a?(SemanticProgram)" -- bodies_at_floor || status=1
+prove_mutation "a call hits the def-instance cache" "$MAIN_VISITOR" \
+  "      return @def_instances[k]?" \
+  "      return nil" -- bodies_at_floor || status=1
 
 if [ "$status" -eq 0 ]; then
   echo

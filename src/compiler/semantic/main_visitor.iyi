@@ -50,6 +50,17 @@ pub class TypedInstance
   end
 end
 
+# One cached instantiation (hosted DefInstance, Call#instantiate): the typed clone of a def
+# whose body typing finished, and the type that body evaluates to. A call with the same key takes
+# both, so the body is not typed again and the call site records the clone the lowering reads.
+pub class DefInstance
+  getter definition : Def
+  getter return_type : Type
+
+  def initialize(@definition : Def, @return_type : Type)
+  end
+end
+
 # The def a block is written in, and the return values of its body (hosted: a `return` in a
 # block leaves the def the block is written in).
 pub class BlockOwner
@@ -89,6 +100,8 @@ pub class MainVisitor < TypeNodeHost
   # Every instantiation whose body typing started with all its parameters typed,
   # in order (see TypedInstance). Shared with a fun body's visitor.
   property typed_instances : Array(TypedInstance)
+  # Every finished instantiation by its key (see def_instance_key). Shared with a fun body's visitor.
+  property def_instances : Hash(String, DefInstance)
 
   # The values the body being typed returns (`return`), and the values a `break` (of the call
   # whose block it is) and a `next` (of that block) carry while they are collected. nil where
@@ -156,6 +169,7 @@ pub class MainVisitor < TypeNodeHost
     @typing_stack = [] of String
     @refusals = [] of Refusal
     @typed_instances = [] of TypedInstance
+    @def_instances = Hash(String, DefInstance).new
   end
 
   def set_type(node : ASTNode, type : Type) : Type
@@ -263,6 +277,12 @@ pub class MainVisitor < TypeNodeHost
 
   def target_def?(call : Call) : Def?
     @call_target_defs[call]?
+  end
+
+  # The lib call record of a call on a lib (see visit_lib_call), keyed by the call node: the fun,
+  # the argument nodes, and the literal and out information the lowering needs. Nil for any other call.
+  def lib_call_target?(call : Call) : LibCallTarget?
+    @lib_call_targets[call]?
   end
 
   # The generic instance a body or signature is typed under: the receiver, or the
@@ -1544,6 +1564,47 @@ pub class MainVisitor < TypeNodeHost
     key
   end
 
+  # The key of a cached instantiation (hosted Call#instantiate, def_instance_key). It names the
+  # def by its original's identity (the clone is what is typed), the receiver, and the argument
+  # types. Nil when the call cannot share an instance: an argument has no type yet, the call has
+  # named arguments, or it passes a block to a def that does not take one (hosted
+  # `use_cache = !block || match.def.block_arg`).
+  def def_instance_key(origin : Def, rec_type : Type, call_node : Call) : String?
+    return nil if call_node.named_args
+    block = call_node.block
+    return nil if block && origin.block_arg.nil?
+    parts = [] of String
+    i = 0
+    while i < call_node.args.size
+      at = child_type(call_node.args[i])
+      return nil if at.nil?
+      parts << at.full_name
+      i = i + 1
+    end
+    key = "#{origin.node_id}|#{rec_type.full_name}(#{parts.join(",")})"
+    if blk = block
+      key = key + "&#{blk.node_id}"
+    end
+    key
+  end
+
+  # The cached instance for a key, or nil when there is none.
+  def cached_instance(key : String?) : DefInstance?
+    if k = key
+      return @def_instances[k]?
+    end
+    nil
+  end
+
+  # Caches a finished instance under its key. Called only where the body was typed, never for a
+  # recursive call (its body is still being typed) or a refused body.
+  def remember_def_instance(key : String?, definition : Def, return_type : Type) : Nil
+    if k = key
+      @def_instances[k] = DefInstance.new(definition, return_type)
+    end
+    nil
+  end
+
   # A recursive call or an over-deep instantiation is refused at the call site, or
   # at the def's body when there is no site.
   def refuse_recursion(site : ASTNode?, target_def : Def, message : String) : Type?
@@ -1558,7 +1619,8 @@ pub class MainVisitor < TypeNodeHost
   # The type a body evaluates to with `args` bound to its parameters, or nil when
   # the body or an argument cannot be typed. `site` is the node that reports a
   # return-type mismatch.
-  def type_method_body(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode? = nil) : Type?
+  # `cache_key` (see def_instance_key) caches the finished instance; nil caches nothing.
+  def type_method_body(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode? = nil, cache_key : String? = nil) : Type?
     body = target_def.body
     if body.nil? || body.is_a?(Nop) || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
@@ -1727,9 +1789,11 @@ pub class MainVisitor < TypeNodeHost
         return nil
       end
       set_type(target_def, declared_ret)
+      remember_def_instance(cache_key, target_def, declared_ret)
       declared_ret
     else
       set_type(target_def, bt)
+      remember_def_instance(cache_key, target_def, bt)
       bt
     end
   end
@@ -1889,7 +1953,14 @@ pub class MainVisitor < TypeNodeHost
         target_def = lookup_method_matching(ut, node.name, node.args, node)
         return false if target_def.nil?
         instantiated_def = target_def.clone
-        ret_t = type_method_body(instantiated_def, ut, node.args, node.block, node)
+        dkey = def_instance_key(target_def, ut, node)
+        ret_t : Type? = nil
+        if hit = cached_instance(dkey)
+          instantiated_def = hit.definition
+          ret_t = hit.return_type
+        else
+          ret_t = type_method_body(instantiated_def, ut, node.args, node.block, node, dkey)
+        end
         return false if ret_t.nil?
         if first_target_def.nil?
           first_target_def = instantiated_def
@@ -1924,12 +1995,22 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     instantiated_def = target_def.clone
-    @call_target_defs[node] = instantiated_def
-
-    if blk = node.block
-      @block_breaks[blk] = [] of Type?
+    dkey = def_instance_key(target_def, rec_type, node)
+    body_ret : Type? = nil
+    if hit = cached_instance(dkey)
+      # A cached instance: the call records its clone and takes its return type. Its block breaks
+      # are the ones the block already collected, so they are kept.
+      instantiated_def = hit.definition
+      @call_target_defs[node] = instantiated_def
+      body_ret = hit.return_type
+    else
+      @call_target_defs[node] = instantiated_def
+      if blk = node.block
+        @block_breaks[blk] = [] of Type?
+      end
+      body_ret = type_method_body(instantiated_def, rec_type, node.args, node.block, nil, dkey)
     end
-    ret_type = call_result(node, type_method_body(instantiated_def, rec_type, node.args, node.block))
+    ret_type = call_result(node, body_ret)
     if ret_type
       set_type(node, ret_type)
     end
@@ -2077,6 +2158,7 @@ pub class MainVisitor < TypeNodeHost
     inner.typing_stack = @typing_stack
     inner.refusals = @refusals
     inner.typed_instances = @typed_instances
+    inner.def_instances = @def_instances
     inner.untyped_locals = Hash(String, String).new
     inner
   end
