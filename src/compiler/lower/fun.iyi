@@ -92,13 +92,28 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
   fn
 end
 
+# The function a fun body goes into. A fun the program never calls was declared at its visit (hosted codegen.cr:864
+# declares it there and defines its body at the end), so its body goes into that declaration; any other name gets a new
+# function. A declaration that already has a body is a bug: a fun is emitted once (hosted External#dead).
+pub def declared_or_defined_fun(low : Lowerer, name : String, fn_type : IrType) : Function
+  declared = low.module.get_function?(name)
+  if declared.nil?
+    return low.module.define_function(name, fn_type)
+  end
+  fn = declared.as(Function)
+  if !fn.blocks.empty?
+    raise "BUG: #{name} already has a body (hosted External#dead)"
+  end
+  fn
+end
+
 # The hosted `codegen_fun` (fun.cr:271), plain case. The function is declared first, so a recursive
 # call finds it. Its body is lowered in a frame of its own: the alloca and entry blocks as
 # `new_entry_block` makes them, `self` (when the owner is passed as self) and each parameter a value
 # read where it arrives (hosted `already_loaded`), the body, and the return. The caller's state is put
 # back afterwards (hosted `old_position`, `old_alloca_block`, `old_needs_value`).
 pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, class_owner : Type? = nil) : Function
-  fn = low.module.define_function(name, fn_type)
+  fn = declared_or_defined_fun(low, name, fn_type)
   fn.call_convention = CallConv::Iyi
   fn.linkage = Linkage::Internal
   add_body_attributes(fn, low.module.triple)

@@ -18,7 +18,7 @@ module compiler/lower/context
 
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Function, Global}
-import compiler/syntax/ast::{ASTNode}
+import compiler/syntax/ast::{ASTNode, FunDef}
 import compiler/ir/inst::{Block, Inst}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{TypeKind}
@@ -136,6 +136,9 @@ pub class Lowerer
   property globals : LowerGlobals
   # The funs with a body already emitted, by their real name (hosted External#dead): a fun is emitted once.
   property fun_defs_done : Hash(String, Bool)
+  # The funs with a body the program never calls (hosted @unused_fun_defs): each is declared at its visit and its body is
+  # emitted at the end of the module (emit_unused_fun_defs).
+  property unused_fun_defs : Array(FunDef)
 
   def initialize(@module : Module, @typer : LowerTyper, @analysed : MainVisitor)
     @builder = Builder.new(@module)
@@ -155,6 +158,7 @@ pub class Lowerer
     @type_ids = LowerTypeIds.new
     @globals = LowerGlobals.new
     @fun_defs_done = Hash(String, Bool).new
+    @unused_fun_defs = [] of FunDef
   end
 
   # The function being lowered (the hosted `context`). Raises when none is.
