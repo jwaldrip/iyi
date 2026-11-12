@@ -5,11 +5,20 @@
 # enforces a committed floor against regression, and proves the gate can fail
 # under guarded mutation.
 #
+# The unit is src/iyi/prelude.iyi as the root: `iyi-compile --probe-phase
+# prelude.iyi`, which resolves every require. selfhost_prelude_exercise.sh
+# probes prelude.iyi with the same invocation as its own prelude.iyi row, and
+# the two share the floor below.
+#
+# The Oracle line is the shipped compiler's verdict on the same root
+# (--prelude=empty): link, semantic, or refused, with its first error.
+#
 #   bash bench/selfhost_prelude_whole_exercise.sh
 #
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -36,10 +45,13 @@ echo
 echo "== 2. Measuring whole-prelude compilation phase against committed floor"
 
 # Committed floor for compiling the prelude as a single integrated unit:
-# parse -> semantic -> codegen -> object -> link.
-# Measured real state: codegen (all 17 prelude modules parse, normalize,
-# type check across 53 classes, and codegen emits LLVM IR; object emission
-# encounters the known LLVM IR gap documented in STAGE_TWO.md).
+# parse -> semantic -> codegen -> object -> link. The same value as the
+# prelude.iyi row of selfhost_prelude_exercise.sh.
+#
+# Kept, not lowered: the floor was measured at codegen. At this tree the probe
+# stops at semantic: codegen panics in llvm_type_from_name with no such key
+# "Atomic(UInt64)" (codegen.iyi, the emitter). The gate stays red until that
+# is fixed, and the floor is re-measured at integration.
 WHOLE_FLOOR="codegen"
 
 phase_rank() {
@@ -75,10 +87,28 @@ probe_whole_prelude() {
   fi
 }
 
-printf "  %-22s %-10s %-10s %s\n" "Unit" "Floor" "Measured" "Status"
-printf "  %-22s %-10s %-10s %s\n" "----------------------" "----------" "----------" "------"
+oracle_whole_prelude() {
+  local target="$REPO/src/iyi/prelude.iyi"
+  set +e
+  "$IYI" build --prelude=empty --no-codegen -o "$WORK/oracle_whole_ns" "$target" > "$WORK/oracle_whole_ns.log" 2>&1
+  local no_codegen=$?
+  "$IYI" build --prelude=empty -o "$WORK/oracle_whole_full" "$target" > "$WORK/oracle_whole_full.log" 2>&1
+  local full=$?
+  set -e
+  if [ "$full" -eq 0 ]; then
+    echo "link"
+  elif [ "$no_codegen" -eq 0 ]; then
+    echo "semantic"
+  else
+    echo "refused"
+  fi
+}
+
+printf "  %-22s %-10s %-10s %-9s %s\n" "Unit" "Floor" "Measured" "Oracle" "Status"
+printf "  %-22s %-10s %-10s %-9s %s\n" "----------------------" "----------" "----------" "---------" "------"
 
 measured_phase="$(probe_whole_prelude)"
+oracle_phase="$(oracle_whole_prelude)"
 measured_rank="$(phase_rank "$measured_phase")"
 floor_rank="$(phase_rank "$WHOLE_FLOOR")"
 
@@ -87,12 +117,21 @@ total=1
 regressions=0
 
 if [ "$measured_rank" -ge "$floor_rank" ]; then
-  printf "  %-22s %-10s %-10s %s\n" "prelude (whole)" "$WHOLE_FLOOR" "$measured_phase" "matched"
+  printf "  %-22s %-10s %-10s %-9s %s\n" "prelude (whole)" "$WHOLE_FLOOR" "$measured_phase" "$oracle_phase" "matched"
   matched=$((matched + 1))
 else
-  printf "  %-22s %-10s %-10s %s\n" "prelude (whole)" "$WHOLE_FLOOR" "$measured_phase" "REGRESSION"
+  printf "  %-22s %-10s %-10s %-9s %s\n" "prelude (whole)" "$WHOLE_FLOOR" "$measured_phase" "$oracle_phase" "REGRESSION"
   regressions=$((regressions + 1))
   status=1
+  fail_line="$(grep -m1 -E '(parse|semantic|codegen|object|link): fail:' "$WORK/probe_whole_prelude.log" || true)"
+  echo "  Cause, first failure in the probe's log: ${fail_line:-none printed}"
+  case "$fail_line" in
+    parse:*)    echo "  Owner: lexer or parser (smallest input needed)" ;;
+    semantic:*) echo "  Owner: semantic, top_level or main_visitor" ;;
+    codegen:*|object:*) echo "  Owner: emitter, codegen.iyi" ;;
+    link:*)     echo "  Owner: codegen.iyi, whose raise lowering references the runtime that pipeline no longer supplies" ;;
+    *)          echo "  Owner: see the probe log" ;;
+  esac
 fi
 
 echo "  Phase summary: $matched/$total whole-prelude compilation targets match or exceed committed floor ($regressions regressions)"
@@ -127,7 +166,6 @@ run_proof "semantic corruption in prelude regresses below codegen floor" "prelud
 run_proof "syntax corruption in concurrency regresses whole prelude below codegen floor" "concurrency.iyi" 'class IyiFiber' 'class %%%' "codegen"
 
 run_proof "syntax corruption in primitives regresses whole prelude below codegen floor" "primitives.iyi" 'struct Symbol' 'struct %%%' "codegen"
-
 echo "  Mutation summary: $mutations_caught/$mutations_run regressions caught"
 
 echo
