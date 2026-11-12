@@ -40,3 +40,6 @@ The gate (bench/selfhost_lower_core_exercise.sh) compares the core's module with
 | Calling convention of `__crystal_main` and `main` | codegen.cr:2456 (`define_main_function`, C calling convention) | `CallConv::C` set explicitly | the core (done) |
 | `printf` declaration from constant printing | codegen.cr printf helper | dropped by the gate on both sides | the constants slice (S2e) |
 | `Crystal::BUILD_*` globals and stores | `codegen.cr` constant initialisation | not emitted; dropped by the gate on both sides | the entry owner when the build identity is ported (S2g) |
+| Phi incoming pairs without the `label` keyword | LLVM 22 prints `[ 1, %then ]` | the gate writes `label` into the oracle's phi pairs before the port reads it (same as the call type) | the IR text parser owner, if LLVM text is to be read unrewritten |
+| The `if` with a literal condition | codegen.cr:1330 (`node.truthy?` folds it, no blocks) | not ported: a literal condition is refused by name by the lowering reaching it (`pending_visit_node`) | the core owner, with the typed truthiness (S2c or a later increment) |
+| The `if` with a non-Bool condition | cond.cr (`codegen_cond` of a union or nilable type) | refused by name in `cond.iyi` | S2c |

@@ -16,7 +16,7 @@ module compiler/lower/lower
 # and a store). Still refused by name: a def and a call (S2c), and the rest of the
 # core, which the next increments port.
 
-import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, Def, Expressions, NilLiteral, NumberLiteral, Var}
+import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, Def, Expressions, NilLiteral, NumberLiteral, Var, If}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Linkage}
 import compiler/ir/inst::{CallConv}
@@ -25,6 +25,8 @@ import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned}
+import compiler/lower/cond::{cond_bool}
+import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{pending_visit_call, pending_visit_fun_def, pending_visit_node}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type}
@@ -56,6 +58,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   fn.name_param(fn.param(1), "argv")
   store_aligned(low, fn.param(0), argc_global)
   store_aligned(low, fn.param(1), argv_global)
+  low.needs_value = true
   codegen_node(low, root)
   codegen_return(low, ret_ir)
   low.finish_main_function
@@ -75,8 +78,10 @@ end
 pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   if node.is_a?(Expressions)
     exprs = node.as(Expressions).expressions
+    wants = low.needs_value
     i = 0
     while i < exprs.size
+      low.needs_value = wants && i == exprs.size - 1
       codegen_node(low, exprs[i])
       i += 1
     end
@@ -102,6 +107,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(Assign)
     codegen_assign(low, node.as(Assign))
+    return
+  end
+  if node.is_a?(If)
+    codegen_if(low, node.as(If))
     return
   end
   if node.is_a?(Def)
@@ -179,4 +188,40 @@ pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
   value = low.last
   raise "BUG: the program returns a value but its last expression left none (hosted codegen.cr: codegen_return)" if value.nil?
   low.builder.ret(value.as(Value))
+end
+
+# The hosted `visit(If)` for a condition that is not a literal (a literal folds in the
+# hosted code, and that case is refused by name in pending.iyi): the condition, a branch
+# on it into `then` and `else`, each branch's value merged in the exit block by a phi when
+# the if's value is wanted.
+pub def codegen_if(low : Lowerer, node : If) : Nil
+  wants = low.needs_value
+  blocks = low.new_blocks(["then", "else"])
+  then_block = blocks[0]
+  else_block = blocks[1]
+
+  low.needs_value = true
+  codegen_node(low, node.cond)
+  cond_value = cond_bool(low, node.cond, low.last.as(Value))
+  low.needs_value = wants
+  low.builder.cond_br(cond_value, then_block, else_block)
+
+  exit_block = low.new_block("exit")
+  merge_type : IrType? = nil
+  if wants
+    merged_ir = low.analysed.type_of?(node)
+    raise "BUG: the analysed program has no type for an if (hosted codegen.cr: visit(If))" if merged_ir.nil?
+    merge_type = low.typer.llvm_type(merged_ir.as(Type))
+  end
+  phi = LowerPhi.new(exit_block, wants, merge_type)
+
+  low.builder.position_at_end(then_block)
+  codegen_node(low, node.then)
+  phi.add(low, low.last)
+
+  low.builder.position_at_end(else_block)
+  codegen_node(low, node.else)
+  phi.add(low, low.last)
+
+  phi.close(low)
 end

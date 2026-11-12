@@ -38,7 +38,9 @@ WORK="$(mktemp -d)"
 
 trap 'rm -rf "$WORK"' EXIT
 
-# Adds the function type to each direct call of a printed LLVM module, from the types
+# Writes the forms LLVM 22 leaves out and the port's text form requires, into a printed LLVM module:
+# the function type of each direct call, from the types of its arguments, and the `label`
+# keyword before each block of a phi's incoming pairs. Adds the function type to each direct call of a printed LLVM module, from the types
 # of its arguments: `call T @f(A, B)` becomes `call T (typeA, typeB) @f(A, B)`. A
 # call through a value, or one with an argument whose type is more than one word, is
 # left as LLVM printed it, and the port then refuses the module by name.
@@ -68,6 +70,7 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
   return head ret " (" types ") " name "(" args ")" tail
 }
 {
+  if (index($0, " phi ") > 0) gsub(/, %/, ", label %")
   if (index($0, " call ") > 0) print call_types($0); else print
 }
 '
@@ -147,7 +150,7 @@ lower_core_check() {
   "$IYI" build -o "$WORK/port-m" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/m.build.log" 2>&1 || return 1
   "$WORK/port-m" context > "$WORK/m.ctx" 2>&1 || return 1
   awk '/^CONTEXT OK$/ { ok = 1 } END { exit !ok }' "$WORK/m.ctx" || return 1
-  for n in lower_nil lower_int lower_bool lower_assign; do "$WORK/port-m" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" > "$WORK/m.out" 2> "$WORK/m.err" || return 1; awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] \&\& a[2] > 0) }' "$WORK/m.out" || return 1; done
+  for n in lower_nil lower_int lower_bool lower_assign lower_if; do "$WORK/port-m" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" > "$WORK/m.out" 2> "$WORK/m.err" || return 1; awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] \&\& a[2] > 0) }' "$WORK/m.out" || return 1; done
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/m.out"
 }
 prove_mutation "argv is stored from the argc parameter" "$REPO/src/compiler/lower/lower.iyi" \
@@ -160,6 +163,8 @@ prove_mutation "a bool literal is false" "$REPO/src/compiler/lower/lower.iyi" \
   "return 1_i64" "return 0_i64" -- lower_core_check || status=1
 prove_mutation "a store is aligned to one byte" "$REPO/src/compiler/lower/helpers.iyi" \
   "set_align(st, low.typer.align_of(value.type))" "set_align(st, 1)" -- lower_core_check || status=1
+prove_mutation "the then and else branches are swapped" "$REPO/src/compiler/lower/lower.iyi" \
+  "low.builder.cond_br(cond_value, then_block, else_block)" "low.builder.cond_br(cond_value, else_block, then_block)" -- lower_core_check || status=1
 prove_mutation "an empty alloca block is kept" "$REPO/src/compiler/lower/context.iyi" \
   "current_fun.blocks.delete(alloca)" "alloca.name" -- lower_core_check || status=1
 

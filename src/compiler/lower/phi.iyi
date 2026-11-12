@@ -1,0 +1,55 @@
+module compiler/lower/phi
+
+# The port of `src/compiler/iyi/codegen/phi.cr` (the hosted `Phi`): the value an `if`
+# leaves, merged from its branches. Each branch adds its value and the block it ends in,
+# then branches to the exit block; closing the phi puts the exit block's phi, with one
+# incoming pair per branch that produced a value. A phi is made only when the value is
+# wanted (the hosted `needs_value`), so a statement emits no phi.
+#
+# The hosted `add` also checks for a NoReturn branch, which leaves nothing to merge. Those
+# branches come with the types that create them, and are refused by name until then.
+
+import compiler/ir/inst::{Block}
+import compiler/ir/values::{Value}
+import compiler/ir/types::{IrType}
+import compiler/lower/context::{Lowerer}
+
+pub class LowerPhi
+  getter exit_block : Block
+  getter needs_value : Bool
+  getter type : IrType?
+  getter values : Array(Value)
+  getter blocks : Array(Block)
+
+  def initialize(@exit_block : Block, @needs_value : Bool, @type : IrType?)
+    @values = [] of Value
+    @blocks = [] of Block
+  end
+
+  # The hosted `add(value, type, last)`: records the value and the block the branch
+  # ends in, then branches to the exit block. A branch with no value adds no pair.
+  def add(low : Lowerer, value : Value?) : Nil
+    if @needs_value
+      if v = value
+        if here = low.builder.insert_block
+          @values << v.as(Value)
+          @blocks << here.as(Block)
+        end
+      end
+    end
+    low.builder.br(@exit_block)
+  end
+
+  # The hosted `close`: the exit block is current, and it holds the phi when a value
+  # is wanted and some branch gave one. The phi becomes the visitor's last value.
+  def close(low : Lowerer) : Nil
+    low.builder.position_at_end(@exit_block)
+    return unless @needs_value
+    t = @type
+    raise "BUG: a phi with a value wanted has no type (hosted phi.cr: close)" if t.nil?
+    return if @values.empty?
+    merged = low.builder.phi(t.as(IrType), "")
+    low.builder.add_incoming(merged, @values, @blocks)
+    low.last = merged
+  end
+end

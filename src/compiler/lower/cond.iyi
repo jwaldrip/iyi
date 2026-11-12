@@ -1,0 +1,25 @@
+module compiler/lower/cond
+
+# The port of the Bool case of `src/compiler/iyi/codegen/cond.cr` (`codegen_cond` for a
+# type): a condition whose analysed type is Bool is already an i1, and a branch on it
+# uses that value as it is. Every other condition type (the nilable and union tests
+# that cond.cr builds) is refused by name in pending.iyi until it is ported.
+#
+# The caller lowers the condition expression itself and passes the value in, so this
+# file does not import the visitor (`lower.iyi` imports this file, not the reverse).
+
+import compiler/syntax/ast::{ASTNode}
+import compiler/ir/values::{Value}
+import compiler/lower/context::{Lowerer}
+import compiler/lower/pending::{refuse_port}
+import compiler/semantic/top_level::{Type}
+
+# The hosted `codegen_cond(node)` for a condition of Bool type: the value itself.
+pub def cond_bool(low : Lowerer, node : ASTNode, value : Value) : Value
+  t = low.analysed.type_of?(node)
+  raise "BUG: the analysed program has no type for a condition (hosted cond.cr: codegen_cond)" if t.nil?
+  if t.as(Type).full_name != "Bool"
+    refuse_port("lower: codegen_cond of a #{t.as(Type).full_name} is not ported yet (hosted cond.cr, slice S2c)")
+  end
+  value
+end

@@ -293,3 +293,5 @@ src/compiler/lower/context.iyi 0
 src/compiler/lower/lower.iyi 0
 src/compiler/lower/pending.iyi 0
 src/compiler/lower/helpers.iyi 0
+src/compiler/lower/cond.iyi 0
+src/compiler/lower/phi.iyi 0
