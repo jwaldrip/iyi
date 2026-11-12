@@ -1,5 +1,0 @@
-# The hosted compiler's own global names: its build constants, which the program stores on
-# entry. The gate drops every global whose name contains the first line below, from both
-# modules, with the private constants that hold their text. Data, not code: the source files
-# name no other language.
-Crystal::

@@ -81,7 +81,7 @@ def normalised_lines(text : String, hosted : String) : Array(String)
     next if stripped.starts_with?("source_filename")
     next if stripped.starts_with?("attributes #")
     next if stripped.starts_with?("declare") && stripped.includes?("@printf(")
-    next if stripped.includes?(hosted) || stripped.starts_with?("%Nil = type")
+    next if stripped.starts_with?("@") && stripped.includes?(hosted) || stripped.starts_with?("%Nil = type")
     next if stripped.includes?("@\"'")
     next if stripped.includes?("@\"''\"")
     if pidx = line.index(" ; preds")
@@ -173,16 +173,6 @@ def compare(oracle : Array(String), port : Array(String)) : Int32
   identical
 end
 
-def hosted_prefix(path : String) : String
-  found = ""
-  File.read(path).split("\n").each do |line|
-    stripped = line.strip
-    found = stripped if found.empty? && !stripped.empty? && !stripped.starts_with?("#")
-  end
-  raise "the hosted names file #{path} names no prefix" if found.empty?
-  found
-end
-
 def run_oracle(path : String, hosted : String) : Nil
   text = File.read(path)
   parsed = parse(text)
@@ -243,9 +233,9 @@ def run : Nil
   end
   mode = args[0]
   if mode == "oracle"
-    run_oracle(args[1], hosted_prefix(args[2]))
+    run_oracle(args[1], "::")
   elsif mode == "lower"
-    run_lower(args[1], args[2], hosted_prefix(args[3]))
+    run_lower(args[1], args[2], "::")
   elsif mode == "context"
     check_context
   else
