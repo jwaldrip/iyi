@@ -7,25 +7,32 @@ module compiler/lower/type_id
 # starts at Object and visits each class's subclasses in registration order. A
 # builtin primitive is a leaf with one id. Nil is id 0. Ids count from 1.
 #
-# Metaclasses are numbered by a separate walk in the hosted compiler and are not
-# here yet (NEEDS.md row 16).
+# Metaclasses are numbered by a second walk, after every object has its ids, in the
+# order the hosted `assign_id_to_metaclass` visits them: the class, then its
+# subclasses depth first. Each metaclass takes the next id when it is first needed,
+# as `type_id(metaclass)` does in the hosted walk. A generic class takes its
+# instantiated types and its subclasses. A generic instance takes its subclasses.
 
 import compiler/semantic/top_level::{Type, ClassType, NilType, NonGenericClassType, GenericClassType}
-import compiler/types/types::{GenericInstanceType}
+import compiler/types/types::{GenericInstanceType, GenericClassInstanceType, TypeQueries}
 import compiler/lower/typer::{primitive_kind}
 
 pub class LowerTypeIds
   @ids : Hash(String, Array(Int32))
+  @id_to_metaclass : Hash(Int32, Int32)
   @next_id : Int32
 
   def initialize
     @ids = Hash(String, Array(Int32)).new
+    @id_to_metaclass = Hash(Int32, Int32).new
     @next_id = 0
   end
 
-  # The hosted `LLVMId#initialize`: number every class reachable from *root* (Object).
+  # The hosted `LLVMId#initialize`: number every class reachable from *root* (Object), then
+  # number the metaclasses in the same walk order.
   def assign_all(root : Type) : Nil
     assign_id(root)
+    assign_metaclass_id(root)
     nil
   end
 
@@ -39,6 +46,12 @@ pub class LowerTypeIds
     pair = min_max(type)
     raise "BUG: #{type.full_name} has no type id (not reachable from Object)" if pair.nil?
     pair[1]
+  end
+
+  # The hosted `id_to_metaclass[type_id(type)]`: the id of the type's metaclass, or nil when the
+  # type is not a class the metaclass walk reached.
+  def metaclass_id(type : Type) : Int32?
+    @id_to_metaclass[type_id(type)]?
   end
 
   # The hosted `assign_id`: a type already numbered answers its max, otherwise the
@@ -61,9 +74,23 @@ pub class LowerTypeIds
       put(type, id, id)
       return id
     end
-    # A generic class with no instances in the program takes its subclasses alone. The
-    # hosted rule adds its non-unbound instantiated types, which the port does not track yet (NEEDS.md row 17).
-    if type.is_a?(NonGenericClassType) || type.is_a?(GenericClassType)
+    # A generic class takes its non-unbound instantiated types and its subclasses (hosted
+    # `assign_id_impl(GenericClassType)`). The port's instantiated list holds bound types only.
+    if type.is_a?(GenericClassType)
+      subtypes = [] of Type
+      type.as(GenericClassType).instantiated_types.each do |instance|
+        subtypes << instance
+      end
+      subclasses_of(type).each do |sub|
+        subtypes << sub
+      end
+      return assign_id_from_subtypes(type, subtypes)
+    end
+    # A generic instance takes its subclasses (hosted `assign_id_impl(GenericClassInstanceType)`).
+    if type.is_a?(GenericClassInstanceType)
+      return assign_id_from_subtypes(type, subclasses_of(type))
+    end
+    if type.is_a?(NonGenericClassType)
       return assign_id_from_subtypes(type, subclasses_of(type))
     end
     raise "BUG: unhandled type in assign id: #{type.full_name} (hosted llvm_id.cr assign_id_impl)"
@@ -91,10 +118,41 @@ pub class LowerTypeIds
     min_id
   end
 
+  # The hosted `assign_id_to_metaclass`: the metaclass of each class, depth first from *type*,
+  # each taking the next id when it is first needed.
+  def assign_metaclass_id(type : Type) : Nil
+    # A generic instance has no metaclass id here yet (NEEDS.md row 17): the port's metaclass of an
+    # instance is not built by the walk.
+    return nil if type.is_a?(GenericInstanceType)
+    if type.is_a?(NonGenericClassType) || type.is_a?(GenericClassType)
+      meta = type.as(ClassType).metaclass
+      @id_to_metaclass[type_id(type)] = metaclass_type_id(meta)
+      # A generic class also walks its instantiated types (hosted `assign_id_to_metaclass(GenericClassType)`).
+      if type.is_a?(GenericClassType)
+        type.as(GenericClassType).instantiated_types.each do |instance|
+          assign_metaclass_id(instance)
+        end
+      end
+      subclasses_of(type).each do |sub|
+        assign_metaclass_id(sub)
+      end
+    end
+    nil
+  end
+
+  # The id of a metaclass, numbered as `type_id(metaclass)` does: the next id if it has none.
+  def metaclass_type_id(meta : Type) : Int32
+    pair = min_max(meta)
+    return pair[1] if pair
+    id = next_id
+    put(meta, id, id)
+    id
+  end
+
   # The hosted `subclasses_of`: the subclasses, without the generic instances.
   def subclasses_of(type : Type) : Array(Type)
     out = [] of Type
-    type.as(ClassType).subclasses.each do |sub|
+    TypeQueries.subclasses(type).each do |sub|
       out << sub unless sub.is_a?(GenericInstanceType)
     end
     out

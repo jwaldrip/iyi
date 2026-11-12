@@ -14,7 +14,7 @@ module compiler/compiler
 
 import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dir_of}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/backend/backend::{Backend, BuildRequest}
 import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, refuse_exception_handlers, register_primitive_operators}
@@ -24,6 +24,7 @@ import compiler/syntax/token::{NumberKind}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
+import compiler/lower/program::{TypedProgram, declare_program, type_bodies, lower_program, native_objects, link_program, link_names, refusal_table, lowering_table}
 
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
@@ -44,6 +45,11 @@ pub struct CompilerConfig
   # compiler does not verify in its emit path and neither does this one: the
   # check belongs to bench/selfhost_ir_valid_exercise.sh, which drives this.
   property probe_verify : Bool
+  # The typed pipeline (compile_typed): declarations, bodies and typed lowering, with no LLVM. Off unless asked for.
+  property typed_pipeline : Bool
+  # Keep going past a refusal where the phase allows: the body typer records each refusal on its node in total
+  # mode and the probe's table reports them. The lowering still stops at its first refusal.
+  property keep_going : Bool
 
   def initialize(
     @output_filename : String = "a.out",
@@ -54,6 +60,8 @@ pub struct CompilerConfig
     @probe_phase : Bool = false,
     @single_file : Bool = false,
     @probe_verify : Bool = false,
+    @typed_pipeline : Bool = false,
+    @keep_going : Bool = false,
   )
   end
 end
@@ -77,12 +85,15 @@ pub class Compiler
   property config : CompilerConfig
   property loader : Loader
   property emit_ir : Bool
+  property refusal : String?
 
   def initialize(@config : CompilerConfig = CompilerConfig.new, @loader : Loader = Loader.new, @backend : Backend = Backend.new)
     @emit_ir = false
+    @refusal = nil
   end
 
   def compile(root_filename : String) : CompileResult
+    return compile_typed(root_filename) if @config.typed_pipeline
     # 1. Resolve: discover all dependencies, detect cycles, produce topological order
     parsed = group do |g|
       task = g.spawn do
@@ -256,6 +267,208 @@ pub class Compiler
       raise refusal.as(String)
     end
     CompileResult.new(@config.output_filename, obj_path, resolved_modules)
+  end
+
+  # The typed pipeline (SPEC 2.1, S3): one program from source to a native executable, through the typed analysis and
+  # the typed lowering, with no LLVM. Each phase is a spawned task, so a raise inside a phase is caught and named by
+  # phase. A refusal writes no output and records its phase and reason in `refusal`. The output is written at the link.
+  def compile_typed(root_filename : String) : CompileResult
+    triple = @config.target_triple || @backend.default_triple
+    typed_start("parse")
+    parsed = group do |g|
+      task = g.spawn do
+        if @config.single_file
+          @loader.resolve_single(root_filename)
+        else
+          @loader.resolve(root_filename)
+        end
+      end
+      task.value
+    end
+    if parsed.is_a?(Panicked)
+      return typed_refuse("parse", "none", parsed.message)
+    end
+    resolved_modules = parsed
+    reached = typed_pass("parse")
+    typed_start("declarations")
+
+    declared = group do |g|
+      task = g.spawn { Compiler.typed_declare(resolved_modules, triple, @loader, @loader.load_prelude) }
+      task.value
+    end
+    if declared.is_a?(Panicked)
+      return typed_refuse("declarations", reached, declared.message)
+    end
+    typed = declared
+    if @config.keep_going
+      # The probe's table: the body typer records each refusal on its node and goes on (total mode).
+      typed.visitor.total = true
+      typed.prog.total_mode = true
+    end
+    reached = typed_pass("declarations")
+    typed_start("bodies")
+
+    bodies = group do |g|
+      task = g.spawn { type_bodies(typed) }
+      task.value
+    end
+    if bodies.is_a?(Panicked)
+      return typed_refuse("bodies", reached, bodies.message)
+    end
+    reached = typed_pass("bodies")
+    if @config.keep_going
+      root_name = Compiler.module_name_from_path(root_filename)
+      refusal_table(typed, root_name).each { |line| puts line }
+      lowering_table(typed, triple, root_name).each { |line| puts line }
+      STDOUT.flush
+    end
+
+    typed_start("lower")
+    name = Compiler.module_name_from_path(root_filename)
+    lowered = group do |g|
+      task = g.spawn { lower_program(typed, triple, name) }
+      task.value
+    end
+    if lowered.is_a?(Panicked)
+      return typed_refuse("lower", reached, lowered.message)
+    end
+    mod = lowered
+    reached = typed_pass("lower")
+
+    typed_start("verify")
+    errors = verify(mod)
+    unless errors.empty?
+      return typed_refuse("verify", reached, "the IR verifier refused the module: " + errors[0].to_s)
+    end
+    reached = typed_pass("verify")
+    if @emit_ir
+      File.write(@config.output_filename, print(mod))
+      return CompileResult.new(@config.output_filename, "", resolved_modules)
+    end
+
+    typed_start("native")
+    objects = native_objects(mod, triple)
+    if objects.is_a?(String)
+      return typed_refuse("native", reached, objects.as(String))
+    end
+    reached = typed_pass("native")
+
+    typed_start("link")
+    output = @config.output_filename
+    parts = output.split('/')
+    refusal = link_program(objects, parts[parts.size - 1], output, typed.links)
+    unless refusal.nil?
+      return typed_refuse("link", reached, refusal.as(String))
+    end
+    typed_pass("link")
+    if @config.probe_phase
+      puts "reached: link"
+      STDOUT.flush
+    end
+    CompileResult.new(output, "", resolved_modules)
+  end
+
+  # Records the start of a phase when probing. A phase that exits the process (refuse_port) leaves its start as the last line.
+  def typed_start(phase : String) : Nil
+    if @config.probe_phase
+      puts "[phase] #{phase}: start"
+      STDOUT.flush
+    end
+  end
+
+  # Records a passed phase and, when probing, prints it.
+  def typed_pass(phase : String) : String
+    if @config.probe_phase
+      puts "[phase] #{phase}: pass"
+      STDOUT.flush
+    end
+    phase
+  end
+
+  # Records a refused phase with the last phase reached. When probing, it is printed and no output is written.
+  def typed_refuse(phase : String, reached : String, message : String) : CompileResult
+    @refusal = "#{phase}: #{message}"
+    if @config.probe_phase
+      puts "#{phase}: fail: #{message}"
+      puts "reached: #{reached}"
+      STDOUT.flush
+    end
+    CompileResult.new(@config.output_filename, "", [] of ModuleInfo)
+  end
+
+  # The declarations phase of the typed pipeline: each unit is normalised, its declarations are collected as the hosted
+  # compiler collects them, and they are declared as one program. The builtin stand-ins apply only when no prelude is loaded.
+  pub def self.typed_declare(resolved : Array(ModuleInfo), triple : String, loader : Loader, prelude : Bool) : TypedProgram
+    resolved.each do |mod_info|
+      refuse_exception_handlers(mod_info.ast)
+    end
+    normalizer = NormalizerProgram.new(prelude)
+    links = [] of String
+    resolved.each do |mod_info|
+      mod_info.ast = normalizer.normalize(mod_info.ast)
+      tops = [mod_info.ast]
+      if mod_info.ast.is_a?(Expressions)
+        tops = mod_info.ast.as(Expressions).expressions
+      end
+      link_names(tops).each { |name| links << name }
+    end
+    classes = [] of ClassDef
+    funs = [] of FunDef
+    defs = Hash(String, Def).new
+    libs = [] of LibDef
+    flags = MacroTargetFlags.for_triple(triple, [] of String)
+    module_tops = {} of String => Array(ASTNode)
+    resolved.each do |mod_info|
+      mod_top = [] of ASTNode
+      Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, mod_top, flags)
+      module_tops[mod_info.filename] = mod_top
+    end
+    # extract_declarations keeps one def per name, so an overload would be lost: every top-level def of the units is
+    # collected here, in order, and any def only the hash holds (one behind a macro condition) is added after them.
+    all_defs = [] of Def
+    resolved.each do |mod_info|
+      tops = [mod_info.ast]
+      if mod_info.ast.is_a?(Expressions)
+        tops = mod_info.ast.as(Expressions).expressions
+      end
+      Compiler.typed_top_defs(tops, all_defs)
+    end
+    defs.each_value do |d|
+      all_defs << d unless all_defs.any? { |x| x.object_id == d.object_id }
+    end
+    top_level = [] of ASTNode
+    Loader.initialiser_order(resolved).each do |mod_info|
+      module_tops[mod_info.filename].each { |node| top_level << node }
+    end
+    # The program is read the way the declarations gate reads one (bench/selfhost_semantic_declarations_exercise.iyi):
+    # the loader's search path, and the entry's project root (its header root, else its directory).
+    entry = resolved[resolved.size - 1]
+    prog = SemanticProgram.new
+    prog.search_path = loader.iyi_path.entries
+    prog.project_root = IyiPath.header_root_of(entry.filename, entry.source) || dir_of(entry.filename)
+    # The prelude is declared before every other unit, as the declarations driver loads it first: the prelude's names are
+    # visible to every unit, which the initialiser order alone does not guarantee.
+    units = [] of ModuleInfo
+    Loader.initialiser_order(resolved).each do |mod_info|
+      units << mod_info if mod_info.filename.ends_with?("/iyi/prelude.iyi")
+    end
+    Loader.initialiser_order(resolved).each do |mod_info|
+      units << mod_info unless mod_info.filename.ends_with?("/iyi/prelude.iyi")
+    end
+    declare_program(classes, libs, all_defs, funs, top_level, links, !prelude, prog, units)
+  end
+
+  # The top-level defs among the given nodes, in order, unwrapping visibility modifiers and expression sequences.
+  def self.typed_top_defs(nodes : Array(ASTNode), collected : Array(Def)) : Nil
+    nodes.each do |node|
+      if node.is_a?(Def)
+        collected << node.as(Def)
+      elsif node.is_a?(VisibilityModifier)
+        Compiler.typed_top_defs([node.as(VisibilityModifier).exp], collected)
+      elsif node.is_a?(Expressions)
+        Compiler.typed_top_defs(node.as(Expressions).expressions, collected)
+      end
+    end
   end
 
   # --- Helper utilities ---

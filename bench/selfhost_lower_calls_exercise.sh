@@ -146,11 +146,41 @@ prove_mutation "the printer writes uwtable as an attribute, not uwtable(sync)" "
 prove_mutation "a NoReturn def carries no noreturn attribute" "$REPO/src/compiler/lower/fun.iyi" \
   'Attribute.new("noreturn", 0_u64, nil, nil)' 'Attribute.new("nounwind", 0_u64, nil, nil)' -- lower_calls_check || status=1
 prove_mutation "a call to a def passes no arguments" "$REPO/src/compiler/lower/call.iyi" \
-  'inst = low.builder.call(func.fn_type, func, values, "")' 'inst = low.builder.call(func.fn_type, func, [] of Value, "")' -- lower_calls_check || status=1
+  'inst = low.builder.call(func.fn_type, func, call_arguments(self_value, values), "")' 'inst = low.builder.call(func.fn_type, func, [] of Value, "")' -- lower_calls_check || status=1
 prove_mutation "a NoReturn def call is not followed by unreachable" "$REPO/src/compiler/lower/call.iyi" \
   "  if ret.is_a?(NoReturnType)
     low.builder.unreachable" "  if ret.is_a?(NilType)
     low.builder.unreachable" -- lower_calls_check || status=1
+prove_mutation "a block argument is never stored at a yield" "$REPO/src/compiler/lower/block.iyi" \
+  "        store_local(low, var.as(LowerVar), exp_types[i], exp_values[i])" "        low.last = low.last" -- lower_calls_check || status=1
+prove_mutation "a block call's value is merged as a non-final branch" "$REPO/src/compiler/lower/call.iyi" \
+  "  phi.add(low, low.last, true)" "  phi.add(low, low.last, false)" -- lower_calls_check || status=1
+prove_mutation "a block call allocates none of the block's variables" "$REPO/src/compiler/lower/call.iyi" \
+  "  allocate_block_vars(low, block, block_ctx.vars)" "  block_ctx.vars.size" -- lower_calls_check || status=1
+prove_mutation "an inlined def's argument is allocated with the nil type" "$REPO/src/compiler/lower/call.iyi" \
+  "    alloca_local(low, vars, arg.name, arg_types[i])" "    alloca_local(low, vars, arg.name, low.analysed.program.nil_type)" -- lower_calls_check || status=1
+prove_mutation "a block branch's value is merged as the last branch" "$REPO/src/compiler/lower/block.iyi" \
+  "  phi.add_branch(low, value, false)" "  phi.add_branch(low, value, true)" -- lower_calls_check || status=1
+prove_mutation "a block branch's value is dropped" "$REPO/src/compiler/lower/block.iyi" \
+  "      value = v.as(Value)" "      value = nil" -- lower_calls_check || status=1
+prove_mutation "a break from a block drops its value" "$REPO/src/compiler/lower/lower.iyi" \
+  "    branch_to_phi(low, block_phi.as(BranchPhi), node.exp)" "    branch_to_phi(low, block_phi.as(BranchPhi), nil)" -- lower_calls_check || status=1
+prove_mutation "a return from an inlined def drops its value" "$REPO/src/compiler/lower/lower.iyi" \
+  "    branch_to_phi(low, rp.as(BranchPhi), node.exp)" "    branch_to_phi(low, rp.as(BranchPhi), nil)" -- lower_calls_check || status=1
+prove_mutation "a method's receiver is not passed to the call" "$REPO/src/compiler/lower/call.iyi" \
+  "    out << sv.as(Value)" "    out.size" -- lower_calls_check || status=1
+prove_mutation "a method's mangled name has no owner" "$REPO/src/compiler/lower/fun.iyi" \
+  'text = text + st.full_name + "#"' 'text = text + "#"' -- lower_calls_check || status=1
+prove_mutation "a block call does not bind self in the inlined def" "$REPO/src/compiler/lower/call.iyi" \
+  '      frame.vars["self"] = LowerVar.new(sv.as(Value), st, true)' '      frame.vars.size' -- lower_calls_check || status=1
+prove_mutation "a method's self is not the first parameter" "$REPO/src/compiler/lower/fun.iyi" \
+  '    first = 1' '    first = 0' -- lower_calls_check || status=1
+prove_mutation "a lib call passes no arguments" "$REPO/src/compiler/lower/call.iyi" \
+  'inst = low.builder.call(fn_type, func.as(Function), values, "")' 'inst = low.builder.call(fn_type, func.as(Function), [] of Value, "")' -- lower_calls_check || status=1
+prove_mutation "a lib fun is declared with the iyi calling convention" "$REPO/src/compiler/lower/call.iyi" \
+  'func = low.module.add_function(real, fn_type, CallConv::C)' 'func = low.module.add_function(real, fn_type, CallConv::Iyi)' -- lower_calls_check || status=1
+prove_mutation "a lib call's function type returns nil" "$REPO/src/compiler/lower/call.iyi" \
+  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))' 'fn_type = low.module.types.func(params, low.typer.llvm_return_type(low.analysed.program.nil_type))' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

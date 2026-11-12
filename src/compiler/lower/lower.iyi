@@ -16,7 +16,7 @@ module compiler/lower/lower
 # folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
 # `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, Path, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA}
+import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, Path, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA, Yield}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -25,19 +25,39 @@ import compiler/ir/function::{Linkage}
 import compiler/ir/inst::{Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/lower/typer::{LowerTyper}
+import compiler/lower/typer::{LowerTyper, passed_by_value?}
 import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
-import compiler/lower/context::{BodyVisit, Lowerer, LowerVar}
+import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
 import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node}
-import compiler/lower/fun::{block_ended?, function_attributes}
-import compiler/lower/cast::{assign}
+import compiler/lower/block::{branch_to_phi, lower_yield}
+import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun}
+import compiler/lower/cast::{assign, union_temp}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
+import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
+
+# The per-def probe the typed pipeline table reads (S3Pipeline): lowers one def's function into `m` the way a call
+# that reaches it does (fun.iyi target_def_fun), for the self type and argument types the caller gives. A refusal
+# raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The return type
+# is the analysed type of the def's body, the value the body leaves; a def whose body has no analysed type raises.
+pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module) : String?
+  low = Lowerer.new(m, typer, analysed)
+  low.body_visitor = CoreBody.new
+  program = analysed.program
+  ids = LowerTypeIds.new
+  ids.assign_all(program.object_type)
+  low.type_ids = ids
+  low.string_type_id = ids.type_id(program.string_type)
+  body_t = analysed.type_of?(target.body)
+  raise "BUG: the analysed program has no type for the body of #{target.name} (hosted codegen_fun: return type)" if body_t.nil?
+  target_def_fun(low, target, self_type, arg_types, body_t.as(Type))
+  nil
+end
 
 # The hosted `codegen` of a program into `m`: the entry of the unit. `root` is the program's
 # parsed tree, `analysed` the semantic pass that typed it.
@@ -134,6 +154,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_var(low, node.as(Var))
     return
   end
+  if node.is_a?(InstanceVar)
+    codegen_instance_var_read(low, node.as(InstanceVar))
+    return
+  end
   if node.is_a?(Path)
     codegen_path(low, node.as(Path))
     return
@@ -205,6 +229,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(Call)
     codegen_call_node(low, node.as(Call))
+    return
+  end
+  if node.is_a?(Yield)
+    lower_yield(low, node.as(Yield))
     return
   end
   if node.is_a?(LibDef)
@@ -344,6 +372,10 @@ end
 # which is made the first time the variable is assigned. The value of the assignment is the value
 # assigned.
 pub def codegen_assign(low : Lowerer, node : Assign) : Nil
+  if node.target.is_a?(InstanceVar)
+    codegen_instance_var_assign(low, node)
+    return
+  end
   if !node.target.is_a?(Var)
     pending_visit_node("Assign to a target that is not a variable")
   end
@@ -353,27 +385,28 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
       pending_visit_node("Assign to a parameter (hosted fun.cr, create_local_copy_of_arg)")
     end
   end
+  # The hosted codegen_assign declares the variable before it visits the value, so its alloca comes first.
+  if low.current_context.vars[target.name]?.nil?
+    declared = variable_storage_type(low, target)
+    if !declared.nil?
+      declare_assign_var(low, target.name, declared.as(Type))
+    end
+  end
+  wants = low.needs_value
+  low.needs_value = true
   codegen_node(low, node.value)
+  low.needs_value = wants
   value = low.last
   raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
   v = value.as(Value)
   value_type = low.analysed.type_of?(node.value)
   raise "BUG: the analysed program has no type for the assigned value (hosted codegen.cr: codegen_assign)" if value_type.nil?
   vt = value_type.as(Type)
-  # The variable's type is the analysed type of its target, not the value's (hosted: the alloca takes the variable's
-  # type); the value's type is the value's own.
-  tgt_t = low.analysed.type_of?(node.target)
-  target_t = vt
-  if !tgt_t.nil?
-    target_t = tgt_t.as(Type)
+  if low.current_context.vars[target.name]?.nil?
+    # The analysis gives the target no type: the variable takes the value's.
+    declare_assign_var(low, target.name, vt)
   end
   var = low.current_context.vars[target.name]?
-  if var.nil?
-    pointer = low.alloca(low.typer.llvm_type(target_t), target.name)
-    made = LowerVar.new(pointer, target_t, false)
-    low.current_context.vars[target.name] = made
-    var = made
-  end
   v_var = var.as(LowerVar)
   if v_var.type.full_name != vt.full_name
     # A value of another type than the variable goes through the casts slice (the hosted upcast into a union).
@@ -382,6 +415,45 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
     store_aligned(low, v, v_var.pointer)
   end
   low.last = v
+end
+
+# The hosted `codegen_assign` for an instance variable target (codegen.cr:1525): the value is evaluated
+# first, as the hosted `request_value(value)` does, then stored at the field (instance_var.iyi).
+pub def codegen_instance_var_assign(low : Lowerer, node : Assign) : Nil
+  target = node.target.as(InstanceVar)
+  wants = low.needs_value
+  low.needs_value = true
+  codegen_node(low, node.value)
+  low.needs_value = wants
+  value = low.last
+  raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
+  value_type = low.analysed.type_of?(node.value)
+  raise "BUG: the analysed program has no type for the assigned value (hosted codegen.cr: codegen_assign)" if value_type.nil?
+  store_instance_var(low, target.name, value.as(Value), value_type.as(Type))
+  low.last = value
+end
+
+# The type a variable is stored as. A variable the body assigns more than one type is stored as the union the analysis
+# gave it (`def_var_unions`, the context's `var_unions`); otherwise as the analysed type of its target. Nil when the
+# analysis gives the target no type.
+pub def variable_storage_type(low : Lowerer, target : Var) : Type?
+  if table = low.current_context.var_unions
+    if u = table[target.name]?
+      return u.as(Type)
+    end
+  end
+  tgt_t = low.analysed.type_of?(target)
+  if tgt_t.nil?
+    return nil
+  end
+  tgt_t.as(Type)
+end
+
+# The hosted variable declaration for an assignment: an alloca of the type, in the alloca block, recorded as the
+# variable of the context.
+pub def declare_assign_var(low : Lowerer, name : String, t : Type) : Nil
+  pointer = low.alloca(low.typer.llvm_type(t), name)
+  low.current_context.vars[name] = LowerVar.new(pointer, t, false)
 end
 
 # The hosted `visit(If)`: a literal condition folds (the hosted `truthy?` and `falsey?`), and any
@@ -437,22 +509,65 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
   low.builder.cond_br(cond_value, then_block, else_block)
 
   merge_type : IrType? = nil
+  merged_t : Type? = nil
+  union_join = false
   if wants
     merged = low.analysed.type_of?(node)
     raise "BUG: the analysed program has no type for a branch (hosted codegen.cr: visit(If))" if merged.nil?
-    merge_type = low.typer.llvm_type(merged.as(Type))
+    merged_t = merged.as(Type)
+    union_join = joins_by_pointer?(merged_t.as(Type))
+    if union_join
+      merge_type = low.module.types.ptr(0)
+    else
+      merge_type = low.typer.llvm_type(merged_t.as(Type))
+    end
   end
   phi = LowerPhi.new(wants, merge_type)
 
   low.builder.position_at_end(then_block)
   codegen_node(low, then_node)
-  phi.add(low, low.last, false)
+  branch_value(low, phi, then_node, merged_t, union_join, false)
 
   low.builder.position_at_end(else_block)
   codegen_node(low, else_node)
-  phi.add(low, low.last, true)
+  branch_value(low, phi, else_node, merged_t, union_join, true)
 
   phi.close(low)
+  if union_join && !phi.values.empty?
+    # The join is the pointer phi; the union value is loaded from the pointer it picked (hosted codegen_if).
+    union_ir = low.typer.llvm_type(merged_t.as(Type))
+    low.last = load_aligned(low, union_ir, low.last.as(Value), "")
+  end
+end
+
+# Whether a value of this type joins by pointer in the `if` phi: the hosted Phi takes a pointer to a
+# passed-by-value type (phi.cr `close`). Only the union case is ported here; another by-value type
+# (a struct) is refused by name, since its branch value needs a pointer the core does not build yet.
+pub def joins_by_pointer?(t : Type) : Bool
+  if !passed_by_value?(t)
+    return false
+  end
+  if t.is_a?(UnionType) || t.is_a?(NilableType)
+    return true
+  end
+  pending_visit_node("a phi over a passed-by-value #{t.full_name} that is not a union (hosted phi.cr: close, struct pointer)")
+  false
+end
+
+# One branch's value into the join. In a union join the branch's value is stored in a fresh alloca of the union
+# (union_temp, hosted upcast in the branch) and the pointer joins; otherwise the value joins as it is.
+pub def branch_value(low : Lowerer, phi : LowerPhi, branch : ASTNode, merged : Type?, union_join : Bool, last : Bool) : Nil
+  if union_join && !at_terminator?(low) && !low.last.nil?
+    bt = low.analysed.type_of?(branch)
+    if bt.nil?
+      pending_visit_node("a union join of a branch with no analysed type (hosted codegen.cr: visit(If))")
+    end
+    m = merged.as(Type)
+    ptr = union_temp(low, m, bt.as(Type), low.last.as(Value))
+    phi.add(low, ptr, last)
+    return
+  end
+  phi.add(low, low.last, last)
 end
 
 # The hosted `visit(Not)`: the condition's value, inverted with an `xor` against true.
@@ -507,11 +622,17 @@ end
 
 # The hosted `visit(Break)` without a value: a branch to the loop's exit block, made at the first break.
 pub def codegen_break(low : Lowerer, node : Break) : Nil
-  if node.exp
-    pending_visit_node("break with a value (hosted codegen.cr: visit(Break))")
-  end
   if low.loop_next.nil?
-    pending_visit_node("break outside a while (hosted codegen.cr: visit(Break))")
+    # A break outside a while leaves the block call it is written in: its value goes to the call's phi (hosted break_phi).
+    block_phi = low.current_context.break_phi
+    if block_phi.nil?
+      pending_visit_node("break outside a while or a block (hosted codegen.cr: visit(Break))")
+    end
+    branch_to_phi(low, block_phi.as(BranchPhi), node.exp)
+    return
+  end
+  if node.exp
+    pending_visit_node("break with a value in a while (hosted codegen.cr: visit(Break))")
   end
   target = low.loop_break
   if target.nil?
@@ -537,8 +658,17 @@ end
 
 # The hosted `visit(Next)`: a branch to the loop's condition.
 pub def codegen_next(low : Lowerer, node : Next) : Nil
+  if low.loop_next.nil?
+    # A next outside a while goes to the block's next: its value is the yield's value (hosted next_phi).
+    yield_phi = low.current_context.next_phi
+    if yield_phi.nil?
+      pending_visit_node("next outside a while or a block (hosted codegen.cr: visit(Next))")
+    end
+    branch_to_phi(low, yield_phi.as(BranchPhi), node.exp)
+    return
+  end
   if node.exp
-    pending_visit_node("next with a value (hosted codegen.cr: visit(Next))")
+    pending_visit_node("next with a value in a while (hosted codegen.cr: visit(Next))")
   end
   target = low.loop_next
   if target.nil?
@@ -569,6 +699,10 @@ end
 pub def codegen_return_node(low : Lowerer, node : Return) : Nil
   if low.current_context.top_level
     pending_visit_node("return at the top level (hosted codegen.cr: visit(Return), node.target is not a Def)")
+  end
+  if rp = low.current_context.return_phi
+    branch_to_phi(low, rp.as(BranchPhi), node.exp)
+    return
   end
   ret_ir = low.current_context.fun_type.return_type
   exp = node.exp

@@ -474,6 +474,11 @@ pub abstract class ModuleType < NamedType
     else
       meta = MetaclassType.new(@program, @namespace, "#{@name}:Class", self)
       @metaclass = meta
+      # The hosted rule: a non-generic class's metaclass has `allocate`, a primitive
+      # (types.cr NonGenericClassType#initialize_metaclass).
+      if self.is_a?(NonGenericClassType)
+        meta.add_def(Def.new("allocate", [] of Arg, Primitive.new("allocate")))
+      end
       meta
     end
   end
@@ -945,6 +950,9 @@ pub class ImplRecord
 end
 
 pub class SemanticProgram < NonGenericModuleType
+  getter new_expansions : Array(NewExpansion)
+  @new_expansions : Array(NewExpansion) = [] of NewExpansion
+
   @object_type : ClassType?
   property merge_hook : TypeHook?
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
@@ -1662,6 +1670,19 @@ pub class PendingIvar
   property imports : Hash(String, Type)? = nil
 
   def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode)
+  end
+end
+
+# A `self.new` the declarations pass added for an instance `initialize` (the hosted
+# new_expansions table). `expanded` is the new on the metaclass, `original` the
+# initialize it came from, `owner` the instance type. define_new_methods fills the
+# body of `expanded`.
+pub class NewExpansion
+  getter original : Def
+  getter expanded : Def
+  getter owner : ModuleType
+
+  def initialize(@original : Def, @expanded : Def, @owner : ModuleType)
   end
 end
 
@@ -2625,15 +2646,17 @@ pub class TopLevelVisitor < Visitor
     target_type.add_def(node)
 
     # An instance `initialize` makes a `self.new` with the same arguments, added now
-    # so a later `def self.new` finds it through `previous_def`. The hosted pass does
-    # the same at this point; its body is filled in once the whole program is known.
+    # so a later `def self.new` finds it through `previous_def`. Its body is filled
+    # by define_new_methods once the file is declared (see finish).
     if node.name == "initialize" && node.receiver.nil?
-      new_def = Def.new("new", node.args.dup, Nop.new)
+      new_def = Def.new("new", node.args.map { |a| a.clone.as(Arg) }, Nop.new)
       new_def.location = node.location
       new_def.splat_index = node.splat_index
+      new_def.double_splat = node.double_splat
       new_def.block_arg = node.block_arg
       new_def.visibility = Visibility::Public
       target_type.metaclass.add_def(new_def)
+      @program.new_expansions << NewExpansion.new(node, new_def, target_type)
     end
 
     false

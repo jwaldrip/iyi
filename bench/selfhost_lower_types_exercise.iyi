@@ -13,8 +13,10 @@ import compiler/lower/type_id::{LowerTypeIds}
 import compiler/lower/layouts::{GcLayouts}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
-import compiler/syntax/ast::{ClassDef, Expressions}
+import compiler/syntax/ast::{ASTNode, ClassDef, Expressions, ModuleHeader}
 import compiler/semantic/top_level::{ModuleType}
+import compiler/semantic/top_level::{dir_of, normalize_path, declared_in?, NamedType, EnumType, Const}
+import compiler/types/rendering::{TypeRenderer}
 
 # Lowering-types driver for bench/selfhost_lower_types_exercise.sh.
 #
@@ -169,7 +171,7 @@ module BenchSelfhostLowerTypesExercise
     parts = [] of String
     t.as(ModuleType).all_instance_vars.each do |name, ivar|
       vt = ivar.var_type
-      parts << "#{name}:#{vt.nil? ? "untyped" : vt.as(Type).full_name}"
+      parts << "#{name}:#{vt.nil? ? "untyped" : TypeRenderer.render(vt.as(Type))}"
     end
     return "-" if parts.size == 0
     parts.join(" ")
@@ -197,10 +199,12 @@ module BenchSelfhostLowerTypesExercise
     mm = ids.min_max(t)
     out = "== #{expr}\n"
     if mm.nil?
-      out = out + "type_id: -\ntype_range: -\n"
+      out = out + "type_id: -\ntype_range: -\nmetaclass_id: -\n"
     else
       pair = mm.as(Array(Int32))
       out = out + "type_id: #{pair[1]}\ntype_range: #{pair[0]} #{pair[1]}\n"
+      meta = ids.metaclass_id(t)
+      out = out + "metaclass_id: #{meta.nil? ? "-" : meta.to_s}\n"
     end
     out
   end
@@ -211,17 +215,11 @@ module BenchSelfhostLowerTypesExercise
     prog = SemanticProgram.new
     # The type system is installed before the visitor runs, as the semantic driver does.
     ts = TypeSystem.new(prog)
-    node.accept(TopLevelVisitor.new(prog))
-    # The port's main visitor declares the instance variables: explicit declarations and assignments.
-    # Only class definitions: the main visitor needs a type for an alias node, which the
-    # declarations pass does not give one here.
-    if node.is_a?(Expressions)
-      node.as(Expressions).expressions.each do |e|
-        e.accept(MainVisitor.new(prog)) if e.is_a?(ClassDef)
-      end
-    elsif node.is_a?(ClassDef)
-      node.accept(MainVisitor.new(prog))
-    end
+    visitor = TopLevelVisitor.new(prog)
+    node.accept(visitor)
+    # The explicit instance variable declarations are recorded by the top-level pass and finished
+    # here, as the declarations driver and the own-source mode do (NEEDS.md row 12).
+    visitor.finish
     # The instance variables typed by assignment in initialize (semantic/instance_vars.iyi).
     declare_guessed_instance_vars(prog)
     layout_result = DataLayout.for(Target.new(triple))
@@ -230,27 +228,118 @@ module BenchSelfhostLowerTypesExercise
     # The hosted Program#iyi_object_layout? is decided by the program declaring IyiRuntimeLock.
     iyi = !prog.types["IyiRuntimeLock"]?.nil?
     typer = LowerTyper.new(TypeTable.new, layout, iyi)
-    # The hosted LLVMId numbers every class reachable from Object.
+    # The hosted LLVMId numbers every class reachable from Object, and the hosted driver resolves
+    # every `# type:` line first (a generic instance named in a line is then reachable from its
+    # generic class). The types are resolved before the walk so both drivers number the same program.
+    exprs = [] of String
+    types = [] of Type
+    src.split("\n").each do |line|
+      if line.starts_with?("# type: ")
+        expr = line[8, line.bytesize - 8].strip
+        exprs << expr
+        types << resolve(prog, ts, expr)
+      end
+    end
     ids = LowerTypeIds.new
     if root = prog.types["Object"]?
       ids.assign_all(root)
     end
     out = ""
-    src.split("\n").each do |line|
-      if line.starts_with?("# type: ")
-        expr = line[8, line.bytesize - 8].strip
-        if mode == "ids"
-          out = out + ids_block(expr, ids, resolve(prog, ts, expr))
-        else
-          out = out + block_text(expr, typer, resolve(prog, ts, expr))
+    i = 0
+    while i < exprs.size
+      if mode == "ids"
+        out = out + ids_block(exprs[i], ids, types[i])
+      else
+        out = out + block_text(exprs[i], typer, types[i])
+      end
+      i = i + 1
+    end
+    out
+  end
+
+  # The search path the import closure is read from (IYI_PATH, as the declarations gate sets it).
+  def self.search_path : Array(String)
+    text = ENV["IYI_PATH"]? || ""
+    text.split(":").select { |entry| !entry.empty? }
+  end
+
+  # The project root an import is resolved from first: the entry's directory, moved up one
+  # level for each segment of its module header's path but the last (the declarations driver's rule).
+  def self.project_root(node : ASTNode, entry : String) : String
+    root = dir_of(entry)
+    if node.is_a?(Expressions)
+      first = node.as(Expressions).expressions.first?
+      if first.is_a?(ModuleHeader)
+        depth = first.as(ModuleHeader).path.size - 1
+        i = 0
+        while i < depth
+          root = dir_of(root)
+          i = i + 1
         end
       end
+    end
+    root
+  end
+
+  # The entry file and its import closure, declared into one program by the top-level pass
+  # (`load_file` for each import), as the declarations driver loads them. Returns the program and the entry.
+  def self.load_program(path : String) : {SemanticProgram, String}
+    cwd = ENV["PWD"]? || "."
+    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    entry = normalize_path(absolute)
+    src = File.read(entry)
+    node = Parser.new(src, entry).parse
+    prog = SemanticProgram.new
+    prog.loaded_files.add(entry)
+    prog.search_path = search_path
+    prog.project_root = project_root(node, entry)
+    visitor = TopLevelVisitor.new(prog, entry)
+    # The prelude, loaded first, as the hosted build loads it (`self.prelude = "iyi/prelude"`).
+    if search_path.size > 0
+      visitor.load_file(normalize_path("#{search_path[0]}/iyi/prelude.iyi"))
+    end
+    node.accept(visitor)
+    visitor.finish
+    declare_guessed_instance_vars(prog)
+    {prog, entry}
+  end
+
+  # Every type the entry declares, nested types included: the hosted dump's rule (`dump_tree_declared`).
+  def self.collect_declared(t : Type, entry : String, found : Array(Type)) : Nil
+    found << t if declared_in?(t.locations, entry) && !t.is_a?(Const)
+    if t.is_a?(NamedType) && !t.is_a?(EnumType)
+      nt = t.as(NamedType)
+      nt.types.keys.sorted.each do |sname|
+        collect_declared(nt.types[sname], entry, found)
+      end
+    end
+    nil
+  end
+
+  # The whole-program mode the gate measures src/compiler with: one block per type the file
+  # declares, lowered by one typer for the target. A block is keyed `== <full name>`.
+  def self.own_text(path : String, triple : String) : String
+    prog, entry = load_program(path)
+    layout_result = DataLayout.for(Target.new(triple))
+    raise "no DataLayout for #{triple}" if layout_result.is_a?(LayoutError)
+    layout = layout_result.as(DataLayout)
+    iyi = !prog.types["IyiRuntimeLock"]?.nil?
+    typer = LowerTyper.new(TypeTable.new, layout, iyi)
+    types = [] of Type
+    prog.types.keys.sorted.each do |name|
+      collect_declared(prog.types[name], entry, types)
+    end
+    out = ""
+    types.each do |t|
+      out = out + block_text(t.full_name, typer, t)
     end
     out
   end
 end
 
-if Program.args.size > 1
+if Program.args.size == 3 && Program.args[0] == "--own"
+  print BenchSelfhostLowerTypesExercise.own_text(Program.args[1], Program.args[2])
+elsif Program.args.size > 1
   filename = Program.args[0]
   mode = Program.args.size > 2 ? Program.args[2] : "blocks"
   print BenchSelfhostLowerTypesExercise.run(File.read(filename), filename, Program.args[1], mode)

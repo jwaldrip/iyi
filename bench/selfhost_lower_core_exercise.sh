@@ -65,8 +65,10 @@ passed=0
 # Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed (the
 # port numbers String 31, the hosted module 1: the typer slice's LowerTypeIds numbering). They are waiting
 # by name, and the gate fails if one of them starts to match, so this list is kept honest.
-KNOWN_DIVERGED="lower_string lower_symbol"
+KNOWN_DIVERGED="lower_string lower_symbol lower_string_long"
 e2e=""
+module_same=0
+module_differ=0
 diverged=0
 waiting=0
 for fixture in "$REPO"/bench/fixtures/lower_*.iyi; do
@@ -96,11 +98,17 @@ for fixture in "$REPO"/bench/fixtures/lower_*.iyi; do
   summary="$(awk '/^SUMMARY/ { print }' "$WORK/$name.port.out")"
   identical="$(echo "$summary" | awk '{ split($2, a, "="); print a[2] }')"
   total="$(echo "$summary" | awk '{ split($3, a, "="); print a[2] }')"
+  module_ok="$(echo "$summary" | awk '{ split($4, a, "="); print a[2] }')"
+  if [ "$module_ok" = 1 ]; then
+    module_same=$((module_same + 1))
+  else
+    module_differ=$((module_differ + 1))
+  fi
   if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ]; then
     case " $KNOWN_DIVERGED " in
       *" $name "*) echo "    $name: now identical to the hosted module: remove it from KNOWN_DIVERGED"; diverged=$((diverged + 1)) ;;
     esac
-    echo "    $name: PASSED, $identical of $total identical (module-level and functions)"
+    echo "    $name: PASSED, $identical of $total functions identical (module-level counted below)"
     passed=$((passed + 1))
     e2e="$e2e $name"
   else
@@ -160,6 +168,19 @@ if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
   status=1
 fi
 
+module_floor_file="$REPO/bench/selfhost_lower_core_module.floor"
+module_floor="$(awk 'NR==1 { print $1 }' "$module_floor_file" 2>/dev/null)"
+module_floor="${module_floor:-0}"
+echo "  module-level: $module_same identical to the hosted module, $module_differ differ (type-id constants, NEEDS.md row 16)"
+if [ -n "${LOWER_MODULE_RAISE:-}" ] && [ "$module_same" -gt "$module_floor" ]; then
+  echo "$module_same" > "$module_floor_file"
+  module_floor="$module_same"
+  echo "  wrote the module-level floor: $module_same"
+fi
+if [ "$module_same" -lt "$module_floor" ]; then
+  echo "  FAIL: module-level identity fell below its floor ($module_same < $module_floor)"
+  status=1
+fi
 echo
 echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
@@ -178,6 +199,22 @@ lower_core_check() {
   done
   return 0
 }
+# The long-string name: a string constant longer than 18 bytes is named by its first 19 bytes and `...` (hosted
+# codegen.cr:3463). The fixture's module differs only in the String type id (NEEDS.md row 16), so the gate
+# compares the name in the port's own module text rather than the whole module.
+long_name_check() {
+  "$IYI" build -o "$WORK/port-n" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/n.build.log" 2>&1 || return 1
+  "$WORK/port-n" emit "$REPO/bench/fixtures/lower_string_long.iyi" "$WORK/lower_string_long.oracle.ll" > "$WORK/n.ll" 2>&1 || return 1
+  needle="a string constant l...'"
+  awk -v n="$needle" 'index($0, n) > 0 { ok = 1 } END { exit !ok }' "$WORK/n.ll"
+}
+echo "  the long string constant is named by its hosted truncated name:"
+if long_name_check; then
+  echo "    yes"
+else
+  echo "    NO: the long-string name differs from the hosted truncated name"
+  status=1
+fi
 echo "  the mutation check passes on the unmutated code:"
 if lower_core_check; then
   echo "    yes"
@@ -185,6 +222,8 @@ else
   echo "    NO: the mutation proofs below would prove nothing"
   status=1
 fi
+prove_mutation "a long string constant is named in full, not truncated" "$REPO/src/compiler/lower/helpers.iyi" \
+  'name_text = str[0, 19] + "..."' 'name_text = str' -- long_name_check || status=1
 prove_mutation "argv is stored from the argc parameter" "$REPO/src/compiler/lower/lower.iyi" \
   "store_aligned(low, fn.param(1), argv_global)" "store_aligned(low, fn.param(0), argv_global)" -- lower_core_check || status=1
 prove_mutation "main returns 1" "$REPO/src/compiler/lower/lower.iyi" \
@@ -209,6 +248,26 @@ prove_mutation "a char is its code point plus one" "$REPO/src/compiler/lower/low
   "node.value.ord.to_i64)" "node.value.ord.to_i64 + 1_i64)" -- lower_core_check || status=1
 prove_mutation "an empty alloca block is kept" "$REPO/src/compiler/lower/context.iyi" \
   "current_fun.blocks.delete(alloca)" "alloca.name" -- lower_core_check || status=1
+
+# The module-level count: how many CORE_CHECK_FIXTURES match the hosted module in every item, module-level included.
+# A patch that changes only module-level text lowers the count, and this check catches it.
+core_module_count() {
+  same=0
+  for n in $CORE_CHECK_FIXTURES; do
+    if "$1" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" > "$WORK/cmc.out" 2> "$WORK/cmc.err" && awk '/^SUMMARY/ { split($4, a, "="); exit !(a[2] == 1) }' "$WORK/cmc.out"; then
+      same=$((same + 1))
+    fi
+  done
+  echo "$same"
+}
+module_count_check() {
+  "$IYI" build -o "$WORK/port-mm" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/mm.build.log" 2>&1 || return 1
+  [ "$(core_module_count "$WORK/port-mm")" -ge "$module_baseline" ]
+}
+module_baseline="$(core_module_count "$WORK/port")"
+echo "  module-level baseline over the checked fixtures: $module_baseline"
+prove_mutation "the argc global is external, not internal (module-level text only)" "$REPO/src/compiler/lower/lower.iyi" \
+  "argc_global.linkage = Linkage::Internal" "argc_global.linkage = Linkage::External" -- module_count_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

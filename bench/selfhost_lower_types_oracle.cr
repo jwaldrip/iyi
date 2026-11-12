@@ -109,9 +109,12 @@ def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
     if mm
       io << "type_id: " << mm[1] << "\n"
       io << "type_range: " << mm[0] << " " << mm[1] << "\n"
+      meta = program.llvm_id.id_to_metaclass[mm[1]]?
+      io << "metaclass_id: " << (meta ? meta.to_s : "-") << "\n"
     else
       io << "type_id: -\n"
       io << "type_range: -\n"
+      io << "metaclass_id: -\n"
     end
   end
 end
@@ -234,6 +237,74 @@ def resolve(program : Iyi::Program, name : String) : Iyi::Type
   t
 end
 
+class Iyi::Compiler
+  # The entry file as a build reads it, with the closure of what it imports, in the same program
+  # (`parse` is private to the compiler, so this reaches it from inside the class).
+  def declarations_program(source : Iyi::Compiler::Source) : {Program, ASTNode}
+    self.prelude = "iyi/prelude"
+    program = new_program([source])
+    {program, parse(program, source)}
+  end
+end
+
+# Whether a declaration with these locations belongs to the entry file.
+def declared_in?(locations : Array(Iyi::Location)?, entry : String?) : Bool
+  return true unless entry
+  return false unless locations
+  locations.any? { |loc| File.expand_path(loc.filename.to_s) == entry }
+end
+
+# Every type the entry declares, nested types included: the hosted dump's rule.
+def own_collect(t : Iyi::Type, entry : String, found : Array(Iyi::Type)) : Nil
+  found << t if declared_in?(t.locations, entry) && !t.is_a?(Iyi::Const)
+  if t.is_a?(Iyi::NamedType) && !t.is_a?(Iyi::EnumType)
+    t.types.keys.sort.each do |sub|
+      own_collect(t.types[sub], entry, found)
+    end
+  end
+  nil
+end
+
+# Whole-program mode (`--own <file> <triple>`): the file and its import closure declared as a
+# build declares them (the declarations pass and the instance variable pass), then one block per
+# type the file declares. A type that fails to lower prints `== name` and an `ERROR:` line in place
+# of its block, so one unported type does not hide the rest.
+def own_text(path : String, triple : String) : String
+  entry = File.expand_path(path)
+  source = File.read(entry)
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(entry, source))
+  # The hosted build prepends the prelude's require to the parsed program (program.cr, `prelude`).
+  prelude_require = Iyi::Require.new("iyi/prelude")
+  prelude_require.iyi_prelude = true
+  prelude_require.at(Iyi::Location.new(entry, 1, 1))
+  node = Iyi::Expressions.new([prelude_require.as(Iyi::ASTNode), node.as(Iyi::ASTNode)] of Iyi::ASTNode)
+  program.top_level_semantic(node)
+  program.codegen_target = Iyi::Codegen::Target.new(triple)
+  typer = program.llvm_typer
+  types = [] of Iyi::Type
+  program.types.keys.sort.each do |name|
+    own_collect(program.types[name], entry, types)
+  end
+  String.build do |io|
+    types.each do |t|
+      name = t.is_a?(Iyi::NamedType) ? t.full_name : t.to_s
+      begin
+        io << block_text(name, program, typer, t)
+      rescue ex : Exception
+        io << "== " << name << "\nERROR: " << (ex.message.to_s.lines.first? || "") << "\n"
+      end
+    end
+  end
+end
+
+if ARGV[0]? == "--own"
+  own_path = ARGV[1]? || abort("usage: selfhost_lower_types_oracle --own <file.iyi> <target triple>")
+  own_triple = ARGV[2]? || abort("usage: selfhost_lower_types_oracle --own <file.iyi> <target triple>")
+  print own_text(own_path, own_triple)
+  exit 0
+end
+
 begin
   path = ARGV[0]? || abort("usage: selfhost_lower_types_oracle <fixture.iyi> <target triple>")
   triple = ARGV[1]? || abort("usage: selfhost_lower_types_oracle <fixture.iyi> <target triple>")
@@ -246,13 +317,19 @@ begin
   program.top_level_semantic(node)
   typer = program.llvm_typer
   mode = ARGV[2]? || "blocks"
+  # Every line is resolved before any block is printed, so the hosted LLVMId (created at its first
+  # use) numbers the instances the fixture names, as the port driver does.
+  pending = [] of {String, Iyi::Type}
   source.each_line do |line|
     next unless line.starts_with?("# type: ")
     expr = line[8..].strip
+    pending << {expr, resolve(program, expr)}
+  end
+  pending.each do |expr, type|
     if mode == "ids"
-      puts ids_block(expr, program, resolve(program, expr))
+      puts ids_block(expr, program, type)
     else
-      puts block_text(expr, program, typer, resolve(program, expr))
+      puts block_text(expr, program, typer, type)
     end
   end
 rescue ex : Exception

@@ -1,0 +1,185 @@
+module compiler/semantic/new
+
+# The generated `new` methods (the port of the hosted src/compiler/iyi/semantic/new.cr).
+#
+# An instance `initialize` makes a `self.new` on its metaclass with the same
+# arguments. The declarations pass adds it when it meets the initialize and records
+# the pair on SemanticProgram#new_expansions (TopLevelVisitor#visit(Def)). When the
+# main pass starts, define_new_methods fills each body with
+#
+#   _ = allocate
+#   _.initialize(args)
+#   GC.add_finalizer _ if _.responds_to? :finalize
+#   _
+#
+# A type with no initialize in its ancestry gets an argless `new` (`x = allocate`,
+# the finalizer, then `x`) and an argless `initialize`, so a subclass's `super`
+# finds one. A generic class allocates through its own type (`Box(T).allocate`), a
+# splat type variable written as a splat.
+#
+# The import direction is one way: this file imports top_level, and top_level never
+# imports it (iyi refuses the cycle). The main visitor calls define_new_methods.
+
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, DoubleSplat, Expressions, Generic, If, NamedArgument, Nop, Path, RespondsTo, Splat, Var, Visibility}
+import compiler/semantic/method_lookup::{MethodLookup}
+import compiler/semantic/top_level::{GenericClassType, NamedType, NonGenericClassType, SemanticProgram, Type}
+
+# `allocate` on the instance type of a generated `new`. A generic class names its
+# type with its type variables; a splat variable is written as a splat.
+pub def allocate_call(type_name : String, type_vars : Array(String)?, splat_index : Int32?) : Call
+  tvs = type_vars
+  if tvs.nil?
+    return Call.new(nil, "allocate")
+  end
+  args = [] of ASTNode
+  tvs.each_with_index do |tv, i|
+    arg : ASTNode = Path.new([tv] of String)
+    arg = Splat.new(arg) if splat_index == i
+    args << arg
+  end
+  Call.new(Generic.new(Path.new([type_name] of String), args), "allocate")
+end
+
+# The body of a generated `new` (the hosted fill_body_from_initialize): allocate,
+# call initialize with the arguments, add the finalizer, and yield the object. The
+# arguments after a splat go to initialize by name.
+pub def fill_body_from_initialize(new_def : Def, type_name : String, type_vars : Array(String)?, type_splat_index : Int32?) : Nil
+  alloc = allocate_call(type_name, type_vars, type_splat_index)
+  splat_index = new_def.splat_index
+  new_vars = [] of ASTNode
+  named_args : Array(NamedArgument)? = nil
+
+  new_def.args.each_with_index do |arg, idx|
+    # A bare splat (`*`) has no name and passes nothing.
+    next if arg.name.empty?
+
+    if (si = splat_index) && idx > si
+      na = named_args
+      if na.nil?
+        na = [] of NamedArgument
+        named_args = na
+      end
+      na << NamedArgument.new(arg.external_name, Var.new(arg.name))
+    else
+      passed : ASTNode = Var.new(arg.name)
+      passed = Splat.new(passed) if splat_index == idx
+      new_vars << passed
+    end
+  end
+
+  if ds = new_def.double_splat
+    new_vars << DoubleSplat.new(Var.new(ds.name))
+  end
+
+  init = Call.new(Var.new("_"), "initialize", new_vars)
+  init.named_args = named_args
+  if ba = new_def.block_arg
+    init.block_arg = Var.new(ba.name)
+  end
+
+  exps = [] of ASTNode
+  exps << Assign.new(Var.new("_"), alloc)
+  exps << init
+  exps << If.new(RespondsTo.new(Var.new("_"), "finalize"), Call.new(Path.global("GC"), "add_finalizer", [Var.new("_")] of ASTNode))
+  exps << Var.new("_")
+  new_def.body = Expressions.new(exps)
+  nil
+end
+
+# An argless `new` for a type with no initialize in its ancestry (the hosted
+# Def.argless_new): `x = allocate`, the finalizer, then `x`.
+pub def argless_new(location : Location?) : Def
+  exps = [] of ASTNode
+  exps << Assign.new(Var.new("x"), Call.new(nil, "allocate"))
+  exps << If.new(RespondsTo.new(Var.new("x"), "finalize"), Call.new(Path.global("GC"), "add_finalizer", [Var.new("x")] of ASTNode))
+  exps << Var.new("x")
+  a_def = Def.new("new", [] of Arg, Expressions.new(exps))
+  a_def.location = location
+  a_def.visibility = Visibility::Public
+  a_def
+end
+
+# The argless `initialize` a type gets with its argless `new`, so `super` in a
+# subclass's initialize has a target (the hosted Def.argless_initialize).
+pub def argless_initialize(location : Location?) : Def
+  init = Def.new("initialize", [] of Arg, Nop.new)
+  init.location = location
+  init.visibility = Visibility::Public
+  init
+end
+
+# The types the hosted pass never gives a `new` (Object, Value, Number, Int, Float,
+# Struct, Enum, Tuple, Proc): a builtin has its own construction.
+pub def builtin_for_new?(program : SemanticProgram, type : Type) : Bool
+  return true if type == program.object_type
+  return true if type == program.value_type
+  return true if type == program.struct_type
+  return true if type == program.enum_type
+  return true if type == program.tuple_type
+  return true if type == program.proc_type
+  ["Number", "Int", "Float"].any? do |name|
+    other = program.types[name]?
+    other.nil? ? false : type == other.as(Type)
+  end
+end
+
+# The default `new` for one non-generic class with no initialize in its ancestry. A
+# class whose ancestry has an initialize takes that one through the lookup walk, so
+# nothing is added. A generic class is handled by its own expansion (see
+# define_new_methods) and not given a default here.
+pub def define_default_new_single(program : SemanticProgram, type : NonGenericClassType) : Nil
+  return if builtin_for_new?(program, type)
+  inits = MethodLookup.all_defs(type, "initialize", [] of Def)
+  news = MethodLookup.all_defs(type.metaclass, "new", [] of Def)
+  if inits.empty? && news.empty?
+    loc : Location? = nil
+    if locs = type.locations
+      loc = locs[0] if locs.size > 0
+    end
+    type.metaclass.add_def(argless_new(loc))
+    type.add_def(argless_initialize(loc))
+  end
+  nil
+end
+
+# The default `new` for every class in a namespace and in its nested namespaces.
+pub def define_default_new(program : SemanticProgram, namespace : NamedType) : Nil
+  namespace.types.each_value do |sub|
+    if sub.is_a?(NonGenericClassType)
+      define_default_new_single(program, sub.as(NonGenericClassType))
+    end
+    if sub.is_a?(NamedType)
+      define_default_new(program, sub.as(NamedType))
+    end
+  end
+  nil
+end
+
+# Completes the generated `new` methods (the hosted define_new_methods): fills each
+# recorded expansion's body, adds the default `new` where no initialize is in the
+# ancestry, then makes each explicit initialize protected unless it had a visibility.
+# The expansions are consumed, so a later call only does the default-new check again,
+# which adds nothing a class already has.
+pub def define_new_methods(program : SemanticProgram) : Nil
+  expansions = program.new_expansions
+  expansions.each do |ex|
+    owner = ex.owner
+    if owner.is_a?(GenericClassType)
+      generic = owner.as(GenericClassType)
+      fill_body_from_initialize(ex.expanded, generic.name, generic.type_vars, generic.splat_index)
+    else
+      fill_body_from_initialize(ex.expanded, owner.name, nil, nil)
+    end
+  end
+
+  define_default_new(program, program)
+
+  expansions.each do |ex|
+    if ex.original.visibility == Visibility::Public
+      ex.original.visibility = Visibility::Protected
+    end
+  end
+  expansions.clear
+  nil
+end

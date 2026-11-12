@@ -438,7 +438,7 @@ prove_mutation "generated new is private instead of public" "$MUT_SEM" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "generated new drops the initialize arguments" "$MUT_SEM" \
-  "new_def = Def.new(\"new\", node.args.dup, Nop.new)" \
+  "new_def = Def.new(\"new\", node.args.map { |a| a.clone.as(Arg) }, Nop.new)" \
   "new_def = Def.new(\"new\", [] of Arg, Nop.new)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))

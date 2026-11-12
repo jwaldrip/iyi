@@ -47,8 +47,8 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
-    lowprim_checked) echo "__crystal_raise_overflow is a fun with a body: the analysis types no FunDef and visit(FunDef) is refused (NEEDS.md row 25)" ;;
-    lowprim_ptr) echo "the analysis types no node for Pointer(Int32), so Pointer(Int32).malloc is refused before the primitive (NEEDS.md row 2); the Pointer primitives are increment 2" ;;
+    lowprim_checked) echo "the analysis types the fun with a body now, and the lowering refuses visit(FunDef) (pending.iyi): the core's FunDef lowering, NEEDS.md row 25" ;;
+    lowprim_ptr) echo "the generic metaclass resolves its receiver now (S1c, 17bc4d2f8), but the bare analysis declares no Pointer primitives, so Pointer(Int32).malloc is undefined: the hosted oracle needs the prelude, and the bare dump has none (NEEDS.md row 19; the Pointer primitives are increment 2)" ;;
   esac
 }
 for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
