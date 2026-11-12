@@ -25,7 +25,8 @@ module compiler/lower/program
 
 import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral}
 import compiler/semantic/top_level::{LibType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
-import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
+import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/loader::{ModuleInfo}
@@ -33,7 +34,7 @@ import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
-import compiler/lower/lower::{codegen_program}
+import compiler/lower/lower::{codegen_program, lower_def_probe}
 import compiler/native/driver::{compile_module}
 import compiler/native/obj/object::{ObjectFile}
 import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
@@ -234,10 +235,206 @@ end
 # rule names is "unassigned", so it shows in the table rather than hiding under another owner.
 pub def typed_owner(reason : String) : String
   return "macros" if reason.includes?("macro control")
-  return "calls" if reason.includes?("undefined method") || reason.includes?("cannot resolve the call")
-  return "declarations" if reason.includes?("undefined constant")
-  return "bodies" if reason.includes?("no type") || reason.includes?("undefined local variable")
+  return "calls" if reason.includes?("undefined method") || reason.includes?("cannot resolve the call") || reason.includes?("expected argument") || reason.includes?("no target def")
+  return "declarations" if reason.includes?("undefined constant") || reason.includes?("without a declared return type")
+  return "bodies" if reason.includes?("no type") || reason.includes?("cannot be typed") || reason.includes?("undefined local variable") || reason.includes?("pointerof")
   return "lowering core" if reason.includes?("is not ported")
-  return "lowering" if reason.includes?("port limitation")
+  return "lowering" if reason.includes?("port limitation") || reason.includes?("string constant")
   "unassigned"
+end
+
+# Collects the id of every node under the tree it visits: the visitor hook runs on each node.
+pub class NodeIds < Visitor
+  getter ids : Hash(UInt64, Bool)
+
+  def initialize
+    @ids = Hash(UInt64, Bool).new
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    @ids[node.node_id] = true
+    true
+  end
+end
+
+# The first line of a refusal's reason, so one table row stays on one line.
+def first_line(text : String) : String
+  i = 0
+  while i < text.size
+    return text[0, i] if text[i] == '\n'
+    i = i + 1
+  end
+  text
+end
+
+# The index of a reason in the list, or -1.
+def reason_index(reasons : Array(String), reason : String) : Int32
+  i = 0
+  while i < reasons.size
+    return i if reasons[i] == reason
+    i = i + 1
+  end
+  -1
+end
+
+# Where a refusal is, for one table row: its file and line, and the def that holds it.
+def refusal_example(r : Refusal) : String
+  where = "no location"
+  if f = r.file
+    where = "#{f}:#{r.line}"
+  end
+  def_label = "top level"
+  if d = r.def_name
+    def_label = d
+  end
+  "#{where} in #{def_label}"
+end
+
+# One table row per reason, largest count first: `table: <root> <phase> <count> owner=<slice> reason=<reason> example=<where>`.
+def ranked_rows(root : String, phase : String, reasons : Array(String), counts : Array(Int32), examples : Array(String)) : Array(String)
+  rows = [] of String
+  taken = [] of Bool
+  n = 0
+  while n < reasons.size
+    taken << false
+    n += 1
+  end
+  k = 0
+  while k < reasons.size
+    best = -1
+    j = 0
+    while j < reasons.size
+      if !taken[j] && (best < 0 || counts[j] > counts[best])
+        best = j
+      end
+      j += 1
+    end
+    taken[best] = true
+    reason = reasons[best]
+    rows << "table: #{root} #{phase} #{counts[best]} owner=#{typed_owner(reason)} reason=#{reason} example=#{examples[best]}"
+    k += 1
+  end
+  rows
+end
+
+# The refusal table of a program the body typer ran over in total mode (PIPELINE.md): a summary line, then the body
+# refusals ranked by reason, largest first, each with its owner and one example. A refusal is counted once per node and
+# reason, however many instantiations of its def reached it. A def is clean when no refusal node lies under it.
+pub def refusal_table(typed : TypedProgram, root : String) : Array(String)
+  lines = [] of String
+  visitor = typed.visitor
+  seen = Hash(UInt64, Bool).new
+  defs = [] of Def
+  visitor.typed_instances.each do |inst|
+    d = inst.definition
+    unless seen.has_key?(d.node_id)
+      seen[d.node_id] = true
+      defs << d
+    end
+  end
+  refusals = visitor.refusals
+  sites = Hash(String, Bool).new
+  reasons = [] of String
+  counts = [] of Int32
+  examples = [] of String
+  root_refusals = 0
+  refusals.each do |r|
+    key = "#{r.node.node_id}|#{r.reason}"
+    unless sites.has_key?(key)
+      sites[key] = true
+      root_refusals += 1 if r.def_name.nil?
+      reason = first_line(r.reason)
+      i = reason_index(reasons, reason)
+      if i < 0
+        reasons << reason
+        counts << 1
+        examples << refusal_example(r)
+      else
+        counts[i] = counts[i] + 1
+      end
+    end
+  end
+  clean = 0
+  defs.each do |d|
+    ids = NodeIds.new
+    d.accept(ids)
+    hit = false
+    refusals.each do |r|
+      hit = true if ids.ids.has_key?(r.node.node_id)
+    end
+    clean += 1 unless hit
+  end
+  lines << "table: #{root} defs-reached=#{defs.size} defs-typed-clean=#{clean} root-refusals=#{root_refusals} refusal-sites=#{sites.size}"
+  ranked_rows(root, "refusal", reasons, counts, examples).each { |line| lines << line }
+  lines
+end
+
+# The lowering column of the table (PIPELINE.md): every reached def's instance lowered alone into one module, the way the
+# lowering reaches it (lower_def_probe). A def is lowered clean when each of its instances lowers with no refusal. A
+# lowering refusal names its def, not a node: the lowering carries no location yet.
+pub def lowering_table(typed : TypedProgram, triple : String, root : String) : Array(String)
+  made = Module.for_target(root, Target.new(triple))
+  if made.is_a?(LayoutError)
+    return ["table: #{root} defs-lowered-clean=not-measured (#{made.as(LayoutError).to_s})"]
+  end
+  m = made.as(Module)
+  typer = LowerTyper.new(m.types, m.layout, true)
+  bad = Hash(UInt64, Bool).new
+  sites = Hash(String, Bool).new
+  reasons = [] of String
+  counts = [] of Int32
+  examples = [] of String
+  typed.visitor.typed_instances.each do |inst|
+    d = inst.definition
+    outcome = group do |g|
+      task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m) }
+      task.value
+    end
+    failed = false
+    message = ""
+    if outcome.is_a?(Panicked)
+      failed = true
+      message = outcome.as(Panicked).message
+    elsif !outcome.nil?
+      failed = true
+      message = outcome.as(String)
+    end
+    if failed
+      bad[d.node_id] = true
+      reason = first_line(message)
+      key = "#{d.node_id}|#{reason}"
+      unless sites.has_key?(key)
+        sites[key] = true
+        i = reason_index(reasons, reason)
+        if i < 0
+          reasons << reason
+          counts << 1
+          examples << lowering_example(d, inst.self_type)
+        else
+          counts[i] = counts[i] + 1
+        end
+      end
+    end
+  end
+  checked = Hash(UInt64, Bool).new
+  clean = 0
+  typed.visitor.typed_instances.each do |inst|
+    id = inst.definition.node_id
+    unless checked.has_key?(id)
+      checked[id] = true
+      clean += 1 unless bad.has_key?(id)
+    end
+  end
+  lines = [] of String
+  lines << "table: #{root} defs-lowered-clean=#{clean} lowering-refusal-sites=#{sites.size}"
+  ranked_rows(root, "lowering", reasons, counts, examples).each { |line| lines << line }
+  lines
+end
+
+# Where a lowering refusal is, for one table row: its def, with the receiver type it was lowered for.
+def lowering_example(d : Def, t : Type?) : String
+  if st = t
+    return "#{st.full_name}##{d.name}"
+  end
+  d.name
 end

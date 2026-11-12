@@ -146,6 +146,18 @@ prove_mutation "uninitialized local is recorded as Nil" "$TYPE_NODES" \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "fun argument is typed from nothing, not the declared record" "$TYPE_NODES" \
+  "vars[node.args[i].name] = arg_types[i]" \
+  "vars[node.args[i].name] = visitor.program.nil_type" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "enum members are not walked before the enum is typed" "$TYPE_NODES" \
+  "    member.accept(visitor)" \
+  "    member.to_s" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

@@ -265,6 +265,12 @@ end
 pub class GenericClassInstanceMetaclassType < MetaclassType
   def initialize(program : SemanticProgram, instance_type : GenericClassInstanceType)
     super(program, instance_type.namespace, "#{instance_type.name}:Class", instance_type)
+    # The hosted rule: an instance's metaclass is the generic type's metaclass, so the
+    # generated `new` methods the generic class has (new.iyi) are found on Box(Int32).class,
+    # and that metaclass walks on to the generic's superclass. MetaclassType gave it Class,
+    # since a generic instance is not a ClassType.
+    parents.clear
+    parents << instance_type.generic_type.as(ModuleType).metaclass
   end
 
   def generic_instance_type : GenericClassInstanceType
