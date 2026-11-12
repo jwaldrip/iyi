@@ -1,6 +1,7 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dump_program_declarations, dir_of, normalize_path}
+import compiler/syntax/ast::{ASTNode, Def, Expressions, ModuleHeader}
+import compiler/foundation/location::{Location}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, NamedType, EnumType, dump_def, dump_program_declarations, dump_tree_declared, dir_of, normalize_path}
 import compiler/semantic/inline_macros::{InlineMacroLedger}
 import compiler/macros/site_scan::{MacroSiteScan}
 import compiler/macros/methods::{MacroMethods}
@@ -14,12 +15,14 @@ import compiler/macros/methods::{MacroMethods}
 # The first form loads the file through the port's top-level pass, with the prelude
 # first (as the oracle does, so a prelude type the file names is declared) and the
 # closure of what the file imports and requires, and prints the declarations the
-# file makes, in the form the oracle prints. The second loads the same way and prints
-# how the file's own inline macro sites went: each site the pass visited with its
-# outcome and, when refused, the reason, then the counts. The third prints every
-# macro site of the file's own source, as the scan finds it in the file as parsed
-# (top level and type bodies, not def bodies), as `site <context> <kind>`. The search
-# path is IYI_PATH.
+# file makes, in the form the oracle prints: the trunk's dump of the user types, the
+# built-in types the file declares (a reopen), then each type the file does not
+# declare with the defs it declares on it, as `(reopened)` records. The second loads
+# the same way and prints how the file's own inline macro sites went: each site the
+# pass visited with its outcome and, when refused, the reason, then the counts. The
+# third prints every macro site of the file's own source, as the scan finds it (top
+# level and type bodies, not def bodies), as `site <context> <kind>`. The search path
+# is IYI_PATH.
 module BenchSelfhostInlineMacrosExercise
   def self.search_path : Array(String)
     text = ENV["IYI_PATH"]? || ""
@@ -50,6 +53,12 @@ module BenchSelfhostInlineMacrosExercise
     normalize_path(absolute)
   end
 
+  # Whether any of a declaration's locations is in the entry file.
+  def self.located_in?(locations : Array(Location)?, entry : String) : Bool
+    return false unless locations
+    locations.any? { |loc| loc.filename == entry }
+  end
+
   # Loads a file and its closure into a fresh program, the prelude first. Returns the
   # program and the entry. The entry is declared once: a prelude closure that already
   # holds it is not visited again.
@@ -74,9 +83,58 @@ module BenchSelfhostInlineMacrosExercise
     {prog, entry}
   end
 
+  # The defs a module type holds, its own and its metaclass's (`allocate` aside, and an
+  # enum's `new`), that the entry declares.
+  def self.entry_defs(mod : ModuleType, entry : String) : Array(Def)
+    all_defs = [] of Def
+    mod.defs.each_value do |list|
+      list.each { |d| all_defs << d }
+    end
+    if meta = mod.metaclass?
+      meta.defs.each_value do |list|
+        list.each do |d|
+          next if d.name == "allocate"
+          next if d.name == "new" && mod.is_a?(EnumType)
+          all_defs << d
+        end
+      end
+    end
+    all_defs.select { |d| located_in?([d.location].compact, entry) }
+  end
+
+  # A type the entry does not declare, with the defs the entry declares on it: one
+  # record, `(reopened)`, then each def. Walks every nested type.
+  def self.dump_reopened(t : Type, sb : String::Builder, entry : String) : Nil
+    if t.is_a?(ModuleType) && !located_in?(t.locations, entry)
+      picked = entry_defs(t.as(ModuleType), entry)
+      unless picked.empty?
+        sb << "Type: " << t.full_name << " (reopened)\n"
+        picked.sorted_by { |d| "#{d.receiver ? "self." : ""}#{d.name}" }.each do |d|
+          dump_def(d, sb, "  ")
+        end
+      end
+    end
+    if t.is_a?(NamedType) && !t.is_a?(EnumType)
+      nt = t.as(NamedType)
+      nt.types.keys.sorted.each do |sname|
+        dump_reopened(nt.types[sname], sb, entry)
+      end
+    end
+  end
+
   def self.dump_file(path : String) : String
     prog, entry = load_program(path)
-    dump_program_declarations(prog, entry)
+    sb = String::Builder.new
+    sb << dump_program_declarations(prog, entry)
+    prog.types.keys.sorted.each do |name|
+      if prog.initial_type_names.includes?(name)
+        dump_tree_declared(prog.types[name], sb, "", entry)
+      end
+    end
+    prog.types.keys.sorted.each do |name|
+      dump_reopened(prog.types[name], sb, entry)
+    end
+    sb.to_s
   end
 
   # The file's own inline macro sites after a load, in visiting order, then the counts.

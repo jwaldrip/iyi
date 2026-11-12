@@ -318,8 +318,8 @@ prove_mutation "an empty expansion is kept and a non-empty one dropped" "$MUT_IN
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "the expansion is parsed with no file, so its declarations are not the file's" "$MUT_INL" \
-  "parsed = Parser.new(text, filename).parse" \
-  "parsed = Parser.new(text, \"\").parse" \
+  "parser = Parser.new(text, filename)" \
+  "parser = Parser.new(text, \"\")" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -332,6 +332,18 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation_all "no inline macro site (if, for or expression) is ever declared" "$MUT_SEM" \
   "expanded.accept(self)" \
   "expanded.is_a?(ASTNode)" \
+  -- check_inline_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a required file finishes its pending ivars at once, before a later file declares them" "$MUT_SEM" \
+  "inner.exp_nest = 1" \
+  "inner.exp_nest = 0" \
+  -- check_inline_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a site inside a lib body is parsed as an ordinary body" "$MUT_INL" \
+  "parsed = in_lib ? parser.parse_lib_body : parser.parse" \
+  "parsed = parser.parse" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

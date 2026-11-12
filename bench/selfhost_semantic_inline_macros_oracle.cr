@@ -3,17 +3,22 @@
 #   selfhost_semantic_inline_macros_oracle <file.iyi>
 #
 # The same analysis and dump form as bench/selfhost_semantic_declarations_oracle.cr
-# (the compile's own front end, bare, with the closure of what the file imports and
-# requires), with one difference. A declaration belongs to the file when its
-# location is the file, and also when it was written by an inline macro the file
-# holds: a macro's expansion is read from a virtual file, and the location of what it
-# declares leads back, through the virtual file, to the site in the file. The
-# declarations gate's oracle drops those, so it cannot measure what the top-level
-# pass declares from a `{% for %}` or `{% if %}`. This oracle keeps them.
+# (the compile's own front end, bare, with the prelude and the closure of what the
+# file imports and requires), with two differences that this gate needs.
+#
+# A declaration belongs to the file when its location is the file, and also when it
+# was written by an inline macro the file holds: a macro's expansion is read from a
+# virtual file, and the location of what it declares leads back, through the virtual
+# file, to the site in the file. The declarations gate's oracle drops those.
+#
+# A def the file declares on a type it does not declare (a prelude type reopened by a
+# macro loop, `Int32#zero` from `number.iyi`) is printed under a record of its own,
+# `Type: Int32 (reopened)`, with the defs the file declares on it. The declarations
+# gate's dump prints a def only under a type header, so it cannot see these.
 require "compiler/requires"
 
 class Iyi::Compiler
-  # iyi: the entry file as a build reads it, bare, in iyi's library.
+  # iyi: the entry file as a build reads it, in iyi's library, with the prelude.
   def declarations_program(source : Iyi::Compiler::Source) : {Program, ASTNode}
     self.prelude = "iyi/prelude"
     program = new_program([source])
@@ -70,6 +75,23 @@ def dump_def(d : Iyi::Def, io : IO, indent : String)
   io << indent << "  return_type: " << ret_str << "\n"
 end
 
+# Every def a module type holds, its own and its metaclass's (`allocate` aside), that
+# the entry declares.
+def entry_defs(t : Iyi::ModuleType, entry : String?) : Array(Iyi::Def)
+  all_defs = [] of Iyi::Def
+  t.defs.try &.each_value { |list| list.each { |item| all_defs << item.def } }
+  if (meta = t.metaclass) && meta.is_a?(Iyi::ModuleType) && !meta.same?(t)
+    meta.defs.try &.each_value do |list|
+      list.each do |item|
+        next if item.def.name == "allocate"
+        next if item.def.name == "new" && t.is_a?(Iyi::EnumType)
+        all_defs << item.def
+      end
+    end
+  end
+  all_defs.select { |d| def_declared?(d, entry) }
+end
+
 def dump_type(t : Iyi::Type, io : IO, indent : String, entry : String?)
   full_name = t.is_a?(Iyi::NamedType) ? t.full_name : t.to_s
   if declared_in?(t.locations, entry)
@@ -80,6 +102,26 @@ def dump_type(t : Iyi::Type, io : IO, indent : String, entry : String?)
     t.types.keys.sort.each do |subname|
       sub = t.types[subname]
       dump_type(sub, io, "#{indent}  ", entry)
+    end
+  end
+end
+
+# A type the entry does not declare, with the defs the entry declares on it: one
+# record, `(reopened)`, then each def. Walks every nested type.
+def dump_reopened(t : Iyi::Type, io : IO, entry : String?)
+  if t.is_a?(Iyi::ModuleType) && !declared_in?(t.locations, entry)
+    picked = entry_defs(t, entry)
+    unless picked.empty?
+      io << "Type: " << t.full_name << " (reopened)\n"
+      picked.sort_by { |d| "#{d.receiver ? "self." : ""}#{d.name}" }.each do |d|
+        dump_def(d, io, "  ")
+      end
+    end
+  end
+
+  if t.is_a?(Iyi::NamedType) && !t.is_a?(Iyi::EnumType)
+    t.types.keys.sort.each do |subname|
+      dump_reopened(t.types[subname], io, entry)
     end
   end
 end
@@ -142,18 +184,7 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
   end
 
   if t.is_a?(Iyi::ModuleType)
-    all_defs = [] of Iyi::Def
-    t.defs.try &.each_value { |list| list.each { |item| all_defs << item.def } }
-    if (meta = t.metaclass) && meta.is_a?(Iyi::ModuleType) && !meta.same?(t)
-      meta.defs.try &.each_value do |list|
-        list.each do |item|
-          next if item.def.name == "allocate"
-          next if item.def.name == "new" && t.is_a?(Iyi::EnumType)
-          all_defs << item.def
-        end
-      end
-    end
-    all_defs = all_defs.select { |d| def_declared?(d, entry) }
+    all_defs = entry_defs(t, entry)
     all_defs.sort_by! { |d| "#{d.receiver ? "self." : ""}#{d.name}" }
     all_defs.each do |d|
       dump_def(d, io, "#{indent}  ")
@@ -180,6 +211,28 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
   user_types.keys.sort.each do |name|
     dump_type(user_types[name], io, "", entry)
   end
+
+  # The built-in types the entry declares (a reopen), dumped as declared types.
+  program.types.keys.sort.each do |name|
+    dump_type(program.types[name], io, "", entry) if initial_types.includes?(name)
+  end
+
+  # Every type, built-in ones included, for the defs the entry adds to a type it does not declare.
+  program.types.keys.sort.each do |name|
+    dump_reopened(program.types[name], io, entry)
+  end
+end
+
+# `--initial` dumps the program's own built-in types (every name a new program
+# holds before any file is read), which the gate compares with the port's.
+if ARGV[0]? == "--initial"
+  buffer = IO::Memory.new
+  initial = Iyi::Program.new
+  initial.types.keys.sort.each do |name|
+    dump_type(initial.types[name], buffer, "", nil)
+  end
+  print buffer.to_s
+  exit 0
 end
 
 path = ARGV[0]? || abort("usage: selfhost_semantic_inline_macros_oracle <file.iyi>")
