@@ -1,0 +1,13 @@
+# A top-level fun with a body whose statements declare a local, then read it through a macro site.
+# The fun body is spliced in place (type_nodes.iyi visit_fun_def), and the site's expansion is parsed
+# knowing `callstack`, which the earlier statement declares (inline_macros.iyi). Without either, the
+# site is refused: `pointerof` of a name the parser reads as a call. This is the shape type nodes
+# reported as mac1.iyi.
+@[Unsafe("a C function is not checked by the compiler")]
+fun probe_locals(argc : Int32) : Int32
+  callstack = uninitialized Int32
+  {% if true %}
+    p = pointerof(callstack)
+  {% end %}
+  argc
+end

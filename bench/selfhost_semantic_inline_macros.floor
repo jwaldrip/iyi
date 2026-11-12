@@ -116,7 +116,7 @@ src/compiler/platform/linker.iyi 14
 src/compiler/platform/target.iyi 42
 src/compiler/semantic/call_nodes.iyi 4
 src/compiler/semantic/cleanup.iyi 7
-src/compiler/semantic/default_arguments.iyi 7
+src/compiler/semantic/default_arguments.iyi 14
 src/compiler/semantic/inline_macros.iyi 0
 src/compiler/semantic/instance_vars.iyi 0
 src/compiler/semantic/literal_expander.iyi 0
@@ -218,7 +218,7 @@ src/std/enum.iyi 19
 src/std/enumerable.iyi 0
 src/std/env.iyi 40
 src/std/errno.iyi 38
-src/std/file.iyi 170
+src/std/file.iyi 171
 src/std/file_utils.iyi 20
 src/std/fileserver.iyi 0
 src/std/float.iyi 15

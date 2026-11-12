@@ -320,8 +320,8 @@ prove_mutation "an empty expansion is kept and a non-empty one dropped" "$MUT_IN
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "the expansion is parsed with no file, so its declarations are not the file's" "$MUT_INL" \
-  "parser = Parser.new(text, filename)" \
-  "parser = Parser.new(text, \"\")" \
+  "parser = Parser.new(text, filename, nil, scopes)" \
+  "parser = Parser.new(text, \"\", nil, scopes)" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -425,6 +425,7 @@ REFUSAL_FLOOR="$REPO/bench/selfhost_inline_refusals.floor"
 MUT_INL="$REPO/src/compiler/semantic/inline_macros.iyi"
 MUT_TOP="$REPO/src/compiler/semantic/top_level.iyi"
 MUT_MAIN="$REPO/src/compiler/semantic/main_visitor.iyi"
+MUT_TYPE="$REPO/src/compiler/semantic/type_nodes.iyi"
 
 check_refusals() {
   local tool="$1" fail=0 root ceiling tag log refusals
@@ -483,6 +484,18 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a constant whose value is one macro node is typed unexpanded, so the typer refuses its macro node" "$MUT_MAIN" \
   "spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType))" \
   "spliced = Expressions.new([value] of ASTNode)" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# A fun body is spliced in place (type_nodes.iyi visit_fun_def): its macro sites are expanded, not refused by the typer.
+prove_mutation "a fun body's macro sites are not spliced, so the typer refuses them" "$MUT_TYPE" \
+  "body = splice_fun_body(node, visitor.program.full_name)" \
+  "body = node.body" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# A site's expansion is parsed knowing the names the body declared before it (inline_macros.iyi, the parser's var scope).
+prove_mutation "a site's expansion is parsed with no names declared before it, so a later local reads as a call" "$MUT_INL" \
+  "parser = Parser.new(text, filename, nil, scopes)" \
+  "parser = Parser.new(text, filename)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"

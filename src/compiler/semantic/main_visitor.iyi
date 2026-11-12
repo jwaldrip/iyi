@@ -1058,15 +1058,27 @@ pub class MainVisitor < TypeNodeHost
     ""
   end
 
+  # The names a def's arguments declare: the locals its body sees before the first statement (inline_macros.iyi).
+  def def_inline_locals : Array(String)
+    names = [] of String
+    if cd = @current_def
+      cd.args.each { |arg| names << arg.name }
+      if ba = cd.block_arg
+        names << ba.name
+      end
+    end
+    names
+  end
+
   def splice_def_inline_sites(node : Expressions) : Nil
     return nil if @current_def.nil?
-    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false)
+    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals)
     nil
   end
 
   def splice_def_body(node : ASTNode) : ASTNode
     return node if @current_def.nil?
-    splice_body_node(node, def_inline_scope_name, def_inline_file, false)
+    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals)
   end
 
   # An inline macro site that is the whole value of a constant (`CHANNEL_WAIT = {% if ... %}512{% else %}2048{% end %}`)
