@@ -36,8 +36,8 @@ echo "  driver built"
 # Fixtures waiting on another slice, by name (the reason is printed with the result).
 waiting_on() {
   case "$1" in
-    lowcast_nilable) echo "the analysis gives x the type of its last assignment, not Int32 | Nil (main_visitor.iyi:217, S1d2Bodies); cast.iyi's store is ready" ;;
-    lowcast_mixed) echo "the analysis gives x the type of its last assignment, not Int32 | Bool (main_visitor.iyi:217, S1d2Bodies); cast.iyi's store is ready" ;;
+    lowcast_nilable) echo "the analysis now gives the union of x's assignments in def_var_unions (S1d2Bodies, ebfa213ad); the lowering must read it for the alloca and the assign (core codegen_assign hook, S2a3Core); cast.iyi's store is ready" ;;
+    lowcast_mixed) echo "the analysis now gives the union of x's assignments in def_var_unions (S1d2Bodies, ebfa213ad); the lowering must read it for the alloca and the assign (core codegen_assign hook, S2a3Core); cast.iyi's store is ready" ;;
     lowcast_if) echo "the if join of a union-typed branch (core codegen_if, pointer phi; cast.iyi union_temp is ready)" ;;
   esac
 }
