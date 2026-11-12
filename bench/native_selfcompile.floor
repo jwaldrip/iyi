@@ -157,3 +157,5 @@ src/compiler/lower/type_id.iyi parse
 src/compiler/lower/typer.iyi parse
 src/compiler/lower/unions.iyi semantic
 src/compiler/lower/cast.iyi parse
+src/compiler/lower/const.iyi parse
+src/compiler/lower/globals.iyi parse

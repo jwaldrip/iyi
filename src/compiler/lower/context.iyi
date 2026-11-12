@@ -28,6 +28,7 @@ import compiler/lower/typer::{LowerTyper}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{Type}
 import compiler/lower/type_id::{LowerTypeIds}
+import compiler/lower/globals::{LowerGlobals}
 
 # The visitor of a node, which the calls and the functions call back into when they
 # emit an argument or a body. The core's dispatch (lower.iyi) implements it, so the
@@ -108,6 +109,8 @@ pub class Lowerer
   property string_type_id : Int32
   # The type ids of the program (the hosted `llvm_id`), numbered by codegen_program before any function is lowered.
   property type_ids : LowerTypeIds
+  # The hosted per-constant state (read flag, no-init flag, initialised value): see globals.iyi.
+  property globals : LowerGlobals
 
   def initialize(@module : Module, @typer : LowerTyper, @analysed : MainVisitor)
     @builder = Builder.new(@module)
@@ -125,6 +128,7 @@ pub class Lowerer
     @symbol_names = [] of String
     @string_type_id = 0
     @type_ids = LowerTypeIds.new
+    @globals = LowerGlobals.new
   end
 
   # The function being lowered (the hosted `context`). Raises when none is.
