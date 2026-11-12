@@ -12,6 +12,10 @@ alias Chain = Id
 alias Pets = Dog | Cat
 alias Named = Animal
 
+lib LibC
+  type Handle = Int32
+end
+
 # op Id.remove_alias
 # op Chain.remove_alias
 # op Pets.remove_alias
@@ -32,6 +36,6 @@ alias Named = Animal
 # op intersect(Pets, Dog)
 # op filter(Id, is_a, Int32)
 # op filter(Named, is_a, Dog)
-# waiting typedef: LibC::Handle.remove_typedef
-# waiting typedef: merge(LibC::Handle, Int32)
-# waiting typedef: intersect(LibC::Handle, Int32)
+# op LibC::Handle.remove_typedef
+# op merge(LibC::Handle, Int32)
+# op intersect(LibC::Handle, Int32)

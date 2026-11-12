@@ -2,7 +2,7 @@ module compiler/semantic/top_level
 
 import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
-import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -122,6 +122,11 @@ pub abstract class Type
 
   def public? : Bool
     @visibility == Visibility::Public
+  end
+
+  # The type with every typedef removed. Only a typedef changes it.
+  def remove_typedef : Type
+    self
   end
 
   def union? : Bool
@@ -667,6 +672,12 @@ pub class AliasType < NamedType
     true
   end
 
+  # The hosted `simple` flag is cleared only for an alias that names no type. Every
+  # alias the port models names one (`process_value`), so the flag stays set.
+  def simple? : Bool
+    true
+  end
+
   def type_desc : String
     "alias"
   end
@@ -690,6 +701,24 @@ pub class AliasType < NamedType
         t
       end
     end
+  end
+end
+
+# A `type` (typedef) inside a `lib` declaration, such as `type Handle = Int32`.
+# It names its typedef's type; `remove_typedef` gives that type.
+pub class TypeDefType < NamedType
+  getter typedef : Type
+
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @typedef : Type)
+    super(program, namespace, name)
+  end
+
+  def remove_typedef : Type
+    @typedef.remove_typedef
+  end
+
+  def type_desc : String
+    "type def"
   end
 end
 
@@ -1051,7 +1080,7 @@ pub class SemanticProgram < NonGenericModuleType
     static_array = GenericClassType.new(self, self, "StaticArray", ["T", "N"], nil, val)
     static_array.struct = true
     @types["StaticArray"] = static_array
-    union_t = GenericClassType.new(self, self, "Union", ["T"], nil, val)
+    union_t = GenericClassType.new(self, self, "Union", ["*T"], 0, val)
     union_t.struct = true
     @types["Union"] = union_t
     ["AlwaysInline", "CallConvention", "Extern", "Flags", "Link", "Naked", "NoInline", "Packed", "Primitive", "Raises", "ReturnsTwice", "ThreadLocal", "Deprecated", "Experimental", "TargetFeature", "Share", "NoPreempt", "SafeReach", "UnsafeReach", "Unsafe"].each do |aname|
@@ -1785,6 +1814,19 @@ pub class TopLevelVisitor < Visitor
     end
     scope.add_type(name, alias_type)
 
+    false
+  end
+
+  # Only the typedefs of a lib are registered here. Its funs and C structs are
+  # recorded by visit(FunDef) and visit(CStructOrUnionDef); external variables
+  # fall through to the default visit.
+  def visit(node : TypeDef) : Bool
+    if @current_type.types[node.name]?
+      raise("#{node.name} is already defined")
+    end
+    typed = @program.lookup_type_node(node.type_spec, @current_type)
+    typedef = TypeDefType.new(@program, @current_type, node.name, typed)
+    @current_type.add_type(node.name, typedef)
     false
   end
 

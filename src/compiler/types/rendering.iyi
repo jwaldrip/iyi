@@ -127,6 +127,10 @@ pub class TypeRenderer
     i = 0
     while i < flat.size
       t = flat[i]
+      # The hosted printer devirtualizes a union member: `(Vehicle | Nil)`, not `(Vehicle+ | Nil)`.
+      if !codegen && t.is_a?(VirtualType)
+        t = t.as(VirtualType).base_type
+      end
       if t.full_name == "Nil"
         has_nil = true
       else

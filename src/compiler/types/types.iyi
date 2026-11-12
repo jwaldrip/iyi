@@ -144,6 +144,7 @@ end
 pub class GenericClassInstanceType < GenericInstanceType
   property superclass : Type?
   getter subclasses : Array(Type)
+  getter included_modules : Array(Type)
   @metaclass : GenericClassInstanceMetaclassType?
 
   def register_subclass(sub : Type) : Nil
@@ -155,6 +156,7 @@ pub class GenericClassInstanceType < GenericInstanceType
   def initialize(program : SemanticProgram, generic_type : Type, type_vars : Hash(String, Type), type_args : Array(Type), @superclass : Type? = nil)
     super(program, generic_type, type_vars, type_args)
     @subclasses = [] of Type
+    @included_modules = [] of Type
     @metaclass = nil
     if sc = @superclass
       if sc.is_a?(ClassType)
@@ -203,6 +205,9 @@ pub class GenericClassInstanceType < GenericInstanceType
       end
     elsif other.is_a?(GenericClassType)
       return @generic_type == other
+    end
+    @included_modules.each do |inc|
+      return true if inc.subtype_of?(other)
     end
     if sc = @superclass
       return sc.subtype_of?(other)

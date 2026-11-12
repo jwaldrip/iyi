@@ -21,7 +21,7 @@
 #                                  its metaclass, or a generic instance. Members:
 #     nil_type? pointer? proc? void? no_return? virtual? metaclass?
 #     virtual_metaclass? struct? reference_like? leaf? subclasses
-#     all_subclasses instance_type virtual_type splat_index proc? remove_alias
+#     all_subclasses instance_type virtual_type splat_index proc? remove_alias remove_typedef
 #   merge(A, B) merge(A, B, C)     Program#type_merge (types/merge.iyi)
 #   intersect(T, U)                Type.common_descendent (types/intersect.iyi)
 #   filter(T, kind[, args])        a type filter applied to T (types/filters.iyi):
@@ -80,6 +80,11 @@ def resolve(program : Iyi::Program, name : String) : Iyi::Type
     end
     return base.as(Iyi::GenericClassType).instantiate(args.map { |arg| arg.as(Iyi::TypeVar) })
   end
+  if name.includes?("::")
+    found = program.lookup_path(Iyi::Path.new(name.split("::")))
+    raise "unknown type #{name}" if found.nil?
+    return found.as(Iyi::Type)
+  end
   t = program.types[name]?
   raise "unknown type #{name}" if t.nil?
   t
@@ -124,10 +129,72 @@ def evaluate_filter(program : Iyi::Program, op : String) : String
   type_text(filter.apply(t))
 end
 
+# The scope a lookup starts in: `program`, or a type's path such as `Outer::Inner`.
+def scope_of(program : Iyi::Program, name : String) : Iyi::Type
+  return program if name == "program"
+  found = program.lookup_path(Iyi::Path.new(name.split("::")))
+  raise "unknown scope #{name}" if found.nil?
+  found.as(Iyi::Type)
+end
+
+# `lookup(scope, written)`: the type the written type names, or `error: <message>`
+# with the first line of the message the hosted lookup raises.
+def evaluate_lookup(program : Iyi::Program, op : String) : String
+  parts = split_top(op[7...-1])
+  scope = scope_of(program, parts[0])
+  node = Iyi::Parser.new(parts[1..].join(", ")).parse
+  type_text(scope.lookup_type(node))
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
+# `restriction(scope, written)`: the restriction the written type converts to in
+# the scope, as hosted TypeToRestriction writes it, or `nil` when it has none.
+# The hosted converter is overloaded by static type, so the type is dispatched here.
+# A metaclass is written `T.class`: the hosted parser reads that in expression
+# position as a call, so it is resolved by name, as the other operations do.
+def evaluate_restriction(program : Iyi::Program, op : String) : String
+  parts = split_top(op[12...-1])
+  scope = scope_of(program, parts[0])
+  written = parts[1..].join(", ")
+  t = written.ends_with?(".class") ? resolve(program, written) : scope.lookup_type(Iyi::Parser.new(written).parse)
+  converter = Iyi::TypeToRestriction.new(scope)
+  restriction = case t
+                when Iyi::NilType                then converter.convert(t)
+                when Iyi::IntegerType            then converter.convert(t)
+                when Iyi::NonGenericClassType    then converter.convert(t)
+                when Iyi::NonGenericModuleType   then converter.convert(t)
+                when Iyi::AliasType              then converter.convert(t)
+                when Iyi::UnionType              then converter.convert(t)
+                when Iyi::MetaclassType          then converter.convert(t)
+                when Iyi::TupleInstanceType      then converter.convert(t)
+                when Iyi::NamedTupleInstanceType then converter.convert(t)
+                when Iyi::ProcInstanceType       then converter.convert(t)
+                when Iyi::GenericInstanceType    then converter.convert(t)
+                when Iyi::GenericClassType       then converter.convert(t)
+                when Iyi::GenericModuleType      then converter.convert(t)
+                else                                  raise "no restriction for #{t.class}"
+                end
+  return "nil" if restriction.nil?
+  # Outside a restriction context the hosted printer parenthesizes a proc, but a
+  # restriction is written without those parentheses (`Int32 -> String`), as the
+  # port prints it. The printer's parenthesis rule is a separate gap, owned by the
+  # syntax printer, and is not compared here.
+  text = restriction.to_s
+  if restriction.is_a?(Iyi::ProcNotation) && text.starts_with?("(") && text.ends_with?(")")
+    text = text[1...-1]
+  end
+  text
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 def evaluate(program : Iyi::Program, op : String) : String
   return evaluate_merge(program, op) if op.starts_with?("merge(")
   return evaluate_intersect(program, op) if op.starts_with?("intersect(")
   return evaluate_filter(program, op) if op.starts_with?("filter(")
+  return evaluate_lookup(program, op) if op.starts_with?("lookup(")
+  return evaluate_restriction(program, op) if op.starts_with?("restriction(")
   # The receiver may carry arguments, so the member starts after the last
   # dot that is outside parentheses.
   dot = nil
@@ -157,6 +224,9 @@ def evaluate(program : Iyi::Program, op : String) : String
   when "instance_type"      then type_text(t.instance_type)
   when "virtual_type"       then type_text(t.virtual_type)
   when "remove_alias"       then type_text(t.remove_alias)
+  when "remove_typedef"     then type_text(t.remove_typedef)
+  when "including_types"    then type_text(t.including_types)
+  when "simple?"            then bool_text(t.as(Iyi::AliasType).simple?)
   when "splat_index"
     idx = t.splat_index
     idx.nil? ? "nil" : idx.to_s

@@ -1,6 +1,6 @@
 module compiler/types/intersect
 
-import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NilType, NonGenericModuleType, SemanticProgram, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NilType, NonGenericModuleType, SemanticProgram, Type, TypeDefType, UnionType, VoidType}
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericInstanceType, NamedTupleInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualMetaclassType, VirtualType}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/unification::{TypeUnification}
@@ -11,9 +11,9 @@ import compiler/types/unification::{TypeUnification}
 #
 # The hosted code has one overload per pair of type kinds, and the hosted compiler
 # picks the most specific. The dispatch below tests the same pairs in the same order of
-# specificity. Three hosted paths need state the port does not carry, and they
-# answer nil here: generic instances of a generic type (instantiated_types, which
-# the port keeps in no list), and typedefs, which the port does not declare yet.
+# specificity. One hosted path needs state the port does not carry, and it
+# answers nil here: generic instances of a generic type (instantiated_types, which
+# the port keeps in no list). Typedefs are ported as `typedef_descendent`.
 # Including types, aliases and procs are ported; each is named at its branch.
 pub class TypeIntersect
   def self.common_descendent(program : SemanticProgram, t1 : Type, t2 : Type) : Type?
@@ -29,6 +29,9 @@ pub class TypeIntersect
     if t2.is_a?(AliasType)
       return t1 if t1 == t2
       return common_descendent(program, t1, TypeMerge.remove_alias(t2))
+    end
+    if t1.is_a?(TypeDefType) && !t2.is_a?(UnionType)
+      return typedef_descendent(program, t1.as(TypeDefType), t2)
     end
 
     if t1.is_a?(TupleInstanceType) && t2.is_a?(TupleInstanceType)
@@ -166,6 +169,28 @@ pub class TypeIntersect
     base_descendent(t1, t2)
   end
 
+  # TypeDefType common_descendent (type_intersect.cr): the typedef itself when its
+  # target meets *t2*. A union the target lies in is rebuilt with the typedef in
+  # the target's place, so a typedef names the same member it was written as.
+  def self.typedef_descendent(program : SemanticProgram, t1 : TypeDefType, t2 : Type) : Type?
+    return t1 if t1 == t2
+    restricted = common_descendent(program, t1.typedef, t2)
+    return nil if restricted.nil?
+    return t1 if restricted == t1.typedef
+    if restricted.is_a?(UnionType)
+      members = [] of Type
+      restricted.as(UnionType).union_types.each do |member|
+        if member == t1.typedef
+          members << t1
+        else
+          members << member
+        end
+      end
+      return TypeMerge.merge_all(program, members)
+    end
+    restricted
+  end
+
   # ProcInstanceType#compatible_with?: a procedure is compatible when its
   # return type is the other's, or the other returns Nil (any value may be
   # discarded), or it returns NoReturn; and its arguments are the other's, in
@@ -292,8 +317,12 @@ pub class TypeIntersect
     end
     result = [] of Type
     if t.is_a?(GenericClassInstanceType)
-      if sc = t.as(GenericClassInstanceType).superclass
+      inst = t.as(GenericClassInstanceType)
+      if sc = inst.superclass
         result << sc
+      end
+      inst.included_modules.each do |inc|
+        result << inc
       end
     end
     result

@@ -308,8 +308,8 @@ prove_mutation "method visibility defaults to private instead of public" "$MUT_S
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "module path segments keep their written case" "$MUT_SEM" \
-  "base.add_type(pname, mod)" \
-  "base.add_type(pname.downcase, mod)" \
+  "mod = NonGenericModuleType.new(@program, base, pname)" \
+  "mod = NonGenericModuleType.new(@program, base, pname.downcase)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

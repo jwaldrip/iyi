@@ -253,9 +253,9 @@ prove_mutation "union parentheses bypassed in rendering" "$REND_FILE" \
   -- check_type_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "generic class arity validation bypassed in lookup_generic" "$TSYS_FILE" \
-  "if node.type_vars.size != gc.type_vars.size" \
-  "if false && node.type_vars.size != gc.type_vars.size" \
+prove_mutation "generic class arity validation bypassed in lookup_generic" "$REPO/src/compiler/types/lookup.iyi" \
+  "    elsif given != type_vars.size" \
+  "    elsif false" \
   -- check_type_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

@@ -156,7 +156,7 @@ prove_mutation "left alias removal bypassed in intersect" "$INTERSECT_FILE" \
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "Void return cast to Nil bypassed in proc_of" "$TYPE_SYSTEM_FILE" \
+prove_mutation "Void return cast to Nil bypassed in proc_of" "$REPO/src/compiler/types/instances.iyi" \
   "    ret = @program.nil_type if return_type.is_a?(VoidType)" \
   "    ret = return_type if false" \
   -- check_type_queries_diverge || status=1
@@ -183,6 +183,68 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "type hook bypassed in SemanticProgram lookup" "$TOP_LEVEL_FILE" \
   "      return resolved" \
   "      return current_type" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+LOOKUP_MUTATION_FILE="$REPO/src/compiler/types/lookup.iyi"
+prove_mutation "lookup searches the enclosing namespaces for a first item not at all" "$LOOKUP_MUTATION_FILE" \
+  "      if ns = scope.namespace" \
+  "      if ns = nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generic type argument count is not checked" "$LOOKUP_MUTATION_FILE" \
+  "    elsif given != type_vars.size" \
+  "    elsif false" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "unbound generic accepted as a written type argument" "$LOOKUP_MUTATION_FILE" \
+  "      return false" \
+  "      return true" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+RESTRICT_MUTATION_FILE="$REPO/src/compiler/types/to_restriction.iyi"
+prove_mutation "proc returning Nil keeps its Nil output in the restriction" "$RESTRICT_MUTATION_FILE" \
+  "    if !type.return_type.is_a?(NilType)" \
+  "    if true" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "restriction paths drop their namespaces" "$RESTRICT_MUTATION_FILE" \
+  "    append_namespace(type, names, common)" \
+  "    nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "restriction names are written in lower case" "$RESTRICT_MUTATION_FILE" \
+  "    names << type.name" \
+  "    names << type.name.downcase" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "private types are written by their full path" "$RESTRICT_MUTATION_FILE" \
+  "    if !fully_public?(type)" \
+  "    if false" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "typedef removal bypassed" "$REPO/src/compiler/semantic/top_level.iyi" \
+  "    @typedef.remove_typedef" \
+  "    self" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "private types reached by a later path item are found" "$REPO/src/compiler/types/lookup.iyi" \
+  "        return nil if !include_private && item.private?" \
+  "        return nil if false" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generic instances do not take the modules of their generic type" "$REPO/src/compiler/types/instances.iyi" \
+  "        inst.included_modules << parent" \
+  "        nil" \
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
