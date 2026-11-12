@@ -114,6 +114,12 @@ prove_mutation "a generic receiver does not bind its type parameters in a restri
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a generic receiver does not bind its type parameters in a lookup" "$MAIN_VISITOR_FILE" \
+  "if bound = inst.type_vars[path.names.first]?" \
+  "if bound = inst.type_vars[\"no-such-param\"]?" \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

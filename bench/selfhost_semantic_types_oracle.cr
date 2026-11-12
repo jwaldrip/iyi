@@ -102,6 +102,14 @@ def evaluate_merge(program : Iyi::Program, op : String) : String
   end
 end
 
+def evaluate_same_merge(program : Iyi::Program, op : String) : String
+  parts = split_top(op[11...-1])
+  raise "same_merge takes four types: #{op}" unless parts.size == 4
+  first = program.type_merge(resolve(program, parts[0]), resolve(program, parts[1]))
+  second = program.type_merge(resolve(program, parts[2]), resolve(program, parts[3]))
+  bool_text(first.object_id == second.object_id)
+end
+
 def evaluate_intersect(program : Iyi::Program, op : String) : String
   parts = split_top(op[10...-1])
   raise "intersect takes two types: #{op}" unless parts.size == 2
@@ -187,6 +195,7 @@ def evaluate(program : Iyi::Program, op : String) : String
   return evaluate_filter(program, op) if op.starts_with?("filter(")
   return evaluate_lookup(program, op) if op.starts_with?("lookup(")
   return evaluate_restriction(program, op) if op.starts_with?("restriction(")
+  return evaluate_same_merge(program, op) if op.starts_with?("same_merge(")
   # The receiver may carry arguments, so the member starts after the last
   # dot that is outside parentheses.
   dot = nil
@@ -215,6 +224,8 @@ def evaluate(program : Iyi::Program, op : String) : String
   when "all_subclasses"     then list_text(t.all_subclasses)
   when "instance_type"      then type_text(t.instance_type)
   when "virtual_type"       then type_text(t.virtual_type)
+  when "virtual_type_made?" then bool_text(t.virtual_type_made?)
+  when "virtual_identical"  then bool_text(t.virtual_type.object_id == t.virtual_type.object_id)
   when "remove_alias"       then type_text(t.remove_alias)
   when "remove_typedef"     then type_text(t.remove_typedef)
   when "unbound?"           then bool_text(t.unbound?)

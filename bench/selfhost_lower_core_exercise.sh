@@ -42,6 +42,25 @@ trap 'rm -rf "$WORK"' EXIT
 # shared with the calls gate (bench/lib/lower_oracle.sh).
 . "$REPO/bench/lib/lower_oracle.sh"
 
+# The oracle rewriter reads a callee up to its own closing parenthesis: a quoted generic name holds
+# parentheses of its own (`@"*Box(Int32)^Box(T)::new<Int32>:Box(Int32)"`). The check re-sources the library
+# in a subshell, so a mutation of bench/lib/lower_oracle.sh is what it tests.
+quoted_callee_line='  %2 = call %"Box(Int32)" @"*Box(Int32)^Box(T)::new<Int32>:Box(Int32)"(i32 %1, i32 7) #3'
+quoted_callee_expected='  %2 = call iyicc %"Box(Int32)" (i32, i32) @"*Box(Int32)^Box(T)::new<Int32>:Box(Int32)"(i32 %1, i32 7)'
+quoted_callee_check() {
+  local got
+  got="$(bash -c '. "$1"; awk "$CALL_TYPES" <<< "$2"' _ "$REPO/bench/lib/lower_oracle.sh" "$quoted_callee_line")" || return 1
+  [ "$got" = "$quoted_callee_expected" ]
+}
+echo "== 0. The oracle rewriter reads a quoted callee name whole"
+if quoted_callee_check; then
+  echo "  $quoted_callee_expected"
+else
+  echo "  FAIL: the oracle rewriter does not write the quoted callee's type (lower_oracle.sh CALL_TYPES)"
+  status=1
+fi
+echo
+
 # A prose line for each fixture verdict, so the summary can be read without the logs.
 verdict_lines=""
 
@@ -65,7 +84,9 @@ passed=0
 # Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed (the
 # port numbers String 31, the hosted module 1: the typer slice's LowerTypeIds numbering). They are waiting
 # by name, and the gate fails if one of them starts to match, so this list is kept honest.
-KNOWN_DIVERGED="lower_string lower_symbol lower_string_long lower_string_collide lower_string_nonascii"
+# lower_fun_main: the port lowers the argv parameter of `fun main(argc, argv : UInt8**)` to i1, not ptr (the record's
+# argument type for UInt8** comes from the type nodes, not from this emitter). Waiting by name until that is fixed.
+KNOWN_DIVERGED="lower_string lower_string_nonascii lower_fun_main"
 e2e=""
 module_same=0
 module_differ=0
@@ -186,7 +207,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -284,6 +305,12 @@ prove_mutation "the deferred pass that defines unused funs is not run" "$REPO/sr
   "  emit_unused_fun_defs(low)" "  low.unused_fun_defs.size" -- lower_core_check || status=1
 prove_mutation "a fun definition is internal, not external" "$REPO/src/compiler/lower/lower.iyi" \
   "fn.linkage = Linkage::External" "fn.linkage = Linkage::Internal" -- lower_core_check || status=1
+prove_mutation "an implicit self call passes no self" "$REPO/src/compiler/lower/call.iyi" \
+  "self_value = implicit_self_value(low)" "self_value = nil" -- lower_core_check || status=1
+prove_mutation "the oracle rewriter reads a quoted callee name to its first parenthesis" "$REPO/bench/lib/lower_oracle.sh" \
+  'if (substr(s, i, 1) == "\"") return i' 'if (substr(s, i, 1) == "\"") return index(s, "(") - 1' -- quoted_callee_check || status=1
+prove_mutation "an asm-referenced runtime fun is internal, not external" "$REPO/src/compiler/lower/lower.iyi" \
+  'if asm_referenced_fun?(name) || name == "__iyi_new"' 'if name == "__iyi_new"' -- lower_core_check || status=1
 
 # The module-level count: how many CORE_CHECK_FIXTURES match the hosted module in every item, module-level included.
 # A patch that changes only module-level text lowers the count, and this check catches it.
