@@ -93,6 +93,14 @@ TOOLS = {
     "resident_probe.py",
     "runtime.py",
     "web_cores.py",
+    # `python3 bench/stale_suite_speed.py` writes an application of a
+    # thousand test files and times the whole suite, plain and `--cached`,
+    # through the edits a day of work is made of. Its seconds are a
+    # machine's: the first run of a thousand tests one at a time took the
+    # better part of an hour, and a runner's load decides the ratio it
+    # prints. Run by hand, on a quiet machine, when the cached runner
+    # changes.
+    "stale_suite_speed.py",
 }
 
 # A command's place in a line: its start, after `;`, `&&`, `|`, `$(`, a
