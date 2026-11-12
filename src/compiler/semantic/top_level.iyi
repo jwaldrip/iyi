@@ -2002,22 +2002,22 @@ pub class TopLevelVisitor < Visitor
     trait_type = @program.lookup_type_node(node.trait, @current_type)
     unless trait_type.trait?
       message = "can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented"
-      refuse_port(message) unless @program.total_mode
+      raise(message) unless @program.total_mode
       @program.carried_refusals << message
       return false
     end
 
     target_type = @program.lookup_type_node(node.target, @current_type)
     if target_type.trait?
-      message = "can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one. To give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)"
-      refuse_port(message) unless @program.total_mode
+      message = "can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one \u{2014} to give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)"
+      raise(message) unless @program.total_mode
       @program.carried_refusals << message
       return false
     end
 
     unless target_type.is_a?(ModuleType)
       message = "can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}"
-      refuse_port(message) unless @program.total_mode
+      raise(message) unless @program.total_mode
       @program.carried_refusals << message
       return false
     end
@@ -2876,7 +2876,11 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
   user_type_names = program.types.keys.sorted
 
   user_type_names.each do |name|
-    dump_tree_declared(program.types[name], sb, "", entry)
+    # With no entry, a built-in name is not the program's own declaration (the typed dump
+    # prints what a program declares); with an entry, the location filter decides.
+    unless entry.nil? && program.initial_type_names.includes?(name)
+      dump_tree_declared(program.types[name], sb, "", entry)
+    end
   end
 
   sb.to_s
