@@ -7,6 +7,7 @@ import compiler/syntax/lexer::{Lexer}
 import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Metaclass, ExceptionHandler, Rescue, ProcLiteral, Propagate, Defer, Recover}
 import compiler/syntax/ast::{Select, Macro, ProcPointer, Union}
 import compiler/syntax/ast::{Select, Macro, ProcPointer, Union, PointerOf}
+import compiler/syntax/ast::{ImportDecl, UsingDecl, ModuleHeader, MacroIf, MacroFor, MagicConstant, Require, MacroExpression, SizeOf, ReadInstanceVar}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 import compiler/semantic/normalizer::{NormalizerProgram, Normalizer}
@@ -41,6 +42,14 @@ module BenchSemanticTransformExercise
       i = i + 1
     end
     res + "\""
+  end
+
+  def self.names_text(names : Array(String)?) : String
+    if n = names
+      "[" + n.join(", ") + "]"
+    else
+      "none"
+    end
   end
 
   def self.dump_ast(node : ASTNode?, indent : Int32 = 0) : String
@@ -523,6 +532,47 @@ module BenchSemanticTransformExercise
     when TypeOf
       s = "#{p}TypeOf\n"
       node.expressions.each { |e| s += dump_ast(e, indent + 1) }
+      s
+    when ImportDecl
+      "#{p}ImportDecl path=#{node.path.join("/")} exported=#{node.exported} glob=#{node.glob} names=#{names_text(node.names)}\n"
+    when UsingDecl
+      "#{p}UsingDecl path=#{node.path.join("/")} names=#{names_text(node.names)}\n"
+    when ModuleHeader
+      "#{p}ModuleHeader path=#{node.path.join("/")}\n"
+    when MacroIf
+      s = "#{p}MacroIf\n"
+      s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
+      s += "#{p}  then:\n" + dump_ast(node.then, indent + 2)
+      s += "#{p}  else:\n" + dump_ast(node.else, indent + 2)
+      s
+    when MacroFor
+      s = "#{p}MacroFor\n"
+      s += "#{p}  vars:\n"
+      node.vars.each { |v| s += dump_ast(v, indent + 2) }
+      s += "#{p}  exp:\n" + dump_ast(node.exp, indent + 2)
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when MagicConstant
+      "#{p}MagicConstant name=#{node.name.to_s}\n"
+    when Require
+      "#{p}Require string=#{escape_s(node.string)}\n"
+    when MacroExpression
+      s = "#{p}MacroExpression output=#{node.output}\n"
+      s += dump_ast(node.exp, indent + 1)
+      s
+    when Macro
+      s = "#{p}Macro name=#{escape_s(node.name)}\n"
+      s += "#{p}  args:\n"
+      node.args.each { |a| s += dump_ast(a, indent + 2) }
+      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+      s
+    when SizeOf
+      s = "#{p}SizeOf\n"
+      s += dump_ast(node.exp, indent + 1)
+      s
+    when ReadInstanceVar
+      s = "#{p}ReadInstanceVar name=#{escape_s(node.name)}\n"
+      s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
       s
     else
       "#{p}Node\n"

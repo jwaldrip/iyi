@@ -24,6 +24,14 @@ def escape_s(s : String) : String
   res + "\""
 end
 
+def names_text(names : Array(String)?) : String
+  if n = names
+    "[#{n.join(", ")}]"
+  else
+    "none"
+  end
+end
+
 def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
   return ("  " * indent) + "nil\n" if node.nil?
   p = "  " * indent
@@ -505,6 +513,47 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
   when Iyi::PointerOf
     s = "#{p}PointerOf\n"
     s += dump_ast(node.exp, indent + 1)
+    s
+  when Iyi::ImportDecl
+    "#{p}ImportDecl path=#{node.path.join("/")} exported=#{node.exported} glob=#{node.glob?} names=#{names_text(node.names)}\n"
+  when Iyi::UsingDecl
+    "#{p}UsingDecl path=#{node.path.join("/")} names=#{names_text(node.names)}\n"
+  when Iyi::ModuleHeader
+    "#{p}ModuleHeader path=#{node.path.join("/")}\n"
+  when Iyi::MacroIf
+    s = "#{p}MacroIf\n"
+    s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
+    s += "#{p}  then:\n" + dump_ast(node.then, indent + 2)
+    s += "#{p}  else:\n" + dump_ast(node.else, indent + 2)
+    s
+  when Iyi::MacroFor
+    s = "#{p}MacroFor\n"
+    s += "#{p}  vars:\n"
+    node.vars.each { |v| s += dump_ast(v, indent + 2) }
+    s += "#{p}  exp:\n" + dump_ast(node.exp, indent + 2)
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::MagicConstant
+    "#{p}MagicConstant name=#{node.name.to_s}\n"
+  when Iyi::Require
+    "#{p}Require string=#{escape_s(node.string)}\n"
+  when Iyi::MacroExpression
+    s = "#{p}MacroExpression output=#{node.output?}\n"
+    s += dump_ast(node.exp, indent + 1)
+    s
+  when Iyi::Macro
+    s = "#{p}Macro name=#{escape_s(node.name)}\n"
+    s += "#{p}  args:\n"
+    node.args.each { |a| s += dump_ast(a, indent + 2) }
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::SizeOf
+    s = "#{p}SizeOf\n"
+    s += dump_ast(node.exp, indent + 1)
+    s
+  when Iyi::ReadInstanceVar
+    s = "#{p}ReadInstanceVar name=#{escape_s(node.name)}\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
     s
   else
     STDERR.puts "UNCOVERED #{node.class.name}"
