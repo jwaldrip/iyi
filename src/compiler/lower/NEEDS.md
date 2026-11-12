@@ -97,3 +97,17 @@ The gates (bench/selfhost_lower_primitives_exercise.sh, and the calls gate once 
 
 Waiting on semantic typing alone: `and`, `or`, `not`, `next` (lower_and, lower_or, lower_not, lower_next), and `exit` on `lib` typing (lower_exit). The symbol fixture (lower_symbol) runs to a linked executable since int-fix; it stays a known divergence on the String id (typer row 16). Float literals are restored (lower_float, 6738b15aa).
 S2d (primitives), checked arithmetic: `lowprim_checked` is WAITING by name in the gate (bench/selfhost_lower_primitives_exercise.sh, `waiting_on`). The hosted build needs `__crystal_raise_overflow` as a `fun` with a body; the analysis types no FunDef (`BUG: node has no type: fun __crystal_raise_overflow`, S1d1Bodies) and `visit(FunDef)` is not on the core's plan (S2a2Core, confirmed). The checked lowering itself (addsub_with_overflow, mul_with_overflow, raise_overflow_cond) is in lower/primitives.iyi and unexercised until then. The oracle's struct-return intrinsic line (`call { i32, i1 } @llvm...`) is cut by intrinsic_line in bench/lib/lower_oracle.sh (S2c2Calls): the fixture reads `unknown intrinsic 32` until that is fixed.
+
+## Lowering core (S2a), increment 1: what it reads and what waits
+
+Ported and measured: `visit(Return)` in a def (`codegen_return_node`, a value of the function's own type; another type is refused by name for the casts slice's upcast), a variable's `TypeDeclaration` with or without a value (`codegen_declare_var`), and the lazy exit block of an `if` with the hosted last-branch rule (phi.iyi, hosted phi.cr `add` and `close`). Fixtures: lower_return, lower_return_last, lower_typedecl, lower_typedecl_nil.
+
+| Node or fact | Hosted line | Port today | Who fixes it | Waiting fixture |
+|---|---|---|---|---|
+| `TupleLiteral`, `NamedTupleLiteral`, `PointerOf`, `SizeOf`, `InstanceSizeOf`, `TypeOf`, `MultiAssign`, `Underscore`: not typed by the analysis (`node has no type`, or `undefined local variable` for a multi-assign target) | codegen.cr visit(...) for each | refused by name through `pending_visit_node` | S1d2Bodies (main_visitor.iyi) | lower_tuple, lower_named_tuple, lower_pointer_of, lower_sizeof, lower_instance_sizeof, lower_typeof, lower_multi_assign, lower_underscore |
+| `out` argument of a lib call: the analysis types no lib fun (row 31) | call.cr out args, lib funs | not typed | the lib slice (row 31, S1d2Bodies) | lower_out |
+| `Unreachable`, `ExpandableNode` | codegen.cr visit(Unreachable), visit(ExpandableNode) | not lowered: the parser and the analysis never create them from source, so there is nothing to port against | none | none |
+| A `return` at the top level | codegen.cr visit(Return), `node.target` is a Def | refused by name (`top_level` flag in context.iyi) | none: iyi has no top-level return | none |
+| A variable declared twice, or a value of another type than the declaration | codegen.cr declare_var, codegen_assign upcast | refused by name | the casts slice (upcast, S2d) | none |
+
+Note on the gate: `lower_out` names a libc function (`time`), because the hosted build must link; a lib fun with no body in the libc does not link under `--prelude empty` (measured on `take`).

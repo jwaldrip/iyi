@@ -55,9 +55,12 @@ pub class LowerContext
   getter type : Type?
   getter vars : Hash(String, LowerVar)
   property return_type : Type?
+  # True for the unit that begin_main_function makes (`__crystal_main`): a return there has no def to leave.
+  property top_level : Bool
 
   def initialize(@fun : Function, @fun_type : IrType, @type : Type?, @vars : Hash(String, LowerVar))
     @return_type = nil
+    @top_level = false
   end
 end
 
@@ -216,7 +219,9 @@ pub class Lowerer
   # alloca and entry blocks; otherwise in a plain entry block.
   def begin_main_function(name : String, fun_type : IrType, needs_alloca : Bool) : Function
     fn = @module.define_function(name, fun_type)
-    @context = LowerContext.new(fn, fun_type, nil, Hash(String, LowerVar).new)
+    ctx = LowerContext.new(fn, fun_type, nil, Hash(String, LowerVar).new)
+    ctx.top_level = true
+    @context = ctx
     @alloca_block = nil
     @entry_block = nil
     if needs_alloca

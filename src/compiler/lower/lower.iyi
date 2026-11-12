@@ -16,7 +16,7 @@ module compiler/lower/lower
 # folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
 # `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA}
+import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -180,6 +180,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_is_a(low, node.as(IsA))
     return
   end
+  if node.is_a?(Return)
+    codegen_return_node(low, node.as(Return))
+    return
+  end
   if node.is_a?(Def)
     # The hosted `visit(Def)`: a def emits nothing where it stands. The call that reaches
     # it makes its function (fun.iyi).
@@ -230,15 +234,53 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   pending_visit_node(node_class_name(node))
 end
 
-# The hosted `visit(TypeDeclaration)` for an instance variable (`@x : Int32`): the hosted case has no branch for an
-# instance variable, so the declaration emits nothing and the value is nil. A variable declaration (declare_var and the
-# assignment of its value) is refused by name until the variable slice ports it.
+# The hosted `visit(TypeDeclaration)` (codegen.cr:1800). A variable declaration is ported (codegen_declare_var). An
+# instance variable emits nothing, as the hosted case has no branch for it; the value is nil. A class variable's
+# initialiser (hosted initialize_class_var) is refused by name until the class-variable slice ports it.
 pub def codegen_type_declaration(low : Lowerer, node : TypeDeclaration) : Nil
   if node.var.is_a?(InstanceVar)
     low.last = llvm_nil(low)
     return
   end
-  pending_visit_node("TypeDeclaration of a variable (hosted codegen.cr: visit(TypeDeclaration), declare_var)")
+  if node.var.is_a?(Var)
+    codegen_declare_var(low, node)
+    return
+  end
+  pending_visit_node("TypeDeclaration of a class variable (hosted codegen.cr: visit(TypeDeclaration), initialize_class_var)")
+end
+
+# The hosted `declare_var` and the value of the declaration (codegen.cr:1800, codegen_assign): the variable's alloca is
+# made in the alloca block with the type the declaration gives; a value is then assigned to it, and the declaration's
+# value is the value assigned. Without a value the declaration leaves nil. A variable declared twice, and a value of
+# another type than the declaration (the hosted upcast into a union, not ported yet), are refused by name.
+pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
+  var_node = node.var.as(Var)
+  decl = low.analysed.type_of?(var_node)
+  raise "BUG: the analysed program has no type for a declared variable (hosted codegen.cr: declare_var)" if decl.nil?
+  dt = decl.as(Type)
+  existing = low.current_context.vars[var_node.name]?
+  if !existing.nil?
+    refuse_port("lower: variable #{var_node.name} is declared twice (hosted codegen.cr: declare_var)")
+  end
+  pointer = low.alloca(low.typer.llvm_type(dt), var_node.name)
+  low.current_context.vars[var_node.name] = LowerVar.new(pointer, dt, false)
+  value = node.value
+  if value.nil?
+    low.last = llvm_nil(low)
+    return
+  end
+  codegen_node(low, value.as(ASTNode))
+  v = low.last
+  raise "BUG: the declared value left no value (hosted codegen.cr: codegen_assign)" if v.nil?
+  vt = low.analysed.type_of?(value.as(ASTNode))
+  raise "BUG: the analysed program has no type for the declared value (hosted codegen.cr: codegen_assign)" if vt.nil?
+  if vt.as(Type).full_name != dt.full_name
+    refuse_port("lower: #{var_node.name} is declared #{dt.full_name} and assigned #{vt.as(Type).full_name}: the hosted upcast is not ported yet")
+  end
+  if !dt.is_a?(NilType)
+    store_aligned(low, v.as(Value), pointer)
+  end
+  low.last = v
 end
 
 # 1 for true, 0 for false: the bit a bool literal is in the IR.
@@ -370,22 +412,21 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
   low.needs_value = wants
   low.builder.cond_br(cond_value, then_block, else_block)
 
-  exit_block = low.new_block("exit")
   merge_type : IrType? = nil
   if wants
     merged = low.analysed.type_of?(node)
     raise "BUG: the analysed program has no type for a branch (hosted codegen.cr: visit(If))" if merged.nil?
     merge_type = low.typer.llvm_type(merged.as(Type))
   end
-  phi = LowerPhi.new(exit_block, wants, merge_type)
+  phi = LowerPhi.new(wants, merge_type)
 
   low.builder.position_at_end(then_block)
   codegen_node(low, then_node)
-  phi.add(low, low.last)
+  phi.add(low, low.last, false)
 
   low.builder.position_at_end(else_block)
   codegen_node(low, else_node)
-  phi.add(low, low.last)
+  phi.add(low, low.last, true)
 
   phi.close(low)
 end
@@ -495,6 +536,43 @@ pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
   value = low.last
   raise "BUG: the program returns a value but its last expression left none (hosted codegen.cr: codegen_return)" if value.nil?
   low.builder.ret(value.as(Value))
+end
+
+# The hosted `visit(Return)` (codegen.cr:1170) for a return in a def, with no ensure and no return phi: the value is
+# evaluated and returned by the function being lowered (hosted codegen_return, codegen.cr:1192). A bare return is a
+# `ret void` in a void function. A value of another type than the function returns is refused by name: the hosted code
+# upcasts it, which the casts slice ports. A return at the top level has no def to leave, so it is refused by name.
+pub def codegen_return_node(low : Lowerer, node : Return) : Nil
+  if low.current_context.top_level
+    pending_visit_node("return at the top level (hosted codegen.cr: visit(Return), node.target is not a Def)")
+  end
+  ret_ir = low.current_context.fun_type.return_type
+  exp = node.exp
+  if exp.nil?
+    if ret_ir.void?
+      low.builder.ret_void
+      return
+    end
+    refuse_port("lower: a bare return from a function that returns a value (hosted codegen_return, the nil upcast)")
+  end
+  wants = low.needs_value
+  low.needs_value = true
+  codegen_node(low, exp.as(ASTNode))
+  low.needs_value = wants
+  return if block_ended?(low)
+  if ret_ir.void?
+    low.builder.ret_void
+    return
+  end
+  value = low.last
+  raise "BUG: the return's expression left no value (hosted codegen.cr: visit(Return))" if value.nil?
+  exp_t = low.analysed.type_of?(exp.as(ASTNode))
+  raise "BUG: the analysed program has no type for a return's value (hosted codegen.cr: visit(Return))" if exp_t.nil?
+  if low.typer.llvm_type(exp_t.as(Type)).to_s != ret_ir.to_s
+    refuse_port("lower: return of #{exp_t.as(Type).full_name} from a function returning another type (hosted upcast, the casts slice)")
+  end
+  returned = value.as(Value)
+  low.builder.ret(returned)
 end
 
 # The hosted `visit(IsA)` (codegen.cr codegen_type_filter): the object is evaluated, and with its value
