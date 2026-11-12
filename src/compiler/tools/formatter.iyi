@@ -1991,7 +1991,13 @@ pub class Formatter < Visitor
   end
 
   def visit(node : IsA) : Bool
-    visit(Call.new(node.obj, "is_a?", node.const))
+    # `x.nil?` parses as `IsA(x, ::Nil)` with the nil check marked, as in the
+    # hosted parser: it is written back as the call it was.
+    if node.nil_check
+      visit(Call.new(node.obj, "nil?"))
+    else
+      visit(Call.new(node.obj, "is_a?", node.const))
+    end
   end
 
   def visit(node : RespondsTo) : Bool
