@@ -25,8 +25,17 @@ reasons, both outside this slice:
    program that reaches them.
 2. **The declarations loader refuses a def import.** `import compiler/foundation/errors::{refuse_port}`
    is refused because `refuse_port` is a module-level `def`, not a type or constant.
-   Every real file that reaches `top_level.iyi` therefore fails to load in the port,
-   which blocks the census of the compiler's own source.
+   Every real file that reaches `top_level.iyi` therefore fails to load in the port
+   (`undefined constant refuse_port`), which blocks the census of the compiler's own source.
+3. **The port cannot parse every type text the hosted pass prints.** The census driver
+   resolves each receiver and argument from its text. On `samples/iyi/hello.iyi` the
+   port panics: `Syntax error in census:1:15: unexpected token: SYMBOL`. The text is a
+   type form the port's resolver does not read (a symbol-like name). A fix needs the
+   driver to resolve type text through the type lookup without re-parsing, or the oracle
+   to print a form the parser reads. Not fixed here.
+
+The census gate fails on these (a file the port cannot load is a failure, not a skip),
+so it is not a passing gate yet. It is not in CI's `*_exercise.sh` glob.
 
 ## Ranked gaps the fixtures show
 
