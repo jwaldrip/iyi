@@ -1,0 +1,8 @@
+class Box(T)
+  def get : Int32
+    7
+  end
+end
+
+b = uninitialized Box(Int32)
+b.get

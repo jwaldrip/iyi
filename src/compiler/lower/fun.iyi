@@ -30,6 +30,7 @@ import compiler/ir/module::{Module}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
 import compiler/lower/instance_var::{self_by_pointer?}
 import compiler/semantic/top_level::{NoReturnType, Type}
+import compiler/types/types::{GenericClassInstanceType}
 
 # The hosted `Def#mangled_name` (codegen/ast.cr): `*`, then for a method the owner's name and `#`,
 # then the name, the argument types in `<>`, each by its full name, then `:` and the return type.
@@ -40,10 +41,10 @@ pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), 
   # A method of a non-generic metaclass (`def self.go`) is named after its class and `::`, and passes no self
   # (hosted Def#mangled_name, codegen/ast.cr: a metaclass owner writes `self_type.instance_type` then `::`).
   if co = class_owner
-    text = text + co.full_name + "::"
+    text = text + owner_mangled_name(co) + "::"
   end
   if st = self_type
-    text = text + st.full_name + "#"
+    text = text + owner_mangled_name(st) + "#"
   end
   text = text + name
   if arg_types.size > 0
@@ -54,6 +55,16 @@ pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), 
     text = text + "<" + names.join(", ") + ">"
   end
   text + ":" + ret.full_name
+end
+
+# The owner's name in a def's symbol (hosted Def#mangled_name, codegen/ast.cr: the owner's llvm name, then `^` and the
+# defining type when it differs). A method of a generic class's instance is named after the instance and then the
+# generic class with its type parameters: `*Box(Int32)^Box(T)#get:Int32`.
+pub def owner_mangled_name(t : Type) : String
+  if t.is_a?(GenericClassInstanceType)
+    return t.full_name + "^" + t.as(GenericClassInstanceType).generic_type.full_name
+  end
+  t.full_name
 end
 
 # Lowers the body of a function through the installed dispatch (hosted `accept`).
