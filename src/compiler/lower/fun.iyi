@@ -1,22 +1,22 @@
 module compiler/lower/fun
 
 # The port of the hosted function emitter, `target_def_fun` and `codegen_fun` in
-# src/compiler/iyi/codegen/fun.cr, for a top-level def of a single-module unit. A def
-# is compiled into a function of its own where the first call that reaches it is
-# lowered; a later call at the same argument types finds that function and does not
-# emit it again.
+# src/compiler/iyi/codegen/fun.cr, for a def of a single-module unit: a top-level def, or a
+# method of a class or struct with a receiver. A def is compiled into a function of its own
+# where the first call that reaches it is lowered; a later call at the same argument types
+# finds that function and does not emit it again.
 #
-# Ported: the mangled name of a top-level def (`*name<A, B>:R`, codegen/ast.cr), the
-# function's type and signature, the frame (the alloca and entry blocks, the
-# parameters read where they arrive, the body, the return), and the lowering state the
-# caller keeps (saved and put back around the body).
+# Ported: the mangled name of a def (`*name<A, B>:R` for a top-level def, `*Owner#name<A, B>:R`
+# for a method, codegen/ast.cr), the function's type and signature (`self` first, when the
+# owner is passed as self), the frame (the alloca and entry blocks, the parameters read where
+# they arrive, the body, the return), and the lowering state the caller keeps (saved and put
+# back around the body).
 #
-# Not ported, and refused by name at the call that reaches them (lower/call.iyi):
-# methods with a receiver (self), by-value and indirect arguments and results, the
-# closure, block and proc parameters, the `@[NoInline]`, `@[AlwaysInline]`, `@[Naked]`
-# and `@[Raises]` annotations, the debug metadata, and every `in artifact`, runtime
-# copy, preemption and closure-host branch of the hosted code: the iyi artifact,
-# runtime and preemption machinery does not apply to a single-module unit.
+# Not ported, and refused by name at the call that reaches them (lower/call.iyi): by-value and
+# indirect arguments and results, the closure, block and proc parameters, the `@[NoInline]`,
+# `@[AlwaysInline]`, `@[Naked]` and `@[Raises]` annotations, the debug metadata, and every
+# `in artifact`, runtime copy, preemption and closure-host branch of the hosted code: the iyi
+# artifact, runtime and preemption machinery does not apply to a single-module unit.
 #
 # The body is lowered through the dispatch the lowering installed (`BodyVisit`,
 # context.iyi), because iyi refuses an import cycle and the dispatch imports this file.
@@ -30,12 +30,16 @@ import compiler/ir/module::{Module}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
 import compiler/semantic/top_level::{NoReturnType, Type}
 
-# The hosted `Def#mangled_name` for a top-level def (codegen/ast.cr): `*` and the name,
-# then the argument types in `<>`, each by its full name, then `:` and the return type.
-# A def with no argument has no `<>`. The hosted escaping of a name that is not a plain
-# identifier is not ported: the caller refuses such a name.
-pub def mangled_name(name : String, arg_types : Array(Type), ret : Type) : String
-  text = "*" + name
+# The hosted `Def#mangled_name` (codegen/ast.cr): `*`, then for a method the owner's name and `#`,
+# then the name, the argument types in `<>`, each by its full name, then `:` and the return type.
+# A def with no argument has no `<>`. The hosted escaping of a name that is not a plain identifier
+# is not ported: the caller refuses such a name. `self_type` is nil for a top-level def.
+pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type) : String
+  text = "*"
+  if st = self_type
+    text = text + st.full_name + "#"
+  end
+  text = text + name
   if arg_types.size > 0
     names = [] of String
     arg_types.each do |t|
@@ -53,21 +57,24 @@ pub def visit_node(low : Lowerer, node : ASTNode) : Nil
   visitor.as(BodyVisit).visit_body(low, node)
 end
 
-# The hosted `target_def_fun` for a top-level def at these argument types, and its
-# return type: the function already in the module when there is one, otherwise a new
-# one, emitted now.
-pub def target_def_fun(low : Lowerer, target : Def, arg_types : Array(Type), ret : Type) : Function
-  name = mangled_name(target.name, arg_types, ret)
+# The hosted `target_def_fun` for a def at these self and argument types, and its return type: the
+# function already in the module when there is one, otherwise a new one, emitted now. A method's
+# self is the first parameter, of the owner's type (hosted `codegen_fun_signature_non_external`).
+pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type) : Function
+  name = mangled_name(target.name, self_type, arg_types, ret)
   if existing = low.module.get_function?(name)
     return existing.as(Function)
   end
   params = [] of IrType
+  if st = self_type
+    params << low.typer.llvm_type(st)
+  end
   arg_types.each do |t|
     params << low.typer.llvm_type(t)
   end
   ret_ir = low.typer.llvm_return_type(ret)
   fn_type = low.module.types.func(params, ret_ir)
-  fn = codegen_fun(low, name, target, arg_types, fn_type, ret_ir)
+  fn = codegen_fun(low, name, target, self_type, arg_types, fn_type, ret_ir)
   # Hosted codegen_fun: a def whose analysed return type is NoReturn carries `noreturn` (fun.cr).
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
@@ -75,27 +82,34 @@ pub def target_def_fun(low : Lowerer, target : Def, arg_types : Array(Type), ret
   fn
 end
 
-# The hosted `codegen_fun` (fun.cr:271), plain case. The function is declared first, so a
-# recursive call finds it. Its body is lowered in a frame of its own: the alloca and
-# entry blocks as `new_entry_block` makes them, each parameter a value read where it
-# arrives (hosted `already_loaded`), the body, and the return. The caller's state is put
+# The hosted `codegen_fun` (fun.cr:271), plain case. The function is declared first, so a recursive
+# call finds it. Its body is lowered in a frame of its own: the alloca and entry blocks as
+# `new_entry_block` makes them, `self` (when the owner is passed as self) and each parameter a value
+# read where it arrives (hosted `already_loaded`), the body, and the return. The caller's state is put
 # back afterwards (hosted `old_position`, `old_alloca_block`, `old_needs_value`).
-pub def codegen_fun(low : Lowerer, name : String, target : Def, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType) : Function
+pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType) : Function
   fn = low.module.define_function(name, fn_type)
   fn.call_convention = CallConv::C
   fn.linkage = Linkage::Internal
   add_body_attributes(fn, low.module.triple)
 
   saved = LowerSavedState.new(low.context, low.alloca_block, low.entry_block, low.builder.insert_block, low.needs_value, low.in_main)
-  low.context = LowerContext.new(fn, fn_type, nil, Hash(String, LowerVar).new)
+  low.context = LowerContext.new(fn, fn_type, self_type, Hash(String, LowerVar).new)
   low.current_context.var_unions = low.analysed.def_var_unions[target]?
   low.alloca_block = nil
   low.entry_block = nil
   low.new_entry_block
 
+  first = 0
+  if st = self_type
+    self_param = fn.param(0)
+    fn.name_param(self_param, "self")
+    low.current_context.vars["self"] = LowerVar.new(self_param, st, true)
+    first = 1
+  end
   i = 0
   while i < target.args.size
-    param = fn.param(i)
+    param = fn.param(i + first)
     fn.name_param(param, target.args[i].name)
     low.current_context.vars[target.args[i].name] = LowerVar.new(param, arg_types[i], true)
     i += 1
