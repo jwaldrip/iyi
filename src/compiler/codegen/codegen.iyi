@@ -385,7 +385,7 @@ def refuse_at(location : Location, caret_len : Int32, message : String) : NoRetu
   STDERR.puts "#{gutter}#{text[indent, text.bytesize - indent]}"
   STDERR.puts "#{pad}#{carets}"
   STDERR.puts "Error: #{message}"
-  LibC.exit(1)
+  exit(1)
 end
 
 # The source form of an operand or call, for a refusal message.
