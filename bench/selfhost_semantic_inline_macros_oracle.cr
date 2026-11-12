@@ -207,14 +207,11 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
     end
   end
 
-  user_types = program.types.reject { |k, _| initial_types.includes?(k) }
-  user_types.keys.sort.each do |name|
-    dump_type(user_types[name], io, "", entry)
-  end
-
-  # The built-in types the entry declares (a reopen), dumped as declared types.
+  # Every top-level type is walked, as the port does: the entry filter prints what the
+  # entry declares, and a namespace named like a built-in holds declarations the built-in
+  # set would have hidden.
   program.types.keys.sort.each do |name|
-    dump_type(program.types[name], io, "", entry) if initial_types.includes?(name)
+    dump_type(program.types[name], io, "", entry)
   end
 
   # Every type, built-in ones included, for the defs the entry adds to a type it does not declare.

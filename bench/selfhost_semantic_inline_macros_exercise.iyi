@@ -127,11 +127,6 @@ module BenchSelfhostInlineMacrosExercise
     sb = String::Builder.new
     sb << dump_program_declarations(prog, entry)
     prog.types.keys.sorted.each do |name|
-      if prog.initial_type_names.includes?(name)
-        dump_tree_declared(prog.types[name], sb, "", entry)
-      end
-    end
-    prog.types.keys.sorted.each do |name|
       dump_reopened(prog.types[name], sb, entry)
     end
     sb.to_s
