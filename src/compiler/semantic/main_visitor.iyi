@@ -12,6 +12,8 @@ import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
+import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of}
+import compiler/types/types::{NamedArgumentType}
 
 # One construct the body typing could not type or refused, as the pipeline's
 # refusal table reads it. `file` is nil and `line` and `column` are 0 when the
@@ -142,13 +144,18 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The type of a node a visit has already visited. Strict mode raises when it
-  # has none, as `type_of` does; total mode returns nil and the caller leaves its
-  # own node untyped.
+  # has none: the reason the node was refused when there is one, else a BUG. Total
+  # mode returns nil and the caller leaves its own node untyped.
   def child_type(node : ASTNode) : Type?
     if t = @node_types[node]?
       return t
     end
-    raise("BUG: node has no type: #{node.to_s}") unless @total
+    unless @total
+      if reason = @untyped_reasons[node]?
+        raise(reason)
+      end
+      raise("BUG: node has no type: #{node.to_s}")
+    end
     nil
   end
 
@@ -369,6 +376,12 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Select) : Bool
+    expand_literal(node)
+  end
+
+  # A multiple assignment is expanded before it is typed, as the hosted pass does
+  # (main_visitor.cr 3736): its targets are assigned from temporaries.
+  def visit(node : MultiAssign) : Bool
     expand_literal(node)
   end
 
@@ -1573,6 +1586,43 @@ pub class MainVisitor < TypeNodeHost
     if ret_type
       set_type(node, ret_type)
     end
+    false
+  end
+
+  # A tuple literal is the tuple of its elements' types (hosted visit(TupleLiteral)).
+  def visit(node : TupleLiteral) : Bool
+    types = [] of Type
+    i = 0
+    while i < node.elements.size
+      e = node.elements[i]
+      e.accept(self)
+      if et = child_type(e)
+        types << et
+      else
+        return false
+      end
+      i = i + 1
+    end
+    set_type(node, tuple_type_of(@program, types))
+    false
+  end
+
+  # A named tuple literal is the named tuple of its entries' types (hosted
+  # visit(NamedTupleLiteral)).
+  def visit(node : NamedTupleLiteral) : Bool
+    entries = [] of NamedArgumentType
+    i = 0
+    while i < node.entries.size
+      entry = node.entries[i]
+      entry.value.accept(self)
+      if et = child_type(entry.value)
+        entries << NamedArgumentType.new(entry.key, et)
+      else
+        return false
+      end
+      i = i + 1
+    end
+    set_type(node, named_tuple_type_of(@program, entries))
     false
   end
 
