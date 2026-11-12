@@ -509,14 +509,19 @@ class Counter < Iyi::Visitor
   end
 end
 
-# The literal walk: the hosted expander lowers each range literal when the
-# walk reaches it, and the walk continues into the call it built, so a literal
-# inside a range is lowered too. Only range literals are lowered here.
+# The literal walk: the hosted expander lowers each literal when the walk
+# reaches it, and the walk continues into the call it built, so a literal
+# inside a lowered literal is lowered too. Range literals and string
+# interpolations are lowered here so far.
 class LiteralWalk < Iyi::Transformer
   def initialize(@program : Iyi::Program)
   end
 
   def transform(node : Iyi::RangeLiteral) : Iyi::ASTNode
+    Iyi::LiteralExpander.new(@program).expand(node).transform(self)
+  end
+
+  def transform(node : Iyi::StringInterpolation) : Iyi::ASTNode
     Iyi::LiteralExpander.new(@program).expand(node).transform(self)
   end
 end

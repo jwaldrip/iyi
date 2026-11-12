@@ -4,17 +4,19 @@ module compiler/semantic/literal_expander
 # LiteralExpander does (src/compiler/iyi/semantic/literal_expander.cr, the
 # hosted compiler). Phase S slice S1e ports it one literal kind per increment.
 #
-# Ported so far: range literals. `1 .. 3` is `Range.new(1, 3, false)` and
-# `1 ... 3` is `Range.new(1, 3, true)`, the `from` and `to` expressions left as
-# written: a literal inside them is lowered by the walk that reaches it, as the
-# hosted pipeline does when its visitor reaches the call.
+# Ported so far: range literals and string interpolation. `1 .. 3` is
+# `Range.new(1, 3, false)` and `1 ... 3` is `Range.new(1, 3, true)`, the `from`
+# and `to` expressions left as written: a literal inside them is lowered by the
+# walk that reaches it, as the hosted pipeline does when its visitor reaches the
+# call. `"a#{b}c"` is `String.interpolation("a", b, "c")`, after the literal
+# pieces that touch each other are merged.
 #
 # Not ported yet, so a literal of these kinds is left as written and the
 # literal fixtures never contain one: array and hash literals (with their
-# temporaries), named containers, string interpolation, `case`, multiple
-# assignment, op-assign, `select`, regex and proc literals.
+# temporaries), named containers, `case`, multiple assignment, op-assign,
+# `select`, regex and proc literals.
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Expressions, Path, RangeLiteral}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Path, RangeLiteral, StringInterpolation, StringLiteral}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
@@ -23,5 +25,38 @@ pub class LiteralExpander < Transformer
     bool = BoolLiteral.new(node.exclusive)
     call = Call.new(path, "new", [node.from, node.to, bool] of ASTNode)
     call.transform(self)
+  end
+
+  def transform(node : StringInterpolation) : ASTNode
+    pieces = combine_contiguous_string_literals(node.expressions)
+    call = Call.new(Path.global(["String"] of String), "interpolation", pieces)
+    call.transform(self)
+  end
+
+  # The hosted expander merges each literal piece into the piece after it when
+  # both are literals, and drops the first. Its `reject!` reads the buffer in
+  # place, so a run of literals collapses into its last piece. The same walk
+  # here: `pieces` is updated as it goes, and a merged piece is not kept.
+  def combine_contiguous_string_literals(pieces : Array(ASTNode)) : Array(ASTNode)
+    kept = [] of ASTNode
+    n = pieces.size
+    i = 0
+    while i < n
+      piece = pieces[i]
+      merged = false
+      if i < n - 1
+        next_piece = pieces[i + 1]
+        if piece.is_a?(StringLiteral) && next_piece.is_a?(StringLiteral)
+          joined = piece.as(StringLiteral).value + next_piece.as(StringLiteral).value
+          pieces[i + 1] = StringLiteral.new(joined)
+          merged = true
+        end
+      end
+      if !merged
+        kept << piece
+      end
+      i = i + 1
+    end
+    kept
   end
 end

@@ -205,7 +205,13 @@ echo
 echo "== 5. Literal expansion: range literals, the port's walk against the hosted walk"
 # The literal fixtures (semtx_lit_*.iyi) are walked by the port (the driver's
 # `literals` mode) and by the hosted walk (the oracle's `literals` mode), and
-# the rewritten trees must match. Only range literals are lowered so far.
+# the rewritten trees must match. Range literals and string interpolations are
+# lowered so far.
+# An interpolation made only of literal pieces is kept out of these fixtures:
+# the hosted parser folds it into one string (consume_interpolation in
+# src/compiler/iyi/syntax/parser.cr), and the port's parser keeps the pieces.
+# That is the parser's divergence, not the expander's, so every adjacency case
+# here carries a variable piece.
 LITERAL="$REPO/src/compiler/semantic/literal_expander.iyi"
 lit_count=0
 lit_diverged=0
@@ -246,6 +252,14 @@ LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a range literal names the wrong global type" "$LITERAL" 'Path.global(["Range"] of String)' 'Path.global(["Ranges"] of String)' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a range nested in a range is not lowered" "$LITERAL" 'call.transform(self)' 'call' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "adjacent string literals are not merged" "$LITERAL" 'if piece.is_a?(StringLiteral) && next_piece.is_a?(StringLiteral)' 'if false' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a merged literal keeps only the next piece's text" "$LITERAL" 'joined = piece.as(StringLiteral).value + next_piece.as(StringLiteral).value' 'joined = next_piece.as(StringLiteral).value' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a merged literal joins its pieces in reverse" "$LITERAL" 'joined = piece.as(StringLiteral).value + next_piece.as(StringLiteral).value' 'joined = next_piece.as(StringLiteral).value + piece.as(StringLiteral).value' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "the last pair of a run is not merged" "$LITERAL" 'if i < n - 1' 'if i < n - 2' -- check_literals_agree || status=1
 echo "  $LIT_MUTATIONS literal mutation proofs run"
 
 echo
