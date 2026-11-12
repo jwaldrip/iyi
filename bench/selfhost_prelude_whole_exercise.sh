@@ -71,7 +71,7 @@ probe_whole_prelude() {
   local target="$REPO/src/iyi/prelude.iyi"
   local log="$WORK/probe_whole_prelude.log"
   set +e
-  "$REPO/.build/iyi-compile" --probe-phase "$target" > "$log" 2>&1
+  (cd "$WORK" && "$REPO/.build/iyi-compile" --probe-phase "$target" > "$log" 2>&1)
   set -e
   if grep -qF "[phase] link: pass" "$log"; then
     echo "link"
