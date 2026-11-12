@@ -1,0 +1,7 @@
+class Box(T)
+  def id(x : T) : T
+    x
+  end
+end
+
+Box(Int32).allocate.id(1)

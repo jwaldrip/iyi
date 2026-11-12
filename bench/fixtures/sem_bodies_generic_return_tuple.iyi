@@ -1,0 +1,14 @@
+@[Unsafe("the fixture returns a raw pointer")]
+class Box(T)
+  def pair(x : T) : Tuple(T, Bool)
+    {x, true}
+  end
+
+  def cell : Pointer(T)
+    Pointer(T).new(0_u64)
+  end
+end
+
+b = Box(Int32).allocate
+y = b.pair(1)
+c = b.cell
