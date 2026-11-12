@@ -22,14 +22,18 @@ module compiler/tools/typed_dump
 import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/top_level::{NamedType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 
 # The type label one typed node is printed with. The gate's mutation proof
 # replaces this body to print a wrong type for one node kind.
 def typed_label(node : ASTNode, t : Type) : String
-  t.full_name
+  if t.is_a?(NamedType)
+    t.full_name
+  else
+    t.to_s
+  end
 end
 
 # The first line of a reason, so one reason is always one output line.
