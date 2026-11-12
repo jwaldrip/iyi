@@ -333,6 +333,22 @@ class ExceptionHandlerRefuser < Visitor
   end
 end
 
+# The refusal of `rescue` and `ensure` in a program, before any lowering. The driver
+# calls it on every resolved module; the refusal is by name, never a silent lowering.
+pub def refuse_exception_handlers(node : ASTNode) : Nil
+  refuser = ExceptionHandlerRefuser.new
+  node.accept(refuser)
+  if message = refuser.refusal
+    if loc = refuser.location
+      if kw = keyword_location(loc, refuser.keyword)
+        refuse_at(kw, refuser.caret, message)
+      end
+      refuse_at(loc, refuser.caret, message)
+    end
+    refuse_port(message)
+  end
+end
+
 class StructCallCollector < Visitor
   getter struct_calls : Array(String)
   property custom_types : Hash(String, CustomTypeInfo)
@@ -4436,17 +4452,7 @@ end
 pub def compile_source_to_module(src : String, filename : String, context : Context, mod : Module) : CodeGenVisitor
   parser = Parser.new(src, filename)
   node = parser.parse
-  refuser = ExceptionHandlerRefuser.new
-  node.accept(refuser)
-  if message = refuser.refusal
-    if loc = refuser.location
-      if kw = keyword_location(loc, refuser.keyword)
-        refuse_at(kw, refuser.caret, message)
-      end
-      refuse_at(loc, refuser.caret, message)
-    end
-    refuse_port(message)
-  end
+  refuse_exception_handlers(node)
 
   prog = SemanticProgram.new
   register_primitive_operators(prog)

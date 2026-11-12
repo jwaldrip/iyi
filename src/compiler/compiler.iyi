@@ -17,7 +17,7 @@ import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/llvm
-import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, register_primitive_operators}
+import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, refuse_exception_handlers, register_primitive_operators}
 import compiler/platform/target
 import compiler/platform/linker::{Linker}
 import compiler/loader::{Loader, ModuleInfo, IyiPath}
@@ -109,6 +109,11 @@ pub class Compiler
     if @config.probe_phase
       puts "[phase] parse: pass"
       STDOUT.flush
+    end
+
+    # Exception handling is refused by name, before any lowering (SPEC.md III.1).
+    resolved_modules.each do |mod_info|
+      refuse_exception_handlers(mod_info.ast)
     end
 
     # 3. Normalise: run normalizer over each resolved module's AST

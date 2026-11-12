@@ -43,6 +43,11 @@ echo "  built .build/iyi-compile successfully"
 
 echo
 echo "== 2. Whole program execution parity: pure iyi compiler vs shipped compiler"
+# compile_raise.iyi is not a parity fixture. It tests exception lowering (rescue,
+# ensure, the raise runtime) under an empty prelude, a mode the port no longer has;
+# exception lowering is retired in the port, which refuses rescue and ensure by name
+# (section 7). Under the default prelude the oracle refuses it for another reason:
+# it redefines Pointer(T)#[], a prelude method.
 FIXTURES=(
   "bench/fixtures/compile_exit.iyi"
   "bench/fixtures/compile_arith.iyi"
@@ -59,7 +64,6 @@ FIXTURES=(
   "bench/fixtures/compile_cross_const.iyi"
   "bench/fixtures/compile_reopen_class.iyi"
   "bench/fixtures/compile_resolve_order.iyi"
-  "bench/fixtures/compile_raise.iyi"
   "bench/fixtures/compile_stdout.iyi"
 )
 
@@ -300,7 +304,29 @@ else
   echo "    shipped:  $(grep -m1 'Error' "$WORK/shipped_implicit.log" || true)"
   status=1
 fi
-echo "  Refusal summary: $refusals/6 malformed scenarios refused properly"
+
+# 7. A rescue under the default prelude, with no prelude method redefined. The
+# shipped compiler refuses it; the pure compiler must refuse it with the same first
+# error line and exit the same way.
+set +e
+"$IYI" build -o "$WORK/shipped_rescue" "$REPO/bench/fixtures/compile_rescue_refused.iyi" > "$WORK/shipped_rescue.log" 2>&1
+shipped_rescue_rc=$?
+"$REPO/.build/iyi-compile" -o "$WORK/bad7" "$REPO/bench/fixtures/compile_rescue_refused.iyi" > "$WORK/selfhost_rescue.log" 2>&1
+selfhost_rescue_rc=$?
+set -e
+shipped_rescue_msg=$(grep -m1 '^Error: ' "$WORK/shipped_rescue.log" || true)
+selfhost_rescue_msg=$(grep -m1 '^Error: ' "$WORK/selfhost_rescue.log" || true)
+if [ "$selfhost_rescue_rc" -eq "$shipped_rescue_rc" ] && [ "$selfhost_rescue_rc" -ne 0 ] && \
+   [ -n "$shipped_rescue_msg" ] && [ "$selfhost_rescue_msg" = "$shipped_rescue_msg" ]; then
+  echo "  properly refused: rescue, same message and exit (rc=$selfhost_rescue_rc)"
+  refusals=$((refusals + 1))
+else
+  echo "  FAIL: rescue: pure iyi rc=$selfhost_rescue_rc, shipped rc=$shipped_rescue_rc"
+  echo "    pure iyi: $selfhost_rescue_msg"
+  echo "    shipped:  $shipped_rescue_msg"
+  status=1
+fi
+  echo "  Refusal summary: $refusals/7 malformed scenarios refused properly"
 
 echo
 echo "== 6. Guarded mutation proofs"
@@ -567,25 +593,14 @@ mutate_compiler_source "pipeline drops default entry point for declaration-only 
   '# top_level << Nop.new' \
   -- check_compile_rc "$REPO/bench/fixtures/compile_no_top_level.iyi" 0
 
-# compile_raise is a run fixture: the shipped compiler accepts it and runs it
-# (rc 38), and the fixture carries its own runtime. These corrupt that runtime.
-prove_mutation "corrupt runtime __crystal_raise entry point" \
-  "$REPO/bench/fixtures/compile_raise.iyi" \
-  'p64[4] = ex.address' \
-  'p64[4] = 0_u64' \
-  -- check_fixture_rc "$REPO/bench/fixtures/compile_raise.iyi" 38 || status=1
-
-prove_mutation "corrupt runtime __crystal_personality entry point" \
-  "$REPO/bench/fixtures/compile_raise.iyi" \
-  'return 6' \
-  'return 8' \
-  -- check_fixture_rc "$REPO/bench/fixtures/compile_raise.iyi" 38 || status=1
-
-prove_mutation "corrupt runtime __crystal_get_exception entry point" \
-  "$REPO/bench/fixtures/compile_raise.iyi" \
-  'p64[4]' \
-  'p64[0]' \
-  -- check_fixture_rc "$REPO/bench/fixtures/compile_raise.iyi" 38 || status=1
+# compile_raise.iyi left the parity set (see the note at the fixture list), so its
+# runtime mutations no longer have a run to be caught by. The rescue refusal is
+# proven below in its place.
+prove_mutation "rescue refusal names ensure instead" \
+  "$REPO/bench/fixtures/compile_rescue_refused.iyi" \
+  'rescue' \
+  'ensure' \
+  -- check_refusal "$REPO/bench/fixtures/compile_rescue_refused.iyi" "iyi has no exceptions to rescue" || status=1
 
 # The refusal of an explicit raise: renaming the raise makes the refused message
 # change, so the refusal check must notice.
