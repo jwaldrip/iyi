@@ -496,7 +496,6 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     return
   end
   if cond_node.is_a?(RespondsTo)
-    # The hosted expansion of `responds_to?` is a Bool literal, which folds the same way (a constant, no branch).
     if responds_to_value(low, cond_node.as(RespondsTo))
       codegen_node(low, then_node)
     else
