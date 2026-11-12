@@ -389,6 +389,45 @@ pub class Nop < ASTNode
   end
 end
 
+# The body of a def declared with `@[Primitive(:name)]`: the declarations pass puts this node in place of the
+# def's own (empty) body, the main pass types it by name, and the lowering emits the operation it names. No
+# source text parses to it. The hosted compiler declares it in semantic/ast.cr; it lives with the other nodes
+# here because the visitor and the transformer dispatch over every node class.
+pub class Primitive < ASTNode
+  getter name : String
+  property extra : ASTNode?
+
+  def initialize(@name : String)
+  end
+
+  def clone_without_location : self
+    Primitive.new(@name)
+  end
+
+  def ==(other : self) : Bool
+    (@name == other.name)
+  end
+
+  def ==(other : ASTNode) : Bool
+    if other.is_a?(self)
+      self == other
+    else
+      false
+    end
+  end
+
+  def hash : Int32
+    h = 17
+    h = 31 &* h &+ hash_val(@name)
+    h
+  end
+
+  def to_s(sb : StringBuilder) : Nil
+    sb << "# primitive: "
+    sb << @name
+  end
+end
+
 pub class NilLiteral < ASTNode
   def initialize
   end
@@ -1640,14 +1679,27 @@ pub class If < ASTNode
   property then : ASTNode
   property else : ASTNode
   property ternary : Bool
+  property from_and : Bool
+  property from_or : Bool
+  property truthy : Bool
+  property falsey : Bool
 
   def initialize(@cond : ASTNode, a_then : ASTNode? = nil, a_else : ASTNode? = nil, @ternary : Bool = false)
     @then = a_then || Nop.new
     @else = a_else || Nop.new
+    @from_and = false
+    @from_or = false
+    @truthy = false
+    @falsey = false
   end
 
   def clone_without_location : self
-    If.new(@cond.clone, @then.clone, @else.clone, @ternary)
+    copy = If.new(@cond.clone, @then.clone, @else.clone, @ternary)
+    copy.from_and = @from_and
+    copy.from_or = @from_or
+    copy.truthy = @truthy
+    copy.falsey = @falsey
+    copy
   end
 
   def accept_children(visitor) : Nil

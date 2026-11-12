@@ -117,6 +117,8 @@ for name in arith control probe_switch probe_phi memory consts calls sizeof visi
     echo "identical: $name"
   else
     echo "NOT identical: $name: $(echo "$verdict" | head -1)"
+    # The rest of what the tool said: on a runner the log is all there is to read the difference from.
+    echo "$verdict" | sed -n '2,12p' | sed 's/^/    /'
     failed=1
   fi
 done
