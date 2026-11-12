@@ -34,6 +34,18 @@ pub abstract class Type
     @struct = false
   end
 
+  # The name without type parameters: a namespace prefix and a generic's base
+  # name (hosted `to_s_with_options(generic_args: false)`).
+  def base_full_name : String
+    full_name
+  end
+
+  # The name as a type argument. The hosted printer passes skip_union_parens to
+  # a type argument, so a union loses its outer parentheses.
+  def arg_full_name : String
+    full_name
+  end
+
   # Records a place this type is declared, as the hosted pass does (`attach_doc`).
   def add_location(location : Location) : Nil
     if @locations.nil?
@@ -43,16 +55,20 @@ pub abstract class Type
     nil
   end
 
-  def full_name : String
+  def base_full_name : String
     if ns = @namespace
       if ns.is_a?(SemanticProgram)
         @name
       else
-        "#{ns.full_name}::#{@name}"
+        "#{ns.base_full_name}::#{@name}"
       end
     else
       @name
     end
+  end
+
+  def full_name : String
+    base_full_name
   end
 
   def to_s : String
@@ -486,7 +502,7 @@ pub class MetaclassType < ModuleType
   end
 
   def full_name : String
-    "#{@instance_type.full_name}.class"
+    "#{@instance_type.to_s}.class"
   end
 
   def to_s : String
@@ -594,6 +610,12 @@ pub class GenericClassType < ClassType
   getter instantiated_types : Array(Type)
   property splat_index : Int32?
 
+  # The unbound generic with its type variables, `Box(T)`: the hosted
+  # `to_s_with_options` (2204-2215). `full_name` is the name without them.
+  def to_s : String
+    "#{base_full_name}(#{@type_vars.join(", ")})"
+  end
+
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String), @splat_index : Int32? = nil, superclass : Type? = nil)
     super(program, namespace, name, superclass)
     @instantiated_types = [] of Type
@@ -641,6 +663,12 @@ end
 pub class GenericModuleType < ModuleType
   getter type_vars : Array(String)
   property splat_index : Int32?
+
+  # The unbound generic with its type variables, `Box(T)`: the hosted
+  # `to_s_with_options` (2204-2215). `full_name` is the name without them.
+  def to_s : String
+    "#{base_full_name}(#{@type_vars.join(", ")})"
+  end
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String), @splat_index : Int32? = nil)
     super(program, namespace, name)
@@ -799,7 +827,7 @@ pub class UnionType < Type
     true
   end
 
-  def full_name : String
+  def arg_full_name : String
     non_nil_names = [] of String
     has_nil = false
     i = 0
@@ -816,7 +844,11 @@ pub class UnionType < Type
     if has_nil
       sorted << "Nil"
     end
-    "(#{sorted.join(" | ")})"
+    sorted.join(" | ")
+  end
+
+  def full_name : String
+    "(#{arg_full_name})"
   end
 
   def to_s : String
@@ -869,6 +901,9 @@ end
 pub class SemanticProgram < NonGenericModuleType
   @object_type : ClassType?
   property merge_hook : TypeHook?
+  # iyi: the typed dump's mode. Strict (the default) refuses a name the program
+  # cannot resolve, as it always has; total mode records it and goes on.
+  property total_mode : Bool = false
   @value_type : ClassType?
   @reference_type : ClassType?
   @struct_type : ClassType?
@@ -1358,7 +1393,7 @@ pub class SemanticProgram < NonGenericModuleType
       if t
         return t
       end
-      refuse_port("undefined constant #{path.to_s}")
+      return refuse_constant(path)
     end
 
     first_name = path.names.first
@@ -1414,7 +1449,7 @@ pub class SemanticProgram < NonGenericModuleType
     end
 
     if t.nil?
-      refuse_port("undefined constant #{path.to_s}")
+      return refuse_constant(path)
     end
 
     if path.names.size == 1
@@ -1431,8 +1466,33 @@ pub class SemanticProgram < NonGenericModuleType
     if res
       res
     else
-      refuse_port("undefined constant #{path.to_s}")
+      refuse_constant(path)
     end
+  end
+
+  # iyi: a name the program cannot resolve. Strict mode refuses it as the port
+  # always has. Total mode answers an UnresolvedType, so the nodes that name it
+  # are recorded untyped with the reason and the pass goes on.
+  def refuse_constant(path : Path) : Type
+    message = "undefined constant #{path.to_s}"
+    refuse_port(message) unless @total_mode
+    UnresolvedType.new(self, path.to_s)
+  end
+end
+
+# iyi: the type of a name the program cannot resolve (see refuse_constant). Its
+# full name cannot equal the name of a type the program declares.
+pub class UnresolvedType < Type
+  def initialize(program : SemanticProgram, name : String)
+    super(program, nil, name)
+  end
+
+  def full_name : String
+    "<unresolved #{@name}>"
+  end
+
+  def type_desc : String
+    "unresolved"
   end
 end
 

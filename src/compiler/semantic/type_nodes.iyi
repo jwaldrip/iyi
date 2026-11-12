@@ -1,0 +1,246 @@
+module compiler/semantic/type_nodes
+
+# The typing of the nodes a body can write as types, and of the casts that name
+# them: `Pointer(Int32)`, `Int32 | String`, `Int32 -> Int32`, `Int32.class`,
+# `self`, `x.as(T)`, `x.as?(T)`, and a `fun` with a body. The hosted pass does
+# these in its main visitor (src/compiler/iyi/semantic/main_visitor.cr:
+# `visit(node : Generic)` 259-335, `ProcNotation` 337-363, `Union` 365-374,
+# `Metaclass` 376-380, `Self` 382-385, `Cast | NilableCast` 2310-2331,
+# `FunDef` 2333-2365). Each function takes the visitor (a TypeNodeHost, the
+# abstract base of MainVisitor) as its first argument and is called from a
+# one-line `visit` in MainVisitor.
+#
+# Inside a type argument a node is typed as the instance type, not its metaclass,
+# so each visit here brackets its children with bracket_type_args(1) and (-1)
+# (hosted `@in_type_args`). A generic written there is `Box(Int32)`, not
+# `Box(Int32).class`.
+#
+# Not ported here: named type arguments (`Foo(x: Int32)`), which only NamedTuple
+# accepts, so the port refuses them by name; and the `raises` mark a cast leaves
+# on its method, which the port does not track yet.
+
+import compiler/syntax/ast::{ASTNode, Cast, FunDef, Generic, Metaclass, NilableCast, ProcNotation, Self, Union}
+import compiler/semantic/type_node_host::{TypeNodeHost}
+import compiler/semantic/top_level::{SemanticProgram, Type, TypeHook}
+import compiler/types/type_system::{TypeSystem}
+import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, TypeQueries}
+import compiler/types/unification::{TypeUnification}
+import compiler/types/lookup::{LookupError, TypeLookup}
+
+# The lookup every type node is resolved with. The program's type system owns
+# the generic instance cache, so a `Pointer(Int32)` written here is the object
+# the rest of the program holds. A program with no type system yet gets one
+# now; it becomes the program's merge hook, as `TypeSystem.new` does.
+pub def type_node_lookup(visitor : TypeNodeHost) : TypeLookup
+  program : SemanticProgram = visitor.program
+  hook : TypeHook? = program.merge_hook
+  if hook.is_a?(TypeSystem)
+    return TypeLookup.new(hook.as(TypeSystem).instances)
+  end
+  system = TypeSystem.new(program)
+  TypeLookup.new(system.instances)
+end
+
+# The metaclass of a resolved type, as the hosted `Type#metaclass` gives it. A
+# generic instance has its own metaclass type; any other type goes through the
+# unification helper. nil when the type has none.
+pub def type_node_metaclass(type : Type) : Type?
+  if type.is_a?(GenericClassInstanceType)
+    return type.as(GenericClassInstanceType).metaclass
+  end
+  if type.is_a?(GenericModuleInstanceType)
+    return type.as(GenericModuleInstanceType).metaclass
+  end
+  TypeUnification.metaclass_of(type)
+end
+
+# `Pointer(Int32)`: in an expression the node is the metaclass of the instantiated
+# type, so a call on it (`Pointer(Int32).malloc(1)`) resolves against that
+# metaclass. In a type argument it is the instance type itself.
+pub def visit_generic(visitor : TypeNodeHost, node : Generic) : Bool
+  if node.named_args
+    return visitor.refuse(node, "named type arguments are not typed yet")
+  end
+
+  node.name.accept(visitor)
+  visitor.bracket_type_args(1)
+  i = 0
+  while i < node.type_vars.size
+    node.type_vars[i].accept(visitor)
+    i = i + 1
+  end
+  visitor.bracket_type_args(-1)
+
+  resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)
+  if resolved.is_a?(LookupError)
+    return visitor.refuse(node, resolved.as(LookupError).message)
+  end
+  instance = resolved.as(Type)
+  if visitor.in_type_args?
+    visitor.set_type(node, instance)
+    return false
+  end
+  meta = type_node_metaclass(instance)
+  if meta.nil?
+    return visitor.refuse(node, "#{instance.full_name} doesn't have a metaclass")
+  end
+  visitor.set_type(node, meta.as(Type))
+  false
+end
+
+# `Int32 | String`: typed as the merged union type, the type a union written in
+# a body denotes (hosted `visit(node : Union)` 365-374 and `lookup_union`).
+pub def visit_union(visitor : TypeNodeHost, node : Union) : Bool
+  visitor.bracket_type_args(1)
+  i = 0
+  while i < node.types.size
+    node.types[i].accept(visitor)
+    i = i + 1
+  end
+  visitor.bracket_type_args(-1)
+
+  resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)
+  if resolved.is_a?(LookupError)
+    return visitor.refuse(node, resolved.as(LookupError).message)
+  end
+  visitor.set_type(node, resolved.as(Type))
+  false
+end
+
+# `Int32 -> String`: the proc type of its inputs and output (hosted
+# `visit(node : ProcNotation)` 337-363). A missing output is Void, as the hosted
+# pass gives it.
+pub def visit_proc_notation(visitor : TypeNodeHost, node : ProcNotation) : Bool
+  visitor.bracket_type_args(1)
+  if ins = node.inputs
+    i = 0
+    while i < ins.size
+      ins[i].accept(visitor)
+      i = i + 1
+    end
+  end
+  if out = node.output
+    out.accept(visitor)
+  end
+  visitor.bracket_type_args(-1)
+
+  resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)
+  if resolved.is_a?(LookupError)
+    return visitor.refuse(node, resolved.as(LookupError).message)
+  end
+  visitor.set_type(node, resolved.as(Type))
+  false
+end
+
+# `Int32.class` written as a type argument: the metaclass of the instance type
+# its name denotes (hosted `visit(node : Metaclass)` 376-380). Written in an
+# expression, the name is already a metaclass and has none, which the hosted
+# pass reports as an undefined method.
+pub def visit_metaclass(visitor : TypeNodeHost, node : Metaclass) : Bool
+  node.name.accept(visitor)
+  base = visitor.child_type(node.name)
+  if base.nil?
+    return false
+  end
+  base_type = base.as(Type)
+  meta = type_node_metaclass(TypeQueries.virtual_type(base_type))
+  if meta.nil?
+    return visitor.refuse(node, "undefined method 'class' for #{base_type.full_name}")
+  end
+  visitor.set_type(node, meta.as(Type))
+  false
+end
+
+# `self` written as a type (`Pointer(self)`): the scope's type, resolved as the
+# hosted `the_self(node).instance_type` (main_visitor.cr 382-385).
+pub def visit_self(visitor : TypeNodeHost, node : Self) : Bool
+  resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)
+  if resolved.is_a?(LookupError)
+    return visitor.refuse(node, resolved.as(LookupError).message)
+  end
+  visitor.set_type(node, resolved.as(Type))
+  false
+end
+
+# `x.as(T)`: the target's instance type. The object and the target are visited
+# first, as the hosted pass does; the target is a type argument.
+pub def visit_cast(visitor : TypeNodeHost, node : Cast) : Bool
+  node.obj.accept(visitor)
+  visitor.bracket_type_args(1)
+  node.to.accept(visitor)
+  visitor.bracket_type_args(-1)
+
+  target = visitor.child_type(node.to)
+  if target.nil?
+    return false
+  end
+  visitor.set_type(node, target.as(Type))
+  false
+end
+
+# `x.as?(T)`: the target's instance type with Nil, the union the hosted
+# `NilableCast#update` gives it.
+pub def visit_nilable_cast(visitor : TypeNodeHost, node : NilableCast) : Bool
+  node.obj.accept(visitor)
+  visitor.bracket_type_args(1)
+  node.to.accept(visitor)
+  visitor.bracket_type_args(-1)
+
+  target = visitor.child_type(node.to)
+  if target.nil?
+    return false
+  end
+  visitor.set_type(node, visitor.program.type_merge(target.as(Type), visitor.program.nil_type))
+  false
+end
+
+# `fun name(a : Int32) : Int32 ... end` with a body: the body is typed in its own
+# visitor, with the arguments as its locals and the program as its scope, and
+# its type must fit the declared return type (hosted `visit(node : FunDef)`
+# 2333-2365). The fun node itself is typed Nil, as the hosted pass types it.
+pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
+  body = node.body
+  if body.nil?
+    return false
+  end
+  lookup = type_node_lookup(visitor)
+
+  vars = Hash(String, Type).new
+  i = 0
+  while i < node.args.size
+    arg = node.args[i]
+    restriction = arg.restriction
+    if restriction.nil?
+      return visitor.refuse(node, "fun argument '#{arg.name}' needs a type")
+    end
+    arg_type = lookup.lookup(visitor.current_type, restriction.as(ASTNode))
+    if arg_type.is_a?(LookupError)
+      return visitor.refuse(node, arg_type.as(LookupError).message)
+    end
+    vars[arg.name] = arg_type.as(Type)
+    i = i + 1
+  end
+
+  declared : Type? = nil
+  if rt = node.return_type
+    declared_type = lookup.lookup(visitor.current_type, rt)
+    if declared_type.is_a?(LookupError)
+      return visitor.refuse(node, declared_type.as(LookupError).message)
+    end
+    declared = declared_type.as(Type)
+  end
+
+  inner = visitor.sub_visitor(vars)
+  body.accept(inner)
+  body_type = inner.child_type(body)
+  if rt_type = declared
+    if bt = body_type
+      merged = visitor.program.type_merge(bt, rt_type)
+      if merged != rt_type
+        return visitor.refuse(node, "expected fun to return #{rt_type.full_name} but it returned #{merged.full_name}")
+      end
+    end
+  end
+  visitor.set_type(node, visitor.program.nil_type)
+  false
+end
