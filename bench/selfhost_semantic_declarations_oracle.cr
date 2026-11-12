@@ -181,7 +181,10 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
     end
   end
 
-  user_types = program.types.reject { |k, _| initial_types.includes?(k) }
+  # Every top-level type is walked, as the port does: the entry filter prints only what the
+  # entry declares, and a namespace named like a built-in holds declarations the built-in set
+  # would have hidden.
+  user_types = program.types
   user_types.keys.sort.each do |name|
     dump_type(user_types[name], io, "", entry)
   end

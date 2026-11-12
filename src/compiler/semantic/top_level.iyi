@@ -2735,14 +2735,10 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
     end
   end
 
-  # User types
-  user_type_names = [] of String
-  program.types.keys.each do |k|
-    unless program.initial_type_names.includes?(k)
-      user_type_names << k
-    end
-  end
-  user_type_names = user_type_names.sorted
+  # Every top-level type is walked: the entry filter prints what the entry declares, and
+  # a namespace the entry shares a name with a built-in (`module enum/x` under the built-in
+  # Enum) holds declarations the built-in set would have hidden.
+  user_type_names = program.types.keys.sorted
 
   user_type_names.each do |name|
     dump_tree_declared(program.types[name], sb, "", entry)
