@@ -626,7 +626,7 @@ module Iyi::Stale
                            nil
                          end
               compiled_key = key_data
-              record_fast_inputs(test_id, file, fast.facts, inputs_path, key_data) unless fast.audit
+              record_fast_inputs(test_id, file, fast.facts, inputs_path, key_data)
 
               # Case 1: Cached Hit!
               if key_data && (hit = key_data.hit)

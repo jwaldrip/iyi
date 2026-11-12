@@ -1265,10 +1265,10 @@ assert 1 + 1 == 2
 IYI
 rm -rf "$CACHE/tests-v1"
 run_json "$WORK/r52" . >/dev/null
-row52_hit="$(run_json "$WORK/r52" .)"
+row52_hit="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r52" .) )"
 expect_eq "$(printf '%s' "$row52_hit" | json_cached)" 2 "unchanged before the edit"
 same_size_edit "$WORK/r52/lib/r52util.iyi" "x + 1" "x + 2"
-row52="$(run_json "$WORK/r52" .)"
+row52="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r52" .) )"
 expect_eq "$(printf '%s' "$row52" | json_cached)" 1 "the same-size edit reruns only the reached test"
 expect_eq "$(printf '%s' "$row52" | json_test reached_test.iyi check)" compiler "the reached test is checked by the compiler"
 expect_contains "$(printf '%s' "$row52" | json_test reached_test.iyi check_reason)" "r52util.iyi" "the check names the edited module"
