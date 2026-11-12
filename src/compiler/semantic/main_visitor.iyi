@@ -14,6 +14,35 @@ import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/new::{define_new_methods}
 
+# One construct the body typing could not type or refused, as the pipeline's
+# refusal table reads it. `file` is nil and `line` and `column` are 0 when the
+# node has no location. `def_name` is the def whose body was being typed, named
+# `Owner#name` inside a type and `name` at top level; nil outside any def.
+pub class Refusal
+  getter reason : String
+  getter file : String?
+  getter line : Int32
+  getter column : Int32
+  getter def_name : String?
+  getter node : ASTNode
+
+  def initialize(@reason : String, @file : String?, @line : Int32, @column : Int32, @def_name : String?, @node : ASTNode)
+  end
+end
+
+# One instantiation whose body typing started with every parameter typed: the
+# instantiated clone of the def (`definition`, the value `call_target_defs` holds),
+# the receiver (`self_type`, nil at top level) and one argument type per parameter,
+# in declaration order. `definition` is the name because `def` is a keyword.
+pub class TypedInstance
+  getter definition : Def
+  getter self_type : Type?
+  getter arg_types : Array(Type)
+
+  def initialize(@definition : Def, @self_type : Type?, @arg_types : Array(Type))
+  end
+end
+
 # iyi: two modes. Strict (the default) raises on the first construct it cannot
 # type, as the port always did, and every existing gate relies on that. Total
 # (`total = true`, the typed dump's mode) records the reason on the node that
@@ -34,6 +63,15 @@ pub class MainVisitor < TypeNodeHost
   property current_yield_nodes : Array(Yield)?
   property total : Bool = false
   property in_type_args : Int32 = 0
+  # The instantiations whose body typing is in progress, by key (receiver, def
+  # name, argument types). A key typed again is a recursive call: it takes the
+  # declared return type, or is refused. Shared with a fun body's visitor.
+  property typing_stack : Array(String)
+  # Every refusal recorded, in order (see Refusal). Shared with a fun body's visitor.
+  property refusals : Array(Refusal)
+  # Every instantiation whose body typing started with all its parameters typed,
+  # in order (see TypedInstance). Shared with a fun body's visitor.
+  property typed_instances : Array(TypedInstance)
 
   def type_args_depth : Int32
     @in_type_args
@@ -81,6 +119,9 @@ pub class MainVisitor < TypeNodeHost
     @current_call_block = nil
     @current_block_context_vars = nil
     @current_yield_nodes = nil
+    @typing_stack = [] of String
+    @refusals = [] of Refusal
+    @typed_instances = [] of TypedInstance
   end
 
   def set_type(node : ASTNode, type : Type) : Type
@@ -119,15 +160,42 @@ pub class MainVisitor < TypeNodeHost
   # false, so a visit can end with `return untyped(node, "...")`.
   def untyped(node : ASTNode, reason : String) : Bool
     @untyped_reasons[node] = reason
+    record_refusal(node, reason)
     false
   end
 
   # A construct the port refuses. Strict mode raises the message (the program's
   # error, as before); total mode records it on the node.
   def refuse(node : ASTNode, message : String) : Bool
+    record_refusal(node, message)
     raise(message) unless @total
     @untyped_reasons[node] = message
     false
+  end
+
+  # Appends one Refusal for `node`: the reason, the node's file, line and column
+  # (0 when it has no location), and the def whose body was being typed, named
+  # `Owner#name` inside a type and `name` at top level.
+  def record_refusal(node : ASTNode, reason : String) : Nil
+    file : String? = nil
+    line = 0
+    column = 0
+    if loc = node.location
+      file = loc.filename
+      line = loc.line_number
+      column = loc.column_number
+    end
+    def_name : String? = nil
+    if cd = @current_def
+      def_name = cd.name
+      if owner = @scope
+        unless owner.is_a?(SemanticProgram)
+          def_name = "#{owner.full_name}##{cd.name}"
+        end
+      end
+    end
+    @refusals << Refusal.new(reason, file, line, column, def_name, node)
+    nil
   end
 
   def untyped_reason?(node : ASTNode) : String?
@@ -1249,6 +1317,35 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
+  # The key of one instantiation: the receiver, the def name and the argument
+  # types (a block adds `&`). The guard in type_method_body compares keys.
+  def instance_key(rec_type : Type, target_def : Def, args : Array(ASTNode), block : Block?) : String
+    parts = [] of String
+    args.each do |a|
+      if at = child_type(a)
+        parts << at.full_name
+      else
+        parts << "?"
+      end
+    end
+    key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
+    if block
+      key = key + "&"
+    end
+    key
+  end
+
+  # A recursive call or an over-deep instantiation is refused at the call site, or
+  # at the def's body when there is no site.
+  def refuse_recursion(site : ASTNode?, target_def : Def, message : String) : Type?
+    anchor : ASTNode = target_def.body.as(ASTNode)
+    if s = site
+      anchor = s
+    end
+    refuse(anchor, message)
+    nil
+  end
+
   # The type a body evaluates to with `args` bound to its parameters, or nil when
   # the body or an argument cannot be typed. `site` is the node that reports a
   # return-type mismatch.
@@ -1260,6 +1357,20 @@ pub class MainVisitor < TypeNodeHost
       else
         return @program.nil_type
       end
+    end
+
+    # A def typed again while its body is being typed is a recursive call: it takes
+    # the declared return type, or the call is refused. The depth bounds a chain of
+    # instantiations whose argument types keep growing.
+    key = instance_key(rec_type, target_def, args, block)
+    if @typing_stack.includes?(key)
+      if rt = target_def.return_type
+        return @program.lookup_type_node(rt, @current_type)
+      end
+      return refuse_recursion(site, target_def, "recursive call of '#{target_def.name}' with no declared return type")
+    end
+    if @typing_stack.size >= 256
+      return refuse_recursion(site, target_def, "instantiation depth exceeded at '#{target_def.name}'")
     end
 
     old_vars = @vars
@@ -1285,6 +1396,7 @@ pub class MainVisitor < TypeNodeHost
       new_vars["self"] = rec_type
     end
 
+    inst_args = [] of Type
     params_typed = true
     i = 0
     while i < target_def.args.size
@@ -1302,6 +1414,7 @@ pub class MainVisitor < TypeNodeHost
       end
       if pt = param_type
         new_vars[param.name] = pt
+        inst_args << pt
         # iyi: the instantiated clone's parameter carries its type, so the lowering
         # reads the argument types from the def (hosted codegen/ast.cr 48).
         set_type(param, pt)
@@ -1320,6 +1433,14 @@ pub class MainVisitor < TypeNodeHost
     @current_def = target_def
     @current_call_block = block
 
+    @typing_stack << key
+    if params_typed
+      self_t : Type? = nil
+      unless rec_type.is_a?(SemanticProgram)
+        self_t = rec_type
+      end
+      @typed_instances << TypedInstance.new(target_def, self_t, inst_args)
+    end
     body.as(ASTNode).accept(self)
     body_type = child_type(body.as(ASTNode))
 
@@ -1351,6 +1472,7 @@ pub class MainVisitor < TypeNodeHost
     @current_yield_nodes = old_yield_nodes
     @def_var_unions[target_def] = @var_unions
     @var_unions = old_var_unions
+    @typing_stack.pop
 
     return nil unless params_typed
     bt = body_type
@@ -1530,6 +1652,9 @@ pub class MainVisitor < TypeNodeHost
     inner.untyped_reasons = @untyped_reasons
     inner.call_target_defs = @call_target_defs
     inner.total = @total
+    inner.typing_stack = @typing_stack
+    inner.refusals = @refusals
+    inner.typed_instances = @typed_instances
     inner
   end
 
