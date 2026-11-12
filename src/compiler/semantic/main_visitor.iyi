@@ -564,7 +564,13 @@ pub class MainVisitor < TypeNodeHost
         return false
       end
     end
-    if node.name == "allocate"
+    if node.name == "pointer_set"
+      if vt = @vars["value"]?
+        set_type(node, vt)
+        return false
+      end
+    end
+    if node.name == "allocate" || node.name == "pointer_new" || node.name == "pointer_malloc"
       if sc = @scope
         if sc.is_a?(MetaclassType)
           set_type(node, sc.as(MetaclassType).instance_type)
