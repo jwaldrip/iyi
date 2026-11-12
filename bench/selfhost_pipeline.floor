@@ -1,12 +1,15 @@
 # selfhost pipeline floor: <repo file> <phase reached>. A phase may only rise.
 # Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh (keeps the higher phase).
 bench/fixtures/lowcall_block_args.iyi run-equal
+bench/fixtures/lowcall_block_break.iyi run-equal
 bench/fixtures/lowcall_block_break_if.iyi run-equal
 bench/fixtures/lowcall_block_local.iyi run-equal
 bench/fixtures/lowcall_block_nested.iyi run-equal
+bench/fixtures/lowcall_block_next.iyi run-equal
 bench/fixtures/lowcall_block_next_if.iyi run-equal
 bench/fixtures/lowcall_block_pair.iyi run-equal
 bench/fixtures/lowcall_block_return.iyi run-equal
+bench/fixtures/lowcall_block_return_def.iyi run-equal
 bench/fixtures/lowcall_block_return_if.iyi run-equal
 bench/fixtures/lowcall_block_twice.iyi run-equal
 bench/fixtures/lowcall_block_value.iyi run-equal
@@ -25,6 +28,7 @@ bench/fixtures/lowcall_recv_arg.iyi run-equal
 bench/fixtures/lowcall_recv_block.iyi run-equal
 bench/fixtures/lowcall_recv_self.iyi run-equal
 bench/fixtures/lowcall_struct_new.iyi run-equal
+bench/fixtures/lowcall_struct_self.iyi run-equal
 bench/fixtures/lowcall_struct_value.iyi run-equal
 bench/fixtures/lowcall_types.iyi run-equal
 bench/fixtures/lower_and.iyi run-equal
@@ -42,6 +46,7 @@ bench/fixtures/lower_fun_body.iyi run-equal
 bench/fixtures/lower_fun_nil.iyi run-equal
 bench/fixtures/lower_fun_unused.iyi run-equal
 bench/fixtures/lower_if.iyi run-equal
+bench/fixtures/lower_implicit_self.iyi run-equal
 bench/fixtures/lower_instance_sizeof.iyi bodies
 bench/fixtures/lower_int.iyi run-equal
 bench/fixtures/lower_isa_same.iyi run-equal
