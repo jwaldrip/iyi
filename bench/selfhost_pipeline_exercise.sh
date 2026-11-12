@@ -265,6 +265,17 @@ pipeline_check() {
   [ ! -e "$WORK/mut_b" ] || return 1
   return 0
 }
+
+# The lowering table names and counts no Primitive-annotated def. The hosted compiler lowers a primitive at its call
+# site, so a probe of such a def's body is a refusal row for a def that is never a function of its own. The hello
+# root with its prelude reaches them; the table must name none. Prelude-free fixtures reach no primitive def, so this
+# check runs the root.
+primitive_table_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/prim_tool"; then return 1; fi
+  IYI_PATH="$REPO/src" "$WORK/prim_tool" "$REPO/samples/iyi/hello.iyi" -o "$WORK/prim_hello" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/prim_hello.probe" 2> /dev/null
+  awk '/^table: hello defs-lowered-clean=/ { ok = 1 } END { exit !ok }' "$WORK/prim_hello.probe" || return 1
+  awk '/^table: hello lowering .*visit\(Primitive/ { bad = 1 } END { exit bad }' "$WORK/prim_hello.probe"
+}
 echo "  the mutation check passes on the unmutated code:"
 if pipeline_check; then
   echo "    unmutated: pass"
@@ -278,6 +289,15 @@ prove_mutation "the program's top-level code is dropped" "$PROGRAM_SRC" \
   "top_level.each { |t| nodes << t }" "nodes << Nop.new" -- pipeline_check || status=1
 prove_mutation "the tool falls back to the codegen pipeline when the typed one refuses" "$TOOL_SRC" \
   "fail(refusal.as(String))" "compiler.config.typed_pipeline = false; compiler.refusal = nil; compiler.compile(input)" -- pipeline_check || status=1
+echo "  the table check passes on the unmutated code:"
+if primitive_table_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL (the table check cannot prove anything)"
+  status=1
+fi
+prove_mutation "the lowering table probes a Primitive-annotated def" "$PROGRAM_SRC" \
+  "next unless primitive_name(d.body).nil?" "next if false" -- primitive_table_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
