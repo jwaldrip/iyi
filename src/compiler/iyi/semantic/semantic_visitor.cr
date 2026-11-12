@@ -826,7 +826,7 @@ abstract class Iyi::SemanticVisitor < Iyi::Visitor
     # every boundary this compiler wrote. A boundary's answer is its inputs,
     # taken above.
     written = summary.source_path
-    if !written.empty? && !source_in_library?(written)
+    if summary.inputs.empty? && !written.empty? && !source_in_library?(written)
       if program_source = resolve_program_import(module_path)
         here = File.expand_path(program_source)
         there = File.expand_path(written)
