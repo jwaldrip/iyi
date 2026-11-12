@@ -1,36 +1,38 @@
 module compiler/lower/const
 
-# The port of `src/compiler/iyi/codegen/const.cr` (the hosted `CodeGenVisitor`'s constants),
-# in file order. Increment 1: a constant whose value is a literal (a Bool, a Char, or an
-# integer literal of an integer type) is inlined at every read, and its assignment emits
-# nothing (hosted `read_const` and `codegen_assign(Path)`). Every other constant read or
-# assigned is refused by name, with the hosted function it stands for, until the next
-# increment ports it.
+# The port of `src/compiler/iyi/codegen/const.cr` (the hosted `CodeGenVisitor`'s constants), in file
+# order. Ported: a literal constant (Bool, Char, an integer of at most 64 bits) is inlined at every read,
+# and its assignment emits nothing (hosted `read_const`, `codegen_assign(Path)`); a non-literal constant
+# of an integer or float type, that was used and not read before its assignment, gets a value global, its
+# initialised flag, an initialiser function `~NAME:const_init` that stores the value, and a call to it at
+# the assignment (hosted `initialize_const` on the no-init-flag path, `create_initialize_const_function`);
+# a read of such a constant after its assignment is a load of its global (hosted `read_const_pointer`
+# without the flag).
 #
-# The AST class of a constant's type is `Compiler::Semantic::TopLevel::Const`, written in full
-# because this module is itself `compiler/lower/const`, and inside it the name `Const` means
-# this module (the same reason call.iyi writes `Compiler::Syntax::Ast::Call`).
-#
-# The hosted `compile_time_value` is an `Int*`, `UInt*`, `Bool` or `Char` value that the
-# analysis can read at compile time. The hosted code computes an integer expression with its
-# MathInterpreter (`A = 1 + 2`); the port has no interpreter, so such a constant is refused
-# when it is read. 128-bit integers are refused too: the hosted read uses `int128`, which the
-# literal path does not emit yet.
-#
-# Known gap at increment 1: the hosted program emits a global for a simple non-literal
-# constant (a string) even when nothing reads it (`initialize_simple_constants`). The port
-# emits no such global yet, and an unread one is not refused, so a module with one differs
-# from the hosted module until increment 2 ports `initialize_program_constants`.
+# Refused by name, with the hosted function each stands for, until ported:
+#   - a constant read before its assignment (hosted `run_once` through the prelude's `__iyi_once`, and
+#     `create_read_const_function`): the gate's prelude-empty oracle does not define `__iyi_once`;
+#   - a constant in a namespace (its hosted `llvm_name` is a namespaced spelling);
+#   - a value that may be a compile-time value: a path to another constant, or an operator call (hosted
+#     `compile_time_value` runs the MathInterpreter, which inlines it at each read instead of storing it);
+#   - a symbol, nil or float literal (hosted `initialize_simple_constants`): its global is not ported yet;
+#   - a constant of another IR type than integer or float (struct, pointer, nil, enum).
+# A string constant (a simple literal) gets its global at the program's start, as the hosted program does, whether or
+# not it is read; its assignment emits nothing and its reads are loads of that global.
 
-import compiler/syntax/ast::{Assign, BoolLiteral, CharLiteral, NumberLiteral, Path}
+import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
 import compiler/ir/values::{Value}
-import compiler/lower/context::{Lowerer}
-import compiler/lower/helpers::{int1, llvm_nil}
+import compiler/ir/inst::{Inst, Op, CallConv}
+import compiler/ir/function::{Function, Global, Linkage}
+import compiler/ir/types::{IrType}
+import compiler/lower/context::{BodyVisit, Lowerer}
+import compiler/lower/helpers::{build_string_constant, int1, llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
-import compiler/semantic/top_level::{ModuleType, Type}
+import compiler/lower/globals::{ConstState}
+import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 
-# The module a path is resolved in: the type of `self` in the function being lowered, or the
-# program at the top level. The analysis resolves a path in the same scope.
+# The module a path is resolved in: the type of `self` in the function being lowered, or the program at
+# the top level. The analysis resolves a path in the same scope.
 pub def const_scope(low : Lowerer) : ModuleType
   ct = low.current_context.type
   if ct.is_a?(ModuleType)
@@ -39,9 +41,9 @@ pub def const_scope(low : Lowerer) : ModuleType
   low.analysed.program
 end
 
-# The constant a path names, or nil when the path names a type, a module or a method. The
-# analysis resolves the path in the same scope (`visit(Path)` in main_visitor.iyi calls
-# `lookup_type_path` with the current type), so this finds the same constant it typed.
+# The constant a path names, or nil when the path names a type, a module or a method. The analysis resolves
+# the path in the same scope (`visit(Path)` in main_visitor.iyi calls `lookup_type_path` with the current
+# type), so this finds the same constant it typed.
 pub def path_const(low : Lowerer, node : Path) : Compiler::Semantic::TopLevel::Const?
   t = low.analysed.program.lookup_type_path(node, const_scope(low))
   if t.const?
@@ -50,12 +52,16 @@ pub def path_const(low : Lowerer, node : Path) : Compiler::Semantic::TopLevel::C
   nil
 end
 
-# The value a constant's literal initialiser has at compile time, as an IR constant of the
-# type the analysis gave the constant's value; nil when the value is not a literal of a kind
-# the port knows (the hosted `compile_time_value` is nil there, and the constant is
-# initialised at run time).
+# The value a constant's literal initialiser has at compile time, as an IR constant of the type the analysis
+# gave the constant's value; nil when the value is not a literal of a kind the port inlines (the hosted
+# `compile_time_value` is nil there, and the constant is initialised at run time).
 pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : Value?
-  value = const.value
+  literal_node_value(low, const.value)
+end
+
+# The value of a literal node (a Bool, Char or integer literal) as an IR constant of the type the analysis gave it;
+# nil for any other node. Shared by constants and class variables (hosted `compile_time_value`, `read_const`).
+pub def literal_node_value(low : Lowerer, value : ASTNode) : Value?
   t = low.analysed.type_of?(value)
   if t.nil?
     return nil
@@ -76,16 +82,192 @@ pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const
       return nil
     end
     if typ.full_name == "Int128" || typ.full_name == "UInt128"
-      refuse_port("lower: constant #{const.full_name} is a 128-bit integer: the literal path that emits int128 is not ported yet (hosted const.cr: read_const)")
+      refuse_port("lower: a 128-bit integer literal is not ported yet: the literal path that emits int128 (hosted const.cr: read_const)")
     end
     return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)
   end
   nil
 end
 
-# The hosted `visit(Path)` for a constant (`read_const`): a literal is the constant's value
-# itself. Any other constant reads its global through the initialiser, which is not ported
-# yet.
+# The name of a constant the lowering can give a global: a constant of the program itself. A constant in a
+# namespace refuses by name (its hosted spelling is not ported).
+pub def program_const_name(const : Compiler::Semantic::TopLevel::Const) : String
+  ns = const.namespace
+  if !ns.is_a?(SemanticProgram)
+    refuse_port("lower: constant #{const.full_name} is in a namespace: its hosted llvm_name is not ported yet (hosted const.cr: declare_const)")
+  end
+  const.name
+end
+
+# The IR type of a constant's value (hosted `llvm_type(const.value.type)`).
+pub def const_ir_type(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : IrType
+  t = low.analysed.type_of?(const.value)
+  if t.nil?
+    raise "BUG: the analysed program has no type for constant #{const.full_name} (hosted const.cr: declare_const)"
+  end
+  low.typer.llvm_type(t.as(Type))
+end
+
+# Refuses a constant whose value is of an IR type the port does not initialise yet (hosted `passed_indirectly?`
+# and the reference and nil cases of `initialize_const`).
+pub def check_scalar_type(const : Compiler::Semantic::TopLevel::Const, ir : IrType) : Nil
+  if !(ir.int? || ir.float?)
+    refuse_port("lower: constant #{const.full_name} is not an integer or a float: the struct, pointer and nil constant initialisers are not ported yet (hosted const.cr: initialize_const)")
+  end
+end
+
+# The operators a constant's value can be written with. A call of one of these may be a compile-time value.
+pub def operator_name?(name : String) : Bool
+  ops = ["+", "-", "*", "/", "//", "%", "**", "<<", ">>", "&", "|", "^", "~", "!", "==", "!=", "<", ">", "<=", ">=", "<=>", "===", "[]", "[]="]
+  ops.each do |op|
+    if op == name
+      return true
+    end
+  end
+  false
+end
+
+# Refuses a value that the hosted MathInterpreter may turn into a compile-time value (hosted `compile_time_value`,
+# const.cr:220). Such a constant is inlined at each read by the hosted code, not stored.
+pub def check_not_compile_time(const : Compiler::Semantic::TopLevel::Const) : Nil
+  value = const.value
+  if value.is_a?(Path)
+    refuse_port("lower: constant #{const.full_name} is a path to another constant: the hosted MathInterpreter may inline it (hosted const.cr: compile_time_value)")
+  end
+  if value.is_a?(Call)
+    if operator_name?(value.as(Call).name)
+      refuse_port("lower: constant #{const.full_name} is an operator call: the hosted MathInterpreter may inline it (hosted const.cr: compile_time_value)")
+    end
+  end
+end
+
+# Refuses a simple literal the port does not inline: its hosted global comes from `initialize_simple_constants`.
+pub def check_not_simple_literal(const : Compiler::Semantic::TopLevel::Const) : Nil
+  value = const.value
+  if value.is_a?(SymbolLiteral) || value.is_a?(NilLiteral)
+    refuse_port("lower: constant #{const.full_name} is a simple literal that is not an integer: its global comes from initialize_simple_constants, not ported yet (hosted const.cr: initialize_simple_const)")
+  end
+  if value.is_a?(NumberLiteral) && value.as(NumberLiteral).value.includes?(".")
+    refuse_port("lower: constant #{const.full_name} is a float literal: its global comes from initialize_simple_constants, not ported yet (hosted const.cr: initialize_simple_const)")
+  end
+end
+
+# A string constant is a simple literal (hosted `simple?`): the program's start emits its global, and neither its
+# assignment nor its reads initialise it.
+pub def string_const?(const : Compiler::Semantic::TopLevel::Const) : Bool
+  const.value.is_a?(StringLiteral)
+end
+
+# The IR type of a constant's value. A string constant is a pointer to its literal (the hosted type of String is `ptr`);
+# the typer's `llvm_type(String)` would also declare the `%String` struct, which the hosted module does not print.
+pub def const_value_ir(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : IrType
+  if string_const?(const)
+    return low.module.types.ptr
+  end
+  const_ir_type(low, const)
+end
+
+# The hosted `initialize_simple_const` (codegen.cr:106) for a string constant: the value global, under the constant's
+# name, initialised with the string constant's address and made constant. A simple constant has no initialiser flag,
+# so a read is a load of this global.
+pub def initialize_simple_const(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : Nil
+  name = program_const_name(const)
+  st = low.globals.const_state(name)
+  ir = const_value_ir(low, const)
+  global = declare_const_global(low, name, ir, st)
+  st.no_init_flag = true
+  str = build_string_constant(low, const.value.as(StringLiteral).value)
+  global.initializer = str.as(Value)
+  global.global_constant = true
+end
+
+# The value global of a constant, declared once (hosted `declare_const`, internal linkage).
+pub def declare_const_global(low : Lowerer, name : String, ir : IrType, st : ConstState) : Global
+  if g = st.global
+    return g.as(Global)
+  end
+  g = low.module.add_global(name, ir)
+  g.linkage = Linkage::Internal
+  st.global = g
+  g
+end
+
+# The initialised flag of a constant, declared once, false (hosted `declare_const_initialized_flag`).
+pub def declare_const_flag(low : Lowerer, name : String, st : ConstState) : Global
+  if f = st.flag
+    return f.as(Global)
+  end
+  i1 = low.module.types.int(1)
+  f = low.module.add_global(name + ":const_init", i1)
+  f.initializer = low.builder.const_int(i1, 0_i64)
+  f.linkage = Linkage::Internal
+  st.flag = f
+  f
+end
+
+# The hosted `create_initialize_const_function`: the function `~NAME:const_init` in the main module, which
+# evaluates the constant's value and stores it in the global. A primitive literal result is kept as the
+# global's initialiser (and the constant's `initializer`), and the global is made constant.
+pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopLevel::Const, init_name : String, global : Global, st : ConstState) : Function
+  ir = const_ir_type(low, const)
+  saved = low.enter_main
+  fun_type = low.module.types.func([] of IrType, low.module.types.void)
+  fn = low.begin_main_function(init_name, fun_type, true)
+  # The hosted initialiser is a `~` function, which the oracle prints with `iyicc` (the calling convention of
+  # generated iyi code, src/compiler/backend/llvm/import.iyi convention_of). The port's call and definition agree on it.
+  fn.call_convention = CallConv::Iyi
+  fn.linkage = Linkage::Internal
+  low.needs_value = true
+  low.body_visitor.as(BodyVisit).visit_body(low, const.value)
+  v = low.last
+  if v.nil?
+    refuse_port("lower: constant #{const.full_name} has no value to store (hosted const.cr: create_initialize_const_function)")
+  end
+  val = v.as(Value)
+  if val.is_a?(Inst) && (val.as(Inst).op == Op::ConstInt || val.as(Inst).op == Op::ConstFloat)
+    global.initializer = val
+    global.global_constant = true
+    st.initializer = val
+  else
+    global.initializer = low.builder.const_null(ir)
+    store_aligned(low, val, global)
+  end
+  low.builder.ret_void
+  low.finish_main_function
+  low.leave_main(saved)
+  fn
+end
+
+# The hosted `initialize_const` on the no-init-flag path (const.cr:158-179): a constant that nothing read
+# before its assignment is initialised here, with a direct call to its initialiser. A constant read before
+# this point needs the `once` path, which is refused by name.
+pub def initialize_const(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : Nil
+  name = program_const_name(const)
+  st = low.globals.const_state(name)
+  if st.read
+    refuse_port("lower: constant #{name} is read before its assignment: the hosted run_once through __iyi_once (const.cr:176) is not ported yet")
+  end
+  st.no_init_flag = true
+  ir = const_ir_type(low, const)
+  check_scalar_type(const, ir)
+  check_not_compile_time(const)
+  global = declare_const_global(low, name, ir, st)
+  declare_const_flag(low, name, st)
+  if st.initializer
+    return
+  end
+  init_name = "~" + name + ":const_init"
+  fn = st.init_fn
+  if fn.nil?
+    fn = make_const_init_function(low, const, init_name, global, st)
+    st.init_fn = fn
+  end
+  ft = low.module.types.func([] of IrType, low.module.types.void)
+  low.builder.call(ft, fn.as(Function), [] of Value, "")
+end
+
+# The hosted `visit(Path)` for a constant (`read_const`): a literal is the constant's value itself; any other
+# constant of an initialised global is a load of that global (`read_const_pointer` without the flag).
 pub def codegen_path(low : Lowerer, node : Path) : Nil
   const = path_const(low, node)
   if const.nil?
@@ -93,15 +275,27 @@ pub def codegen_path(low : Lowerer, node : Path) : Nil
   end
   c = const.as(Compiler::Semantic::TopLevel::Const)
   v = literal_value(low, c)
-  if v.nil?
-    refuse_port("lower: read of constant #{c.full_name} (hosted const.cr: read_const, read_const_pointer): its global and initialiser are not ported yet")
+  if !v.nil?
+    low.last = v.as(Value)
+    return
   end
-  low.last = v.as(Value)
+  name = program_const_name(c)
+  st = low.globals.const_state(name)
+  st.read = true
+  g = st.global
+  if g.nil? || (!st.no_init_flag && st.initializer.nil?)
+    refuse_port("lower: read of constant #{name} before its initialisation: the flag path (hosted read_const_pointer, create_read_const_function) is not ported yet")
+  end
+  ir = const_value_ir(low, c)
+  if !string_const?(c)
+    check_scalar_type(c, ir)
+  end
+  low.last = load_aligned(low, ir, g.as(Global))
 end
 
-# The hosted `codegen_assign(Path)` (codegen.cr): a literal constant is initialised where it
-# is read, so its assignment emits nothing and the value is nil. Any other constant is
-# initialised by `initialize_const` (const.cr), which is not ported yet.
+# The hosted `codegen_assign(Path)` (codegen.cr:1516): a literal constant is initialised where it is read, so
+# its assignment emits nothing; a constant that is never used emits nothing; any other used constant is
+# initialised by `initialize_const`. The value of the assignment is nil.
 pub def codegen_path_assign(low : Lowerer, node : Assign) : Nil
   target = node.target.as(Path)
   const = path_const(low, target)
@@ -109,15 +303,35 @@ pub def codegen_path_assign(low : Lowerer, node : Assign) : Nil
     refuse_port("lower: an assignment to a path that names a type or a module is not ported yet (hosted codegen.cr: codegen_assign(Path))")
   end
   c = const.as(Compiler::Semantic::TopLevel::Const)
-  if literal_value(low, c).nil?
-    refuse_port("lower: assignment to constant #{c.full_name} (hosted const.cr: initialize_const) is not ported yet")
+  if !literal_value(low, c).nil?
+    low.last = llvm_nil(low)
+    return
+  end
+  if string_const?(c)
+    # The hosted `codegen_assign(Path)` emits nothing for a simple constant: its global was initialised at the program's start.
+    low.last = llvm_nil(low)
+    return
+  end
+  check_not_simple_literal(c)
+  if c.used?
+    initialize_const(low, c)
   end
   low.last = llvm_nil(low)
 end
 
-# The hosted `initialize_predefined_constants` and `initialize_simple_constants`, which run
-# at the start of `__crystal_main`. Increment 1 emits neither (see the known gap above). The
-# hosted order is the predefined constants, then the simple constants, both before the
-# program's own code. Increment 2 fills this in.
+# The hosted `initialize_predefined_constants` and `initialize_simple_constants`, which run at the start of
+# `__crystal_main`, before the program's own code. The predefined constants (ARGC_UNSAFE, ARGV_UNSAFE) are stored by
+# the core (lower.iyi codegen_program). The simple constants are walked in declaration order (hosted
+# `const_initializers`): an integer, Bool or Char literal is inlined and needs no global; a string constant gets its
+# global here; a symbol, nil or float constant is refused by name until its global is ported.
 pub def initialize_program_constants(low : Lowerer) : Nil
+  low.analysed.program.const_initializers.each do |const|
+    if literal_value(low, const).nil?
+      if string_const?(const)
+        initialize_simple_const(low, const)
+      else
+        check_not_simple_literal(const)
+      end
+    end
+  end
 end

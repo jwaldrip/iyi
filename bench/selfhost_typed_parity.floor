@@ -69,6 +69,7 @@ src/compiler/lower/abi/aarch64.iyi 0
 src/compiler/lower/block.iyi 0
 src/compiler/lower/call.iyi 0
 src/compiler/lower/cast.iyi 0
+src/compiler/lower/class_var.iyi 0
 src/compiler/lower/cond.iyi 0
 src/compiler/lower/const.iyi 0
 src/compiler/lower/context.iyi 0

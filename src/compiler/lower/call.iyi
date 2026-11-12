@@ -7,7 +7,8 @@ module compiler/lower/call
 # pad is made (hosted `codegen_call_or_invoke` without a rescue block).
 #
 # Ported:
-#   - a call to a def in the program, with no receiver (`codegen_call_node`);
+#   - a call to a def in the program, with no receiver: inside an instance method it passes the frame's
+#     self (`implicit_owner`, `implicit_self_value`), at the top level it passes none (`codegen_call_node`);
 #   - a call on a receiver whose type is a class or a struct or a builtin (`receiver_owner`): the
 #     receiver is the callee's `self` (by value for a struct, the object for a class, the value of a
 #     builtin), the callee is the method `*Owner#name`, and `self` is a variable of its frame;
@@ -27,8 +28,8 @@ module compiler/lower/call
 # analysed program instantiates a def (main_visitor.iyi, type_method_body). A restriction
 # is honoured only when it names the argument's own type.
 #
-# Refused by name, at the call that reaches them (pending.iyi): a call with no receiver inside a
-# method (the implicit self, hosted call.cr: prepare_call_args), a receiver that is a union, a
+# Refused by name, at the call that reaches them (pending.iyi): a call with no receiver inside a class
+# method, a call to a method inherited by an implicit self (hosted target_def.owner), a receiver that is a union, a
 # virtual type, nil or a metaclass, a method inherited from a superclass (the hosted owner is the
 # defining type, and the port does not record it), a getter whose body reads an instance variable
 # (hosted `read_instance_var`, waiting on `instance_var_pointer`), default arguments and splats, a
@@ -56,7 +57,7 @@ import compiler/semantic/top_level::{ClassType, LibType, LibFun, MetaclassType, 
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
-import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType}
 import compiler/semantic/lib_call::{LibCallTarget}
 
 # A body that is a literal or nothing (`Nop`, an empty def), which the hosted call inlines (`try_inline_call`:
@@ -118,9 +119,6 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   if node.super? || node.previous_def?
     pending_visit_node("super or previous_def (hosted call.cr: is_super, owner is the scope, match.cr codegen_dispatch)")
   end
-  if node.obj.nil? && !low.current_context.type.nil?
-    pending_visit_node("a call with no receiver inside a method, an implicit self call (hosted call.cr: prepare_call_args, self)")
-  end
 
   # The receiver is evaluated before the arguments (hosted `prepare_call_args`), and is the callee's self.
   # A non-generic metaclass receiver (`Sched.go`) passes no self and is not evaluated (hosted `passed_as_self?`
@@ -147,6 +145,13 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
           self_value = receiver_self(low, node, recv, self_type.as(Type))
         end
       end
+    end
+  end
+  if node.obj.nil? && !low.current_context.type.nil?
+    owner = implicit_owner(low, node)
+    self_type = owner
+    unless owner.nil?
+      self_value = implicit_self_value(low)
     end
   end
 
@@ -262,6 +267,44 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   end
 end
 
+# The owner of an implicit-self call: a call with no receiver inside an instance method (hosted call.cr:
+# prepare_call_args, `owner` is the target def's owner). The current type when it defines the method, whose self
+# the call passes; nil for a top-level def, which takes no self; a refusal otherwise. A class method's implicit
+# call is refused (its self is the class, a metaclass owner), and so is an inherited method (the hosted owner is
+# the superclass, which the port does not record).
+pub def implicit_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type?
+  ct = low.current_context.type.as(Type)
+  if low.current_context.vars["self"]?.nil?
+    pending_visit_node("a call to #{node.name} with no receiver inside a class method (hosted call.cr: prepare_call_args, the metaclass owner)")
+  end
+  if defines_method?(ct, node.name)
+    return ct
+  end
+  if low.analysed.program.defs[node.name]?
+    return nil
+  end
+  pending_visit_node("a call to #{node.name} inherited from a superclass of #{ct.full_name} (hosted call.cr: target_def.owner is the defining type)")
+  nil
+end
+
+# Whether a type's own defs name a method. A generic instance's defs are its generic class's.
+pub def defines_method?(t : Type, name : String) : Bool
+  if t.is_a?(GenericClassInstanceType)
+    return !t.as(GenericClassInstanceType).generic_type.as(ModuleType).defs[name]?.nil?
+  end
+  if t.is_a?(ModuleType)
+    return !t.as(ModuleType).defs[name]?.nil?
+  end
+  false
+end
+
+# The self of an implicit-self call: the frame's self as the callee takes it, a struct's address or a class's object.
+pub def implicit_self_value(low : Lowerer) : Value
+  sv = low.current_context.vars["self"]?
+  raise "BUG: an implicit self call with no self variable (hosted llvm_self)" if sv.nil?
+  sv.as(LowerVar).pointer
+end
+
 # The receiver's type, which is the owner of the method the call reaches (hosted `target_def.owner`). A
 # receiver that is a metaclass, a union, a virtual type or nil is refused by name, and so is a method
 # the receiver's type does not define itself (inherited, so the owner is a superclass).
@@ -336,8 +379,14 @@ pub def discard_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Ni
   obj = node.obj
   raise "BUG: discard_receiver on a call with no receiver (hosted call.cr: prepare_call_args)" if obj.nil?
   o = obj.as(ASTNode)
-  # A variable has no effect, and the hosted receiver of an inlined literal is not read (no value is wanted).
-  return if o.is_a?(Var)
+  # The hosted receiver of an inlined literal is requested as a value (prepare_call_args), but a by-value struct variable
+  # is not read where the value is unused (lowprim_alloc_struct: the empty struct's receiver loads nothing). A class
+  # variable is read (lowprim_alloc_class).
+  if o.is_a?(Var)
+    vt = low.analysed.type_of?(o)
+    raise "BUG: the analysed program has no type for receiver variable #{o.name} (hosted call.cr: prepare_call_args)" if vt.nil?
+    return if passed_by_value?(vt.as(Type))
+  end
   wants = low.needs_value
   prev_unused = low.receiver_unused
   low.needs_value = true
@@ -377,7 +426,10 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   end
   body_t = low.analysed.type_of?(def_node.body)
   raise "BUG: the analysed program has no type for the body of #{node.name} (hosted call.cr: codegen_call_with_block)" if body_t.nil?
-  if body_t.as(Type).full_name != ret.full_name
+  # A body typed NoReturn never yields a value: its block jumps out with `break` or `next`, so the hosted upcast of the body's
+  # value does not apply and the body adds no value to the phi.
+  body_no_return = body_t.as(Type).is_a?(NoReturnType)
+  if !body_no_return && body_t.as(Type).full_name != ret.full_name
     pending_visit_node("a block call to #{node.name} whose body is #{body_t.as(Type).full_name} and whose call is #{ret.full_name} (hosted upcast of the body's value)")
   end
 
@@ -427,7 +479,9 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
       low.builder.unreachable
     end
   else
-    phi.add(low, low.last, true)
+    unless body_no_return
+      phi.add(low, low.last, true)
+    end
   end
   low.context = caller
   low.needs_value = wants
