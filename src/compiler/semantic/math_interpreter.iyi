@@ -35,11 +35,36 @@ import std/int
 import compiler/syntax/ast::{ASTNode, Call, Expressions, NumberLiteral, Path}
 import compiler/syntax/token::{NumberKind}
 
-pub class MathValue
-  getter value : Int128
-  getter kind : NumberKind
+# A 128-bit value is kept in these classes as two 64-bit words, never as one Int128 or UInt128 field. The
+# hosted compiler reads a 128-bit field with a load aligned to 16 bytes, and its allocator hands out an object
+# with a header at 8 bytes past a 16-byte boundary about half the time: on x86-64 hardware that load is a
+# `movaps` and it faults (the Linux runner killed the math fold on `//` and `%` with a segmentation fault;
+# arm64 does not check the alignment, and neither does an x86-64 emulator). Two words need 8 bytes.
+def math_low_word(bits : UInt128) : UInt64
+  (bits & 18446744073709551615_u128).to_u64
+end
 
-  def initialize(@value : Int128, @kind : NumberKind)
+def math_high_word(bits : UInt128) : UInt64
+  (bits >> 64).to_u64
+end
+
+def math_join_words(high : UInt64, low : UInt64) : UInt128
+  (high.to_u128 << 64) | low.to_u128
+end
+
+pub class MathValue
+  getter kind : NumberKind
+  @high : UInt64
+  @low : UInt64
+
+  def initialize(value : Int128, @kind : NumberKind)
+    bits = MathInterpreter.bits_of(value)
+    @high = math_high_word(bits)
+    @low = math_low_word(bits)
+  end
+
+  def value : Int128
+    MathInterpreter.value_of_bits(math_join_words(@high, @low))
   end
 end
 
@@ -57,10 +82,17 @@ pub alias MathResult = MathValue | MathError
 # and `beyond` when the magnitude does not fit in UInt128.
 class MathExact
   getter negative : Bool
-  getter magnitude : UInt128
   getter beyond : Bool
+  @high : UInt64
+  @low : UInt64
 
-  def initialize(@negative : Bool, @magnitude : UInt128, @beyond : Bool = false)
+  def initialize(@negative : Bool, magnitude : UInt128, @beyond : Bool = false)
+    @high = math_high_word(magnitude)
+    @low = math_low_word(magnitude)
+  end
+
+  def magnitude : UInt128
+    math_join_words(@high, @low)
   end
 end
 
@@ -429,6 +461,19 @@ pub class MathInterpreter
     return -170141183460469231731687303715884105728_i128 if magnitude == two127
     positive = magnitude.to_i128
     negative ? 0_i128 - positive : positive
+  end
+
+  # The two's complement bit pattern of a value, and back: what MathValue stores as two words. Written with
+  # checked arithmetic only, so nothing here can overflow: a negative value's pattern is 2**128 less its
+  # magnitude.
+  def self.bits_of(value : Int128) : UInt128
+    return value.to_u128 if value >= 0_i128
+    umax - (magnitude_of(value) - 1_u128)
+  end
+
+  def self.value_of_bits(bits : UInt128) : Int128
+    return bits.to_i128 if bits < two127
+    signed_of(true, (umax - bits) + 1_u128)
   end
 
   def self.two127 : UInt128
