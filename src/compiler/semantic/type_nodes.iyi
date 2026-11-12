@@ -21,7 +21,7 @@ module compiler/semantic/type_nodes
 
 import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, PointerOf, ProcNotation, Self, SizeOf, TypeOf, Union, UninitializedVar, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, SemanticProgram, Type, TypeHook}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, SemanticProgram, Type, TypeHook}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TypeQueries}
 import compiler/types/unification::{TypeUnification}
@@ -214,39 +214,26 @@ end
 # its type must fit the declared return type (hosted `visit(node : FunDef)`
 # 2333-2365). The fun node itself is typed Nil, as the hosted pass types it.
 pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
+  fun_record = visitor.program.lib_fun_of(node)
+  if fun_record.nil?
+    return visitor.refuse(node, "fun has no record from the declarations pass")
+  end
+  record = fun_record.as(LibFun)
+  arg_types = record.arg_types
+  declared = record.resolved_return
+  visitor.record_fun_signature(node, arg_types, declared)
+
   body = node.body
   if body.nil?
     return false
   end
-  lookup = type_node_lookup(visitor)
 
   vars = Hash(String, Type).new
-  arg_types = [] of Type
   i = 0
   while i < node.args.size
-    arg = node.args[i]
-    restriction = arg.restriction
-    if restriction.nil?
-      return visitor.refuse(node, "fun argument '#{arg.name}' needs a type")
-    end
-    arg_type = lookup.lookup(visitor.current_type, restriction.as(ASTNode))
-    if arg_type.is_a?(LookupError)
-      return visitor.refuse(node, arg_type.as(LookupError).message)
-    end
-    vars[arg.name] = arg_type.as(Type)
-    arg_types << arg_type.as(Type)
+    vars[node.args[i].name] = arg_types[i]
     i = i + 1
   end
-
-  declared : Type? = nil
-  if rt = node.return_type
-    declared_type = lookup.lookup(visitor.current_type, rt)
-    if declared_type.is_a?(LookupError)
-      return visitor.refuse(node, declared_type.as(LookupError).message)
-    end
-    declared = declared_type.as(Type)
-  end
-  visitor.record_fun_signature(node, arg_types, declared)
 
   inner = visitor.sub_visitor(vars)
   body.accept(inner)
