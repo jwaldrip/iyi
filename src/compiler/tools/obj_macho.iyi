@@ -26,12 +26,44 @@ module ObjMachoTool
     ]
   end
 
+  # After a read, no absolute relocation site holds non-zero bytes: the reader
+  # folds the in-place addend into Reloc#addend and zeroes the site. A site that
+  # still holds bytes means the model and the file disagree about the addend.
+  def self.site_residue(obj : ObjectFile) : String?
+    s = 0
+    while s < obj.sections.size
+      sec = obj.sections[s]
+      obj.sections[s].relocs.each do |reloc|
+        if reloc.kind == RelocKind::Abs64 || reloc.kind == RelocKind::Abs32
+          width = 8
+          if reloc.kind == RelocKind::Abs32
+            width = 4
+          end
+          j = 0
+          while j < width
+            at = reloc.offset.to_i32 + j
+            if at < sec.bytes.size && sec.bytes[at] != 0_u8
+              return "section #{s} #{sec.name} site at #{reloc.offset} holds non-zero bytes after the read"
+            end
+            j = j + 1
+          end
+        end
+      end
+      s = s + 1
+    end
+    nil
+  end
+
   def self.read_file(path : String, target : Target) : ObjectFile
     result = read_object(Slice(UInt8).of(File.read(path)), target)
     if result.is_a?(ObjError)
       raise "#{path}: #{result.message}"
     end
-    result.as(ObjectFile)
+    obj = result.as(ObjectFile)
+    if message = site_residue(obj)
+      raise "#{path}: #{message}"
+    end
+    obj
   end
 
   # The first place two objects differ, or nil when they are equal.
@@ -145,6 +177,9 @@ module ObjMachoTool
     second = read_object(bytes, target)
     if second.is_a?(ObjError)
       raise "#{args[1]}: #{second.message}"
+    end
+    if message = site_residue(second.as(ObjectFile))
+      raise "#{args[1]}: #{message}"
     end
     if message = difference(first, second.as(ObjectFile))
       raise "round trip of #{args[0]} changed the object at #{message}"

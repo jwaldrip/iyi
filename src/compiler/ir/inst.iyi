@@ -218,16 +218,18 @@ pub struct AsmAux               # the callee of a Call that is inline asm
   getter side_effects : Bool
   getter align_stack : Bool
   getter dialect : AsmDialect
+  getter unwind : Bool            # LLVM's `unwind`: the asm may throw, so its call may unwind
 
-  def initialize(@template : String, @constraints : String, @side_effects : Bool = false, @align_stack : Bool = false, @dialect : AsmDialect = AsmDialect::Att)
+  def initialize(@template : String, @constraints : String, @side_effects : Bool = false, @align_stack : Bool = false, @dialect : AsmDialect = AsmDialect::Att, @unwind : Bool = false)
   end
 end
 
 pub struct IntrinsicAux
   getter id : IntrinsicId         # closed enum in compiler/ir/intrinsics.iyi
   getter overload : Array(IrType)
+  getter param_attrs : Array(Array(Attribute))   # operand k's attributes, written as an ordinary call's are
 
-  def initialize(@id : IntrinsicId, @overload : Array(IrType))
+  def initialize(@id : IntrinsicId, @overload : Array(IrType), @param_attrs : Array(Array(Attribute)) = [] of Array(Attribute))
   end
 end
 
@@ -246,7 +248,7 @@ pub alias InstAux = GepAux | MemAux | CallAux | AsmAux | IntrinsicAux | Nil
 #   ICmp, FCmp:        aux_int is the predicate ordinal.
 #   Binary arithmetic: aux_int holds flags: bit 0 nuw, bit 1 nsw, bit 2 exact.
 #   ExtractValue, InsertValue: aux_int is the index.
-#   ConstInt:          aux_int is the value (for i128, the low 64 bits; aux_hi holds the high 64 bits).
+#   ConstInt:          aux_int is the value; an integer wider than 64 bits also has aux_words (see below).
 #   ConstFloat:        aux_int is the bit pattern (32 or 64 bits).
 #   ConstExpr:         aux_int is the wrapped operation's Op ordinal; aux is GepAux for Gep.
 #   ConstBytes:        args are i8 ConstInts, one per byte.
@@ -261,13 +263,43 @@ pub class Inst < Value
   getter targets : Array(Block)
   getter cases : Array(Int64)
   property loc : DebugLoc?
-  # The high 64 bits of an i128 ConstInt. aux_int holds the low 64 bits; zero for every other constant.
-  property aux_hi : Int64
+  # The 64-bit words of an integer constant wider than 64 bits, least significant first and sign-extended to whole
+  # words; aux_int is word 0. Empty for every other constant.
+  getter aux_words : Array(Int64)
 
   def initialize(@op : Op, type : IrType, @args : Array(Value), @aux_int : Int64, @aux : InstAux, @targets : Array(Block), @cases : Array(Int64), name : String = "")
     super(type, name)
     @loc = nil
-    @aux_hi = 0_i64
+    @aux_words = [] of Int64
+  end
+
+  # Word 1 of a wide ConstInt: the high 64 bits of an i128. Zero for every other constant.
+  def aux_hi : Int64
+    @aux_words.size > 1 ? @aux_words[1] : 0_i64
+  end
+
+  # Sets word 1 of a wide ConstInt. On a constant with no words yet, the words become [aux_int, hi].
+  def aux_hi=(hi : Int64) : Nil
+    @aux_words = [@aux_int, hi] of Int64 if @aux_words.size < 2
+    @aux_words[1] = hi
+  end
+
+  # Sets every word of a wide ConstInt. Word 0 becomes aux_int.
+  def wide_words=(words : Array(Int64)) : Nil
+    @aux_int = words[0]
+    @aux_words = words
+  end
+
+  # The `bits`-bit words of this ConstInt, least significant first: the words it was given, or else aux_int and aux_hi
+  # sign-extended to whole words.
+  def int_words(bits : Int32) : Array(Int64)
+    count = (bits + 63) // 64
+    return @aux_words if @aux_words.size == count
+    words = [@aux_int, aux_hi] of Int64
+    while words.size < count
+      words << (words[words.size - 1] < 0_i64 ? -1_i64 : 0_i64)
+    end
+    words[0, count]
   end
 
   # Adds one incoming (value, block) pair to a phi.
