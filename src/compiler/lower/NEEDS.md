@@ -50,6 +50,7 @@ The gate (bench/selfhost_lower_core_exercise.sh) compares the core's module with
 | The `if` with a non-Bool condition | cond.cr (`codegen_cond` of a union or nilable type) | refused by name in `cond.iyi` | S2c |
 | A lib definition typed by the semantic pass (`lib LibC` with `fun exit`) | semantic/main_visitor.iyi:407-408 (`Expressions` asks `type_of` of every child) | the main visitor sets no type for a LibDef, so analysis raises `BUG: node has no type: lib LibC`; `bench/fixtures/lower_exit.iyi` waits on it by name | the semantic owner (S1d or the lib slice); the lowering for a lib call (`declare` plus a C-convention call, `unreachable` after a NoReturn call) is the core's next increment once the analysis types it |
 | End-to-end observability | the hosted `main` returns 0 | every ported fixture ends with status 0 and empty stdout, so the end-to-end check proves the executable runs, not the value | the lib-call path above (exit status 42 for lower_exit) |
+| Float literals (`ret double 1.500000e+00`) | LLVM prints doubles in decimal exponent form | the IR text parser refuses that form (`unexpected ... after the instruction` at the float constant), so no float fixture can be gated; floats are refused by name in `lower.iyi` (`NumberLiteral with a fraction`) | the IR text parser owner (`ir/parser.iyi`): read LLVM's decimal float literal, or the gate writes the hex bit form before the port reads it |
 
 ## Lowering calls and functions (S2c): what the calls read and the port does not yet give
 
