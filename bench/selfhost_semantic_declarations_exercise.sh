@@ -303,6 +303,24 @@ prove_mutation "method visibility defaults to private instead of public" "$MUT_S
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "module header segments keep their written case" "$MUT_SEM" \
+  "name = camelcase_segment(segment)" \
+  "name = segment" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generated new is private instead of public" "$MUT_SEM" \
+  "new_def.visibility = Visibility::Public" \
+  "new_def.visibility = Visibility::Private" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generated new drops the initialize arguments" "$MUT_SEM" \
+  "new_def = Def.new(\"new\", node.args.dup, Nop.new)" \
+  "new_def = Def.new(\"new\", [] of Arg, Nop.new)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
