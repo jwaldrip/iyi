@@ -24,6 +24,7 @@ import compiler/syntax/token::{NumberKind}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
+import compiler/lower/program::{TypedProgram, declare_program, type_bodies, lower_program, native_objects, link_program, link_names}
 
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
@@ -44,6 +45,8 @@ pub struct CompilerConfig
   # compiler does not verify in its emit path and neither does this one: the
   # check belongs to bench/selfhost_ir_valid_exercise.sh, which drives this.
   property probe_verify : Bool
+  # The typed pipeline (compile_typed): declarations, bodies and typed lowering, with no LLVM. Off unless asked for.
+  property typed_pipeline : Bool
 
   def initialize(
     @output_filename : String = "a.out",
@@ -54,6 +57,7 @@ pub struct CompilerConfig
     @probe_phase : Bool = false,
     @single_file : Bool = false,
     @probe_verify : Bool = false,
+    @typed_pipeline : Bool = false,
   )
   end
 end
@@ -77,12 +81,15 @@ pub class Compiler
   property config : CompilerConfig
   property loader : Loader
   property emit_ir : Bool
+  property refusal : String?
 
   def initialize(@config : CompilerConfig = CompilerConfig.new, @loader : Loader = Loader.new, @backend : Backend = Backend.new)
     @emit_ir = false
+    @refusal = nil
   end
 
   def compile(root_filename : String) : CompileResult
+    return compile_typed(root_filename) if @config.typed_pipeline
     # 1. Resolve: discover all dependencies, detect cycles, produce topological order
     parsed = group do |g|
       task = g.spawn do
@@ -256,6 +263,156 @@ pub class Compiler
       raise refusal.as(String)
     end
     CompileResult.new(@config.output_filename, obj_path, resolved_modules)
+  end
+
+  # The typed pipeline (SPEC 2.1, S3): one program from source to a native executable, through the typed analysis and
+  # the typed lowering, with no LLVM. Each phase is a spawned task, so a raise inside a phase is caught and named by
+  # phase. A refusal writes no output and records its phase and reason in `refusal`. The output is written at the link.
+  def compile_typed(root_filename : String) : CompileResult
+    triple = @config.target_triple || @backend.default_triple
+    typed_start("parse")
+    parsed = group do |g|
+      task = g.spawn do
+        if @config.single_file
+          @loader.resolve_single(root_filename)
+        else
+          @loader.resolve(root_filename)
+        end
+      end
+      task.value
+    end
+    if parsed.is_a?(Panicked)
+      return typed_refuse("parse", "none", parsed.message)
+    end
+    resolved_modules = parsed
+    reached = typed_pass("parse")
+    typed_start("declarations")
+
+    declared = group do |g|
+      task = g.spawn { Compiler.typed_declare(resolved_modules, triple, @loader.load_prelude) }
+      task.value
+    end
+    if declared.is_a?(Panicked)
+      return typed_refuse("declarations", reached, declared.message)
+    end
+    typed = declared
+    reached = typed_pass("declarations")
+    typed_start("bodies")
+
+    bodies = group do |g|
+      task = g.spawn { type_bodies(typed) }
+      task.value
+    end
+    if bodies.is_a?(Panicked)
+      return typed_refuse("bodies", reached, bodies.message)
+    end
+    reached = typed_pass("bodies")
+
+    typed_start("lower")
+    name = Compiler.module_name_from_path(root_filename)
+    lowered = group do |g|
+      task = g.spawn { lower_program(typed, triple, name) }
+      task.value
+    end
+    if lowered.is_a?(Panicked)
+      return typed_refuse("lower", reached, lowered.message)
+    end
+    mod = lowered
+    reached = typed_pass("lower")
+
+    typed_start("verify")
+    errors = verify(mod)
+    unless errors.empty?
+      return typed_refuse("verify", reached, "the IR verifier refused the module: " + errors[0].to_s)
+    end
+    reached = typed_pass("verify")
+    if @emit_ir
+      File.write(@config.output_filename, print(mod))
+      return CompileResult.new(@config.output_filename, "", resolved_modules)
+    end
+
+    typed_start("native")
+    objects = native_objects(mod, triple)
+    if objects.is_a?(String)
+      return typed_refuse("native", reached, objects.as(String))
+    end
+    reached = typed_pass("native")
+
+    typed_start("link")
+    output = @config.output_filename
+    parts = output.split('/')
+    refusal = link_program(objects, parts[parts.size - 1], output, typed.links)
+    unless refusal.nil?
+      return typed_refuse("link", reached, refusal.as(String))
+    end
+    typed_pass("link")
+    if @config.probe_phase
+      puts "reached: link"
+      STDOUT.flush
+    end
+    CompileResult.new(output, "", resolved_modules)
+  end
+
+  # Records the start of a phase when probing. A phase that exits the process (refuse_port) leaves its start as the last line.
+  def typed_start(phase : String) : Nil
+    if @config.probe_phase
+      puts "[phase] #{phase}: start"
+      STDOUT.flush
+    end
+  end
+
+  # Records a passed phase and, when probing, prints it.
+  def typed_pass(phase : String) : String
+    if @config.probe_phase
+      puts "[phase] #{phase}: pass"
+      STDOUT.flush
+    end
+    phase
+  end
+
+  # Records a refused phase with the last phase reached. When probing, it is printed and no output is written.
+  def typed_refuse(phase : String, reached : String, message : String) : CompileResult
+    @refusal = "#{phase}: #{message}"
+    if @config.probe_phase
+      puts "#{phase}: fail: #{message}"
+      puts "reached: #{reached}"
+      STDOUT.flush
+    end
+    CompileResult.new(@config.output_filename, "", [] of ModuleInfo)
+  end
+
+  # The declarations phase of the typed pipeline: each unit is normalised, its declarations are collected as the hosted
+  # compiler collects them, and they are declared as one program. The builtin stand-ins apply only when no prelude is loaded.
+  pub def self.typed_declare(resolved : Array(ModuleInfo), triple : String, prelude : Bool) : TypedProgram
+    resolved.each do |mod_info|
+      refuse_exception_handlers(mod_info.ast)
+    end
+    normalizer = NormalizerProgram.new(prelude)
+    links = [] of String
+    resolved.each do |mod_info|
+      mod_info.ast = normalizer.normalize(mod_info.ast)
+      tops = [mod_info.ast]
+      if mod_info.ast.is_a?(Expressions)
+        tops = mod_info.ast.as(Expressions).expressions
+      end
+      link_names(tops).each { |name| links << name }
+    end
+    classes = [] of ClassDef
+    funs = [] of FunDef
+    defs = Hash(String, Def).new
+    libs = [] of LibDef
+    flags = MacroTargetFlags.for_triple(triple, [] of String)
+    module_tops = {} of String => Array(ASTNode)
+    resolved.each do |mod_info|
+      mod_top = [] of ASTNode
+      Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, mod_top, flags)
+      module_tops[mod_info.filename] = mod_top
+    end
+    top_level = [] of ASTNode
+    Loader.initialiser_order(resolved).each do |mod_info|
+      module_tops[mod_info.filename].each { |node| top_level << node }
+    end
+    declare_program(classes, libs, defs, funs, top_level, links, !prelude)
   end
 
   # --- Helper utilities ---
