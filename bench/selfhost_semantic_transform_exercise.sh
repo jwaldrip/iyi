@@ -205,8 +205,8 @@ echo
 echo "== 5. Literal expansion: range literals, the port's walk against the hosted walk"
 # The literal fixtures (semtx_lit_*.iyi) are walked by the port (the driver's
 # `literals` mode) and by the hosted walk (the oracle's `literals` mode), and
-# the rewritten trees must match. Range literals and string interpolations are
-# lowered so far.
+# the rewritten trees must match. Range literals, string interpolations and array
+# literals are lowered so far.
 # An interpolation made only of literal pieces is kept out of these fixtures:
 # the hosted parser folds it into one string (consume_interpolation in
 # src/compiler/iyi/syntax/parser.cr), and the port's parser keeps the pieces.
@@ -260,6 +260,18 @@ LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a merged literal joins its pieces in reverse" "$LITERAL" 'joined = piece.as(StringLiteral).value + next_piece.as(StringLiteral).value' 'joined = next_piece.as(StringLiteral).value + piece.as(StringLiteral).value' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "the last pair of a run is not merged" "$LITERAL" 'if i < n - 1' 'if i < n - 2' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a typed empty array takes the typeof, not its type" "$LITERAL" 'type_var = of' 'type_var = typeof_exp(node.elements, temps)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "the splat capacity counts the splats" "$LITERAL" 'capacity = count_non_splat(node.elements)' 'capacity = node.elements.size' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "buffer indices start at one" "$LITERAL" 'NumberLiteral.new(i.to_s), value_or_temp' 'NumberLiteral.new((i + 1).to_s), value_or_temp' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "every element is bound to a temporary" "$LITERAL" 'if plain_operand?(elem)' 'if false' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a named splat block variable takes a plain temporary name" "$LITERAL" 'yield_var = temp_var_for(elem)' 'yield_var = temp_var' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "the walk stops at the array expansion" "$LITERAL" 'expanded.transform(self)' 'expanded' -- check_literals_agree || status=1
 echo "  $LIT_MUTATIONS literal mutation proofs run"
 
 echo

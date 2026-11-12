@@ -535,7 +535,7 @@ else
   prog = NormalizerProgram.new
   norm = prog.normalize(node)
   if Program.args.size > 1 && Program.args[1] == "literals"
-    norm = norm.transform(LiteralExpander.new)
+    norm = norm.transform(LiteralExpander.new(NormalizerProgram.new))
   end
   print BenchSemanticTransformExercise.dump_ast(norm)
 end

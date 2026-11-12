@@ -4,22 +4,47 @@ module compiler/semantic/literal_expander
 # LiteralExpander does (src/compiler/iyi/semantic/literal_expander.cr, the
 # hosted compiler). Phase S slice S1e ports it one literal kind per increment.
 #
-# Ported so far: range literals and string interpolation. `1 .. 3` is
-# `Range.new(1, 3, false)` and `1 ... 3` is `Range.new(1, 3, true)`, the `from`
-# and `to` expressions left as written: a literal inside them is lowered by the
-# walk that reaches it, as the hosted pipeline does when its visitor reaches the
-# call. `"a#{b}c"` is `String.interpolation("a", b, "c")`, after the literal
-# pieces that touch each other are merged.
+# Ported so far: range literals, string interpolation, and array literals.
+#
+# `1 .. 3` is `Range.new(1, 3, false)` and `1 ... 3` is `Range.new(1, 3, true)`,
+# the `from` and `to` expressions left as written. `"a#{b}c"` is
+# `String.interpolation("a", b, "c")`, after the literal pieces that touch each
+# other are merged.
+#
+# Array literals: `[] of T` is `Array(T).new`; `[] ` is `Array(typeof()).new`
+# (the hosted typeof of no elements); `[a, b]` is an `unsafe_build` with each
+# element stored by index; a splat element switches to `new` and `<<`/`concat`.
+# An element that is not a plain variable or a simple literal is bound to a
+# `__temp_N` first, in element order. The expander is one step: the walk
+# (`transform`) continues into the expansion, so a literal inside an element is
+# expanded when the walk reaches it, which is the order the hosted visitor uses.
+#
+# The named form `Type{...}` takes its generic type from the program's types in
+# the hosted compiler. The walk here has no types, so it passes no generic type,
+# which is the non-generic branch. The generic branch is not ported.
 #
 # Not ported yet, so a literal of these kinds is left as written and the
-# literal fixtures never contain one: array and hash literals (with their
-# temporaries), named containers, `case`, multiple assignment, op-assign,
-# `select`, regex and proc literals.
+# literal fixtures never contain one: hash literals (with their temporaries),
+# named tuples, `case`, multiple assignment, op-assign, `select`, regex and
+# proc literals.
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Path, RangeLiteral, StringInterpolation, StringLiteral}
+import compiler/semantic/normalizer::{NormalizerProgram}
+import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, CharLiteral, ClassVar, Expressions, Generic, InstanceVar, NilLiteral, Nop, NumberLiteral, Path, RangeLiteral, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TypeOf, Var}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
+  def initialize(@program : NormalizerProgram)
+  end
+
+  def transform(node : ArrayLiteral) : ASTNode
+    if name = node.name
+      expanded = expand_named_array(node, name, nil)
+    else
+      expanded = expand_array(node)
+    end
+    expanded.transform(self)
+  end
+
   def transform(node : RangeLiteral) : ASTNode
     path = Path.global(["Range"] of String)
     bool = BoolLiteral.new(node.exclusive)
@@ -58,5 +83,192 @@ pub class LiteralExpander < Transformer
       i = i + 1
     end
     kept
+  end
+
+  # `[] of T` is `Array(T).new`. `[a, b]` is an `unsafe_build` of the capacity,
+  # then each element stored by index. A splat makes it `new` and then `<<`
+  # for each element and `concat` for each splat.
+  def expand_array(node : ArrayLiteral) : ASTNode
+    temps = complex_elem_temp_vars(node.elements)
+    if of = node.of
+      type_var = of
+    else
+      type_var = typeof_exp(node.elements, temps)
+    end
+    capacity = count_non_splat(node.elements)
+    generic = Generic.new(Path.global(["Array"] of String), [type_var] of ASTNode)
+
+    if any_splat?(node.elements)
+      ary_var = temp_var
+      ary_instance = Call.new(generic, "new", [NumberLiteral.new(capacity.to_s)] of ASTNode)
+      exps = [] of ASTNode
+      bind_elem_temps(node.elements, temps, exps)
+      exps << Assign.new(ary_var.clone, ary_instance)
+      i = 0
+      while i < node.elements.size
+        elem = node.elements[i]
+        if elem.is_a?(Splat)
+          exps << Call.new(ary_var.clone, "concat", [splat_value(elem, temps[i])] of ASTNode)
+        else
+          exps << Call.new(ary_var.clone, "<<", [value_or_temp(elem, temps[i])] of ASTNode)
+        end
+        i += 1
+      end
+      exps << ary_var
+      return Expressions.new(exps)
+    end
+
+    if node.elements.empty?
+      return Call.new(generic, "new")
+    end
+
+    ary_var = temp_var
+    ary_instance = Call.new(generic, "unsafe_build", [NumberLiteral.new(capacity.to_s)] of ASTNode)
+    buffer = Call.new(ary_var.clone, "to_unsafe")
+    buffer_var = temp_var
+    exps = [] of ASTNode
+    bind_elem_temps(node.elements, temps, exps)
+    exps << Assign.new(ary_var.clone, ary_instance)
+    exps << Assign.new(buffer_var.clone, buffer)
+    i = 0
+    while i < node.elements.size
+      exps << Call.new(buffer_var.clone, "[]=", [NumberLiteral.new(i.to_s), value_or_temp(node.elements[i], temps[i])] of ASTNode)
+      i += 1
+    end
+    exps << ary_var.clone
+    Expressions.new(exps)
+  end
+
+  # `Type{a, *b}` with no generic type: a `new`, then `<<` for each element and
+  # `each` with a block for each splat. The block variable's name is taken
+  # from the splat's location, as the hosted `new_temp_var(elem)` does.
+  def expand_named_array(node : ArrayLiteral, name : ASTNode, generic_type : ASTNode?) : ASTNode
+    temps = complex_elem_temp_vars(node.elements)
+    if g = generic_type
+      type_of = typeof_exp(node.elements, temps)
+      node_name = Generic.new(g, [type_of] of ASTNode)
+    else
+      node_name = name
+    end
+    constructor = Call.new(node_name, "new")
+    if node.elements.empty?
+      return constructor
+    end
+
+    ary_var = temp_var
+    exps = [] of ASTNode
+    bind_elem_temps(node.elements, temps, exps)
+    exps << Assign.new(ary_var.clone, constructor)
+    i = 0
+    while i < node.elements.size
+      elem = node.elements[i]
+      if elem.is_a?(Splat)
+        yield_var = temp_var_for(elem)
+        each_body = Call.new(ary_var.clone, "<<", [yield_var.clone] of ASTNode)
+        each_block = Block.new([yield_var] of Var, each_body)
+        exps << Call.new(splat_value(elem, temps[i]), "each", [] of ASTNode, each_block)
+      else
+        exps << Call.new(ary_var.clone, "<<", [value_or_temp(elem, temps[i])] of ASTNode)
+      end
+      i += 1
+    end
+    exps << ary_var
+    Expressions.new(exps)
+  end
+
+  # Each element that is not a plain variable or a simple literal gets a
+  # temporary, nil where it needs none. A splat is judged by what it splats.
+  def complex_elem_temp_vars(elements : Array(ASTNode)) : Array(Var?)
+    temps = [] of Var?
+    i = 0
+    while i < elements.size
+      elem = elements[i]
+      if elem.is_a?(Splat)
+        elem = elem.as(Splat).exp
+      end
+      if plain_operand?(elem)
+        temps << nil
+      else
+        temps << temp_var
+      end
+      i += 1
+    end
+    temps
+  end
+
+  # `typeof(...)` over the elements, with each temporary in place of its
+  # element, and each splat as the element type of what it splats.
+  def typeof_exp(elements : Array(ASTNode), temps : Array(Var?)) : TypeOf
+    type_exps = [] of ASTNode
+    i = 0
+    while i < elements.size
+      elem = elements[i]
+      if elem.is_a?(Splat)
+        source = splat_value(elem, temps[i])
+        type_exps << Call.new(Path.global(["Enumerable"] of String), "element_type", [source] of ASTNode)
+      else
+        type_exps << value_or_temp(elem, temps[i])
+      end
+      i += 1
+    end
+    TypeOf.new(type_exps)
+  end
+
+  # Binds each complex element to its temporary, in element order. A splat
+  # binds what it splats.
+  def bind_elem_temps(elements : Array(ASTNode), temps : Array(Var?), exps : Array(ASTNode)) : Nil
+    i = 0
+    while i < elements.size
+      if t = temps[i]
+        elem = elements[i]
+        if elem.is_a?(Splat)
+          elem = elem.as(Splat).exp
+        end
+        exps << Assign.new(t, elem.clone)
+      end
+      i += 1
+    end
+  end
+
+  def value_or_temp(elem : ASTNode, temp : Var?) : ASTNode
+    if t = temp
+      t.clone
+    else
+      elem.clone
+    end
+  end
+
+  def splat_value(elem : ASTNode, temp : Var?) : ASTNode
+    if t = temp
+      t.clone
+    else
+      elem.as(Splat).exp.clone
+    end
+  end
+
+  def plain_operand?(node : ASTNode) : Bool
+    node.is_a?(Var) || node.is_a?(InstanceVar) || node.is_a?(ClassVar) || simple_literal?(node)
+  end
+
+  def simple_literal?(node : ASTNode) : Bool
+    node.is_a?(Nop) || node.is_a?(NilLiteral) || node.is_a?(BoolLiteral) || node.is_a?(NumberLiteral) || node.is_a?(CharLiteral) || node.is_a?(StringLiteral) || node.is_a?(SymbolLiteral)
+  end
+
+  def any_splat?(elements : Array(ASTNode)) : Bool
+    elements.any? { |elem| elem.is_a?(Splat) }
+  end
+
+  def count_non_splat(elements : Array(ASTNode)) : Int32
+    elements.count { |elem| !elem.is_a?(Splat) }
+  end
+
+  # The `__temp_N` of the hosted program: one counter for the prefix.
+  def temp_var : Var
+    Var.new(@program.new_temp_var_name)
+  end
+
+  # A temporary named from the node's file, as the hosted `new_temp_var(node)`.
+  def temp_var_for(node : ASTNode) : Var
+    Var.new(@program.new_temp_var_name(node))
   end
 end
