@@ -353,6 +353,11 @@ prove_mutation "a range's min is its last subtype, not the first" "$TYPE_ID_FILE
   "      if sub_id != 0" \
   -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a Tuple instance is not recorded in Tuple's instantiated types" "$REPO/src/compiler/types/instances.iyi" \
+  '    @program.types["Tuple"].as(GenericClassType).instantiated_types << inst' \
+  '    @program.types["Tuple"].as(GenericClassType).instantiated_types.size' \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "leaves take no id of their own" "$TYPE_ID_FILE" \
   "    if subtypes.size == 0" \
