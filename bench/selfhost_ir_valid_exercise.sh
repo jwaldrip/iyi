@@ -98,6 +98,11 @@ fx_total=0
 fx_valid=0
 for src in "$REPO"/bench/fixtures/cg_*.iyi; do
   name="$(basename "$src")"
+  # A refusal fixture has no IR to verify: iyi refuses it, and
+  # selfhost_codegen_exercise.sh checks that the port refuses it the same way.
+  case "$name" in
+    cg_exceptions.iyi|cg_raise.iyi) continue ;;
+  esac
   fx_total=$((fx_total + 1))
   got="$(verify_one "$src")"
   if [ "$got" = "pass" ]; then

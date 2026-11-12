@@ -1,20 +1,11 @@
-lib LibRunner
-  @[Raises]
-  fun c_raise = __runner_raise(ex : Void*) : NoReturn
-end
-
-@[Raises]
-fun __crystal_raise(ex : Void*) : NoReturn
-  LibRunner.c_raise(ex)
-end
-
-def raise(msg : String) : NoReturn
-  __crystal_raise(msg.as(Void*))
-end
-
-fun test_direct_raise(code : Int32) : Int32
-  if code < 0
-    raise "negative"
+# A refusal fixture. iyi has no `ensure`: a panic unwinds by registry and skips
+# it, so the oracle refuses this file, and the port must refuse it with the same
+# message and exit status. Checked by bench/selfhost_codegen_exercise.sh
+# (section 4), not compared as IR.
+fun test_ensure(x : Int32) : Int32
+  begin
+    x &+ 1
+  ensure
+    x
   end
-  code &* 3
 end

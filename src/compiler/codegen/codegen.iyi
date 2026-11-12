@@ -15,7 +15,7 @@
 #
 # Explicitly excluded from this slice:
 # - Closures and proc literals
-# - Exception handling (try/catch/raise)
+# - Exception handling: `rescue` and `ensure` are refused with the oracle's message, not lowered
 # - Generics instantiation beyond Pointer(T)
 # - Garbage collection interface (classes use malloc directly)
 # - Dynamic virtual hierarchy dispatch tables (~match<Base+>)
@@ -24,7 +24,7 @@
 module compiler/codegen/codegen
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Rescue, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Var, While, Yield, MacroIf, MacroLiteral}
+import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Unless, Var, While, Yield, MacroIf, MacroLiteral}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/token::{NumberKind}
@@ -80,6 +80,25 @@ pub def register_primitive_operators(prog : SemanticProgram) : Nil
   end
   d_not = Def.new("!", [] of Arg, nil, nil, nil, Path.new("Bool"))
   bool_t.add_def(d_not)
+end
+
+# The oracle's `Iyi.symbol_text`: text somebody else chose (a file's path, a proc
+# literal's type) is written into a symbol with `%`, `@` and `^` escaped, so the
+# joiner `^` is never the person's and two texts that differ give two names.
+pub def symbol_text(text : String) : String
+  out = String::Builder.new
+  text.each_char do |char|
+    if char == '%'
+      out << "%25"
+    elsif char == '@'
+      out << "%40"
+    elsif char == '^'
+      out << "%5E"
+    else
+      out << char
+    end
+  end
+  out.to_s
 end
 
 pub class CustomTypeInfo
@@ -175,10 +194,12 @@ end
 
 class LocalVarCollector < Visitor
   getter vars : Hash(String, ASTNode)
+  getter assigns : Hash(String, Array(ASTNode))
   getter excluded : Set(String)
 
   def initialize(@excluded : Set(String))
     @vars = Hash(String, ASTNode).new
+    @assigns = Hash(String, Array(ASTNode)).new
   end
 
   def visit(node : Assign) : Bool
@@ -186,6 +207,9 @@ class LocalVarCollector < Visitor
       v = node.target.as(Var)
       unless @excluded.includes?(v.name)
         @vars[v.name] ||= node.value
+        list = @assigns[v.name]? || [] of ASTNode
+        list << node.value
+        @assigns[v.name] = list
       end
     end
     true
@@ -200,11 +224,28 @@ class LocalVarCollector < Visitor
     end
     true
   end
+end
 
-  def visit(node : Rescue) : Bool
-    if n = node.name
-      unless @excluded.includes?(n)
-        @vars[n] ||= node
+# iyi has no `rescue` or `ensure` (SPEC.md III.1): an error is a value the caller
+# handles, and a panic is caught at a task boundary, never by a handler in the
+# body. The oracle refuses both in an iyi file with these sentences, and so does
+# the port, before it emits any IR.
+class ExceptionHandlerRefuser < Visitor
+  getter refusal : String?
+
+  def initialize
+    @refusal = nil
+  end
+
+  def visit(node : ExceptionHandler) : Bool
+    if @refusal.nil?
+      rescues = node.rescues
+      else_part = node.else
+      ensure_part = node.ensure
+      if rescues || else_part
+        @refusal = "iyi has no exceptions to rescue: an error is a value the caller handles (SPEC.md III.1), and a panic is caught at a task boundary (III.1.4), never here - this `rescue` would not run. Return the error, or read the task's `value`"
+      elsif ensure_part
+        @refusal = "iyi has no `ensure`: a panic unwinds by registry and skips it (SPEC.md III.1.4). Write `defer`, which runs on return, on `!` and on a panic"
       end
     end
     true
@@ -367,7 +408,6 @@ pub class CodeGenVisitor < Visitor
   property current_inlined_block : InlinedBlockContext?
   property inlined_block_contexts : Array(InlinedBlockContext)
   property inlined_block_index : Int32
-  property rescue_block : LLVMBasicBlock?
   property lib_funs : Hash(Tuple(String, String), Tuple(String, LLVMType, Bool))
   property lib_fun_return_types : Hash(Tuple(String, String), String)
   property needs_value : Bool
@@ -405,7 +445,6 @@ pub class CodeGenVisitor < Visitor
     @current_inlined_block = nil
     @inlined_block_contexts = [] of InlinedBlockContext
     @inlined_block_index = 0
-    @rescue_block = nil
     @lib_funs = Hash(Tuple(String, String), Tuple(String, LLVMType, Bool)).new
     @lib_fun_return_types = Hash(Tuple(String, String), String).new
     @needs_value = true
@@ -686,33 +725,6 @@ pub class CodeGenVisitor < Visitor
     end
   end
 
-  def ensure_crystal_personality : Function
-    if f = @mod.get_function?("__crystal_personality")
-      f
-    else
-      pers_fn_ty = LLVMType.function([@context.int32, @context.int32, @context.int64, @context.pointer, @context.pointer], @context.int32, true)
-      @mod.add_function("__crystal_personality", pers_fn_ty)
-    end
-  end
-
-  def ensure_crystal_get_exception : Function
-    if f = @mod.get_function?("__crystal_get_exception")
-      f
-    else
-      get_ex_fn_ty = LLVMType.function([@context.pointer], @context.int64, false)
-      @mod.add_function("__crystal_get_exception", get_ex_fn_ty)
-    end
-  end
-
-  def ensure_crystal_raise : Function
-    if f = @mod.get_function?("__crystal_raise")
-      f
-    else
-      raise_fn_ty = LLVMType.function([@context.pointer], @context.void, false)
-      @mod.add_function("__crystal_raise", raise_fn_ty)
-    end
-  end
-
   def nil_type : LLVMType
     @llvm_struct_types["Nil"]? || @context.struct([] of LLVMType)
   end
@@ -885,14 +897,6 @@ pub class CodeGenVisitor < Visitor
       return node.as(TypeDeclaration).declared_type.to_s
     end
 
-    if node.is_a?(Rescue)
-      if r_types = node.as(Rescue).types
-        return r_types.first.to_s
-      else
-        return "Exception"
-      end
-    end
-
     if node.is_a?(Expressions)
       if last_exp = node.as(Expressions).expressions.last?
         return infer_var_type(vname, last_exp)
@@ -985,7 +989,13 @@ pub class CodeGenVisitor < Visitor
           end
         end
       end
-      if (c.name == "+" || c.name == "-" || c.name == "*" || c.name == "/" || c.name == "//" || c.name == "%" || c.name == "&+" || c.name == "&-" || c.name == "&*" || c.name == "|" || c.name == "&" || c.name == "^" || c.name == "<<" || c.name == ">>" || c.name == "unsafe_shl" || c.name == "unsafe_shr") && c.args.size == 1 && (co = c.obj)
+      # A call with no receiver, inside a method of a type, answers that type's
+      # declared method: `from_bits(bits)` in `def self.product` is `Float64`, not
+      # the `Int32` the fallback below gave it.
+      if c.obj.nil? && (ctype = @current_self_type) && (c_info = @custom_types[ctype]?) && (m = c_info.methods[c.name]?) && (decl = m.return_type)
+        return decl.to_s
+      end
+      if (c.name == "+" || c.name == "-" || c.name == "*" || c.name == "/" || c.name == "//" || c.name == "%" || c.name == "**" || c.name == "&+" || c.name == "&-" || c.name == "&*" || c.name == "|" || c.name == "&" || c.name == "^" || c.name == "<<" || c.name == ">>" || c.name == "unsafe_shl" || c.name == "unsafe_shr") && c.args.size == 1 && (co = c.obj)
         lt = infer_var_type(vname, co)
         rt = infer_var_type(vname, c.args[0])
         if lt == "Float64" || rt == "Float64"
@@ -1116,6 +1126,45 @@ pub class CodeGenVisitor < Visitor
     collector.vars
   end
 
+  def collect_local_assigns(body : ASTNode?, excluded : Set(String)) : Hash(String, Array(ASTNode))
+    collector = LocalVarCollector.new(excluded)
+    if b = body
+      b.accept(collector)
+    end
+    collector.assigns
+  end
+
+  # A local's slot type comes from its assignments. The first value that is
+  # not `nil` fixes the type, so `found = nil` then `found = element` is the
+  # element's type: `Nil` has no slot of its own, and a slot of it was
+  # `alloca void`. A `nil` among the assignments makes the slot nilable, as
+  # `unify_types` does for an `if` whose branches disagree. A local that is only
+  # ever `nil` keeps `Nil`.
+  def local_slot_type(vname : String, assigns : Array(ASTNode)) : String
+    base = ""
+    have_base = false
+    nil_seen = false
+    assigns.each do |node|
+      t = infer_var_type(vname, node)
+      if t == "Nil"
+        nil_seen = true
+      elsif !have_base
+        base = t
+        have_base = true
+      end
+    end
+    return "Nil" unless have_base
+    nil_seen ? nilable_slot_type(base) : base
+  end
+
+  def nilable_slot_type(t : String) : String
+    return t if t.ends_with?('?')
+    if info = @custom_types[t]?
+      return t if info.is_struct
+    end
+    "#{t}?"
+  end
+
   def collect_struct_calls(body : ASTNode?) : Array(String)
     collector = StructCallCollector.new(@custom_types, @var_type_names)
     if b = body
@@ -1193,10 +1242,11 @@ pub class CodeGenVisitor < Visitor
     end
 
     local_vars = collect_local_vars(node.body, excluded_names)
+    local_assigns = collect_local_assigns(node.body, excluded_names)
 
     # First pass: infer all variable type names
     local_vars.each do |vname, vnode|
-      tname = infer_var_type(vname, vnode)
+      tname = local_slot_type(vname, local_assigns[vname]? || [vnode] of ASTNode)
       @var_type_names[vname] = tname
     end
 
@@ -1283,9 +1333,10 @@ pub class CodeGenVisitor < Visitor
 
           # 2c. Inlined method local variables
           m_locals = collect_local_vars(b_def.body, Set(String).new)
+          m_assigns = collect_local_assigns(b_def.body, Set(String).new)
           m_locals.each do |mvname, mvnode|
             next if ctx.method_param_allocas.has_key?(mvname)
-            mv_tname = infer_var_type(mvname, mvnode)
+            mv_tname = local_slot_type(mvname, m_assigns[mvname]? || [mvnode] of ASTNode)
             llvm_t = llvm_type_from_name(mv_tname)
             ptr = @builder.alloca(llvm_t, mvname)
             ptr.alignment = 4
@@ -1713,7 +1764,7 @@ pub class CodeGenVisitor < Visitor
     loc = node.location
     line_no = loc ? loc.line_number : 1
     rel_file = relative_filename
-    proc_fn_name = "~proc#{proc_type_str}@#{rel_file}:#{line_no}"
+    proc_fn_name = "~proc#{symbol_text(proc_type_str)}^#{symbol_text(rel_file)}:#{line_no}"
     count = (@proc_counts[proc_fn_name]? || 0) + 1
     @proc_counts[proc_fn_name] = count
     if count > 1
@@ -1902,7 +1953,7 @@ pub class CodeGenVisitor < Visitor
     info = @custom_types[type_name]? || @custom_types["Array"]?
     if info
       ctor_name = if gname = info.generic_name
-                    "*#{info.name}@#{gname}::new:#{info.name}"
+                    "*#{info.name}^#{gname}::new:#{info.name}"
                   else
                     "*#{info.name}::new:#{info.name}"
                   end
@@ -1961,6 +2012,16 @@ pub class CodeGenVisitor < Visitor
   def visit(node : SymbolLiteral) : Bool
     @last = @context.int32.const_int(0)
     @terminated = false
+    false
+  end
+
+  # `body unless cond` (statement or suffix form) is `if cond` with the body in
+  # the else branch. The oracle normalises `Unless` to an `If` before codegen;
+  # without this the body was emitted unconditionally, and a `return` in it
+  # left the rest of the function after a terminator.
+  def visit(node : Unless) : Bool
+    lowered = If.new(node.cond, node.else, node.then)
+    lowered.accept(self)
     false
   end
 
@@ -2162,205 +2223,6 @@ pub class CodeGenVisitor < Visitor
     false
   end
 
-  def visit(node : ExceptionHandler) : Bool
-    cur_fn = if f = @current_fn
-               f
-             else
-               return false
-             end
-    pers_fn = ensure_crystal_personality
-    cur_fn.personality_function = pers_fn.to_value
-    landing_pad_ty = if st = @llvm_struct_types["landing_pad"]?
-                       st
-                     else
-                       lp_st = @context.struct_named("landing_pad")
-                       lp_st.struct_set_body([@context.pointer, @context.int32])
-                       @llvm_struct_types["landing_pad"] = lp_st
-                       lp_st
-                     end
-
-    rescue_block = cur_fn.append_basic_block("rescue")
-    node_rescues = node.rescues
-    node_ensure = node.ensure
-    node_else = node.else
-
-    phi_vals = [] of LLVMValue
-    phi_bbs = [] of LLVMBasicBlock
-
-    old_rescue = @rescue_block
-    @rescue_block = rescue_block
-    @terminated = false
-    node.body.accept(self)
-    body_val = @last
-    @rescue_block = old_rescue
-    exit_bb = cur_fn.append_basic_block("exit")
-
-    unless @terminated
-      if node_else
-        node_else.accept(self)
-        if l = @last
-          cur_entry = cur_fn.entry_block || exit_bb
-          phi_vals << l
-          phi_bbs << (@builder.insert_block || cur_entry)
-        end
-      else
-        if l = body_val
-          cur_entry = cur_fn.entry_block || exit_bb
-          phi_vals << l
-          phi_bbs << (@builder.insert_block || cur_entry)
-        end
-      end
-      @builder.br(exit_bb)
-    end
-    rescue_ensure_block = nil
-    if node_ensure && node_rescues
-      rescue_ensure_block = cur_fn.append_basic_block("rescue_ensure")
-    end
-
-    @builder.position_at_end(rescue_block)
-    lp = @builder.landing_pad(landing_pad_ty, pers_fn.to_value, [] of LLVMValue)
-    unwind_ex_obj = @builder.extract_value(lp, 0)
-    exception_type_id = @builder.extract_value(lp, 1)
-
-    get_ex_fn = ensure_crystal_get_exception
-    get_ex_fn_ty = LLVMType.function([@context.pointer], @context.int64, false)
-    caught_ex_u64 = @builder.call(get_ex_fn_ty, get_ex_fn.to_value, [unwind_ex_obj])
-    caught_ex_ptr = @builder.int_to_ptr(caught_ex_u64, @context.pointer)
-
-    if rescues = node_rescues
-      rescues.each_with_index do |a_rescue, r_idx|
-        this_rescue_bb = cur_fn.append_basic_block("this_rescue")
-        next_rescue_bb = cur_fn.append_basic_block("next_rescue")
-
-        if r_types = a_rescue.types
-          cond : LLVMValue? = nil
-          r_types.each do |r_type_node|
-            tname = r_type_node.to_s
-            type_cond = if (c_info = @custom_types[tname]?) && !c_info.subclasses.empty?
-                          m_match_fn = ensure_match_function(tname)
-                          m_match_fn_ty = LLVMType.function([@context.int32], @context.int1, false)
-                          @builder.call(m_match_fn_ty, m_match_fn.to_value, [exception_type_id])
-                        else
-                          tid_global_name = "#{tname}:type_id"
-                          unless @mod.get_global?(tid_global_name)
-                            g = @mod.add_global(tid_global_name, @context.int32)
-                            tid_val = if c_info = @custom_types[tname]?
-                                        c_info.type_id
-                                      else
-                                        0
-                                      end
-                            g.initializer = @context.int32.const_int(tid_val)
-                            g.global_constant = true
-                            g.linkage = LibLLVM::Linkage::Internal
-                          end
-                          g = @mod.get_global(tid_global_name)
-                          l_tid = @builder.load(@context.int32, g)
-                          l_tid.alignment = 4
-                          @builder.icmp(LibLLVM::IntPredicate::EQ, l_tid, exception_type_id)
-                        end
-            cond = if c = cond
-                     @builder.build_or(c, type_cond)
-                   else
-                     type_cond
-                   end
-          end
-          if c = cond
-            @builder.cond_br(c, this_rescue_bb, next_rescue_bb)
-          else
-            @builder.br(this_rescue_bb)
-          end
-        else
-          @builder.br(this_rescue_bb)
-        end
-
-        @builder.position_at_end(this_rescue_bb)
-        saved_var_type = nil
-        if var_name = a_rescue.name
-          if ptr = @vars[var_name]?
-            s_inst = @builder.store(caught_ex_ptr, ptr)
-            s_inst.alignment = 8
-          end
-          saved_var_type = @var_type_names[var_name]?
-          r_type_name = if r_types = a_rescue.types
-                          r_types.first.to_s
-                        else
-                          "Exception"
-                        end
-          @var_type_names[var_name] = r_type_name
-        end
-
-        old_res = @rescue_block
-        @rescue_block = rescue_ensure_block
-        @terminated = false
-        a_rescue.body.accept(self)
-        @rescue_block = old_res
-
-        if var_name = a_rescue.name
-          if sv = saved_var_type
-            @var_type_names[var_name] = sv
-          else
-            @var_type_names.delete(var_name)
-          end
-        end
-
-        unless @terminated
-          if l = @last
-            phi_vals << l
-            phi_bbs << (@builder.insert_block || this_rescue_bb)
-          end
-          @builder.br(exit_bb)
-        end
-
-        @builder.position_at_end(next_rescue_bb)
-      end
-
-      if ens = node_ensure
-        ens.accept(self)
-      end
-      raise_fn = ensure_crystal_raise
-      raise_fn_ty = LLVMType.function([@context.pointer], @context.void, false)
-      @builder.call(raise_fn_ty, raise_fn.to_value, [unwind_ex_obj])
-      @builder.unreachable
-    else
-      if ens = node_ensure
-        ens.accept(self)
-      end
-      raise_fn = ensure_crystal_raise
-      raise_fn_ty = LLVMType.function([@context.pointer], @context.void, false)
-      @builder.call(raise_fn_ty, raise_fn.to_value, [unwind_ex_obj])
-      @builder.unreachable
-    end
-
-    if node_ensure && rescue_ensure_block
-      @builder.position_at_end(rescue_ensure_block)
-      re_lp = @builder.landing_pad(landing_pad_ty, pers_fn.to_value, [] of LLVMValue)
-      re_unwind = @builder.extract_value(re_lp, 0)
-      node_ensure.accept(self)
-      raise_fn = ensure_crystal_raise
-      raise_fn_ty = LLVMType.function([@context.pointer], @context.void, false)
-      @builder.call(raise_fn_ty, raise_fn.to_value, [re_unwind])
-      @builder.unreachable
-    end
-
-    @builder.position_at_end(exit_bb)
-    if @needs_value && !phi_vals.empty?
-      phi_ty = phi_vals[0].type
-      if !phi_ty.void?
-        phi = @builder.phi(phi_ty)
-        @builder.add_incoming(phi, phi_vals, phi_bbs)
-        @last = phi
-      end
-    end
-    old_last = @last
-    if ens = node_ensure
-      ens.accept(self)
-    end
-    @last = old_last
-
-    @terminated = false
-    false
-  end
-
   def visit(node : Return) : Bool
     if exp = node.exp
       exp.accept(self)
@@ -2436,53 +2298,6 @@ pub class CodeGenVisitor < Visitor
     if node.name == "as" && node.args.size == 1 && (as_obj = node.obj)
       as_obj.accept(self)
       @terminated = false
-      return false
-    end
-    if node.obj.nil? && node.name == "raise" && node.args.size == 1
-      node.args[0].accept(self)
-      return false unless ex_val = @last
-      arg_tname = if node.args[0].is_a?(Call) && (c_obj = node.args[0].as(Call).obj)
-                    c_obj.to_s
-                  elsif node.args[0].is_a?(Var) && (v_tname = @var_type_names[node.args[0].as(Var).name]?)
-                    v_tname
-                  elsif node.args[0].is_a?(StringLiteral)
-                    "String"
-                  else
-                    "Exception"
-                  end
-
-      fn_name = "*raise<#{arg_tname}>:NoReturn"
-      fn_ty = LLVMType.function([@context.pointer], @context.void, false)
-      raise_helper = if existing = @mod.get_function?(fn_name)
-                       existing
-                     else
-                       rh = @mod.add_function(fn_name, fn_ty)
-                       rh.linkage = LibLLVM::Linkage::Internal
-                       entry_bb = rh.append_basic_block("entry")
-                       b = Builder.new(@context)
-                       b.position_at_end(entry_bb)
-                       param = rh.param(0)
-                       param.name = arg_tname == "String" ? "msg" : "ex"
-                       crystal_raise_fn = ensure_crystal_raise
-                       crystal_raise_ty = LLVMType.function([@context.pointer], @context.void, false)
-                       b.call(crystal_raise_ty, crystal_raise_fn.to_value, [param])
-                       b.unreachable
-                       b.dispose
-                       rh
-                     end
-
-      if rb = @rescue_block
-        if c_fn = @current_fn
-          invoke_out_bb = c_fn.append_basic_block("invoke_out")
-          @builder.invoke(fn_ty, raise_helper.to_value, [ex_val], invoke_out_bb, rb)
-          @builder.position_at_end(invoke_out_bb)
-          @builder.unreachable
-        end
-      else
-        @builder.call(fn_ty, raise_helper.to_value, [ex_val])
-        @builder.unreachable
-      end
-      @terminated = true
       return false
     end
     if node.obj.nil? && node.name == "pointerof" && node.args.size == 1
@@ -2591,9 +2406,9 @@ pub class CodeGenVisitor < Visitor
         expected_arg_types = m.args.map { |a| a.restriction ? a.restriction.to_s : "Int32" }
         method_fn_name = if gname = info.generic_name
                            if expected_arg_types.empty?
-                             "*#{info.name}@#{gname}##{node.name}:#{ret_tname}"
+                             "*#{info.name}^#{gname}##{node.name}:#{ret_tname}"
                            else
-                             "*#{info.name}@#{gname}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
+                             "*#{info.name}^#{gname}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
                            end
                          else
                            if expected_arg_types.empty?
@@ -2765,9 +2580,9 @@ pub class CodeGenVisitor < Visitor
 
             ctor_name = if gname = info.generic_name
                           if arg_type_names.empty?
-                            "*#{info.name}@#{gname}::new:#{info.name}"
+                            "*#{info.name}^#{gname}::new:#{info.name}"
                           else
-                            "*#{info.name}@#{gname}::new<#{arg_type_names.join(", ")}>:#{info.name}"
+                            "*#{info.name}^#{gname}::new<#{arg_type_names.join(", ")}>:#{info.name}"
                           end
                         else
                           if arg_type_names.empty?
@@ -3272,9 +3087,9 @@ pub class CodeGenVisitor < Visitor
 
                   @builder.position_at_end(cur_def_base_bb)
                   base_fn_name = if arg_type_names.empty?
-                                   "*#{base_info.name}+@#{base_info.name}##{node.name}:#{ret_tname}"
+                                   "*#{base_info.name}+^#{base_info.name}##{node.name}:#{ret_tname}"
                                  else
-                                   "*#{base_info.name}+@#{base_info.name}##{node.name}<#{arg_type_names.join(", ")}>:#{ret_tname}"
+                                   "*#{base_info.name}+^#{base_info.name}##{node.name}<#{arg_type_names.join(", ")}>:#{ret_tname}"
                                  end
                   if b_fn = @mod.get_function?(base_fn_name)
                     call_args = [ptr] of LLVMValue
@@ -3417,9 +3232,9 @@ pub class CodeGenVisitor < Visitor
             expected_arg_types = m.args.map { |a| a.restriction ? a.restriction.to_s : "Int32" }
             method_fn_name = if gname = info.generic_name
                                if expected_arg_types.empty?
-                                 "*#{info.name}@#{gname}##{node.name}:#{ret_tname}"
+                                 "*#{info.name}^#{gname}##{node.name}:#{ret_tname}"
                                else
-                                 "*#{info.name}@#{gname}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
+                                 "*#{info.name}^#{gname}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
                                end
                              else
                                if expected_arg_types.empty?
@@ -3433,9 +3248,9 @@ pub class CodeGenVisitor < Visitor
             if method_fn.nil?
               alt_name = if gname = info.generic_name
                            if arg_type_names.empty?
-                             "*#{info.name}@#{gname}##{node.name}:#{ret_tname}"
+                             "*#{info.name}^#{gname}##{node.name}:#{ret_tname}"
                            else
-                             "*#{info.name}@#{gname}##{node.name}<#{arg_type_names.join(", ")}>:#{ret_tname}"
+                             "*#{info.name}^#{gname}##{node.name}<#{arg_type_names.join(", ")}>:#{ret_tname}"
                            end
                          else
                            if arg_type_names.empty?
@@ -3527,9 +3342,9 @@ pub class CodeGenVisitor < Visitor
 
               method_fn_name = if gname = info.generic_name
                                  if expected_arg_types.empty?
-                                   "*#{info.name}@#{gname}##{node.name}:#{ret_tname}"
+                                   "*#{info.name}^#{gname}##{node.name}:#{ret_tname}"
                                  else
-                                   "*#{info.name}@#{gname}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
+                                   "*#{info.name}^#{gname}##{node.name}<#{expected_arg_types.join(", ")}>:#{ret_tname}"
                                  end
                                else
                                  if expected_arg_types.empty?
@@ -3597,8 +3412,10 @@ pub class CodeGenVisitor < Visitor
 
       # Binary primitive operation
       if node.args.size == 1
+        @last = nil
         obj.accept(self)
         return false unless lhs = @last
+        @last = nil
         node.args[0].accept(self)
         return false unless rhs = @last
 
@@ -3739,15 +3556,7 @@ pub class CodeGenVisitor < Visitor
 
     if fn_val = fn
       callee_type = @fn_types[node.name]
-      if rb = @rescue_block
-        if c_fn = @current_fn
-          invoke_out_bb = c_fn.append_basic_block("invoke_out")
-          @last = @builder.invoke(callee_type, fn_val.to_value, arg_vals, invoke_out_bb, rb)
-          @builder.position_at_end(invoke_out_bb)
-        end
-      else
-        @last = @builder.call(callee_type, fn_val.to_value, arg_vals)
-      end
+      @last = @builder.call(callee_type, fn_val.to_value, arg_vals)
     end
 
     @terminated = false
@@ -3797,15 +3606,15 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
 
       fn_mangled = if gname = info.generic_name
                      if arg_type_names.empty?
-                       "*#{info.name}@#{gname}##{mname}:#{ret_tname}"
+                       "*#{info.name}^#{gname}##{mname}:#{ret_tname}"
                      else
-                       "*#{info.name}@#{gname}##{mname}<#{arg_type_names.join(", ")}>:#{ret_tname}"
+                       "*#{info.name}^#{gname}##{mname}<#{arg_type_names.join(", ")}>:#{ret_tname}"
                      end
                    elsif has_sub_override
                      if arg_type_names.empty?
-                       "*#{info.name}+@#{info.name}##{mname}:#{ret_tname}"
+                       "*#{info.name}+^#{info.name}##{mname}:#{ret_tname}"
                      else
-                       "*#{info.name}+@#{info.name}##{mname}<#{arg_type_names.join(", ")}>:#{ret_tname}"
+                       "*#{info.name}+^#{info.name}##{mname}<#{arg_type_names.join(", ")}>:#{ret_tname}"
                      end
                    else
                      if arg_type_names.empty?
@@ -3834,7 +3643,7 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       init_fn_ty = LLVMType.function(init_arg_tys, init_ret_ty, false)
       arg_type_names = init_def.args.map { |a| a.restriction ? a.restriction.to_s : "Int32" }
       init_fn_name = if gname = info.generic_name
-                       "*#{info.name}@#{gname}#initialize<#{arg_type_names.join(", ")}>:#{init_ret_tname}"
+                       "*#{info.name}^#{gname}#initialize<#{arg_type_names.join(", ")}>:#{init_ret_tname}"
                      else
                        "*#{info.name}#initialize<#{arg_type_names.join(", ")}>:#{init_ret_tname}"
                      end
@@ -3875,8 +3684,9 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       end
 
       m_locals = cg.collect_local_vars(init_def.body, excluded_names)
+      m_assigns = cg.collect_local_assigns(init_def.body, excluded_names)
       m_locals.each do |vname, vnode|
-        cg.var_type_names[vname] = cg.infer_var_type(vname, vnode)
+        cg.var_type_names[vname] = cg.local_slot_type(vname, m_assigns[vname]? || [vnode] of ASTNode)
       end
 
       m_struct_calls = cg.collect_struct_calls(init_def.body)
@@ -3984,9 +3794,9 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       ctor_fn_ty = LLVMType.function(ctor_arg_tys, ctor_ret_ty, false)
       ctor_name = if gname = info.generic_name
                     if arg_type_names.empty?
-                      "*#{info.name}@#{gname}::new:#{info.name}"
+                      "*#{info.name}^#{gname}::new:#{info.name}"
                     else
-                      "*#{info.name}@#{gname}::new<#{arg_type_names.join(", ")}>:#{info.name}"
+                      "*#{info.name}^#{gname}::new<#{arg_type_names.join(", ")}>:#{info.name}"
                     end
                   else
                     if arg_type_names.empty?
@@ -4189,15 +3999,15 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
 
       fn_mangled = if gname = info.generic_name
                      if arg_type_names.empty?
-                       "*#{info.name}@#{gname}##{mname}:#{ret_tname}"
+                       "*#{info.name}^#{gname}##{mname}:#{ret_tname}"
                      else
-                       "*#{info.name}@#{gname}##{mname}<#{arg_type_names.join(", ")}>:#{ret_tname}"
+                       "*#{info.name}^#{gname}##{mname}<#{arg_type_names.join(", ")}>:#{ret_tname}"
                      end
                    elsif has_sub_override
                      if arg_type_names.empty?
-                       "*#{info.name}+@#{info.name}##{mname}:#{ret_tname}"
+                       "*#{info.name}+^#{info.name}##{mname}:#{ret_tname}"
                      else
-                       "*#{info.name}+@#{info.name}##{mname}<#{arg_type_names.join(", ")}>:#{ret_tname}"
+                       "*#{info.name}+^#{info.name}##{mname}<#{arg_type_names.join(", ")}>:#{ret_tname}"
                      end
                    else
                      if arg_type_names.empty?
@@ -4249,8 +4059,9 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
 
       # Local variables
       m_locals = cg.collect_local_vars(mdef.body, excluded_names)
+      m_assigns = cg.collect_local_assigns(mdef.body, excluded_names)
       m_locals.each do |vname, vnode|
-        cg.var_type_names[vname] = cg.infer_var_type(vname, vnode)
+        cg.var_type_names[vname] = cg.local_slot_type(vname, m_assigns[vname]? || [vnode] of ASTNode)
       end
 
       m_struct_calls = cg.collect_struct_calls(mdef.body)
@@ -4382,6 +4193,12 @@ end
 pub def compile_source_to_module(src : String, filename : String, context : Context, mod : Module) : CodeGenVisitor
   parser = Parser.new(src, filename)
   node = parser.parse
+  refuser = ExceptionHandlerRefuser.new
+  node.accept(refuser)
+  if message = refuser.refusal
+    STDERR.puts "Error: #{message}"
+    LibC.exit(1)
+  end
 
   prog = SemanticProgram.new
   register_primitive_operators(prog)
