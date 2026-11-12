@@ -51,6 +51,23 @@ pub def path_const(low : Lowerer, node : Path) : Compiler::Semantic::TopLevel::C
   nil
 end
 
+# The constant an assignment declares: the analysis made its Const from this initialiser (top_level.iyi visit(Assign),
+# const_initializers), so the initialiser's identity finds it with no name lookup. The bare name of the target is not
+# resolved from the program scope, where the lowering of a module-level assignment stands, so a namespaced target
+# (`Outer::S = 1`) would be refused by it.
+pub def assigned_const(low : Lowerer, node : Assign) : Compiler::Semantic::TopLevel::Const?
+  id = node.value.object_id
+  inits = low.analysed.program.const_initializers
+  i = 0
+  while i < inits.size
+    if inits[i].value.object_id == id
+      return inits[i]
+    end
+    i = i + 1
+  end
+  nil
+end
+
 # The value a constant's literal initialiser has at compile time, as an IR constant of the type the analysis
 # gave the constant's value; nil when the value is not a literal of a kind the port inlines (the hosted
 # `compile_time_value` is nil there, and the constant is initialised at run time).
@@ -342,8 +359,7 @@ end
 # its assignment emits nothing; a constant that is never used emits nothing; any other used constant is
 # initialised by `initialize_const`. The value of the assignment is nil.
 pub def codegen_path_assign(low : Lowerer, node : Assign) : Nil
-  target = node.target.as(Path)
-  const = path_const(low, target)
+  const = assigned_const(low, node)
   if const.nil?
     refuse_port("lower: an assignment to a path that names a type or a module is not ported yet (hosted codegen.cr: codegen_assign(Path))")
   end
