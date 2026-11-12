@@ -38,6 +38,13 @@ pub def symbol_table(mod : Module, obj : ObjectFile) : Hash(String, Int32)
       obj.symbols << Symbol.new(fn.name, SymbolKind::Func, binding, 0)
     end
   end
+  # The runtime helpers the lowering calls by name (isel's lower_transfer and lower_memset). The runtime object defines
+  # them and the linker resolves them; a module that defines one itself keeps its own entry.
+  ["__iyi_native_memcpy", "__iyi_native_memmove", "__iyi_native_memset"].each do |helper|
+    next if table[helper]?
+    table[helper] = obj.symbols.size
+    obj.symbols << Symbol.new(helper, SymbolKind::Undefined, SymbolBinding::Global)
+  end
   mod.globals.each do |g|
     table[g.name] = obj.symbols.size
     binding = g.linkage == Linkage::External ? SymbolBinding::Global : SymbolBinding::Local
