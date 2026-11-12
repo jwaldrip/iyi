@@ -141,6 +141,7 @@ src/compiler/semantic/cleanup.iyi 7
 src/compiler/semantic/default_arguments.iyi 14
 src/compiler/semantic/inline_macros.iyi 0
 src/compiler/semantic/instance_vars.iyi 0
+src/compiler/semantic/lib_call.iyi 0
 src/compiler/semantic/literal_expander.iyi 0
 src/compiler/semantic/main_visitor.iyi 0
 src/compiler/semantic/match.iyi 0
