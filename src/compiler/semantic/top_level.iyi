@@ -1454,10 +1454,10 @@ pub class SemanticProgram < NonGenericModuleType
     @types["Enum"] = en
 
     # iyi: Class is the metaclass of Value, as the hosted program makes it (program.cr 1423). Its parent
-    # is Object's metaclass, as the hosted MetaclassType computes it (types.cr 3918), set once Class exists.
+    # is Value itself: the hosted chain prints Object.class under Class under Value (bench oracle --chain).
     klass = MetaclassType.new(self, self, "Class", val)
     @types["Class"] = klass
-    klass.parents << obj.metaclass
+    klass.parents << val
     @types["Array"] = GenericClassType.new(self, self, "Array", ["T"], nil, ref)
     @types["Hash"] = GenericClassType.new(self, self, "Hash", ["K", "V"], nil, ref)
     proc_t = GenericClassType.new(self, self, "Proc", ["T", "R"], 0, val)
