@@ -1,5 +1,6 @@
 module compiler/semantic/method_lookup
 
+import compiler/syntax/ast::{Def}
 import compiler/semantic/top_level::{ClassType, MetaclassType, ModuleType, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/match::{CallMatch, CallSignature, Match}
@@ -60,6 +61,23 @@ pub class MethodLookup
       return true if defines?(parent.as(ModuleType), name)
     end
     false
+  end
+
+  # Every def named *name* on *type* and then on its parents, in the order the
+  # walk meets them: the hosted lookup_defs, which the call pass reads to report
+  # why nothing matched.
+  def self.all_defs(type : ModuleType, name : String, into : Array(Def)) : Array(Def)
+    defs = type.defs[name]?
+    if defs
+      defs.as(Array(Def)).each do |d|
+        into << d
+      end
+    end
+    parents_of(type).each do |parent|
+      next unless parent.is_a?(ModuleType)
+      all_defs(parent.as(ModuleType), name, into)
+    end
+    into
   end
 
   # The matches of *signature* on *type*, its own defs first and then each

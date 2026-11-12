@@ -130,6 +130,12 @@ prove_mutation "undefined method text loses its quotes" "$ERROR_FILE" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a consecutive range of expected sizes is printed as a list" "$ERROR_FILE" \
+  "    if sizes.size > 1 && sizes[sizes.size - 1] - sizes[0] == sizes.size - 1" \
+  "    if false" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

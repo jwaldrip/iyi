@@ -1,5 +1,5 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Call}
+import compiler/syntax/ast::{ASTNode, Call, Def}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
@@ -44,9 +44,9 @@ module BenchSelfhostSemanticCallsExercise
     "#{m.owner.to_s}::#{m.definition.name}(#{restrictions.join(", ")}) -> #{ret_text}"
   end
 
-  # The matches of the call *expr* with its receiver and literal arguments, or
-  # the message of why they cannot be found. The error text is the port's own
-  # answer: a receiver or argument the call rule cannot type says so.
+  # The matches of the call with its receiver and literal arguments, or the
+  # message of why they cannot be found. A receiver or argument the call rule
+  # cannot type says so.
   def self.lookup(prog : SemanticProgram, ts : TypeSystem, call : Call) : Matches | String
     scope = CallReceiver.scope(prog, ts, call.obj)
     if scope.nil?
@@ -91,8 +91,9 @@ module BenchSelfhostSemanticCallsExercise
   end
 
   # The first line of the error a call raises, as the oracle's `# error` lines
-  # print it: `ok` when the call finds a match, the undefined-method message when
-  # no def of its name exists, and a marked refusal for the messages not ported.
+  # print it: `ok` when the call finds a match, and otherwise the message the port
+  # ported (undefined method, or wrong number of arguments). A message not ported
+  # is marked as such, so a fixture cannot pass by accident.
   def self.evaluate_error(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
     node = Parser.new(expr, "call").parse
     if !node.is_a?(Call)
@@ -116,7 +117,12 @@ module BenchSelfhostSemanticCallsExercise
     if !MethodLookup.defines?(scoped, call.name)
       return "error: #{CallError.undefined_method(scoped, call.name)}"
     end
-    "error: not ported: no overload or arity message"
+    defs = MethodLookup.all_defs(scoped, call.name, [] of Def)
+    wrong = CallError.wrong_number(scoped, call.name, call.args.size, defs)
+    if wrong
+      return "error: #{wrong.as(String)}"
+    end
+    "error: not ported: no overload message"
   end
 
   def self.run(src : String, filename : String) : String
