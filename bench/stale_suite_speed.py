@@ -171,7 +171,10 @@ def suite_run(compiler, mode, cwd, env):
         "failed": data.get("failed", 0),
         "served": sum(1 for test in tests if test.get("cached")),
         "seconds": {os.path.basename(test["file"]): test.get("seconds", 0.0) for test in tests},
+        # With what the test printed: "does not build" under a loaded machine
+        # is a finding about the runner, and the status alone cannot say which.
         "not_passing": [os.path.basename(test["file"]) + ": " + str(test.get("status"))
+                        + " | " + str(test.get("output", ""))[-400:]
                         for test in tests if test.get("status") != "pass"][:5],
     }
 
