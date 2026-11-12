@@ -28,3 +28,11 @@ pub class SyntaxException
     end
   end
 end
+
+# The port refuses, by name and before it writes any IR, a call or operand it cannot
+# lower. Emitting nothing for one would leave a block unterminated and hand the verifier
+# invalid IR, so the emitter stops with exit status 1.
+pub def refuse_port(message : String) : NoReturn
+  STDERR.puts "Error: #{message}"
+  exit(1)
+end

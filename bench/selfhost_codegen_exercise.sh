@@ -499,10 +499,29 @@ prove_mutation "corrupt the ensure refusal message" "$CG_SRC" \
   -- check_refusal_mutant cg_raise.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation_all "corrupt the refusal exit status" "$CG_SRC" \
-  'LibC.exit(1)' \
-  'LibC.exit(0)' \
+# The rescue refusal is a located one: it prints the source line and exits in
+# codegen.iyi's own refusal, not through foundation/errors.iyi's refuse_port.
+prove_mutation_all "corrupt the located refusal's exit status" "$CG_SRC" \
+  '  exit(1)' \
+  '  exit(0)' \
   -- check_refusal_mutant cg_exceptions.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# The by-name refusals (a call or an operand the port cannot resolve) exit
+# through refuse_port. The port-limit fixture is the one that reaches it: the
+# check holds only while the port still refuses it by name with a status that
+# is not zero, which is what section 3c requires.
+check_port_limit_status() {
+  local name="$1" got got_status
+  "$IYI" build -o "$WORK/mut_exercise" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1 || return 1
+  got="$(cd "$REPO" && "$WORK/mut_exercise" --dump-ir "bench/fixtures/$name" 2>&1)"
+  got_status=$?
+  [ "$got_status" -ne 0 ] && printf '%s\n' "$got" | grep -q '^Error: port limitation: the port cannot '
+}
+prove_mutation_all "corrupt refuse_port's exit status" "$REPO/src/compiler/foundation/errors.iyi" \
+  '  exit(1)' \
+  '  exit(0)' \
+  -- check_port_limit_status cg_splat_loop.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "drop the exit block of a statement if with no else" "$CG_SRC" \
