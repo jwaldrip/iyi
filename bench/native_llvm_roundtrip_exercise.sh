@@ -103,8 +103,8 @@ prove_mutation "drop nsw in translate" \
 step 4 "mutation: remove llvm.memcpy from the importer's accepted intrinsics"
 prove_mutation "remove llvm.memcpy from the importer" \
   src/compiler/backend/llvm/import.iyi \
-  "id = intrinsic_from_name(llvm_name)" \
-  "id = llvm_name == \"llvm.memcpy.p0.p0.i64\" ? nil : intrinsic_from_name(llvm_name)" \
+  "found = intrinsic_match(llvm_name, @ir.types)" \
+  "found = llvm_name == \"llvm.memcpy.p0.p0.i64\" ? nil : intrinsic_match(llvm_name, @ir.types)" \
   "\"$TOOL\" roundtrip \"$FX/calls.ll\" | grep -qx identical"
 
 step 5 "mutation: a patch that changes nothing is refused"

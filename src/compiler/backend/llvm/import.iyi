@@ -2,14 +2,14 @@
 module compiler/backend/llvm/import
 
 import compiler/ir/types::{IrType}
-import compiler/ir/values::{Value, Param}
+import compiler/ir/values::{Value, Param, i128_parse}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, Ordering, Attribute, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, DebugLoc}
-import compiler/ir/function::{Function, Global, Linkage, TlsModel}
+import compiler/ir/function::{Function, Global, Linkage, TlsModel, Visibility}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout, LayoutError}
-import compiler/ir/intrinsics::{intrinsic_from_name, intrinsic_spec, intrinsic_type}
+import compiler/ir/intrinsics::{intrinsic_match, intrinsic_signature}
 import compiler/platform/target::{Target}
-import compiler/llvm/lib_llvm::{string_from_c, to_c_str}
+import compiler/llvm/lib_llvm::{string_from_c, to_c_str, string_and_dispose}
 
 # LLVM's value kind, linkage and calling convention, read through the C API's enums (as plain numbers:
 # LLVM 22 gives values past the enums' members, which the enums carry without checking).
@@ -768,11 +768,37 @@ class ModuleImporter
     end
   end
 
-  def read_global(ref : LibLLVM::ValueRef, global : Global) : Nil
-    if LibLLVM.get_visibility_int(ref) != 0
-      refuse("global #{global.name} has a visibility, which the IR does not model")
-      return
+  def visibility_of(value : Int32, name : String) : Visibility
+    return Visibility::Default if value == 0
+    return Visibility::Hidden if value == 1
+    return Visibility::Protected if value == 2
+    refuse("#{name} has visibility #{value}, which the IR does not model")
+    Visibility::Default
+  end
+
+  # LLVM 22's C API has no accessor for dso_local, so it is read from the printed header of the value:
+  # `define dso_local ...` or `@x = dso_local global ...`.
+  def dso_local_of(ref : LibLLVM::ValueRef) : Bool
+    text = string_and_dispose(LibLLVM.print_value_to_string(ref))
+    text.split('\n')[0].includes?(" dso_local ")
+  end
+
+  # A 128-bit constant. The C API reads an integer constant only up to 64 bits, so the printed value
+  # (`i128 <signed decimal>`) is parsed instead.
+  def wide_constant(ref : LibLLVM::ValueRef, ty : IrType, factory : ConstantFactory) : Value
+    text = string_and_dispose(LibLLVM.print_value_to_string(ref))
+    wide = i128_parse(text.split(' ')[1])
+    unless wide
+      refuse("the constant #{text} is outside the signed 128-bit range")
+      return dummy
     end
+    factory.wide(ty, wide.hi, wide.lo)
+  end
+
+  def read_global(ref : LibLLVM::ValueRef, global : Global) : Nil
+    global.visibility = visibility_of(LibLLVM.get_visibility_int(ref), global.name)
+    global.dso_local = dso_local_of(ref)
+    return if failed?
     if LibLLVM.is_externally_initialized(ref) != 0
       refuse("global #{global.name} is externally initialized, which the IR does not model")
       return
@@ -804,10 +830,9 @@ class ModuleImporter
   end
 
   def read_function(ref : LibLLVM::ValueRef, fn : Function) : Nil
-    if LibLLVM.get_visibility_int(ref) != 0
-      refuse("function #{fn.name} has a visibility, which the IR does not model")
-      return
-    end
+    fn.visibility = visibility_of(LibLLVM.get_visibility_int(ref), fn.name)
+    fn.dso_local = dso_local_of(ref)
+    return if failed?
     if LibLLVM.get_dll_storage_class_int(ref) != 0
       refuse("function #{fn.name} has a DLL storage class, which the IR does not model")
       return
@@ -901,7 +926,14 @@ class ModuleImporter
     elsif kind == vk_null_pointer
       built = factory.null_pointer(ty)
     elsif kind == vk_constant_int
-      built = factory.integer(ty, LibLLVM.const_int_get_sext_value(ref))
+      if ty.int? && ty.bits == 128
+        built = wide_constant(ref, ty, factory)
+      elsif ty.int? && ty.bits > 64
+        refuse("an integer constant of #{ty} is wider than 64 bits and is not i128, which the IR does not model")
+        return dummy
+      else
+        built = factory.integer(ty, LibLLVM.const_int_get_sext_value(ref))
+      end
     elsif kind == vk_constant_fp
       loses = 0
       built = factory.float_value(ty, LibLLVM.const_real_get_double(ref, pointerof(loses)))
@@ -1396,8 +1428,8 @@ class ModuleImporter
 
   def intrinsic_call(ref : LibLLVM::ValueRef, callee_ref : LibLLVM::ValueRef, name : String) : Inst?
     llvm_name = string_from_c(LibLLVM.get_value_name(callee_ref))
-    id = intrinsic_from_name(llvm_name)
-    unless id
+    found = intrinsic_match(llvm_name, @ir.types)
+    unless found
       refuse("the intrinsic #{llvm_name} is not in the IR's closed set")
       return nil
     end
@@ -1409,11 +1441,10 @@ class ModuleImporter
       refuse("the intrinsic #{llvm_name} is called with call-site attributes, which the IR does not model")
       return nil
     end
-    spec = intrinsic_spec(id)
-    overload = spec.overload.map { |t| intrinsic_type(t, @ir.types) }
     args = call_arguments(ref)
     return nil if failed?
-    Inst.new(Op::Intrinsic, intrinsic_type(spec.ret, @ir.types), args, 0_i64, IntrinsicAux.new(id, overload), [] of Block, [] of Int64, name)
+    signature = intrinsic_signature(found.id, found.overload, @ir.types)
+    Inst.new(Op::Intrinsic, signature[0], args, 0_i64, IntrinsicAux.new(found.id, found.overload), [] of Block, [] of Int64, name)
   end
 end
 
@@ -1440,6 +1471,12 @@ class ConstantFactory
 
   def integer(ty : IrType, value : Int64) : Inst
     Inst.new(Op::ConstInt, ty, [] of Value, value, nil, [] of Block, [] of Int64)
+  end
+
+  def wide(ty : IrType, hi : Int64, lo : Int64) : Inst
+    inst = Inst.new(Op::ConstInt, ty, [] of Value, lo, nil, [] of Block, [] of Int64)
+    inst.aux_hi = hi
+    inst
   end
 
   def float_value(ty : IrType, value : Float64) : Inst

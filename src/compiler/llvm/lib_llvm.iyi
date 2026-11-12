@@ -396,6 +396,7 @@ module compiler/llvm/lib_llvm
     fun const_real = LLVMConstReal(real_ty : TypeRef, n : Double) : ValueRef
     fun const_int_get_zext_value = LLVMConstIntGetZExtValue(constant_val : ValueRef) : ULongLong
     fun const_int_get_sext_value = LLVMConstIntGetSExtValue(constant_val : ValueRef) : LongLong
+    fun const_int_of_arbitrary_precision = LLVMConstIntOfArbitraryPrecision(int_ty : TypeRef, num_words : UInt, words : UInt64*) : ValueRef
 
     {% if is_lt_190 %}
       fun const_string_in_context = LLVMConstStringInContext(c : ContextRef, str : Char*, length : UInt, dont_null_terminate : Bool) : ValueRef
@@ -555,6 +556,7 @@ module compiler/llvm/lib_llvm
     fun write_bitcode_to_file = LLVMWriteBitcodeToFile(m : ModuleRef, path : Char*) : Int32
     fun write_bitcode_to_memory_buffer = LLVMWriteBitcodeToMemoryBuffer(m : ModuleRef) : MemoryBufferRef
     fun create_memory_buffer_with_contents_of_file = LLVMCreateMemoryBufferWithContentsOfFile(path : Char*, out_mem_buf : MemoryBufferRef*, out_message : Char**) : Bool
+    fun create_memory_buffer_with_memory_range_copy = LLVMCreateMemoryBufferWithMemoryRangeCopy(input_data : Char*, input_data_length : SizeT, buffer_name : Char*) : MemoryBufferRef
     fun get_buffer_start = LLVMGetBufferStart(mem_buf : MemoryBufferRef) : Char*
     fun get_buffer_size = LLVMGetBufferSize(mem_buf : MemoryBufferRef) : SizeT
     fun dispose_memory_buffer = LLVMDisposeMemoryBuffer(mem_buf : MemoryBufferRef)
@@ -585,6 +587,7 @@ module compiler/llvm/lib_llvm
     fun metadata_as_value = LLVMMetadataAsValue(c : ContextRef, md : MetadataRef) : ValueRef
     fun global_get_value_type = LLVMGlobalGetValueType(g : ValueRef) : TypeRef
     fun get_visibility_int = LLVMGetVisibility(g : ValueRef) : Int32
+    fun set_visibility = LLVMSetVisibility(g : ValueRef, visibility : Int32) : Void
     fun get_dll_storage_class_int = LLVMGetDLLStorageClass(g : ValueRef) : Int32
     fun get_thread_local_mode = LLVMGetThreadLocalMode(g : ValueRef) : Int32
     fun set_thread_local_mode = LLVMSetThreadLocalMode(g : ValueRef, mode : Int32) : Void

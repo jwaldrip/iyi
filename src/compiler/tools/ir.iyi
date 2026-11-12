@@ -20,7 +20,8 @@ import compiler/ir/verifier::{verify, IrError}
 import compiler/ir/module::{Module}
 import compiler/ir/inst::{Op, Inst, Block, CallAux, AsmAux, IntrinsicAux}
 import compiler/ir/function::{Function, Global}
-import compiler/ir/intrinsics::{intrinsic_from_name}
+import compiler/ir/intrinsics::{intrinsic_match}
+import compiler/ir/types::{TypeTable}
 import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
 import compiler/backend/llvm/emit::{read_ll_file, LlFileError, print_llvm_module, strip_llvm_debug_info, verify_llvm_module, function_of_line}
 import compiler/backend/llvm/import::{import_llvm_module, ImportError, ir_enum_attribute_names, ir_string_attribute_names, ir_module_flag_behavior, llvm_opcode_name, vk_inline_asm, llvm_value_kind, llvm_linkage, llvm_calling_convention}
@@ -362,7 +363,7 @@ class Coverage
         note("inline asm template", text, true)
       elsif LibLLVM.get_intrinsic_id(callee) != 0
         intrinsic = string_from_c(LibLLVM.get_value_name(callee))
-        note("intrinsic", intrinsic, intrinsic_from_name(intrinsic) != nil)
+        note("intrinsic", intrinsic, intrinsic_match(intrinsic, TypeTable.new) != nil)
       end
       note("calling convention", cc_name(LibLLVM.get_instruction_call_conv(inst)), LibLLVM.get_instruction_call_conv(inst) == 0)
       tail = LibLLVM.get_tail_call_kind(inst)

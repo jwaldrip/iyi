@@ -4,10 +4,11 @@ module compiler/backend/llvm/translate
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/ir/inst::{Op, Inst, Block, Ordering, Attribute, CallAux, AsmAux, GepAux, MemAux, IntrinsicAux}
-import compiler/ir/function::{Function, Global, Linkage, TlsModel}
+import compiler/ir/function::{Function, Global, Linkage, TlsModel, Visibility}
 import compiler/ir/module::{Module}
-import compiler/ir/intrinsics::{intrinsic_spec, intrinsic_type}
-import compiler/llvm/lib_llvm::{to_c_str}
+import compiler/ir/printer::{print}
+import compiler/ir/intrinsics::{intrinsic_name, intrinsic_signature}
+import compiler/llvm/lib_llvm::{to_c_str, string_and_dispose}
 import compiler/backend/llvm/import::{ir_int_predicate_to_llvm, ir_real_predicate_to_llvm, ir_ordering_to_llvm, atomic_rmw_operation_names, ir_module_flag_behavior}
 
 # LibLLVM's enum for an IR linkage, for LLVMSetLinkage.
@@ -55,7 +56,28 @@ end
 
 # Replays an IR module into an LLVM module, in a fresh LLVM context. The caller owns the result.
 pub def translate(m : Module) : LibLLVM::ModuleRef | TranslateError
+  return translate_through_text(m) if carries_dso_local?(m)
   ModuleTranslator.new(m).run
+end
+
+# LLVM 22's C API cannot set dso_local. A module that carries it is printed in the IR's text form, which is
+# LLVM's own IR syntax, and parsed back. The instruction builders below do not build such a module.
+pub def translate_through_text(m : Module) : LibLLVM::ModuleRef | TranslateError
+  text = print(m)
+  ctx = LibLLVM.create_context
+  buffer = LibLLVM.create_memory_buffer_with_memory_range_copy(to_c_str(text), text.bytesize.to_u64, to_c_str(m.name))
+  module_slot = Pointer(LibLLVM::ModuleRef).malloc(1_u64)
+  message = Pointer(UInt8).new(0_u64)
+  rc = LibLLVM.parse_ir_in_context(ctx, buffer, module_slot, pointerof(message))
+  LibLLVM.dispose_memory_buffer(buffer)
+  if rc != 0
+    return TranslateError.new(string_and_dispose(message))
+  end
+  module_slot[0]
+end
+
+def carries_dso_local?(m : Module) : Bool
+  m.globals.any? { |g| g.dso_local } || m.functions.any? { |f| f.dso_local }
 end
 
 # LLVM's C `bool` for an IR Bool.
@@ -83,6 +105,18 @@ pub def llvm_linkage_number(linkage : Linkage) : Int32
     5
   else
     12
+  end
+end
+
+# LLVM's LLVMVisibility number for an IR visibility (llvm-c/Core.h).
+pub def visibility_number(v : Visibility) : Int32
+  case v
+  when Visibility::Hidden
+    1
+  when Visibility::Protected
+    2
+  else
+    0
   end
 end
 
@@ -227,6 +261,7 @@ class ModuleTranslator
     value = LibLLVM.add_global(@llvm, type_ref(g.value_type), to_c_str(g.name))
     @values[g] = value
     LibLLVM.set_linkage(value, llvm_linkage_enum(g.linkage))
+    LibLLVM.set_visibility(value, visibility_number(g.visibility))
     LibLLVM.set_global_constant(value, llvm_bool(g.constant))
     LibLLVM.set_thread_local_mode(value, llvm_tls_number(g.tls))
     LibLLVM.set_alignment(value, g.alignment) if g.alignment != 0
@@ -240,6 +275,7 @@ class ModuleTranslator
     fn = LibLLVM.add_function(@llvm, to_c_str(f.name), type_ref(f.fn_type))
     @values[f] = fn
     LibLLVM.set_linkage(fn, llvm_linkage_enum(f.linkage))
+    LibLLVM.set_visibility(fn, visibility_number(f.visibility))
     f.attrs.each { |a| LibLLVM.add_attribute_at_index(fn, -1, create_attribute(a)) }
     f.ret_attrs.each { |a| LibLLVM.add_attribute_at_index(fn, 0, create_attribute(a)) }
     f.param_attrs.each_with_index do |list, i|
@@ -281,6 +317,12 @@ class ModuleTranslator
   def constant_ref(c : Inst) : LibLLVM::ValueRef
     ty = type_ref(c.type)
     if c.op == Op::ConstInt
+      if c.type.int? && c.type.bits == 128
+        words = Pointer(UInt64).malloc(2_u64)
+        words[0] = u64_bits(c.aux_int)
+        words[1] = u64_bits(c.aux_hi)
+        return LibLLVM.const_int_of_arbitrary_precision(ty, 2_u32, words)
+      end
       return LibLLVM.const_int(ty, u64_bits(c.aux_int), 1)
     end
     if c.op == Op::ConstFloat
@@ -686,15 +728,16 @@ class ModuleTranslator
   # An intrinsic call: the declaration is the module's, under the intrinsic's LLVM name.
   def emit_intrinsic(builder : LibLLVM::BuilderRef, inst : Inst) : LibLLVM::ValueRef
     aux = inst.aux.as(IntrinsicAux)
-    spec = intrinsic_spec(aux.id)
-    decl = LibLLVM.get_named_function_with_length(@llvm, to_c_str(spec.name), spec.name.bytesize.to_u64)
+    llvm_name = intrinsic_name(aux.id, aux.overload)
+    signature = intrinsic_signature(aux.id, aux.overload, @ir.types)
+    decl = LibLLVM.get_named_function_with_length(@llvm, to_c_str(llvm_name), llvm_name.bytesize.to_u64)
     if decl.address == 0
-      params = spec.params.map { |t| type_ref(intrinsic_type(t, @ir.types)) }
-      ret = type_ref(intrinsic_type(spec.ret, @ir.types))
-      decl = LibLLVM.add_function(@llvm, to_c_str(spec.name), LibLLVM.function_type(ret, params, params.size.to_i32, 0))
+      params = signature[1].map { |t| type_ref(t) }
+      ret = type_ref(signature[0])
+      decl = LibLLVM.add_function(@llvm, to_c_str(llvm_name), LibLLVM.function_type(ret, params, params.size.to_i32, 0))
     end
     args = inst.args.map { |a| value_ref(a) }
-    name = intrinsic_type(spec.ret, @ir.types).void? ? to_c_str("") : to_c_str(inst.name)
+    name = signature[0].void? ? to_c_str("") : to_c_str(inst.name)
     LibLLVM.build_call2(builder, LibLLVM.global_get_value_type(decl), decl, args, args.size.to_i32, name)
   end
 
