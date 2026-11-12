@@ -1,7 +1,8 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, dump_program_declarations, dump_type, dir_of, normalize_path}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, LibFun, LibType, dump_program_declarations, dump_type, dir_of, normalize_path}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
+import compiler/semantic/type_nodes::{type_node_system}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
@@ -21,22 +22,26 @@ module BenchSelfhostSemanticDeclarationsExercise
     text.split(":").select { |entry| !entry.empty? }
   end
 
-  # The project root an import is resolved from first: the entry's directory, moved
-  # up one level for each segment of its module header's path but the last.
-  def self.project_root(node : ASTNode, entry : String) : String
-    root = dir_of(entry)
+  # The header root an import is resolved from after the entry's directory: the directory
+  # the entry's module header names, moved up one level for each segment of its path but the
+  # last. Nil unless the entry's path ends with that header (Compiler.header_root_of).
+  def self.project_root(node : ASTNode, entry : String) : String?
     if node.is_a?(Expressions)
       first = node.as(Expressions).expressions.first?
       if first.is_a?(ModuleHeader)
-        depth = first.as(ModuleHeader).path.size - 1
-        i = 0
-        while i < depth
-          root = dir_of(root)
-          i = i + 1
+        header = first.as(ModuleHeader).path
+        if entry.ends_with?("/#{header.join("/")}.iyi")
+          root = dir_of(entry)
+          i = 0
+          while i < header.size - 1
+            root = dir_of(root)
+            i = i + 1
+          end
+          return root
         end
       end
     end
-    root
+    nil
   end
 
   # Loads a file and its closure into a fresh program. Returns the program and the entry.
@@ -51,6 +56,7 @@ module BenchSelfhostSemanticDeclarationsExercise
     prog.loaded_files.add(entry)
     prog.search_path = search_path
     prog.project_root = project_root(node, entry)
+    prog.entry_dir = dir_of(entry)
     visitor = TopLevelVisitor.new(prog, entry)
     node.accept(visitor)
     visitor.finish
@@ -61,6 +67,34 @@ module BenchSelfhostSemanticDeclarationsExercise
   def self.dump_file(path : String) : String
     prog, entry = load_program(path)
     dump_program_declarations(prog, entry)
+  end
+
+  # The whole-program load: the file and its import closure, with the prelude loaded
+  # first, in total mode (an impl of an unresolved target is carried past). It does not
+  # print a dump: it completes, or the port refuses the file.
+  def self.load_whole(path : String) : SemanticProgram
+    cwd = ENV["PWD"]? || "."
+    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    entry = normalize_path(absolute)
+    src = File.read(entry)
+    parser = Parser.new(src, entry)
+    node = parser.parse
+    prog = SemanticProgram.new
+    prog.loaded_files.add(entry)
+    prog.search_path = search_path
+    prog.project_root = project_root(node, entry)
+    prog.total_mode = true
+    prelude = TopLevelVisitor.new(prog)
+    prelude_file = prelude.import_file("iyi/prelude")
+    if prelude_file
+      prelude.load_file(prelude_file.as(String))
+    end
+    prog.entry_dir = dir_of(entry)
+    visitor = TopLevelVisitor.new(prog, entry)
+    node.accept(visitor)
+    visitor.finish
+    declare_guessed_instance_vars(prog)
+    prog
   end
 
   # The parent chain of one type, each parent on its own line, indented by depth.
@@ -108,6 +142,15 @@ module BenchSelfhostSemanticDeclarationsExercise
     end
     sb.to_s
   end
+
+  # The resolved return type's name, or "nil" for a fun without one.
+  def self.return_name(f : LibFun) : String
+    if rt = f.resolved_return
+      rt.full_name
+    else
+      "nil"
+    end
+  end
 end
 
 if Program.args.empty?
@@ -117,6 +160,50 @@ elsif Program.args[0] == "--initial"
   print BenchSelfhostSemanticDeclarationsExercise.dump_initial
 elsif Program.args[0] == "--chain"
   print BenchSelfhostSemanticDeclarationsExercise.dump_chain(Program.args[1])
+elsif Program.args[0] == "--total"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  prog.carried_refusals.each do |message|
+    print "carried: #{message}\n"
+  end
+  print "ok\n"
+elsif Program.args[0] == "--lib-types"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  type_node_system(prog)
+  prog.global_funs.each do |f|
+    print "fun #{f.name}: #{f.arg_types.map(&.full_name).join(", ")} -> #{BenchSelfhostSemanticDeclarationsExercise.return_name(f)}\n"
+  end
+  prog.types.keys.sorted.each do |name|
+    t = prog.types[name]
+    if t.is_a?(LibType)
+      t.as(LibType).funs.each do |f|
+        print "lib #{name}.#{f.name}: #{f.arg_types.map(&.full_name).join(", ")} -> #{BenchSelfhostSemanticDeclarationsExercise.return_name(f)}\n"
+      end
+    end
+  end
+elsif Program.args[0] == "--const-facts"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  prog.const_initializers.each do |c|
+    print "const #{c.full_name} used=#{c.used?} pointer_read=#{c.pointer_read?}\n"
+  end
+  if prog.predefined_const("ARGC_UNSAFE").nil?
+    print "predef ARGC_UNSAFE missing\n"
+  else
+    print "predef ARGC_UNSAFE present\n"
+  end
+  if prog.predefined_const("ARGV_UNSAFE").nil?
+    print "predef ARGV_UNSAFE missing\n"
+  else
+    print "predef ARGV_UNSAFE present\n"
+  end
+  if holder = prog.types["Holder"]?
+    holder.as(ModuleType).class_vars.each_value do |mv|
+      if owner = mv.owner
+        print "cvar #{mv.name} owner #{owner.full_name}\n"
+      else
+        print "cvar #{mv.name} owner none\n"
+      end
+    end
+  end
 else
   print BenchSelfhostSemanticDeclarationsExercise.dump_file(Program.args[0])
 end

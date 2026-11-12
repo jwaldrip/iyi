@@ -22,14 +22,19 @@ module compiler/tools/typed_dump
 import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/top_level::{NamedType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
+import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 
 # The type label one typed node is printed with. The gate's mutation proof
 # replaces this body to print a wrong type for one node kind.
 def typed_label(node : ASTNode, t : Type) : String
-  t.full_name
+  if t.is_a?(NamedType)
+    t.full_name
+  else
+    t.to_s
+  end
 end
 
 # The first line of a reason, so one reason is always one output line.
@@ -60,12 +65,15 @@ pub class TypedNodeWalk < Visitor
 end
 
 module TypedDump
-  def self.dump(source : String, filename : String) : Array(String)
+  def self.dump(source : String, filename : String, root : String?) : Array(String)
     parser = Parser.new(source, filename)
-    node = parser.parse
+    node = Normalizer.new(NormalizerProgram.new(false)).normalize(parser.parse)
     prog = SemanticProgram.new
     prog.total_mode = true
-    tl = TopLevelVisitor.new(prog)
+    if r = root
+      prog.search_path = [r] of String
+    end
+    tl = TopLevelVisitor.new(prog, filename)
     node.accept(tl)
     tl.finish
     mv = MainVisitor.new(prog)
@@ -85,8 +93,12 @@ module TypedDumpTool
       raise "usage: typed_dump <file.iyi>"
     end
     path = args[0]
+    root : String? = nil
+    if args.size > 1
+      root = args[1]
+    end
     source = File.read(path)
-    TypedDump.dump(source, path).each { |line| puts line }
+    TypedDump.dump(source, path, root).each { |line| puts line }
   end
 end
 

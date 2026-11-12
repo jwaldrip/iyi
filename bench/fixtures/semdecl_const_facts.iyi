@@ -1,0 +1,7 @@
+class Holder
+  @@count : Int32
+end
+
+A = 1
+B = "two"
+C = A

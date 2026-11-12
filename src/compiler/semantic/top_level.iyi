@@ -4,9 +4,10 @@ import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
-import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
+import compiler/semantic/inline_macros::{expand_inline_macro}
 
 pub class TypeException
   getter message : String
@@ -34,6 +35,18 @@ pub abstract class Type
     @struct = false
   end
 
+  # The name without type parameters: a namespace prefix and a generic's base
+  # name (hosted `to_s_with_options(generic_args: false)`).
+  def base_full_name : String
+    full_name
+  end
+
+  # The name as a type argument. The hosted printer passes skip_union_parens to
+  # a type argument, so a union loses its outer parentheses.
+  def arg_full_name : String
+    full_name
+  end
+
   # Records a place this type is declared, as the hosted pass does (`attach_doc`).
   def add_location(location : Location) : Nil
     if @locations.nil?
@@ -43,16 +56,20 @@ pub abstract class Type
     nil
   end
 
-  def full_name : String
+  def base_full_name : String
     if ns = @namespace
       if ns.is_a?(SemanticProgram)
         @name
       else
-        "#{ns.full_name}::#{@name}"
+        "#{ns.base_full_name}::#{@name}"
       end
     else
       @name
     end
+  end
+
+  def full_name : String
+    base_full_name
   end
 
   def to_s : String
@@ -203,6 +220,8 @@ pub class MetaTypeVar
   property var_type : Type?
   property initializer : ASTNode?
   property location : Location?
+  # iyi: the type a variable is declared in (hosted MetaTypeVar#owner); nil for a built-in one.
+  property owner : Type? = nil
 
   def initialize(@name : String, @var_type : Type? = nil, @initializer : ASTNode? = nil, @location : Location? = nil)
   end
@@ -486,7 +505,7 @@ pub class MetaclassType < ModuleType
   end
 
   def full_name : String
-    "#{@instance_type.full_name}.class"
+    "#{@instance_type.to_s}.class"
   end
 
   def to_s : String
@@ -594,6 +613,12 @@ pub class GenericClassType < ClassType
   getter instantiated_types : Array(Type)
   property splat_index : Int32?
 
+  # The unbound generic with its type variables, `Box(T)`: the hosted
+  # `to_s_with_options` (2204-2215). `full_name` is the name without them.
+  def to_s : String
+    "#{base_full_name}(#{@type_vars.join(", ")})"
+  end
+
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String), @splat_index : Int32? = nil, superclass : Type? = nil)
     super(program, namespace, name, superclass)
     @instantiated_types = [] of Type
@@ -619,14 +644,44 @@ pub class LibFun
   getter args : Array(String)
   getter varargs : Bool
   getter return_type : ASTNode?
+  # iyi: the fun's node, its argument types and return type as this pass resolved them (hosted
+  # External, ast.cr 756). `SemanticProgram#lib_fun_of` finds the record from its node.
+  property node : FunDef? = nil
+  getter arg_types : Array(Type)
+  property resolved_return : Type? = nil
+  # iyi: a call to this fun was typed (hosted External#used). False when the pass creates it.
+  property used : Bool = false
+  # iyi: the scope and the file's imports the pass declared the fun in, so a re-resolution finds the
+  # same names (`resolve_declared_types`).
+  property owner : ModuleType? = nil
+  property imports : Hash(String, Type)? = nil
+
+  def varargs? : Bool
+    @varargs
+  end
 
   def initialize(@name : String, @real_name : String, @args : Array(String), @varargs : Bool, @return_type : ASTNode?)
+    @arg_types = [] of Type
   end
 end
 
 # A lib type, like `lib LibC`.
 pub class LibType < NonGenericModuleType
   getter funs : Array(LibFun)
+  # iyi: whether a call to one of this lib's funs was typed (hosted lib `used`). False until the
+  # call pass sets it.
+  property used : Bool = false
+
+  def lookup_fun(name : String) : LibFun?
+    i = 0
+    while i < @funs.size
+      if @funs[i].name == name
+        return @funs[i]
+      end
+      i = i + 1
+    end
+    nil
+  end
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
     super(program, namespace, name)
@@ -641,6 +696,12 @@ end
 pub class GenericModuleType < ModuleType
   getter type_vars : Array(String)
   property splat_index : Int32?
+
+  # The unbound generic with its type variables, `Box(T)`: the hosted
+  # `to_s_with_options` (2204-2215). `full_name` is the name without them.
+  def to_s : String
+    "#{base_full_name}(#{@type_vars.join(", ")})"
+  end
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String), @splat_index : Int32? = nil)
     super(program, namespace, name)
@@ -685,6 +746,18 @@ pub class Const < NamedType
   property value : ASTNode
   property declared_type : ASTNode?
   property value_source : String?
+  # iyi: whether a read of this constant was typed, and whether a pointerof of it was lowered (hosted
+  # Const#used and pointer_read). The analysis and the lowering set them.
+  property used : Bool = false
+  property pointer_read : Bool = false
+
+  def used? : Bool
+    @used
+  end
+
+  def pointer_read? : Bool
+    @pointer_read
+  end
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @value : ASTNode)
     super(program, namespace, name)
@@ -799,7 +872,7 @@ pub class UnionType < Type
     true
   end
 
-  def full_name : String
+  def arg_full_name : String
     non_nil_names = [] of String
     has_nil = false
     i = 0
@@ -816,7 +889,11 @@ pub class UnionType < Type
     if has_nil
       sorted << "Nil"
     end
-    "(#{sorted.join(" | ")})"
+    sorted.join(" | ")
+  end
+
+  def full_name : String
+    "(#{arg_full_name})"
   end
 
   def to_s : String
@@ -855,6 +932,7 @@ end
 pub abstract class TypeHook
   abstract def merge_members(types : Array(Type)) : Type
   abstract def resolve_node(node : ASTNode, current_type : ModuleType) : Type
+  abstract def instantiate_type(base : Type, type_args : Array(Type)) : Type
 end
 
 pub class ImplRecord
@@ -880,11 +958,28 @@ pub class SemanticProgram < NonGenericModuleType
   @initial_type_names : Set(String)
   @impls : Array(ImplRecord)
   @global_funs : Array(LibFun)
+  # The constants with an initializer, in declaration order (hosted program.const_initializers).
+  @const_initializers : Array(Const)
+  # The records of the funs the pass declared, by the node's id (`lib_fun_of`).
+  @lib_funs_by_node : Hash(UInt64, LibFun)
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
   # hosted pass keeps a scope per file; the port keeps the importing file's table here.
   property current_imports : Hash(String, Type)
+  # The lowercase names the importing file imports (`import a/b::{refuse_port}`), as
+  # the defs they name. Swapped per file like current_imports.
+  property current_import_defs : Hash(String, Array(Def))
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
+  # iyi: the directory of the entry file: the first root an import is resolved from, as
+  # Program#iyi_import_root (the entry's directory). A driver sets it; nil leaves the
+  # project root and IYI_PATH.
+  property entry_dir : String?
+  # Whether a refusal the pass can carry on past (an impl of an unresolved target) is
+  # skipped instead of raised. The typed dump of a whole program sets it.
+  property total_mode : Bool
+  # The refusals the pass carried past in total mode, by message: a file that completes
+  # with one of these did not declare what it refused, so the gate counts them apart.
+  getter carried_refusals : Array(String)
   property search_path : Array(String)
   # The files read so far (absolute paths), and the module each one declared.
   getter loaded_files : Set(String)
@@ -1035,6 +1130,60 @@ pub class SemanticProgram < NonGenericModuleType
     @global_funs
   end
 
+  # The constants with an initializer, in declaration order (hosted program.const_initializers).
+  def const_initializers : Array(Const)
+    @const_initializers
+  end
+
+  # The predefined constant named (ARGC_UNSAFE, ARGV_UNSAFE), or nil for any other name.
+  def predefined_const(name : String) : Const?
+    if name == "ARGC_UNSAFE" || name == "ARGV_UNSAFE"
+      t = @types[name]?
+      if t.is_a?(Const)
+        return t.as(Const)
+      end
+    end
+    nil
+  end
+
+  # The record the pass made for a fun node (lib funs and top-level funs alike), or nil.
+  def lib_fun_of(node : FunDef) : LibFun?
+    @lib_funs_by_node[node.node_id]?
+  end
+
+  # Registers the record made for *node*. Called by the top-level pass when it declares a fun.
+  def record_lib_fun(node : FunDef, record : LibFun) : Nil
+    @lib_funs_by_node[node.node_id] = record
+  end
+
+  # iyi: the declaration pass resolves a generic type node to its base only, since no type system is
+  # installed while the program is declared. Installing one (TypeSystem.new) calls this to resolve the
+  # lib funs again through it, in the scope and imports of the file that declared each one, so
+  # `fun get(p : Pointer(Int32))` takes `Pointer(Int32)`, as the hosted pass has it.
+  def resolve_declared_types : Nil
+    saved = @current_imports
+    @lib_funs_by_node.each_value do |f|
+      if owner = f.owner
+        if node = f.node
+          if imports = f.imports
+            @current_imports = imports
+            f.arg_types.clear
+            node.args.each do |arg|
+              if restriction = arg.restriction
+                f.arg_types << lookup_type_node(restriction, owner)
+              end
+            end
+            if rt = node.return_type
+              f.resolved_return = lookup_type_node(rt, owner)
+            end
+          end
+        end
+      end
+    end
+    @current_imports = saved
+    nil
+  end
+
   # Each class body the top-level pass visited, in order, with its type.
   def type_bodies : Array(TypeBody)
     @type_bodies
@@ -1046,8 +1195,14 @@ pub class SemanticProgram < NonGenericModuleType
     @merge_hook = nil
     @impls = [] of ImplRecord
     @global_funs = [] of LibFun
+    @const_initializers = [] of Const
+    @lib_funs_by_node = Hash(UInt64, LibFun).new
     @current_imports = Hash(String, Type).new
+    @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
+    @entry_dir = nil
+    @total_mode = false
+    @carried_refusals = [] of String
     @search_path = [] of String
     @loaded_files = Set(String).new
     @loaded_units = Hash(String, ModuleType).new
@@ -1240,6 +1395,18 @@ pub class SemanticProgram < NonGenericModuleType
     elsif node.is_a?(Generic)
       g = node.as(Generic)
       base_type = lookup_type_node(g.name, current_type)
+      if hook = @merge_hook
+        # iyi: only a real generic base is instantiated or handed to the hook. A base that does not
+        # resolve (a total-mode placeholder) keeps the base-only answer: the hook's lookup cannot see
+        # this file's imports, and would raise on a name the total pass has already recorded.
+        if base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
+          if plain_generic?(g, base_type)
+            type_args = g.type_vars.map { |t| lookup_type_node(t, current_type) }
+            return hook.instantiate_type(base_type, type_args)
+          end
+          return hook.resolve_node(node, current_type)
+        end
+      end
       base_type
     elsif node.is_a?(Union)
       u = node.as(Union)
@@ -1260,6 +1427,32 @@ pub class SemanticProgram < NonGenericModuleType
     else
       raise("expected type, got #{node.to_s}")
     end
+  end
+
+  # A generic the type system instantiates here: a plain class or module, with the arity written and
+  # type nodes for its arguments. Anything else (named arguments, numbers, splats, NamedTuple,
+  # StaticArray, a wrong arity) is left to the hook's own lookup, which answers as the hosted does.
+  def plain_generic?(g : Generic, base : Type) : Bool
+    if named = g.named_args
+      return false if named.size > 0
+    end
+    if base.is_a?(GenericClassType)
+      gc = base.as(GenericClassType)
+      return false if gc.full_name == "NamedTuple" || gc.full_name == "StaticArray"
+      return false unless gc.splat_index.nil?
+      return gc.type_vars.size == g.type_vars.size && g.type_vars.all? { |t| type_node?(t) }
+    end
+    if base.is_a?(GenericModuleType)
+      gm = base.as(GenericModuleType)
+      return false unless gm.splat_index.nil?
+      return gm.type_vars.size == g.type_vars.size && g.type_vars.all? { |t| type_node?(t) }
+    end
+    false
+  end
+
+  # A written type that lookup_type_node resolves: a path, generic, union, metaclass, Self or proc.
+  def type_node?(node : ASTNode) : Bool
+    node.is_a?(Path) || node.is_a?(Generic) || node.is_a?(Union) || node.is_a?(Metaclass) || node.is_a?(Self) || node.is_a?(ProcNotation)
   end
 
   def lookup_type_node?(node : ASTNode, current_type : ModuleType) : Type?
@@ -1322,10 +1515,10 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
     if t.nil?
-      t = lookup_type(first_name)
+      t = @current_imports[first_name]?
     end
     if t.nil?
-      t = @current_imports[first_name]?
+      t = lookup_type(first_name)
     end
     if t.nil?
       return nil
@@ -1378,28 +1571,30 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
 
+    # The file's imports shadow the enclosing namespaces and the program root: a name
+    # the file imports is found before a same-named module beside the importing file.
+    if t.nil?
+      t = @current_imports[first_name]?
+    end
+
     # 4. Search enclosing namespaces
     if t.nil?
       ns = current_type.namespace
       while ns
+        # The program itself is searched last, in step 5, after the file's imports.
+        break if ns.is_a?(SemanticProgram)
         match = ns.lookup_type(first_name)
         if match
           t = match
-          break
-        end
-        if ns == self
           break
         end
         ns = ns.namespace
       end
     end
 
-    # 5. Search in program root
+    # 5. Search the program root
     if t.nil?
       t = self.lookup_type(first_name)
-    end
-    if t.nil?
-      t = @current_imports[first_name]?
     end
 
     if t.nil?
@@ -1464,6 +1659,7 @@ pub class PendingIvar
   property owner : ModuleType
   property name : String
   property restriction : ASTNode
+  property imports : Hash(String, Type)? = nil
 
   def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode)
   end
@@ -1479,12 +1675,38 @@ pub class TopLevelVisitor < Visitor
   @enum_flags : Bool = false
   @pending_flags : Bool = false
 
+  # Resolves the pending instance variables this visitor holds, once, after every file it
+  # read is declared. A restriction may name a type a later file declares (`concurrency.iyi`
+  # restricts an ivar to `IyiDeferNode`, declared in `prelude.iyi`). Each one resolves with
+  # the imports of the file that wrote it.
   def finish : Nil
+    saved = @program.current_imports
     @pending_ivars.each do |pi|
+      if imports = pi.imports
+        @program.current_imports = imports
+      else
+        @program.current_imports = saved
+      end
       arg_type = @program.lookup_type_node(pi.restriction, pi.owner)
-      pi.owner.instance_vars[pi.name] = MetaTypeVar.new(pi.name, arg_type)
+      mv = MetaTypeVar.new(pi.name, arg_type)
+      mv.owner = pi.owner
+      pi.owner.instance_vars[pi.name] = mv
     end
+    @program.current_imports = saved
     @pending_ivars.clear
+  end
+
+  # A file that `load_file` reads hands its pending instance variables to the file that
+  # reads it. Each keeps the imports of the file that wrote it.
+  def take_pending_ivars : Array(PendingIvar)
+    taken = @pending_ivars
+    taken.each do |pi|
+      if pi.imports.nil?
+        pi.imports = @program.current_imports
+      end
+    end
+    @pending_ivars = [] of PendingIvar
+    taken
   end
 
   def initialize(@program : SemanticProgram, @file : String? = nil)
@@ -1567,17 +1789,31 @@ pub class TopLevelVisitor < Visitor
       end
       names.each do |name|
         found = unit.as(ModuleType).types[name]?
-        unless found
-          refuse_port("undefined constant #{name} in '#{written}'")
+        if found
+          @program.current_imports[name] = found.as(Type)
+        else
+          # A lowercase name is a def the file declares (`import a/b::{refuse_port}`):
+          # the calls slice resolves calls to it, so the pass records it here.
+          defs = unit.as(ModuleType).defs[name]?
+          unless defs
+            refuse_port("undefined constant #{name} in '#{written}'")
+          end
+          @program.current_import_defs[name] = defs.as(Array(Def))
         end
-        @program.current_imports[name] = found.as(Type)
       end
     end
     false
   end
 
+  # iyi: `import a/b` resolved as the hosted build resolves it (Program#iyi_import_candidates):
+  # the entry file's directory first, then the root its header names (only when the entry's
+  # path ends with that header), then IYI_PATH. A `.cr` file found at a root is Crystal's
+  # library, which this pass does not read, so it is refused by name.
   def import_file(written : String) : String?
     roots = [] of String
+    if dir = @program.entry_dir
+      roots << dir
+    end
     if root = @program.project_root
       roots << root
     end
@@ -1589,6 +1825,10 @@ pub class TopLevelVisitor < Visitor
       candidate = "#{roots[i]}/#{written}.iyi"
       if File.exists?(candidate)
         return normalize_path(candidate)
+      end
+      crate = "#{roots[i]}/#{written}.cr"
+      if File.exists?(crate)
+        refuse_port("`#{written}` is Crystal's library (#{crate}), which this pass does not read")
       end
       i = i + 1
     end
@@ -1608,10 +1848,17 @@ pub class TopLevelVisitor < Visitor
     nodes = parser.parse
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
+    saved_defs = @program.current_import_defs
     @program.current_imports = Hash(String, Type).new
+    # A required file never finishes its own pending instance variables. It hands them to
+    # the file that reads it, and the root that read them finishes once, after every file
+    # it read is declared (the hosted pass resolves them after all top-level declarations).
+    inner.exp_nest = 1
+    @program.current_import_defs = Hash(String, Array(Def)).new
     nodes.accept(inner)
-    inner.finish
+    inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
     @program.current_imports = saved
+    @program.current_import_defs = saved_defs
     if unit = inner.unit
       @program.loaded_units[file] = unit
     end
@@ -1929,16 +2176,25 @@ pub class TopLevelVisitor < Visitor
   def visit(node : ImplDef) : Bool
     trait_type = @program.lookup_type_node(node.trait, @current_type)
     unless trait_type.trait?
-      raise("can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented")
+      message = "can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented"
+      raise(message) unless @program.total_mode
+      @program.carried_refusals << message
+      return false
     end
 
     target_type = @program.lookup_type_node(node.target, @current_type)
     if target_type.trait?
-      raise("can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one — to give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)")
+      message = "can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one \u{2014} to give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)"
+      raise(message) unless @program.total_mode
+      @program.carried_refusals << message
+      return false
     end
 
     unless target_type.is_a?(ModuleType)
-      raise("can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}")
+      message = "can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}"
+      raise(message) unless @program.total_mode
+      @program.carried_refusals << message
+      return false
     end
 
     target_mod = target_type.as(ModuleType)
@@ -2175,6 +2431,22 @@ pub class TopLevelVisitor < Visitor
       real = node.real_name || node.name
       record = LibFun.new(node.name, real, arg_names, node.varargs, node.return_type)
       record.location = node.location
+      record.node = node
+      record.owner = @current_type
+      record.imports = @program.current_imports
+      # iyi: the argument and return types resolved here, as the hosted pass resolves them when it
+      # visits a fun (top_level_visitor.cr 2628-2680): the call typing and the lowering read them.
+      node.args.each do |arg|
+        if restriction = arg.restriction
+          record.arg_types << @program.lookup_type_node(restriction, @current_type)
+        else
+          raise("a lib fun argument needs a type: #{arg.name} of #{node.name}")
+        end
+      end
+      if rt = node.return_type
+        record.resolved_return = @program.lookup_type_node(rt, @current_type)
+      end
+      @program.record_lib_fun(node, record)
       if @current_type.is_a?(LibType)
         @current_type.as(LibType).funs << record
       else
@@ -2308,7 +2580,9 @@ pub class TopLevelVisitor < Visitor
         if arg.name.starts_with?("@")
           if r = arg.restriction
             if arg_type = @program.lookup_type_node?(r, @current_type)
-              @current_type.instance_vars[arg.name] = MetaTypeVar.new(arg.name, arg_type)
+              mv = MetaTypeVar.new(arg.name, arg_type)
+              mv.owner = @current_type
+              @current_type.instance_vars[arg.name] = mv
             else
               @pending_ivars << PendingIvar.new(@current_type, arg.name, r)
             end
@@ -2334,7 +2608,9 @@ pub class TopLevelVisitor < Visitor
               if arg.name == vname
                 if r = arg.restriction
                   if arg_type = @program.lookup_type_node?(r, @current_type)
-                    @current_type.instance_vars[ivar_name] = MetaTypeVar.new(ivar_name, arg_type)
+                    mv = MetaTypeVar.new(ivar_name, arg_type)
+                    mv.owner = @current_type
+                    @current_type.instance_vars[ivar_name] = mv
                   else
                     @pending_ivars << PendingIvar.new(@current_type, ivar_name, r)
                   end
@@ -2384,6 +2660,7 @@ pub class TopLevelVisitor < Visitor
       end
 
       const = Const.new(@program, scope, name, node.value)
+      @program.const_initializers << const
       if loc = node.location
         const.add_location(loc)
       end
@@ -2405,7 +2682,9 @@ pub class TopLevelVisitor < Visitor
       end
       ivar_name = node.var.as(InstanceVar).name
       if decl_type = @program.lookup_type_node?(node.declared_type, @current_type)
-        @current_type.instance_vars[ivar_name] = MetaTypeVar.new(ivar_name, decl_type, node.value)
+        mv = MetaTypeVar.new(ivar_name, decl_type, node.value)
+        mv.owner = @current_type
+        @current_type.instance_vars[ivar_name] = mv
       else
         @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type)
       end
@@ -2415,7 +2694,9 @@ pub class TopLevelVisitor < Visitor
       end
       decl_type = @program.lookup_type_node(node.declared_type, @current_type)
       cvar_name = node.var.as(ClassVar).name
-      @current_type.class_vars[cvar_name] = MetaTypeVar.new(cvar_name, decl_type, node.value)
+      mv = MetaTypeVar.new(cvar_name, decl_type, node.value)
+      mv.owner = @current_type
+      @current_type.class_vars[cvar_name] = mv
     end
     false
   end
@@ -2467,6 +2748,23 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroIf) : Bool
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+      expanded.accept(self)
+    end
+    false
+  end
+
+  def visit(node : MacroFor) : Bool
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+      expanded.accept(self)
+    end
+    false
+  end
+
+  def visit(node : MacroExpression) : Bool
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+      expanded.accept(self)
+    end
     false
   end
 
@@ -2789,13 +3087,23 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
     end
   end
 
-  # Every top-level type is walked: the entry filter prints what the entry declares, and
-  # a namespace the entry shares a name with a built-in (`module enum/x` under the built-in
-  # Enum) holds declarations the built-in set would have hidden.
-  user_type_names = program.types.keys.sorted
+  # With an entry, every top-level type is walked: the entry filter prints what the entry
+  # declares, and a namespace the entry shares a name with a built-in (`module enum/x` under
+  # the built-in Enum) holds declarations the built-in set would have hidden. With no entry
+  # (a whole-program dump), the built-in types are not user types and are left out.
+  user_type_names = [] of String
+  program.types.keys.sorted.each do |name|
+    if !entry.nil? || !program.initial_type_names.includes?(name)
+      user_type_names << name
+    end
+  end
 
   user_type_names.each do |name|
-    dump_tree_declared(program.types[name], sb, "", entry)
+    # With no entry, a built-in name is not the program's own declaration (the typed dump
+    # prints what a program declares); with an entry, the location filter decides.
+    unless entry.nil? && program.initial_type_names.includes?(name)
+      dump_tree_declared(program.types[name], sb, "", entry)
+    end
   end
 
   sb.to_s

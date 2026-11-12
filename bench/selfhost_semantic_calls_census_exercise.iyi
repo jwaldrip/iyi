@@ -1,0 +1,271 @@
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path}
+import compiler/semantic/top_level::{GenericClassType, ModuleType, SemanticProgram, TopLevelVisitor, Type, UnionType, dir_of}
+import compiler/types/type_system::{TypeSystem}
+import compiler/types/lookup::{LookupError, TypeLookup}
+import compiler/types/types::{GenericInstanceType, NamedArgumentType, VirtualType}
+import compiler/semantic/method_lookup::{MethodLookup}
+import compiler/semantic/match::{CallSignature, Match}
+import compiler/semantic/restrictions::{ArgRestriction}
+
+# Call census driver for bench/selfhost_semantic_calls_census_exercise.sh.
+#
+#   selfhost_semantic_calls_census_exercise <file.iyi> <dump> <prelude require> [--prelude-only]
+#
+# Reads the dump the hosted census oracle wrote for <file.iyi>
+# (bench/selfhost_semantic_calls_census_oracle.cr), loads the file's program the
+# way the declarations gate does (the prelude, required by the relative path the
+# gate passes, then the file and the closure of what it imports; the prelude alone
+# for a file of the prelude itself), and for each T line rebuilds the receiver and
+# argument types from their text and runs the lookup. It prints one line per dump
+# line, `<key>\t<result>`: a T line's result is the lookup's matches in the oracle's
+# form, `none`, or `unresolved|<reason>|<name>|<receiver shape>` when the port cannot
+# answer the site. A U line is echoed unchanged.
+#
+# The type text is read by this driver's own splitter, not by the parser: the
+# hosted pass prints the forms `Path::Name`, `Name(args)`, `(A | B)`, `T.class`,
+# `T+` and `Scope:Module` (a file's module), and each is resolved from its parts.
+module BenchSelfhostSemanticCallsCensusExercise
+  def self.search_path : Array(String)
+    text = ENV["IYI_PATH"]? || ""
+    text.split(":").select { |entry| !entry.empty? }
+  end
+
+  # The project root an import is resolved from first, as the declarations driver
+  # computes it from the module header of the entry.
+  def self.project_root(node : ASTNode, entry : String) : String
+    root = dir_of(entry)
+    if node.is_a?(Expressions)
+      first = node.as(Expressions).expressions.first?
+      if first.is_a?(ModuleHeader)
+        depth = first.as(ModuleHeader).path.size - 1
+        i = 0
+        while i < depth
+          root = dir_of(root)
+          i = i + 1
+        end
+      end
+    end
+    root
+  end
+
+  # The program a file's dump was made against: the prelude, then the file itself,
+  # or the prelude alone when the file is part of the prelude.
+  def self.load(path : String, prelude_req : String, prelude_only : Bool) : {SemanticProgram, TypeSystem}
+    prog = SemanticProgram.new
+    prog.search_path = search_path
+    nodes = [] of ASTNode
+    nodes << Parser.new("require \"#{prelude_req}\"\n", path).parse
+    if !prelude_only
+      entry = Parser.new(File.read(path), path).parse
+      prog.project_root = project_root(entry, path)
+      nodes << entry
+    end
+    visitor = TopLevelVisitor.new(prog, path)
+    Expressions.new(nodes).accept(visitor)
+    visitor.finish
+    {prog, TypeSystem.new(prog)}
+  end
+
+  # The receiver shape a message names its failure by.
+  def self.shape(text : String) : String
+    return "program" if text == "PROGRAM"
+    return "metaclass" if text.ends_with?(".class")
+    return "virtual" if text.ends_with?("+")
+    return "file module" if text.ends_with?(":Module")
+    return "union" if text.includes?(" | ")
+    return "generic" if text.includes?("(")
+    "plain"
+  end
+
+  # The parts of *text* split on *sep*, where *sep* counts only outside parentheses.
+  def self.split_top(text : String, sep : String) : Array(String)
+    parts = [] of String
+    depth = 0
+    start = 0
+    i = 0
+    while i < text.bytesize
+      c = text[i, 1]
+      if c == "("
+        depth = depth + 1
+        i = i + 1
+      elsif c == ")"
+        depth = depth - 1
+        i = i + 1
+      elsif depth == 0 && text[i, sep.bytesize] == sep
+        parts << text[start, i - start]
+        i = i + sep.bytesize
+        start = i
+      else
+        i = i + 1
+      end
+    end
+    parts << text[start, text.bytesize - start]
+    parts
+  end
+
+  # The index of the first `(` in *text*, or -1.
+  def self.first_open(text : String) : Int32
+    i = 0
+    while i < text.bytesize
+      return i if text[i, 1] == "("
+      i = i + 1
+    end
+    -1
+  end
+
+  # The type a plain `A::B::C` path names, looked up in the program.
+  def self.lookup_path(prog : SemanticProgram, ts : TypeSystem, text : String) : Type | String
+    found = TypeLookup.new(ts.instances).lookup(prog, Path.new(text.split("::")))
+    return "type #{text} does not resolve" if found.is_a?(LookupError)
+    found.as(Type)
+  end
+
+  # The type a type text names. `PROGRAM` is the program; `T:Module` is the module
+  # T (a file's own scope); `T.class` the metaclass of T; `T+` the virtual form of T;
+  # `(A | B)` the union; `Name(A, B)` the generic instance. A string when the port
+  # cannot resolve it.
+  def self.resolve(prog : SemanticProgram, ts : TypeSystem, text : String) : Type | String
+    return prog if text == "PROGRAM"
+    if text.ends_with?(":Module")
+      return resolve(prog, ts, text[0, text.bytesize - 7])
+    end
+    if text.ends_with?(".class")
+      base = resolve(prog, ts, text[0, text.bytesize - 6])
+      return base if base.is_a?(String)
+      t = base.as(Type)
+      return "metaclass of a non-module" if !t.is_a?(ModuleType)
+      return t.as(ModuleType).metaclass
+    end
+    if text.ends_with?("+")
+      base = resolve(prog, ts, text[0, text.bytesize - 1])
+      return base if base.is_a?(String)
+      t = base.as(Type)
+      return "virtual of a non-module" if !t.is_a?(ModuleType)
+      return VirtualType.new(prog, t)
+    end
+    if text.starts_with?("(") && text.ends_with?(")")
+      inner = text[1, text.bytesize - 2]
+      parts = split_top(inner, " | ")
+      if parts.size > 1
+        members = [] of Type
+        parts.each do |part|
+          member = resolve(prog, ts, part)
+          return member if member.is_a?(String)
+          members << member.as(Type)
+        end
+        return ts.merge_members(members)
+      end
+      return resolve(prog, ts, inner)
+    end
+    open = first_open(text)
+    if open > 0 && text.ends_with?(")")
+      base = lookup_path(prog, ts, text[0, open])
+      return base if base.is_a?(String)
+      generic = base.as(Type)
+      return "#{text} is not generic" if !generic.is_a?(GenericClassType)
+      args = [] of Type
+      parts = split_top(text[open + 1, text.bytesize - open - 2], ", ")
+      parts.each do |part|
+        arg = resolve(prog, ts, part)
+        return arg if arg.is_a?(String)
+        args << arg.as(Type)
+      end
+      return ts.instantiate_generic(generic.as(GenericClassType), args)
+    end
+    lookup_path(prog, ts, text)
+  end
+
+  # One restriction or return of a match, as the oracle writes it.
+  def self.match_text(ts : TypeSystem, m : Match) : String
+    defining = m.defining
+    restrictions = [] of String
+    m.definition.args.each do |arg|
+      r = ArgRestriction.of(ts, defining, arg, m.owner)
+      if r.type.nil?
+        restrictions << "_"
+      else
+        restrictions << r.type.as(Type).to_s
+      end
+    end
+    ret_text = "needs body typing"
+    ret = m.definition.return_type
+    if ret
+      found = ArgRestriction.lookup_bound(ts, defining, ret.as(ASTNode), m.owner)
+      if found.is_a?(LookupError)
+        ret_text = "error: #{found.as(LookupError).message}"
+      else
+        ret_text = found.as(Type).to_s
+      end
+    end
+    "#{m.owner.to_s}::#{m.definition.name}(#{restrictions.join(", ")}) -> #{ret_text}"
+  end
+
+  # The port's answer for one T line: its name, receiver, argument types, named
+  # arguments and block.
+  def self.census(prog : SemanticProgram, ts : TypeSystem, name : String, recv_text : String, args_text : String, named_text : String, block_text : String) : String
+    recv = resolve(prog, ts, recv_text)
+    if recv.is_a?(String)
+      return "unresolved|receiver: #{recv.as(String)}|#{name}|#{shape(recv_text)}"
+    end
+    rt = recv.as(Type)
+    if !(rt.is_a?(ModuleType) || rt.is_a?(UnionType) || rt.is_a?(VirtualType) || rt.is_a?(GenericInstanceType))
+      return "unresolved|receiver kind|#{name}|#{shape(recv_text)}"
+    end
+
+    arg_types = [] of Type
+    if args_text != "-"
+      args_text.split(";").each do |part|
+        t = resolve(prog, ts, part)
+        return "unresolved|argument: #{t.as(String)}|#{name}|#{shape(recv_text)}" if t.is_a?(String)
+        arg_types << t.as(Type)
+      end
+    end
+
+    named_list = nil
+    if named_text != "-"
+      list = [] of NamedArgumentType
+      named_text.split(";").each do |part|
+        pieces = part.split("=")
+        t = resolve(prog, ts, pieces[1])
+        return "unresolved|argument: #{t.as(String)}|#{name}|#{shape(recv_text)}" if t.is_a?(String)
+        list << NamedArgumentType.new(pieces[0], t.as(Type))
+      end
+      named_list = list
+    end
+
+    signature = CallSignature.new(name, arg_types, named_list, block_text == "1")
+    matches = MethodLookup.lookup_receiver(rt, ts, signature)
+    if matches.error
+      return "unresolved|restriction: #{matches.error.to_s}|#{name}|#{shape(recv_text)}"
+    end
+    return "none" if matches.empty?
+    parts = [] of String
+    matches.matches.each do |m|
+      parts << match_text(ts, m)
+    end
+    text = parts.join("; ")
+    text = text + " [cover all]" if matches.cover_all?
+    text
+  end
+
+  def self.run(path : String, dump_path : String, prelude_req : String, prelude_only : Bool) : String
+    prog, ts = load(path, prelude_req, prelude_only)
+    out = [] of String
+    File.read(dump_path).split("\n").each do |line|
+      next if line.empty?
+      cols = line.split("\t")
+      if cols[1] == "U"
+        out << line
+        next
+      end
+      out << "#{cols[0]}\t#{census(prog, ts, cols[2], cols[3], cols[4], cols[5], cols[6])}"
+    end
+    out.join("\n") + "\n"
+  end
+end
+
+if Program.args.size >= 3
+  prelude_only = Program.args.size >= 4 && Program.args[3] == "--prelude-only"
+  print BenchSelfhostSemanticCallsCensusExercise.run(Program.args[0], Program.args[1], Program.args[2], prelude_only)
+end
