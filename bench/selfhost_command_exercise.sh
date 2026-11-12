@@ -101,6 +101,16 @@ class Iyi::Command
     previous_def
   end
 
+  def get
+    Iyi::Command.current_command = "get"
+    previous_def
+  end
+
+  def run_sandbox
+    Iyi::Command.current_command = "run"
+    previous_def
+  end
+
   def vet
     Iyi::Command.current_command = "vet"
     previous_def
