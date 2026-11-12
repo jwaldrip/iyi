@@ -60,5 +60,5 @@ end
 # call User.make("iyi").shout()
 # call Robot.make(42).greet()
 # call Holder.all().size()
-# not yet ported: Holder.all().push(1) (a restricted splat), and a call on a trait
-# receiver that dispatches to its implementers (Holder.one().greet())
+# call Holder.one().greet()
+# not yet ported: Holder.all().push(1) (a restricted splat)

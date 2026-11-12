@@ -1,7 +1,7 @@
 module compiler/semantic/method_lookup
 
 import compiler/syntax/ast::{Def, Nop}
-import compiler/semantic/top_level::{ClassType, MetaclassType, ModuleType, Type, UnionType}
+import compiler/semantic/top_level::{ClassType, GenericClassType, MetaclassType, ModuleType, TraitType, Type, UnionType}
 import compiler/types/types::{GenericInstanceType, VirtualType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/match::{CallMatch, CallSignature, Match}
@@ -275,6 +275,54 @@ pub class MethodLookup
   # lookup per member, the members' matches joined in member order; it covers
   # when every member covers. A virtual receiver is looked up as above, and a
   # module receiver as its own lookup. Other types are not ported.
+
+  # The matches of *signature* on a trait receiver, as the hosted call pass dispatches
+  # it (NonGenericModuleType#including_types): one lookup per type that implements the
+  # trait, its implementers (the program's impl records) sorted by name, joined
+  # in that order. Covers when every implementer covers. A generic implementer is not
+  # ported.
+  def self.lookup_trait(trait_type : TraitType, ts : TypeSystem, signature : CallSignature) : Matches
+    all = [] of Match
+    cover = true
+    targets = [] of Type
+    ts.program.impls.each do |rec|
+      targets << rec.target_type if rec.trait_type == trait_type
+    end
+    # The hosted union of the implementers sorts its members by name (make_union_type),
+    # so the lookup walks them in that order, not in declaration order.
+    sorted = sorted_by_name(targets)
+    sorted.each do |target|
+      if !target.is_a?(ModuleType) || target.is_a?(GenericClassType)
+        return Matches.new(all, false, "not ported: generic implementer of #{trait_type.to_s}")
+      end
+      found = lookup_receiver(target, ts, signature)
+      return Matches.new(all, false, found.error) if found.error
+      found.matches.each do |m|
+        all << m
+      end
+      cover = false if !found.cover_all?
+    end
+    Matches.new(all, cover && !all.empty?)
+  end
+
+  # The types sorted by their names, as the hosted union sorts its members.
+  def self.sorted_by_name(types : Array(Type)) : Array(Type)
+    out = [] of Type
+    types.each do |t|
+      placed = false
+      i = 0
+      while i < out.size
+        if !placed && t.to_s < out[i].to_s
+          out.insert(i, t)
+          placed = true
+        end
+        i += 1
+      end
+      out << t if !placed
+    end
+    out
+  end
+
   def self.lookup_receiver(receiver : Type, ts : TypeSystem, signature : CallSignature) : Matches
     if receiver.is_a?(UnionType)
       all = [] of Match
@@ -298,6 +346,9 @@ pub class MethodLookup
         generic_module = generic.as(ModuleType)
         return lookup_matches(generic_module, ts, signature, receiver, generic_module, [] of Match)
       end
+    end
+    if receiver.is_a?(TraitType)
+      return lookup_trait(receiver.as(TraitType), ts, signature)
     end
     if receiver.is_a?(ModuleType)
       module_type = receiver.as(ModuleType)

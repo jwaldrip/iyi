@@ -11,6 +11,7 @@ import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast}
+import compiler/semantic/default_arguments::{DefaultArguments}
 
 # iyi: two modes. Strict (the default) raises on the first construct it cannot
 # type, as the port always did, and every existing gate relies on that. Total
@@ -32,6 +33,10 @@ pub class MainVisitor < TypeNodeHost
   property current_yield_nodes : Array(Yield)?
   property total : Bool = false
   property in_type_args : Int32 = 0
+  # The union of the types each variable of the body being typed is assigned, keyed
+  # by name; `def_var_unions` keeps it per instantiated def (the lowering's storage type).
+  property var_unions : Hash(String, Type)
+  property def_var_unions : NodeMap(Hash(String, Type))
 
   def initialize(@program : SemanticProgram)
     @current_type = @program
@@ -40,6 +45,8 @@ pub class MainVisitor < TypeNodeHost
     @node_types = NodeMap(Type).new
     @untyped_reasons = NodeMap(String).new
     @call_target_defs = NodeMap(Def).new
+    @var_unions = Hash(String, Type).new
+    @def_var_unions = NodeMap(Hash(String, Type)).new
     @current_def = nil
     @current_call_block = nil
     @current_block_context_vars = nil
@@ -287,6 +294,32 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # iyi: `!x` is Bool whatever its operand (hosted main_visitor.cr 3757). The
+  # operand is visited so its own nodes are typed.
+  def visit(node : Not) : Bool
+    node.exp.accept(self)
+    set_type(node, @program.bool_type)
+    false
+  end
+
+  # iyi: `break` and `next` never complete, so they are NoReturn. A value they
+  # carry is visited first, as the hosted pass does (the expression is bound).
+  def visit(node : Break) : Bool
+    if e = node.exp
+      e.accept(self)
+    end
+    set_type(node, @program.no_return_type)
+    false
+  end
+
+  def visit(node : Next) : Bool
+    if e = node.exp
+      e.accept(self)
+    end
+    set_type(node, @program.no_return_type)
+    false
+  end
+
   # iyi: the body of a `@[Primitive(:name)]` def (hosted main_visitor.cr
   # 2842-2851). It has the def's declared return type. `pre_initialize` and the
   # by-name cases are not ported here; a primitive with no return type is
@@ -448,9 +481,18 @@ pub class MainVisitor < TypeNodeHost
 
     if node.target.is_a?(Var)
       v = node.target.as(Var)
+      # The target and the later reads take the type of this assignment: the
+      # oracle prints flow types (bench/fixtures/sem_bodies_union.iyi). The
+      # variable's storage type is the union over the body's assignments, kept
+      # apart in `def_var_unions` for the lowering.
       @vars[v.name] = val_type
       set_type(v, val_type)
       set_type(node, val_type)
+      if old_u = @var_unions[v.name]?
+        @var_unions[v.name] = @program.type_merge(old_u, val_type)
+      else
+        @var_unions[v.name] = val_type
+      end
     elsif node.target.is_a?(InstanceVar)
       ivar_node = node.target.as(InstanceVar)
       if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
@@ -1175,6 +1217,8 @@ pub class MainVisitor < TypeNodeHost
     old_block_call = @current_call_block
     old_block_context_vars = @current_block_context_vars
     old_yield_nodes = @current_yield_nodes
+    old_var_unions = @var_unions
+    @var_unions = Hash(String, Type).new
 
     if block
       @current_block_context_vars = @vars.dup
@@ -1254,6 +1298,8 @@ pub class MainVisitor < TypeNodeHost
     @current_call_block = old_block_call
     @current_block_context_vars = old_block_context_vars
     @current_yield_nodes = old_yield_nodes
+    @def_var_unions[target_def] = @var_unions
+    @var_unions = old_var_unions
 
     return nil unless params_typed
     bt = body_type
@@ -1356,6 +1402,18 @@ pub class MainVisitor < TypeNodeHost
 
     target_def = lookup_method_matching(rec_type, node.name, node.args, node)
     return false if target_def.nil?
+    # A positional call that leaves parameters to their defaults gets them as
+    # cloned argument nodes, one per parameter (hosted expansion; the calls slice's
+    # DefaultArguments). The new nodes are visited here; the rest were visited above.
+    if node.named_args.nil? && DefaultArguments.supported?(target_def, node.args, nil)
+      original_count = node.args.size
+      node.args = DefaultArguments.expand(target_def, node.args, nil)
+      i = original_count
+      while i < node.args.size
+        node.args[i].accept(self)
+        i = i + 1
+      end
+    end
     instantiated_def = target_def.clone
     @call_target_defs[node] = instantiated_def
 
