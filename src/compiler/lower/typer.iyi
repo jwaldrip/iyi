@@ -120,6 +120,7 @@ pub class LowerTyper
   @structs : Hash(String, IrType)
   @nil_type : IrType?
   @proc_struct : IrType?
+  @closure_counter : Int32
 
   def initialize(@table : TypeTable, @layout : DataLayout, @iyi_layout : Bool)
     @cache = Hash(String, IrType).new
@@ -129,6 +130,7 @@ pub class LowerTyper
     @structs = Hash(String, IrType).new
     @nil_type = nil
     @proc_struct = nil
+    @closure_counter = 0
   end
 
   # The hosted `llvm_type(type, wants_size)`: the IR type of a value of *type*.
@@ -447,6 +449,79 @@ pub class LowerTyper
   def closure_function(type : Type) : IrType
     proc = type.as(ProcInstanceType)
     function_type(proc.arg_types, proc.return_type, true)
+  end
+
+  # The hosted `llvm_c_type`: the type a C function's argument of *type* has. A proc is a
+  # pointer to its function, a tuple is its struct, and a value passed by value travels behind
+  # a pointer, as the C ABI takes it. An extern's struct is not here (NEEDS.md row 4).
+  def llvm_c_type(type : Type) : IrType
+    if type.is_a?(ProcInstanceType) || type.is_a?(NilableProcType)
+      return @table.ptr
+    end
+    if type.is_a?(TupleInstanceType)
+      return llvm_struct_type(type)
+    end
+    if passed_by_value?(type)
+      return @table.ptr
+    end
+    llvm_type(type)
+  end
+
+  # The hosted `llvm_c_return_type`: a static array returns as its struct, nil as void.
+  def llvm_c_return_type(type : Type) : IrType
+    if type.is_a?(StaticArrayInstanceType)
+      return llvm_struct_type(type)
+    end
+    if type.is_a?(NilType)
+      return @table.void
+    end
+    llvm_c_type(type)
+  end
+
+  # The hosted `llvm_embedded_c_type`: a proc stored in a C struct is one function pointer.
+  def llvm_embedded_c_type(type : Type, wants_size : Bool = false) : IrType
+    if type.is_a?(ProcInstanceType)
+      return @table.ptr
+    end
+    llvm_embedded_type(type, wants_size)
+  end
+
+  # The hosted `llvm_intrinsic_return_type`: a tuple returned by an LLVM intrinsic is an
+  # unnamed struct of its element types, since LLVM 15 takes no named struct there.
+  def llvm_intrinsic_return_type(type : Type) : IrType
+    if type.is_a?(TupleInstanceType)
+      fields = [] of IrType
+      type.as(TupleInstanceType).tuple_types.each do |t|
+        fields << llvm_embedded_type(t)
+      end
+      return @table.struct_of(fields)
+    end
+    if type.is_a?(NamedTupleInstanceType)
+      fields = [] of IrType
+      type.as(NamedTupleInstanceType).entries.each do |entry|
+        fields << llvm_embedded_type(entry.type)
+      end
+      return @table.struct_of(fields)
+    end
+    llvm_return_type(type)
+  end
+
+  # The hosted `closure_context_type`: the struct a closure's captured variables live in,
+  # with the parent context pointer and the self value when there are those. The hosted
+  # name counts across every typer in the process; this one counts per typer.
+  def closure_context_type(vars : Array(Type), parent_present : Bool, self_type : Type?) : IrType
+    @closure_counter = @closure_counter + 1
+    named = @table.named_struct("closure_#{@closure_counter}")
+    fields = [] of IrType
+    vars.each do |v|
+      fields << llvm_type(v)
+    end
+    fields << @table.ptr if parent_present
+    unless self_type.nil?
+      fields << llvm_type(self_type.as(Type))
+    end
+    @table.set_body(named, fields, false)
+    named
   end
 
   # The hosted `size_of` (`LLVMStoreSizeOfType`): bytes a value of the type takes

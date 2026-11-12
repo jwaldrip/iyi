@@ -149,6 +149,10 @@ def block_text(name : String, program : Iyi::Program, typer : Iyi::LLVMTyper, ty
     io << "passed_by_value: " << (type.passed_by_value? ? "true" : "false") << "\n"
     io << "ivars: " << ivars_text(type) << "\n"
     io << "layout: " << layout_text(program, type) << "\n"
+    io << "c_type: " << llvm_text(typer.llvm_c_type(type)) << "\n"
+    io << "c_return_type: " << llvm_text(typer.llvm_c_return_type(type)) << "\n"
+    io << "embedded_c_type: " << llvm_text(typer.llvm_embedded_c_type(type)) << "\n"
+    io << "intrinsic_return_type: " << llvm_text(typer.llvm_intrinsic_return_type(type)) << "\n"
     io << "passed_indirectly: " << (typer.passed_indirectly?(type) ? "true" : "false") << "\n"
     if type.is_a?(Iyi::ProcInstanceType)
       io << "proc_function: " << llvm_function_text(typer.proc_type(type)) << "\n"
