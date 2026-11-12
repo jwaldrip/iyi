@@ -325,6 +325,14 @@ LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "the select ignores the iyi prelude's happened flag" "$LITERAL" 'has_happened = @program.iyi_prelude' 'has_happened = false' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a select's branches bind it as a user case does" "$LITERAL" 'chain = expand_case(a_case, false)' 'chain = expand_case(a_case, true)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "an and whose left side is an assignment falls back to the left side" "$LITERAL" 'If.new(left, node.right, left.as(Assign).target.clone)' 'If.new(left, node.right, left.clone)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "an and binds a temporary and runs the right side on false" "$LITERAL" 'If.new(Assign.new(temp.clone, left), node.right, temp.clone)' 'If.new(Assign.new(temp.clone, left), temp.clone, node.right)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "an or binds a temporary and runs the right side on true" "$LITERAL" 'If.new(Assign.new(temp.clone, left), temp.clone, node.right)' 'If.new(Assign.new(temp.clone, left), node.right, temp.clone)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "an or is expanded as an and" "$LITERAL" 'expanded = expand_or(node)' 'expanded = expand_and(node)' -- check_literals_agree || status=1
 echo "  $LIT_MUTATIONS literal mutation proofs run"
 
 echo
@@ -340,6 +348,7 @@ corpus_count=0
 corpus_identical=0
 corpus_refused=0
 : > "$WORK/corpus_kinds.txt"
+: > "$WORK/corpus_uncovered.txt"
 for file in $corpus_files; do
   rel="${file#$REPO/}"
   corpus_count=$((corpus_count + 1))
@@ -353,6 +362,7 @@ for file in $corpus_files; do
     echo "  $rel: refused by the hosted walk: $(awk 'NR==1' "$WORK/corpus_oracle.err")"
     continue
   fi
+  awk '/^UNCOVERED /' "$WORK/corpus_oracle.err" >> "$WORK/corpus_uncovered.txt"
   "$WORK/port_exercise" "$file" kinds >> "$WORK/corpus_kinds.txt" 2> /dev/null
   if cmp -s "$WORK/corpus_port.ast" "$WORK/corpus_oracle.ast"; then
     corpus_identical=$((corpus_identical + 1))
@@ -364,6 +374,8 @@ done
 echo "  Corpus: $corpus_identical/$corpus_count files transform identically ($corpus_refused refused by one side)"
 echo "  Constructs in that source, counted by the port's parser before any transform:"
 awk '{t[$1]+=$2} END{for (k in t) printf "    %-22s %d\n", k, t[k]}' "$WORK/corpus_kinds.txt" | sort
+echo "  Nodes the shared dump prints as Node (kind, count; their children are not compared):"
+awk '{t[$2]+=1} END{for (k in t) printf "    %-22s %d\n", k, t[k]}' "$WORK/corpus_uncovered.txt" | sort -k2 -nr
 corpus_floor=0
 if [ -f "$CORPUS_FLOOR" ]; then
   corpus_floor=$(awk 'NR==1{print $1}' "$CORPUS_FLOOR")

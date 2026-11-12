@@ -49,7 +49,7 @@ module compiler/semantic/literal_expander
 # Named tuples have no expansion in the hosted expander either, so none here.
 
 import compiler/semantic/normalizer::{NormalizerProgram}
-import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, Cast, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, Metaclass, MultiAssign, NilLiteral, Nop, NumberLiteral, Or, Path, RangeLiteral, Select, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
+import compiler/syntax/ast::{ASTNode, And, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, Cast, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, MacroExpression, MacroFor, MacroIf, Metaclass, MultiAssign, NilLiteral, Nop, Not, NumberLiteral, Or, Path, RangeLiteral, Select, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
@@ -90,6 +90,31 @@ pub class LiteralExpander < Transformer
   def transform(node : Select) : ASTNode
     expanded = expand_select(node)
     expanded.transform(self)
+  end
+
+  # `a && b` and `a || b`: the hosted expansion, then the walk continues into it.
+  def transform(node : And) : ASTNode
+    expanded = expand_and(node)
+    expanded.transform(self)
+  end
+
+  def transform(node : Or) : ASTNode
+    expanded = expand_or(node)
+    expanded.transform(self)
+  end
+
+  # Macros are expanded before literal lowering, and the hosted walk never
+  # enters their bodies, so a macro's condition or body stays as written.
+  def transform(node : MacroIf) : ASTNode
+    node
+  end
+
+  def transform(node : MacroFor) : ASTNode
+    node
+  end
+
+  def transform(node : MacroExpression) : ASTNode
+    node
   end
 
   def transform(node : RangeLiteral) : ASTNode
@@ -765,6 +790,43 @@ pub class LiteralExpander < Transformer
     a_case = Case.new(Var.new(index_name), case_whens, select_else(node), false)
     chain = expand_case(a_case, false)
     Expressions.new([multi, chain] of ASTNode)
+  end
+
+  # `a && b`, as the hosted expand(And): a variable, an assignment to one, or a
+  # test of one is tested in place; any other left side is bound to a temporary
+  # first. The right side runs only when the left side is truthy.
+  def expand_and(node : And) : ASTNode
+    left = single_expression(node.left)
+    if left.is_a?(Var) || (left.is_a?(IsA) && left.as(IsA).obj.is_a?(Var))
+      If.new(left, node.right, left.clone)
+    elsif left.is_a?(Assign) && left.as(Assign).target.is_a?(Var)
+      If.new(left, node.right, left.as(Assign).target.clone)
+    elsif left.is_a?(Not) && left.as(Not).exp.is_a?(Var)
+      If.new(left, node.right, left.clone)
+    elsif left.is_a?(Not) && left.as(Not).exp.is_a?(IsA) && left.as(Not).exp.as(IsA).obj.is_a?(Var)
+      If.new(left, node.right, left.clone)
+    else
+      temp = temp_var
+      If.new(Assign.new(temp.clone, left), node.right, temp.clone)
+    end
+  end
+
+  # `a || b`, as the hosted expand(Or): the same forms as `&&`, with the left
+  # side as the value when it is truthy and the right side otherwise.
+  def expand_or(node : Or) : ASTNode
+    left = single_expression(node.left)
+    if left.is_a?(Var) || (left.is_a?(IsA) && left.as(IsA).obj.is_a?(Var))
+      If.new(left, left.clone, node.right)
+    elsif left.is_a?(Assign) && left.as(Assign).target.is_a?(Var)
+      If.new(left, left.as(Assign).target.clone, node.right)
+    elsif left.is_a?(Not) && left.as(Not).exp.is_a?(Var)
+      If.new(left, left.clone, node.right)
+    elsif left.is_a?(Not) && left.as(Not).exp.is_a?(IsA) && left.as(Not).exp.as(IsA).obj.is_a?(Var)
+      If.new(left, left.clone, node.right)
+    else
+      temp = temp_var
+      If.new(Assign.new(temp.clone, left), temp.clone, node.right)
+    end
   end
 
   def select_has_else?(node : Select) : Bool

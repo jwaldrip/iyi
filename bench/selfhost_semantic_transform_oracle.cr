@@ -503,6 +503,7 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     node.expressions.each { |e| s += dump_ast(e, indent + 1) }
     s
   else
+    STDERR.puts "UNCOVERED #{node.class.name}"
     "#{p}Node\n"
   end
 end
@@ -553,6 +554,14 @@ class LiteralWalk < Iyi::Transformer
   end
 
   def transform(node : Iyi::Select) : Iyi::ASTNode
+    Iyi::LiteralExpander.new(@program).expand(node).transform(self)
+  end
+
+  def transform(node : Iyi::And) : Iyi::ASTNode
+    Iyi::LiteralExpander.new(@program).expand(node).transform(self)
+  end
+
+  def transform(node : Iyi::Or) : Iyi::ASTNode
     Iyi::LiteralExpander.new(@program).expand(node).transform(self)
   end
 end
