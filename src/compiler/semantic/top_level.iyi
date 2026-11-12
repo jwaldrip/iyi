@@ -501,15 +501,13 @@ pub class MetaclassType < ModuleType
       sc = @instance_type.as(ClassType).superclass
       if sc
         @parents << sc.as(ModuleType).metaclass
-      elsif klass = program.types["Class"]?
-        @parents << klass
+      else
+        @parents << program.types["Class"]
       end
     elsif @instance_type.is_a?(EnumType)
       @parents << program.enum_type.metaclass
-    elsif klass = program.types["Class"]?
-      # iyi: `Class` is made by this constructor (hosted: the metaclass of Value), so it has no parent
-      # while it is being made.
-      @parents << klass
+    else
+      @parents << program.types["Class"]
     end
   end
 
@@ -1382,14 +1380,14 @@ pub class SemanticProgram < NonGenericModuleType
     num.struct = true
     num.abstract = true
     @types["Number"] = num
+    nil_t = NilType.new(self, self, "Nil", val)
+    @types["Nil"] = nil_t
     bool_t = NonGenericClassType.new(self, self, "Bool", val)
     bool_t.struct = true
     @types["Bool"] = bool_t
     char_t = NonGenericClassType.new(self, self, "Char", val)
     char_t.struct = true
     @types["Char"] = char_t
-    nil_t = NilType.new(self, self, "Nil", val)
-    @types["Nil"] = nil_t
 
     int_t = NonGenericClassType.new(self, self, "Int", num)
     int_t.struct = true
@@ -1450,7 +1448,8 @@ pub class SemanticProgram < NonGenericModuleType
     @enum_type = en
     @types["Enum"] = en
 
-    klass = MetaclassType.new(self, self, "Class", val)
+    klass = NonGenericClassType.new(self, self, "Class", val)
+    klass.abstract = true
     @types["Class"] = klass
     @types["Array"] = GenericClassType.new(self, self, "Array", ["T"], nil, ref)
     @types["Hash"] = GenericClassType.new(self, self, "Hash", ["K", "V"], nil, ref)
