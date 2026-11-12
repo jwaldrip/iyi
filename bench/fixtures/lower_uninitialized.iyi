@@ -6,5 +6,9 @@ fun __crystal_raise_overflow : NoReturn
   LibC.exit(99)
 end
 
-x = uninitialized Int32
+fun __iyi_uninit : Int32
+  x uninitialized Int32
+end
+
+y uninitialized Int32
 LibC.exit(0)
