@@ -88,7 +88,44 @@ def struct_applies?(type : Iyi::Type) : Bool
   type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
 end
 
-def block_text(name : String, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
+# An LLVM function type as the IR writes it: `ret (params)`.
+def llvm_function_text(t : LLVM::Type) : String
+  params = t.params_types.map { |p| llvm_text(p) }
+  "#{llvm_text(t.return_type)} (#{params.join(", ")})"
+end
+
+# The instance variables of a user class, in declaration order: `name:Type` (the name keeps its @), or `-`.
+def ivars_text(type : Iyi::Type) : String
+  return "-" unless type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
+  parts = type.all_instance_vars.map { |name, ivar| "#{name}:#{ivar.type}" }
+  parts.empty? ? "-" : parts.join(" ")
+end
+
+# The `ids` mode's block: the type id and the id range the hosted LLVMId gives the type, or `-`.
+def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
+  mm = program.llvm_id.min_max_type_id(type)
+  String.build do |io|
+    io << "== " << name << "\n"
+    if mm
+      io << "type_id: " << mm[1] << "\n"
+      io << "type_range: " << mm[0] << " " << mm[1] << "\n"
+    else
+      io << "type_id: -\n"
+      io << "type_range: -\n"
+    end
+  end
+end
+
+# The pointer map of a user class under iyi's object layout, as `alloc`, `cap` and the scan
+# offsets; the hosted type id is not printed (it is numbered differently, NEEDS.md row 16).
+def layout_text(program : Iyi::Program, type : Iyi::Type) : String
+  return "-" unless type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType) && program.iyi_object_layout?
+  row = program.gc_type_layout(type)
+  scan = row.scan_offsets.map { |o| o.to_s }.join(" ")
+  "alloc=#{row.alloc_size} cap=#{row.scan_cap} scan=#{scan.empty? ? "-" : scan}"
+end
+
+def block_text(name : String, program : Iyi::Program, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
   String.build do |io|
     io << "== " << name << "\n"
     io << "llvm_type: " << llvm_text(typer.llvm_type(type)) << "\n"
@@ -110,6 +147,13 @@ def block_text(name : String, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
     io << "size: " << typer.size_of(typer.llvm_type(type)) << "\n"
     io << "align: " << typer.align_of(typer.llvm_type(type)) << "\n"
     io << "passed_by_value: " << (type.passed_by_value? ? "true" : "false") << "\n"
+    io << "ivars: " << ivars_text(type) << "\n"
+    io << "layout: " << layout_text(program, type) << "\n"
+    io << "passed_indirectly: " << (typer.passed_indirectly?(type) ? "true" : "false") << "\n"
+    if type.is_a?(Iyi::ProcInstanceType)
+      io << "proc_function: " << llvm_function_text(typer.proc_type(type)) << "\n"
+      io << "closure_function: " << llvm_function_text(typer.closure_type(type)) << "\n"
+    end
   end
 end
 
@@ -172,6 +216,9 @@ def resolve(program : Iyi::Program, name : String) : Iyi::Type
     raise "unknown generic #{name}" unless name.ends_with?(")")
     base_name = name[0...open]
     args = split_top(name[(open + 1)...-1]).map { |arg| resolve(program, arg) }
+    if base_name == "Proc"
+      return program.proc_of(args)
+    end
     base = resolve(program, base_name)
     unless base.is_a?(Iyi::GenericClassType)
       raise "#{base_name} takes no type arguments"
@@ -190,12 +237,19 @@ begin
   program = Iyi::Program.new
   program.codegen_target = Iyi::Codegen::Target.new(triple)
   node = Iyi::Parser.new(source).parse
-  node.accept Iyi::TopLevelVisitor.new(program)
+  # The hosted declaration passes: top-level declarations, then the instance variable
+  # declarations and the types guessed from assignments (program.cr top_level_semantic).
+  program.top_level_semantic(node)
   typer = program.llvm_typer
+  mode = ARGV[2]? || "blocks"
   source.each_line do |line|
     next unless line.starts_with?("# type: ")
     expr = line[8..].strip
-    puts block_text(expr, typer, resolve(program, expr))
+    if mode == "ids"
+      puts ids_block(expr, program, resolve(program, expr))
+    else
+      puts block_text(expr, program, typer, resolve(program, expr))
+    end
   end
 rescue ex : Exception
   STDERR.puts "ERROR: #{ex.message.to_s.lines.first? || ""}"
