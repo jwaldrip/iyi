@@ -372,13 +372,13 @@ def compute_nonnil(owners : Array(OwnerGuesses), og : OwnerGuesses) : Nil
     end
     if og.owner.is_a?(ClassType)
       if sc = og.owner.as(ClassType).superclass
-      if ancestor = owner_for(owners, sc)
-        if inherited = ancestor.nonnil
-          inherited.each do |name|
-            names << name unless names.includes?(name)
+        if ancestor = owner_for(owners, sc)
+          if inherited = ancestor.nonnil
+            inherited.each do |name|
+              names << name unless names.includes?(name)
+            end
           end
         end
-      end
       end
     end
   end
