@@ -19,7 +19,7 @@ module compiler/semantic/type_nodes
 # accepts, so the port refuses them by name; and the `raises` mark a cast leaves
 # on its method, which the port does not track yet.
 
-import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, PointerOf, ProcNotation, Self, SizeOf, TypeOf, Union, Var}
+import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, PointerOf, ProcNotation, Self, SizeOf, TypeOf, Union, UninitializedVar, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, SemanticProgram, Type, TypeHook}
 import compiler/types/type_system::{TypeSystem}
@@ -359,4 +359,28 @@ pub def visit_pointer_of(visitor : TypeNodeHost, node : PointerOf) : Bool
     return false
   end
   visitor.refuse(node, "pointerof of #{exp.to_s} is not ported yet: only a local variable is")
+end
+
+# `x = uninitialized Int32`: the declared type is a type argument, the local is
+# recorded in the scope under its name, and the variable and the node are typed
+# as that type (hosted `visit(node : UninitializedVar)` main_visitor.cr 490-520).
+# A name already declared refuses as the hosted pass does. Only a local variable
+# is ported; the hosted meta-variable binding is the port's `vars` entry.
+pub def visit_uninitialized_var(visitor : TypeNodeHost, node : UninitializedVar) : Bool
+  var = node.var
+  return visitor.refuse(node, "uninitialized of this target is not ported yet") unless var.is_a?(Var)
+  name = var.as(Var).name
+  if visitor.vars[name]?
+    return visitor.refuse(node, "variable '#{name}' already declared")
+  end
+  visitor.bracket_type_args(1)
+  node.declared_type.accept(visitor)
+  visitor.bracket_type_args(-1)
+  t = visitor.child_type(node.declared_type)
+  return false if t.nil?
+  declared = TypeQueries.virtual_type(t.as(Type))
+  visitor.vars[name] = declared
+  visitor.set_type(var, declared)
+  visitor.set_type(node, declared)
+  false
 end
