@@ -146,6 +146,7 @@ pub class GenericClassInstanceType < GenericInstanceType
   property superclass : Type?
   getter subclasses : Array(Type)
   getter included_modules : Array(Type)
+  getter instance_vars : Hash(String, MetaTypeVar)
   @metaclass : GenericClassInstanceMetaclassType?
 
   def register_subclass(sub : Type) : Nil
@@ -547,7 +548,9 @@ pub class PointerInstanceType < GenericClassInstanceType
   getter element_type : Type
 
   def initialize(program : SemanticProgram, @element_type : Type)
-    super(program, program.types["Pointer"], Hash(String, Type).new, [@element_type] of Type, program.struct_type)
+    vars = Hash(String, Type).new
+    vars["T"] = @element_type
+    super(program, program.types["Pointer"], vars, [@element_type] of Type, program.struct_type)
     @struct = true
   end
 

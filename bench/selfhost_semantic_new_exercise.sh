@@ -111,6 +111,9 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic receiver does not bind its type parameters in a restriction" "$MAIN_VISITOR_FILE" \
   "    if owner.is_a?(GenericInstanceType) && restriction.is_a?(Path)" \
   "    if false" \
+prove_mutation "a generic receiver does not bind its type parameters in a lookup" "$MAIN_VISITOR_FILE" \
+  "if bound = inst.type_vars[path.names.first]?" \
+  "if bound = inst.type_vars[\"no-such-param\"]?" \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
