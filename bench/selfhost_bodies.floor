@@ -2,6 +2,7 @@
 # A count may only rise. Raise with: BODIES_RAISE=1 bash bench/selfhost_bodies_exercise.sh
 bench/fixtures/sem_bodies_defaults.iyi 3
 bench/fixtures/sem_bodies_flow.iyi 36
+bench/fixtures/sem_bodies_ivar_read.iyi 11
 bench/fixtures/sem_bodies_jumps.iyi 20
 bench/fixtures/sem_bodies_libcall.iyi 15
 bench/fixtures/sem_bodies_primitive_add.iyi 4
