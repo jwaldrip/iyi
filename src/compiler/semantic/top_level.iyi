@@ -1591,7 +1591,12 @@ pub class SemanticProgram < NonGenericModuleType
     if base.is_a?(GenericClassType)
       gc = base.as(GenericClassType)
       return false if gc.full_name == "NamedTuple" || gc.full_name == "StaticArray"
-      return false unless gc.splat_index.nil?
+      # iyi: Tuple's splat takes every argument it is written with. Its arguments resolve through
+      # lookup_type_node, which sees this file's imports; the hook's own lookup does not, so a
+      # Tuple(String, IrType, Bool) named in an imported file stays unresolved there (codegen.iyi 651).
+      if !gc.splat_index.nil?
+        return gc.full_name == "Tuple" && g.type_vars.all? { |t| type_node?(t) }
+      end
       return gc.type_vars.size == g.type_vars.size && g.type_vars.all? { |t| type_node?(t) }
     end
     if base.is_a?(GenericModuleType)
