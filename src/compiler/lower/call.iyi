@@ -54,7 +54,7 @@ import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
 import compiler/semantic/top_level::{ClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
-import compiler/lower/primitives::{primitive_name_of, lower_primitive_call}
+import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
 
@@ -88,7 +88,17 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       pending_visit_node("a block passed to a primitive (hosted call.cr: codegen_call, Primitive body)")
     end
     if node.obj.nil? && primitive_name_of(def_node) == "allocate"
-      pending_visit_node("allocate with no receiver in a class method (hosted codegen_primitive_allocate): waits on primitive_allocate (lower/primitives.iyi, S2d2Primitives)")
+      # `_ = allocate` in a class method (the generated `new`): the instance type is the class method's context
+      # type (fun.iyi class_owner). The pointer to the zeroed instance is loaded as the struct value, which is
+      # what `_` holds (hosted allocate returns the value; primitive_allocate returns the pointer).
+      owner = low.current_context.type
+      if owner.nil?
+        pending_visit_node("allocate outside a class method (hosted codegen_primitive_allocate, the instance type)")
+      end
+      inst = owner.as(Type)
+      ptr = primitive_allocate(low, inst)
+      low.last = load_aligned(low, low.typer.llvm_type(inst), ptr, "")
+      return
     end
     lower_primitive_call(low, node, def_node)
     return
@@ -526,10 +536,15 @@ end
 # receiver's type, or a superclass of it, defines a method of that name. The analysis types the node Bool and
 # leaves the value here (semantic/main_visitor.iyi, visit(RespondsTo)). The value is a constant i1.
 pub def codegen_responds_to(low : Lowerer, node : RespondsTo) : Nil
+  low.last = int1(low, responds_to_value(low, node) ? 1_i64 : 0_i64)
+end
+
+# The value of a responds_to? node (the hosted expanded literal): the receiver's type, or a superclass, defines
+# the method. Used by the value path and by the `if` fold (lower.iyi codegen_branch), as the hosted folds a literal.
+pub def responds_to_value(low : Lowerer, node : RespondsTo) : Bool
   t = low.analysed.type_of?(node.obj)
   raise "BUG: the analysed program has no type for the receiver of responds_to? (hosted codegen: RespondsTo)" if t.nil?
-  value = responds_to_name?(t.as(Type), node.name)
-  low.last = int1(low, value ? 1_i64 : 0_i64)
+  responds_to_name?(t.as(Type), node.name)
 end
 
 # Whether a type, or a superclass of it, defines a method of this name (the hosted lookup for responds_to?).

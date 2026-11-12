@@ -32,7 +32,7 @@ import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
-import compiler/lower/call::{codegen_call_node, codegen_responds_to}
+import compiler/lower/call::{codegen_call_node, codegen_responds_to, responds_to_value}
 import compiler/lower/block::{branch_to_phi, lower_yield}
 import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun}
 import compiler/lower/cast::{assign, union_temp}
@@ -489,6 +489,15 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
     # taken is lowered, with its value as the value.
     taken = cond_node.is_a?(BoolLiteral) && cond_node.as(BoolLiteral).value
     if taken
+      codegen_node(low, then_node)
+    else
+      codegen_node(low, else_node)
+    end
+    return
+  end
+  if cond_node.is_a?(RespondsTo)
+    # The hosted expansion of `responds_to?` is a Bool literal, which folds the same way (a constant, no branch).
+    if responds_to_value(low, cond_node.as(RespondsTo))
       codegen_node(low, then_node)
     else
       codegen_node(low, else_node)
