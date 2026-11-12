@@ -30,7 +30,13 @@ mkdir -p "$WORK/plain_out" "$WORK/release_out" "$WORK/mut_out" "$WORK/final_out"
 
 echo "== 1. Building and running selfhost LLVM exercise (plain mode)"
 "$IYI" build -o "$WORK/exercise-plain" "$REPO/bench/selfhost_llvm_exercise.iyi"
-"$WORK/exercise-plain" "$WORK/plain_out" > "$WORK/plain.out" 2>&1
+# The exercise's own output names the check that failed: print it before stopping, or the gate's log ends at the
+# heading above and says nothing.
+if ! "$WORK/exercise-plain" "$WORK/plain_out" > "$WORK/plain.out" 2>&1; then
+  cat "$WORK/plain.out"
+  echo "FAILED: the plain exercise exited non-zero"
+  exit 1
+fi
 cat "$WORK/plain.out"
 
 echo
@@ -53,7 +59,11 @@ done
 echo
 echo "== 2. Building and running selfhost LLVM exercise (--release mode)"
 "$IYI" build --release -o "$WORK/exercise-release" "$REPO/bench/selfhost_llvm_exercise.iyi"
-"$WORK/exercise-release" "$WORK/release_out" > "$WORK/release.out" 2>&1
+if ! "$WORK/exercise-release" "$WORK/release_out" > "$WORK/release.out" 2>&1; then
+  cat "$WORK/release.out"
+  echo "FAILED: the release exercise exited non-zero"
+  exit 1
+fi
 cat "$WORK/release.out"
 
 if ! grep -qF "ALL SELFHOST LLVM CHECKS PASSED SUCCESSFULLY!" "$WORK/release.out"; then

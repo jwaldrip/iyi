@@ -16,16 +16,29 @@ module BenchSelfhostLlvmExercise
     end
   end
 
+  # True when LLVM's target registry holds a target of this name.
+  def self.registered?(llvm_name : String) : Bool
+    found = false
+    Target.each do |t|
+      found = true if t.name == llvm_name
+    end
+    found
+  end
+
   def self.run_all(output_dir : String)
     puts "== 1. Target initialization & identification"
     Target.init_native_target
     Target.init_all_targets
 
-    assert(Target.init_target("aarch64"), "init_target aarch64")
-    assert(Target.init_target("x86_64"), "init_target x86_64")
-    assert(Target.init_target("arm"), "init_target arm")
-    assert(Target.init_target("webassembly"), "init_target webassembly")
-    assert(Target.init_target("riscv"), "init_target riscv")
+    # `init_target` answers whether the linked LLVM carries the target. The release build links a static LLVM
+    # built with five targets and no RISC-V, so the answer is checked against LLVM's own registry rather than
+    # assumed true: a carried target is registered under its LLVM name, and one that is not carried is not.
+    assert(Target.init_target("aarch64") == registered?("aarch64"), "init_target aarch64 agrees with the registry")
+    assert(Target.init_target("x86_64") == registered?("x86-64"), "init_target x86_64 agrees with the registry")
+    assert(Target.init_target("arm") == registered?("arm"), "init_target arm agrees with the registry")
+    assert(Target.init_target("webassembly") == registered?("wasm32"), "init_target webassembly agrees with the registry")
+    assert(Target.init_target("riscv") == registered?("riscv64"), "init_target riscv agrees with the registry")
+    assert(registered?("aarch64") || registered?("x86-64"), "the registry lists a target this LLVM was built with")
     assert(!Target.init_target("nonexistent_target_xyz"), "init_target unknown should return false")
 
     default_triple = Target.default_target_triple
