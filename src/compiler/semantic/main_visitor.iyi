@@ -1810,10 +1810,31 @@ pub class MainVisitor < TypeNodeHost
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(target_def)
+    old_current_type = @current_type
+    enter_owner_scope(rec_type)
     result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
+    @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
     result
+  end
+
+  # iyi: a body's constants are looked up from the type the def is called on, not from the type the
+  # call is written in (hosted: the def's self type). A generic instance's constants are its generic
+  # type's, and a metaclass names its instance type: `SIZE` in a class method of Hdr is Hdr's whatever
+  # class calls it.
+  def enter_owner_scope(rec_type : Type) : Nil
+    owner : Type = rec_type
+    if owner.is_a?(MetaclassType)
+      owner = owner.as(MetaclassType).instance_type
+    end
+    if owner.is_a?(GenericInstanceType)
+      owner = owner.as(GenericInstanceType).generic_type
+    end
+    if owner.is_a?(ModuleType) && !owner.is_a?(SemanticProgram)
+      @current_type = owner.as(ModuleType)
+    end
+    nil
   end
 
   # iyi: the names a node's file imported become the names in scope (SPEC.md R-2b). A node with
