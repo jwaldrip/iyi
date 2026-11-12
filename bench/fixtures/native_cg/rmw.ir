@@ -42,3 +42,43 @@ entry:
   %o = atomicrmw add ptr @c64, i64 1, align 8 monotonic
   ret i64 %o
 }
+
+define internal i64 @ord_acq() {
+entry:
+  %o = atomicrmw add ptr @c64, i64 1, align 8 acquire
+  ret i64 %o
+}
+
+define internal i64 @ord_rel() {
+entry:
+  %o = atomicrmw add ptr @c64, i64 1, align 8 release
+  ret i64 %o
+}
+
+define internal i64 @ord_cas_mono() {
+entry:
+  %p = cmpxchg ptr @c64, i64 1, i64 2, align 8 monotonic monotonic
+  %o = extractvalue { i64, i1 } %p, 0
+  ret i64 %o
+}
+
+define internal i64 @ord_cas_acq() {
+entry:
+  %p = cmpxchg ptr @c64, i64 1, i64 2, align 8 acquire monotonic
+  %o = extractvalue { i64, i1 } %p, 0
+  ret i64 %o
+}
+
+define internal i64 @ord_cas_rel() {
+entry:
+  %p = cmpxchg ptr @c64, i64 1, i64 2, align 8 release monotonic
+  %o = extractvalue { i64, i1 } %p, 0
+  ret i64 %o
+}
+
+define internal i64 @ord_cas_seq() {
+entry:
+  %p = cmpxchg ptr @c64, i64 1, i64 2, align 8 seq_cst monotonic
+  %o = extractvalue { i64, i1 } %p, 0
+  ret i64 %o
+}

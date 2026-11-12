@@ -221,6 +221,10 @@ pub class Encoder
       word(acquire_word(inst.size, 0xC85FFC00_i64, 0x885FFC00_i64, 0x485FFC00_i64, 0x085FFC00_i64) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::Stlxr
       word(acquire_word(inst.size, 0xC800FC00_i64, 0x8800FC00_i64, 0x4800FC00_i64, 0x0800FC00_i64) | (field(inst.defs[0].reg) << 16) | (field(inst.uses[1].reg) << 5) | field(inst.uses[0].reg))
+    elsif op == MOp::Ldxr
+      word(acquire_word(inst.size, 0xC85F7C00_i64, 0x885F7C00_i64, 0x485F7C00_i64, 0x085F7C00_i64) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::Stxr
+      word(acquire_word(inst.size, 0xC8007C00_i64, 0x88007C00_i64, 0x48007C00_i64, 0x08007C00_i64) | (field(inst.defs[0].reg) << 16) | (field(inst.uses[1].reg) << 5) | field(inst.uses[0].reg))
     elsif op == MOp::Dmb
       if inst.imm == 0_i64
         word(0xD5033BBF_i64)

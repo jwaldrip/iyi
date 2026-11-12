@@ -1328,6 +1328,7 @@ class Isel
   # ---- atomics: load-exclusive / store-exclusive loops, as LLVM's AArch64 backend emits them at -O0 ----
 
   def lower_cmpxchg(i : Inst) : Nil
+    aux = i.aux.as(MemAux)
     ptr = first_leaf(i.args[0])
     expected = first_leaf(i.args[1])
     newv = first_leaf(i.args[2])
@@ -1340,7 +1341,7 @@ class Isel
     done_block = new_block("cmpxchg.done")
     @cur.insts << branch(loop_block.index)
     @cur = loop_block
-    load = mop(MOp::Ldaxr)
+    load = mop(rmw_load_op(acquire_on_load?(aux.ordering) || acquire_on_load?(aux.failure_ordering)))
     load.size = bits
     load.defs << vop(old)
     load.uses << vop(ptr)
@@ -1351,7 +1352,7 @@ class Isel
     miss.target = fail_block.index
     emit(miss)
     status = gpr
-    store = mop(MOp::Stlxr)
+    store = mop(rmw_store_op(release_on_store?(aux.ordering)))
     store.size = bits
     store.defs << vop(status)
     store.uses << vop(newv)
@@ -1369,6 +1370,16 @@ class Isel
     emit(branch(done_block.index))
     @cur = done_block
     bind_result(i, [canon(old, value_type), success])
+  end
+
+  # The exclusive load and store of a read-modify-write, by ordering (LLVM's AArch64 mapping): the load takes the
+  # acquire form and the store the release form only when the ordering asks for them. Monotonic selects the plain pair.
+  def rmw_load_op(acquire : Bool) : MOp
+    acquire ? MOp::Ldaxr : MOp::Ldxr
+  end
+
+  def rmw_store_op(release : Bool) : MOp
+    release ? MOp::Stlxr : MOp::Stxr
   end
 
   def move_imm_inst(dst : Int32, value : Int64) : MInst
@@ -1401,7 +1412,7 @@ class Isel
     done_block = new_block("atomicrmw.done")
     @cur.insts << branch(loop_block.index)
     @cur = loop_block
-    load = mop(MOp::Ldaxr)
+    load = mop(rmw_load_op(acquire_on_load?(aux.ordering)))
     load.size = bits
     load.defs << vop(old)
     load.uses << vop(ptr)
@@ -1439,7 +1450,7 @@ class Isel
       return
     end
     status = gpr
-    store = mop(MOp::Stlxr)
+    store = mop(rmw_store_op(release_on_store?(aux.ordering)))
     store.size = bits
     store.defs << vop(status)
     store.uses << vop(newv)

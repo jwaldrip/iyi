@@ -103,15 +103,29 @@ else
   fail "the frame dump shows $probes probes; a 65 KiB frame needs 16"
 fi
 
-# ---- 4b. each atomicrmw ordering selects the same load-exclusive and store-exclusive pair -------------
-echo "== 4b. monotonic and seq_cst atomicrmw select the same instructions"
-seq_mir=$("$DRV" mir "$FIX/rmw.ir" ord_seq | tail -n +2)
-mono_mir=$("$DRV" mir "$FIX/rmw.ir" ord_mono | tail -n +2)
-if [ -n "$seq_mir" ] && [ "$seq_mir" = "$mono_mir" ] && echo "$seq_mir" | grep -q 'Ldaxr' && echo "$seq_mir" | grep -q 'Stlxr'; then
-  echo "monotonic and seq_cst both select Ldaxr and Stlxr, identically"
-else
-  fail "the two orderings select different instructions"
-fi
+# ---- 4b. each ordering selects its own exclusive pair: acquire on the load for acquire and seq_cst, release on
+# the store for release and seq_cst, and the plain pair for monotonic (LLVM's AArch64 mapping) -----------------
+# expect_ord <function> <load op> <store op>: the function's MIR holds that pair and not the other forms.
+expect_ord() {
+  local fn=$1 load=$2 store=$3 mir oload=Ldaxr ostore=Stlxr
+  [ "$load" = Ldaxr ] && oload=Ldxr
+  [ "$store" = Stlxr ] && ostore=Stxr
+  mir=$("$DRV" mir "$FIX/rmw.ir" "$fn" | tail -n +2)
+  if echo "$mir" | grep -qw "$load" && echo "$mir" | grep -qw "$store" && ! echo "$mir" | grep -qw "$oload" && ! echo "$mir" | grep -qw "$ostore"; then
+    echo "$fn: $load and $store"
+  else
+    fail "$fn: its exclusive pair is not $load and $store"
+  fi
+}
+echo "== 4b. each atomicrmw and cmpxchg ordering selects its own exclusive pair"
+expect_ord ord_mono Ldxr Stxr
+expect_ord ord_acq Ldaxr Stxr
+expect_ord ord_rel Ldxr Stlxr
+expect_ord ord_seq Ldaxr Stlxr
+expect_ord ord_cas_mono Ldxr Stxr
+expect_ord ord_cas_acq Ldaxr Stxr
+expect_ord ord_cas_rel Ldxr Stlxr
+expect_ord ord_cas_seq Ldaxr Stlxr
 
 
 # ---- 5. the Linux variant encodes; it is not executed here -------------------------------------
@@ -182,6 +196,7 @@ check_byval() { check_fixture "$1" byval; }
 check_rmw() { check_fixture "$1" rmw; }
 check_mem() { check_fixture "$1" mem; }
 check_wide() { check_fixture "$1" wide; }
+check_mono_pair() { "$1" mir "$FIX/rmw.ir" ord_mono | grep -qw Ldxr; }
 check_probe() {
   local n
   n=$("$1" mir "$FIX/frame64k.ir" big | grep -c 'ZeroSp')
@@ -245,6 +260,11 @@ prove_mutation "i128 argument: the high half is passed in the low half's registe
   'LeafLoc.new(0, desc.integer_args[gpr_next + 1], -1_i64, 64, false, leaves[1][1])' \
   'LeafLoc.new(0, desc.integer_args[gpr_next], -1_i64, 64, false, leaves[1][1])' \
   check_wide
+prove_mutation "atomicrmw monotonic: the load takes the acquire form" \
+  src/compiler/native/aarch64/isel.iyi \
+  'acquire ? MOp::Ldaxr : MOp::Ldxr' \
+  'MOp::Ldaxr' \
+  check_mono_pair
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \

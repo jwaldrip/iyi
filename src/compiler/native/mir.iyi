@@ -55,6 +55,8 @@ pub enum MOp
   Stlr            # release store, size bits
   Ldaxr           # load-acquire exclusive
   Stlxr           # store-release exclusive: defs[0] is the status register
+  Ldxr            # load-exclusive, no acquire: the monotonic read-modify-write load
+  Stxr            # store-exclusive, no release: defs[0] is the status register
   Dmb             # imm: 0 ish, 1 ishld, 2 ishst
   Add             # dst <- a + b
   Sub
