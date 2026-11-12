@@ -122,6 +122,12 @@ prove_mutation "a generic in a type argument is typed as its metaclass" "$TYPE_N
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "generic instance metaclass drops the generic class's class methods" "$TYPES_FILE" \
+  "generic_instance_type.generic_type.as(GenericClassType).metaclass.defs" \
+  "Hash(String, Array(Def)).new" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

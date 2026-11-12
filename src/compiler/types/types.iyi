@@ -271,6 +271,12 @@ pub class GenericClassInstanceMetaclassType < MetaclassType
     @instance_type.as(GenericClassInstanceType)
   end
 
+  # The class methods of a generic instance are the generic class's own (hosted
+  # `delegate defs, macros, to: generic_type`, types.cr 3400).
+  def defs : Hash(String, Array(Def))
+    generic_instance_type.generic_type.as(GenericClassType).metaclass.defs
+  end
+
   def full_name : String
     "#{@instance_type.full_name}.class"
   end
