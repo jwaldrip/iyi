@@ -139,6 +139,17 @@ pub class Compiler
     Loader.initialiser_order(resolved_modules).each do |mod_info|
       module_tops[mod_info.filename].each { |node| top_level << node }
     end
+    # A plain top-level def is a function, as a fun is: a receiver-less call reaches it through
+    # the program's defs and its body is emitted. The block table still serves inlining. The
+    # defs come first, as the oracle checks them before the funs' bodies.
+    def_funs = [] of FunDef
+    defs.each_value do |d|
+      # A def taking a block is inlined at each block call, and a generic def is instantiated at
+      # each call: neither has a body of its own to emit.
+      next if d.block_arg || !d.free_vars.nil?
+      def_funs << FunDef.new(d.name, d.args, d.return_type, d.body)
+    end
+    funs = def_funs + funs
     if top_level.empty? && funs.none? { |f| f.name == "main" }
       top_level << Nop.new
     end

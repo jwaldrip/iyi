@@ -386,6 +386,26 @@ class ProcLiteralCollector < Visitor
   end
 end
 
+# The classes a program constructs with Type.new, anywhere in its code.
+class NewCallCollector < Visitor
+  getter classes : Set(String)
+
+  def initialize
+    @classes = Set(String).new
+  end
+
+  def visit(node : Call) : Bool
+    if node.name == "new" && (recv = node.obj) && recv.is_a?(Path)
+      @classes.add(recv.to_s)
+    end
+    true
+  end
+
+  def visit(node : ASTNode) : Bool
+    true
+  end
+end
+
 class GenericUsageCollector < Visitor
   getter generic_nodes : Array(Generic)
   getter saw_string : Bool
@@ -487,6 +507,7 @@ pub class CodeGenVisitor < Visitor
   property struct_call_temps : Array(LLVMValue)
   property struct_temp_index : Int32
   property block_methods : Hash(String, Def)
+  property constructed_classes : Set(String)
   property current_inlined_block : InlinedBlockContext?
   property inlined_block_contexts : Array(InlinedBlockContext)
   property inlined_block_index : Int32
@@ -525,6 +546,7 @@ pub class CodeGenVisitor < Visitor
     @struct_call_temps = [] of LLVMValue
     @struct_temp_index = 0
     @block_methods = Hash(String, Def).new
+    @constructed_classes = Set(String).new
     @current_inlined_block = nil
     @inlined_block_contexts = [] of InlinedBlockContext
     @inlined_block_index = 0
@@ -987,6 +1009,18 @@ pub class CodeGenVisitor < Visitor
     t1
   end
 
+  # The class an expression's value is an instance of, when the expression alone says:
+  # a constructor call Type.new(...). Nil for everything else.
+  def expression_class_type(node : ASTNode) : String?
+    if node.is_a?(Call)
+      call = node.as(Call)
+      if call.name == "new" && (recv = call.obj) && recv.is_a?(Path)
+        return recv.to_s
+      end
+    end
+    nil
+  end
+
   def infer_var_type(vname : String, node : ASTNode) : String
     if node.is_a?(TypeDeclaration)
       return node.as(TypeDeclaration).declared_type.to_s
@@ -1314,6 +1348,10 @@ pub class CodeGenVisitor < Visitor
     @current_fn_return_type = ret_type
     @current_fun_def = node
     @current_method_name = nil
+    # A free function has no self. The last method emitted left its class behind, and a
+    # receiver-less call in this function would then be taken for a method call on it.
+    @current_self = nil
+    @current_self_type = nil
 
     @vars.clear
     @last = nil
@@ -3075,6 +3113,37 @@ pub class CodeGenVisitor < Visitor
         end
       end
 
+      # 3a. An instance method on an expression of known class type, as in Svc.new.part1.
+      # The method is found before the receiver is evaluated, so a miss emits nothing.
+      if !obj.is_a?(Var) && (rt_name = expression_class_type(obj)) && @custom_types.has_key?(rt_name)
+        r_info = @custom_types[rt_name]
+        if !r_info.is_struct && r_info.generic_name.nil? && (r_m = r_info.methods[node.name]?)
+          r_expected = r_m.args.map { |a| a.restriction ? a.restriction.to_s : "Int32" }
+          r_ret = r_m.return_type ? r_m.return_type.to_s.lstrip(':') : "Int32"
+          r_fn_name = if r_expected.empty?
+                        "*#{r_info.name}##{node.name}:#{r_ret}"
+                      else
+                        "*#{r_info.name}##{node.name}<#{r_expected.join(", ")}>:#{r_ret}"
+                      end
+          if r_fn = @mod.get_function?(r_fn_name)
+            obj.accept(self)
+            if recv_val = @last
+              r_args = [recv_val] of LLVMValue
+              node.args.each do |a|
+                a.accept(self)
+                if l = @last
+                  r_args << l
+                end
+              end
+              r_fn_ty = LLVMType.function(r_args.map(&.type), llvm_type_from_name(r_ret), false)
+              @last = @builder.call(r_fn_ty, r_fn.to_value, r_args)
+              @terminated = false
+              return false
+            end
+          end
+        end
+      end
+
       # 3. Struct & Class instance operations: p.x, p.x = val, p.method(args...)
       if obj.is_a?(Var)
         vname = obj.as(Var).name
@@ -3799,8 +3868,15 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
   cg.custom_types.each_value do |info|
     st = cg.llvm_struct_types[info.name]? || context.int32
 
-    # Emit initializer if defined
-    if init_def = info.methods["initialize"]?
+    # Emit initializer if defined. A class with no initialize gets the default one (no
+    # arguments, no body) when some code constructs it; its constructor is then emitted
+    # the same way as one with an initialize.
+    default_init = if cg.constructed_classes.includes?(info.name)
+                     Def.new("initialize", [] of Arg, nil, nil, nil, Path.new("Void"))
+                   else
+                     nil
+                   end
+    if init_def = info.methods["initialize"]? || default_init
       init_arg_tys = [context.pointer] of LLVMType
       init_def.args.each { |a| init_arg_tys << cg.llvm_type_from_name(a.restriction ? a.restriction.to_s : "Int32") }
       init_ret_tname = cg.infer_def_return_type(init_def, info)
@@ -4509,6 +4585,13 @@ pub def compile_declarations_to_module(
   cg = CodeGenVisitor.new(context, mod, prog, mv)
   cg.filename = filename
   cg.block_methods = defs
+  # Only the classes some code constructs with Type.new get a default constructor, as the
+  # oracle emits no code for a class nothing constructs.
+  constructed = NewCallCollector.new
+  classes.each { |cd| cd.accept(constructed) }
+  funs.each { |fd| fd.accept(constructed) }
+  defs.each_value { |d| d.accept(constructed) }
+  cg.constructed_classes = constructed.classes
 
   # Process lib definitions
   libs.each do |ld|

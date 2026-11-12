@@ -58,6 +58,7 @@ FIXTURES=(
   "bench/fixtures/compile_no_top_level.iyi"
   "bench/fixtures/compile_cross_const.iyi"
   "bench/fixtures/compile_reopen_class.iyi"
+  "bench/fixtures/compile_resolve_order.iyi"
   "bench/fixtures/compile_raise.iyi"
   "bench/fixtures/compile_stdout.iyi"
 )
@@ -493,6 +494,7 @@ clean_must_pass "compile_top_level expects 42" check_compile_rc "$REPO/bench/fix
 clean_must_pass "compile_no_top_level expects 0" check_compile_rc "$REPO/bench/fixtures/compile_no_top_level.iyi" 0
 clean_must_pass "compile_search expects 11 under the search roots" check_search_rc "$REPO/bench/fixtures/compile_search.iyi" 11
 clean_must_pass "compile_order prints the shipped order" check_compiler_stdout "$REPO/bench/fixtures/compile_order.iyi" "$WORK/out_cr_compile_order.txt"
+clean_must_pass "compile_resolve_order expects 20 under the load order" check_compile_rc "$REPO/bench/fixtures/compile_resolve_order.iyi" 20
 
 mutate_compiler_source "corrupt linker placeholder substitution" \
   "$COMPILER_SRC" \
@@ -528,6 +530,18 @@ mutate_compiler_source "initialiser order ignores the path hash" \
   '    hash ^ (hash >> 31)' \
   '    0_u64' \
   -- check_compiler_stdout "$REPO/bench/fixtures/compile_order.iyi" "$WORK/out_cr_compile_order.txt"
+
+
+# The load order decides which of two reopened definitions of one method runs: the later
+# import wins. Reversing the load order (@order) makes the earlier import win, so the
+# program exits 10 instead of 20. This fixture is what sees the order: a loader that
+# reverses the load order is caught here. Before the initialiser-order change, the
+# mutation was caught by compile_diamond; no fixture there depends on declaration order.
+mutate_compiler_source "wrong resolver resolution order" \
+  "$LOADER_SRC" \
+  '@order << clean_fn' \
+  '@order = [clean_fn] + @order' \
+  -- check_compile_rc "$REPO/bench/fixtures/compile_resolve_order.iyi" 20
 
 mutate_compiler_source "missed import in resolver" \
   "$LOADER_SRC" \
