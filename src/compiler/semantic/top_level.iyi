@@ -868,6 +868,7 @@ pub class ImplRecord
 end
 
 pub class SemanticProgram < NonGenericModuleType
+  property defer_pending_ivars : Bool = false
   @object_type : ClassType?
   property merge_hook : TypeHook?
   @value_type : ClassType?
@@ -1566,12 +1567,18 @@ pub class TopLevelVisitor < Visitor
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
     @program.current_imports = Hash(String, Type).new
-    # A required file is nested in the file that reads it: its top-level expressions
-    # do not finish its pending instance variables, because a later file may declare
-    # the type they restrict to. The reader takes them and finishes once.
-    inner.exp_nest = 1
-    nodes.accept(inner)
-    inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
+    # With `defer_pending_ivars` (the prelude-first measure in the inline macros gate),
+    # a required file is nested in the file that reads it: its pending instance variables
+    # wait for the reader, which finishes once, so a type a later file declares resolves.
+    # Otherwise each file finishes its own, as the hosted pass does file by file.
+    if @program.defer_pending_ivars
+      inner.exp_nest = 1
+      nodes.accept(inner)
+      inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
+    else
+      nodes.accept(inner)
+      inner.finish
+    end
     @program.current_imports = saved
     if unit = inner.unit
       @program.loaded_units[file] = unit
