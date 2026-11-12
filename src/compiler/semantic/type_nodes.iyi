@@ -23,22 +23,25 @@ import compiler/syntax/ast::{ASTNode, Cast, FunDef, Generic, Metaclass, NilableC
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/top_level::{SemanticProgram, Type, TypeHook}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, TypeQueries}
+import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TypeQueries}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/lookup::{LookupError, TypeLookup}
 
-# The lookup every type node is resolved with. The program's type system owns
-# the generic instance cache, so a `Pointer(Int32)` written here is the object
-# the rest of the program holds. A program with no type system yet gets one
-# now; it becomes the program's merge hook, as `TypeSystem.new` does.
-pub def type_node_lookup(visitor : TypeNodeHost) : TypeLookup
-  program : SemanticProgram = visitor.program
+# The program's type system. The type system owns the generic instance cache,
+# so a `Pointer(Int32)` written in a body is the object the rest of the program
+# holds. A program with no type system yet gets one now; it becomes the
+# program's merge hook, as `TypeSystem.new` does.
+pub def type_node_system(program : SemanticProgram) : TypeSystem
   hook : TypeHook? = program.merge_hook
   if hook.is_a?(TypeSystem)
-    return TypeLookup.new(hook.as(TypeSystem).instances)
+    return hook.as(TypeSystem)
   end
-  system = TypeSystem.new(program)
-  TypeLookup.new(system.instances)
+  TypeSystem.new(program)
+end
+
+# The lookup every type node is resolved with.
+pub def type_node_lookup(visitor : TypeNodeHost) : TypeLookup
+  TypeLookup.new(type_node_system(visitor.program).instances)
 end
 
 # The metaclass of a resolved type, as the hosted `Type#metaclass` gives it. A
@@ -52,6 +55,18 @@ pub def type_node_metaclass(type : Type) : Type?
     return type.as(GenericModuleInstanceType).metaclass
   end
   TypeUnification.metaclass_of(type)
+end
+
+# The instance type of `Tuple(T, ...)` for these element types, as the hosted
+# `program.tuple_of` gives it. A tuple literal in a body is typed by it.
+pub def tuple_type_of(program : SemanticProgram, elements : Array(Type)) : Type
+  type_node_system(program).tuple_of(elements)
+end
+
+# The instance type of `NamedTuple(a: T, ...)` for these entries, as the hosted
+# `program.named_tuple_of` gives it.
+pub def named_tuple_type_of(program : SemanticProgram, entries : Array(NamedArgumentType)) : Type
+  type_node_system(program).named_tuple_of(entries)
 end
 
 # `Pointer(Int32)`: in an expression the node is the metaclass of the instantiated
