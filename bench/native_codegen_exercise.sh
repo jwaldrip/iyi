@@ -103,6 +103,17 @@ else
   fail "the frame dump shows $probes probes; a 65 KiB frame needs 16"
 fi
 
+# ---- 4b. each atomicrmw ordering selects the same load-exclusive and store-exclusive pair -------------
+echo "== 4b. monotonic and seq_cst atomicrmw select the same instructions"
+seq_mir=$("$DRV" mir "$FIX/rmw.ir" ord_seq | tail -n +2)
+mono_mir=$("$DRV" mir "$FIX/rmw.ir" ord_mono | tail -n +2)
+if [ -n "$seq_mir" ] && [ "$seq_mir" = "$mono_mir" ] && echo "$seq_mir" | grep -q 'Ldaxr' && echo "$seq_mir" | grep -q 'Stlxr'; then
+  echo "monotonic and seq_cst both select Ldaxr and Stlxr, identically"
+else
+  fail "the two orderings select different instructions"
+fi
+
+
 # ---- 5. the Linux variant encodes; it is not executed here -------------------------------------
 echo "== 5. aarch64-linux-gnu variant of each fixture encodes (not executed)"
 linux_count=0
@@ -168,6 +179,7 @@ check_arith() { check_fixture "$1" arith; }
 check_recursion() { check_fixture "$1" control; }
 check_iyiagg() { check_fixture "$1" iyiagg; }
 check_byval() { check_fixture "$1" byval; }
+check_rmw() { check_fixture "$1" rmw; }
 check_probe() {
   local n
   n=$("$1" mir "$FIX/frame64k.ir" big | grep -c 'ZeroSp')
@@ -206,6 +218,11 @@ prove_mutation "byval: the caller passes its own object instead of a copy" \
 
   # Copies' \
   check_byval
+prove_mutation "atomicrmw max: the keep branch selects the smaller value" \
+  src/compiler/native/aarch64/isel.iyi \
+  'cond = signed ? cond_gt : cond_hi' \
+  'cond = signed ? cond_lt : cond_hi' \
+  check_rmw
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \

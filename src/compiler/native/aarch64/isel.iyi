@@ -1096,6 +1096,18 @@ class Isel
     m
   end
 
+  # dst <- cond ? a : b, on the flags the last compare set.
+  def csel_cond(a : Int32, b : Int32, cond : Int32) : Int32
+    d = gpr
+    m = mop(MOp::Csel)
+    m.cond = cond
+    m.defs << vop(d)
+    m.uses << vop(a)
+    m.uses << vop(b)
+    emit(m)
+    d
+  end
+
   def lower_atomicrmw(i : Inst) : Nil
     aux = i.aux.as(MemAux)
     ptr = first_leaf(i.args[0])
@@ -1126,6 +1138,20 @@ class Isel
       newv = binop(MOp::Eor, old, value)
     elsif rmw == "xchg"
       newv = value
+    elsif rmw == "nand"
+      ones = binop(MOp::Sub, const_gpr(0_i64), const_gpr(1_i64))
+      newv = binop(MOp::Eor, binop(MOp::And, old, value), ones)
+    elsif rmw == "max" || rmw == "min" || rmw == "umax" || rmw == "umin"
+      signed = rmw == "max" || rmw == "min"
+      keep = rmw == "max" || rmw == "umax"
+      lhs = signed ? canon(old, t) : zext(old, t)
+      rhs = signed ? canon(value, t) : zext(value, t)
+      compare(lhs, rhs)
+      cond = signed ? cond_lt : cond_cc
+      if keep
+        cond = signed ? cond_gt : cond_hi
+      end
+      newv = csel_cond(old, value, cond)
     else
       fail("atomicrmw #{rmw} is not lowered in this slice")
       return
