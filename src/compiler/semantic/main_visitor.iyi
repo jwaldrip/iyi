@@ -7,6 +7,8 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
+import compiler/semantic/normalizer::{NormalizerProgram}
+import compiler/semantic/literal_expander::{LiteralExpander}
 
 # iyi: two modes. Strict (the default) raises on the first construct it cannot
 # type, as the port always did, and every existing gate relies on that. Total
@@ -219,6 +221,51 @@ pub class MainVisitor < Visitor
 
   def visit(node : MacroLiteral) : Bool
     false
+  end
+
+  # iyi: a literal the hosted pass expands before it types it (main_visitor.cr
+  # 3664-3700, expand(node)). The literal expander builds the tree the hosted
+  # pass types; the literal takes that tree's type, and the tree is walked.
+  def expand_literal(node : ASTNode) : Bool
+    expander = LiteralExpander.new(NormalizerProgram.new)
+    expanded = node.transform(expander)
+    expanded.accept(self)
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
+    false
+  end
+
+  def visit(node : ArrayLiteral) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : HashLiteral) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : RangeLiteral) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : StringInterpolation) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : And) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : Or) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : Case) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : Select) : Bool
+    expand_literal(node)
   end
 
   # iyi: a node of a kind this visitor does not type yet. The walk goes on into

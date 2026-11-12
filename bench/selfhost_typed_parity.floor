@@ -105,7 +105,10 @@ src/compiler/native/wasm/module.iyi 43
 src/compiler/platform/flags.iyi 8
 src/compiler/platform/linker.iyi 16
 src/compiler/platform/target.iyi 41
+src/compiler/semantic/cleanup.iyi 0
+src/compiler/semantic/literal_expander.iyi 0
 src/compiler/semantic/main_visitor.iyi 0
+src/compiler/semantic/math_interpreter.iyi 45
 src/compiler/semantic/normalizer.iyi 0
 src/compiler/semantic/recursive_struct_checker.iyi 11
 src/compiler/semantic/top_level.iyi 0
