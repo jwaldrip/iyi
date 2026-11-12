@@ -1,0 +1,19 @@
+# Instance variables a macro declares (`getter`, `property`, src/iyi/macros.iyi) are recorded after
+# the class body's explicit declarations and the initialize arguments, as the hosted pass records
+# them. A name takes its place from its first record in that order; its type is the winning record's.
+class Gauge
+  getter level : Int32
+  @high : UInt64
+  @low : UInt64
+
+  def initialize(@unit : String, scale : Int32)
+    @level = scale
+  end
+end
+
+class Tagged
+  property name : String
+
+  def initialize(@kind : Int32, @name : String)
+  end
+end
