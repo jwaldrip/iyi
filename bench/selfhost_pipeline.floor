@@ -65,6 +65,7 @@ bench/fixtures/lower_not.iyi run-equal
 bench/fixtures/lower_or.iyi run-equal
 bench/fixtures/lower_out.iyi run-equal
 bench/fixtures/lower_pointer_of.iyi run-equal
+bench/fixtures/lower_proc_literal.iyi declarations
 bench/fixtures/lower_return.iyi run-equal
 bench/fixtures/lower_return_last.iyi run-equal
 bench/fixtures/lower_sizeof.iyi bodies
