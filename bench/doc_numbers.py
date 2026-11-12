@@ -516,9 +516,15 @@ def as_number(raw: str) -> int | None:
 # measure exactly the ceiling and a blind replace of that literal moved both. A
 # raised ceiling reads as a passing gate, which is the one failure this file
 # must never have. So every sentence that states the ceiling is checked against
-# `CEILING` above, the one place it is decided, with its reasons beside it. This
-# check once carried a constant of its own, which stayed at 3,734 after
-# `CEILING` moved to 4,738 and failed a sentence that was right.
+# `CEILING` above, the one place it is decided, with its reasons beside it.
+#
+# This check once carried a constant of its own, 3,734, and a third pattern for
+# "The 3,734 lines were Crystal's *library*". Both went stale when `CEILING`
+# was raised by decision: the constant failed the sentence that states today's
+# ceiling, and that third sentence is history (what Crystal's 0.1.0 library
+# measured, where the ceiling started), which upstream's SPEC.md still states
+# beside today's figure. It is not a statement of the ceiling and is not
+# checked as one.
 PRELUDE_LIBRARY_CEILING = CEILING
 
 
@@ -529,7 +535,6 @@ def ceiling_intact() -> list[str]:
     patterns = (
         r"held to the ([\d,]+)[- ]line ceiling",
         r"held to the ([\d,]+) ceiling",
-        r"The\n?([\d,]+) lines were Crystal's \*library\*",
     )
     for pattern in patterns:
         for m in re.finditer(pattern, text):

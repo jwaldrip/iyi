@@ -35,6 +35,7 @@ gates=(
   "native_llvm_roundtrip|bench/native_llvm_roundtrip_exercise.sh|any"
   "native_x86_64|bench/native_x86_64_exercise.sh|any"
   "native_wasm|bench/native_wasm_exercise.sh|any"
+  "native_elf|bench/native_elf_exercise.sh|any"
   "native_first_light|bench/native_first_light_exercise.sh|darwin-arm64"
 )
 
