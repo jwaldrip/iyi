@@ -420,6 +420,57 @@ check_own_diverges() {
   return 0
 }
 
+# The own-source fixtures (bench/fixtures/ownty_*.iyi): each file's own-source dump, the hosted oracle
+# against the port, with the prelude loaded. A declared generic argument keeps its arguments (NEEDS.md row 22).
+own_fixture_bad=0
+own_fixture_count=0
+for fixture in "$REPO"/bench/fixtures/ownty_*.iyi; do
+  own_fixture_count=$((own_fixture_count + 1))
+  name="$(basename "$fixture" .iyi)"
+  if ! timeout 900 "$WORK/oracle" --own "$fixture" "$TRIPLE" > "$WORK/$name.own_o" 2> "$WORK/$name.own_oe"; then
+    echo "  $name: oracle failed: $(head -n 1 "$WORK/$name.own_oe")"
+    own_fixture_bad=$((own_fixture_bad + 1))
+    continue
+  fi
+  if ! timeout 900 "$WORK/port" --own "$fixture" "$TRIPLE" > "$WORK/$name.own_p" 2> "$WORK/$name.own_pe"; then
+    echo "  $name: port failed: $(head -n 1 "$WORK/$name.own_pe")"
+    own_fixture_bad=$((own_fixture_bad + 1))
+    continue
+  fi
+  if cmp -s "$WORK/$name.own_o" "$WORK/$name.own_p"; then
+    echo "  $name: own-source dump identical to the hosted oracle"
+  else
+    echo "  $name: DIVERGES from the hosted oracle:"
+    diff "$WORK/$name.own_o" "$WORK/$name.own_p" | head -n 20
+    own_fixture_bad=$((own_fixture_bad + 1))
+  fi
+done
+echo "  Own-source fixtures: $((own_fixture_count - own_fixture_bad))/$own_fixture_count identical"
+if [ "$own_fixture_count" -eq 0 ] || [ "$own_fixture_bad" -ne 0 ]; then
+  status=1
+fi
+
+# Builds the port's driver as it now stands and compares every own-source fixture. Returns non-zero
+# (caught) when the driver does not build or a fixture's own-source dump differs from the oracle's.
+check_own_fixture_diverges() {
+  "$IYI" build -o "$WORK/mut_port" "$REPO/bench/selfhost_lower_types_exercise.iyi" > /dev/null 2>&1 || return 1
+  for fixture in "$REPO"/bench/fixtures/ownty_*.iyi; do
+    timeout 900 "$WORK/oracle" --own "$fixture" "$TRIPLE" > "$WORK/mut_ownfx_o.txt" 2> /dev/null || return 1
+    timeout 900 "$WORK/mut_port" --own "$fixture" "$TRIPLE" > "$WORK/mut_ownfx_p.txt" 2> /dev/null || return 1
+    cmp -s "$WORK/mut_ownfx_o.txt" "$WORK/mut_ownfx_p.txt" || return 1
+  done
+  return 0
+}
+
+# Caught when either the own-source probes fall below their floors or an own-source fixture's dump
+# differs from the oracle's. A mutation can leave every probe's identical count unchanged and still
+# change a fixture's dump, so the fixtures are part of the check.
+check_own_or_fixture_diverges() {
+  check_own_diverges || return 1
+  check_own_fixture_diverges
+}
+
+
 # The baseline: the unmutated port meets every probe floor. Without it a port that fails a probe would
 # count as a catch.
 if ! check_own_diverges; then
@@ -442,7 +493,7 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a reference union lowered as a mixed union, not a pointer" "$TYPER_FILE" \
   "      return @table.ptr if reference_union?(type.as(UnionType))" \
   "      return @table.ptr if false" \
-  -- check_own_diverges || status=1
+  -- check_own_or_fixture_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "the file's own module answers i1, not i32" "$TYPER_FILE" \
@@ -461,6 +512,12 @@ prove_mutation "a module's own metaclass counted as an implementor" "$TYPER_FILE
   "    found << t unless t.is_a?(MetaclassType) || t.is_a?(VirtualMetaclassType)" \
   "    found << t" \
   -- check_own_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "the own-source load installs no type system, so a generic's declared variable is the unbound base" "$REPO/bench/selfhost_lower_types_exercise.iyi" \
+  "    own_types = TypeSystem.new(prog)" \
+  "    # no type system is installed here" \
+  -- check_own_fixture_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
