@@ -1,32 +1,42 @@
 module compiler/lower/globals
 
-# The state the hosted code generator keeps on a constant (`Const`) while it generates
-# code: whether it was read (`read?`, which decides between the direct and the lazy
-# initialisation), whether it needs an init flag (`no_init_flag?`), and the value a simple
-# constant was initialised with (`initializer`, which a later read reuses). The hosted
-# code writes these fields on the analysed `Const` object; the port keeps them in one table
-# on the `Lowerer`, keyed by the constant's full name, so the analysed program stays
-# untouched. It is a plain data file: it imports no lowering module, so the core's
-# `Lowerer` can hold a `LowerGlobals` without an import cycle.
+# The state the hosted code generator keeps on a constant (`Const`) and a class variable while it
+# generates code: whether it was read (`read?`, which decides between the direct and the lazy
+# initialisation), whether it needs an init flag (`no_init_flag?`), the value a simple constant was
+# initialised with (`initializer`, which a later read reuses), and the IR globals and the
+# initialiser function the lowering made for it. The hosted code writes these fields on the analysed
+# object; the port keeps them in one table on the `Lowerer`, keyed by the object's full name, so the
+# analysed program stays untouched. It imports no lowering module, so the core's `Lowerer` can hold a
+# `LowerGlobals` without an import cycle.
 
 import compiler/ir/values::{Value}
+import compiler/ir/function::{Function, Global}
 
-# The hosted fields `read`, `no_init_flag` and `initializer` of one `Const`.
+# The hosted fields `read`, `no_init_flag` and `initializer` of one constant, and the globals the
+# lowering made for it.
 pub class ConstState
   property read : Bool
   property no_init_flag : Bool
   property initializer : Value?
+  # The constant's value global, made by the first assignment or read that needs it.
+  property global : Global?
+  # The initialised flag (`NAME:const_init`), declared with the value global (hosted declare_const_initialized_flag).
+  property flag : Global?
+  # The initialiser function (`~NAME:const_init`), made once per constant (hosted create_initialize_const_function).
+  property init_fn : Function?
 
   def initialize
     @read = false
     @no_init_flag = false
     @initializer = nil
+    @global = nil
+    @flag = nil
+    @init_fn = nil
   end
 end
 
-# The table of constant states of one lowered program. A constant's state is created on
-# first use; the hosted generator's fields start false and nil, which is what a fresh
-# state holds.
+# The table of constant and class variable states of one lowered program. A state is created on first
+# use; the hosted generator's fields start false and nil, which is what a fresh state holds.
 pub class LowerGlobals
   getter consts : Hash(String, ConstState)
 

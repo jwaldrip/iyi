@@ -172,6 +172,13 @@ prove_mutation "a true Bool constant is false" "$REPO/src/compiler/lower/const.i
 prove_mutation "a literal integer constant is refused rather than inlined" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return nil" -- lowglob_check || status=1
+prove_mutation "the initialiser is not called at the assignment" "$REPO/src/compiler/lower/const.iyi" \
+  '  low.builder.call(ft, fn.as(Function), [] of Value, "")' \
+  '  low.builder.const_int(low.module.types.int(1), 0_i64)' -- lowglob_check || status=1
+prove_mutation "a constant with a constant value is stored at run time, not folded" "$REPO/src/compiler/lower/const.iyi" \
+  "  if val.is_a?(Inst) && (val.as(Inst).op == Op::ConstInt || val.as(Inst).op == Op::ConstFloat)" "  if false" -- lowglob_check || status=1
+prove_mutation "a read of an initialised constant is not a load" "$REPO/src/compiler/lower/const.iyi" \
+  "  low.last = load_aligned(low, ir, g.as(Global))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
