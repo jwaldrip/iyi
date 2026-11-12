@@ -318,9 +318,11 @@ for triple in $arches; do
     exes=$((exes + 1))
     expected=-
     case "$name" in addr_main) expected=random-address ;; esac
+    # The flags come last on the line, so that every word of them is read back: on a Linux host the hosted
+    # compiler's link line has two (`-rdynamic -fuse-ld=lld`).
     flags="$(oracle_flags "$work/obj/$short/$name.build")"
-    case "$flags" in *" "*) fail "$short $name: the oracle's link line has several flag words: $flags" ;; esac
-    echo "$name $flags $expected" >>"$work/manifest/$short"
+    [ "$flags" = "-" ] && flags=""
+    echo "$name $expected $flags" >>"$work/manifest/$short"
   done
   echo "   $short: executables linked and checked: $(ls "$work/exe/$short" 2>/dev/null | grep -vc '\.' || true)"
 done
@@ -341,7 +343,7 @@ for triple in $arches; do
   mkdir -p "$emit/$short"
   cp "$work/manifest/$short" "$emit/$short/MANIFEST"
   count=0
-  while read -r name flags expected; do
+  while read -r name expected flags; do
     [ -n "$name" ] || continue
     cp "$work/obj/$short/$name.o" "$emit/$short/$name.o" || fail "$short $name: no oracle object to emit"
     cp "$work/exe/$short/$name" "$emit/$short/$name.native" || fail "$short $name: no native executable to emit"

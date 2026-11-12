@@ -751,6 +751,7 @@ for fixture in \
   "$REPO"/bench/fixtures/syntax_macro_keywords_and_escapes.iyi \
   "$REPO"/bench/fixtures/syntax_proc_literals.iyi \
   "$REPO"/bench/fixtures/syntax_index_tuples_and_keyword_names.iyi \
+  "$REPO"/bench/fixtures/syntax_control_keyword_names.iyi \
   "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi \
   "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi \
   "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi; do
@@ -882,6 +883,7 @@ new_fixtures_match() {
     "$REPO"/bench/fixtures/syntax_proc_literals.iyi \
     "$REPO"/bench/fixtures/syntax_index_tuples_and_keyword_names.iyi \
     "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi \
+    "$REPO"/bench/fixtures/syntax_control_keyword_names.iyi \
     "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi \
     "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi; do
     "$WORK/mut-exercise" "$fixture" > "$WORK/mut.ast" 2>/dev/null || return 1
@@ -927,6 +929,9 @@ run_proof_in "mutation 26: &.name with a local of that name reads the local" "$P
 run_proof_in "mutation 27: a comma does not continue a call across the line break" "$PARSER" \
   $'        next_token_skip_space_or_newline\n        if (@token.keyword == Keyword::END' \
   $'        next_token_skip_space\n        if (@token.keyword == Keyword::END'
+run_proof_in "mutation 28: a control keyword before a colon is refused as a void value" "$PARSER" \
+  'syntax_error("void value expression", @token.location) unless next_comes_colon_space?' \
+  'syntax_error("void value expression", @token.location)'
 
 echo
 echo "== Verification clean state confirmed"

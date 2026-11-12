@@ -6021,11 +6021,13 @@ pub class Parser < Lexer
     end
   end
 
+  # A control keyword where a value is wanted is refused, unless a space and a colon follow it: then it is a
+  # name being declared (`getter next : Int32`), as the hosted parser reads it.
   def check_void_expression_keyword : Nil
     if kw = @token.keyword
       case kw
       when Keyword::BREAK, Keyword::NEXT, Keyword::RETURN
-        syntax_error("void value expression", @token.location)
+        syntax_error("void value expression", @token.location) unless next_comes_colon_space?
       end
     end
   end
