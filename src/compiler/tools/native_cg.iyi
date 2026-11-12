@@ -95,8 +95,8 @@ def forms : Array(Form)
   m.defs << reg(0)
   m.imm = 16_i64
   acc << Form.new("add x0, sp, #16", m)
-  acc << Form.new("adrp x0, _sym@PAGE ; add x0, x0, _sym@PAGEOFF", sym_form(MOp::AddrSym))
-  acc << Form.new("adrp x1, _sym@GOTPAGE ; ldr x1, [x1, _sym@GOTPAGEOFF]", sym_form(MOp::LoadGot))
+  acc << Form.new("adrp x0, _sym@PAGE ; add x0, x0, _sym@PAGEOFF", sym_form(MOp::AddrSym, 0))
+  acc << Form.new("adrp x1, _sym@GOTPAGE ; ldr x1, [x1, _sym@GOTPAGEOFF]", sym_form(MOp::LoadGot, 1))
   acc << Form.new("ldr x1, [x2, #8]", mem(MOp::Ldr, 64, false, false, 1, 2, 8_i64))
   acc << Form.new("ldr w1, [x2, #4]", mem(MOp::Ldr, 32, false, false, 1, 2, 4_i64))
   acc << Form.new("ldrsw x1, [x2, #4]", mem(MOp::Ldr, 32, true, false, 1, 2, 4_i64))
@@ -291,9 +291,9 @@ def forms : Array(Form)
   acc
 end
 
-def sym_form(op : MOp) : MInst
+def sym_form(op : MOp, rd : Int32) : MInst
   m = mk(op)
-  m.defs << reg(0)
+  m.defs << reg(rd)
   m.sym = 0
   m
 end
