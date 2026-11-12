@@ -26,7 +26,8 @@ LLVM_OBJDUMP=${LLVM_OBJDUMP:-llvm-objdump}
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/native-x86_64.XXXXXX")
 restore=""
-trap '[ -n "$restore" ] && [ -f "$restore.bak" ] && cp "$restore.bak" "$restore"; rm -rf "$work"' EXIT INT TERM
+backup=""
+trap '[ -n "$restore" ] && [ -f "$backup" ] && cp "$backup" "$restore"; rm -rf "$work"' EXIT INT TERM
 
 failed=0
 fail() {
@@ -243,15 +244,17 @@ fi
 
 # prove_mutation LABEL FILE OLD NEW CHECK: replaces the first OLD in FILE with NEW, rebuilds the table tool from
 # the patched source, runs CHECK, and requires it to fail. A patch whose OLD is absent, or whose NEW leaves the
-# text unchanged, changes nothing and is refused. The backup is taken before the patch, and the file is restored
-# on every exit path.
+# text unchanged, changes nothing and is refused. The backup is taken before the patch, in the gate's work directory
+# (never beside the source, where an interrupted run left `.bak` files in the tree), and the file is restored on every
+# exit path.
 prove_mutation() {
   label=$1
   file=$2
   old=$3
   new=$4
   check=$5
-  cp "$file" "$file.bak" || return 1
+  backup="$work/mutation-$RANDOM.bak"
+  cp "$file" "$backup" || return 1
   restore="$file"
   python3 - "$file" "$old" "$new" <<'PY'
 import sys
@@ -263,8 +266,7 @@ open(path, "w", encoding="utf-8").write(text.replace(old, new, 1))
 PY
   patched=$?
   if [ "$patched" -ne 0 ]; then
-    cp "$file.bak" "$file"
-    rm -f "$file.bak"
+    cp "$backup" "$file"
     restore=""
     if [ "$patched" -eq 3 ]; then
       fail "PATCH CHANGED NOTHING: '$label' found no text to change"
@@ -283,8 +285,7 @@ PY
   else
     fail "the mutant does not build, so it proves nothing: $label"
   fi
-  cp "$file.bak" "$file"
-  rm -f "$file.bak"
+  cp "$backup" "$file"
   restore=""
   ./bin/iyi build -o "$work/native_amd64" src/compiler/tools/native_amd64.iyi >"$work/build.log" 2>&1 || fail "the original tool does not rebuild after '$label'"
   return 0
