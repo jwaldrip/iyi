@@ -434,7 +434,15 @@ server_ep.send_to(s_hs_packet, "127.0.0.1", client_port)
 puts "  [observed] Server Initial and Handshake packets transmitted"
 
 # 3. Client receives Server Initial and Handshake, verifies cert/sig/MAC, sends client Finished
+# Two datagrams were sent and the loopback delivers each on its own: a step reads what has arrived
+# and returns, so the second can still be on its way. Step again, a bounded number of times, until
+# the state the two packets produce is there.
 client_ep.step(1020_i64)
+steps = 0
+while !client_conn.tls.cert_verified && steps < 100
+  client_ep.step(1020_i64)
+  steps = steps + 1
+end
 raise "client certificate not verified" unless client_conn.tls.cert_verified
 puts "  [observed] client certificate/hostname verification result: verified=#{client_conn.tls.cert_verified} for hostname='#{client_conn.tls.hostname}'"
 
@@ -488,9 +496,13 @@ server_ep.send_to(s_hs_ack, "127.0.0.1", client_port)
 last_app_pn = 2_u64
 s_ack_retransmit = server_conn.send_1rtt_packet(FrameCodec.encode_ack(last_app_pn, 5_u64, 2_u64), current_time: retrans_time + 5_i64)
 server_ep.send_to(s_ack_retransmit, "127.0.0.1", client_port)
+# The two acknowledgements are two datagrams (see step 3 of the handshake above).
 client_ep.step(retrans_time + 10_i64)
-raise "bytes in flight did not clear on retransmit ack" unless client_conn.bytes_in_flight == 0_i64
-client_ep.step(retrans_time + 10_i64)
+steps = 0
+while client_conn.bytes_in_flight != 0_i64 && steps < 100
+  client_ep.step(retrans_time + 10_i64)
+  steps = steps + 1
+end
 raise "bytes in flight did not clear on retransmit ack" unless client_conn.bytes_in_flight == 0_i64
 puts "  [observed] one deliberately dropped ack-eliciting packet retransmitted by the endpoint PTO timer without a test call"
 puts "  pto-retransmit: loss detection timer and retransmission on PTO verified"
@@ -529,6 +541,13 @@ client_ep.send_to(c_qdec_pkt, "127.0.0.1", server_port)
 server_ep.step(3025_i64)
 s_st_6 = server_conn.stream_manager.get_or_create_stream(6_u64)
 s_st_10 = server_conn.stream_manager.get_or_create_stream(10_u64)
+# The encoder and decoder streams came in two datagrams (see step 3 of the handshake above).
+steps = 0
+while (s_st_6.bytes_received == 0_u64 || s_st_10.bytes_received == 0_u64) && steps < 100
+  server_ep.step(3025_i64)
+  steps = steps + 1
+end
+raise "QPACK encoder or decoder stream not received" if s_st_6.bytes_received == 0_u64 || s_st_10.bytes_received == 0_u64
 server_h3.process_uni_stream(6_u64, s_st_6.read_available)
 server_h3.process_uni_stream(10_u64, s_st_10.read_available)
 server_h3.process_uni_stream(10_u64, s_st_10.read_available)
