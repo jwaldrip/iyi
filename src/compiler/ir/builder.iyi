@@ -1,7 +1,7 @@
 module compiler/ir/builder
 
 import compiler/ir/types::{IrType, TypeTable}
-import compiler/ir/values::{Value, double_bits, single_bits, u64_as_i64}
+import compiler/ir/values::{Value, double_bits, single_bits, u64_as_i64, canonical_words}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, Attribute, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, InstAux, Ordering, IntPredicate, RealPredicate, ThreadPointerKind, DebugLoc, terminator_op?}
 import compiler/ir/function::{Function, Global}
 import compiler/ir/module::{Module}
@@ -50,11 +50,18 @@ pub class Builder
 
   # ---- constants ----------------------------------------------------------------------
 
-  # An integer constant. For i128 the high half is the sign extension of `value`.
+  # An integer constant. An integer wider than 64 bits gets every word: the sign extension of `value`.
   def const_int(type : IrType, value : Int64) : Inst
     raise "a ConstInt needs an integer type, not #{type}" unless type.int?
     inst = Inst.new(Op::ConstInt, type, [] of Value, value, nil, [] of Block, [] of Int64)
-    inst.aux_hi = value < 0_i64 ? -1_i64 : 0_i64
+    if type.bits > 64
+      sign = value < 0_i64 ? -1_i64 : 0_i64
+      words = [value] of Int64
+      while words.size < (type.bits + 63) // 64
+        words << sign
+      end
+      inst.wide_words = words
+    end
     inst
   end
 
@@ -62,7 +69,18 @@ pub class Builder
   def const_wide(type : IrType, hi : Int64, lo : Int64) : Inst
     raise "a wide constant needs an i128, not #{type}" unless type.int? && type.bits == 128
     inst = Inst.new(Op::ConstInt, type, [] of Value, lo, nil, [] of Block, [] of Int64)
-    inst.aux_hi = hi
+    inst.wide_words = [lo, hi]
+    inst
+  end
+
+  # An integer constant wider than 64 bits from its 64-bit words, least significant first. The value is truncated to the
+  # type's width and sign-extended, so one value has exactly one word list.
+  def const_words(type : IrType, words : Array(Int64)) : Inst
+    raise "a wide constant needs an integer wider than 64 bits, not #{type}" unless type.int? && type.bits > 64
+    count = (type.bits + 63) // 64
+    raise "#{type} takes #{count} words, not #{words.size}" unless words.size == count
+    inst = Inst.new(Op::ConstInt, type, [] of Value, words[0], nil, [] of Block, [] of Int64)
+    inst.wide_words = canonical_words(words, type.bits)
     inst
   end
 
@@ -514,16 +532,24 @@ pub class Builder
   # An intrinsic call. `overload` is the set of types the LLVM name spells, and the result type follows
   # from it: the IR refuses an overload its family does not accept, rather than guessing a signature.
   def intrinsic(id : IntrinsicId, overload : Array(IrType), args : Array(Value), name : String = "") : Inst
+    intrinsic_with(id, overload, args, [] of Array(Attribute), name)
+  end
+
+  # An intrinsic call whose operands carry attributes: `param_attrs[k]` belongs to operand k, as on an ordinary call.
+  def intrinsic_with(id : IntrinsicId, overload : Array(IrType), args : Array(Value), param_attrs : Array(Array(Attribute)), name : String = "") : Inst
     unless intrinsic_accepts?(id, overload)
       raise "#{intrinsic_name(id, overload)} is not an intrinsic the IR accepts at these types"
     end
+    if param_attrs.size > args.size
+      raise "#{intrinsic_name(id, overload)} has #{param_attrs.size} attribute lists for #{args.size} operands"
+    end
     signature = intrinsic_signature(id, overload, types)
-    emit(Op::Intrinsic, signature[0], args, 0_i64, IntrinsicAux.new(id, overload), [] of Block, [] of Int64, name)
+    emit(Op::Intrinsic, signature[0], args, 0_i64, IntrinsicAux.new(id, overload, param_attrs), [] of Block, [] of Int64, name)
   end
 
   # An inline asm callee. Call it with `call`; the printer writes the template where the callee goes.
-  def inline_asm(fn_type : IrType, template : String, constraints : String, side_effects : Bool, align_stack : Bool, dialect : AsmDialect) : Value
-    aux = AsmAux.new(template, constraints, side_effects, align_stack, dialect)
+  def inline_asm(fn_type : IrType, template : String, constraints : String, side_effects : Bool, align_stack : Bool, dialect : AsmDialect, unwind : Bool = false) : Value
+    aux = AsmAux.new(template, constraints, side_effects, align_stack, dialect, unwind)
     Inst.new(Op::Call, fn_type, [] of Value, 0_i64, aux, [] of Block, [] of Int64)
   end
 

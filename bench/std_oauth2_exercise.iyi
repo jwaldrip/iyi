@@ -1,0 +1,239 @@
+# Exercises `std/oauth2` (RFC 6749, RFC 6750, draft-ietf-oauth-v2-http-mac).
+#
+# Run via:
+#     ./bin/iyi run bench/std_oauth2_exercise.iyi
+#
+# Every request is captured in memory by a transport that stands in for the
+# token endpoint, so no socket is opened. The expected bytes were computed
+# outside iyi from RFC 3986 percent-encoding and RFC 4648 base64, not from
+# this module's output.
+
+module bench/std_oauth2_exercise
+
+import std/oauth2::{Bearer, Mac, AuthScheme, Session, AccessToken}
+import std/http::{Request, Response, Headers}
+import std/uri::{Params}
+import std/time::{Time, Span}
+
+alias OAuthClient = Std::Oauth::Client
+alias Client = Std::Oauth2::Client
+alias Token = Std::Oauth2::AccessToken
+
+def assert_true(cond : Bool, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}" unless cond
+end
+
+def assert_str(expected : String, actual : String, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}\n  expected #{expected.inspect}\n  got      #{actual.inspect}" unless expected == actual
+end
+
+# Transport that records the one request a grant sends and answers with a
+# canned token response.
+class TokenTransport < OAuthClient
+  property last_request : Request?
+  property response_body : String
+  property response_status : Int32
+
+  def initialize
+    super("127.0.0.1", 80)
+    @last_request = nil
+    @response_body = ""
+    @response_status = 200
+  end
+
+  def post(path : String, headers : Headers? = nil, body : String = "", form : String | Params | Nil = nil) : Response
+    actual_body = if form
+                    form.is_a?(Params) ? form.to_s : form.as(String)
+                  else
+                    body
+                  end
+    req = Request.new("POST", path, headers, actual_body)
+    run_before_request(req)
+    @last_request = req
+    Response.new(@response_status, @response_body, headers || Headers.new)
+  end
+
+  def get(path : String, headers : Headers? = nil) : Response
+    req = Request.new("GET", path, headers)
+    run_before_request(req)
+    @last_request = req
+    Response.new(@response_status, @response_body, headers || Headers.new)
+  end
+end
+
+def sent(transport : TokenTransport) : Request
+  transport.last_request.as(Request)
+end
+
+def authorization_of(req : Request) : String
+  req.headers["Authorization"]? || ""
+end
+
+# The value of `name="..."` in the parameters of an Authorization header.
+def header_field(params : String, name : String) : String
+  prefix = name + "=\""
+  found = ""
+  params.split(',').each do |piece|
+    item = piece.starts_with?(" ") ? piece[1, piece.bytesize - 1] : piece
+    if found.empty? && item.starts_with?(prefix)
+      found = item[prefix.bytesize, item.bytesize - prefix.bytesize - 1]
+    end
+  end
+  found
+end
+
+def expires_text(tok : Token) : String
+  if e = tok.expires_in
+    e.to_s
+  else
+    "nil"
+  end
+end
+
+puts "== authorization code request"
+
+# Authorize URL: every value is form-encoded, space as `+`, reserved bytes as %XX.
+code_client = Client.new("auth.example.com", "id 1", "sec",
+  redirect_uri: "https://app.example.com/cb?x=1&y=a b",
+  auth_scheme: AuthScheme::HTTPBasic)
+authorize = code_client.get_authorize_uri("a b&c", "x y")
+assert_str "https://auth.example.com/oauth2/authorize?client_id=id+1&redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb%3Fx%3D1%26y%3Da+b&response_type=code&scope=a+b%26c&state=x+y", authorize, "authorize URI bytes"
+puts "  authorize URL: client_id, redirect_uri, response_type, scope, state encoded"
+
+# Token request: HTTP Basic carries the credentials, and the body is the form.
+code_transport = TokenTransport.new
+code_client.http_client = code_transport
+code_transport.response_body = "{\"access_token\": \"at_code\", \"token_type\": \"Bearer\", \"expires_in\": 3600, \"refresh_token\": \"rt_code\"}"
+code_tok = code_client.get_access_token_using_authorization_code("a/b+c=d&e f~g*")
+code_req = sent(code_transport)
+assert_str "POST", code_req.method, "authorization code request method"
+assert_str "/oauth2/token", code_req.target, "authorization code request target"
+assert_str "redirect_uri=https%3A%2F%2Fapp.example.com%2Fcb%3Fx%3D1%26y%3Da+b&grant_type=authorization_code&code=a%2Fb%2Bc%3Dd%26e+f~g%2A", code_req.body, "authorization code form body bytes"
+assert_str "Basic aWQgMTpzZWM=", authorization_of(code_req), "authorization code HTTP Basic header"
+assert_str "application/x-www-form-urlencoded", code_req.headers["Content-Type"]? || "", "authorization code content type"
+assert_str "at_code", code_tok.access_token, "authorization code access token"
+puts "  token request: form body bytes, Basic header, content type"
+
+puts "\n== client credentials with the RequestBody scheme"
+cc_client = Client.new("auth.example.com", "id 1", "s&e/cr=et", auth_scheme: AuthScheme::RequestBody)
+cc_transport = TokenTransport.new
+cc_client.http_client = cc_transport
+cc_transport.response_body = "{\"access_token\": \"at_cc\", \"token_type\": \"Bearer\", \"expires_in\": 60}"
+cc_tok = cc_client.get_access_token_using_client_credentials("a b&c")
+cc_req = sent(cc_transport)
+assert_str "client_id=id+1&client_secret=s%26e%2Fcr%3Det&grant_type=client_credentials&scope=a+b%26c", cc_req.body, "client credentials form body bytes"
+assert_true authorization_of(cc_req).empty?, "RequestBody sends no Authorization header"
+assert_str "60", expires_text(cc_tok), "client credentials expires_in"
+puts "  credentials in the form, no Authorization header, scope encoded"
+
+puts "\n== refresh request"
+rf_client = Client.new("auth.example.com", "client_id_001", "client_secret_002")
+rf_transport = TokenTransport.new
+rf_client.http_client = rf_transport
+rf_transport.response_body = "{\"access_token\": \"at2\", \"token_type\": \"bearer\", \"expires_in\": 1800}"
+rf_tok = rf_client.get_access_token_using_refresh_token("rt 1&x", "a b")
+rf_req = sent(rf_transport)
+assert_str "grant_type=refresh_token&refresh_token=rt+1%26x&scope=a+b", rf_req.body, "refresh request form body bytes"
+assert_str "Basic Y2xpZW50X2lkXzAwMTpjbGllbnRfc2VjcmV0XzAwMg==", authorization_of(rf_req), "refresh request HTTP Basic header"
+assert_str "1800", expires_text(rf_tok), "refresh response expires_in"
+assert_true rf_tok.refresh_token.nil?, "refresh response without refresh_token leaves it nil"
+puts "  refresh form body bytes, Basic header, no refresh_token in the reply"
+
+puts "\n== access token parsing"
+numeric = Token.from_json("{\"access_token\": \"at\", \"token_type\": \"Bearer\", \"expires_in\": 3600, \"refresh_token\": \"rt\", \"scope\": \"read\"}")
+assert_true numeric.is_a?(Bearer), "numeric expires_in: Bearer"
+assert_str "3600", expires_text(numeric), "numeric expires_in value"
+assert_str "rt", numeric.refresh_token || "", "refresh_token parsed"
+assert_str "read", numeric.scope || "", "scope parsed"
+puts "  numeric expires_in, refresh_token, scope"
+
+missing_type = Token.from_json("{\"access_token\": \"at2\"}")
+assert_true missing_type.is_a?(Bearer), "missing token_type is bearer"
+assert_str "nil", expires_text(missing_type), "missing expires_in is nil"
+puts "  missing token_type is bearer, missing expires_in is nil"
+
+upper = Token.from_json("{\"access_token\": \"at3\", \"token_type\": \"BEARER\", \"expires_in\": 5}")
+assert_true upper.is_a?(Bearer), "token_type is case-insensitive"
+puts "  token_type matched case-insensitively"
+
+mac_tok = Token.from_json("{\"access_token\": \"mt\", \"token_type\": \"mac\", \"expires_in\": 7200, \"mac_algorithm\": \"hmac-sha-256\", \"mac_key\": \"k\"}")
+assert_true mac_tok.is_a?(Mac), "mac token_type gives Mac"
+mac_parsed = mac_tok.as(Mac)
+assert_str "hmac-sha-256", mac_parsed.mac_algorithm, "mac_algorithm parsed"
+assert_str "k", mac_parsed.mac_key, "mac_key parsed"
+assert_str "7200", expires_text(mac_parsed), "mac expires_in"
+puts "  mac token: algorithm, key, expires_in"
+
+unknown_extra = Token.from_json("{\"access_token\": \"at4\", \"token_type\": \"bearer\", \"tenant\": \"t-9\", \"count\": 7}")
+extra = unknown_extra.extra || ({} of String => String)
+assert_str "t-9", extra["tenant"]? || "", "string extra field kept"
+assert_str "7", extra["count"]? || "", "number extra field kept as text"
+puts "  unknown fields kept as text"
+
+puts "\n== Authorization header values"
+bearer_req = Request.new("GET", "/r")
+Bearer.new("tok.en-1_~").authenticate(bearer_req, true)
+assert_str "Bearer tok.en-1_~", authorization_of(bearer_req), "Bearer Authorization header"
+puts "  Bearer header: token verbatim after the scheme"
+
+# draft-ietf-oauth-v2-http-mac Section 3.1 normalised-request signatures.
+assert_str "kokbKhcCbgACV1AXY2dhTsmPla4=", Mac.signature("1336363200", "dj83hs9s", "GET", "/resource/1?b=1&a=2", "example.com", 80, "", "hmac-sha-1", "adijq39jdnf9-d9"), "MAC HMAC-SHA-1 signature"
+assert_str "j1OQiCRG3uyS2N8LyHMYt0dZqC7OXdT8kVPBh7M5Qko=", Mac.signature("1336363200", "dj83hs9s", "GET", "/resource/1?b=1&a=2", "example.com", 80, "", "hmac-sha-256", "adijq39jdnf9-d9"), "MAC HMAC-SHA-256 signature"
+puts "  MAC signatures match the draft's HMAC-SHA-1 and HMAC-SHA-256 vectors"
+
+# The header Mac.authenticate writes: its time and nonce are chosen at send
+# time, so the signature is recomputed from the fields the header carries.
+mac_req = Request.new("GET", "/resource/1?b=1&a=2")
+mac_req.headers["Host"] = "example.com:80"
+Mac.new("h480djs", 3600, "hmac-sha-256", "adijq39jdnf9-d9").authenticate(mac_req, false)
+mac_header = authorization_of(mac_req)
+assert_true mac_header.starts_with?("MAC id=\"h480djs\", nonce=\""), "MAC header starts with id then nonce"
+params = mac_header[4, mac_header.bytesize - 4]
+ts = header_field(params, "ts")
+nonce = header_field(params, "nonce")
+mac_value = header_field(params, "mac")
+assert_str "h480djs", header_field(params, "id"), "MAC header id"
+assert_true ts.to_i? != nil, "MAC header ts is a number"
+assert_true nonce.includes?(":"), "MAC header nonce is <age>:<random>"
+assert_str "44", mac_value.bytesize.to_s, "MAC header mac is a 44-character base64 digest"
+assert_str mac_value, Mac.signature(ts, nonce, "GET", "/resource/1?b=1&a=2", "example.com", 80, "", "hmac-sha-256", "adijq39jdnf9-d9"), "MAC header mac equals the signature of its own fields"
+puts "  MAC header: id, ts, nonce and mac agree with the signature"
+
+puts "\n== session expiry"
+# A token already expired refreshes, and the new expiry is 3600 seconds
+# from now, not 3600 of some other unit.
+ex_client = Client.new("auth.example.com", "c", "s")
+ex_transport = TokenTransport.new
+ex_client.http_client = ex_transport
+ex_transport.response_body = "{\"access_token\": \"fresh\", \"token_type\": \"bearer\", \"expires_in\": 3600}"
+refreshes = 0
+stale = Bearer.new("old", expires_in: -50, refresh_token: "rt")
+session = Session.new(ex_client, stale, expires_at: Time.utc - Span.new(seconds: 100_i64, nanoseconds: 0)) do |s|
+  refreshes = refreshes + 1
+end
+session.authenticate(OAuthClient.new("api.example.com"))
+assert_str "1", refreshes.to_s, "expired token refreshes once"
+assert_str "fresh", session.access_token.access_token, "session holds the refreshed token"
+if e = session.expires_at
+  low = Time.utc + Span.new(seconds: 3590_i64, nanoseconds: 0)
+  high = Time.utc + Span.new(seconds: 3610_i64, nanoseconds: 0)
+  assert_true e >= low && e <= high, "refreshed token expires 3600 s from now"
+else
+  raise "ASSERTION FAILED: refreshed token has no expiry"
+end
+puts "  expired token refreshed once, expiry 3600 s ahead"
+
+# A token that has not expired is used as it is.
+live_transport = TokenTransport.new
+live_client = Client.new("auth.example.com", "c", "s")
+live_client.http_client = live_transport
+live_refreshes = 0
+live = Session.new(live_client, Bearer.new("valid", expires_in: 3600), expires_at: Time.utc + Span.new(seconds: 3600_i64, nanoseconds: 0)) do |s|
+  live_refreshes = live_refreshes + 1
+end
+live.authenticate(OAuthClient.new("api.example.com"))
+assert_str "0", live_refreshes.to_s, "unexpired token does not refresh"
+assert_true live_transport.last_request.nil?, "unexpired token sends no token request"
+puts "  unexpired token used without a token request"
+
+puts "\n== std/oauth2 request and token checks all passed"

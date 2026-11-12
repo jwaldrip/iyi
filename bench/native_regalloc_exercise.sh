@@ -261,7 +261,7 @@ prove_mutation "linear: a register is given to an interval that overlaps an acti
   '      return reg unless reserved?(reg, @starts[iv], @ends[iv])'
 prove_mutation "rewrite: a spilled operand is read without its reload" \
   src/compiler/native/regalloc_linear.iyi check_linear_outputs \
-  '        reloads << slot_access(MOp::LdrFrame, reg, fn.vreg_slot[v], fp)' \
+  '        reloads << slot_access(fn.isa, true, reg, fn.vreg_slot[v], fp)' \
   '        # the reload is dropped'
 prove_mutation "linear: a value that crosses a call may take a caller-saved register" \
   src/compiler/native/regalloc_linear.iyi check_linear_outputs \

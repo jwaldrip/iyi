@@ -22,7 +22,7 @@ import compiler/foundation/enums
 import compiler/foundation/string_pool::{StringPool}
 import compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState, MacroState}
 import compiler/syntax/lexer::{Lexer}
-import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, Visibility, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover, ImportDecl, UsingDecl, Propagate, ExceptionHandler, Rescue, ProcLiteral, Macro, MacroExpression, MacroLiteral, MacroIf, MacroFor, MacroVar, MacroVerbatim, MagicConstant, StringBuilder}
+import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, Visibility, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover, ImportDecl, UsingDecl, Propagate, ExceptionHandler, Rescue, ProcLiteral, Macro, MacroExpression, MacroLiteral, MacroIf, MacroFor, MacroVar, MacroVerbatim, MagicConstant, StringBuilder, ReadInstanceVar, Require, Asm, AsmOperand, Select}
 
 pub struct CallArgs
   property args : Array(ASTNode)?
@@ -99,6 +99,11 @@ pub class Parser < Lexer
   property in_macro_expression : Bool
   property unclosed_stack : Array(Unclosed)
 
+  # iyi: true when the caller wants the tree of the source as written and
+  # nothing synthesised for scoping (the formatter): imported names get no
+  # `UsingDecl`.
+  property iyi_source_only : Bool = false
+
   def self.parse(str : String, string_pool : StringPool? = nil, var_scopes : Array(Set(String)) = [Set(String).new]) : ASTNode
     new(str, "", string_pool, var_scopes).parse
   end
@@ -124,6 +129,7 @@ pub class Parser < Lexer
     @no_type_declaration = 0
     @in_macro_expression = false
     @unclosed_stack = [] of Unclosed
+    @iyi_module_headers = [] of ModuleHeader
   end
 
   def token_end_location : Location
@@ -840,8 +846,7 @@ pub class Parser < Lexer
       when TokenKind::OP_PERIOD
         next_token_skip_space_or_newline
         if @token.type == TokenKind::INSTANCE_VAR
-          ivar_name = @token.value[1, @token.value.bytesize - 1]
-          res = Call.new(res, ivar_name).at(location)
+          res = ReadInstanceVar.new(res, @token.value).at(location)
           next_token
           next
         end
@@ -849,17 +854,25 @@ pub class Parser < Lexer
           res = parse_iyi_recover(res).at(location)
           next
         end
-        if @token.type == TokenKind::IDENT && @token.value == "as"
-          next_token_skip_space
-          if @token.type == TokenKind::OP_LPAREN
-            next_token_skip_space_or_newline
-            target_type = parse_bare_proc_type
-            skip_space_or_newline
-            check(TokenKind::OP_RPAREN)
-            next_token_skip_space
-            res = Cast.new(res, target_type).at(location)
-            next
-          end
+        if @token.keyword == Keyword::IS_A_QUESTION
+          res = parse_is_a(res).at(location)
+          next
+        end
+        if @token.keyword == Keyword::AS
+          res = parse_as(res, false).at(location)
+          next
+        end
+        if @token.keyword == Keyword::AS_QUESTION
+          res = parse_as(res, true).at(location)
+          next
+        end
+        if @token.keyword == Keyword::RESPONDS_TO_QUESTION
+          res = parse_responds_to(res).at(location)
+          next
+        end
+        if !@in_macro_expression && @token.keyword == Keyword::NIL_QUESTION
+          res = parse_nil_question(res).at(location)
+          next
         end
 
         name = @token.value.empty? ? @token.type.to_s : @token.value
@@ -886,7 +899,7 @@ pub class Parser < Lexer
         next_token
       when TokenKind::OP_LSQUARE
         next_token_skip_space_or_newline
-        call_args = preserve_stop_on_do { parse_call_args_space_consumed(false, true) }
+        call_args = preserve_stop_on_do { parse_call_args_space_consumed(true, true, true) }
         skip_space_or_newline
         check(TokenKind::OP_RSQUARE)
         next_token
@@ -924,6 +937,113 @@ pub class Parser < Lexer
     res
   end
 
+  # iyi: `x.is_a?(T)` and `x.is_a? T` are a type test, a node of their own.
+  def parse_is_a(atomic : ASTNode) : ASTNode
+    next_token_skip_space
+    if @token.type == TokenKind::OP_LPAREN
+      next_token_skip_space_or_newline
+      type = parse_bare_proc_type
+      skip_space_or_newline
+      check(TokenKind::OP_RPAREN)
+      end_location = token_end_location
+      next_token_skip_space
+    else
+      type = parse_union_type
+      end_location = type.end_location || token_end_location
+    end
+    node = IsA.new(atomic, type)
+    node.end_location = end_location
+    node
+  end
+
+  # iyi: `x.as(T)` is a cast and `x.as?(T)` a nilable cast.
+  def parse_as(atomic : ASTNode, nilable : Bool) : ASTNode
+    next_token_skip_space
+    if @token.type == TokenKind::OP_LPAREN
+      next_token_skip_space_or_newline
+      type = parse_bare_proc_type
+      skip_space_or_newline
+      check(TokenKind::OP_RPAREN)
+      end_location = token_end_location
+      next_token_skip_space
+    else
+      type = parse_union_type
+      end_location = token_end_location
+    end
+    node = nilable ? NilableCast.new(atomic, type) : Cast.new(atomic, type)
+    node.end_location = end_location
+    node
+  end
+
+  # iyi: `x.responds_to?(:name)` tests for a method, a node of its own.
+  def parse_responds_to(atomic : ASTNode) : ASTNode
+    next_token
+    name = ""
+    if @token.type == TokenKind::OP_LPAREN
+      next_token_skip_space_or_newline
+      name = parse_responds_to_name
+      next_token_skip_space_or_newline
+      check(TokenKind::OP_RPAREN)
+      end_location = token_end_location
+      next_token_skip_space
+    elsif @token.type == TokenKind::SPACE
+      next_token
+      name = parse_responds_to_name
+      end_location = token_end_location
+      next_token_skip_space
+    else
+      unexpected_token("expected space or '('")
+    end
+    node = RespondsTo.new(atomic, name)
+    node.end_location = end_location
+    node
+  end
+
+  def parse_responds_to_name : String
+    unless @token.type == TokenKind::SYMBOL
+      unexpected_token("expected symbol")
+    end
+    @token.value
+  end
+
+  # iyi: `x.nil?` is `x.is_a?(::Nil)`, with the parentheses optional.
+  def parse_nil_question(atomic : ASTNode) : ASTNode
+    end_location = token_end_location
+    next_token
+    if @token.type == TokenKind::OP_LPAREN
+      next_token_skip_space_or_newline
+      check(TokenKind::OP_RPAREN)
+      end_location = token_end_location
+      next_token_skip_space
+    end
+    node = IsA.new(atomic, Path.new(["Nil"], true), true)
+    node.end_location = end_location
+    node
+  end
+
+  # iyi: the codepoint a char literal's text is, decoded from its UTF-8 bytes.
+  def utf8_first_codepoint(text : String) : Char
+    return '\0' if text.empty?
+    lead = text.byte_at(0).to_i32
+    return lead.unsafe_chr if lead < 128
+    extra = lead >= 240 ? 3 : (lead >= 224 ? 2 : 1)
+    codepoint = lead & (0x1F >> (extra - 1))
+    i = 1
+    while i <= extra && i < text.bytesize
+      codepoint = (codepoint << 6) | (text.byte_at(i).to_i32 & 0x3F)
+      i += 1
+    end
+    codepoint.unsafe_chr
+  end
+
+  # iyi: the name of a temporary argument, numbered per parse as the hosted
+  # front end numbers them (`&.name` and a parameter named after a keyword).
+  def temp_arg_name : String
+    name = "__arg#{@temp_arg_count}"
+    @temp_arg_count += 1
+    name
+  end
+
   def parse_atomic : ASTNode
     location = @token.location
     case @token.type
@@ -943,7 +1063,7 @@ pub class Parser < Lexer
       @wants_regex = false
       node_and_next_token(NumberLiteral.new(@token.value, @token.number_kind).at(location))
     when TokenKind::CHAR
-      char_val = @token.value.empty? ? '\0' : @token.value[0]
+      char_val = utf8_first_codepoint(@token.value)
       node_and_next_token(CharLiteral.new(char_val).at(location))
     when TokenKind::STRING
       node_and_next_token(StringLiteral.new(@token.value).at(location))
@@ -1008,6 +1128,11 @@ pub class Parser < Lexer
       parse_fun_literal
     when TokenKind::IDENT
       if kw = @token.keyword
+        # iyi: a keyword-named variable takes a type (`getter lib : String?`,
+        # `property ensure : ASTNode?`). Block keywords never do.
+        if !(kw == Keyword::IF || kw == Keyword::UNLESS || kw == Keyword::WHILE || kw == Keyword::UNTIL || kw == Keyword::CASE || kw == Keyword::ELSE || kw == Keyword::ELSIF || kw == Keyword::END || kw == Keyword::WHEN || kw == Keyword::IN || kw == Keyword::THEN || kw == Keyword::DO || kw == Keyword::BEGIN) && next_comes_colon_space?
+          return check_type_declaration { parse_var_or_call(location) }
+        end
         case kw
         when Keyword::NIL
           node_and_next_token(NilLiteral.new.at(location))
@@ -1023,6 +1148,8 @@ pub class Parser < Lexer
           parse_while
         when Keyword::UNTIL
           parse_until
+        when Keyword::SELECT
+          parse_select
         when Keyword::CASE
           parse_case
         when Keyword::BEGIN
@@ -1115,8 +1242,30 @@ pub class Parser < Lexer
           check_not_inside_def("can't define fun") do
             parse_fun_def(true, true)
           end
+        when Keyword::ASM
+          parse_asm
+        when Keyword::POINTEROF
+          check_type_declaration { parse_pointerof }
+        when Keyword::SIZEOF
+          check_type_declaration { parse_sizeof }
+        when Keyword::INSTANCE_SIZEOF
+          check_type_declaration { parse_instance_sizeof }
+        when Keyword::ALIGNOF
+          check_type_declaration { parse_alignof }
+        when Keyword::INSTANCE_ALIGNOF
+          check_type_declaration { parse_instance_alignof }
+        when Keyword::OFFSETOF
+          check_type_declaration { parse_offsetof }
+        when Keyword::TYPEOF
+          check_type_declaration { parse_typeof }
         when Keyword::PRIVATE
           parse_visibility_modifier(Visibility::Private)
+        when Keyword::REQUIRE
+          check_type_declaration do
+            check_not_inside_def("can't require") do
+              parse_require
+            end
+          end
         when Keyword::PROTECTED
           parse_visibility_modifier(Visibility::Protected)
         when Keyword::PUB
@@ -1144,7 +1293,7 @@ pub class Parser < Lexer
     end
   end
 
-  def parse_var_or_call(location : Location, global : Bool = false) : ASTNode
+  def parse_var_or_call(location : Location, global : Bool = false, call_only : Bool = false) : ASTNode
     name = @token.value
     is_var = !global && var?(name)
 
@@ -1157,7 +1306,7 @@ pub class Parser < Lexer
       block_arg = call_args.block_arg
       named_args = call_args.named_args
       has_parens = call_args.has_parentheses
-      force_call = has_parens || !args.empty? || (named_args ? !named_args.empty? : false) || !block.nil? || !block_arg.nil?
+      force_call = call_only || has_parens || !args.empty? || (named_args ? !named_args.empty? : false) || !block.nil? || !block_arg.nil?
 
       if is_var && !force_call
         var = Var.new(name).at(location)
@@ -1172,7 +1321,7 @@ pub class Parser < Lexer
       c.iyi_group = true if name == "group" && block && args.empty?
       c
     else
-      if is_var
+      if is_var && !call_only
         Var.new(name).at(location)
       else
         c = Call.new(nil, name).at(location)
@@ -1223,8 +1372,8 @@ pub class Parser < Lexer
           next_token_skip_space
           if @token.type == TokenKind::OP_PERIOD
             next_token_skip_space
-            temp_arg = Var.new("__arg0")
-            call = parse_var_or_call(@token.location)
+            temp_arg = Var.new(temp_arg_name)
+            call = parse_var_or_call(@token.location, false, true)
             if call.is_a?(Call)
               call.obj = temp_arg
             end
@@ -1288,7 +1437,7 @@ pub class Parser < Lexer
          TokenKind::INSTANCE_VAR, TokenKind::CLASS_VAR, TokenKind::CONST, TokenKind::GLOBAL,
          TokenKind::OP_DOLLAR_TILDE, TokenKind::OP_DOLLAR_QUESTION, TokenKind::GLOBAL_MATCH_DATA_INDEX,
          TokenKind::OP_LPAREN, TokenKind::OP_BANG, TokenKind::OP_LSQUARE, TokenKind::OP_LSQUARE_RSQUARE,
-         TokenKind::OP_TILDE, TokenKind::UNDERSCORE
+         TokenKind::OP_TILDE, TokenKind::UNDERSCORE, TokenKind::OP_MINUS_GT
       # valid argument start
     when TokenKind::OP_STAR, TokenKind::OP_STAR_STAR
       return nil if current_char.ascii_whitespace?
@@ -1303,7 +1452,7 @@ pub class Parser < Lexer
     if kw = @token.keyword
       case kw
       when Keyword::IF, Keyword::UNLESS, Keyword::WHILE, Keyword::UNTIL, Keyword::RESCUE, Keyword::ENSURE
-        return nil
+        return nil unless next_comes_colon_space?
       end
     end
 
@@ -1318,8 +1467,8 @@ pub class Parser < Lexer
         next_token_skip_space
         if @token.type == TokenKind::OP_PERIOD
           next_token_skip_space
-          temp_arg = Var.new("__arg0")
-          call = parse_var_or_call(@token.location)
+          temp_arg = Var.new(temp_arg_name)
+          call = parse_var_or_call(@token.location, false, true)
           if call.is_a?(Call)
             call.obj = temp_arg
           end
@@ -1341,9 +1490,10 @@ pub class Parser < Lexer
 
       skip_space
       if @token.type == TokenKind::OP_COMMA
-        next_token_skip_space
-        if @token.type == TokenKind::NEWLINE || @token.type == TokenKind::OP_SEMICOLON || end_token?
-          break
+        comma_location = @token.location
+        next_token_skip_space_or_newline
+        if (@token.keyword == Keyword::END && !next_comes_colon_space?) || @token.type == TokenKind::EOF
+          syntax_error("invalid trailing comma in call", comma_location)
         end
       else
         break
@@ -1354,6 +1504,13 @@ pub class Parser < Lexer
   end
 
   def parse_call_arg : ASTNode
+    @call_args_start_locations << @token.location
+    arg = parse_call_arg_value
+    @call_args_start_locations.pop
+    arg
+  end
+
+  def parse_call_arg_value : ASTNode
     if @token.type == TokenKind::OP_STAR
       location = @token.location
       next_token_skip_space
@@ -1449,7 +1606,7 @@ pub class Parser < Lexer
           next_token_skip_space
         end
 
-        name = @token.value
+        name = @token.type == TokenKind::UNDERSCORE ? "_" : @token.value
         block_params << Var.new(name).at(@token.location)
         param_index = param_index + 1
         next_token_skip_space
@@ -1598,6 +1755,13 @@ pub class Parser < Lexer
       skip_statement_end
     end
 
+    # iyi: `it` names the value being matched inside every branch (SPEC.md
+    # III.1.1), declared before the bodies so an identifier is a variable there.
+    # A tuple subject has no single value to name.
+    if iyi? && cond && !cond.is_a?(TupleLiteral)
+      push_var_name("it")
+    end
+
     whens = [] of When
     a_else : ASTNode? = nil
     is_exhaustive = false
@@ -1638,6 +1802,71 @@ pub class Parser < Lexer
     Case.new(cond, whens, a_else, is_exhaustive).at(location)
   end
 
+  # iyi: `select` takes one concurrent operation per `when`: an assignment of a
+  # call (`when ended = done.receive`) or a call (`when timeout(limit)`), with an
+  # optional `else`. The oracle's rule: the same checks and the same messages.
+  def parse_select : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_statement_end
+
+    whens = [] of When
+    a_else : ASTNode? = nil
+    while true
+      case @token.keyword
+      when Keyword::WHEN
+        when_loc = @token.location
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+
+        condition_loc = @token.location
+        condition = parse_op_assign_no_control
+        unless valid_select_when?(condition)
+          syntax_error("invalid select when expression: must be an assignment or call", condition_loc)
+        end
+
+        skip_space
+        unless when_expression_end
+          syntax_error("expecting then, ';' or newline", @token.location)
+        end
+        skip_statement_end
+
+        body = parse_expressions
+        skip_space_or_newline
+        whens << When.new([condition] of ASTNode, body).at(when_loc)
+      when Keyword::ELSE
+        if whens.empty?
+          syntax_error("expecting when", @token.location)
+        end
+        set_slash_is_regex(true)
+        next_token_skip_statement_end
+        a_else = parse_expressions
+        skip_statement_end
+        check_keyword(Keyword::END)
+        next_token
+        break
+      when Keyword::END
+        if whens.empty?
+          syntax_error("expecting when, else or end", @token.location)
+        end
+        next_token
+        break
+      else
+        unexpected_token("expecting when, else or end")
+      end
+    end
+
+    Select.new(whens, a_else).at(location)
+  end
+
+  def valid_select_when?(node : ASTNode) : Bool
+    if node.is_a?(Assign)
+      node.as(Assign).value.is_a?(Call)
+    else
+      node.is_a?(Call)
+    end
+  end
+
   def parse_begin : ASTNode
     location = @token.location
     set_slash_is_regex(true)
@@ -1676,7 +1905,14 @@ pub class Parser < Lexer
     if rescues || a_ensure || a_else
       ExceptionHandler.new(body, rescues, a_else, a_ensure).at(location)
     else
-      body
+      if body.is_a?(Expressions)
+        body.keyword = Expressions::Keyword::Begin
+        body
+      else
+        node = Expressions.new([body] of ASTNode).at(location)
+        node.keyword = Expressions::Keyword::Begin
+        node
+      end
     end
   end
 
@@ -2270,15 +2506,197 @@ pub class Parser < Lexer
     t
   end
 
+  # iyi: `module app/greeter` scopes everything after it in the file. The
+  # header and the rest of the file become `ModuleDef(App::Greeter, <rest>)`,
+  # desugared here rather than in semantic analysis, so the semantic phase
+  # needs no change (SPEC.md R-1, IV.6). The file's `@[Unsafe]` mark stays
+  # first in the tree, outside the module.
   def apply_module_header(nodes : ASTNode) : ASTNode
     expressions = case nodes
-                  when Expressions then nodes.expressions
-                  else                  [nodes] of ASTNode
+                  when Expressions
+                    if nodes.keyword == Expressions::Keyword::None
+                      nodes.expressions
+                    else
+                      [nodes] of ASTNode
+                    end
+                  else
+                    [nodes] of ASTNode
                   end
+
+    mark : Annotation? = nil
+    first_node = expressions.first?
+    if first_node && first_node.is_a?(Annotation) && iyi_unsafe_file_mark?(first_node)
+      mark = first_node.as(Annotation)
+      expressions = expressions[1..]
+    end
+
+    # iyi: one file, one module (R-1, IV.6). A file has one path, so a second
+    # header is refused rather than emitted under the first one's name.
+    expressions.each_with_index do |node, index|
+      next if index == 0 || !node.is_a?(ModuleHeader)
+      header_node = node.as(ModuleHeader)
+      top = expressions[0]
+      if top.is_a?(ModuleHeader)
+        syntax_error("a file declares one module, and this one already declares `#{top.as(ModuleHeader).path.join("/")}`. A module is a compilation unit and its path is its file's path (SPEC.md R-1, IV.6), so `#{header_node.path.join("/")}` belongs in `#{header_node.path.join("/")}.iyi`", header_node.location)
+      end
+      syntax_error("the `module` header comes first in a file: `module #{header_node.path.join("/")}` goes above every `import` and declaration, with only comments before it (SPEC.md R-1, IV.6)", header_node.location)
+    end
+
+    # iyi: and the header is the file's first statement, not something a body
+    # holds: a header inside a `class`, an `if` or a `begin` is refused.
+    top_is_header = expressions.first?.is_a?(ModuleHeader)
+    nested_index = top_is_header ? 1 : 0
+    if @iyi_module_headers.size > nested_index
+      nested = @iyi_module_headers[nested_index]
+      camel = nested.path.map { |segment| iyi_camelcase(segment) }.join("::")
+      syntax_error("`module #{nested.path.join("/")}` is a module header, and a header is the first statement of its file, outside every `begin`, `if`, `class` and `def` (SPEC.md R-1). A module inside a type is named by a constant: `module #{camel}`", nested.location)
+    end
+
+    scoped = iyi_scope_imported_names(expressions)
+    if scoped.size != expressions.size
+      expressions = scoped
+      nodes = Expressions.from(mark ? ([mark] of ASTNode) + expressions : expressions)
+    end
 
     header = expressions.first?
     return nodes unless header.is_a?(ModuleHeader)
-    nodes
+    header_node = header.as(ModuleHeader)
+
+    rest = expressions[1..]
+
+    # `import` and `require` stay at FILE level, outside the namespace: an
+    # imported file carries its own `module` header, and processing it while
+    # scoped inside this module would nest the two. The scope an `import
+    # x::{a}` makes stays inside, so its `UsingDecl` goes to the top of the
+    # module's body.
+    directives = [] of ASTNode
+    scopes = [] of ASTNode
+    while rest.size > 0 && (rest[0].is_a?(ImportDecl) || rest[0].is_a?(Require) || rest[0].is_a?(UsingDecl))
+      node = rest.shift
+      if node.is_a?(UsingDecl)
+        scopes << node
+      else
+        directives << node
+      end
+    end
+
+    path = Path.new(header_node.path.map { |segment| iyi_camelcase(segment) })
+    path.at(header_node)
+
+    # `extend self` so a module-level `pub def` is callable on the module.
+    body = [Extend.new(Self.new).at(header_node)] of ASTNode
+    scopes.each { |scope| body << scope }
+    rest.each { |node| body << node }
+
+    module_def = ModuleDef.new(path, Expressions.from(body))
+    module_def.iyi_unit = true
+    module_def.at(header_node)
+    # The module is the rest of the file and ends where the file's last
+    # expression with a location does.
+    module_end = header_node.end_location
+    index = rest.size - 1
+    while index >= 0
+      if located = rest[index].end_location
+        module_end = located
+        break
+      end
+      index -= 1
+    end
+    module_def.end_location = module_end
+
+    result = [] of ASTNode
+    if m = mark
+      result << m
+    end
+    result << header_node
+    directives.each { |directive| result << directive }
+    result << module_def
+    Expressions.from(result)
+  end
+
+  # iyi: whether *mark*, first in its file, is the module's unsafe mark:
+  # `@[Unsafe]` with no `call:`, the spelling a def's caller contract takes
+  # (SPEC.md III.13).
+  def iyi_unsafe_file_mark?(mark : ASTNode) : Bool
+    return false unless mark.is_a?(Annotation)
+    unsafe_mark = mark.as(Annotation)
+    return false unless unsafe_mark.path.names.size == 1 && unsafe_mark.path.names[0] == "Unsafe" && !unsafe_mark.path.global
+    if named = unsafe_mark.named_args
+      return false if named.any? { |arg| arg.name == "call" }
+    end
+    true
+  end
+
+  # iyi: the namespace segment for one module path segment: `camelcase`
+  # upper-cases the first letter of every underscore-separated group and
+  # drops the underscores (`file_utils` is `FileUtils`).
+  def iyi_camelcase(segment : String) : String
+    res = ""
+    up = true
+    i = 0
+    while i < segment.bytesize
+      b = segment.byte_at(i)
+      if b == 95_u8
+        up = true
+      else
+        if up && b >= 97_u8 && b <= 122_u8
+          res = res + (b - 32_u8).unsafe_chr.to_s
+        else
+          res = res + b.unsafe_chr.to_s
+        end
+        up = false
+      end
+      i += 1
+    end
+    res
+  end
+
+  # iyi: an `import x::{a, b}` or `import x::*` brings names into scope; the
+  # scope is a `UsingDecl` made beside the import, in the file's top level
+  # and in the bodies of the types it declares. The import is what the
+  # source says; the scope is what it implies.
+  def iyi_scope_imported_names(expressions : Array(ASTNode)) : Array(ASTNode)
+    return expressions if @iyi_source_only
+    expressions.each do |node|
+      inner = node
+      if node.is_a?(VisibilityModifier)
+        inner = node.as(VisibilityModifier).exp
+      end
+      if inner.is_a?(ClassDef)
+        class_def = inner.as(ClassDef)
+        class_def.body = iyi_scope_body(class_def.body)
+      elsif inner.is_a?(ModuleDef)
+        module_def = inner.as(ModuleDef)
+        module_def.body = iyi_scope_body(module_def.body)
+      end
+    end
+
+    has_scopes = expressions.any? { |node| node.is_a?(ImportDecl) && node.as(ImportDecl).scopes? }
+    return expressions unless has_scopes
+
+    result = [] of ASTNode
+    expressions.each do |node|
+      result << node
+      if node.is_a?(ImportDecl) && node.as(ImportDecl).scopes?
+        import_node = node.as(ImportDecl)
+        scoped_names = import_node.glob ? nil : import_node.names
+        scope = UsingDecl.new(import_node.path, scoped_names)
+        scope.at(import_node)
+        scope.end_location = import_node.end_location
+        result << scope
+      end
+    end
+    result
+  end
+
+  def iyi_scope_body(body : ASTNode) : ASTNode
+    list = body.is_a?(Expressions) ? body.as(Expressions).expressions : ([body] of ASTNode)
+    scoped = iyi_scope_imported_names(list)
+    if scoped.size != list.size
+      Expressions.from(scoped)
+    else
+      body
+    end
   end
 
   def parse_bare_proc_type : ASTNode
@@ -2624,13 +3042,46 @@ pub class Parser < Lexer
 
   def type_start_check : Bool
     case @token.type
-    when TokenKind::CONST, TokenKind::OP_COLON_COLON, TokenKind::UNDERSCORE, TokenKind::OP_LCURLY, TokenKind::OP_MINUS_GT
+    when TokenKind::CONST
+      return false if named_tuple_start?
+      type_path_start?
+    when TokenKind::OP_COLON_COLON, TokenKind::UNDERSCORE, TokenKind::OP_LCURLY, TokenKind::OP_MINUS_GT
       true
     when TokenKind::OP_LPAREN
       true
     when TokenKind::IDENT
       kw = @token.keyword
       kw == Keyword::SELF || kw == Keyword::TYPEOF || @token.value == "self?"
+    else
+      false
+    end
+  end
+
+  # A constant starts a type only when the path ends at a delimiter, a type
+  # suffix or `.class`: `[] of Arg, Foo.new` leaves `Foo.new` as a call.
+  def type_path_start? : Bool
+    while @token.type == TokenKind::CONST
+      next_token
+      break unless @token.type == TokenKind::OP_COLON_COLON
+      next_token_skip_space_or_newline
+    end
+
+    skip_space
+    delimiter_or_type_suffix?
+  end
+
+  def delimiter_or_type_suffix? : Bool
+    case @token.type
+    when TokenKind::OP_PERIOD
+      next_token_skip_space_or_newline
+      @token.value == "class"
+    when TokenKind::OP_QUESTION, TokenKind::OP_STAR, TokenKind::OP_STAR_STAR
+      next_token_skip_space
+      delimiter_or_type_suffix?
+    when TokenKind::OP_MINUS_GT, TokenKind::OP_BAR, TokenKind::OP_COMMA, TokenKind::OP_EQ_GT,
+         TokenKind::NEWLINE, TokenKind::EOF, TokenKind::OP_EQ, TokenKind::OP_SEMICOLON,
+         TokenKind::OP_LPAREN, TokenKind::OP_RPAREN, TokenKind::OP_LSQUARE, TokenKind::OP_RSQUARE
+      true
     else
       false
     end
@@ -2657,6 +3108,148 @@ pub class Parser < Lexer
     end_location = token_end_location
     next_token_skip_space
     TypeOf.new(exps).at(location).at_end(end_location)
+  end
+
+  # iyi: `require "path"` loads a file at file level, a node of its own.
+  def parse_require : ASTNode
+    if @type_nest > 0
+      syntax_error("can't require inside type declarations", @token.location)
+    end
+    next_token_skip_space
+    literal = parse_delimiter(want_skip_space: false)
+    unless literal.is_a?(StringLiteral)
+      syntax_error("expected a string literal after require", @token.location)
+    end
+    skip_space
+    node = Require.new(literal.as(StringLiteral).value)
+    node.end_location = literal.end_location
+    node
+  end
+
+  # iyi: `asm("template" : outputs : inputs : clobbers : options)`, the oracle's rule.
+  # The template is a string without interpolation; each part after a `:` is
+  # optional, and a `::` skips the part that would be empty.
+  def parse_asm : ASTNode
+    location = @token.location
+    next_token_skip_space
+    check(TokenKind::OP_LPAREN)
+    next_token_skip_space_or_newline
+    text = parse_asm_string("asm")
+    skip_space_or_newline
+
+    outputs : Array(AsmOperand)? = nil
+    inputs : Array(AsmOperand)? = nil
+    clobbers : Array(String)? = nil
+    options = [] of String
+    part_index = 0
+    until @token.type == TokenKind::OP_RPAREN
+      if @token.type == TokenKind::OP_COLON_COLON
+        next_token_skip_space_or_newline
+        part_index += 2
+      elsif @token.type == TokenKind::OP_COLON
+        next_token_skip_space_or_newline
+        part_index += 1
+      else
+        syntax_error("expected `:` or `)` in asm", @token.location)
+      end
+
+      break if part_index > 4
+      if part_index == 1 && @token.type == TokenKind::DELIMITER_START
+        outputs = parse_asm_operands
+      elsif part_index == 2 && @token.type == TokenKind::DELIMITER_START
+        inputs = parse_asm_operands
+      elsif part_index == 3 && @token.type == TokenKind::DELIMITER_START
+        clobbers = parse_asm_clobbers
+      elsif part_index == 4 && @token.type == TokenKind::DELIMITER_START
+        options = parse_asm_options
+      end
+    end
+
+    check(TokenKind::OP_RPAREN)
+    end_location = token_end_location
+    next_token_skip_space
+    node = Asm.new(text, outputs, inputs, clobbers, options.includes?("volatile"),
+      options.includes?("alignstack"), options.includes?("intel"), options.includes?("unwind"))
+    node.at(location).at_end(end_location)
+  end
+
+  def parse_asm_operands : Array(AsmOperand)
+    operands = [] of AsmOperand
+    while true
+      operands << parse_asm_operand
+      if @token.type == TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+      end
+      break unless @token.type == TokenKind::DELIMITER_START
+    end
+    operands
+  end
+
+  def parse_asm_operand : AsmOperand
+    constraint = parse_asm_string("constraint")
+    check(TokenKind::OP_LPAREN)
+    next_token_skip_space_or_newline
+    exp = parse_expression
+    check(TokenKind::OP_RPAREN)
+    next_token_skip_space_or_newline
+    AsmOperand.new(constraint, exp)
+  end
+
+  def parse_asm_clobbers : Array(String)
+    clobbers = [] of String
+    while true
+      clobbers << parse_asm_string("asm clobber")
+      skip_space_or_newline
+      if @token.type == TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+      end
+      break unless @token.type == TokenKind::DELIMITER_START
+    end
+    clobbers
+  end
+
+  # The option names, each checked against the four the oracle accepts.
+  def parse_asm_options : Array(String)
+    options = [] of String
+    while true
+      location = @token.location
+      option = parse_asm_string("asm option")
+      skip_space_or_newline
+      unless ["volatile", "alignstack", "intel", "unwind"].includes?(option)
+        syntax_error("unknown asm option: #{option}", location)
+      end
+      options << option
+      if @token.type == TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+      end
+      break unless @token.type == TokenKind::DELIMITER_START
+    end
+    options
+  end
+
+  def parse_asm_string(what : String) : String
+    literal = parse_delimiter(want_skip_space: false)
+    unless literal.is_a?(StringLiteral)
+      syntax_error("expected a string literal for #{what}, without interpolation", @token.location)
+    end
+    literal.as(StringLiteral).value
+  end
+
+  def parse_pointerof : ASTNode
+    next_token_skip_space
+    check(TokenKind::OP_LPAREN)
+    next_token_skip_space_or_newline
+    if @token.keyword == Keyword::SELF
+      syntax_error("can't take address of self", @token.location)
+    end
+    exp = parse_op_assign
+    skip_space_or_newline
+    end_location = token_end_location
+    check(TokenKind::OP_RPAREN)
+    next_token_skip_space
+    node = PointerOf.new(exp)
+    node.end_location = end_location
+    node
   end
 
   def parse_sizeof : ASTNode
@@ -3703,7 +4296,7 @@ pub class Parser < Lexer
       skip_space_or_newline
     end
 
-    with_lexical_var_scope do
+    with_isolated_var_scope do
       params.each { |p| push_var_name(p.name) }
       end_location : Location? = nil
       body : ASTNode? = nil
@@ -3858,6 +4451,16 @@ pub class Parser < Lexer
     ArgExtras.new(nil, !default_value.nil?, splat, double_splat)
   end
 
+  # iyi: a name the parser reads as a keyword and so cannot assign to.
+  def invalid_internal_name?(name : String) : Bool
+    ["begin", "nil", "true", "false", "yield", "with", "abstract",
+     "def", "macro", "require", "case", "select", "if", "unless", "include",
+     "extend", "class", "struct", "module", "enum", "while", "until", "return",
+     "next", "break", "lib", "fun", "alias", "pointerof", "sizeof", "offsetof",
+     "instance_sizeof", "typeof", "private", "protected", "asm", "out",
+     "self", "in", "end", "alignof", "instance_alignof"].includes?(name)
+  end
+
   def parse_param_name(location : Location, extra_assigns : Array(ASTNode)?, allow_external_name : Bool) : {String, String?, Bool, Bool}
     param_name = ""
     external_name : String? = nil
@@ -3893,6 +4496,10 @@ pub class Parser < Lexer
       do_next_token = true
     when TokenKind::INSTANCE_VAR
       param_name = @token.value[1, @token.value.bytesize - 1]
+      if invalid_internal_name?(param_name)
+        external_name = param_name unless external_name
+        param_name = temp_arg_name
+      end
       ivar = InstanceVar.new(@token.value).at(location)
       var = Var.new(param_name).at(location)
       assign = Assign.new(ivar, var).at(location)
@@ -4095,6 +4702,7 @@ pub class Parser < Lexer
       path = parse_module_path
       header = ModuleHeader.new(path).at(location)
       header.end_location = token_end_location
+      @iyi_module_headers << header
       return header
     end
 
@@ -4985,11 +5593,15 @@ pub class Parser < Lexer
   def check_type_declaration(&) : ASTNode
     if next_comes_colon_space?
       name = @token.value
-      var = Var.new(name).at(@token.location).at_end(token_end_location)
+      name_location = @token.location
+      var = Var.new(name).at(name_location).at_end(token_end_location)
       next_token
       skip_space
       check(TokenKind::OP_COLON)
       type_declaration = parse_type_declaration(var)
+      # A declaration that is an argument of a call (`getter name : String`) declares no
+      # local variable, so the name stays a call afterwards (the oracle's rule).
+      push_var(type_declaration) unless @call_args_start_locations.includes?(name_location)
       set_visibility(type_declaration)
     else
       yield
@@ -5007,7 +5619,6 @@ pub class Parser < Lexer
     elsif is_const
       syntax_error("expected '=' for constant type declaration", @token.location)
     end
-    push_var(var) unless is_const
     TypeDeclaration.new(var, var_type, value).at(var).at_end(value ? value.end_location : var_type.end_location)
   end
 
@@ -5100,6 +5711,10 @@ pub class Parser < Lexer
         end
       end
     end
+    if delimiter_state.kind == DelimiterKind::HEREDOC
+      return StringInterpolation.new(remove_heredoc_indent(pieces, delimiter_state.heredoc_indent)).at(location)
+    end
+
     has_interp = false
     pieces.each do |p|
       if p.value.is_a?(ASTNode)
@@ -5117,7 +5732,7 @@ pub class Parser < Lexer
           nodes << val
         end
       end
-      StringInterpolation.new(nodes).at(location)
+      wrap_command(StringInterpolation.new(nodes).at(location), delimiter_state.kind, location)
     else
       str = ""
       pieces.each do |p|
@@ -5129,7 +5744,7 @@ pub class Parser < Lexer
       if delimiter_state.kind == DelimiterKind::REGEX
         RegexLiteral.new(StringLiteral.new(str)).at(location)
       else
-        StringLiteral.new(str).at(location)
+        wrap_command(StringLiteral.new(str).at(location), delimiter_state.kind, location)
       end
     end
   end
@@ -5147,7 +5762,11 @@ pub class Parser < Lexer
         interp_exp = parse_expression
         skip_space_or_newline
         check(TokenKind::OP_RCURLY)
-        pieces << Piece.new(interp_exp, @token.line_number)
+        if interp_exp.is_a?(StringLiteral) && delimiter_state.kind != DelimiterKind::HEREDOC
+          pieces << Piece.new(interp_exp.value, @token.line_number)
+        else
+          pieces << Piece.new(interp_exp, @token.line_number)
+        end
       when TokenKind::DELIMITER_END, TokenKind::EOF
         break
       end
@@ -5156,6 +5775,146 @@ pub class Parser < Lexer
     end
     next_token
     delimiter_state
+  end
+
+  # The heredoc body starts on the line after the opener, so the newline that ends the
+  # opener line is not part of the body.
+  def heredoc_body(pieces : Array(Piece)) : Array(Piece)
+    body = [] of Piece
+    return body if pieces.size == 0
+    first = pieces[0]
+    first_value = first.value
+    if first_value.is_a?(String) && (first_value.starts_with?("\n") || first_value.starts_with?("\r\n"))
+      cut = first_value.starts_with?("\n") ? 1 : 2
+      if cut < first_value.bytesize
+        body << Piece.new(first_value[cut, first_value.bytesize - cut], first.line_number)
+      end
+      idx = 1
+      while idx < pieces.size
+        body << pieces[idx]
+        idx = idx + 1
+      end
+    else
+      pieces.each { |piece| body << piece }
+    end
+    body
+  end
+
+  # A command literal is a call to the backtick, as the hosted parser builds it.
+  def wrap_command(node : ASTNode, kind : DelimiterKind, location : Location) : ASTNode
+    return node unless kind == DelimiterKind::COMMAND
+    Call.new(nil, "`", node).at(location)
+  end
+
+  # The heredoc body without the indent of its terminator, as the hosted parser reads it:
+  # each line loses `indent` leading characters, and the text between interpolations is one
+  # string piece. Interpolations pass through unchanged.
+  def remove_heredoc_indent(pieces : Array(Piece), indent : Int32) : Array(ASTNode)
+    pieces = heredoc_body(pieces)
+    current_line = StringBuilder.new
+    remove_indent = true
+    new_pieces = [] of ASTNode | String
+    previous_line_number = 0
+    idx = 0
+    while idx < pieces.size
+      piece = pieces[idx]
+      value = piece.value
+      line_number = piece.line_number
+      this_piece_is_in_new_line = line_number != previous_line_number
+      next_piece_is_in_new_line = idx == pieces.size - 1 || pieces[idx + 1].line_number != line_number
+      if value.is_a?(String)
+        if value == "\n" || value == "\r\n"
+          current_line << value
+          if this_piece_is_in_new_line || next_piece_is_in_new_line
+            line = current_line.to_s
+            line = remove_heredoc_from_line(line, indent) if remove_indent
+            add_heredoc_text(new_pieces, line)
+            current_line = StringBuilder.new
+            remove_indent = true
+          end
+        elsif value.starts_with?("\n") || value.starts_with?("\r\n")
+          slash_n = value.starts_with?("\n")
+          current_line << (slash_n ? "\n" : "\r\n")
+          line = current_line.to_s
+          line = remove_heredoc_from_line(line, indent) if remove_indent
+          add_heredoc_text(new_pieces, line)
+          current_line = StringBuilder.new
+          remove_indent = true
+          rest_start = slash_n ? 1 : 2
+          current_line << value[rest_start, value.bytesize - rest_start]
+        else
+          current_line << value
+        end
+      else
+        if remove_indent
+          line = current_line.to_s
+          if line.bytesize < indent || !heredoc_indent_ok?(line, indent)
+            raise_syntax_error("heredoc line must have an indent greater than or equal to #{indent}")
+          end
+          line = line[indent, line.bytesize - indent]
+          add_heredoc_text(new_pieces, line) unless line.empty?
+          new_pieces << value
+          remove_indent = false
+          current_line = StringBuilder.new
+        else
+          unless current_line.empty?
+            add_heredoc_text(new_pieces, current_line.to_s)
+            current_line = StringBuilder.new
+          end
+          new_pieces << value
+        end
+      end
+      previous_line_number = line_number
+      idx = idx + 1
+    end
+    unless current_line.empty?
+      line = current_line.to_s
+      line = remove_heredoc_from_line(line, indent) if remove_indent
+      add_heredoc_text(new_pieces, line)
+    end
+
+    nodes = [] of ASTNode
+    new_pieces.each do |piece|
+      if piece.is_a?(String)
+        nodes << StringLiteral.new(piece)
+      else
+        nodes << piece
+      end
+    end
+    nodes
+  end
+
+  def add_heredoc_text(pieces : Array(ASTNode | String), text : String) : Nil
+    if pieces.size > 0
+      last = pieces[pieces.size - 1]
+      if last.is_a?(String)
+        pieces[pieces.size - 1] = last + text
+        return
+      end
+    end
+    pieces << text
+  end
+
+  def heredoc_indent_ok?(line : String, indent : Int32) : Bool
+    count = indent < line.bytesize ? indent : line.bytesize
+    i = 0
+    while i < count
+      return false unless line.byte_at(i).unsafe_chr.ascii_whitespace?
+      i = i + 1
+    end
+    true
+  end
+
+  # One heredoc line without its indent: a blank line becomes a newline.
+  def remove_heredoc_from_line(line : String, indent : Int32) : String
+    unless heredoc_indent_ok?(line, indent)
+      raise_syntax_error("heredoc line must have an indent greater than or equal to #{indent}")
+    end
+    if line.bytesize - 1 < indent
+      "\n"
+    else
+      line[indent, line.bytesize - indent]
+    end
   end
 
   def parse_string_array : ASTNode

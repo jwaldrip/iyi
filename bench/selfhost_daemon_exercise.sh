@@ -34,7 +34,15 @@ if ! "$IYI" build -o "$WORK/exercise" "$REPO/bench/selfhost_daemon_exercise.iyi"
   echo "  FAILED to build bench/selfhost_daemon_exercise.iyi"
   exit 1
 fi
-"$WORK/exercise" "$WORK" > "$WORK/iyi_raw.out" 2>&1
+# Both drivers run from a directory of their own. The candidate search reads
+# `.build/<name>-daemon` relative to the working directory, and one scenario
+# writes that file and deletes it: run from the checkout, that replaced the
+# real `.build/iyi-daemon` with a two-line script and then removed it, so the
+# first driver saw the daemon `make iyi-daemon` built and the second did not
+# (fork job 130964506518, on Linux, where the job builds the daemon).
+SANDBOX="$WORK/cwd"
+mkdir -p "$SANDBOX/.build"
+(cd "$SANDBOX" && "$WORK/exercise" "$WORK") > "$WORK/iyi_raw.out" 2>&1
 
 echo
 echo "== 2. Build daemon comparison against the front end being replaced"
@@ -561,7 +569,7 @@ if [ ! -x "$WORK/dump_crystal" ]; then
   exit 1
 fi
 
-"$WORK/dump_crystal" "$WORK" > "$WORK/crystal_raw.out" 2>&1
+(cd "$SANDBOX" && "$WORK/dump_crystal" "$WORK") > "$WORK/crystal_raw.out" 2>&1
 
 # Normalisation pass:
 # Normalise only what is genuinely machine-specific:
@@ -611,7 +619,7 @@ MUTATIONS_RUN=0
 
 check_daemon_mutant() {
   "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_daemon_exercise.iyi" >/dev/null 2>&1 || return 1
-  "$WORK/mut-exercise" "$WORK" > "$WORK/iyi_mut_raw.out" 2>&1
+  (cd "$SANDBOX" && "$WORK/mut-exercise" "$WORK") > "$WORK/iyi_mut_raw.out" 2>&1
   python3 - "$REPO" "$WORK" "$WORK/iyi_mut_raw.out" "$WORK/iyi_mut.out" <<'PY'
 import re, sys
 repo, work, src, dst = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]

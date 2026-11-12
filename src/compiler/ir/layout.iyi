@@ -66,14 +66,7 @@ pub class DataLayout
 
   # The ABI alignment of a type, in bytes.
   def abi_align(t : IrType) : Int32
-    if t.int?
-      return 1 if t.bits == 1 || t.bits == 8
-      return 2 if t.bits == 16
-      return 4 if t.bits == 32
-      return 8 if t.bits == 64
-      return 16 if t.bits == 128
-      raise "no ABI alignment for i#{t.bits}"
-    end
+    return int_align(t.bits) if t.int?
     if t.float?
       return t.bits // 8
     end
@@ -93,6 +86,17 @@ pub class DataLayout
       return align
     end
     raise "no alignment for a #{t}"
+  end
+
+  # LLVM's ABI alignment of an integer of `bits` bits. The five targets' integer specs are i1, i8, i16, i32, i64 and
+  # i128, and LLVM gives a width the alignment of the first spec at least as wide, or of the widest spec for a wider
+  # width (DataLayout::getIntegerAlignment). So an i192 is 16-byte aligned on every target.
+  def int_align(bits : Int32) : Int32
+    return 1 if bits <= 8
+    return 2 if bits <= 16
+    return 4 if bits <= 32
+    return 8 if bits <= 64
+    16
   end
 
   # The bytes a value of the type occupies in memory, without the padding that follows it.

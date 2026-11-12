@@ -90,56 +90,56 @@ end
 # (`expect.i1`, `wasm.memory.grow.i32`) spell it here, with no overload.
 pub def intrinsic_stem(id : IntrinsicId) : String
   case id
-  when IntrinsicId::Memcpy then "memcpy"
-  when IntrinsicId::Memmove then "memmove"
-  when IntrinsicId::Memset then "memset"
-  when IntrinsicId::SAddOverflow then "sadd.with.overflow"
-  when IntrinsicId::UAddOverflow then "uadd.with.overflow"
-  when IntrinsicId::SSubOverflow then "ssub.with.overflow"
-  when IntrinsicId::USubOverflow then "usub.with.overflow"
-  when IntrinsicId::SMulOverflow then "smul.with.overflow"
-  when IntrinsicId::UMulOverflow then "umul.with.overflow"
-  when IntrinsicId::Sqrt then "sqrt"
-  when IntrinsicId::Fabs then "fabs"
-  when IntrinsicId::Sin then "sin"
-  when IntrinsicId::Cos then "cos"
-  when IntrinsicId::Exp then "exp"
-  when IntrinsicId::Exp2 then "exp2"
-  when IntrinsicId::Log then "log"
-  when IntrinsicId::Log2 then "log2"
-  when IntrinsicId::Log10 then "log10"
-  when IntrinsicId::Pow then "pow"
-  when IntrinsicId::Powi then "powi"
-  when IntrinsicId::Floor then "floor"
-  when IntrinsicId::Ceil then "ceil"
-  when IntrinsicId::Trunc then "trunc"
-  when IntrinsicId::Round then "round"
-  when IntrinsicId::Roundeven then "roundeven"
-  when IntrinsicId::Rint then "rint"
-  when IntrinsicId::Fma then "fma"
-  when IntrinsicId::Minnum then "minnum"
-  when IntrinsicId::Maxnum then "maxnum"
-  when IntrinsicId::Copysign then "copysign"
-  when IntrinsicId::Ctpop then "ctpop"
-  when IntrinsicId::Ctlz then "ctlz"
-  when IntrinsicId::Cttz then "cttz"
-  when IntrinsicId::Bswap then "bswap"
-  when IntrinsicId::Fshl then "fshl"
-  when IntrinsicId::Fshr then "fshr"
-  when IntrinsicId::Trap then "trap"
-  when IntrinsicId::DebugTrap then "debugtrap"
-  when IntrinsicId::ExpectI1 then "expect.i1"
-  when IntrinsicId::Assume then "assume"
-  when IntrinsicId::Donothing then "donothing"
-  when IntrinsicId::Frameaddress then "frameaddress"
-  when IntrinsicId::Returnaddress then "returnaddress"
-  when IntrinsicId::Stacksave then "stacksave"
-  when IntrinsicId::Stackrestore then "stackrestore"
-  when IntrinsicId::VaStart then "va_start"
-  when IntrinsicId::VaEnd then "va_end"
+  when IntrinsicId::Memcpy           then "memcpy"
+  when IntrinsicId::Memmove          then "memmove"
+  when IntrinsicId::Memset           then "memset"
+  when IntrinsicId::SAddOverflow     then "sadd.with.overflow"
+  when IntrinsicId::UAddOverflow     then "uadd.with.overflow"
+  when IntrinsicId::SSubOverflow     then "ssub.with.overflow"
+  when IntrinsicId::USubOverflow     then "usub.with.overflow"
+  when IntrinsicId::SMulOverflow     then "smul.with.overflow"
+  when IntrinsicId::UMulOverflow     then "umul.with.overflow"
+  when IntrinsicId::Sqrt             then "sqrt"
+  when IntrinsicId::Fabs             then "fabs"
+  when IntrinsicId::Sin              then "sin"
+  when IntrinsicId::Cos              then "cos"
+  when IntrinsicId::Exp              then "exp"
+  when IntrinsicId::Exp2             then "exp2"
+  when IntrinsicId::Log              then "log"
+  when IntrinsicId::Log2             then "log2"
+  when IntrinsicId::Log10            then "log10"
+  when IntrinsicId::Pow              then "pow"
+  when IntrinsicId::Powi             then "powi"
+  when IntrinsicId::Floor            then "floor"
+  when IntrinsicId::Ceil             then "ceil"
+  when IntrinsicId::Trunc            then "trunc"
+  when IntrinsicId::Round            then "round"
+  when IntrinsicId::Roundeven        then "roundeven"
+  when IntrinsicId::Rint             then "rint"
+  when IntrinsicId::Fma              then "fma"
+  when IntrinsicId::Minnum           then "minnum"
+  when IntrinsicId::Maxnum           then "maxnum"
+  when IntrinsicId::Copysign         then "copysign"
+  when IntrinsicId::Ctpop            then "ctpop"
+  when IntrinsicId::Ctlz             then "ctlz"
+  when IntrinsicId::Cttz             then "cttz"
+  when IntrinsicId::Bswap            then "bswap"
+  when IntrinsicId::Fshl             then "fshl"
+  when IntrinsicId::Fshr             then "fshr"
+  when IntrinsicId::Trap             then "trap"
+  when IntrinsicId::DebugTrap        then "debugtrap"
+  when IntrinsicId::ExpectI1         then "expect.i1"
+  when IntrinsicId::Assume           then "assume"
+  when IntrinsicId::Donothing        then "donothing"
+  when IntrinsicId::Frameaddress     then "frameaddress"
+  when IntrinsicId::Returnaddress    then "returnaddress"
+  when IntrinsicId::Stacksave        then "stacksave"
+  when IntrinsicId::Stackrestore     then "stackrestore"
+  when IntrinsicId::VaStart          then "va_start"
+  when IntrinsicId::VaEnd            then "va_end"
   when IntrinsicId::Readcyclecounter then "readcyclecounter"
-  when IntrinsicId::X86Sse2Pause then "x86.sse2.pause"
-  when IntrinsicId::AArch64Hint then "aarch64.hint"
+  when IntrinsicId::X86Sse2Pause     then "x86.sse2.pause"
+  when IntrinsicId::AArch64Hint      then "aarch64.hint"
   else
     "wasm.memory.grow.i32"
   end
@@ -148,8 +148,8 @@ end
 # How many overload types the family's name spells after its stem.
 pub def intrinsic_arity(id : IntrinsicId) : Int32
   case id
-  when IntrinsicId::Memcpy, IntrinsicId::Memmove then 3
-  when IntrinsicId::Memset, IntrinsicId::Powi then 2
+  when IntrinsicId::Memcpy, IntrinsicId::Memmove                                                                                                                                                                                                                     then 3
+  when IntrinsicId::Memset, IntrinsicId::Powi                                                                                                                                                                                                                        then 2
   when IntrinsicId::ExpectI1, IntrinsicId::Assume, IntrinsicId::Trap, IntrinsicId::DebugTrap, IntrinsicId::Donothing, IntrinsicId::Returnaddress, IntrinsicId::Readcyclecounter, IntrinsicId::X86Sse2Pause, IntrinsicId::AArch64Hint, IntrinsicId::WasmMemoryGrowI32 then 0
   else
     1
@@ -202,11 +202,11 @@ pub def intrinsic_accepts?(id : IntrinsicId, overload : Array(IrType)) : Bool
     return float_type?(overload[0])
   end
   case id
-  when IntrinsicId::Ctpop, IntrinsicId::Ctlz, IntrinsicId::Cttz, IntrinsicId::Fshl, IntrinsicId::Fshr then wide_int?(overload[0])
-  when IntrinsicId::Bswap then wide_int?(overload[0]) && overload[0].bits >= 16
-  when IntrinsicId::Powi then float_type?(overload[0]) && overload[1].int? && overload[1].bits == 32
-  when IntrinsicId::Memcpy, IntrinsicId::Memmove then plain_ptr?(overload[0]) && plain_ptr?(overload[1]) && wide_int?(overload[2])
-  when IntrinsicId::Memset then plain_ptr?(overload[0]) && wide_int?(overload[1])
+  when IntrinsicId::Ctpop, IntrinsicId::Ctlz, IntrinsicId::Cttz, IntrinsicId::Fshl, IntrinsicId::Fshr                         then wide_int?(overload[0])
+  when IntrinsicId::Bswap                                                                                                     then wide_int?(overload[0]) && overload[0].bits >= 16
+  when IntrinsicId::Powi                                                                                                      then float_type?(overload[0]) && overload[1].int? && overload[1].bits == 32
+  when IntrinsicId::Memcpy, IntrinsicId::Memmove                                                                              then plain_ptr?(overload[0]) && plain_ptr?(overload[1]) && wide_int?(overload[2])
+  when IntrinsicId::Memset                                                                                                    then plain_ptr?(overload[0]) && wide_int?(overload[1])
   when IntrinsicId::Frameaddress, IntrinsicId::Stacksave, IntrinsicId::Stackrestore, IntrinsicId::VaStart, IntrinsicId::VaEnd then plain_ptr?(overload[0])
   else
     true
@@ -242,29 +242,29 @@ pub def intrinsic_signature(id : IntrinsicId, overload : Array(IrType), types : 
     t = overload[0]
     case id
     when IntrinsicId::Pow, IntrinsicId::Minnum, IntrinsicId::Maxnum, IntrinsicId::Copysign then return {t, [t, t]}
-    when IntrinsicId::Fma then return {t, [t, t, t]}
+    when IntrinsicId::Fma                                                                  then return {t, [t, t, t]}
     else
       return {t, [t]}
     end
   end
   case id
-  when IntrinsicId::Ctpop, IntrinsicId::Bswap then {overload[0], [overload[0]]}
-  when IntrinsicId::Ctlz, IntrinsicId::Cttz then {overload[0], [overload[0], types.int1]}
-  when IntrinsicId::Fshl, IntrinsicId::Fshr then {overload[0], [overload[0], overload[0], overload[0]]}
-  when IntrinsicId::Powi then {overload[0], [overload[0], overload[1]]}
-  when IntrinsicId::Memcpy, IntrinsicId::Memmove then {types.void, [overload[0], overload[1], overload[2], types.int1]}
-  when IntrinsicId::Memset then {types.void, [overload[0], types.int8, overload[1], types.int1]}
-  when IntrinsicId::Frameaddress then {overload[0], [types.int32]}
-  when IntrinsicId::Returnaddress then {types.ptr(0), [types.int32]}
-  when IntrinsicId::Stacksave then {overload[0], [] of IrType}
-  when IntrinsicId::Stackrestore then {types.void, [overload[0]]}
-  when IntrinsicId::VaStart, IntrinsicId::VaEnd then {types.void, [overload[0]]}
-  when IntrinsicId::ExpectI1 then {types.int1, [types.int1, types.int1]}
-  when IntrinsicId::Assume then {types.void, [types.int1]}
+  when IntrinsicId::Ctpop, IntrinsicId::Bswap                                                       then {overload[0], [overload[0]]}
+  when IntrinsicId::Ctlz, IntrinsicId::Cttz                                                         then {overload[0], [overload[0], types.int1]}
+  when IntrinsicId::Fshl, IntrinsicId::Fshr                                                         then {overload[0], [overload[0], overload[0], overload[0]]}
+  when IntrinsicId::Powi                                                                            then {overload[0], [overload[0], overload[1]]}
+  when IntrinsicId::Memcpy, IntrinsicId::Memmove                                                    then {types.void, [overload[0], overload[1], overload[2], types.int1]}
+  when IntrinsicId::Memset                                                                          then {types.void, [overload[0], types.int8, overload[1], types.int1]}
+  when IntrinsicId::Frameaddress                                                                    then {overload[0], [types.int32]}
+  when IntrinsicId::Returnaddress                                                                   then {types.ptr(0), [types.int32]}
+  when IntrinsicId::Stacksave                                                                       then {overload[0], [] of IrType}
+  when IntrinsicId::Stackrestore                                                                    then {types.void, [overload[0]]}
+  when IntrinsicId::VaStart, IntrinsicId::VaEnd                                                     then {types.void, [overload[0]]}
+  when IntrinsicId::ExpectI1                                                                        then {types.int1, [types.int1, types.int1]}
+  when IntrinsicId::Assume                                                                          then {types.void, [types.int1]}
   when IntrinsicId::Trap, IntrinsicId::DebugTrap, IntrinsicId::Donothing, IntrinsicId::X86Sse2Pause then {types.void, [] of IrType}
-  when IntrinsicId::Readcyclecounter then {types.int64, [] of IrType}
-  when IntrinsicId::AArch64Hint then {types.int32, [types.int32]}
-  when IntrinsicId::WasmMemoryGrowI32 then {types.int32, [types.int32, types.int32]}
+  when IntrinsicId::Readcyclecounter                                                                then {types.int64, [] of IrType}
+  when IntrinsicId::AArch64Hint                                                                     then {types.int32, [types.int32]}
+  when IntrinsicId::WasmMemoryGrowI32                                                               then {types.int32, [types.int32, types.int32]}
   else
     raise "no signature for #{intrinsic_stem(id)}"
   end
