@@ -75,8 +75,9 @@ pub class LinkOptions
   getter identifier : String
   getter entry : String
   getter frameworks : Array(String)
+  getter native_only : Bool
 
-  def initialize(@identifier : String, @entry : String, @frameworks : Array(String))
+  def initialize(@identifier : String, @entry : String, @frameworks : Array(String), @native_only : Bool = false)
   end
 end
 
@@ -304,6 +305,10 @@ class Linker
         fail("object #{i} is not a Mach-O object")
         return
       end
+      if @options.native_only && obj.producer != "iyi-native"
+        fail("object #{i} was produced by #{obj.producer}: a native program links only objects from the iyi-native backend")
+        return
+      end
       if obj.target.architecture != "aarch64"
         fail("object #{i} is for #{obj.target.architecture}, and this linker writes arm64 executables")
         return
@@ -479,6 +484,9 @@ class Linker
   end
 
   def import_code(name : String) : Int64
+    if @options.native_only && name.starts_with?("__iyi_")
+      fail("undefined symbol #{name}: the native runtime defines every __iyi_ name, and no object defines it")
+    end
     known = @import_index[name]?
     if known.nil?
       n = @import_names.size.to_i64

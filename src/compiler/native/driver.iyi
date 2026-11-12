@@ -23,6 +23,7 @@ import compiler/native/emit::{SectionWriter, to_bytes, write_initializer, data_s
 import compiler/native/thread_locals::{place_thread_locals}
 import compiler/native/aarch64/abi::{aarch64_target}
 import std/slice::{Slice, Bytes}
+import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
 
 # The symbol table of a module: every function and global by name, in the object's order.
 pub def symbol_table(mod : Module, obj : ObjectFile) : Hash(String, Int32)
@@ -135,6 +136,20 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
     obj.sections << s
   end
   obj
+end
+
+# A native program: the program's module and the runtime module each compile to an object by this backend, and
+# the linker writes the arm64 Mach-O executable from them. Nothing else takes part. A refusal or link error comes
+# back as its reason, which names the function, object or symbol.
+pub def link_native_program(mod : Module, runtime : Module, identifier : String) : LinkedImage | String
+  program = compile_module(mod, true)
+  return program.as(String) if program.is_a?(String)
+  rt = compile_module(runtime, true)
+  return rt.as(String) if rt.is_a?(String)
+  objects = [program.as(ObjectFile), rt.as(ObjectFile)]
+  result = link(objects, LinkOptions.new(identifier, "main", [] of String, true))
+  return result.as(LinkError).message if result.is_a?(LinkError)
+  result.as(LinkedImage)
 end
 
 # Object bytes for the Mach-O writer.

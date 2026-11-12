@@ -1,0 +1,13 @@
+module compiler/native/rt/builtins_text
+
+# GENERATED from builtins.ir by the command in bench/native_first_light_exercise.sh: do not edit by hand.
+# The native runtime's IR text, one array element per line, so the compiler needs no file at run time.
+
+pub def builtins_ir : String
+  lines = [] of String
+  lines << "; iyi-ir 1"
+  lines << "source_filename = \"builtins\""
+  lines << "target triple = \"aarch64-apple-darwin\""
+  lines << "target datalayout = \"e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128-Fn32\""
+  lines.join("\n") + "\n"
+end

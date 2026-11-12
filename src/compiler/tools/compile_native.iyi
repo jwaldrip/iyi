@@ -1,0 +1,92 @@
+# iyi-compile-native: compiles one IR program to a signed arm64 Mach-O executable.
+#
+#   iyi-compile-native <program.ir> -o <exe> [--target aarch64-apple-darwin]
+#
+# The program is parsed and verified, each function is compiled by the native backend, and the object is linked with
+# the native runtime (rt/builtins.ir) by the native linker, which writes the signature too. No host tool takes part:
+# no ld, cc, clang, codesign or LLVM. A refusal names the function, construct or symbol, and the tool exits 1.
+
+@[Unsafe("declares the C library exit to set the process status; the tool handles no raw memory")]
+module compiler/tools/compile_native
+
+import compiler/ir/parser::{parse, IrParseError}
+import compiler/ir/module::{Module}
+import compiler/ir/verifier::{verify}
+import compiler/native/driver::{link_native_program}
+import compiler/native/rt/builtins_text::{builtins_ir}
+import compiler/native/link/link::{LinkedImage}
+import std/file
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+module CompileNative
+  TARGET = "aarch64-apple-darwin"
+
+  def self.fail(message : String) : Nil
+    STDERR.puts "iyi-compile-native: #{message}"
+    LibC.exit(1)
+  end
+
+  # Parses an IR text and verifies it. Every rule it breaks is printed, naming its function.
+  def self.module_of(text : String, name : String) : Module
+    parsed = parse(text)
+    if parsed.is_a?(IrParseError)
+      fail("#{name}: #{parsed.to_s}")
+    end
+    mod = parsed.as(Module)
+    errors = verify(mod)
+    errors.each do |e|
+      where = e.function
+      unless where.nil?
+        STDERR.puts "iyi-compile-native: #{name}: in function #{where}: #{e.message}"
+      else
+        STDERR.puts "iyi-compile-native: #{name}: #{e.message}"
+      end
+    end
+    fail("#{name}: the IR is not well formed") unless errors.empty?
+    mod
+  end
+
+  def self.run : Nil
+    args = Program.args
+    if args.size < 3 || args[1] != "-o"
+      fail("usage: iyi-compile-native <program.ir> -o <exe> [--target #{TARGET}]")
+    end
+    input = args[0]
+    output = args[2]
+    target = TARGET
+    i = 3
+    while i < args.size
+      if args[i] == "--target" && i + 1 < args.size
+        target = args[i + 1]
+        i = i + 2
+      else
+        fail("unknown argument #{args[i]}")
+      end
+    end
+    if target != TARGET
+      fail("the native backend builds #{TARGET} only, and #{target} was asked for")
+    end
+    unless File.exists?(input)
+      fail("no such file: #{input}")
+    end
+    mod = module_of(File.read(input), input)
+    unless mod.target.architecture == "aarch64" && mod.target.darwin?
+      fail("#{input}: the module's target is not #{TARGET}")
+    end
+    runtime = module_of(builtins_ir, "rt/builtins.ir")
+    parts = output.split('/')
+    result = link_native_program(mod, runtime, parts[parts.size - 1])
+    if result.is_a?(String)
+      fail("#{input}: #{result.as(String)}")
+    end
+    image = result.as(LinkedImage)
+    File.write(output, String.new(image.executable))
+    File.chmod(output, 493)
+    print "BUILT #{output} #{image.executable.size}\n"
+  end
+end
+
+CompileNative.run
