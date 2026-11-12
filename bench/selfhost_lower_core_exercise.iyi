@@ -33,12 +33,14 @@ import compiler/lower/lower::{codegen_program}
 import compiler/lower/context::{Lowerer}
 import bench/lib/lower_gate::{attach_attrs, oracle_attr_map, printed_attr_map}
 
-# The parsed and analysed fixture: the tree and the semantic pass that typed it.
+# The parsed and analysed fixture: the tree, the semantic pass that typed it, and the object
+# layout the program itself chooses (hosted `Program#iyi_object_layout?`: the prelude's IyiRuntimeLock).
 pub class Analysis
   getter root : ASTNode
   getter visitor : MainVisitor
+  getter iyi : Bool
 
-  def initialize(@root : ASTNode, @visitor : MainVisitor)
+  def initialize(@root : ASTNode, @visitor : MainVisitor, @iyi : Bool)
   end
 end
 
@@ -57,7 +59,7 @@ def analyse(source : String, filename : String) : Analysis
   mv = MainVisitor.new(prog)
   root.accept(mv)
   RecursiveStructChecker.new(prog).run
-  Analysis.new(root, mv)
+  Analysis.new(root, mv, !prog.types["IyiRuntimeLock"]?.nil?)
 end
 
 def ir_module(triple : String) : Module
@@ -208,7 +210,7 @@ def run_lower(fixture : String, oracle_path : String) : Nil
 
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   port_text = print(m)
   port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
@@ -223,7 +225,7 @@ end
 def check_context : Nil
   analysis = analyse("nil\n", "context_check.iyi")
   m = ir_module("aarch64-apple-darwin27.0.0")
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
   low = Lowerer.new(m, typer, analysis.visitor)
   void_fn_type = m.types.func([] of IrType, m.types.void)
 
@@ -249,7 +251,7 @@ def run_emit(fixture : String, oracle_path : String) : Nil
   triple = triple_of(File.read(oracle_path))
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   puts print(m)
 end
