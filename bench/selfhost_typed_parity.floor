@@ -41,8 +41,8 @@ src/compiler/foundation/errors.iyi 9
 src/compiler/foundation/location.iyi 13
 src/compiler/foundation/string_pool.iyi 6
 src/compiler/ir/builder.iyi 133
-src/compiler/ir/function.iyi 0
-src/compiler/ir/inst.iyi 0
+src/compiler/ir/function.iyi 32
+src/compiler/ir/inst.iyi 41
 src/compiler/ir/intrinsics.iyi 22
 src/compiler/ir/layout.iyi 22
 src/compiler/ir/module.iyi 29
@@ -124,15 +124,15 @@ src/compiler/semantic/typed.iyi 2
 src/compiler/stage1.iyi 6
 src/compiler/syntax/ast.iyi 860
 src/compiler/syntax/lexer.iyi 156
-src/compiler/syntax/parser.iyi 0
+src/compiler/syntax/parser.iyi 263
 src/compiler/syntax/token.iyi 40
 src/compiler/syntax/transformer.iyi 114
 src/compiler/syntax/visitor.iyi 331
-src/compiler/tools/bind.iyi 0
+src/compiler/tools/bind.iyi 69
 src/compiler/tools/compile.iyi 8
 src/compiler/tools/compile_native.iyi 28
 src/compiler/tools/format.iyi 6
-src/compiler/tools/formatter.iyi 0
+src/compiler/tools/formatter.iyi 186
 src/compiler/tools/ir.iyi 61
 src/compiler/tools/ir_core.iyi 41
 src/compiler/tools/link_elf.iyi 29
@@ -172,7 +172,7 @@ src/iyi/io.iyi 53
 src/iyi/macros.iyi 3
 src/iyi/number.iyi 35
 src/iyi/object.iyi 26
-src/iyi/prelude.iyi 59
+src/iyi/prelude.iyi 66
 src/iyi/primitives.iyi 36
 src/iyi/range.iyi 12
 src/iyi/set.iyi 11
@@ -276,7 +276,7 @@ src/std/smtp.iyi 59
 src/std/socket.iyi 177
 src/std/sse.iyi 43
 src/std/static_array.iyi 0
-src/std/steppable.iyi 0
+src/std/steppable.iyi 15
 src/std/string_pool.iyi 21
 src/std/string_scanner.iyi 49
 src/std/symbol.iyi 17
