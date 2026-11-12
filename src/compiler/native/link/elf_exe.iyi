@@ -670,6 +670,8 @@ class ElfExe
       end
       word = exe_get(image, site, 4)
       exe_put(image, site, (word & 0xffe0001f_i64) | imm.unsafe_shl(5_i64), 4)
+    elsif kind == RelocKind::PcRel64
+      exe_put(image, site, s + a - p, 8)
     else
       fail("#{sec_name} has relocation kind #{kind}, which the static-PIE writer does not apply")
     end

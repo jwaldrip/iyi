@@ -73,6 +73,7 @@ def elf_type_of(kind : RelocKind, x86 : Bool) : Int64
     return 23_i64 if kind == RelocKind::X86TpOff32
     return 41_i64 if kind == RelocKind::X86GotPcRelX
     return 42_i64 if kind == RelocKind::X86RexGotPcRelX
+    return 24_i64 if kind == RelocKind::PcRel64
     return -1_i64
   end
   return 257_i64 if kind == RelocKind::Abs64
@@ -91,6 +92,7 @@ def elf_type_of(kind : RelocKind, x86 : Bool) : Int64
   return 312_i64 if kind == RelocKind::A64GotLo12
   return 545_i64 if kind == RelocKind::A64TprelMovwG1
   return 548_i64 if kind == RelocKind::A64TprelMovwG0Nc
+  return 260_i64 if kind == RelocKind::PcRel64
   -1_i64
 end
 
@@ -106,6 +108,7 @@ def elf_kind_code(type : Int64, x86 : Bool) : Int64
     return 6_i64 if type == 23_i64
     return 7_i64 if type == 41_i64
     return 8_i64 if type == 42_i64
+    return 9_i64 if type == 24_i64
     return -1_i64
   end
   return 10_i64 if type == 257_i64
@@ -124,6 +127,7 @@ def elf_kind_code(type : Int64, x86 : Bool) : Int64
   return 23_i64 if type == 312_i64
   return 24_i64 if type == 545_i64
   return 25_i64 if type == 548_i64
+  return 26_i64 if type == 260_i64
   -1_i64
 end
 
@@ -201,6 +205,9 @@ def elf_kind_of_code(code : Int64) : RelocKind
   if code == 24_i64
     return RelocKind::A64TprelMovwG1
   end
+  if code == 9_i64 || code == 26_i64
+    return RelocKind::PcRel64
+  end
   RelocKind::A64TprelMovwG0Nc
 end
 
@@ -263,8 +270,10 @@ class ElfReader
   property symtab : Int64
   property strtab : Int64
   property shstrndx : Int64
+  property drop_groups : Bool
 
   def initialize(@data : Bytes, @target : ::Compiler::Platform::Target::Target)
+    @drop_groups = false
     @failure = nil
     @x86 = @target.architecture == "x86_64"
     @headers = [] of ElfHeaderEntry
@@ -427,6 +436,8 @@ class ElfReader
         @model_of << -1_i64
       elsif h.type == ElfConst::SHT_STRTAB
         reject("section #{i} is a string table the reader does not take")
+        @model_of << -1_i64
+      elsif h.type == ElfConst::SHT_GROUP && @drop_groups
         @model_of << -1_i64
       elsif h.type == ElfConst::SHT_GROUP || h.type == ElfConst::SHT_SYMTAB_SHNDX
         reject("section #{i} is of type #{h.type}, which the reader does not take")
@@ -949,6 +960,15 @@ end
 # Reads an ELF object of x86_64 or aarch64. Returns the object, or the reason it does not read.
 pub def read_object(bytes : ::Std::Slice::Bytes, target : ::Compiler::Platform::Target::Target) : ObjectFile | ObjError
   ElfReader.new(bytes, target).read
+end
+
+# Reads an object for the linker: as read_object, but COMDAT group sections are dropped rather than refused. Their
+# members stay in the link, so a weak definition links once; a duplicated strong one is a link error. The object
+# writer does not carry the groups, so an object read this way is not written back for an exact round trip.
+pub def read_object_linkable(bytes : ::Std::Slice::Bytes, target : ::Compiler::Platform::Target::Target) : ObjectFile | ObjError
+  reader = ElfReader.new(bytes, target)
+  reader.drop_groups = true
+  reader.read
 end
 
 # Writes an ELF object of x86_64 or aarch64. A model the format cannot state raises, naming the part at fault.

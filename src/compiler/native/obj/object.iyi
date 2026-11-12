@@ -85,6 +85,7 @@ pub enum RelocKind
   X86RexGotPcRelX         # ELF R_X86_64_REX_GOTPCRELX (a GOT entry, relaxable with a REX prefix)
   A64TprelMovwG1          # ELF R_AARCH64_TLSLE_MOVW_TPREL_G1 (local-exec, movz with LSL 16)
   A64TprelMovwG0Nc        # ELF R_AARCH64_TLSLE_MOVW_TPREL_G0_NC (local-exec, movk)
+  PcRel64                 # 64-bit pc-relative: ELF R_AARCH64_PREL64 and R_X86_64_PC64 (eh_frame)
 end
 
 pub struct Reloc

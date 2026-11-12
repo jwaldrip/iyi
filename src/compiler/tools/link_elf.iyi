@@ -14,13 +14,39 @@ import compiler/ir/parser::{parse, IrParseError}
 import compiler/ir/module::{Module}
 import compiler/ir/verifier::{verify}
 import compiler/native/driver::{compile_module}
-import compiler/native/obj/object::{ObjectFile, ObjError}
-import compiler/native/obj/elf::{read_object, write_object}
+import compiler/native/obj/object::{ObjectFile, ObjFormat, ObjError, Section, SectionKind, Symbol, SymbolKind, SymbolBinding, Reloc}
+import compiler/native/obj/elf::{read_object, read_object_linkable, write_object}
 import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
 import compiler/platform/target::{Target}
 import std/slice::{Slice, Bytes}
 
 module LinkElfTool
+  # A stand-in `_start` for an architecture whose start code cannot be compiled yet: one trap instruction, and the
+  # `environ` word the start code defines, so an executable links and its structure can be checked, but it cannot run.
+  # Used for x86_64 until slice D2 lands.
+  def self.stub_start(arch : String, dest : String) : Nil
+    x86 = arch == "x86_64"
+    bytes = Slice(UInt8).new(4)
+    if x86
+      bytes[0] = 0xf4_u8
+      bytes[1] = 0xf4_u8
+      bytes[2] = 0xf4_u8
+      bytes[3] = 0xf4_u8
+    else
+      bytes[0] = 0x00_u8
+      bytes[1] = 0x00_u8
+      bytes[2] = 0x20_u8
+      bytes[3] = 0xd4_u8
+    end
+    target = x86 ? Target.new("x86_64-linux-gnu") : Target.new("aarch64-linux-gnu")
+    obj = ObjectFile.new(ObjFormat::Elf, target, "iyi-native")
+    obj.sections << Section.new(".text", SectionKind::Text, 4, bytes, 4_i64, [] of Reloc, 0_i64)
+    obj.sections << Section.new(".data", SectionKind::Data, 8, Slice(UInt8).new(8), 8_i64, [] of Reloc, 0_i64)
+    obj.symbols << Symbol.new("_start", SymbolKind::Func, SymbolBinding::Global, 0, 0_i64, 4_i64)
+    obj.symbols << Symbol.new("environ", SymbolKind::Object, SymbolBinding::Global, 1, 0_i64, 8_i64)
+    File.write(dest, String.new(write_object(obj)))
+    print "STUB #{arch} #{dest}\n"
+  end
   # Parses one IR text and verifies it. Raises naming the first rule it breaks.
   def self.module_of(text : String, name : String) : Module
     parsed = parse(text)
@@ -45,7 +71,7 @@ module LinkElfTool
 
   def self.read_object_file(path : String) : ObjectFile
     bytes = Slice(UInt8).of(File.read(path))
-    result = read_object(bytes, target_of(bytes))
+    result = read_object_linkable(bytes, target_of(bytes))
     if result.is_a?(ObjError)
       raise "#{path}: #{result.message}"
     end
@@ -92,6 +118,10 @@ module LinkElfTool
       start_object(args[1], args[2])
       return
     end
+    if args.size == 3 && args[0] == "stub"
+      stub_start(args[1], args[2])
+      return
+    end
     if args.size >= 4 && args[0] == "link"
       inputs = [] of String
       i = 3
@@ -102,7 +132,7 @@ module LinkElfTool
       link_program(args[1], args[2], inputs)
       return
     end
-    raise "usage: link_elf verify IR | link_elf start IR OBJ | link_elf link OUT ENTRY OBJ..."
+    raise "usage: link_elf verify IR | link_elf start IR OBJ | link_elf stub ARCH OBJ | link_elf link OUT ENTRY OBJ..."
   end
 end
 
