@@ -1,6 +1,6 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Call}
-import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type, dir_of}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/semantic/method_lookup::{MethodLookup, Matches}
@@ -12,13 +12,20 @@ import compiler/semantic/call::{CallReceiver, CallRecalculation}
 #
 #   selfhost_semantic_calls_exercise <fixture.iyi>
 #
-# Builds the fixture's declarations into a SemanticProgram, then answers each
-# `# call <expr>` line and each `# error <expr>` line and prints the same lines
-# the hosted oracle (bench/selfhost_semantic_calls_oracle.cr) prints. The
-# receiver rule and the result formats are the oracle's header. `# call` lines
-# print the lookup's matches; `# error` lines run CallRecalculation.recalculate
-# and print `ok` when the call has a target, or its error line.
+# Loads the fixture with the prelude, through the port's top-level pass and the
+# closure of what it requires (IYI_PATH is the search path, as the declarations
+# gate reads it), then answers each `# call <expr>` line and each `# error <expr>`
+# line and prints the same lines the hosted oracle
+# (bench/selfhost_semantic_calls_oracle.cr) prints. The receiver rule and the
+# result formats are the oracle's header. `# call` lines print the lookup's
+# matches; `# error` lines run CallRecalculation.recalculate and print `ok` when the
+# call has a target, or its error line.
 module BenchSelfhostSemanticCallsExercise
+  def self.search_path : Array(String)
+    text = ENV["IYI_PATH"]? || ""
+    text.split(":").select { |entry| !entry.empty? }
+  end
+
   # One match as the oracle writes it: owner, name, restrictions, return.
   def self.match_text(ts : TypeSystem, m : Match) : String
     defining = m.defining
@@ -113,12 +120,15 @@ module BenchSelfhostSemanticCallsExercise
   end
 
   def self.run(src : String, filename : String) : String
-    parser = Parser.new(src, filename)
-    node = parser.parse
     prog = SemanticProgram.new
-    # The type system is installed before the visitor runs, as the types driver does.
+    prog.search_path = search_path
+    prog.project_root = dir_of(filename)
+    # Bare, as the oracle compiles the fixture: no prelude (see the oracle's header).
+    node = Parser.new(src, filename).parse
+    visitor = TopLevelVisitor.new(prog, filename)
+    node.accept(visitor)
+    visitor.finish
     ts = TypeSystem.new(prog)
-    node.accept(TopLevelVisitor.new(prog))
     out = [] of String
     src.split("\n").each do |line|
       if line.starts_with?("# call ")

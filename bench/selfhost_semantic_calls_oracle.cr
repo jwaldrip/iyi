@@ -2,8 +2,8 @@
 #
 #   selfhost_semantic_calls_oracle <fixture.iyi>
 #
-# Builds the fixture's declarations into the hosted Program, then evaluates each
-# line of two kinds and prints one line for each:
+# Builds the fixture's declarations into the hosted Program (bare, no prelude),
+# then evaluates each line of two kinds and prints one line for each:
 #
 #   # call <expr>   =>  <expr> => <matches> | none | error: <first line of the message>
 #   # error <expr>  =>  <expr> => ok | error: <first line of the message>
@@ -36,9 +36,10 @@
 # The port's driver (bench/selfhost_semantic_calls_exercise.iyi) prints the same
 # lines for the same fixtures, and the gate requires them byte-identical.
 #
-# Not covered here (and not written in the fixtures): splats, block arguments,
-# autocast of literals, free variables, virtual receivers, and `new`. Their
-# hosted behaviour is later increments of slice S1c.
+# Not covered here (and not written in the fixtures): splats, autocast of
+# literals, free variables, and virtual receivers. Their hosted behaviour is later
+# increments of slice S1c. The prelude is not loaded: restrictions on prelude
+# types overflow the port's type model (see the report of the prelude step).
 require "compiler/requires"
 
 RECEIVER_ERROR = "receiver is not resolvable"

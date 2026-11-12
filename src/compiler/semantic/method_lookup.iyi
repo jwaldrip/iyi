@@ -33,16 +33,16 @@ end
 # `new` on a metaclass: the hosted pass gives a class a `self.new` for every
 # instance `initialize` (the same arguments, no body), added before any explicit
 # `def self.new`, so the explicit one chains onto them. The declarations slice
-# makes those defs on its branch; this port does not record them, and `own_defs`
-# synthesises them from the instance's own initialize defs, then appends the
-# explicit ones. A class with its own initialize does not search its ancestors
-# for `new`, as hosted lookup_new_in_ancestors? says.
+# records those on the metaclass, so when the metaclass has a `new` list it is
+# used as it is. When it has none, `own_defs` synthesises the list from the
+# instance's own initialize defs, which is what the hosted lookup would find. A
+# class with its own initialize does not search its ancestors for `new`, as
+# hosted lookup_new_in_ancestors? says.
 pub class MethodLookup
-  # The types the walk visits after *type*. The port's MetaclassType records no
-  # parents, so the metaclass of a class is walked to the metaclass of its
-  # superclass here, which is what the hosted metaclass has. The declarations
-  # slice owns that wiring in top_level.iyi; this is the stand-in until it
-  # records it there. Extended modules are not walked yet.
+  # The types the walk visits after *type*. The metaclass of a class is walked to
+  # the metaclass of its superclass, which is what the hosted metaclass has. The
+  # declarations slice's MetaclassType may record its parents now; when it does
+  # not, this is the stand-in. Extended modules are not walked yet.
   def self.parents_of(type : ModuleType) : Array(Type)
     if type.is_a?(MetaclassType)
       instance = type.as(MetaclassType).instance_type
@@ -79,34 +79,29 @@ pub class MethodLookup
   end
 
   # The defs of *name* declared on *type* itself, in the hosted order. For `new`
-  # on a metaclass: the synthesised defs of the instance's own initialize, then
-  # the explicit `self.new` defs. Nil when there are none.
+  # on a metaclass: the list the declarations slice recorded (the synthesised
+  # initialize-new defs, then the explicit ones) when there is one, else the
+  # defs synthesised here from the instance's own initialize.
   def self.own_defs(type : ModuleType, name : String) : Array(Def)?
     if name != "new"
       defs = type.defs[name]?
       return defs.as(Array(Def)) if defs
       return nil
     end
-    out = [] of Def
+    recorded = type.defs["new"]?
+    return recorded.as(Array(Def)) if recorded
     instance = instance_module(type)
-    if instance
-      inits = instance.as(ModuleType).defs["initialize"]?
-      if inits
-        inits.as(Array(Def)).each do |init|
-          made = Def.new("new", init.args, Nop.new)
-          made.splat_index = init.splat_index
-          made.block_arg = init.block_arg
-          made.double_splat = init.double_splat
-          made.free_vars = init.free_vars
-          out << made
-        end
-      end
-    end
-    explicit = type.defs["new"]?
-    if explicit
-      explicit.as(Array(Def)).each do |d|
-        out << d
-      end
+    return nil if instance.nil?
+    inits = instance.as(ModuleType).defs["initialize"]?
+    return nil if inits.nil?
+    out = [] of Def
+    inits.as(Array(Def)).each do |init|
+      made = Def.new("new", init.args, Nop.new)
+      made.splat_index = init.splat_index
+      made.block_arg = init.block_arg
+      made.double_splat = init.double_splat
+      made.free_vars = init.free_vars
+      out << made
     end
     return nil if out.empty?
     out

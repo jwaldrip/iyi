@@ -15,6 +15,7 @@
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+export IYI_PATH="$REPO/src"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 LOOKUP_FILE="$REPO/src/compiler/semantic/method_lookup.iyi"
