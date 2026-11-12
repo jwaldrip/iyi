@@ -45,6 +45,7 @@ MUTATED=""
 LC_ALL=C
 export LC_ALL
 export IYI_CACHE_DIR="$WORK/cache"
+export IYI_PATH="$REPO/src"
 trap 'if [ -n "$MUTATED" ]; then cp "$WORK/mutation.orig" "$MUTATED"; fi; rm -rf "$WORK"' EXIT INT TERM
 
 ORACLE="$WORK/oracle"

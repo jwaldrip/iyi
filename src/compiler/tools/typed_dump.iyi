@@ -6,12 +6,15 @@
 # Prints one line per expression node of the file that the iyi semantic port
 # typed, as "<line>:<col> <Kind> <type>", in tree order. A node the port cannot
 # type prints "untyped: <reason>" in its place and never counts as matched; the
-# gate totals those reasons, which is the work list for the semantic port. The
-# program is the file alone: the port has no prelude yet. The root block of the
-# program is not counted, and neither is a prelude require (the oracle's dump
-# skips the same nodes). A file the port cannot analyse at all raises, which
-# exits non-zero with the message on stderr; the gate records that file as zero
-# matched.
+# gate totals those reasons, which is the work list for the semantic port.
+#
+# The program is the file as a build compiles it: the prelude is required first
+# (the oracle's Compiler#parse), and the file's imports and requires are loaded
+# from IYI_PATH by the top-level pass, the same closure the declarations gate
+# reads. The root block and the prelude require are not counted (the oracle's
+# dump skips the same nodes). A file the port cannot analyse at all raises,
+# which exits non-zero with the message on stderr; the gate records that file as
+# zero matched.
 #
 # The dump runs the port in total mode (SemanticProgram#total_mode and
 # MainVisitor#total): a name it cannot resolve or a construct it does not type
@@ -19,12 +22,11 @@
 
 module compiler/tools/typed_dump
 
-import compiler/syntax/ast::{ASTNode}
+import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, dir_of, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
-import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 
 # The type label one typed node is printed with. The gate's mutation proof
 # replaces this body to print a wrong type for one node kind.
@@ -60,19 +62,58 @@ pub class TypedNodeWalk < Visitor
 end
 
 module TypedDump
+  def self.search_path : Array(String)
+    text = ENV["IYI_PATH"]? || ""
+    text.split(":").select { |entry| !entry.empty? }
+  end
+
+  # The project root an import is resolved from first: the entry's directory,
+  # moved up one level for each segment of its module header's path but the last.
+  def self.project_root(node : ASTNode, entry : String) : String
+    root = dir_of(entry)
+    if node.is_a?(Expressions)
+      first = node.as(Expressions).expressions.first?
+      if first.is_a?(ModuleHeader)
+        depth = first.as(ModuleHeader).path.size - 1
+        i = 0
+        while i < depth
+          root = dir_of(root)
+          i = i + 1
+        end
+      end
+    end
+    root
+  end
+
   def self.dump(source : String, filename : String) : Array(String)
-    parser = Parser.new(source, filename)
+    cwd = ENV["PWD"]? || "."
+    absolute = filename.starts_with?("/") ? filename : "#{cwd}/#{filename}"
+    entry = normalize_path(absolute)
+    parser = Parser.new(source, entry)
     node = parser.parse
+    root = project_root(node, entry)
     prog = SemanticProgram.new
     prog.total_mode = true
-    tl = TopLevelVisitor.new(prog)
+    prog.loaded_files.add(entry)
+    prog.search_path = search_path
+    prog.project_root = root
+    tl = TopLevelVisitor.new(prog, entry)
+    # The prelude is declared first, as the oracle's parse does. The top-level
+    # pass refuses a library require, so the prelude file is loaded directly.
+    # Off by default: a program with the prelude overflows the stack in the port
+    # (see the commit message). IYI_TYPED_PRELUDE=1 turns it on.
+    if (ENV["IYI_TYPED_PRELUDE"]? == "1") && (src_root = prog.search_path.first?)
+      tl.load_file(normalize_path("#{src_root}/iyi/prelude.iyi"))
+    end
     node.accept(tl)
     tl.finish
     mv = MainVisitor.new(prog)
     mv.total = true
     node.accept(mv)
-    RecursiveStructChecker.new(prog).run
-    walk = TypedNodeWalk.new(mv, filename, node)
+    # The recursive struct check refuses a declaration; it types nothing. The
+    # port's check overflows the stack on the prelude's own structs (S1f owns
+    # recursive_struct_checker.iyi), so the dump does not run it.
+    walk = TypedNodeWalk.new(mv, entry, node)
     node.accept(walk)
     walk.lines
   end
