@@ -14,7 +14,7 @@ end
 
 def callseven : Int64
   out = 0_i64
-  asm("bl _seven" : "={x0}"(out) : : "x30" : "volatile")
+  asm("bl _seven" : "={x0}"(out) :: "x30" : "volatile")
   out
 end
 

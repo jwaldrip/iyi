@@ -44,6 +44,48 @@ pub def u64_as_i64(u : UInt64) : Int64
   end
 end
 
+# The two's complement negation of `words`, taken across all of them: the magnitude of a negative value.
+def negate_words(words : Array(UInt64)) : Array(UInt64)
+  out = [] of UInt64
+  carry = 1_u64
+  words.each do |w|
+    inv = w ^ 0xFFFFFFFFFFFFFFFF_u64
+    sum = inv &+ carry
+    carry = (carry == 1_u64 && sum == 0_u64) ? 1_u64 : 0_u64
+    out << sum
+  end
+  out
+end
+
+# The `bits`-bit two's complement value of `words`: every bit from `bits` up is a copy of bit `bits - 1`. Its words are
+# the canonical form of that value, so a word list equals its own sign extension exactly when it fits `bits` bits.
+pub def sign_extend_words(words : Array(UInt64), bits : Int32) : Array(UInt64)
+  top = bits - 1
+  k = top // 64
+  r = top % 64
+  sign = ((words[k] >> r) & 1_u64) == 1_u64
+  keep = r == 63 ? 0xFFFFFFFFFFFFFFFF_u64 : (1_u64 << (r + 1)) - 1_u64
+  high = keep ^ 0xFFFFFFFFFFFFFFFF_u64
+  out = [] of UInt64
+  i = 0
+  while i < words.size
+    if i < k
+      out << words[i]
+    elsif i == k
+      out << (sign ? (words[i] | high) : (words[i] & keep))
+    else
+      out << (sign ? 0xFFFFFFFFFFFFFFFF_u64 : 0_u64)
+    end
+    i = i + 1
+  end
+  out
+end
+
+# The canonical words of the `bits`-bit integer that `words` (least significant first, as Int64) truncates to.
+pub def canonical_words(words : Array(Int64), bits : Int32) : Array(Int64)
+  sign_extend_words(words.map { |w| w.unsafe_to_u64 }, bits).map { |w| u64_as_i64(w) }
+end
+
 # A 128-bit constant as two 64-bit halves in two's complement: `hi` holds bits 64 to 127, `lo` bits 0 to 63.
 pub class Wide128
   getter hi : Int64
@@ -53,21 +95,37 @@ pub class Wide128
   end
 end
 
-# The 128-bit value of `text` in decimal, LLVM's signed form (`-5`, `170141183460469231731687303715884105727`).
-# Nil when the text is not a decimal number or does not fit the signed range [-2^127, 2^127 - 1].
+# The 128-bit value of `text` in decimal, LLVM's signed form. Nil when it does not fit [-2^127, 2^127 - 1].
 pub def i128_parse(text : String) : Wide128?
+  if words = int_words_parse(text, 128)
+    return Wide128.new(words[1], words[0])
+  end
+  nil
+end
+
+# A 128-bit two's complement constant as LLVM's signed decimal text.
+pub def i128_text(hi : Int64, lo : Int64) : String
+  int_words_text([lo, hi], 128)
+end
+
+# The 64-bit words of the `bits`-bit integer that `text` writes in decimal (LLVM's signed form, `-5`), least
+# significant first and sign-extended to whole words. Nil when the text is not a decimal number or does not fit the
+# signed range [-2^(bits-1), 2^(bits-1) - 1].
+pub def int_words_parse(text : String, bits : Int32) : Array(Int64)?
   negative = text.starts_with?("-")
   digits = negative ? text[1, text.bytesize - 1] : text
   return nil if digits.empty?
-  # Limbs of 32 bits, least significant first.
-  limbs = [0_u64, 0_u64, 0_u64, 0_u64]
+  count = (bits + 63) // 64
+  # 32-bit limbs, least significant first; the spare limb holds a magnitude one word past the value's own.
+  limbs = [] of UInt64
+  (2 * count + 1).times { limbs << 0_u64 }
   i = 0
   while i < digits.bytesize
     b = digits.byte_at(i)
     return nil if b < 48_u8 || b > 57_u8
     carry = (b - 48_u8).to_i64.unsafe_to_u64
     k = 0
-    while k < 4
+    while k < limbs.size
       current = limbs[k] * 10_u64 + carry
       limbs[k] = current & 0xFFFFFFFF_u64
       carry = current >> 32
@@ -76,49 +134,55 @@ pub def i128_parse(text : String) : Wide128?
     return nil unless carry == 0_u64
     i = i + 1
   end
-  lo = (limbs[1] << 32) | limbs[0]
-  hi = (limbs[3] << 32) | limbs[2]
-  top_clear = (hi >> 63) == 0_u64
-  limit_hit = hi == 9223372036854775808_u64 && lo == 0_u64
-  if negative
-    return nil unless top_clear || limit_hit
-    lo_n = (lo ^ 0xFFFFFFFFFFFFFFFF_u64) &+ 1_u64
-    carry_n = lo_n == 0_u64 ? 1_u64 : 0_u64
-    hi_n = (hi ^ 0xFFFFFFFFFFFFFFFF_u64) &+ carry_n
-    return Wide128.new(u64_as_i64(hi_n), u64_as_i64(lo_n))
+  k = 2 * count
+  while k < limbs.size
+    return nil unless limbs[k] == 0_u64
+    k = k + 1
   end
-  return nil unless top_clear
-  Wide128.new(u64_as_i64(hi), u64_as_i64(lo))
+  words = [] of UInt64
+  j = 0
+  while j < count
+    words << (limbs[2 * j] | (limbs[2 * j + 1] << 32))
+    j = j + 1
+  end
+  # A zero is never negative; the value's top bit must then agree with its sign, and its bits above must be a sign extension.
+  negative = negative && words.any? { |w| w != 0_u64 }
+  words = negate_words(words) if negative
+  top = bits - 1
+  sign_set = ((words[top // 64] >> (top % 64)) & 1_u64) == 1_u64
+  return nil unless sign_set == negative
+  return nil unless sign_extend_words(words, bits) == words
+  words.map { |w| u64_as_i64(w) }
 end
 
-# A 128-bit two's complement constant as LLVM's signed decimal text.
-pub def i128_text(hi : Int64, lo : Int64) : String
-  negative = hi < 0_i64
-  mh = hi.unsafe_to_u64
-  ml = lo.unsafe_to_u64
-  if negative
-    # The magnitude of a negative value is its two's complement: (~hi:~lo) + 1.
-    lo_n = (ml ^ 0xFFFFFFFFFFFFFFFF_u64) &+ 1_u64
-    carry = lo_n == 0_u64 ? 1_u64 : 0_u64
-    mh = (mh ^ 0xFFFFFFFFFFFFFFFF_u64) &+ carry
-    ml = lo_n
-  end
-  digits = unsigned_decimal(mh, ml)
+# LLVM's signed decimal text of the `bits`-bit integer whose 64-bit words are `words`, least significant first.
+pub def int_words_text(words : Array(Int64), bits : Int32) : String
+  count = (bits + 63) // 64
+  raise "a #{bits}-bit integer takes #{count} words, not #{words.size}" unless words.size == count
+  value = sign_extend_words(words.map { |w| w.unsafe_to_u64 }, bits)
+  top = bits - 1
+  negative = ((value[top // 64] >> (top % 64)) & 1_u64) == 1_u64
+  magnitude = negative ? negate_words(value) : value
+  digits = unsigned_words_decimal(magnitude)
   negative ? "-" + digits : digits
 end
 
-# The decimal digits of the unsigned 128-bit value (hi:lo), by repeated division of 32-bit limbs by ten.
-pub def unsigned_decimal(hi : UInt64, lo : UInt64) : String
-  limbs = [hi >> 32, hi & 0xFFFFFFFF_u64, lo >> 32, lo & 0xFFFFFFFF_u64]
+# The decimal digits of the unsigned value of `words` (least significant first), by repeated division of 32-bit limbs.
+def unsigned_words_decimal(words : Array(UInt64)) : String
+  limbs = [] of UInt64
+  words.each do |w|
+    limbs << (w & 0xFFFFFFFF_u64)
+    limbs << (w >> 32)
+  end
   digits = [] of String
-  while limbs[0] != 0_u64 || limbs[1] != 0_u64 || limbs[2] != 0_u64 || limbs[3] != 0_u64
+  while limbs.any? { |l| l != 0_u64 }
     remainder = 0_u64
-    k = 0
-    while k < 4
+    k = limbs.size - 1
+    while k >= 0
       current = (remainder << 32) | limbs[k]
       limbs[k] = current // 10_u64
       remainder = current % 10_u64
-      k = k + 1
+      k = k - 1
     end
     digits << remainder.to_s
   end

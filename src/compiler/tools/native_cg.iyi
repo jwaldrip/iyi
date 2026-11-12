@@ -41,7 +41,7 @@ def reg(n : Int32) : Operand
 end
 
 def mk(op : MOp) : MInst
-  MInst.new(op)
+  MInst.new(op.value.to_i32)
 end
 
 # Every form the selector can produce, one instruction each (two for the address pairs).

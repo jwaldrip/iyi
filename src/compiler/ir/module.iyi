@@ -13,9 +13,9 @@ pub class Module
   getter target : Target
   getter layout : DataLayout
   getter types : TypeTable
-  getter files : Array(String)            # DebugLoc#file indexes this
-  getter flags : Hash(String, Int64)      # module flags (branch-target-enforcement, cf-protection)
-  getter globals : Array(Global)          # emission order is part of determinism
+  getter files : Array(String)       # DebugLoc#file indexes this
+  getter flags : Hash(String, Int64) # module flags (branch-target-enforcement, cf-protection)
+  getter globals : Array(Global)     # emission order is part of determinism
   getter functions : Array(Function)
 
   def initialize(@name : String, @target : Target, @layout : DataLayout)

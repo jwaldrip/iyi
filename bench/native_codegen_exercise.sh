@@ -421,13 +421,13 @@ prove_mutation "isel: the subtraction's operands swap" \
   check_arith
 prove_mutation "frame: callee-saved registers are not saved in the prologue" \
   src/compiler/native/frame.iyi \
-  '    m = MInst.new(MOp::SpStore)' \
-  '    m = MInst.new(MOp::Label)' \
+  '    m = new_inst(fn.isa, Role::SaveReg)' \
+  '    m = MInst.new(MOp::Label.value.to_i32)' \
   check_recursion
 prove_mutation "frame: the stack probe is dropped" \
   src/compiler/native/frame.iyi \
-  '    acc << MInst.new(MOp::ZeroSp)' \
-  '    acc << MInst.new(MOp::Label)' \
+  '    acc << new_inst(fn.isa, Role::Probe)' \
+  '    acc << MInst.new(MOp::Label.value.to_i32)' \
   check_probe
 prove_mutation "iyi convention: the second leaf of a split aggregate takes the wrong register" \
   src/compiler/native/lower.iyi \
@@ -543,8 +543,8 @@ prove_mutation "asm: a relocation names the wrong symbol" \
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \
-    '    m = MInst.new(MOp::SpStore)' \
-    '    m = MInst.new(MOp::SpStore)' \
+    '    m = new_inst(fn.isa, Role::SaveReg)' \
+    '    m = new_inst(fn.isa, Role::SaveReg)' \
     check_probe | grep -q 'PATCH CHANGED NOTHING'; then
   echo "refused: the no-op proof does not pass"
 else
