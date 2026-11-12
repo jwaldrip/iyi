@@ -35,51 +35,74 @@ There are 23 selfhost gates (`ls bench/selfhost_*_exercise.sh | wc -l`). Each ro
 
 | Gate | Exit | Summary line from its log |
 |---|---|---|
-| `selfhost_ast_exercise` | pending | pending |
-| `selfhost_bind_exercise` | pending | pending |
-| `selfhost_codegen_exercise` | pending | pending |
-| `selfhost_command_exercise` | pending | pending |
-| `selfhost_compile_exercise` | pending | pending |
-| `selfhost_daemon_exercise` | pending | pending |
-| `selfhost_format_wiring_exercise` | pending | pending |
-| `selfhost_formatter_exercise` | pending | pending |
-| `selfhost_ir_valid_exercise` | pending | pending |
-| `selfhost_iyimod_exercise` | pending | pending |
-| `selfhost_lexer_exercise` | pending | pending |
-| `selfhost_llvm_exercise` | pending | pending |
-| `selfhost_macros_exercise` | pending | pending |
-| `selfhost_mod_wiring_exercise` | pending | pending |
-| `selfhost_normalizer_exercise` | pending | pending |
-| `selfhost_parser_exercise` | pending | pending |
-| `selfhost_parser_wiring_exercise` | pending | pending |
-| `selfhost_platform_exercise` | pending | pending |
-| `selfhost_prelude_exercise` | pending | pending |
-| `selfhost_prelude_whole_exercise` | pending | pending |
-| `selfhost_semantic_exercise` | pending | pending |
-| `selfhost_stage_one_exercise` | pending | pending |
-| `selfhost_types_exercise` | pending | pending |
+| `selfhost_ast_exercise` | `exit=0` | `ALL SELFHOST AST CHECKS PASSED SUCCESSFULLY!` |
+| `selfhost_bind_exercise` | `exit=1` | `== SELFHOST BIND CHECKS FAILED` |
+| `selfhost_codegen_exercise` | `exit=1` | `== SOME SELFHOST CODEGEN CHECKS FAILED` |
+| `selfhost_command_exercise` | `exit=1` | `== SELFHOST COMMAND DRIVER CHECKS FAILED` |
+| `selfhost_compile_exercise` | `exit=1` | `SOME SELFHOST COMPILE CHECKS FAILED` |
+| `selfhost_daemon_exercise` | `exit=1` | `FAILED to build bench/selfhost_daemon_exercise.iyi` |
+| `selfhost_format_wiring_exercise` | `exit=1` | `(no summary line)` |
+| `selfhost_formatter_exercise` | `exit=1` | `FAILED: could not build bench/selfhost_formatter_exercise.iyi` |
+| `selfhost_ir_valid_exercise` | `exit=1` | `SOME SELFHOST IR VALIDITY CHECKS FAILED` |
+| `selfhost_iyimod_exercise` | `exit=1` | `== SELFHOST IYIMOD CHECKS FAILED` |
+| `selfhost_lexer_exercise` | `exit=0` | `== ALL SELFHOST LEXER EXERCISE CHECKS PASSED!` |
+| `selfhost_llvm_exercise` | `exit=1` | `(no summary line)` |
+| `selfhost_macros_exercise` | `exit=0` | `== ALL SELFHOST MACRO CHECKS PASSED` |
+| `selfhost_mod_wiring_exercise` | `exit=1` | `(no summary line)` |
+| `selfhost_normalizer_exercise` | `exit=1` | `== SELFHOST NORMALIZER CHECKS FAILED` |
+| `selfhost_parser_exercise` | `exit=0` | `== ALL SELFHOST PARSER EXERCISE CHECKS PASSED!` |
+| `selfhost_parser_wiring_exercise` | `exit=1` | `CHECKS FAILED` |
+| `selfhost_platform_exercise` | `exit=0` | `== ALL SELFHOST PLATFORM EXERCISE CHECKS PASSED!` |
+| `selfhost_prelude_exercise` | `exit=1` | `SOME SELFHOST PRELUDE CHECKS FAILED` |
+| `selfhost_prelude_whole_exercise` | `exit=1` | `SOME SELFHOST PRELUDE WHOLE CHECKS FAILED` |
+| `selfhost_semantic_exercise` | `exit=0` | `== ALL SELFHOST SEMANTIC CHECKS PASSED` |
+| `selfhost_stage_one_exercise` | `exit=1` | `(no summary line)` |
+| `selfhost_types_exercise` | `exit=0` | `== ALL SELFHOST TYPES CHECKS PASSED ==` |
 
 ## 4. Holes
 
 ### Hole 1: the pipeline orchestrator
 
-* **Status:** pending (`selfhost_compile_exercise`).
-* **Evidence:** `src/compiler/compiler.iyi` (575 lines) orchestrates resolve, parse, normalise, semantic, code generation, object emission and linking. It calls `append_entry_point` (line 137) and `Compiler.append_raise_runtime` (line 139, when the program does not define `__crystal_raise`). `src/compiler/tools/compile.iyi` (108 lines) is the command-line wrapper over it. The gate's summary: pending
+* **Status:** `exit=1` (`selfhost_compile_exercise`).
+* **Evidence:** `src/compiler/compiler.iyi` (575 lines) orchestrates resolve, parse, normalise, semantic, code generation, object emission and linking. It calls `append_entry_point` (line 137) and `Compiler.append_raise_runtime` (line 139, when the program does not define `__crystal_raise`). `src/compiler/tools/compile.iyi` (108 lines) is the command-line wrapper over it. The gate's summary: `SOME SELFHOST COMPILE CHECKS FAILED`
 
 ### Hole 2: the module resolver
 
-* **Status:** pending, the same gate.
+* **Status:** `exit=1`, the same gate.
 * **Evidence:** `src/compiler/loader.iyi` (343 lines) resolves imports against relative directories, header roots and `IYI_PATH`, detects cycles, and orders modules topologically. The gate runs `bench/fixtures/compile_multi_import.iyi`, `compile_diamond.iyi` and `compile_missing_import.iyi`, among others (`ls bench/fixtures/compile_*.iyi` lists 17 fixtures).
 
 ### Hole 3: the prelude barrier, and why it is not closed
 
-* **Phase gate.** `bench/selfhost_prelude_exercise.sh` records the highest phase each file in `src/iyi` reaches. Its verdict is pending, and its summary is pending. Committed floors cover 17 files. `chaos.iyi`, `chaos_points.iyi` and `testing.iyi` have no floor and default to `none` (the `*)` case in the script), so the gate cannot catch a regression in them. The phase table below is the gate's own output:
+* **Phase gate.** `bench/selfhost_prelude_exercise.sh` records the highest phase each file in `src/iyi` reaches. Its verdict is `exit=1`, and its summary is `SOME SELFHOST PRELUDE CHECKS FAILED`. Committed floors cover 17 files. `chaos.iyi`, `chaos_points.iyi` and `testing.iyi` have no floor and default to `none` (the `*)` case in the script), so the gate cannot catch a regression in them. The phase table below is the gate's own output:
 
-pending (the phase table is the gate's own output, added with the verdict table)
+The gate's rows, from `/tmp/iyi-b-baseline/selfhost_prelude_exercise.log`:
 
-* **Whole-prelude gate.** `bench/selfhost_prelude_whole_exercise.sh` compiles the prelude as one unit rather than file by file. Verdict pending. Summary: pending
+| File | Lines | Floor | Reached | Note |
+|---|---:|---|---|---|
+| `array.iyi` | 934 | link | codegen | REGRESSION |
+| `atomic.iyi` | 90 | link | link | matched |
+| `chaos.iyi` | 616 | none | link | IMPROVED |
+| `chaos_points.iyi` | 43 | none | link | IMPROVED |
+| `concurrency.iyi` | 8332 | link | parse | REGRESSION |
+| `enum.iyi` | 161 | link | link | matched |
+| `file.iyi` | 145 | link | link | matched |
+| `float.iyi` | 1975 | link | none | REGRESSION |
+| `hash.iyi` | 617 | link | link | matched |
+| `io.iyi` | 470 | link | link | matched |
+| `macros.iyi` | 68 | link | link | matched |
+| `number.iyi` | 295 | link | link | matched |
+| `object.iyi` | 152 | link | link | matched |
+| `prelude.iyi` | 11736 | link | codegen | REGRESSION |
+| `primitives.iyi` | 366 | link | link | matched |
+| `range.iyi` | 88 | link | link | matched |
+| `set.iyi` | 68 | link | link | matched |
+| `string.iyi` | 771 | link | link | matched |
+| `testing.iyi` | 254 | none | link | IMPROVED |
+| `thread.iyi` | 1699 | link | link | matched |
 
-* **IR validity.** `bench/selfhost_ir_valid_exercise.sh` checks that the IR the backend emits verifies, not only that it is accepted by object emission. Its verdict is pending. Its summary is pending. Two files are recorded as known failures, `concurrency.iyi` and `prelude.iyi`, and `prelude.iyi` inherits the same defect, as the gate's comment says, because it requires `concurrency.iyi`. The verifier message for `concurrency.iyi`, from the log, is: pending. Object emission accepting a module does not make the module valid, and invalid IR is likely to surface as a miscompile before it surfaces as an error [INFERENCE].
+* **Whole-prelude gate.** `bench/selfhost_prelude_whole_exercise.sh` compiles the prelude as one unit rather than file by file. Verdict `exit=1`. Summary: `SOME SELFHOST PRELUDE WHOLE CHECKS FAILED`
+
+* **IR validity.** `bench/selfhost_ir_valid_exercise.sh` checks that the IR the backend emits verifies, not only that it is accepted by object emission. Its verdict is `exit=1`. Its summary is `SOME SELFHOST IR VALIDITY CHECKS FAILED`. Two files are recorded as known failures, `concurrency.iyi` and `prelude.iyi`, and `prelude.iyi` inherits the same defect, as the gate's comment says, because it requires `concurrency.iyi`. The verifier message for `concurrency.iyi`, from the log, is: `concurrency.iyi known-fail absent`. Object emission accepting a module does not make the module valid, and invalid IR is likely to surface as a miscompile before it surfaces as an error [INFERENCE].
 
 * **The raise runtime is being retired.** The port carries a native unwinder, `Compiler.append_raise_runtime` (`src/compiler/compiler.iyi`, line 424), which declares the platform unwinder's entry points (`_Unwind_RaiseException` and five others, lines 438 to 443) and implements `__crystal_raise`, `__crystal_personality` and `__crystal_get_exception` on the Itanium C++ exception ABI: the `_Unwind_*` entry points, and the language-specific call-site tables its personality routine parses. It is being retired because iyi refuses `rescue` and `ensure` in iyi files (SPEC.md, the paragraph that begins "Because errors are values returned early", lines 2409 to 2415). A runtime that exists to implement `rescue` has no caller once `rescue` is refused. Nothing in the tree retires it yet.
 
@@ -87,12 +110,12 @@ pending (the phase table is the gate's own output, added with the verdict table)
 
 ### Hole 4: macros in semantic traversal
 
-* **Status:** pending (`selfhost_semantic_exercise`).
-* **Evidence:** `src/compiler/semantic/main_visitor.iyi` imports `MacroEngine` (line 8), visits `Macro` nodes (line 80) and constructs a `MacroEngine` (line 95). Whether macros expand during traversal is what the semantic gate tests. The gate's summary: pending
+* **Status:** `exit=0` (`selfhost_semantic_exercise`).
+* **Evidence:** `src/compiler/semantic/main_visitor.iyi` imports `MacroEngine` (line 8), visits `Macro` nodes (line 80) and constructs a `MacroEngine` (line 95). Whether macros expand during traversal is what the semantic gate tests. The gate's summary: `== ALL SELFHOST SEMANTIC CHECKS PASSED`
 
 ### Hole 5: top-level statements in code generation
 
-* **Status:** pending, the same gate.
+* **Status:** `exit=1`, the same gate.
 * **Evidence:** `append_entry_point` (`src/compiler/codegen/codegen.iyi`, line 4349) wraps top-level statements into `__crystal_main` and `main`. It is called from `codegen.iyi` (line 4422) and from `compiler.iyi` (line 137), so the single-file path and the multi-file pipeline share one wrapper. `bench/fixtures/compile_top_level.iyi` and `compile_no_top_level.iyi` are the probes.
 
 ### Hole 6: the bootstrap chicken-and-egg
@@ -103,10 +126,10 @@ pending (the phase table is the gate's own output, added with the verdict table)
 
 The steps are in dependency order. Each one says what is measured.
 
-1. **End-to-end program compiler.** `.build/iyi-compile` is built from `src/compiler/tools/compile.iyi` and the gate is pending. Done as far as the gate proves.
+1. **End-to-end program compiler.** `.build/iyi-compile` is built from `src/compiler/tools/compile.iyi` and the gate is `exit=1`. Done as far as the gate proves.
 2. **Semantic analysis as a companion tool.** Not started. `src/compiler/tools/` holds `bind.iyi`, `compile.iyi`, `format.iyi`, `formatter.iyi`, `mod.iyi` and `parse.iyi` (`ls src/compiler/tools`), and no check tool. `iyi check --parse-only [--selfhost]` is the only selfhost mode (`src/compiler/iyi/command/check.cr`, the usage line).
-3. **Multi-file loader.** Done as far as the gate proves, with `src/compiler/loader.iyi` (343 lines) and pending.
-4. **Code generation primitives: string literals, heap layouts, generics.** Partly done. The codegen gate is pending. The gaps are the IR validity gap in hole 3 and STAGE_ONE.md section 3, layer 6.
+3. **Multi-file loader.** Done as far as the gate proves, with `src/compiler/loader.iyi` (343 lines) and `exit=1`.
+4. **Code generation primitives: string literals, heap layouts, generics.** Partly done. The codegen gate is `exit=1`. The gaps are the IR validity gap in hole 3 and STAGE_ONE.md section 3, layer 6.
 5. **Minimal compiler prelude.** Not started. `src/compiler/prelude.iyi` does not exist (`ls src/compiler/prelude.iyi` fails).
 6. **Top-level assembly.** Partly. `src/compiler/stage1.iyi` (37 lines) is the entry point. It does not compile at this commit, so no assembled binary exists (STAGE_ONE.md section 5).
 7. **Stage one cutover and removal of the collector.** Not started. `bin/iyi` still execs `.build/iyi`, which Crystal builds (`bin/iyi`, lines 16 and 18).
