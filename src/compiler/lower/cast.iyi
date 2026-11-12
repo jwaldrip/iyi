@@ -1,0 +1,135 @@
+module compiler/lower/cast
+
+# The port of the mixed-union part of `src/compiler/iyi/codegen/cast.cr` and `unions.cr`: the
+# stores that put a value into a mixed union, which is the struct `{ i32 type id, [N x i64]
+# value area }` (lower/typer.iyi mixed_union_struct, hosted `create_llvm_type(MixedUnionType)`).
+#
+# Ported (increment 4, first part):
+#   - `assign`: a store of a value of the target's type (the caller's store), a value of
+#     another type into a mixed union target (hosted `assign_distinct(MixedUnionType, Type)`,
+#     through `store_in_union`, `store_bool_in_union` and `store_nil_in_union`).
+#   - `union_temp` and `upcast`: a fresh alloca of the union holding the value, which the
+#     hosted branch of `codegen_if` writes and joins by pointer (hosted `upcast`).
+#   - `type_id_value`: the type id of a type, read from its global `@"<Name>:type_id"` as the
+#     hosted `type_id` does (an internal constant global, loaded).
+# Refused by name: a union value stored into a union (assign_distinct_union_types), a nilable
+# target (NilableType, `upcast` into a nilable), a reference union, a tuple or named tuple, a
+# virtual type, a proc, a pointer and a class value (their store helpers are later increments),
+# and `downcast`, `to_lhs`, `to_rhs`, `union_type_id` reads (later increments).
+
+import compiler/ir/function::{Global, Linkage}
+import compiler/ir/types::{IrType}
+import compiler/ir/values::{Value}
+import compiler/lower/context::{Lowerer}
+import compiler/lower/helpers::{load_aligned, store_aligned}
+import compiler/lower/pending::{pending_visit_node}
+import compiler/lower/typer::{primitive_kind}
+import compiler/lower/unions::{mixed_union_value_area}
+import compiler/semantic/top_level::{NilType, Type, UnionType}
+import compiler/types/types::{MixedUnionType}
+
+# The type id of a type as a loaded value: the hosted `type_id(type)` loads it from the
+# global `@"<full name>:type_id"`, an internal constant, created on first use.
+pub def type_id_value(low : Lowerer, t : Type) : Value
+  name = "#{t.full_name}:type_id"
+  global = low.module.get_global?(name)
+  if global.nil?
+    made = low.module.add_global(name, low.module.types.int32)
+    made.global_constant = true
+    made.linkage = Linkage::Internal
+    made.initializer = low.builder.const_int(low.module.types.int32, low.type_ids.type_id(t).to_i64)
+    global = made
+  end
+  load_aligned(low, low.module.types.int32, global.as(Global))
+end
+
+# The pointer to a mixed union's type id word (hosted `union_type_id`: field 0).
+pub def union_type_id_ptr(low : Lowerer, struct_type : IrType, union_pointer : Value) : Value
+  zero = low.builder.const_int(low.module.types.int32, 0_i64)
+  index = low.builder.const_int(low.module.types.int32, 0_i64)
+  low.builder.inbounds_gep(struct_type, union_pointer, [zero, index] of Value)
+end
+
+# The pointer to a mixed union's value area (hosted `union_value`: field 1).
+pub def union_value_ptr(low : Lowerer, struct_type : IrType, union_pointer : Value) : Value
+  zero = low.builder.const_int(low.module.types.int32, 0_i64)
+  index = low.builder.const_int(low.module.types.int32, 1_i64)
+  low.builder.inbounds_gep(struct_type, union_pointer, [zero, index] of Value)
+end
+
+# The hosted `assign`: a value of `value_type` stored where a `target` lives. A value of the
+# target's own type is stored as it is; a value of another type goes into a mixed union.
+# A nil value into a union only writes the type id and the zeroed area (the caller must not
+# store the nil itself).
+pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
+  if target.full_name == value_type.full_name
+    store_aligned(low, value, pointer)
+    return
+  end
+  if value_type.is_a?(UnionType)
+    pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (union into union, hosted assign_distinct_union_types)")
+    return
+  end
+  if target.is_a?(MixedUnionType)
+    assign_mixed_union(low, pointer, target, value_type, value)
+    return
+  end
+  pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (hosted assign_distinct, not ported)")
+end
+
+# The hosted `assign_distinct(MixedUnionType, Type)` for a value that is one of the union's
+# member types. A value that is not a member is refused by name.
+pub def assign_mixed_union(low : Lowerer, pointer : Value, target : MixedUnionType, value_type : Type, value : Value) : Nil
+  member = false
+  target.union_types.each do |ut|
+    member = true if ut.full_name == value_type.full_name
+  end
+  unless member
+    pending_visit_node("assign #{value_type.full_name} to #{target.full_name}: not a member (hosted cast.cr, compatible type)")
+    return
+  end
+  store_in_union(low, target, pointer, value_type, value)
+end
+
+# The hosted `store_in_union` (unions.cr): the type id, then the value into the value area.
+# A Bool is zero-extended to the width of the area (hosted store_bool_in_union), a nil writes
+# the zeroed area (hosted store_nil_in_union), and a number, Char or Symbol is stored at its
+# own width. Any other value type is refused by name (its store is a later increment).
+pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, value_type : Type, value : Value) : Nil
+  struct_ir = low.typer.llvm_type(union_type)
+  area = mixed_union_value_area(struct_ir)
+  store_aligned(low, type_id_value(low, value_type), union_type_id_ptr(low, struct_ir, union_pointer))
+  field = union_value_ptr(low, struct_ir, union_pointer)
+  kind = primitive_kind(value_type)
+  if value_type.is_a?(NilType)
+    store_aligned(low, low.builder.const_zero(area), field)
+    return
+  end
+  if kind == "bool"
+    bits = low.typer.size_of(area) * 8
+    widened = low.builder.zext(value, low.module.types.int(bits.to_i32))
+    store_aligned(low, widened, field)
+    return
+  end
+  if kind == "int" || kind == "char" || kind == "symbol" || kind == "float"
+    store_aligned(low, value, field)
+    return
+  end
+  pending_visit_node("store of #{value_type.full_name} in #{union_type.full_name} (hosted store_value, not ported)")
+end
+
+# A fresh alloca of the union type holding `value` of `value_type` (the hosted branch of an
+# `if` whose type is a union writes its value into one of these, and joins the pointers).
+pub def union_temp(low : Lowerer, union_type : Type, value_type : Type, value : Value) : Value
+  temp = low.alloca(low.typer.llvm_type(union_type), "")
+  assign(low, temp, union_type, value_type, value)
+  temp
+end
+
+# The hosted `upcast`: the union value of `value` of `value_type` in `to`, loaded from a
+# temporary. Structurally this is not the hosted `if` join (which keeps the temporary's
+# pointer); the core's join uses `union_temp` for identity with the hosted module.
+pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
+  temp = union_temp(low, to, from, value)
+  load_aligned(low, low.typer.llvm_type(to), temp)
+end
