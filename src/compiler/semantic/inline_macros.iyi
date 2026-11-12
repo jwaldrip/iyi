@@ -1,0 +1,77 @@
+module compiler/semantic/inline_macros
+
+import compiler/syntax/ast::{ASTNode}
+import compiler/syntax/parser::{Parser}
+import compiler/semantic/normalizer::{Normalizer}
+import compiler/macros/engine::{MacroEngine}
+
+# One inline macro site the declarations pass visited: the file it is written in,
+# its kind and place, and why the engine refused it (nil when it expanded, an empty
+# expansion included). The gate prints these, so a refused site is counted and
+# never dropped.
+pub class InlineMacroSite
+  property file : String
+  property kind : String
+  property line : Int32
+  property column : Int32
+  property reason : String?
+
+  def initialize(@file : String, @kind : String, @line : Int32, @column : Int32, @reason : String?)
+  end
+end
+
+# Every inline macro site the pass visited in this run, in visiting order, across
+# the files it loaded. A caller filters by file to measure one file.
+pub class InlineMacroLedger
+  @@sites = [] of InlineMacroSite
+
+  def self.sites : Array(InlineMacroSite)
+    @@sites
+  end
+
+  def self.record(site : InlineMacroSite) : Nil
+    @@sites << site
+    nil
+  end
+
+  def self.reset : Nil
+    @@sites = [] of InlineMacroSite
+    nil
+  end
+end
+
+# Expands one inline macro site (`{% if %}`, `{% for %}` or `{{ }}` at the top
+# level, in a type body or in a `lib` body) as the hosted pass expands it: with a
+# fresh interpreter that names `scope_name` for `@type` and `@top_level`, the output
+# is parsed in the site's file and normalised. A site in a `lib` body is parsed as a
+# lib body (`fun` declarations with no body). Returns the expansion for the caller
+# to visit in the same scope, or nil when the engine refuses the site or the
+# expansion is empty. Either way the site is recorded in the ledger.
+#
+# The expansion's nodes carry the lines of the expansion text, not of the site: the
+# declarations pass reads only the file a node was written in, which the site
+# shares. A line reported for a declaration a macro made is the expansion's line.
+pub def expand_inline_macro(site : ASTNode, scope_name : String, filename : String, in_lib : Bool) : ASTNode?
+  report = MacroEngine.new.site_report(site, scope_name)
+  first = report.sites.first
+  kind = first.kind
+  line = first.line
+  column = first.column
+
+  if f = report.failure
+    InlineMacroLedger.record(InlineMacroSite.new(filename, kind, line, column, f.message))
+    return nil
+  end
+  if report.skipped
+    InlineMacroLedger.record(InlineMacroSite.new(filename, kind, line, column, "skip_file ends the file's expansion early, which the port does not expand"))
+    return nil
+  end
+
+  InlineMacroLedger.record(InlineMacroSite.new(filename, kind, line, column, nil))
+  text = report.output
+  return nil if text.bytesize == 0
+
+  parser = Parser.new(text, filename)
+  parsed = in_lib ? parser.parse_lib_body : parser.parse
+  Normalizer.new.normalize(parsed)
+end

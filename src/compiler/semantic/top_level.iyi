@@ -4,9 +4,10 @@ import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
-import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
+import compiler/semantic/inline_macros::{expand_inline_macro}
 
 pub class TypeException
   getter message : String
@@ -1676,6 +1677,7 @@ pub class PendingIvar
   property initializer : ASTNode?
   # An explicit `@x : T` is typed by T's virtual type (hosted declare_instance_var).
   property virtual : Bool
+  property imports : Hash(String, Type)? = nil
 
   def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false)
   end
@@ -1705,20 +1707,41 @@ pub class TopLevelVisitor < Visitor
   @enum_flags : Bool = false
   @pending_flags : Bool = false
 
-  # Every explicit instance variable is recorded here, in the order the source
-  # declares it, and resolved only now: a type named later in the file is known
-  # by then. Resolving at the visit would record an ivar whose type comes later
-  # after the ones that resolve at once, and every later offset would move (the
-  # hosted declarations pass keeps declaration order: TypeDeclarationVisitor).
+  # Every explicit instance variable is recorded here, in the order the source declares it.
+  # Resolves the pending instance variables this visitor holds, once, after every file it
+  # read is declared. A restriction may name a type a later file declares (`concurrency.iyi`
+  # restricts an ivar to `IyiDeferNode`, declared in `prelude.iyi`). Each one resolves with
+  # the imports of the file that wrote it; resolving at the visit would move every later offset
+  # (the hosted declarations pass keeps declaration order: TypeDeclarationVisitor).
   def finish : Nil
+    saved = @program.current_imports
     @pending_ivars.each do |pi|
+      if imports = pi.imports
+        @program.current_imports = imports
+      else
+        @program.current_imports = saved
+      end
       arg_type = @program.lookup_type_node(pi.restriction, pi.owner)
       mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
       mv.owner = pi.owner
       pi.owner.instance_vars[pi.name] = mv
       @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
     end
+    @program.current_imports = saved
     @pending_ivars.clear
+  end
+
+  # A file that `load_file` reads hands its pending instance variables to the file that
+  # reads it. Each keeps the imports of the file that wrote it.
+  def take_pending_ivars : Array(PendingIvar)
+    taken = @pending_ivars
+    taken.each do |pi|
+      if pi.imports.nil?
+        pi.imports = @program.current_imports
+      end
+    end
+    @pending_ivars = [] of PendingIvar
+    taken
   end
 
   def initialize(@program : SemanticProgram, @file : String? = nil)
@@ -1862,9 +1885,13 @@ pub class TopLevelVisitor < Visitor
     saved = @program.current_imports
     saved_defs = @program.current_import_defs
     @program.current_imports = Hash(String, Type).new
+    # A required file never finishes its own pending instance variables. It hands them to
+    # the file that reads it, and the root that read them finishes once, after every file
+    # it read is declared (the hosted pass resolves them after all top-level declarations).
+    inner.exp_nest = 1
     @program.current_import_defs = Hash(String, Array(Def)).new
     nodes.accept(inner)
-    inner.finish
+    inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
     @program.current_imports = saved
     @program.current_import_defs = saved_defs
     if unit = inner.unit
@@ -2738,6 +2765,23 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroIf) : Bool
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+      expanded.accept(self)
+    end
+    false
+  end
+
+  def visit(node : MacroFor) : Bool
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+      expanded.accept(self)
+    end
+    false
+  end
+
+  def visit(node : MacroExpression) : Bool
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+      expanded.accept(self)
+    end
     false
   end
 
@@ -3067,10 +3111,16 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
     end
   end
 
-  # Every top-level type is walked: the entry filter prints what the entry declares, and
-  # a namespace the entry shares a name with a built-in (`module enum/x` under the built-in
-  # Enum) holds declarations the built-in set would have hidden.
-  user_type_names = program.types.keys.sorted
+  # With an entry, every top-level type is walked: the entry filter prints what the entry
+  # declares, and a namespace the entry shares a name with a built-in (`module enum/x` under
+  # the built-in Enum) holds declarations the built-in set would have hidden. With no entry
+  # (a whole-program dump), the built-in types are not user types and are left out.
+  user_type_names = [] of String
+  program.types.keys.sorted.each do |name|
+    if !entry.nil? || !program.initial_type_names.includes?(name)
+      user_type_names << name
+    end
+  end
 
   user_type_names.each do |name|
     # With no entry, a built-in name is not the program's own declaration (the typed dump
