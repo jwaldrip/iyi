@@ -181,3 +181,4 @@ src/compiler/lower/instance_var.iyi parse
 src/compiler/lower/abi/aarch64.iyi parse
 src/compiler/lower/program.iyi parse
 src/compiler/native/const_expr.iyi parse
+src/compiler/semantic/lib_call.iyi parse
