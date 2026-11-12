@@ -110,7 +110,7 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
   # a nilable reference is one pointer, so a reference value is stored as it is and nil is the null pointer.
   if nilable_reference_type?(target)
     if value_type.nil_type?
-      store_aligned(low, low.builder.const_null(low.typer.llvm_type(target)), pointer)
+      store_aligned(low, low.builder.const_null(low.module.types.ptr), pointer)
       return
     end
     if !value_type.is_a?(UnionType) && TypeQueries.reference_like?(value_type)

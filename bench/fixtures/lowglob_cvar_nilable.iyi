@@ -1,25 +1,16 @@
 class Node
-  def initialize(@value : Int32)
-  end
-
-  def value : Int32
-    @value
-  end
 end
 
 class K
   @@head : Node?
 
-  def self.put(node : Node)
-    @@head = node
+  def self.put
+    @@head = nil
   end
 
-  def self.value : Int32
-    if node = @@head
-      node.value
-    else
-      0
-    end
+  def self.head : Nil
+    @@head
+    nil
   end
 end
 
@@ -27,5 +18,6 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-K.put(Node.new(7))
-LibC.exit(K.value)
+K.put
+K.head
+LibC.exit(0)

@@ -149,8 +149,12 @@ end
 
 # The IR type of the variable (hosted `llvm_type(class_var.type)`), refused unless it is an integer or a float.
 pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
+  # A nilable reference is one pointer (hosted llvm_type); the typer would declare the class's struct for it, which the hosted module does not print.
+  if nilable_reference_type?(cvar.type)
+    return low.module.types.ptr
+  end
   ir = low.typer.llvm_type(cvar.type)
-  if !(ir.int? || ir.float? || (ir.pointer? && nilable_reference_type?(cvar.type)))
+  if !(ir.int? || ir.float?)
     refuse_port("lower: class variable #{cvar.name} is not an integer, a float or a nilable reference: the struct and the non-nilable pointer initialisers are not ported yet (hosted class_var.cr: initialize_class_var)")
   end
   ir
@@ -278,6 +282,8 @@ pub def uninitialised_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : Stri
   end
   ir = cvar_ir_type(low, cvar)
   g = declare_cvar_global(low, name, ir, st)
+  # The hosted global of a nilable reference is not made internal (it prints as the default, external, linkage).
+  g.linkage = Linkage::External
   if g.initializer.nil?
     g.initializer = low.builder.const_null(ir)
   end
