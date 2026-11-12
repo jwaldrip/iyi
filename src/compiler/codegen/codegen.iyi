@@ -25,7 +25,7 @@ module compiler/codegen/codegen
 
 import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
-import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Unless, Var, While, Yield, MacroIf, MacroLiteral}
+import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Unless, Var, While, Yield, MacroIf, MacroLiteral, VisibilityModifier}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/token::{NumberKind}
@@ -2605,6 +2605,18 @@ pub class CodeGenVisitor < Visitor
     end
   end
 
+  # `{% if %}` in a body: the condition is a macro expression the macro engine
+  # evaluates against the target's flags, and only the chosen branch is emitted,
+  # as the oracle expands it. Walking both branches would refuse a flag the
+  # target does not set.
+  def visit(node : MacroIf) : Bool
+    interp = MacroInterpreter.new
+    cond_val = interp.evaluate(node.cond)
+    branch = MacroMethods.truthy?(cond_val) ? node.then : node.else
+    branch.accept(self)
+    false
+  end
+
   def visit(node : Call) : Bool
     if node.name == "as" && node.args.size == 1 && (as_obj = node.obj)
       as_obj.accept(self)
@@ -4679,6 +4691,10 @@ def expand_body_nodes(node : ASTNode) : Array(ASTNode)
     cond_val = interp.evaluate(mif.cond)
     branch = MacroMethods.truthy?(cond_val) ? mif.then : mif.else
     res.concat(expand_body_nodes(branch))
+  elsif node.is_a?(VisibilityModifier)
+    # `private def f` is a def under a visibility modifier; the method table
+    # registers the def, as the oracle's does.
+    res.concat(expand_body_nodes(node.as(VisibilityModifier).exp))
   else
     res << node
   end
