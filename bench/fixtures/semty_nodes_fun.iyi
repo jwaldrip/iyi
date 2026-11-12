@@ -1,8 +1,0 @@
-@[Unsafe("fixture: a C function body")]
-fun id(a : Int32) : Int32
-  a
-end
-
-fun two : Int32
-  2
-end

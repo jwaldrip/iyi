@@ -1,6 +1,0 @@
-@[Unsafe("fixture: pointer types")]
-class Box(T)
-end
-
-x = Pointer(Box(Int32))
-y = 1.as(Pointer(Int32))

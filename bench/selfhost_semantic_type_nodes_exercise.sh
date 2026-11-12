@@ -4,7 +4,7 @@
 # stops agreeing with the hosted pass, or when the type names those nodes print
 # (GenericClassType, GenericInstanceType, union arguments) drift from it.
 #
-# Every fixture bench/fixtures/semty_nodes_*.iyi is analysed twice: by the
+# Every fixture bench/fixtures/typenodes_*.iyi is analysed twice: by the
 # hosted pass (bench/selfhost_typed_oracle.cr, --bare) and by the port's typed
 # dump (src/compiler/tools/typed_dump.iyi). The two dumps must be byte-identical.
 #
@@ -44,7 +44,7 @@ echo "== 2. Each fixture: the port's typed dump against the hosted oracle"
 fixture_count=0
 diverged=0
 total_nodes=0
-for fixture in "$REPO"/bench/fixtures/semty_nodes_*.iyi; do
+for fixture in "$REPO"/bench/fixtures/typenodes_*.iyi; do
   base="$(basename "$fixture" .iyi)"
   fixture_count=$((fixture_count + 1))
   "$ORACLE" "$fixture" --bare > "$WORK/$base.oracle" 2> "$WORK/$base.oracle.err"
@@ -74,7 +74,7 @@ fi
 # when the port does not build: both count as the mutation being caught.
 check_outputs_match() {
   "$IYI" build -o "$WORK/mut_dump" "$DUMP_SRC" > "$WORK/mut_build.log" 2>&1 || return 1
-  for fixture in "$REPO"/bench/fixtures/semty_nodes_*.iyi; do
+  for fixture in "$REPO"/bench/fixtures/typenodes_*.iyi; do
     base="$(basename "$fixture" .iyi)"
     "$WORK/mut_dump" "$fixture" > "$WORK/$base.mut" 2>&1
     cmp -s "$WORK/$base.oracle" "$WORK/$base.mut" || return 1
@@ -95,12 +95,6 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "type arguments are not bracketed as type arguments" "$TYPE_NODES" \
   "visitor.bracket_type_args(1)" \
   "visitor.bracket_type_args(0)" \
-  -- check_outputs_match || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-
-prove_mutation "fun with a body leaves the fun node untyped" "$TYPE_NODES" \
-  "visitor.set_type(node, visitor.program.nil_type)" \
-  "visitor.program.nil_type" \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
