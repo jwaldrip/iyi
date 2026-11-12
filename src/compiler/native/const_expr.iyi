@@ -84,6 +84,17 @@ pub def reduce_const(layout : DataLayout, v : Value) : ConstAddress | String
     return ConstAddress.new(start.base, off)
   end
 
+  if i.aux_int == Op::Mul.value.to_i64
+    left = reduce_const(layout, i.args[0])
+    return left if left.is_a?(String)
+    right = reduce_const(layout, i.args[1])
+    return right if right.is_a?(String)
+    a = left.as(ConstAddress)
+    b = right.as(ConstAddress)
+    return "a constant expression multiplies a symbol" if !a.base.nil? || !b.base.nil?
+    return ConstAddress.new(nil, wrap_to_bits(a.offset * b.offset, i.type.int? ? i.type.bits : 64))
+  end
+
   if i.aux_int == Op::Add.value.to_i64 || i.aux_int == Op::Sub.value.to_i64
     left = reduce_const(layout, i.args[0])
     return left if left.is_a?(String)

@@ -228,8 +228,8 @@ class IrPrinter
       operands = i.args.map { |a| typed(a, numbers) }.join(", ")
       return "getelementptr" + (gep.inbounds ? " inbounds" : "") + " (#{gep.source_type.to_s}, #{operands})"
     end
-    if i.aux_int == Op::Add.value.to_i64 || i.aux_int == Op::Sub.value.to_i64
-      name = i.aux_int == Op::Add.value.to_i64 ? "add" : "sub"
+    if i.aux_int == Op::Add.value.to_i64 || i.aux_int == Op::Sub.value.to_i64 || i.aux_int == Op::Mul.value.to_i64
+      name = i.aux_int == Op::Add.value.to_i64 ? "add" : (i.aux_int == Op::Sub.value.to_i64 ? "sub" : "mul")
       return "#{name} (#{typed(i.args[0], numbers)}, #{typed(i.args[1], numbers)})"
     end
     name = cast_word(i.aux_int)
