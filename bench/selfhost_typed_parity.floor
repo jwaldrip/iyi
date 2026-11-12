@@ -308,3 +308,7 @@ src/compiler/types/instances.iyi 15
 src/compiler/types/intersect.iyi 28
 src/compiler/types/lookup.iyi 39
 src/compiler/types/to_restriction.iyi 24
+src/compiler/lower/layouts.iyi 0
+src/compiler/lower/type_id.iyi 0
+src/compiler/lower/typer.iyi 0
+src/compiler/lower/unions.iyi 0

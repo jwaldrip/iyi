@@ -37,6 +37,10 @@ src/compiler/llvm/pass_manager.iyi parse
 src/compiler/llvm/target.iyi parse
 src/compiler/llvm/values.iyi parse
 src/compiler/loader.iyi parse
+src/compiler/lower/layouts.iyi parse
+src/compiler/lower/type_id.iyi parse
+src/compiler/lower/typer.iyi parse
+src/compiler/lower/unions.iyi parse
 src/compiler/macros/answers.iyi parse
 src/compiler/macros/ast.iyi parse
 src/compiler/macros/engine.iyi parse
