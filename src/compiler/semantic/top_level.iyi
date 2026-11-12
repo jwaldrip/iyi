@@ -2628,6 +2628,7 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
     end
   end
 end
+
 # A type the entry declares is printed with its nested types. One it does not declare (a
 # namespace another file made, such as `Std` for a header `std/file` whose import made
 # it first) is not, but the types inside it that the entry declares still are, one level
