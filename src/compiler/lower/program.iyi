@@ -376,6 +376,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(d.body).nil?
+    refused << "reached\t#{lowering_example(d, inst.self_type)}\t-\t-"
     outcome = group do |g|
       task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m) }
       task.value
