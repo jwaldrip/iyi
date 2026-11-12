@@ -8,9 +8,22 @@ import std/digest
 pub class NormalizerProgram
   property iyi_prelude : Bool
   @temp_vars : Hash(String, Int32)
+  @flags : Array(String)
 
   def initialize(@iyi_prelude : Bool = true)
     @temp_vars = Hash(String, Int32).new
+    @flags = [] of String
+  end
+
+  # Flags the program was built with, read the way the hosted program's
+  # `has_flag?` reads them. The port starts with none; a driver sets the ones
+  # its fixtures need.
+  def set_flag(name : String) : Nil
+    @flags << name
+  end
+
+  def has_flag?(name : String) : Bool
+    @flags.any? { |flag| flag == name }
   end
 
   def reset_temp_vars : Nil

@@ -540,6 +540,10 @@ class LiteralWalk < Iyi::Transformer
   def transform(node : Iyi::Case) : Iyi::ASTNode
     Iyi::LiteralExpander.new(@program).expand(node).transform(self)
   end
+
+  def transform(node : Iyi::MultiAssign) : Iyi::ASTNode
+    Iyi::LiteralExpander.new(@program).expand(node).transform(self)
+  end
 end
 
 filename = ARGV[0]
@@ -549,8 +553,11 @@ parser.filename = filename
 node = parser.parse
 node = Iyi::Program.new.normalize(node)
 
-if ARGV.size > 1 && ARGV[1] == "literals"
-  node = node.transform(LiteralWalk.new(Iyi::Program.new))
+mode = ARGV.size > 1 ? ARGV[1] : ""
+if mode == "literals" || mode == "literals-strict"
+  walk_program = Iyi::Program.new
+  walk_program.flags.add("strict_multi_assign") if mode == "literals-strict"
+  node = node.transform(LiteralWalk.new(walk_program))
 end
 
 if ARGV.size > 1 && ARGV[1] == "--count"

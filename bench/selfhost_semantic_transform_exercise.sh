@@ -213,14 +213,23 @@ echo "== 5. Literal expansion: range literals, the port's walk against the hoste
 # That is the parser's divergence, not the expander's, so every adjacency case
 # here carries a variable piece.
 LITERAL="$REPO/src/compiler/semantic/literal_expander.iyi"
+# Fixtures named semtx_lit_strict_* are walked with strict_multi_assign set on
+# the program, as the hosted program is when that flag is given. Every other
+# literal fixture is walked with no flags.
+lit_mode() {
+  case "$(basename "$1")" in
+    semtx_lit_strict_*) echo literals-strict ;;
+    *) echo literals ;;
+  esac
+}
 lit_count=0
 lit_diverged=0
 for fixture in "$REPO"/bench/fixtures/semtx_lit_*.iyi; do
   name="bench/fixtures/$(basename "$fixture")"
   lit_count=$((lit_count + 1))
-  "$WORK/port_exercise" "$fixture" literals > "$WORK/lit_iyi.ast" 2> "$WORK/lit_iyi.err" || {
+  "$WORK/port_exercise" "$fixture" "$(lit_mode "$fixture")" > "$WORK/lit_iyi.ast" 2> "$WORK/lit_iyi.err" || {
     echo "  $name: LITERAL PORT FAILED"; cat "$WORK/lit_iyi.err"; lit_diverged=$((lit_diverged + 1)); status=1; continue; }
-  IYI_PATH="$REPO/src" "$WORK/dump_crystal" "$fixture" literals > "$WORK/lit_oracle.ast" 2> "$WORK/lit_oracle.err" || {
+  IYI_PATH="$REPO/src" "$WORK/dump_crystal" "$fixture" "$(lit_mode "$fixture")" > "$WORK/lit_oracle.ast" 2> "$WORK/lit_oracle.err" || {
     echo "  $name: HOSTED LITERAL WALK FAILED"; cat "$WORK/lit_oracle.err"; lit_diverged=$((lit_diverged + 1)); status=1; continue; }
   if cmp -s "$WORK/lit_iyi.ast" "$WORK/lit_oracle.ast"; then
     echo "  $name: identical (the literal walk lowers the same trees as the hosted walk)"
@@ -239,8 +248,8 @@ echo "  Parity summary: literal $((lit_count - lit_diverged))/$lit_count fixture
 check_literals_agree() {
   "$IYI" build -o "$WORK/lit_mut_port" "$WORK/semtx_port.iyi" > /dev/null 2>&1 || return 1
   for fixture in "$REPO"/bench/fixtures/semtx_lit_*.iyi; do
-    "$WORK/lit_mut_port" "$fixture" literals > "$WORK/lit_mut.ast" 2> /dev/null || return 1
-    IYI_PATH="$REPO/src" "$WORK/dump_crystal" "$fixture" literals > "$WORK/lit_mut_oracle.ast" || return 1
+    "$WORK/lit_mut_port" "$fixture" "$(lit_mode "$fixture")" > "$WORK/lit_mut.ast" 2> /dev/null || return 1
+    IYI_PATH="$REPO/src" "$WORK/dump_crystal" "$fixture" "$(lit_mode "$fixture")" > "$WORK/lit_mut_oracle.ast" || return 1
     cmp -s "$WORK/lit_mut.ast" "$WORK/lit_mut_oracle.ast" || return 1
   done
   return 0
@@ -290,6 +299,18 @@ LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a type chain drops the else of the when" "$LITERAL" 'cur = tail' 'cur = Nop.new' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a branch's it is not renamed to its temporary" "$LITERAL" 'if node.name == "it"' 'if false' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "the strict count check ignores the flag" "$LITERAL" 'checked = @program.has_flag?("strict_multi_assign") || middle_splat' 'checked = middle_splat' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a target after a splat is indexed from the front" "$LITERAL" 'index = i - count' 'index = i' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a splat with an underscore name is still assigned" "$LITERAL" 'if i == splat_at && splat_underscore' 'if i == splat_at && false' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a call target is assigned without the = suffix" "$LITERAL" 'call.name = call.name + "="' 'call.name = call.name' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a negative end of a splat range does not count from the end" "$LITERAL" 'last = last + values.size' 'last = last + 0' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "several values are assigned to targets before their temporaries" "$LITERAL" 'to_temps.concat(from_temps)' 'from_temps.concat(to_temps)' -- check_literals_agree || status=1
 echo "  $LIT_MUTATIONS literal mutation proofs run"
 
 echo

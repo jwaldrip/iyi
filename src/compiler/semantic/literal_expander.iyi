@@ -49,7 +49,7 @@ module compiler/semantic/literal_expander
 # Named tuples have no expansion in the hosted expander either, so none here.
 
 import compiler/semantic/normalizer::{NormalizerProgram}
-import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, Metaclass, NilLiteral, Nop, NumberLiteral, Or, Path, RangeLiteral, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
+import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, Metaclass, MultiAssign, NilLiteral, Nop, NumberLiteral, Or, Path, RangeLiteral, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
@@ -76,6 +76,12 @@ pub class LiteralExpander < Transformer
       return node
     end
     expanded = expand_case(node)
+    expanded.transform(self)
+  end
+
+  # Multiple assignment: the hosted expansion, then the walk continues into it.
+  def transform(node : MultiAssign) : ASTNode
+    expanded = expand_multi_assign(node)
     expanded.transform(self)
   end
 
@@ -539,6 +545,145 @@ pub class LiteralExpander < Transformer
   # A temporary named from the node's file, as the hosted `new_temp_var(node)`.
   def temp_var_for(node : ASTNode) : Var
     Var.new(@program.new_temp_var_name(node))
+  end
+
+  # Multiple assignment, as the hosted expand(MultiAssign). Several values are
+  # each bound to a temporary, then assigned to the targets in order. A single
+  # value is bound once and each target takes an index of it; with a count
+  # check when the program asks for one (strict_multi_assign) or the splat sits
+  # in the middle, which the hosted code always checks.
+  def expand_multi_assign(node : MultiAssign) : ASTNode
+    splat_at = -1
+    splat_underscore = false
+    i = 0
+    while i < node.targets.size
+      target = node.targets[i]
+      if target.is_a?(Splat)
+        raise "BUG: splat assignment already specified" if splat_at >= 0
+        splat_at = i
+        splat_underscore = true if target.as(Splat).exp.is_a?(Underscore)
+      end
+      i += 1
+    end
+    if node.values.size == 1
+      return expand_single_multi_assign(node, splat_at, splat_underscore)
+    end
+    expand_values_multi_assign(node, splat_at, splat_underscore)
+  end
+
+  # `a, b = value`: the value goes to `__temp_N`, then each target is assigned
+  # `__temp_N[index]`. The index counts from the end after a splat.
+  def expand_single_multi_assign(node : MultiAssign, splat_at : Int32, splat_underscore : Bool) : ASTNode
+    value = node.values[0]
+    count = node.targets.size
+    middle_splat = splat_at > 0 && splat_at < count - 1
+    checked = @program.has_flag?("strict_multi_assign") || middle_splat
+    tv = temp_var
+    assigns = [] of ASTNode
+    assigns << Assign.new(tv.clone, value)
+    if checked
+      size_call = Call.new(tv.clone, "size")
+      if middle_splat
+        size_comp = Call.new(size_call, "<", [NumberLiteral.new((count - 1).to_s)] of ASTNode)
+      else
+        size_comp = Call.new(size_call, "!=", [NumberLiteral.new(count.to_s)] of ASTNode)
+      end
+      index_error = Call.new(Path.global(["IndexError"] of String), "new", [StringLiteral.new("Multiple assignment count mismatch")] of ASTNode)
+      assigns << If.new(size_comp, Call.global("raise", index_error))
+    end
+    i = 0
+    while i < count
+      target = node.targets[i]
+      if i == splat_at
+        if !splat_underscore
+          range = RangeLiteral.new(NumberLiteral.new(i.to_s), NumberLiteral.new((i - count).to_s), false)
+          assigns << transform_multi_assign_target(target, Call.new(tv.clone, "[]", [range] of ASTNode))
+        end
+      else
+        index = i
+        if splat_at >= 0 && i > splat_at
+          index = i - count
+        end
+        indexer = NumberLiteral.new(index.to_s)
+        assigns << transform_multi_assign_target(target, Call.new(tv.clone, "[]", [indexer] of ASTNode))
+      end
+      i += 1
+    end
+    Expressions.new(assigns)
+  end
+
+  # `a, b = x, y`: each value goes to its own temporary in order, then each
+  # temporary goes to its target. A splat target takes the values it covers as
+  # a tuple; `*_` leaves them in place, with no assignment for the splat.
+  def expand_values_multi_assign(node : MultiAssign, splat_at : Int32, splat_underscore : Bool) : ASTNode
+    count = node.targets.size
+    if splat_at >= 0
+      raise "BUG: multiple assignment count mismatch" if count - 1 > node.values.size
+    else
+      raise "BUG: multiple assignment count mismatch" if count != node.values.size
+    end
+    to_temps = [] of ASTNode
+    from_temps = [] of ASTNode
+    i = 0
+    while i < count
+      target = node.targets[i]
+      if i == splat_at && splat_underscore
+        to_temps.concat(values_within(node.values, i, i - count))
+      else
+        value = multi_value_for(node.values, i, count, splat_at)
+        tv = temp_var
+        to_temps << Assign.new(tv.clone, value)
+        from_temps << transform_multi_assign_target(target, tv.clone)
+      end
+      i += 1
+    end
+    to_temps.concat(from_temps)
+    Expressions.new(to_temps)
+  end
+
+  # The value a target at index `i` takes in a list of several values.
+  def multi_value_for(values : Array(ASTNode), i : Int32, count : Int32, splat_at : Int32) : ASTNode
+    if i == splat_at
+      return TupleLiteral.new(values_within(values, i, i - count))
+    end
+    if splat_at >= 0 && i > splat_at
+      return values[i - count]
+    end
+    values[i]
+  end
+
+  # The values from `from` through `to_offset`, where a negative offset counts
+  # from the end: `values[from..to_offset]`, as the hosted `each(within:)` and
+  # range index give it. Empty when the end is before the start.
+  def values_within(values : Array(ASTNode), from : Int32, to_offset : Int32) : Array(ASTNode)
+    last = to_offset
+    if last < 0
+      last = last + values.size
+    end
+    picked = [] of ASTNode
+    j = from
+    while j <= last
+      picked << values[j]
+      j += 1
+    end
+    picked
+  end
+
+  # The assignment for one target. A call target takes the value as its last
+  # argument with `=` added to its name (`a.b = v`, `c[0] = v`); a splat target
+  # is assigned through its inner expression.
+  def transform_multi_assign_target(target : ASTNode, value : ASTNode) : ASTNode
+    inner = target
+    if target.is_a?(Splat)
+      inner = target.as(Splat).exp
+    end
+    if inner.is_a?(Call)
+      call = inner.as(Call)
+      call.name = call.name + "="
+      call.args << value
+      return call
+    end
+    Assign.new(inner, value)
   end
 end
 

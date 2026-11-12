@@ -534,8 +534,16 @@ else
   node = parser.parse
   prog = NormalizerProgram.new
   norm = prog.normalize(node)
-  if Program.args.size > 1 && Program.args[1] == "literals"
-    norm = norm.transform(LiteralExpander.new(NormalizerProgram.new))
+  mode = ""
+  if Program.args.size > 1
+    mode = Program.args[1]
+  end
+  if mode == "literals" || mode == "literals-strict"
+    lit_program = NormalizerProgram.new
+    if mode == "literals-strict"
+      lit_program.set_flag("strict_multi_assign")
+    end
+    norm = norm.transform(LiteralExpander.new(lit_program))
   end
   print BenchSemanticTransformExercise.dump_ast(norm)
 end
