@@ -236,6 +236,25 @@ awk -F'\t' '
   }' "$RESULTS"
 
 echo
+echo "== 6b. Port failures by class (the port's first message, grouped; a file the port cannot analyse counts as zero matched)"
+awk -F'\t' '
+  $5 ~ /^PORT/ {
+    r = substr($5, 7)
+    c = "other"
+    if (r ~ /undefined constant/) c = "undefined constant (top-level refuses a name it cannot resolve: no imports or prelude in the dump)"
+    else if (r ~ /node has no type/) c = "BUG node has no type (a module header or annotation node the visitor does not type)"
+    else if (r ~ /undefined local variable or method/) c = "undefined local variable or method"
+    else if (r ~ /stack overflow/) c = "stack overflow"
+    else if (r ~ /[Ss]yntax error/) c = "syntax error in a file the dump parses"
+    else if (r ~ /alias|inherit|extend|already defined/) c = "declaration conflict (top-level pass)"
+    cls[c]++
+    total++
+  }
+  END {
+    for (c in cls) printf "  %5d  %s\n", cls[c], c
+    printf "  %5d  total port failures\n", total + 0
+  }' "$RESULTS" | sort -k1,1nr
+echo
 echo "== 7. The ten largest gaps (oracle nodes the port did not type identically)"
 awk -F'\t' '$4 > 0 || $3 > 0 { printf "%d\t%d\t%d\t%s\n", $3 - $4, $3, $4, $2 }' "$RESULTS" \
   | sort -t "$(printf '\t')" -k1,1nr -k4,4 | head -n 10 \
