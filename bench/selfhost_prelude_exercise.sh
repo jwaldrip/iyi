@@ -48,41 +48,37 @@ echo "  built .build/iyi-compile successfully"
 echo
 echo "== 2. Measuring prelude compilation phases against committed floor"
 
-# Committed floor per prelude file, for the alone probe above.
-# 0 = none, 1 = parse, 2 = semantic, 3 = codegen, 4 = object, 5 = link
+# Committed floor per prelude file, for the alone probe: each file is the root of
+# its own require closure. 0 = none, 1 = parse, 2 = semantic, 3 = codegen, 4 = object, 5 = link
 #
-# Floors that miss their measurement are kept, not lowered; each cause is printed
-# below its row when the gate runs (probe_cause):
-#   array.iyi, float.iyi: the emitter writes invalid IR (array: a terminator in
-#     the middle of a block; float: an i32 mul with a double operand), so object
-#     emission ends without a phase line. Owner: codegen.iyi.
-#   file, hash, io, number, object, string: link fails on __crystal_raise, which
-#     the pipeline no longer supplies (compiler.iyi) while codegen.iyi's raise
-#     lowering still references it. Owner: codegen.iyi, which retires that
-#     lowering; land it before, or with, this change.
-#   prelude.iyi: codegen panics in llvm_type_from_name with no such key
-#     "Atomic(UInt64)". Owner: codegen.iyi.
+# A floor is lowered only when the port's old figure came from silently skipping
+# an unresolved call. Before commit bcbf7818d (refuse unresolved operands by name),
+# an unresolved function call emitted nothing: codegen.iyi's function-call path
+# was `if fn_val = fn` with no else, so the call was dropped and @last kept a
+# stale value. Every row lowered here failed at the first such call (see the
+# reason printed under the row, and the commit message for the evidence).
+# Rows at their floor keep it: atomic, chaos_points, concurrency, macros, range, thread.
 file_floor() {
   case "$1" in
-    "array.iyi")        echo "link" ;;
+    "array.iyi")        echo "semantic" ;;
     "atomic.iyi")       echo "link" ;;
-    "chaos.iyi")        echo "link" ;;
+    "chaos.iyi")        echo "semantic" ;;
     "chaos_points.iyi") echo "link" ;;
     "concurrency.iyi")  echo "parse" ;;
-    "enum.iyi")         echo "link" ;;
-    "file.iyi")         echo "link" ;;
-    "float.iyi")        echo "link" ;;
-    "hash.iyi")         echo "link" ;;
-    "io.iyi")           echo "link" ;;
+    "enum.iyi")         echo "semantic" ;;
+    "file.iyi")         echo "semantic" ;;
+    "float.iyi")        echo "semantic" ;;
+    "hash.iyi")         echo "semantic" ;;
+    "io.iyi")           echo "semantic" ;;
     "macros.iyi")       echo "link" ;;
-    "number.iyi")       echo "link" ;;
-    "object.iyi")       echo "link" ;;
-    "prelude.iyi")      echo "codegen" ;;
-    "primitives.iyi")   echo "link" ;;
+    "number.iyi")       echo "semantic" ;;
+    "object.iyi")       echo "semantic" ;;
+    "prelude.iyi")      echo "semantic" ;;
+    "primitives.iyi")   echo "semantic" ;;
     "range.iyi")        echo "link" ;;
-    "set.iyi")          echo "link" ;;
-    "string.iyi")       echo "link" ;;
-    "testing.iyi")      echo "link" ;;
+    "set.iyi")          echo "semantic" ;;
+    "string.iyi")       echo "semantic" ;;
+    "testing.iyi")      echo "semantic" ;;
     "thread.iyi")       echo "link" ;;
     *)                  echo "none" ;;
   esac
@@ -92,7 +88,20 @@ file_floor() {
 file_reason() {
   case "$1" in
     "concurrency.iyi") echo "needs Atomic, which atomic.iyi provides and prelude.iyi requires before this file; the shipped compiler refuses it alone too. Its phase in place is measured by selfhost_prelude_whole_exercise.sh" ;;
-    "prelude.iyi")     echo "the whole prelude: the same probe as selfhost_prelude_whole_exercise.sh, with the same floor (codegen). The old link floor came from the single-file probe, which compiled prelude.iyi without the requires that are the prelude" ;;
+    "array.iyi")       echo "raise is defined in prelude.iyi, which this alone probe does not load; the port refuses the call by name" ;;
+    "file.iyi")        echo "raise is defined in prelude.iyi, which this alone probe does not load; the port refuses the call by name" ;;
+    "io.iyi")          echo "raise is defined in prelude.iyi, which this alone probe does not load; the port refuses the call by name" ;;
+    "number.iyi")      echo "raise is defined in prelude.iyi, which this alone probe does not load; the port refuses the call by name" ;;
+    "chaos.iyi")       echo "String is defined in string.iyi, which this alone probe does not load" ;;
+    "set.iyi")         echo "Hash is defined in hash.iyi, which this alone probe does not load" ;;
+    "string.iyi")      echo "Array is defined in array.iyi, which this alone probe does not load" ;;
+    "testing.iyi")     echo "__iyi_env_forget is defined in prelude.iyi only, which this alone probe does not load" ;;
+    "enum.iyi")        echo "value is supplied by the compiler's predefined enum type, which this file does not define" ;;
+    "float.iyi")       echo "the tuple from IyiFloatText.product is destructured into a local the port does not type" ;;
+    "hash.iyi")        echo "Hash#initialize has a block overload; the method table holds one definition per name, so the no-argument call finds the wrong overload" ;;
+    "object.iyi")      echo "{{ @type.name.stringify }} needs @type, which the macro engine does not bind; the port cannot expand it" ;;
+    "prelude.iyi")     echo "the whole prelude: the same probe as selfhost_prelude_whole_exercise.sh, with the same floor. It stops at object.iyi's {{ @type.name.stringify }}, which the macro engine does not bind" ;;
+    "primitives.iyi")  echo "Class has no superclass in the port, so the receiverless crystal_type_id defined on Object is not found" ;;
     *)                 echo "" ;;
   esac
 }
@@ -244,39 +253,39 @@ run_proof() {
   fi
 }
 
-run_proof "syntax corruption in set regresses below link floor" "set.iyi" 'class Set' 'class %%%' "link"
+run_proof "syntax corruption in set regresses below semantic floor" "set.iyi" 'class Set' 'class %%%' "semantic"
 
-run_proof "semantic corruption in set regresses below link floor" "set.iyi" '@entries : Hash(T, Bool)' '@entries : UndefinedType12345' "link"
+run_proof "semantic corruption in set regresses below semantic floor" "set.iyi" '@entries : Hash(T, Bool)' '@entries : UndefinedType12345' "semantic"
 
-run_proof "syntax corruption in hash regresses below link floor" "hash.iyi" 'class Hash' 'class %%%' "link"
+run_proof "syntax corruption in hash regresses below semantic floor" "hash.iyi" 'class Hash' 'class %%%' "semantic"
 
 run_proof "syntax corruption in range regresses below link floor" "range.iyi" 'struct Range' 'struct %%%' "link"
 
-run_proof "syntax corruption in enum regresses below link floor" "enum.iyi" 'struct Enum' 'struct %%%' "link"
+run_proof "syntax corruption in enum regresses below semantic floor" "enum.iyi" 'struct Enum' 'struct %%%' "semantic"
 
-run_proof "syntax corruption in primitives regresses below link floor" "primitives.iyi" 'struct Symbol' 'struct %%%' "link"
+run_proof "syntax corruption in primitives regresses below semantic floor" "primitives.iyi" 'struct Symbol' 'struct %%%' "semantic"
 
 run_proof "syntax corruption in atomic regresses below link floor" "atomic.iyi" 'struct Atomic' 'struct %%%' "link"
 
-run_proof "syntax corruption in prelude regresses below codegen floor" "prelude.iyi" 'require "./primitives"' 'require %%%' "codegen"
+run_proof "syntax corruption in prelude regresses below semantic floor" "prelude.iyi" 'require "./primitives"' 'require %%%' "semantic"
 
-run_proof "semantic corruption in prelude regresses below codegen floor" "prelude.iyi" '@proc : Proc(Nil)' '@proc : UndefinedType9876' "codegen"
+run_proof "semantic corruption in prelude regresses below semantic floor" "prelude.iyi" '@proc : Proc(Nil)' '@proc : UndefinedType9876' "semantic"
 
 run_proof "syntax corruption in concurrency regresses below parse floor" "concurrency.iyi" 'class IyiFiber' 'class %%%' "parse"
 
-run_proof "syntax corruption in float regresses below link floor" "float.iyi" 'struct Float64' 'struct %%%' "link"
+run_proof "syntax corruption in float regresses below semantic floor" "float.iyi" 'struct Float64' 'struct %%%' "semantic"
 
-run_proof "syntax corruption in array regresses below link floor" "array.iyi" 'class Array' 'class %%%' "link"
+run_proof "syntax corruption in array regresses below semantic floor" "array.iyi" 'class Array' 'class %%%' "semantic"
 
-run_proof "syntax corruption in file regresses below link floor" "file.iyi" 'class File' 'class %%%' "link"
+run_proof "syntax corruption in file regresses below semantic floor" "file.iyi" 'class File' 'class %%%' "semantic"
 
-run_proof "syntax corruption in string regresses below link floor" "string.iyi" 'class String' 'class %%%' "link"
+run_proof "syntax corruption in string regresses below semantic floor" "string.iyi" 'class String' 'class %%%' "semantic"
 
-run_proof "syntax corruption in number regresses below link floor" "number.iyi" 'struct Int32' 'struct %%%' "link"
+run_proof "syntax corruption in number regresses below semantic floor" "number.iyi" 'struct Int32' 'struct %%%' "semantic"
 
-run_proof "syntax corruption in object regresses below link floor" "object.iyi" 'class Object' 'class %%%' "link"
+run_proof "syntax corruption in object regresses below semantic floor" "object.iyi" 'class Object' 'class %%%' "semantic"
 
-run_proof "syntax corruption in io regresses below link floor" "io.iyi" 'class IyiIO' 'class %%%' "link"
+run_proof "syntax corruption in io regresses below semantic floor" "io.iyi" 'class IyiIO' 'class %%%' "semantic"
 echo "  Mutation summary: $mutations_caught/$mutations_run regressions caught"
 
 echo

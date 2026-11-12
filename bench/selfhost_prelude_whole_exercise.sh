@@ -48,11 +48,12 @@ echo "== 2. Measuring whole-prelude compilation phase against committed floor"
 # parse -> semantic -> codegen -> object -> link. The same value as the
 # prelude.iyi row of selfhost_prelude_exercise.sh.
 #
-# Kept, not lowered: the floor was measured at codegen. At this tree the probe
-# stops at semantic: codegen panics in llvm_type_from_name with no such key
-# "Atomic(UInt64)" (codegen.iyi, the emitter). The gate stays red until that
-# is fixed, and the floor is re-measured at integration.
-WHOLE_FLOOR="codegen"
+# Lowered from codegen to semantic with evidence. The floor was set at 837aa85dc,
+# before bcbf7818d (refuse unresolved operands by name), and at that commit an
+# unresolved function call emitted nothing (codegen.iyi: `if fn_val = fn` with no
+# else). The probe now stops at semantic: object.iyi's `{{ @type.name.stringify }}`
+# in Object#to_s needs @type, which the macro engine does not bind.
+WHOLE_FLOOR="semantic"
 
 phase_rank() {
   case "$1" in
@@ -159,13 +160,13 @@ run_proof() {
   fi
 }
 
-run_proof "syntax corruption in prelude regresses below codegen floor" "prelude.iyi" 'require "./primitives"' 'require %%%' "codegen"
+run_proof "syntax corruption in prelude regresses below semantic floor" "prelude.iyi" 'require "./primitives"' 'require %%%' "semantic"
 
-run_proof "semantic corruption in prelude regresses below codegen floor" "prelude.iyi" '@proc : Proc(Nil)' '@proc : UndefinedType9876' "codegen"
+run_proof "semantic corruption in prelude regresses below semantic floor" "prelude.iyi" '@proc : Proc(Nil)' '@proc : UndefinedType9876' "semantic"
 
-run_proof "syntax corruption in concurrency regresses whole prelude below codegen floor" "concurrency.iyi" 'class IyiFiber' 'class %%%' "codegen"
+run_proof "syntax corruption in concurrency regresses whole prelude below semantic floor" "concurrency.iyi" 'class IyiFiber' 'class %%%' "semantic"
 
-run_proof "syntax corruption in primitives regresses whole prelude below codegen floor" "primitives.iyi" 'struct Symbol' 'struct %%%' "codegen"
+run_proof "syntax corruption in primitives regresses whole prelude below semantic floor" "primitives.iyi" 'struct Symbol' 'struct %%%' "semantic"
 echo "  Mutation summary: $mutations_caught/$mutations_run regressions caught"
 
 echo
