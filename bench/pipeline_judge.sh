@@ -12,7 +12,7 @@
 set -u
 OUT="${OUT:-/tmp/iyi-pipeline-judge}"
 mkdir -p "$OUT"
-export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib CRYSTAL_CACHE_DIR="${CRYSTAL_CACHE_DIR:-/tmp/iyi-pipeline-judge-cache}"
+export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin LIBRARY_PATH=/opt/homebrew/opt/bdw-gc/lib
 ROOT="$(pwd -P)"
 echo "checkout $ROOT head $(git rev-parse --short HEAD)"
 echo "== 1. port tool from this commit (the hosted compiler builds it)"
@@ -39,7 +39,7 @@ python3 bench/pipeline_frontier.py "$CN_LL" "$OUT/cn-port.names" "$OUT/cn-port.r
 python3 bench/pipeline_breakdown.py "$HELLO_LL" "$OUT/hello-port.names" "$OUT/hello-port.refusals" hello > "$OUT/hello.breakdown" 2>&1
 python3 bench/pipeline_breakdown.py "$CN_LL" "$OUT/cn-port.names" "$OUT/cn-port.refusals" compile_native > "$OUT/cn.breakdown" 2>&1
 awk '/^table:/ && !/missing:/' "$OUT/hello.coverage" "$OUT/cn.coverage"
-awk '/^frontier:/ && !/clean-caller=/ && !/refusals ranked/' "$OUT/hello.breakdown" "$OUT/cn.breakdown"
+awk '/^frontier:/ && !/clean-caller=/' "$OUT/hello.breakdown" "$OUT/cn.breakdown"
 awk '/^frontier:/ && !/clean-caller=/' "$OUT/hello.frontier" "$OUT/cn.frontier"
 awk '/^breakdown:/' "$OUT/hello.breakdown" "$OUT/cn.breakdown" > "$OUT/breakdown.txt"
 echo "judge_done"
