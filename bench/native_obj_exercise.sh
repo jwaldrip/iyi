@@ -219,24 +219,44 @@ check_drop_addend() {
   build_tool && check_roundtrip hello
 }
 prove_mutation "drop the ADDEND records the writer emits" "$macho_src" \
-  "        if r.addend != 0_i64" "        if false" \
+  "elsif r.addend != 0_i64" "elsif false" \
   check_drop_addend
+check_fold_without_zeroing() {
+  build_tool && check_roundtrip hello
+}
+prove_mutation "fold the in-place addend but leave the site non-zero" "$macho_src" \
+  "bytes[(address + k).to_i32] = 0_u8" "bytes[(address + k).to_i32] = bytes[(address + k).to_i32]" \
+  check_fold_without_zeroing
 if [ "$(uname -s)" = Darwin ]; then
-  check_shift_page21() {
-    # The relinked program is the judge. The driver writes its output before it
-    # reads that output back, so a writer that emits a record the reader refuses
-    # still leaves an object to link, and the program must then fail to match.
+  # The relinked program is the judge. The driver writes its output before it
+  # reads that output back, so a writer or reader that drops an addend still
+  # leaves an object to link, and the program must then fail to match.
+  judge_by_relink() {
     build_tool || return 1
-    rm -f "$work/corpus/hello.rt.o"
-    "$work/bin/obj_macho" "$work/corpus/hello.o" "$work/corpus/hello.rt.o" >/dev/null 2>&1
-    [ -f "$work/corpus/hello.rt.o" ] || return 1
-    check_relinked hello
+    for name in $names; do
+      if [ -n "$(excluded_reason "$name")" ]; then
+        continue
+      fi
+      rm -f "$work/corpus/$name.rt.o"
+      "$work/bin/obj_macho" "$work/corpus/$name.o" "$work/corpus/$name.rt.o" >/dev/null 2>&1
+      [ -f "$work/corpus/$name.rt.o" ] || return 1
+      check_relinked "$name" || return 1
+    done
+    return 0
   }
+  prove_mutation "stop folding the in-place addend on read" "$macho_src" \
+    "addend + fold_in_place(h, bytes, address, width, target)" \
+    "addend + 0_i64 * fold_in_place(h, bytes, address, width, target)" \
+    judge_by_relink
+  prove_mutation "stop writing the in-place addend back" "$macho_src" \
+    "patch_site(start, plan, p)" \
+    "patch_site(start, plan, p) if plan.size < 0_i64" \
+    judge_by_relink
   prove_mutation "shift the PAGE21 pc-relative bit by one" "$macho_src" \
     "[MachO::R_PAGE21, 1_i64, 2_i64]" "[MachO::R_PAGE21, 0_i64, 2_i64]" \
-    check_shift_page21
+    judge_by_relink
 else
-  echo "   the PAGE21 relinked-program proof needs cc: the native-darwin job runs it"
+  echo "   the relinked-program proofs need cc: the native-darwin job runs them"
 fi
 # Restore the driver built from the unmutated source for the remaining checks.
 cp "$work/bin/obj_macho.good" "$work/bin/obj_macho"
