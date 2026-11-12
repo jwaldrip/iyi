@@ -99,6 +99,11 @@ pub class Parser < Lexer
   property in_macro_expression : Bool
   property unclosed_stack : Array(Unclosed)
 
+  # iyi: true when the caller wants the tree of the source as written and
+  # nothing synthesised for scoping (the formatter): imported names get no
+  # `UsingDecl`.
+  property iyi_source_only : Bool = false
+
   def self.parse(str : String, string_pool : StringPool? = nil, var_scopes : Array(Set(String)) = [Set(String).new]) : ASTNode
     new(str, "", string_pool, var_scopes).parse
   end
@@ -2584,6 +2589,7 @@ pub class Parser < Lexer
     rest.each { |node| body << node }
 
     module_def = ModuleDef.new(path, Expressions.from(body))
+    module_def.iyi_unit = true
     module_def.at(header_node)
     # The module is the rest of the file and ends where the file's last
     # expression with a location does.
@@ -2650,6 +2656,7 @@ pub class Parser < Lexer
   # and in the bodies of the types it declares. The import is what the
   # source says; the scope is what it implies.
   def iyi_scope_imported_names(expressions : Array(ASTNode)) : Array(ASTNode)
+    return expressions if @iyi_source_only
     expressions.each do |node|
       inner = node
       if node.is_a?(VisibilityModifier)
@@ -3227,7 +3234,6 @@ pub class Parser < Lexer
     end
     literal.as(StringLiteral).value
   end
-
 
   def parse_pointerof : ASTNode
     next_token_skip_space
