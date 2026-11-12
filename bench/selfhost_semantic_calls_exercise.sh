@@ -210,6 +210,12 @@ prove_mutation "a def with a block argument does not yield" "$MATCH_FILE" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a private method called with an explicit receiver is allowed" "$CALL_FILE" \
+  "      if explicit && single.definition.visibility == Visibility::Private" \
+  "      if false" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

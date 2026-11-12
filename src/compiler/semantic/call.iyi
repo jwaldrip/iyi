@@ -1,6 +1,6 @@
 module compiler/semantic/call
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Def, NamedArgument, NilLiteral, NumberLiteral, StringLiteral}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Def, NamedArgument, NilLiteral, NumberLiteral, StringLiteral, Visibility}
 import compiler/semantic/call_nodes::{CallNodes}
 import compiler/semantic/call_error::{CallFailure}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
@@ -141,7 +141,7 @@ end
 # is a dispatch, answered as not ported until the bodies slice instantiates
 # several targets. Arguments are typed as CallReceiver types them.
 pub class CallRecalculation
-  def self.recalculate(rec_type : Type, ts : TypeSystem, prog : SemanticProgram, name : String, args : Array(ASTNode), named_args : Array(NamedArgument)?, block : Bool) : CallTarget
+  def self.recalculate(rec_type : Type, ts : TypeSystem, prog : SemanticProgram, name : String, args : Array(ASTNode), named_args : Array(NamedArgument)?, block : Bool, explicit : Bool = false) : CallTarget
     arg_types = [] of Type
     args.each do |arg|
       typed = CallReceiver.argument_type(prog, arg)
@@ -158,6 +158,9 @@ pub class CallRecalculation
     end
     if matches.matches.size == 1
       single = matches.matches[0]
+      if explicit && single.definition.visibility == Visibility::Private
+        return CallTarget.failed("private method '#{name}' called for #{rec_type.to_s}")
+      end
       ret = single.definition.return_type
       if ret.nil?
         return CallTarget.new(single.definition, rec_type, nil, true, nil)

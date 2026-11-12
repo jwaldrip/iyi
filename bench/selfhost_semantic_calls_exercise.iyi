@@ -105,7 +105,7 @@ module BenchSelfhostSemanticCallsExercise
     if scope.nil?
       return "error: receiver is not resolvable"
     end
-    target = CallRecalculation.recalculate(scope.as(Type), ts, prog, call.name, call.args, call.named_args, call.block != nil)
+    target = CallRecalculation.recalculate(scope.as(Type), ts, prog, call.name, call.args, call.named_args, call.block != nil, call.obj != nil)
     if target.error
       return "error: #{target.error.to_s}"
     end
