@@ -3,7 +3,8 @@ module compiler/semantic/top_level
 import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Alias, And, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/token::{NumberKind}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -382,7 +383,17 @@ pub abstract class ModuleType < NamedType
       return false unless ta == tb
       i = i + 1
     end
-    true
+    # A block parameter is part of the signature: `fetch(key)` and `fetch(key, &block)` are two overloads.
+    ab = a.block_arg
+    bb = b.block_arg
+    if ab.nil? || bb.nil?
+      return ab.nil? && bb.nil?
+    end
+    ba_r = ab.restriction
+    bb_r = bb.restriction
+    ba_t = ba_r ? ba_r.to_s : ""
+    bb_t = bb_r ? bb_r.to_s : ""
+    ba_t == bb_t
   end
 
   def add_macro(a_macro : Macro) : Nil
@@ -1412,6 +1423,8 @@ pub class TopLevelVisitor < Visitor
   getter pending_ivars : Array(PendingIvar)
   @file : String?
   property unit : ModuleType? = nil
+  @enum_flags : Bool = false
+  @pending_flags : Bool = false
 
   def finish : Nil
     @pending_ivars.each do |pi|
@@ -1861,6 +1874,14 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
+  # `@[Flags]` marks the enum that follows it: its members are bits, and it gets None and All.
+  def visit(node : Annotation) : Bool
+    if node.path.names.last == "Flags"
+      @pending_flags = true
+    end
+    false
+  end
+
   def visit(node : EnumDef) : Bool
     scope, name, existing = lookup_type_def(node, node.name)
 
@@ -1893,7 +1914,9 @@ pub class TopLevelVisitor < Visitor
       enum_type.visibility = Visibility::Private
     end
 
-    counter = 0_i64
+    @enum_flags = @pending_flags
+    @pending_flags = false
+    counter = @enum_flags ? 1_i64 : 0_i64
     direct_names = [] of String
     counter = add_enum_members(enum_type, node.members, counter, direct_names, false)
 
@@ -1901,6 +1924,21 @@ pub class TopLevelVisitor < Visitor
       raise("enum #{node.name.names.last} must have at least one member")
     end
 
+    if @enum_flags
+      if enum_type.members["None"]?.nil?
+        enum_type.add_member("None", NumberLiteral.new("0"))
+        none_def = Def.new("none?", return_type: Path.new("Bool"))
+        none_def.location = node.location
+        enum_type.add_def(none_def)
+      end
+      if enum_type.members["All"]?.nil?
+        all_value = 0_i64
+        enum_type.members.each_value do |member|
+          all_value = all_value | member.value.as(NumberLiteral).value.to_i64
+        end
+        enum_type.add_member("All", NumberLiteral.new(all_value.to_s))
+      end
+    end
     enum_type.add_def(Def.new("value"))
     direct_names.each do |mname|
       pname = "#{underscore(mname)}?"
@@ -1931,7 +1969,11 @@ pub class TopLevelVisitor < Visitor
         end
         enum_type.add_member(mname, NumberLiteral.new(counter.to_s))
         direct_names << mname unless in_macro
-        counter = counter + 1
+        if @enum_flags
+          counter = counter == 0 ? 1_i64 : counter * 2_i64
+        else
+          counter = counter + 1
+        end
       elsif node.is_a?(MacroIf)
         mi = node.as(MacroIf)
         branch = iyi_flag_cond?(mi.cond) ? mi.then : mi.else
@@ -2410,6 +2452,19 @@ pub def def_declared?(d : Def, entry : String?) : Bool
   normalize_path(loc.as(Location).filename) == entry.as(String)
 end
 
+# A default value as the hosted printer writes it: a number keeps its kind as a suffix
+# (`0_i64`), an `Int32` has none.
+def default_text(node : ASTNode) : String
+  if node.is_a?(NumberLiteral)
+    nl = node.as(NumberLiteral)
+    if nl.kind == NumberKind::I32
+      return nl.value
+    end
+    return "#{nl.value}_#{nl.kind.to_s.downcase}"
+  end
+  node.to_s
+end
+
 pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
   io << indent << "Def: " << (d.receiver ? "self." : "") << d.name << "\n"
   vis_str = case d.visibility
@@ -2424,7 +2479,7 @@ pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
       s = "#{s} : #{r.to_s}"
     end
     if dv = arg.default_value
-      s = "#{s} = #{dv.to_s}"
+      s = "#{s} = #{default_text(dv)}"
     end
     s
   end
@@ -2566,7 +2621,23 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
     sub_names = nt.types.keys.dup.sorted
     sub_names.each do |sname|
       sub = nt.types[sname]
-      dump_type(sub, io, "#{indent}  ", entry)
+      dump_tree_declared(sub, io, "#{indent}  ", entry)
+    end
+  end
+end
+# A type the entry declares is printed with its nested types. One it does not declare (a
+# namespace another file made, such as `Std` for a header `std/file` whose import made
+# it first) is not, but the types inside it that the entry declares still are, one level
+# deeper, as the hosted pass prints them.
+pub def dump_tree_declared(t : Type, io : String::Builder, indent : String, entry : String?) : Nil
+  if declared_in?(t.locations, entry)
+    dump_type(t, io, indent, entry)
+    return
+  end
+  if t.is_a?(NamedType) && !t.is_a?(EnumType)
+    nt = t.as(NamedType)
+    nt.types.keys.sorted.each do |sname|
+      dump_tree_declared(nt.types[sname], io, "#{indent}  ", entry)
     end
   end
 end
@@ -2604,10 +2675,7 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
   user_type_names = user_type_names.sorted
 
   user_type_names.each do |name|
-    t = program.types[name]
-    if declared_in?(t.locations, entry)
-      dump_type(t, sb, "", entry)
-    end
+    dump_tree_declared(program.types[name], sb, "", entry)
   end
 
   sb.to_s
