@@ -61,12 +61,12 @@ status=0
 
 . "$REPO/bench/lib/mutation.sh"
 
-# Splits a dump into records, one per "Type:" or "Def:" header line, each with its
-# own property lines, joined onto one line with the record separator \036.
+# Splits a dump into records, one per "Type:", "Def:", "Ivar:" or "IvarOrder:" header line,
+# each with its own property lines, joined onto one line with the record separator \036.
 records() {
   awk '
     function flush() { if (cur != "") print cur }
-    /^ *(Type|Def|Ivar): / { flush(); cur = $0; next }
+    /^ *(Type|Def|Ivar|IvarOrder): / { flush(); cur = $0; next }
     { if (cur != "") cur = cur "\036" $0 }
     END { flush() }
   ' "$1"
@@ -99,7 +99,14 @@ for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semde
     echo "  $rel: ORACLE REJECTS: $(head -n 1 "$WORK/fx_oe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
   fi
-  if ! "$PORT" "$REPO/$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
+  # The typed fixtures (semdecl_ivar_typed_*) are declared with the type system installed: the
+  # generic arguments and virtual types of explicit instance variables need it. The oracle is
+  # always the hosted full pass, so it needs no flag.
+  port_mode=""
+  case "$(basename "$fixture")" in
+    semdecl_ivar_typed_*) port_mode="--typed" ;;
+  esac
+  if ! "$PORT" $port_mode "$REPO/$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
     echo "  $rel: PORT REJECTS: $(head -n 1 "$WORK/fx_pe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
   fi
@@ -480,6 +487,36 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a file's own directory is never searched for an import" "$MUT_SEM" \
   "      roots << dir" \
   "      roots << \"/nonexistent-root\"" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_SEM" \
+  "@pending_ivars.each do |pi|" \
+  "@pending_ivars.reversed.each do |pi|" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
+  "@pending_ivars << PendingIvar.new(@current_type, arg.name, r)" \
+  "@pending_ivars.unshift(PendingIvar.new(@current_type, arg.name, r))" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an instance variable assigned from a typed argument is dropped" "$MUT_SEM" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r)" \
+  "nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
+  "t = hook.virtual_of(t)" \
+  "t = t" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
+  "di.owner.instance_vars[di.name] = mv" \
+  "nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an explicit instance variable is not recorded for re-resolution" "$MUT_SEM" \
+  "@program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)" \
+  "nil" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TS="$REPO/src/compiler/types/type_system.iyi"

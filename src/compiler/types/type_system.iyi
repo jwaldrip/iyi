@@ -30,6 +30,10 @@ pub class TypeSystem < TypeHook
     TypeMerge.merge_all(@program, types)
   end
 
+  def virtual_of(type : Type) : Type
+    TypeQueries.virtual_type(type)
+  end
+
   def resolve_node(node : ASTNode, current_type : ModuleType) : Type
     found = TypeLookup.new(@instances).lookup(current_type, node)
     if found.is_a?(LookupError)
