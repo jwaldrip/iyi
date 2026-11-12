@@ -1,8 +1,8 @@
 # Typer parity: the lowering against the hosted typer
 
-Measured by `bench/selfhost_lower_types_exercise.sh` on the head of `selfhost/s2b-typer`, for the host target `aarch64-apple-darwin`. Each row is one type, and it is identical when the port's block (`llvm_type`, `llvm_type(wants_size)`, `llvm_struct_type`, offsets, `llvm_embedded_type`, size, alignment, `passed_by_value`) equals the hosted oracle's block byte for byte.
+Measured by `bench/selfhost_lower_types_exercise.sh` on the head of `selfhost/s2b-typer`, for the host target `aarch64-apple-darwin`. A type is identical when the port's block equals the hosted oracle's block byte for byte. A block holds `llvm_type`, `llvm_type(wants_size)`, `llvm_struct_type`, `offsets`, `llvm_embedded_type`, `size`, `align`, `ivars`, `layout` (the pointer map, without the type id), `passed_indirectly`, the proc function types, and the C types (`c_type`, `c_return_type`, `embedded_c_type`, `intrinsic_return_type`).
 
-## Fixtures (live, gate-compared)
+## Fixtures, gate-compared
 
 | fixture | types | identical |
 |---|---|---|
@@ -12,20 +12,35 @@ Measured by `bench/selfhost_lower_types_exercise.sh` on the head of `selfhost/s2
 | `lowty_composites` | 6 | 6 |
 | `lowty_unions` | 7 | 7 |
 | `lowty_procs` | 4 | 4 |
-| **total** | **45** | **45** |
+| `lowty_class_explicit` (iyi object layout) | 1 | 1 |
+| `lowty_class_layout` (Crystal object layout) | 1 | 1 |
+| `lowty_class_pointers` | 2 | 2 |
+| **total** | **49** | **49** |
 
-Types listed as `# waiting` in the fixtures are not counted. They wait on the rows of `NEEDS.md`: generic instance metaclasses, `StaticArray` and `NamedTuple` resolution, and class instance variables. Classes and structs with instance variables are lowered by `instance_var_struct` but unmeasured: no fixture can type their instance variables until row 12 closes.
+Type ids are gated by shape in `lowtyid_hierarchy`: the port's ids equal the hosted ids shifted by 30 across every value. Exact equality waits on NEEDS.md row 16.
 
-## Own source and the hello sample: not measured
+Types in `lowtywait_*` fixtures are not counted. They are the property declarations, the assignment-typed instance variables, the generic class instance, and the builtins' ids. Each waits on its row in NEEDS.md.
 
-The acceptance asks for the same comparison on every type the hosted typer is asked for when it compiles `samples/iyi/hello.iyi`, and on every type declared in `src/compiler/**/*.iyi`. That measurement is not built. Both sides need the same analysed program: the hosted compile's front end, with the prelude and the import closure, on the oracle side, and the port's declarations and semantic pass on the port side. The port's declarations do not yet type instance variables (NEEDS.md row 12), and the hosted front end is not called from the lowering driver. Without those two, every class or struct in the port's own source fails the lowering with a BUG error, so a count would measure the declarations slice, not the typer. The next increment (below) builds the measurement once row 12 is closed.
+## Own source and hello.iyi: not measured
 
-## Reasons for a difference, in the order they came up
+Measured quantities, both counted from the tree and not from the lowering:
 
-These are the differences the gate found while the fixtures were being brought to parity. Each is recorded so the same class does not reappear unnoticed.
+- `src/compiler/**/*.iyi`: 538 declared type lines (class, struct, enum, module, lib, union, alias, trait) in 123 files.
+- `samples/iyi/hello.iyi` with the prelude: the set of types the hosted typer is asked for. Not enumerated.
 
-1. Builtins are plain structs in the port (`NonGenericClassType`, NEEDS.md row 1), not primitive classes. The hosted typer sees `Int32` as `i32` by its `bytes`; the port sees a struct. The typer recognises builtins by name. This accounted for every primitive mismatch before the adapter.
-2. A generic instance's metaclass is nil in the port's unification (NEEDS.md row 2). The fixture line is waiting.
-3. Struct store size: LLVM pads a struct to its alignment, the port's `store_size` (`ir/layout.iyi`) does not (NEEDS.md row 9). The typer pads the struct itself; `lowty_composites` and `lowty_unions` show the padded value.
-4. The oracle's and the driver's type resolvers took only plain names; unions, nilable types, and numeric or named arguments needed a resolver each (NEEDS.md rows 11 and 13). The union and nilable forms are now resolved on both sides.
-5. A mixed union is a `MixedUnionType` in the port, not a plain `UnionType`, so the by-value rule must name it. Found by a mutation that the first gate run did not catch.
+Identical of total: **0 of 538** for the own source and **0 of N** for hello.iyi. Both are zero for the same reason: the lowering driver loads one file bare, with no prelude and no import closure. Every own-source type either refers to a type declared in another file (unresolved) or has an instance variable the port records no type for (NEEDS.md rows 14 and 15). Measuring the whole tree needs the import closure that the declarations gate already loads (`bench/selfhost_semantic_declarations_oracle.cr`), and the hosted prelude. Those are the next steps.
+
+## Reasons for a difference, ranked
+
+Ranked by what they block in the own source, from the declarations and not from a count: a type with a blocked reason cannot be measured at all, so the reasons are listed by how many types each would block once the lowering reaches them.
+
+1. Instance variables assigned in `initialize` have no recorded type (NEEDS.md row 15). Most classes in the compiler assign their fields that way, so this blocks the most types.
+2. `property` and `getter` declarations are not expanded in a bare program (NEEDS.md row 14). Both sides fail on them.
+3. Instance variables of a generic class instance have no `all_instance_vars` (NEEDS.md row 3). Every generic class in the source is blocked by this.
+4. The builtins are struct classes in the port, not primitives (NEEDS.md row 1). The name adapter in `typer.iyi` covers the lowering, and it does not cover the ids (row 16).
+5. Type ids differ by the builtins' numbering (NEEDS.md row 16). Ids are not in the block gate; they are gated by shape only.
+6. Metaclasses of generic instances have no answer (NEEDS.md row 2).
+7. A module member of a union is not expanded (NEEDS.md rows 5 and 7).
+8. The struct store size omits tail padding in `ir/layout.iyi` (NEEDS.md row 9). The typer pads the struct itself, so the blocks agree, but the layout module is wrong for other callers.
+
+Found during the work and fixed, so they are not in the ranking: the builtins' by-value rule, the mixed union's by-value rule (`MixedUnionType`), the uninitialised-ivar hosted error (the fixtures initialise every declared variable), and the alias node that the main visitor cannot type (the driver visits class definitions only).
