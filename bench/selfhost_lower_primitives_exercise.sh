@@ -58,7 +58,6 @@ waiting_on() {
 # (NEEDS.md row 16).
 known_divergence() {
   case "$1" in
-    lowprim_alloc_class) echo "call_types splits a constant expression argument (lower_oracle.sh, split_top pending on the calls lane)" ;;
     lowprim_checked) echo "the port defines __crystal_raise_overflow external; the hosted fixture's is internal (core's visit(FunDef) linkage, codegen_fun; S2a4Core)" ;;
   esac
 }
@@ -66,7 +65,6 @@ known_divergence() {
 # port's module, so the executable is not built. The gate fails if one starts to run.
 e2e_waiting_on() {
   case "$1" in
-    lowprim_alloc_struct) echo "the native tool refuses a C-convention call returning %Pair: codegen_fun sets CallConv::C on every fun (fun.iyi:102), and the struct return ABI is the core's and the integrator's" ;;
   esac
 }
 for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
@@ -188,6 +186,8 @@ prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/p
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"==\"" "    if op == \"!=\"" -- lower_primitives_check || status=1
+prove_mutation "the class type id is stored one struct over" "$REPO/src/compiler/lower/primitives.iyi" \
+  "  zero = low.builder.const_int(low.module.types.int32, 0_i64)" "  zero = low.builder.const_int(low.module.types.int32, 1_i64)" -- lower_primitives_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
