@@ -2,6 +2,7 @@
 module compiler/ir/values
 
 import std/float
+import std/int
 import compiler/ir/types::{IrType}
 
 # The base of everything that can be an operand: instructions, constants, parameters, globals and functions.
@@ -31,4 +32,96 @@ end
 pub def single_bits(value : Float64) : Int64
   narrowed = value.to_f32
   (pointerof(narrowed).as(Int32*).value.to_i64) & 0xFFFFFFFF_i64
+end
+
+# A 64-bit pattern read as a signed Int64: the same bits, not the same value.
+pub def u64_as_i64(u : UInt64) : Int64
+  low = (u & 0x7FFFFFFFFFFFFFFF_u64).to_i64
+  if ((u >> 63) & 1_u64) == 1_u64
+    low - 9223372036854775807_i64 - 1_i64
+  else
+    low
+  end
+end
+
+# A 128-bit constant as two 64-bit halves in two's complement: `hi` holds bits 64 to 127, `lo` bits 0 to 63.
+pub class Wide128
+  getter hi : Int64
+  getter lo : Int64
+
+  def initialize(@hi : Int64, @lo : Int64)
+  end
+end
+
+# The 128-bit value of `text` in decimal, LLVM's signed form (`-5`, `170141183460469231731687303715884105727`).
+# Nil when the text is not a decimal number or does not fit the signed range [-2^127, 2^127 - 1].
+pub def i128_parse(text : String) : Wide128?
+  negative = text.starts_with?("-")
+  digits = negative ? text[1, text.bytesize - 1] : text
+  return nil if digits.empty?
+  # Limbs of 32 bits, least significant first.
+  limbs = [0_u64, 0_u64, 0_u64, 0_u64]
+  i = 0
+  while i < digits.bytesize
+    b = digits.byte_at(i)
+    return nil if b < 48_u8 || b > 57_u8
+    carry = (b - 48_u8).to_i64.unsafe_to_u64
+    k = 0
+    while k < 4
+      current = limbs[k] * 10_u64 + carry
+      limbs[k] = current & 0xFFFFFFFF_u64
+      carry = current >> 32
+      k = k + 1
+    end
+    return nil unless carry == 0_u64
+    i = i + 1
+  end
+  lo = (limbs[1] << 32) | limbs[0]
+  hi = (limbs[3] << 32) | limbs[2]
+  top_clear = (hi >> 63) == 0_u64
+  limit_hit = hi == 9223372036854775808_u64 && lo == 0_u64
+  if negative
+    return nil unless top_clear || limit_hit
+    lo_n = (lo ^ 0xFFFFFFFFFFFFFFFF_u64) &+ 1_u64
+    carry_n = lo_n == 0_u64 ? 1_u64 : 0_u64
+    hi_n = (hi ^ 0xFFFFFFFFFFFFFFFF_u64) &+ carry_n
+    return Wide128.new(u64_as_i64(hi_n), u64_as_i64(lo_n))
+  end
+  return nil unless top_clear
+  Wide128.new(u64_as_i64(hi), u64_as_i64(lo))
+end
+
+# A 128-bit two's complement constant as LLVM's signed decimal text.
+pub def i128_text(hi : Int64, lo : Int64) : String
+  negative = hi < 0_i64
+  mh = hi.unsafe_to_u64
+  ml = lo.unsafe_to_u64
+  if negative
+    # The magnitude of a negative value is its two's complement: (~hi:~lo) + 1.
+    lo_n = (ml ^ 0xFFFFFFFFFFFFFFFF_u64) &+ 1_u64
+    carry = lo_n == 0_u64 ? 1_u64 : 0_u64
+    mh = (mh ^ 0xFFFFFFFFFFFFFFFF_u64) &+ carry
+    ml = lo_n
+  end
+  digits = unsigned_decimal(mh, ml)
+  negative ? "-" + digits : digits
+end
+
+# The decimal digits of the unsigned 128-bit value (hi:lo), by repeated division of 32-bit limbs by ten.
+pub def unsigned_decimal(hi : UInt64, lo : UInt64) : String
+  limbs = [hi >> 32, hi & 0xFFFFFFFF_u64, lo >> 32, lo & 0xFFFFFFFF_u64]
+  digits = [] of String
+  while limbs[0] != 0_u64 || limbs[1] != 0_u64 || limbs[2] != 0_u64 || limbs[3] != 0_u64
+    remainder = 0_u64
+    k = 0
+    while k < 4
+      current = (remainder << 32) | limbs[k]
+      limbs[k] = current // 10_u64
+      remainder = current % 10_u64
+      k = k + 1
+    end
+    digits << remainder.to_s
+  end
+  return "0" if digits.empty?
+  digits.reversed.join
 end

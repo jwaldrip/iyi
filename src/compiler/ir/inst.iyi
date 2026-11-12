@@ -246,7 +246,7 @@ pub alias InstAux = GepAux | MemAux | CallAux | AsmAux | IntrinsicAux | Nil
 #   ICmp, FCmp:        aux_int is the predicate ordinal.
 #   Binary arithmetic: aux_int holds flags: bit 0 nuw, bit 1 nsw, bit 2 exact.
 #   ExtractValue, InsertValue: aux_int is the index.
-#   ConstInt:          aux_int is the sign-extended value.
+#   ConstInt:          aux_int is the value (for i128, the low 64 bits; aux_hi holds the high 64 bits).
 #   ConstFloat:        aux_int is the bit pattern (32 or 64 bits).
 #   ConstExpr:         aux_int is the wrapped operation's Op ordinal; aux is GepAux for Gep.
 #   ConstBytes:        args are i8 ConstInts, one per byte.
@@ -261,10 +261,13 @@ pub class Inst < Value
   getter targets : Array(Block)
   getter cases : Array(Int64)
   property loc : DebugLoc?
+  # The high 64 bits of an i128 ConstInt. aux_int holds the low 64 bits; zero for every other constant.
+  property aux_hi : Int64
 
   def initialize(@op : Op, type : IrType, @args : Array(Value), @aux_int : Int64, @aux : InstAux, @targets : Array(Block), @cases : Array(Int64), name : String = "")
     super(type, name)
     @loc = nil
+    @aux_hi = 0_i64
   end
 
   # Adds one incoming (value, block) pair to a phi.
