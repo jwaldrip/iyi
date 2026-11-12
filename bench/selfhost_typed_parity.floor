@@ -333,3 +333,4 @@ src/compiler/semantic/type_nodes.iyi 37
 src/compiler/lower/block.iyi 0
 src/compiler/lower/instance_var.iyi 0
 src/compiler/lower/abi/aarch64.iyi 0
+src/compiler/lower/program.iyi 0
