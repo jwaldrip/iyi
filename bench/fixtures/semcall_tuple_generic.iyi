@@ -1,0 +1,12 @@
+class Box(T)
+  def pair(x : T) : Tuple(T, Bool)
+    {x, true}
+  end
+
+  def take(t : Tuple(T, Bool)) : Int32
+    1
+  end
+end
+
+# call Box(Int32).new.pair(1)
+# call Box(String).new.pair("a")
