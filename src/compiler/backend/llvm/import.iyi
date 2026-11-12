@@ -229,7 +229,7 @@ end
 
 # LLVM's string attributes, by key.
 pub def ir_string_attribute_names : Array(String)
-  ["frame-pointer", "probe-stack", "target-cpu", "target-features", "tune-cpu", "stack-protector-buffer-size"]
+  ["frame-pointer", "probe-stack", "target-cpu", "target-features", "tune-cpu", "stack-protector-buffer-size", "wasm-export-name"]
 end
 
 # Module flags the IR records, with the behavior LLVM gives them (-1 when the IR has no such flag).
@@ -238,6 +238,7 @@ pub def ir_module_flag_behavior(key : String) : Int32
   if key == "PIC Level" || key == "PIE Level" || key == "uwtable" || key == "frame-pointer" || key == "branch-target-enforcement" || key == "sign-return-address" || key == "sign-return-address-all" || key == "sign-return-address-with-bkey" || key == "guarded-control-stack"
     return 7
   end
+  return 2 if key == "CodeView"
   -1
 end
 

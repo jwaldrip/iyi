@@ -80,7 +80,7 @@ fi
 step 2 "every fixture round-trips identically, and the one the translator refuses is refused by name"
 count=0
 total=0
-for name in arith control probe_switch probe_phi memory consts calls sizeof visibility wide_int overflow8_16 variadic; do
+for name in arith control probe_switch probe_phi memory consts calls sizeof visibility wide_int overflow8_16 variadic flags_attrs; do
   total=$((total + 1))
   verdict=$("$TOOL" roundtrip "$FX/$name.ll" 2>&1)
   if [ "$verdict" = "identical" ]; then
