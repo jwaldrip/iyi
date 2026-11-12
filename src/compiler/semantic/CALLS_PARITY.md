@@ -10,32 +10,32 @@ head by `bench/selfhost_semantic_calls_exercise.sh`.
 every `# error` line (the first line of the hosted error, or `ok`) is byte-identical
 to the hosted oracle. 23 guarded mutation proofs, each caught.
 
-## Census over real files (not yet a figure)
+## Census over real files (measured)
 
-`bench/selfhost_semantic_calls_census.sh` (with `selfhost_semantic_calls_census_oracle.cr`
-and `selfhost_semantic_calls_census_exercise.iyi`) compares the lookup on every call
-site the hosted pass types in a file. Its first figure is not yet produced, for two
-reasons, both outside this slice:
+`bench/selfhost_semantic_calls_census.sh` compares the lookup with the hosted pass on
+every call site the hosted pass types in a whole-program entry. Run on the 45 entries
+(17 tools under `src/compiler/tools/`, 28 samples), with the floor written from the run:
 
-1. **The hosted pass types a call only when its def is reached.** A library file
-   compiled as an entry has almost no typed call sites: `match.iyi` has none, and
-   `src/iyi/array.iyi` has none under `--prelude-only`. A per-file census of library
-   code therefore measures almost nothing. A meaningful census needs the call sites
-   of whole programs (the tool entries, the samples), counted per file across every
-   program that reaches them.
-2. **The declarations loader refuses a def import.** `import compiler/foundation/errors::{refuse_port}`
-   is refused because `refuse_port` is a module-level `def`, not a type or constant.
-   Every real file that reaches `top_level.iyi` therefore fails to load in the port
-   (`undefined constant refuse_port`), which blocks the census of the compiler's own source.
-3. **The port cannot parse every type text the hosted pass prints.** The census driver
-   resolves each receiver and argument from its text. On `samples/iyi/hello.iyi` the
-   port panics: `Syntax error in census:1:15: unexpected token: SYMBOL`. The text is a
-   type form the port's resolver does not read (a symbol-like name). A fix needs the
-   driver to resolve type text through the type lookup without re-parsing, or the oracle
-   to print a form the parser reads. Not fixed here.
+- **Loaded in the port: 17 files** (all samples the port can load). Sites the hosted
+  pass reached: 729. Typed by the hosted pass: 567. Identical: 331, which is 58.4% of
+  the typed sites. Per file: `bench/selfhost_semantic_calls.floor`.
+- **Did not load in the port: 28 files** (all 17 tools, 11 samples). The census cannot
+  measure them until the declarations slice fixes these loader gaps (the port refuses
+  or panics on them): `Compiler::Syntax::Lexer is not a class, it's a module`; `can't
+  implement Std::Enumerable, it's a module`; `undefined constant ir_quote` and
+  `valid_int_bits?` in `compiler/ir/types`; `undefined constant parse_operand` in
+  `compiler/native/asm/constraints`.
+- **Ranked unresolved shapes:** `type IyiGroup does not resolve` (spawn), `type Channel
+  does not resolve` (receive, send, close, new). The port's lookup does not find those
+  types in the file's closure (a declarations gap for the samples' concurrency types).
+- **Known text differences on identical lookups:** the hosted pass prints a file's
+  module as `Name:Module` and the port prints `Name` (a renderer gap in the type
+  names, `ModuleType#to_s`, which the types slice owns). A call with a free-variable
+  argument (`forall T`) is refused by the port (`free variables are not ported`) where
+  the hosted pass gives `undefined constant T`.
 
-The census gate fails on these (a file the port cannot load is a failure, not a skip),
-so it is not a passing gate yet. It is not in CI's `*_exercise.sh` glob.
+The census gate's floor is committed; a count may only rise. It is not in CI's
+`*_exercise.sh` glob.
 
 ## Ranked gaps the fixtures show
 
