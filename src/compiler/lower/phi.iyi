@@ -95,4 +95,8 @@ impl BranchPhi for LowerPhi
   def add_branch(low : Lowerer, value : Value?, last : Bool) : Nil
     add(low, value, last)
   end
+
+  def merge_type : IrType?
+    @type
+  end
 end
