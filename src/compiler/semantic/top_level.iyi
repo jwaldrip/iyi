@@ -2926,9 +2926,6 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroIf) : Bool
-    # iyi: disabled until S1bInlineMacros3 fixes the expansion: the visit at this site dropped defs
-    # (hello defs reached 5218 to 168). Until then it answers as before 7092cb8eb: children walked.
-    return true
     if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
       expanded.accept(self)
     end
@@ -2936,9 +2933,6 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroFor) : Bool
-    # iyi: disabled until S1bInlineMacros3 fixes the expansion: the visit at this site dropped defs
-    # (hello defs reached 5218 to 168). Until then it answers as before 7092cb8eb: children walked.
-    return true
     if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
       expanded.accept(self)
     end
@@ -2946,9 +2940,6 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroExpression) : Bool
-    # iyi: disabled until S1bInlineMacros3 fixes the expansion: the visit at this site dropped defs
-    # (hello defs reached 5218 to 168). Until then it answers as before 7092cb8eb: children walked.
-    return true
     if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
       expanded.accept(self)
     end
