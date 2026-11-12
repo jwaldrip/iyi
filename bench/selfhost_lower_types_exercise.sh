@@ -359,6 +359,26 @@ prove_mutation "a Tuple instance is not recorded in Tuple's instantiated types" 
   -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "Nil created after Bool, not before it" "$REPO/src/compiler/semantic/top_level.iyi" \
+  '    nil_t = NilType.new(self, self, "Nil", val)
+    @types["Nil"] = nil_t
+    bool_t = NonGenericClassType.new(self, self, "Bool", val)
+    bool_t.struct = true
+    @types["Bool"] = bool_t' \
+  '    bool_t = NonGenericClassType.new(self, self, "Bool", val)
+    bool_t.struct = true
+    @types["Bool"] = bool_t
+    nil_t = NilType.new(self, self, "Nil", val)
+    @types["Nil"] = nil_t' \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "ARGV_UNSAFE's Pointer(Pointer(UInt8)) not made, so Pointer(UInt8) alone" "$REPO/src/compiler/types/type_system.iyi" \
+  "    @instances.pointer_of(@instances.pointer_of(uint8))" \
+  "    @instances.pointer_of(uint8)" \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "leaves take no id of their own" "$TYPE_ID_FILE" \
   "    if subtypes.size == 0" \
   "    if subtypes.size == 99" \
