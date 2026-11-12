@@ -501,13 +501,15 @@ pub class MetaclassType < ModuleType
       sc = @instance_type.as(ClassType).superclass
       if sc
         @parents << sc.as(ModuleType).metaclass
-      else
-        @parents << program.types["Class"]
+      elsif klass = program.types["Class"]?
+        @parents << klass
       end
     elsif @instance_type.is_a?(EnumType)
       @parents << program.enum_type.metaclass
-    else
-      @parents << program.types["Class"]
+    elsif klass = program.types["Class"]?
+      # iyi: `Class` is made by this constructor (hosted: the metaclass of Value), so it has no parent
+      # while it is being made.
+      @parents << klass
     end
   end
 
@@ -567,6 +569,7 @@ pub abstract class ClassType < ModuleType
 end
 
 pub class NonGenericClassType < ClassType
+  property virtual_type_cache : Type? = nil
 end
 
 # Built-ins the hosted Program creates as their own kinds. They live here, not in
@@ -1058,6 +1061,8 @@ pub class SemanticProgram < NonGenericModuleType
   @const_initializers : Array(Const)
   # The records of the funs the pass declared, by the node's id (`lib_fun_of`).
   @lib_funs_by_node : Hash(UInt64, LibFun)
+  # All unions the program made, keyed by the sorted object ids of their members (hosted program.unions).
+  getter unions : Hash(Array(UInt64), Type)
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
   # hosted pass keeps a scope per file; the port keeps the importing file's table here.
   property current_imports : Hash(String, Type)
@@ -1337,6 +1342,7 @@ pub class SemanticProgram < NonGenericModuleType
     @global_funs = [] of LibFun
     @const_initializers = [] of Const
     @lib_funs_by_node = Hash(UInt64, LibFun).new
+    @unions = Hash(Array(UInt64), Type).new
     @declared_ivars = [] of DeclaredIvar
     @current_imports = Hash(String, Type).new
     @current_import_defs = Hash(String, Array(Def)).new
@@ -1376,21 +1382,27 @@ pub class SemanticProgram < NonGenericModuleType
     num.struct = true
     num.abstract = true
     @types["Number"] = num
+    bool_t = NonGenericClassType.new(self, self, "Bool", val)
+    bool_t.struct = true
+    @types["Bool"] = bool_t
+    char_t = NonGenericClassType.new(self, self, "Char", val)
+    char_t.struct = true
+    @types["Char"] = char_t
+    nil_t = NilType.new(self, self, "Nil", val)
+    @types["Nil"] = nil_t
 
     int_t = NonGenericClassType.new(self, self, "Int", num)
     int_t.struct = true
     int_t.abstract = true
     @types["Int"] = int_t
 
-    i32 = NonGenericClassType.new(self, self, "Int32", int_t)
-    i32.struct = true
-    @int32_type = i32
-    @types["Int32"] = i32
-
-    ["Int8", "UInt8", "Int16", "UInt16", "UInt32", "Int64", "UInt64", "Int128", "UInt128"].each do |tname|
+    ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Int128", "UInt128"].each do |tname|
       t = NonGenericClassType.new(self, self, tname, int_t)
       t.struct = true
       @types[tname] = t
+      if tname == "Int32"
+        @int32_type = t
+      end
     end
 
     flt = NonGenericClassType.new(self, self, "Float", num)
@@ -1404,18 +1416,21 @@ pub class SemanticProgram < NonGenericModuleType
     f64.struct = true
     @types["Float64"] = f64
 
-    char_t = NonGenericClassType.new(self, self, "Char", val)
-    char_t.struct = true
-    @types["Char"] = char_t
-    bool_t = NonGenericClassType.new(self, self, "Bool", val)
-    bool_t.struct = true
-    @types["Bool"] = bool_t
-    nil_t = NilType.new(self, self, "Nil", val)
-    @types["Nil"] = nil_t
-
     sym_t = NonGenericClassType.new(self, self, "Symbol", val)
     sym_t.struct = true
     @types["Symbol"] = sym_t
+    ptr = GenericClassType.new(self, self, "Pointer", ["T"], nil, val)
+    ptr.struct = true
+    @types["Pointer"] = ptr
+    tup = GenericClassType.new(self, self, "Tuple", ["T"], 0, val)
+    tup.struct = true
+    @types["Tuple"] = tup
+    named_tup = GenericClassType.new(self, self, "NamedTuple", ["T"], nil, val)
+    named_tup.struct = true
+    @types["NamedTuple"] = named_tup
+    static_array = GenericClassType.new(self, self, "StaticArray", ["T", "N"], nil, val)
+    static_array.struct = true
+    @types["StaticArray"] = static_array
 
     @types["String"] = NonGenericClassType.new(self, self, "String", ref)
 
@@ -1435,37 +1450,26 @@ pub class SemanticProgram < NonGenericModuleType
     @enum_type = en
     @types["Enum"] = en
 
-    klass = NonGenericClassType.new(self, self, "Class", val)
-    klass.abstract = true
+    klass = MetaclassType.new(self, self, "Class", val)
     @types["Class"] = klass
     @types["Array"] = GenericClassType.new(self, self, "Array", ["T"], nil, ref)
     @types["Hash"] = GenericClassType.new(self, self, "Hash", ["K", "V"], nil, ref)
-    ptr = GenericClassType.new(self, self, "Pointer", ["T"], nil, val)
-    ptr.struct = true
-    @types["Pointer"] = ptr
     proc_t = GenericClassType.new(self, self, "Proc", ["T", "R"], 0, val)
     proc_t.struct = true
     @types["Proc"] = proc_t
-    tup = GenericClassType.new(self, self, "Tuple", ["T"], 0, val)
-    tup.struct = true
-    @types["Tuple"] = tup
-    named_tup = GenericClassType.new(self, self, "NamedTuple", ["T"], nil, val)
-    named_tup.struct = true
-    @types["NamedTuple"] = named_tup
-    slice_t = GenericClassType.new(self, self, "Slice", ["T"], nil, st)
-    slice_t.struct = true
-    @types["Slice"] = slice_t
+    # iyi: Range before Slice, as the hosted program creates them (program.cr 1435, 1437): the
+    # order of Struct's subclasses is the order the type-id walk numbers them.
     range_t = GenericClassType.new(self, self, "Range", ["B", "E"], nil, st)
     range_t.struct = true
     @types["Range"] = range_t
+    slice_t = GenericClassType.new(self, self, "Slice", ["T"], nil, st)
+    slice_t.struct = true
+    @types["Slice"] = slice_t
     @types["Enumerable"] = GenericModuleType.new(self, self, "Enumerable", ["T"])
     @types["Indexable"] = GenericModuleType.new(self, self, "Indexable", ["T"])
     @types["Crystal"] = NonGenericModuleType.new(self, self, "Crystal")
-    @types["Exception"] = NonGenericClassType.new(self, self, "Exception", ref)
     @types["Regex"] = NonGenericClassType.new(self, self, "Regex", ref)
-    static_array = GenericClassType.new(self, self, "StaticArray", ["T", "N"], nil, val)
-    static_array.struct = true
-    @types["StaticArray"] = static_array
+    @types["Exception"] = NonGenericClassType.new(self, self, "Exception", ref)
     union_t = GenericClassType.new(self, self, "Union", ["T"], 0, val)
     union_t.struct = true
     @types["Union"] = union_t

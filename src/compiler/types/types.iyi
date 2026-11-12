@@ -148,6 +148,7 @@ pub class GenericClassInstanceType < GenericInstanceType
   getter included_modules : Array(Type)
   getter instance_vars : Hash(String, MetaTypeVar)
   @metaclass : GenericClassInstanceMetaclassType?
+  property virtual_type_cache : Type? = nil
 
   def register_subclass(sub : Type) : Nil
     @subclasses << sub
@@ -924,10 +925,41 @@ pub class TypeQueries
   end
 
   # Hosted virtual_type!, named virtual_type_bang because iyi names have no `!`.
-  # The virtual type over a class. The port does not cache it, so two calls give
-  # equal but distinct objects.
+  # The virtual type over a class, made once and kept on the class (hosted
+  # `@virtual_type ||=`), so two calls give the same object. A non-generic class
+  # and a generic instance keep one, as the hosted classes that define it do.
   def self.virtual_type_bang(type : Type) : Type
+    if type.is_a?(NonGenericClassType)
+      cls = type.as(NonGenericClassType)
+      if made = cls.virtual_type_cache
+        return made
+      end
+      fresh = VirtualType.new(type.program, type)
+      cls.virtual_type_cache = fresh
+      return fresh
+    end
+    if type.is_a?(GenericClassInstanceType)
+      inst = type.as(GenericClassInstanceType)
+      if made = inst.virtual_type_cache
+        return made
+      end
+      fresh = VirtualType.new(type.program, type)
+      inst.virtual_type_cache = fresh
+      return fresh
+    end
     VirtualType.new(type.program, type)
+  end
+
+  # Hosted virtual_type_made?: whether a virtual type over this type was ever made.
+  # Asking does not make one.
+  def self.virtual_type_made?(type : Type) : Bool
+    if type.is_a?(NonGenericClassType)
+      return !type.as(NonGenericClassType).virtual_type_cache.nil?
+    end
+    if type.is_a?(GenericClassInstanceType)
+      return !type.as(GenericClassInstanceType).virtual_type_cache.nil?
+    end
+    false
   end
 
   # Hosted virtual_type: a class that is a leaf and not abstract stands for
