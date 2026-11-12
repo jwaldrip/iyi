@@ -235,6 +235,12 @@ prove_mutation "a union inside a generic owner ignores its visited type argument
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a pointerof of a local declared in an earlier macro block is refused" "$TYPE_NODES" \
+  "    if call_exp.obj.nil? && call_exp.args.empty? && call_exp.block.nil? && visitor.vars[call_exp.name]?" \
+  "    if false" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "a cast's upcast flag is not recorded" "$TYPE_NODES" \
   "  node.upcast = upcast
   result = to_type

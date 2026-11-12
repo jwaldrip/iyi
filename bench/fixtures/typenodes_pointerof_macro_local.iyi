@@ -1,0 +1,15 @@
+@[Unsafe("pointerof of a local declared in an earlier macro splice")]
+def capture_stack
+  {% if flag?(:darwin) %}
+    callstack = uninitialized Void*[64]
+  {% else %}
+    callstack = uninitialized Void*[64]
+  {% end %}
+  {% if flag?(:darwin) %}
+    pointerof(callstack)
+  {% else %}
+    pointerof(callstack)
+  {% end %}
+end
+
+capture_stack

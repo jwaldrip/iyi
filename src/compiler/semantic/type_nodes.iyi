@@ -19,7 +19,7 @@ module compiler/semantic/type_nodes
 # accepts, so the port refuses them by name; and the `raises` mark a cast leaves
 # on its method, which the port does not track yet.
 
-import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, NumberLiteral, PointerOf, ProcNotation, Self, SizeOf, Splat, TypeOf, Union, UninitializedVar, Var}
+import compiler/syntax/ast::{ASTNode, AlignOf, Call, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, NumberLiteral, PointerOf, ProcNotation, Self, SizeOf, Splat, TypeOf, Union, UninitializedVar, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, SemanticProgram, Type, TypeHook, TypeParameterType}
 import compiler/types/type_system::{TypeSystem}
@@ -579,6 +579,18 @@ pub def visit_pointer_of(visitor : TypeNodeHost, node : PointerOf) : Bool
     end
     visitor.set_type(node, type_node_system(visitor.program).pointer_of(t.as(Type)))
     return false
+  end
+  if exp.is_a?(Call)
+    call_exp = exp.as(Call)
+    if call_exp.obj.nil? && call_exp.args.empty? && call_exp.block.nil? && visitor.vars[call_exp.name]?
+      exp.accept(visitor)
+      t = visitor.child_type(exp)
+      if t.nil?
+        return visitor.refuse(node, "pointerof operand has no type")
+      end
+      visitor.set_type(node, type_node_system(visitor.program).pointer_of(t.as(Type)))
+      return false
+    end
   end
   visitor.refuse(node, "pointerof of #{exp.to_s} is not ported yet: only a local variable is")
 end
