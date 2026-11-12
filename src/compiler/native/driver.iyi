@@ -1,0 +1,159 @@
+module compiler/native/driver
+
+# Compiles one IR module to an object (SPEC 2.2): select, allocate, lay acc the frame, encode each function
+# into .text, and lay the globals acc into their sections. Every failure is returned as its reason.
+
+import compiler/ir/types::{IrType}
+import compiler/ir/inst::{Op, Inst}
+import compiler/ir/values::{Value}
+import compiler/ir/function::{Function, Global, Linkage, TlsModel}
+import compiler/ir/module::{Module}
+import compiler/ir/layout::{DataLayout}
+import compiler/platform/target::{Target}
+import compiler/native/obj/object::{ObjectFile, ObjFormat, Section, SectionKind, Symbol, SymbolKind, SymbolBinding, BuildVersion, Reloc}
+import compiler/native/obj/macho::{write_object}
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/aarch64/regs::{reg_name}
+import compiler/native/aarch64/isel::{select_function, IselError}
+import compiler/native/aarch64/encode::{encode_function, EncodedFunction, EncodeError}
+import compiler/native/regalloc::{allocate}
+import compiler/native/frame::{lay_out}
+import compiler/native/emit::{SectionWriter, to_bytes, write_initializer, data_section_name}
+import std/slice::{Slice, Bytes}
+
+# The symbol table of a module: every function and global by name, in the object's order.
+pub def symbol_table(mod : Module, obj : ObjectFile) : Hash(String, Int32)
+  table = Hash(String, Int32).new
+  mod.functions.each do |fn|
+    table[fn.name] = obj.symbols.size
+    binding = fn.linkage == Linkage::External ? SymbolBinding::Global : SymbolBinding::Local
+    if fn.declaration?
+      obj.symbols << Symbol.new(fn.name, SymbolKind::Undefined, SymbolBinding::Global)
+    else
+      obj.symbols << Symbol.new(fn.name, SymbolKind::Func, binding, 0)
+    end
+  end
+  mod.globals.each do |g|
+    table[g.name] = obj.symbols.size
+    binding = g.linkage == Linkage::External ? SymbolBinding::Global : SymbolBinding::Local
+    if g.initializer.nil? && g.linkage == Linkage::External
+      obj.symbols << Symbol.new(g.name, SymbolKind::Undefined, SymbolBinding::Global)
+    else
+      obj.symbols << Symbol.new(g.name, SymbolKind::Object, binding, -1)
+    end
+  end
+  table
+end
+
+# The MIR of one function after allocation and frame layout: what the encoder receives.
+pub def function_mir(mod : Module, fn : Function, syms : Hash(String, Int32), darwin : Bool) : MFunction | String
+  selected = select_function(mod, fn, syms, darwin)
+  if selected.is_a?(IselError)
+    return selected.as(IselError).message
+  end
+  mf = selected.as(MFunction)
+  allocate(mf)
+  lay_out(mf)
+  mf
+end
+
+# Compiles the whole module. The object is returned, or the reason compilation stopped.
+pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
+  target = mod.target
+  obj = ObjectFile.new(ObjFormat::MachO, target, "iyi-native")
+  if darwin
+    obj.build_version = BuildVersion.new(1, 0x000E0400, 0x000E0400)
+  end
+  syms = symbol_table(mod, obj)
+  text = SectionWriter.new
+  rodata = SectionWriter.new
+  data = SectionWriter.new
+  bss_size = 0_i64
+  mod.functions.each do |fn|
+    next if fn.declaration?
+    mf = function_mir(mod, fn, syms, darwin)
+    return mf if mf.is_a?(String)
+    encoded = encode_function(mf.as(MFunction))
+    return "#{fn.name}: #{encoded.as(EncodeError).message}" if encoded.is_a?(EncodeError)
+    enc = encoded.as(EncodedFunction)
+    text.pad_to(4_i64)
+    base = text.append(enc.bytes, enc.relocs)
+    index = syms[fn.name]
+    obj.symbols[index].value = base
+    obj.symbols[index].size = enc.bytes.size.to_i64
+    obj.symbols[index].section = 0
+  end
+  layout = mod.layout
+  mod.globals.each do |g|
+    next if g.tls != TlsModel::None
+    index = syms[g.name]
+    next if g.initializer.nil? && g.linkage == Linkage::External
+    align = g.alignment > 0 ? g.alignment.to_i64 : layout.abi_align(g.value_type).to_i64
+    if g.initializer.nil?
+      bss_size = ((bss_size + align - 1_i64) // align) * align
+      obj.symbols[index].section = 3
+      obj.symbols[index].value = bss_size
+      bss_size = bss_size + layout.store_size(g.value_type)
+      next
+    end
+    w = SectionWriter.new
+    message = write_initializer(layout, w, syms, g.value_type, g.initializer, 0_i64)
+    return "#{g.name}: #{message}" if message
+    target_writer = g.constant ? rodata : data
+    target_writer.pad_to(align)
+    base = target_writer.append(w.bytes, w.relocs)
+    obj.symbols[index].section = g.constant ? 1 : 2
+    obj.symbols[index].value = base
+    obj.symbols[index].size = layout.store_size(g.value_type)
+  end
+  obj.sections << Section.new(".text", SectionKind::Text, 4, to_bytes(text.bytes), text.bytes.size.to_i64, text.relocs)
+  obj.sections << Section.new(".rodata", SectionKind::ReadOnly, 8, to_bytes(rodata.bytes), rodata.bytes.size.to_i64, rodata.relocs)
+  obj.sections << Section.new(".data", SectionKind::Data, 8, to_bytes(data.bytes), data.bytes.size.to_i64, data.relocs)
+  obj.sections << Section.new(".bss", SectionKind::ZeroFill, 8, to_bytes([] of UInt8), bss_size, [] of Reloc)
+  obj
+end
+
+# Object bytes for the Mach-O writer.
+pub def macho_bytes(obj : ObjectFile) : Bytes
+  write_object(obj)
+end
+
+# The MIR as text, one instruction per line: the form the gate reads for the probe and the register homes.
+pub def dump_mfunction(mf : MFunction) : String
+  acc = "function #{mf.name}\n"
+  acc = acc + "  frame size=#{mf.frame.frame_size} outgoing=#{mf.frame.outgoing_bytes} saves=#{mf.frame.saves_offset} slots=#{mf.frame.slots.size}\n"
+  mf.blocks.each do |b|
+    acc = acc + "block #{b.index} #{b.name}\n"
+    b.insts.each do |inst|
+      acc = acc + "  #{dump_inst(inst)}\n"
+    end
+  end
+  acc
+end
+
+def dump_operand(op : Operand) : String
+  if op.kind == OperandKind::Virtual
+    return "v#{op.reg}"
+  end
+  if op.kind == OperandKind::FrameSlot
+    return "slot#{op.reg}+#{op.imm}"
+  end
+  reg_name(op.reg)
+end
+
+def dump_inst(inst : MInst) : String
+  parts = [] of String
+  inst.defs.each do |d|
+    parts << dump_operand(d)
+  end
+  inst.uses.each do |u|
+    parts << dump_operand(u)
+  end
+  text = "#{inst.opcode}/#{inst.size}"
+  text = text + "f" if inst.fp
+  text = text + " " + parts.join(", ") unless parts.empty?
+  text = text + " #imm=#{inst.imm}" if inst.imm != 0_i64
+  text = text + " target=#{inst.target}" if inst.target >= 0
+  text = text + " sym=#{inst.sym}" if inst.sym >= 0
+  text
+end

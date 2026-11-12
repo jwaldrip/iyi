@@ -1,0 +1,1432 @@
+module compiler/native/aarch64/isel
+
+# Instruction selection for aarch64 at -O0 (SPEC 2.2 step 3): IR -> MIR over virtual
+# registers. Regalloc, frame layout and encoding come after.
+#
+# Value representation. A value of scalar type is one virtual register; an
+# aggregate is the list of its scalar leaves in layout order, so aggregates never
+# reach the machine. Integers are canonical in a 64-bit register: a value of width
+# w < 64 is sign-extended from its low w bits, except i1, which is 0 or 1. Every
+# operation that can leave the width normalises its result. Unsigned operations
+# zero-extend their operands first.
+#
+# Failure. iyi has no exceptions, so an unsupported construct records its reason
+# with `fail` and selection stops emitting; `select_function` returns the reason.
+# Refused by name: i128, thread-local access, inline asm, constant expressions,
+# reachable exception pads, and intrinsics outside the overflow family, trap,
+# expect, assume and donothing.
+
+import compiler/ir/types::{IrType}
+import compiler/ir/values::{Value, Param}
+import compiler/ir/inst::{Op, Inst, CallConv, Ordering, Attribute, CallAux, GepAux, MemAux, IntrinsicAux}
+import compiler/ir/function::{Function, Global, Linkage, TlsModel}
+import compiler/ir/module::{Module}
+import compiler/ir/layout::{DataLayout}
+import compiler/ir/intrinsics::{IntrinsicId}
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/obj/object::{RelocKind}
+import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le, caller_saved_gprs, caller_saved_fprs, fp_reg}
+import compiler/native/aarch64/abi::{assign_call, assign_return, flatten_leaves, CallAssignment, LeafLoc}
+
+pub class IselError
+  getter message : String
+
+  def initialize(@message : String)
+  end
+
+  def to_s : String
+    @message
+  end
+end
+
+def vop(id : Int32) : Operand
+  Operand.new(OperandKind::Virtual, id)
+end
+
+def pop(reg : Int32) : Operand
+  Operand.new(OperandKind::Physical, reg)
+end
+
+def mop(op : MOp) : MInst
+  MInst.new(op)
+end
+
+# The IR's integer predicates by ordinal, in the order inst.iyi declares them:
+# EQ NE UGT UGE ULT ULE SGT SGE SLT SLE.
+def int_cond(ordinal : Int64) : Int32
+  if ordinal == 0_i64
+    return cond_eq
+  elsif ordinal == 1_i64
+    return cond_ne
+  elsif ordinal == 2_i64
+    return cond_hi
+  elsif ordinal == 3_i64
+    return cond_cs
+  elsif ordinal == 4_i64
+    return cond_cc
+  elsif ordinal == 5_i64
+    return cond_ls
+  elsif ordinal == 6_i64
+    return cond_gt
+  elsif ordinal == 7_i64
+    return cond_ge
+  elsif ordinal == 8_i64
+    return cond_lt
+  end
+  cond_le
+end
+
+def int_unsigned?(ordinal : Int64) : Bool
+  ordinal == 2_i64 || ordinal == 3_i64 || ordinal == 4_i64 || ordinal == 5_i64
+end
+
+class Isel
+  getter mf : MFunction
+  getter layout : DataLayout
+  getter fn : Function
+  getter syms : Hash(String, Int32)
+  getter darwin : Bool
+  getter values : Array(Value)
+  getter leaves : Array(Array(Int32))
+  getter block_index : Hash(String, Int32)
+  getter edge_count : Int32
+  getter failure : String?
+  getter max_outgoing : Int64
+  property cur : MBlock
+  property cur_ir_name : String
+  property sret_vreg : Int32
+
+  def initialize(module_ref : Module, @fn : Function, @syms : Hash(String, Int32), @darwin : Bool)
+    @layout = module_ref.layout
+    @mf = MFunction.new(@fn.name)
+    @values = [] of Value
+    @leaves = [] of Array(Int32)
+    @block_index = Hash(String, Int32).new
+    @edge_count = 0
+    @failure = nil
+    @max_outgoing = 0_i64
+    @cur = MBlock.new(0, "")
+    @cur_ir_name = ""
+    @sret_vreg = -1
+  end
+
+  # ---- failure and register bookkeeping ----------------------------------------------------------
+
+  def fail(message : String) : Nil
+    unless @failure
+      @failure = "#{@fn.name}: #{message}"
+    end
+  end
+
+  def failed? : Bool
+    !@failure.nil?
+  end
+
+  def leaf_class(t : IrType) : RegClass
+    t.float? ? RegClass::Fpr : RegClass::Gpr
+  end
+
+  # One fresh virtual register per leaf of `t`, in layout order.
+  def fresh_leaves(t : IrType) : Array(Int32)
+    acc = [] of Int32
+    flatten_leaves(@layout, t).each do |l|
+      acc << @mf.new_vreg(leaf_class(l[1]))
+    end
+    acc
+  end
+
+  def bind(value : Value, regs : Array(Int32)) : Nil
+    @values << value
+    @leaves << regs
+  end
+
+  def lookup(value : Value) : Array(Int32)?
+    i = 0
+    while i < @values.size
+      if @values[i] == value
+        return @leaves[i]
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  def emit(inst : MInst) : Nil
+    @cur.insts << inst
+  end
+
+  def new_block(name : String) : MBlock
+    block = MBlock.new(@mf.blocks.size, name)
+    @mf.blocks << block
+    block
+  end
+
+  def gpr : Int32
+    @mf.new_vreg(RegClass::Gpr)
+  end
+
+  # A fresh gpr holding an integer constant.
+  def const_gpr(value : Int64) : Int32
+    d = gpr
+    m = mop(MOp::MovImm)
+    m.defs << vop(d)
+    m.imm = value
+    emit(m)
+    d
+  end
+
+  def is_const_op?(op : Op) : Bool
+    op == Op::ConstInt || op == Op::ConstFloat || op == Op::ConstNull || op == Op::ConstUndef || op == Op::ConstPoison || op == Op::ConstZero || op == Op::ConstAggregate || op == Op::ConstBytes || op == Op::ConstExpr
+  end
+
+  # The leaves of a constant. A float constant's bits go through a gpr.
+  def const_leaves(c : Inst) : Array(Int32)
+    t = c.type
+    if c.op == Op::ConstInt
+      v = c.aux_int
+      v = v & 1_i64 if t.int? && t.bits == 1
+      return [const_gpr(v)]
+    end
+    if c.op == Op::ConstFloat
+      g = const_gpr(c.aux_int)
+      return [move_bits_to_fp(g, t.bits)]
+    end
+    if c.op == Op::ConstNull || c.op == Op::ConstUndef || c.op == Op::ConstPoison || c.op == Op::ConstZero
+      return zero_leaves(t)
+    end
+    if c.op == Op::ConstAggregate || c.op == Op::ConstBytes
+      acc = [] of Int32
+      c.args.each do |a|
+        acc = acc + materialize(a)
+      end
+      return acc
+    end
+    fail("constant expressions are not lowered in this slice")
+    return [gpr]
+  end
+
+  def zero_leaves(t : IrType) : Array(Int32)
+    acc = [] of Int32
+    flatten_leaves(@layout, t).each do |l|
+      if l[1].float?
+        acc << move_bits_to_fp(const_gpr(0_i64), l[1].bits)
+      else
+        acc << const_gpr(0_i64)
+      end
+    end
+    acc
+  end
+
+  def move_bits_to_fp(g : Int32, bits : Int32) : Int32
+    f = @mf.new_vreg(RegClass::Fpr)
+    m = mop(MOp::FMovToFp)
+    m.size = bits
+    m.defs << vop(f)
+    m.uses << vop(g)
+    emit(m)
+    f
+  end
+
+  def move_bits_to_gp(f : Int32, bits : Int32) : Int32
+    g = gpr
+    m = mop(MOp::FMovToGp)
+    m.size = bits
+    m.defs << vop(g)
+    m.uses << vop(f)
+    emit(m)
+    g
+  end
+
+  # The leaves of any operand. Constants and symbol addresses are materialised here, in the current block.
+  def materialize(v : Value) : Array(Int32)
+    if v.is_a?(Global)
+      g = v.as(Global)
+      return [symbol_address(g.name, g.tls != TlsModel::None, g.initializer.nil? && g.linkage == Linkage::External)]
+    end
+    if v.is_a?(Function)
+      f = v.as(Function)
+      return [symbol_address(f.name, false, f.declaration?)]
+    end
+    if v.is_a?(Inst) && is_const_op?(v.as(Inst).op)
+      return const_leaves(v.as(Inst))
+    end
+    found = lookup(v)
+    return found if found
+    fail("a value is used before it is defined (#{v.name})")
+    return [gpr]
+  end
+
+  def first_leaf(v : Value) : Int32
+    materialize(v)[0]
+  end
+
+  def symbol_index(name : String) : Int32
+    index = @syms[name]?
+    unless index
+      fail("symbol #{name} is not in the module's symbol table")
+      return 0
+    end
+    index
+  end
+
+  # The address of a symbol: an adrp/add pair for a symbol defined here, the GOT entry for an external one.
+  def symbol_address(name : String, tls : Bool, external : Bool) : Int32
+    if tls
+      fail("thread-local access to #{name} is not lowered in this slice: the Mach-O TLV descriptor awaits its own slice")
+    end
+    d = gpr
+    m = mop(external ? MOp::LoadGot : MOp::AddrSym)
+    m.defs << vop(d)
+    m.sym = symbol_index(name)
+    emit(m)
+    d
+  end
+
+  # ---- normalisation -----------------------------------------------------------------------------
+
+  def width_of(t : IrType) : Int32
+    return 64 if t.pointer?
+    return 64 unless t.int?
+    t.bits
+  end
+
+  # The canonical form of register `v` at type `t`: sign-extended from its width, or 0/1 for i1.
+  def canon(v : Int32, t : IrType) : Int32
+    w = width_of(t)
+    return v if w >= 64
+    d = gpr
+    m = mop(w == 1 ? MOp::Ubfm : MOp::Sbfm)
+    m.imm = w.to_i64
+    m.defs << vop(d)
+    m.uses << vop(v)
+    emit(m)
+    d
+  end
+
+  # The zero-extended form of `v` at type `t`.
+  def zext(v : Int32, t : IrType) : Int32
+    w = width_of(t)
+    return v if w >= 64
+    d = gpr
+    m = mop(MOp::Ubfm)
+    m.imm = w.to_i64
+    m.defs << vop(d)
+    m.uses << vop(v)
+    emit(m)
+    d
+  end
+
+  def binop(op : MOp, a : Int32, b : Int32) : Int32
+    d = gpr
+    m = mop(op)
+    m.defs << vop(d)
+    m.uses << vop(a)
+    m.uses << vop(b)
+    emit(m)
+    d
+  end
+
+  def fbinop(op : MOp, a : Int32, b : Int32, bits : Int32) : Int32
+    d = @mf.new_vreg(RegClass::Fpr)
+    m = mop(op)
+    m.fp = true
+    m.size = bits
+    m.defs << vop(d)
+    m.uses << vop(a)
+    m.uses << vop(b)
+    emit(m)
+    d
+  end
+
+  # A copy of a register, of the same class.
+  def copy_reg(src : Int32) : Int32
+    cls = @mf.vreg_classes[src]
+    d = @mf.new_vreg(cls)
+    m = mop(cls == RegClass::Fpr ? MOp::FMov : MOp::Mov)
+    m.fp = cls == RegClass::Fpr
+    m.defs << vop(d)
+    m.uses << vop(src)
+    emit(m)
+    d
+  end
+
+  def copy_all(regs : Array(Int32)) : Array(Int32)
+    acc = [] of Int32
+    regs.each do |r|
+      acc << copy_reg(r)
+    end
+    acc
+  end
+
+  # base + off, for any offset the frame can produce.
+  def add_imm(a : Int32, off : Int64) : Int32
+    return a if off == 0_i64
+    if off > 0_i64 && off < 4096_i64
+      d = gpr
+      m = mop(MOp::AddImm)
+      m.imm = off
+      m.defs << vop(d)
+      m.uses << vop(a)
+      emit(m)
+      return d
+    end
+    binop(MOp::Add, a, const_gpr(off))
+  end
+
+  def set_flag(cond : Int32) : Int32
+    d = gpr
+    m = mop(MOp::Cset)
+    m.cond = cond
+    m.defs << vop(d)
+    emit(m)
+    d
+  end
+
+  def compare(a : Int32, b : Int32) : Nil
+    c = mop(MOp::Cmp)
+    c.uses << vop(a)
+    c.uses << vop(b)
+    emit(c)
+  end
+
+  # Sets flags against zero, so that `ne` means the register is nonzero.
+  def compare_zero(a : Int32) : Nil
+    c = mop(MOp::CmpImm)
+    c.imm = 0_i64
+    c.uses << vop(a)
+    emit(c)
+  end
+
+  def branch(target : Int32) : MInst
+    m = mop(MOp::B)
+    m.target = target
+    m.terminator = true
+    m
+  end
+
+  # Writes the leaves of `i` into their registers.
+  def bind_result(i : Inst, regs : Array(Int32)) : Nil
+    return if failed?
+    dest = lookup(i)
+    unless dest
+      fail("no register was allocated for #{i.name}")
+      return
+    end
+    k = 0
+    while k < regs.size
+      cls = @mf.vreg_classes[dest[k]]
+      m = mop(cls == RegClass::Fpr ? MOp::FMov : MOp::Mov)
+      m.fp = cls == RegClass::Fpr
+      m.defs << vop(dest[k])
+      m.uses << vop(regs[k])
+      emit(m)
+      k = k + 1
+    end
+  end
+
+  # ---- the function ------------------------------------------------------------------------------
+
+  def run : MFunction
+    # One MIR block per IR block, in order, so block indices agree with the IR's.
+    @fn.blocks.each do |b|
+      @block_index[b.name] = @mf.blocks.size
+      new_block(b.name)
+    end
+    @fn.params.each do |p|
+      bind(p, fresh_leaves(p.type))
+    end
+    reachable = reachable_blocks
+    @fn.blocks.each do |b|
+      next unless reachable[@block_index[b.name]]
+      b.insts.each do |i|
+        next if i.op == Op::Phi || i.type.void? || is_const_op?(i.op)
+        bind(i, fresh_leaves(i.type))
+      end
+      b.insts.each do |i|
+        bind(i, fresh_leaves(i.type)) if i.op == Op::Phi
+      end
+    end
+    @cur = @mf.blocks[0]
+    @cur_ir_name = @fn.blocks[0].name
+    lower_params
+    @fn.blocks.each do |b|
+      next unless reachable[@block_index[b.name]]
+      @cur = @mf.blocks[@block_index[b.name]]
+      @cur_ir_name = b.name
+      b.insts.each do |i|
+        next if i.op == Op::Phi || is_const_op?(i.op)
+        lower_inst(i)
+      end
+    end
+    @mf.frame.outgoing_bytes = @max_outgoing
+    @mf
+  end
+
+  # Which IR blocks are reachable from the entry through normal edges.
+  def reachable_blocks : Array(Bool)
+    seen = [] of Bool
+    @fn.blocks.each do |b|
+      seen << false
+    end
+    work = [0]
+    while !work.empty?
+      k = work.pop
+      next if seen[k]
+      seen[k] = true
+      block = @fn.blocks[k]
+      next unless block.terminated?
+      t = block.terminator
+      if t.op == Op::Invoke
+        work << @block_index[t.targets[0].name]
+      else
+        t.targets.each do |s|
+          work << @block_index[s.name]
+        end
+      end
+    end
+    seen
+  end
+
+  # Parameters arrive by the convention: registers, or the caller's outgoing area above the frame record.
+  def lower_params : Nil
+    params = @fn.params.map { |p| p.type }
+    sret_first = sret_param?(0)
+    assignment = assign_call(@layout, params, params.size, false, sret_first)
+    if assignment.is_a?(String)
+      fail(assignment.as(String))
+      return
+    end
+    call = assignment.as(CallAssignment)
+    i = 0
+    while i < @fn.params.size
+      regs = lookup(@fn.params[i]).as(Array(Int32))
+      locs = call.args[i]
+      k = 0
+      while k < locs.size
+        loc = locs[k]
+        dst = regs[k]
+        if loc.kind == 0
+          m = mop(MOp::Mov)
+          m.defs << vop(dst)
+          m.uses << pop(loc.reg)
+          emit(m)
+        elsif loc.kind == 1
+          m = mop(MOp::FMov)
+          m.fp = true
+          m.defs << vop(dst)
+          m.uses << pop(loc.reg)
+          emit(m)
+        else
+          m = mop(MOp::Ldr)
+          m.size = loc.fp ? loc.bits : 64
+          m.fp = loc.fp
+          m.imm = 16_i64 + loc.offset
+          m.defs << vop(dst)
+          m.uses << pop(fp_reg)
+          emit(m)
+        end
+        k = k + 1
+      end
+      i = i + 1
+    end
+    if sret_first
+      @sret_vreg = lookup(@fn.params[0]).as(Array(Int32))[0]
+    end
+  end
+
+  def sret_param?(index : Int32) : Bool
+    attrs = @fn.param_attrs
+    return false if index >= attrs.size
+    attrs[index].any? { |a| a.name == "sret" }
+  end
+
+  # ---- instructions ------------------------------------------------------------------------------
+
+  def lower_inst(i : Inst) : Nil
+    return if failed?
+    op = i.op
+    if op == Op::Alloca
+      lower_alloca(i)
+    elsif op == Op::Load
+      lower_load(i)
+    elsif op == Op::Store
+      lower_store(i)
+    elsif op == Op::Gep
+      lower_gep(i)
+    elsif op == Op::Fence
+      lower_fence(i)
+    elsif op == Op::CmpXchg
+      lower_cmpxchg(i)
+    elsif op == Op::AtomicRmw
+      lower_atomicrmw(i)
+    elsif op == Op::Add || op == Op::Sub || op == Op::Mul || op == Op::And || op == Op::Or || op == Op::Xor || op == Op::Shl || op == Op::LShr || op == Op::AShr || op == Op::SDiv || op == Op::UDiv || op == Op::SRem || op == Op::URem
+      lower_int_binop(i)
+    elsif op == Op::FAdd || op == Op::FSub || op == Op::FMul || op == Op::FDiv
+      lower_fp_binop(i)
+    elsif op == Op::FNeg
+      src = first_leaf(i.args[0])
+      d = @mf.new_vreg(RegClass::Fpr)
+      m = mop(MOp::FNeg)
+      m.fp = true
+      m.size = i.type.bits
+      m.defs << vop(d)
+      m.uses << vop(src)
+      emit(m)
+      bind_result(i, [d])
+    elsif op == Op::ICmp
+      lower_icmp(i)
+    elsif op == Op::FCmp
+      lower_fcmp(i)
+    elsif op == Op::Select
+      lower_select(i)
+    elsif op == Op::Freeze
+      bind_result(i, copy_all(materialize(i.args[0])))
+    elsif op == Op::Trunc || op == Op::SExt || op == Op::ZExt || op == Op::PtrToInt || op == Op::IntToPtr || op == Op::BitCast || op == Op::AddrSpaceCast
+      lower_cast(i)
+    elsif op == Op::FPTrunc || op == Op::FPExt
+      src = first_leaf(i.args[0])
+      d = @mf.new_vreg(RegClass::Fpr)
+      m = mop(MOp::FCvt)
+      m.fp = true
+      m.size = i.type.bits
+      m.defs << vop(d)
+      m.uses << vop(src)
+      emit(m)
+      bind_result(i, [d])
+    elsif op == Op::FPToSI || op == Op::FPToUI
+      src = first_leaf(i.args[0])
+      d = gpr
+      m = mop(op == Op::FPToSI ? MOp::Fcvtzs : MOp::Fcvtzu)
+      m.fp = true
+      m.size = i.args[0].type.bits
+      m.imm = i.type.bits < 32 ? 32_i64 : i.type.bits.to_i64
+      m.defs << vop(d)
+      m.uses << vop(src)
+      emit(m)
+      bind_result(i, [canon(d, i.type)])
+    elsif op == Op::SIToFP || op == Op::UIToFP
+      src = first_leaf(i.args[0])
+      if op == Op::UIToFP
+        src = zext(src, i.args[0].type)
+      end
+      d = @mf.new_vreg(RegClass::Fpr)
+      m = mop(op == Op::SIToFP ? MOp::Scvtf : MOp::Ucvtf)
+      m.fp = true
+      m.size = i.type.bits
+      m.defs << vop(d)
+      m.uses << vop(src)
+      emit(m)
+      bind_result(i, [d])
+    elsif op == Op::ExtractValue
+      lower_extract(i)
+    elsif op == Op::InsertValue
+      lower_insert(i)
+    elsif op == Op::Call
+      lower_call(i)
+    elsif op == Op::Invoke
+      lower_call(i)
+      emit_edge_branch(i.targets[0].name)
+    elsif op == Op::Intrinsic
+      lower_intrinsic(i)
+    elsif op == Op::Ret
+      lower_ret(i)
+    elsif op == Op::Br
+      emit_edge_branch(i.targets[0].name)
+    elsif op == Op::CondBr
+      lower_condbr(i)
+    elsif op == Op::Switch
+      lower_switch(i)
+    elsif op == Op::Unreachable
+      m = mop(MOp::Brk)
+      m.imm = 1_i64
+      emit(m)
+    elsif op == Op::ThreadLocalAddr || op == Op::ThreadPointer
+      fail("thread-local access is not lowered in this slice: the TLV descriptor and the thread pointer await their own slice")
+    elsif op == Op::LandingPad || op == Op::Resume || op == Op::CatchSwitch || op == Op::CatchPad || op == Op::CatchRet || op == Op::CleanupPad || op == Op::CleanupRet
+      fail("a reachable exception pad (#{op}) is a named error: iyi emits no exception tables")
+    else
+      fail("#{op} is not lowered in this slice")
+    end
+  end
+
+  def lower_alloca(i : Inst) : Nil
+    t = i.aux.as(GepAux).source_type
+    align = i.alignment
+    align = @layout.abi_align(t) if align == 0
+    slot = @mf.frame.add_slot(@layout.alloc_size(t), align)
+    d = gpr
+    m = mop(MOp::AddrFrame)
+    m.defs << vop(d)
+    m.uses << Operand.new(OperandKind::FrameSlot, slot, 0_i64)
+    emit(m)
+    bind_result(i, [d])
+  end
+
+  # The memory width of a scalar: at least a byte, and i1 is stored as a byte.
+  def mem_bits(t : IrType) : Int32
+    return 64 if t.pointer?
+    return 8 if t.int? && t.bits == 1
+    t.bits
+  end
+
+  def atomic_load?(ordering : Ordering) : Bool
+    ordering == Ordering::Acquire || ordering == Ordering::SeqCst || ordering == Ordering::AcqRel
+  end
+
+  def atomic_store?(ordering : Ordering) : Bool
+    ordering == Ordering::Release || ordering == Ordering::SeqCst || ordering == Ordering::AcqRel
+  end
+
+  def lower_load(i : Inst) : Nil
+    aux = i.aux.as(MemAux)
+    base = first_leaf(i.args[0])
+    regs = [] of Int32
+    flatten_leaves(@layout, i.type).each do |l|
+      off = l[0]
+      lt = l[1]
+      if atomic_load?(aux.ordering)
+        addr = add_imm(base, off)
+        g = gpr
+        m = mop(MOp::Ldar)
+        m.size = mem_bits(lt)
+        m.defs << vop(g)
+        m.uses << vop(addr)
+        emit(m)
+        regs << (lt.float? ? move_bits_to_fp(g, lt.bits) : canon(g, lt))
+      else
+        d = @mf.new_vreg(leaf_class(lt))
+        m = mop(MOp::Ldr)
+        m.size = mem_bits(lt)
+        m.fp = lt.float?
+        m.signed = lt.int? && lt.bits > 1
+        m.imm = off
+        m.defs << vop(d)
+        m.uses << vop(base)
+        emit(m)
+        regs << d
+      end
+    end
+    bind_result(i, regs)
+  end
+
+  def lower_store(i : Inst) : Nil
+    aux = i.aux.as(MemAux)
+    vals = materialize(i.args[0])
+    base = first_leaf(i.args[1])
+    flat = flatten_leaves(@layout, i.args[0].type)
+    k = 0
+    while k < flat.size
+      off = flat[k][0]
+      lt = flat[k][1]
+      v = vals[k]
+      if atomic_store?(aux.ordering)
+        src = lt.float? ? move_bits_to_gp(v, lt.bits) : v
+        m = mop(MOp::Stlr)
+        m.size = mem_bits(lt)
+        m.uses << vop(src)
+        m.uses << vop(add_imm(base, off))
+        emit(m)
+      else
+        m = mop(MOp::Str)
+        m.size = mem_bits(lt)
+        m.fp = lt.float?
+        m.imm = off
+        m.uses << vop(v)
+        m.uses << vop(base)
+        emit(m)
+      end
+      k = k + 1
+    end
+  end
+
+  # getelementptr: the first index scales the source type; each later one walks into the type it indexes.
+  # Constant offsets fold into one add. A dynamic index into an array multiplies by its element size; a
+  # dynamic index into a struct is refused, since a struct field is named by a constant.
+  def lower_gep(i : Inst) : Nil
+    layout = @layout
+    aux = i.aux.as(GepAux)
+    base = first_leaf(i.args[0])
+    const_off = 0_i64
+    dyn = base
+    cur = aux.source_type
+    k = 1
+    while k < i.args.size
+      index = i.args[k]
+      is_const = index.is_a?(Inst) && index.as(Inst).op == Op::ConstInt
+      if k == 1
+        stride = layout.alloc_size(cur)
+        if is_const
+          const_off = const_off + index.as(Inst).aux_int * stride
+        else
+          dyn = scaled_add(dyn, index, stride)
+        end
+      elsif cur.struct?
+        if !is_const
+          fail("a struct field in a getelementptr needs a constant index")
+          return
+        end
+        n = index.as(Inst).aux_int.to_i32
+        const_off = const_off + layout.offset_of(cur, n)
+        cur = cur.struct_element_types[n]
+      elsif cur.array?
+        element = cur.element_type
+        stride = layout.alloc_size(element)
+        if is_const
+          const_off = const_off + index.as(Inst).aux_int * stride
+        else
+          dyn = scaled_add(dyn, index, stride)
+        end
+        cur = element
+      else
+        fail("getelementptr indexes into #{cur}")
+        return
+      end
+      k = k + 1
+    end
+    bind_result(i, [add_imm(dyn, const_off)])
+  end
+
+  # dyn + index * stride, for a dynamic index value.
+  def scaled_add(dyn : Int32, index : Value, stride : Int64) : Int32
+    scaled = canon(first_leaf(index), index.type)
+    product = binop(MOp::Mul, scaled, const_gpr(stride))
+    binop(MOp::Add, dyn, product)
+  end
+
+  def lower_fence(i : Inst) : Nil
+    aux = i.aux.as(MemAux)
+    return if aux.single_thread
+    m = mop(MOp::Dmb)
+    m.imm = aux.ordering == Ordering::Acquire ? 1_i64 : 0_i64
+    emit(m)
+  end
+
+  def lower_int_binop(i : Inst) : Nil
+    t = i.type
+    a = first_leaf(i.args[0])
+    b = first_leaf(i.args[1])
+    op = i.op
+    if op == Op::LShr
+      a = zext(a, t)
+    end
+    if op == Op::UDiv || op == Op::URem
+      a = zext(a, t)
+      b = zext(b, t)
+    end
+    if op == Op::SRem || op == Op::URem
+      q = binop(op == Op::SRem ? MOp::Sdiv : MOp::Udiv, a, b)
+      r = gpr
+      m = mop(MOp::Msub)
+      m.defs << vop(r)
+      m.uses << vop(a)
+      m.uses << vop(q)
+      m.uses << vop(b)
+      emit(m)
+      bind_result(i, [canon(r, t)])
+      return
+    end
+    kind = MOp::Add
+    if op == Op::Sub
+      kind = MOp::Sub
+    elsif op == Op::Mul
+      kind = MOp::Mul
+    elsif op == Op::And
+      kind = MOp::And
+    elsif op == Op::Or
+      kind = MOp::Orr
+    elsif op == Op::Xor
+      kind = MOp::Eor
+    elsif op == Op::Shl
+      kind = MOp::Lsl
+    elsif op == Op::LShr
+      kind = MOp::Lsr
+    elsif op == Op::AShr
+      kind = MOp::Asr
+    elsif op == Op::SDiv
+      kind = MOp::Sdiv
+    elsif op == Op::UDiv
+      kind = MOp::Udiv
+    end
+    bind_result(i, [canon(binop(kind, a, b), t)])
+  end
+
+  def lower_fp_binop(i : Inst) : Nil
+    a = first_leaf(i.args[0])
+    b = first_leaf(i.args[1])
+    kind = MOp::FAdd
+    if i.op == Op::FSub
+      kind = MOp::FSub
+    elsif i.op == Op::FMul
+      kind = MOp::FMul
+    elsif i.op == Op::FDiv
+      kind = MOp::FDiv
+    end
+    bind_result(i, [fbinop(kind, a, b, i.type.bits)])
+  end
+
+  def lower_icmp(i : Inst) : Nil
+    ordinal = i.aux_int
+    t = i.args[0].type
+    a = first_leaf(i.args[0])
+    b = first_leaf(i.args[1])
+    if int_unsigned?(ordinal)
+      a = zext(a, t)
+      b = zext(b, t)
+    end
+    compare(a, b)
+    bind_result(i, [set_flag(int_cond(ordinal))])
+  end
+
+  # Floating-point predicates by ordinal, in the order inst.iyi declares them:
+  # FALSE OEQ OGT OGE OLT OLE ONE ORD UEQ UGT UGE ULT ULE UNE UNO TRUE.
+  def lower_fcmp(i : Inst) : Nil
+    ordinal = i.aux_int
+    if ordinal == 0_i64
+      bind_result(i, [const_gpr(0_i64)])
+      return
+    end
+    if ordinal == 15_i64
+      bind_result(i, [const_gpr(1_i64)])
+      return
+    end
+    bits = i.args[0].type.bits
+    a = first_leaf(i.args[0])
+    b = first_leaf(i.args[1])
+    cmp = mop(MOp::FCmp)
+    cmp.fp = true
+    cmp.size = bits
+    cmp.uses << vop(a)
+    cmp.uses << vop(b)
+    emit(cmp)
+    if ordinal == 6_i64
+      # ONE: less or greater, both false when unordered.
+      bind_result(i, [binop(MOp::Orr, set_flag(cond_mi), set_flag(cond_gt))])
+      return
+    end
+    if ordinal == 8_i64
+      # UEQ: equal or unordered.
+      bind_result(i, [binop(MOp::Orr, set_flag(cond_eq), set_flag(cond_vs))])
+      return
+    end
+    cond = cond_eq
+    if ordinal == 2_i64
+      cond = cond_gt
+    elsif ordinal == 3_i64
+      cond = cond_ge
+    elsif ordinal == 4_i64
+      cond = cond_mi
+    elsif ordinal == 5_i64
+      cond = cond_ls
+    elsif ordinal == 7_i64
+      cond = cond_vc
+    elsif ordinal == 9_i64
+      cond = cond_hi
+    elsif ordinal == 10_i64
+      cond = cond_cs
+    elsif ordinal == 11_i64
+      cond = cond_lt
+    elsif ordinal == 12_i64
+      cond = cond_le
+    elsif ordinal == 13_i64
+      cond = cond_ne
+    elsif ordinal == 14_i64
+      cond = cond_vs
+    end
+    bind_result(i, [set_flag(cond)])
+  end
+
+  def csel(a : Int32, b : Int32) : Int32
+    d = gpr
+    m = mop(MOp::Csel)
+    m.cond = cond_ne
+    m.defs << vop(d)
+    m.uses << vop(a)
+    m.uses << vop(b)
+    emit(m)
+    d
+  end
+
+  def lower_select(i : Inst) : Nil
+    c = first_leaf(i.args[0])
+    tv = materialize(i.args[1])
+    fv = materialize(i.args[2])
+    compare_zero(c)
+    regs = [] of Int32
+    flat = flatten_leaves(@layout, i.type)
+    k = 0
+    while k < flat.size
+      lt = flat[k][1]
+      if lt.float?
+        regs << move_bits_to_fp(csel(move_bits_to_gp(tv[k], lt.bits), move_bits_to_gp(fv[k], lt.bits)), lt.bits)
+      else
+        regs << csel(tv[k], fv[k])
+      end
+      k = k + 1
+    end
+    bind_result(i, regs)
+  end
+
+  def lower_cast(i : Inst) : Nil
+    op = i.op
+    src_type = i.args[0].type
+    src = first_leaf(i.args[0])
+    t = i.type
+    if op == Op::Trunc
+      bind_result(i, [canon(src, t)])
+    elsif op == Op::ZExt
+      bind_result(i, [canon(zext(src, src_type), t)])
+    elsif op == Op::PtrToInt
+      bind_result(i, [canon(src, t)])
+    elsif op == Op::BitCast && src_type.float? && t.int?
+      bind_result(i, [canon(move_bits_to_gp(src, src_type.bits), t)])
+    elsif op == Op::BitCast && src_type.int? && t.float?
+      bind_result(i, [move_bits_to_fp(canon(src, src_type), t.bits)])
+    else
+      bind_result(i, [src])
+    end
+  end
+
+  # The index of the first leaf of field or element `index` of an aggregate type.
+  def leaf_offset(t : IrType, index : Int32) : Int32
+    if t.struct?
+      total = 0
+      fields = t.struct_element_types
+      k = 0
+      while k < index
+        total = total + leaf_count(fields[k])
+        k = k + 1
+      end
+      return total
+    end
+    index * leaf_count(t.element_type)
+  end
+
+  def leaf_count(t : IrType) : Int32
+    return 0 if t.void?
+    flatten_leaves(@layout, t).size
+  end
+
+  def lower_extract(i : Inst) : Nil
+    src = materialize(i.args[0])
+    start = leaf_offset(i.args[0].type, i.aux_int.to_i32)
+    count = leaf_count(i.type)
+    bind_result(i, copy_all(src[start, count]))
+  end
+
+  def lower_insert(i : Inst) : Nil
+    agg = materialize(i.args[0])
+    val = materialize(i.args[1])
+    start = leaf_offset(i.args[0].type, i.aux_int.to_i32)
+    acc = agg.dup
+    k = 0
+    while k < val.size
+      acc[start + k] = val[k]
+      k = k + 1
+    end
+    bind_result(i, copy_all(acc))
+  end
+
+  # ---- atomics: load-exclusive / store-exclusive loops, as LLVM's AArch64 backend emits them at -O0 ----
+
+  def lower_cmpxchg(i : Inst) : Nil
+    ptr = first_leaf(i.args[0])
+    expected = first_leaf(i.args[1])
+    newv = first_leaf(i.args[2])
+    value_type = i.args[1].type
+    bits = mem_bits(value_type)
+    old = gpr
+    success = gpr
+    loop_block = new_block("cmpxchg.loop")
+    fail_block = new_block("cmpxchg.fail")
+    done_block = new_block("cmpxchg.done")
+    @cur.insts << branch(loop_block.index)
+    @cur = loop_block
+    load = mop(MOp::Ldaxr)
+    load.size = bits
+    load.defs << vop(old)
+    load.uses << vop(ptr)
+    emit(load)
+    compare(old, expected)
+    miss = mop(MOp::Bcond)
+    miss.cond = cond_ne
+    miss.target = fail_block.index
+    emit(miss)
+    status = gpr
+    store = mop(MOp::Stlxr)
+    store.size = bits
+    store.defs << vop(status)
+    store.uses << vop(newv)
+    store.uses << vop(ptr)
+    emit(store)
+    compare_zero(status)
+    retry = mop(MOp::Bcond)
+    retry.cond = cond_ne
+    retry.target = loop_block.index
+    emit(retry)
+    emit(move_imm_inst(success, 1_i64))
+    emit(branch(done_block.index))
+    @cur = fail_block
+    emit(move_imm_inst(success, 0_i64))
+    emit(branch(done_block.index))
+    @cur = done_block
+    bind_result(i, [canon(old, value_type), success])
+  end
+
+  def move_imm_inst(dst : Int32, value : Int64) : MInst
+    m = mop(MOp::MovImm)
+    m.defs << vop(dst)
+    m.imm = value
+    m
+  end
+
+  def lower_atomicrmw(i : Inst) : Nil
+    aux = i.aux.as(MemAux)
+    ptr = first_leaf(i.args[0])
+    value = first_leaf(i.args[1])
+    t = i.args[1].type
+    bits = mem_bits(t)
+    old = gpr
+    loop_block = new_block("atomicrmw.loop")
+    done_block = new_block("atomicrmw.done")
+    @cur.insts << branch(loop_block.index)
+    @cur = loop_block
+    load = mop(MOp::Ldaxr)
+    load.size = bits
+    load.defs << vop(old)
+    load.uses << vop(ptr)
+    emit(load)
+    rmw = aux.rmw_op
+    newv = value
+    if rmw == "add"
+      newv = binop(MOp::Add, old, value)
+    elsif rmw == "sub"
+      newv = binop(MOp::Sub, old, value)
+    elsif rmw == "and"
+      newv = binop(MOp::And, old, value)
+    elsif rmw == "or"
+      newv = binop(MOp::Orr, old, value)
+    elsif rmw == "xor"
+      newv = binop(MOp::Eor, old, value)
+    elsif rmw == "xchg"
+      newv = value
+    else
+      fail("atomicrmw #{rmw} is not lowered in this slice")
+      return
+    end
+    status = gpr
+    store = mop(MOp::Stlxr)
+    store.size = bits
+    store.defs << vop(status)
+    store.uses << vop(newv)
+    store.uses << vop(ptr)
+    emit(store)
+    compare_zero(status)
+    retry = mop(MOp::Bcond)
+    retry.cond = cond_ne
+    retry.target = loop_block.index
+    emit(retry)
+    emit(branch(done_block.index))
+    @cur = done_block
+    bind_result(i, [canon(old, t)])
+  end
+
+  # ---- control flow and phi copies ---------------------------------------------------------------
+
+  # The phi nodes at the start of the IR block named `name`.
+  def phis_of(name : String) : Array(Inst)
+    acc = [] of Inst
+    @fn.blocks[@block_index[name]].insts.each do |i|
+      acc << i if i.op == Op::Phi
+    end
+    acc
+  end
+
+  # The MIR block a branch from `pred` to IR block `target` lands in. When the target has phi nodes the copies
+  # go into the current block (an unconditional branch) or into a fresh edge block (a conditional branch, so a
+  # copy never runs on the path that does not take the edge).
+  def edge_block(pred : String, target : String, split : Bool) : Int32
+    phis = phis_of(target)
+    dest = @block_index[target]
+    return dest if phis.empty?
+    unless split
+      copy_phis(pred, phis)
+      return dest
+    end
+    edge = new_block("edge.#{@edge_count}")
+    @edge_count = @edge_count + 1
+    saved = @cur
+    @cur = edge
+    copy_phis(pred, phis)
+    emit(branch(dest))
+    @cur = saved
+    edge.index
+  end
+
+  def copy_phis(pred : String, phis : Array(Inst)) : Nil
+    incoming = [] of Array(Int32)
+    phis.each do |p|
+      found = -1
+      k = 0
+      while k < p.targets.size
+        found = k if p.targets[k].name == pred
+        k = k + 1
+      end
+      if found < 0
+        fail("phi #{p.name} has no incoming value from #{pred}")
+        return
+      end
+      incoming << copy_all(materialize(p.args[found]))
+    end
+    k = 0
+    while k < phis.size
+      dest = lookup(phis[k])
+      unless dest
+        fail("no register for phi #{phis[k].name}")
+        return
+      end
+      j = 0
+      while j < dest.size
+        cls = @mf.vreg_classes[dest[j]]
+        m = mop(cls == RegClass::Fpr ? MOp::FMov : MOp::Mov)
+        m.fp = cls == RegClass::Fpr
+        m.defs << vop(dest[j])
+        m.uses << vop(incoming[k][j])
+        emit(m)
+        j = j + 1
+      end
+      k = k + 1
+    end
+  end
+
+  def emit_edge_branch(target : String) : Nil
+    dest = edge_block(@cur_ir_name, target, false)
+    emit(branch(dest))
+  end
+
+  def lower_condbr(i : Inst) : Nil
+    c = first_leaf(i.args[0])
+    compare_zero(c)
+    t_dest = edge_block(@cur_ir_name, i.targets[0].name, true)
+    f_dest = edge_block(@cur_ir_name, i.targets[1].name, true)
+    bc = mop(MOp::Bcond)
+    bc.cond = cond_ne
+    bc.target = t_dest
+    emit(bc)
+    emit(branch(f_dest))
+  end
+
+  # A switch is a compare chain: each case compares the value and branches; the default follows.
+  def lower_switch(i : Inst) : Nil
+    v = first_leaf(i.args[0])
+    k = 0
+    while k < i.cases.size
+      key = const_gpr(i.cases[k])
+      compare(v, key)
+      dest = edge_block(@cur_ir_name, i.targets[k + 1].name, true)
+      bc = mop(MOp::Bcond)
+      bc.cond = cond_eq
+      bc.target = dest
+      emit(bc)
+      k = k + 1
+    end
+    emit_edge_branch(i.targets[0].name)
+  end
+
+  def lower_ret(i : Inst) : Nil
+    ret_type = @fn.fn_type.return_type
+    if !ret_type.void? && i.args.size == 1
+      assigned = assign_return(@layout, ret_type)
+      if assigned.is_a?(String)
+        fail(assigned.as(String))
+        return
+      end
+      vals = materialize(i.args[0])
+      locs = assigned.as(Array(LeafLoc))
+      k = 0
+      while k < locs.size
+        loc = locs[k]
+        m = mop(loc.kind == 1 ? MOp::FMov : MOp::Mov)
+        m.fp = loc.kind == 1
+        m.defs << pop(loc.reg)
+        m.uses << vop(vals[k])
+        emit(m)
+        k = k + 1
+      end
+    end
+    r = mop(MOp::Ret)
+    r.terminator = true
+    emit(r)
+  end
+
+  # ---- calls -------------------------------------------------------------------------------------
+
+  def lower_call(i : Inst) : Nil
+    aux = i.aux
+    cc_aux = nil
+    if aux.is_a?(CallAux)
+      cc_aux = aux.as(CallAux)
+    end
+    actual = i.args[1, i.args.size - 1]
+    types = actual.map { |a| a.type }
+    fixed = types.size
+    sret_first = false
+    if cc_aux
+      fixed = cc_aux.fn_type.param_types.size
+      attrs = cc_aux.param_attrs
+      sret_first = attrs.size > 0 && attrs[0].any? { |a| a.name == "sret" }
+    end
+    assignment = assign_call(@layout, types, fixed, @darwin, sret_first)
+    if assignment.is_a?(String)
+      fail(assignment.as(String))
+      return
+    end
+    call = assignment.as(CallAssignment)
+    if call.stack_bytes > @max_outgoing
+      @max_outgoing = call.stack_bytes
+    end
+    @mf.frame.has_calls = true
+    # Every argument is read from its register before the call; stack arguments are stored to the outgoing area.
+    k = 0
+    while k < actual.size
+      vals = materialize(actual[k])
+      locs = call.args[k]
+      j = 0
+      while j < locs.size
+        loc = locs[j]
+        if loc.kind == 0
+          m = mop(MOp::Mov)
+          m.defs << pop(loc.reg)
+          m.uses << vop(vals[j])
+          emit(m)
+        elsif loc.kind == 1
+          m = mop(MOp::FMov)
+          m.fp = true
+          m.defs << pop(loc.reg)
+          m.uses << vop(vals[j])
+          emit(m)
+        else
+          m = mop(MOp::StrOutgoing)
+          m.size = loc.fp ? loc.bits : 64
+          m.fp = loc.fp
+          m.imm = loc.offset
+          m.uses << vop(vals[j])
+          emit(m)
+        end
+        j = j + 1
+      end
+      k = k + 1
+    end
+    callee = i.args[0]
+    if callee.is_a?(Function)
+      m = mop(MOp::Bl)
+      m.sym = symbol_index(callee.as(Function).name)
+      m.reloc = RelocKind::A64Call26
+      m.call = true
+      m.clobbers = caller_saved_gprs + caller_saved_fprs
+      emit(m)
+    else
+      target = first_leaf(callee)
+      m = mop(MOp::Blr)
+      m.uses << vop(target)
+      m.call = true
+      m.clobbers = caller_saved_gprs + caller_saved_fprs
+      emit(m)
+    end
+    return if i.type.void?
+    assigned = assign_return(@layout, i.type)
+    if assigned.is_a?(String)
+      fail(assigned.as(String))
+      return
+    end
+    regs = [] of Int32
+    assigned.as(Array(LeafLoc)).each do |loc|
+      d = @mf.new_vreg(loc.kind == 1 ? RegClass::Fpr : RegClass::Gpr)
+      m = mop(loc.kind == 1 ? MOp::FMov : MOp::Mov)
+      m.fp = loc.kind == 1
+      m.defs << vop(d)
+      m.uses << pop(loc.reg)
+      emit(m)
+      regs << d
+    end
+    bind_result(i, regs)
+  end
+
+  # ---- intrinsics --------------------------------------------------------------------------------
+
+  def lower_intrinsic(i : Inst) : Nil
+    id = i.aux.as(IntrinsicAux).id
+    if id == IntrinsicId::Trap || id == IntrinsicId::DebugTrap
+      m = mop(MOp::Brk)
+      m.imm = 1_i64
+      emit(m)
+    elsif id == IntrinsicId::Donothing || id == IntrinsicId::Assume
+      return
+    elsif id == IntrinsicId::ExpectI1
+      bind_result(i, copy_all(materialize(i.args[0])))
+    else
+      lower_overflow(i, id)
+    end
+  end
+
+  # The overflow family: the value and a flag. Narrow widths compute in 64 bits and compare the result with
+  # its own width; 64-bit forms use the flag-setting adds and subs, and the high half of a multiply.
+  def lower_overflow(i : Inst, id : IntrinsicId) : Nil
+    signed = id == IntrinsicId::SaddWithOverflowI32 || id == IntrinsicId::SaddWithOverflowI64 || id == IntrinsicId::SsubWithOverflowI32 || id == IntrinsicId::SsubWithOverflowI64 || id == IntrinsicId::SmulWithOverflowI32 || id == IntrinsicId::SmulWithOverflowI64
+    mul = id == IntrinsicId::SmulWithOverflowI32 || id == IntrinsicId::SmulWithOverflowI64 || id == IntrinsicId::UmulWithOverflowI32 || id == IntrinsicId::UmulWithOverflowI64
+    sub = id == IntrinsicId::SsubWithOverflowI32 || id == IntrinsicId::SsubWithOverflowI64 || id == IntrinsicId::UsubWithOverflowI32 || id == IntrinsicId::UsubWithOverflowI64
+    wide = id == IntrinsicId::SaddWithOverflowI64 || id == IntrinsicId::UaddWithOverflowI64 || id == IntrinsicId::SsubWithOverflowI64 || id == IntrinsicId::UsubWithOverflowI64 || id == IntrinsicId::SmulWithOverflowI64 || id == IntrinsicId::UmulWithOverflowI64
+    t = i.args[0].type
+    bits = t.bits
+    a = first_leaf(i.args[0])
+    b = first_leaf(i.args[1])
+    unless signed
+      a = zext(a, t)
+      b = zext(b, t)
+    end
+    if mul
+      if wide
+        lo = binop(MOp::Mul, a, b)
+        hi = binop(signed ? MOp::Smulh : MOp::Umulh, a, b)
+        if signed
+          sign = binop(MOp::Asr, lo, const_gpr(63_i64))
+          compare(hi, sign)
+        else
+          compare_zero(hi)
+        end
+        bind_result(i, [lo, set_flag(cond_ne)])
+        return
+      end
+      prod = binop(MOp::Mul, a, b)
+      norm = signed ? canon(prod, t) : zext(prod, t)
+      compare(prod, norm)
+      bind_result(i, [canon(prod, t), set_flag(cond_ne)])
+      return
+    end
+    if wide
+      flag_op = sub ? MOp::Subs : MOp::Adds
+      value = gpr
+      s = mop(flag_op)
+      s.defs << vop(value)
+      s.uses << vop(a)
+      s.uses << vop(b)
+      emit(s)
+      cond = signed ? cond_vs : (sub ? cond_cc : cond_cs)
+      bind_result(i, [value, set_flag(cond)])
+      return
+    end
+    raw = binop(sub ? MOp::Sub : MOp::Add, a, b)
+    norm = signed ? canon(raw, t) : zext(raw, t)
+    compare(raw, norm)
+    bind_result(i, [canon(raw, t), set_flag(cond_ne)])
+  end
+end
+
+# Selects the MIR of one function. Returns the reason when a construct is not lowered.
+pub def select_function(mod : Module, fn : Function, syms : Hash(String, Int32), darwin : Bool) : MFunction | IselError
+  isel = Isel.new(mod, fn, syms, darwin)
+  mf = isel.run
+  if msg = isel.failure
+    return IselError.new(msg)
+  end
+  mf
+end

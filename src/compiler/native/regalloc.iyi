@@ -1,0 +1,110 @@
+module compiler/native/regalloc
+
+# Register allocation for the -O0 backend (SPEC 2.2 step 4).
+#
+# Policy. Every virtual register has one home for the whole function, so no
+# interval analysis is needed to be correct:
+#   - the first ten general-purpose virtual registers in definition order are
+#     pinned to the callee-saved set x19..x28, so their values survive calls
+#     without any spill;
+#   - every other virtual register, and every floating-point one, lives in an
+#     8-byte frame slot, and each instruction reloads the slots it reads into
+#     scratch registers and stores the slot it writes from one.
+# No floating-point register holds a value across a call, and no pointer lives in
+# a floating-point register at all. Linear scan with live-range splitting is the
+# spec's intended allocator and is not built here; this is the -O0 policy the
+# spec's "-O0 disables it" leaves room for, and it is the one this slice proves.
+
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/aarch64/regs::{callee_saved_gprs, scratch_gprs, scratch_fprs}
+
+# Assigns homes and rewrites every instruction so that it names only physical registers and frame slots.
+pub def allocate(fn : MFunction) : Nil
+  n = fn.vreg_count
+  fn.vreg_home = [] of Int32
+  fn.vreg_slot = [] of Int32
+  pinned = 0
+  v = 0
+  while v < n
+    if fn.vreg_classes[v] == RegClass::Gpr && pinned < 10
+      fn.vreg_home << callee_saved_gprs[pinned]
+      fn.frame.callee_saved << callee_saved_gprs[pinned]
+      fn.vreg_slot << -1
+      pinned = pinned + 1
+    else
+      fn.vreg_home << -1
+      fn.vreg_slot << fn.frame.add_slot(8_i64, 8)
+    end
+    v = v + 1
+  end
+  fn.blocks.each do |block|
+    rewrite_block(fn, block)
+  end
+end
+
+# The MIR of one spill slot access: an 8-byte load or store through the frame, with its width kept whole.
+def slot_access(op : MOp, reg : Int32, slot : Int32, fp : Bool) : MInst
+  m = MInst.new(op)
+  m.size = 64
+  m.fp = fp
+  if op == MOp::LdrFrame
+    m.defs << Operand.new(OperandKind::Physical, reg)
+    m.uses << Operand.new(OperandKind::FrameSlot, slot, 0_i64)
+  else
+    m.uses << Operand.new(OperandKind::Physical, reg)
+    m.uses << Operand.new(OperandKind::FrameSlot, slot, 0_i64)
+  end
+  m
+end
+
+def rewrite_block(fn : MFunction, block : MBlock) : Nil
+  acc = [] of MInst
+  block.insts.each do |inst|
+    next_gpr = 0
+    next_fpr = 0
+    reloads = [] of MInst
+    stores = [] of MInst
+    inst.uses.each_with_index do |op, k|
+      next unless op.kind == OperandKind::Virtual
+      v = op.reg
+      if fn.vreg_home[v] >= 0
+        inst.uses[k] = Operand.new(OperandKind::Physical, fn.vreg_home[v])
+      else
+        fp = fn.vreg_classes[v] == RegClass::Fpr
+        reg = fp ? scratch_fprs[next_fpr] : scratch_gprs[next_gpr]
+        if fp
+          next_fpr = next_fpr + 1
+        else
+          next_gpr = next_gpr + 1
+        end
+        reloads << slot_access(MOp::LdrFrame, reg, fn.vreg_slot[v], fp)
+        inst.uses[k] = Operand.new(OperandKind::Physical, reg)
+      end
+    end
+    inst.defs.each_with_index do |op, k|
+      next unless op.kind == OperandKind::Virtual
+      v = op.reg
+      if fn.vreg_home[v] >= 0
+        inst.defs[k] = Operand.new(OperandKind::Physical, fn.vreg_home[v])
+      else
+        fp = fn.vreg_classes[v] == RegClass::Fpr
+        reg = fp ? scratch_fprs[next_fpr] : scratch_gprs[next_gpr]
+        if fp
+          next_fpr = next_fpr + 1
+        else
+          next_gpr = next_gpr + 1
+        end
+        stores << slot_access(MOp::StrFrame, reg, fn.vreg_slot[v], fp)
+        inst.defs[k] = Operand.new(OperandKind::Physical, reg)
+      end
+    end
+    reloads.each do |r|
+      acc << r
+    end
+    acc << inst
+    stores.each do |s|
+      acc << s
+    end
+  end
+  block.insts = acc
+end
