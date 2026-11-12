@@ -18,10 +18,6 @@ def raise(ex : Exception) : NoReturn
 end
 
 fun main(argc : Int32, argv : Pointer(Pointer(UInt8))) : Int32
-  begin
-    raise MyError.new(42)
-    0
-  rescue ex : MyError
-    ex.code
-  end
+  raise MyError.new(42)
+  0
 end

@@ -24,7 +24,8 @@
 module compiler/codegen/codegen
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Unless, Var, While, Yield, MacroIf, MacroLiteral}
+import compiler/foundation/errors::{refuse_port}
+import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Unless, Var, While, Yield, MacroIf, MacroLiteral, VisibilityModifier}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/token::{NumberKind}
@@ -226,12 +227,118 @@ class LocalVarCollector < Visitor
   end
 end
 
-# The port refuses, by name and before it writes any IR, a call or operand it
-# cannot lower. Emitting nothing for one would leave a block unterminated and
-# hand the verifier invalid IR, so the emitter stops with exit status 1.
-def refuse_port(message : String) : NoReturn
-  STDERR.puts "Error: #{message}"
-  LibC.exit(1)
+# Collects the assignments to instance variables in one method body. A nested def or
+# class has its own self and its own parameters, so the walk stops at it.
+class IvarAssignCollector < Visitor
+  getter assigns : Array(Assign)
+
+  def initialize
+    @assigns = [] of Assign
+  end
+
+  def visit(node : Def) : Bool
+    false
+  end
+
+  def visit(node : ClassDef) : Bool
+    false
+  end
+
+  def visit(node : Assign) : Bool
+    @assigns << node if node.target.is_a?(InstanceVar)
+    true
+  end
+end
+
+# The type an assignment's value gives an instance variable that no declaration names,
+# for the three forms the port can name without inference: a number literal of a kind
+# listed here, a parameter with a type restriction, and `Type.new(...)`. Anything else
+# is nil, and the variable stays undeclared.
+def ivar_guess_type(value : ASTNode, params : Array(Arg), subst : Hash(String, String)) : String?
+  if value.is_a?(NumberLiteral)
+    kind = value.as(NumberLiteral).kind
+    if kind == NumberKind::I32
+      return "Int32"
+    elsif kind == NumberKind::I64
+      return "Int64"
+    elsif kind == NumberKind::U32
+      return "UInt32"
+    elsif kind == NumberKind::U64
+      return "UInt64"
+    elsif kind == NumberKind::F32
+      return "Float32"
+    elsif kind == NumberKind::F64
+      return "Float64"
+    end
+    return nil
+  end
+  if value.is_a?(Var)
+    vname = value.as(Var).name
+    i = 0
+    while i < params.size
+      if params[i].name == vname
+        if r = params[i].restriction
+          s = r.to_s
+          return subst[s]? || s
+        end
+        return nil
+      end
+      i += 1
+    end
+    return nil
+  end
+  if value.is_a?(Call)
+    call = value.as(Call)
+    if call.name == "new"
+      if o = call.obj
+        if o.is_a?(Path)
+          s = o.as(Path).to_s
+          return subst[s]? || s
+        end
+      end
+    end
+  end
+  nil
+end
+
+# Declares each instance variable that no declaration names, when every assignment to
+# it in the class's own methods gives the same type by ivar_guess_type. Any other
+# variable stays undeclared, and its store is refused by name where it is lowered.
+def infer_undeclared_ivars(info : CustomTypeInfo, exps : Array(ASTNode), subst : Hash(String, String)) : Nil
+  guesses = Hash(String, String).new
+  unresolved = Set(String).new
+  exps.each do |exp|
+    next unless exp.is_a?(Def)
+    d = exp.as(Def)
+    collector = IvarAssignCollector.new
+    d.body.accept(collector)
+    collector.assigns.each do |asg|
+      name = asg.target.as(InstanceVar).name.lstrip('@')
+      next if info.fields.has_key?(name)
+      if t = ivar_guess_type(asg.value, d.args, subst)
+        if prev = guesses[name]?
+          unresolved.add(name) if prev != t
+        else
+          guesses[name] = t
+        end
+      else
+        unresolved.add(name)
+      end
+    end
+  end
+  guesses.each_key do |name|
+    info.add_field(name, guesses[name]) unless unresolved.includes?(name)
+  end
+end
+
+# A store to an instance variable the port cannot type is refused by name, where the
+# store is lowered. Dropping the store would run the program without its assignment.
+def refuse_undeclared_ivar(node : InstanceVar) : NoReturn
+  message = "instance variable #{node.name} has no type the port can read: declare it in the class body (`#{node.name} : Type`)"
+  if loc = node.location
+    refuse_at(loc, node.name.size, message)
+  end
+  refuse_port(message)
 end
 
 # The location of a clause keyword (`rescue`, `ensure`) at or after `from`. The AST
@@ -278,7 +385,7 @@ def refuse_at(location : Location, caret_len : Int32, message : String) : NoRetu
   STDERR.puts "#{gutter}#{text[indent, text.bytesize - indent]}"
   STDERR.puts "#{pad}#{carets}"
   STDERR.puts "Error: #{message}"
-  LibC.exit(1)
+  exit(1)
 end
 
 # The source form of an operand or call, for a refusal message.
@@ -333,6 +440,22 @@ class ExceptionHandlerRefuser < Visitor
   end
 end
 
+# The refusal of `rescue` and `ensure` in a program, before any lowering. The driver
+# calls it on every resolved module; the refusal is by name, never a silent lowering.
+pub def refuse_exception_handlers(node : ASTNode) : Nil
+  refuser = ExceptionHandlerRefuser.new
+  node.accept(refuser)
+  if message = refuser.refusal
+    if loc = refuser.location
+      if kw = keyword_location(loc, refuser.keyword)
+        refuse_at(kw, refuser.caret, message)
+      end
+      refuse_at(loc, refuser.caret, message)
+    end
+    refuse_port(message)
+  end
+end
+
 class StructCallCollector < Visitor
   getter struct_calls : Array(String)
   property custom_types : Hash(String, CustomTypeInfo)
@@ -379,6 +502,26 @@ class ProcLiteralCollector < Visitor
   def visit(node : ProcLiteral) : Bool
     @proc_literals << node
     false
+  end
+
+  def visit(node : ASTNode) : Bool
+    true
+  end
+end
+
+# The classes a program constructs with Type.new, anywhere in its code.
+class NewCallCollector < Visitor
+  getter classes : Set(String)
+
+  def initialize
+    @classes = Set(String).new
+  end
+
+  def visit(node : Call) : Bool
+    if node.name == "new" && (recv = node.obj) && recv.is_a?(Path)
+      @classes.add(recv.to_s)
+    end
+    true
   end
 
   def visit(node : ASTNode) : Bool
@@ -487,6 +630,7 @@ pub class CodeGenVisitor < Visitor
   property struct_call_temps : Array(LLVMValue)
   property struct_temp_index : Int32
   property block_methods : Hash(String, Def)
+  property constructed_classes : Set(String)
   property current_inlined_block : InlinedBlockContext?
   property inlined_block_contexts : Array(InlinedBlockContext)
   property inlined_block_index : Int32
@@ -525,6 +669,7 @@ pub class CodeGenVisitor < Visitor
     @struct_call_temps = [] of LLVMValue
     @struct_temp_index = 0
     @block_methods = Hash(String, Def).new
+    @constructed_classes = Set(String).new
     @current_inlined_block = nil
     @inlined_block_contexts = [] of InlinedBlockContext
     @inlined_block_index = 0
@@ -987,6 +1132,18 @@ pub class CodeGenVisitor < Visitor
     t1
   end
 
+  # The class an expression's value is an instance of, when the expression alone says:
+  # a constructor call Type.new(...). Nil for everything else.
+  def expression_class_type(node : ASTNode) : String?
+    if node.is_a?(Call)
+      call = node.as(Call)
+      if call.name == "new" && (recv = call.obj) && recv.is_a?(Path)
+        return recv.to_s
+      end
+    end
+    nil
+  end
+
   def infer_var_type(vname : String, node : ASTNode) : String
     if node.is_a?(TypeDeclaration)
       return node.as(TypeDeclaration).declared_type.to_s
@@ -1314,6 +1471,10 @@ pub class CodeGenVisitor < Visitor
     @current_fn_return_type = ret_type
     @current_fun_def = node
     @current_method_name = nil
+    # A free function has no self. The last method emitted left its class behind, and a
+    # receiver-less call in this function would then be taken for a method call on it.
+    @current_self = nil
+    @current_self_type = nil
 
     @vars.clear
     @last = nil
@@ -1544,6 +1705,8 @@ pub class CodeGenVisitor < Visitor
                 @terminated = false
               end
             end
+          else
+            refuse_undeclared_ivar(node.target.as(InstanceVar))
           end
         end
       end
@@ -2442,6 +2605,18 @@ pub class CodeGenVisitor < Visitor
     end
   end
 
+  # `{% if %}` in a body: the condition is a macro expression the macro engine
+  # evaluates against the target's flags, and only the chosen branch is emitted,
+  # as the oracle expands it. Walking both branches would refuse a flag the
+  # target does not set.
+  def visit(node : MacroIf) : Bool
+    interp = MacroInterpreter.new
+    cond_val = interp.evaluate(node.cond)
+    branch = MacroMethods.truthy?(cond_val) ? node.then : node.else
+    branch.accept(self)
+    false
+  end
+
   def visit(node : Call) : Bool
     if node.name == "as" && node.args.size == 1 && (as_obj = node.obj)
       as_obj.accept(self)
@@ -3070,6 +3245,37 @@ pub class CodeGenVisitor < Visitor
                   end
                 end
               end
+            end
+          end
+        end
+      end
+
+      # 3a. An instance method on an expression of known class type, as in Svc.new.part1.
+      # The method is found before the receiver is evaluated, so a miss emits nothing.
+      if !obj.is_a?(Var) && (rt_name = expression_class_type(obj)) && @custom_types.has_key?(rt_name)
+        r_info = @custom_types[rt_name]
+        if !r_info.is_struct && r_info.generic_name.nil? && (r_m = r_info.methods[node.name]?)
+          r_expected = r_m.args.map { |a| a.restriction ? a.restriction.to_s : "Int32" }
+          r_ret = r_m.return_type ? r_m.return_type.to_s.lstrip(':') : "Int32"
+          r_fn_name = if r_expected.empty?
+                        "*#{r_info.name}##{node.name}:#{r_ret}"
+                      else
+                        "*#{r_info.name}##{node.name}<#{r_expected.join(", ")}>:#{r_ret}"
+                      end
+          if r_fn = @mod.get_function?(r_fn_name)
+            obj.accept(self)
+            if recv_val = @last
+              r_args = [recv_val] of LLVMValue
+              node.args.each do |a|
+                a.accept(self)
+                if l = @last
+                  r_args << l
+                end
+              end
+              r_fn_ty = LLVMType.function(r_args.map(&.type), llvm_type_from_name(r_ret), false)
+              @last = @builder.call(r_fn_ty, r_fn.to_value, r_args)
+              @terminated = false
+              return false
             end
           end
         end
@@ -3799,8 +4005,15 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
   cg.custom_types.each_value do |info|
     st = cg.llvm_struct_types[info.name]? || context.int32
 
-    # Emit initializer if defined
-    if init_def = info.methods["initialize"]?
+    # Emit initializer if defined. A class with no initialize gets the default one (no
+    # arguments, no body) when some code constructs it; its constructor is then emitted
+    # the same way as one with an initialize.
+    default_init = if cg.constructed_classes.includes?(info.name)
+                     Def.new("initialize", [] of Arg, nil, nil, nil, Path.new("Void"))
+                   else
+                     nil
+                   end
+    if init_def = info.methods["initialize"]? || default_init
       init_arg_tys = [context.pointer] of LLVMType
       init_def.args.each { |a| init_arg_tys << cg.llvm_type_from_name(a.restriction ? a.restriction.to_s : "Int32") }
       init_ret_tname = cg.infer_def_return_type(init_def, info)
@@ -4360,17 +4573,7 @@ end
 pub def compile_source_to_module(src : String, filename : String, context : Context, mod : Module) : CodeGenVisitor
   parser = Parser.new(src, filename)
   node = parser.parse
-  refuser = ExceptionHandlerRefuser.new
-  node.accept(refuser)
-  if message = refuser.refusal
-    if loc = refuser.location
-      if kw = keyword_location(loc, refuser.keyword)
-        refuse_at(kw, refuser.caret, message)
-      end
-      refuse_at(loc, refuser.caret, message)
-    end
-    refuse_port(message)
-  end
+  refuse_exception_handlers(node)
 
   prog = SemanticProgram.new
   register_primitive_operators(prog)
@@ -4488,6 +4691,10 @@ def expand_body_nodes(node : ASTNode) : Array(ASTNode)
     cond_val = interp.evaluate(mif.cond)
     branch = MacroMethods.truthy?(cond_val) ? mif.then : mif.else
     res.concat(expand_body_nodes(branch))
+  elsif node.is_a?(VisibilityModifier)
+    # `private def f` is a def under a visibility modifier; the method table
+    # registers the def, as the oracle's does.
+    res.concat(expand_body_nodes(node.as(VisibilityModifier).exp))
   else
     res << node
   end
@@ -4509,6 +4716,13 @@ pub def compile_declarations_to_module(
   cg = CodeGenVisitor.new(context, mod, prog, mv)
   cg.filename = filename
   cg.block_methods = defs
+  # Only the classes some code constructs with Type.new get a default constructor, as the
+  # oracle emits no code for a class nothing constructs.
+  constructed = NewCallCollector.new
+  classes.each { |cd| cd.accept(constructed) }
+  funs.each { |fd| fd.accept(constructed) }
+  defs.each_value { |d| d.accept(constructed) }
+  cg.constructed_classes = constructed.classes
 
   # Process lib definitions
   libs.each do |ld|
@@ -4608,6 +4822,7 @@ pub def compile_declarations_to_module(
           end
         end
       end
+      infer_undeclared_ivars(info, exps, Hash(String, String).new)
     end
   end
 
@@ -4699,6 +4914,7 @@ pub def compile_declarations_to_module(
               end
             end
           end
+          infer_undeclared_ivars(info, exps, subst)
         end
         cg.custom_types[inst_name] = info
       end
