@@ -4,6 +4,18 @@
 
 ### Added
 
+- **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
+  [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
+  the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,
+  `codesign` or LLVM. A refusal names the function, construct or symbol and exits 1. Thirty-four fixtures run end to end
+  with stdout and exit status equal to the hosted compiler's program.
+- **The native runtime helpers are IR.** `__iyi_native_memcpy`, `__iyi_native_memmove` (correct for overlap in both
+  directions), `__iyi_native_memset`, and signed and unsigned 128-bit division and remainder are written in
+  `src/compiler/native/rt/builtins.ir` and compiled by the backend at link time. Division by zero yields 0.
+- **`bench/native_first_light_exercise.sh` gates the path.** It builds the tool, checks it links only libSystem, builds
+  every fixture with a twin under a tripwire that fails on `ld`, `cc`, `clang`, `gcc`, `codesign`, `dsymutil`,
+  `llvm-config` and `as`, and checks each executable's signature, imports, build version and reproducibility.
+
 - **The native backend lowers thread-local globals.** On darwin a thread-local global has a TLV descriptor in
   `__DATA,__thread_vars`, bound to `__tlv_bootstrap`, and its storage in `__DATA,__thread_data` or `__DATA,__thread_bss`
   as the oracle's object lays them out. `threadlocaladdr` calls the descriptor's thunk, and `threadpointer` reads
