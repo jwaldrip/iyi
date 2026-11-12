@@ -312,8 +312,8 @@ prove_mutation "struct default superclass switches to Reference" "$MUT_SEM" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "enum members start numbering at one instead of zero" "$MUT_SEM" \
-  "counter = 0_i64" \
-  "counter = 1_i64" \
+  "counter = @enum_flags ? 1_i64 : 0_i64" \
+  "counter = @enum_flags ? 1_i64 : 1_i64" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

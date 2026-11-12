@@ -2113,6 +2113,9 @@ pub class TopLevelVisitor < Visitor
     end
     type = NonGenericClassType.new(@program, @current_type, node.name, @program.struct_type)
     type.struct = true
+    if loc = node.location
+      type.add_location(loc)
+    end
     @current_type.add_type(node.name, type)
     false
   end
