@@ -145,7 +145,10 @@ elsif Program.args[0] == "--initial"
 elsif Program.args[0] == "--chain"
   print BenchSelfhostSemanticDeclarationsExercise.dump_chain(Program.args[1])
 elsif Program.args[0] == "--total"
-  BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  prog.carried_refusals.each do |message|
+    print "carried: #{message}\n"
+  end
   print "ok\n"
 else
   print BenchSelfhostSemanticDeclarationsExercise.dump_file(Program.args[0])
