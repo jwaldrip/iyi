@@ -304,6 +304,7 @@ src/compiler/semantic/method_lookup.iyi 0
 src/compiler/semantic/restrictions.iyi 0
 src/compiler/semantic/call_error.iyi 0
 src/compiler/semantic/default_arguments.iyi 0
+src/compiler/semantic/lib_call.iyi 0
 src/compiler/types/filters.iyi 22
 src/compiler/types/instances.iyi 15
 src/compiler/types/intersect.iyi 28
