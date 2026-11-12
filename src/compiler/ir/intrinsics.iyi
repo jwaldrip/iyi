@@ -1,0 +1,269 @@
+module compiler/ir/intrinsics
+
+import compiler/ir/types::{IrType, TypeTable}
+
+# The closed set of intrinsics the IR knows. Each member is one concrete LLVM intrinsic name, so its
+# overload types are fixed by the member. The importer's coverage report (B2) decides the final membership.
+pub enum IntrinsicId
+  MemcpyP0P0I64
+  MemmoveP0P0I64
+  MemsetP0I64
+  SaddWithOverflowI32
+  SaddWithOverflowI64
+  UaddWithOverflowI32
+  UaddWithOverflowI64
+  SsubWithOverflowI32
+  SsubWithOverflowI64
+  UsubWithOverflowI32
+  UsubWithOverflowI64
+  SmulWithOverflowI32
+  SmulWithOverflowI64
+  UmulWithOverflowI32
+  UmulWithOverflowI64
+  SqrtF32
+  SqrtF64
+  FabsF32
+  FabsF64
+  SinF64
+  CosF64
+  ExpF64
+  Exp2F64
+  LogF64
+  Log2F64
+  Log10F64
+  PowF64
+  PowiF64I32
+  FloorF64
+  CeilF64
+  TruncF64
+  RoundF64
+  RoundevenF64
+  RintF64
+  FmaF64
+  MinnumF64
+  MaxnumF64
+  CopysignF64
+  CtpopI32
+  CtpopI64
+  CtlzI32
+  CtlzI64
+  CttzI32
+  CttzI64
+  BswapI32
+  BswapI64
+  FshlI64
+  FshrI64
+  Trap
+  DebugTrap
+  ExpectI1
+  Assume
+  Donothing
+  FrameaddressP0
+  ReturnaddressP0
+  StacksaveP0
+  StackrestoreP0
+  VaStart
+  VaEnd
+  Readcyclecounter
+  X86Sse2Pause
+  AArch64Hint
+  WasmMemoryGrowI32
+end
+
+# A concrete intrinsic: its LLVM name, the types its name mangles (`overload`), its result and its
+# parameters. Type tokens are `void`, `i1`, `i8`, `i32`, `i64`, `f32`, `f64`, `ptr`, or `{a,b}` for
+# a struct of two tokens (the overflow intrinsics return `{T,i1}`).
+pub class IntrinsicSpec
+  getter name : String
+  getter overload : Array(String)
+  getter ret : String
+  getter params : Array(String)
+
+  def initialize(@name : String, @overload : Array(String), @ret : String, @params : Array(String))
+  end
+end
+
+pub def intrinsic_spec(id : IntrinsicId) : IntrinsicSpec
+  case id
+  when IntrinsicId::MemcpyP0P0I64
+    IntrinsicSpec.new("llvm.memcpy.p0.p0.i64", ["ptr", "ptr", "i64"], "void", ["ptr", "ptr", "i64", "i1"])
+  when IntrinsicId::MemmoveP0P0I64
+    IntrinsicSpec.new("llvm.memmove.p0.p0.i64", ["ptr", "ptr", "i64"], "void", ["ptr", "ptr", "i64", "i1"])
+  when IntrinsicId::MemsetP0I64
+    IntrinsicSpec.new("llvm.memset.p0.i64", ["ptr", "i64"], "void", ["ptr", "i8", "i64", "i1"])
+  when IntrinsicId::SaddWithOverflowI32
+    IntrinsicSpec.new("llvm.sadd.with.overflow.i32", ["i32"], "{i32,i1}", ["i32", "i32"])
+  when IntrinsicId::SaddWithOverflowI64
+    IntrinsicSpec.new("llvm.sadd.with.overflow.i64", ["i64"], "{i64,i1}", ["i64", "i64"])
+  when IntrinsicId::UaddWithOverflowI32
+    IntrinsicSpec.new("llvm.uadd.with.overflow.i32", ["i32"], "{i32,i1}", ["i32", "i32"])
+  when IntrinsicId::UaddWithOverflowI64
+    IntrinsicSpec.new("llvm.uadd.with.overflow.i64", ["i64"], "{i64,i1}", ["i64", "i64"])
+  when IntrinsicId::SsubWithOverflowI32
+    IntrinsicSpec.new("llvm.ssub.with.overflow.i32", ["i32"], "{i32,i1}", ["i32", "i32"])
+  when IntrinsicId::SsubWithOverflowI64
+    IntrinsicSpec.new("llvm.ssub.with.overflow.i64", ["i64"], "{i64,i1}", ["i64", "i64"])
+  when IntrinsicId::UsubWithOverflowI32
+    IntrinsicSpec.new("llvm.usub.with.overflow.i32", ["i32"], "{i32,i1}", ["i32", "i32"])
+  when IntrinsicId::UsubWithOverflowI64
+    IntrinsicSpec.new("llvm.usub.with.overflow.i64", ["i64"], "{i64,i1}", ["i64", "i64"])
+  when IntrinsicId::SmulWithOverflowI32
+    IntrinsicSpec.new("llvm.smul.with.overflow.i32", ["i32"], "{i32,i1}", ["i32", "i32"])
+  when IntrinsicId::SmulWithOverflowI64
+    IntrinsicSpec.new("llvm.smul.with.overflow.i64", ["i64"], "{i64,i1}", ["i64", "i64"])
+  when IntrinsicId::UmulWithOverflowI32
+    IntrinsicSpec.new("llvm.umul.with.overflow.i32", ["i32"], "{i32,i1}", ["i32", "i32"])
+  when IntrinsicId::UmulWithOverflowI64
+    IntrinsicSpec.new("llvm.umul.with.overflow.i64", ["i64"], "{i64,i1}", ["i64", "i64"])
+  when IntrinsicId::SqrtF32
+    IntrinsicSpec.new("llvm.sqrt.f32", ["f32"], "f32", ["f32"])
+  when IntrinsicId::SqrtF64
+    IntrinsicSpec.new("llvm.sqrt.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::FabsF32
+    IntrinsicSpec.new("llvm.fabs.f32", ["f32"], "f32", ["f32"])
+  when IntrinsicId::FabsF64
+    IntrinsicSpec.new("llvm.fabs.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::SinF64
+    IntrinsicSpec.new("llvm.sin.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::CosF64
+    IntrinsicSpec.new("llvm.cos.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::ExpF64
+    IntrinsicSpec.new("llvm.exp.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::Exp2F64
+    IntrinsicSpec.new("llvm.exp2.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::LogF64
+    IntrinsicSpec.new("llvm.log.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::Log2F64
+    IntrinsicSpec.new("llvm.log2.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::Log10F64
+    IntrinsicSpec.new("llvm.log10.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::PowF64
+    IntrinsicSpec.new("llvm.pow.f64", ["f64"], "f64", ["f64", "f64"])
+  when IntrinsicId::PowiF64I32
+    IntrinsicSpec.new("llvm.powi.f64.i32", ["f64", "i32"], "f64", ["f64", "i32"])
+  when IntrinsicId::FloorF64
+    IntrinsicSpec.new("llvm.floor.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::CeilF64
+    IntrinsicSpec.new("llvm.ceil.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::TruncF64
+    IntrinsicSpec.new("llvm.trunc.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::RoundF64
+    IntrinsicSpec.new("llvm.round.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::RoundevenF64
+    IntrinsicSpec.new("llvm.roundeven.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::RintF64
+    IntrinsicSpec.new("llvm.rint.f64", ["f64"], "f64", ["f64"])
+  when IntrinsicId::FmaF64
+    IntrinsicSpec.new("llvm.fma.f64", ["f64"], "f64", ["f64", "f64", "f64"])
+  when IntrinsicId::MinnumF64
+    IntrinsicSpec.new("llvm.minnum.f64", ["f64"], "f64", ["f64", "f64"])
+  when IntrinsicId::MaxnumF64
+    IntrinsicSpec.new("llvm.maxnum.f64", ["f64"], "f64", ["f64", "f64"])
+  when IntrinsicId::CopysignF64
+    IntrinsicSpec.new("llvm.copysign.f64", ["f64"], "f64", ["f64", "f64"])
+  when IntrinsicId::CtpopI32
+    IntrinsicSpec.new("llvm.ctpop.i32", ["i32"], "i32", ["i32"])
+  when IntrinsicId::CtpopI64
+    IntrinsicSpec.new("llvm.ctpop.i64", ["i64"], "i64", ["i64"])
+  when IntrinsicId::CtlzI32
+    IntrinsicSpec.new("llvm.ctlz.i32", ["i32"], "i32", ["i32", "i1"])
+  when IntrinsicId::CtlzI64
+    IntrinsicSpec.new("llvm.ctlz.i64", ["i64"], "i64", ["i64", "i1"])
+  when IntrinsicId::CttzI32
+    IntrinsicSpec.new("llvm.cttz.i32", ["i32"], "i32", ["i32", "i1"])
+  when IntrinsicId::CttzI64
+    IntrinsicSpec.new("llvm.cttz.i64", ["i64"], "i64", ["i64", "i1"])
+  when IntrinsicId::BswapI32
+    IntrinsicSpec.new("llvm.bswap.i32", ["i32"], "i32", ["i32"])
+  when IntrinsicId::BswapI64
+    IntrinsicSpec.new("llvm.bswap.i64", ["i64"], "i64", ["i64"])
+  when IntrinsicId::FshlI64
+    IntrinsicSpec.new("llvm.fshl.i64", ["i64"], "i64", ["i64", "i64", "i64"])
+  when IntrinsicId::FshrI64
+    IntrinsicSpec.new("llvm.fshr.i64", ["i64"], "i64", ["i64", "i64", "i64"])
+  when IntrinsicId::Trap
+    IntrinsicSpec.new("llvm.trap", [] of String, "void", [] of String)
+  when IntrinsicId::DebugTrap
+    IntrinsicSpec.new("llvm.debugtrap", [] of String, "void", [] of String)
+  when IntrinsicId::ExpectI1
+    IntrinsicSpec.new("llvm.expect.i1", ["i1"], "i1", ["i1", "i1"])
+  when IntrinsicId::Assume
+    IntrinsicSpec.new("llvm.assume", [] of String, "void", ["i1"])
+  when IntrinsicId::Donothing
+    IntrinsicSpec.new("llvm.donothing", [] of String, "void", [] of String)
+  when IntrinsicId::FrameaddressP0
+    IntrinsicSpec.new("llvm.frameaddress.p0", ["ptr"], "ptr", ["i32"])
+  when IntrinsicId::ReturnaddressP0
+    IntrinsicSpec.new("llvm.returnaddress", [] of String, "ptr", ["i32"])
+  when IntrinsicId::StacksaveP0
+    IntrinsicSpec.new("llvm.stacksave.p0", ["ptr"], "ptr", [] of String)
+  when IntrinsicId::StackrestoreP0
+    IntrinsicSpec.new("llvm.stackrestore.p0", ["ptr"], "void", ["ptr"])
+  when IntrinsicId::VaStart
+    IntrinsicSpec.new("llvm.va_start", [] of String, "void", ["ptr"])
+  when IntrinsicId::VaEnd
+    IntrinsicSpec.new("llvm.va_end", [] of String, "void", ["ptr"])
+  when IntrinsicId::Readcyclecounter
+    IntrinsicSpec.new("llvm.readcyclecounter", [] of String, "i64", [] of String)
+  when IntrinsicId::X86Sse2Pause
+    IntrinsicSpec.new("llvm.x86.sse2.pause", [] of String, "void", [] of String)
+  when IntrinsicId::AArch64Hint
+    IntrinsicSpec.new("llvm.aarch64.hint", [] of String, "i32", ["i32"])
+  when IntrinsicId::WasmMemoryGrowI32
+    IntrinsicSpec.new("llvm.wasm.memory.grow.i32", ["i32"], "i32", ["i32", "i32"])
+  else
+    raise "no specification for intrinsic #{id}"
+  end
+end
+
+# Every member, in declaration order.
+pub def all_intrinsic_ids : Array(IntrinsicId)
+  [IntrinsicId::MemcpyP0P0I64, IntrinsicId::MemmoveP0P0I64, IntrinsicId::MemsetP0I64,
+   IntrinsicId::SaddWithOverflowI32, IntrinsicId::SaddWithOverflowI64,
+   IntrinsicId::UaddWithOverflowI32, IntrinsicId::UaddWithOverflowI64,
+   IntrinsicId::SsubWithOverflowI32, IntrinsicId::SsubWithOverflowI64,
+   IntrinsicId::UsubWithOverflowI32, IntrinsicId::UsubWithOverflowI64,
+   IntrinsicId::SmulWithOverflowI32, IntrinsicId::SmulWithOverflowI64,
+   IntrinsicId::UmulWithOverflowI32, IntrinsicId::UmulWithOverflowI64,
+   IntrinsicId::SqrtF32, IntrinsicId::SqrtF64, IntrinsicId::FabsF32, IntrinsicId::FabsF64,
+   IntrinsicId::SinF64, IntrinsicId::CosF64, IntrinsicId::ExpF64, IntrinsicId::Exp2F64,
+   IntrinsicId::LogF64, IntrinsicId::Log2F64, IntrinsicId::Log10F64, IntrinsicId::PowF64,
+   IntrinsicId::PowiF64I32, IntrinsicId::FloorF64, IntrinsicId::CeilF64, IntrinsicId::TruncF64,
+   IntrinsicId::RoundF64, IntrinsicId::RoundevenF64, IntrinsicId::RintF64, IntrinsicId::FmaF64,
+   IntrinsicId::MinnumF64, IntrinsicId::MaxnumF64, IntrinsicId::CopysignF64,
+   IntrinsicId::CtpopI32, IntrinsicId::CtpopI64, IntrinsicId::CtlzI32, IntrinsicId::CtlzI64,
+   IntrinsicId::CttzI32, IntrinsicId::CttzI64, IntrinsicId::BswapI32, IntrinsicId::BswapI64,
+   IntrinsicId::FshlI64, IntrinsicId::FshrI64,
+   IntrinsicId::Trap, IntrinsicId::DebugTrap, IntrinsicId::ExpectI1, IntrinsicId::Assume,
+   IntrinsicId::Donothing, IntrinsicId::FrameaddressP0, IntrinsicId::ReturnaddressP0,
+   IntrinsicId::StacksaveP0, IntrinsicId::StackrestoreP0, IntrinsicId::VaStart, IntrinsicId::VaEnd,
+   IntrinsicId::Readcyclecounter, IntrinsicId::X86Sse2Pause, IntrinsicId::AArch64Hint,
+   IntrinsicId::WasmMemoryGrowI32]
+end
+
+# The member called `name` (an LLVM intrinsic name), or nil when the IR does not know it.
+pub def intrinsic_from_name(name : String) : IntrinsicId?
+  all_intrinsic_ids.each do |id|
+    return id if intrinsic_spec(id).name == name
+  end
+  nil
+end
+
+# The IR type a spec token names, in `types`. Tokens are those of IntrinsicSpec.
+pub def intrinsic_type(token : String, types : TypeTable) : IrType
+  return types.void if token == "void"
+  return types.int1 if token == "i1"
+  return types.int8 if token == "i8"
+  return types.int32 if token == "i32"
+  return types.int64 if token == "i64"
+  return types.float(32) if token == "f32"
+  return types.double if token == "f64"
+  return types.ptr(0) if token == "ptr"
+  if token.starts_with?("{") && token.ends_with?("}")
+    inner = token[1, token.bytesize - 2]
+    parts = inner.split(',')
+    fields = parts.map { |p| intrinsic_type(p, types) }
+    return types.struct_of(fields)
+  end
+  raise "unknown intrinsic type token #{token}"
+end

@@ -1,0 +1,34 @@
+@[Unsafe("reads the bit pattern of a float through a pointer cast: iyi has no float bit conversion, and a float constant carries its bits")]
+module compiler/ir/values
+
+import std/float
+import compiler/ir/types::{IrType}
+
+# The base of everything that can be an operand: instructions, constants, parameters, globals and functions.
+# A name of "" marks an unnamed value; the printer numbers those in definition order.
+pub class Value
+  property name : String
+  getter type : IrType
+
+  def initialize(@type : IrType, @name : String = "")
+  end
+end
+
+pub class Param < Value
+  getter index : Int32
+
+  def initialize(type : IrType, name : String, @index : Int32)
+    super(type, name)
+  end
+end
+
+# The bit pattern of a double, as a signed 64-bit integer.
+pub def double_bits(value : Float64) : Int64
+  pointerof(value).as(Int64*).value
+end
+
+# The bit pattern of a float (32-bit), held in the low 32 bits of a non-negative Int64.
+pub def single_bits(value : Float64) : Int64
+  narrowed = value.to_f32
+  (pointerof(narrowed).as(Int32*).value.to_i64) & 0xFFFFFFFF_i64
+end
