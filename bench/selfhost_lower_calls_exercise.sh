@@ -175,6 +175,12 @@ prove_mutation "a block call does not bind self in the inlined def" "$REPO/src/c
   '      frame.vars["self"] = LowerVar.new(sv.as(Value), st, true)' '      frame.vars.size' -- lower_calls_check || status=1
 prove_mutation "a method's self is not the first parameter" "$REPO/src/compiler/lower/fun.iyi" \
   '    first = 1' '    first = 0' -- lower_calls_check || status=1
+prove_mutation "a lib call passes no arguments" "$REPO/src/compiler/lower/call.iyi" \
+  'inst = low.builder.call(fn_type, func.as(Function), values, "")' 'inst = low.builder.call(fn_type, func.as(Function), [] of Value, "")' -- lower_calls_check || status=1
+prove_mutation "a lib fun is declared with the iyi calling convention" "$REPO/src/compiler/lower/call.iyi" \
+  'func = low.module.add_function(real, fn_type, CallConv::C)' 'func = low.module.add_function(real, fn_type, CallConv::Iyi)' -- lower_calls_check || status=1
+prove_mutation "a lib call's function type returns nil" "$REPO/src/compiler/lower/call.iyi" \
+  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))' 'fn_type = low.module.types.func(params, low.typer.llvm_return_type(low.analysed.program.nil_type))' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

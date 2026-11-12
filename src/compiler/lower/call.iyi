@@ -54,6 +54,7 @@ import compiler/lower/typer::{passed_by_value?}
 import compiler/semantic/top_level::{LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call}
+import compiler/lower/abi/aarch64::{check_lib_aggregate}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
 
 # A body that is a literal, which the hosted call inlines (`try_inline_call`).
@@ -89,6 +90,9 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     return
   end
 
+  if node.super? || node.previous_def?
+    pending_visit_node("super or previous_def (hosted call.cr: is_super, owner is the scope, match.cr codegen_dispatch)")
+  end
   if node.obj.nil? && !low.current_context.type.nil?
     pending_visit_node("a call with no receiver inside a method, an implicit self call (hosted call.cr: prepare_call_args, self)")
   end
@@ -401,6 +405,10 @@ pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, the_
     low.last = llvm_nil(low)
     return
   end
+  arg_types.each do |t|
+    check_lib_aggregate(t, "argument")
+  end
+  check_lib_aggregate(ret, "result")
   params = [] of IrType
   arg_types.each do |t|
     params << low.typer.llvm_type(t)
