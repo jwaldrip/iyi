@@ -33,7 +33,8 @@ module compiler/lower/primitives
 
 import compiler/syntax/ast::{ASTNode, Call, Def, MacroLiteral, Primitive}
 import compiler/ir/function::{Function}
-import compiler/ir/inst::{IntPredicate}
+import compiler/ir/inst::{IntPredicate, Attribute, Op, CallConv}
+import compiler/lower/cast::{type_id_value}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -511,26 +512,83 @@ end
 # The hosted `codegen_primitive_allocate` for the `allocate` primitive that the generated `new`
 # calls (`_ = allocate`). `t` is the instance type of the metaclass the call is on (the Point in
 # `Point.new`), and the value is a pointer to a fresh instance, zeroed. Ported for a struct: an
-# alloca of the struct type, zeroed by a store of the zero constant. Hosted codegen emits
-# `llvm.memset` there (codegen.cr pre_initialize_aggregate), so the zeroing is the same value, but
-# not the same IR; the module comparison of a fixture that allocates a struct therefore names the
-# difference and is not claimed identical. Refused by name: a class (the arena or malloc path, the
-# header type id, and `__iyi_new`, codegen.cr allocate_aggregate 2758-2798) and a virtual type (the
-# hosted upcast of the instance). The header store is decided from codegen.cr 2790-2806, not from
-# the core's pointer function, which covers fields only.
+# alloca of the struct type, zeroed by the hosted `llvm.memset` (codegen.cr `pre_initialize_aggregate`
+# and `memset`, the pointer argument with alignment 4). Refused by name: a class (the arena or malloc
+# path, the header type id, and `__iyi_new`, codegen.cr allocate_aggregate 2758-2798) and a virtual
+# type (the hosted upcast of the instance). The header store is decided from codegen.cr 2790-2806,
+# not from the core's pointer function, which covers fields only.
 pub def primitive_allocate(low : Lowerer, t : Type) : Value
   if t.is_a?(VirtualType)
     pending_visit_node("allocate of a virtual type (hosted codegen_primitive_allocate, upcast of the instance)")
     return low.builder.const_undef(low.typer.llvm_type(t))
   end
   unless passed_by_value?(t)
-    pending_visit_node("allocate of class #{t.full_name} (hosted allocate_aggregate: the arena or malloc path, the header type id, and __iyi_new)")
-    return low.builder.const_undef(low.typer.llvm_type(t))
+    return allocate_class(low, t)
   end
   struct_ir = low.typer.llvm_type(t)
   ptr = low.alloca(struct_ir, "")
-  store_aligned(low, low.builder.const_zero(struct_ir), ptr)
+  zero_memory(low, ptr, struct_ir)
   ptr
+end
+
+# The hosted class allocation under the arena, which is what a default build emits (codegen.cr
+# allocate_aggregate 2766-2776): `__iyi_new(size, type id, flags)` with flags = the class's `:headed`
+# byte, or 2 when the object is not pointerful (atomic), then the memset of the instance, and the
+# instance pointer is the value (a class is a reference). Verified against the hosted IR of
+# bench/fixtures/lowprim_alloc_class.iyi: `zext i8 headed`, `or 2`, `zext i32 type_id`,
+# `call ptr @__iyi_new(ptrtoint sizeof, id, flags)`, `call void @llvm.memset ... ptr align 4`.
+# The headed byte is decided by the program-wide census (gc_layouts.cr iyi_headed?: virtual types and
+# unions the program made, subclasses, and type ids over UInt16::MAX), which the port does not have:
+# headed_byte refuses by name until it does. Pointerful objects (instance variables holding pointers,
+# NEEDS row 18) are not handled either; they wait on the same census.
+pub def allocate_class(low : Lowerer, t : Type) : Value
+  headed = headed_byte(low, t)
+  struct_ir = low.typer.llvm_struct_type(t)
+  head64 = low.builder.zext(headed, low.module.types.int(64))
+  flags = low.builder.build_or(head64, low.builder.const_int(low.module.types.int(64), 2_i64))
+  tid = low.builder.zext(type_id_value(low, t), low.module.types.int(64))
+  size = sizeof_expr(low, struct_ir)
+  new_fn = iyi_new_function(low)
+  ptr = low.builder.call(new_fn.fn_type, new_fn, [size, tid, flags] of Value, "")
+  zero_memory(low, ptr, struct_ir)
+  ptr
+end
+
+# The `:headed` byte of a class, as the hosted `iyi_headed_flag` loads it. Not ported: it is the
+# whole-program census's answer (gc_layouts.cr iyi_headed?), so this refuses by name for every class.
+pub def headed_byte(low : Lowerer, t : Type) : Value
+  pending_visit_node("allocate of class #{t.full_name}: the :headed byte is the program-wide census (gc_layouts.cr iyi_headed?), not ported")
+  low.builder.const_int(low.module.types.int8, 0_i64)
+end
+
+# The `__iyi_new` runtime function, declared in the module with the C convention when the program
+# does not define it yet (the hosted module has it defined by the prelude).
+pub def iyi_new_function(low : Lowerer) : Function
+  existing = low.module.get_function?("__iyi_new")
+  return existing.as(Function) unless existing.nil?
+  fn_type = low.module.types.func([low.module.types.int(64), low.module.types.int(64), low.module.types.int(64)] of IrType, low.module.types.ptr(0))
+  low.module.add_function("__iyi_new", fn_type, CallConv::C)
+end
+
+# The hosted `memset ptr, int8(0), size_t(struct_type.size)` (codegen.cr:3285): `llvm.memset` with the
+# pointer's alignment 4 (LibLLVM.set_instr_param_alignment(res, 1, 4)), a zero byte, the size as the
+# target's size type, and a false volatile flag.
+pub def zero_memory(low : Lowerer, ptr : Value, struct_ir : IrType) : Nil
+  byte = low.builder.const_int(low.module.types.int8, 0_i64)
+  count = sizeof_expr(low, struct_ir)
+  volatile = int1(low, 0_i64)
+  align_ptr = Attribute.new("align", 4_u64, nil, nil)
+  param_attrs = [[align_ptr] of Attribute, [] of Attribute, [] of Attribute, [] of Attribute] of Array(Attribute)
+  low.builder.intrinsic_with(IntrinsicId::Memset, [low.module.types.ptr(0), low.typer.size_t] of IrType, [ptr, byte, count, volatile] of Value, param_attrs)
+end
+
+# The LLVM sizeof of a struct as the size type: `ptrtoint (ptr getelementptr (T, ptr null, i32 1) to
+# i64)`, the constant expression the hosted codegen passes as size_t(struct_type.size).
+pub def sizeof_expr(low : Lowerer, struct_ir : IrType) : Value
+  null_ptr = low.builder.const_null_pointer
+  one = low.builder.const_int(low.module.types.int32, 1_i64)
+  elem = low.builder.const_gep(struct_ir, null_ptr, [one] of Value)
+  low.builder.const_cast(Op::PtrToInt, elem, low.typer.size_t)
 end
 
 # The name in a `# primitive: <name>` text, or nil for any other text.
