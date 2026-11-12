@@ -4,6 +4,33 @@
 
 ### Added
 
+- **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
+  [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
+  the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,
+  `codesign` or LLVM. A refusal names the function, construct or symbol and exits 1. Thirty-four fixtures run end to end
+  with stdout and exit status equal to the hosted compiler's program.
+- **The native runtime helpers are IR.** `__iyi_native_memcpy`, `__iyi_native_memmove` (correct for overlap in both
+  directions), `__iyi_native_memset`, and signed and unsigned 128-bit division and remainder are written in
+  `src/compiler/native/rt/builtins.ir` and compiled by the backend at link time. Division by zero yields 0.
+- **`bench/native_first_light_exercise.sh` gates the path.** It builds the tool, checks it links only libSystem, builds
+  every fixture with a twin under a tripwire that fails on `ld`, `cc`, `clang`, `gcc`, `codesign`, `dsymutil`,
+  `llvm-config` and `as`, and checks each executable's signature, imports, build version and reproducibility.
+
+- **The native backend lowers thread-local globals.** On darwin a thread-local global has a TLV descriptor in
+  `__DATA,__thread_vars`, bound to `__tlv_bootstrap`, and its storage in `__DATA,__thread_data` or `__DATA,__thread_bss`
+  as the oracle's object lays them out. `threadlocaladdr` calls the descriptor's thunk, and `threadpointer` reads
+  `tpidrro_el0` with its low bits cleared on darwin or `tpidr_el0` on Linux. Fixtures match the hosted compiler's output,
+  including a thread that sees its own copy. The aarch64 Linux local-exec form encodes, but no ELF object is written yet,
+  so it is not run.
+
+- **The native backend lowers `i128` values, selects each atomic ordering exactly, and allocates registers with linear
+  scan by default.** A 128-bit integer is a pair of 64-bit registers. Arithmetic, shifts, comparisons, division through
+  the runtime helpers, the overflow family and AAPCS64 argument passing lower to aarch64 without LLVM, and the fixtures
+  match the hosted compiler's output. Each atomic read-modify-write and compare-exchange selects the exclusive pair its
+  ordering asks for. `IYI_NATIVE_REGALLOC=pin` still selects the reference allocator. Still refused by name: jump
+  tables for switches, inline assembly and naked functions, floating-point conversions of `i128`,
+  and atomic accesses to `i128`.
+
 - **`iyi test` runs tests at once, says what each named case came to, and
   can run some of them.** Half as many tests build and run together as the
   machine has cores, `-p N` says how many, and the report stays in file
@@ -68,6 +95,16 @@
 
 ### Gates
 
+- **The native back end's gates run in CI.** `bench/native_gates.sh` runs
+  the nine gates in order (the IR, the object model, the linker, the
+  encoder, register allocation, the inline assembler, code generation, the
+  LLVM round trip, and the end-to-end build with no host tool) and prints
+  one verdict per gate. Two jobs run it: `native` on Linux, where what
+  must execute an arm64 darwin program is printed as skipped, and
+  `native-darwin` on macos-15, where nothing is. `scripts/ci_plan.py`
+  selects both for a change under `src/compiler/native/`,
+  `src/compiler/ir/`, `src/compiler/backend/`, `src/compiler/tools/`, or
+  to a native gate or its fixtures, and `result` reads both.
 - **Four module exercises are tests now.** `bench/std_bool_test.iyi`,
   `std_box_test.iyi`, `std_heap_test.iyi` and `std_string_pool_test.iyi`
   are named cases over the prelude's assertions, and their drivers run
