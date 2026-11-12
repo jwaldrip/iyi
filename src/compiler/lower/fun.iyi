@@ -35,8 +35,13 @@ import compiler/semantic/top_level::{NoReturnType, Type}
 # then the name, the argument types in `<>`, each by its full name, then `:` and the return type.
 # A def with no argument has no `<>`. The hosted escaping of a name that is not a plain identifier
 # is not ported: the caller refuses such a name. `self_type` is nil for a top-level def.
-pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type) : String
+pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : String
   text = "*"
+  # A method of a non-generic metaclass (`def self.go`) is named after its class and `::`, and passes no self
+  # (hosted Def#mangled_name, codegen/ast.cr: a metaclass owner writes `self_type.instance_type` then `::`).
+  if co = class_owner
+    text = text + co.full_name + "::"
+  end
   if st = self_type
     text = text + st.full_name + "#"
   end
@@ -61,8 +66,8 @@ end
 # The hosted `target_def_fun` for a def at these self and argument types, and its return type: the
 # function already in the module when there is one, otherwise a new one, emitted now. A method's
 # self is the first parameter, of the owner's type (hosted `codegen_fun_signature_non_external`).
-pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type) : Function
-  name = mangled_name(target.name, self_type, arg_types, ret)
+pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : Function
+  name = mangled_name(target.name, self_type, arg_types, ret, class_owner)
   if existing = low.module.get_function?(name)
     return existing.as(Function)
   end
@@ -79,7 +84,7 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
   end
   ret_ir = low.typer.llvm_return_type(ret)
   fn_type = low.module.types.func(params, ret_ir)
-  fn = codegen_fun(low, name, target, self_type, arg_types, fn_type, ret_ir)
+  fn = codegen_fun(low, name, target, self_type, arg_types, fn_type, ret_ir, class_owner)
   # Hosted codegen_fun: a def whose analysed return type is NoReturn carries `noreturn` (fun.cr).
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
@@ -87,19 +92,33 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
   fn
 end
 
+# The calling convention of a function with a body (import.iyi convention_of, the rule the native back end
+# reads the oracle with): a def, named with a leading `*` or `~`, is `Iyi`; a `fun` and the runtime's entry
+# points (`__crystal_raise_overflow`, `main`) are `C`. The hosted code emits both as `ccc`; the IR keeps them apart.
+pub def def_convention(name : String) : CallConv
+  return CallConv::Iyi if name.starts_with?("*") || name.starts_with?("~")
+  CallConv::C
+end
+
 # The hosted `codegen_fun` (fun.cr:271), plain case. The function is declared first, so a recursive
 # call finds it. Its body is lowered in a frame of its own: the alloca and entry blocks as
 # `new_entry_block` makes them, `self` (when the owner is passed as self) and each parameter a value
 # read where it arrives (hosted `already_loaded`), the body, and the return. The caller's state is put
 # back afterwards (hosted `old_position`, `old_alloca_block`, `old_needs_value`).
-pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType) : Function
+pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, class_owner : Type? = nil) : Function
   fn = low.module.define_function(name, fn_type)
-  fn.call_convention = CallConv::C
+  fn.call_convention = def_convention(name)
   fn.linkage = Linkage::Internal
   add_body_attributes(fn, low.module.triple)
 
   saved = LowerSavedState.new(low.context, low.alloca_block, low.entry_block, low.builder.insert_block, low.needs_value, low.in_main)
-  low.context = LowerContext.new(fn, fn_type, self_type, Hash(String, LowerVar).new)
+  # A class method's context names its instance type (hosted: the metaclass's instance, which `allocate` reads),
+  # since it has no self. The implicit-self refusal then covers the calls inside it that are not primitives.
+  ctx_type = self_type
+  if ctx_type.nil?
+    ctx_type = class_owner
+  end
+  low.context = LowerContext.new(fn, fn_type, ctx_type, Hash(String, LowerVar).new)
   low.current_context.var_unions = low.analysed.def_var_unions[target]?
   low.alloca_block = nil
   low.entry_block = nil

@@ -134,6 +134,17 @@ pub class Lowerer
   property type_ids : LowerTypeIds
   # The hosted per-constant state (read flag, no-init flag, initialised value): see globals.iyi.
   property globals : LowerGlobals
+  # The funs with a body already emitted, by their real name (hosted External#dead): a fun is emitted once.
+  property fun_defs_done : Hash(String, Bool)
+  # The hosted struct spill of a call (call.cr:707-713), read by the receiver of a call: the object_id of the call node
+  # that spilled its struct result last (0 for none), and the spill slot, whose pointer is that receiver's self.
+  property spill_node : UInt64
+  property spill_slot : Value?
+  # The object_id of the call node being lowered as a receiver, whose struct result is wanted only as its spill slot (0 for none).
+  property receiver_node : UInt64
+  # The object_id of a receiver whose value an inlined literal body never reads (0 for none): its struct result is
+  # spilled as the hosted call spills it, and no value is read back.
+  property receiver_unused : UInt64
 
   def initialize(@module : Module, @typer : LowerTyper, @analysed : MainVisitor)
     @builder = Builder.new(@module)
@@ -152,6 +163,11 @@ pub class Lowerer
     @string_type_id = 0
     @type_ids = LowerTypeIds.new
     @globals = LowerGlobals.new
+    @spill_node = 0_u64
+    @spill_slot = nil
+    @receiver_node = 0_u64
+    @receiver_unused = 0_u64
+    @fun_defs_done = Hash(String, Bool).new
   end
 
   # The function being lowered (the hosted `context`). Raises when none is.
@@ -292,11 +308,14 @@ pub class Lowerer
 end
 
 # The alignment an alloca is emitted with. The hosted code writes none, so LLVM gives the alloca the
-# preferred alignment of its type: the same as the ABI alignment for an int, a float and a pointer, but
-# a word for an empty struct (the Nil type), whose ABI alignment is 1. Checked against the hosted module
-# of a Nil variable (bench/fixtures/lower_cond_nil.iyi); other aggregates are not observed yet.
+# preferred alignment of its type: the same as the ABI alignment for an int, a float and a pointer. An aggregate
+# (a struct, and the Nil type, which is an empty struct) is preferred 8 bytes or its ABI alignment if that is
+# larger: the hosted module's `%Point` alloca is `align 8` with an ABI alignment of 4 (lower_ivar_struct), and the
+# empty Nil struct is `align 8` where its ABI alignment is 1 (bench/fixtures/lower_cond_nil.iyi).
 pub def alloca_alignment(type : IrType, typer : LowerTyper) : Int32
-  if type.kind == TypeKind::Struct && type.fields.empty?
+  if type.kind == TypeKind::Struct
+    abi = typer.align_of(type)
+    return abi if abi > 8
     return 8
   end
   typer.align_of(type)
