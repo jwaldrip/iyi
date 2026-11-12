@@ -145,6 +145,7 @@ src/compiler/tools/typed_dump.iyi 0
 src/compiler/types.iyi 8
 src/compiler/types/filtering.iyi 17
 src/compiler/types/filters.iyi 22
+src/compiler/types/indirection.iyi 0
 src/compiler/types/instances.iyi 15
 src/compiler/types/intersect.iyi 28
 src/compiler/types/lookup.iyi 39

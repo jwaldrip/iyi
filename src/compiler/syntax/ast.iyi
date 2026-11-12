@@ -243,6 +243,27 @@ def clone_opt_strings(strings : Array(String)?) : Array(String)?
   end
 end
 
+# The hosted printer writes a proc type in parentheses, `(T, U -> V)`, and drops the outermost pair where the
+# surrounding syntax already delimits it: a def or fun parameter's restriction, a call argument that is a proc type
+# or a declaration of one, a call's block argument, and the only member of a union. This prints `node` in one of
+# those places.
+def print_dropping_proc_parens(node : ASTNode, sb : StringBuilder) : Nil
+  if node.is_a?(ProcNotation)
+    node.as(ProcNotation).to_s_bare(sb)
+  elsif node.is_a?(TypeDeclaration) && node.as(TypeDeclaration).declared_type.is_a?(ProcNotation)
+    decl = node.as(TypeDeclaration)
+    decl.var.to_s(sb)
+    sb << " : "
+    decl.declared_type.as(ProcNotation).to_s_bare(sb)
+    if v = decl.value
+      sb << " = "
+      v.to_s(sb)
+    end
+  else
+    node.to_s(sb)
+  end
+end
+
 def hash_val(v) : Int32
   if val = v
     val.hash
@@ -3012,7 +3033,7 @@ pub class Call < ASTNode
       i = 0
       while i < @args.size
         sb << ", " if i > 0
-        @args[i].to_s(sb)
+        print_dropping_proc_parens(@args[i], sb)
         i = i + 1
       end
       if na = @named_args
@@ -3030,7 +3051,7 @@ pub class Call < ASTNode
         end
         sb << ", " if has_prev
         sb << "&"
-        ba.to_s(sb)
+        print_dropping_proc_parens(ba, sb)
       end
       sb << ")"
     end
@@ -3091,13 +3112,26 @@ pub class Arg < ASTNode
   end
 
   def to_s(sb : StringBuilder) : Nil
+    write_arg(sb, false)
+  end
+
+  # As a parameter of a def or a fun, where a proc restriction loses its outermost parentheses.
+  def to_s_param(sb : StringBuilder) : Nil
+    write_arg(sb, true)
+  end
+
+  def write_arg(sb : StringBuilder, drop_proc_parens : Bool) : Nil
     if ext = @external_name
       sb << ext << " "
     end
     sb << @name
     if r = @restriction
       sb << " : "
-      r.to_s(sb)
+      if drop_proc_parens
+        print_dropping_proc_parens(r, sb)
+      else
+        r.to_s(sb)
+      end
     end
     if d = @default_value
       sb << " = "
@@ -3146,26 +3180,28 @@ pub class ProcNotation < ASTNode
     h
   end
 
+  # The hosted printer's form: `(T, U -> V)`, `(-> V)`, `(T ->)`.
   def to_s(sb : StringBuilder) : Nil
+    sb << "("
+    to_s_bare(sb)
+    sb << ")"
+  end
+
+  # Without the outermost parentheses. A proc type among the inputs or as the output keeps its own.
+  def to_s_bare(sb : StringBuilder) : Nil
     if inp = @inputs
-      if inp.size == 1
-        inp[0].to_s(sb)
-      else
-        sb << "("
-        i = 0
-        while i < inp.size
-          sb << ", " if i > 0
-          inp[i].to_s(sb)
-          i = i + 1
-        end
-        sb << ")"
+      i = 0
+      while i < inp.size
+        sb << ", " if i > 0
+        inp[i].to_s(sb)
+        i = i + 1
       end
+      sb << " "
     end
-    sb << " -> "
+    sb << "->"
     if out = @output
+      sb << " "
       out.to_s(sb)
-    else
-      sb << "Nil"
     end
   end
 end
@@ -3402,18 +3438,18 @@ pub class Def < ASTNode
       while i < @args.size
         sb << ", " if i > 0
         sb << "*" if @splat_index == i
-        @args[i].to_s(sb)
+        @args[i].to_s_param(sb)
         i = i + 1
       end
       if ds = @double_splat
         sb << ", " if @args.size > 0
         sb << "**"
-        ds.to_s(sb)
+        ds.to_s_param(sb)
       end
       if ba = @block_arg
         sb << ", " if @args.size > 0 || @double_splat
         sb << "&"
-        ba.to_s(sb)
+        ba.to_s_param(sb)
       end
       sb << ")"
     end
@@ -4240,7 +4276,7 @@ pub class FunDef < ASTNode
       i = 0
       while i < @args.size
         sb << ", " if i > 0
-        @args[i].to_s(sb)
+        @args[i].to_s_param(sb)
         i = i + 1
       end
       sb << ")"
@@ -4771,6 +4807,10 @@ pub class Union < ASTNode
   end
 
   def to_s(sb : StringBuilder) : Nil
+    if @types.size == 1
+      print_dropping_proc_parens(@types[0], sb)
+      return
+    end
     i = 0
     while i < @types.size
       sb << " | " if i > 0
