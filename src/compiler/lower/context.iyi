@@ -17,7 +17,7 @@ module compiler/lower/context
 # alloca block with allocas branches to the entry block.
 
 import compiler/ir/module::{Module}
-import compiler/ir/function::{Function}
+import compiler/ir/function::{Function, Global}
 import compiler/ir/inst::{Block, Inst}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{TypeKind}
@@ -86,6 +86,12 @@ pub class Lowerer
   # The hosted `break_phi`/`next` targets of the innermost while: the block `next` branches to, and the exit block `break` branches to (made at the first break).
   property loop_next : Block?
   property loop_break : Block?
+  # The hosted `@strings`: the string constants of the module, by text.
+  property strings : Hash(String, Global)
+  # The hosted `@symbols_by_index`: the program's symbol names in index order (a symbol literal is its index).
+  property symbol_names : Array(String)
+  # The type id of String, which its constants carry first (the hosted `llvm_id.type_id(program.string)`).
+  property string_type_id : Int32
 
   def initialize(@module : Module, @typer : LowerTyper, @analysed : MainVisitor)
     @builder = Builder.new(@module)
@@ -98,6 +104,9 @@ pub class Lowerer
     @main_ret_type = nil
     @loop_next = nil
     @loop_break = nil
+    @strings = Hash(String, Global).new
+    @symbol_names = [] of String
+    @string_type_id = 0
   end
 
   # The function being lowered (the hosted `context`). Raises when none is.

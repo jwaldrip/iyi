@@ -11,6 +11,8 @@ module compiler/lower/helpers
 
 import compiler/ir/inst::{Block, Inst}
 import compiler/ir/values::{Value}
+import compiler/ir/function::{Global, Linkage}
+import compiler/lower/pending::{refuse_port}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{Lowerer}
 
@@ -50,4 +52,36 @@ pub def at_terminator?(low : Lowerer) : Bool
   b = low.builder.insert_block
   return false if b.nil?
   b.as(Block).terminated?
+end
+
+# The hosted `build_string_constant(str)` (codegen.cr) under Crystal's object layout: a private
+# constant global of the literal struct `{ i32 type_id, i32 bytesize, i32 length, [bytesize+1 x i8] }`,
+# with the string's bytes and a trailing zero. The global is named `'text'` (with `@` written as `.`),
+# and the program's pointer to the string is the global itself (a pointer cast is free in opaque
+# pointers). Equal texts share one global, as the hosted `@strings` does. A text longer than 18
+# bytes has a truncated name in the hosted code and is refused by name until that is ported.
+pub def build_string_constant(low : Lowerer, str : String) : Global
+  if found = low.strings[str]?
+    return found
+  end
+  if str.bytesize > 18
+    refuse_port("lower: a string constant longer than 18 bytes needs the hosted truncated global name (codegen.cr build_string_constant), not ported yet")
+  end
+  name = "'" + str.split('@').join(".") + "'"
+  types = low.module.types
+  i32 = types.int32
+  bytes = types.array_of(types.int(8), str.bytesize.to_i64 + 1_i64)
+  ty = types.struct_of([i32, i32, i32, bytes] of IrType, false)
+  g = low.module.add_global(name, ty)
+  g.linkage = Linkage::Private
+  g.global_constant = true
+  b = low.builder
+  g.initializer = b.const_struct([
+    b.const_int(i32, low.string_type_id.to_i64),
+    b.const_int(i32, str.bytesize.to_i64),
+    b.const_int(i32, str.size.to_i64),
+    b.const_string(str),
+  ] of Value, false)
+  low.strings[str] = g
+  g
 end
