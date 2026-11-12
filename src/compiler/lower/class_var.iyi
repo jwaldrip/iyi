@@ -19,14 +19,15 @@ module compiler/lower/class_var
 #   - a class variable whose owner is in a namespace, is generic, or is not a class (its hosted `llvm_name`);
 #   - a string, symbol, nil or float initialiser, whose global is initialised by `initialize_simple_constants`;
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
-# Thread-local class variables: the analysis has no thread-local flag on `MetaTypeVar` yet, so a thread-local
-# variable is lowered as an ordinary global; this gap is recorded in NEEDS.md and must close before the
-# lowering is used for a program with `@[ThreadLocal]` variables.
+# Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
+# class_var.cr:27-34), the model every non-Windows target uses. The Windows general-dynamic model is not ported: the
+# lowering cannot see the target's flags yet (`SemanticProgram` carries none), so a Windows build of such a variable
+# would be wrong. This is recorded in NEEDS.md.
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, CharLiteral, ClassDef, NumberLiteral, TypeDeclaration}
 import compiler/ir/values::{Value}
 import compiler/ir/inst::{Inst, Op, CallConv}
-import compiler/ir/function::{Function, Global, Linkage}
+import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{BodyVisit, Lowerer}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
@@ -178,12 +179,15 @@ pub def check_cvar_initializer(cvar : MetaTypeVar, node : ASTNode) : Nil
 end
 
 # The global of a class variable, declared once (hosted `declare_class_var`, internal linkage).
-pub def declare_cvar_global(low : Lowerer, name : String, ir : IrType, st : ClassVarState) : Global
+pub def declare_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir : IrType, st : ClassVarState) : Global
   if g = st.global
     return g.as(Global)
   end
   g = low.module.add_global(name, ir)
   g.linkage = Linkage::Internal
+  if cvar.thread_local
+    g.tls = TlsModel::LocalExec
+  end
   st.global = g
   g
 end
@@ -198,7 +202,7 @@ pub def simple_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir 
   if value.nil?
     refuse_port("lower: class variable #{cvar.name} has a literal initialiser that is not an integer, Bool or Char (hosted class_var.cr: initialize_class_var)")
   end
-  g = declare_cvar_global(low, name, ir, st)
+  g = declare_cvar_global(low, cvar, name, ir, st)
   g.initializer = value.as(Value)
   g
 end
@@ -253,7 +257,7 @@ pub def initialize_class_var(low : Lowerer, cvar : MetaTypeVar) : Nil
     return
   end
   check_cvar_initializer(cvar, node)
-  global = declare_cvar_global(low, name, ir, st)
+  global = declare_cvar_global(low, cvar, name, ir, st)
   fn = st.init_fn
   if fn.nil?
     fn = make_cvar_init_function(low, cvar, "~" + name + ":init", global, st)
@@ -275,7 +279,7 @@ pub def uninitialised_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : Stri
     refuse_port("lower: class variable #{cvar.name} is declared without an initialiser and is not a nilable reference: its hosted global has no initial value, not ported yet (hosted class_var.cr: declare_class_var)")
   end
   ir = cvar_ir_type(low, cvar)
-  g = declare_cvar_global(low, name, ir, st)
+  g = declare_cvar_global(low, cvar, name, ir, st)
   # The hosted global of a nilable reference is not made internal (it prints as the default, external, linkage).
   g.linkage = Linkage::External
   if g.initializer.nil?

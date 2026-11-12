@@ -114,6 +114,8 @@ function cc_define(line,   at, head, n, w, i, out) {
   return out "iyicc " w[n] substr(line, at)
 }
 {
+  # The hosted top-level code is `__crystal_main`; the port names it `__iyi_main` (lower.iyi, pipeline step 4, d737232b7).
+  gsub(/@__crystal_main/, "@__iyi_main")
   if ($0 ~ /^define .* @"[*~]/) $0 = cc_define($0)
   if ($0 ~ /^declare .*@llvm\./) next
   if (index($0, " phi ") > 0) gsub(/, %/, ", label %")
