@@ -105,7 +105,7 @@ pub def instance_var_pointer(low : Lowerer, owner : Type, name : String, pointer
   struct_t = low.typer.llvm_struct_type(owner)
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   field = low.builder.const_int(low.module.types.int32, index.to_i64)
-  low.builder.gep(struct_t, pointer, [zero, field] of Value, "")
+  low.builder.inbounds_gep(struct_t, pointer, [zero, field] of Value)
 end
 
 # The read of an instance variable of `owner` at `pointer`, as a value of `node_type` (the hosted
