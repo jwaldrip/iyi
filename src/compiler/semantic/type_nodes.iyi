@@ -19,7 +19,7 @@ module compiler/semantic/type_nodes
 # accepts, so the port refuses them by name; and the `raises` mark a cast leaves
 # on its method, which the port does not track yet.
 
-import compiler/syntax/ast::{ASTNode, AlignOf, Cast, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, ProcNotation, Self, SizeOf, TypeOf, Union, Var}
+import compiler/syntax/ast::{ASTNode, AlignOf, Cast, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, PointerOf, ProcNotation, Self, SizeOf, TypeOf, Union, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, SemanticProgram, Type, TypeHook}
 import compiler/types/type_system::{TypeSystem}
@@ -332,4 +332,22 @@ end
 
 pub def visit_instance_align_of(visitor : TypeNodeHost, node : InstanceAlignOf) : Bool
   visit_size_of_node(visitor, node, node.exp, "instance alignment")
+end
+
+# `pointerof(x)` for a local variable: a pointer to the variable's type (hosted
+# `visit(node : PointerOf)` 3087-3100 and `pointerof_var` 3102-3142). The operand
+# is visited first. Only a local is ported; the other forms refuse by name. The
+# hosted pass also marks the variable assigned, which is flow work, not done here.
+pub def visit_pointer_of(visitor : TypeNodeHost, node : PointerOf) : Bool
+  exp = node.exp
+  if exp.is_a?(Var)
+    exp.accept(visitor)
+    t = visitor.child_type(exp)
+    if t.nil?
+      return visitor.refuse(node, "pointerof operand has no type")
+    end
+    visitor.set_type(node, type_node_system(visitor.program).pointer_of(t.as(Type)))
+    return false
+  end
+  visitor.refuse(node, "pointerof of #{exp.to_s} is not ported yet: only a local variable is")
 end

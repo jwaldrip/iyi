@@ -128,6 +128,12 @@ prove_mutation "generic instance metaclass drops the generic class's class metho
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "pointerof types its operand, not a pointer to it" "$TYPE_NODES" \
+  "visitor.set_type(node, type_node_system(visitor.program).pointer_of(t.as(Type)))" \
+  "visitor.set_type(node, t.as(Type))" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
