@@ -226,8 +226,7 @@ table: hello refusal 1 owner=calls reason=expected argument #2 to 'Pointer(<unre
 table: hello refusal 1 owner=unassigned reason=can't infer the type of instance variable '@size' of Array(<unresolved T>) example=src/iyi/array.iyi:226 in Array(<unresolved T>)#each
 table: hello refusal 1 owner=bodies reason=undefined local variable or method 'member' for Array(<unresolved T>) example=samples/iyi/hello.iyi:117 in top level
 table: hello refusal 1 owner=calls reason=expected argument #1 to 'Samples::Hello#announce' to be <unresolved T>, not Samples::Hello::Robot example=samples/iyi/hello.iyi:119 in top level
-table: hello defs-lowered-clean=66 lowering-refusal-sites=191
-table: hello lowering 24 owner=lowering core reason=lower: visit(Primitive (a def body; hosted codegen_call lowers it at the call site)) (hosted codegen.cr) is not ported yet example=Pointer(UInt64).class#new
+table: hello defs-lowered-clean=66 lowering-refusal-sites=167
 table: hello lowering 12 owner=lowering core reason=lower: visit(a call with no receiver inside a method, an implicit self call (hosted call.cr: prepare_call_args, self)) (hosted codegen.cr) is not ported yet example=IyiChaos.class#at_atomic
 table: hello lowering 11 owner=lowering core reason=lower: visit(assign Nil to (IyiFiber | Nil) (nilable target, hosted assign_distinct NilableType)) (hosted codegen.cr) is not ported yet example=IyiFiber#next_run=
 table: hello lowering 9 owner=lowering core reason=lower: visit(ClassVar) (hosted codegen.cr) is not ported yet example=IyiScheduler.class#state
@@ -460,8 +459,7 @@ table: parse refusal 1 owner=unassigned reason=wrong number of arguments for 'St
 table: parse refusal 1 owner=bodies reason=the value of 'text' cannot be typed example=src/iyi/file.iyi:71 in File.class#read
 table: parse refusal 1 owner=declarations reason=undefined constant Parser example=src/compiler/tools/parse.iyi:36 in Compiler::Tools::Parse::ParseTool.class#parse_source
 table: parse refusal 1 owner=bodies reason=the value of 'parser' cannot be typed example=src/compiler/tools/parse.iyi:37 in Compiler::Tools::Parse::ParseTool.class#parse_source
-table: parse defs-lowered-clean=63 lowering-refusal-sites=204
-table: parse lowering 22 owner=lowering core reason=lower: visit(Primitive (a def body; hosted codegen_call lowers it at the call site)) (hosted codegen.cr) is not ported yet example=Pointer(UInt64).class#new
+table: parse defs-lowered-clean=63 lowering-refusal-sites=182
 table: parse lowering 16 owner=bodies reason=BUG: the analysed program has no type for the body of [] (hosted codegen_fun: return type) example=Array(String)#[]
 table: parse lowering 11 owner=lowering core reason=lower: visit(assign Nil to (IyiFiber | Nil) (nilable target, hosted assign_distinct NilableType)) (hosted codegen.cr) is not ported yet example=IyiFiber#next_run=
 table: parse lowering 10 owner=lowering core reason=lower: visit(a call with no receiver inside a method, an implicit self call (hosted call.cr: prepare_call_args, self)) (hosted codegen.cr) is not ported yet example=IyiChaos.class#at_atomic
@@ -723,9 +721,8 @@ table: compile_native refusal 1 owner=bodies reason=undefined local variable or 
 table: compile_native refusal 1 owner=bodies reason=undefined local variable or method 'each_byte' for String.class example=src/iyi/string.iyi:591 in String.class#to_s
 table: compile_native refusal 1 owner=bodies reason=undefined local variable or method 'line' for Array(String) example=src/compiler/tools/compile_native.iyi:73 in Array(String)#sidecar_libraries
 table: compile_native refusal 1 owner=declarations reason=undefined constant LinkedImage example=src/compiler/tools/compile_native.iyi:196 in Compiler::Tools::CompileNative::CompileNative.class#run
-table: compile_native defs-lowered-clean=68 lowering-refusal-sites=247
+table: compile_native defs-lowered-clean=68 lowering-refusal-sites=222
 table: compile_native lowering 28 owner=bodies reason=BUG: the analysed program has no type for the body of [] (hosted codegen_fun: return type) example=Array(String)#[]
-table: compile_native lowering 25 owner=lowering core reason=lower: visit(Primitive (a def body; hosted codegen_call lowers it at the call site)) (hosted codegen.cr) is not ported yet example=Pointer(UInt64).class#new
 table: compile_native lowering 11 owner=lowering core reason=lower: visit(a call with no receiver inside a method, an implicit self call (hosted call.cr: prepare_call_args, self)) (hosted codegen.cr) is not ported yet example=IyiChaos.class#at_atomic
 table: compile_native lowering 11 owner=lowering core reason=lower: visit(assign Nil to (IyiFiber | Nil) (nilable target, hosted assign_distinct NilableType)) (hosted codegen.cr) is not ported yet example=IyiFiber#next_run=
 table: compile_native lowering 10 owner=bodies reason=BUG: the analysed program has no type for the body of initialize (hosted codegen_fun: return type) example=Atomic(UInt64)#initialize
