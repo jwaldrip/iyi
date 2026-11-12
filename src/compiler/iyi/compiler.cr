@@ -264,6 +264,7 @@ module Iyi
     property stale_accept : String? = nil
     property stale_block : String? = nil
     property stale_dump_elements : String? = nil
+    property stale_inputs : String? = nil
 
     def stale_build? : Bool
       !@stale_key.nil?
@@ -609,7 +610,7 @@ module Iyi
       emit_bind emit_targets frame_pointers iyi_direct_link iyi_keep
       iyi_link_driver_only link_flags mattr mcmodel mcpu n_threads no_cleanup
       program progress_tracker single_module stale_drop stderr target_machine verbose
-      stale_accept stale_block stale_dump_elements stale_key
+      stale_accept stale_block stale_dump_elements stale_inputs stale_key
     )
 
     # Everything that changes what the prelude analyses *to*. Macros branch on
@@ -651,7 +652,7 @@ module Iyi
 
     DISPLAY_ONLY = %w(
       color dependency_printer progress_tracker show_error_trace stale_accept
-      stale_block stale_drop stale_dump_elements stale_key stderr stdout verbose warnings
+      stale_block stale_drop stale_dump_elements stale_inputs stale_key stderr stdout verbose warnings
     )
 
     def behavior_key : Stale::Digest
