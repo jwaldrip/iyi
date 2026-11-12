@@ -679,6 +679,16 @@ prove_mutation "a generic instance copies no instance variable the first time" "
   -- check_decl_fixtures_diverge || status=1
 
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a declared instance variable keeps its alias: the hook path takes the alias itself" "$MUT_SEM" \
+  "      resolved = remove_alias(lookup_type_node(restriction, owner))" \
+  "      resolved = lookup_type_node(restriction, owner)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic instance's declared variable keeps its parameter type" "$MUT_TYPES" \
+  "            mv = MetaTypeVar.new(name, TypeQueries.replace_type_parameters(source_type, @type_vars))" \
+  "            mv = MetaTypeVar.new(name, source_type)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
 
