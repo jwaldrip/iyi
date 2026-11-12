@@ -505,6 +505,10 @@ prove_mutation "an initialize argument instance variable is recorded ahead of th
   "@pending_ivars.unshift(PendingIvar.new(@current_type, ivar_name, r))" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+# Re-claimed from "an instance variable assigned from a typed argument is dropped". Measured: the pending
+# record (finish) and the guessed-ivar fallback (instance_vars.iyi, skipped when the ivar already exists)
+# each declare that ivar, and the pending one wins. Dropping either alone is not observable (probes: same
+# output), so the drop is not expressible on one file. This mutation is the pending path's type claim.
 prove_mutation "a typed argument's instance variable takes its restriction type" "$MUT_SEM" \
   "mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)" \
   "mv = MetaTypeVar.new(pi.name, @program.nil_type, pi.initializer)" \
