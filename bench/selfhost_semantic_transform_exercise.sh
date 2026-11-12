@@ -334,6 +334,10 @@ prove_mutation "an or binds a temporary and runs the right side on true" "$LITER
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "an or is expanded as an and" "$LITERAL" 'expanded = expand_or(node)' 'expanded = expand_and(node)' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "an and is not marked as an and" "$LITERAL" 'a_if.from_and = true' 'a_if.from_and = false' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "an or is not marked as an or" "$LITERAL" 'a_if.from_or = true' 'a_if.from_or = false' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a tuple subject binds no temporaries for the when chain" "$LITERAL" 'tuple_temps = temps' 'tuple_temps = nil' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a tuple condition compares its underscore elements" "$LITERAL" 'if !lh.is_a?(Underscore)' 'if true' -- check_literals_agree || status=1
