@@ -16,7 +16,7 @@ module compiler/lower/lower
 # folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
 # `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, Path, PointerOf, Primitive, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA, Yield}
+import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, Path, PointerOf, Primitive, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA, Yield}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -39,6 +39,7 @@ import compiler/lower/cast::{assign, union_temp}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
+import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_type_declaration_class_var, in_class_body?, store_class_var}
 import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
 import compiler/syntax/ast::{FunDef}
 import compiler/syntax/ast::{Annotation}
@@ -126,7 +127,7 @@ end
 # The hosted `visit(FunDef)` with a body (codegen.cr:842) for a fun the analysis recorded (lib_fun_of): its arguments and
 # return type are that record's. A fun is emitted once (`fun_defs_done`, hosted External#dead). A `fun` definition is a C
 # function (hosted External with no call_convention, call.cr:661), emitted with external linkage as a hosted External is;
-# a `__crystal_` name is internal instead (hosted codegen_fun, fun.cr:763). A fun the program never calls is declared here,
+# a `__crystal_` or `__iyi_` name is internal instead, except the names asm refers to (hosted codegen_fun, fun.cr:763-781). A fun the program never calls is declared here,
 # as the hosted visit does (codegen.cr:864), and its body waits for emit_unused_fun_defs (the hosted @unused_fun_defs pass,
 # codegen.cr:747). A `well_known` fun is emitted on entry (see emit_well_known_funs).
 pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
@@ -178,16 +179,24 @@ pub def emit_fun_def(low : Lowerer, node : FunDef, rec : LibFun, ret : Type) : N
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end
-  # The hosted codegen_fun (fun.cr:763): a `__crystal_` name is internal (the optimiser may remove it),
-  # any other fun is external. The `__iyi_` names have rules of their own (asm references) and are refused here.
-  if name.starts_with?("__iyi_")
-    refuse_port("lower: the runtime fun #{name} (hosted fun.cr: __iyi_ internalisation and asm references) is not ported")
-  end
-  if name.starts_with?("__crystal_")
-    fn.linkage = Linkage::Internal
+  # The hosted codegen_fun (fun.cr:763): a `__crystal_` or `__iyi_` name is internal (the optimiser may remove it), except
+  # the names asm refers to (`asm_referenced_fun?`), the personality on darwin (fun.cr:781), and `__iyi_new`, which the
+  # allocation declares and which stays external in the hosted module. Any other fun is external.
+  if name.starts_with?("__crystal_") || name.starts_with?("__iyi_")
+    if asm_referenced_fun?(name) || name == "__iyi_new" || (low.module.target.darwin? && name.starts_with?("__iyi_personality"))
+      fn.linkage = Linkage::External
+    else
+      fn.linkage = Linkage::Internal
+    end
   else
     fn.linkage = Linkage::External
   end
+end
+
+# The funs inline asm refers to by a literal name, which no pass can see (hosted fun.cr:778-780): they stay external
+# when the hosted code would internalise them. `__iyi_preempt` is the preemption check's name (codegen.cr PREEMPT_NAME).
+pub def asm_referenced_fun?(name : String) : Bool
+  name.starts_with?("__iyi_fiber_") || name.includes?("sigreturn") || name == "__iyi_preempt"
 end
 
 # The deferred pass for the funs the program never calls (hosted @unused_fun_defs, codegen.cr:747): each body is lowered
@@ -265,11 +274,23 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_path(low, node.as(Path))
     return
   end
+  if node.is_a?(ClassVar)
+    codegen_class_var_read(low, node.as(ClassVar))
+    return
+  end
   if node.is_a?(Assign)
     if node.as(Assign).target.is_a?(Path)
       codegen_path_assign(low, node.as(Assign))
       return
     end
+  end
+  if node.is_a?(Assign) && node.as(Assign).target.is_a?(ClassVar)
+    if in_class_body?(low)
+      codegen_class_var_assign(low, node.as(Assign))
+    else
+      codegen_class_var_store(low, node.as(Assign))
+    end
+    return
   end
   if node.is_a?(Assign)
     codegen_assign(low, node.as(Assign))
@@ -356,7 +377,9 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     # The hosted `visit(ClassDef)`: the body is visited for its declarations; the definition emits nothing and its value is nil.
     wants = low.needs_value
     low.needs_value = false
+    entered = class_body_enter(low, node.as(ClassDef))
     codegen_node(low, node.as(ClassDef).body)
+    class_body_leave(low, entered)
     low.needs_value = wants
     low.last = llvm_nil(low)
     return
@@ -420,7 +443,11 @@ pub def codegen_type_declaration(low : Lowerer, node : TypeDeclaration) : Nil
     codegen_declare_var(low, node)
     return
   end
-  pending_visit_node("TypeDeclaration of a class variable (hosted codegen.cr: visit(TypeDeclaration), initialize_class_var)")
+  if node.var.is_a?(ClassVar)
+    codegen_type_declaration_class_var(low, node)
+    return
+  end
+  pending_visit_node("TypeDeclaration of an unknown kind (hosted codegen.cr: visit(TypeDeclaration))")
 end
 
 # The hosted `declare_var` and the value of the declaration (codegen.cr:1800, codegen_assign): the variable's alloca is
@@ -499,6 +526,22 @@ pub def codegen_var(low : Lowerer, node : Var) : Nil
   end
   ir = low.typer.llvm_type(v.type)
   low.last = load_aligned(low, ir, v.pointer, "")
+end
+
+# The hosted `codegen_assign` for a class variable target with a type (codegen.cr:1543-1556): the value is evaluated
+# first, then stored in the variable's global (class_var.iyi `store_class_var`). The value of the assignment is the value.
+pub def codegen_class_var_store(low : Lowerer, node : Assign) : Nil
+  target = node.target.as(ClassVar)
+  wants = low.needs_value
+  low.needs_value = true
+  codegen_node(low, node.value)
+  low.needs_value = wants
+  value = low.last
+  raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
+  value_type = low.analysed.type_of?(node.value)
+  raise "BUG: the analysed program has no type for the assigned value (hosted codegen.cr: codegen_assign)" if value_type.nil?
+  store_class_var(low, target, value.as(Value), value_type.as(Type))
+  low.last = value
 end
 
 # The hosted `visit(Assign)` for a variable target: the value is stored in the variable's alloca,
