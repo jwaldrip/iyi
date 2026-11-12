@@ -377,7 +377,10 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   end
   body_t = low.analysed.type_of?(def_node.body)
   raise "BUG: the analysed program has no type for the body of #{node.name} (hosted call.cr: codegen_call_with_block)" if body_t.nil?
-  if body_t.as(Type).full_name != ret.full_name
+  # A body typed NoReturn never yields a value: its block jumps out with `break` or `next`, so the hosted upcast of the body's
+  # value does not apply and the body adds no value to the phi.
+  body_no_return = body_t.as(Type).is_a?(NoReturnType)
+  if !body_no_return && body_t.as(Type).full_name != ret.full_name
     pending_visit_node("a block call to #{node.name} whose body is #{body_t.as(Type).full_name} and whose call is #{ret.full_name} (hosted upcast of the body's value)")
   end
 
@@ -427,7 +430,9 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
       low.builder.unreachable
     end
   else
-    phi.add(low, low.last, true)
+    unless body_no_return
+      phi.add(low, low.last, true)
+    end
   end
   low.context = caller
   low.needs_value = wants
