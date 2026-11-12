@@ -34,9 +34,8 @@
   `bench/fixtures/native_first_light/const_ptr_table.ir` builds, runs and prints the hosted program's output.
 - **The native back end builds whole programs, and the compiler's own tool.** The hosted compiler's IR for a program
   with the real prelude (the allocator, fibers, IO, thread-locals) is imported by `iyi-ir`, compiled and linked by the
-  native back end with no LLVM and no host tool, and runs as the hosted executable runs: 27 of the 28 programs in
-  `samples/iyi` (the other, `cores`, calls the Security framework, which IR bridged from the hosted compiler does
-  not name, and is refused at link by the symbol's name). The tool's own IR builds the
+  native back end with no LLVM and no host tool, and runs as the hosted executable runs: all 28 programs in
+  `samples/iyi`. The tool's own IR builds the
   same way into a compiler that links only libSystem; that compiler builds the same IR again to the same bytes, and
   builds `hello` to the bytes the hosted-built tool builds it to. `bench/native_whole_program_exercise.sh` gates all
   of it against a floor that may only rise. What a whole program needed that no fixture had: a def keeps the internal
@@ -48,17 +47,36 @@
   constant, load, store and truncation the hosted compiler writes; `mrs` of the thread pointer and the TLV descriptor load in inline
   asm; the IR text form reads a numbered parameter and a quote escaped in a name. Liveness keeps its sets as bits,
   which the tool's largest functions needed to finish in reasonable time.
+- **Two runs of the port on one program give one answer.** `NodeMap`, the side table the semantic passes keep per
+  node, is keyed by the node's address and held only the address. A node nothing else referred to (a discarded
+  clone) could be collected, and the next node allocated at that address then found the dead node's entry. The
+  collector marks on other threads, so when that happened differed between runs: one binary run three times on
+  `samples/iyi/hello.iyi` with the prelude reached 5,218, 5,220 and 5,218 defs and typed 2,409, 2,413 and 2,410 of
+  them clean. The map now holds the node beside the value; the same three runs print the same table byte for byte.
+- **A native link loads the frameworks a program's libs name.** The link took no library beyond libSystem, so a
+  program that calls the Security framework was refused by its first symbol. The native driver now loads every
+  library a declaration of the IR imports from (`import "Security"`, a lib's `@[Link]`), and `iyi-compile-native`
+  reads `<program.ir>.imports`, one library a line, for IR bridged from the hosted compiler, which carries no
+  `@[Link]`. `c`, `m`, `pthread`, `dl` and `System` are libSystem; a name the native floor does not provide is
+  refused by name. `samples/iyi/cores.iyi` loads Security and CoreFoundation and runs as the hosted build runs.
 - **The port links against an LLVM built with fewer targets.** `Target.init_all_targets` named the initializers of
   eight targets, so the port built with the LLVM back end (`tools/compile.iyi`) asked the linker for RISC-V, MIPS,
   PowerPC and BPF. A static LLVM built with five targets, which is what the darwin jobs link, has none of those.
   Each `Target.init_*` now initializes its target only when `llvm-config --targets-built` (or `LLVM_TARGETS`) names
   it, and `Target.init_target` answers whether it did.
-- **A mutation proof writes the text it was given under bash 3.2.** `bench/lib/mutation.sh` replaced text with
-  `${original/"$old"/"$new"}`. bash 3.2, which is the `bash` of a macos-15 runner, keeps the replacement's quotes as
-  text: every mutation on that runner was the new text wrapped in `"`, and a patch that changes nothing changed two
-  bytes and ran as a mutation instead of being refused with exit 3. The replacement is written unquoted with
-  `patsub_replacement` off, which gives the same bytes under bash 3.2 and 5.3. `native_source` and `native_macro`
-  print what a failed tool build said, because the log they named is deleted when the gate exits.
+- **A mutation proof writes the text it was given, and in time, under bash 3.2.** `bench/lib/mutation.sh` replaced
+  text with a bash substitution on the whole file held in a variable. Under bash 3.2, which is the `bash` of a
+  macos-15 runner, that had two defects. A quoted replacement kept its quotes as text: every mutation on that runner
+  was the new text wrapped in `"`, and a patch that changes nothing changed two bytes and ran as a mutation instead
+  of being refused with exit 3. And the substitution is quadratic there: 2.4 seconds on a 5 KB file, more than a
+  minute on an 82 KB one, about three quarters of an hour on the parser, for each mutation, so the darwin gates did
+  not finish. The edit is made by perl on bytes now (six proofs on an 82 KB file in 0.6 seconds under both bashes,
+  the bytes exact). `native_source` and `native_macro` print what a failed tool build said, because the log they
+  named is deleted when the gate exits.
+- **`out` call arguments parse.** The port's parser had no rule for `out` in a call's arguments, so a lib call that
+  returns through a pointer could not be typed. `out name` declares the local and is `Out(Var)`, `out @name` is
+  `Out(InstanceVar)`, `out _` is `Out(Underscore)`, also as a named argument's value, as the hosted parser builds
+  them.
 - **The IR text form reads decimal floating-point constants** (`double 1.500000e+00`), the form LLVM prints for a
   value that is exact in a few digits, as well as the bit-pattern form.
 
