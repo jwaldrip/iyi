@@ -66,6 +66,20 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
   nil
 end
 
+# Whether the program's root defines a top-level `fun main`, the prelude's C entry. Its own `main` then
+# stands, and the entry is not emitted a second time.
+def root_defines_main(root : ASTNode) : Bool
+  return false unless root.is_a?(Expressions)
+  nodes = root.as(Expressions).expressions
+  i = 0
+  while i < nodes.size
+    node = nodes[i]
+    return true if node.is_a?(FunDef) && node.as(FunDef).name == "main"
+    i += 1
+  end
+  false
+end
+
 # The hosted `codegen` of a program into `m`: the entry of the unit. `root` is the program's
 # parsed tree, `analysed` the semantic pass that typed it.
 pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyper, m : Module) : Nil
@@ -98,7 +112,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   ret_ir = typer.llvm_return_type(program_type.as(Type))
   entry_type = m.types.func([i32, ptr] of IrType, ret_ir)
 
-  fn = low.begin_main_function("__crystal_main", entry_type, true)
+  fn = low.begin_main_function("__iyi_main", entry_type, true)
   fn.linkage = Linkage::Internal
   fn.call_convention = CallConv::C
   fn.name_param(fn.param(0), "argc")
@@ -113,14 +127,18 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   low.finish_main_function
   emit_unused_fun_defs(low)
 
-  main_fn = m.define_function("main", m.types.func([i32, ptr] of IrType, i32))
-  main_fn.call_convention = CallConv::C
-  main_fn.name_param(main_fn.param(0), "argc")
-  main_fn.name_param(main_fn.param(1), "argv")
-  main_entry = main_fn.append_basic_block("entry")
-  low.builder.position_at_end(main_entry)
-  low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
-  low.builder.ret(low.builder.const_int(i32, 0))
+  # The C entry. The prelude's `fun main` is the entry when it is loaded: it starts the runtime and calls
+  # `__iyi_main`, this function, through LibIyiMain. A program with no `main` of its own gets this one.
+  unless root_defines_main(root)
+    main_fn = m.define_function("main", m.types.func([i32, ptr] of IrType, i32))
+    main_fn.call_convention = CallConv::C
+    main_fn.name_param(main_fn.param(0), "argc")
+    main_fn.name_param(main_fn.param(1), "argv")
+    main_entry = main_fn.append_basic_block("entry")
+    low.builder.position_at_end(main_entry)
+    low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
+    low.builder.ret(low.builder.const_int(i32, 0))
+  end
   function_attributes(m)
 end
 
