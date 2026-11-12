@@ -15,6 +15,9 @@
 #    Floor: bench/native_whole_program.floor, "<program> <phase>". A phase may only rise; a program below its floor
 #    or missing from it fails the gate. NATIVE_WHOLE_PROGRAM_RAISE=1 writes the floor from this run, keeping the
 #    higher phase.
+#    A program whose lib blocks link a framework has it named beside its IR (<p.ir>.imports, SPEC 2.3: bridged IR
+#    carries no @[Link]; the names are read from the hosted link command). Its executable must load libSystem, those
+#    frameworks and nothing else. 2b: a sidecar naming a library the native floor does not provide is refused by name.
 # 3. The compiler builds itself in the back half: the tool's own IR is built by the tool (cn1, a compiler with no
 #    LLVM in it), cn1 builds the same IR (cn2), and cn1 and cn2 must be the same bytes; cn2 builds hello to the
 #    bytes the tool builds it to.
@@ -74,11 +77,14 @@ build_tools() {
   "$iyi" build -o "$1/iyi-ir" "$BRIDGE_SRC" >"$1/build.bridge.log" 2>&1 || return 1
 }
 
-# hosted_of SRC DIR: the hosted executable DIR/hosted and its IR DIR/hosted.ll, with its run recorded.
+# hosted_of SRC DIR: the hosted executable DIR/hosted and its IR DIR/hosted.ll, with its run recorded, and the
+# frameworks its link named in DIR/frameworks (one per line; the hosted link command is the only place bridged IR's
+# @[Link] survives, so --verbose prints it and the names are read from there).
 hosted_of() {
   mkdir -p "$2"
-  "$iyi" build --no-debug --emit llvm-ir -o "$2/hosted" "$1" >"$2/hosted.log" 2>&1 || return 1
+  "$iyi" build --no-debug --verbose --emit llvm-ir -o "$2/hosted" "$1" >"$2/hosted.log" 2>&1 || return 1
   [ -f "$2/hosted.ll" ] || return 1
+  awk '{ for (i = 1; i < NF; i++) if ($i == "-framework") print $(i + 1) }' "$2/hosted.log" | sort -u >"$2/frameworks"
   run_bounded "$2/hosted" "$2/h.out" "$2/h.err" >"$2/h.status"
 }
 
@@ -90,14 +96,21 @@ phase_of() {
     printf 'import\t%s\n' "$(head -n 1 "$dir/import.err")"
     return
   fi
+  # The sidecar of bridged IR (SPEC 2.3): the libraries the program's lib blocks link, beside the IR.
+  rm -f "$dir/p.ir.imports"
+  [ -s "$dir/frameworks" ] && cp "$dir/frameworks" "$dir/p.ir.imports"
   if ! PATH="$TRIPWIRE_PATH:$PATH" "$tools/compile_native" "$dir/p.ir" -o "$dir/native" >"$dir/native.log" 2>&1; then
     printf 'native\t%s\n' "$(head -n 1 "$dir/native.log")"
     return
   fi
-  local libs
+  # The executable loads libSystem and the frameworks the hosted link named that it calls, and nothing else.
+  local libs extra
   libs=$(otool -L "$dir/native" | awk 'NR > 1 { print $1 }')
-  if [ "$libs" != "/usr/lib/libSystem.B.dylib" ]; then
-    printf 'native\tthe executable links %s\n' "$libs"
+  extra=$(printf '%s\n' "$libs" | awk -v list="$dir/frameworks" '
+    BEGIN { while ((getline name < list) > 0) allowed["/System/Library/Frameworks/" name ".framework/" name] = 1 }
+    $0 != "/usr/lib/libSystem.B.dylib" && !($0 in allowed) { print }')
+  if [ -n "$extra" ] || ! printf '%s\n' "$libs" | grep -qx '/usr/lib/libSystem.B.dylib'; then
+    printf 'native\tthe executable links %s\n' "$(printf '%s' "$libs" | tr '\n' ' ')"
     return
   fi
   local ns
@@ -193,6 +206,23 @@ else
   fail "$below program(s) are off their floor"
 fi
 
+echo "== 2b. a library the native floor does not provide is refused by name"
+hello_p="$work/p/samples_iyi_hello"
+if [ -f "$hello_p/p.ir" ]; then
+  mkdir -p "$work/lib"
+  cp "$hello_p/p.ir" "$work/lib/p.ir"
+  printf 'Bogus\n' >"$work/lib/p.ir.imports"
+  if "$tools/compile_native" "$work/lib/p.ir" -o "$work/lib/exe" >"$work/lib/log" 2>&1; then
+    fail "a program whose sidecar names the library Bogus was built"
+  elif grep -q 'does not provide the framework Bogus' "$work/lib/log" && [ ! -e "$work/lib/exe" ]; then
+    echo "   refused: $(head -n 1 "$work/lib/log" | sed 's/^.*p\.ir: //')"
+  else
+    fail "the refusal does not name the library: $(head -n 1 "$work/lib/log")"
+  fi
+else
+  fail "hello has no imported IR to try an unknown library on"
+fi
+
 echo "== 3. the compiler builds itself in the back half"
 self="$work/self"
 mkdir -p "$self/a" "$self/b" "$self/h1" "$self/h2"
@@ -234,45 +264,57 @@ else
 fi
 
 echo "== 5. mutation proofs"
-# The check rebuilds both tools from the mutated tree and requires the three programs that exercise the mutated
-# pieces to still run equal: hello (thread-locals, naked functions, constant expressions, conventions), a result
-# wider than the result registers, and a global whose name holds a quote.
-whole_still_runs() {
-  local t="$work/mut-tools"
+# still_runs TOOL PROGRAM: rebuilds the one tool the mutated file belongs to (native: iyi-compile-native; bridge:
+# iyi-ir) from the tree as it is now, takes the other as step 1 built it, and requires PROGRAM to still run equal.
+# Each mutation names the program that exercises the mutated piece: hello (thread-locals, naked functions, constant
+# expressions, conventions, numbered parameters), a result wider than the result registers, a global whose name
+# holds a quote, and cores (two frameworks named beside its IR). Step 2 is the check on the unmutated tree.
+still_runs() {
+  local which="$1" src="$2" t="$work/mut-tools" dir result
   rm -rf "$t"
-  build_tools "$t" || return 1
-  local src dir result
-  for src in samples/iyi/hello.iyi "$FIX/wide_result.iyi" "$FIX/quoted_name.iyi"; do
-    dir="$work/p/$(dirname "$src" | tr '/' '_')_$(basename "$src" .iyi)"
-    [ -f "$dir/hosted.ll" ] || return 1
-    result=$(phase_of "$t" "$dir")
-    [ "${result%%$'\t'*}" = "run-equal" ] || return 1
-  done
-  return 0
+  mkdir -p "$t"
+  if [ "$which" = bridge ]; then
+    cp "$tools/compile_native" "$t/compile_native"
+    "$iyi" build -o "$t/iyi-ir" "$BRIDGE_SRC" >"$t/build.bridge.log" 2>&1 || return 1
+  else
+    cp "$tools/iyi-ir" "$t/iyi-ir"
+    "$iyi" build -o "$t/compile_native" "$TOOL_SRC" >"$t/build.tool.log" 2>&1 || return 1
+  fi
+  dir="$work/p/$(dirname "$src" | tr '/' '_')_$(basename "$src" .iyi)"
+  [ -f "$dir/hosted.ll" ] || return 1
+  result=$(phase_of "$t" "$dir")
+  [ "${result%%$'\t'*}" = "run-equal" ]
 }
-if ! whole_still_runs; then
-  fail "the mutation check does not pass on the unmutated tree, so no mutation was run"
+unmutated=1
+for src in samples/iyi/hello.iyi "$FIX/wide_result.iyi" "$FIX/quoted_name.iyi" samples/iyi/cores.iyi; do
+  awk -v p="$src" '$1 == p && $2 == "run-equal" { found = 1 } END { exit !found }' "$measured" || unmutated=0
+done
+if [ "$unmutated" -ne 1 ]; then
+  fail "a program the mutation proofs read did not run equal on the unmutated tree, so no mutation was run"
 else
   status=0
   prove_mutation "a def imported with the C convention" src/compiler/backend/llvm/import.iyi \
     'return CallConv::Iyi if name.starts_with?("*") || name.starts_with?("~")' \
-    'return CallConv::C if name.starts_with?("*") || name.starts_with?("~")' -- whole_still_runs || status=1
+    'return CallConv::C if name.starts_with?("*") || name.starts_with?("~")' -- still_runs bridge samples/iyi/hello.iyi || status=1
   prove_mutation "a constant field address loses its offset" src/compiler/native/const_expr.iyi \
-    'off = off + layout.offset_of(cur, n.to_i32)' 'off = off + 0_i64' -- whole_still_runs || status=1
+    'off = off + layout.offset_of(cur, n.to_i32)' 'off = off + 0_i64' -- still_runs native samples/iyi/hello.iyi || status=1
   prove_mutation "a thread-local operand takes the plain symbol address" src/compiler/native/aarch64/isel.iyi \
     'return [thread_local_address(g)] if g.tls != TlsModel::None' \
-    'return [symbol_address(g.name, false, false)] if g.tls != TlsModel::None' -- whole_still_runs || status=1
+    'return [symbol_address(g.name, false, false)] if g.tls != TlsModel::None' -- still_runs native samples/iyi/hello.iyi || status=1
   prove_mutation "a ret after a naked function's template is refused" src/compiler/native/aarch64/isel.iyi \
     '      if i.op == Op::Ret
         lower_ret(i)
         next
-      end' '' -- whole_still_runs || status=1
+      end' '' -- still_runs native samples/iyi/hello.iyi || status=1
   prove_mutation "a wide internal result is never passed in memory" src/compiler/native/lower.iyi \
-    'gprs > desc.integer_args.size || fprs > desc.fp_args.size' 'false' -- whole_still_runs || status=1
+    'gprs > desc.integer_args.size || fprs > desc.fp_args.size' 'false' -- still_runs native "$FIX/wide_result.iyi" || status=1
   prove_mutation "a quote escaped in a name ends the name" src/compiler/ir/parser.iyi \
-    'stop = stop + (line.byte_at(stop) == 92_u8 && stop + 1 < line.bytesize ? 2 : 1)' 'stop = stop + 1' -- whole_still_runs || status=1
+    'stop = stop + (line.byte_at(stop) == 92_u8 && stop + 1 < line.bytesize ? 2 : 1)' 'stop = stop + 1' -- still_runs native "$FIX/quoted_name.iyi" || status=1
   prove_mutation "a numbered parameter is taken as a name" src/compiler/ir/parser.iyi \
-    'param_names << (written.numeric ? "" : written.text)' 'param_names << written.text' -- whole_still_runs || status=1
+    'param_names << (written.numeric ? "" : written.text)' 'param_names << written.text' -- still_runs native samples/iyi/hello.iyi || status=1
+  prove_mutation "a library named beside the IR is not loaded" src/compiler/tools/compile_native.iyi \
+    'names << name unless name.empty? || name.starts_with?("#")' \
+    'names << name if name.empty?' -- still_runs native samples/iyi/cores.iyi || status=1
   [ "$status" -eq 0 ] || fail "a mutation was not caught"
 fi
 
