@@ -173,3 +173,8 @@ exit:
   ret void
 }
 
+define internal i32 @uwt() [uwtable(sync)] {
+entry:
+  ret i32 0
+}
+

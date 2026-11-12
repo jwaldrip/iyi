@@ -89,6 +89,8 @@ module CompileNative
     emit_ir = false
     print_backend = false
     asked_llvm = false
+    typed = false
+    keep_going = false
     i = 3
     while i < args.size
       if args[i] == "--target" && i + 1 < args.size
@@ -103,12 +105,24 @@ module CompileNative
           fail("this tool has only the native backend, and #{args[i + 1]} was asked for")
         end
         i = i + 2
+      elsif args[i] == "--keep-going"
+        keep_going = true
+        i = i + 1
       elsif args[i] == "--probe-phase"
         probe = true
         i = i + 1
       elsif args[i] == "--prelude"
         prelude = true
         i = i + 1
+      elsif args[i] == "--pipeline" && i + 1 < args.size
+        # `typed` builds a source program through the typed analysis and lowering (compiler/lower/program); `codegen`
+        # is the pipeline this tool has always used, and the default.
+        if args[i + 1] == "typed"
+          typed = true
+        elsif args[i + 1] != "codegen"
+          fail("the pipelines are typed and codegen, and #{args[i + 1]} was asked for")
+        end
+        i = i + 2
       elsif args[i] == "--print-backend"
         print_backend = true
         i = i + 1
@@ -139,15 +153,21 @@ module CompileNative
       unless target == TARGET
         fail("source programs build for #{TARGET} with the native backend, and #{target} was asked for")
       end
-      config = CompilerConfig.new(output, false, nil, false, target, probe, false, false)
+      config = CompilerConfig.new(output, false, nil, false, target, probe, false, false, typed)
+      config.keep_going = keep_going
       loader = Loader.new
       loader.load_prelude = prelude
       compiler = Compiler.new(config, loader, NativeBackend.new)
       compiler.emit_ir = emit_ir
       compiler.compile(input)
+      refusal = compiler.refusal
+      unless refusal.nil?
+        fail(refusal.as(String))
+      end
       print "BUILT #{output}\n" unless probe || emit_ir
       return nil
     end
+    fail("--pipeline typed builds a source program, and #{input} is already IR") if typed
     fail("--emit ir writes the IR of a source program, and #{input} is already IR") if emit_ir
     mod = module_of(File.read(input), input)
     if target == "wasm32-wasi"

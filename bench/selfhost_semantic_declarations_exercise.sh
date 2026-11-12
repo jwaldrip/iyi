@@ -154,6 +154,49 @@ else
     status=1
   fi
 fi
+echo "== 2b''. Link annotations once the program is declared: a lib's @[Link] records, in declaration order, positional and named"
+echo "  (a port-side pin: the expected lines are written by hand; the oracle's own dump of the same fixture must agree with them)"
+link_annotations_expected="$REPO/bench/selfhost_semantic_declarations_link_annotations.expected"
+if ! "$PORT" --link-annotations "$REPO/bench/fixtures/semdecl_link_annotations.iyi" > "$WORK/la_p.txt" 2> "$WORK/la_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/la_pe.txt")"; status=1
+else
+  awk '/^link /' "$WORK/la_p.txt" > "$WORK/la_pin.txt"
+  if ! "$ORACLE" --link-annotations "$REPO/bench/fixtures/semdecl_link_annotations.iyi" > "$WORK/la_o.txt" 2> "$WORK/la_oe.txt"; then
+    echo "  ORACLE REJECTS: $(head -n 1 "$WORK/la_oe.txt")"; status=1
+  elif ! cmp -s "$WORK/la_o.txt" "$link_annotations_expected"; then
+    echo "  semdecl_link_annotations.iyi: ORACLE DIFFERS FROM THE PIN"
+    diff "$link_annotations_expected" "$WORK/la_o.txt" | head -n 20
+    status=1
+  elif cmp -s "$WORK/la_pin.txt" "$link_annotations_expected"; then
+    echo "  semdecl_link_annotations.iyi: $(awk 'END{print NR}' "$WORK/la_pin.txt") link records pinned, and the oracle agrees"
+  else
+    echo "  semdecl_link_annotations.iyi: PIN DIFFERS"
+    diff "$link_annotations_expected" "$WORK/la_pin.txt" | head -n 20
+    status=1
+  fi
+fi
+echo "== 2d. Total mode with the type system installed: an unresolved superclass is carried past; the class takes the default superclass"
+total_typed_expected="$REPO/bench/selfhost_semantic_declarations_total_typed.expected"
+if ! "$PORT" --total-typed "$REPO/bench/fixtures/total_unresolved_superclass.iyi" > "$WORK/tt_p.txt" 2> "$WORK/tt_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/tt_pe.txt")"; status=1
+elif cmp -s "$WORK/tt_p.txt" "$total_typed_expected"; then
+  echo "  total_unresolved_superclass.iyi: pinned (carried refusal, default superclass)"
+else
+  echo "  total_unresolved_superclass.iyi: PIN DIFFERS"
+  diff "$total_typed_expected" "$WORK/tt_p.txt" | head -n 20
+  status=1
+fi
+echo "== 2e. A constant read in a metaclass scope is the class's own: HELD read in def self.acquire"
+scope_expected="$REPO/bench/selfhost_semantic_declarations_scope_lookup.expected"
+if ! "$PORT" --scope-lookup "$REPO/bench/fixtures/semdecl_metaclass_scope.iyi" Lock HELD > "$WORK/sl_p.txt" 2> "$WORK/sl_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/sl_pe.txt")"; status=1
+elif cmp -s "$WORK/sl_p.txt" "$scope_expected"; then
+  echo "  semdecl_metaclass_scope.iyi: Lock::HELD found from the metaclass"
+else
+  echo "  semdecl_metaclass_scope.iyi: PIN DIFFERS"
+  diff "$scope_expected" "$WORK/sl_p.txt" | head -n 20
+  status=1
+fi
 
 echo "== 2c. Prelude parent chains: Nil, Object, Reference, Value, Int32, String and a user class, identical to the oracle"
 if ! "$ORACLE" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/chain_o.txt" 2> "$WORK/chain_oe.txt"; then
@@ -408,19 +451,43 @@ check_const_facts_diverge() {
   return 0
 }
 
+check_pins_diverge() {
+  # Builds the driver as it now stands and runs the total-mode and metaclass-scope pins. Returns non-zero
+  # (caught) when the driver fails to build, a total-mode load raises on the unresolved superclass, or a
+  # metaclass scope does not find the class's constant.
+  local probe="$WORK/mut_pin_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --total-typed "$REPO/bench/fixtures/total_unresolved_superclass.iyi" > "$WORK/mut_tt.txt" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_tt.txt" "$total_typed_expected" || return 1
+  "$probe" --scope-lookup "$REPO/bench/fixtures/semdecl_metaclass_scope.iyi" Lock HELD > "$WORK/mut_sl.txt" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_sl.txt" "$scope_expected" || return 1
+  return 0
+}
+
+check_link_annotations_diverge() {
+  # Builds the driver as it now stands and compares the link annotation pin. Returns non-zero (caught)
+  # when the driver fails to build or a lib's @[Link] records differ from the pinned lines.
+  local probe="$WORK/mut_link_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --link-annotations "$REPO/bench/fixtures/semdecl_link_annotations.iyi" 2>/dev/null | awk '/^link /' > "$WORK/mut_la.txt" || return 1
+  cmp -s "$WORK/mut_la.txt" "$link_annotations_expected" || return 1
+  return 0
+}
+
 echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
+MUT_IVARS="$REPO/src/compiler/semantic/instance_vars.iyi"
 MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
 
-prove_mutation "struct default superclass switches to Reference" "$MUT_SEM" \
+prove_mutation_all "struct default superclass switches to Reference" "$MUT_SEM" \
   "superclass = node.struct ? @program.struct_type : @program.reference_type" \
   "superclass = @program.reference_type" \
   -- check_decl_fixtures_diverge || status=1
@@ -451,7 +518,7 @@ prove_mutation "generated new is private instead of public" "$MUT_SEM" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "generated new drops the initialize arguments" "$MUT_SEM" \
-  "new_def = Def.new(\"new\", node.args.dup, Nop.new)" \
+  "new_def = Def.new(\"new\", node.args.map { |a| a.clone.as(Arg) }, Nop.new)" \
   "new_def = Def.new(\"new\", [] of Arg, Nop.new)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -515,8 +582,13 @@ prove_mutation "a typed argument's instance variable takes its restriction type"
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
-  "t = hook.virtual_of(t)" \
-  "t = t" \
+  "return hook.virtual_of(resolved)" \
+  "return resolved" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \
+  "if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)" \
+  "if owner.owner.is_a?(NonGenericClassType)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
@@ -560,6 +632,36 @@ prove_mutation "the predefined constants are not found by name" "$MUT_SEM" \
   "if name == \"NOPE\"" \
   -- check_const_facts_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a named framework argument of a link annotation is refused" "$MUT_SEM" \
+  "          elsif na.name == \"framework\"" \
+  "          elsif na.name == \"frameworkX\"" \
+  -- check_link_annotations_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a positional ldflags argument of a link annotation is refused" "$MUT_SEM" \
+  "          elsif i == 1" \
+  "          elsif i == 9" \
+  -- check_link_annotations_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a lib records only its first link annotation" "$MUT_SEM" \
+  "      if ann.path.names.last == \"Link\"" \
+  "      if ann.path.names.last == \"Link\" && lib_type.link_annotations.empty?" \
+  -- check_link_annotations_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an unresolvable written type raises once the type system is installed, even in total mode" "$MUT_TS" \
+  "      raise(message) unless @program.total_mode" \
+  "      raise(message)" \
+  -- check_pins_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "total mode raises on an unresolved superclass instead of carrying it past" "$MUT_SEM" \
+  "      if superclass.is_a?(UnresolvedType) && @program.total_mode" \
+  "      if superclass.is_a?(UnresolvedType) && !@program.total_mode" \
+  -- check_pins_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a metaclass scope does not look names up in its instance type" "$MUT_SEM" \
+  "        return lookup_type_path(path, instance.as(ModuleType))" \
+  "        return refuse_constant(path)" \
+  -- check_pins_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TYPES="$REPO/src/compiler/types/types.iyi"
 prove_mutation "a generic instance's instance variable keeps its type parameter" "$MUT_TYPES" \
   "if replacement = tv_map[type.name]?" \
@@ -574,6 +676,17 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance copies no instance variable the first time" "$MUT_TYPES" \
   "unless (copied = @copied_from[name]?) && copied == source" \
   "if (copied = @copied_from[name]?) && copied == source" \
+  -- check_decl_fixtures_diverge || status=1
+
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a declared instance variable keeps its alias: the hook path takes the alias itself" "$MUT_SEM" \
+  "      resolved = remove_alias(lookup_type_node(restriction, owner))" \
+  "      resolved = lookup_type_node(restriction, owner)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic instance's declared variable keeps its parameter type" "$MUT_TYPES" \
+  "            mv = MetaTypeVar.new(name, TypeQueries.replace_type_parameters(source_type, @type_vars))" \
+  "            mv = MetaTypeVar.new(name, source_type)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"

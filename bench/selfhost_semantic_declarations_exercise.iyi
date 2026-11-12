@@ -1,6 +1,6 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, LibFun, LibType, GenericClassType, dump_program_declarations, dump_type, dir_of, normalize_path}
+import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, dump_program_declarations, dump_type, dir_of, normalize_path}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
 import compiler/types/types::{GenericClassInstanceType}
@@ -111,7 +111,7 @@ module BenchSelfhostSemanticDeclarationsExercise
   # The whole-program load: the file and its import closure, with the prelude loaded
   # first, in total mode (an impl of an unresolved target is carried past). It does not
   # print a dump: it completes, or the port refuses the file.
-  def self.load_whole(path : String) : SemanticProgram
+  def self.load_whole(path : String, typed : Bool = false) : SemanticProgram
     cwd = ENV["PWD"]? || "."
     absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
     entry = normalize_path(absolute)
@@ -123,6 +123,7 @@ module BenchSelfhostSemanticDeclarationsExercise
     prog.search_path = search_path
     prog.project_root = project_root(node, entry)
     prog.total_mode = true
+    type_node_system(prog) if typed
     prelude = TopLevelVisitor.new(prog)
     prelude_file = prelude.import_file("iyi/prelude")
     if prelude_file
@@ -205,6 +206,22 @@ elsif Program.args[0] == "--total"
     print "carried: #{message}\n"
   end
   print "ok\n"
+elsif Program.args[0] == "--total-typed"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1], true)
+  prog.carried_refusals.each do |message|
+    print "carried: #{message}\n"
+  end
+  if klass = prog.types["Mine"]?
+    if sc = klass.as(ClassType).superclass
+      print "superclass #{sc.full_name}\n"
+    end
+  end
+  print "ok\n"
+elsif Program.args[0] == "--scope-lookup"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  scope = prog.types[Program.args[2]].as(ModuleType).metaclass
+  found = prog.lookup_type_path(Path.new(Program.args[3]), scope)
+  print "#{found.full_name}\n"
 elsif Program.args[0] == "--typed"
   print BenchSelfhostSemanticDeclarationsExercise.dump_file_typed(Program.args[1])
 elsif Program.args[0] == "--lib-types"
@@ -239,10 +256,17 @@ elsif Program.args[0] == "--const-facts"
   if holder = prog.types["Holder"]?
     holder.as(ModuleType).class_vars.each_value do |mv|
       if owner = mv.owner
-        print "cvar #{mv.name} owner #{owner.full_name}\n"
+        print "cvar #{mv.name} owner #{owner.full_name} thread_local=#{mv.thread_local}\n"
       else
-        print "cvar #{mv.name} owner none\n"
+        print "cvar #{mv.name} owner none thread_local=#{mv.thread_local}\n"
       end
+    end
+  end
+elsif Program.args[0] == "--link-annotations"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  if link_lib = prog.types["LibA"]?
+    link_lib.as(LibType).link_annotations.each do |rec|
+      print "link lib=#{rec.library || "-"} ldflags=#{rec.ldflags || "-"} static=#{rec.is_static} framework=#{rec.framework || "-"} pkg_config=#{rec.pkg_config || "-"} dll=#{rec.dll || "-"}\n"
     end
   end
 else

@@ -87,6 +87,13 @@ TOOLS = {
     # the order the macro port is filled in, recorded in
     # src/compiler/macros/PORT_STATUS.md, which says to regenerate from it.
     "macro_method_usage.py",
+    # `bash bench/selfhost_semantic_calls_census.sh` asks the port's call
+    # lookup every call site the hosted pass typed in the compiler's own
+    # source and the prelude, and prints how many answers are identical and
+    # the ranked reasons for the rest: the order the call lookup is filled
+    # in. It takes minutes per file and has no floor; the gate beside it,
+    # `selfhost_semantic_calls_exercise.sh`, is what a job runs.
+    "selfhost_semantic_calls_census.sh",
     # The instruments: each measures seconds or megabytes with a release
     # compiler, and most against Go or the compatibility binary beside it,
     # which a shared runner can neither build nor time - the same binary
@@ -268,11 +275,13 @@ def main():
     every = {name for name in bench if name.endswith((".sh", ".py", ".iyi"))}
     run = reached(bench) & every
     unreached = sorted(every - run)
-    unexplained = [name for name in unreached if name not in TOOLS]
+    # A gate named `*.wip.sh` does not pass yet: the slice that owns it renames it
+    # to `*_exercise.sh` when it does, and a job's glob runs it from then on.
+    unexplained = [name for name in unreached if name not in TOOLS and ".wip." not in name]
 
     print(f"{len(every)} scripts and programs under bench/, {len(run)} of them run")
     for name in unreached:
-        why = "a tool, not a gate" if name in TOOLS else "RUN BY NOTHING"
+        why = "a tool, not a gate" if name in TOOLS else ("a gate that does not pass yet" if ".wip." in name else "RUN BY NOTHING")
         print(f"  {name:34s} {why}")
 
     missing_tools = sorted(TOOLS - every)
