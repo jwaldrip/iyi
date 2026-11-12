@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Fails when the iyi selfhost formatter stops agreeing with the shipped formatter.
+#
+# For each file in an explicit corpus list, the port's output must match the
+# shipped formatter's output byte for byte, and a second pass over the port's
+# own output must change nothing (idempotency).
+#
+# The mutation proofs verify that the parity checks are load-bearing: each
+# mutation modifies a key ported mechanism, proves the patch applied, runs
+# the comparison to confirm it is caught, and reverts cleanly.
+#
+#   bash bench/selfhost_formatter_exercise.sh
+set -u
+status=0
+diverged=0
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IYI="$REPO/bin/iyi"
+. "$REPO/bench/lib/mutation.sh"
+FMT="$REPO/src/compiler/tools/formatter.iyi"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# The corpus is an explicit list of files the port currently handles byte-for-byte.
+# It grows deliberately as the formatter port reaches further constructs, and fails
+# if any listed file regresses.
+# 118 .iyi files in the tree (10 in samples/iyi, 17 in src/iyi, 91 in src/std) are not yet in this list.
+CORPUS=(
+  "samples/iyi/calc.iyi"
+  "samples/iyi/collections.iyi"
+  "samples/iyi/derive.iyi"
+  "samples/iyi/files.iyi"
+  "samples/iyi/format.iyi"
+  "samples/iyi/formatting.iyi"
+  "samples/iyi/generics.iyi"
+  "samples/iyi/hello.iyi"
+  "samples/iyi/immutable.iyi"
+  "samples/iyi/init_order.iyi"
+  "samples/iyi/io.iyi"
+  "samples/iyi/modules.iyi"
+  "samples/iyi/sessions.iyi"
+  "samples/iyi/socket.iyi"
+  "samples/iyi/std_iterator.iyi"
+  "samples/iyi/std_text.iyi"
+  "samples/iyi/std_time.iyi"
+  "samples/iyi/webapp.iyi"
+  "src/std/bool.iyi"
+  "src/std/deque.iyi"
+  "src/std/list.iyi"
+  "src/std/steppable.iyi"
+  "src/std/string_scanner.iyi"
+  "src/std/enum.iyi"
+  "src/std/uuid.iyi"
+)
+
+echo "== 1. Building the selfhost formatter exercise driver"
+if ! "$IYI" build -o "$WORK/exercise" "$REPO/bench/selfhost_formatter_exercise.iyi"; then
+  echo "FAILED: could not build bench/selfhost_formatter_exercise.iyi"
+  exit 1
+fi
+echo "  built bench/selfhost_formatter_exercise.iyi successfully"
+
+echo
+echo "== 2. Parity comparison against the shipped formatter and idempotency check"
+
+compare_corpus() {
+  local driver="$1"
+  local matched=0
+  local total_bytes=0
+  local total_files=${#CORPUS[@]}
+
+  for rel in "${CORPUS[@]}"; do
+    local src="$REPO/$rel"
+    if [ ! -f "$src" ]; then
+      echo "  MISSING: $rel does not exist in repository"
+      return 1
+    fi
+
+    local bytes
+    bytes=$(wc -c < "$src" | tr -d ' ')
+
+    # Format with shipped formatter
+    "$IYI" tool format - < "$src" > "$WORK/shipped.out" 2>/dev/null
+    local shipped_rc=$?
+    if [ "$shipped_rc" -ne 0 ]; then
+      echo "  FAILED: shipped formatter failed on $rel"
+      return 1
+    fi
+
+    # Format with selfhost port
+    "$driver" "$src" > "$WORK/port_pass1.out" 2>/dev/null
+    local port_rc=$?
+    if [ "$port_rc" -ne 0 ]; then
+      echo "  FAILED: selfhost port crashed on $rel"
+      return 1
+    fi
+
+    # Parity check: port output == shipped formatter output
+    if ! cmp -s "$WORK/shipped.out" "$WORK/port_pass1.out"; then
+      echo "  DIVERGED: selfhost output differs from shipped formatter on $rel"
+      return 1
+    fi
+
+    # Idempotency check: second pass over port output changes nothing
+    "$driver" "$WORK/port_pass1.out" > "$WORK/port_pass2.out" 2>/dev/null
+    local pass2_rc=$?
+    if [ "$pass2_rc" -ne 0 ] || ! cmp -s "$WORK/port_pass1.out" "$WORK/port_pass2.out"; then
+      echo "  NOT IDEMPOTENT: second pass changed output on $rel"
+      return 1
+    fi
+
+    matched=$((matched + 1))
+    total_bytes=$((total_bytes + bytes))
+  done
+
+  echo "  Parity summary: $matched/$total_files files match byte-for-byte ($total_bytes total bytes)"
+  echo "  Idempotency summary: $matched/$total_files files idempotent"
+  return 0
+}
+
+if ! compare_corpus "$WORK/exercise"; then
+  status=1
+fi
+
+echo
+echo "== 3. Mutation proofs: each one must make the comparison above fail"
+
+# Each check rebuilds the formatter with the mutation applied and compares it with the
+# shipped formatter on the corpus. It returns zero only when the comparison still passes.
+check_formatter_parity() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_formatter_exercise.iyi" >/dev/null 2>&1 || return 1
+  if compare_corpus "$WORK/mut-exercise" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+MUTATIONS_RUN=0
+run_proof() {
+  prove_mutation "$1" "$FMT" "$2" "$3" -- check_formatter_parity || status=1
+  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+}
+
+run_proof "synthetic ivar assignment removal in def body bypassed" \
+  "body = remove_to_skip(node.body, to_skip)" \
+  "body = node.body"
+
+run_proof "instance variable argument skipping disabled in Arg visitor" \
+  "@last_arg_is_skip = at_skip?" \
+  "@last_arg_is_skip = false"
+
+run_proof "block argument bar leading space omitted in format_block" \
+  "write_token(\" \", TokenKind::OP_BAR)" \
+  "write_token(TokenKind::OP_BAR)"
+
+run_proof "do block body formatting bypasses nested indentation and end" \
+  "format_nested_with_end(block.body)" \
+  "accept(block.body)"
+
+run_proof "blank line preservation in consume_newlines disabled" \
+  "if raw_newlines > 1 && !next_comes_end" \
+  "if false && raw_newlines > 1"
+
+run_proof "empty array literal bracket handling bypassed in ArrayLiteral visitor" \
+  "if @token.type == TokenKind::OP_LSQUARE_RSQUARE" \
+  "if false && @token.type == TokenKind::OP_LSQUARE_RSQUARE"
+
+run_proof "method def receiver formatting bypassed in Def visitor" \
+  "if receiver = node.receiver" \
+  "if false && (receiver = node.receiver)"
+
+run_proof "proc notation arrow omitted in ProcNotation visitor" \
+  "write_token(TokenKind::OP_MINUS_GT)" \
+  "# write_token(TokenKind::OP_MINUS_GT)"
+echo "  $MUTATIONS_RUN mutation proofs run"
+
+echo
+if [ "$status" -eq 0 ]; then
+  echo "== ALL SELFHOST FORMATTER CHECKS PASSED"
+else
+  echo "== SELFHOST FORMATTER CHECKS FAILED"
+fi
+exit $status
