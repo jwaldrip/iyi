@@ -31,8 +31,11 @@ import compiler/types/type_system::{TypeSystem}
 pub class Analysis
   getter root : ASTNode
   getter visitor : MainVisitor
+  # The layout the oracle uses for this program: iyi's (the type id is the header word under the object)
+  # when the prelude declares IyiRuntimeLock, as the hosted driver decides it.
+  getter iyi : Bool
 
-  def initialize(@root : ASTNode, @visitor : MainVisitor)
+  def initialize(@root : ASTNode, @visitor : MainVisitor, @iyi : Bool)
   end
 end
 
@@ -58,7 +61,7 @@ pub def analyse(source : String, filename : String, stand_in_libs : Bool) : Anal
   end
   root.accept(mv)
   RecursiveStructChecker.new(prog).run
-  Analysis.new(root, mv)
+  Analysis.new(root, mv, !prog.types["IyiRuntimeLock"]?.nil?)
 end
 
 pub def ir_module(triple : String) : Module
@@ -301,7 +304,7 @@ pub def run_lower(fixture : String, oracle_path : String, hosted : String, stand
 
   analysis = analyse(File.read(fixture), fixture, stand_in_libs)
   m = ir_module(triple)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   port_text = print(m)
   port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
@@ -316,7 +319,7 @@ pub def run_emit(fixture : String, oracle_path : String, stand_in_libs : Bool) :
   triple = triple_of(File.read(oracle_path))
   analysis = analyse(File.read(fixture), fixture, stand_in_libs)
   m = ir_module(triple)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   puts print(m)
 end
