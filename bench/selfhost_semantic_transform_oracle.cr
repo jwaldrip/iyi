@@ -502,6 +502,10 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     s = "#{p}TypeOf\n"
     node.expressions.each { |e| s += dump_ast(e, indent + 1) }
     s
+  when Iyi::PointerOf
+    s = "#{p}PointerOf\n"
+    s += dump_ast(node.exp, indent + 1)
+    s
   else
     STDERR.puts "UNCOVERED #{node.class.name}"
     "#{p}Node\n"
