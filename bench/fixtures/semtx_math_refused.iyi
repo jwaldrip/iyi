@@ -1,0 +1,11 @@
+# Expressions the port refuses by name rather than answers. The oracle is not
+# compared on this fixture: every line must print `refused=`.
+1 / 2
+1 ** 2
+foo
+-(1_u8)
+Foo + 1
+1_i8 // 256_u16
+170141183460469231731687303715884105727_u128 + 1_u128
+# target: u128
+340282366920938463463374607431768211455_u128

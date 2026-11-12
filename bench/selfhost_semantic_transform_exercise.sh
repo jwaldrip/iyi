@@ -130,6 +130,78 @@ prove_mutation "the propagated mark is never consumed" "$NORM" 'propagated = @pr
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
+echo "== 4. Math folding: the port's math interpreter against the hosted one"
+MATH="$REPO/src/compiler/semantic/math_interpreter.iyi"
+MATH_DRIVER="$REPO/bench/selfhost_semantic_math_exercise.iyi"
+MATH_ORACLE_SRC="$REPO/bench/selfhost_semantic_math_oracle.cr"
+LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" \
+  CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
+    -o "$WORK/math_oracle" "$MATH_ORACLE_SRC" > "$WORK/math_oracle.log" 2>&1 || { echo "  HOSTED MATH ORACLE DOES NOT BUILD"; cat "$WORK/math_oracle.log"; exit 1; }
+"$IYI" build -o "$WORK/math_port" "$MATH_DRIVER" > "$WORK/math_port.log" 2>&1 || { echo "  MATH PORT DRIVER DOES NOT BUILD"; cat "$WORK/math_port.log"; exit 1; }
+math_count=0
+math_diverged=0
+math_matched=0
+for fixture in "$REPO"/bench/fixtures/semtx_math_*.iyi; do
+  name="bench/fixtures/$(basename "$fixture")"
+  if [ "$(basename "$fixture")" = "semtx_math_refused.iyi" ]; then continue; fi
+  math_count=$((math_count + 1))
+  "$WORK/math_port" "$fixture" > "$WORK/math_iyi.txt" 2> "$WORK/math_iyi.err" || {
+    echo "  $name: MATH PORT FAILED"; cat "$WORK/math_iyi.err"; math_diverged=$((math_diverged + 1)); status=1; continue; }
+  "$WORK/math_oracle" "$fixture" > "$WORK/math_oracle.txt" 2> "$WORK/math_oracle.err" || {
+    echo "  $name: HOSTED MATH ORACLE FAILED"; cat "$WORK/math_oracle.err"; math_diverged=$((math_diverged + 1)); status=1; continue; }
+  if cmp -s "$WORK/math_iyi.txt" "$WORK/math_oracle.txt"; then
+    n=$(grep -c ': value=\|: error=' "$WORK/math_oracle.txt")
+    echo "  $name: identical ($n expressions fold to the same value or message)"
+    math_matched=$((math_matched + n))
+  else
+    echo "  $name: FOLDS DIFFER"
+    diff -u "$WORK/math_oracle.txt" "$WORK/math_iyi.txt" | head -40
+    math_diverged=$((math_diverged + 1))
+    status=1
+  fi
+done
+echo "  Parity summary: math $((math_count - math_diverged))/$math_count fixtures fold identically ($math_matched expressions)"
+
+# The refused fixture: the port must refuse every expression by name, so the
+# hosted answer is not compared on it. A line that is answered instead fails.
+REFUSED="$REPO/bench/fixtures/semtx_math_refused.iyi"
+if "$WORK/math_port" "$REFUSED" > "$WORK/math_refused.txt" 2>/dev/null \
+   && [ "$(grep -c ': refused=' "$WORK/math_refused.txt")" -eq "$(grep -cv '^#\|^$' "$REFUSED")" ] \
+   && ! grep -qv ': refused=' "$WORK/math_refused.txt"; then
+  echo "  bench/fixtures/semtx_math_refused.iyi: every expression refused by name ($(grep -c ': refused=' "$WORK/math_refused.txt") lines)"
+else
+  echo "  bench/fixtures/semtx_math_refused.iyi: A LINE WAS ANSWERED, NOT REFUSED"
+  cat "$WORK/math_refused.txt"
+  status=1
+fi
+
+# A patch to the port's math interpreter that the gate must catch. The math
+# driver is rebuilt from the patched module and compared with the oracle on
+# every compared fixture; a build failure or a differing line counts as caught.
+check_math_agrees() {
+  "$IYI" build -o "$WORK/math_mut_port" "$MATH_DRIVER" > /dev/null 2>&1 || return 1
+  for fixture in "$REPO"/bench/fixtures/semtx_math_*.iyi; do
+    if [ "$(basename "$fixture")" = "semtx_math_refused.iyi" ]; then continue; fi
+    "$WORK/math_mut_port" "$fixture" > "$WORK/math_mut.txt" 2> /dev/null || return 1
+    "$WORK/math_oracle" "$fixture" > "$WORK/math_mut_oracle.txt" 2> /dev/null || return 1
+    cmp -s "$WORK/math_mut.txt" "$WORK/math_mut_oracle.txt" || return 1
+  done
+  return 0
+}
+MATH_MUTATIONS=0
+MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
+prove_mutation "a wrapped result keeps the bits above its kind" "$MATH" 'low = value & mask_of(kind)' 'low = value' -- check_math_agrees || status=1
+MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
+prove_mutation "a right shift past the width loses the sign of a negative value" "$MATH" 'MathValue.new(value.value < 0_i128 ? -1_i128 : 0_i128, value.kind)' 'MathValue.new(0_i128, value.kind)' -- check_math_agrees || status=1
+MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
+prove_mutation "a result one above the kind's limit is accepted" "$MATH" 'return MathError.new("Arithmetic overflow") if magnitude > upper_magnitude(kind)' 'return MathError.new("Arithmetic overflow") if magnitude > upper_magnitude(kind) + 1_u128' -- check_math_agrees || status=1
+MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
+prove_mutation "a mixed-signedness divisor is not wrapped to the left kind" "$MATH" 'if kind.signed? != right.kind.signed?' 'if false' -- check_math_agrees || status=1
+MATH_MUTATIONS=$((MATH_MUTATIONS + 1))
+prove_mutation "the MIN / -1 overflow carries the wrong message" "$MATH" '"Overflow: #{kind_name(kind)}::MIN / -1"' '"Overflow: #{kind_name(kind)}::MIN/-1"' -- check_math_agrees || status=1
+echo "  $MATH_MUTATIONS math mutation proofs run"
+
+echo
 if [ "$status" -eq 0 ]; then
   echo "ALL SELFHOST SEMANTIC TRANSFORM CHECKS PASSED SUCCESSFULLY!"
 else
