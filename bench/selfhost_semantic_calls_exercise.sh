@@ -91,7 +91,7 @@ prove_mutation "exact match does not end the lookup" "$LOOKUP_FILE" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "arguments beyond the def's parameters are accepted" "$MATCH_FILE" \
-  "    return MatchAttempt.none if given > definition.args.size" \
+  "    return MatchAttempt.none if !splat && given > count" \
   "    return MatchAttempt.none if false" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -103,7 +103,7 @@ prove_mutation "restrictions are not applied to arguments" "$MATCH_FILE" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "missing arguments without a default are accepted" "$MATCH_FILE" \
-  "      if !mandatory[k] && definition.args[k].default_value.nil?" \
+  "      if !is_splat && !mandatory[k] && definition.args[k].default_value.nil?" \
   "      if false" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -189,6 +189,24 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a virtual receiver answers covered when it has matches" "$METHOD_FILE" \
   "    Matches.new(matches, !matches.empty?)" \
   "    Matches.new(matches, false)" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a splat parameter takes none of the arguments past its prefix" "$MATCH_FILE" \
+  "        matched << signature.arg_types[i]" \
+  "        i = i" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a double splat does not take the names no parameter has" "$MATCH_FILE" \
+  "          return MatchAttempt.none if !dsplat" \
+  "          return MatchAttempt.none if true" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a def with a block argument does not yield" "$MATCH_FILE" \
+  "    return true if definition.block_arg" \
+  "    return false if definition.block_arg" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
