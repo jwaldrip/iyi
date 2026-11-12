@@ -1,6 +1,6 @@
 # Typer parity: the lowering against the hosted typer
 
-Measured by `bench/selfhost_lower_types_exercise.sh` on the head of `selfhost/s2b-typer`, for the host target `aarch64-apple-darwin`. A type is identical when the port's block equals the hosted oracle's block byte for byte. A block holds `llvm_type`, `llvm_type(wants_size)`, `llvm_struct_type`, `offsets`, `llvm_embedded_type`, `size`, `align`, `ivars`, `layout` (the pointer map, without the type id), `passed_indirectly`, the proc function types, and the C types.
+Measured by `bench/selfhost_lower_types_exercise.sh` on the head of `selfhost/s2b-typer`, for the host target `aarch64-apple-darwin`. A type is identical when the port's block equals the hosted oracle's block byte for byte. A block holds `llvm_type`, `llvm_type(wants_size)`, `llvm_struct_type`, `offsets`, `llvm_embedded_type`, `size`, `align`, `passed_by_value`, `ivars`, `layout` (the pointer map, without the type id), the C types, `passed_indirectly`, and the proc function types.
 
 ## Fixtures (bare, gate-compared)
 
@@ -11,55 +11,72 @@ Measured by `bench/selfhost_lower_types_exercise.sh` on the head of `selfhost/s2
 | `lowty_enums` | 4 | 4 |
 | `lowty_composites` | 6 | 6 |
 | `lowty_unions` | 7 | 7 |
+| `lowty_refunions` (new) | 2 | 2 |
 | `lowty_procs` | 4 | 4 |
 | `lowty_class_explicit` (iyi object layout) | 1 | 1 |
 | `lowty_class_layout` (Crystal object layout) | 1 | 1 |
 | `lowty_class_pointers` | 2 | 2 |
 | `lowty_class_assigned` (ivars typed by assignment) | 1 | 1 |
-| **total** | **50** | **50** |
+| **total (12 fixtures)** | **56** | **56** |
 
 Type ids are gated by shape in `lowtyid_hierarchy` (the port's ids equal the hosted ids shifted by 30). Exact equality waits on NEEDS.md row 16.
 
 ## Own source: every type each file declares (the floor)
 
-The whole-program mode (`--own <file> <triple>`) loads the file's import closure with the prelude, as a build does (the hosted oracle prepends the prelude's require; the port loads the prelude file first), declares the instance variables, and prints one block per type the file declares. The gate compares the blocks by type name (`bench/lib/lower_types_compare.py`) and checks each file against `bench/selfhost_lower_types.floor`, which may only rise.
+The whole-program mode (`--own <file> <triple>`) loads the file's import closure with the prelude, as a build does, declares the instance variables, and prints one block per type the file declares. Constants are not types: the hosted typer does not lower them, so both sides skip them (before this increment the hosted side printed them as failures, 255 of the 1001 blocks). The gate compares the blocks by type name and checks each file against `bench/selfhost_lower_types.floor`, which may only rise.
 
-Measured at this head (`LOWER_TYPES_RAISE=1` wrote the floors):
-
-- 125 files under `src/compiler/**/*.iyi`.
-- **28 measured** (both sides lower the file). Declared types in them: 963 (the hosted side's count, including nested types). **Identical: 64** of those; 160 differ; the rest are not measured because the port fails the file.
-- The hosted oracle fails no file in this run. 97 files fail on the port side, each at its first unported or upstream reason (below).
-
-The per-file counts are the floors in `bench/selfhost_lower_types.floor`. The 28 measured files and their identical counts are in that file.
-
-### Ranked reasons
-
-Differences, by the field that first disagrees (`differs in <field>`): offsets 123 types, `llvm_type` 32, ivars 5.
-
-Port failures (a file the port cannot lower counts zero), by the first line of the port's message: 32 `can't implement Std::Enumerable, it's a module` (trait impl through the closure), 31 `Compiler::Syntax::Lexer is not a class, it's a module`, 19 `can't make class 'Inst' inherit struct 'Value'`, 10 undefined `LibLLVM::...` lib types, 1 `leb.iyi` syntax error, and a few `create_llvm_type ... is not ported` for constants and `AnalysedProgram`.
-
-| reason | types or files | owner |
+| | before (4370c655e) | after (this increment) |
 |---|---|---|
-| Instance variables in the wrong order: the port records explicit declarations at `TopLevelVisitor#finish`, after the guessed ones and the constructor arguments; the hosted pass keeps declaration order. Every offset after the first mis-ordered field differs. | most of the 123 offset differences | declarations trunk: `agent://S1b5Declarations` (`semantic/top_level.iyi` pending ivars, `instance_vars.iyi`) |
-| Generic instance ivar types lose their arguments (`@pool : Hash(String, String)` prints `Hash`). | 5 ivars | declarations trunk (NEEDS.md row 3) |
-| A module with implementors lowers as the mixed union of its implementors in the hosted typer. The port answers `i32` (the namespace answer) for it. | part of the 32 `llvm_type` | lowered types (`agent://S2b2Typer`, NEEDS.md row 5): open |
-| Constants and `AnalysedProgram` are not typed: `create_llvm_type` raises. | 4 files | lowered types (`agent://S2b2Typer`, new NEEDS row) |
-| `Std::Enumerable` trait impl and `Lexer` module-vs-class fail in the closure. | 63 files | declarations trunk and bodies (`agent://S1b5Declarations`, `agent://S1d2Bodies`) |
-| `Inst` inherits the struct `Value`. | 19 files | declarations trunk |
-| `LibLLVM` lib types are not declared in the closure. | 10 files | declarations trunk |
+| declared types, own source | 1001 (255 of them constants) | 746 |
+| measured (the port lowers the file) | 688 | 688 |
+| identical | 283 | **407** |
+| differ | 405 | 281 |
+| in a file the port cannot lower | 58 | 58 |
 
-Settled in this increment, not in the ranking:
+- 134 files under `src/compiler/**/*.iyi`; 118 measured, 16 port failures (the LibLLVM lib types, row 3 below).
+- The hosted oracle fails no file.
 
-- A namespace module (`module Compiler::Foundation`) answers `i32`, the hosted answer for every namespace measured with the prelude loaded.
-- A struct's by-value answer and a module's by-value answer follow the hosted `passed_by_value?` (codegen/types.cr). The port's `including_types` also holds nested namespaces, so a module's answer is not yet split on implementors.
-- The prelude is loaded in both sides. The oracle was not loading it before; its `iyi_object_layout?` was therefore false and the port's true.
+### What changed in this increment
+
+- **Namespaces and the file's own module (NEEDS row 19).** A namespace answers `i1`, the hosted `NonGenericModuleType` answer. The file's own module (`module a/b/c`, an iyi unit, `ModuleType#iyi_unit`) answers `i32`. Before, every namespace answered `i32`: 118 types differed for that reason alone.
+- **Reference unions are one pointer (NEEDS row 20).** The typer decides from the members (`reference_union?`): when every member but Nil is reference-like, the union is `ptr`, passed as a word, and the layout walk scans it. The port's unification builds a `MixedUnionType` for some of them, so the typer cannot rely on the object's kind.
+- **Driver prints ivar types as the hosted `to_s` does** (`TypeRenderer.render`), so `Array(String)` and `Foo+` print as the hosted does. Before, a generic instance printed its bare name.
+
+### Ranked reasons (gate output, 281 types that differ)
+
+The reason of a type is the root cause of its first difference, not the first printed field that differs: an instance variable recorded in another order moves every later offset, and that is one reason. `bench/lib/lower_types_compare.py` prints the same table on every run (`REASON` and `EXAMPLE` lines).
+
+| # | types | reason | owner | NEEDS row |
+|---|---|---|---|---|
+| 1 | 115 | ivars recorded in a different order: an ivar whose type names a type declared later in the file is recorded after the ivars that resolve at once. Repro: `/tmp/s2b/t1.iyi` (`@n : Int32?` before `@v : Visibility?`). | declarations trunk (S1b6, `semantic/top_level.iyi`) | 12 |
+| 2 | 101 | generic instance ivar types are the unbound generic (`@a : Array(String)` is `Array(T)`, lowered as i1). Repro: `/tmp/s2b/t4.iyi`. | declarations trunk (S1b6, `semantic/type_declaration_processor.cr`) | 22 |
+| 3 | 51 | ivar typed by a class with subclasses prints `X` where hosted prints `X+` (the port does not build the virtual type). The ivar line differs, so the layout behind it is not measured yet. | declarations / type model (S1a) | 24 |
+| 4 | 12 | `getter`/`property` declared ivars are not recorded (`ir/module.iyi`). | declarations trunk (S1b6) | 23 |
+| 5 | 1 | `InstAux` size 48 where the port says 40 (open: a mixed union or a field alignment; next increment). | typer (S2b) | none |
+| 6 | 1 | extern struct llvm name: hosted `struct.Name` for an `extern` struct, the port `Name` (no `extern?` on the port's class). | typer (S2b) after NEEDS row 4 | 4 |
+
+Port failures (a file the port cannot lower counts zero; the 58 types are in these 16 files):
+
+- `undefined constant LibLLVM::MemoryBufferRef` (10 files), `LibLLVM::TypeRef` (3), `LibLLVM::ModuleRef` (2): lib types not in the closure. Repro: `port --own src/compiler/backend/llvm/emit.iyi aarch64-apple-darwin`. Declarations trunk.
+- `create_llvm_type for Compiler::Semantic::Typed::AnalysedProgram is not ported`: 1 file. Typer, to do.
+
+Sum: 407 identical + 281 differ + 58 in failed files = 746.
 
 ## Hello and the prelude
 
-`samples/iyi/hello.iyi` with the prelude: not yet measured. The own-source mode covers the prelude's own declared types only when the prelude file itself is the entry. It is the next increment after the declarations fixes above.
+`samples/iyi/hello.iyi` with the prelude: not measured in this increment. The own-source mode covers a file's own declared types; the program-wide count (every type the program instantiates) needs a driver mode that walks the whole analysed program. Next increment.
 
 ## Gate figures
 
-- Fixtures: 10 identical (50 types), 0 diverged.
-- Own source: 28 measured, 64 identical of 963 declared, floors in `bench/selfhost_lower_types.floor`.
-- Mutations: 28 caught, including the own-source probes (a namespace module as `if false`, and a struct's by-value answer removed), which fail when a probe file's identical count drops below its floor.
+- Fixtures: 12 identical (56 types), 0 diverged.
+- Own source: 118 measured, 407 identical of 746 declared, floors in `bench/selfhost_lower_types.floor`, all at floor.
+- Type ids: 1 fixture (`lowtyid_hierarchy`) agrees in shape.
+- Mutations: 32 caught, including the new `reference union lowered as a mixed union` (caught by the own-source probe `syntax/ast.iyi`, since the bare fixtures already reach a `ReferenceUnionType` through the unification), `the file's own module answers i1` and `mixed unions not passed by value`.
+
+## Next increments, in order
+
+1. Re-measure after S1b6 lands the declaration-order and generic-argument fixes (rows 12, 22). Those two reasons are 216 of the 281.
+2. `AnalysedProgram` and the `InstAux` size (reasons 5 and the typer item above).
+3. Type ids: exact equality (row 16), metaclass ids (`assign_id_to_metaclass`), generic instantiated ids (row 17).
+4. `gc_layouts.cr` remainder: virtual struct fields and `ReferenceStorageType` in the layout walk (row 18).
+5. `samples/iyi/hello.iyi` with the prelude: the program-wide count.

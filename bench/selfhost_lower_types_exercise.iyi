@@ -16,6 +16,7 @@ import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/syntax/ast::{ASTNode, ClassDef, Expressions, ModuleHeader}
 import compiler/semantic/top_level::{ModuleType}
 import compiler/semantic/top_level::{dir_of, normalize_path, declared_in?, NamedType, EnumType, Const}
+import compiler/types/rendering::{TypeRenderer}
 
 # Lowering-types driver for bench/selfhost_lower_types_exercise.sh.
 #
@@ -170,7 +171,7 @@ module BenchSelfhostLowerTypesExercise
     parts = [] of String
     t.as(ModuleType).all_instance_vars.each do |name, ivar|
       vt = ivar.var_type
-      parts << "#{name}:#{vt.nil? ? "untyped" : vt.as(Type).full_name}"
+      parts << "#{name}:#{vt.nil? ? "untyped" : TypeRenderer.render(vt.as(Type))}"
     end
     return "-" if parts.size == 0
     parts.join(" ")
@@ -198,10 +199,12 @@ module BenchSelfhostLowerTypesExercise
     mm = ids.min_max(t)
     out = "== #{expr}\n"
     if mm.nil?
-      out = out + "type_id: -\ntype_range: -\n"
+      out = out + "type_id: -\ntype_range: -\nmetaclass_id: -\n"
     else
       pair = mm.as(Array(Int32))
       out = out + "type_id: #{pair[1]}\ntype_range: #{pair[0]} #{pair[1]}\n"
+      meta = ids.metaclass_id(t)
+      out = out + "metaclass_id: #{meta.nil? ? "-" : meta.to_s}\n"
     end
     out
   end
@@ -225,21 +228,31 @@ module BenchSelfhostLowerTypesExercise
     # The hosted Program#iyi_object_layout? is decided by the program declaring IyiRuntimeLock.
     iyi = !prog.types["IyiRuntimeLock"]?.nil?
     typer = LowerTyper.new(TypeTable.new, layout, iyi)
-    # The hosted LLVMId numbers every class reachable from Object.
+    # The hosted LLVMId numbers every class reachable from Object, and the hosted driver resolves
+    # every `# type:` line first (a generic instance named in a line is then reachable from its
+    # generic class). The types are resolved before the walk so both drivers number the same program.
+    exprs = [] of String
+    types = [] of Type
+    src.split("\n").each do |line|
+      if line.starts_with?("# type: ")
+        expr = line[8, line.bytesize - 8].strip
+        exprs << expr
+        types << resolve(prog, ts, expr)
+      end
+    end
     ids = LowerTypeIds.new
     if root = prog.types["Object"]?
       ids.assign_all(root)
     end
     out = ""
-    src.split("\n").each do |line|
-      if line.starts_with?("# type: ")
-        expr = line[8, line.bytesize - 8].strip
-        if mode == "ids"
-          out = out + ids_block(expr, ids, resolve(prog, ts, expr))
-        else
-          out = out + block_text(expr, typer, resolve(prog, ts, expr))
-        end
+    i = 0
+    while i < exprs.size
+      if mode == "ids"
+        out = out + ids_block(exprs[i], ids, types[i])
+      else
+        out = out + block_text(exprs[i], typer, types[i])
       end
+      i = i + 1
     end
     out
   end
