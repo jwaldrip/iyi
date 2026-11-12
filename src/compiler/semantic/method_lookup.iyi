@@ -2,7 +2,7 @@ module compiler/semantic/method_lookup
 
 import compiler/syntax/ast::{Def, Nop}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaclassType, ModuleType, TraitType, Type, UnionType}
-import compiler/types/types::{GenericInstanceType, VirtualType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, VirtualType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/match::{CallMatch, CallSignature, Match}
 
@@ -290,9 +290,10 @@ pub class MethodLookup
     end
     # The hosted union of the implementers sorts its members by name (make_union_type),
     # so the lookup walks them in that order, not in declaration order.
+    targets = expanded_targets(targets)
     sorted = sorted_by_name(targets)
     sorted.each do |target|
-      if !target.is_a?(ModuleType) || target.is_a?(GenericClassType)
+      if (!target.is_a?(ModuleType) && !target.is_a?(GenericInstanceType)) || target.is_a?(GenericClassType)
         return Matches.new(all, false, "not ported: generic implementer of #{trait_type.to_s}")
       end
       found = lookup_receiver(target, ts, signature)
@@ -303,6 +304,24 @@ pub class MethodLookup
       cover = false if !found.cover_all?
     end
     Matches.new(all, cover && !all.empty?)
+  end
+
+  # The types a trait's implementers are looked up over: a generic implementer stands
+  # for its instances the program has created so far, in creation order (the hosted
+  # GenericClassType#including_types answers its instances the same way). Other
+  # implementers are kept as they are.
+  def self.expanded_targets(targets : Array(Type)) : Array(Type)
+    out = [] of Type
+    targets.each do |target|
+      if target.is_a?(GenericClassType)
+        target.as(GenericClassType).instantiated_types.each do |inst|
+          out << inst.as(Type)
+        end
+      else
+        out << target
+      end
+    end
+    out
   end
 
   # The types sorted by their names, as the hosted union sorts its members.
@@ -339,6 +358,19 @@ pub class MethodLookup
     end
     if receiver.is_a?(VirtualType)
       return lookup_virtual(receiver.as(VirtualType), ts, signature)
+    end
+    # The metaclass of a generic instance (`Pointer(Int32).malloc`): its class methods are the
+    # defs of the generic type's own metaclass, looked up with the instance metaclass as owner,
+    # as the hosted pass does. Its own defs are empty, so this comes before the module branch.
+    if receiver.is_a?(GenericClassInstanceMetaclassType)
+      instance = receiver.as(GenericClassInstanceMetaclassType).instance_type
+      if instance.is_a?(GenericClassInstanceType)
+        generic = instance.as(GenericClassInstanceType).generic_type
+        if generic.is_a?(GenericClassType)
+          generic_meta = generic.as(GenericClassType).metaclass
+          return lookup_matches(generic_meta, ts, signature, receiver, generic_meta, [] of Match)
+        end
+      end
     end
     if receiver.is_a?(GenericInstanceType)
       generic = receiver.as(GenericInstanceType).generic_type

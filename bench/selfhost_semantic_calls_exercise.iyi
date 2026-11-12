@@ -1,12 +1,13 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Call}
-import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type, dir_of}
+import compiler/syntax/ast::{ASTNode, Call, NamedArgument, Out, Path, Underscore, Var}
+import compiler/semantic/top_level::{LibType, ModuleType, SemanticProgram, TopLevelVisitor, Type, dir_of}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/semantic/method_lookup::{MethodLookup, Matches}
 import compiler/semantic/match::{CallSignature, Match}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/call::{CallReceiver, CallRecalculation}
+import compiler/semantic/lib_call::{LibCall, LibCallArgument}
 import compiler/semantic/default_arguments::{DefaultArguments}
 
 # Call-lookup driver for bench/selfhost_semantic_calls_exercise.sh.
@@ -131,6 +132,54 @@ module BenchSelfhostSemanticCallsExercise
     text
   end
 
+  # The lib a call's receiver names: a path that names a lib is the lib itself (`LibC`
+  # in `LibC.exit(1)`), not its metaclass. Nil for any other receiver.
+  def self.lib_receiver(prog : SemanticProgram, ts : TypeSystem, obj : ASTNode?) : LibType?
+    return nil if obj.nil?
+    receiver = obj.as(ASTNode)
+    return nil if !receiver.is_a?(Path)
+    found = TypeLookup.new(ts.instances).lookup(prog, receiver)
+    return nil if found.is_a?(LookupError)
+    named = found.as(Type)
+    return nil if !named.is_a?(LibType)
+    named.as(LibType)
+  end
+
+  # One argument of a lib call as the call writes it: an `out _` has no type, and any
+  # other argument is typed as CallReceiver types literals. Nil when it is not typeable.
+  def self.lib_argument(prog : SemanticProgram, node : ASTNode, name : String?) : LibCallArgument?
+    if node.is_a?(Out)
+      out_exp = node.as(Out).exp
+      return LibCallArgument.new(node, nil, name) if out_exp.is_a?(Underscore) || (out_exp.is_a?(Var) && out_exp.as(Var).name == "_")
+      return nil
+    end
+    typed = CallReceiver.argument_type(prog, node)
+    return nil if typed.nil?
+    LibCallArgument.new(node, typed.as(Type), name)
+  end
+
+  # The `# error` line of a call on a lib: `ok` when LibCall answers it with a target,
+  # else the first line of its error.
+  def self.lib_error(prog : SemanticProgram, ts : TypeSystem, target_lib : LibType, call : Call) : String
+    list = [] of LibCallArgument
+    call.args.each do |arg|
+      typed = lib_argument(prog, arg, nil)
+      return "error: argument is not a literal" if typed.nil?
+      list << typed.as(LibCallArgument)
+    end
+    named_list = call.named_args
+    if !named_list.nil?
+      named_list.as(Array(NamedArgument)).each do |na|
+        typed = lib_argument(prog, na.value, na.name)
+        return "error: argument is not a literal" if typed.nil?
+        list << typed.as(LibCallArgument)
+      end
+    end
+    target = LibCall.recalculate(target_lib, prog, ts, call.name, list)
+    return "error: #{target.error.to_s}" if target.error
+    "ok"
+  end
+
   # `ok` when the call has a target, otherwise the first line of its error, as the
   # hosted call pass raises it. A message not ported is marked as such.
   def self.evaluate_error(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
@@ -139,6 +188,10 @@ module BenchSelfhostSemanticCallsExercise
       return "error: not a call"
     end
     call = node.as(Call)
+    lib_target = lib_receiver(prog, ts, call.obj)
+    if lib_target
+      return lib_error(prog, ts, lib_target.as(LibType), call)
+    end
     scope = CallReceiver.scope(prog, ts, call.obj)
     if scope.nil?
       return "error: receiver is not resolvable"

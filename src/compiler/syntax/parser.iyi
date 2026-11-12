@@ -3284,6 +3284,7 @@ pub class Parser < Lexer
   end
 
   def parse_pointerof : ASTNode
+    location = @token.location
     next_token_skip_space
     check(TokenKind::OP_LPAREN)
     next_token_skip_space_or_newline
@@ -3295,8 +3296,7 @@ pub class Parser < Lexer
     end_location = token_end_location
     check(TokenKind::OP_RPAREN)
     next_token_skip_space
-    node = PointerOf.new(exp)
-    node.end_location = end_location
+    node = PointerOf.new(exp).at(location).at_end(end_location)
     node
   end
 
