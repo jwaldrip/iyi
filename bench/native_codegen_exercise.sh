@@ -70,7 +70,7 @@ for ir in "$FIX"/*.ir; do
     fail "$base: the native backend refused the fixture"
     continue
   fi
-  if ! cc "$WORK/$base.o" -o "$WORK/$base.native" >"$WORK/$base.link.log" 2>&1; then
+  if ! cc "$WORK/$base.o" "$FIX/rt_stub.c" -o "$WORK/$base.native" >"$WORK/$base.link.log" 2>&1; then
     fail "$base: cc did not link the native object"
     continue
   fi
@@ -170,7 +170,7 @@ prove_mutation() {
 check_fixture() {
   local drv=$1 base=$2
   "$drv" obj "$FIX/$base.ir" "$WORK/m.$base.o" >/dev/null 2>&1 || return 1
-  cc "$WORK/m.$base.o" -o "$WORK/m.$base.bin" >/dev/null 2>&1 || return 1
+  cc "$WORK/m.$base.o" "$FIX/rt_stub.c" -o "$WORK/m.$base.bin" >/dev/null 2>&1 || return 1
   "$WORK/m.$base.bin" >"$WORK/m.$base.out" 2>/dev/null
   local status=$?
   cmp -s "$WORK/m.$base.out" "$WORK/$base.hosted.out" && [ "$status" = "$(tr -d '\n' <"$WORK/$base.hosted.status")" ]
@@ -180,6 +180,7 @@ check_recursion() { check_fixture "$1" control; }
 check_iyiagg() { check_fixture "$1" iyiagg; }
 check_byval() { check_fixture "$1" byval; }
 check_rmw() { check_fixture "$1" rmw; }
+check_mem() { check_fixture "$1" mem; }
 check_probe() {
   local n
   n=$("$1" mir "$FIX/frame64k.ir" big | grep -c 'ZeroSp')
@@ -223,6 +224,11 @@ prove_mutation "atomicrmw max: the keep branch selects the smaller value" \
   'cond = signed ? cond_gt : cond_hi' \
   'cond = signed ? cond_lt : cond_hi' \
   check_rmw
+prove_mutation "memmove: a large move calls the copy helper" \
+  src/compiler/native/aarch64/isel.iyi \
+  'overlap ? "__iyi_native_memmove" : "__iyi_native_memcpy"' \
+  '"__iyi_native_memcpy"' \
+  check_mem
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \

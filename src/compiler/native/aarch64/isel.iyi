@@ -1396,6 +1396,107 @@ class Isel
 
   # ---- intrinsics --------------------------------------------------------------------------------
 
+  # The byte length of a memory intrinsic when it is a constant, or -1 when it is not.
+  def const_len(v : Value) : Int64
+    return -1_i64 unless v.is_a?(Inst) && v.as(Inst).op == Op::ConstInt
+    v.as(Inst).aux_int
+  end
+
+  # Moves n bytes from the address in src to the address in dst. Every chunk is loaded before any is stored, so the
+  # ranges may overlap (memmove). Chunks are 8, 4, 2 or 1 bytes wide.
+  def move_bytes(src : Int32, dst : Int32, n : Int64) : Nil
+    vals = [] of Int32
+    sizes = [] of Int32
+    offs = [] of Int64
+    off = 0_i64
+    while off < n
+      left = n - off
+      size = left >= 8_i64 ? 8 : (left >= 4_i64 ? 4 : (left >= 2_i64 ? 2 : 1))
+      v = gpr
+      load = mop(MOp::Ldr)
+      load.size = size * 8
+      load.imm = off
+      load.defs << vop(v)
+      load.uses << vop(src)
+      emit(load)
+      vals << v
+      sizes << size
+      offs << off
+      off = off + size.to_i64
+    end
+    k = 0
+    while k < vals.size
+      store = mop(MOp::Str)
+      store.size = sizes[k] * 8
+      store.imm = offs[k]
+      store.uses << vop(vals[k])
+      store.uses << vop(dst)
+      emit(store)
+      k = k + 1
+    end
+  end
+
+  # Stores the low byte of `value` into each of the n bytes at dst.
+  def set_bytes(dst : Int32, value : Int32, n : Int64) : Nil
+    k = 0_i64
+    while k < n
+      m = mop(MOp::Str)
+      m.size = 8
+      m.imm = k
+      m.uses << vop(value)
+      m.uses << vop(dst)
+      emit(m)
+      k = k + 1_i64
+    end
+  end
+
+  # Calls a native runtime helper with three integer arguments. The helper is declared by the module and defined
+  # by the runtime, not here.
+  def call_helper(name : String, a : Int32, b : Int32, c : Int32) : Nil
+    @mf.frame.has_calls = true
+    regs = [a, b, c]
+    k = 0
+    while k < 3
+      m = mop(MOp::Mov)
+      m.defs << pop(k)
+      m.uses << vop(regs[k])
+      emit(m)
+      k = k + 1
+    end
+    call = mop(MOp::Bl)
+    call.sym = symbol_index(name)
+    call.reloc = RelocKind::A64Call26
+    call.call = true
+    call.clobbers = @desc.caller_saved
+    emit(call)
+  end
+
+  # memcpy and memmove: inline for a constant length up to 64 bytes, otherwise a call to the native helper.
+  def lower_transfer(i : Inst, overlap : Bool) : Nil
+    dst = first_leaf(i.args[0])
+    src = first_leaf(i.args[1])
+    n = const_len(i.args[2])
+    if n >= 0_i64 && n <= 64_i64
+      move_bytes(src, dst, n)
+      return
+    end
+    len = zext(first_leaf(i.args[2]), i.args[2].type)
+    call_helper(overlap ? "__iyi_native_memmove" : "__iyi_native_memcpy", dst, src, len)
+  end
+
+  # memset: inline for a constant length up to 64 bytes, otherwise a call to the native helper.
+  def lower_memset(i : Inst) : Nil
+    dst = first_leaf(i.args[0])
+    value = zext(first_leaf(i.args[1]), i.args[1].type)
+    n = const_len(i.args[2])
+    if n >= 0_i64 && n <= 64_i64
+      set_bytes(dst, value, n)
+      return
+    end
+    len = zext(first_leaf(i.args[2]), i.args[2].type)
+    call_helper("__iyi_native_memset", dst, value, len)
+  end
+
   def lower_intrinsic(i : Inst) : Nil
     id = i.aux.as(IntrinsicAux).id
     if id == IntrinsicId::Trap || id == IntrinsicId::DebugTrap
@@ -1406,6 +1507,10 @@ class Isel
       return
     elsif id == IntrinsicId::ExpectI1
       bind_result(i, copy_all(materialize(i.args[0])))
+    elsif id == IntrinsicId::Memcpy || id == IntrinsicId::Memmove
+      lower_transfer(i, id == IntrinsicId::Memmove)
+    elsif id == IntrinsicId::Memset
+      lower_memset(i)
     elsif !overflow_form(id).family
       fail("intrinsic #{intrinsic_stem(id)} is not lowered in this slice")
     else
