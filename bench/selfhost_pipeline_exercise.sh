@@ -30,6 +30,7 @@ trap 'rm -rf "$WORK"' EXIT
 FLOOR="$REPO/bench/selfhost_pipeline.floor"
 TOOL_SRC="$REPO/src/compiler/tools/compile_native.iyi"
 PROGRAM_SRC="$REPO/src/compiler/lower/program.iyi"
+LOWER_SRC="$REPO/src/compiler/lower/lower.iyi"
 COMPILER_SRC="$REPO/src/compiler/compiler.iyi"
 ROOTS="samples/iyi/hello.iyi src/compiler/tools/parse.iyi src/compiler/tools/compile_native.iyi"
 
@@ -276,6 +277,22 @@ primitive_table_check() {
   awk '/^table: hello defs-lowered-clean=/ { ok = 1 } END { exit !ok }' "$WORK/prim_hello.probe" || return 1
   awk '/^table: hello lowering .*visit\(Primitive/ { bad = 1 } END { exit bad }' "$WORK/prim_hello.probe"
 }
+
+# The entry: the top-level code is `__iyi_main` (the name the prelude's LibIyiMain declares), and the C `main` is
+# emitted once, by the pipeline only when the program has no `fun main` of its own. Checked on IR text from --emit ir:
+# a prelude-free fixture with no main and one with its own main. The check returns 0 only on the unmutated behaviour.
+entry_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/entry_tool"; then return 1; fi
+  "$WORK/entry_tool" "$REPO/bench/fixtures/lower_exit.iyi" -o "$WORK/entry_exit.ll" --pipeline typed --emit ir > /dev/null 2>&1 || return 1
+  "$WORK/entry_tool" "$REPO/bench/fixtures/lower_fun_main.iyi" -o "$WORK/entry_fm.ll" --pipeline typed --emit ir > /dev/null 2>&1 || return 1
+  local f
+  for f in "$WORK/entry_exit.ll" "$WORK/entry_fm.ll"; do
+    awk '/^define .*@__crystal_main\(/ { bad = 1 } END { exit bad }' "$f" || return 1
+    awk '/^define .*@__iyi_main\(/ { m = 1 } END { exit !m }' "$f" || return 1
+    awk '/^define .*@main\(/ { n++ } END { exit n != 1 }' "$f" || return 1
+  done
+  return 0
+}
 echo "  the mutation check passes on the unmutated code:"
 if pipeline_check; then
   echo "    unmutated: pass"
@@ -298,6 +315,19 @@ else
 fi
 prove_mutation "the lowering table probes a Primitive-annotated def" "$PROGRAM_SRC" \
   "next unless primitive_name(d.body).nil?" "next if false" -- primitive_table_check || status=1
+prove_mutation "the top-level code is named __crystal_main, not __iyi_main" "$LOWER_SRC" \
+  'begin_main_function("__iyi_main"' 'begin_main_function("__crystal_main"' -- entry_check || status=1
+prove_mutation "a program that defines its own main gets a second main" "$LOWER_SRC" \
+  "unless root_defines_main(root)" "unless false" -- entry_check || status=1
+prove_mutation "a program with no main of its own gets no main" "$LOWER_SRC" \
+  "unless root_defines_main(root)" "if false" -- entry_check || status=1
+echo "  the entry check passes on the unmutated code:"
+if entry_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL (the entry check cannot prove anything)"
+  status=1
+fi
 
 echo
 if [ "$status" -eq 0 ]; then

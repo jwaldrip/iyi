@@ -186,3 +186,4 @@ src/compiler/native/const_expr.iyi parse
 src/compiler/semantic/inline_macros.iyi parse
 src/compiler/semantic/lib_call.iyi parse
 src/compiler/lower/class_var.iyi parse
+src/compiler/lower/proc.iyi parse

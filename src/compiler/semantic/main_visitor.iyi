@@ -19,9 +19,9 @@ import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericCla
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/new::{define_new_methods}
-import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of}
 import compiler/types/types::{GenericInstanceType, NamedArgumentType}
+import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
 # One construct the body typing could not type or refused, as the pipeline's
 # refusal table reads it. `file` is nil and `line` and `column` are 0 when the

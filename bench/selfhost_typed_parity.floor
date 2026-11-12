@@ -82,6 +82,7 @@ src/compiler/lower/lower.iyi 0
 src/compiler/lower/pending.iyi 0
 src/compiler/lower/phi.iyi 0
 src/compiler/lower/primitives.iyi 0
+src/compiler/lower/proc.iyi 0
 src/compiler/lower/program.iyi 0
 src/compiler/lower/symbols.iyi 0
 src/compiler/lower/type_id.iyi 0
