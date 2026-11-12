@@ -3,7 +3,7 @@
 # Every member the Crystal code generator reads from the analysed program, one
 # abstract def per member, in the order of src/compiler/lower/CONTRACT.md. The
 # gate (bench/selfhost_typed_parity_exercise.sh) fails when this trait and that
-# table name different members. A member's name is its Crystal original, except
+# table name different members. A member's name is its original name, except
 # where that name is not a legal iyi name: an iyi keyword gets a `_member`
 # suffix, a `!` becomes `_bang`, and annotations and constants have no method
 # name of their own, so their rows give the name used here.
