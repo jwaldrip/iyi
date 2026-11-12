@@ -2,12 +2,15 @@
 # Burn-down gate for declaration parity between the iyi semantic port and the
 # hosted front end's top-level pass (specification S1b).
 #
-# Every file is analysed twice, alone and with no prelude, by the hosted
-# front end's top-level pass (bench/selfhost_semantic_declarations_oracle.cr)
-# and by the iyi port (bench/selfhost_semantic_declarations_exercise.iyi). Both
-# print one text dump of the declarations the file makes: defs, types, nested
-# types, their visibility, superclasses, type variables, enum members, aliases
-# and constants. The dump is split into records, one per declaration header
+# Every file is analysed bare (no prelude), with the closure of what it imports
+# and requires, by the hosted front end's top-level pass
+# (bench/selfhost_semantic_declarations_oracle.cr) and by the iyi port
+# (bench/selfhost_semantic_declarations_exercise.iyi). Both search IYI_PATH, set
+# below to this checkout's src/. Both print one text dump of the declarations the
+# file itself makes: defs, types, nested types, their visibility, superclasses,
+# type variables, enum members, aliases and constants. A declaration belongs to
+# the file when its location is the file, so an imported file's declarations are
+# not repeated. The dump is split into records, one per declaration header
 # (a "Type:" or "Def:" line) with its own property lines. A record agrees when
 # both sides print it identically. The gate counts agreeing records per file.
 #
@@ -45,6 +48,7 @@ export LC_ALL
 export IYI_CACHE_DIR="$WORK/cache"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
+export IYI_PATH="$REPO/src"
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
 ORACLE="$WORK/oracle"
@@ -303,9 +307,9 @@ prove_mutation "method visibility defaults to private instead of public" "$MUT_S
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "module header segments keep their written case" "$MUT_SEM" \
-  "name = camelcase_segment(segment)" \
-  "name = segment" \
+prove_mutation "module path segments keep their written case" "$MUT_SEM" \
+  "base.add_type(pname, mod)" \
+  "base.add_type(pname.downcase, mod)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

@@ -1,16 +1,44 @@
 # Declaration oracle for bench/selfhost_semantic_declarations_exercise.sh.
 #
 #   selfhost_semantic_declarations_oracle <file.iyi>
+#   selfhost_semantic_declarations_oracle --initial
 #
-# Analyses the file alone, with no prelude, through the hosted top-level pass
-# (Iyi::TopLevelVisitor over a fresh Iyi::Program), and prints one text dump of
-# every declaration the file makes: its top-level defs, then each user type with
-# its nested types, defs and constants. The port's dump_program_declarations
-# prints the same form, and the gate requires the two to agree record by record.
+# Loads the file through the compile's own front end, bare (no prelude), together
+# with the closure of what it imports and requires: each imported file is read,
+# parsed and declared by the same top-level pass a build runs, with the search
+# path IYI_PATH. Then it prints one text dump of the declarations the file itself
+# makes: its top-level defs, then each user type with its nested types, defs and
+# constants. A type or a def is printed when its location is the file, so what an
+# imported file declares is not repeated here. The port's dump prints the same
+# form, and the gate requires the two to agree record by record.
 #
-# On failure the first line of the message goes to stderr and the exit status
-# is 2; the gate reports such a file as unmeasured, with that reason.
+# On failure the first line of the message goes to stderr and the exit status is
+# 2; the gate reports such a file as unmeasured, with that reason.
 require "compiler/requires"
+
+class Iyi::Compiler
+  # iyi: the entry file as a build reads it, bare. `parse` is private to the
+  # compiler, so this reaches it from inside the class, as the typed oracle does.
+  def declarations_program(source : Iyi::Compiler::Source) : {Program, ASTNode}
+    program = new_program([source])
+    {program, parse(program, source)}
+  end
+end
+
+# Whether a declaration with these locations belongs to the entry file. With no
+# entry (the built-in types) everything belongs.
+def declared_in?(locations : Array(Iyi::Location)?, entry : String?) : Bool
+  return true unless entry
+  return false unless locations
+  locations.any? { |loc| File.expand_path(loc.filename.to_s) == entry }
+end
+
+def def_declared?(d : Iyi::Def, entry : String?) : Bool
+  return true unless entry
+  loc = d.location
+  return false unless loc
+  File.expand_path(loc.filename.to_s) == entry
+end
 
 def dump_def(d : Iyi::Def, io : IO, indent : String)
   io << indent << "Def: " << (d.receiver ? "self." : "") << d.name << "\n"
@@ -36,8 +64,23 @@ def dump_def(d : Iyi::Def, io : IO, indent : String)
   io << indent << "  return_type: " << ret_str << "\n"
 end
 
-def dump_type(t : Iyi::Type, io : IO, indent : String)
+def dump_type(t : Iyi::Type, io : IO, indent : String, entry : String?)
   full_name = t.is_a?(Iyi::NamedType) ? t.full_name : t.to_s
+  if declared_in?(t.locations, entry)
+    dump_type_header(t, full_name, io, indent, entry)
+  end
+
+  if t.is_a?(Iyi::NamedType) && !t.is_a?(Iyi::EnumType)
+    t.types.keys.sort.each do |subname|
+      sub = t.types[subname]
+      dump_type(sub, io, "#{indent}  ", entry)
+    end
+  end
+end
+
+# One type's own record: its header and properties, its defs. Its nested types
+# are dumped by `dump_type`, whether or not this type is the entry's.
+def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String, entry : String?)
   kind = case t
          when Iyi::EnumType   then "enum"
          when Iyi::TraitType  then "trait"
@@ -104,29 +147,23 @@ def dump_type(t : Iyi::Type, io : IO, indent : String)
         end
       end
     end
+    all_defs = all_defs.select { |d| def_declared?(d, entry) }
     all_defs.sort_by! { |d| "#{d.receiver ? "self." : ""}#{d.name}" }
     all_defs.each do |d|
       dump_def(d, io, "#{indent}  ")
     end
   end
-
-  if t.is_a?(Iyi::NamedType) && !t.is_a?(Iyi::EnumType)
-    t.types.keys.sort.each do |subname|
-      sub = t.types[subname]
-      dump_type(sub, io, "#{indent}  ")
-    end
-  end
 end
 
-def dump_declarations(node : Iyi::ASTNode, io : IO)
-  program = Iyi::Program.new
-  initial_types = program.types.keys.to_set
+def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entry : String?)
+  initial_types = Iyi::Program.new.types.keys.to_set
   visitor = Iyi::TopLevelVisitor.new(program)
   node.accept(visitor)
 
   if pdefs = program.defs
     top_defs = [] of Iyi::Def
     pdefs.each_value { |list| list.each { |item| top_defs << item.def } }
+    top_defs = top_defs.select { |d| def_declared?(d, entry) }
     top_defs.sort_by!(&.name)
     top_defs.each do |d|
       dump_def(d, io, "")
@@ -135,7 +172,7 @@ def dump_declarations(node : Iyi::ASTNode, io : IO)
 
   user_types = program.types.reject { |k, _| initial_types.includes?(k) }
   user_types.keys.sort.each do |name|
-    dump_type(user_types[name], io, "")
+    dump_type(user_types[name], io, "", entry)
   end
 end
 
@@ -145,20 +182,19 @@ if ARGV[0]? == "--initial"
   buffer = IO::Memory.new
   initial = Iyi::Program.new
   initial.types.keys.sort.each do |name|
-    dump_type(initial.types[name], buffer, "")
+    dump_type(initial.types[name], buffer, "", nil)
   end
   print buffer.to_s
   exit 0
 end
 
 path = ARGV[0]? || abort("usage: selfhost_semantic_declarations_oracle <file.iyi>")
+entry = File.expand_path(path)
 buffer = IO::Memory.new
 begin
-  src = File.read(path)
-  parser = Iyi::Parser.new(src)
-  parser.filename = path
-  node = parser.parse
-  dump_declarations(node, buffer)
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(entry, File.read(entry)))
+  dump_declarations(node, buffer, program, entry)
 rescue ex : Exception
   first_line = ex.message.to_s.lines.first? || ""
   STDERR.puts "ERROR: #{first_line}"
