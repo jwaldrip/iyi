@@ -106,6 +106,13 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
     io << indent << "  superclass: " << sc.to_s << "\n"
   end
 
+  if t.is_a?(Iyi::ClassType)
+    t.instance_vars.keys.sort.each do |ivar_name|
+      io << indent << "  Ivar: " << full_name << "#" << ivar_name << "\n"
+      io << indent << "    type: " << t.instance_vars[ivar_name].type.to_s << "\n"
+    end
+  end
+
   if t.is_a?(Iyi::ModuleType) && !t.parents.empty?
     io << indent << "  parents: [" << t.parents.map(&.to_s).sort.join(", ") << "]\n"
   end
@@ -161,6 +168,8 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
   initial_types = Iyi::Program.new.types.keys.to_set
   visitor = Iyi::TopLevelVisitor.new(program)
   node.accept(visitor)
+  # The hosted type declaration pass: explicit and guessed instance variables.
+  Iyi::TypeDeclarationProcessor.new(program).process(node)
 
   if pdefs = program.defs
     top_defs = [] of Iyi::Def

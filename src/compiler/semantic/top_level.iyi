@@ -1031,8 +1031,13 @@ pub class SemanticProgram < NonGenericModuleType
   def global_funs : Array(LibFun)
     @global_funs
   end
+  # Each class body the top-level pass visited, in order, with its type.
+  def type_bodies : Array(TypeBody)
+    @type_bodies
+  end
 
   def initialize
+    @type_bodies = [] of TypeBody
     @initial_type_names = Set(String).new
     @merge_hook = nil
     @impls = [] of ImplRecord
@@ -1407,6 +1412,16 @@ pub class SemanticProgram < NonGenericModuleType
   end
 end
 
+# A class body the top-level pass visited: the type it reopens or creates, and
+# the body node. The instance-variable pass walks these after the top-level pass.
+pub class TypeBody
+  getter type : ModuleType
+  getter body : ASTNode
+
+  def initialize(@type : ModuleType, @body : ASTNode)
+  end
+end
+
 pub class PendingIvar
   property owner : ModuleType
   property name : String
@@ -1708,6 +1723,7 @@ pub class TopLevelVisitor < Visitor
     end
 
     old_type = @current_type
+    @program.type_bodies << TypeBody.new(type, node.body)
     @current_type = type
     node.body.accept(self)
     @current_type = old_type
@@ -2117,7 +2133,41 @@ pub class TopLevelVisitor < Visitor
       type.add_location(loc)
     end
     @current_type.add_type(node.name, type)
+    declare_c_struct_fields(type, node.body)
     false
+  end
+  # Each field of a C struct or union is an instance variable of the declared type,
+  # with a getter `name` and a setter `name=`, as the hosted pass declares them. The
+  # field's type is resolved in `finish`, so a field may name a struct declared
+  # later in the lib. Not ported yet: the void check, `check_allowed_in_lib`, and a
+  # field that includes another C struct (refused).
+  def declare_c_struct_fields(type : NonGenericClassType, body : ASTNode) : Nil
+    nodes = body.is_a?(Expressions) ? body.as(Expressions).expressions : [body]
+    nodes.each do |field|
+      if field.is_a?(Include)
+        refuse_port("include in a C struct or union is not ported yet")
+      end
+      next unless field.is_a?(TypeDeclaration)
+      decl = field.as(TypeDeclaration)
+      next unless decl.var.is_a?(Var)
+      field_name = decl.var.as(Var).name
+      var_name = "@" + field_name
+      if type.lookup_instance_var?(var_name)
+        raise("#{type.type_desc} #{type.full_name} already defines a field named '#{field_name}'")
+      end
+      @pending_ivars << PendingIvar.new(type, var_name, decl.declared_type)
+
+      setter = Def.new("#{field_name}=", [Arg.new("value")], Nop.new)
+      setter.visibility = Visibility::Public
+      setter.location = decl.location
+      type.add_def(setter)
+
+      getter = Def.new(field_name, [] of Arg, InstanceVar.new(var_name))
+      getter.visibility = Visibility::Public
+      getter.location = decl.location
+      type.add_def(getter)
+    end
+    nil
   end
 
   def visit(node : Alias) : Bool
@@ -2538,6 +2588,11 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
     cls = t.as(ClassType)
     if sc_disp = cls.superclass_display
       io << indent << "  superclass: " << sc_disp << "\n"
+    end
+    cls.instance_vars.keys.sorted.each do |ivar_name|
+      ivar = cls.instance_vars[ivar_name]
+      io << indent << "  Ivar: " << t.full_name << "#" << ivar_name << "\n"
+      io << indent << "    type: " << ivar.type.to_s << "\n"
     end
   end
 
