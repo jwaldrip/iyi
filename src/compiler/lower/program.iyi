@@ -35,6 +35,7 @@ import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program, lower_def_probe}
+import compiler/lower/primitives::{primitive_name}
 import compiler/lower/fun::{mangled_name}
 import compiler/native/driver::{compile_module}
 import compiler/native/obj/object::{ObjectFile}
@@ -95,6 +96,10 @@ end
 # The declarations phase: every unit declared in initialiser order (dependencies first, the entry last), the
 # guessed instance variables, then the root and the body visitor. The stand-ins apply when no prelude is loaded.
 pub def declare_program(classes : Array(ClassDef), libs : Array(LibDef), defs : Array(Def), funs : Array(FunDef), top_level : Array(ASTNode), links : Array(String), stand_in : Bool, prog : SemanticProgram, units : Array(ModuleInfo)) : TypedProgram
+  # Every unit's tree is registered before any unit is declared: a require that reaches a unit early reads this tree.
+  units.each do |mod_info|
+    prog.unit_trees[normalize_path(mod_info.filename)] = mod_info.ast
+  end
   units.each do |mod_info|
     declare_unit(prog, mod_info.filename, mod_info.ast)
   end
@@ -102,7 +107,6 @@ pub def declare_program(classes : Array(ClassDef), libs : Array(LibDef), defs : 
   root = assemble_root(classes, libs, defs, funs, top_level)
   mv = MainVisitor.new(prog)
   if stand_in
-    program_stand_in_libs(root, prog, mv)
     program_stand_in_primitives(root, prog, mv)
   end
   TypedProgram.new(root, prog, mv, links)
@@ -169,36 +173,6 @@ pub def link_names(nodes : Array(ASTNode)) : Array(String)
     end
   end
   names
-end
-
-# Stand-in for the semantic typing of `lib` definitions (NEEDS.md, lowering calls row 31): each LibDef is typed
-# as nil, and each of its funs is registered in the lib as a def that has no body and returns its declared type.
-pub def program_stand_in_libs(root : ASTNode, prog : SemanticProgram, mv : MainVisitor) : Nil
-  top = [] of ASTNode
-  if root.is_a?(Expressions)
-    top = root.as(Expressions).expressions
-  else
-    top << root
-  end
-  top.each do |node|
-    next unless node.is_a?(LibDef)
-    lib_node = node.as(LibDef)
-    mv.set_type(lib_node, prog.nil_type)
-    lib_type = prog.lookup_type_node(lib_node.name.as(ASTNode), prog)
-    the_lib = lib_type.as(LibType)
-    funs = [] of ASTNode
-    body = lib_node.body
-    if body.is_a?(Expressions)
-      funs = body.as(Expressions).expressions
-    else
-      funs << body
-    end
-    funs.each do |f|
-      next unless f.is_a?(FunDef)
-      decl = f.as(FunDef)
-      the_lib.metaclass.add_def(Def.new(decl.name, decl.args, nil, nil, nil, decl.return_type))
-    end
-  end
 end
 
 # Stand-in for the builtin primitive operators of the integers, the floats, Bool and Char: each is declared on its
@@ -387,6 +361,9 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   examples = [] of String
   typed.visitor.typed_instances.each do |inst|
     d = inst.definition
+    # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
+    # neither probes it nor counts it, so it is no refusal row and no clean def.
+    next unless primitive_name(d.body).nil?
     outcome = group do |g|
       task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m) }
       task.value
@@ -439,6 +416,9 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   checked = Hash(UInt64, Bool).new
   clean = 0
   typed.visitor.typed_instances.each do |inst|
+    # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
+    # neither probes it nor counts it, so it is no refusal row and no clean def.
+    next unless primitive_name(inst.definition.body).nil?
     id = inst.definition.node_id
     unless checked.has_key?(id)
       checked[id] = true
