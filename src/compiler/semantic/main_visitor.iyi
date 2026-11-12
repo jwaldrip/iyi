@@ -2,7 +2,7 @@ module compiler/semantic/main_visitor
 
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Primitive, NodeMap, Alias, AlignOf, And, Annotation, AnnotationDef, Arg, ArrayLiteral, Asm, AsmOperand, Assign, AssocTypeDecl, Block, BoolLiteral, Break, CStructOrUnionDef, Call, Case, Cast, CharLiteral, ClassDef, ClassVar, Def, Defer, DoubleSplat, EnumDef, ExceptionHandler, Expressions, Extend, ExternalVar, FunDef, Generic, Global, HashLiteral, If, ImplDef, ImplicitObj, ImportDecl, Include, InstanceAlignOf, InstanceSizeOf, InstanceVar, IsA, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant, Metaclass, ModuleDef, ModuleHeader, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, NilableCast, Nop, Not, NumberLiteral, OffsetOf, OpAssign, Or, Out, Path, PointerOf, ProcLiteral, ProcNotation, ProcPointer, Propagate, RangeLiteral, ReadInstanceVar, Recover, RegexLiteral, Require, Rescue, RespondsTo, Return, Select, Self, SizeOf, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TraitDef, TupleLiteral, TypeDeclaration, TypeDef, TypeOf, Underscore, UninitializedVar, Union, Unless, Until, UsingDecl, Var, VisibilityModifier, When, While, Yield}
-import compiler/syntax/token::{NumberKind}
+import compiler/syntax/token::{NumberKind, TokenKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
@@ -663,6 +663,17 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : StringLiteral) : Bool
     set_type(node, @program.string_type)
+    false
+  end
+
+  # `__FILE__` and `__DIR__` are Strings, `__LINE__` and `__END_LINE__` Int32 (hosted: the call site
+  # rewrites them to literals; a default argument types as the literal it will be).
+  def visit(node : MagicConstant) : Bool
+    if node.name == TokenKind::MAGIC_LINE || node.name == TokenKind::MAGIC_END_LINE
+      set_type(node, @program.int32_type)
+    else
+      set_type(node, @program.string_type)
+    end
     false
   end
 
