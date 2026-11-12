@@ -641,14 +641,40 @@ pub class LibFun
   getter args : Array(String)
   getter varargs : Bool
   getter return_type : ASTNode?
+  # iyi: the fun's node, its argument types and return type as this pass resolved them (hosted
+  # External, ast.cr 756). `SemanticProgram#lib_fun_of` finds the record from its node.
+  property node : FunDef? = nil
+  getter arg_types : Array(Type)
+  property resolved_return : Type? = nil
+  # iyi: a call to this fun was typed (hosted External#used). False when the pass creates it.
+  property used : Bool = false
+
+  def varargs? : Bool
+    @varargs
+  end
 
   def initialize(@name : String, @real_name : String, @args : Array(String), @varargs : Bool, @return_type : ASTNode?)
+    @arg_types = [] of Type
   end
 end
 
 # A lib type, like `lib LibC`.
 pub class LibType < NonGenericModuleType
   getter funs : Array(LibFun)
+  # iyi: whether a call to one of this lib's funs was typed (hosted lib `used`). False until the
+  # call pass sets it.
+  property used : Bool = false
+
+  def lookup_fun(name : String) : LibFun?
+    i = 0
+    while i < @funs.size
+      if @funs[i].name == name
+        return @funs[i]
+      end
+      i = i + 1
+    end
+    nil
+  end
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
     super(program, namespace, name)
@@ -912,6 +938,8 @@ pub class SemanticProgram < NonGenericModuleType
   @initial_type_names : Set(String)
   @impls : Array(ImplRecord)
   @global_funs : Array(LibFun)
+  # The records of the funs the pass declared, by the node's id (`lib_fun_of`).
+  @lib_funs_by_node : Hash(UInt64, LibFun)
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
   # hosted pass keeps a scope per file; the port keeps the importing file's table here.
   property current_imports : Hash(String, Type)
@@ -920,9 +948,16 @@ pub class SemanticProgram < NonGenericModuleType
   property current_import_defs : Hash(String, Array(Def))
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
+  # iyi: the directory of the entry file: the first root an import is resolved from, as
+  # Program#iyi_import_root (the entry's directory). A driver sets it; nil leaves the
+  # project root and IYI_PATH.
+  property entry_dir : String?
   # Whether a refusal the pass can carry on past (an impl of an unresolved target) is
   # skipped instead of raised. The typed dump of a whole program sets it.
   property total_mode : Bool
+  # The refusals the pass carried past in total mode, by message: a file that completes
+  # with one of these did not declare what it refused, so the gate counts them apart.
+  getter carried_refusals : Array(String)
   property search_path : Array(String)
   # The files read so far (absolute paths), and the module each one declared.
   getter loaded_files : Set(String)
@@ -1073,6 +1108,16 @@ pub class SemanticProgram < NonGenericModuleType
     @global_funs
   end
 
+  # The record the pass made for a fun node (lib funs and top-level funs alike), or nil.
+  def lib_fun_of(node : FunDef) : LibFun?
+    @lib_funs_by_node[node.node_id]?
+  end
+
+  # Registers the record made for *node*. Called by the top-level pass when it declares a fun.
+  def record_lib_fun(node : FunDef, record : LibFun) : Nil
+    @lib_funs_by_node[node.node_id] = record
+  end
+
   # Each class body the top-level pass visited, in order, with its type.
   def type_bodies : Array(TypeBody)
     @type_bodies
@@ -1084,10 +1129,13 @@ pub class SemanticProgram < NonGenericModuleType
     @merge_hook = nil
     @impls = [] of ImplRecord
     @global_funs = [] of LibFun
+    @lib_funs_by_node = Hash(UInt64, LibFun).new
     @current_imports = Hash(String, Type).new
     @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
+    @entry_dir = nil
     @total_mode = false
+    @carried_refusals = [] of String
     @search_path = [] of String
     @loaded_files = Set(String).new
     @loaded_units = Hash(String, ModuleType).new
@@ -1625,8 +1673,15 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
+  # iyi: `import a/b` resolved as the hosted build resolves it (Program#iyi_import_candidates):
+  # the entry file's directory first, then the root its header names (only when the entry's
+  # path ends with that header), then IYI_PATH. A `.cr` file found at a root is Crystal's
+  # library, which this pass does not read, so it is refused by name.
   def import_file(written : String) : String?
     roots = [] of String
+    if dir = @program.entry_dir
+      roots << dir
+    end
     if root = @program.project_root
       roots << root
     end
@@ -1638,6 +1693,10 @@ pub class TopLevelVisitor < Visitor
       candidate = "#{roots[i]}/#{written}.iyi"
       if File.exists?(candidate)
         return normalize_path(candidate)
+      end
+      crate = "#{roots[i]}/#{written}.cr"
+      if File.exists?(crate)
+        refuse_port("`#{written}` is Crystal's library (#{crate}), which this pass does not read")
       end
       i = i + 1
     end
@@ -1981,18 +2040,24 @@ pub class TopLevelVisitor < Visitor
   def visit(node : ImplDef) : Bool
     trait_type = @program.lookup_type_node(node.trait, @current_type)
     unless trait_type.trait?
-      refuse_port("can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented") unless @program.total_mode
+      message = "can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented"
+      raise(message) unless @program.total_mode
+      @program.carried_refusals << message
       return false
     end
 
     target_type = @program.lookup_type_node(node.target, @current_type)
     if target_type.trait?
-      refuse_port("can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one. To give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)") unless @program.total_mode
+      message = "can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one \u{2014} to give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)"
+      raise(message) unless @program.total_mode
+      @program.carried_refusals << message
       return false
     end
 
     unless target_type.is_a?(ModuleType)
-      refuse_port("can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}") unless @program.total_mode
+      message = "can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}"
+      raise(message) unless @program.total_mode
+      @program.carried_refusals << message
       return false
     end
 
@@ -2230,6 +2295,20 @@ pub class TopLevelVisitor < Visitor
       real = node.real_name || node.name
       record = LibFun.new(node.name, real, arg_names, node.varargs, node.return_type)
       record.location = node.location
+      record.node = node
+      # iyi: the argument and return types resolved here, as the hosted pass resolves them when it
+      # visits a fun (top_level_visitor.cr 2628-2680): the call typing and the lowering read them.
+      node.args.each do |arg|
+        if restriction = arg.restriction
+          record.arg_types << @program.lookup_type_node(restriction, @current_type)
+        else
+          raise("a lib fun argument needs a type: #{arg.name} of #{node.name}")
+        end
+      end
+      if rt = node.return_type
+        record.resolved_return = @program.lookup_type_node(rt, @current_type)
+      end
+      @program.record_lib_fun(node, record)
       if @current_type.is_a?(LibType)
         @current_type.as(LibType).funs << record
       else
@@ -2850,7 +2929,11 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
   user_type_names = program.types.keys.sorted
 
   user_type_names.each do |name|
-    dump_tree_declared(program.types[name], sb, "", entry)
+    # With no entry, a built-in name is not the program's own declaration (the typed dump
+    # prints what a program declares); with an entry, the location filter decides.
+    unless entry.nil? && program.initial_type_names.includes?(name)
+      dump_tree_declared(program.types[name], sb, "", entry)
+    end
   end
 
   sb.to_s
