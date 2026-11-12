@@ -137,6 +137,12 @@ prove_mutation "a lib call omits the unreachable after NoReturn" "$REPO/src/comp
   "    low.builder.unreachable" "    low.last = llvm_nil(low)" -- lower_calls_check || status=1
 prove_mutation "the return after a terminated block is not skipped" "$REPO/src/compiler/lower/lower.iyi" \
   "  return if block_ended?(low)" "  low.last = low.last" -- lower_calls_check || status=1
+prove_mutation "a def's unwind table is async on aarch64" "$REPO/src/compiler/lower/fun.iyi" \
+  'return "sync"' 'return "async"' -- lower_calls_check || status=1
+prove_mutation "a def loses its darwin frame pointers" "$REPO/src/compiler/lower/fun.iyi" \
+  "  if darwin_triple?(triple)" "  if false" -- lower_calls_check || status=1
+prove_mutation "the printer writes uwtable as an attribute, not uwtable(sync)" "$REPO/src/compiler/ir/printer.iyi" \
+  'return "uwtable(" + s + ")" if a.name == "uwtable"' 'return "uwtable=" + ir_quote(s) if a.name == "uwtable"' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

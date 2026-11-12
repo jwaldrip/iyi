@@ -126,9 +126,77 @@ pub def normalised_lines(text : String, hosted : String) : Array(String)
     end
     if idx = line.index(" #")
       out << line[0, idx] + " {"
+    elsif line.starts_with?("define ") && (bracket = line.index(") ["))
+      out << line[0, bracket.as(Int32) + 1] + " {"
     else
       out << line
     end
+  end
+  out
+end
+
+# The tokens of an attribute list, sorted and joined by spaces, so the two sides compare as sets.
+pub def sorted_tokens(text : String, separator : String) : String
+  tokens = [] of String
+  text.split(separator).each do |t|
+    tokens << t.strip unless t.strip.empty?
+  end
+  tokens.sorted.join(" ")
+end
+
+# The oracle's function attributes by function name: each `define`'s attribute group, read from
+# the oracle's text (`attributes #N = { ... }`), because the port's parser keeps no groups.
+pub def oracle_attr_map(raw : String) : Hash(String, String)
+  groups = Hash(String, String).new
+  raw.split("\n").each do |line|
+    next unless line.starts_with?("attributes #")
+    open = line.index("{")
+    close = line.index("}")
+    next if open.nil? || close.nil?
+    groups[line.split(" ")[1]] = sorted_tokens(line[open.as(Int32) + 1, close.as(Int32) - open.as(Int32) - 1], " ")
+  end
+  out = Hash(String, String).new
+  raw.split("\n").each do |line|
+    next unless line.starts_with?("define ")
+    tokens = line.split(" ")
+    ref = ""
+    if tokens.size >= 2 && tokens[tokens.size - 2].starts_with?("#")
+      ref = tokens[tokens.size - 2]
+    end
+    out[function_name(line)] = groups[ref]? || ""
+  end
+  out
+end
+
+# The printer's attribute list of each define line, from the bracket after its parameters.
+pub def printed_attr_map(text : String) : Hash(String, String)
+  out = Hash(String, String).new
+  text.split("\n").each do |line|
+    next unless line.starts_with?("define ")
+    bracket = line.index(") [")
+    close = line.index("] {")
+    next if bracket.nil? || close.nil?
+    open = bracket.as(Int32) + 3
+    out[function_name(line)] = sorted_tokens(line[open, close.as(Int32) - open], ", ")
+  end
+  out
+end
+
+# Appends each lowered def's attribute tokens to its define line, so a difference in attributes
+# is a difference in the line. Only the functions the calls and functions files lower (names that
+# start with `*`) are compared this way; `main` and `__crystal_main` wait on the core hook
+# (NEEDS.md, lowering calls row 19).
+pub def attach_attrs(lines : Array(String), attrs : Hash(String, String)) : Array(String)
+  out = [] of String
+  lines.each do |line|
+    if line.starts_with?("define ")
+      name = function_name(line)
+      if name.starts_with?("*")
+        out << line + "  ; attrs: " + (attrs[name]? || "")
+        next
+      end
+    end
+    out << line
   end
   out
 end
@@ -223,14 +291,15 @@ pub def run_lower(fixture : String, oracle_path : String, hosted : String, stand
   oracle_text = File.read(oracle_path)
   parsed = parse(oracle_text)
   raise parsed.as(IrParseError).to_s if parsed.is_a?(IrParseError)
-  oracle = normalised_lines(print(parsed.as(Module)), hosted)
+  oracle = attach_attrs(normalised_lines(print(parsed.as(Module)), hosted), oracle_attr_map(oracle_text))
   triple = triple_of(oracle_text)
 
   analysis = analyse(File.read(fixture), fixture, stand_in_libs)
   m = ir_module(triple)
   typer = LowerTyper.new(m.types, m.layout, true)
   codegen_program(analysis.root, analysis.visitor, typer, m)
-  port = normalised_lines(print(m), hosted)
+  port_text = print(m)
+  port = attach_attrs(normalised_lines(port_text, hosted), printed_attr_map(port_text))
   identical = compare(oracle, port)
   total = split_module(oracle)[2].size
   puts "SUMMARY identical=#{identical} total=#{total}"
