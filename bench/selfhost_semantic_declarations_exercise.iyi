@@ -1,6 +1,7 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, dump_program_declarations, dump_type, dir_of, normalize_path}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
@@ -53,6 +54,7 @@ module BenchSelfhostSemanticDeclarationsExercise
     visitor = TopLevelVisitor.new(prog, entry)
     node.accept(visitor)
     visitor.finish
+    declare_guessed_instance_vars(prog)
     {prog, entry}
   end
 

@@ -66,7 +66,7 @@ status=0
 records() {
   awk '
     function flush() { if (cur != "") print cur }
-    /^ *(Type|Def): / { flush(); cur = $0; next }
+    /^ *(Type|Def|Ivar): / { flush(); cur = $0; next }
     { if (cur != "") cur = cur "\036" $0 }
     END { flush() }
   ' "$1"
