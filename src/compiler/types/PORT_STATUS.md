@@ -7,6 +7,8 @@ Generated mechanically by name and owner class (indentation-tracked, so a method
 The `codegen reads` column comes from `src/compiler/lower/CONTRACT.md`: the number of readings by the Crystal code generator and the first reading. Those rows are the ones increment (2) must provide.
 
 Totals: 568 rows. Increment (1) baseline: 141 ported, 107 other owner, 298 missing, 22 out of scope. Increment (2) provides the base `Type` members named in the `TypeQueries` rows below (`ported as TypeQueries.<name>`); the subclass overrides of the same names are not yet covered. 
+
+Increment (9), regenerated from the status column: 186 ported, 98 other owner, 262 missing, 22 out of scope, 0 other. The rows changed in increment 9 are the members the type-model gate compares (semty_*.iyi, 260 operations); their status names the defining file.
 Increment (3), `merge.iyi`, and increment (4), `filters.iyi` and `intersect.iyi`, are gated in `semty_merge.iyi`, `semty_filter.iyi` and `semty_intersect.iyi`. This session closed the divergences those fixtures used to list as "not gated": including_types (`ModuleType#including_types`, read by `TypeIntersect.including_descendent`), aliases (removed before intersecting, and union alias values merge through the hook), generic instances (`semty_generics.iyi`: an instance registers with its generic type, and a generic type stands for itself as a virtual type; `class IntBox < Box(Int32)` takes the instance as its superclass), procs (`TypeIntersect.compatible_proc?`, as the hosted `compatible_with?`, with `Void` returns converted to `Nil` by `TypeSystem.proc_of`), and union members printed devirtualized, as the hosted printer does. `SemanticProgram` resolves written types and merges through the `TypeHook` that `TypeSystem` installs. Typedefs (`remove_typedef`, lib declarations) are not declared by the port: the `# waiting typedef:` lines in `semty_alias.iyi` are reported by the gate under their own heading and are not compared. Increment (7): `restrictions.iyi` and `type_system.iyi` call `TypeIntersect.common_descendent`, and `filtering.iyi`'s copy is retired. Increment (5) is done in `lookup.iyi` (see below). Increments (6), (7), (8) and (9) are not started. Row counts above are the baseline; the status column was not regenerated.
 Increment (5), the lookup port: `lookup.iyi` (`TypeLookup`), with `instances.iyi` (`TypeInstances`), the instance cache the lookup and the TypeSystem now share, since lookup.iyi cannot import type_system.iyi. The lookup covers `Path` (global, nested, the parent and namespace walk for the first item), `Union`, `Metaclass`, `Generic` (arity messages, splats of tuples and type parameters, `NamedTuple`, `Tuple`, `Union`, `Proc`, `Pointer`, `StaticArray` with a number size), `ProcNotation`, `Self`, and the nilable `?` (the parser writes it as `Union(T, Nil)`). Refused by name or not ported: `typeof`, `_`, a constant size, the import wall, `using`, private types, a type parameter solved through an inherited generic, and the parents of a generic instance. `TypeSystem.lookup_type_node` and `lookup_path` are deleted; `TypeSystem#resolve_node` is the one entry and the types driver's caller migrated to it. `SemanticProgram.lookup_type_node` keeps the simplified lookup: the real pipeline installs no TypeSystem, and routing that lookup through the hook broke the typing of its union branch, so only the superclass path uses the hook. `TypeRenderer` prints a union member devirtualized outside codegen, as the hosted printer does. The gate `semty_lookup.iyi`: 23 operations identical, the `typeof` operation is waiting, and three mutations are proved, among them the arity check and the unbound-generic check.
 Increments (6), (7) and (8), the later status. This supersedes the typedef and "not started" sentences above. Restrictions: `to_restriction.iyi` (`TypeToRestriction`) ports `type_to_restriction.cr`, including the common-namespace rule for private types. `conversions.cr` needs typed calls and waits. Gate `semty_restrict.iyi`. Typedefs: `TypeDefType` and `LibType` in `top_level.iyi`, `Type#remove_typedef`, and the `LibDef` and `TypeDef` visits; lib functions, structs and external variables keep the default visit. Not ported: the lib's link annotations and call convention, `check_allowed_in_lib` (a typedef of a disallowed type is accepted), and the TypeDefType delegations (`pointer?`, `reference_like?`, `parents`, `defs`, `macros`, `lookup_instance_var`). `intersect.iyi`: `typedef_descendent`, with typedef operands on the right and a typedef's parent walk not ported. Includers: a generic instance records the modules its generic class includes (`GenericClassInstanceType#included_modules`, read by `subtype_of?` and `TypeIntersect.parents_of`, and registered with each `NonGenericModuleType#add_including_type`). Not ported: `GenericClassType#including_types`, which the hosted generic type answers with its instances (waiting in `semty_includers.iyi`). `AliasType#simple?` is always true, since every alias the port models names a type. Lookup: a private type reached at a later path item is refused as `private constant X referenced`. Gates `semty_restrict.iyi`, `semty_alias.iyi` and `semty_includers.iyi` are in `selfhost_semantic_types`, which now compares 12 fixtures over 241 operations.
@@ -28,9 +30,9 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 113 | def | Type | `abstract?` | ported (src/compiler/semantic/top_level.iyi:57) |  | ported |
 | 120 | def | Type | `abstract_leaf?` | missing |  | missing |
 | 137 | def | Type | `struct?` | ported (src/compiler/semantic/top_level.iyi:61) | 19 reads, first src/compiler/iyi/codegen/codegen.cr:2503 | ported |
-| 142 | def | Type | `extern?` | missing | 9 reads, first src/compiler/iyi/codegen/ast.cr:168 | missing |
-| 147 | def | Type | `extern_union?` | missing | 9 reads, first src/compiler/iyi/codegen/codegen.cr:206 | missing |
-| 153 | def | Type | `packed?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_typer.cr:314 | missing |
+| 142 | def | Type | `extern?` | missing | 9 reads, first src/compiler/iyi/codegen/ast.cr:168 | ported as TypeQueries.extern? (src/compiler/types/types.iyi) |
+| 147 | def | Type | `extern_union?` | missing | 9 reads, first src/compiler/iyi/codegen/codegen.cr:206 | ported as TypeQueries.extern_union? (src/compiler/types/types.iyi) |
+| 153 | def | Type | `packed?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_typer.cr:314 | ported as TypeQueries.packed? (src/compiler/types/types.iyi) |
 | 169 | def | Type | `gc_shape` | missing |  | missing |
 | 193 | def | Type | `inst_shape` | missing |  | missing |
 | 215 | def | Type | `reference_like?` | ported as `TypeQueries.reference_like?` (types/types.iyi) | 1 reads, first src/compiler/iyi/codegen/type_layouts.cr:113 | ported |
@@ -62,7 +64,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 372 | def | Type | `instance_type` | ported as `TypeQueries.instance_type` (types/types.iyi) | 14 reads, first src/compiler/iyi/codegen/ast.cr:19 | ported |
 | 376 | def | Type | `generic_type` | other owner GenericInstanceType (src/compiler/types/types.iyi:110) |  | other-owner |
 | 380 | def | Type | `includes_type?` | missing | 1 reads, first src/compiler/iyi/codegen/class_var.cr:44 | missing |
-| 384 | def | Type | `remove_typedef` | missing | 6 reads, first src/compiler/iyi/codegen/codegen.cr:1931 | missing |
+| 384 | def | Type | `remove_typedef` | missing | 6 reads, first src/compiler/iyi/codegen/codegen.cr:1931 | ported (src/compiler/semantic/top_level.iyi) |
 | 392 | def | Type | `class_var_owner` | missing |  | missing |
 | 396 | def | Type | `has_in_type_vars?` | missing |  | missing |
 | 404 | def | Type | `lookup_new_in_ancestors?` | missing |  | missing |
@@ -93,7 +95,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 632 | def | Type | `lookup_macro` | missing |  | missing |
 | 664 | def | Type | `lookup_macros` | missing |  | missing |
 | 688 | def | Type | `add_including_type` | missing |  | missing |
-| 692 | def | Type | `including_types` | missing |  | missing |
+| 692 | def | Type | `including_types` | missing |  | ported as TypeIntersect.including_union (src/compiler/types/intersect.iyi) |
 | 699 | def | Type | `allows_instance_vars?` | missing |  | missing |
 | 714 | def | Type | `instance_vars` | other owner ModuleType (src/compiler/semantic/top_level.iyi:197) | 4 reads, first src/compiler/iyi/codegen/codegen.cr:3430 | other-owner |
 | 718 | def | Type | `class_vars` | other owner ModuleType (src/compiler/semantic/top_level.iyi:198) | 2 reads, first src/compiler/iyi/codegen/codegen.cr:3031 | other-owner |
@@ -112,15 +114,15 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 818 | def | Type | `replace_type_parameters` | missing |  | missing |
 | 822 | def | Type | `depth` | missing |  | missing |
 | 826 | def | Type | `type_desc` | ported (src/compiler/semantic/top_level.iyi:53) |  | ported |
-| 830 | def | Type | `remove_alias` | missing | 3 reads, first src/compiler/iyi/codegen/ast.cr:167 | missing |
+| 830 | def | Type | `remove_alias` | missing | 3 reads, first src/compiler/iyi/codegen/ast.cr:167 | ported as TypeMerge.remove_alias (src/compiler/types/merge.iyi) |
 | 834 | def | Type | `remove_alias_if_simple` | missing |  | missing |
-| 838 | def | Type | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | missing |
+| 838 | def | Type | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | ported as TypeIndirection.remove_indirection (src/compiler/types/indirection.iyi) |
 | 842 | def | Type | `remove_literal` | missing |  | missing |
 | 846 | def | Type | `generic_nest` | missing |  | missing |
 | 850 | def | Type | `double_variadic?` | missing |  | missing |
 | 854 | def | Type | `splat_index` | ported as `TypeQueries.splat_index` (types/types.iyi) | 1 reads, first src/compiler/iyi/codegen/codegen.cr:2233 | ported |
 | 858 | def | Type | `type_vars` | other owner GenericInstanceType (src/compiler/types/types.iyi:111) |  | other-owner |
-| 862 | def | Type | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | missing |
+| 862 | def | Type | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | ported as TypeQueries.unbound? (src/compiler/types/types.iyi) |
 | 866 | def | Type | `private?` | ported (src/compiler/semantic/top_level.iyi:107) |  | ported |
 | 870 | def | Type | `private=` | missing |  | missing |
 | 874 | def | Type | `type_var?` | missing |  | missing |
@@ -189,10 +191,10 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 1388 | class | InstanceVarContainer | `InstanceVarContainer` | missing class |  | missing |
 | 1393 | class | NonGenericModuleType | `NonGenericModuleType` | ported class (src/compiler/semantic/top_level.iyi:474) |  | ported |
 | 1398 | def | NonGenericModuleType | `add_including_type` | missing |  | missing |
-| 1407 | def | NonGenericModuleType | `including_types` | missing |  | missing |
+| 1407 | def | NonGenericModuleType | `including_types` | missing |  | ported as TypeIntersect.including_union (src/compiler/types/intersect.iyi) |
 | 1417 | def | NonGenericModuleType | `add_to_including_types` | missing |  | missing |
 | 1425 | def | NonGenericModuleType | `raw_including_types` | missing |  | missing |
-| 1429 | def | NonGenericModuleType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | missing |
+| 1429 | def | NonGenericModuleType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | ported as TypeIndirection.remove_indirection (src/compiler/types/indirection.iyi) |
 | 1437 | def | NonGenericModuleType | `filter_by_responds_to` | other owner TypeFiltering (src/compiler/types/filtering.iyi:127) |  | other-owner |
 | 1441 | def | NonGenericModuleType | `module?` | other owner GenericModuleInstanceType (src/compiler/types/types.iyi:212) |  | other-owner |
 | 1445 | def | NonGenericModuleType | `add_instance_var_initializer` | missing |  | missing |
@@ -218,7 +220,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 1561 | def | ClassType | `type_desc` | ported (src/compiler/semantic/top_level.iyi:433) |  | ported |
 | 1574 | class | NonGenericClassType | `NonGenericClassType` | ported class (src/compiler/semantic/top_level.iyi:449) |  | ported |
 | 1578 | def | NonGenericClassType | `initialize_metaclass` | missing |  | missing |
-| 1582 | def | NonGenericClassType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | missing |
+| 1582 | def | NonGenericClassType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | ported as TypeQueries.virtual_type (src/compiler/types/types.iyi) |
 | 1594 | def | NonGenericClassType | `virtual_type!` | missing | 1 reads, first src/compiler/iyi/codegen/codegen.cr:517 | missing |
 | 1598 | def | NonGenericClassType | `virtual_type_made?` | missing | 1 reads, first src/compiler/iyi/codegen/gc_layouts.cr:207 | missing |
 | 1602 | def | NonGenericClassType | `class?` | other owner GenericClassInstanceType (src/compiler/types/types.iyi:154) |  | other-owner |
@@ -292,7 +294,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 2105 | def | TypeParameter | `replace_type_parameters` | missing |  | missing |
 | 2114 | def | TypeParameter | `solve` | missing |  | missing |
 | 2118 | def | TypeParameter | `solve?` | missing |  | missing |
-| 2128 | def | TypeParameter | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | missing |
+| 2128 | def | TypeParameter | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | ported as TypeQueries.unbound? (src/compiler/types/types.iyi) |
 | 2132 | def | TypeParameter | `to_s_with_options` | out of scope: Crystal-only inspection/printing |  | out-of-scope |
 | 2154 | class | TypeSplat | `TypeSplat` | ported class (src/compiler/types/types.iyi:658) |  | ported |
 | 2155 | attr | TypeSplat | `splatted_type` | ported (src/compiler/types/types.iyi:659) |  | ported |
@@ -321,8 +323,8 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 2284 | def | GenericClassType | `new_generic_instance` | missing |  | missing |
 | 2288 | def | GenericClassType | `initialize_metaclass` | missing |  | missing |
 | 2292 | def | GenericClassType | `type_desc` | other owner VirtualType (src/compiler/types/types.iyi:29) |  | other-owner |
-| 2296 | def | GenericClassType | `including_types` | missing |  | missing |
-| 2309 | def | GenericClassType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | missing |
+| 2296 | def | GenericClassType | `including_types` | missing |  | ported as TypeIntersect.including_union (src/compiler/types/intersect.iyi) |
+| 2309 | def | GenericClassType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | ported as TypeIndirection.remove_indirection (src/compiler/types/indirection.iyi) |
 | 2317 | def | GenericClassType | `to_s_with_options` | out of scope: Crystal-only inspection/printing |  | out-of-scope |
 | 2355 | class | GenericInstanceType | `GenericInstanceType` | ported class (src/compiler/types/types.iyi:109) |  | ported |
 | 2356 | attr | GenericInstanceType | `generic_type` | ported (src/compiler/types/types.iyi:110) |  | ported |
@@ -334,7 +336,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 2419 | def | GenericInstanceType | `implements?` | other owner VirtualType (src/compiler/types/types.iyi:80) | 8 reads, first src/compiler/iyi/codegen/cast.cr:143 | other-owner |
 | 2436 | def | GenericInstanceType | `implements?` | other owner VirtualType (src/compiler/types/types.iyi:80) | 8 reads, first src/compiler/iyi/codegen/cast.cr:143 | other-owner |
 | 2441 | def | GenericInstanceType | `has_in_type_vars?` | missing |  | missing |
-| 2450 | def | GenericInstanceType | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | missing |
+| 2450 | def | GenericInstanceType | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | ported as TypeQueries.unbound? (src/compiler/types/types.iyi) |
 | 2459 | def | GenericInstanceType | `to_s_with_options` | out of scope: Crystal-only inspection/printing |  | out-of-scope |
 | 2495 | class | GenericClassInstanceType | `GenericClassInstanceType` | ported class (src/compiler/types/types.iyi:136) |  | ported |
 | 2501 | attr | GenericClassInstanceType | `superclass` | ported (src/compiler/types/types.iyi:137) | 2 reads, first src/compiler/iyi/codegen/codegen.cr:2823 | ported |
@@ -343,7 +345,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 2505 | def | GenericClassInstanceType | `initialize` | ported (src/compiler/types/types.iyi:141) |  | ported |
 | 2510 | def | GenericClassInstanceType | `after_initialize` | missing |  | missing |
 | 2517 | def | GenericClassInstanceType | `add_subclass` | missing |  | missing |
-| 2530 | def | GenericClassInstanceType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | missing |
+| 2530 | def | GenericClassInstanceType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | ported as TypeQueries.virtual_type (src/compiler/types/types.iyi) |
 | 2542 | def | GenericClassInstanceType | `virtual_type!` | missing | 1 reads, first src/compiler/iyi/codegen/codegen.cr:517 | missing |
 | 2546 | def | GenericClassInstanceType | `virtual_type_made?` | missing | 1 reads, first src/compiler/iyi/codegen/gc_layouts.cr:207 | missing |
 | 2554 | def | GenericClassInstanceType | `filter_by_responds_to` | other owner TypeFiltering (src/compiler/types/filtering.iyi:127) |  | other-owner |
@@ -352,12 +354,12 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 2572 | attr | GenericModuleInstanceType | `generic_nest` | missing |  | missing |
 | 2574 | def | GenericModuleInstanceType | `initialize` | ported (src/compiler/types/types.iyi:207) |  | ported |
 | 2579 | def | GenericModuleInstanceType | `after_initialize` | missing |  | missing |
-| 2585 | def | GenericModuleInstanceType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | missing |
+| 2585 | def | GenericModuleInstanceType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | ported as TypeQueries.virtual_type (src/compiler/types/types.iyi) |
 | 2593 | def | GenericModuleInstanceType | `add_including_type` | missing |  | missing |
-| 2604 | def | GenericModuleInstanceType | `including_types` | missing |  | missing |
+| 2604 | def | GenericModuleInstanceType | `including_types` | missing |  | ported as TypeIntersect.including_union (src/compiler/types/intersect.iyi) |
 | 2614 | def | GenericModuleInstanceType | `add_to_including_types` | missing |  | missing |
 | 2622 | def | GenericModuleInstanceType | `raw_including_types` | missing |  | missing |
-| 2626 | def | GenericModuleInstanceType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | missing |
+| 2626 | def | GenericModuleInstanceType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | ported as TypeIndirection.remove_indirection (src/compiler/types/indirection.iyi) |
 | 2634 | def | GenericModuleInstanceType | `filter_by_responds_to` | other owner TypeFiltering (src/compiler/types/filtering.iyi:127) |  | other-owner |
 | 2638 | def | GenericModuleInstanceType | `module?` | ported (src/compiler/types/types.iyi:212) |  | ported |
 | 2646 | class | PointerType | `PointerType` | missing class |  | missing |
@@ -400,7 +402,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 2875 | def | TupleInstanceType | `var` | missing | 9 reads, first src/compiler/iyi/codegen/class_var.cr:101 | missing |
 | 2879 | def | TupleInstanceType | `has_in_type_vars?` | missing |  | missing |
 | 2883 | def | TupleInstanceType | `replace_type_parameters` | missing |  | missing |
-| 2900 | def | TupleInstanceType | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | missing |
+| 2900 | def | TupleInstanceType | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | ported as TypeQueries.unbound? (src/compiler/types/types.iyi) |
 | 2904 | def | TupleInstanceType | `to_s_with_options` | out of scope: Crystal-only inspection/printing |  | out-of-scope |
 | 2913 | def | TupleInstanceType | `type_desc` | ported (src/compiler/types/types.iyi:306) |  | ported |
 | 2919 | class | NamedTupleType | `NamedTupleType` | missing class |  | missing |
@@ -422,7 +424,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 3003 | def | NamedTupleInstanceType | `size` | ported (src/compiler/types/types.iyi:380) |  | ported |
 | 3007 | def | NamedTupleInstanceType | `var` | missing | 9 reads, first src/compiler/iyi/codegen/class_var.cr:101 | missing |
 | 3011 | def | NamedTupleInstanceType | `replace_type_parameters` | missing |  | missing |
-| 3018 | def | NamedTupleInstanceType | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | missing |
+| 3018 | def | NamedTupleInstanceType | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | ported as TypeQueries.unbound? (src/compiler/types/types.iyi) |
 | 3022 | def | NamedTupleInstanceType | `has_in_type_vars?` | missing |  | missing |
 | 3026 | def | NamedTupleInstanceType | `to_s_with_options` | out of scope: Crystal-only inspection/printing |  | out-of-scope |
 | 3043 | def | NamedTupleInstanceType | `type_desc` | ported (src/compiler/types/types.iyi:368) |  | ported |
@@ -442,15 +444,15 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 3110 | class | TypeDefType | `TypeDefType` | missing class |  | missing |
 | 3113 | attr | TypeDefType | `typedef` | missing | 10 reads, first src/compiler/iyi/codegen/cast.cr:247 | missing |
 | 3115 | def | TypeDefType | `initialize` | other owner TypeSystem (src/compiler/types/type_system.iyi:17) |  | other-owner |
-| 3122 | def | TypeDefType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | missing |
+| 3122 | def | TypeDefType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | ported as TypeIndirection.remove_indirection (src/compiler/types/indirection.iyi) |
 | 3126 | def | TypeDefType | `type_def_type?` | missing |  | missing |
 | 3130 | def | TypeDefType | `type_desc` | other owner VirtualType (src/compiler/types/types.iyi:29) |  | other-owner |
 | 3136 | class | AliasType | `AliasType` | ported class (src/compiler/semantic/top_level.iyi:564) |  | ported |
 | 3141 | def | AliasType | `initialize` | ported (src/compiler/semantic/top_level.iyi:569) |  | ported |
 | 3149 | def | AliasType | `lookup_name` | missing |  | missing |
-| 3154 | def | AliasType | `remove_alias` | missing | 3 reads, first src/compiler/iyi/codegen/ast.cr:167 | missing |
+| 3154 | def | AliasType | `remove_alias` | missing | 3 reads, first src/compiler/iyi/codegen/ast.cr:167 | ported as TypeMerge.remove_alias (src/compiler/types/merge.iyi) |
 | 3164 | def | AliasType | `remove_alias_if_simple` | missing |  | missing |
-| 3169 | def | AliasType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | missing |
+| 3169 | def | AliasType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | ported as TypeIndirection.remove_indirection (src/compiler/types/indirection.iyi) |
 | 3179 | def | AliasType | `can_be_stored?` | missing |  | missing |
 | 3188 | def | AliasType | `process_value` | ported (src/compiler/semantic/top_level.iyi:581) |  | ported |
 | 3196 | def | AliasType | `includes_type?` | missing | 1 reads, first src/compiler/iyi/codegen/class_var.cr:44 | missing |
@@ -470,9 +472,9 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 3288 | def | MetaclassType | `initialize` | ported (src/compiler/semantic/top_level.iyi:392) |  | ported |
 | 3306 | def | MetaclassType | `metaclass` | other owner VirtualType (src/compiler/types/types.iyi:45) | 12 reads, first src/compiler/iyi/codegen/class_var.cr:397 | other-owner |
 | 3313 | def | MetaclassType | `class_var_owner` | missing |  | missing |
-| 3317 | def | MetaclassType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | missing |
+| 3317 | def | MetaclassType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | ported as TypeQueries.virtual_type (src/compiler/types/types.iyi) |
 | 3321 | def | MetaclassType | `virtual_type!` | missing | 1 reads, first src/compiler/iyi/codegen/codegen.cr:517 | missing |
-| 3325 | def | MetaclassType | `remove_typedef` | missing | 6 reads, first src/compiler/iyi/codegen/codegen.cr:1931 | missing |
+| 3325 | def | MetaclassType | `remove_typedef` | missing | 6 reads, first src/compiler/iyi/codegen/codegen.cr:1931 | ported (src/compiler/semantic/top_level.iyi) |
 | 3332 | def | MetaclassType | `replace_type_parameters` | missing |  | missing |
 | 3336 | def | MetaclassType | `to_s_with_options` | out of scope: Crystal-only inspection/printing |  | out-of-scope |
 | 3346 | def | MetaclassType | `type_desc` | ported (src/compiler/semantic/top_level.iyi:404) |  | ported |
@@ -486,7 +488,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 3379 | def | GenericClassInstanceMetaclassType | `generic_type` | other owner GenericInstanceType (src/compiler/types/types.iyi:110) |  | other-owner |
 | 3383 | def | GenericClassInstanceMetaclassType | `implements?` | other owner VirtualType (src/compiler/types/types.iyi:80) | 8 reads, first src/compiler/iyi/codegen/cast.cr:143 | other-owner |
 | 3388 | def | GenericClassInstanceMetaclassType | `replace_type_parameters` | missing |  | missing |
-| 3392 | def | GenericClassInstanceMetaclassType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | missing |
+| 3392 | def | GenericClassInstanceMetaclassType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | ported as TypeQueries.virtual_type (src/compiler/types/types.iyi) |
 | 3396 | def | GenericClassInstanceMetaclassType | `virtual_type!` | missing | 1 reads, first src/compiler/iyi/codegen/codegen.cr:517 | missing |
 | 3403 | def | GenericClassInstanceMetaclassType | `class_var_owner` | missing |  | missing |
 | 3407 | def | GenericClassInstanceMetaclassType | `filter_by_responds_to` | other owner TypeFiltering (src/compiler/types/filtering.iyi:127) |  | other-owner |
@@ -522,10 +524,10 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 3556 | def | UnionType | `includes_type?` | missing | 1 reads, first src/compiler/iyi/codegen/class_var.cr:44 | missing |
 | 3560 | def | UnionType | `filter_by_responds_to` | other owner TypeFiltering (src/compiler/types/filtering.iyi:127) |  | other-owner |
 | 3565 | def | UnionType | `each_concrete_type` | missing | 1 reads, first src/compiler/iyi/codegen/match.cr:175 | missing |
-| 3589 | def | UnionType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | missing |
+| 3589 | def | UnionType | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | ported as TypeQueries.virtual_type (src/compiler/types/types.iyi) |
 | 3597 | def | UnionType | `implements?` | other owner VirtualType (src/compiler/types/types.iyi:80) | 8 reads, first src/compiler/iyi/codegen/cast.cr:143 | other-owner |
 | 3602 | def | UnionType | `replace_type_parameters` | missing |  | missing |
-| 3627 | def | UnionType | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | missing |
+| 3627 | def | UnionType | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | ported as TypeQueries.unbound? (src/compiler/types/types.iyi) |
 | 3631 | def | UnionType | `all?` | missing |  | missing |
 | 3635 | def | UnionType | `to_s_with_options` | out of scope: Crystal-only inspection/printing |  | out-of-scope |
 | 3650 | def | UnionType | `type_desc` | other owner VirtualType (src/compiler/types/types.iyi:29) |  | other-owner |
@@ -553,7 +555,7 @@ Increments (6), (7) and (8), the later status. This supersedes the typedef and "
 | 3803 | class | VirtualType | `VirtualType` | ported class (src/compiler/types/types.iyi:8) |  | ported |
 | 3811 | attr | VirtualType | `base_type` | ported (src/compiler/types/types.iyi:9) | 18 reads, first src/compiler/iyi/codegen/class_var.cr:220 | ported |
 | 3813 | def | VirtualType | `initialize` | ported (src/compiler/types/types.iyi:12) |  | ported |
-| 3823 | def | VirtualType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | missing |
+| 3823 | def | VirtualType | `remove_indirection` | missing | 20 reads, first src/compiler/iyi/codegen/call.cr:465 | ported as TypeIndirection.remove_indirection (src/compiler/types/indirection.iyi) |
 | 3831 | def | VirtualType | `metaclass` | ported (src/compiler/types/types.iyi:45) | 12 reads, first src/compiler/iyi/codegen/class_var.cr:397 | ported |
 | 3835 | def | VirtualType | `each_concrete_type` | missing | 1 reads, first src/compiler/iyi/codegen/match.cr:175 | missing |
 | 3841 | def | VirtualType | `subtypes` | ported (src/compiler/types/types.iyi:55) |  | ported |

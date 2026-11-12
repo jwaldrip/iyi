@@ -106,6 +106,13 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
     io << indent << "  superclass: " << sc.to_s << "\n"
   end
 
+  if t.is_a?(Iyi::InstanceVarContainer)
+    t.instance_vars.keys.sort.each do |ivar_name|
+      io << indent << "  Ivar: " << full_name << "#" << ivar_name << "\n"
+      io << indent << "    type: " << t.instance_vars[ivar_name].type.to_s << "\n"
+    end
+  end
+
   if t.is_a?(Iyi::ModuleType) && !t.parents.empty?
     io << indent << "  parents: [" << t.parents.map(&.to_s).sort.join(", ") << "]\n"
   end
@@ -161,6 +168,8 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
   initial_types = Iyi::Program.new.types.keys.to_set
   visitor = Iyi::TopLevelVisitor.new(program)
   node.accept(visitor)
+  # The hosted type declaration pass: explicit and guessed instance variables.
+  Iyi::TypeDeclarationProcessor.new(program).process(node)
 
   if pdefs = program.defs
     top_defs = [] of Iyi::Def
@@ -187,6 +196,41 @@ if ARGV[0]? == "--initial"
     dump_type(initial.types[name], buffer, "", nil)
   end
   print buffer.to_s
+  exit 0
+end
+
+# The parent chain of one type, each parent on its own line, indented by depth.
+def chain_show(t : Iyi::Type, depth : Int32, indent : String) : String
+  line = indent + t.to_s + "\n"
+  return line if depth == 0
+  if t.is_a?(Iyi::ModuleType)
+    t.parents.each do |p|
+      line = line + chain_show(p, depth - 1, indent + "  ")
+    end
+  end
+  line
+end
+
+# `--chain` loads the file the way the dump does, then prints the parent chain of the
+# types the gate names. The prelude is loaded by the file's own require.
+if ARGV[0]? == "--chain"
+  chain_path = ARGV[1]? || abort("usage: selfhost_semantic_declarations_oracle --chain <file.iyi>")
+  chain_entry = File.expand_path(chain_path)
+  chain_compiler = Iyi::Compiler.new
+  chain_program, chain_node = chain_compiler.declarations_program(Iyi::Compiler::Source.new(chain_entry, File.read(chain_entry)))
+  chain_node.accept(Iyi::TopLevelVisitor.new(chain_program))
+  ["Nil", "Object", "Reference", "Value", "Int32", "String", "Mine"].each do |name|
+    if t = chain_program.types[name]?
+      print chain_show(t, 4, "")
+    else
+      print "#{name} missing\n"
+    end
+  end
+  ["Object", "Mine", "Int32"].each do |name|
+    if (t = chain_program.types[name]?) && t.is_a?(Iyi::ModuleType)
+      print chain_show(t.metaclass, 4, "")
+    end
+  end
   exit 0
 end
 
