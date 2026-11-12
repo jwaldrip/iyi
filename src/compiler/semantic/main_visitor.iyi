@@ -9,6 +9,8 @@ import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
+import compiler/semantic/type_node_host::{TypeNodeHost}
+import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self}
 
 # iyi: two modes. Strict (the default) raises on the first construct it cannot
 # type, as the port always did, and every existing gate relies on that. Total
@@ -16,7 +18,7 @@ import compiler/semantic/literal_expander::{LiteralExpander}
 # cannot be typed and goes on, so one unsupported construct costs its own nodes
 # and not the file. A node with no type is never printed as typed, so it never
 # counts as matched.
-pub class MainVisitor < Visitor
+pub class MainVisitor < TypeNodeHost
   property program : SemanticProgram
   property current_type : ModuleType
   property scope : Type?
@@ -1363,6 +1365,50 @@ pub class MainVisitor < Visitor
     end
     false
   end
+
+  # --- type nodes: begin ---
+  # The type-argument bracket the type-node functions use (hosted `@in_type_args`).
+  def bracket_type_args(delta : Int32) : Nil
+    @in_type_args = @in_type_args + delta
+  end
+
+  def visit(node : Generic) : Bool
+    visit_generic(self, node)
+  end
+
+  def visit(node : Union) : Bool
+    visit_union(self, node)
+  end
+
+  def visit(node : ProcNotation) : Bool
+    visit_proc_notation(self, node)
+  end
+
+  def visit(node : Metaclass) : Bool
+    visit_metaclass(self, node)
+  end
+
+  def visit(node : FunDef) : Bool
+    visit_fun_def(self, node)
+  end
+
+  def visit(node : Self) : Bool
+    visit_self(self, node)
+  end
+
+  # The visitor of a fun body: the same node types and errors, its own locals.
+  def sub_visitor(vars : Hash(String, Type)) : TypeNodeHost
+    inner = MainVisitor.new(@program)
+    inner.vars = vars
+    inner.scope = @program
+    inner.current_type = @current_type
+    inner.node_types = @node_types
+    inner.untyped_reasons = @untyped_reasons
+    inner.call_target_defs = @call_target_defs
+    inner.total = @total
+    inner
+  end
+  # --- type nodes: end ---
 end
 
 pub def node_class_name(node : ASTNode) : String
