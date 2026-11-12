@@ -52,6 +52,7 @@ import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/semantic/top_level::{LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, Type, UnionType, VoidType}
+import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
 
@@ -97,7 +98,8 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   self_value : Value? = nil
   unless node.obj.nil?
     self_type = receiver_owner(low, node)
-    self_value = lower_receiver(low, node)
+    recv = lower_receiver(low, node)
+    self_value = self_argument(low, node.obj.as(ASTNode), recv, self_type.as(Type))
   end
 
   if block = node.block
@@ -140,7 +142,9 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       end
     end
     if low.needs_value
-      low.last = self_value
+      if sv = self_value
+        low.last = self_as_value(low, sv.as(Value), self_type.as(Type))
+      end
     end
     return
   end
@@ -265,7 +269,7 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   if st = self_type
     if sv = self_value
       # Hosted create_local_copy_of_block_self: `self` is the receiver, already loaded.
-      frame.vars["self"] = LowerVar.new(sv.as(Value), st, true)
+      frame.vars["self"] = LowerVar.new(sv.as(Value), st, !self_by_pointer?(st))
     end
   end
   allocate_def_vars(low, def_node, arg_types, frame.vars)

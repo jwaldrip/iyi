@@ -331,3 +331,4 @@ src/compiler/semantic/instance_vars.iyi 0
 src/compiler/semantic/type_node_host.iyi 0
 src/compiler/semantic/type_nodes.iyi 0
 src/compiler/lower/block.iyi 0
+src/compiler/lower/instance_var.iyi 0

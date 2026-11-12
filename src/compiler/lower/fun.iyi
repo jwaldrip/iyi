@@ -28,6 +28,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/ir/module::{Module}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
+import compiler/lower/instance_var::{self_by_pointer?}
 import compiler/semantic/top_level::{NoReturnType, Type}
 
 # The hosted `Def#mangled_name` (codegen/ast.cr): `*`, then for a method the owner's name and `#`,
@@ -67,7 +68,11 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
   end
   params = [] of IrType
   if st = self_type
-    params << low.typer.llvm_type(st)
+    if self_by_pointer?(st)
+      params << low.module.types.ptr(0)
+    else
+      params << low.typer.llvm_type(st)
+    end
   end
   arg_types.each do |t|
     params << low.typer.llvm_type(t)
@@ -104,7 +109,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   if st = self_type
     self_param = fn.param(0)
     fn.name_param(self_param, "self")
-    low.current_context.vars["self"] = LowerVar.new(self_param, st, true)
+    low.current_context.vars["self"] = LowerVar.new(self_param, st, !self_by_pointer?(st))
     first = 1
   end
   i = 0
