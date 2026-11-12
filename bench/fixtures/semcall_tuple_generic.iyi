@@ -11,3 +11,4 @@ end
 # call Box(Int32).new.pair(1)
 # call Box(String).new.pair("a")
 # call Box(Int32).new.take({1, true})
+# call Box(Int32 | String).new.take({1, true})
