@@ -14,7 +14,7 @@ pub enum Op
   ConstZero
   ConstAggregate
   ConstBytes
-  ConstExpr # Gep / PtrToInt / IntToPtr / BitCast / Add / Sub over constants
+  ConstExpr # Gep / PtrToInt / IntToPtr / BitCast / Add / Sub / Mul over constants
   GlobalAddr
   FunctionAddr
   # memory
