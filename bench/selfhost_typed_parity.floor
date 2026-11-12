@@ -338,3 +338,4 @@ src/compiler/lower/typer.iyi 0
 src/compiler/lower/unions.iyi 0
 src/compiler/semantic/new.iyi 0
 src/compiler/lower/class_var.iyi 0
+src/compiler/lower/proc.iyi 0
