@@ -563,18 +563,13 @@ prove_mutation "a file's own directory is never searched for an import" "$MUT_SE
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_SEM" \
-  "@pending_ivars.each { |pi| ordered << pi unless pi.macro_made }" \
-  "@pending_ivars.reversed.each { |pi| ordered << pi unless pi.macro_made }" \
+  "@pending_ivars.each do |pi|" \
+  "@pending_ivars.reversed.each do |pi|" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
-  "record_pending(PendingIvar.new(@current_type, ivar_name, r))" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r)" \
   "@pending_ivars.unshift(PendingIvar.new(@current_type, ivar_name, r))" \
-  -- check_decl_fixtures_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a macro's instance variable is recorded in source order, not after the class body's" "$MUT_SEM" \
-  "pi.macro_made = @macro_depth > 0" \
-  "pi.macro_made = false" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # Re-claimed from "an instance variable assigned from a typed argument is dropped". Measured: the pending

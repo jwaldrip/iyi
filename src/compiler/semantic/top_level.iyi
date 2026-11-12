@@ -1822,8 +1822,6 @@ pub class PendingIvar
   # An explicit `@x : T` is typed by T's virtual type (hosted declare_instance_var).
   property virtual : Bool
   property imports : Hash(String, Type)? = nil
-  # A record a macro expansion made (`getter`, `property`); finish places it after the explicit and initialize records.
-  property macro_made : Bool = false
 
   def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false)
   end
@@ -1867,8 +1865,6 @@ pub class TopLevelVisitor < Visitor
   @pending_flags : Bool = false
   # The annotations written since the last declaration (hosted process_annotations).
   @pending_annotations : Array(Annotation) = [] of Annotation
-  # Set while a macro expansion is visited (see visit(Call)): the records it makes come after the rest.
-  @macro_depth : Int32 = 0
 
   # Every explicit instance variable is recorded here, in the order the source
   # declares it. A restriction may name a type a later file declares (`concurrency.iyi`
@@ -1885,26 +1881,8 @@ pub class TopLevelVisitor < Visitor
     @pending_ivars.each do |found|
       explicit << "#{found.owner.full_name} #{found.name}" if found.virtual
     end
-    # Hosted order: a name takes its place from its first record in this order, explicit and
-    # initialize records first (source order), then the records a macro made (`getter`, `property`).
-    ordered = [] of PendingIvar
-    @pending_ivars.each { |pi| ordered << pi unless pi.macro_made }
-    @pending_ivars.each { |pi| ordered << pi if pi.macro_made }
-    places = [] of String
-    ordered.each do |pi|
-      key = "#{pi.owner.full_name} #{pi.name}"
-      places << key unless places.includes?(key)
-    end
-    # The type comes from the last record that is not skipped: an explicit one, or a non-explicit one when none exists.
-    winners = Hash(String, PendingIvar).new
-    ordered.each do |pi|
-      key = "#{pi.owner.full_name} #{pi.name}"
-      next if !pi.virtual && explicit.includes?(key)
-      winners[key] = pi
-    end
-    places.each do |key|
-      pi = winners[key]?
-      next unless pi
+    @pending_ivars.each do |pi|
+      next if !pi.virtual && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
       if imports = pi.imports
         @program.current_imports = imports
       else
@@ -1914,15 +1892,6 @@ pub class TopLevelVisitor < Visitor
       mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
       mv.owner = pi.owner
       pi.owner.instance_vars[pi.name] = mv
-    end
-    # One resolution record per non-skipped pending record, in pending order (unchanged).
-    @pending_ivars.each do |pi|
-      next if !pi.virtual && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
-      if imports = pi.imports
-        @program.current_imports = imports
-      else
-        @program.current_imports = saved
-      end
       @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
     end
     @program.current_imports = saved
@@ -1947,13 +1916,6 @@ pub class TopLevelVisitor < Visitor
     @exp_nest = 0
     @pending_ivars = [] of PendingIvar
     @pending_annotations = [] of Annotation
-  end
-
-  # A pending record. One made while a macro expansion is visited is marked, so finish places it
-  # after the explicit and initialize records, as the hosted pass does.
-  def record_pending(pi : PendingIvar) : Nil
-    pi.macro_made = @macro_depth > 0
-    @pending_ivars << pi
   end
 
   # `@[Primitive(:name)]` makes a def's body the compiler's own primitive, located at
@@ -2766,7 +2728,7 @@ pub class TopLevelVisitor < Visitor
       if type.lookup_instance_var?(var_name)
         raise("#{type.type_desc} #{type.full_name} already defines a field named '#{field_name}'")
       end
-      record_pending(PendingIvar.new(type, var_name, decl.declared_type))
+      @pending_ivars << PendingIvar.new(type, var_name, decl.declared_type)
 
       setter = Def.new("#{field_name}=", [Arg.new("value")], Nop.new)
       setter.visibility = Visibility::Public
@@ -2855,7 +2817,7 @@ pub class TopLevelVisitor < Visitor
       node.args.each do |arg|
         if arg.name.starts_with?("@")
           if r = arg.restriction
-            record_pending(PendingIvar.new(@current_type, arg.name, r))
+            @pending_ivars << PendingIvar.new(@current_type, arg.name, r)
           end
         end
       end
@@ -2877,7 +2839,7 @@ pub class TopLevelVisitor < Visitor
             node.args.each do |arg|
               if arg.name == vname
                 if r = arg.restriction
-                  record_pending(PendingIvar.new(@current_type, ivar_name, r))
+                  @pending_ivars << PendingIvar.new(@current_type, ivar_name, r)
                 end
               end
             end
@@ -2951,7 +2913,7 @@ pub class TopLevelVisitor < Visitor
         raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
       end
       ivar_name = node.var.as(InstanceVar).name
-      record_pending(PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value, true))
+      @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value, true)
     elsif node.var.is_a?(ClassVar)
       if @current_type.is_a?(SemanticProgram)
         raise("can't use class variables at the top level")
@@ -3007,9 +2969,7 @@ pub class TopLevelVisitor < Visitor
         engine = MacroEngine.new
         expanded_ast = engine.expand(a_macro, node)
         node.expanded = expanded_ast
-        @macro_depth += 1
         expanded_ast.accept(self)
-        @macro_depth -= 1
         return false
       end
     end
