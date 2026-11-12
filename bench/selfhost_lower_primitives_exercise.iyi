@@ -1,15 +1,57 @@
 module bench/selfhost_lower_primitives_exercise
 
 # The port's side of the primitives gate (bench/selfhost_lower_primitives_exercise.sh): the
-# same modes as the calls gate's driver, for the fixtures that call a builtin primitive
-# (lowprim_*). The analysis runs with the lib stand-in (bench/lib/lower_gate.iyi), the
-# same as the calls gate: a lib's funs are not typed by the semantic pass yet.
+# fixtures that call a builtin primitive (lowprim_*). The analysis runs with the lib stand-in
+# (bench/lib/lower_gate.iyi), as the calls gate's does: a lib's funs are not typed by the semantic
+# pass yet.
+#
+# The fixtures are bare programs (the hosted build is `--prelude empty`), so the typer keeps the
+# Crystal object layout, where a class's type id is its first field. The shared lower and emit
+# modes of bench/lib/lower_gate.iyi build the typer with the header layout; this driver builds it
+# with the bare layout, here and nowhere else.
 #
 #   port oracle <oracle.ll>                 the oracle module, normalised, one line each
 #   port lower <fixture.iyi> <oracle.ll>    lowers the fixture and compares it with the oracle
 #   port emit <fixture.iyi> <oracle.ll>     the port's module as text, for the native tool
 
-import bench/lib/lower_gate::{analyse, run_emit, run_lower, run_oracle}
+import bench/lib/lower_gate::{analyse, ir_module, triple_of, normalised_lines, attach_attrs, oracle_attr_map, printed_attr_map, compare, split_module, run_oracle}
+import compiler/ir/module::{Module}
+import compiler/ir/parser::{parse, IrParseError}
+import compiler/ir/printer::{print}
+import compiler/lower/typer::{LowerTyper}
+import compiler/lower/lower::{codegen_program}
+
+# The bare layout of the typer: a bare program is not an own-prelude build, so its objects are
+# Crystal's (`Program#iyi_object_layout?` is false without the prelude's IyiRuntimeLock).
+def bare_typer(m : Module) : LowerTyper
+  LowerTyper.new(m.types, m.layout, false)
+end
+
+def lower_bare(fixture : String, oracle_path : String) : Nil
+  oracle_text = File.read(oracle_path)
+  parsed = parse(oracle_text)
+  raise parsed.as(IrParseError).to_s if parsed.is_a?(IrParseError)
+  oracle = attach_attrs(normalised_lines(print(parsed.as(Module)), "::"), oracle_attr_map(oracle_text))
+  triple = triple_of(oracle_text)
+
+  analysis = analyse(File.read(fixture), fixture, true)
+  m = ir_module(triple)
+  codegen_program(analysis.root, analysis.visitor, bare_typer(m), m)
+  port_text = print(m)
+  port = attach_attrs(normalised_lines(port_text, "::"), printed_attr_map(port_text))
+  identical = compare(oracle, port)
+  total = split_module(oracle)[2].size
+  module_ok = split_module(oracle)[0] == split_module(port)[0]
+  puts "SUMMARY identical=#{identical} total=#{total} module=#{module_ok ? 1 : 0}"
+end
+
+def emit_bare(fixture : String, oracle_path : String) : Nil
+  triple = triple_of(File.read(oracle_path))
+  analysis = analyse(File.read(fixture), fixture, true)
+  m = ir_module(triple)
+  codegen_program(analysis.root, analysis.visitor, bare_typer(m), m)
+  puts print(m)
+end
 
 def run : Nil
   args = Program.args
@@ -23,9 +65,9 @@ def run : Nil
   if mode == "oracle"
     run_oracle(args[1], "::")
   elsif mode == "lower"
-    run_lower(args[1], args[2], "::", true)
+    lower_bare(args[1], args[2])
   elsif mode == "emit"
-    run_emit(args[1], args[2], true)
+    emit_bare(args[1], args[2])
   else
     raise "unknown mode #{mode}"
   end

@@ -43,10 +43,11 @@ import compiler/lower/fun::{visit_node}
 import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
-import compiler/semantic/top_level::{Type}
+import compiler/semantic/top_level::{ClassType, MetaTypeVar, Type}
 import compiler/types/types::{VirtualType}
 import compiler/lower/helpers::{store_aligned}
 import compiler/lower/typer::{passed_by_value?}
+import compiler/lower/layouts::{has_inner_pointers?}
 
 # An integer operand as the hosted codegen reads it: its width in bytes, its signedness and
 # its IR type. A mixed-signedness operation biases one operand to the other signedness at the
@@ -531,27 +532,102 @@ pub def primitive_allocate(low : Lowerer, t : Type) : Value
   ptr
 end
 
-# The hosted class allocation under the arena, which is what a default build emits (codegen.cr
-# allocate_aggregate 2766-2776): `__iyi_new(size, type id, flags)` with flags = the class's `:headed`
-# byte, or 2 when the object is not pointerful (atomic), then the memset of the instance, and the
-# instance pointer is the value (a class is a reference). Verified against the hosted IR of
-# bench/fixtures/lowprim_alloc_class.iyi: `zext i8 headed`, `or 2`, `zext i32 type_id`,
-# `call ptr @__iyi_new(ptrtoint sizeof, id, flags)`, `call void @llvm.memset ... ptr align 4`.
-# The headed byte is decided by the program-wide census (gc_layouts.cr iyi_headed?: virtual types and
-# unions the program made, subclasses, and type ids over UInt16::MAX), which the port does not have:
-# headed_byte refuses by name until it does. Pointerful objects (instance variables holding pointers,
-# NEEDS row 18) are not handled either; they wait on the same census.
+# The hosted class allocation (codegen.cr allocate_aggregate 2758-2798). The program decides it
+# (`iyi_gc_arena?`, gc_layouts.cr 48): an own-prelude build allocates through the arena's `__iyi_new`, any
+# other program through malloc. Both are ported. The arena's `:headed` byte is the program-wide census
+# (gc_layouts.cr iyi_headed?), which the port does not have, so headed_byte refuses by name. A virtual
+# type refuses in primitive_allocate. Pointerful objects are decided by the core's has_inner_pointers?.
 pub def allocate_class(low : Lowerer, t : Type) : Value
+  if iyi_gc_arena?(low)
+    return allocate_arena_class(low, t)
+  end
+  allocate_malloc_class(low, t)
+end
+
+# The arena's class allocation, as a default build emits it (codegen.cr 2766-2776): `__iyi_new(size,
+# type id, flags)`, with flags = the class's `:headed` byte, or 2 when the object is not pointerful
+# (atomic). The chunk comes back zeroed for a pointerful object (`cleared`, codegen.cr 2776), so the
+# memset is skipped then; otherwise the instance is zeroed as the hosted pre_initialize_aggregate does.
+# The arena writes no type id at field 0: the id is in the header, which the arena writes itself.
+pub def allocate_arena_class(low : Lowerer, t : Type) : Value
+  pointerful = class_pointerful?(t)
   headed = headed_byte(low, t)
   struct_ir = low.typer.llvm_struct_type(t)
-  head64 = low.builder.zext(headed, low.module.types.int(64))
-  flags = low.builder.build_or(head64, low.builder.const_int(low.module.types.int(64), 2_i64))
+  flags = low.builder.zext(headed, low.module.types.int(64))
+  unless pointerful
+    flags = low.builder.build_or(flags, low.builder.const_int(low.module.types.int(64), 2_i64))
+  end
   tid = low.builder.zext(type_id_value(low, t), low.module.types.int(64))
   size = sizeof_expr(low, struct_ir)
   new_fn = iyi_new_function(low)
   ptr = low.builder.call(new_fn.fn_type, new_fn, [size, tid, flags] of Value, "")
-  zero_memory(low, ptr, struct_ir)
+  zero_memory(low, ptr, struct_ir) unless pointerful
   ptr
+end
+
+# The malloc class allocation (codegen.cr 2778-2793 and 2800-2807) for a program with no arena. The
+# memory is the C `malloc` of the struct's size: the hosted `malloc` and `malloc_atomic` both call it
+# when the program has no `__crystal_malloc64` or `__crystal_malloc_atomic64`. Then the memset, then the
+# type id in field 0, the Crystal layout a program without the prelude's header keeps. Verified against
+# the hosted IR of bench/fixtures/lowprim_alloc_class.iyi. Under the header layout the hosted code stores
+# the id at P-4 instead, which is not ported and refuses here.
+pub def allocate_malloc_class(low : Lowerer, t : Type) : Value
+  if low.typer.iyi_layout
+    pending_visit_node("allocate of class #{t.full_name} under the header layout (hosted allocate_aggregate 2790, the type id at P-4, not ported)")
+    return low.builder.const_null_pointer
+  end
+  refuse_program_malloc(low, t)
+  struct_ir = low.typer.llvm_struct_type(t)
+  c_malloc = c_malloc_function(low)
+  ptr = low.builder.call(c_malloc.fn_type, c_malloc, [sizeof_expr(low, struct_ir)] of Value, "")
+  zero_memory(low, ptr, struct_ir)
+  zero = low.builder.const_int(low.module.types.int32, 0_i64)
+  slot = low.builder.inbounds_gep(struct_ir, ptr, [zero, zero] of Value)
+  store_aligned(low, type_id_value(low, t), slot)
+  ptr
+end
+
+# The hosted `iyi_gc_arena?` (gc_layouts.cr 48), the allocator the prelude selects. The port has no
+# program flags, so its ground truth is the prelude's own `IyiHeap` class, which exists exactly when the
+# prelude is loaded. The hosted predicate's gc_boehm, gc_none and platform tests are not ported.
+pub def iyi_gc_arena?(low : Lowerer) : Bool
+  !low.analysed.program.types["IyiHeap"]?.nil?
+end
+
+# The hosted `pointerful` of allocate_aggregate (codegen.cr 2764-2765): a class with an instance
+# variable that holds pointers, by the core's has_inner_pointers? (layouts.iyi).
+pub def class_pointerful?(t : Type) : Bool
+  ivars = t.as(ClassType).all_instance_vars
+  names = ivars.keys
+  i = 0
+  while i < names.size
+    var_type = ivars[names[i]].var_type
+    if var_type.nil?
+      raise "BUG: instance variable #{names[i]} of #{t.full_name} has no type yet (hosted allocate_aggregate)"
+    end
+    return true if has_inner_pointers?(var_type.as(Type))
+    i += 1
+  end
+  false
+end
+
+# A program that defines its own malloc is allocated through it by the hosted crystal_malloc_fun, which
+# is not ported; refuse by name rather than emit the C malloc beside it.
+pub def refuse_program_malloc(low : Lowerer, t : Type) : Nil
+  ["__iyi_malloc64", "__crystal_malloc64", "__iyi_malloc_atomic64", "__crystal_malloc_atomic64"].each do |name|
+    if !low.module.get_function?(name).nil?
+      pending_visit_node("allocate of class #{t.full_name} through the program's #{name} (hosted crystal_malloc_fun, not ported)")
+    end
+  end
+end
+
+# The C `malloc` the hosted `c_malloc_fun` declares (`declare ptr @malloc(i64)`), added to the module when
+# the program does not have it yet.
+pub def c_malloc_function(low : Lowerer) : Function
+  existing = low.module.get_function?("malloc")
+  return existing.as(Function) unless existing.nil?
+  fn_type = low.module.types.func([low.module.types.int(64)] of IrType, low.module.types.ptr(0))
+  low.module.add_function("malloc", fn_type, CallConv::C)
 end
 
 # The `:headed` byte of a class, as the hosted `iyi_headed_flag` loads it. Not ported: it is the
