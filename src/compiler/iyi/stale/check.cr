@@ -65,6 +65,15 @@ module Iyi::Stale
       not_reusable.empty? && inputs.stale? && inputs.reasons.empty?
     end
 
+    # The first reason the recorder kept this build's inputs from its record,
+    # for the key file: the fast path reads it to say why a test compiles. Nil
+    # when the recorder heard everything, or when it is not a stale recorder.
+    def self.inputs_refusal : String?
+      inputs = BuildInputs.current
+      return nil unless inputs && inputs.stale?
+      inputs.reasons.first?
+    end
+
     def self.closure_check(program : Program, reach : Reach) : Effects::ClosureResult
       Effects.closure_check(program, reach)
     end
@@ -254,7 +263,8 @@ module Iyi::Stale
           hit: hit,
           blocked: blocked,
           reach: reach,
-          rg3: closure.rg3_sites
+          rg3: closure.rg3_sites,
+          inputs_refusal: Check.inputs_refusal
         )
       end
 

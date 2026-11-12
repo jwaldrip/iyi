@@ -104,6 +104,17 @@ module Iyi::Stale
       res
     end
 
+    # The files a build is made by, which the fast path stamps: the compiler,
+    # the LLVM library when that is a shared library, and the linker driver.
+    def self.paths(executable_path : String? = nil) : Array(String)
+      compiler_path = resolve_compiler_path(executable_path)
+      llvm_path, llvm_is_shared = resolve_llvm_lib(compiler_path)
+      paths = [compiler_path]
+      paths << llvm_path if llvm_is_shared
+      paths << resolve_linker_path
+      paths
+    end
+
     private def self.resolve_compiler_path(executable_path : String?) : String
       if executable_path
         return File.realpath(executable_path)

@@ -1306,10 +1306,12 @@ set -e
 expect_eq "$row53_drop_status" 1 "an env-blind fast path fails the audit"
 expect_contains "$row53_drop" "fast path served" "the audit names the served env change"
 
-# Row 54 mutation proof: a copy of the same compiler at another path has another
-# compiler stamp, so its first run is a compiler check that names the compiler,
-# and its second run is served. IYI_STALE_FAST_DROP=compiler ignores the stamp:
-# the copy is then served on its first run, which the check above rejects.
+# Row 54: a copy of the same compiler at another path has another compiler
+# stamp, so its first run is a compiler check that names the compiler, and its
+# second run is served. IYI_STALE_FAST_DROP=compiler ignores the stamps under
+# the audit, so the copy's verdict is served and the audit compiles it anyway.
+# The copy's bytes are equal, so its Build is equal and the audit agrees. This
+# row does not cover a compiler that builds differently.
 step 54 "a copy of the compiler starts a check that names it, and its second run is served"
 mkdir -p "$WORK/r54"
 cat > "$WORK/r54/t_test.iyi" <<'IYI'
@@ -1329,8 +1331,10 @@ expect_eq "$(printf '%s' "$row54_copy_again" | json_test t_test.iyi check)" inpu
 run_json "$WORK/r54" t_test.iyi >/dev/null
 set +e
 row54_mutant="$( (cd "$WORK/r54" && IYI_PATH="$REPO/src" IYI_STALE_FAST_DROP=compiler IYI_STALE_FAST_AUDIT=1 "$WORK/r54/iyi-copy" test --cached --json t_test.iyi) )"
+row54_mutant_status=$?
 set -e
-expect_eq "$(printf '%s' "$row54_mutant" | json_test t_test.iyi check)" inputs "with the compiler stamp ignored the copy is served, so the check above is what rejects that"
+expect_eq "$row54_mutant_status" 0 "a byte-equal copy agrees with its served verdict, so the audit passes"
+expect_eq "$(printf '%s' "$row54_mutant" | json_test t_test.iyi check)" compiler "under the audit the copy is compiled, not served"
 
 # Row 55 mutation proof: a macro run helper makes every check a compiler check,
 # because the helper's reads are invisible to the recorder. Dropping that reason

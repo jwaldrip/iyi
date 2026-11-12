@@ -10,6 +10,7 @@ require "./trace"
 require "./key_file"
 require "./profile"
 require "./snapshot"
+require "./fast_record"
 require "../compiler"
 
 module Iyi::Stale
@@ -29,7 +30,9 @@ module Iyi::Stale
     portable_build : String? = nil,
     profile : String? = nil,
     roots : Hash(String, String) = Hash(String, String).new,
-    blocked : Bool = false do
+    blocked : Bool = false,
+    check : String = "compiler",
+    check_reason : String? = nil do
     def pass? : Bool
       @status == "pass"
     end
@@ -46,7 +49,20 @@ module Iyi::Stale
     result : TestResult,
     receipt : Receipt? = nil,
     explain : String? = nil,
-    builds : Int32 = 0
+    builds : Int32 = 0,
+    audit : Audit? = nil
+
+  # The audit's verdict on a test the fast path would have served: whether the
+  # compiler agreed with the record, and the cause when it did not.
+  record Audit, file : String, agreed : Bool, reason : String? = nil
+
+  # What a run reads once for the fast path: the facts every record is compared
+  # with, whether the audit is on, and the classes the audit drops.
+  record FastPath, facts : FastFacts, audit : Bool, drop : Set(String)
+
+  # The fast path's decision for one test: served from its record, or the first
+  # cause that sends it to the compiler.
+  record FastVerdict, served : Bool, reason : String? = nil, held : FastRecord? = nil
 
   class Runner
     def initialize(
@@ -209,6 +225,8 @@ module Iyi::Stale
       # and nowhere else.
       host = Profile.host(@target)
       run_cwd = Dir.current
+      audit = ENV["IYI_STALE_FAST_AUDIT"]? == "1"
+      fast = FastPath.new(FastFacts.current(run_cwd, @target), audit, Runner.fast_drop(audit, ENV["IYI_STALE_FAST_DROP"]?))
 
       # Every build and run leads a process group that these traps end, so an
       # interrupted run leaves no test running (exit 128 + the signal).
@@ -223,12 +241,11 @@ module Iyi::Stale
         scratch_locks[scratch_path(file_test_ids[file])] ||= Sync::Mutex.new
       end
 
-      audit_list = [] of Hash(String, JSON::Any)
 
       outcomes = Command::TestPool.run(files.size, @parallel) do |index|
         file = files[index]
         test_id = file_test_ids[file]
-        check_one(file, test_id, id_counts[test_id] > 1, host, keyer_local, run_cwd, scratch_locks)
+        check_one(file, test_id, id_counts[test_id] > 1, host, keyer_local, run_cwd, scratch_locks, fast)
       end
 
       # The report is made here, once every test has ended, in file order.
@@ -285,6 +302,8 @@ module Iyi::Stale
                     json.field "cached", result.cached
                     json.field "source", result.source
                     json.field "reuse", result.reuse
+                    json.field "check", result.check
+                    json.field "check_reason", result.check_reason if result.check_reason
                     json.field "reason", result.reason if result.reason
                     json.field "portable_build", result.portable_build
                     json.field "profile", result.profile
@@ -307,7 +326,13 @@ module Iyi::Stale
             json.field "builds", builds
             json.field "audit" do
               json.array do
-                audit_list.each { |a| a.to_json(json) }
+                outcomes.compact_map(&.audit).each do |entry|
+                  json.object do
+                    json.field "file", entry.file
+                    json.field "agreed", entry.agreed
+                    json.field "reason", entry.reason if entry.reason
+                  end
+                end
               end
             end
             unless discount_off.empty?
@@ -357,10 +382,106 @@ module Iyi::Stale
       exit 1 unless failed.zero?
     end
 
-    # A later change serves a test from its own record here, with no compiler,
-    # before any build starts. Nothing is served this way yet.
-    private def serve_without_compiler(file : String, test_id : TestId, is_ambiguous : Bool) : Outcome?
-      nil
+    # The classes the audit drops, from `IYI_STALE_FAST_DROP`. Honored only
+    # under the audit (`IYI_STALE_FAST_AUDIT=1`): it exists to show that the
+    # gate fails when a class is ignored.
+    def self.fast_drop(audit : Bool, raw : String?) : Set(String)
+      drop = Set(String).new
+      return drop unless audit
+      return drop if raw.nil?
+      unless ["ctime", "env", "compiler"].includes?(raw)
+        raise RunnerError.new("IYI_STALE_FAST_DROP takes ctime, env or compiler")
+      end
+      drop << raw
+      drop
+    end
+
+    # The fast path's verdict on one test. It serves a test only when every
+    # condition holds: no block rule, a record of its last compiler run, nothing
+    # the record stamped has changed, and a valid local receipt of the record's
+    # Build. Otherwise it names the first cause, which the compiler path reports.
+    private def fast_verdict(file : String, test_id : TestId, is_ambiguous : Bool,
+                             profile : ReceiptProfile, roots : Roots, keyer : Keyer,
+                             fast : FastPath) : FastVerdict
+      return FastVerdict.new(false, "ambiguous test id") if is_ambiguous
+      if @store.blockers(test_id).any? { |rec| block_rule?(rec, profile, roots, keyer) }
+        return FastVerdict.new(false, "a contradicted receipt validates")
+      end
+      record = FastRecord.read(@store, test_id)
+      return FastVerdict.new(false, "no record of the inputs") unless record
+      if cause = record.unchanged_reason(file, fast.facts, fast.drop)
+        return FastVerdict.new(false, cause)
+      end
+      matched = @store.candidates(test_id, @target, imported: false).any? do |rec|
+        valid_candidate?(rec, profile, roots, keyer) &&
+          rec.build.build.compare(record.local_build, case_insensitive: true) == 0
+      end
+      return FastVerdict.new(false, "no valid local receipt has the record's build") unless matched
+      FastVerdict.new(true, nil, record)
+    end
+
+    private def valid_candidate?(rec : Receipt, profile : ReceiptProfile, roots : Roots, keyer : Keyer) : Bool
+      rec.pass? && !rec.contradicted && rec.profile.fp == profile.fp &&
+        Trace.replay(rec.trace.observations, keyer_for(rec, keyer), roots).nil?
+    end
+
+    private def block_rule?(rec : Receipt, profile : ReceiptProfile, roots : Roots, keyer : Keyer) : Bool
+      rec.version != FORMAT_VERSION || !Trace.supported?(rec.trace.observations) ||
+        (rec.profile.fp == profile.fp && Trace.replay(rec.trace.observations, keyer_for(rec, keyer), roots).nil?)
+    end
+
+    # A test the fast path serves: its result, with no compiler run.
+    private def served_outcome(file : String, test_id : TestId, record : FastRecord,
+                               profile : ReceiptProfile, roots_map : Hash(String, String),
+                               entered : Time::Instant) : Outcome
+      result = TestResult.new(
+        file: file, test: test_id, status: "pass", seconds: elapsed(entered), output: "",
+        cached: true, source: "local", reuse: "hit", reason: nil,
+        portable_build: record.portable_build.empty? ? nil : record.portable_build,
+        profile: profile.fp, roots: roots_map, blocked: false,
+        check: "inputs", check_reason: nil)
+      explain = @explain ? "#{file}: hit from local (inputs unchanged)" : nil
+      Outcome.new(result: result, explain: explain)
+    end
+
+    # Whether the compiler, run for a served test, built the record's Build and
+    # hit it: the audit's proof that the record and the check agree.
+    private def audit_agrees?(key : KeyFile::KeyFileData?, record : FastRecord) : Bool
+      return false unless key && key.hit
+      local = key.local
+      return false unless local
+      local.build.compare(record.local_build, case_insensitive: true) == 0
+    end
+
+    # After a compiler run, the record of its inputs: the inputs file the build
+    # wrote, or the reason the recorder refused to write one. It is written only
+    # when the key file names this build's local Build, since a record of another
+    # build would serve the wrong answer. The caller holds the scratch lock.
+    private def record_fast_inputs(test_id : TestId, file : String, facts : FastFacts,
+                                   inputs_path : String, key : KeyFile::KeyFileData?) : Nil
+      return unless key && (local = key.local)
+      portable_build = key.portable.try(&.build) || ""
+      record = if File.file?(inputs_path)
+                 FastRecord.from_inputs(inputs_path, test_id, file, facts, local.build, portable_build)
+               elsif reason = key.inputs_refusal
+                 FastRecord.refused(test_id, file, facts, local.build, portable_build, reason)
+               end
+      @store.write_fast(test_id, record.to_store_json) if record
+    end
+
+    # The same result under other tags: its check, and where given its status,
+    # cache, reuse and reason.
+    private def retag(result : TestResult, check : String, check_reason : String?,
+                      status : String? = nil, cached : Bool? = nil, reuse : String? = nil,
+                      reason : String? = nil) : TestResult
+      TestResult.new(
+        file: result.file, test: result.test, status: status || result.status,
+        seconds: result.seconds, output: result.output,
+        cached: cached.nil? ? result.cached : cached, source: result.source,
+        reuse: reuse || result.reuse, reason: reason || result.reason,
+        portable_build: result.portable_build, profile: result.profile,
+        roots: result.roots, blocked: result.blocked,
+        check: check, check_reason: check_reason)
     end
 
     private def scratch_path(test_id : TestId) : String
@@ -379,10 +500,9 @@ module Iyi::Stale
       keyer_local : Keyer,
       run_cwd : String,
       scratch_locks : Hash(String, Sync::Mutex),
+      fast : FastPath,
     ) : Outcome
-      if served = serve_without_compiler(file, test_id, is_ambiguous)
-        return served
-      end
+      entered = Time.instant
 
       s = scratch_path(test_id)
       roots = Roots.default_for_file(file, cache_root: @store.cache_root)
@@ -407,6 +527,11 @@ module Iyi::Stale
         cwd: roots.map(run_cwd),
         timeout: @timeout
       )
+      verdict = @cached && !@fresh ? fast_verdict(file, test_id, is_ambiguous, current_profile, roots, keyer_local, fast) : nil
+      if verdict && verdict.served && !fast.audit
+        return served_outcome(file, test_id, verdict.held.not_nil!, current_profile, roots_map, entered)
+      end
+      check_reason = verdict && !verdict.served ? verdict.reason : nil
 
       accept_rules = [] of KeyFile::StaleRule
       block_rules = [] of KeyFile::StaleRule
@@ -418,17 +543,9 @@ module Iyi::Stale
         blockers = @store.blockers(test_id)
         newest_receipt = candidates.first?
 
-        valid = candidates.select do |rec|
-          rec.pass? && !rec.contradicted &&
-            rec.profile.fp == current_profile.fp &&
-            Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?
-        end
+        valid = candidates.select { |rec| valid_candidate?(rec, current_profile, roots, keyer_local) }
 
-        matching_blockers = blockers.select do |rec|
-          rec.version != FORMAT_VERSION || !Trace.supported?(rec.trace.observations) ||
-            (rec.profile.fp == current_profile.fp &&
-              Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?)
-        end
+        matching_blockers = blockers.select { |rec| block_rule?(rec, current_profile, roots, keyer_local) }
         if blockers.any? { |rec| rec.version != FORMAT_VERSION || !Trace.supported?(rec.trace.observations) }
           valid.clear
         end
@@ -445,6 +562,7 @@ module Iyi::Stale
       Dir.mkdir_p(File.dirname(lock_path))
 
       outcome : Outcome? = nil
+      compiled_key : KeyFile::KeyFileData? = nil
       scratch_locks[s].synchronize do
         File.open(lock_path, "a") do |lock_file|
           lock_file.flock_exclusive do
@@ -461,6 +579,7 @@ module Iyi::Stale
             block_path = File.tempname("iyi-stale-block", ".json")
             binary = File.tempname("iyi-test", {{ flag?(:win32) ? ".exe" : nil }})
             trace_file = File.tempname("iyi-trace")
+            inputs_path = File.tempname("iyi-stale-inputs", ".json")
             null_io : File? = nil
             tree : Command::TestTree? = nil
             builds = 0
@@ -468,6 +587,9 @@ module Iyi::Stale
             begin
               File.write(accept_path, accept_rules.to_json)
               File.write(block_path, block_rules.to_json)
+              # The record is only ever the newest check's: a compiler run takes
+              # it away first. An audit keeps it, so the audit can check it.
+              @store.forget_fast(test_id) unless fast.audit
 
               build_out = IO::Memory.new
 
@@ -481,6 +603,7 @@ module Iyi::Stale
                   "--stale-key", out_key_path,
                   "--stale-accept", accept_path,
                   "--stale-block", block_path,
+                  "--stale-inputs", inputs_path,
                 ],
                 env: Profile.build_env,
                 clear_env: true,
@@ -502,6 +625,8 @@ module Iyi::Stale
                          else
                            nil
                          end
+              compiled_key = key_data
+              record_fast_inputs(test_id, file, fast.facts, inputs_path, key_data) unless fast.audit
 
               # Case 1: Cached Hit!
               if key_data && (hit = key_data.hit)
@@ -816,6 +941,7 @@ module Iyi::Stale
               File.delete(out_key_path) if File.file?(out_key_path) rescue nil
               File.delete(accept_path) if File.file?(accept_path) rescue nil
               File.delete(block_path) if File.file?(block_path) rescue nil
+              File.delete(inputs_path) if File.file?(inputs_path) rescue nil
               File.delete(binary) if File.file?(binary) rescue nil
               {% if flag?(:win32) %}
                 File.delete(binary.rchop(".exe") + ".pdb") rescue nil
@@ -827,7 +953,34 @@ module Iyi::Stale
         end
       end
 
-      outcome.not_nil!
+      final = outcome.not_nil!
+      final = Outcome.new(
+        result: retag(final.result, "compiler", check_reason),
+        receipt: final.receipt,
+        explain: final.explain,
+        builds: final.builds
+      )
+      if fast.audit && (decided = verdict) && decided.served && (held = decided.held)
+        if audit_agrees?(compiled_key, held)
+          final = Outcome.new(result: final.result, receipt: final.receipt, explain: final.explain,
+            builds: final.builds, audit: Audit.new(file, true))
+        else
+          reason = if final.result.status != "pass"
+                     "the test is #{final.result.status}"
+                   elsif compiled_key.try(&.hit)
+                     "the check built #{compiled_key.try(&.local.try(&.build)) || "nothing"}, and the record has #{held.local_build}"
+                   else
+                     compute_explain_reason(file, compiled_key, newest_receipt, current_profile, roots, keyer_local, is_ambiguous, final.result.reason)
+                   end
+          final = Outcome.new(
+            result: retag(final.result, "compiler", check_reason, status: "fast path served what the check would not: #{reason}", cached: false, reuse: "miss", reason: reason),
+            receipt: final.receipt,
+            explain: final.explain,
+            builds: final.builds,
+            audit: Audit.new(file, false, reason))
+        end
+      end
+      final
     end
 
     private def compute_explain_reason(

@@ -99,7 +99,10 @@ describe "Iyi::Stale::Runner with -p" do
     with_tempfile("runner_parallel_test") do |cache_root|
       store = Iyi::Stale::Store.new(cache_root)
       runner = Iyi::Stale::Runner.new(files: [] of String, cached: true, parallel: 4, store: store)
-      runner.run_internal
+      # Nothing to run, so the run gets as far as the empty test list and no
+      # further: the count was not refused on the way.
+      error = expect_raises(Iyi::Stale::RunnerError) { runner.run_internal }
+      error.message.not_nil!.should contain "no *_test.iyi found"
     end
   end
 end

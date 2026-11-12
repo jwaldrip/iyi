@@ -4833,7 +4833,8 @@ module Iyi
           hit: result.hit,
           blocked: result.blocked?,
           reach: reach,
-          rg3: result.rg3
+          rg3: result.rg3,
+          inputs_refusal: Stale::Check.inputs_refusal
         )
       elsif key_file = @stale_key
         primary_source = source_or_sources.is_a?(Array) ? source_or_sources.first : source_or_sources

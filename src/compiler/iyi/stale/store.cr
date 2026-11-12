@@ -169,6 +169,14 @@ module Iyi::Stale
       end
     end
 
+    # Writes the fast-path record of a test, atomically. The runner calls this
+    # under the test's scratch lock; a reader sees the old record or the new one.
+    def write_fast(test : TestId, content : String) : Nil
+      lock do
+        Store.atomic_write(fast_path(test), content)
+      end
+    end
+
     def has_marker?(test : TestId) : Bool
       File.file?(marker_path(test))
     end
