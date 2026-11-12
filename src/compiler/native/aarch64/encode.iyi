@@ -52,11 +52,13 @@ pub class Encoder
   getter relocs : Array(Reloc)
   getter fixups : Array(BranchFixup)
   property frame : FrameInfo
+  property table_syms : Array(Int32)   # the symbol of each jump table of the function, by table index
 
   def initialize(@frame : FrameInfo)
     @bytes = [] of UInt8
     @relocs = [] of Reloc
     @fixups = [] of BranchFixup
+    @table_syms = [] of Int32
   end
 
   def here : Int64
@@ -183,6 +185,15 @@ pub class Encoder
       reloc(RelocKind::A64AdrpPage21, inst.sym)
       word(0x90000000_i64 | field(inst.defs[0].reg))
       reloc(RelocKind::A64AddLo12, inst.sym)
+      word(0x91000000_i64 | (field(inst.defs[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::AddrTable
+      sym = inst.sym
+      if inst.table >= 0
+        sym = @table_syms[inst.table]
+      end
+      reloc(RelocKind::A64AdrpPage21, sym)
+      word(0x90000000_i64 | field(inst.defs[0].reg))
+      reloc(RelocKind::A64AddLo12, sym)
       word(0x91000000_i64 | (field(inst.defs[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::LoadGot
       reloc(RelocKind::A64GotPage21, inst.sym)
@@ -328,6 +339,10 @@ pub class Encoder
       word(0xD63F0000_i64 | (field(inst.uses[0].reg) << 5))
     elsif op == MOp::Br
       word(0xD61F0000_i64 | (field(inst.uses[0].reg) << 5))
+    elsif op == MOp::BrTable
+      word(0xD61F0000_i64 | (field(inst.uses[0].reg) << 5))
+    elsif op == MOp::LdrIdx
+      word(0xF8607800_i64 | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::Ret
       word(0xD65F03C0_i64)
     elsif op == MOp::Brk
@@ -430,6 +445,9 @@ end
 # Encodes a whole function. Each block is placed in order; branches are fixed up at the end.
 pub def encode_function(fn : MFunction) : EncodedFunction | EncodeError
   enc = Encoder.new(fn.frame)
+  fn.jump_tables.each do |t|
+    enc.table_syms << t.sym
+  end
   offsets = [] of Int64
   fn.blocks.each do |b|
     offsets << enc.here

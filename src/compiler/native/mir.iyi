@@ -104,6 +104,9 @@ pub enum MOp
   Br              # branch through uses[0]
   Ret
   Brk             # trap with imm
+  AddrTable       # gpr <- address of jump table `table` (adrp, add); the symbol is the table's, set once the object has one
+  LdrIdx          # dst <- [base + index * 8]; uses[0] base, uses[1] index; 64-bit only
+  BrTable         # branch through uses[0] to one of the entries of jump table `table`; the successors are those entries
 end
 
 pub class Operand
@@ -128,6 +131,7 @@ pub class MInst
   property sym : Int32             # symbol index, or -1
   property reloc : RelocKind?      # relocation applied at the instruction
   property target : Int32          # block index for branches, or -1
+  property table : Int32           # jump table index for AddrTable and BrTable, or -1
   property call : Bool
   property terminator : Bool
 
@@ -143,6 +147,7 @@ pub class MInst
     @sym = -1
     @reloc = nil
     @target = -1
+    @table = -1
     @call = false
     @terminator = false
   end
@@ -185,10 +190,24 @@ pub class FrameInfo
   end
 end
 
+# A switch's jump table: the block each entry branches to, in value order from `low` (entry k is the case for
+# low + k, or the default). `sym` is the table's symbol in the object; the driver creates it before the function
+# is encoded, so it is -1 until then.
+pub class JumpTable
+  getter low : Int64
+  getter targets : Array(Int32)
+  property sym : Int32
+
+  def initialize(@low : Int64, @targets : Array(Int32))
+    @sym = -1
+  end
+end
+
 pub class MFunction
   getter name : String
   property blocks : Array(MBlock)
   property frame : FrameInfo
+  property jump_tables : Array(JumpTable)
   property vreg_classes : Array(RegClass)
   property vreg_home : Array(Int32)          # regalloc: physical register, or -1 for a spill slot
   property vreg_slot : Array(Int32)          # regalloc: spill slot index when vreg_home is -1
@@ -196,6 +215,7 @@ pub class MFunction
   def initialize(@name : String)
     @blocks = [] of MBlock
     @frame = FrameInfo.new
+    @jump_tables = [] of JumpTable
     @vreg_classes = [] of RegClass
     @vreg_home = [] of Int32
     @vreg_slot = [] of Int32
