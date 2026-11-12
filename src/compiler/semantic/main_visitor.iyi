@@ -293,6 +293,12 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
+    # `self` in a declared type is the receiver (hosted: the def's self type), not the lexical scope.
+    if node.is_a?(Self)
+      if o = owner
+        return o.as(Type) unless o.is_a?(SemanticProgram)
+      end
+    end
     @program.lookup_type_node(node, @current_type)
   end
 
@@ -532,7 +538,7 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : Primitive) : Bool
     if cd = @current_def
       if rt = cd.return_type
-        set_type(node, @program.lookup_type_node(rt, @current_type))
+        set_type(node, lookup_under(rt, @scope))
         return false
       end
     end

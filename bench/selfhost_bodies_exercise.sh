@@ -104,7 +104,7 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -125,6 +125,9 @@ prove_mutation "next value joins the block type" "$MAIN_VISITOR" \
 prove_mutation "return value joins the def type" "$MAIN_VISITOR" \
   "body_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)" \
   "body_type = child_type(body.as(ASTNode))" -- bodies_at_floor || status=1
+prove_mutation "self in a declared type names the receiver" "$MAIN_VISITOR" \
+  "return o.as(Type) unless o.is_a?(SemanticProgram)" \
+  "return @program.lookup_type_node(node, @current_type) unless o.is_a?(SemanticProgram)" -- bodies_at_floor || status=1
 
 if [ "$status" -eq 0 ]; then
   echo
