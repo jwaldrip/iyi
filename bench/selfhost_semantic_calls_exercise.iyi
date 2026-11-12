@@ -1,11 +1,12 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, NilLiteral, NumberLiteral, StringLiteral}
+import compiler/syntax/ast::{ASTNode, Call}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
-import compiler/semantic/method_lookup::{MethodLookup, Matches}
+import compiler/semantic/method_lookup::{MethodLookup}
 import compiler/semantic/match::{CallSignature, Match}
 import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/call::{CallReceiver}
 
 # Call-lookup driver for bench/selfhost_semantic_calls_exercise.sh.
 #
@@ -13,37 +14,10 @@ import compiler/semantic/restrictions::{ArgRestriction}
 #
 # Builds the fixture's declarations into a SemanticProgram, then resolves each
 # `# call <expr>` line and prints `<expr> => <result>`, the same lines the hosted
-# oracle (bench/selfhost_semantic_calls_oracle.cr) prints. The result format is
-# the oracle's header: matches in order, `none`, or `error: <message>`.
+# oracle (bench/selfhost_semantic_calls_oracle.cr) prints. The receiver rule and
+# the result format are the oracle's header. The receiver and argument typing
+# is in semantic/call.iyi, not here.
 module BenchSelfhostSemanticCallsExercise
-  # The position of the first dot, or -1.
-  def self.first_dot(expr : String) : Int32
-    i = 0
-    while i < expr.bytesize
-      return i if expr[i, 1] == "."
-      i = i + 1
-    end
-    -1
-  end
-
-  # The type of a literal argument: an integer is Int32, a string String, true
-  # or false Bool, and nil Nil. Any other argument is not in the fixtures.
-  def self.literal_type(prog : SemanticProgram, node : ASTNode) : Type
-    if node.is_a?(NumberLiteral)
-      return prog.types["Int32"]
-    end
-    if node.is_a?(StringLiteral)
-      return prog.types["String"]
-    end
-    if node.is_a?(BoolLiteral)
-      return prog.types["Bool"]
-    end
-    if node.is_a?(NilLiteral)
-      return prog.types["Nil"]
-    end
-    raise "argument is not a literal: #{node.class}"
-  end
-
   # One match as the oracle writes it: owner, name, restrictions, return.
   def self.match_text(ts : TypeSystem, m : Match) : String
     defining = m.defining
@@ -76,27 +50,22 @@ module BenchSelfhostSemanticCallsExercise
     end
     call = node.as(Call)
 
-    scope : ModuleType = prog
-    dot = first_dot(expr)
-    if dot >= 0
-      receiver = Parser.new(expr[0, dot], "receiver").parse
-      found = TypeLookup.new(ts.instances).lookup(prog, receiver)
-      if found.is_a?(LookupError)
-        return "error: #{found.as(LookupError).message}"
-      end
-      named = found.as(Type)
-      if !named.is_a?(ModuleType)
-        return "error: receiver is not a module"
-      end
-      scope = named.as(ModuleType).metaclass
+    scope = CallReceiver.scope(prog, ts, call.obj)
+    if scope.nil?
+      return "error: receiver is not resolvable"
     end
+    owner = scope.as(ModuleType)
 
     arg_types = [] of Type
     call.args.each do |arg|
-      arg_types << literal_type(prog, arg)
+      typed = CallReceiver.argument_type(prog, arg)
+      if typed.nil?
+        return "error: argument is not a literal"
+      end
+      arg_types << typed.as(Type)
     end
     signature = CallSignature.new(call.name, arg_types)
-    matches = MethodLookup.lookup_matches(scope, ts, signature, scope, scope, [] of Match)
+    matches = MethodLookup.lookup_matches(owner, ts, signature, owner, owner, [] of Match)
     if matches.error
       return "error: #{matches.error.to_s}"
     end

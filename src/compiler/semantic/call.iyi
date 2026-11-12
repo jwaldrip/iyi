@@ -1,0 +1,83 @@
+module compiler/semantic/call
+
+import compiler/syntax/ast::{ASTNode, BoolLiteral, NilLiteral, NumberLiteral, StringLiteral}
+import compiler/semantic/call_nodes::{CallNodes}
+import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
+import compiler/types/type_system::{TypeSystem}
+import compiler/types/lookup::{LookupError, TypeLookup}
+import compiler/semantic/method_lookup::{MethodLookup}
+import compiler/semantic/match::{CallSignature, Match}
+
+# The receiver and the argument types of a call: the seed of the port of
+# semantic/call.cr. The hosted call pass types an argument from its body, and the
+# bodies slice provides that later. Until then an argument is typed only when it
+# is a literal, and a receiver only when it is a type path or a call with a
+# single match that declares its return type. Anything else is nil, and the
+# caller says why. A call node is read through CallNodes, because this module's
+# name is `call`.
+pub class CallReceiver
+  # The type a call's receiver is: the program for a call without one (*obj* is
+  # nil), else the receiver's type, or nil when the receiver cannot be typed.
+  def self.scope(prog : SemanticProgram, ts : TypeSystem, obj : ASTNode?) : ModuleType?
+    return prog if obj.nil?
+    receiver_type(prog, ts, obj.as(ASTNode))
+  end
+
+  # The type a receiver node names: a call names the instance type of its
+  # single match's declared return; a type path names its metaclass, where its
+  # class methods are.
+  def self.receiver_type(prog : SemanticProgram, ts : TypeSystem, node : ASTNode) : ModuleType?
+    if call = CallNodes.as_call(node)
+      return return_type_of(prog, ts, call.obj, call.name, call.args)
+    end
+    found = TypeLookup.new(ts.instances).lookup(prog, node)
+    return nil if found.is_a?(LookupError)
+    named = found.as(Type)
+    return nil if !named.is_a?(ModuleType)
+    named.as(ModuleType).metaclass
+  end
+
+  # The instance type of the single match of a call with receiver *obj*, method
+  # *name* and arguments *args*, or nil unless the match is unique and declares
+  # its return type. The lookup is the hosted one with analyze_all off.
+  def self.return_type_of(prog : SemanticProgram, ts : TypeSystem, obj : ASTNode?, name : String, args : Array(ASTNode)) : ModuleType?
+    arg_types = [] of Type
+    args.each do |arg|
+      typed = argument_type(prog, arg)
+      return nil if typed.nil?
+      arg_types << typed.as(Type)
+    end
+    owner = scope(prog, ts, obj)
+    return nil if owner.nil?
+    scoped = owner.as(ModuleType)
+    matches = MethodLookup.lookup_matches(scoped, ts, CallSignature.new(name, arg_types), scoped, scoped, [] of Match)
+    return nil if matches.error
+    return nil if matches.matches.size != 1
+    single = matches.matches[0]
+    ret = single.definition.return_type
+    return nil if ret.nil?
+    found = TypeLookup.new(ts.instances).lookup(single.defining, ret.as(ASTNode))
+    return nil if found.is_a?(LookupError)
+    instance = found.as(Type)
+    return nil if !instance.is_a?(ModuleType)
+    instance.as(ModuleType)
+  end
+
+  # The type of a literal argument: an integer is Int32, a string String, true
+  # or false Bool, and nil Nil. Nil for any other argument.
+  def self.argument_type(prog : SemanticProgram, node : ASTNode) : Type?
+    if node.is_a?(NumberLiteral)
+      return prog.types["Int32"]
+    end
+    if node.is_a?(StringLiteral)
+      return prog.types["String"]
+    end
+    if node.is_a?(BoolLiteral)
+      return prog.types["Bool"]
+    end
+    if node.is_a?(NilLiteral)
+      return prog.types["Nil"]
+    end
+    nil
+  end
+end

@@ -18,6 +18,7 @@ IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 LOOKUP_FILE="$REPO/src/compiler/semantic/method_lookup.iyi"
 MATCH_FILE="$REPO/src/compiler/semantic/match.iyi"
+CALL_FILE="$REPO/src/compiler/semantic/call.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -97,9 +98,21 @@ prove_mutation "restrictions are not applied to arguments" "$MATCH_FILE" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "missing arguments without a default are accepted" "$MATCH_FILE" \
+  "    return MatchAttempt.none if given < required" \
+  "    return MatchAttempt.none if false" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "parent types are not searched for methods" "$LOOKUP_FILE" \
   "    parents_of(type).each do |parent|" \
   "    ([] of Type).each do |parent|" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a type path as receiver resolves to its instance, not its metaclass" "$CALL_FILE" \
+  "    named.as(ModuleType).metaclass" \
+  "    named.as(ModuleType)" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
