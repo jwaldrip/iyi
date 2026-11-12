@@ -23,6 +23,7 @@ LOOKUP_FILE="$REPO/src/compiler/semantic/method_lookup.iyi"
 MATCH_FILE="$REPO/src/compiler/semantic/match.iyi"
 CALL_FILE="$REPO/src/compiler/semantic/call.iyi"
 ERROR_FILE="$REPO/src/compiler/semantic/call_error.iyi"
+DEFAULT_FILE="$REPO/src/compiler/semantic/default_arguments.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -231,6 +232,24 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "trait implementers are walked in declaration order, not by name" "$LOOKUP_FILE" \
   "    sorted = sorted_by_name(targets)" \
   "    sorted = targets" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a missing parameter takes the first argument, not its default" "$DEFAULT_FILE" \
+  "out << default.clone" \
+  "out << args[0]" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a named argument is ignored when a default is expanded" "$DEFAULT_FILE" \
+  "DefaultArguments.named_value(named_args, " \
+  "DefaultArguments.named_value(nil, " \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a given positional argument is replaced by its default" "$DEFAULT_FILE" \
+  "out << args[k]" \
+  "out << args[args.size - 1]" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

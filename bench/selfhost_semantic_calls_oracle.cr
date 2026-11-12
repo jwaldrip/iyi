@@ -8,6 +8,7 @@
 #
 #   # call <expr>   =>  <expr> => <matches> | none | error: <first line of the message>
 #   # error <expr>  =>  <expr> => ok | error: <first line of the message>
+#   # expand <call>  =>  <call> => <argument list> (the one match's arguments after default expansion)
 #
 # A call is `name(args)` (the program's own defs and the prelude's), `Type.name(args)`
 # (the metaclass of a type: its class methods and the ones it inherits), or
@@ -198,6 +199,53 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+# The argument list the call's matched def is called with after the hosted
+# expansion (Def#expand_default_arguments): the given positional arguments, then
+# each further parameter's named argument, or else the default value the hosted
+# expansion assigns to it. The defaults are read from the hosted expansion's body
+# (its assignments), not computed here. An expansion that is the def itself (the
+# named arguments cover every default in order) has no assignments, so each
+# parameter is taken from the call.
+def expand_text(program : Iyi::Program, expr : String) : String
+  node = Iyi::Parser.new(expr).parse
+  raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
+  call = node.as(Iyi::Call)
+  receiver = call_scope(program, expr)
+  found, _ = dispatch_matches(receiver, signature_of(program, call))
+  raise "expected one match" unless found.size == 1
+  definition = found[0].def
+  named = call.named_args
+  named_names = named.nil? ? nil : named.map { |na| na.name }
+  expansion = definition.expand_default_arguments(program, call.args.size, named_names)
+  defaults = {} of String => String
+  unless expansion.object_id == definition.object_id
+    expansion.body.as(Iyi::Expressions).expressions.each do |item|
+      assign = item
+      assign = item.as(Iyi::AssignWithRestriction).assign if item.is_a?(Iyi::AssignWithRestriction)
+      next unless assign.is_a?(Iyi::Assign)
+      target = assign.as(Iyi::Assign).target
+      next unless target.is_a?(Iyi::Var)
+      defaults[target.as(Iyi::Var).name] = assign.as(Iyi::Assign).value.to_s
+    end
+  end
+  texts = [] of String
+  definition.args.each_with_index do |arg, k|
+    if k < call.args.size
+      texts << call.args[k].to_s
+    else
+      given = named.nil? ? nil : named.find { |n| n.name == arg.external_name }
+      if given
+        texts << given.value.to_s
+      else
+        texts << defaults.fetch(arg.name, "?")
+      end
+    end
+  end
+  texts.join(", ")
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 # The first line of the error the hosted compile raises for `expr` after the prelude
 # and the fixture, or `ok` when it raises none.
 def error_text(path : String, fixture : String, expr : String) : String
@@ -218,6 +266,9 @@ begin
     elsif line.starts_with?("# error ")
       expr = line[8..].strip
       puts "#{expr} => #{error_text(path, source, expr)}"
+    elsif line.starts_with?("# expand ")
+      expr = line[9..].strip
+      puts "#{expr} => #{expand_text(program, expr)}"
     end
   end
 rescue ex : Exception
