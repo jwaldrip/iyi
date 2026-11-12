@@ -1,3 +1,4 @@
+@[Unsafe("The .iyimod writer and reader pack and unpack the container in raw byte buffers (Pointer(UInt8) from malloc, pointer reads through to_unsafe). The compiler does not check those pointers or their bounds, and the container layout is the point of the module.")]
 module compiler/artifact/iyimod
 
 import std/int

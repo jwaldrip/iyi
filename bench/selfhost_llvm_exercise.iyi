@@ -1,3 +1,4 @@
+@[Unsafe("The exercise checks LLVM's raw context and module handles for null through to_unsafe, and drives the C API with them. Those raw handles are what this test compares, and the compiler does not check them.")]
 import compiler/llvm
 import compiler/llvm/target::{Target, TargetData, TargetMachine}
 import compiler/llvm/context::{Context}
