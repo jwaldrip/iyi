@@ -33,7 +33,7 @@ import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node}
-import compiler/lower/fun::{block_ended?}
+import compiler/lower/fun::{block_ended?, function_attributes}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 
@@ -89,6 +89,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   low.builder.position_at_end(main_entry)
   low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
   low.builder.ret(low.builder.const_int(i32, 0))
+  function_attributes(m)
 end
 
 # The hosted `codegen` visitor's dispatch over one node. A sequence visits each of its
