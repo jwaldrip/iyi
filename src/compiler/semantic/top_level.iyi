@@ -497,7 +497,11 @@ pub class MetaclassType < ModuleType
     super(program, namespace, name)
     # The hosted rule: a class's metaclass inherits from its superclass's metaclass, an
     # enum's from Enum's, and anything else (a class with no superclass, Object) from Class.
-    if @instance_type.is_a?(ClassType)
+    # iyi: Class itself is the metaclass of Value (program.cr 1423). Its parent, Object's metaclass,
+    # is set by the program once Class is registered, since building it needs types["Class"].
+    if name == "Class"
+      # parent set after registration
+    elsif @instance_type.is_a?(ClassType)
       sc = @instance_type.as(ClassType).superclass
       if sc
         @parents << sc.as(ModuleType).metaclass
@@ -512,6 +516,7 @@ pub class MetaclassType < ModuleType
   end
 
   def full_name : String
+    return "Class" if @name == "Class"
     "#{@instance_type.to_s}.class"
   end
 
@@ -1448,9 +1453,11 @@ pub class SemanticProgram < NonGenericModuleType
     @enum_type = en
     @types["Enum"] = en
 
-    klass = NonGenericClassType.new(self, self, "Class", val)
-    klass.abstract = true
+    # iyi: Class is the metaclass of Value, as the hosted program makes it (program.cr 1423). Its parent
+    # is Object's metaclass, as the hosted MetaclassType computes it (types.cr 3918), set once Class exists.
+    klass = MetaclassType.new(self, self, "Class", val)
     @types["Class"] = klass
+    klass.parents << obj.metaclass
     @types["Array"] = GenericClassType.new(self, self, "Array", ["T"], nil, ref)
     @types["Hash"] = GenericClassType.new(self, self, "Hash", ["K", "V"], nil, ref)
     proc_t = GenericClassType.new(self, self, "Proc", ["T", "R"], 0, val)
@@ -2135,6 +2142,17 @@ pub class TopLevelVisitor < Visitor
     if ex = existing
       if ex.is_a?(AliasType)
         ex = ex.as(AliasType).process_value
+      end
+      # iyi: `class Class` reopens the metaclass of Value (primitives.iyi; hosted program.cr 1423), so
+      # its methods (==, ===, self.|) are added to that metaclass, as the hosted program adds them.
+      if ex.is_a?(MetaclassType) && name == "Class"
+        meta = ex.as(MetaclassType)
+        old_meta_scope = @current_type
+        @program.type_bodies << TypeBody.new(meta, node.body)
+        @current_type = meta
+        node.body.accept(self)
+        @current_type = old_meta_scope
+        return false
       end
 
       unless ex.is_a?(ClassType)
