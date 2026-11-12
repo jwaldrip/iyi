@@ -1,0 +1,205 @@
+# The driver for the inline asm gate (bench/native_asm_exercise.sh, SPEC 2.2 C4).
+#
+# `native_asm inventory PARSE_REPORT` reads one line per iyi source file,
+# `path<TAB>parsed` or `path<TAB>scanned<TAB>reason`, where the status and the
+# reason come from line B's parser. A file that holds the text `asm(` is read
+# by the lexical scanner for each target flag set, and every row of it is
+# scanned: the parser does not read asm expressions. A file without that text
+# holds no asm expression and is not scanned. The driver prints one ROW per
+# active expression, one SUMMARY per target, REFUSED for a target that a
+# `{% raise %}` excludes, NOT_EXPRESSION for each line that names `asm(` but
+# starts no expression (a comment, a string or an identifier such as
+# `inline_asm(`), the instruction names per architecture, the constraint
+# strings, and the census. It raises when a file with asm does not scan.
+
+module compiler/tools/native_asm
+
+import compiler/native/asm/inventory::{AsmScanner, AsmSite, AsmInventory, AsmFlags}
+import compiler/platform/target::{Target}
+
+module NativeAsmTool
+  def self.targets : Array(String)
+    ["aarch64-apple-darwin", "aarch64-linux-gnu", "x86_64-linux-gnu", "x86_64-windows-msvc", "wasm32-wasi"]
+  end
+
+  def self.run : Nil
+    args = Program.args
+    unless args.size == 2 && args[0] == "inventory"
+      raise "usage: native_asm inventory PARSE_REPORT"
+    end
+    inventory(args[1])
+  end
+
+  # The 1-based numbers of the lines in `text` that contain the substring `asm(`.
+  def self.asm_line_numbers(text : String) : Array(Int32)
+    found = [] of Int32
+    lines = text.split('\n')
+    i = 0
+    while i < lines.size
+      line = lines[i]
+      j = 0
+      while j + 4 <= line.bytesize
+        if line[j, 4] == "asm("
+          found << i + 1
+          break
+        end
+        j += 1
+      end
+      i += 1
+    end
+    found
+  end
+
+  def self.inventory(report : String) : Nil
+    paths = [] of String
+    statuses = [] of String
+    reasons = [] of String
+    lines = File.read(report).split('\n')
+    i = 0
+    while i < lines.size
+      if lines[i].bytesize > 0
+        fields = lines[i].split('\t')
+        if fields.size < 2
+          raise "#{report}: a line without a status: #{lines[i]}"
+        end
+        paths << fields[0]
+        statuses << fields[1]
+        reasons << (fields.size > 2 ? fields[2] : "")
+      end
+      i += 1
+    end
+
+    texts = [] of String
+    asm_numbers = [] of Array(Int32)
+    substring_total = 0
+    f = 0
+    while f < paths.size
+      text = File.read(paths[f])
+      texts << text
+      numbers = asm_line_numbers(text)
+      asm_numbers << numbers
+      substring_total += numbers.size
+      f += 1
+    end
+
+    triples = targets
+    failures = 0
+    constraints = [] of String
+    arch_names = [] of String
+    arch_mnemonics = [] of Array(String)
+    modifier_count = 0
+    intel_count = 0
+    guarded_count = 0
+    t = 0
+    while t < triples.size
+      triple = triples[t]
+      flags = AsmFlags.new(Target.new(triple))
+      rows = 0
+      expressions = 0
+      parsed = 0
+      scanned = 0
+      f = 0
+      while f < paths.size
+        if asm_numbers[f].size == 0
+          if statuses[f] == "parsed"
+            parsed += 1
+          else
+            scanned += 1
+          end
+        else
+          scanned += 1
+          if t == 0
+            print "SCANNED\t#{paths[f]}\t#{asm_numbers[f].size} asm lines\t#{statuses[f]}: #{reasons[f]}\n"
+          end
+          scanner = AsmScanner.new(texts[f], paths[f], triple, "scanned", flags)
+          scanner.run
+          if message = scanner.failure
+            print "ERROR\t#{triple}\t#{message}\n"
+            failures += 1
+          else
+            if message = scanner.refused
+              print "REFUSED\t#{triple}\t#{message}\n"
+            end
+            expressions += scanner.expressions
+            if t == 0
+              source = texts[f].split('\n')
+              k = 0
+              while k < asm_numbers[f].size
+                number = asm_numbers[f][k]
+                unless scanner.expression_lines.includes?(number)
+                  print "NOT_EXPRESSION\t#{paths[f]}:#{number}\t#{source[number - 1].strip}\n"
+                end
+                k += 1
+              end
+            end
+            scanner.sites.each do |site|
+              rows += 1
+              print_row(triple, site)
+              note_site(site, constraints, arch_names, arch_mnemonics)
+              modifier_count += 1 if AsmInventory.modifier?(site.template)
+              intel_count += 1 if site.dialect == "intel"
+              guarded_count += 1 if site.guard.bytesize > 0
+            end
+          end
+        end
+        f += 1
+      end
+      print "SUMMARY\t#{triple}\tfiles=#{paths.size}\tparsed=#{parsed}\tscanned=#{scanned}\texpressions=#{expressions}\trows=#{rows}\n"
+      t += 1
+    end
+
+    arch = 0
+    while arch < arch_names.size
+      print "MNEMONICS\t#{arch_names[arch]}\t#{arch_mnemonics[arch].join(" ")}\n"
+      arch += 1
+    end
+    c = 0
+    while c < constraints.size
+      print "CONSTRAINT\t#{constraints[c]}\n"
+      c += 1
+    end
+    print "CENSUS\tintel_rows=#{intel_count}\tmodifier_rows=#{modifier_count}\tguarded_rows=#{guarded_count}\tsubstring_lines=#{substring_total}\n"
+    if failures > 0
+      raise "INVENTORY FAILED with #{failures} errors"
+    end
+  end
+
+  def self.print_row(triple : String, site : AsmSite) : Nil
+    guard = site.guard.bytesize > 0 ? site.guard : "-"
+    print "ROW\t#{triple}\t#{site.file}:#{site.line}\t#{site.status}\t#{guard}\t#{site.dialect}\t#{join_items(site.outputs, " ; ")}\t#{join_items(site.inputs, " ; ")}\t#{join_items(site.clobbers, ", ")}\t#{join_items(site.options, ", ")}\t#{AsmInventory.escape(site.template)}\n"
+  end
+
+  def self.join_items(items : Array(String), separator : String) : String
+    out = ""
+    i = 0
+    while i < items.size
+      out = out + separator if i > 0
+      out = out + items[i]
+      i += 1
+    end
+    out
+  end
+
+  # Records each operand's constraint text, and each template's instruction
+  # names under its architecture (the triple's first field).
+  def self.note_site(site : AsmSite, constraints : Array(String), arch_names : Array(String), arch_mnemonics : Array(Array(String))) : Nil
+    arch = site.target.split('-')[0]
+    site.outputs.each do |item|
+      constraints << item unless constraints.includes?(item)
+    end
+    site.inputs.each do |item|
+      constraints << item unless constraints.includes?(item)
+    end
+    index = arch_names.index(arch)
+    if index.nil?
+      arch_names << arch
+      arch_mnemonics << [] of String
+      index = arch_names.size - 1
+    end
+    AsmInventory.mnemonics(site.template).each do |name|
+      arch_mnemonics[index] << name unless arch_mnemonics[index].includes?(name)
+    end
+  end
+end
+
+NativeAsmTool.run
