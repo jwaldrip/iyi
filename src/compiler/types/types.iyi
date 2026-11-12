@@ -801,4 +801,39 @@ pub class TypeQueries
     end
     nil
   end
+
+  # Hosted unbound?: the type still holds a free type parameter. A type parameter
+  # is unbound; a generic instance, tuple, named tuple or union is unbound when one
+  # of its arguments is; a virtual type is unbound when its base is. Anything else
+  # is bound.
+  def self.unbound?(type : Type) : Bool
+    if type.is_a?(TypeParameter)
+      return true
+    end
+    if type.is_a?(VirtualType)
+      return unbound?(type.as(VirtualType).base_type)
+    end
+    if type.is_a?(NamedTupleInstanceType)
+      return any_unbound?(type.as(NamedTupleInstanceType).entries.map(&.type))
+    end
+    if type.is_a?(TupleInstanceType)
+      return any_unbound?(type.as(TupleInstanceType).tuple_types)
+    end
+    if type.is_a?(GenericInstanceType)
+      return any_unbound?(type.as(GenericInstanceType).type_vars.values)
+    end
+    if type.is_a?(UnionType)
+      return any_unbound?(type.as(UnionType).union_types)
+    end
+    false
+  end
+
+  private def self.any_unbound?(types : Array(Type)) : Bool
+    i = 0
+    while i < types.size
+      return true if unbound?(types[i])
+      i = i + 1
+    end
+    false
+  end
 end

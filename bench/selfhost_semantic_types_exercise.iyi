@@ -3,6 +3,7 @@ import compiler/semantic/top_level::{AliasType, GenericClassType, ModuleType, Se
 import compiler/types/types::{TypeQueries}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/intersect::{TypeIntersect}
+import compiler/types/indirection::{TypeIndirection}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/unification::{TypeUnification}
@@ -175,6 +176,12 @@ module BenchSelfhostSemanticTypesExercise
     end
     if member == "remove_typedef"
       return type_text(t.remove_typedef)
+    end
+    if member == "unbound?"
+      return bool_text(TypeQueries.unbound?(t))
+    end
+    if member == "remove_indirection"
+      return type_text(TypeIndirection.remove_indirection(t))
     end
     if member == "including_types"
       return type_text(TypeIntersect.including_union(t.program, t))
