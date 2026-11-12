@@ -138,6 +138,22 @@ else
   fi
 fi
 
+echo "== 2b'. Constant facts once the program is declared: constants in declaration order, the predefined constants, a class variable's owner"
+echo "  (a port-side pin: the oracle has no dump of these, so the expected lines are written by hand)"
+const_facts_expected="$REPO/bench/selfhost_semantic_declarations_const_facts.expected"
+if ! "$PORT" --const-facts "$REPO/bench/fixtures/semdecl_const_facts.iyi" > "$WORK/cf_full.txt" 2> "$WORK/cf_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/cf_pe.txt")"; status=1
+else
+  awk '/^(const (A|B|C) |predef |cvar )/' "$WORK/cf_full.txt" > "$WORK/cf_pin.txt"
+  if cmp -s "$WORK/cf_pin.txt" "$const_facts_expected"; then
+    echo "  semdecl_const_facts.iyi: $(awk 'END{print NR}' "$WORK/cf_pin.txt") facts pinned"
+  else
+    echo "  semdecl_const_facts.iyi: PIN DIFFERS"
+    diff "$const_facts_expected" "$WORK/cf_pin.txt" | head -n 20
+    status=1
+  fi
+fi
+
 echo "== 2c. Prelude parent chains: Nil, Object, Reference, Value, Int32, String and a user class, identical to the oracle"
 if ! "$ORACLE" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/chain_o.txt" 2> "$WORK/chain_oe.txt"; then
   echo "  ORACLE REJECTS: $(head -n 1 "$WORK/chain_oe.txt")"; status=1
@@ -376,6 +392,16 @@ check_lib_types_diverge() {
   return 0
 }
 
+check_const_facts_diverge() {
+  # Builds the driver as it now stands and compares the constant-facts pin. Returns non-zero (caught)
+  # when the driver fails to build or a constant, a predefined constant or a class variable's owner differs.
+  local probe="$WORK/mut_const_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --const-facts "$REPO/bench/fixtures/semdecl_const_facts.iyi" 2>/dev/null | awk '/^(const (A|B|C) |predef |cvar )/' > "$WORK/mut_cf.txt" || return 1
+  cmp -s "$WORK/mut_cf.txt" "$const_facts_expected" || return 1
+  return 0
+}
+
 echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
@@ -383,7 +409,7 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
@@ -484,7 +510,7 @@ prove_mutation "a declared instance variable keeps its bare type: the virtual ty
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
-  "di.owner.instance_vars[di.name] = MetaTypeVar.new(di.name, t, di.initializer)" \
+  "di.owner.instance_vars[di.name] = mv" \
   "nil" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -508,6 +534,21 @@ prove_mutation "a lib fun's return type is dropped once the type system is insta
   "              f.resolved_return = lookup_type_node(rt, owner)" \
   "              f.resolved_return = nil" \
   -- check_lib_types_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a constant is never added to the program's constant list" "$MUT_SEM" \
+  "      @program.const_initializers << const" \
+  "      nil" \
+  -- check_const_facts_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a class variable is declared without its owner" "$MUT_SEM" \
+  "@current_type.class_vars[cvar_name] = mv" \
+  "@current_type.class_vars[cvar_name] = MetaTypeVar.new(cvar_name, decl_type, node.value)" \
+  -- check_const_facts_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "the predefined constants are not found by name" "$MUT_SEM" \
+  "if name == \"ARGC_UNSAFE\" || name == \"ARGV_UNSAFE\"" \
+  "if name == \"NOPE\"" \
+  -- check_const_facts_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
