@@ -49,7 +49,7 @@ end
 # the arguments are lowered in order, then `codegen_primitive` emits the instruction. The
 # value of the call is left in `low.last`.
 pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
-  name = primitive_name(target.body)
+  name = primitive_name_of(target)
   raise "BUG: lower_primitive_call on a def that is not a primitive (hosted call.cr)" if name.nil?
   obj = node.obj
   raise "BUG: a primitive call has no receiver (hosted call.cr: codegen_primitive)" if obj.nil?
@@ -244,4 +244,28 @@ pub def codegen_convert_int(low : Lowerer, from : Type, to : Type, value : Value
     pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} (hosted codegen_convert, range check)")
   end
   low.builder.trunc(value, to_ir)
+end
+
+# The primitive name of a def: from its body when the semantic pass gives it a primitive body
+# (`primitive_name`), otherwise from the marker in its free_vars. The marker is the gate-only
+# stand-in's form (bench/lib/primitive_stand_in.iyi, NEEDS.md row 21): the analysis reads a
+# def's free_vars only for a `forall`, and a marker that is not a type name is never looked up.
+# Deleted with the stand-in.
+pub def primitive_name_of(target : Def) : String?
+  name = primitive_name(target.body)
+  return name unless name.nil?
+  marks = target.free_vars
+  return nil if marks.nil?
+  marks.each do |mark|
+    text = primitive_name_text(mark)
+    return text unless text.nil?
+  end
+  nil
+end
+
+# The name in a `# primitive: <name>` text, or nil for any other text.
+pub def primitive_name_text(text : String) : String?
+  parts = text.split(": ")
+  return nil unless parts.size == 2 && parts[0] == "# primitive"
+  parts[1]
 end
