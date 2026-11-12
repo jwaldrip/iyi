@@ -126,7 +126,7 @@ lower_primitives_check() {
 prove_mutation "the wrapping add is a subtraction" "$REPO/src/compiler/lower/primitives.iyi" \
   "    return low.builder.add(p1, p2)" "    return low.builder.sub(p1, p2)" -- lower_primitives_check || status=1
 prove_mutation "the signed less-than is unsigned" "$REPO/src/compiler/lower/primitives.iyi" \
-  "signed ? IntPredicate::SLT : IntPredicate::ULT" "signed ? IntPredicate::ULT : IntPredicate::ULT" -- lower_primitives_check || status=1
+  "signed_pred(signed, IntPredicate::SLT, IntPredicate::ULT)" "signed_pred(signed, IntPredicate::ULT, IntPredicate::ULT)" -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
