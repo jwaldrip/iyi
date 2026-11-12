@@ -15,8 +15,7 @@
 # native tool and run: its exit status and stdout must equal the hosted executable's. The
 # fixtures return computed values through `LibC.exit`, so the status is observable.
 #
-# The analysis runs with the lib stand-in (bench/lib/lower_gate.iyi, stand_in_lib_types):
-# the semantic pass types no lib definition yet (NEEDS.md, lowering calls row 31).
+# The analysis types each lib and the calls on it (the semantic pass, semantic/lib_call.iyi).
 #
 # Mutation proofs patch the ported code, rebuild the driver, and require the check to
 # fail. A patch that changes nothing is refused by prove_mutation.
@@ -132,7 +131,7 @@ lower_calls_check() {
 # unmutated tree would "catch" every patch, so the baseline must pass first.
 if ! lower_calls_check; then
   echo "  baseline: the unmutated port does not match the hosted module, so no mutation below is counted"
-  status=1
+  exit 1
 fi
 prove_mutation "a function's linkage is external" "$REPO/src/compiler/lower/fun.iyi" \
   "fn.linkage = Linkage::Internal" "fn.linkage = Linkage::External" -- lower_calls_check || status=1
@@ -187,9 +186,9 @@ prove_mutation "a lib call passes no arguments" "$REPO/src/compiler/lower/call.i
 prove_mutation "a lib fun is declared with the iyi calling convention" "$REPO/src/compiler/lower/call.iyi" \
   'func = low.module.add_function(real, fn_type, CallConv::C)' 'func = low.module.add_function(real, fn_type, CallConv::Iyi)' -- lower_calls_check || status=1
 prove_mutation "a lib call's function type returns nil" "$REPO/src/compiler/lower/call.iyi" \
-  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))' 'fn_type = low.module.types.func(params, low.typer.llvm_return_type(low.analysed.program.nil_type))' -- lower_calls_check || status=1
+  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.typer.llvm_return_type(low.analysed.program.nil_type), lib_fun.varargs?)' -- lower_calls_check || status=1
 prove_mutation "a lib call's result is declared as an integer (a pointer result is caught)" "$REPO/src/compiler/lower/call.iyi" \
-  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))' 'fn_type = low.module.types.func(params, low.module.types.int32)' -- lower_calls_check || status=1
+  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.module.types.int32, lib_fun.varargs?)' -- lower_calls_check || status=1
 prove_mutation "a class method is named with the instance separator (# not ::)" "$REPO/src/compiler/lower/fun.iyi" \
   'text = text + co.full_name + "::"' 'text = text + co.full_name + "#"' -- lower_calls_check || status=1
 prove_mutation "a stored struct receiver is loaded, not passed by its address" "$REPO/src/compiler/lower/call.iyi" \
