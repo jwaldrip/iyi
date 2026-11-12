@@ -46,7 +46,7 @@ for phrase in \
   "testing call and block parsing... ok (calls and blocks verified)" \
   "testing control expressions (if, unless, while, until, case, modifiers)... ok (control expressions verified)" \
   "testing declaration parsing... ok (declarations verified)" \
-  "testing real syntax fixtures parsing... ok (1774 nodes across 27 fixtures)" \
+  "testing real syntax fixtures parsing... ok (1819 nodes across 28 fixtures)" \
   "ALL SELFHOST PARSER CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -733,6 +733,7 @@ for fixture in \
   "$REPO"/bench/fixtures/expr_blocks.iyi \
   "$REPO"/bench/fixtures/expr_multi_assign.iyi \
   "$REPO"/bench/fixtures/expr_case_when.iyi \
+  "$REPO"/bench/fixtures/expr_asm.iyi \
   "$REPO"/bench/fixtures/decl_classes_and_structs.iyi \
   "$REPO"/bench/fixtures/decl_getter_type_leak.iyi \
   "$REPO"/bench/fixtures/decl_def.iyi \
@@ -851,6 +852,11 @@ run_proof "mutation 11: altering magic constant default value parsing in parse_p
 run_proof "mutation 12: pushing a call-argument type declaration as a local variable" \
   'push_var(type_declaration) unless @call_args_start_locations.includes?(name_location)' \
   'push_var(type_declaration) unless false && @call_args_start_locations.includes?(name_location)'
+
+# Mutation 13: read the volatile option from the alignstack flag. The asm check
+# reads `volatile` back, so a parser that mixed the options up fails.
+run_proof "mutation 13: mixing up the asm volatile and alignstack options" \
+  'options.includes?("volatile"),' 'options.includes?("alignstack"),'
 
 echo
 echo "== Verification clean state confirmed"

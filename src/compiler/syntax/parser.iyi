@@ -22,7 +22,7 @@ import compiler/foundation/enums
 import compiler/foundation/string_pool::{StringPool}
 import compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState, MacroState}
 import compiler/syntax/lexer::{Lexer}
-import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, Visibility, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover, ImportDecl, UsingDecl, Propagate, ExceptionHandler, Rescue, ProcLiteral, Macro, MacroExpression, MacroLiteral, MacroIf, MacroFor, MacroVar, MacroVerbatim, MagicConstant, StringBuilder, ReadInstanceVar, Require}
+import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, Visibility, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover, ImportDecl, UsingDecl, Propagate, ExceptionHandler, Rescue, ProcLiteral, Macro, MacroExpression, MacroLiteral, MacroIf, MacroFor, MacroVar, MacroVerbatim, MagicConstant, StringBuilder, ReadInstanceVar, Require, Asm, AsmOperand}
 
 pub struct CallArgs
   property args : Array(ASTNode)?
@@ -1235,6 +1235,8 @@ pub class Parser < Lexer
           check_not_inside_def("can't define fun") do
             parse_fun_def(true, true)
           end
+        when Keyword::ASM
+          parse_asm
         when Keyword::POINTEROF
           check_type_declaration { parse_pointerof }
         when Keyword::SIZEOF
@@ -3008,6 +3010,116 @@ pub class Parser < Lexer
     node.end_location = literal.end_location
     node
   end
+
+  # iyi: `asm("template" : outputs : inputs : clobbers : options)`, the oracle's rule.
+  # The template is a string without interpolation; each part after a `:` is
+  # optional, and a `::` skips the part that would be empty.
+  def parse_asm : ASTNode
+    location = @token.location
+    next_token_skip_space
+    check(TokenKind::OP_LPAREN)
+    next_token_skip_space_or_newline
+    text = parse_asm_string("asm")
+    skip_space_or_newline
+
+    outputs : Array(AsmOperand)? = nil
+    inputs : Array(AsmOperand)? = nil
+    clobbers : Array(String)? = nil
+    options = [] of String
+    part_index = 0
+    until @token.type == TokenKind::OP_RPAREN
+      if @token.type == TokenKind::OP_COLON_COLON
+        next_token_skip_space_or_newline
+        part_index += 2
+      elsif @token.type == TokenKind::OP_COLON
+        next_token_skip_space_or_newline
+        part_index += 1
+      else
+        syntax_error("expected `:` or `)` in asm", @token.location)
+      end
+
+      break if part_index > 4
+      if part_index == 1 && @token.type == TokenKind::DELIMITER_START
+        outputs = parse_asm_operands
+      elsif part_index == 2 && @token.type == TokenKind::DELIMITER_START
+        inputs = parse_asm_operands
+      elsif part_index == 3 && @token.type == TokenKind::DELIMITER_START
+        clobbers = parse_asm_clobbers
+      elsif part_index == 4 && @token.type == TokenKind::DELIMITER_START
+        options = parse_asm_options
+      end
+    end
+
+    check(TokenKind::OP_RPAREN)
+    end_location = token_end_location
+    next_token_skip_space
+    node = Asm.new(text, outputs, inputs, clobbers, options.includes?("volatile"),
+      options.includes?("alignstack"), options.includes?("intel"), options.includes?("unwind"))
+    node.at(location).at_end(end_location)
+  end
+
+  def parse_asm_operands : Array(AsmOperand)
+    operands = [] of AsmOperand
+    while true
+      operands << parse_asm_operand
+      if @token.type == TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+      end
+      break unless @token.type == TokenKind::DELIMITER_START
+    end
+    operands
+  end
+
+  def parse_asm_operand : AsmOperand
+    constraint = parse_asm_string("constraint")
+    check(TokenKind::OP_LPAREN)
+    next_token_skip_space_or_newline
+    exp = parse_expression
+    check(TokenKind::OP_RPAREN)
+    next_token_skip_space_or_newline
+    AsmOperand.new(constraint, exp)
+  end
+
+  def parse_asm_clobbers : Array(String)
+    clobbers = [] of String
+    while true
+      clobbers << parse_asm_string("asm clobber")
+      skip_space_or_newline
+      if @token.type == TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+      end
+      break unless @token.type == TokenKind::DELIMITER_START
+    end
+    clobbers
+  end
+
+  # The option names, each checked against the four the oracle accepts.
+  def parse_asm_options : Array(String)
+    options = [] of String
+    while true
+      location = @token.location
+      option = parse_asm_string("asm option")
+      skip_space_or_newline
+      unless ["volatile", "alignstack", "intel", "unwind"].includes?(option)
+        syntax_error("unknown asm option: #{option}", location)
+      end
+      options << option
+      if @token.type == TokenKind::OP_COMMA
+        next_token_skip_space_or_newline
+      end
+      break unless @token.type == TokenKind::DELIMITER_START
+    end
+    options
+  end
+
+  def parse_asm_string(what : String) : String
+    literal = parse_delimiter(want_skip_space: false)
+    unless literal.is_a?(StringLiteral)
+      syntax_error("expected a string literal for #{what}, without interpolation", @token.location)
+    end
+    literal.as(StringLiteral).value
+  end
+
 
   def parse_pointerof : ASTNode
     next_token_skip_space

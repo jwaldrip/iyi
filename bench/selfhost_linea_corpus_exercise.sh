@@ -108,7 +108,20 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" CRYSTAL_PATH="$R
   || { cat "$WORK/golden_decls.log"; echo "  FAILED to build the declaration golden dumper"; exit 1; }
 echo "  built: lexer, parser and declaration tools; three golden dumpers"
 
-# One file: run line B's tool and the golden dumper, record agree or differ.
+# The message a refusal ends with, normalised so that the port's diagnostic and
+# the oracle's exception read as one text: the first line that names an error,
+# with the "Error:" or "Unhandled exception:" prefix and the exception class
+# suffix removed.
+refusal_message() {
+  awk 'NF && /[Ee]rror|xception/ { print; exit }' "$1" \
+    | sed -e 's/^.*[Ee]rror: //' -e 's/^Unhandled exception: //' -e 's/ ([A-Za-z:_]*)[[:space:]]*$//' -e 's/[[:space:]]*$//'
+}
+
+# One file: run line B's tool and the golden dumper, then record one of
+# agree (both succeed with byte-identical output), refused (both refuse with the
+# same normalised message and the same exit status: the same refusal, counted as
+# agreement in its own column), or differ. A differing file records its first
+# difference: the oracle's line (its node kind or message) beside line B's.
 compare() {
   tool="$1"
   corpus="$2"
@@ -118,14 +131,28 @@ compare() {
     parser)       mine="$WORK/parser"; golden="$WORK/golden_parser" ;;
     declarations) mine="$WORK/decls";  golden="$WORK/golden_decls" ;;
   esac
-  if "$mine" "$rel" > "$WORK/mine.out" 2> "$WORK/mine.err" \
-     && IYI_PATH="$REPO/src" "$golden" "$rel" > "$WORK/golden.out" 2> "$WORK/golden.err" \
-     && cmp -s "$WORK/mine.out" "$WORK/golden.out"; then
+  "$mine" "$rel" > "$WORK/mine.out" 2> "$WORK/mine.err"; mine_rc=$?
+  IYI_PATH="$REPO/src" "$golden" "$rel" > "$WORK/golden.out" 2> "$WORK/golden.err"; golden_rc=$?
+  detail=""
+  if [ "$mine_rc" -eq 0 ] && [ "$golden_rc" -eq 0 ] && cmp -s "$WORK/mine.out" "$WORK/golden.out"; then
     verdict=agree
+  elif [ "$mine_rc" -ne 0 ] && [ "$golden_rc" -ne 0 ] && [ "$mine_rc" -eq "$golden_rc" ] \
+       && [ "$(refusal_message "$WORK/mine.err")" = "$(refusal_message "$WORK/golden.err")" ]; then
+    verdict=refused
   else
     verdict=differ
+    if [ "$mine_rc" -ne 0 ] || [ "$golden_rc" -ne 0 ]; then
+      detail="port exit $mine_rc: $(refusal_message "$WORK/mine.err") | oracle exit $golden_rc: $(refusal_message "$WORK/golden.err")"
+    else
+      line=$(cmp "$WORK/mine.out" "$WORK/golden.out" 2>/dev/null | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p')
+      if [ -n "$line" ]; then
+        detail="line $line: oracle [$(sed -n "${line}p" "$WORK/golden.out")] | port [$(sed -n "${line}p" "$WORK/mine.out")]"
+      else
+        detail="output length differs: port $(wc -l < "$WORK/mine.out" | tr -d ' ') lines, oracle $(wc -l < "$WORK/golden.out" | tr -d ' ') lines"
+      fi
+    fi
   fi
-  printf '%s\t%s\t%s\t%s\n' "$tool" "$corpus" "$rel" "$verdict" >> "$RESULTS"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$tool" "$corpus" "$rel" "$verdict" "$detail" >> "$RESULTS"
 }
 
 echo
@@ -147,34 +174,37 @@ echo "  $(wc -l < "$RESULTS" | tr -d ' ') tool-file runs"
 
 echo
 echo "== 3. Agreement per tool and corpus, beside line A's measured figures (PR #104)"
-printf '  %-13s %-9s %6s %6s %6s %6s  %-6s  %s\n' tool corpus files agree differ floor verdict "line A (PR #104)"
+echo "  agreeing = agree + refused (the same refusal on both sides); the floor applies to agreeing"
+printf '  %-13s %-9s %6s %6s %8s %6s %6s  %-6s  %s\n' tool corpus files agree refused differ floor verdict "line A (PR #104)"
 fails=0
 for tool in lexer parser declarations; do
   for corpus in samples prelude std self fixtures; do
     total=$(awk -F'\t' -v t="$tool" -v c="$corpus" '$1 == t && $2 == c' "$RESULTS" | wc -l | tr -d ' ')
     agree=$(awk -F'\t' -v t="$tool" -v c="$corpus" '$1 == t && $2 == c && $4 == "agree"' "$RESULTS" | wc -l | tr -d ' ')
-    differ=$((total - agree))
+    refused=$(awk -F'\t' -v t="$tool" -v c="$corpus" '$1 == t && $2 == c && $4 == "refused"' "$RESULTS" | wc -l | tr -d ' ')
+    differ=$((total - agree - refused))
+    agreeing=$((agree + refused))
     floor=$(floor_of "$tool" "$corpus")
     if [ "${LINEA_FLOOR_BUMP:-0}" = 1 ]; then
       floor=$((floor + 1))
     fi
     if [ "$total" -eq 0 ]; then
       verdict="empty"
-    elif [ "$agree" -lt "$floor" ]; then
+    elif [ "$agreeing" -lt "$floor" ]; then
       verdict="BELOW"
       fails=$((fails + 1))
-    elif [ "$agree" -gt "$floor" ]; then
+    elif [ "$agreeing" -gt "$floor" ]; then
       verdict="better"
     else
       verdict="ok"
     fi
-    printf '  %-13s %-9s %6s %6s %6s %6s  %-6s  %s\n' "$tool" "$corpus" "$total" "$agree" "$differ" "$floor" "$verdict" "$(linea_figure "$tool" "$corpus")"
+    printf '  %-13s %-9s %6s %6s %8s %6s %6s  %-6s  %s\n' "$tool" "$corpus" "$total" "$agree" "$refused" "$differ" "$floor" "$verdict" "$(linea_figure "$tool" "$corpus")"
   done
 done
 
 echo
-echo "== 4. Files that differ, by tool"
-awk -F'\t' '$4 == "differ" { printf "  %-13s %-9s %s\n", $1, $2, $3 }' "$RESULTS"
+echo "== 4. Files that differ, by tool: the oracle's node kind or message at the first difference"
+awk -F'\t' '$4 == "differ" { printf "  %s %s %s\n      %s\n", $1, $2, $3, $5 }' "$RESULTS"
 
 echo
 echo "== 5. Floor check"

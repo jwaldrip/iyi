@@ -734,6 +734,25 @@ module BenchSelfhostParserExercise
     assert(exps_leak[0].is_a?(Call), "getter with a type declaration argument is a call")
     assert(exps_leak[1].is_a?(Call), "a name after a call-argument type declaration is a call")
     assert(exps_leak[1].as(Call).name == "name", "leaked name is the call name")
+
+    # Inline assembly: the template, the operand groups, the clobbers and the
+    # options, each read back. The `::` form leaves the middle parts empty.
+    p_asm = Parser.new("asm(\"nop\" : \"=r\"(x) : \"r\"(y) : \"memory\" : \"volatile\")\nasm(\"pause\" :::: \"volatile\")")
+    exps_asm = p_asm.parse.as(Expressions).expressions
+    asm_full = exps_asm[0].as(Asm)
+    assert(asm_full.text == "nop", "asm template")
+    assert(asm_full.volatile == true, "asm volatile option")
+    assert(asm_full.alignstack == false, "asm alignstack defaults off")
+    outs_full = asm_full.outputs.as(Array(AsmOperand))
+    assert(outs_full.size == 1 && outs_full[0].constraint == "=r", "asm output operand constraint")
+    ins_full = asm_full.inputs.as(Array(AsmOperand))
+    assert(ins_full.size == 1 && ins_full[0].constraint == "r", "asm input operand constraint")
+    clobbers_full = asm_full.clobbers.as(Array(String))
+    assert(clobbers_full.size == 1 && clobbers_full[0] == "memory", "asm clobber")
+    asm_bare = exps_asm[1].as(Asm)
+    assert(asm_bare.text == "pause", "bare asm template")
+    assert(asm_bare.volatile == true, "bare asm volatile option")
+    assert(asm_bare.outputs.nil? && asm_bare.inputs.nil?, "empty asm parts are absent")
     puts "ok (declarations verified)"
   end
 
@@ -755,6 +774,7 @@ module BenchSelfhostParserExercise
       "bench/fixtures/expr_blocks.iyi",
       "bench/fixtures/expr_multi_assign.iyi",
       "bench/fixtures/expr_case_when.iyi",
+      "bench/fixtures/expr_asm.iyi",
       "bench/fixtures/decl_classes_and_structs.iyi",
       "bench/fixtures/decl_getter_type_leak.iyi",
       "bench/fixtures/decl_def.iyi",

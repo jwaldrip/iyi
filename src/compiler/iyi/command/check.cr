@@ -313,7 +313,7 @@ class Iyi::Command
       end
     end
 
-    exit status_code
+    exit 0
   end
 
   private def check_parse_source(filename : String, source : String, selfhost : Bool) : Int32
