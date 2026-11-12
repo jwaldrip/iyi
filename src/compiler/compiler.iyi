@@ -22,6 +22,7 @@ import compiler/platform/target
 import compiler/loader::{Loader, ModuleInfo, IyiPath}
 import compiler/syntax/token::{NumberKind}
 import compiler/macros/interpreter::{MacroInterpreter}
+import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
 
 import compiler/ir/module::{Module}
@@ -131,7 +132,7 @@ pub class Compiler
     module_tops = {} of String => Array(ASTNode)
     resolved_modules.each do |mod_info|
       mod_top = [] of ASTNode
-      Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, mod_top)
+      Compiler.extract_declarations(mod_info.ast, classes, funs, defs, libs, mod_top, MacroTargetFlags.for_triple(@config.target_triple || @backend.default_triple, [] of String))
       module_tops[mod_info.filename] = mod_top
     end
     Loader.initialiser_order(resolved_modules).each do |mod_info|
@@ -312,10 +313,11 @@ pub class Compiler
     defs : Hash(String, Def),
     libs : Array(LibDef),
     top_level : Array(ASTNode) = [] of ASTNode,
+    flags : Array(String) = MacroTargetFlags.host([] of String),
   ) : Nil
     if node.is_a?(Expressions)
       node.as(Expressions).expressions.each do |e|
-        extract_declarations(e, classes, funs, defs, libs, top_level)
+        extract_declarations(e, classes, funs, defs, libs, top_level, flags)
       end
     elsif node.is_a?(ClassDef)
       classes << node.as(ClassDef)
@@ -353,13 +355,13 @@ pub class Compiler
       cdef.body = Expressions.new(body_nodes)
       classes << cdef
     elsif node.is_a?(VisibilityModifier)
-      extract_declarations(node.as(VisibilityModifier).exp, classes, funs, defs, libs, top_level)
+      extract_declarations(node.as(VisibilityModifier).exp, classes, funs, defs, libs, top_level, flags)
     elsif node.is_a?(MacroIf)
       mif = node.as(MacroIf)
-      interp = MacroInterpreter.new
+      interp = MacroInterpreter.new(nil, flags)
       cond_val = interp.evaluate(mif.cond)
       branch = MacroMethods.truthy?(cond_val) ? mif.then : mif.else
-      extract_declarations(branch, classes, funs, defs, libs, top_level)
+      extract_declarations(branch, classes, funs, defs, libs, top_level, flags)
     elsif node.is_a?(Alias) || node.is_a?(ImplDef) || node.is_a?(MacroFor) || node.is_a?(MacroExpression)
       # Declarations or compile-time constructs, not top-level runtime code
     elsif node.is_a?(ImportDecl) || node.is_a?(Require)

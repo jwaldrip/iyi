@@ -38,6 +38,7 @@ module CompileTool
     output_file = "a.out"
     emit_obj_only = false
     obj_output_file : String? = nil
+    target_arg : String? = nil
     verbose = false
     probe_phase = false
     single_file = false
@@ -58,6 +59,15 @@ module CompileTool
         single_file = true
       when "--probe-verify"
         probe_verify = true
+      when "--target"
+        i = i + 1
+        if i < args.size
+          target_arg = args[i]
+        else
+          STDERR.puts "Error: --target requires a triple"
+          LibC.exit(1)
+          return
+        end
       when "--emit-obj"
         emit_obj_only = true
         i = i + 1
@@ -101,7 +111,7 @@ module CompileTool
       return
     end
 
-    config = CompilerConfig.new(output_file, emit_obj_only, obj_output_file, verbose, nil, probe_phase, single_file, probe_verify)
+    config = CompilerConfig.new(output_file, emit_obj_only, obj_output_file, verbose, target_arg, probe_phase, single_file, probe_verify)
     compiler = Compiler.new(config, Loader.new, LlvmBackend.new)
     compiler.compile(in_file)
   end

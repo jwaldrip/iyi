@@ -33,6 +33,10 @@ import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, Cla
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/methods::{MacroMethods}
+import compiler/macros/engine::{MacroEngine}
+import compiler/macros/target_flags::{MacroTargetFlags}
+import compiler/semantic/normalizer::{Normalizer}
+import compiler/syntax/ast::{MacroExpression}
 
 import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/values::{Value}
@@ -661,6 +665,7 @@ pub class CodeGenVisitor < Visitor
 
   def initialize(@mod : Module, @program : SemanticProgram, @main_visitor : MainVisitor)
     @types = @mod.types
+    @macro_flags = MacroTargetFlags.for_triple(@mod.triple, [] of String)
     @builder = Builder.new(@mod)
     @fn_types = Hash(String, IrType).new
     @current_fn = nil
@@ -2646,10 +2651,23 @@ pub class CodeGenVisitor < Visitor
   # as the oracle expands it. Walking both branches would refuse a flag the
   # target does not set.
   def visit(node : MacroIf) : Bool
-    interp = MacroInterpreter.new
+    interp = MacroInterpreter.new(nil, @macro_flags)
     cond_val = interp.evaluate(node.cond)
     branch = MacroMethods.truthy?(cond_val) ? node.then : node.else
     branch.accept(self)
+    false
+  end
+
+  # `{{ ... }}` in a body: the macro engine expands the site with the enclosing type as `@type`, as the hosted compiler
+  # does. The expansion is parsed, normalised and emitted in place of the site. A site that fails to expand is refused.
+  def visit(node : MacroExpression) : Bool
+    scope = (@current_self_type || "<Program>").split("(")[0]
+    report = MacroEngine.new(@macro_flags).site_report(node, scope)
+    if failure = report.failure
+      refuse_port("port limitation: the macro site in #{scope_name} fails to expand: #{failure.message} (no IR is written)")
+    end
+    expanded = Normalizer.new.normalize(Parser.new(report.output).parse)
+    expanded.accept(self)
     false
   end
 
@@ -4676,10 +4694,10 @@ pub def compile_source_to_module(src : String, filename : String, mod : Module) 
   compile_declarations_to_module(classes, funs, defs, libs, filename, mod, prog, mv, [node] of ASTNode)
 end
 
-def collect_constants_from(node : ASTNode, into : Hash(String, ASTNode)) : Nil
+def collect_constants_from(node : ASTNode, into : Hash(String, ASTNode), flags : Array(String)) : Nil
   if node.is_a?(Expressions)
     node.as(Expressions).expressions.each do |e|
-      collect_constants_from(e, into)
+      collect_constants_from(e, into, flags)
     end
   elsif node.is_a?(Assign)
     assign = node.as(Assign)
@@ -4690,11 +4708,11 @@ def collect_constants_from(node : ASTNode, into : Hash(String, ASTNode)) : Nil
     end
   elsif node.is_a?(MacroIf)
     mif = node.as(MacroIf)
-    interp = MacroInterpreter.new
+    interp = MacroInterpreter.new(nil, flags)
     cond_val = interp.evaluate(mif.cond)
     is_t = MacroMethods.truthy?(cond_val)
     branch = is_t ? mif.then : mif.else
-    collect_constants_from(branch, into)
+    collect_constants_from(branch, into, flags)
   elsif node.is_a?(MacroLiteral)
     ml = node.as(MacroLiteral)
     ml.value.split('\n').each do |line|
@@ -4714,22 +4732,22 @@ def collect_constants_from(node : ASTNode, into : Hash(String, ASTNode)) : Nil
   end
 end
 
-def expand_body_nodes(node : ASTNode) : Array(ASTNode)
+def expand_body_nodes(node : ASTNode, flags : Array(String)) : Array(ASTNode)
   res = [] of ASTNode
   if node.is_a?(Expressions)
     node.as(Expressions).expressions.each do |e|
-      res.concat(expand_body_nodes(e))
+      res.concat(expand_body_nodes(e, flags))
     end
   elsif node.is_a?(MacroIf)
     mif = node.as(MacroIf)
-    interp = MacroInterpreter.new
+    interp = MacroInterpreter.new(nil, flags)
     cond_val = interp.evaluate(mif.cond)
     branch = MacroMethods.truthy?(cond_val) ? mif.then : mif.else
-    res.concat(expand_body_nodes(branch))
+    res.concat(expand_body_nodes(branch, flags))
   elsif node.is_a?(VisibilityModifier)
     # `private def f` is a def under a visibility modifier; the method table
     # registers the def, as the oracle's does.
-    res.concat(expand_body_nodes(node.as(VisibilityModifier).exp))
+    res.concat(expand_body_nodes(node.as(VisibilityModifier).exp, flags))
   else
     res << node
   end
@@ -4782,7 +4800,7 @@ pub def compile_declarations_to_module(
 
   # Collect top-level constants
   roots.each do |r|
-    collect_constants_from(r, cg.constants)
+    collect_constants_from(r, cg.constants, MacroTargetFlags.for_triple(mod.triple, [] of String))
   end
 
   # Process custom types (structs and classes)
@@ -4806,7 +4824,7 @@ pub def compile_declarations_to_module(
 
     # Process body
     if b = cd.body
-      exps = expand_body_nodes(b)
+      exps = expand_body_nodes(b, MacroTargetFlags.for_triple(mod.triple, [] of String))
       exps.each do |exp|
         if exp.is_a?(TypeDeclaration)
           td = exp.as(TypeDeclaration)
@@ -4880,7 +4898,7 @@ pub def compile_declarations_to_module(
         end
 
         if b = template.body
-          exps = expand_body_nodes(b)
+          exps = expand_body_nodes(b, MacroTargetFlags.for_triple(mod.triple, [] of String))
           exps.each do |exp|
             if exp.is_a?(TypeDeclaration)
               td = exp.as(TypeDeclaration)
