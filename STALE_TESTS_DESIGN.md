@@ -431,7 +431,7 @@ If the census shows almost all real tests always running, work is not marked com
 * Where codegen stops after a `NoReturn`, edits behind it rerun.
 * Build side: a fast serve also compares ctime, dev and inode, which user-space tools cannot set, so writers that preserve size and mtime (`cp -p`, `tar`, `rsync -t`) cannot hide a content change from it.
 * Run side: A3's stat comparison still cannot observe content modifications when size and mtime are preserved.
-* Stamp argument: it assumes the clock moves forward and that the file system keeps ctime. A clock set backwards, or a file system without ctime, can leave a changed file with the stamp its record holds, so a fast serve can miss a change the compiler check would see.
+* Stamp argument: it assumes the clock moves forward and that the file system keeps ctime. A file system that reports no change time at all gets no fast-path record, so its tests take the compiler path. A clock set backwards, or a file system that reports a change time it does not keep, can leave a changed file with the stamp its record holds, so a fast serve can miss a change the compiler check would see.
 * Process limits or loader settings outside recorded profile properties.
 * Per-case reuse within a test file.
 * Non-host targets.
