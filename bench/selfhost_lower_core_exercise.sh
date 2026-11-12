@@ -65,7 +65,7 @@ passed=0
 # Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed (the
 # port numbers String 31, the hosted module 1: the typer slice's LowerTypeIds numbering). They are waiting
 # by name, and the gate fails if one of them starts to match, so this list is kept honest.
-KNOWN_DIVERGED="lower_string lower_symbol"
+KNOWN_DIVERGED="lower_string lower_symbol lower_string_long"
 e2e=""
 module_same=0
 module_differ=0
@@ -199,6 +199,22 @@ lower_core_check() {
   done
   return 0
 }
+# The long-string name: a string constant longer than 18 bytes is named by its first 19 bytes and `...` (hosted
+# codegen.cr:3463). The fixture's module differs only in the String type id (NEEDS.md row 16), so the gate
+# compares the name in the port's own module text rather than the whole module.
+long_name_check() {
+  "$IYI" build -o "$WORK/port-n" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/n.build.log" 2>&1 || return 1
+  "$WORK/port-n" emit "$REPO/bench/fixtures/lower_string_long.iyi" "$WORK/lower_string_long.oracle.ll" > "$WORK/n.ll" 2>&1 || return 1
+  needle="a string constant l...'"
+  awk -v n="$needle" 'index($0, n) > 0 { ok = 1 } END { exit !ok }' "$WORK/n.ll"
+}
+echo "  the long string constant is named by its hosted truncated name:"
+if long_name_check; then
+  echo "    yes"
+else
+  echo "    NO: the long-string name differs from the hosted truncated name"
+  status=1
+fi
 echo "  the mutation check passes on the unmutated code:"
 if lower_core_check; then
   echo "    yes"
@@ -206,6 +222,8 @@ else
   echo "    NO: the mutation proofs below would prove nothing"
   status=1
 fi
+prove_mutation "a long string constant is named in full, not truncated" "$REPO/src/compiler/lower/helpers.iyi" \
+  'name_text = str[0, 19] + "..."' 'name_text = str' -- long_name_check || status=1
 prove_mutation "argv is stored from the argc parameter" "$REPO/src/compiler/lower/lower.iyi" \
   "store_aligned(low, fn.param(1), argv_global)" "store_aligned(low, fn.param(0), argv_global)" -- lower_core_check || status=1
 prove_mutation "main returns 1" "$REPO/src/compiler/lower/lower.iyi" \
