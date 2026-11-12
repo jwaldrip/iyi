@@ -1,4 +1,4 @@
-def last_yield
+def last_yield(&)
   yield 2
 end
 

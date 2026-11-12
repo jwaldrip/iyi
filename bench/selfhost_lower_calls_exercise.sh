@@ -159,6 +159,14 @@ prove_mutation "a block call allocates none of the block's variables" "$REPO/src
   "  allocate_block_vars(low, block, block_ctx.vars)" "  block_ctx.vars.size" -- lower_calls_check || status=1
 prove_mutation "an inlined def's argument is allocated with the nil type" "$REPO/src/compiler/lower/call.iyi" \
   "    alloca_local(low, vars, arg.name, arg_types[i])" "    alloca_local(low, vars, arg.name, low.analysed.program.nil_type)" -- lower_calls_check || status=1
+prove_mutation "a block branch's value is merged as the last branch" "$REPO/src/compiler/lower/block.iyi" \
+  "  phi.add_branch(low, value, false)" "  phi.add_branch(low, value, true)" -- lower_calls_check || status=1
+prove_mutation "a block branch's value is dropped" "$REPO/src/compiler/lower/block.iyi" \
+  "      value = v.as(Value)" "      value = nil" -- lower_calls_check || status=1
+prove_mutation "a break from a block drops its value" "$REPO/src/compiler/lower/lower.iyi" \
+  "    branch_to_phi(low, block_phi.as(BranchPhi), node.exp)" "    branch_to_phi(low, block_phi.as(BranchPhi), nil)" -- lower_calls_check || status=1
+prove_mutation "a return from an inlined def drops its value" "$REPO/src/compiler/lower/lower.iyi" \
+  "    branch_to_phi(low, rp.as(BranchPhi), node.exp)" "    branch_to_phi(low, rp.as(BranchPhi), nil)" -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

@@ -1,4 +1,4 @@
-def pick(c : Bool)
+def pick(c : Bool, &)
   yield 1
   if c
     return 3
