@@ -92,32 +92,38 @@ _prove_mutation_run() {
     exit 2
   fi
 
-  local original patched backup log rc=0 monitor_was_on=0
-  original="$(cat "$file"; printf x)"
-  original="${original%x}"
-  case "$original" in
-    *"$old"*) ;;
-    *)
-      echo "PATCH CHANGED NOTHING: this proves nothing ($label: text not found in $file)"
-      exit 3
-      ;;
-  esac
-  # The replacement is written unquoted. bash 3.2 (darwin's /bin/bash, which a runner with no newer bash on its PATH
-  # runs these gates with) keeps a quoted replacement's quotes as text: every mutation arrived wrapped in '"', and a
-  # patch that changes nothing changed two bytes and was run as a mutation. From bash 5.2 an unquoted '&' in a
-  # replacement is the matched text unless patsub_replacement is off, so it is turned off around the edit.
-  local patsub_was_on=0
-  if shopt -q patsub_replacement 2>/dev/null; then
-    patsub_was_on=1
-    shopt -u patsub_replacement
+  # The edit is made by perl, on bytes, with index and substr: literal text, never a pattern. It was a bash
+  # substitution on the whole file held in a variable, which had two defects under bash 3.2 (darwin's /bin/bash, the
+  # bash of a macos runner). A quoted replacement kept its quotes as text, so every mutation arrived wrapped in '"'
+  # and a patch that changes nothing changed two bytes and ran as a mutation. And the substitution is quadratic
+  # there: 2.4 seconds on a 5 KB file, more than a minute on an 82 KB one, about three quarters of an hour on the
+  # parser, per mutation; the darwin gates never finished.
+  local patched backup log rc=0 monitor_was_on=0 edit_rc=0
+  patched="$(mktemp)"
+  MUT_OLD="$old" MUT_NEW="$new" MUT_MODE="$mode" perl -e '
+    local $/; binmode STDIN; binmode STDOUT;
+    my $s = <STDIN>; my $old = $ENV{MUT_OLD}; my $new = $ENV{MUT_NEW};
+    exit 4 if length($old) == 0 || index($s, $old) < 0;
+    my ($out, $pos, $i) = ("", 0, 0);
+    while (($i = index($s, $old, $pos)) >= 0) {
+      $out .= substr($s, $pos, $i - $pos) . $new;
+      $pos = $i + length($old);
+      last unless $ENV{MUT_MODE} eq "all";
+    }
+    print $out . substr($s, $pos);
+  ' < "$file" > "$patched" || edit_rc=$?
+  if [ "$edit_rc" -eq 4 ]; then
+    rm -f "$patched"
+    echo "PATCH CHANGED NOTHING: this proves nothing ($label: text not found in $file)"
+    exit 3
   fi
-  if [ "$mode" = all ]; then
-    patched="${original//"$old"/$new}"
-  else
-    patched="${original/"$old"/$new}"
+  if [ "$edit_rc" -ne 0 ]; then
+    rm -f "$patched"
+    echo "prove_mutation: the edit of $file could not be made ($label: perl exit $edit_rc)" >&2
+    exit 2
   fi
-  if [ "$patsub_was_on" -eq 1 ]; then shopt -s patsub_replacement; fi
-  if [ "$patched" = "$original" ]; then
+  if cmp -s "$file" "$patched"; then
+    rm -f "$patched"
     echo "PATCH CHANGED NOTHING: this proves nothing ($label: replacement left $file unchanged)"
     exit 3
   fi
@@ -130,7 +136,8 @@ _prove_mutation_run() {
   set -m
   _PM_MONITOR=1
   _prove_mutation_arm "$file" "$backup"
-  printf '%s' "$patched" > "$file"
+  cat "$patched" > "$file"
+  rm -f "$patched"
 
   { "$@" > "$log" 2>&1 & } 2>/dev/null
   _PM_CHILD=$!

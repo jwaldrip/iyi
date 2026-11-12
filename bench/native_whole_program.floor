@@ -4,7 +4,7 @@ samples/iyi/basics.iyi run-equal
 samples/iyi/calc.iyi run-equal
 samples/iyi/collections.iyi run-equal
 samples/iyi/config.iyi run-equal
-samples/iyi/cores.iyi native
+samples/iyi/cores.iyi run-equal
 samples/iyi/derive.iyi run-equal
 samples/iyi/enums.iyi run-equal
 samples/iyi/errors.iyi run-equal
