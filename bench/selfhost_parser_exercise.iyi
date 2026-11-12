@@ -753,6 +753,13 @@ module BenchSelfhostParserExercise
     assert(asm_bare.text == "pause", "bare asm template")
     assert(asm_bare.volatile == true, "bare asm volatile option")
     assert(asm_bare.outputs.nil? && asm_bare.inputs.nil?, "empty asm parts are absent")
+
+    # A concurrent select: its `when`s are an assignment of a call and a call, read back.
+    p_sel = Parser.new("select\nwhen got = ch.receive\n  got\nwhen timeout(5)\n  1\nend")
+    sel = p_sel.parse.as(Select)
+    assert(sel.whens.size == 2, "select has two whens")
+    assert(sel.whens[0].conds[0].is_a?(Assign), "select assignment when")
+    assert(sel.whens[1].conds[0].is_a?(Call), "select call when")
     puts "ok (declarations verified)"
   end
 
@@ -775,6 +782,7 @@ module BenchSelfhostParserExercise
       "bench/fixtures/expr_multi_assign.iyi",
       "bench/fixtures/expr_case_when.iyi",
       "bench/fixtures/expr_asm.iyi",
+      "bench/fixtures/expr_select.iyi",
       "bench/fixtures/decl_classes_and_structs.iyi",
       "bench/fixtures/decl_getter_type_leak.iyi",
       "bench/fixtures/decl_def.iyi",

@@ -46,7 +46,7 @@ for phrase in \
   "testing call and block parsing... ok (calls and blocks verified)" \
   "testing control expressions (if, unless, while, until, case, modifiers)... ok (control expressions verified)" \
   "testing declaration parsing... ok (declarations verified)" \
-  "testing real syntax fixtures parsing... ok (1819 nodes across 28 fixtures)" \
+  "testing real syntax fixtures parsing... ok (1863 nodes across 29 fixtures)" \
   "ALL SELFHOST PARSER CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -734,6 +734,7 @@ for fixture in \
   "$REPO"/bench/fixtures/expr_multi_assign.iyi \
   "$REPO"/bench/fixtures/expr_case_when.iyi \
   "$REPO"/bench/fixtures/expr_asm.iyi \
+  "$REPO"/bench/fixtures/expr_select.iyi \
   "$REPO"/bench/fixtures/decl_classes_and_structs.iyi \
   "$REPO"/bench/fixtures/decl_getter_type_leak.iyi \
   "$REPO"/bench/fixtures/decl_def.iyi \
@@ -857,6 +858,11 @@ run_proof "mutation 12: pushing a call-argument type declaration as a local vari
 # reads `volatile` back, so a parser that mixed the options up fails.
 run_proof "mutation 13: mixing up the asm volatile and alignstack options" \
   'options.includes?("volatile"),' 'options.includes?("alignstack"),'
+
+# Mutation 14: refuse the assignment form of a select `when`. The select check
+# reads an assignment back, so a parser that refuses it fails.
+run_proof "mutation 14: refusing the assignment form of a select when" \
+  'if node.is_a?(Assign)' 'if false && node.is_a?(Assign)'
 
 echo
 echo "== Verification clean state confirmed"

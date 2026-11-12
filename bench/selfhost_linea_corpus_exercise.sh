@@ -45,20 +45,20 @@ RESULTS="$WORK/results.tsv"
 floor_of() {
   case "$1:$2" in
     lexer:samples)         echo 28 ;;
-    lexer:prelude)         echo 14 ;;
-    lexer:std)             echo 119 ;;
-    lexer:self)            echo 1 ;;
+    lexer:prelude)         echo 20 ;;
+    lexer:std)             echo 126 ;;
+    lexer:self)            echo 54 ;;
     lexer:fixtures)        echo 15 ;;
-    parser:samples)        echo 0 ;;
-    parser:prelude)        echo 4 ;;
-    parser:std)            echo 0 ;;
-    parser:self)           echo 0 ;;
-    parser:fixtures)       echo 3 ;;
-    declarations:samples)  echo 0 ;;
+    parser:samples)        echo 28 ;;
+    parser:prelude)        echo 19 ;;
+    parser:std)            echo 119 ;;
+    parser:self)           echo 49 ;;
+    parser:fixtures)       echo 15 ;;
+    declarations:samples)  echo 5 ;;
     declarations:prelude)  echo 10 ;;
-    declarations:std)      echo 0 ;;
-    declarations:self)     echo 0 ;;
-    declarations:fixtures) echo 2 ;;
+    declarations:std)      echo 2 ;;
+    declarations:self)     echo 1 ;;
+    declarations:fixtures) echo 12 ;;
     *)                     echo 0 ;;
   esac
 }
@@ -109,12 +109,14 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" CRYSTAL_PATH="$R
 echo "  built: lexer, parser and declaration tools; three golden dumpers"
 
 # The message a refusal ends with, normalised so that the port's diagnostic and
-# the oracle's exception read as one text: the first line that names an error,
-# with the "Error:" or "Unhandled exception:" prefix and the exception class
-# suffix removed.
+# the oracle's exception read as one text. The port prints
+# `iyi: panic: Syntax error in <file>:<line>:<col>: <message>` and the oracle prints
+# the bare `<message>` or `Error: <message>`; the location, the panic prefix, the
+# error prefix and the exception class suffix are removed.
 refusal_message() {
-  awk 'NF && /[Ee]rror|xception/ { print; exit }' "$1" \
-    | sed -e 's/^.*[Ee]rror: //' -e 's/^Unhandled exception: //' -e 's/ ([A-Za-z:_]*)[[:space:]]*$//' -e 's/[[:space:]]*$//'
+  awk 'NF && /[Ee]rror|xception|panic/ { print; found = 1; exit } NF && first == "" { first = $0 } END { if (!found) print first }' "$1" \
+    | sed -e 's/^.*Syntax error in [^:]*:[0-9]*:[0-9]*: //' -e 's/^.*panic: //' -e 's/^.*[Ee]rror: //' \
+          -e 's/^Unhandled exception: //' -e 's/ ([A-Za-z:_]*)[[:space:]]*$//' -e 's/[[:space:]]*$//'
 }
 
 # One file: run line B's tool and the golden dumper, then record one of

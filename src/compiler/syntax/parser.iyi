@@ -22,7 +22,7 @@ import compiler/foundation/enums
 import compiler/foundation/string_pool::{StringPool}
 import compiler/syntax/token::{Token, TokenKind, Keyword, NumberKind, DelimiterKind, DelimiterState, MacroState}
 import compiler/syntax/lexer::{Lexer}
-import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, Visibility, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover, ImportDecl, UsingDecl, Propagate, ExceptionHandler, Rescue, ProcLiteral, Macro, MacroExpression, MacroLiteral, MacroIf, MacroFor, MacroVar, MacroVerbatim, MagicConstant, StringBuilder, ReadInstanceVar, Require, Asm, AsmOperand}
+import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral, NumberLiteral, CharLiteral, StringLiteral, StringInterpolation, SymbolLiteral, ArrayLiteral, HashLiteral, TupleLiteral, NamedTupleLiteral, RangeLiteral, RegexLiteral, Var, InstanceVar, ClassVar, Global, Path, Generic, Self, Underscore, ImplicitObj, Return, Break, Next, Yield, If, Unless, While, Until, Case, When, Assign, OpAssign, MultiAssign, And, Or, Not, Splat, DoubleSplat, Cast, NilableCast, IsA, RespondsTo, TypeOf, NamedArgument, Block, Call, Def, Arg, ClassDef, ModuleDef, EnumDef, Alias, Include, Extend, TraitDef, ImplDef, AssocTypeDecl, AnnotationDef, Annotation, TypeDeclaration, UninitializedVar, VisibilityModifier, LibDef, FunDef, TypeDef, CStructOrUnionDef, ExternalVar, ProcNotation, Union, Metaclass, Visibility, ModuleHeader, SizeOf, InstanceSizeOf, AlignOf, InstanceAlignOf, OffsetOf, PointerOf, Defer, Recover, ImportDecl, UsingDecl, Propagate, ExceptionHandler, Rescue, ProcLiteral, Macro, MacroExpression, MacroLiteral, MacroIf, MacroFor, MacroVar, MacroVerbatim, MagicConstant, StringBuilder, ReadInstanceVar, Require, Asm, AsmOperand, Select}
 
 pub struct CallArgs
   property args : Array(ASTNode)?
@@ -1143,6 +1143,8 @@ pub class Parser < Lexer
           parse_while
         when Keyword::UNTIL
           parse_until
+        when Keyword::SELECT
+          parse_select
         when Keyword::CASE
           parse_case
         when Keyword::BEGIN
@@ -1792,6 +1794,71 @@ pub class Parser < Lexer
     end
 
     Case.new(cond, whens, a_else, is_exhaustive).at(location)
+  end
+
+  # iyi: `select` takes one concurrent operation per `when`: an assignment of a
+  # call (`when ended = done.receive`) or a call (`when timeout(limit)`), with an
+  # optional `else`. The oracle's rule: the same checks and the same messages.
+  def parse_select : ASTNode
+    location = @token.location
+    set_slash_is_regex(true)
+    next_token_skip_statement_end
+
+    whens = [] of When
+    a_else : ASTNode? = nil
+    while true
+      case @token.keyword
+      when Keyword::WHEN
+        when_loc = @token.location
+        set_slash_is_regex(true)
+        next_token_skip_space_or_newline
+
+        condition_loc = @token.location
+        condition = parse_op_assign_no_control
+        unless valid_select_when?(condition)
+          syntax_error("invalid select when expression: must be an assignment or call", condition_loc)
+        end
+
+        skip_space
+        unless when_expression_end
+          syntax_error("expecting then, ';' or newline", @token.location)
+        end
+        skip_statement_end
+
+        body = parse_expressions
+        skip_space_or_newline
+        whens << When.new([condition] of ASTNode, body).at(when_loc)
+      when Keyword::ELSE
+        if whens.empty?
+          syntax_error("expecting when", @token.location)
+        end
+        set_slash_is_regex(true)
+        next_token_skip_statement_end
+        a_else = parse_expressions
+        skip_statement_end
+        check_keyword(Keyword::END)
+        next_token
+        break
+      when Keyword::END
+        if whens.empty?
+          syntax_error("expecting when, else or end", @token.location)
+        end
+        next_token
+        break
+      else
+        unexpected_token("expecting when, else or end")
+      end
+    end
+
+    Select.new(whens, a_else).at(location)
+  end
+
+  def valid_select_when?(node : ASTNode) : Bool
+    if node.is_a?(Assign)
+      node.as(Assign).value.is_a?(Call)
+    else
+      node.is_a?(Call)
+    end
   end
 
   def parse_begin : ASTNode
