@@ -208,7 +208,8 @@ def run_lower(fixture : String, oracle_path : String) : Nil
 
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  # The fixtures are built with --prelude empty, which has no iyi header word: the typer lays out Crystal's types.
+  typer = LowerTyper.new(m.types, m.layout, false)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   port_text = print(m)
   port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
@@ -223,7 +224,7 @@ end
 def check_context : Nil
   analysis = analyse("nil\n", "context_check.iyi")
   m = ir_module("aarch64-apple-darwin27.0.0")
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, false)
   low = Lowerer.new(m, typer, analysis.visitor)
   void_fn_type = m.types.func([] of IrType, m.types.void)
 
@@ -249,7 +250,7 @@ def run_emit(fixture : String, oracle_path : String) : Nil
   triple = triple_of(File.read(oracle_path))
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, false)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   puts print(m)
 end
