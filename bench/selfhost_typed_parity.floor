@@ -13,7 +13,7 @@ samples/iyi/format.iyi 64
 samples/iyi/formatting.iyi 33
 samples/iyi/generics.iyi 52
 samples/iyi/grid.iyi 19
-samples/iyi/hello.iyi 22
+samples/iyi/hello.iyi 25
 samples/iyi/immutable.iyi 45
 samples/iyi/init_order.iyi 5
 samples/iyi/inventory.iyi 9
@@ -139,7 +139,7 @@ src/compiler/semantic/cleanup.iyi 10
 src/compiler/semantic/default_arguments.iyi 9
 src/compiler/semantic/instance_vars.iyi 45
 src/compiler/semantic/literal_expander.iyi 69
-src/compiler/semantic/main_visitor.iyi 140
+src/compiler/semantic/main_visitor.iyi 147
 src/compiler/semantic/match.iyi 31
 src/compiler/semantic/math_interpreter.iyi 52
 src/compiler/semantic/method_lookup.iyi 33

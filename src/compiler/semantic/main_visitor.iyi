@@ -7,12 +7,15 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
+import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/new::{define_new_methods}
+import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of}
+import compiler/types/types::{NamedArgumentType}
 
 # One construct the body typing could not type or refused, as the pipeline's
 # refusal table reads it. `file` is nil and `line` and `column` are 0 when the
@@ -102,6 +105,9 @@ pub class MainVisitor < TypeNodeHost
   # by name; `def_var_unions` keeps it per instantiated def (the lowering's storage type).
   property var_unions : Hash(String, Type)
   property def_var_unions : NodeMap(Hash(String, Type))
+  # The locals of the body being typed whose value has no type, by name, with the
+  # reason their reads are reported with. Saved and restored per body.
+  property untyped_locals : Hash(String, String)
 
   def initialize(@program : SemanticProgram)
     # The generated `new` methods are completed before any body is typed: the
@@ -115,6 +121,7 @@ pub class MainVisitor < TypeNodeHost
     @call_target_defs = NodeMap(Def).new
     @var_unions = Hash(String, Type).new
     @def_var_unions = NodeMap(Hash(String, Type)).new
+    @untyped_locals = Hash(String, String).new
     @current_def = nil
     @current_call_block = nil
     @current_block_context_vars = nil
@@ -146,13 +153,18 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The type of a node a visit has already visited. Strict mode raises when it
-  # has none, as `type_of` does; total mode returns nil and the caller leaves its
-  # own node untyped.
+  # has none: the reason the node was refused when there is one, else a BUG. Total
+  # mode returns nil and the caller leaves its own node untyped.
   def child_type(node : ASTNode) : Type?
     if t = @node_types[node]?
       return t
     end
-    raise("BUG: node has no type: #{node.to_s}") unless @total
+    unless @total
+      if reason = @untyped_reasons[node]?
+        raise(reason)
+      end
+      raise("BUG: node has no type: #{node.to_s}")
+    end
     nil
   end
 
@@ -376,6 +388,12 @@ pub class MainVisitor < TypeNodeHost
     expand_literal(node)
   end
 
+  # A multiple assignment is expanded before it is typed, as the hosted pass does
+  # (main_visitor.cr 3736): its targets are assigned from temporaries.
+  def visit(node : MultiAssign) : Bool
+    expand_literal(node)
+  end
+
   # iyi: an annotation is a sibling of the def it annotates, not an expression.
   # The hosted pass does not type or walk it, so neither does the port; the
   # primitive name is read from the Annotation by the lowering (S2d owns that).
@@ -518,6 +536,9 @@ pub class MainVisitor < TypeNodeHost
       set_type(node, t)
       return false
     end
+    if reason = @untyped_locals[node.name]?
+      return untyped(node, reason)
+    end
 
     if node.name == "self"
       if sc = @scope
@@ -591,8 +612,18 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : Assign) : Bool
     node.value.accept(self)
     vt = child_type(node.value)
-    return false if vt.nil?
+    if vt.nil?
+      # The local is declared; its reads report why its value has no type.
+      if node.target.is_a?(Var)
+        name = node.target.as(Var).name
+        @untyped_locals[name] = "the value of '#{name}' cannot be typed"
+      end
+      return false
+    end
     val_type = vt.as(Type)
+    if node.target.is_a?(Var)
+      @untyped_locals.delete(node.target.as(Var).name)
+    end
 
     if node.target.is_a?(Var)
       v = node.target.as(Var)
@@ -817,6 +848,14 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # The type where two branches meet. A branch that never completes (NoReturn) adds
+  # nothing, as the hosted merge drops it; the other branch's type is the result.
+  def merge_flow(a : Type, b : Type) : Type
+    return b if a.is_a?(NoReturnType)
+    return a if b.is_a?(NoReturnType)
+    @program.type_merge(a, b)
+  end
+
   def visit(node : If) : Bool
     node.cond.accept(self)
     node.then.accept(self)
@@ -825,7 +864,7 @@ pub class MainVisitor < TypeNodeHost
     else_type = child_type(node.else)
     if then_type
       if else_type
-        merged = @program.type_merge(then_type, else_type)
+        merged = merge_flow(then_type, else_type)
         set_type(node, merged)
       end
     end
@@ -1318,7 +1357,9 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The key of one instantiation: the receiver, the def name and the argument
-  # types (a block adds `&`). The guard in type_method_body compares keys.
+  # types, and for a block call the block's node. Two calls with different blocks
+  # are different instantiations (a block nested in another call's block is not a
+  # recursion of that call); the same call with the same block is.
   def instance_key(rec_type : Type, target_def : Def, args : Array(ASTNode), block : Block?) : String
     parts = [] of String
     args.each do |a|
@@ -1330,7 +1371,7 @@ pub class MainVisitor < TypeNodeHost
     end
     key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
     if block
-      key = key + "&"
+      key = key + "&#{block.node_id}"
     end
     key
   end
@@ -1367,7 +1408,11 @@ pub class MainVisitor < TypeNodeHost
       if rt = target_def.return_type
         return @program.lookup_type_node(rt, @current_type)
       end
-      return refuse_recursion(site, target_def, "recursive call of '#{target_def.name}' with no declared return type")
+      # No declared return type: until the body's own type is known the recursive
+      # call contributes nothing to a merge, so it is NoReturn (the bottom of the
+      # merge). The hosted pass gets the same answer from the non-recursive returns
+      # (bench/fixtures/sem_bodies_recursive.iyi: count(true) is Int32).
+      return @program.no_return_type
     end
     if @typing_stack.size >= 256
       return refuse_recursion(site, target_def, "instantiation depth exceeded at '#{target_def.name}'")
@@ -1380,6 +1425,8 @@ pub class MainVisitor < TypeNodeHost
     old_block_context_vars = @current_block_context_vars
     old_yield_nodes = @current_yield_nodes
     old_var_unions = @var_unions
+    old_untyped_locals = @untyped_locals
+    @untyped_locals = Hash(String, String).new
     @var_unions = Hash(String, Type).new
 
     if block
@@ -1472,11 +1519,21 @@ pub class MainVisitor < TypeNodeHost
     @current_yield_nodes = old_yield_nodes
     @def_var_unions[target_def] = @var_unions
     @var_unions = old_var_unions
+    @untyped_locals = old_untyped_locals
     @typing_stack.pop
 
     return nil unless params_typed
     bt = body_type
-    return nil if bt.nil?
+    # A body that cannot be typed (its refusal is recorded on the body's own nodes)
+    # still leaves a call its declared return type, as the oracle types it
+    # (bench/fixtures/sem_bodies_primitive_add.iyi).
+    if bt.nil?
+      if rt = target_def.return_type
+        set_type(target_def, @program.lookup_type_node(rt, @current_type))
+        return @program.lookup_type_node(rt, @current_type)
+      end
+      return nil
+    end
 
     if rt = target_def.return_type
       declared_ret = @program.lookup_type_node(rt, @current_type)
@@ -1579,6 +1636,43 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # A tuple literal is the tuple of its elements' types (hosted visit(TupleLiteral)).
+  def visit(node : TupleLiteral) : Bool
+    types = [] of Type
+    i = 0
+    while i < node.elements.size
+      e = node.elements[i]
+      e.accept(self)
+      if et = child_type(e)
+        types << et
+      else
+        return false
+      end
+      i = i + 1
+    end
+    set_type(node, tuple_type_of(@program, types))
+    false
+  end
+
+  # A named tuple literal is the named tuple of its entries' types (hosted
+  # visit(NamedTupleLiteral)).
+  def visit(node : NamedTupleLiteral) : Bool
+    entries = [] of NamedArgumentType
+    i = 0
+    while i < node.entries.size
+      entry = node.entries[i]
+      entry.value.accept(self)
+      if et = child_type(entry.value)
+        entries << NamedArgumentType.new(entry.key, et)
+      else
+        return false
+      end
+      i = i + 1
+    end
+    set_type(node, named_tuple_type_of(@program, entries))
+    false
+  end
+
   # --- type nodes: begin ---
   # The type-argument bracket the type-node functions use (hosted `@in_type_args`).
   def bracket_type_args(delta : Int32) : Nil
@@ -1654,6 +1748,7 @@ pub class MainVisitor < TypeNodeHost
     inner.typing_stack = @typing_stack
     inner.refusals = @refusals
     inner.typed_instances = @typed_instances
+    inner.untyped_locals = Hash(String, String).new
     inner
   end
 
