@@ -2025,14 +2025,16 @@ jobs:
   # a job of their own (bench/std_platforms.sh): 54 to 75 minutes in the
   # last ten green runs (1,785 s of job 128265739304's 3,841 in it), and a
   # seventh macOS job would wait for a runner - in run 42327393858 shard 2
-  # above started at 02:40:54, three seconds after shard 1 ended.
+  # above started at 02:40:54, three seconds after shard 1 ended. A hundred
+  # and fifty since job 131485060135 (run 43303875393), which found the
+  # static LLVM in the cache and still ran 99 minutes, green.
   darwin-std:
     needs: plan
     if: ${{ contains(fromJSON(needs.plan.outputs.jobs), 'darwin-std') }}
     runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.4"
-    timeout-minutes: 120
+    timeout-minutes: 150
     name: "The native standard library's foundation, on darwin"
     steps:
       - uses: actions/checkout@v7
