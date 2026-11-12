@@ -417,6 +417,14 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if node.is_a?(Annotation) && node.as(Annotation).path.names.last == "ThreadLocal"
+    # A `@[ThreadLocal]` annotation is lowered just before the class variable it marks, which takes the mark
+    # (class_var.iyi take_thread_local_annotation). The local-exec global (hosted class_var.cr declare_thread_local)
+    # exists only when the analysis flagged that variable, so an untyped declaration is refused there, by name.
+    low.globals.thread_local_pending = true
+    low.last = llvm_nil(low)
+    return
+  end
   if node.is_a?(Alias) || node.is_a?(Macro) || node.is_a?(Annotation)
     # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil. The hosted
     # `visit(Annotation)` (codegen.cr:838) emits nothing and returns without setting `@last`; the value is
