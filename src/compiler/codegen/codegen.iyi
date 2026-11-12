@@ -234,6 +234,120 @@ def refuse_port(message : String) : NoReturn
   LibC.exit(1)
 end
 
+# Collects the assignments to instance variables in one method body. A nested def or
+# class has its own self and its own parameters, so the walk stops at it.
+class IvarAssignCollector < Visitor
+  getter assigns : Array(Assign)
+
+  def initialize
+    @assigns = [] of Assign
+  end
+
+  def visit(node : Def) : Bool
+    false
+  end
+
+  def visit(node : ClassDef) : Bool
+    false
+  end
+
+  def visit(node : Assign) : Bool
+    @assigns << node if node.target.is_a?(InstanceVar)
+    true
+  end
+end
+
+# The type an assignment's value gives an instance variable that no declaration names,
+# for the three forms the port can name without inference: a number literal of a kind
+# listed here, a parameter with a type restriction, and `Type.new(...)`. Anything else
+# is nil, and the variable stays undeclared.
+def ivar_guess_type(value : ASTNode, params : Array(Arg), subst : Hash(String, String)) : String?
+  if value.is_a?(NumberLiteral)
+    kind = value.as(NumberLiteral).kind
+    if kind == NumberKind::I32
+      return "Int32"
+    elsif kind == NumberKind::I64
+      return "Int64"
+    elsif kind == NumberKind::U32
+      return "UInt32"
+    elsif kind == NumberKind::U64
+      return "UInt64"
+    elsif kind == NumberKind::F32
+      return "Float32"
+    elsif kind == NumberKind::F64
+      return "Float64"
+    end
+    return nil
+  end
+  if value.is_a?(Var)
+    vname = value.as(Var).name
+    i = 0
+    while i < params.size
+      if params[i].name == vname
+        if r = params[i].restriction
+          s = r.to_s
+          return subst[s]? || s
+        end
+        return nil
+      end
+      i += 1
+    end
+    return nil
+  end
+  if value.is_a?(Call)
+    call = value.as(Call)
+    if call.name == "new"
+      if o = call.obj
+        if o.is_a?(Path)
+          s = o.as(Path).to_s
+          return subst[s]? || s
+        end
+      end
+    end
+  end
+  nil
+end
+
+# Declares each instance variable that no declaration names, when every assignment to
+# it in the class's own methods gives the same type by ivar_guess_type. Any other
+# variable stays undeclared, and its store is refused by name where it is lowered.
+def infer_undeclared_ivars(info : CustomTypeInfo, exps : Array(ASTNode), subst : Hash(String, String)) : Nil
+  guesses = Hash(String, String).new
+  unresolved = Set(String).new
+  exps.each do |exp|
+    next unless exp.is_a?(Def)
+    d = exp.as(Def)
+    collector = IvarAssignCollector.new
+    d.body.accept(collector)
+    collector.assigns.each do |asg|
+      name = asg.target.as(InstanceVar).name.lstrip('@')
+      next if info.fields.has_key?(name)
+      if t = ivar_guess_type(asg.value, d.args, subst)
+        if prev = guesses[name]?
+          unresolved.add(name) if prev != t
+        else
+          guesses[name] = t
+        end
+      else
+        unresolved.add(name)
+      end
+    end
+  end
+  guesses.each_key do |name|
+    info.add_field(name, guesses[name]) unless unresolved.includes?(name)
+  end
+end
+
+# A store to an instance variable the port cannot type is refused by name, where the
+# store is lowered. Dropping the store would run the program without its assignment.
+def refuse_undeclared_ivar(node : InstanceVar) : NoReturn
+  message = "instance variable #{node.name} has no type the port can read: declare it in the class body (`#{node.name} : Type`)"
+  if loc = node.location
+    refuse_at(loc, node.name.size, message)
+  end
+  refuse_port(message)
+end
+
 # The location of a clause keyword (`rescue`, `ensure`) at or after `from`. The AST
 # records the `begin` block but not its clause keywords, and the oracle points at them.
 def keyword_location(from : Location, keyword : String) : Location?
@@ -1598,6 +1712,8 @@ pub class CodeGenVisitor < Visitor
                 @terminated = false
               end
             end
+          else
+            refuse_undeclared_ivar(node.target.as(InstanceVar))
           end
         end
       end
@@ -4697,6 +4813,7 @@ pub def compile_declarations_to_module(
           end
         end
       end
+      infer_undeclared_ivars(info, exps, Hash(String, String).new)
     end
   end
 
@@ -4788,6 +4905,7 @@ pub def compile_declarations_to_module(
               end
             end
           end
+          infer_undeclared_ivars(info, exps, subst)
         end
         cg.custom_types[inst_name] = info
       end

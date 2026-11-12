@@ -64,6 +64,7 @@ FIXTURES=(
   "bench/fixtures/compile_cross_const.iyi"
   "bench/fixtures/compile_reopen_class.iyi"
   "bench/fixtures/compile_resolve_order.iyi"
+  "bench/fixtures/compile_ivar_infer.iyi"
   "bench/fixtures/compile_stdout.iyi"
 )
 
@@ -326,6 +327,21 @@ else
   echo "    shipped:  $shipped_rescue_msg"
   status=1
 fi
+
+# 8. An instance variable that no declaration names and no typed assignment gives a
+# type to. The oracle infers it from the call site, which the port does not do, so the
+# port refuses the store by name rather than dropping it. Not compared with the shipped
+# compiler (it accepts this program), and not counted in the refusal summary.
+set +e
+"$REPO/.build/iyi-compile" -o "$WORK/bad8" "$REPO/bench/fixtures/compile_ivar_untyped_refused.iyi" > "$WORK/selfhost_ivar.log" 2>&1
+selfhost_ivar_rc=$?
+set -e
+if [ "$selfhost_ivar_rc" -ne 0 ] && grep -q "instance variable @v has no type the port can read" "$WORK/selfhost_ivar.log"; then
+  echo "  properly refused: untyped instance variable store, by name (rc=$selfhost_ivar_rc)"
+else
+  echo "  FAIL: untyped instance variable store: pure iyi rc=$selfhost_ivar_rc"
+  status=1
+fi
   echo "  Refusal summary: $refusals/7 malformed scenarios refused properly"
 
 echo
@@ -481,6 +497,18 @@ check_refusal() {
   return 1
 }
 
+# Rebuilds the pure compiler from the sources as they are now, then requires it to refuse
+# the fixture with a message containing the phrase. A mutation of compiler source must be
+# built before a refusal check, or the check runs the clean binary and proves nothing.
+check_refusal_rebuilt() {
+  local fixture="$1" phrase="$2"
+  if ! rebuild_mutated_compile; then
+    set_why "the mutated compiler does not build (the clean compiler does)"
+    return 1
+  fi
+  check_refusal "$fixture" "$phrase"
+}
+
 # A mutation of a compiler source leaves .build/iyi-compile built from the mutated
 # source, so rebuild it from the restored source before any later check uses it.
 rebuild_clean_compile() {
@@ -521,6 +549,7 @@ clean_must_pass "compile_no_top_level expects 0" check_compile_rc "$REPO/bench/f
 clean_must_pass "compile_search expects 11 under the search roots" check_search_rc "$REPO/bench/fixtures/compile_search.iyi" 11
 clean_must_pass "compile_order prints the shipped order" check_compiler_stdout "$REPO/bench/fixtures/compile_order.iyi" "$WORK/out_cr_compile_order.txt"
 clean_must_pass "compile_resolve_order expects 20 under the load order" check_compile_rc "$REPO/bench/fixtures/compile_resolve_order.iyi" 20
+clean_must_pass "compile_ivar_infer expects 12" check_compile_rc "$REPO/bench/fixtures/compile_ivar_infer.iyi" 12
 
 mutate_compiler_source "corrupt linker placeholder substitution" \
   "$COMPILER_SRC" \
@@ -601,6 +630,23 @@ prove_mutation "rescue refusal names ensure instead" \
   'rescue' \
   'ensure' \
   -- check_refusal "$REPO/bench/fixtures/compile_rescue_refused.iyi" "iyi has no exceptions to rescue" || status=1
+
+# A store to an undeclared instance variable is refused by name. Replacing the refusal
+# with nothing drops the store; the refusal check must notice the compiler now accepts
+# the program.
+mutate_compiler_source "undeclared instance variable store dropped" \
+  "$CODEGEN_SRC" \
+  '            refuse_undeclared_ivar(node.target.as(InstanceVar))' \
+  '            nil' \
+  -- check_refusal_rebuilt "$REPO/bench/fixtures/compile_ivar_untyped_refused.iyi" "instance variable @v has no type the port can read" || status=1
+
+# Inference declares nothing: the typed fixture then has undeclared stores and is refused,
+# so its exit code (12) is never reached.
+mutate_compiler_source "ivar inference declares nothing" \
+  "$CODEGEN_SRC" \
+  '    info.add_field(name, guesses[name]) unless unresolved.includes?(name)' \
+  '    nil' \
+  -- check_compile_rc "$REPO/bench/fixtures/compile_ivar_infer.iyi" 12 || status=1
 
 # The refusal of an explicit raise: renaming the raise makes the refused message
 # change, so the refusal check must notice.
