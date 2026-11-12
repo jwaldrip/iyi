@@ -190,7 +190,15 @@ prove_mutation "a stored struct receiver is loaded, not passed by its address" "
 prove_mutation "an empty (Nop) body is not inlined" "$REPO/src/compiler/lower/call.iyi" \
   'body.is_a?(Nop) || body.is_a?(NilLiteral)' 'body.is_a?(NilLiteral)' -- lower_calls_check || status=1
 prove_mutation "a def is emitted with the C calling convention (a struct result is then refused)" "$REPO/src/compiler/lower/fun.iyi" \
-  'fn.call_convention = CallConv::Iyi' 'fn.call_convention = CallConv::C' -- lower_calls_check || status=1
+  'return CallConv::Iyi if name.starts_with?("*")' 'return CallConv::C if name.starts_with?("*")' -- lower_calls_check || status=1
+prove_mutation "a struct's allocate result is not loaded from its instance (the store into _ is wrong)" "$REPO/src/compiler/lower/call.iyi" \
+  'if passed_by_value?(inst)' 'if false' -- lower_calls_check || status=1
+prove_mutation "a struct call result is not spilled to an alloca (hosted call.cr:707-713)" "$REPO/src/compiler/lower/call.iyi" \
+  'low.last = load_aligned(low, ir, temp, "")' 'low.last = inst' -- lower_calls_check || status=1
+prove_mutation "a struct call receiver gets a second alloca (hosted reuses the spill pointer as self)" "$REPO/src/compiler/lower/call.iyi" \
+  'if self_by_pointer?(st) && low.spill_node != 0_u64 && low.spill_node == obj.object_id' 'if false' -- lower_calls_check || status=1
+prove_mutation "a struct call receiver loads its spill slot though the slot is its self" "$REPO/src/compiler/lower/call.iyi" \
+  'if low.receiver_node == node.object_id && self_by_pointer?(ret)' 'if false' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

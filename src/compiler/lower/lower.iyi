@@ -110,6 +110,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   codegen_node(low, root)
   codegen_return(low, ret_ir)
   low.finish_main_function
+  emit_unused_fun_defs(low)
 
   main_fn = m.define_function("main", m.types.func([i32, ptr] of IrType, i32))
   main_fn.call_convention = CallConv::C
@@ -123,10 +124,11 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
 end
 
 # The hosted `visit(FunDef)` with a body (codegen.cr:842) for a fun the analysis recorded (lib_fun_of): its arguments and
-# return type are that record's. A fun is emitted once (`fun_defs_done`, hosted External#dead). It is emitted with
-# external linkage, as a hosted External is (codegen_fun does not make an External internal). A fun the program never
-# calls is refused by name: the hosted code declares it at its visit and emits its body at the end of the module. A
-# `well_known` fun is emitted on entry (see emit_well_known_funs).
+# return type are that record's. A fun is emitted once (`fun_defs_done`, hosted External#dead). A `fun` definition is a C
+# function (hosted External with no call_convention, call.cr:661), emitted with external linkage as a hosted External is;
+# a `__crystal_` name is internal instead (hosted codegen_fun, fun.cr:763). A fun the program never calls is declared here,
+# as the hosted visit does (codegen.cr:864), and its body waits for emit_unused_fun_defs (the hosted @unused_fun_defs pass,
+# codegen.cr:747). A `well_known` fun is emitted on entry (see emit_well_known_funs).
 pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
   rec_opt = low.analysed.program.lib_fun_of(node)
   if rec_opt.nil?
@@ -138,12 +140,7 @@ pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
   if low.fun_defs_done[name]?
     return
   end
-  if !well_known && !rec.used
-    pending_visit_node("an unused fun with a body #{name} (hosted visit(FunDef) declares it and emits its body at the end, not ported)")
-    return
-  end
-  body = node.body
-  if body.nil?
+  if node.body.nil?
     pending_visit_node("a fun #{name} with no body (hosted visit(FunDef) with an External that has no body)")
     return
   end
@@ -154,14 +151,30 @@ pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
   end
   low.fun_defs_done[name] = true
   ret = rt.as(Type)
-  ret_ir = low.typer.llvm_return_type(ret)
+  if !well_known && !rec.used
+    low.module.define_function(name, fun_def_type(low, rec, ret))
+    low.unused_fun_defs << node
+    return
+  end
+  emit_fun_def(low, node, rec, ret)
+end
+
+# The function type of a fun definition: its record's argument types and its return type, as llvm types.
+pub def fun_def_type(low : Lowerer, rec : LibFun, ret : Type) : IrType
   params = [] of IrType
   rec.arg_types.each do |t|
     params << low.typer.llvm_type(t)
   end
-  fn_type = low.module.types.func(params, ret_ir)
+  low.module.types.func(params, low.typer.llvm_return_type(ret))
+end
+
+# The body of a fun definition, lowered into its function (the hosted codegen_fun of a External).
+pub def emit_fun_def(low : Lowerer, node : FunDef, rec : LibFun, ret : Type) : Nil
+  name = rec.real_name
+  body = node.body
+  raise "BUG: fun #{name} has no body (hosted visit(FunDef))" if body.nil?
   target = Def.new(node.name, node.args, body.as(ASTNode))
-  fn = codegen_fun(low, name, target, nil, rec.arg_types, fn_type, ret_ir)
+  fn = codegen_fun(low, name, target, nil, rec.arg_types, fun_def_type(low, rec, ret), low.typer.llvm_return_type(ret))
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end
@@ -174,6 +187,17 @@ pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
     fn.linkage = Linkage::Internal
   else
     fn.linkage = Linkage::External
+  end
+end
+
+# The deferred pass for the funs the program never calls (hosted @unused_fun_defs, codegen.cr:747): each body is lowered
+# into the function its visit declared, once the program's own code is lowered.
+pub def emit_unused_fun_defs(low : Lowerer) : Nil
+  low.unused_fun_defs.each do |node|
+    rec_opt = low.analysed.program.lib_fun_of(node)
+    raise "BUG: unused fun #{node.name} has no record (lib_fun_of)" if rec_opt.nil?
+    rec = rec_opt.as(LibFun)
+    emit_fun_def(low, node, rec, rec.resolved_return.as(Type))
   end
 end
 
