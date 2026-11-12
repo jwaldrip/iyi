@@ -48,6 +48,7 @@ waiting=0
 waiting_on() {
   case "$1" in
     lowprim_checked) echo "__crystal_raise_overflow is a fun with a body: the analysis types no FunDef and visit(FunDef) is refused (NEEDS.md row 25)" ;;
+    lowprim_ptr) echo "the analysis types no node for Pointer(Int32), so Pointer(Int32).malloc is refused before the primitive (NEEDS.md row 2); the Pointer primitives are increment 2" ;;
   esac
 }
 for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
