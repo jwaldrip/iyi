@@ -23,7 +23,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value, Param}
 import compiler/ir/inst::{Op, Inst, Block, CallAux, GepAux, MemAux, Attribute, AsmAux, IntrinsicAux}
 import compiler/ir/intrinsics::{IntrinsicId}
-import compiler/ir/function::{Function, Global}
+import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout}
 import compiler/native/wasm/leb::{uleb, sleb, uleb_i}
@@ -34,7 +34,9 @@ def data_base : Int64
 end
 
 def stack_size : Int64
-  65536_i64
+  # 1 MiB, the size wasm-ld gives the stack by default. A frame of 64 KiB (frame64k) needs the room, and printf's
+  # frames sit below it.
+  1048576_i64
 end
 
 # The wasm value type of an IR type: 127 i32, 126 i64, 125 f32, 124 f64; 0 when wasm has no such value.
@@ -885,6 +887,47 @@ class FnGen
     end
   end
 
+  # The variadic arguments of a call, each into its 8-byte slot in the buffer plan_frame reserved. Integers are
+  # sign-extended to 64 bits (zero-extended for i1 and pointers), floats are promoted to double.
+  def store_varargs(i : Inst, fixed : Int32) : Nil
+    base = @alloca_off[i]
+    k = fixed + 1
+    slot = 0_i64
+    while k < i.args.size
+      v = i.args[k]
+      t = v.type
+      global_get(0)
+      i32c(base + slot * 8_i64)
+      byte(106_u8)
+      if t.float32?
+        push(v)
+        byte(187_u8)
+        byte(57_u8)
+      elsif t.double?
+        push(v)
+        byte(57_u8)
+      elsif t.pointer? || (t.int? && t.bits == 1)
+        push(v)
+        byte(173_u8)
+        byte(55_u8)
+      elsif t.int? && t.bits == 64
+        push(v)
+        byte(55_u8)
+      elsif t.int? && t.bits <= 32
+        push_signed(v)
+        byte(172_u8)
+        byte(55_u8)
+      else
+        refuse("a variadic argument of type #{t} is not lowered by the wasm backend")
+        return
+      end
+      uleb_i(@code, 3)
+      uleb_i(@code, 0)
+      slot = slot + 1
+      k = k + 1
+    end
+  end
+
   # A call. The callee is a defined or imported function, or a function pointer read as a table index.
   def call(i : Inst) : Nil
     callee = i.args[0]
@@ -899,17 +942,26 @@ class FnGen
       return
     end
     if ca.fn_type.varargs?
-      refuse("a variadic call is not lowered by the wasm backend")
-      return
+      unless callee.is_a?(Function)
+        refuse("an indirect variadic call is not lowered by the wasm backend")
+        return
+      end
     end
     if callee.is_a?(Inst) && callee.as(Inst).aux.is_a?(AsmAux)
       refuse("inline asm is not lowered by the wasm backend")
       return
     end
+    fixed = ca.fn_type.param_types.size
     k = 1
-    while k < i.args.size
+    while k <= fixed && k < i.args.size
       push(i.args[k])
       k = k + 1
+    end
+    if ca.fn_type.varargs?
+      store_varargs(i, fixed)
+      global_get(0)
+      i32c(@alloca_off[i])
+      byte(106_u8)
     end
     if callee.is_a?(Function)
       index = @ctx.fn_index[callee.as(Function).name]?
@@ -1108,6 +1160,13 @@ class FnGen
     total = 0_i64
     @fn.blocks.each do |b|
       b.insts.each do |i|
+        if i.op == Op::Call && i.aux.is_a?(CallAux) && i.aux.as(CallAux).fn_type.varargs?
+          fixed = i.aux.as(CallAux).fn_type.param_types.size
+          total = align_up(total, 8_i64)
+          @alloca_off[i] = total
+          total = total + 8_i64 * (i.args.size - 1 - fixed).to_i64
+          next
+        end
         next unless i.op == Op::Alloca
         g = i.aux.as(GepAux)
         count = 1_i64
@@ -1225,6 +1284,9 @@ pub def compile_wasm(program : Module, runtime : Module) : Array(UInt8) | String
   globals = [] of Global
   modules.each do |m|
     m.globals.each do |g|
+      if g.initializer.nil? && g.linkage == Linkage::External
+        return "global #{g.name} is external and has no definition: no wasm module supplies it"
+      end
       a = program.layout.abi_align(g.value_type)
       a = g.alignment if g.alignment > a
       addr = align_up(addr, a.to_i64)

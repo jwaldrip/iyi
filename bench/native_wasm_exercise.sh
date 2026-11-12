@@ -107,7 +107,7 @@ else
       fail "$f: a non-wasi import ($bad_imports) or a custom section other than name ($producers)"
       continue
     fi
-    "$WASMTIME" run "$WORK/$f.wasm" >"$WORK/$f.out" 2>"$WORK/$f.err"
+    timeout 30 "$WASMTIME" run "$WORK/$f.wasm" >"$WORK/$f.out" 2>"$WORK/$f.err"
     status=$?
     want_status=$(cat "$FIX/$f.exit")
     if [ "$status" != "$want_status" ]; then
@@ -174,9 +174,9 @@ for f in "$WORK"/cg/*.ir; do
       cg_differ=$((cg_differ + 1))
       continue
     fi
-    "$WORK/cg/$name.bin" >"$WORK/cg/$name.dout" 2>/dev/null
+    timeout 30 "$WORK/cg/$name.bin" >"$WORK/cg/$name.dout" 2>/dev/null
     dstatus=$?
-    "$WASMTIME" run "$WORK/cg/$name.wasm" >"$WORK/cg/$name.wout" 2>"$WORK/cg/$name.werr"
+    timeout 30 "$WASMTIME" run "$WORK/cg/$name.wasm" >"$WORK/cg/$name.wout" 2>"$WORK/cg/$name.werr"
     wstatus=$?
     if [ "$dstatus" = "$wstatus" ] && cmp -s "$WORK/cg/$name.dout" "$WORK/cg/$name.wout"; then
       cg_equal=$((cg_equal + 1))
@@ -229,7 +229,7 @@ else
         caught="$f does not compile"
         break
       fi
-      "$WASMTIME" run "$WORK/mut.wasm" >"$WORK/mut.out" 2>/dev/null
+      timeout 30 "$WASMTIME" run "$WORK/mut.wasm" >"$WORK/mut.out" 2>/dev/null
       if [ $? -ne "$(cat "$FIX/$f.exit")" ] || ! cmp -s "$WORK/mut.out" "$FIX/$f.expected"; then
         caught="$f differs"
         break
