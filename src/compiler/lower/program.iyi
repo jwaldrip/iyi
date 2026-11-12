@@ -237,7 +237,7 @@ pub def typed_owner(reason : String) : String
   return "macros" if reason.includes?("macro control")
   return "calls" if reason.includes?("undefined method") || reason.includes?("cannot resolve the call") || reason.includes?("expected argument") || reason.includes?("no target def")
   return "declarations" if reason.includes?("undefined constant") || reason.includes?("without a declared return type")
-  return "bodies" if reason.includes?("no type") || reason.includes?("undefined local variable") || reason.includes?("pointerof")
+  return "bodies" if reason.includes?("no type") || reason.includes?("cannot be typed") || reason.includes?("undefined local variable") || reason.includes?("pointerof")
   return "lowering core" if reason.includes?("is not ported")
   return "lowering" if reason.includes?("port limitation") || reason.includes?("string constant")
   "unassigned"
