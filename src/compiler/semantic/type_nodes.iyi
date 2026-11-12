@@ -214,6 +214,10 @@ end
 # its type must fit the declared return type (hosted `visit(node : FunDef)`
 # 2333-2365). The fun node itself is typed Nil, as the hosted pass types it.
 pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
+  # The declaration pass resolves a fun's types to their bases until a type system is installed
+  # (top_level.iyi resolve_declared_types). Installing it here, before the record is read, gives the
+  # generic argument types (`UInt8**`) the oracle's instances.
+  type_node_system(visitor.program)
   fun_record = visitor.program.lib_fun_of(node)
   if fun_record.nil?
     return visitor.refuse(node, "fun has no record from the declarations pass")

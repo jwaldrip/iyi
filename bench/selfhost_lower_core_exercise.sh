@@ -81,12 +81,10 @@ fi
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
-# Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed (the
-# port numbers String 31, the hosted module 1: the typer slice's LowerTypeIds numbering). They are waiting
-# by name, and the gate fails if one of them starts to match, so this list is kept honest.
-# lower_fun_main: the port lowers the argv parameter of `fun main(argc, argv : UInt8**)` to i1, not ptr (the record's
-# argument type for UInt8** comes from the type nodes, not from this emitter). Waiting by name until that is fixed.
-KNOWN_DIVERGED="lower_string lower_string_nonascii lower_fun_main"
+# Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed. The port numbers
+# String 31 and the hosted module 1 for lower_string and lower_string_nonascii (the typer slice's LowerTypeIds
+# numbering, NEEDS.md row 16). They wait by name; the gate fails if one starts to match, so this list is kept honest.
+KNOWN_DIVERGED="lower_string lower_string_nonascii"
 e2e=""
 module_same=0
 module_differ=0
