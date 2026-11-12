@@ -514,11 +514,19 @@ pub class Builder
   # An intrinsic call. `overload` is the set of types the LLVM name spells, and the result type follows
   # from it: the IR refuses an overload its family does not accept, rather than guessing a signature.
   def intrinsic(id : IntrinsicId, overload : Array(IrType), args : Array(Value), name : String = "") : Inst
+    intrinsic_with(id, overload, args, [] of Array(Attribute), name)
+  end
+
+  # An intrinsic call whose operands carry attributes: `param_attrs[k]` belongs to operand k, as on an ordinary call.
+  def intrinsic_with(id : IntrinsicId, overload : Array(IrType), args : Array(Value), param_attrs : Array(Array(Attribute)), name : String = "") : Inst
     unless intrinsic_accepts?(id, overload)
       raise "#{intrinsic_name(id, overload)} is not an intrinsic the IR accepts at these types"
     end
+    if param_attrs.size > args.size
+      raise "#{intrinsic_name(id, overload)} has #{param_attrs.size} attribute lists for #{args.size} operands"
+    end
     signature = intrinsic_signature(id, overload, types)
-    emit(Op::Intrinsic, signature[0], args, 0_i64, IntrinsicAux.new(id, overload), [] of Block, [] of Int64, name)
+    emit(Op::Intrinsic, signature[0], args, 0_i64, IntrinsicAux.new(id, overload, param_attrs), [] of Block, [] of Int64, name)
   end
 
   # An inline asm callee. Call it with `call`; the printer writes the template where the callee goes.

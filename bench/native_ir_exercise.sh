@@ -290,6 +290,11 @@ prove_mutation "printer: hidden visibility is written as nothing" \
   '      "hidden"' \
   '      ""' \
   roundtrip_check
+prove_mutation "printer: an intrinsic operand drops its align attribute" \
+  src/compiler/ir/printer.iyi \
+  'attrs = k < aux.param_attrs.size ? attrs_inline(aux.param_attrs[k]) : ""' \
+  'attrs = k < aux.param_attrs.size ? attrs_inline(aux.param_attrs[k].select { |a| a.name != "align" }) : ""' \
+  roundtrip_check
 prove_mutation "verifier: a call no longer kills thread-local values" \
   src/compiler/ir/verifier.iyi \
   '    if i.op == Op::Call || i.op == Op::Invoke' \

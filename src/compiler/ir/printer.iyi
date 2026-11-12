@@ -329,7 +329,7 @@ class IrPrinter
     when Op::Intrinsic
       aux = i.aux.as(IntrinsicAux)
       name = intrinsic_name(aux.id, aux.overload)
-      args = i.args.map { |a| typed(a, numbers) }.join(", ")
+      args = intrinsic_args(i, aux, numbers)
       return "intrinsic #{ir_name_text(name)}(#{args})"
     when Op::ThreadLocalAddr
       return "threadlocaladdr #{typed(i.args[0], numbers)}"
@@ -401,6 +401,18 @@ class IrPrinter
     while k < i.args.size
       index = k - 1
       attrs = index < aux.param_attrs.size ? attrs_inline(aux.param_attrs[index]) : ""
+      parts << attrs + typed(i.args[k], numbers)
+      k = k + 1
+    end
+    parts.join(", ")
+  end
+
+  # The operands of an intrinsic call, each preceded by the attributes its operand carries, as an ordinary call writes them.
+  def intrinsic_args(i : Inst, aux : IntrinsicAux, numbers : Hash(Value, Int32)) : String
+    parts = [] of String
+    k = 0
+    while k < i.args.size
+      attrs = k < aux.param_attrs.size ? attrs_inline(aux.param_attrs[k]) : ""
       parts << attrs + typed(i.args[k], numbers)
       k = k + 1
     end

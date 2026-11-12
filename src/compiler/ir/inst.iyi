@@ -226,8 +226,9 @@ end
 pub struct IntrinsicAux
   getter id : IntrinsicId         # closed enum in compiler/ir/intrinsics.iyi
   getter overload : Array(IrType)
+  getter param_attrs : Array(Array(Attribute))   # operand k's attributes, written as an ordinary call's are
 
-  def initialize(@id : IntrinsicId, @overload : Array(IrType))
+  def initialize(@id : IntrinsicId, @overload : Array(IrType), @param_attrs : Array(Array(Attribute)) = [] of Array(Attribute))
   end
 end
 

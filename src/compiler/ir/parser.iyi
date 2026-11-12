@@ -1047,13 +1047,15 @@ class IrParser
       match = found
       signature = intrinsic_signature(match.id, match.overload, types)
       c.expect_punct("(")
+      param_attrs = [] of Array(Attribute)
       while !c.punct?(")") && !c.at_end?
+        param_attrs << parse_attrs(c, types)
         operand(c, types, resolve, shape, nil, true)
         break unless c.punct?(",")
         c.take
       end
       c.expect_punct(")")
-      shape.set(Op::Intrinsic, signature[0], 0_i64, IntrinsicAux.new(match.id, match.overload))
+      shape.set(Op::Intrinsic, signature[0], 0_i64, IntrinsicAux.new(match.id, match.overload, param_attrs))
     when "threadlocaladdr"
       operand(c, types, resolve, shape, nil, true)
       shape.set(Op::ThreadLocalAddr, types.ptr(0), 0_i64, nil)
