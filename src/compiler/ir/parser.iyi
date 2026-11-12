@@ -1618,7 +1618,7 @@ class IrParser
     Inst.new(Op::ConstBytes, type, args, 0_i64, nil, [] of Block, [] of Int64)
   end
 
-  # `getelementptr [inbounds] (T, typed...)`, `op (typed to T)`, or `add|sub (typed, typed)`.
+  # `getelementptr [inbounds] (T, typed...)`, `op (typed to T)`, or `add|sub|mul (typed, typed)`.
   def constant_expr(c : Cursor, type : IrType, mod : Module) : Value
     word = c.take.text
     if word == "getelementptr"
@@ -1644,12 +1644,12 @@ class IrParser
     c.expect_punct("(")
     first_type = parse_type(c, mod.types)
     first = parse_value(c, first_type, mod)
-    if word == "add" || word == "sub"
+    if word == "add" || word == "sub" || word == "mul"
       c.expect_punct(",")
       second_type = parse_type(c, mod.types)
       second = parse_value(c, second_type, mod)
       c.expect_punct(")")
-      ordinal = word == "add" ? Op::Add.value.to_i64 : Op::Sub.value.to_i64
+      ordinal = word == "add" ? Op::Add.value.to_i64 : (word == "sub" ? Op::Sub.value.to_i64 : Op::Mul.value.to_i64)
       return Inst.new(Op::ConstExpr, first_type, [first, second] of Value, ordinal, nil, [] of Block, [] of Int64)
     end
     c.expect_ident("to")

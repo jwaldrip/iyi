@@ -981,6 +981,11 @@ pub class SemanticProgram < NonGenericModuleType
   # The lowercase names the importing file imports (`import a/b::{refuse_port}`), as
   # the defs they name. Swapped per file like current_imports.
   property current_import_defs : Hash(String, Array(Def))
+  # iyi: each file's two import tables, by the file name its nodes carry (`import` records them).
+  # The body typing reads them: a def's body is typed long after its file was declared, and the
+  # names it may write are its own file's (the hosted pass keeps a scope per file).
+  getter file_imports : Hash(String, Hash(String, Type)) = Hash(String, Hash(String, Type)).new
+  getter file_import_defs : Hash(String, Hash(String, Array(Def))) = Hash(String, Hash(String, Array(Def))).new
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
   # iyi: the directory of the entry file: the first root an import is resolved from, as
@@ -1565,6 +1570,14 @@ pub class SemanticProgram < NonGenericModuleType
   end
 
   def lookup_type_path(path : Path, current_type : ModuleType) : Type
+    # iyi: a metaclass looks a name up as its instance type does: the hosted MetaclassType delegates
+    # lookup_path to instance_type, so a constant read in `def self.m` is the class's own (HELD).
+    if current_type.is_a?(MetaclassType)
+      instance = current_type.as(MetaclassType).instance_type
+      if instance.is_a?(ModuleType)
+        return lookup_type_path(path, instance.as(ModuleType))
+      end
+    end
     if path.global
       t = lookup_path_names(path.names, self)
       if t
@@ -1839,6 +1852,10 @@ pub class TopLevelVisitor < Visitor
   # order the hosted pass tries), and brings the listed types into this file.
   def visit(node : ImportDecl) : Bool
     written = node.path.join("/")
+    if loc = node.location
+      @program.file_imports[loc.filename] = @program.current_imports
+      @program.file_import_defs[loc.filename] = @program.current_import_defs
+    end
     file = import_file(written)
     unless file
       refuse_port("can't find module '#{written}'")
@@ -2058,6 +2075,13 @@ pub class TopLevelVisitor < Visitor
 
       if superclass == @program.enum_type
         raise("can't inherit Enum. Use the enum keyword to define enums")
+      end
+      if superclass.is_a?(UnresolvedType) && @program.total_mode
+        # iyi: total mode carries an unresolved superclass past, as an unresolved constant: the class
+        # takes the default superclass it would have had without one, and the file is counted with the refusal.
+        @program.carried_refusals << "undefined constant #{superclass.name}"
+        superclass = node.struct ? @program.struct_type : @program.reference_type
+        superclass_display = superclass.full_name
       end
       unless superclass.is_a?(ClassType) || superclass.class?
         raise("#{superclass.full_name} is not a class, it's a #{superclass.type_desc}")
@@ -2793,6 +2817,9 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroIf) : Bool
+    # iyi: disabled until S1bInlineMacros3 fixes the expansion: the visit at this site dropped defs
+    # (hello defs reached 5218 to 168). Until then it answers as before 7092cb8eb: children walked.
+    return true
     if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
       expanded.accept(self)
     end
@@ -2800,6 +2827,9 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroFor) : Bool
+    # iyi: disabled until S1bInlineMacros3 fixes the expansion: the visit at this site dropped defs
+    # (hello defs reached 5218 to 168). Until then it answers as before 7092cb8eb: children walked.
+    return true
     if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
       expanded.accept(self)
     end
@@ -2807,6 +2837,9 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroExpression) : Bool
+    # iyi: disabled until S1bInlineMacros3 fixes the expansion: the visit at this site dropped defs
+    # (hello defs reached 5218 to 168). Until then it answers as before 7092cb8eb: children walked.
+    return true
     if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
       expanded.accept(self)
     end

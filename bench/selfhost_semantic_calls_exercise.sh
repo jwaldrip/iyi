@@ -309,6 +309,17 @@ prove_mutation "a call whose named arguments cover the defaults in order gets a 
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a free variable is not bound from the argument that names it" "$RESTRICT_FILE" \
+  '        bound[names[0]] = arg_type' \
+  '        bound[names[0]] = arg_type if false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a return type is resolved without the bound free variables" "$CALL_FILE" \
+  'ret.as(ASTNode), rec_type, single.bound)' \
+  'ret.as(ASTNode), rec_type, Hash(String, Type).new)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

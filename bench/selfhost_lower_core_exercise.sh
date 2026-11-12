@@ -65,7 +65,7 @@ passed=0
 # Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed (the
 # port numbers String 31, the hosted module 1: the typer slice's LowerTypeIds numbering). They are waiting
 # by name, and the gate fails if one of them starts to match, so this list is kept honest.
-KNOWN_DIVERGED="lower_string lower_symbol lower_string_long"
+KNOWN_DIVERGED="lower_string lower_symbol lower_string_long lower_string_collide lower_string_nonascii"
 e2e=""
 module_same=0
 module_differ=0
@@ -186,7 +186,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -215,6 +215,26 @@ else
   echo "    NO: the long-string name differs from the hosted truncated name"
   status=1
 fi
+string_name_check() {
+  "$IYI" build -o "$WORK/port-n" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/n.build.log" 2>&1 || return 1
+  "$WORK/port-n" emit "$REPO/bench/fixtures/$1.iyi" "$WORK/$1.oracle.ll" > "$WORK/n.ll" 2>&1 || return 1
+  NEEDLE="$2" awk 'index($0, ENVIRON["NEEDLE"]) > 0 { ok = 1 } END { exit !ok }' "$WORK/n.ll"
+}
+# A non-ASCII long text is cut by character (codegen.cr:3463), and its bytes are written in the port's text form.
+nonascii_name_check() {
+  string_name_check lower_string_nonascii "'h\\xc3\\xa9llo w\\xc3\\xb6rld \\xc3\\xbcn\\xc3\\xafcode...'"
+}
+# Two texts with one 19-character cut: the second global takes the module's next number (LLVM's makeUniqueName).
+collide_name_check() {
+  string_name_check lower_string_collide "'a string constant l...'.1"
+}
+echo "  the non-ASCII long string constant is cut by character, and the second of two colliding names is renamed:"
+if nonascii_name_check && collide_name_check; then
+  echo "    yes"
+else
+  echo "    NO: a string constant name differs from the hosted name"
+  status=1
+fi
 echo "  the mutation check passes on the unmutated code:"
 if lower_core_check; then
   echo "    yes"
@@ -223,11 +243,17 @@ else
   status=1
 fi
 prove_mutation "a long string constant is named in full, not truncated" "$REPO/src/compiler/lower/helpers.iyi" \
-  'name_text = str[0, 19] + "..."' 'name_text = str' -- long_name_check || status=1
+  'name_text = first_chars(str, 19) + "..."' 'name_text = str' -- long_name_check || status=1
+prove_mutation "a non-ASCII long string constant is cut in bytes, not characters" "$REPO/src/compiler/lower/helpers.iyi" \
+  'name_text = first_chars(str, 19) + "..."' 'name_text = str[0, 19] + "..."' -- nonascii_name_check || status=1
+prove_mutation "a renamed global takes the number after the next" "$REPO/src/compiler/lower/helpers.iyi" \
+  'candidate = name + "." + low.last_unique.to_s' 'candidate = name + "." + (low.last_unique + 1_i64).to_s' -- collide_name_check || status=1
+prove_mutation "a taken global name is not renamed" "$REPO/src/compiler/lower/helpers.iyi" \
+  'while low.module.global?(candidate) || low.module.function?(candidate)' 'while low.module.function?(candidate)' -- collide_name_check || status=1
 prove_mutation "a runtime fun's name is external, not internal" "$REPO/src/compiler/lower/lower.iyi" \
   'if name.starts_with?("__crystal_")' 'if name.starts_with?("__crystal_no_such_")' -- lower_core_check || status=1
-prove_mutation "the well-known raise_overflow fun is not emitted on entry" "$REPO/src/compiler/lower/lower.iyi" \
-  'name == "__crystal_raise_overflow"' 'name == "__crystal_no_such_fun"' -- lower_core_check || status=1
+prove_mutation "a fun is not marked emitted, so its body is lowered again" "$REPO/src/compiler/lower/lower.iyi" \
+  "low.fun_defs_done[name] = true" "low.fun_defs_done.size" -- lower_core_check || status=1
 prove_mutation "argv is stored from the argc parameter" "$REPO/src/compiler/lower/lower.iyi" \
   "store_aligned(low, fn.param(1), argv_global)" "store_aligned(low, fn.param(0), argv_global)" -- lower_core_check || status=1
 prove_mutation "main returns 1" "$REPO/src/compiler/lower/lower.iyi" \
@@ -252,6 +278,14 @@ prove_mutation "a char is its code point plus one" "$REPO/src/compiler/lower/low
   "node.value.ord.to_i64)" "node.value.ord.to_i64 + 1_i64)" -- lower_core_check || status=1
 prove_mutation "an empty alloca block is kept" "$REPO/src/compiler/lower/context.iyi" \
   "current_fun.blocks.delete(alloca)" "alloca.name" -- lower_core_check || status=1
+prove_mutation "an unused fun is not recorded for the deferred body pass" "$REPO/src/compiler/lower/lower.iyi" \
+  "low.unused_fun_defs << node" "low.unused_fun_defs.size" -- lower_core_check || status=1
+prove_mutation "the deferred pass that defines unused funs is not run" "$REPO/src/compiler/lower/lower.iyi" \
+  "  emit_unused_fun_defs(low)" "  low.unused_fun_defs.size" -- lower_core_check || status=1
+prove_mutation "a fun definition is internal, not external" "$REPO/src/compiler/lower/lower.iyi" \
+  "fn.linkage = Linkage::External" "fn.linkage = Linkage::Internal" -- lower_core_check || status=1
+prove_mutation "an implicit self call passes no self" "$REPO/src/compiler/lower/call.iyi" \
+  "self_value = implicit_self_value(low)" "self_value = nil" -- lower_core_check || status=1
 
 # The module-level count: how many CORE_CHECK_FIXTURES match the hosted module in every item, module-level included.
 # A patch that changes only module-level text lowers the count, and this check catches it.

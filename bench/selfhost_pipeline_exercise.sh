@@ -166,10 +166,6 @@ fi
 echo
 echo "== 6. The refusal table: src/compiler/PIPELINE.md and its floor (SPEC 2.1, S3)"
 TFLOOR="$REPO/bench/selfhost_pipeline_table.floor"
-# Identical builds vary in the typer's reach and in the clean and lowered counts: measured 2026-11-12 on the calls-merged
-# bodies head, reached 5218/5219/5218, clean 2409/2409/2411, lowered 2926/2930/2922. A count may sit this far under its
-# floor (and no further) until the typer's nondeterminism is found; the floor itself is never lowered by this.
-TABLE_TOLERANCE=10
 PIPE_MD="$REPO/src/compiler/PIPELINE.md"
 # The count a table summary line carries under a key (defs-reached, defs-typed-clean), or nothing.
 table_value() {
@@ -237,13 +233,9 @@ if [ "$table_ok" -eq 1 ]; then
     gr="$(table_value "$name" defs-reached)"
     gc="$(table_value "$name" defs-typed-clean)"
     gl="$(table_value "$name" defs-lowered-clean)"
-    below=0
-    if [ "${gr:-0}" -lt "$fr" ] || [ "${gc:-0}" -lt "$fc" ] || [ "${gl:-0}" -lt "${fl:-0}" ]; then below=1; fi
-    if [ "${gr:-0}" -lt $((fr - TABLE_TOLERANCE)) ] || [ "${gc:-0}" -lt $((fc - TABLE_TOLERANCE)) ] || [ "${gl:-0}" -lt $((${fl:-0} - TABLE_TOLERANCE)) ]; then
-      echo "  $name: table count FALLS below the floor by more than the tolerance (reached ${gr:-none} < $fr, clean ${gc:-none} < $fc or lowered ${gl:-none} < ${fl:-0}, tolerance $TABLE_TOLERANCE)"
+    if [ "${gr:-0}" -lt "$fr" ] || [ "${gc:-0}" -lt "$fc" ] || [ "${gl:-0}" -lt "${fl:-0}" ]; then
+      echo "  $name: table count FALLS below the floor (reached ${gr:-none} < $fr, clean ${gc:-none} < $fc or lowered ${gl:-none} < ${fl:-0})"
       tbad=$((tbad + 1))
-    elif [ "$below" -eq 1 ]; then
-      echo "  $name: table count below its floor within the tolerance of $TABLE_TOLERANCE (identical builds vary; reached ${gr:-none} vs $fr, clean ${gc:-none} vs $fc, lowered ${gl:-none} vs ${fl:-0})"
     fi
   done < "$TFLOOR"
   if [ "$tbad" -gt 0 ]; then
@@ -263,7 +255,7 @@ echo "== 5. Mutation proofs: the gate must catch each patch"
 pipeline_check() {
   if ! build_tool "$TOOL_SRC" "$WORK/mut_tool"; then return 1; fi
   local a="$REPO/bench/fixtures/lower_exit.iyi"
-  local b="$REPO/bench/fixtures/lowprim_checked.iyi"
+  local b="$REPO/bench/fixtures/lower_tuple.iyi"
   rm -f "$WORK/mut_a" "$WORK/mut_b"
   "$WORK/mut_tool" "$a" -o "$WORK/mut_a" --pipeline typed > /dev/null 2>&1; local sa=$?
   [ "$sa" -eq 0 ] || return 1
@@ -272,6 +264,17 @@ pipeline_check() {
   [ "$sb" -ne 0 ] || return 1
   [ ! -e "$WORK/mut_b" ] || return 1
   return 0
+}
+
+# The lowering table names and counts no Primitive-annotated def. The hosted compiler lowers a primitive at its call
+# site, so a probe of such a def's body is a refusal row for a def that is never a function of its own. The hello
+# root with its prelude reaches them; the table must name none. Prelude-free fixtures reach no primitive def, so this
+# check runs the root.
+primitive_table_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/prim_tool"; then return 1; fi
+  IYI_PATH="$REPO/src" "$WORK/prim_tool" "$REPO/samples/iyi/hello.iyi" -o "$WORK/prim_hello" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/prim_hello.probe" 2> /dev/null
+  awk '/^table: hello defs-lowered-clean=/ { ok = 1 } END { exit !ok }' "$WORK/prim_hello.probe" || return 1
+  awk '/^table: hello lowering .*visit\(Primitive/ { bad = 1 } END { exit bad }' "$WORK/prim_hello.probe"
 }
 echo "  the mutation check passes on the unmutated code:"
 if pipeline_check; then
@@ -286,6 +289,15 @@ prove_mutation "the program's top-level code is dropped" "$PROGRAM_SRC" \
   "top_level.each { |t| nodes << t }" "nodes << Nop.new" -- pipeline_check || status=1
 prove_mutation "the tool falls back to the codegen pipeline when the typed one refuses" "$TOOL_SRC" \
   "fail(refusal.as(String))" "compiler.config.typed_pipeline = false; compiler.refusal = nil; compiler.compile(input)" -- pipeline_check || status=1
+echo "  the table check passes on the unmutated code:"
+if primitive_table_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL (the table check cannot prove anything)"
+  status=1
+fi
+prove_mutation "the lowering table probes a Primitive-annotated def" "$PROGRAM_SRC" \
+  "next unless primitive_name(d.body).nil?" "next if false" -- primitive_table_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
