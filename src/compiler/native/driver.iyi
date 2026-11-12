@@ -205,16 +205,43 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
   obj
 end
 
+# True for a library name that is libSystem on darwin: libSystem is every program's first library and carries what
+# other systems split into libc, libm, libpthread and libdl, so naming one of them loads nothing more.
+def libsystem_library?(name : String) : Bool
+  name == "System" || name == "c" || name == "m" || name == "pthread" || name == "dl"
+end
+
+# The libraries a link must load beyond libSystem: the ones the module's declarations import from (`import "Name"`,
+# a lib's @[Link] in the IR) and the ones named beside it (`extra`, the sidecar of bridged IR that carries no
+# @[Link]), each once, in first-seen order. Whether the native floor provides a name is the linker's to say.
+pub def libraries_of(mod : Module, extra : Array(String)) : Array(String)
+  names = [] of String
+  extra.each do |name|
+    names << name unless libsystem_library?(name) || names.includes?(name)
+  end
+  mod.functions.each do |fn|
+    if library = fn.import_library
+      names << library unless libsystem_library?(library) || names.includes?(library)
+    end
+  end
+  mod.globals.each do |g|
+    if library = g.import_library
+      names << library unless libsystem_library?(library) || names.includes?(library)
+    end
+  end
+  names
+end
+
 # A native program: the program's module and the runtime module each compile to an object by this backend, and
 # the linker writes the arm64 Mach-O executable from them. Nothing else takes part. A refusal or link error comes
-# back as its reason, which names the function, object or symbol.
-pub def link_native_program(mod : Module, runtime : Module, identifier : String) : LinkedImage | String
+# back as its reason, which names the function, object, symbol or library.
+pub def link_native_program(mod : Module, runtime : Module, identifier : String, libraries : Array(String) = [] of String) : LinkedImage | String
   program = compile_module(mod, true)
   return program.as(String) if program.is_a?(String)
   rt = compile_module(runtime, true)
   return rt.as(String) if rt.is_a?(String)
   objects = [program.as(ObjectFile), rt.as(ObjectFile)]
-  result = link(objects, LinkOptions.new(identifier, "main", [] of String, true))
+  result = link(objects, LinkOptions.new(identifier, "main", libraries_of(mod, libraries), true))
   return result.as(LinkError).message if result.is_a?(LinkError)
   result.as(LinkedImage)
 end
