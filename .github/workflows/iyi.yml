@@ -380,6 +380,10 @@ jobs:
       - name: Link once, RG4, the reach walk, the key's phases, RG8 and RG9
         run: IYI="$PWD/.build/iyi" bash bench/stale_callpath.sh all
 
+      # The suite's cached runs under the audit: every fast serve must agree with the compiler (RG10).
+      - name: Suite speed under the audit, 20 tests
+        run: IYI="$PWD/.build/iyi" python3 bench/stale_suite_speed.py --tests 20 --iterations 0,0 --audit
+
       # Row 21: two processes record a thousand receipts each into one
       # store, and every record parses with the sequence at two thousand.
       - name: Two processes record into one store
