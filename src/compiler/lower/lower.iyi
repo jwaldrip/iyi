@@ -41,6 +41,7 @@ import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
 import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
 import compiler/syntax/ast::{FunDef}
+import compiler/syntax/ast::{Annotation}
 import compiler/semantic/top_level::{LibFun}
 import compiler/ir/inst::{Attribute}
 import compiler/lower/fun::{codegen_fun}
@@ -164,7 +165,16 @@ pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end
-  fn.linkage = Linkage::External
+  # The hosted codegen_fun (fun.cr:763): a `__crystal_` name is internal (the optimiser may remove it),
+  # any other fun is external. The `__iyi_` names have rules of their own (asm references) and are refused here.
+  if name.starts_with?("__iyi_")
+    refuse_port("lower: the runtime fun #{name} (hosted fun.cr: __iyi_ internalisation and asm references) is not ported")
+  end
+  if name.starts_with?("__crystal_")
+    fn.linkage = Linkage::Internal
+  else
+    fn.linkage = Linkage::External
+  end
 end
 
 # The well-known funs the hosted code emits on entry (codegen.cr:379, codegen_well_known_functions). Only
@@ -332,8 +342,11 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = llvm_nil(low)
     return
   end
-  if node.is_a?(Alias) || node.is_a?(Macro)
-    # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil.
+  if node.is_a?(Alias) || node.is_a?(Macro) || node.is_a?(Annotation)
+    # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil. The hosted
+    # `visit(Annotation)` (codegen.cr:838) emits nothing and returns without setting `@last`; the value is
+    # nil here, which matters only where an annotation is the last node of a body, and a class or module body's
+    # value is discarded.
     low.last = llvm_nil(low)
     return
   end
