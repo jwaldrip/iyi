@@ -171,6 +171,12 @@ module BenchSelfhostSemanticTypesExercise
     if member == "virtual_type"
       return type_text(TypeQueries.virtual_type(t))
     end
+    if member == "virtual_type_made?"
+      return bool_text(TypeQueries.virtual_type_made?(t))
+    end
+    if member == "virtual_identical"
+      return bool_text(TypeQueries.virtual_type(t).object_id == TypeQueries.virtual_type(t).object_id)
+    end
     if member == "remove_alias"
       return type_text(TypeMerge.remove_alias(t))
     end
@@ -216,6 +222,14 @@ module BenchSelfhostSemanticTypesExercise
       return type_text(TypeMerge.merge_all(prog, types))
     end
     raise "merge takes two or three types: #{op}"
+  end
+
+  def self.evaluate_same_merge(prog : SemanticProgram, ts : TypeSystem, op : String) : String
+    parts = split_top(op[11, op.bytesize - 12])
+    raise "same_merge takes four types: #{op}" unless parts.size == 4
+    first = TypeMerge.merge(prog, resolve(prog, ts, parts[0]), resolve(prog, ts, parts[1]))
+    second = TypeMerge.merge(prog, resolve(prog, ts, parts[2]), resolve(prog, ts, parts[3]))
+    bool_text(first.object_id == second.object_id)
   end
 
   def self.evaluate_intersect(prog : SemanticProgram, ts : TypeSystem, op : String) : String
@@ -329,6 +343,7 @@ module BenchSelfhostSemanticTypesExercise
     return evaluate_filter(prog, ts, op) if op.starts_with?("filter(")
     return evaluate_lookup(prog, ts, op) if op.starts_with?("lookup(")
     return evaluate_restriction(prog, ts, op) if op.starts_with?("restriction(")
+    return evaluate_same_merge(prog, ts, op) if op.starts_with?("same_merge(")
     dot = member_dot(op)
     raise "malformed operation #{op}" if dot < 0
     t = resolve(prog, ts, op[0, dot])

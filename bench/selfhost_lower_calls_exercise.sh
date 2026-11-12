@@ -15,8 +15,7 @@
 # native tool and run: its exit status and stdout must equal the hosted executable's. The
 # fixtures return computed values through `LibC.exit`, so the status is observable.
 #
-# The analysis runs with the lib stand-in (bench/lib/lower_gate.iyi, stand_in_lib_types):
-# the semantic pass types no lib definition yet (NEEDS.md, lowering calls row 31).
+# The analysis types each lib and the calls on it (the semantic pass, semantic/lib_call.iyi).
 #
 # Mutation proofs patch the ported code, rebuild the driver, and require the check to
 # fail. A patch that changes nothing is refused by prove_mutation.
@@ -64,7 +63,8 @@ for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
   summary="$(awk '/^SUMMARY/ { print }' "$WORK/$name.port.out")"
   identical="$(echo "$summary" | awk '{ split($2, a, "="); print a[2] }')"
   total="$(echo "$summary" | awk '{ split($3, a, "="); print a[2] }')"
-  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ]; then
+  module="$(echo "$summary" | awk '{ split($4, a, "="); print a[2] }')"
+  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ] && [ "$module" = 1 ]; then
     echo "    $name: PASSED, $identical of $total functions identical"
     passed=$((passed + 1))
     e2e="$e2e $name"
@@ -123,10 +123,16 @@ lower_calls_check() {
   for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
     name="$(basename "$fixture" .iyi)"
     "$WORK/mut" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/mut.out" 2>/dev/null || return 1
-    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+$/ { split($2, a, "="); split($3, b, "="); if (a[2] != b[2] || b[2] == 0) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
   done
   return 0
 }
+# A mutation is caught only when the unmutated port matches the hosted module: a check that fails on the
+# unmutated tree would "catch" every patch, so the baseline must pass first.
+if ! lower_calls_check; then
+  echo "  baseline: the unmutated port does not match the hosted module, so no mutation below is counted"
+  exit 1
+fi
 prove_mutation "a function's linkage is external" "$REPO/src/compiler/lower/fun.iyi" \
   "fn.linkage = Linkage::Internal" "fn.linkage = Linkage::External" -- lower_calls_check || status=1
 prove_mutation "a mangled argument list has no separator" "$REPO/src/compiler/lower/fun.iyi" \
@@ -180,9 +186,9 @@ prove_mutation "a lib call passes no arguments" "$REPO/src/compiler/lower/call.i
 prove_mutation "a lib fun is declared with the iyi calling convention" "$REPO/src/compiler/lower/call.iyi" \
   'func = low.module.add_function(real, fn_type, CallConv::C)' 'func = low.module.add_function(real, fn_type, CallConv::Iyi)' -- lower_calls_check || status=1
 prove_mutation "a lib call's function type returns nil" "$REPO/src/compiler/lower/call.iyi" \
-  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))' 'fn_type = low.module.types.func(params, low.typer.llvm_return_type(low.analysed.program.nil_type))' -- lower_calls_check || status=1
+  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.typer.llvm_return_type(low.analysed.program.nil_type), lib_fun.varargs?)' -- lower_calls_check || status=1
 prove_mutation "a lib call's result is declared as an integer (a pointer result is caught)" "$REPO/src/compiler/lower/call.iyi" \
-  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))' 'fn_type = low.module.types.func(params, low.module.types.int32)' -- lower_calls_check || status=1
+  'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.module.types.int32, lib_fun.varargs?)' -- lower_calls_check || status=1
 prove_mutation "a class method is named with the instance separator (# not ::)" "$REPO/src/compiler/lower/fun.iyi" \
   'text = text + co.full_name + "::"' 'text = text + co.full_name + "#"' -- lower_calls_check || status=1
 prove_mutation "a stored struct receiver is loaded, not passed by its address" "$REPO/src/compiler/lower/call.iyi" \
@@ -190,7 +196,23 @@ prove_mutation "a stored struct receiver is loaded, not passed by its address" "
 prove_mutation "an empty (Nop) body is not inlined" "$REPO/src/compiler/lower/call.iyi" \
   'body.is_a?(Nop) || body.is_a?(NilLiteral)' 'body.is_a?(NilLiteral)' -- lower_calls_check || status=1
 prove_mutation "a def is emitted with the C calling convention (a struct result is then refused)" "$REPO/src/compiler/lower/fun.iyi" \
-  'fn.call_convention = CallConv::Iyi' 'fn.call_convention = CallConv::C' -- lower_calls_check || status=1
+  'return CallConv::Iyi if name.starts_with?("*")' 'return CallConv::C if name.starts_with?("*")' -- lower_calls_check || status=1
+prove_mutation "a struct's allocate result is not loaded from its instance (the store into _ is wrong)" "$REPO/src/compiler/lower/call.iyi" \
+  'if passed_by_value?(inst)' 'if false' -- lower_calls_check || status=1
+prove_mutation "a struct call result is not spilled to an alloca (hosted call.cr:707-713)" "$REPO/src/compiler/lower/call.iyi" \
+  'low.last = load_aligned(low, ir, temp, "")' 'low.last = inst' -- lower_calls_check || status=1
+prove_mutation "a struct call receiver gets a second alloca (hosted reuses the spill pointer as self)" "$REPO/src/compiler/lower/call.iyi" \
+  'if self_by_pointer?(st) && low.spill_node != 0_u64 && low.spill_node == obj.object_id' 'if false' -- lower_calls_check || status=1
+prove_mutation "a struct call receiver loads its spill slot though the slot is its self" "$REPO/src/compiler/lower/call.iyi" \
+  'if low.receiver_node == node.object_id && self_by_pointer?(ret)' 'if false' -- lower_calls_check || status=1
+prove_mutation "a module-level build constant is kept in the module (the module check catches it)" "$REPO/bench/lib/lower_gate.iyi" \
+  'next if stripped.starts_with?("@") && build_constant?(stripped, builds) || stripped.starts_with?("%Nil = type")' 'next if stripped.starts_with?("%Nil = type")' -- lower_calls_check || status=1
+prove_mutation "a block body typed NoReturn is refused (no hosted upcast applies to a body that never returns)" "$REPO/src/compiler/lower/call.iyi" \
+  'body_no_return = body_t.as(Type).is_a?(NoReturnType)' 'body_no_return = false' -- lower_calls_check || status=1
+prove_mutation "a top-level fun with a body is emitted with the iyi calling convention" "$REPO/src/compiler/lower/fun.iyi" \
+  "  CallConv::C
+end" "  CallConv::Iyi
+end" -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

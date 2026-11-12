@@ -1,4 +1,4 @@
-def only
+def only(&)
   yield 5
 end
 
@@ -6,4 +6,4 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-LibC.exit(only { |v| next v })
+LibC.exit(only { |v| break v })

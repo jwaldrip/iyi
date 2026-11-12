@@ -47,9 +47,20 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
-    lowprim_checked) echo "the analysis types the fun with a body now, and the lowering refuses visit(FunDef) (pending.iyi): the core's FunDef lowering, NEEDS.md row 25" ;;
     lowprim_ptr) echo "the generic metaclass resolves its receiver now (S1c, 17bc4d2f8), but the bare analysis declares no Pointer primitives, so Pointer(Int32).malloc is undefined: the hosted oracle needs the prelude, and the bare dump has none (NEEDS.md row 19; the Pointer primitives are increment 2)" ;;
-    lowprim_alloc_struct) echo "the receiverless allocate in the generated new reaches codegen_call_node, which still refuses it by name: the one branch that calls primitive_allocate (lower/primitives.iyi, pushed) is S2c4Calls' (lower/call.iyi); primitive_allocate's struct path (zero_memory, the hosted llvm.memset with align 4) is in place" ;;
+  esac
+}
+
+# Fixtures that lower with a known divergence, named, not yet fixed. The gate fails if one starts to match,
+# so the list stays honest. None now.
+known_divergence() {
+  case "$1" in
+  esac
+}
+# Fixtures identical to the hosted module whose native executable waits by name. None now: defs are emitted Iyi
+# (fun.iyi), so the native tool builds lowprim_alloc_struct.
+e2e_waiting_on() {
+  case "$1" in
   esac
 }
 for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
@@ -80,13 +91,18 @@ for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
     echo "    $name: PASSED, $identical of $total functions identical"
     passed=$((passed + 1))
     e2e="$e2e $name"
-    if [ -n "$(waiting_on "$name")" ]; then
-      echo "    $name: passes now: take it off the WAITING list in this gate"
+    if [ -n "$(waiting_on "$name")" ] || [ -n "$(known_divergence "$name")" ]; then
+      echo "    $name: passes now: take it off the WAITING or KNOWN_DIVERGED list in this gate"
       diverged=$((diverged + 1))
     fi
   else
-    echo "    $name: DIVERGED, $identical of $total functions identical"
-    diverged=$((diverged + 1))
+    if [ -n "$(known_divergence "$name")" ]; then
+      echo "    $name: WAITING, known divergence: $identical of $total functions identical: $(known_divergence "$name")"
+      waiting=$((waiting + 1))
+    else
+      echo "    $name: DIVERGED, $identical of $total functions identical"
+      diverged=$((diverged + 1))
+    fi
   fi
 done
 echo "  fixtures: $passed passed, $waiting waiting (named above), $diverged diverged or refused"
@@ -98,6 +114,7 @@ echo
 echo "== 3. End to end: each fixture the port lowers identically, built natively and run"
 e2e_pass=0
 e2e_fail=0
+e2e_waiting=0
 if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/tool.build.log" 2>&1; then
   for name in $e2e; do
     fixture="$REPO/bench/fixtures/$name.iyi"
@@ -107,6 +124,11 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
       continue
     fi
     if ! "$WORK/compile_native" "$WORK/$name.port.ir" -o "$WORK/$name.native" > "$WORK/$name.native.log" 2>&1; then
+      if [ -n "$(e2e_waiting_on "$name")" ]; then
+        echo "  $name: WAITING, $(e2e_waiting_on "$name"): $(awk 'NR==1' "$WORK/$name.native.log")"
+        e2e_waiting=$((e2e_waiting + 1))
+        continue
+      fi
       echo "  $name: the native tool refuses the port's module: $(awk 'NR==1' "$WORK/$name.native.log")"
       e2e_fail=$((e2e_fail + 1))
       continue
@@ -116,6 +138,10 @@ if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_nati
     if [ "$ns" = "$hs" ] && cmp -s "$WORK/$name.native.out" "$WORK/$name.hosted.out"; then
       echo "  $name: native executable runs to the hosted result (status $hs, stdout identical)"
       e2e_pass=$((e2e_pass + 1))
+      if [ -n "$(e2e_waiting_on "$name")" ]; then
+        echo "    $name: runs now: take it off E2E_WAITING in this gate"
+        e2e_fail=$((e2e_fail + 1))
+      fi
     else
       echo "  $name: native status $ns, hosted $hs; stdout differs or status differs"
       e2e_fail=$((e2e_fail + 1))
@@ -125,7 +151,7 @@ else
   echo "  the native tool does not build (see $WORK/tool.build.log)"
   e2e_fail=1
 fi
-echo "  end to end: $e2e_pass fixture(s) run to the hosted result, $e2e_fail failed"
+  echo "  end to end: $e2e_pass fixture(s) run to the hosted result, $e2e_waiting waiting by name, $e2e_fail failed"
 if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
   status=1
 fi
@@ -138,11 +164,16 @@ lower_primitives_check() {
   "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_primitives_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
   for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
     name="$(basename "$fixture" .iyi)"
+    # A fixture waiting by name cannot pass the check; the check covers the rest.
+    [ -n "$(waiting_on "$name")" ] && continue
+    [ -n "$(known_divergence "$name")" ] && continue
     "$WORK/mut" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/mut.out" 2>/dev/null || return 1
-    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+$/ { split($2, a, "="); split($3, b, "="); if (a[2] != b[2] || b[2] == 0) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
+    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); if (a[2] != b[2] || b[2] == 0) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
   done
   return 0
 }
+# The baseline: the unmutated port must pass the check, or every mutation below is caught for the wrong reason.
+lower_primitives_check || { echo "  baseline: the unmutated primitives do not pass the check"; status=1; }
 prove_mutation "the wrapping add is a subtraction" "$REPO/src/compiler/lower/primitives.iyi" \
   "    return low.builder.add(p1, p2)" "    return low.builder.sub(p1, p2)" -- lower_primitives_check || status=1
 prove_mutation "the signed less-than is unsigned" "$REPO/src/compiler/lower/primitives.iyi" \
@@ -151,6 +182,8 @@ prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/p
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"==\"" "    if op == \"!=\"" -- lower_primitives_check || status=1
+prove_mutation "the class type id is stored one struct over" "$REPO/src/compiler/lower/primitives.iyi" \
+  "  zero = low.builder.const_int(low.module.types.int32, 0_i64)" "  zero = low.builder.const_int(low.module.types.int32, 1_i64)" -- lower_primitives_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
