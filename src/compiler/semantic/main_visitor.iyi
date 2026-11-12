@@ -193,6 +193,34 @@ pub class MainVisitor < Visitor
     false
   end
 
+  # iyi: macro control inside a body. The hosted pass hands a MacroIf, MacroFor
+  # or MacroExpression to its macro engine (semantic_visitor.cr 1943-1956) and
+  # does not walk it; MacroLiteral text exists only inside those, and the hosted
+  # pass never reaches it. Expansion waits for the macro engine (macros slice).
+  def visit(node : MacroIf) : Bool
+    untyped(node, "macro control expansion (macros engine)")
+    false
+  end
+
+  def visit(node : MacroFor) : Bool
+    untyped(node, "macro control expansion (macros engine)")
+    false
+  end
+
+  def visit(node : MacroExpression) : Bool
+    untyped(node, "macro control expansion (macros engine)")
+    false
+  end
+
+  def visit(node : MacroVerbatim) : Bool
+    untyped(node, "macro control expansion (macros engine)")
+    false
+  end
+
+  def visit(node : MacroLiteral) : Bool
+    false
+  end
+
   # iyi: a node of a kind this visitor does not type yet. The walk goes on into
   # its children, so the children are typed; the node itself is recorded.
   def visit(node : ASTNode) : Bool
