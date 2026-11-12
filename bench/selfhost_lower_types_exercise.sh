@@ -428,6 +428,18 @@ prove_mutation "a struct's by-value answer removed (passed_by_value? of a class)
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a reference-only module union lowered as a mixed union, not a pointer" "$TYPER_FILE" \
+  "  return @table.ptr if all_references" \
+  "  return @table.ptr if false" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a module's own metaclass counted as an implementor" "$TYPER_FILE" \
+  "    found << t unless t.is_a?(MetaclassType) || t.is_a?(VirtualMetaclassType)" \
+  "    found << t" \
+  -- check_own_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
