@@ -786,6 +786,12 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Assign) : Bool
+    # iyi: a constant whose value is one macro node is typed where a read of it types the value (visit(Path) expands
+    # the site, see splice_const_value). The declaration is not walked as an expression: the macro refusal would
+    # belong to no def.
+    if node.target.is_a?(Path) && (node.value.is_a?(MacroIf) || node.value.is_a?(MacroFor) || node.value.is_a?(MacroExpression))
+      return false
+    end
     node.value.accept(self)
     vt = child_type(node.value)
     if vt.nil?
@@ -1018,6 +1024,7 @@ pub class MainVisitor < TypeNodeHost
       if c_type = type_of?(c.value)
         set_type(node, c_type)
       else
+        splice_const_value(c)
         c.value.accept(self)
         if c_type = child_type(c.value)
           set_type(node, c_type)
@@ -1060,6 +1067,31 @@ pub class MainVisitor < TypeNodeHost
   def splice_def_body(node : ASTNode) : ASTNode
     return node if @current_def.nil?
     splice_body_node(node, def_inline_scope_name, def_inline_file, false)
+  end
+
+  # An inline macro site that is the whole value of a constant (`CHANNEL_WAIT = {% if ... %}512{% else %}2048{% end %}`)
+  # is expanded where the constant is typed, as the hosted pass expands a macro where an expression is expected
+  # (semantic_visitor.cr 1943-1956). The declared value keeps the site: the declarations dump prints it as written.
+  def splice_const_value(c : Const) : Nil
+    value = c.value
+    return nil unless value.is_a?(MacroIf) || value.is_a?(MacroFor) || value.is_a?(MacroExpression)
+    scope_name = ""
+    if ns = c.namespace
+      scope_name = ns.full_name
+    end
+    file = ""
+    if locs = c.locations
+      if first_loc = locs.first?
+        file = first_loc.filename
+      end
+    end
+    spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType))
+    if spliced.is_a?(Expressions)
+      only = spliced.as(Expressions).expressions
+      spliced = only[0] if only.size == 1
+    end
+    c.value = spliced
+    nil
   end
 
   def visit(node : Expressions) : Bool

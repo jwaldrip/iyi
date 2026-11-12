@@ -424,6 +424,7 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 REFUSAL_FLOOR="$REPO/bench/selfhost_inline_refusals.floor"
 MUT_INL="$REPO/src/compiler/semantic/inline_macros.iyi"
 MUT_TOP="$REPO/src/compiler/semantic/top_level.iyi"
+MUT_MAIN="$REPO/src/compiler/semantic/main_visitor.iyi"
 
 check_refusals() {
   local tool="$1" fail=0 root ceiling tag log refusals
@@ -476,6 +477,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a class, module or lib body that is one macro node is not passed to the splice" "$MUT_TOP" \
   "splice_body_node(body, @current_type.full_name, @file || \"\", @current_type.is_a?(LibType))" \
   "body" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# A constant whose value is one macro node is expanded where the typer reads it (main_visitor.iyi splice_const_value).
+prove_mutation "a constant whose value is one macro node is typed unexpanded, so the typer refuses its macro node" "$MUT_MAIN" \
+  "spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType))" \
+  "spliced = Expressions.new([value] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
