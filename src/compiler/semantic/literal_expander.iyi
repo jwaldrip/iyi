@@ -4,8 +4,8 @@ module compiler/semantic/literal_expander
 # LiteralExpander does (src/compiler/iyi/semantic/literal_expander.cr, the
 # hosted compiler). Phase S slice S1e ports it one literal kind per increment.
 #
-# Ported so far: range literals, string interpolation, array literals and hash
-# literals.
+# Ported so far: range literals, string interpolation, array literals, hash
+# literals, and `case` with a single subject or none.
 #
 # `1 .. 3` is `Range.new(1, 3, false)` and `1 ... 3` is `Range.new(1, 3, true)`,
 # the `from` and `to` expressions left as written. `"a#{b}c"` is
@@ -22,18 +22,34 @@ module compiler/semantic/literal_expander
 # continues into the expansion, so a literal inside an element is expanded when
 # the walk reaches it, which is the order the hosted visitor uses.
 #
+# `case subject` becomes an `if` chain over `===`: a subject that is not a
+# variable is kept in a `__temp_N`; a `when` with several conditions is their
+# `||`; a `when` of types is one `is_a?` per type, each with its own copy of the
+# body. `when nil` is `is_a?(Nil)`, and `when X.class` is `is_a?(X.class)`.
+# With a subject, every branch and the `else` binds `it` to the subject, as the
+# hosted pass does for every iyi `case` with a subject: a `__temp_N` takes the
+# subject, `it` takes the temporary, and the branch's own `it`s are renamed to
+# the temporary in a copy. A `case` with no subject keeps each condition as
+# written. A missing `else` stays `Nop` here, which is what the hosted pass
+# leaves too.
+#
+# Not ported, named here rather than left out silently:
+# - `case` with a tuple subject (`case a, b`): the walk leaves that `case` as
+#   written, because the hosted pass zips its tuple against each `when` tuple.
+# - an exhaustive `case` with no `else`, which the hosted pass fills with an
+#   `Unreachable` node; the port has no such node.
+# - a `when` condition that is an implicit receiver (`when .foo`), which the
+#   hosted pass refuses.
+# - multiple assignment, op-assign, `select`, regex and proc literals, none yet
+#   ported; a literal of these kinds is left as written.
+#
 # The named forms `Type{...}` take their generic type from the program's types
 # in the hosted compiler. The walk here has no types, so it passes the name as
 # written, which is the non-generic branch. The generic branch is not ported.
-#
 # Named tuples have no expansion in the hosted expander either, so none here.
-#
-# Not ported yet, so a literal of these kinds is left as written and the
-# literal fixtures never contain one: `case`, multiple assignment, op-assign,
-# `select`, regex and proc literals.
 
 import compiler/semantic/normalizer::{NormalizerProgram}
-import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, InstanceVar, NilLiteral, Nop, NumberLiteral, Path, RangeLiteral, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TypeOf, Var}
+import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, Metaclass, NilLiteral, Nop, NumberLiteral, Or, Path, RangeLiteral, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
@@ -51,6 +67,15 @@ pub class LiteralExpander < Transformer
 
   def transform(node : HashLiteral) : ASTNode
     expanded = expand_hash(node, node.name)
+    expanded.transform(self)
+  end
+
+  def transform(node : Case) : ASTNode
+    # A tuple subject is not ported: the case stays as written.
+    if node.cond.is_a?(TupleLiteral)
+      return node
+    end
+    expanded = expand_case(node)
     expanded.transform(self)
   end
 
@@ -240,6 +265,175 @@ pub class LiteralExpander < Transformer
     Expressions.new(exps)
   end
 
+  # `case subject` as an `if` chain. The subject is bound first, then every
+  # branch body in source order, then the `else`: the order the hosted pass
+  # allocates its temporaries in. The chain is built from the last branch back,
+  # so each branch's `else` is the branch after it.
+  def expand_case(node : Case) : ASTNode
+    cond = node.cond
+    if node.whens.empty?
+      exps = [] of ASTNode
+      else_node = node.else
+      if c = cond
+        exps << c
+        if else_node.nil?
+          exps << NilLiteral.new
+        end
+      end
+      if e = else_node
+        exps << e
+      end
+      return Expressions.new(exps)
+    end
+
+    assigns = [] of ASTNode
+    subject = bind_subject(cond, assigns)
+    bodies = [] of ASTNode
+    i = 0
+    while i < node.whens.size
+      bodies << bind_it(node.whens[i].body, subject)
+      i += 1
+    end
+    chain = else_or_nop(node.else, subject)
+    i = node.whens.size - 1
+    while i >= 0
+      chain = when_chain(node.whens[i], bodies[i], subject, chain)
+      i -= 1
+    end
+    if assigns.empty?
+      return chain
+    end
+    assigns << chain
+    Expressions.new(assigns)
+  end
+
+  # The subject as a condition's left side: a variable as it is, an assignment
+  # as its target (the assignment itself is kept ahead of the chain), and any
+  # other expression bound to a temporary.
+  def bind_subject(cond : ASTNode?, assigns : Array(ASTNode)) : ASTNode?
+    if c = cond
+      value = single_expression(c)
+      if value.is_a?(Var) || value.is_a?(InstanceVar)
+        return value
+      end
+      if value.is_a?(Assign)
+        assigns << value
+        return value.as(Assign).target
+      end
+      tv = temp_var
+      assigns << Assign.new(tv.clone, value)
+      return tv
+    end
+    nil
+  end
+
+  # The hosted `bind_it`: a branch of a case with a subject binds `it` to the
+  # subject. The temporary is taken first; the body is copied, its `it`s are
+  # renamed to the temporary, and the copy follows the two assignments.
+  def bind_it(body : ASTNode, subject : ASTNode?) : ASTNode
+    if s = subject
+      hidden = temp_var
+      renamed = body.clone.transform(ItRenamer.new(hidden.name))
+      bind = Assign.new(hidden.clone, s.clone)
+      keep = Assign.new(Var.new("it"), hidden.clone)
+      return Expressions.new([bind, keep, renamed] of ASTNode)
+    end
+    body
+  end
+
+  def else_or_nop(else_node : ASTNode?, subject : ASTNode?) : ASTNode
+    if e = else_node
+      return bind_it(e, subject)
+    end
+    Nop.new
+  end
+
+  # One `when`: an `if` over its conditions, with `tail` as its `else`. When every
+  # condition is a type, one `if` per type, each with its own copy of the body.
+  def when_chain(wh : When, body : ASTNode, subject : ASTNode?, tail : ASTNode) : ASTNode
+    comps = [] of ASTNode
+    j = 0
+    while j < wh.conds.size
+      wh_cond = wh.conds[j]
+      if !wh_cond.is_a?(Underscore)
+        comps << case_when_comparison(subject, wh_cond)
+      end
+      j += 1
+    end
+
+    if !comps.empty? && all_is_a?(comps)
+      cur = tail
+      k = comps.size - 1
+      while k >= 0
+        cur = If.new(comps[k], body.clone, cur)
+        k -= 1
+      end
+      return cur
+    end
+    If.new(or_all(comps), body, tail)
+  end
+
+  # The hosted `case_when_comparison`: a `nil` or a type is an `is_a?`, `X.class`
+  # is an `is_a?` of the metaclass, and anything else is `===`. With no subject
+  # the condition stands as written.
+  def case_when_comparison(subject : ASTNode?, cond : ASTNode) : ASTNode
+    if s = subject
+      case_when_test(s.clone, cond)
+    else
+      cond
+    end
+  end
+
+  def case_when_test(right_side : ASTNode, cond : ASTNode) : ASTNode
+    if cond.is_a?(NilLiteral)
+      return IsA.new(right_side, Path.global(["Nil"] of String))
+    end
+    if cond.is_a?(Path) || cond.is_a?(Generic)
+      return IsA.new(right_side, cond)
+    end
+    if cond.is_a?(Call)
+      call = cond.as(Call)
+      if call.name == "class"
+        if o = call.obj
+          if o.is_a?(Path) || o.is_a?(Generic)
+            return IsA.new(right_side, Metaclass.new(o))
+          end
+        end
+      end
+    end
+    Call.new(cond, "===", right_side)
+  end
+
+  # `comps.all?(IsA)`: every condition is a type test.
+  def all_is_a?(comps : Array(ASTNode)) : Bool
+    comps.all? { |comp| comp.is_a?(IsA) }
+  end
+
+  # The `||` of the conditions, left to right; `true` when there are none.
+  def or_all(comps : Array(ASTNode)) : ASTNode
+    if comps.empty?
+      return BoolLiteral.new(true)
+    end
+    final = comps[0]
+    i = 1
+    while i < comps.size
+      final = Or.new(final, comps[i])
+      i += 1
+    end
+    final
+  end
+
+  # The one expression of a list of one, else the node itself.
+  def single_expression(node : ASTNode) : ASTNode
+    if node.is_a?(Expressions)
+      exps = node.as(Expressions).expressions
+      if exps.size == 1
+        return exps[0]
+      end
+    end
+    node
+  end
+
   # Each element that is not a plain variable or a simple literal gets a
   # temporary, nil where it needs none. A splat is judged by what it splats.
   def complex_elem_temp_vars(elements : Array(ASTNode)) : Array(Var?)
@@ -345,5 +539,18 @@ pub class LiteralExpander < Transformer
   # A temporary named from the node's file, as the hosted `new_temp_var(node)`.
   def temp_var_for(node : ASTNode) : Var
     Var.new(@program.new_temp_var_name(node))
+  end
+end
+
+# Points every `it` in a copied branch at the temporary the branch binds it to.
+class ItRenamer < Transformer
+  def initialize(@name : String)
+  end
+
+  def transform(node : Var) : ASTNode
+    if node.name == "it"
+      node.name = @name
+    end
+    node
   end
 end

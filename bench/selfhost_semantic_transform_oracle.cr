@@ -536,6 +536,10 @@ class LiteralWalk < Iyi::Transformer
     expanded = node.name ? expander.expand_named(node, nil) : expander.expand(node)
     expanded.transform(self)
   end
+
+  def transform(node : Iyi::Case) : Iyi::ASTNode
+    Iyi::LiteralExpander.new(@program).expand(node).transform(self)
+  end
 end
 
 filename = ARGV[0]

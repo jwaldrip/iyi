@@ -206,7 +206,7 @@ echo "== 5. Literal expansion: range literals, the port's walk against the hoste
 # The literal fixtures (semtx_lit_*.iyi) are walked by the port (the driver's
 # `literals` mode) and by the hosted walk (the oracle's `literals` mode), and
 # the rewritten trees must match. Range literals, string interpolations, array and
-# hash literals are lowered so far.
+# hash literals, and `case` with a subject or none are lowered so far.
 # An interpolation made only of literal pieces is kept out of these fixtures:
 # the hosted parser folds it into one string (consume_interpolation in
 # src/compiler/iyi/syntax/parser.cr), and the port's parser keeps the pieces.
@@ -280,6 +280,16 @@ LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "an untyped hash swaps its key and value types" "$LITERAL" '[typeof_key, typeof_value] of ASTNode' '[typeof_value, typeof_key] of ASTNode' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a typed hash swaps its declared key and value" "$LITERAL" '[of.key, of.value] of ASTNode' '[of.value, of.key] of ASTNode' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a when with several conditions keeps only its first" "$LITERAL" 'final = Or.new(final, comps[i])' 'final = Or.new(final, comps[0])' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a variable subject is copied into a temporary" "$LITERAL" 'if value.is_a?(Var) || value.is_a?(InstanceVar)' 'if false' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a type condition is tested with === not is_a?" "$LITERAL" 'if cond.is_a?(Path) || cond.is_a?(Generic)' 'if false' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a type chain drops the else of the when" "$LITERAL" 'cur = tail' 'cur = Nop.new' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a branch's it is not renamed to its temporary" "$LITERAL" 'if node.name == "it"' 'if false' -- check_literals_agree || status=1
 echo "  $LIT_MUTATIONS literal mutation proofs run"
 
 echo
