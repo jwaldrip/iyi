@@ -90,6 +90,17 @@ def read_u32(bytes : Bytes, at : Int64) : Int64
   v
 end
 
+# Reads the 8 bytes at `at`, little-endian: a pointer's in-place addend.
+def read_u64(bytes : Bytes, at : Int64) : Int64
+  v = 0_i64
+  i = 7
+  while i >= 0
+    v = v.unsafe_shl(8_i64) | bytes[(at + i.to_i64).to_i32].to_i64
+    i = i - 1
+  end
+  v
+end
+
 # Writes the low `width` bytes of `value`, little-endian.
 def write_num(bytes : Bytes, at : Int64, value : Int64, width : Int32) : Nil
   i = 0
@@ -825,9 +836,12 @@ class Linker
 
   # An absolute pointer. An import is bound. A thread-local target is an offset
   # into the template and is not rebased. Any other target is rebased.
-  def patch_abs64(dst_out : Int64, off : Int64, code : Int64, addend : Int64) : Nil
+  def patch_abs64(dst_out : Int64, off : Int64, code : Int64, explicit : Int64) : Nil
     sec = @out_sec[dst_out.to_i32]
     p = sec.addr + off
+    # Mach-O keeps the addend of a pointer in the pointer's own bytes, not in an
+    # ADDEND record, so the in-place value is part of the addend.
+    addend = explicit + read_u64(sec.bytes, off)
     if code < 0
       @exe.binds << ExeBind.new(p, ordinal_of_import(code), mach_name(import_name(code)), addend)
       write_num(sec.bytes, off, 0_i64, 8)
@@ -846,13 +860,18 @@ class Linker
     @exe.rebases << p # rebase: dyld slides this pointer by the load slide
   end
 
+  # A difference a - b: the minuend's in-place value is part of the addend too.
   def patch_difference(dst_out : Int64, off : Int64, minuend : Reloc, sub_code : Int64, min_code : Int64) : Nil
     sec = @out_sec[dst_out.to_i32]
     if sub_code < 0 || min_code < 0
       fail("a difference in #{sec.label} names an import, which has no link-time address")
       return
     end
-    value = addr_of(min_code) + minuend.addend - addr_of(sub_code)
+    inplace = read_u64(sec.bytes, off)
+    if minuend.kind == RelocKind::Abs32
+      inplace = read_u32(sec.bytes, off)
+    end
+    value = addr_of(min_code) + minuend.addend + inplace - addr_of(sub_code)
     if minuend.kind == RelocKind::Abs32
       write_num(sec.bytes, off, value, 4)
     else
