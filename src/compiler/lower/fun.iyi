@@ -99,7 +99,7 @@ end
 # back afterwards (hosted `old_position`, `old_alloca_block`, `old_needs_value`).
 pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, class_owner : Type? = nil) : Function
   fn = low.module.define_function(name, fn_type)
-  fn.call_convention = CallConv::C
+  fn.call_convention = CallConv::Iyi
   fn.linkage = Linkage::Internal
   add_body_attributes(fn, low.module.triple)
 
