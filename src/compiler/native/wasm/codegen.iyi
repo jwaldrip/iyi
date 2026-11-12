@@ -207,6 +207,39 @@ def put_le(buf : Array(UInt8), off : Int64, value : Int64, n : Int32) : Nil
   end
 end
 
+# The bytes an initializer of type `t` writes from its start: its store size, or more when a constant byte array
+# inside it is longer than its type. The aarch64 object writes every byte of such an array (write_initializer
+# appends each ConstBytes byte and the symbol keeps the type's size), so the data segment gives the global that room.
+pub def init_extent(layout : DataLayout, t : IrType, v : Value?) : Int64
+  size = layout.store_size(t)
+  return size if v.nil?
+  x = v.as(Value)
+  return size unless x.is_a?(Inst)
+  i = x.as(Inst)
+  if i.op == Op::ConstBytes
+    n = i.args.size.to_i64
+    return n > size ? n : size
+  end
+  best = size
+  if i.op == Op::ConstAggregate && t.struct?
+    k = 0
+    while k < t.struct_element_types.size && k < i.args.size
+      e = layout.offset_of(t, k) + init_extent(layout, t.struct_element_types[k], i.args[k])
+      best = e if e > best
+      k = k + 1
+    end
+  elsif i.op == Op::ConstAggregate && t.array?
+    stride = layout.alloc_size(t.element_type)
+    k = 0
+    while k < i.args.size
+      e = k.to_i64 * stride + init_extent(layout, t.element_type, i.args[k])
+      best = e if e > best
+      k = k + 1
+    end
+  end
+  best
+end
+
 # Writes an initializer of type `t` into the data buffer at `off` (offsets are from DATA_BASE).
 def write_init(ctx : WasmCtx, buf : Array(UInt8), t : IrType, v : Value?, off : Int64) : Nil
   size = ctx.layout.store_size(t)
@@ -234,8 +267,8 @@ def write_init(ctx : WasmCtx, buf : Array(UInt8), t : IrType, v : Value?, off : 
       put_le(buf, off + 8_i64, i.aux_hi, 8)
     end
   when Op::ConstBytes
-    if i.args.size.to_i64 > size
-      ctx.refuse("a constant's bytes are longer than its type")
+    if off + i.args.size.to_i64 > buf.size.to_i64
+      ctx.refuse("a constant's bytes run past the data segment")
       return
     end
     k = 0
@@ -1197,7 +1230,9 @@ pub def compile_wasm(program : Module, runtime : Module) : Array(UInt8) | String
       addr = align_up(addr, a.to_i64)
       ctx.global_addr[g.name] = addr
       globals << g
-      addr = addr + program.layout.alloc_size(g.value_type)
+      room = program.layout.alloc_size(g.value_type)
+      ext = init_extent(program.layout, g.value_type, g.initializer)
+      addr = addr + (ext > room ? ext : room)
     end
   end
   data_end = addr

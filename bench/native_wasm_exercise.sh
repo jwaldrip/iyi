@@ -159,21 +159,42 @@ for p in sorted(src.glob("*.ir")):
 PY
 cg_table="$WORK/cg_table.txt"
 : >"$cg_table"
+cg_equal=0
+cg_differ=0
 for f in "$WORK"/cg/*.ir; do
-  name=$(basename "$f")
-  if "$WORK/cn" "$f" -o "$WORK/cg/out.wasm" --target wasm32-wasi >"$WORK/cg/last.log" 2>&1; then
+  name=$(basename "$f" .ir)
+  if "$WORK/cn" "$f" -o "$WORK/cg/$name.wasm" --target wasm32-wasi >"$WORK/cg/$name.log" 2>&1; then
     native_cg_built=$((native_cg_built + 1))
-    echo "$name	built" >>"$cg_table"
+    if [ "$(uname -s)" != "Darwin" ] || [ -z "$WASMTIME" ]; then
+      echo "$name	built, not run (needs darwin and wasmtime)" >>"$cg_table"
+      continue
+    fi
+    if ! "$WORK/cn" "$CG_FIX/$name.ir" -o "$WORK/cg/$name.bin" >"$WORK/cg/$name.dbuild" 2>&1; then
+      echo "$name	built, but the darwin oracle does not build" >>"$cg_table"
+      cg_differ=$((cg_differ + 1))
+      continue
+    fi
+    "$WORK/cg/$name.bin" >"$WORK/cg/$name.dout" 2>/dev/null
+    dstatus=$?
+    "$WASMTIME" run "$WORK/cg/$name.wasm" >"$WORK/cg/$name.wout" 2>"$WORK/cg/$name.werr"
+    wstatus=$?
+    if [ "$dstatus" = "$wstatus" ] && cmp -s "$WORK/cg/$name.dout" "$WORK/cg/$name.wout"; then
+      cg_equal=$((cg_equal + 1))
+      echo "$name	built, runs equal to the darwin build (exit $wstatus)" >>"$cg_table"
+    else
+      cg_differ=$((cg_differ + 1))
+      echo "$name	built, DIFFERS from the darwin build (darwin exit $dstatus, wasm exit $wstatus)" >>"$cg_table"
+    fi
   else
     native_cg_refused=$((native_cg_refused + 1))
-    reason=$(sed -n 's/.*: \(.*\)$/\1/p' "$WORK/cg/last.log" | head -n 1)
+    reason=$(sed -n 's/.*: \(.*\)$/\1/p' "$WORK/cg/$name.log" | head -n 1)
     echo "$name	refused: $reason" >>"$cg_table"
   fi
 done
 awk -F'\t' '{ print }' "$cg_table"
-echo "native_cg: $native_cg_built built, $native_cg_refused refused; the refused programs are not run (see the reasons)"
-if [ "$native_cg_built" != "0" ]; then
-  fail "a native_cg program builds for wasm but has no expected output: verify it before counting it"
+echo "native_cg: $native_cg_built built and $native_cg_refused refused; of the built, $cg_equal run equal to the darwin build and $cg_differ differ or have no oracle"
+if [ "$cg_differ" != "0" ]; then
+  fail "a built native_cg program does not run equal to its darwin build"
 fi
 
 # ---- 5. mutations -----------------------------------------------------------------------------------------
