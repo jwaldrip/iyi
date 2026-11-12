@@ -3569,6 +3569,10 @@ pub class MainVisitor < TypeNodeHost
   def in_type_args? : Bool
     @in_type_args > 0
   end
+
+  def scope_type : Type?
+    @scope
+  end
   # --- type nodes: end ---
 end
 
