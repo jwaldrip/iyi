@@ -113,6 +113,7 @@ src/compiler/platform/flags.iyi 5
 src/compiler/platform/linker.iyi 24
 src/compiler/platform/target.iyi 45
 src/compiler/semantic/cleanup.iyi 7
+src/compiler/semantic/inline_macros.iyi 0
 src/compiler/semantic/instance_vars.iyi 0
 src/compiler/semantic/literal_expander.iyi 0
 src/compiler/semantic/main_visitor.iyi 0
@@ -257,7 +258,7 @@ src/std/parallel.iyi 0
 src/std/password.iyi 0
 src/std/path.iyi 73
 src/std/png.iyi 0
-src/std/process.iyi 104
+src/std/process.iyi 108
 src/std/qpack.iyi 0
 src/std/quic.iyi 0
 src/std/random.iyi 0
