@@ -152,6 +152,12 @@ prove_mutation "fun argument is typed from nothing, not the declared record" "$T
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "enum members are not walked before the enum is typed" "$TYPE_NODES" \
+  "    member.accept(visitor)" \
+  "    member.to_s" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

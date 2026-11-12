@@ -321,11 +321,14 @@ pub def visit_instance_align_of(visitor : TypeNodeHost, node : InstanceAlignOf) 
   visit_size_of_node(visitor, node, node.exp, "instance alignment")
 end
 
-# `enum Color ... end` in a body: typed Nil. The hosted pass types the node nil
-# and walks its members (semantic_visitor.cr 1871-1878); the oracle prints only
-# the enum, and the port's member nodes are `Arg` nodes it skips. The hosted
-# check "declare enum" (outside an expression) is not ported here.
+# `enum Color ... end` in a body: each member is visited, then the enum is typed
+# Nil (hosted visit(EnumDef), semantic_visitor.cr 1871-1878). The members'
+# definitions are typed as the oracle types them. The hosted check "declare enum"
+# (outside an expression) is not ported here.
 pub def visit_enum_def(visitor : TypeNodeHost, node : EnumDef) : Bool
+  node.members.each do |member|
+    member.accept(visitor)
+  end
   visitor.set_type(node, visitor.program.nil_type)
   false
 end
