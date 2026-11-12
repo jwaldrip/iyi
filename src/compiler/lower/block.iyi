@@ -13,10 +13,12 @@ module compiler/lower/block
 #
 # Ported: a yield with expressions, the assignment of each expression to a block argument (a store, or
 # the casts slice when the types differ), the block body, and the value of the yield (the phi merged by
-# `LowerPhi`, which makes no exit block for one value).
+# `LowerPhi`, which makes no exit block for one value); a `break`, `next` or `return` with a value, into
+# a phi that merges (`branch_to_phi`); and a block or yield whose type is NoReturn, whose phi is a
+# `NoReturnPhi` (hosted `Phi#add` with a NoReturn node type: every value is `unreachable`).
 # Refused by name, at the yield that reaches them: a splat, a tuple unpacked into several block
 # arguments, a block with a splat argument, a yield with a scope (`with ... yield`), and a yield with no
-# block in scope. `break`, `next` and `return` inside a block are the next increment (lower.iyi).
+# block in scope.
 #
 # The AST `Block` is written in full: inside this module the name `Block` means the module.
 
@@ -26,7 +28,7 @@ import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
 import compiler/lower/cast::{assign}
 import compiler/lower/context::{BranchPhi, Lowerer, LowerContext, LowerVar}
-import compiler/lower/fun::{visit_node}
+import compiler/lower/fun::{block_ended?, visit_node}
 import compiler/lower/helpers::{llvm_nil, store_aligned}
 import compiler/lower/pending::{pending_visit_node, refuse_port}
 import compiler/lower/phi::{LowerPhi}
@@ -68,6 +70,26 @@ pub class LocalCollector < Visitor
   end
 end
 
+# The phi of a branch whose value never arrives: a block call or a yield whose type is NoReturn. The
+# hosted `Phi#add` with a NoReturn node type (phi.cr:40-55) emits `unreachable` for every value added, and
+# no branch reaches an exit block. The frame's return phi and the yield's phi are this one in that case.
+pub class NoReturnPhi
+  def initialize
+  end
+end
+
+impl BranchPhi for NoReturnPhi
+  def add_branch(low : Lowerer, value : Value?, last : Bool) : Nil
+    unless block_ended?(low)
+      low.builder.unreachable
+    end
+  end
+
+  def merge_type : IrType?
+    nil
+  end
+end
+
 # A copy of a variable table (hosted `context.vars.dup`): the same variables, a new table.
 pub def copy_vars(vars : Hash(String, LowerVar)) : Hash(String, LowerVar)
   out = Hash(String, LowerVar).new
@@ -97,7 +119,9 @@ pub def store_local(low : Lowerer, var : LowerVar, value_type : Type, value : Va
 end
 
 # The hosted `visit(Yield)`. The block's arguments take the values of the yield's expressions; the
-# block body runs in a copy of the block context, and the yield's value is the body's value.
+# block body runs in a copy of the block context, and the yield's value is the body's value. A block
+# whose type is NoReturn never yields a value: its body is followed by `unreachable`, and so is the
+# yield.
 pub def lower_yield(low : Lowerer, node : Yield) : Nil
   frame = low.current_context
   blk = frame.block_node
@@ -153,13 +177,14 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
     i += 1
   end
 
+  bt = low.analysed.type_of?(block.as(ASTNode))
+  raise "BUG: the analysed program has no type for a block (hosted codegen.cr: visit(Yield))" if bt.nil?
+  noreturn = bt.as(Type).is_a?(NoReturnType)
   merge : IrType? = nil
-  if wants
-    bt = low.analysed.type_of?(block.as(ASTNode))
-    raise "BUG: the analysed program has no type for a block (hosted codegen.cr: visit(Yield))" if bt.nil?
+  if wants && !noreturn
     merge = low.typer.llvm_type(bt.as(Type))
   end
-  phi = LowerPhi.new(wants, merge)
+  phi = LowerPhi.new(wants && !noreturn, merge)
 
   # The hosted `with_cloned_context(block_context)`: the body's context shares the block context's
   # variables and its return; `break` is the call's value, `next` is this yield's phi.
@@ -168,7 +193,11 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   body.return_type = caller.return_type
   body.return_phi = caller.return_phi
   body.break_phi = frame.return_phi
-  body.next_phi = phi
+  if noreturn
+    body.next_phi = NoReturnPhi.new
+  else
+    body.next_phi = phi
+  end
   body.block_node = caller.block_node
   body.block_context = caller.block_context
 
@@ -180,25 +209,29 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
 
   low.context = body
   low.needs_value = wants
-  lower_block(low, block, phi)
+  visit_node(low, block.body)
+  if noreturn
+    unless block_ended?(low)
+      low.builder.unreachable
+    end
+  else
+    phi.add(low, low.last, true)
+  end
   low.context = frame
   low.loop_next = saved_next
   low.loop_break = saved_break
   low.needs_value = wants
-  phi.close(low)
-end
-
-# The body of a block, lowered in the context the yield set, with its value added to the yield's phi.
-# A body that ends in a terminator adds nothing (LowerPhi.add).
-pub def lower_block(low : Lowerer, node : Compiler::Syntax::Ast::Block, phi : LowerPhi) : Nil
-  visit_node(low, node.body)
-  phi.add(low, low.last, true)
+  if noreturn
+    low.last = llvm_nil(low)
+  else
+    phi.close(low)
+  end
 end
 
 # The hosted `break_phi.add @last, node_type`, `next_phi.add` and `return_phi.add` (codegen.cr visit(Break),
 # visit(Next), codegen_return_node): the value of the expression goes to the phi, which branches to its
 # exit. A nil or void value adds no value to the phi; a value of another type than the phi's merges is
-# refused by name (the hosted upcast).
+# refused by name (the hosted upcast). A NoReturn phi takes the value as `unreachable` (`NoReturnPhi`).
 pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?) : Nil
   nil_ir = low.typer.llvm_type(low.analysed.program.nil_type)
   value : Value? = nil
