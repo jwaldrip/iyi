@@ -35,6 +35,7 @@ import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program, lower_def_probe}
+import compiler/lower/primitives::{primitive_name}
 import compiler/lower/fun::{mangled_name}
 import compiler/native/driver::{compile_module}
 import compiler/native/obj/object::{ObjectFile}
@@ -356,6 +357,9 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   examples = [] of String
   typed.visitor.typed_instances.each do |inst|
     d = inst.definition
+    # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
+    # neither probes it nor counts it, so it is no refusal row and no clean def.
+    next unless primitive_name(d.body).nil?
     outcome = group do |g|
       task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m) }
       task.value
@@ -408,6 +412,9 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   checked = Hash(UInt64, Bool).new
   clean = 0
   typed.visitor.typed_instances.each do |inst|
+    # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
+    # neither probes it nor counts it, so it is no refusal row and no clean def.
+    next unless primitive_name(inst.definition.body).nil?
     id = inst.definition.node_id
     unless checked.has_key?(id)
       checked[id] = true
