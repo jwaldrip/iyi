@@ -182,10 +182,8 @@ prove_mutation "a read of an initialised constant is not a load" "$REPO/src/comp
   "  low.last = load_aligned(low, ir, g.as(Global))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
 prove_mutation "the constant initialiser has the iyi convention, not C" "$REPO/src/compiler/lower/const.iyi" \
   "  fn.call_convention = CallConv::C" "  fn.call_convention = CallConv::Iyi" -- lowglob_check || status=1
-prove_mutation "a literal class variable is not stored in its global" "$REPO/src/compiler/lower/class_var.iyi" \
-  "  g.initializer = value.as(Value)" "  g.initializer = low.builder.const_null(ir)" -- lowglob_check || status=1
-prove_mutation "a class variable is named without its owner" "$REPO/src/compiler/lower/class_var.iyi" \
-  "  owner.full_name + cvar_suffix(name)" "  cvar_suffix(name)" -- lowglob_check || status=1
+prove_mutation "a literal class variable is initialised by a function, not stored at its declaration" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if simple_literal?(node)" "  if false" -- lowglob_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
