@@ -570,8 +570,8 @@ prove_mutation "a block name is not claimed in its function" "$REPO/src/compiler
   -- check_standalone_mutant || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a parameter name is not claimed in its function" "$REPO/src/compiler/ir/function.iyi" \
-  '    param.name = @symbols.claim(param.name)' \
-  '    param.name = param.name' \
+  '    param.name = @symbols.claim(name)' \
+  '    param.name = name' \
   -- check_standalone_mutant || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a placed instruction's name is not claimed" "$REPO/src/compiler/ir/builder.iyi" \

@@ -866,7 +866,7 @@ pub class CodeGenVisitor < Visitor
     if cond_raw.type == @types.int1
       cond_raw
     elsif cond_raw.type.pointer?
-      @builder.icmp(IntPredicate::NE, cond_raw, @builder.const_null_pointer())
+      @builder.icmp(IntPredicate::NE, cond_raw, @builder.const_null_pointer)
     elsif cond_raw.type.int?
       @builder.icmp(IntPredicate::NE, cond_raw, @builder.const_int(cond_raw.type, 0))
     elsif cond_raw.type.void?
@@ -1046,7 +1046,7 @@ pub class CodeGenVisitor < Visitor
 
   def sizeof_type(type_name : String) : Value
     elem_ty = llvm_type_from_name(type_name)
-    null_ptr = @builder.const_null_pointer()
+    null_ptr = @builder.const_null_pointer
     gep = @builder.gep(elem_ty, null_ptr, [@builder.const_int(@types.int32, 1)])
     @builder.ptr_to_int(gep, @types.int64)
   end
@@ -1091,7 +1091,7 @@ pub class CodeGenVisitor < Visitor
         @builder.load(@types.pointer, var_ptr)
       end
     else
-      @builder.const_null_pointer()
+      @builder.const_null_pointer
     end
   end
 
@@ -1668,7 +1668,7 @@ pub class CodeGenVisitor < Visitor
           expected_llvm_ty = vtype ? llvm_type_from_name(vtype) : nil
           val_to_store = if expected_llvm_ty && expected_llvm_ty != val.type
                            if expected_llvm_ty.pointer? && val.type.int?
-                             @builder.const_null_pointer()
+                             @builder.const_null_pointer
                            elsif expected_llvm_ty.int? && val.type.int?
                              if val.type.int_width > expected_llvm_ty.int_width
                                @builder.trunc(val, expected_llvm_ty)
@@ -1842,7 +1842,7 @@ pub class CodeGenVisitor < Visitor
       set_align(l_inst, 8)
       @last = l_inst
     else
-      @last = @builder.const_null_pointer()
+      @last = @builder.const_null_pointer
     end
     @terminated = false
     false
@@ -1947,7 +1947,7 @@ pub class CodeGenVisitor < Visitor
         return false
       end
     end
-    @last = @builder.const_null_pointer()
+    @last = @builder.const_null_pointer
     @terminated = false
     false
   end
@@ -2130,7 +2130,7 @@ pub class CodeGenVisitor < Visitor
       elsif (l = @last) && ret_llvm_ty.pointer? && l.type.int?
         @builder.ret(@builder.int_to_ptr(l, ret_llvm_ty))
       elsif ret_llvm_ty.pointer?
-        @builder.ret(@builder.const_null_pointer())
+        @builder.ret(@builder.const_null_pointer)
       elsif ret_llvm_ty.float? || ret_llvm_ty.double?
         @builder.ret(@builder.const_float(ret_llvm_ty, 0.0))
       elsif ret_llvm_ty.int?
@@ -2170,7 +2170,7 @@ pub class CodeGenVisitor < Visitor
     @builder.store(proc_fn.to_value, fn_slot).alignment = 8
 
     ctx_slot = @builder.inbounds_gep(proc_type, temp_ptr, [@builder.const_int(@types.int32, 0), @builder.const_int(@types.int32, 1)])
-    ctx_val = is_closure && env_ptr ? env_ptr : @builder.const_null_pointer()
+    ctx_val = is_closure && env_ptr ? env_ptr : @builder.const_null_pointer
     @builder.store(ctx_val, ctx_slot).alignment = 8
 
     l_proc = @builder.load(proc_type, temp_ptr, "")
@@ -2212,7 +2212,7 @@ pub class CodeGenVisitor < Visitor
   end
 
   def visit(node : NilLiteral) : Bool
-    @last = @builder.const_null_pointer()
+    @last = @builder.const_null_pointer
     @terminated = false
     false
   end
@@ -2274,7 +2274,7 @@ pub class CodeGenVisitor < Visitor
         return false
       end
     end
-    @last = @builder.const_null_pointer()
+    @last = @builder.const_null_pointer
     @terminated = false
     false
   end
@@ -2288,7 +2288,7 @@ pub class CodeGenVisitor < Visitor
       end
     end
     if elems.empty?
-      @last = @builder.const_null_pointer()
+      @last = @builder.const_null_pointer
     else
       tys = elems.map(&.type)
       st = @types.struct(tys)
@@ -2325,7 +2325,7 @@ pub class CodeGenVisitor < Visitor
     else_bb = fn.append_basic_block("else")
 
     cond_val = ensure_i1_condition(operand_value(node.cond, "condition of 'if'"))
-    @builder.cond_br(cond_val, else_bb, then_bb)
+    @builder.cond_br(cond_val, then_bb, else_bb)
 
     if node.else.nil? || node.else.is_a?(Nop)
       # then branch
@@ -2555,7 +2555,7 @@ pub class CodeGenVisitor < Visitor
           elsif fn_ret_ty.float? || fn_ret_ty.double?
             @builder.ret(@builder.const_float(fn_ret_ty, 0.0))
           elsif fn_ret_ty.pointer?
-            @builder.ret(@builder.const_null_pointer())
+            @builder.ret(@builder.const_null_pointer)
           else
             @builder.ret(l)
           end
@@ -2571,7 +2571,7 @@ pub class CodeGenVisitor < Visitor
           elsif fn_ret_ty.float? || fn_ret_ty.double?
             @builder.ret(@builder.const_float(fn_ret_ty, 0.0))
           elsif fn_ret_ty.pointer?
-            @builder.ret(@builder.const_null_pointer())
+            @builder.ret(@builder.const_null_pointer)
           else
             @builder.ret_void
           end
@@ -2588,7 +2588,7 @@ pub class CodeGenVisitor < Visitor
         elsif fn_ret_ty.float? || fn_ret_ty.double?
           @builder.ret(@builder.const_float(fn_ret_ty, 0.0))
         elsif fn_ret_ty.pointer?
-          @builder.ret(@builder.const_null_pointer())
+          @builder.ret(@builder.const_null_pointer)
         else
           @builder.ret_void
         end
@@ -2889,7 +2889,7 @@ pub class CodeGenVisitor < Visitor
                                "*#{tinfo.name}##{node.name}<#{arg_type_names.join(", ")}>:#{ret_tname}"
                              end
             if method_fn = @mod.get_function?(method_fn_name)
-              call_args = [@builder.const_null_pointer()] of Value
+              call_args = [@builder.const_null_pointer] of Value
               arg_vals.each { |av| call_args << av }
               call_ret_ty = llvm_type_from_name(ret_tname)
               m_param_tys = call_args.map(&.type)
@@ -2905,7 +2905,7 @@ pub class CodeGenVisitor < Visitor
           if count_val = @last
             elem_tname = element_type_of_pointer(type_name)
             elem_llvm_t = llvm_type_from_name(elem_tname)
-            elem_size_gep = @builder.gep(elem_llvm_t, @builder.const_null_pointer(), [@builder.const_int(@types.int32, 1)])
+            elem_size_gep = @builder.gep(elem_llvm_t, @builder.const_null_pointer, [@builder.const_int(@types.int32, 1)])
             elem_size = @builder.ptr_to_int(elem_size_gep, @types.int64)
             c_val = count_val.type == @types.int64 ? count_val : @builder.zext(count_val, @types.int64)
             total_bytes = @builder.mul(c_val, elem_size)
@@ -3078,7 +3078,7 @@ pub class CodeGenVisitor < Visitor
             fun_ptr = @builder.extract_value(proc_val, 0)
             ctx_ptr = @builder.extract_value(proc_val, 1)
 
-            is_null = @builder.icmp(IntPredicate::EQ, ctx_ptr, @builder.const_null_pointer())
+            is_null = @builder.icmp(IntPredicate::EQ, ctx_ptr, @builder.const_null_pointer)
             cur_f = @current_fn
             if cur_f.nil?
               return false
@@ -3167,13 +3167,13 @@ pub class CodeGenVisitor < Visitor
                          get_ptr_val(arg0.as(Var).name)
                        else
                          arg0.accept(self)
-                         @last || @builder.const_null_pointer()
+                         @last || @builder.const_null_pointer
                        end
             i1 = @builder.ptr_to_int(ptr_val1, @types.int64)
             i2 = @builder.ptr_to_int(ptr_val2, @types.int64)
             diff = @builder.sub(i1, i2)
             elem_st = llvm_type_from_name(elem_tname)
-            size_gep = @builder.inbounds_gep(elem_st, @builder.const_null_pointer(), [@builder.const_int(@types.int32, 1)])
+            size_gep = @builder.inbounds_gep(elem_st, @builder.const_null_pointer, [@builder.const_int(@types.int32, 1)])
             size_val = @builder.ptr_to_int(size_gep, @types.int64)
             @last = @builder.exact_sdiv(diff, size_val)
             @terminated = false
@@ -3212,7 +3212,7 @@ pub class CodeGenVisitor < Visitor
                                 val
                               end
                             elsif elem_llvm_t.pointer? && val.type.int?
-                              @builder.const_null_pointer()
+                              @builder.const_null_pointer
                             else
                               val
                             end
@@ -3278,7 +3278,7 @@ pub class CodeGenVisitor < Visitor
                                       val
                                     end
                                   elsif elem_llvm_t.pointer? && val.type.int?
-                                    @builder.const_null_pointer()
+                                    @builder.const_null_pointer
                                   else
                                     val
                                   end
@@ -3527,7 +3527,7 @@ pub class CodeGenVisitor < Visitor
               g.linkage = Linkage::Internal
             end
             ptr_val = get_ptr_val(vname)
-            l_null = @builder.icmp(IntPredicate::EQ, ptr_val, @builder.const_null_pointer())
+            l_null = @builder.icmp(IntPredicate::EQ, ptr_val, @builder.const_null_pointer)
             l_nil_tid = @builder.load(@types.int32, @mod.get_global("Nil:type_id"))
             set_align(l_nil_tid, 4)
             box_tid_g = if g = @mod.get_global?("#{base_cname}:type_id")
@@ -3825,11 +3825,11 @@ pub class CodeGenVisitor < Visitor
           end
         elsif lhs.type.pointer? && rhs.type.int?
           if node.name == "<" || node.name == "<=" || node.name == ">" || node.name == ">=" || node.name == "==" || node.name == "!="
-            rhs = @builder.const_null_pointer()
+            rhs = @builder.const_null_pointer
           end
         elsif lhs.type.int? && rhs.type.pointer?
           if node.name == "<" || node.name == "<=" || node.name == ">" || node.name == ">=" || node.name == "==" || node.name == "!="
-            lhs = @builder.const_null_pointer()
+            lhs = @builder.const_null_pointer
           end
         end
         case node.name
