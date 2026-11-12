@@ -55,7 +55,7 @@ def prologue_insts(fn : MFunction) : Array(MInst)
   acc << MInst.new(MOp::StpFpLr)
   acc << MInst.new(MOp::MovFp)
   remaining = f.frame_size
-  while remaining > 4096_i64
+  while remaining >= 4096_i64
     sp_adjust(acc, -4096_i64)
     acc << MInst.new(MOp::ZeroSp)
     remaining = remaining - 4096_i64
