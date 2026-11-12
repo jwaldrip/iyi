@@ -142,7 +142,7 @@ pub def normalised_lines(text : String, builds : Array(String)) : Array(String)
 end
 
 # The hosted build constants of an oracle module: each `store` of the compiler's own identity names its
-# destination global (`@"Crystal::BUILD_COMMIT"`) and the private text it stores (`@"'b598d221d'"`). Both are
+# destination global (`@"<hosted>::BUILD_COMMIT"`) and the private text it stores (`@"'b598d221d'"`). Both are
 # dropped before comparison. A destination counts only when it contains `marker` (the hosted `::` identity), so a
 # program's own global, such as a class variable `@"K::v"`, is compared like any other global.
 pub def build_names(text : String, marker : String) : Array(String)
