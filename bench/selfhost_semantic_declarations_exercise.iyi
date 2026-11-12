@@ -1,0 +1,67 @@
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dump_program_declarations, dump_type, dir_of, normalize_path}
+
+# Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
+#
+#   selfhost_semantic_declarations_exercise <file.iyi>
+#   selfhost_semantic_declarations_exercise --initial
+#
+# Loads the file through the port's top-level pass, bare (no prelude), with the
+# closure of what it imports and requires: each imported file is read, parsed and
+# declared into the same program. The search path is IYI_PATH, the one the oracle
+# reads. It prints the declarations the file itself makes, the same form the oracle
+# prints for the same file. `--initial` dumps the built-in types a new program holds.
+module BenchSelfhostSemanticDeclarationsExercise
+  def self.search_path : Array(String)
+    text = ENV["IYI_PATH"]? || ""
+    text.split(":").select { |entry| !entry.empty? }
+  end
+
+  # The project root an import is resolved from first: the entry's directory, moved
+  # up one level for each segment of its module header's path but the last.
+  def self.project_root(node : ASTNode, entry : String) : String
+    root = dir_of(entry)
+    if node.is_a?(Expressions)
+      first = node.as(Expressions).expressions.first?
+      if first.is_a?(ModuleHeader)
+        depth = first.as(ModuleHeader).path.size - 1
+        i = 0
+        while i < depth
+          root = dir_of(root)
+          i = i + 1
+        end
+      end
+    end
+    root
+  end
+
+  def self.dump_file(path : String) : String
+    entry = normalize_path(path)
+    src = File.read(entry)
+    parser = Parser.new(src, entry)
+    node = parser.parse
+    prog = SemanticProgram.new
+    prog.search_path = search_path
+    prog.project_root = project_root(node, entry)
+    visitor = TopLevelVisitor.new(prog, entry)
+    node.accept(visitor)
+    visitor.finish
+    dump_program_declarations(prog, entry)
+  end
+
+  def self.dump_initial : String
+    prog = SemanticProgram.new
+    sb = String::Builder.new
+    prog.types.keys.sorted.each do |name|
+      dump_type(prog.types[name], sb, "")
+    end
+    sb.to_s
+  end
+end
+
+if Program.args[0] == "--initial"
+  print BenchSelfhostSemanticDeclarationsExercise.dump_initial
+else
+  print BenchSelfhostSemanticDeclarationsExercise.dump_file(Program.args[0])
+end
