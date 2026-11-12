@@ -10,6 +10,14 @@
 # 4. Malformed-input and boundary rejection handling
 # 5. Guarded mutation proofs verifying that test checks catch injected parser defects
 #
+# The golden oracle (the hosted front end, dumped by the inline Crystal script
+# below) parses each .iyi fixture in iyi mode: it sets `parser.filename` to the
+# file before `parser.parse`, so the iyi lexer and parser rules apply, not the
+# Crystal rules. Its dump names every node kind the port emits (module headers,
+# imports, using, asm and asm operands, casts, type queries, pointerof/sizeof,
+# require, select, exception handlers, proc literals and more). A kind the dump
+# does not name falls back to the generic `ASTNode` label on the port side.
+#
 
 set -eu
 
