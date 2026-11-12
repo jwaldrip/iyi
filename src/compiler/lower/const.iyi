@@ -213,9 +213,9 @@ pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopL
   saved = low.enter_main
   fun_type = low.module.types.func([] of IrType, low.module.types.void)
   fn = low.begin_main_function(init_name, fun_type, true)
-  # The hosted initialiser keeps the default C convention: nothing sets a calling convention on a `~` function
-  # (codegen has no CallConvention for it), and the oracle prints no `iyicc` on it. The port's defs are C too.
-  fn.call_convention = CallConv::C
+  # The hosted initialiser is a `~` function, which the oracle prints with `iyicc` (the calling convention of
+  # generated iyi code, src/compiler/backend/llvm/import.iyi convention_of). The port's call and definition agree on it.
+  fn.call_convention = CallConv::Iyi
   fn.linkage = Linkage::Internal
   low.needs_value = true
   low.body_visitor.as(BodyVisit).visit_body(low, const.value)

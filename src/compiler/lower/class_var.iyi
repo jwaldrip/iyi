@@ -7,8 +7,8 @@ module compiler/lower/class_var
 #     declaration with no function and no flag (`simple_initializer`): the global's initializer is the literal,
 #     and every read is a load of the global;
 #   - a non-literal initialiser that the class body declares before any read (`initialize_class_var` on the
-#     no-init-flag path): the global, its initialiser function `~Owner::name:init` (C convention, as the hosted
-#     code has no calling convention for it), the call at the declaration, and every read after it a load.
+#     no-init-flag path): the global, its initialiser function `~Owner::name:init` (iyi convention, as the oracle prints
+#     it), the call at the declaration, and every read after it a load.
 # The global is named `Owner::name` with the variable's `@` signs turned into `:` (hosted `class_var_global_name`).
 #
 # Refused by name, with the hosted function each stands for, until ported:
@@ -208,7 +208,7 @@ pub def make_cvar_init_function(low : Lowerer, cvar : MetaTypeVar, init_name : S
   saved = low.enter_main
   fun_type = low.module.types.func([] of IrType, low.module.types.void)
   fn = low.begin_main_function(init_name, fun_type, true)
-  fn.call_convention = CallConv::C
+  fn.call_convention = CallConv::Iyi
   fn.linkage = Linkage::Internal
   low.needs_value = true
   low.body_visitor.as(BodyVisit).visit_body(low, node)

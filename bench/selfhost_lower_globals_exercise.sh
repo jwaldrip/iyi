@@ -36,8 +36,8 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 
 trap 'rm -rf "$WORK"' EXIT
 
-# Fixtures the port refuses by name: the two class-variable reads call a method on the class (K.v), a call on a class receiver that lower/call.iyi does not port yet (S2c5Calls).
-WAITING_FIXTURES="lowglob_cvar_literal lowglob_cvar_call lowglob_const_namespace"
+# The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
+WAITING_FIXTURES="lowglob_const_namespace"
 # lowglob_const_namespace: a string constant in a module (Outer::S) is refused by name, its hosted llvm_name not ported yet.
 
 echo "== 1. Building the port driver"
@@ -185,8 +185,10 @@ prove_mutation "a constant with a constant value is stored at run time, not fold
   "  if val.is_a?(Inst) && (val.as(Inst).op == Op::ConstInt || val.as(Inst).op == Op::ConstFloat)" "  if false" -- lowglob_check || status=1
 prove_mutation "a read of an initialised constant is not a load" "$REPO/src/compiler/lower/const.iyi" \
   "  low.last = load_aligned(low, ir, g.as(Global))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
-prove_mutation "the constant initialiser has the iyi convention, not C" "$REPO/src/compiler/lower/const.iyi" \
-  "  fn.call_convention = CallConv::C" "  fn.call_convention = CallConv::Iyi" -- lowglob_check || status=1
+prove_mutation "the constant initialiser has the C convention, not iyi" "$REPO/src/compiler/lower/const.iyi" \
+  "  fn.call_convention = CallConv::Iyi" "  fn.call_convention = CallConv::C" -- lowglob_check || status=1
+prove_mutation "a literal class variable read is not a load of its global" "$REPO/src/compiler/lower/class_var.iyi" \
+  "    low.last = load_aligned(low, ir, g)" "    low.last = llvm_nil(low)" -- lowglob_check || status=1
 prove_mutation "a literal class variable is initialised by a function, not stored at its declaration" "$REPO/src/compiler/lower/class_var.iyi" \
   "  if simple_literal?(node)" "  if false" -- lowglob_check || status=1
 prove_mutation "a string constant's global is not emitted at the program's start" "$REPO/src/compiler/lower/const.iyi" \
