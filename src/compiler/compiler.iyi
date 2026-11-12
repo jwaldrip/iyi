@@ -14,7 +14,7 @@ module compiler/compiler
 
 import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dir_of}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/backend/backend::{Backend, BuildRequest}
 import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, refuse_exception_handlers, register_primitive_operators}
@@ -289,7 +289,7 @@ pub class Compiler
     typed_start("declarations")
 
     declared = group do |g|
-      task = g.spawn { Compiler.typed_declare(resolved_modules, triple, @loader.load_prelude) }
+      task = g.spawn { Compiler.typed_declare(resolved_modules, triple, @loader, @loader.load_prelude) }
       task.value
     end
     if declared.is_a?(Panicked)
@@ -383,7 +383,7 @@ pub class Compiler
 
   # The declarations phase of the typed pipeline: each unit is normalised, its declarations are collected as the hosted
   # compiler collects them, and they are declared as one program. The builtin stand-ins apply only when no prelude is loaded.
-  pub def self.typed_declare(resolved : Array(ModuleInfo), triple : String, prelude : Bool) : TypedProgram
+  pub def self.typed_declare(resolved : Array(ModuleInfo), triple : String, loader : Loader, prelude : Bool) : TypedProgram
     resolved.each do |mod_info|
       refuse_exception_handlers(mod_info.ast)
     end
@@ -412,7 +412,22 @@ pub class Compiler
     Loader.initialiser_order(resolved).each do |mod_info|
       module_tops[mod_info.filename].each { |node| top_level << node }
     end
-    declare_program(classes, libs, defs, funs, top_level, links, !prelude)
+    # The program is read the way the declarations gate reads one (bench/selfhost_semantic_declarations_exercise.iyi):
+    # the loader's search path, and the entry's project root (its header root, else its directory).
+    entry = resolved[resolved.size - 1]
+    prog = SemanticProgram.new
+    prog.search_path = loader.iyi_path.entries
+    prog.project_root = IyiPath.header_root_of(entry.filename, entry.source) || dir_of(entry.filename)
+    # The prelude is declared before every other unit, as the declarations driver loads it first: the prelude's names are
+    # visible to every unit, which the initialiser order alone does not guarantee.
+    units = [] of ModuleInfo
+    Loader.initialiser_order(resolved).each do |mod_info|
+      units << mod_info if mod_info.filename.ends_with?("/iyi/prelude.iyi")
+    end
+    Loader.initialiser_order(resolved).each do |mod_info|
+      units << mod_info unless mod_info.filename.ends_with?("/iyi/prelude.iyi")
+    end
+    declare_program(classes, libs, defs, funs, top_level, links, !prelude, prog, units)
   end
 
   # --- Helper utilities ---

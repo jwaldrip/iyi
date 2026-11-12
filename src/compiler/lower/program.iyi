@@ -4,9 +4,10 @@ module compiler/lower/program
 # declarations to a linked executable, as the hosted `compiler.cr` orchestrates them for a unit.
 #
 # The compiler pipeline (compiler/compiler.iyi, `compile_typed`) calls these in order:
-#   declare_program  the declarations of every unit as one program: a root expression holds the classes,
-#                    libs, defs and funs, then the top-level code in initialiser order, and the bare
-#                    analysis (top level declarations, then the body visitor) is set up on it.
+#   declare_program  the declarations of every unit, each read by the semantic pass the way the declarations
+#                    gate loads a program (semantic/top_level.iyi `declare_unit`): one visitor per file, in
+#                    initialiser order, with that file's imports bound to the units already declared. Then
+#                    the guessed instance variables, the root expression of the program, and the body visitor.
 #   type_bodies      the body typer over that root, then the recursive struct check.
 #   lower_program    the typed lowering (lower/lower.iyi) into one IR module for the target.
 #   native_objects   the native back end compiles the program module and the native runtime to objects.
@@ -15,7 +16,7 @@ module compiler/lower/program
 # No LLVM and no host tool takes part. Each phase returns a refusal by name rather than raising, except
 # where a lowering or a typer raises it (the pipeline catches a raise in a spawned task and names the phase).
 #
-# Stand-ins (removed when the prelude declares the builtins itself, which is the `--prelude` build):
+# Stand-ins (used only when no prelude declares the builtins itself, which is the `--prelude` build):
 #   - the builtin primitive operators of Int8..UInt128, Float32, Float64, Bool and Char, declared on their
 #     classes with a primitive marker the lowering reads (primitives.iyi). The hosted library declares them
 #     in src/primitives.cr, which a bare build does not load. Same as bench/lib/primitive_stand_in.iyi.
@@ -23,9 +24,11 @@ module compiler/lower/program
 #     the hosted analysis does (NEEDS.md, lowering calls row 31). Same as bench/lib/lower_gate.iyi.
 
 import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral}
-import compiler/semantic/top_level::{LibType, NonGenericClassType, SemanticProgram, TopLevelVisitor}
+import compiler/semantic/top_level::{LibType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
+import compiler/loader::{ModuleInfo}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
@@ -65,15 +68,36 @@ pub def assemble_root(classes : Array(ClassDef), libs : Array(LibDef), defs : Ha
   Expressions.new(nodes)
 end
 
-# The declarations phase: the root, the bare analysis of its declarations, and the stand-ins when no prelude
-# declares the builtins. `links` are the library names of the `@[Link]` annotations at the top of the units.
-pub def declare_program(classes : Array(ClassDef), libs : Array(LibDef), defs : Hash(String, Def), funs : Array(FunDef), top_level : Array(ASTNode), links : Array(String), stand_in : Bool) : TypedProgram
+# Declares one unit into the program, as the semantic pass loads a file (top_level.iyi `load_file`), but from the
+# normalised tree the pipeline already holds, so the pipeline reads each file once. The unit's imports are bound
+# to the visit, and a file already declared is not declared again. The unit is keyed by the normal path the import
+# resolver returns (`normalize_path`), so an import of it finds it declared.
+pub def declare_unit(prog : SemanticProgram, file : String, node : ASTNode) : Nil
+  key = normalize_path(file)
+  return if prog.loaded_files.includes?(key)
+  prog.loaded_files.add(key)
+  inner = TopLevelVisitor.new(prog, key)
+  saved = prog.current_imports
+  saved_defs = prog.current_import_defs
+  prog.current_imports = Hash(String, Type).new
+  prog.current_import_defs = Hash(String, Array(Def)).new
+  node.accept(inner)
+  inner.finish
+  prog.current_imports = saved
+  prog.current_import_defs = saved_defs
+  if unit = inner.unit
+    prog.loaded_units[key] = unit
+  end
+end
+
+# The declarations phase: every unit declared in initialiser order (dependencies first, the entry last), the
+# guessed instance variables, then the root and the body visitor. The stand-ins apply when no prelude is loaded.
+pub def declare_program(classes : Array(ClassDef), libs : Array(LibDef), defs : Hash(String, Def), funs : Array(FunDef), top_level : Array(ASTNode), links : Array(String), stand_in : Bool, prog : SemanticProgram, units : Array(ModuleInfo)) : TypedProgram
+  units.each do |mod_info|
+    declare_unit(prog, mod_info.filename, mod_info.ast)
+  end
+  declare_guessed_instance_vars(prog)
   root = assemble_root(classes, libs, defs, funs, top_level)
-  prog = SemanticProgram.new
-  tl = TopLevelVisitor.new(prog)
-  tl.declare_types(classes)
-  root.accept(tl)
-  tl.finish
   mv = MainVisitor.new(prog)
   if stand_in
     program_stand_in_libs(root, prog, mv)
