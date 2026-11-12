@@ -1,0 +1,23 @@
+import compiler/syntax/parser::{Parser}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dump_program_declarations}
+
+# Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
+#
+#   selfhost_semantic_declarations_exercise <file.iyi>
+#
+# Analyses the file alone, with no prelude, through the port's top-level pass and
+# prints the declaration dump the oracle prints for the same file.
+module BenchSelfhostSemanticDeclarationsExercise
+  def self.dump_file(path : String) : String
+    src = File.read(path)
+    parser = Parser.new(src, path)
+    node = parser.parse
+    prog = SemanticProgram.new
+    visitor = TopLevelVisitor.new(prog)
+    node.accept(visitor)
+    visitor.finish
+    dump_program_declarations(prog)
+  end
+end
+
+print BenchSelfhostSemanticDeclarationsExercise.dump_file(Program.args[0])
