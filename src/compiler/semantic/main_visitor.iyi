@@ -1525,7 +1525,6 @@ pub class MainVisitor < TypeNodeHost
       rec_type = @scope || @current_type
     end
 
-
     # Multiple dispatch over a union receiver
     if rec_type.is_a?(UnionType)
       union_t = rec_type.as(UnionType)

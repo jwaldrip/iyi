@@ -2,18 +2,19 @@
 #
 #   selfhost_semantic_new_oracle <fixture.iyi>
 #
-# Analyses the fixture bare (no prelude) through the hosted top-level pass, the
-# hosted new pass and the main pass, then prints, sorted, one line per generated or
-# explicit `new` on a user class's metaclass, then one line per `new` call written in
-# the file, in tree order:
+# Analyses the fixture bare (no prelude) through the hosted top-level pass, the hosted
+# new pass and the main pass, then prints, sorted, one line per generated or explicit
+# `new` on a user class's metaclass and one per explicit `initialize`, then one line
+# per `new` call written in the file, in tree order:
 #
-#   def <Type>.new(<arg names>) body <node kinds>
+#   def <Type>.new(<arg names>) vis <v> body <node kinds>[ init(<args>)]
+#   init <Type>#initialize(<arg names>) vis <v>
 #   call <line>:<col> <receiver>.new(<arg types>) -> <result type> target <name>(<arg names>) targets <n>
 #
-# Node kinds are the names kind_text gives (anything else is Other). The port's
-# driver (bench/selfhost_semantic_new_exercise.iyi) prints the same lines for the same
-# fixture, and the gate requires them byte-identical. On failure the first line of the
-# message goes to stderr and the exit status is 2.
+# Node kinds are the names kind_text gives (anything else is Other). The port's driver
+# (bench/selfhost_semantic_new_exercise.iyi) prints the same lines for the same fixture,
+# and the gate requires them byte-identical. On failure the first line of the message
+# goes to stderr and the exit status is 2.
 require "compiler/requires"
 
 class Iyi::Compiler
@@ -61,6 +62,40 @@ def body_text(body : Iyi::ASTNode) : String
   end
 end
 
+# One argument of an initialize call: a variable, or a splat of one.
+def arg_text(node : Iyi::ASTNode) : String
+  case node
+  when Iyi::Var         then node.as(Iyi::Var).name
+  when Iyi::Splat       then "*" + arg_text(node.as(Iyi::Splat).exp)
+  when Iyi::DoubleSplat then "**" + arg_text(node.as(Iyi::DoubleSplat).exp)
+  else                       kind_text(node)
+  end
+end
+
+# The arguments of the initialize call a generated new makes (its second expression),
+# positional first, then named, so the argument order is part of the record.
+def init_text(body : Iyi::ASTNode) : String
+  return "" unless body.is_a?(Iyi::Expressions)
+  exps = body.as(Iyi::Expressions).expressions
+  return "" if exps.size < 2
+  c = exps[1]
+  return "" unless c.is_a?(Iyi::Call)
+  parts = c.as(Iyi::Call).args.map { |a| arg_text(a) }
+  if named = c.as(Iyi::Call).named_args
+    named.each do |na|
+      parts << "#{na.name}:#{arg_text(na.value)}"
+    end
+  end
+  " init(#{parts.join(",")})"
+end
+
+def vis_text(d : Iyi::Def) : String
+  v = d.visibility
+  return "protected" if v.protected?
+  return "private" if v.private?
+  "public"
+end
+
 # Collects the `new` calls written in the entry file, in tree order.
 class NewCallWalk < Iyi::Visitor
   getter calls = [] of Iyi::Call
@@ -99,12 +134,18 @@ begin
     next if initial.includes?(name)
     next unless t.is_a?(Iyi::ModuleType) && t.is_a?(Iyi::ClassType)
     meta = t.metaclass
-    next unless meta.is_a?(Iyi::ModuleType)
-    if list = meta.defs.try(&.["new"]?)
+    if meta.is_a?(Iyi::ModuleType) && (list = meta.defs.try(&.["new"]?))
       list.each do |item|
         d = item.def
         arg_names = d.args.map(&.name).join(", ")
-        def_lines << "def #{type_text(t)}.new(#{arg_names}) body #{body_text(d.body)}"
+        def_lines << "def #{type_text(t)}.new(#{arg_names}) vis #{vis_text(d)} body #{body_text(d.body)}#{init_text(d.body)}"
+      end
+    end
+    if inits = t.defs.try(&.["initialize"]?)
+      inits.each do |item|
+        d = item.def
+        arg_names = d.args.map(&.name).join(", ")
+        def_lines << "init #{type_text(t)}#initialize(#{arg_names}) vis #{vis_text(d)}"
       end
     end
   end

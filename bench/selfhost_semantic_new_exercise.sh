@@ -12,7 +12,7 @@
 # Mutation proofs patch the port's ported code, rebuild the driver, and require a
 # divergence from the hosted oracle. A patch that changes nothing is refused.
 #
-#   bash bench/selfhost_semantic_new.wip.sh
+#   bash bench/selfhost_semantic_new_exercise.sh
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
