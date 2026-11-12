@@ -1,0 +1,108 @@
+module compiler/ir/module
+
+import compiler/ir/types::{IrType, TypeTable}
+import compiler/ir/function::{Function, Global}
+import compiler/ir/values::{Param}
+import compiler/ir/inst::{CallConv}
+import compiler/ir/layout::{DataLayout, LayoutError}
+import compiler/platform/target::{Target}
+
+# A module: the globals and functions of one compilation unit, in emission order. Emission order is part
+# of the determinism contract, so the printer writes them in this order and never sorts them.
+pub class Module
+  getter name : String
+  getter target : Target
+  getter layout : DataLayout
+  getter types : TypeTable
+  getter files : Array(String)       # DebugLoc#file indexes this
+  getter flags : Hash(String, Int64) # module flags (branch-target-enforcement, cf-protection)
+  getter globals : Array(Global)     # emission order is part of determinism
+  getter functions : Array(Function)
+
+  def initialize(@name : String, @target : Target, @layout : DataLayout)
+    @types = TypeTable.new
+    @files = [] of String
+    @flags = Hash(String, Int64).new
+    @globals = [] of Global
+    @functions = [] of Function
+    @function_index = Hash(String, Function).new
+    @global_index = Hash(String, Global).new
+  end
+
+  # A module for `target`, or the reason the IR has no layout for it.
+  def self.for_target(name : String, target : Target) : Module | LayoutError
+    layout = DataLayout.for(target)
+    return layout if layout.is_a?(LayoutError)
+    Module.new(name, target, layout)
+  end
+
+  def triple : String
+    @target.original_triple
+  end
+
+  def function?(name : String) : Function?
+    @function_index[name]?
+  end
+
+  def get_function?(name : String) : Function?
+    @function_index[name]?
+  end
+
+  def get_function(name : String) : Function
+    fn = @function_index[name]?
+    raise "function #{name} is not in the module" unless fn
+    fn
+  end
+
+  def global?(name : String) : Global?
+    @global_index[name]?
+  end
+
+  def get_global?(name : String) : Global?
+    @global_index[name]?
+  end
+
+  def get_global(name : String) : Global
+    g = @global_index[name]?
+    raise "global #{name} is not in the module" unless g
+    g
+  end
+
+  def add_function(name : String, type : IrType, cc : CallConv = CallConv::Iyi) : Function
+    raise "a function or global named #{name} already exists" if @function_index[name]? || @global_index[name]?
+    fn = Function.new(name, type, @types.ptr(0), cc)
+    @functions << fn
+    @function_index[name] = fn
+    fn
+  end
+
+  # A function with a body: `add_function`, then one unnamed parameter per parameter type of `type`, the way
+  # the parser gives a `define` its parameters. A declaration keeps `add_function`, with no parameters.
+  def define_function(name : String, type : IrType, cc : CallConv = CallConv::Iyi) : Function
+    fn = add_function(name, type, cc)
+    type.param_types.each_with_index do |t, i|
+      fn.add_param(Param.new(t, "", i))
+    end
+    fn
+  end
+
+  def add_global(name : String, type : IrType) : Global
+    raise "a function or global named #{name} already exists" if @function_index[name]? || @global_index[name]?
+    g = Global.new(name, type, @types.ptr(0))
+    @globals << g
+    @global_index[name] = g
+    g
+  end
+
+  # The index of `path` in the file table, adding it on first use.
+  def file_index(path : String) : Int32
+    i = @files.index(path)
+    return i if i
+    @files << path
+    @files.size - 1
+  end
+
+  def set_flag(name : String, value : Int64) : Nil
+    @flags[name] = value
+  end
+end
