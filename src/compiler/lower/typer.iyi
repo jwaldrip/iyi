@@ -20,6 +20,7 @@ import compiler/ir/layout::{DataLayout}
 import compiler/semantic/top_level::{Type, ClassType, EnumType, LibType, MetaclassType, NilType, NonGenericClassType, NonGenericModuleType, GenericClassType, NoReturnType, VoidType, AliasType, TypeDefType, ModuleType, UnionType}
 import compiler/types/types::{PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, NamedTupleInstanceType, GenericClassInstanceType, GenericModuleInstanceType, MixedUnionType, VirtualType, VirtualMetaclassType, NilableType, ReferenceUnionType, NilableReferenceUnionType, NilableProcType}
 import compiler/types/merge::{TypeMerge}
+import compiler/lower/unions::{mixed_union_body, mixed_union_value_area}
 
 # The builtin primitives. The hosted semantic model makes them PrimitiveType
 # subclasses with a byte size, and a builtin is never a user type. The port's
@@ -404,11 +405,48 @@ pub class LowerTyper
       max_size = size if size > max_size
       max_alignment = align if align > max_alignment
     end
-    value_size = (max_size + max_alignment - 1) // max_alignment
-    value_size = 1_i64 if value_size < 1
-    value_type = @table.array_of(@table.int(max_alignment * 8), value_size)
-    @table.set_body(named, [@table.int32, value_type], false)
+    @table.set_body(named, mixed_union_body(@table, max_size, max_alignment), false)
     named
+  end
+
+  # The hosted `union_value_type(MixedUnionType)`: the value area of a mixed union's struct.
+  def union_value_type(type : Type) : IrType
+    mixed_union_value_area(llvm_type(type))
+  end
+
+  # The hosted `passed_indirectly?`: a value of more than INDIRECT_ABOVE (128) bytes travels
+  # through memory, not as an aggregate (types.cr). A C type's and an extern's are not here.
+  def passed_indirectly?(type : Type) : Bool
+    return false unless passed_by_value?(type)
+    size_of(llvm_type(type)) > 128
+  end
+
+  # The hosted `function_type`: the LLVM function type of a proc's call. A closure's
+  # context pointer comes first, an indirect argument is a pointer, and an indirect result
+  # is a pointer passed last and returned as void.
+  def function_type(arg_types : Array(Type), return_type : Type, closure : Bool) : IrType
+    params = [] of IrType
+    params << @table.ptr if closure
+    arg_types.each do |arg|
+      params << (passed_indirectly?(arg) ? @table.ptr : llvm_type(arg))
+    end
+    if passed_indirectly?(return_type)
+      params << @table.ptr
+      return @table.func(params, @table.void)
+    end
+    @table.func(params, llvm_type(return_type))
+  end
+
+  # The hosted `proc_type(ProcInstanceType)`: the function a proc value calls, without a context.
+  def proc_function(type : Type) : IrType
+    proc = type.as(ProcInstanceType)
+    function_type(proc.arg_types, proc.return_type, false)
+  end
+
+  # The hosted `closure_type(ProcInstanceType)`: the function a closure calls, with its context.
+  def closure_function(type : Type) : IrType
+    proc = type.as(ProcInstanceType)
+    function_type(proc.arg_types, proc.return_type, true)
   end
 
   # The hosted `size_of` (`LLVMStoreSizeOfType`): bytes a value of the type takes
