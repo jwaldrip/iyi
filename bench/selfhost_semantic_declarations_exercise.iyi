@@ -21,22 +21,26 @@ module BenchSelfhostSemanticDeclarationsExercise
     text.split(":").select { |entry| !entry.empty? }
   end
 
-  # The project root an import is resolved from first: the entry's directory, moved
-  # up one level for each segment of its module header's path but the last.
-  def self.project_root(node : ASTNode, entry : String) : String
-    root = dir_of(entry)
+  # The header root an import is resolved from after the entry's directory: the directory
+  # the entry's module header names, moved up one level for each segment of its path but the
+  # last. Nil unless the entry's path ends with that header (Compiler.header_root_of).
+  def self.project_root(node : ASTNode, entry : String) : String?
     if node.is_a?(Expressions)
       first = node.as(Expressions).expressions.first?
       if first.is_a?(ModuleHeader)
-        depth = first.as(ModuleHeader).path.size - 1
-        i = 0
-        while i < depth
-          root = dir_of(root)
-          i = i + 1
+        header = first.as(ModuleHeader).path
+        if entry.ends_with?("/#{header.join("/")}.iyi")
+          root = dir_of(entry)
+          i = 0
+          while i < header.size - 1
+            root = dir_of(root)
+            i = i + 1
+          end
+          return root
         end
       end
     end
-    root
+    nil
   end
 
   # Loads a file and its closure into a fresh program. Returns the program and the entry.
@@ -51,6 +55,7 @@ module BenchSelfhostSemanticDeclarationsExercise
     prog.loaded_files.add(entry)
     prog.search_path = search_path
     prog.project_root = project_root(node, entry)
+    prog.entry_dir = dir_of(entry)
     visitor = TopLevelVisitor.new(prog, entry)
     node.accept(visitor)
     visitor.finish
@@ -83,6 +88,7 @@ module BenchSelfhostSemanticDeclarationsExercise
     if prelude_file
       prelude.load_file(prelude_file.as(String))
     end
+    prog.entry_dir = dir_of(entry)
     visitor = TopLevelVisitor.new(prog, entry)
     node.accept(visitor)
     visitor.finish
