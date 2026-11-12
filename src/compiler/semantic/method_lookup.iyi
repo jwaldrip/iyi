@@ -45,17 +45,6 @@ pub class MethodLookup
   # declarations slice's MetaclassType may record its parents now; when it does
   # not, this is the stand-in. Extended modules are not walked yet.
   def self.parents_of(type : ModuleType) : Array(Type)
-    if type.is_a?(MetaclassType)
-      instance = type.as(MetaclassType).instance_type
-      if instance.is_a?(ClassType)
-        superclass = instance.as(ClassType).superclass
-        if superclass && superclass.is_a?(ModuleType)
-          meta = superclass.as(ModuleType).metaclass
-          return [meta.as(Type)]
-        end
-      end
-      return [] of Type
-    end
     type.parents
   end
 

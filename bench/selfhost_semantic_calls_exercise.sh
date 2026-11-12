@@ -151,8 +151,8 @@ prove_mutation "a named argument may repeat a positional one" "$MATCH_FILE" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "new does not match the initialize overloads of its class" "$LOOKUP_FILE" \
-  "    if instance" \
-  "    if false" \
+  "    return recorded.as(Array(Def)) if recorded" \
+  "    return nil if recorded" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
