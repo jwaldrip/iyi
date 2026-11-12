@@ -227,6 +227,9 @@ def evaluate(program : Iyi::Program, op : String) : String
   when "remove_typedef"     then type_text(t.remove_typedef)
   when "unbound?"           then bool_text(t.unbound?)
   when "remove_indirection" then type_text(t.remove_indirection)
+  when "extern?"            then bool_text(t.extern?)
+  when "extern_union?"      then bool_text(t.extern_union?)
+  when "packed?"            then bool_text(t.packed?)
   when "including_types"    then type_text(t.including_types)
   when "simple?"            then bool_text(t.as(Iyi::AliasType).simple?)
   when "splat_index"

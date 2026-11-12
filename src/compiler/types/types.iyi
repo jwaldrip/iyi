@@ -1,5 +1,6 @@
 module compiler/types/types
 
+import compiler/foundation/errors::{refuse_port}
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
 import compiler/syntax/token::{NumberKind}
@@ -835,5 +836,27 @@ pub class TypeQueries
       i = i + 1
     end
     false
+  end
+
+  # Hosted extern?, extern_union? and packed?: true only for an extern C struct or
+  # union, or one marked packed. The port builds no such type: lib struct and union
+  # definitions are not visited (top_level.iyi has no CStructOrUnionDef visit), so
+  # every type answers false, as the hosted base class does.
+  def self.extern?(type : Type) : Bool
+    false
+  end
+
+  def self.extern_union?(type : Type) : Bool
+    false
+  end
+
+  def self.packed?(type : Type) : Bool
+    false
+  end
+
+  # Hosted sizeof_type is computed from layouts, which the port does not build yet.
+  # It is refused by name, so no caller receives a wrong size.
+  def self.sizeof_type(type : Type) : Int32
+    refuse_port("sizeof_type: layouts are not ported yet")
   end
 end

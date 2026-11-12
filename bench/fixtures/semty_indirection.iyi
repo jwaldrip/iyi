@@ -52,3 +52,6 @@ end
 # waiting generic class instance registry (src/compiler/semantic/top_level.iyi GenericClassType): Box.remove_indirection (the hosted generic class reports its instances)
 # op Box(Int32).remove_indirection
 # op LibC::Handle.remove_indirection
+# op Animal.extern?
+# op Animal.extern_union?
+# op Animal.packed?

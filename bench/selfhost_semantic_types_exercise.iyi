@@ -183,6 +183,15 @@ module BenchSelfhostSemanticTypesExercise
     if member == "remove_indirection"
       return type_text(TypeIndirection.remove_indirection(t))
     end
+    if member == "extern?"
+      return bool_text(TypeQueries.extern?(t))
+    end
+    if member == "extern_union?"
+      return bool_text(TypeQueries.extern_union?(t))
+    end
+    if member == "packed?"
+      return bool_text(TypeQueries.packed?(t))
+    end
     if member == "including_types"
       return type_text(TypeIntersect.including_union(t.program, t))
     end
