@@ -127,6 +127,21 @@ expect_ord ord_cas_acq Ldaxr Stxr
 expect_ord ord_cas_rel Ldxr Stlxr
 expect_ord ord_cas_seq Ldaxr Stlxr
 
+# ---- 4c. switch forms: a dense switch indexes a jump table, a sparse one and one with no cases keep the compare
+# chain. The MIR dump names each table with its entry count and lowest case. ----------------------------------
+expect_table() { "$DRV" mir "$FIX/$1.ir" "$2" | grep -qF "jump table 0 entries=$3 low=$4 "; }
+expect_chain() { ! "$DRV" mir "$FIX/$1.ir" "$2" | grep -qE 'jump table|BrTable'; }
+echo "== 4c. dense switches take a jump table; sparse and empty switches keep the compare chain"
+expect_table jump_dense dense 10 0 || fail "jump_dense: dense is not a 10-entry table at 0"
+expect_table jump_holes holes 11 0 || fail "jump_holes: holes is not an 11-entry table at 0"
+expect_table jump_widths neg8 10 -5 || fail "jump_widths: neg8 is not a 10-entry table at -5"
+expect_table jump_widths neg16 10 -4 || fail "jump_widths: neg16 is not a 10-entry table at -4"
+expect_table jump_widths far64 6 8589934592 || fail "jump_widths: far64 is not a 6-entry table at 2^33"
+expect_table jump_widths neg32 10 -3 || fail "jump_widths: neg32 is not a 10-entry table at -3"
+expect_table jump_loop run 6 0 || fail "jump_loop: run is not a 6-entry table at 0"
+expect_chain jump_sparse sparse || fail "jump_sparse: a sparse switch took a table"
+expect_chain jump_sparse none || fail "jump_sparse: a switch with no cases took a table"
+
 
 # ---- 5. the Linux variant encodes; it is not executed here -------------------------------------
 echo "== 5. aarch64-linux-gnu variant of each fixture encodes (not executed)"
@@ -197,6 +212,10 @@ check_rmw() { check_fixture "$1" rmw; }
 check_mem() { check_fixture "$1" mem; }
 check_wide() { check_fixture "$1" wide; }
 check_mono_pair() { "$1" mir "$FIX/rmw.ir" ord_mono | grep -qw Ldxr; }
+check_jump_dense() { check_fixture "$1" jump_dense; }
+# The successor mutation exists only in linear scan, which is the one that reads the control-flow graph, so its check
+# always runs linear, whatever allocator the gate was started with.
+check_jump_loop() { IYI_NATIVE_REGALLOC=linear check_fixture "$1" jump_loop; }
 check_probe() {
   local n
   n=$("$1" mir "$FIX/frame64k.ir" big | grep -c 'ZeroSp')
@@ -265,6 +284,24 @@ prove_mutation "atomicrmw monotonic: the load takes the acquire form" \
   'acquire ? MOp::Ldaxr : MOp::Ldxr' \
   'MOp::Ldaxr' \
   check_mono_pair
+
+prove_mutation "jump table: the index is one too high, so every case reads the next entry" \
+  src/compiler/native/aarch64/isel.iyi \
+  'index = binop(MOp::Sub, v, const_gpr(plan.low))' \
+  'index = binop(MOp::Sub, v, const_gpr(plan.low - 1_i64))' \
+  check_jump_dense
+prove_mutation "jump table: the range check is dropped, so an out-of-range value indexes past the table" \
+  src/compiler/native/aarch64/isel.iyi \
+  '    emit(range_check)' \
+  '    emit(mop(MOp::Label))' \
+  check_jump_dense
+prove_mutation "jump table: the case-0 block is missing from the branch's successors, so a value live into it is clobbered" \
+  src/compiler/native/regalloc_linear.iyi \
+  '      table_targets.each do |t|
+        acc << t' \
+  '      table_targets.each do |t|
+        acc << t unless t == table_targets[0]' \
+  check_jump_loop
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \
