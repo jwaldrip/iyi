@@ -6,8 +6,7 @@ Generated mechanically by name and owner class (indentation-tracked, so a method
 
 The `codegen reads` column comes from `src/compiler/lower/CONTRACT.md`: the number of readings by the Crystal code generator and the first reading. Those rows are the ones increment (2) must provide.
 
-Totals: 568 rows. 141 ported, 107 other owner, 298 missing, 22 out of scope.
-
+Totals: 568 rows. Increment (1) baseline: 141 ported, 107 other owner, 298 missing, 22 out of scope. Increment (2) provides the base `Type` members named in the `TypeQueries` rows below (`ported as TypeQueries.<name>`); the subclass overrides of the same names are not yet covered. 
 | hosted line | kind | owner | member | port status | codegen reads | class |
 |---:|---|---|---|---|---|---|
 | 3 | class | Iyi | `Iyi` | missing class |  | missing |
@@ -31,33 +30,33 @@ Totals: 568 rows. 141 ported, 107 other owner, 298 missing, 22 out of scope.
 | 153 | def | Type | `packed?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_typer.cr:314 | missing |
 | 169 | def | Type | `gc_shape` | missing |  | missing |
 | 193 | def | Type | `inst_shape` | missing |  | missing |
-| 215 | def | Type | `reference_like?` | missing | 1 reads, first src/compiler/iyi/codegen/type_layouts.cr:113 | missing |
+| 215 | def | Type | `reference_like?` | ported as `TypeQueries.reference_like?` (types/types.iyi) | 1 reads, first src/compiler/iyi/codegen/type_layouts.cr:113 | ported |
 | 234 | def | Type | `defs` | other owner ModuleType (src/compiler/semantic/top_level.iyi:195) |  | other-owner |
 | 240 | def | Type | `macros` | other owner ModuleType (src/compiler/semantic/top_level.iyi:199) |  | other-owner |
 | 245 | attr | Type | `metaclass` | other owner VirtualType (src/compiler/types/types.iyi:45) | 12 reads, first src/compiler/iyi/codegen/class_var.cr:397 | other-owner |
 | 253 | def | Type | `initialize_metaclass` | missing |  | missing |
 | 262 | def | Type | `can_be_stored?` | missing |  | missing |
-| 267 | def | Type | `subclasses` | other owner GenericClassInstanceType (src/compiler/types/types.iyi:138) | 5 reads, first src/compiler/iyi/codegen/llvm_id.cr:104 | other-owner |
-| 273 | def | Type | `all_subclasses` | missing | 3 reads, first src/compiler/iyi/codegen/class_var.cr:394 | missing |
+| 267 | def | Type | `subclasses` | ported as `TypeQueries.subclasses` (types/types.iyi) | 5 reads, first src/compiler/iyi/codegen/llvm_id.cr:104 | ported |
+| 273 | def | Type | `all_subclasses` | ported as `TypeQueries.all_subclasses` (types/types.iyi) | 3 reads, first src/compiler/iyi/codegen/class_var.cr:394 | ported |
 | 279 | def | Type | `append_subclasses` | missing |  | missing |
-| 287 | def | Type | `leaf?` | other owner VirtualType (src/compiler/types/types.iyi:41) |  | other-owner |
+| 287 | def | Type | `leaf?` | ported as `TypeQueries.leaf?` (types/types.iyi) |  | ported |
 | 291 | def | Type | `class?` | ported (src/compiler/semantic/top_level.iyi:65) |  | ported |
 | 295 | def | Type | `module?` | ported (src/compiler/semantic/top_level.iyi:69) |  | ported |
 | 307 | def | Type | `trait?` | ported (src/compiler/semantic/top_level.iyi:73) |  | ported |
-| 311 | def | Type | `metaclass?` | other owner ModuleType (src/compiler/semantic/top_level.iyi:384) | 6 reads, first src/compiler/iyi/codegen/ast.cr:18 | other-owner |
-| 322 | def | Type | `pointer?` | missing | 6 reads, first src/compiler/iyi/codegen/codegen.cr:1953 | missing |
+| 311 | def | Type | `metaclass?` | ported as `TypeQueries.metaclass?` (types/types.iyi) | 6 reads, first src/compiler/iyi/codegen/ast.cr:18 | ported |
+| 322 | def | Type | `pointer?` | ported as `TypeQueries.pointer?` (types/types.iyi) | 6 reads, first src/compiler/iyi/codegen/codegen.cr:1953 | ported |
 | 326 | def | Type | `nil_type?` | ported (src/compiler/semantic/top_level.iyi:93) | 9 reads, first src/compiler/iyi/codegen/ast.cr:170 | ported |
 | 330 | def | Type | `nilable?` | ported (src/compiler/semantic/top_level.iyi:97) |  | ported |
 | 334 | def | Type | `bool_type?` | missing |  | missing |
-| 338 | def | Type | `no_return?` | other owner NoReturnType (src/compiler/types/types.iyi:627) | 4 reads, first src/compiler/iyi/codegen/call.cr:678 | other-owner |
-| 342 | def | Type | `virtual?` | other owner VirtualType (src/compiler/types/types.iyi:17) |  | other-owner |
-| 346 | def | Type | `virtual_metaclass?` | missing |  | missing |
-| 350 | def | Type | `proc?` | other owner ProcInstanceType (src/compiler/types/types.iyi:445) | 4 reads, first src/compiler/iyi/codegen/fun.cr:584 | other-owner |
-| 354 | def | Type | `void?` | other owner VoidType (src/compiler/types/types.iyi:641) | 14 reads, first src/compiler/iyi/codegen/ast.cr:170 | other-owner |
-| 358 | def | Type | `virtual_type` | missing | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | missing |
+| 338 | def | Type | `no_return?` | ported as `TypeQueries.no_return?` (types/types.iyi) | 4 reads, first src/compiler/iyi/codegen/call.cr:678 | ported |
+| 342 | def | Type | `virtual?` | ported as `TypeQueries.virtual?` (types/types.iyi) |  | ported |
+| 346 | def | Type | `virtual_metaclass?` | ported as `TypeQueries.virtual_metaclass?` (types/types.iyi) |  | ported |
+| 350 | def | Type | `proc?` | ported as `TypeQueries.proc?` (types/types.iyi) | 4 reads, first src/compiler/iyi/codegen/fun.cr:584 | ported |
+| 354 | def | Type | `void?` | ported as `TypeQueries.void?` (types/types.iyi) | 14 reads, first src/compiler/iyi/codegen/ast.cr:170 | ported |
+| 358 | def | Type | `virtual_type` | ported as `TypeQueries.virtual_type` (types/types.iyi) | 5 reads, first src/compiler/iyi/codegen/ast.cr:110 | ported |
 | 364 | def | Type | `virtual_type_made?` | missing | 1 reads, first src/compiler/iyi/codegen/gc_layouts.cr:207 | missing |
-| 368 | def | Type | `virtual_type!` | missing | 1 reads, first src/compiler/iyi/codegen/codegen.cr:517 | missing |
-| 372 | def | Type | `instance_type` | other owner VirtualMetaclassType (src/compiler/types/types.iyi:86) | 14 reads, first src/compiler/iyi/codegen/ast.cr:19 | other-owner |
+| 368 | def | Type | `virtual_type!` | ported as `TypeQueries.virtual_type_bang` (types/types.iyi) | 1 reads, first src/compiler/iyi/codegen/codegen.cr:517 | ported |
+| 372 | def | Type | `instance_type` | ported as `TypeQueries.instance_type` (types/types.iyi) | 14 reads, first src/compiler/iyi/codegen/ast.cr:19 | ported |
 | 376 | def | Type | `generic_type` | other owner GenericInstanceType (src/compiler/types/types.iyi:110) |  | other-owner |
 | 380 | def | Type | `includes_type?` | missing | 1 reads, first src/compiler/iyi/codegen/class_var.cr:44 | missing |
 | 384 | def | Type | `remove_typedef` | missing | 6 reads, first src/compiler/iyi/codegen/codegen.cr:1931 | missing |
@@ -116,7 +115,7 @@ Totals: 568 rows. 141 ported, 107 other owner, 298 missing, 22 out of scope.
 | 842 | def | Type | `remove_literal` | missing |  | missing |
 | 846 | def | Type | `generic_nest` | missing |  | missing |
 | 850 | def | Type | `double_variadic?` | missing |  | missing |
-| 854 | def | Type | `splat_index` | other owner GenericClassType (src/compiler/semantic/top_level.iyi:460) | 1 reads, first src/compiler/iyi/codegen/codegen.cr:2233 | other-owner |
+| 854 | def | Type | `splat_index` | ported as `TypeQueries.splat_index` (types/types.iyi) | 1 reads, first src/compiler/iyi/codegen/codegen.cr:2233 | ported |
 | 858 | def | Type | `type_vars` | other owner GenericInstanceType (src/compiler/types/types.iyi:111) |  | other-owner |
 | 862 | def | Type | `unbound?` | missing | 1 reads, first src/compiler/iyi/codegen/llvm_id.cr:154 | missing |
 | 866 | def | Type | `private?` | ported (src/compiler/semantic/top_level.iyi:107) |  | ported |

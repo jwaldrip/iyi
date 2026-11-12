@@ -1,0 +1,124 @@
+import compiler/syntax/parser::{Parser}
+import compiler/semantic/top_level::{GenericClassType, SemanticProgram, TopLevelVisitor, Type}
+import compiler/types/types::{TypeQueries}
+
+# Type-model driver for bench/selfhost_semantic_types_exercise.sh.
+#
+#   selfhost_semantic_types_exercise <fixture.iyi>
+#
+# Builds the fixture's declarations into a SemanticProgram, then evaluates each
+# `# op <op>` line and prints `<op> => <result>`, the same lines the hosted
+# oracle (bench/selfhost_semantic_types_oracle.cr) prints. The operations are
+# listed in the oracle's header; a type name in an operation has no dot in it.
+module BenchSelfhostSemanticTypesExercise
+  def self.resolve(prog : SemanticProgram, name : String) : Type
+    t = prog.types[name]?
+    raise "unknown type #{name}" if t.nil?
+    t
+  end
+
+  def self.type_text(t : Type?) : String
+    return "nil" if t.nil?
+    # The hosted to_s prints an unbound generic with its type variables, as in
+    # Pair(A, B). The port's to_s prints the name alone, so the driver adds them.
+    if t.is_a?(GenericClassType)
+      gt = t.as(GenericClassType)
+      return "#{gt.name}(#{gt.type_vars.join(", ")})"
+    end
+    t.to_s
+  end
+
+  def self.bool_text(b : Bool) : String
+    b ? "true" : "false"
+  end
+
+  def self.list_text(types : Array(Type)) : String
+    parts = [] of String
+    types.each do |t|
+      parts << type_text(t)
+    end
+    "[#{parts.join(", ")}]"
+  end
+
+  def self.apply(t : Type, member : String) : String
+    if member == "nil_type?"
+      return bool_text(t.nil_type?)
+    end
+    if member == "struct?"
+      return bool_text(t.struct?)
+    end
+    if member == "pointer?"
+      return bool_text(TypeQueries.pointer?(t))
+    end
+    if member == "proc?"
+      return bool_text(TypeQueries.proc?(t))
+    end
+    if member == "void?"
+      return bool_text(TypeQueries.void?(t))
+    end
+    if member == "no_return?"
+      return bool_text(TypeQueries.no_return?(t))
+    end
+    if member == "virtual?"
+      return bool_text(TypeQueries.virtual?(t))
+    end
+    if member == "virtual_metaclass?"
+      return bool_text(TypeQueries.virtual_metaclass?(t))
+    end
+    if member == "metaclass?"
+      return bool_text(TypeQueries.metaclass?(t))
+    end
+    if member == "leaf?"
+      return bool_text(TypeQueries.leaf?(t))
+    end
+    if member == "reference_like?"
+      return bool_text(TypeQueries.reference_like?(t))
+    end
+    if member == "subclasses"
+      return list_text(TypeQueries.subclasses(t))
+    end
+    if member == "all_subclasses"
+      return list_text(TypeQueries.all_subclasses(t))
+    end
+    if member == "instance_type"
+      return type_text(TypeQueries.instance_type(t))
+    end
+    if member == "virtual_type"
+      return type_text(TypeQueries.virtual_type(t))
+    end
+    if member == "splat_index"
+      idx = TypeQueries.splat_index(t)
+      return "nil" if idx.nil?
+      return idx.to_s
+    end
+    raise "unknown operation #{member}"
+  end
+
+  def self.evaluate(prog : SemanticProgram, op : String) : String
+    if dot = op.index(".")
+      t = resolve(prog, op[0, dot])
+      return apply(t, op[dot + 1, op.bytesize - dot - 1])
+    end
+    raise "malformed operation #{op}"
+  end
+
+  def self.run(src : String, filename : String) : String
+    parser = Parser.new(src, filename)
+    node = parser.parse
+    prog = SemanticProgram.new
+    node.accept(TopLevelVisitor.new(prog))
+    out = [] of String
+    src.split("\n").each do |line|
+      if line.starts_with?("# op ")
+        op = line[5, line.bytesize - 5].strip
+        out << "#{op} => #{evaluate(prog, op)}"
+      end
+    end
+    out.join("\n") + "\n"
+  end
+end
+
+if Program.args.size > 0
+  filename = Program.args[0]
+  print BenchSelfhostSemanticTypesExercise.run(File.read(filename), filename)
+end
