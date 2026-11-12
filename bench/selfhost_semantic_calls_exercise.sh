@@ -148,6 +148,12 @@ prove_mutation "a named argument may repeat a positional one" "$MATCH_FILE" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "new does not match the initialize overloads of its class" "$LOOKUP_FILE" \
+  "    if instance" \
+  "    if false" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

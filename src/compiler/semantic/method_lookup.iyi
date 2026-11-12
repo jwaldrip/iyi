@@ -1,6 +1,6 @@
 module compiler/semantic/method_lookup
 
-import compiler/syntax/ast::{Def}
+import compiler/syntax/ast::{Def, Nop}
 import compiler/semantic/top_level::{ClassType, MetaclassType, ModuleType, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/match::{CallMatch, CallSignature, Match}
@@ -28,7 +28,15 @@ end
 
 # The port of Type#lookup_matches, lookup_matches_without_parents and the
 # parent walk, for the receivers that are not virtual. Virtual receivers (the
-# subclass dispatch of an abstract type) and `new` are later increments.
+# subclass dispatch of an abstract type) are a later increment.
+#
+# `new` on a metaclass: the hosted pass gives a class a `self.new` for every
+# instance `initialize` (the same arguments, no body), added before any explicit
+# `def self.new`, so the explicit one chains onto them. The declarations slice
+# makes those defs on its branch; this port does not record them, and `own_defs`
+# synthesises them from the instance's own initialize defs, then appends the
+# explicit ones. A class with its own initialize does not search its ancestors
+# for `new`, as hosted lookup_new_in_ancestors? says.
 pub class MethodLookup
   # The types the walk visits after *type*. The port's MetaclassType records no
   # parents, so the metaclass of a class is walked to the metaclass of its
@@ -50,12 +58,66 @@ pub class MethodLookup
     type.parents
   end
 
+  # The instance module type a metaclass describes, or nil when *type* is not a
+  # metaclass of a module type.
+  def self.instance_module(type : ModuleType) : ModuleType?
+    return nil if !type.is_a?(MetaclassType)
+    instance = type.as(MetaclassType).instance_type
+    return nil if !instance.is_a?(ModuleType)
+    instance.as(ModuleType)
+  end
+
+  # True when a lookup of *name* on *type* searches its parents: a `new` on a
+  # metaclass whose instance declares its own initialize does not, and every
+  # other lookup does.
+  def self.walks_parents?(type : ModuleType, name : String) : Bool
+    return true if name != "new"
+    instance = instance_module(type)
+    return true if instance.nil?
+    init = instance.as(ModuleType).defs["initialize"]?
+    init.nil?
+  end
+
+  # The defs of *name* declared on *type* itself, in the hosted order. For `new`
+  # on a metaclass: the synthesised defs of the instance's own initialize, then
+  # the explicit `self.new` defs. Nil when there are none.
+  def self.own_defs(type : ModuleType, name : String) : Array(Def)?
+    if name != "new"
+      defs = type.defs[name]?
+      return defs.as(Array(Def)) if defs
+      return nil
+    end
+    out = [] of Def
+    instance = instance_module(type)
+    if instance
+      inits = instance.as(ModuleType).defs["initialize"]?
+      if inits
+        inits.as(Array(Def)).each do |init|
+          made = Def.new("new", init.args, Nop.new)
+          made.splat_index = init.splat_index
+          made.block_arg = init.block_arg
+          made.double_splat = init.double_splat
+          made.free_vars = init.free_vars
+          out << made
+        end
+      end
+    end
+    explicit = type.defs["new"]?
+    if explicit
+      explicit.as(Array(Def)).each do |d|
+        out << d
+      end
+    end
+    return nil if out.empty?
+    out
+  end
+
   # True when *type* or one of its parents has a def named *name*, whether or not
   # its parameters accept the call. The hosted call pass reports "undefined
   # method" only when this is false.
   def self.defines?(type : ModuleType, name : String) : Bool
-    defs = type.defs[name]?
-    return true if !defs.nil?
+    return true if own_defs(type, name)
+    return false if !walks_parents?(type, name)
     parents_of(type).each do |parent|
       next unless parent.is_a?(ModuleType)
       return true if defines?(parent.as(ModuleType), name)
@@ -67,12 +129,13 @@ pub class MethodLookup
   # walk meets them: the hosted lookup_defs, which the call pass reads to report
   # why nothing matched.
   def self.all_defs(type : ModuleType, name : String, into : Array(Def)) : Array(Def)
-    defs = type.defs[name]?
+    defs = own_defs(type, name)
     if defs
       defs.as(Array(Def)).each do |d|
         into << d
       end
     end
+    return into if !walks_parents?(type, name)
     parents_of(type).each do |parent|
       next unless parent.is_a?(ModuleType)
       all_defs(parent.as(ModuleType), name, into)
@@ -87,6 +150,7 @@ pub class MethodLookup
     return own if own.cover_all? || own.error
     all = own.matches
     cover = own.cover_all?
+    return Matches.new(all, cover) if !walks_parents?(type, signature.name)
 
     parents_of(type).each do |parent|
       next unless parent.is_a?(ModuleType)
@@ -102,11 +166,11 @@ pub class MethodLookup
   # the order the defs were declared. The first exact match ends the scan: the
   # hosted scan skips every later def once it has an exact match.
   def self.lookup_without_parents(type : ModuleType, ts : TypeSystem, signature : CallSignature, owner : Type, path_lookup : ModuleType, matches_array : Array(Match)) : Matches
-    defs = type.defs[signature.name]?
+    defs = own_defs(type, signature.name)
     return Matches.new(matches_array, false) if defs.nil?
 
     exact = false
-    defs.each do |item|
+    defs.as(Array(Def)).each do |item|
       next if item.abstract
       attempt = CallMatch.attempt(ts, signature, item, owner, path_lookup)
       if attempt.error
