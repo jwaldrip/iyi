@@ -725,6 +725,15 @@ module BenchSelfhostParserExercise
     assert(def_magic.args[0].default_value.as(MagicConstant).name == TokenKind::MAGIC_FILE, "file is MAGIC_FILE")
     assert(def_magic.args[1].default_value.as(MagicConstant).name == TokenKind::MAGIC_LINE, "line is MAGIC_LINE")
     assert(def_magic.args[2].default_value.as(MagicConstant).name == TokenKind::MAGIC_DIR, "dir is MAGIC_DIR")
+
+    # A type declaration written as an argument of a call (`getter name : String`)
+    # declares no local variable, so a bare `name` after it is still a call. A parser
+    # that declared every type-declared name would answer `Var` here.
+    p_leak = Parser.new("getter name : String\nname")
+    exps_leak = p_leak.parse.as(Expressions).expressions
+    assert(exps_leak[0].is_a?(Call), "getter with a type declaration argument is a call")
+    assert(exps_leak[1].is_a?(Call), "a name after a call-argument type declaration is a call")
+    assert(exps_leak[1].as(Call).name == "name", "leaked name is the call name")
     puts "ok (declarations verified)"
   end
 
@@ -747,6 +756,7 @@ module BenchSelfhostParserExercise
       "bench/fixtures/expr_multi_assign.iyi",
       "bench/fixtures/expr_case_when.iyi",
       "bench/fixtures/decl_classes_and_structs.iyi",
+      "bench/fixtures/decl_getter_type_leak.iyi",
       "bench/fixtures/decl_def.iyi",
       "bench/fixtures/decl_enums.iyi",
       "bench/fixtures/decl_lib_and_fun.iyi",

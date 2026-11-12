@@ -46,7 +46,7 @@ for phrase in \
   "testing call and block parsing... ok (calls and blocks verified)" \
   "testing control expressions (if, unless, while, until, case, modifiers)... ok (control expressions verified)" \
   "testing declaration parsing... ok (declarations verified)" \
-  "testing real syntax fixtures parsing... ok (1753 nodes across 26 fixtures)" \
+  "testing real syntax fixtures parsing... ok (1774 nodes across 27 fixtures)" \
   "ALL SELFHOST PARSER CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -734,6 +734,7 @@ for fixture in \
   "$REPO"/bench/fixtures/expr_multi_assign.iyi \
   "$REPO"/bench/fixtures/expr_case_when.iyi \
   "$REPO"/bench/fixtures/decl_classes_and_structs.iyi \
+  "$REPO"/bench/fixtures/decl_getter_type_leak.iyi \
   "$REPO"/bench/fixtures/decl_def.iyi \
   "$REPO"/bench/fixtures/decl_enums.iyi \
   "$REPO"/bench/fixtures/decl_lib_and_fun.iyi \
@@ -844,6 +845,12 @@ run_proof "mutation 10: altering adjacent string concatenation in parse_delimite
 # Mutation 11: break magic constant parsing in parse_param
 run_proof "mutation 11: altering magic constant default value parsing in parse_param" \
   'if @token.type.magic?' 'if false && @token.type.magic?'
+
+# Mutation 12: declare a name from a type declaration that is a call argument
+# (`getter name : String`), which the oracle does not. The leaked name then parses as Var.
+run_proof "mutation 12: pushing a call-argument type declaration as a local variable" \
+  'push_var(type_declaration) unless @call_args_start_locations.includes?(name_location)' \
+  'push_var(type_declaration) unless false && @call_args_start_locations.includes?(name_location)'
 
 echo
 echo "== Verification clean state confirmed"

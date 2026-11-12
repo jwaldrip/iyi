@@ -1494,6 +1494,13 @@ pub class Parser < Lexer
   end
 
   def parse_call_arg : ASTNode
+    @call_args_start_locations << @token.location
+    arg = parse_call_arg_value
+    @call_args_start_locations.pop
+    arg
+  end
+
+  def parse_call_arg_value : ASTNode
     if @token.type == TokenKind::OP_STAR
       location = @token.location
       next_token_skip_space
@@ -5360,11 +5367,15 @@ pub class Parser < Lexer
   def check_type_declaration(&) : ASTNode
     if next_comes_colon_space?
       name = @token.value
-      var = Var.new(name).at(@token.location).at_end(token_end_location)
+      name_location = @token.location
+      var = Var.new(name).at(name_location).at_end(token_end_location)
       next_token
       skip_space
       check(TokenKind::OP_COLON)
       type_declaration = parse_type_declaration(var)
+      # A declaration that is an argument of a call (`getter name : String`) declares no
+      # local variable, so the name stays a call afterwards (the oracle's rule).
+      push_var(type_declaration) unless @call_args_start_locations.includes?(name_location)
       set_visibility(type_declaration)
     else
       yield
@@ -5382,7 +5393,6 @@ pub class Parser < Lexer
     elsif is_const
       syntax_error("expected '=' for constant type declaration", @token.location)
     end
-    push_var(var) unless is_const
     TypeDeclaration.new(var, var_type, value).at(var).at_end(value ? value.end_location : var_type.end_location)
   end
 
