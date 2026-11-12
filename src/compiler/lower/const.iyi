@@ -15,11 +15,10 @@ module compiler/lower/const
 #   - a constant in a namespace (its hosted `llvm_name` is a namespaced spelling);
 #   - a value that may be a compile-time value: a path to another constant, or an operator call (hosted
 #     `compile_time_value` runs the MathInterpreter, which inlines it at each read instead of storing it);
-#   - a simple literal that is not an integer literal: a string, symbol, nil or float literal (hosted
-#     `initialize_simple_constants`, which emits the global at program start);
+#   - a symbol, nil or float literal (hosted `initialize_simple_constants`): its global is not ported yet;
 #   - a constant of another IR type than integer or float (struct, pointer, nil, enum).
-# The gate's known gap: the hosted program emits a global for an unread simple constant at program start
-# (`initialize_simple_constants`); a module with one differs.
+# A string constant (a simple literal) gets its global at the program's start, as the hosted program does, whether or
+# not it is read; its assignment emits nothing and its reads are loads of that global.
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
 import compiler/ir/values::{Value}
@@ -27,7 +26,7 @@ import compiler/ir/inst::{Inst, Op, CallConv}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{BodyVisit, Lowerer}
-import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned}
+import compiler/lower/helpers::{build_string_constant, int1, llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ConstState}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
@@ -145,12 +144,41 @@ end
 # Refuses a simple literal the port does not inline: its hosted global comes from `initialize_simple_constants`.
 pub def check_not_simple_literal(const : Compiler::Semantic::TopLevel::Const) : Nil
   value = const.value
-  if value.is_a?(StringLiteral) || value.is_a?(SymbolLiteral) || value.is_a?(NilLiteral)
+  if value.is_a?(SymbolLiteral) || value.is_a?(NilLiteral)
     refuse_port("lower: constant #{const.full_name} is a simple literal that is not an integer: its global comes from initialize_simple_constants, not ported yet (hosted const.cr: initialize_simple_const)")
   end
   if value.is_a?(NumberLiteral) && value.as(NumberLiteral).value.includes?(".")
     refuse_port("lower: constant #{const.full_name} is a float literal: its global comes from initialize_simple_constants, not ported yet (hosted const.cr: initialize_simple_const)")
   end
+end
+
+# A string constant is a simple literal (hosted `simple?`): the program's start emits its global, and neither its
+# assignment nor its reads initialise it.
+pub def string_const?(const : Compiler::Semantic::TopLevel::Const) : Bool
+  const.value.is_a?(StringLiteral)
+end
+
+# The IR type of a constant's value. A string constant is a pointer to its literal (the hosted type of String is `ptr`);
+# the typer's `llvm_type(String)` would also declare the `%String` struct, which the hosted module does not print.
+pub def const_value_ir(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : IrType
+  if string_const?(const)
+    return low.module.types.ptr
+  end
+  const_ir_type(low, const)
+end
+
+# The hosted `initialize_simple_const` (codegen.cr:106) for a string constant: the value global, under the constant's
+# name, initialised with the string constant's address and made constant. A simple constant has no initialiser flag,
+# so a read is a load of this global.
+pub def initialize_simple_const(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : Nil
+  name = program_const_name(const)
+  st = low.globals.const_state(name)
+  ir = const_value_ir(low, const)
+  global = declare_const_global(low, name, ir, st)
+  st.no_init_flag = true
+  str = build_string_constant(low, const.value.as(StringLiteral).value)
+  global.initializer = str.as(Value)
+  global.global_constant = true
 end
 
 # The value global of a constant, declared once (hosted `declare_const`, internal linkage).
@@ -258,8 +286,10 @@ pub def codegen_path(low : Lowerer, node : Path) : Nil
   if g.nil? || (!st.no_init_flag && st.initializer.nil?)
     refuse_port("lower: read of constant #{name} before its initialisation: the flag path (hosted read_const_pointer, create_read_const_function) is not ported yet")
   end
-  ir = const_ir_type(low, c)
-  check_scalar_type(c, ir)
+  ir = const_value_ir(low, c)
+  if !string_const?(c)
+    check_scalar_type(c, ir)
+  end
   low.last = load_aligned(low, ir, g.as(Global))
 end
 
@@ -277,6 +307,11 @@ pub def codegen_path_assign(low : Lowerer, node : Assign) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if string_const?(c)
+    # The hosted `codegen_assign(Path)` emits nothing for a simple constant: its global was initialised at the program's start.
+    low.last = llvm_nil(low)
+    return
+  end
   check_not_simple_literal(c)
   if c.used?
     initialize_const(low, c)
@@ -285,7 +320,18 @@ pub def codegen_path_assign(low : Lowerer, node : Assign) : Nil
 end
 
 # The hosted `initialize_predefined_constants` and `initialize_simple_constants`, which run at the start of
-# `__crystal_main`. Not ported (see the known gap above); the hosted order is the predefined constants, then
-# the simple constants, both before the program's own code.
+# `__crystal_main`, before the program's own code. The predefined constants (ARGC_UNSAFE, ARGV_UNSAFE) are stored by
+# the core (lower.iyi codegen_program). The simple constants are walked in declaration order (hosted
+# `const_initializers`): an integer, Bool or Char literal is inlined and needs no global; a string constant gets its
+# global here; a symbol, nil or float constant is refused by name until its global is ported.
 pub def initialize_program_constants(low : Lowerer) : Nil
+  low.analysed.program.const_initializers.each do |const|
+    if literal_value(low, const).nil?
+      if string_const?(const)
+        initialize_simple_const(low, const)
+      else
+        check_not_simple_literal(const)
+      end
+    end
+  end
 end

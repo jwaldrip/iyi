@@ -30,6 +30,10 @@ IYI="$REPO/bin/iyi"
 . "$REPO/bench/lib/lower_oracle.sh"
 WORK="$(mktemp -d)"
 
+# The shared comparator (bench/lib/lower_gate.iyi) counts only the functions it reproduces: a module-level item (a global,
+# a declaration) that differs is reported but not counted. This gate also requires the module-level items to match.
+module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }' "$1"; }
+
 trap 'rm -rf "$WORK"' EXIT
 
 # Fixtures the port refuses by name: the two class-variable reads call a method on the class (K.v), a call on a class receiver that lower/call.iyi does not port yet (S2c5Calls).
@@ -87,7 +91,7 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
   summary="$(awk '/^SUMMARY/ { print }' "$WORK/$name.port.out")"
   identical="$(echo "$summary" | awk '{ split($2, a, "="); print a[2] }')"
   total="$(echo "$summary" | awk '{ split($3, a, "="); print a[2] }')"
-  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ]; then
+  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ] && module_same "$WORK/$name.port.out"; then
     if [ "$named" = 1 ]; then
       echo "    $name: now identical to the hosted module: remove it from WAITING_FIXTURES"
       diverged=$((diverged + 1))
@@ -154,7 +158,7 @@ lowglob_check() {
     summary="$(awk '/^SUMMARY/ { print }' "$WORK/m.out")"
     identical="$(echo "$summary" | awk '{ split($2, a, "="); print a[2] }')"
     total="$(echo "$summary" | awk '{ split($3, a, "="); print a[2] }')"
-    [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ] || return 1
+    [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ] && module_same "$WORK/m.out" || return 1
   done
   return 0
 }
@@ -184,6 +188,15 @@ prove_mutation "the constant initialiser has the iyi convention, not C" "$REPO/s
   "  fn.call_convention = CallConv::C" "  fn.call_convention = CallConv::Iyi" -- lowglob_check || status=1
 prove_mutation "a literal class variable is initialised by a function, not stored at its declaration" "$REPO/src/compiler/lower/class_var.iyi" \
   "  if simple_literal?(node)" "  if false" -- lowglob_check || status=1
+prove_mutation "a string constant's global is not emitted at the program's start" "$REPO/src/compiler/lower/const.iyi" \
+  "initialize_simple_const(low, const)" \
+  "low.last = llvm_nil(low)" -- lowglob_check || status=1
+prove_mutation "a string constant's global is initialised with null, not its address" "$REPO/src/compiler/lower/const.iyi" \
+  "global.initializer = str.as(Value)" \
+  "global.initializer = low.builder.const_null(ir)" -- lowglob_check || status=1
+prove_mutation "a string constant's assignment initialises it a second time" "$REPO/src/compiler/lower/const.iyi" \
+  "if string_const?(c)" \
+  "if false" -- lowglob_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
