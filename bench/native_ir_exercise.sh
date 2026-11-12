@@ -123,6 +123,21 @@ roundtrip_check() {
   return 0
 }
 
+# Decimal floating-point constants must be read as the bit patterns they name. Non-zero when any is not.
+decimal_check() {
+  local bin="$1" out want
+  out=$("$bin" print bench/fixtures/ir/accept/decimal_float.ir 2>&1) || return 1
+  for want in \
+    '@half = internal global double 0x3fe0000000000000' \
+    '@single = internal global float 0x3fc00000' \
+    '@plain = internal global double 0x4002000000000000' \
+    '@negative = internal global double 0xbff8000000000000' \
+    '  ret double 0x3ff8000000000000'; do
+    echo "$out" | grep -qxF -- "$want" || return 1
+  done
+  return 0
+}
+
 # The tls-fresh fixture must be refused under its rule. Non-zero when it is accepted or refused another way.
 tls_check() {
   local bin="$1" out
@@ -242,6 +257,7 @@ echo "refused $count malformed fixtures under their rules"
 echo "== 5b. the ModuleID header is ignored and the module is named by source_filename; the rejected literals and intrinsics are refused"
 out=$("$DRV" print bench/fixtures/ir/accept/moduleid.ir 2>&1) || fail "moduleid.ir: $out"
 echo "$out" | grep -q '^source_filename = "moduleid.iyi"$' || fail "moduleid.ir does not keep source_filename as its module identifier: $out"
+decimal_check "$DRV" || fail "decimal_float.ir: a decimal floating-point constant is not read as its bit pattern: $("$DRV" print bench/fixtures/ir/accept/decimal_float.ir 2>&1)"
 count=0
 for f in bench/fixtures/ir/reject/*.ir; do
   count=$((count + 1))
@@ -370,6 +386,11 @@ prove_mutation "printer: the unwind word of inline asm is not written" \
   '    text += " unwind" if inline_asm.unwind' \
   '    text += " unwind_" if inline_asm.unwind' \
   roundtrip_check
+prove_mutation "parser: a decimal constant of type float keeps the double's bit pattern" \
+  src/compiler/ir/parser.iyi \
+  'type.float32? ? single_bits(value) : double_bits(value)' \
+  'type.float32? ? double_bits(value) : double_bits(value)' \
+  decimal_check
 
 echo
 if [ "$failed" -eq 0 ]; then

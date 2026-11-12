@@ -1,7 +1,7 @@
 module compiler/ir/parser
 
 import compiler/ir/types::{IrType, TypeTable, valid_int_bits?}
-import compiler/ir/values::{Value, Param, int_words_parse}
+import compiler/ir/values::{Value, Param, int_words_parse, single_bits, double_bits}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, Ordering, Attribute, ThreadPointerKind, DebugLoc}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel, DebugSubprogram, Visibility}
 import compiler/ir/module::{Module}
@@ -35,6 +35,7 @@ enum TokKind
   CStr
   Int
   Hex
+  Decimal
   Punct
   Eol
 end
@@ -136,7 +137,27 @@ def tokenize(line : String) : Array(Tok)
           j = j + 1
         end
         value = 0_i64 &- value if negative
-        toks << Tok.new(TokKind::Int, line[i, j - i], value, false, [] of Int64)
+        # A decimal floating-point constant, the form a printer uses for a value that is exact in a few
+        # digits: `1.500000e+00`. Digits, a point, digits, then an optional exponent.
+        if j + 1 < n && line.byte_at(j) == 46_u8 && digit?(line.byte_at(j + 1))
+          j = j + 1
+          while j < n && digit?(line.byte_at(j))
+            j = j + 1
+          end
+          if j < n && (line.byte_at(j) == 101_u8 || line.byte_at(j) == 69_u8)
+            k = j + 1
+            k = k + 1 if k < n && (line.byte_at(k) == 43_u8 || line.byte_at(k) == 45_u8)
+            if k < n && digit?(line.byte_at(k))
+              while k < n && digit?(line.byte_at(k))
+                k = k + 1
+              end
+              j = k
+            end
+          end
+          toks << Tok.new(TokKind::Decimal, line[i, j - i], 0_i64, false, [] of Int64)
+        else
+          toks << Tok.new(TokKind::Int, line[i, j - i], value, false, [] of Int64)
+        end
         i = j
       end
     elsif ident_start?(b)
@@ -1527,6 +1548,14 @@ class IrParser
     end
     if t.kind == TokKind::Hex
       return make_const(Op::ConstFloat, type, t.num)
+    end
+    if t.kind == TokKind::Decimal
+      unless type.float?
+        c.fail("#{t.text} is a floating-point constant, and #{type} is not a floating-point type")
+        return dummy(type)
+      end
+      value = t.text.to_f
+      return make_const(Op::ConstFloat, type, type.float32? ? single_bits(value) : double_bits(value))
     end
     if t.kind == TokKind::CStr
       return byte_constant(type, t.bytes, mod)

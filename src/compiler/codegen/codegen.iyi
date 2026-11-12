@@ -33,6 +33,10 @@ import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, Cla
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/methods::{MacroMethods}
+import compiler/macros/engine::{MacroEngine}
+import compiler/macros/target_flags::{MacroTargetFlags}
+import compiler/semantic/normalizer::{Normalizer}
+import compiler/syntax/ast::{MacroExpression}
 
 import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/values::{Value}
@@ -40,6 +44,7 @@ import compiler/ir/function::{Function, Linkage}
 import compiler/ir/inst::{Block, Inst, IntPredicate, RealPredicate}
 import compiler/ir/module::{Module}
 import compiler/ir/builder::{Builder}
+import compiler/ir/intrinsics::{IntrinsicId}
 
 pub def register_primitive_operators(prog : SemanticProgram) : Nil
   int_names = ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Int128", "UInt128"]
@@ -660,6 +665,7 @@ pub class CodeGenVisitor < Visitor
 
   def initialize(@mod : Module, @program : SemanticProgram, @main_visitor : MainVisitor)
     @types = @mod.types
+    @macro_flags = MacroTargetFlags.for_triple(@mod.triple, [] of String)
     @builder = Builder.new(@mod)
     @fn_types = Hash(String, IrType).new
     @current_fn = nil
@@ -954,15 +960,6 @@ pub class CodeGenVisitor < Visitor
     end
   end
 
-  def ensure_memset : Function
-    if f = @mod.get_function?("llvm.memset.p0.i64")
-      f
-    else
-      m_ty = @types.func([@types.pointer, @types.int8, @types.int64, @types.int1], @types.void, false)
-      @mod.add_function("llvm.memset.p0.i64", m_ty)
-    end
-  end
-
   def nil_type : IrType
     @llvm_struct_types["Nil"]? || @types.struct([] of IrType)
   end
@@ -1142,16 +1139,43 @@ pub class CodeGenVisitor < Visitor
     t1
   end
 
-  # The class an expression's value is an instance of, when the expression alone says:
-  # a constructor call Type.new(...). Nil for everything else.
+  # The class an expression's value is an instance of, when the expression says it: a constructor call
+  # Type.new(...), or a field or method of a receiver whose class is known, so g.label and h.label.text
+  # are typed. Nil for everything else.
   def expression_class_type(node : ASTNode) : String?
     if node.is_a?(Call)
       call = node.as(Call)
       if call.name == "new" && (recv = call.obj) && recv.is_a?(Path)
         return recv.to_s
       end
+      if (recv = call.obj) && (rec_class = receiver_class_name(recv)) && (info = @custom_types[rec_class]?)
+        if call.args.empty? && info.fields.has_key?(call.name)
+          ft = info.field_types[call.name]
+          if @custom_types.has_key?(ft)
+            return ft
+          end
+        elsif (m = info.methods[call.name]?) && m.return_type
+          rt = m.return_type.to_s.lstrip(':')
+          if @custom_types.has_key?(rt)
+            return rt
+          end
+        end
+      end
     end
     nil
+  end
+
+  # The custom class a receiver is an instance of: a local whose type is a custom class, or an expression
+  # expression_class_type can type. Nil for everything else.
+  def receiver_class_name(node : ASTNode) : String?
+    if node.is_a?(Var)
+      tname = @var_type_names[node.as(Var).name]?
+      if tname && @custom_types.has_key?(tname)
+        return tname
+      end
+      return nil
+    end
+    expression_class_type(node)
   end
 
   def infer_var_type(vname : String, node : ASTNode) : String
@@ -2649,15 +2673,42 @@ pub class CodeGenVisitor < Visitor
     end
   end
 
+  # The enclosing type's name, as the hosted compiler names the scope a macro expands in.
+  def macro_scope_name : String
+    (@current_self_type || "<Program>").split("(")[0]
+  end
+
   # `{% if %}` in a body: the condition is a macro expression the macro engine
   # evaluates against the target's flags, and only the chosen branch is emitted,
   # as the oracle expands it. Walking both branches would refuse a flag the
   # target does not set.
   def visit(node : MacroIf) : Bool
-    interp = MacroInterpreter.new
-    cond_val = interp.evaluate(node.cond)
+    scope = macro_scope_name
+    cond_val = MacroInterpreter.new(nil, @macro_flags, scope).evaluate(node.cond)
     branch = MacroMethods.truthy?(cond_val) ? node.then : node.else
-    branch.accept(self)
+    if chosen = branch
+      # Raw macro text in the branch is rendered, then parsed and emitted in place, as a site is.
+      renderer = MacroInterpreter.new(nil, @macro_flags, scope)
+      renderer.interpret(chosen)
+      text = renderer.to_s
+      unless text.strip.empty?
+        expanded = Normalizer.new.normalize(Parser.new(text).parse)
+        expanded.accept(self)
+      end
+    end
+    false
+  end
+
+  # `{{ ... }}` in a body: the macro engine expands the site with the enclosing type as `@type`, as the hosted compiler
+  # does. The expansion is parsed, normalised and emitted in place of the site. A site that fails to expand is refused.
+  def visit(node : MacroExpression) : Bool
+    scope = macro_scope_name
+    report = MacroEngine.new(@macro_flags).site_report(node, scope)
+    if failure = report.failure
+      refuse_port("port limitation: the macro site in #{scope_name} fails to expand: #{failure.message} (no IR is written)")
+    end
+    expanded = Normalizer.new.normalize(Parser.new(report.output).parse)
+    expanded.accept(self)
     false
   end
 
@@ -3300,6 +3351,18 @@ pub class CodeGenVisitor < Visitor
       # The method is found before the receiver is evaluated, so a miss emits nothing.
       if !obj.is_a?(Var) && (rt_name = expression_class_type(obj)) && @custom_types.has_key?(rt_name)
         r_info = @custom_types[rt_name]
+        if !r_info.is_struct && r_info.generic_name.nil? && node.args.empty? && r_info.fields.has_key?(node.name)
+          obj.accept(self)
+          if recv_val = @last
+            f_st = @llvm_struct_types[r_info.name]
+            f_gep = @builder.inbounds_gep(f_st, recv_val, [@builder.const_int(@types.int32, 0), @builder.const_int(@types.int32, r_info.fields[node.name] + 1)])
+            f_inst = @builder.load(llvm_type_from_name(r_info.field_types[node.name]), f_gep)
+            set_align(f_inst, 4)
+            @last = f_inst
+            @terminated = false
+            return false
+          end
+        end
         if !r_info.is_struct && r_info.generic_name.nil? && (r_m = r_info.methods[node.name]?)
           r_expected = r_m.args.map { |a| a.restriction ? a.restriction.to_s : "Int32" }
           r_ret = r_m.return_type ? r_m.return_type.to_s.lstrip(':') : "Int32"
@@ -4261,8 +4324,7 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
         size_val = builder.ptr_to_int(size_gep, mod.types.int64)
 
         # Call memset
-        m_fn_ty = mod.types.func([mod.types.pointer, mod.types.int8, mod.types.int64, mod.types.int1], mod.types.void, false)
-        builder.call(m_fn_ty, cg.ensure_memset.to_value, [zero_slot, cg.builder.const_int(mod.types.int8, 0), size_val, cg.builder.const_int(mod.types.int1, 0)])
+        builder.intrinsic(IntrinsicId::Memset, [mod.types.pointer, mod.types.int64], [zero_slot, cg.builder.const_int(mod.types.int8, 0), size_val, cg.builder.const_int(mod.types.int1, 0)] of Value)
 
         l_zero = builder.load(st, zero_slot)
         set_align(l_zero, 4)
@@ -4307,8 +4369,7 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
         mal_fn_ty = mod.types.func([mod.types.int64], mod.types.pointer, false)
         obj_ptr = builder.call(mal_fn_ty, cg.ensure_malloc.to_value, [size_val])
 
-        m_fn_ty = mod.types.func([mod.types.pointer, mod.types.int8, mod.types.int64, mod.types.int1], mod.types.void, false)
-        builder.call(m_fn_ty, cg.ensure_memset.to_value, [obj_ptr, cg.builder.const_int(mod.types.int8, 0), size_val, cg.builder.const_int(mod.types.int1, 0)])
+        builder.intrinsic(IntrinsicId::Memset, [mod.types.pointer, mod.types.int64], [obj_ptr, cg.builder.const_int(mod.types.int8, 0), size_val, cg.builder.const_int(mod.types.int1, 0)] of Value)
 
         # Store type_id at index 0
         tid_gep = builder.inbounds_gep(st, obj_ptr, [cg.builder.const_int(mod.types.int32, 0), cg.builder.const_int(mod.types.int32, 0)])
@@ -4686,10 +4747,10 @@ pub def compile_source_to_module(src : String, filename : String, mod : Module) 
   compile_declarations_to_module(classes, funs, defs, libs, filename, mod, prog, mv, [node] of ASTNode)
 end
 
-def collect_constants_from(node : ASTNode, into : Hash(String, ASTNode)) : Nil
+def collect_constants_from(node : ASTNode, into : Hash(String, ASTNode), flags : Array(String)) : Nil
   if node.is_a?(Expressions)
     node.as(Expressions).expressions.each do |e|
-      collect_constants_from(e, into)
+      collect_constants_from(e, into, flags)
     end
   elsif node.is_a?(Assign)
     assign = node.as(Assign)
@@ -4700,11 +4761,11 @@ def collect_constants_from(node : ASTNode, into : Hash(String, ASTNode)) : Nil
     end
   elsif node.is_a?(MacroIf)
     mif = node.as(MacroIf)
-    interp = MacroInterpreter.new
+    interp = MacroInterpreter.new(nil, flags)
     cond_val = interp.evaluate(mif.cond)
     is_t = MacroMethods.truthy?(cond_val)
     branch = is_t ? mif.then : mif.else
-    collect_constants_from(branch, into)
+    collect_constants_from(branch, into, flags)
   elsif node.is_a?(MacroLiteral)
     ml = node.as(MacroLiteral)
     ml.value.split('\n').each do |line|
@@ -4724,22 +4785,22 @@ def collect_constants_from(node : ASTNode, into : Hash(String, ASTNode)) : Nil
   end
 end
 
-def expand_body_nodes(node : ASTNode) : Array(ASTNode)
+def expand_body_nodes(node : ASTNode, flags : Array(String)) : Array(ASTNode)
   res = [] of ASTNode
   if node.is_a?(Expressions)
     node.as(Expressions).expressions.each do |e|
-      res.concat(expand_body_nodes(e))
+      res.concat(expand_body_nodes(e, flags))
     end
   elsif node.is_a?(MacroIf)
     mif = node.as(MacroIf)
-    interp = MacroInterpreter.new
+    interp = MacroInterpreter.new(nil, flags)
     cond_val = interp.evaluate(mif.cond)
     branch = MacroMethods.truthy?(cond_val) ? mif.then : mif.else
-    res.concat(expand_body_nodes(branch))
+    res.concat(expand_body_nodes(branch, flags))
   elsif node.is_a?(VisibilityModifier)
     # `private def f` is a def under a visibility modifier; the method table
     # registers the def, as the oracle's does.
-    res.concat(expand_body_nodes(node.as(VisibilityModifier).exp))
+    res.concat(expand_body_nodes(node.as(VisibilityModifier).exp, flags))
   else
     res << node
   end
@@ -4792,7 +4853,7 @@ pub def compile_declarations_to_module(
 
   # Collect top-level constants
   roots.each do |r|
-    collect_constants_from(r, cg.constants)
+    collect_constants_from(r, cg.constants, MacroTargetFlags.for_triple(mod.triple, [] of String))
   end
 
   # Process custom types (structs and classes)
@@ -4816,7 +4877,7 @@ pub def compile_declarations_to_module(
 
     # Process body
     if b = cd.body
-      exps = expand_body_nodes(b)
+      exps = expand_body_nodes(b, MacroTargetFlags.for_triple(mod.triple, [] of String))
       exps.each do |exp|
         if exp.is_a?(TypeDeclaration)
           td = exp.as(TypeDeclaration)
@@ -4890,7 +4951,7 @@ pub def compile_declarations_to_module(
         end
 
         if b = template.body
-          exps = expand_body_nodes(b)
+          exps = expand_body_nodes(b, MacroTargetFlags.for_triple(mod.triple, [] of String))
           exps.each do |exp|
             if exp.is_a?(TypeDeclaration)
               td = exp.as(TypeDeclaration)

@@ -178,6 +178,36 @@ pub def int_binary_op(low : Lowerer, op : String, t : Type, p1 : Value, p2 : Val
   if op == ">="
     return low.builder.icmp(signed_pred(signed, IntPredicate::SGE, IntPredicate::UGE), p1, p2)
   end
+  if op == "|"
+    return low.builder.build_or(p1, p2)
+  end
+  if op == "&"
+    return low.builder.build_and(p1, p2)
+  end
+  if op == "^"
+    return low.builder.build_xor(p1, p2)
+  end
+  if op == "unsafe_shl"
+    return low.builder.shl(p1, p2)
+  end
+  if op == "unsafe_shr"
+    if signed
+      return low.builder.ashr(p1, p2)
+    end
+    return low.builder.lshr(p1, p2)
+  end
+  if op == "unsafe_div"
+    if signed
+      return low.builder.sdiv(p1, p2)
+    end
+    return low.builder.udiv(p1, p2)
+  end
+  if op == "unsafe_mod"
+    if signed
+      return low.builder.srem(p1, p2)
+    end
+    return low.builder.urem(p1, p2)
+  end
   pending_visit_node("binary #{op} on #{t.full_name} (checked arithmetic or a later operator, hosted codegen_binary_op)")
   p1
 end
