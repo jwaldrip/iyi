@@ -37,8 +37,9 @@ pub class Match
   getter owner : Type
   getter defining : ModuleType
   getter exact : Bool
+  getter declared : Array(Type)
 
-  def initialize(@definition : Def, @arg_types : Array(Type), @owner : Type, @defining : ModuleType, @exact : Bool, @named_arg_types : Array(NamedArgumentType) = [] of NamedArgumentType)
+  def initialize(@definition : Def, @arg_types : Array(Type), @owner : Type, @defining : ModuleType, @exact : Bool, @named_arg_types : Array(NamedArgumentType) = [] of NamedArgumentType, @declared : Array(Type) = [] of Type)
   end
 end
 
@@ -132,6 +133,7 @@ pub class CallMatch
     # The prefix parameters are filled in order; one that no argument reaches must
     # have a default.
     matched = [] of Type
+    declared = [] of Type
     exact = true
     i = 0
     while i < given && i < prefix
@@ -151,6 +153,11 @@ pub class CallMatch
         exact = false if restricted.as(Type) != arg_type
       end
       mandatory[i] = true
+      if allowed.nil?
+        declared << ts.program.types["Object"].as(Type)
+      else
+        declared << allowed.as(Type)
+      end
       i += 1
     end
 
@@ -200,7 +207,7 @@ pub class CallMatch
       k += 1
     end
 
-    MatchAttempt.matched(Match.new(definition, matched, owner, defining, exact, named_matched))
+    MatchAttempt.matched(Match.new(definition, matched, owner, defining, exact, named_matched, declared))
   end
 
   # The position of the def parameter a named argument refers to, or -1.

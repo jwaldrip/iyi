@@ -154,7 +154,7 @@ pub class MethodLookup
     defs = own_defs(type, signature.name)
     return Matches.new(matches_array, false) if defs.nil?
 
-    exact = false
+    found = [] of Match
     defs.as(Array(Def)).each do |item|
       next if item.abstract
       attempt = CallMatch.attempt(ts, signature, item, owner, path_lookup)
@@ -163,14 +163,48 @@ pub class MethodLookup
       end
       match = attempt.match
       next if match.nil?
-      matches_array << match.as(Match)
-      if match.as(Match).exact
-        exact = true
-        break
-      end
+      found << match.as(Match)
     end
+    best = MethodLookup.most_specific(found)
+    if best
+      matches_array << best
+      return Matches.new(matches_array, best.exact)
+    end
+    found.each do |m|
+      matches_array << m
+    end
+    Matches.new(matches_array, false)
+  end
 
-    Matches.new(matches_array, exact)
+  # The def a call takes among *found*, the matches of one type that accept the
+  # call: the most specific, whose declared restrictions are each a subtype of
+  # every other match's, as the hosted lookup chooses. Nil when none is the most
+  # specific (an ambiguous set).
+  def self.most_specific(found : Array(Match)) : Match?
+    i = 0
+    while i < found.size
+      candidate = found[i]
+      all = true
+      j = 0
+      while j < found.size
+        all = false if !MethodLookup.at_least_as_specific(candidate, found[j])
+        j += 1
+      end
+      return candidate if all
+      i += 1
+    end
+    nil
+  end
+
+  # True when *a*'s declared restrictions are each a subtype of *b*'s, position by
+  # position over the parameters they both have.
+  def self.at_least_as_specific(a : Match, b : Match) : Bool
+    k = 0
+    while k < a.declared.size && k < b.declared.size
+      return false if !a.declared[k].subtype_of?(b.declared[k])
+      k += 1
+    end
+    true
   end
 
   # The virtual form of a module type, as hosted virtual_type: a class that has

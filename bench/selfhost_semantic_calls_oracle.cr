@@ -80,6 +80,13 @@ def literal_type(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
   if node.is_a?(Iyi::NilLiteral)
     return program.types["Nil"].as(Iyi::Type)
   end
+  if node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance"
+    call = node.as(Iyi::Call)
+    if call.args.size == 1 && call.args[0].is_a?(Iyi::Path)
+      found = program.lookup_path(call.args[0].as(Iyi::Path))
+      return found.as(Iyi::Type) if found.is_a?(Iyi::Type)
+    end
+  end
   raise "argument is not a literal"
 end
 

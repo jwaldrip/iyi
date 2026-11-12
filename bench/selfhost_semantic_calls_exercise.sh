@@ -85,8 +85,8 @@ check_calls_diverge() {
 }
 
 prove_mutation "exact match does not end the lookup" "$LOOKUP_FILE" \
-  "      if match.as(Match).exact" \
-  "      if false" \
+  "    return own if own.cover_all? || own.error" \
+  "    return own if own.error" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -207,6 +207,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a def with a block argument does not yield" "$MATCH_FILE" \
   "    return true if definition.block_arg" \
   "    return false if definition.block_arg" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "the less specific of two overloads is chosen" "$LOOKUP_FILE" \
+  "      return false if !a.declared[k].subtype_of?(b.declared[k])" \
+  "      return false if !b.declared[k].subtype_of?(a.declared[k])" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

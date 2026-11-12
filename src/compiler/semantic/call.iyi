@@ -1,7 +1,7 @@
 module compiler/semantic/call
 
 import compiler/semantic/restrictions::{ArgRestriction}
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Def, NamedArgument, NilLiteral, NumberLiteral, StringLiteral, Visibility}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Def, NamedArgument, NilLiteral, NumberLiteral, Path, StringLiteral, Visibility}
 import compiler/semantic/call_nodes::{CallNodes}
 import compiler/semantic/call_error::{CallFailure}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
@@ -108,6 +108,15 @@ pub class CallReceiver
     if node.is_a?(NilLiteral)
       return prog.types["Nil"]
     end
+    if call = CallNodes.as_call(node)
+      if call.obj.nil? && call.name == "instance" && call.args.size == 1 && call.args[0].is_a?(Path)
+        names = call.args[0].as(Path).names
+        if names.size == 1
+          t = prog.types[names[0]]?
+          return t.as(Type) if t
+        end
+      end
+    end
     nil
   end
 end
@@ -152,6 +161,18 @@ pub class CallRecalculation
     typed_named = CallReceiver.named_argument_types(prog, named_args)
     return CallTarget.failed("argument is not a literal") if typed_named.nil?
     signature = CallSignature.new(name, arg_types, typed_named, block)
+    CallRecalculation.recalculate_signature(rec_type, ts, signature, explicit)
+  end
+
+  # The port of the hosted Call#recalculate for a call whose arguments are already
+  # typed: the receiver's lookup_matches of *signature* (the hosted lookup with
+  # analyze_all off), the one target's declared return type, and the first line of
+  # the error the hosted pass raises when it finds no target. `recalculate` types
+  # literal arguments and calls this; the bodies slice calls this directly with the
+  # argument types its own pass has typed.
+  def self.recalculate_signature(rec_type : Type, ts : TypeSystem, signature : CallSignature, explicit : Bool) : CallTarget
+    name = signature.name
+    arg_types = signature.arg_types
     matches = MethodLookup.lookup_receiver(rec_type, ts, signature)
     return CallTarget.failed(matches.error.to_s) if matches.error
     if matches.matches.size > 1
@@ -170,7 +191,10 @@ pub class CallRecalculation
       return CallTarget.failed(found.as(LookupError).message) if found.is_a?(LookupError)
       return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil)
     end
-    return CallTarget.failed("not ported: named argument message") if named_args
+    named = signature.named_args
+    if named
+      return CallTarget.failed("not ported: named argument message") if !named.empty?
+    end
     if !rec_type.is_a?(ModuleType)
       return CallTarget.failed("not ported: virtual or union receiver message")
     end

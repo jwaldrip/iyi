@@ -115,6 +115,16 @@ module BenchSelfhostSemanticCallsExercise
     if target.error
       return "error: #{target.error.to_s}"
     end
+    arg_types = [] of Type
+    call.args.each do |arg|
+      arg_types << CallReceiver.argument_type(prog, arg).as(Type)
+    end
+    named = CallReceiver.named_argument_types(prog, call.named_args)
+    signature = CallSignature.new(call.name, arg_types, named, call.block != nil)
+    by_signature = CallRecalculation.recalculate_signature(scope.as(Type), ts, signature, call.obj != nil)
+    if by_signature.error.to_s != target.error.to_s
+      return "error: signature entry diverges from recalculate"
+    end
     "ok"
   end
 
