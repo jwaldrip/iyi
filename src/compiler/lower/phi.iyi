@@ -18,7 +18,7 @@ module compiler/lower/phi
 import compiler/ir/inst::{Block}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
-import compiler/lower/context::{Lowerer}
+import compiler/lower/context::{BranchPhi, Lowerer}
 import compiler/lower/helpers::{at_terminator?, llvm_nil}
 
 pub class LowerPhi
@@ -86,5 +86,13 @@ pub class LowerPhi
     merged = low.builder.phi(t.as(IrType), "")
     low.builder.add_incoming(merged, @values, @blocks)
     low.last = merged
+  end
+end
+
+# The phi as the block frames see it (hosted `Phi#add` with the branch's value): a `break`, `next` or
+# `return` written in an inlined block call adds its value through the trait.
+impl BranchPhi for LowerPhi
+  def add_branch(low : Lowerer, value : Value?, last : Bool) : Nil
+    add(low, value, last)
   end
 end

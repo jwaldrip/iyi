@@ -1,0 +1,196 @@
+module compiler/lower/block
+
+# The port of the block side of a call: `visit(Yield)` (src/compiler/iyi/codegen/codegen.cr:2226),
+# the block body it runs, and the local variables a block or an inlined def owns. A call with a block
+# inlines its def (call.iyi, codegen_call_with_block); each `yield` in that body lowers the block
+# here, in the context the call made for it.
+#
+# `lower_yield` runs in the inlined def's context (the frame the call makes). That frame names the
+# block (`block_node`) and the caller's block context (`block_context`, the caller's variables plus
+# the block's own, as the call made them). The block body runs in a copy of that block context whose
+# `break` goes to the call's value (the frame's return phi, hosted `break_phi = old.return_phi`), whose
+# `next` goes to this yield's phi (hosted `next_phi = phi`), and whose `return` is the caller's.
+#
+# Ported: a yield with expressions, the assignment of each expression to a block argument (a store, or
+# the casts slice when the types differ), the block body, and the value of the yield (the phi merged by
+# `LowerPhi`, which makes no exit block for one value).
+# Refused by name, at the yield that reaches them: a splat, a tuple unpacked into several block
+# arguments, a block with a splat argument, a yield with a scope (`with ... yield`), and a yield with no
+# block in scope. `break`, `next` and `return` inside a block are the next increment (lower.iyi).
+#
+# The AST `Block` is written in full: inside this module the name `Block` means the module.
+
+import compiler/syntax/ast::{ASTNode, Assign, ClassDef, Def, ModuleDef, Splat, TypeDeclaration, Var, Yield}
+import compiler/syntax/visitor::{Visitor}
+import compiler/ir/values::{Value}
+import compiler/ir/types::{IrType}
+import compiler/lower/cast::{assign}
+import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
+import compiler/lower/fun::{visit_node}
+import compiler/lower/helpers::{store_aligned}
+import compiler/lower/pending::{pending_visit_node}
+import compiler/lower/phi::{LowerPhi}
+import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/top_level::{NilType, NoReturnType, Type, VoidType}
+import compiler/types/types::{TupleInstanceType}
+
+# The names a body assigns, each once, in the order its first assignments are met, with the analysed
+# type of the first target. A nested block or def is another scope and is not walked: the hosted
+# `block.vars` and `def.vars` hold the variables of their own scope only. `declared` is set when the
+# body declares a variable with a type (`x : Int32`), which the inlined code does not allocate yet.
+pub class LocalCollector < Visitor
+  getter names : Array(String)
+  getter types : Array(Type)
+  getter declared : Bool
+
+  def initialize(@analysed : MainVisitor)
+    @names = [] of String
+    @types = [] of Type
+    @declared = false
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    return false if node.is_a?(Compiler::Syntax::Ast::Block) || node.is_a?(Def) || node.is_a?(ClassDef) || node.is_a?(ModuleDef)
+    @declared = true if node.is_a?(TypeDeclaration)
+    if node.is_a?(Assign)
+      target = node.as(Assign).target
+      if target.is_a?(Var)
+        name = target.as(Var).name
+        unless @names.includes?(name)
+          t = @analysed.type_of?(target.as(ASTNode))
+          raise "BUG: the analysed program has no type for local #{name} (hosted codegen.cr: alloca_non_closured_vars)" if t.nil?
+          @names << name
+          @types << t.as(Type)
+        end
+      end
+    end
+    true
+  end
+end
+
+# A copy of a variable table (hosted `context.vars.dup`): the same variables, a new table.
+pub def copy_vars(vars : Hash(String, LowerVar)) : Hash(String, LowerVar)
+  out = Hash(String, LowerVar).new
+  vars.each { |name, var| out[name] = var }
+  out
+end
+
+# The hosted `alloca_non_closured_vars` for one variable: an alloca named by the variable, in the
+# function's alloca block, and the variable in the table. A void or NoReturn variable has no alloca in
+# the hosted code, and is refused here until a caller needs it.
+pub def alloca_local(low : Lowerer, vars : Hash(String, LowerVar), name : String, t : Type) : Nil
+  if t.is_a?(VoidType) || t.is_a?(NoReturnType)
+    pending_visit_node("a #{t.full_name} local #{name} (hosted alloca_non_closured_vars, no alloca)")
+  end
+  pointer = low.alloca(low.typer.llvm_type(t), name)
+  vars[name] = LowerVar.new(pointer, t, false)
+end
+
+# The hosted `assign` of a value into a variable (codegen.cr codegen_assign): stored as it is when the
+# variable has the value's type, through the casts slice when it does not. A nil value writes nothing.
+pub def store_local(low : Lowerer, var : LowerVar, value_type : Type, value : Value) : Nil
+  if var.type.full_name != value_type.full_name
+    assign(low, var.pointer, var.type, value_type, value)
+  elsif !value_type.is_a?(NilType)
+    store_aligned(low, value, var.pointer)
+  end
+end
+
+# The hosted `visit(Yield)`. The block's arguments take the values of the yield's expressions; the
+# block body runs in a copy of the block context, and the yield's value is the body's value.
+pub def lower_yield(low : Lowerer, node : Yield) : Nil
+  frame = low.current_context
+  blk = frame.block_node
+  if blk.nil?
+    pending_visit_node("yield with no block in scope (hosted codegen.cr: visit(Yield), a block of an enclosing block body)")
+  end
+  block = blk.as(ASTNode).as(Compiler::Syntax::Ast::Block)
+  caller = frame.block_context
+  if caller.nil?
+    raise "BUG: a yield's frame has no block context (hosted codegen.cr: visit(Yield))"
+  end
+  unless node.scope.nil?
+    pending_visit_node("yield with a scope (hosted codegen.cr: visit(Yield), node_scope)")
+  end
+  unless block.splat_index.nil?
+    pending_visit_node("a block with a splat argument (hosted codegen.cr: visit(Yield), splat_index)")
+  end
+
+  wants = low.needs_value
+  exp_values = [] of Value
+  exp_types = [] of Type
+  low.needs_value = true
+  node.exps.each do |exp|
+    if exp.is_a?(Splat)
+      pending_visit_node("a splat in a yield (hosted codegen.cr: visit(Yield), tuple expansion)")
+    end
+    visit_node(low, exp)
+    v = low.last
+    raise "BUG: a yield's expression left no value (hosted codegen.cr: visit(Yield))" if v.nil?
+    t = low.analysed.type_of?(exp)
+    raise "BUG: the analysed program has no type for a yield's expression (hosted codegen.cr: visit(Yield))" if t.nil?
+    exp_values << v.as(Value)
+    exp_types << t.as(Type)
+  end
+  low.needs_value = wants
+
+  if exp_types.size == 1 && exp_types[0].is_a?(TupleInstanceType) && block.args.size > 1
+    pending_visit_node("a tuple yielded to several block arguments (hosted codegen.cr: visit(Yield), tuple unpacking)")
+  end
+
+  i = 0
+  while i < exp_values.size
+    if i < block.args.size
+      arg = block.args[i]
+      if arg.name != "_"
+        var = caller.vars[arg.name]?
+        if var.nil?
+          raise "BUG: block argument #{arg.name} has no variable (hosted codegen.cr: visit(Yield), block_context.vars)"
+        end
+        store_local(low, var.as(LowerVar), exp_types[i], exp_values[i])
+      end
+    end
+    i += 1
+  end
+
+  merge : IrType? = nil
+  if wants
+    bt = low.analysed.type_of?(block.as(ASTNode))
+    raise "BUG: the analysed program has no type for a block (hosted codegen.cr: visit(Yield))" if bt.nil?
+    merge = low.typer.llvm_type(bt.as(Type))
+  end
+  phi = LowerPhi.new(wants, merge)
+
+  # The hosted `with_cloned_context(block_context)`: the body's context shares the block context's
+  # variables and its return; `break` is the call's value, `next` is this yield's phi.
+  body = LowerContext.new(caller.fun, caller.fun_type, caller.type, caller.vars)
+  body.top_level = caller.top_level
+  body.return_type = caller.return_type
+  body.return_phi = caller.return_phi
+  body.break_phi = frame.return_phi
+  body.next_phi = phi
+  body.block_node = caller.block_node
+  body.block_context = caller.block_context
+
+  # A `while` around the call is not the target of a `break` or `next` written in the block.
+  saved_next = low.loop_next
+  saved_break = low.loop_break
+  low.loop_next = nil
+  low.loop_break = nil
+
+  low.context = body
+  low.needs_value = wants
+  lower_block(low, block, phi)
+  low.context = frame
+  low.loop_next = saved_next
+  low.loop_break = saved_break
+  low.needs_value = wants
+  phi.close(low)
+end
+
+# The body of a block, lowered in the context the yield set, with its value added to the yield's phi.
+# A body that ends in a terminator adds nothing (LowerPhi.add).
+pub def lower_block(low : Lowerer, node : Compiler::Syntax::Ast::Block, phi : LowerPhi) : Nil
+  visit_node(low, node.body)
+  phi.add(low, low.last, true)
+end

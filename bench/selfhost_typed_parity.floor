@@ -301,6 +301,7 @@ src/compiler/lower/cond.iyi 0
 src/compiler/lower/phi.iyi 0
 src/compiler/lower/primitives.iyi 0
 src/compiler/lower/fun.iyi 0
+src/compiler/lower/block.iyi 0
 src/compiler/lower/call.iyi 0
 src/compiler/backend/backend.iyi 0
 src/compiler/backend/llvm/llvm_backend.iyi 0
