@@ -20,6 +20,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 TYPER_FILE="$REPO/src/compiler/lower/typer.iyi"
+TYPE_ID_FILE="$REPO/src/compiler/lower/type_id.iyi"
 UNIONS_FILE="$REPO/src/compiler/lower/unions.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -44,6 +45,22 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" \
   CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
     -o "$WORK/oracle" "$REPO/bench/selfhost_lower_types_oracle.cr" >/dev/null 2>&1 || { echo "oracle build failed"; exit 1; }
 "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_types_exercise.iyi" || { echo "port driver build failed"; exit 1; }
+
+
+# The type ids (`lowtyid_*.iyi`) are compared by shape: the port's ids must equal the
+# hosted ids shifted by one constant, across every type_id and type_range value of the
+# fixture. The shift is the builtins' numbering difference (NEEDS.md row 16). Prints the
+# shift, and fails when the shape differs or a value is missing.
+ids_shape() {
+  awk 'FNR == NR { if ($1 == "type_id:" || $1 == "type_range:") { for (i = 2; i <= NF; i++) o[++n] = $i } next }
+       $1 == "type_id:" || $1 == "type_range:" { for (i = 2; i <= NF; i++) p[++m] = $i }
+       END {
+         if (n == 0 || n != m) exit 1
+         shift = p[1] - o[1]
+         for (k = 1; k <= n; k++) { if (o[k] !~ /^-?[0-9]+$/ || p[k] !~ /^-?[0-9]+$/) exit 1; if (p[k] - o[k] != shift) exit 1 }
+         print shift
+       }' "$1" "$2"
+}
 
 echo
 echo "== 2. Each fixture's blocks, hosted oracle against the port"
@@ -73,6 +90,24 @@ for fixture in "$REPO"/bench/fixtures/lowty_*.iyi; do
   fi
 done
 echo "  Parity summary: $fixture_count fixtures identical ($block_count types compared), $diverged diverged"
+ids_count=0
+for fixture in "$REPO"/bench/fixtures/lowtyid_*.iyi; do
+  name="$(basename "$fixture" .iyi)"
+  "$WORK/oracle" "$fixture" "$TRIPLE" ids > "$WORK/$name.ids_oracle" 2>"$WORK/$name.oracle.err" || { echo "  $name: oracle failed"; diverged=$((diverged + 1)); continue; }
+  "$WORK/port" "$fixture" "$TRIPLE" ids > "$WORK/$name.ids_port" 2>"$WORK/$name.port.err" || { echo "  $name: port driver failed: $(head -n 2 "$WORK/$name.port.err")"; diverged=$((diverged + 1)); continue; }
+  if shift=$(ids_shape "$WORK/$name.ids_oracle" "$WORK/$name.ids_port"); then
+    ids_count=$((ids_count + 1))
+    echo "  $name: type ids agree in shape with the hosted numbering (port = hosted + $shift)"
+  else
+    echo "  $name: type ids DIVERGE in shape from the hosted numbering"
+    diverged=$((diverged + 1))
+  fi
+done
+echo "  Type id summary: $ids_count fixtures agree in shape"
+if [ "$ids_count" -eq 0 ]; then
+  echo "  no type id fixture was compared"
+  status=1
+fi
 if [ "$fixture_count" -eq 0 ]; then
   echo "  no fixture was compared"
   status=1
@@ -180,6 +215,52 @@ prove_mutation "indirect result returned as int32, not void" "$TYPER_FILE" \
   "      return @table.func(params, @table.void)" \
   "      return @table.func(params, @table.int32)" \
   -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+check_ids_diverge() {
+  "$IYI" build -o "$WORK/mut_port" "$REPO/bench/selfhost_lower_types_exercise.iyi" >/dev/null 2>&1 || return 1
+  for fixture in "$REPO"/bench/fixtures/lowtyid_*.iyi; do
+    name="$(basename "$fixture" .iyi)"
+    "$WORK/mut_port" "$fixture" "$TRIPLE" ids > "$WORK/mut_ids.out" 2>/dev/null || return 1
+    ids_shape "$WORK/$name.ids_oracle" "$WORK/mut_ids.out" >/dev/null || return 1
+  done
+  return 0
+}
+
+prove_mutation "class instance variables stored as one i8 each" "$TYPER_FILE" \
+  "      fields << llvm_embedded_type(var_type.as(Type), wants_size)" \
+  "      fields << @table.int8" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "object header id placed in front under the iyi layout" "$TYPER_FILE" \
+  "    id_in_front = !type.struct? && !@iyi_layout" \
+  "    id_in_front = !type.struct? && @iyi_layout" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "class value lowered to its struct, not a pointer" "$TYPER_FILE" \
+  "      return final_type if type.struct?" \
+  "      return final_type" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "type ids step by two" "$TYPE_ID_FILE" \
+  "    @next_id = @next_id + 1" \
+  "    @next_id = @next_id + 2" \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a range's min is its last subtype, not the first" "$TYPE_ID_FILE" \
+  "      if first && sub_id != 0" \
+  "      if sub_id != 0" \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "leaves take no id of their own" "$TYPE_ID_FILE" \
+  "    if subtypes.size == 0" \
+  "    if subtypes.size == 99" \
+  -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"

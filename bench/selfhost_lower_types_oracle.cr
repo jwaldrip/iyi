@@ -101,6 +101,21 @@ def ivars_text(type : Iyi::Type) : String
   parts.empty? ? "-" : parts.join(" ")
 end
 
+# The `ids` mode's block: the type id and the id range the hosted LLVMId gives the type, or `-`.
+def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
+  mm = program.llvm_id.min_max_type_id(type)
+  String.build do |io|
+    io << "== " << name << "\n"
+    if mm
+      io << "type_id: " << mm[1] << "\n"
+      io << "type_range: " << mm[0] << " " << mm[1] << "\n"
+    else
+      io << "type_id: -\n"
+      io << "type_range: -\n"
+    end
+  end
+end
+
 def block_text(name : String, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
   String.build do |io|
     io << "== " << name << "\n"
@@ -216,10 +231,15 @@ begin
   # declarations and the types guessed from assignments (program.cr top_level_semantic).
   program.top_level_semantic(node)
   typer = program.llvm_typer
+  mode = ARGV[2]? || "blocks"
   source.each_line do |line|
     next unless line.starts_with?("# type: ")
     expr = line[8..].strip
-    puts block_text(expr, typer, resolve(program, expr))
+    if mode == "ids"
+      puts ids_block(expr, program, resolve(program, expr))
+    else
+      puts block_text(expr, typer, resolve(program, expr))
+    end
   end
 rescue ex : Exception
   STDERR.puts "ERROR: #{ex.message.to_s.lines.first? || ""}"

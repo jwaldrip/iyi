@@ -1,0 +1,113 @@
+module compiler/lower/type_id
+
+# The port of `src/compiler/iyi/codegen/llvm_id.cr` (LLVMId): the type ids of a
+# program. Every class gets a pair of ids {min, max}: `min` is the smallest id among
+# its subtypes and `max` is one more than their largest, so a value's dynamic type
+# implements a type exactly when its id lies between that type's pair. The walk
+# starts at Object and visits each class's subclasses in registration order. A
+# builtin primitive is a leaf with one id. Nil is id 0. Ids count from 1.
+#
+# Metaclasses are numbered by a separate walk in the hosted compiler and are not
+# here yet (NEEDS.md row 16).
+
+import compiler/semantic/top_level::{Type, ClassType, NilType, NonGenericClassType, GenericClassType}
+import compiler/types/types::{GenericInstanceType}
+import compiler/lower/typer::{primitive_kind}
+
+pub class LowerTypeIds
+  @ids : Hash(String, Array(Int32))
+  @next_id : Int32
+
+  def initialize
+    @ids = Hash(String, Array(Int32)).new
+    @next_id = 0
+  end
+
+  # The hosted `LLVMId#initialize`: number every class reachable from *root* (Object).
+  def assign_all(root : Type) : Nil
+    assign_id(root)
+    nil
+  end
+
+  # The hosted `min_max_type_id`: the pair of a numbered type, or nil.
+  def min_max(type : Type) : Array(Int32)?
+    @ids[type.full_name]?
+  end
+
+  # The hosted `type_id(type)`: the max of the type's pair.
+  def type_id(type : Type) : Int32
+    pair = min_max(type)
+    raise "BUG: #{type.full_name} has no type id (not reachable from Object)" if pair.nil?
+    pair[1]
+  end
+
+  # The hosted `assign_id`: a type already numbered answers its max, otherwise the
+  # type is numbered by its own rule (`assign_id_impl`).
+  def assign_id(type : Type) : Int32
+    if pair = @ids[type.full_name]?
+      return pair[1]
+    end
+    assign_id_impl(type)
+  end
+
+  # The hosted `assign_id_impl` overloads, in their resolution order.
+  def assign_id_impl(type : Type) : Int32
+    if type.is_a?(NilType)
+      put(type, 0, 0)
+      return 0
+    end
+    if primitive_kind(type) != ""
+      id = next_id
+      put(type, id, id)
+      return id
+    end
+    # A generic class with no instances in the program takes its subclasses alone. The
+    # hosted rule adds its non-unbound instantiated types, which the port does not track yet (NEEDS.md row 17).
+    if type.is_a?(NonGenericClassType) || type.is_a?(GenericClassType)
+      return assign_id_from_subtypes(type, subclasses_of(type))
+    end
+    raise "BUG: unhandled type in assign id: #{type.full_name} (hosted llvm_id.cr assign_id_impl)"
+  end
+
+  # The hosted `assign_id_from_subtypes`: a leaf takes one id; a type with subtypes takes
+  # the first non-zero minimum of its subtypes as its min and one more id as its max.
+  def assign_id_from_subtypes(type : Type, subtypes : Array(Type)) : Int32
+    if subtypes.size == 0
+      id = next_id
+      put(type, id, id)
+      return id
+    end
+    min_id = 0
+    first = true
+    subtypes.each do |sub|
+      sub_id = assign_id(sub)
+      if first && sub_id != 0
+        min_id = sub_id
+        first = false
+      end
+    end
+    id = next_id
+    put(type, min_id, id)
+    min_id
+  end
+
+  # The hosted `subclasses_of`: the subclasses, without the generic instances.
+  def subclasses_of(type : Type) : Array(Type)
+    out = [] of Type
+    type.as(ClassType).subclasses.each do |sub|
+      out << sub unless sub.is_a?(GenericInstanceType)
+    end
+    out
+  end
+
+  def put(type : Type, min : Int32, max : Int32) : Nil
+    @ids[type.full_name] = [min, max]
+    nil
+  end
+
+  # The hosted `next_id`: the counter increments, then reads.
+  def next_id : Int32
+    @next_id = @next_id + 1
+    @next_id
+  end
+end

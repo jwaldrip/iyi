@@ -9,6 +9,7 @@ import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/layout::{DataLayout, LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper, passed_by_value?, primitive_kind}
+import compiler/lower/type_id::{LowerTypeIds}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/syntax/ast::{ClassDef, Expressions}
 import compiler/semantic/top_level::{ModuleType}
@@ -171,7 +172,20 @@ module BenchSelfhostLowerTypesExercise
     b ? "true" : "false"
   end
 
-  def self.run(src : String, filename : String, triple : String) : String
+  # The `ids` mode's block: the type id and the id range the hosted LLVMId gives the type, or `-`.
+  def self.ids_block(expr : String, ids : LowerTypeIds, t : Type) : String
+    mm = ids.min_max(t)
+    out = "== #{expr}\n"
+    if mm.nil?
+      out = out + "type_id: -\ntype_range: -\n"
+    else
+      pair = mm.as(Array(Int32))
+      out = out + "type_id: #{pair[1]}\ntype_range: #{pair[0]} #{pair[1]}\n"
+    end
+    out
+  end
+
+  def self.run(src : String, filename : String, triple : String, mode : String) : String
     parser = Parser.new(src, filename)
     node = parser.parse
     prog = SemanticProgram.new
@@ -194,11 +208,20 @@ module BenchSelfhostLowerTypesExercise
     # The hosted Program#iyi_object_layout? is decided by the program declaring IyiRuntimeLock.
     iyi = !prog.types["IyiRuntimeLock"]?.nil?
     typer = LowerTyper.new(TypeTable.new, layout, iyi)
+    # The hosted LLVMId numbers every class reachable from Object.
+    ids = LowerTypeIds.new
+    if root = prog.types["Object"]?
+      ids.assign_all(root)
+    end
     out = ""
     src.split("\n").each do |line|
       if line.starts_with?("# type: ")
         expr = line[8, line.bytesize - 8].strip
-        out = out + block_text(expr, typer, resolve(prog, ts, expr))
+        if mode == "ids"
+          out = out + ids_block(expr, ids, resolve(prog, ts, expr))
+        else
+          out = out + block_text(expr, typer, resolve(prog, ts, expr))
+        end
       end
     end
     out
@@ -207,5 +230,6 @@ end
 
 if Program.args.size > 1
   filename = Program.args[0]
-  print BenchSelfhostLowerTypesExercise.run(File.read(filename), filename, Program.args[1])
+  mode = Program.args.size > 2 ? Program.args[2] : "blocks"
+  print BenchSelfhostLowerTypesExercise.run(File.read(filename), filename, Program.args[1], mode)
 end
