@@ -1,0 +1,9 @@
+@[Unsafe("the fixture takes a raw pointer")]
+class Box(T)
+  def take(x : Pointer(T))
+    1
+  end
+end
+
+value = 5
+Box(Int32).allocate.take(pointerof(value))
