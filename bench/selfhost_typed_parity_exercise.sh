@@ -103,7 +103,9 @@ measure() {
   if "$ORACLE" $flag "$rel" > "$WORK/o.txt" 2> "$WORK/o.err"; then
     sort "$WORK/o.txt" > "$WORK/o.sorted"
     nodes=$(wc -l < "$WORK/o.sorted" | tr -d ' ')
-    if "$TYPED" "$rel" > "$WORK/p.txt" 2> "$WORK/p.err"; then
+    root="$REPO/src"
+    case "$rel" in samples/*) root="$REPO/samples/iyi" ;; esac
+    if "$TYPED" "$rel" "$root" > "$WORK/p.txt" 2> "$WORK/p.err"; then
       sort "$WORK/p.txt" > "$WORK/p.sorted"
       matched=$(comm -12 "$WORK/o.sorted" "$WORK/p.sorted" | wc -l | tr -d ' ')
       note="-"
