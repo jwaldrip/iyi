@@ -290,6 +290,7 @@ pub class MethodLookup
     end
     # The hosted union of the implementers sorts its members by name (make_union_type),
     # so the lookup walks them in that order, not in declaration order.
+    targets = expanded_targets(targets)
     sorted = sorted_by_name(targets)
     sorted.each do |target|
       if !target.is_a?(ModuleType) || target.is_a?(GenericClassType)
@@ -303,6 +304,24 @@ pub class MethodLookup
       cover = false if !found.cover_all?
     end
     Matches.new(all, cover && !all.empty?)
+  end
+
+  # The types a trait's implementers are looked up over: a generic implementer stands
+  # for its instances the program has created so far, in creation order (the hosted
+  # GenericClassType#including_types answers its instances the same way). Other
+  # implementers are kept as they are.
+  def self.expanded_targets(targets : Array(Type)) : Array(Type)
+    out = [] of Type
+    targets.each do |target|
+      if target.is_a?(GenericClassType)
+        target.as(GenericClassType).instantiated_types.each do |inst|
+          out << inst.as(Type)
+        end
+      else
+        out << target
+      end
+    end
+    out
   end
 
   # The types sorted by their names, as the hosted union sorts its members.
