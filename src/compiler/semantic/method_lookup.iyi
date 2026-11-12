@@ -293,7 +293,7 @@ pub class MethodLookup
     targets = expanded_targets(targets)
     sorted = sorted_by_name(targets)
     sorted.each do |target|
-      if !target.is_a?(ModuleType) || target.is_a?(GenericClassType)
+      if (!target.is_a?(ModuleType) && !target.is_a?(GenericInstanceType)) || target.is_a?(GenericClassType)
         return Matches.new(all, false, "not ported: generic implementer of #{trait_type.to_s}")
       end
       found = lookup_receiver(target, ts, signature)
