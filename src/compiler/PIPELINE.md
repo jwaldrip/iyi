@@ -46,16 +46,24 @@ port lowers clean under the same name. The hosted list is the `define` names of 
 -o <dir>/hosted <root>`. The port's list is `<output>.names`, written by the tool under `--keep-going` (one name per clean
 instance). `bench/pipeline_coverage.py <hosted.ll> <output>.names <root>` prints the line and the first missing names.
 
-As measured on 2026-11-12, head `88e7edf94` plus the uncommitted coverage columns:
+As measured on 2026-11-12, head `ed86befc5` (the port's names as the call lowering names them: a class method by its
+class, `*Point::new`, as `call.iyi` passes `class_owner`):
 
-- `hello`: hosted 698 functions; 46 in the port's clean list; 652 missing; 97 extra.
-- `compile_native` (as root): hosted 10,776 functions; 48 in the port's clean list; 10,728 missing; 100 extra.
+- `hello`: hosted 698 functions; 49 match the port's clean list; 649 missing; 55 extra.
+- `compile_native` (as root): hosted 10,776 functions; 51 match; 10,725 missing; 56 extra.
 
-This is a name comparison, not a count of lowered code. Most of the gap is naming, not missing work: the hosted compiler
-names a top-level def with its file (`*/abs/prelude.iyi::__iyi_say`; the script drops the file part on both sides), a class
-method `*IyiRuntimeLock::word`, and an instance of a generic class `*Atomic(UInt64)^Atomic(T)#get`; the port emits
-`*Atomic(UInt64).class#new` and no `^Generic(T)` segment. Naming is lowering's to align (mangled_name, lower/fun.iyi). Until
-it is, the 652 missing names overcount the work left. The 97 extra names include primitives the hosted compiler inlines.
+The comparison is on exact `define` names. What is still counted as missing or extra and is not work:
+
+- Generic instances. The hosted compiler names a method of a generic class with its owner's type parameters
+  (`*Array(IyiSchedulerState)^Array(T)#grow:Nil`, 66 such defines in hello). The port's names carry no `^Generic(T)`
+  segment at all (0 names with `^`). `mangled_name` (lower/fun.iyi, lowering core's) must add it. Until it does, every
+  generic-class method is missing here.
+- Extras that are over-reach, not naming. The body typer types and the lowering lowers defs the hosted compiler never
+  reaches (`*Array(Int32)#each` is extra on hello; hosted hello has no `Array(Int32)`). Those are the typer's and are a
+  real signal that the port lowers more than the program calls.
+- Top-level prelude defs: the hosted compiler prefixes the file path (`*/abs/prelude.iyi::__iyi_say`); the script drops
+  that file part on the hosted side so both sides compare on the def.
+
 The gate does not check this line (the hosted build and the probe are too slow to run every gate); it is measured by hand
 and recorded here.
 

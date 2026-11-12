@@ -24,7 +24,7 @@ module compiler/lower/program
 #     the hosted analysis does (NEEDS.md, lowering calls row 31). Same as bench/lib/lower_gate.iyi.
 
 import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral}
-import compiler/semantic/top_level::{LibType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
+import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
@@ -404,7 +404,16 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
       # The function a clean instance defines, by the name lower_def_probe gives it (target_def_fun: the body's type is
       # the return type). A name a failed probe created first is still found here, once a clean probe completes it.
       if body_t = typed.visitor.type_of?(d.body)
-        name = mangled_name(d.name, inst.self_type, inst.arg_types, body_t.as(Type), nil)
+        # The call lowering names a metaclass receiver's method by its class (call.iyi class_owner, no self): `*Point::new`.
+        self_for = inst.self_type
+        class_owner : Type? = nil
+        if st = self_for
+          if st.is_a?(MetaclassType)
+            class_owner = st.as(MetaclassType).instance_type
+            self_for = nil
+          end
+        end
+        name = mangled_name(d.name, self_for, inst.arg_types, body_t.as(Type), class_owner)
         if fn = m.get_function?(name)
           names << name unless fn.declaration?
         end
