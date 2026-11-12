@@ -5,16 +5,16 @@ import compiler/semantic/top_level::{AliasType, EnumType, MetaclassType, NilType
 import compiler/types/types::{BoolType, CharType, FloatType, GenericInstanceType, IntegerType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, SymbolType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
 
 # Turns a type into the restriction AST that names it, from the context of
-# *from_type*: the port of type_to_restriction.cr. A type is written by its full
-# path (the port has no private flag, so every type counts as fully public, and
-# the hosted common-namespace shortening is not needed). A conversion with no
-# restriction returns nil; the caller writes `_` for it, as hosted does.
+# *from_type*: the port of type_to_restriction.cr. A fully public type is written
+# by its full path. A private one is written from the namespace it shares with
+# *from_type*, as hosted does. A conversion with no restriction returns nil; the
+# caller writes `_` for it, as hosted does.
 #
 # Not ported: the Crystal-only and interpreter kinds (LibType, AnnotationType,
-# Const), the autocast kinds (NumberAutocastType, SymbolAutocastType), which
-# cannot be instance variable types, and TypeDefType, which waits on the typedef
-# increment. Unbound generics (GenericClassType, GenericModuleType) return nil,
-# as they do in the hosted converter.
+# Const) and the autocast kinds (NumberAutocastType, SymbolAutocastType), which
+# cannot be instance variable types. TypeDefType waits on the typedef increment.
+# Unbound generics (GenericClassType, GenericModuleType) return nil, as they do in
+# the hosted converter.
 pub class TypeToRestriction
   getter from_type : Type
 
@@ -163,23 +163,55 @@ pub class TypeToRestriction
     Metaclass.new(converted.as(ASTNode))
   end
 
-  # The path a type is named by: its namespaces below the program, then its own
-  # name, always global.
+  # The path a type is named by. A fully public type is named from the program,
+  # so the path is global. Otherwise it is named from the namespace it shares with
+  # `from_type`, when there is one, and is relative to it.
   def type_to_path(type : Type) : Path
+    common = nil
+    if !fully_public?(type)
+      common = common_namespace(type, @from_type)
+    end
     names = [] of String
-    append_namespace(type, names)
+    append_namespace(type, names, common)
     names << type.name
-    Path.global(names)
+    if common.nil?
+      return Path.global(names)
+    end
+    Path.new(names, false)
+  end
+
+  # The nearest namespace of *type* that is also a namespace of *from*, or nil
+  # when only the program is shared.
+  def common_namespace(type : Type, from : Type) : Type?
+    current : Type? = type
+    while true
+      return nil if current.nil?
+      return nil if current.is_a?(SemanticProgram)
+      return current if current == from
+      from_namespace = from.namespace
+      return current if !from_namespace.nil? && current == from_namespace
+      current = current.namespace
+    end
+    nil
   end
 
   # Prepends the names of the namespaces of *type*, outermost first, stopping at
-  # the program.
-  def append_namespace(type : Type, names : Array(String)) : Nil
+  # the program and at *upto*.
+  def append_namespace(type : Type, names : Array(String), upto : Type?) : Nil
     namespace = type.namespace
     return nil if namespace.nil?
     return nil if namespace.is_a?(SemanticProgram)
-    append_namespace(namespace.as(Type), names)
+    return nil if !upto.nil? && namespace == upto
+    append_namespace(namespace.as(Type), names, upto)
     names << namespace.as(Type).name
     nil
+  end
+
+  # True when every namespace of *type* is public, down to the program.
+  def fully_public?(type : Type?) : Bool
+    return true if type.nil?
+    return true if type.is_a?(SemanticProgram)
+    return false if type.private?
+    fully_public?(type.namespace)
   end
 end

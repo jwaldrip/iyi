@@ -213,7 +213,7 @@ prove_mutation "proc returning Nil keeps its Nil output in the restriction" "$RE
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "restriction paths drop their namespaces" "$RESTRICT_MUTATION_FILE" \
-  "    append_namespace(type, names)" \
+  "    append_namespace(type, names, common)" \
   "    nil" \
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -221,6 +221,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "restriction names are written in lower case" "$RESTRICT_MUTATION_FILE" \
   "    names << type.name" \
   "    names << type.name.downcase" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "private types are written by their full path" "$RESTRICT_MUTATION_FILE" \
+  "    if !fully_public?(type)" \
+  "    if false" \
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

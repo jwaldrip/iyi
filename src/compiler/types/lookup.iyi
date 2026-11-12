@@ -76,17 +76,23 @@ pub class TypeLookup
   # ---- paths ----
 
   def lookup_path_node(scope : ModuleType, path : Path) : Type | LookupError
-    found = find_path(scope, path)
+    found = find_path(scope, path, false)
     if found.nil?
+      hidden = find_path(scope, path, true)
+      if hidden
+        return LookupError.new("private constant #{hidden.as(Type).full_name} referenced")
+      end
       return LookupError.new("undefined constant #{path.to_s}")
     end
     expand(found.as(Type))
   end
 
-  # The item a path names, or nil. A global path starts at the program; any
-  # other starts at *scope* and walks out through its namespaces for the first
-  # item only (path_lookup.cr, `Type#lookup_path`).
-  def find_path(scope : ModuleType, path : Path) : Type?
+  # The item a path names, or nil. A global path starts at the program; any other
+  # starts at *scope* and walks out through its namespaces for the first item only
+  # (path_lookup.cr, `Type#lookup_path`). A later item that is private is not found
+  # unless *include_private* is set: the hosted lookup refuses it, and
+  # `lookup_path_node` reports it as a private constant.
+  def find_path(scope : ModuleType, path : Path, include_private : Bool) : Type?
     root : ModuleType = scope
     if path.global
       root = program
@@ -97,6 +103,9 @@ pub class TypeLookup
       owner = curr
       return nil unless owner.is_a?(ModuleType)
       curr = find_item(owner.as(ModuleType), path.names[i], false, false)
+      if item = curr
+        return nil if !include_private && item.private?
+      end
       i = i + 1
     end
     curr

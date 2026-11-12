@@ -1,6 +1,12 @@
 module Outer
   class Inner
   end
+
+  class Sibling
+  end
+
+  private class Hidden
+  end
 end
 
 class Box(T)
@@ -32,3 +38,10 @@ alias Alias = Outer::Inner
 # op restriction(program, Animal.class)
 # op restriction(program, Alias)
 # op restriction(program, Pointer(Int32))
+# op restriction(program, Outer::Hidden)
+# op restriction(Outer::Inner, Hidden)
+# op restriction(Outer::Inner, Sibling)
+# op restriction(Outer::Inner, Inner)
+# op restriction(Outer, Hidden)
+# op restriction(Outer, Sibling)
+# op restriction(Outer::Inner, Outer::Hidden)
