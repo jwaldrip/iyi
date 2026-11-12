@@ -21,7 +21,7 @@
 #                                  its metaclass, or a generic instance. Members:
 #     nil_type? pointer? proc? void? no_return? virtual? metaclass?
 #     virtual_metaclass? struct? reference_like? leaf? subclasses
-#     all_subclasses instance_type virtual_type splat_index proc? remove_alias
+#     all_subclasses instance_type virtual_type splat_index proc? remove_alias remove_typedef
 #   merge(A, B) merge(A, B, C)     Program#type_merge (types/merge.iyi)
 #   intersect(T, U)                Type.common_descendent (types/intersect.iyi)
 #   filter(T, kind[, args])        a type filter applied to T (types/filters.iyi):
@@ -79,6 +79,11 @@ def resolve(program : Iyi::Program, name : String) : Iyi::Type
       raise "#{base_name} takes no type arguments"
     end
     return base.as(Iyi::GenericClassType).instantiate(args.map { |arg| arg.as(Iyi::TypeVar) })
+  end
+  if name.includes?("::")
+    found = program.lookup_path(Iyi::Path.new(name.split("::")))
+    raise "unknown type #{name}" if found.nil?
+    return found.as(Iyi::Type)
   end
   t = program.types[name]?
   raise "unknown type #{name}" if t.nil?
@@ -219,6 +224,7 @@ def evaluate(program : Iyi::Program, op : String) : String
   when "instance_type"      then type_text(t.instance_type)
   when "virtual_type"       then type_text(t.virtual_type)
   when "remove_alias"       then type_text(t.remove_alias)
+  when "remove_typedef"     then type_text(t.remove_typedef)
   when "splat_index"
     idx = t.splat_index
     idx.nil? ? "nil" : idx.to_s

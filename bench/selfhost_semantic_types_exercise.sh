@@ -230,6 +230,18 @@ prove_mutation "private types are written by their full path" "$RESTRICT_MUTATIO
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "typedef removal bypassed" "$REPO/src/compiler/semantic/top_level.iyi" \
+  "    @typedef.remove_typedef" \
+  "    self" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "private types reached by a later path item are found" "$REPO/src/compiler/types/lookup.iyi" \
+  "        return nil if !include_private && item.private?" \
+  "        return nil if false" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

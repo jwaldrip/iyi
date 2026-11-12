@@ -91,6 +91,11 @@ module BenchSelfhostSemanticTypesExercise
       raise "#{base_name} takes no type arguments" unless base.is_a?(GenericClassType)
       return ts.instantiate_generic(base.as(GenericClassType), args)
     end
+    if idx = name.index("::")
+      found = prog.lookup_path_names(name.split("::"), prog)
+      raise "unknown type #{name}" if found.nil?
+      return found.as(Type)
+    end
     t = prog.types[name]?
     raise "unknown type #{name}" if t.nil?
     t
@@ -167,6 +172,9 @@ module BenchSelfhostSemanticTypesExercise
     end
     if member == "remove_alias"
       return type_text(TypeMerge.remove_alias(t))
+    end
+    if member == "remove_typedef"
+      return type_text(t.remove_typedef)
     end
     if member == "splat_index"
       idx = TypeQueries.splat_index(t)
