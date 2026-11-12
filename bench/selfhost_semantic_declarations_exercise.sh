@@ -661,6 +661,7 @@ prove_mutation "a metaclass scope does not look names up in its instance type" "
   "        return lookup_type_path(path, instance.as(ModuleType))" \
   "        return refuse_constant(path)" \
   -- check_pins_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TYPES="$REPO/src/compiler/types/types.iyi"
 prove_mutation "a generic instance's instance variable keeps its type parameter" "$MUT_TYPES" \
   "if replacement = tv_map[type.name]?" \
@@ -676,6 +677,7 @@ prove_mutation "a generic instance copies no instance variable the first time" "
   "unless (copied = @copied_from[name]?) && copied == source" \
   "if (copied = @copied_from[name]?) && copied == source" \
   -- check_decl_fixtures_diverge || status=1
+
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
