@@ -1,0 +1,67 @@
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, InstanceVar, NilLiteral, NumberLiteral, Path, Self, StringLiteral, Var}
+import compiler/syntax/visitor::{Visitor}
+
+# Call-shape census for the slice S1c table (see the report of that slice).
+#
+#   selfhost_semantic_call_census <file.iyi>...
+#
+# Parses each file with the port's parser and prints one line per call site:
+#
+#   <file>|<receiver shape>|<argument shape>|<method name>
+#
+# Receiver shapes: none (a call with no receiver, which is the program's own
+# defs), type path (a constant path, whose class methods the lookup reaches),
+# call (the result of another call), local (a local variable), instance variable,
+# self, other. Argument shapes: literal (every argument is a literal, which the
+# port types without a body) or non-literal. Piping through sort and uniq -c
+# gives the table.
+module BenchSelfhostSemanticCallCensus
+  def self.receiver_shape(obj : ASTNode?) : String
+    return "none" if obj.nil?
+    node = obj.as(ASTNode)
+    return "type path" if node.is_a?(Path)
+    return "call" if node.is_a?(Call)
+    return "local" if node.is_a?(Var)
+    return "instance variable" if node.is_a?(InstanceVar)
+    return "self" if node.is_a?(Self)
+    "other"
+  end
+
+  def self.argument_shape(args : Array(ASTNode)) : String
+    args.each do |arg|
+      literal = arg.is_a?(NumberLiteral) || arg.is_a?(StringLiteral) || arg.is_a?(BoolLiteral) || arg.is_a?(NilLiteral)
+      return "non-literal" unless literal
+    end
+    "literal"
+  end
+end
+
+class CallCensus < Visitor
+  getter lines : Array(String)
+  getter file : String
+
+  def initialize(@file : String)
+    @lines = [] of String
+  end
+
+  def visit(node : Call) : Bool
+    recv = BenchSelfhostSemanticCallCensus.receiver_shape(node.obj)
+    args = BenchSelfhostSemanticCallCensus.argument_shape(node.args)
+    @lines << "#{@file}|#{recv}|#{args}|#{node.name}"
+    true
+  end
+end
+
+if Program.args.size > 0
+  Program.args.each do |filename|
+    source = File.read(filename)
+    node = Parser.new(source, filename).parse
+    census = CallCensus.new(filename)
+    node.accept(census)
+    census.lines.each do |line|
+      print line
+      print "\n"
+    end
+  end
+end
