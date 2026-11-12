@@ -88,12 +88,21 @@ hosted_of() {
   run_bounded "$2/hosted" "$2/h.out" "$2/h.err" >"$2/h.status"
 }
 
+# import_refusal ERR OUT: why the bridge refused. iyi-ir writes a failure to read the file to stderr and a refusal of
+# the import to stdout (`refused: ...`), where the IR would have gone.
+import_refusal() {
+  local why
+  why=$(head -n 1 "$1")
+  [ -n "$why" ] || why=$(head -n 1 "$2")
+  printf '%s' "$why"
+}
+
 # phase_of TOOLS DIR: imports DIR/hosted.ll, builds it natively and runs it; prints the phase reached and, after a
 # tab, the first line of the refusal when there is one.
 phase_of() {
   local tools="$1" dir="$2"
   if ! "$tools/iyi-ir" import "$dir/hosted.ll" >"$dir/p.ir" 2>"$dir/import.err"; then
-    printf 'import\t%s\n' "$(head -n 1 "$dir/import.err")"
+    printf 'import\t%s\n' "$(import_refusal "$dir/import.err" "$dir/p.ir")"
     return
   fi
   # The sidecar of bridged IR (SPEC 2.3): the libraries the program's lib blocks link, beside the IR.
@@ -230,7 +239,7 @@ hello_dir="$work/p/samples_iyi_hello"
 if ! "$iyi" build --no-debug --emit llvm-ir -o "$self/hosted" "$TOOL_SRC" >"$self/hosted.log" 2>&1 || [ ! -f "$self/hosted.ll" ]; then
   fail "the hosted compiler wrote no IR for $TOOL_SRC"
 elif ! "$tools/iyi-ir" import "$self/hosted.ll" >"$self/cn.ir" 2>"$self/import.err"; then
-  fail "the tool's own IR is refused by the import: $(head -n 1 "$self/import.err")"
+  fail "the tool's own IR is refused by the import: $(import_refusal "$self/import.err" "$self/cn.ir")"
 elif ! PATH="$TRIPWIRE_PATH:$PATH" "$tools/compile_native" "$self/cn.ir" -o "$self/a/cn" >"$self/a.log" 2>&1; then
   fail "the tool does not build its own IR: $(head -n 1 "$self/a.log")"
 elif ! PATH="$TRIPWIRE_PATH:$PATH" "$self/a/cn" "$self/cn.ir" -o "$self/b/cn" >"$self/b.log" 2>&1; then
