@@ -8,14 +8,18 @@ import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
+import compiler/semantic/top_level::{LibType}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
+import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
+import compiler/types/types::{NamedArgumentType, GenericInstanceType}
+import compiler/types/lookup::{LookupError}
+import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/new::{define_new_methods}
-import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of}
-import compiler/types/types::{NamedArgumentType}
+import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
 # One construct the body typing could not type or refused, as the pipeline's
 # refusal table reads it. `file` is nil and `line` and `column` are 0 when the
@@ -43,6 +47,16 @@ pub class TypedInstance
   getter arg_types : Array(Type)
 
   def initialize(@definition : Def, @self_type : Type?, @arg_types : Array(Type))
+  end
+end
+
+# The def a block is written in, and the return values of its body (hosted: a `return` in a
+# block leaves the def the block is written in).
+pub class BlockOwner
+  getter def_node : Def?
+  getter return_types : Array(Type?)?
+
+  def initialize(@def_node : Def?, @return_types : Array(Type?)?)
   end
 end
 
@@ -75,6 +89,19 @@ pub class MainVisitor < TypeNodeHost
   # Every instantiation whose body typing started with all its parameters typed,
   # in order (see TypedInstance). Shared with a fun body's visitor.
   property typed_instances : Array(TypedInstance)
+
+  # The values the body being typed returns (`return`), and the values a `break` (of the call
+  # whose block it is) and a `next` (of that block) carry while they are collected. nil where
+  # none is collected; a nil entry is a value with no type.
+  property return_types : Array(Type?)? = nil
+  property break_types : Array(Type?)? = nil
+  property next_types : Array(Type?)? = nil
+  # The break values of each block's call, and the def and return list each block is written in.
+  property block_breaks : NodeMap(Array(Type?)) = NodeMap(Array(Type?)).new
+  property block_owners : NodeMap(BlockOwner) = NodeMap(BlockOwner).new
+  # The record of each call on a lib (see visit_lib_call): the fun, the result type and the
+  # arguments the lowering passes.
+  property lib_call_targets : NodeMap(LibCallTarget) = NodeMap(LibCallTarget).new
 
   def type_args_depth : Int32
     @in_type_args
@@ -210,12 +237,69 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
+  # The type a declared type names, or nil when it names none. A declared type never
+  # raises here (the trunk's lookup raises on an unresolved name): the caller records
+  # the refusal on its node. Generic receivers bind their type parameters as lookup_under does.
+  def lookup_declared?(node : ASTNode, owner : Type?) : Type?
+    if receiver_instance(owner).nil?
+      return @program.lookup_type_node?(node, @current_type)
+    end
+    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
+    return found.as(Type) unless found.is_a?(LookupError)
+    nil
+  end
+
+  # The name a declared type is refused by: the base of a generic.
+  def declared_base_name(node : ASTNode) : String
+    if node.is_a?(Generic)
+      return node.as(Generic).name.to_s
+    end
+    node.to_s
+  end
+
   def untyped_reason?(node : ASTNode) : String?
     @untyped_reasons[node]?
   end
 
   def target_def?(call : Call) : Def?
     @call_target_defs[call]?
+  end
+
+  # The generic instance a body or signature is typed under: the receiver, or the
+  # instance a metaclass stands for (`Pointer(UInt64).new` binds `T` to UInt64).
+  def receiver_instance(owner : Type?) : GenericInstanceType?
+    o : Type? = owner
+    if o.is_a?(MetaclassType)
+      o = o.as(MetaclassType).instance_type
+    end
+    if o.is_a?(GenericInstanceType)
+      return o.as(GenericInstanceType)
+    end
+    nil
+  end
+
+  # The type a type node names under `owner`. A generic instance binds its type
+  # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), as the
+  # hosted lookup does for an instantiated def; anything else is the lexical lookup
+  # from the current type.
+  def lookup_under(node : ASTNode, owner : Type?) : Type
+    if inst = receiver_instance(owner)
+      if node.is_a?(Path)
+        path = node.as(Path)
+        if !path.global && path.names.size == 1
+          if bound = inst.type_vars[path.names.first]?
+            return bound
+          end
+        end
+      end
+    end
+    # `self` in a declared type is the receiver (hosted: the def's self type), not the lexical scope.
+    if node.is_a?(Self)
+      if o = owner
+        return o.as(Type) unless o.is_a?(SemanticProgram)
+      end
+    end
+    @program.lookup_type_node(node, @current_type)
   end
 
   def type_from_literal_kind(kind : NumberKind) : Type
@@ -418,19 +502,30 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
-  # iyi: `break` and `next` never complete, so they are NoReturn. A value they
-  # carry is visited first, as the hosted pass does (the expression is bound).
+  # iyi: `break` and `next` never complete, so they are NoReturn. The value they carry is typed
+  # first (the hosted pass binds it): a `break` to the call whose block is being typed, a `next`
+  # to the block (see visit(Yield) and call_result).
   def visit(node : Break) : Bool
+    value_t : Type? = @program.nil_type
     if e = node.exp
       e.accept(self)
+      value_t = child_type(e)
+    end
+    if bts = @break_types
+      bts << value_t
     end
     set_type(node, @program.no_return_type)
     false
   end
 
   def visit(node : Next) : Bool
+    value_t : Type? = @program.nil_type
     if e = node.exp
       e.accept(self)
+      value_t = child_type(e)
+    end
+    if nts = @next_types
+      nts << value_t
     end
     set_type(node, @program.no_return_type)
     false
@@ -443,7 +538,7 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : Primitive) : Bool
     if cd = @current_def
       if rt = cd.return_type
-        set_type(node, @program.lookup_type_node(rt, @current_type))
+        set_type(node, lookup_under(rt, @scope))
         return false
       end
     end
@@ -704,7 +799,11 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : TypeDeclaration) : Bool
-    decl_type = @program.lookup_type_node(node.declared_type, @current_type)
+    decl_found = lookup_declared?(node.declared_type, @scope)
+    if decl_found.nil?
+      return refuse(node, "undefined constant #{declared_base_name(node.declared_type)}")
+    end
+    decl_type = decl_found.as(Type)
     if val = node.value
       val.accept(self)
       vt = child_type(val)
@@ -804,9 +903,25 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Path) : Bool
+    if inst = receiver_instance(@scope)
+      path = node
+      if !path.global && path.names.size == 1
+        if bound = inst.type_vars[path.names.first]?
+          # A type parameter in an expression names the bound type's metaclass, as a
+          # type name does (`T.new`), except inside a type argument.
+          if @in_type_args == 0 && bound.is_a?(ModuleType)
+            set_type(node, bound.as(ModuleType).metaclass)
+          else
+            set_type(node, bound)
+          end
+          return false
+        end
+      end
+    end
     t = @program.lookup_type_path(node, @current_type)
     if t.const?
       c = t.as(Const)
+      c.used = true
       if c_type = type_of?(c.value)
         set_type(node, c_type)
       else
@@ -815,7 +930,7 @@ pub class MainVisitor < TypeNodeHost
           set_type(node, c_type)
         end
       end
-    elsif t.is_a?(ModuleType) && @in_type_args == 0
+    elsif t.is_a?(ModuleType) && @in_type_args == 0 && !t.is_a?(LibType)
       set_type(node, t.as(ModuleType).metaclass)
     else
       set_type(node, t)
@@ -873,24 +988,55 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : While) : Bool
     node.cond.accept(self)
+    # A `break` or `next` in the loop leaves the loop, so its values are not the block's.
+    old_break_types = @break_types
+    old_next_types = @next_types
+    @break_types = nil
+    @next_types = nil
     node.body.accept(self)
+    @break_types = old_break_types
+    @next_types = old_next_types
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : Until) : Bool
+    node.cond.accept(self)
+    # As in a while: a `break` or `next` in the loop is not the block's.
+    old_break_types = @break_types
+    old_next_types = @next_types
+    @break_types = nil
+    @next_types = nil
+    node.body.accept(self)
+    @break_types = old_break_types
+    @next_types = old_next_types
     set_type(node, @program.nil_type)
     false
   end
 
   def visit(node : Return) : Bool
+    value_t : Type? = @program.nil_type
     if exp = node.exp
       exp.accept(self)
-      exp_type = child_type(exp)
-      return false if exp_type.nil?
+      value_t = child_type(exp)
+      if value_t.nil?
+        # An untyped value makes the def's type untyped (see type_method_body).
+        if rts = @return_types
+          rts << nil
+        end
+        return false
+      end
       if cd = @current_def
         if rt = cd.return_type
-          expected_ret = @program.lookup_type_node(rt, @current_type)
-          unless exp_type.as(Type).subtype_of?(expected_ret)
-            return refuse(node, "type mismatch for return type: expected #{expected_ret.full_name}, got #{exp_type.as(Type).full_name}")
+          expected_ret = lookup_under(rt, @scope)
+          unless value_t.as(Type).subtype_of?(expected_ret)
+            return refuse(node, "type mismatch for return type: expected #{expected_ret.full_name}, got #{value_t.as(Type).full_name}")
           end
         end
       end
+    end
+    if rts = @return_types
+      rts << value_t
     end
     set_type(node, @program.no_return_type)
     false
@@ -975,8 +1121,23 @@ pub class MainVisitor < TypeNodeHost
       end
       @vars = blk_vars
 
+      # The block's `break`s bind to the call that owns it, its `next`s to the block, and a `return`
+      # leaves the def the block is written in (hosted Break, Next, Return).
+      old_break_types = @break_types
+      old_next_types = @next_types
+      old_return_types = @return_types
+      old_def_node = @current_def
+      @break_types = @block_breaks[blk]?
+      @next_types = [] of Type?
+      if owner = @block_owners[blk]?
+        @current_def = owner.def_node
+        @return_types = owner.return_types
+      else
+        @return_types = nil
+      end
+
       blk.body.accept(self)
-      blk_type = child_type(blk.body)
+      blk_type = merge_jump_values(child_type(blk.body), @next_types)
       if bt = blk_type
         set_type(blk, bt)
         set_type(node, bt)
@@ -990,6 +1151,10 @@ pub class MainVisitor < TypeNodeHost
         end
       end
 
+      @break_types = old_break_types
+      @next_types = old_next_types
+      @return_types = old_return_types
+      @current_def = old_def_node
       @vars = old_vars
       @scope = old_scope
 
@@ -1000,7 +1165,7 @@ pub class MainVisitor < TypeNodeHost
               if r.is_a?(ProcNotation)
                 pn = r.as(ProcNotation)
                 if out_node = pn.output
-                  expected_ret = @program.lookup_type_node(out_node, @current_type)
+                  expected_ret = lookup_under(out_node, @scope)
                   unless bt.subtype_of?(expected_ret)
                     return refuse(node, "expected block to return #{expected_ret.full_name}, not #{bt.full_name}")
                   end
@@ -1036,6 +1201,9 @@ pub class MainVisitor < TypeNodeHost
       mod.parents.each do |p|
         collect_candidate_defs(p, name, result, visited)
       end
+    elsif rec_type.is_a?(GenericInstanceType)
+      # A generic instance's defs are its generic type's (Box(Int32) has Box(T)'s initialize).
+      collect_candidate_defs(rec_type.as(GenericInstanceType).generic_type, name, result, visited)
     end
   end
 
@@ -1074,19 +1242,19 @@ pub class MainVisitor < TypeNodeHost
     count
   end
 
-  def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode)) : Bool
+  def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode), owner : Type) : Bool
     has_strict = false
     i = 0
     while i < args.size
       p1 = d1.args[i]
       p2 = d2.args[i]
       t1 = if r1 = p1.restriction
-             @program.lookup_type_node(r1, @current_type)
+             lookup_under(r1, owner)
            else
              @program.object_type
            end
       t2 = if r2 = p2.restriction
-             @program.lookup_type_node(r2, @current_type)
+             lookup_under(r2, owner)
            else
              @program.object_type
            end
@@ -1102,7 +1270,7 @@ pub class MainVisitor < TypeNodeHost
     has_strict
   end
 
-  def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode)) : Array(Def)
+  def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode), owner : Type) : Array(Def)
     if candidates.size <= 1
       return candidates
     end
@@ -1111,7 +1279,7 @@ pub class MainVisitor < TypeNodeHost
     candidates.each do |cand|
       subsumed = false
       candidates.each do |other|
-        if cand != other && def_more_specific?(other, cand, args)
+        if cand != other && def_more_specific?(other, cand, args, owner)
           subsumed = true
           break
         end
@@ -1227,7 +1395,7 @@ pub class MainVisitor < TypeNodeHost
         arg_type = type_of(args[i])
         param = d.args[i]
         if r = param.restriction
-          expected_type = @program.lookup_type_node(r, @current_type)
+          expected_type = lookup_under(r, rec_type)
           unless arg_type.subtype_of?(expected_type)
             all_args_match = false
             break
@@ -1241,7 +1409,7 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if exact_matches.size > 0
-      most_specific = filter_most_specific_overloads(exact_matches, args)
+      most_specific = filter_most_specific_overloads(exact_matches, args, rec_type)
       return most_specific.first
     end
 
@@ -1259,7 +1427,7 @@ pub class MainVisitor < TypeNodeHost
           arg_t = type_of(arg)
           param = d.args[i]
           if r = param.restriction
-            expected_t = @program.lookup_type_node(r, @current_type)
+            expected_t = lookup_under(r, rec_type)
             if arg_t.subtype_of?(expected_t)
               # exact subtype match
             elsif arg.is_a?(NumberLiteral) && number_literal_matches_type?(arg.as(NumberLiteral), expected_t)
@@ -1307,7 +1475,7 @@ pub class MainVisitor < TypeNodeHost
         arg_t = type_of(args[i])
         param = d.args[i]
         if r = param.restriction
-          exp_t = @program.lookup_type_node(r, @current_type)
+          exp_t = lookup_under(r, rec_type)
           unless arg_t.subtype_of?(exp_t)
             first_mismatch = i
             break
@@ -1331,7 +1499,7 @@ pub class MainVisitor < TypeNodeHost
       count_matches.each do |d|
         param = d.args[mismatch_idx]
         if r = param.restriction
-          exp_t = @program.lookup_type_node(r, @current_type)
+          exp_t = lookup_under(r, rec_type)
           expected_types_list << exp_t.full_name
         end
       end
@@ -1394,7 +1562,7 @@ pub class MainVisitor < TypeNodeHost
     body = target_def.body
     if body.nil? || body.is_a?(Nop) || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
-        return @program.lookup_type_node(rt, @current_type)
+        return lookup_under(rt, rec_type)
       else
         return @program.nil_type
       end
@@ -1406,7 +1574,7 @@ pub class MainVisitor < TypeNodeHost
     key = instance_key(rec_type, target_def, args, block)
     if @typing_stack.includes?(key)
       if rt = target_def.return_type
-        return @program.lookup_type_node(rt, @current_type)
+        return lookup_under(rt, rec_type)
       end
       # No declared return type: until the body's own type is known the recursive
       # call contributes nothing to a merge, so it is NoReturn (the bottom of the
@@ -1428,10 +1596,19 @@ pub class MainVisitor < TypeNodeHost
     old_untyped_locals = @untyped_locals
     @untyped_locals = Hash(String, String).new
     @var_unions = Hash(String, Type).new
+    old_break_types = @break_types
+    old_next_types = @next_types
+    old_return_types = @return_types
+    @break_types = nil
+    @next_types = nil
+    @return_types = [] of Type?
 
     if block
       @current_block_context_vars = @vars.dup
       @current_yield_nodes = [] of Yield
+      if blk = block
+        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types)
+      end
     end
 
     new_vars = Hash(String, Type).new
@@ -1455,7 +1632,7 @@ pub class MainVisitor < TypeNodeHost
         dv.accept(self)
         param_type = child_type(dv)
       elsif r = param.restriction
-        param_type = @program.lookup_type_node(r, @current_type)
+        param_type = lookup_under(r, rec_type)
       else
         param_type = @program.nil_type
       end
@@ -1489,7 +1666,7 @@ pub class MainVisitor < TypeNodeHost
       @typed_instances << TypedInstance.new(target_def, self_t, inst_args)
     end
     body.as(ASTNode).accept(self)
-    body_type = child_type(body.as(ASTNode))
+    body_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)
 
     if block && (ctx_vars = @current_block_context_vars)
       ctx_vars.each do |k, new_v|
@@ -1511,6 +1688,9 @@ pub class MainVisitor < TypeNodeHost
       end
     end
 
+    @break_types = old_break_types
+    @next_types = old_next_types
+    @return_types = old_return_types
     @vars = old_vars
     @scope = old_scope
     @current_def = old_def
@@ -1529,14 +1709,14 @@ pub class MainVisitor < TypeNodeHost
     # (bench/fixtures/sem_bodies_primitive_add.iyi).
     if bt.nil?
       if rt = target_def.return_type
-        set_type(target_def, @program.lookup_type_node(rt, @current_type))
-        return @program.lookup_type_node(rt, @current_type)
+        set_type(target_def, lookup_under(rt, rec_type))
+        return lookup_under(rt, rec_type)
       end
       return nil
     end
 
     if rt = target_def.return_type
-      declared_ret = @program.lookup_type_node(rt, @current_type)
+      declared_ret = lookup_under(rt, rec_type)
       unless bt.subtype_of?(declared_ret)
         mismatch = "type mismatch for return type: expected #{declared_ret.full_name}, got #{bt.full_name}"
         if s = site
@@ -1552,6 +1732,115 @@ pub class MainVisitor < TypeNodeHost
       set_type(target_def, bt)
       bt
     end
+  end
+
+  # iyi: `out x` in a lib call declares `x` as the parameter's pointee (see declare_out). Visited
+  # alone it declares nothing: the call does. An instance variable is visited for its own type;
+  # `out _` has no type.
+  def visit(node : Out) : Bool
+    if exp = node.exp
+      if exp.is_a?(InstanceVar)
+        exp.accept(self)
+      end
+    end
+    false
+  end
+
+  # A call on a lib (`LibC.name(args)`), the port of Call#recalculate_lib_call. The arguments are
+  # typed by the walk in visit(Call); the lib call checks them (semantic/lib_call.iyi), answers the
+  # result type, and marks the lib and the fun used. Its record is kept for the lowering.
+  def visit_lib_call(node : Call, lib_type : LibType) : Bool
+    args = [] of LibCallArgument
+    node.args.each do |arg|
+      args << LibCallArgument.new(arg, type_of?(arg), nil)
+    end
+    if named = node.named_args
+      named.each do |na|
+        na.value.accept(self)
+        args << LibCallArgument.new(na.value, type_of?(na.value), na.name)
+      end
+    end
+    target = LibCall.recalculate(lib_type, @program, type_node_system(@program), node.name, args)
+    if msg = target.error
+      return refuse(node, msg)
+    end
+    @lib_call_targets[node] = target
+    i = 0
+    while i < target.out_index.size
+      out_node = target.arg_nodes[target.out_index[i]].as(Out)
+      declare_out(out_node, target.out_type[i])
+      i += 1
+    end
+    set_type(node, target.result_type.as(Type))
+    false
+  end
+
+  # The variable an `out` argument names takes the parameter's pointee type. As the hosted pass
+  # does, a name the body already has is refused: `out` defines a variable.
+  def declare_out(out_node : Out, pointee : Type) : Nil
+    exp = out_node.exp
+    return nil unless exp.is_a?(Var)
+    name = exp.as(Var).name
+    if @vars[name]?
+      refuse(out_node, "variable '#{name}' is already defined, `out` must be used to define a variable, use another name")
+      return nil
+    end
+    @vars[name] = pointee
+    if old_u = @var_unions[name]?
+      @var_unions[name] = @program.type_merge(old_u, pointee)
+    else
+      @var_unions[name] = pointee
+    end
+    set_type(exp, pointee)
+    set_type(out_node, pointee)
+    nil
+  end
+
+  # The lib call record of a call on a lib (see visit_lib_call), or nil.
+  def lib_call_target(node : Call) : LibCallTarget?
+    @lib_call_targets[node]?
+  end
+
+  # The type of a body, block or call with the values its jumps carry merged in (hosted: `return`
+  # binds to the def, `next` to the block). An untyped value makes the whole untyped.
+  def merge_jump_values(base : Type?, values : Array(Type?)?) : Type?
+    vs = values
+    return base if vs.nil?
+    return base if vs.empty?
+    b = base
+    return nil if b.nil?
+    result : Type = b.as(Type)
+    i = 0
+    while i < vs.size
+      v = vs[i]
+      return nil if v.nil?
+      result = merge_flow(result, v.as(Type))
+      i += 1
+    end
+    result
+  end
+
+  # The type of a call: its method's result, with the values its block's `break`s carry merged in.
+  def call_result(node : Call, ret : Type?) : Type?
+    if blk = node.block
+      return merge_jump_values(ret, @block_breaks[blk]?)
+    end
+    ret
+  end
+
+  # `obj.@name`: the instance variable of obj's type (hosted visit_read_instance_var).
+  def visit(node : ReadInstanceVar) : Bool
+    node.obj.accept(self)
+    ot = child_type(node.obj)
+    return false if ot.nil?
+    owner : Type = ot.as(Type)
+    if owner.is_a?(ModuleType)
+      if ivar = owner.as(ModuleType).lookup_instance_var?(node.name)
+        set_type(node, ivar.type)
+        return false
+      end
+    end
+    refuse(node, "undefined instance variable '#{node.name}' for #{owner.full_name}")
   end
 
   def visit(node : Call) : Bool
@@ -1581,6 +1870,9 @@ pub class MainVisitor < TypeNodeHost
     else
       rec_type = @scope || @current_type
     end
+    if rec_type.is_a?(LibType)
+      return visit_lib_call(node, rec_type.as(LibType))
+    end
 
     # Multiple dispatch over a union receiver
     if rec_type.is_a?(UnionType)
@@ -1588,6 +1880,9 @@ pub class MainVisitor < TypeNodeHost
       ret_types = [] of Type
       first_target_def : Def? = nil
 
+      if blk = node.block
+        @block_breaks[blk] = [] of Type?
+      end
       i = 0
       while i < union_t.union_types.size
         ut = union_t.union_types[i]
@@ -1608,7 +1903,9 @@ pub class MainVisitor < TypeNodeHost
       end
 
       merged_ret = @program.type_merge(ret_types)
-      set_type(node, merged_ret)
+      if merged_call_t = call_result(node, merged_ret)
+        set_type(node, merged_call_t)
+      end
       return false
     end
 
@@ -1629,7 +1926,10 @@ pub class MainVisitor < TypeNodeHost
     instantiated_def = target_def.clone
     @call_target_defs[node] = instantiated_def
 
-    ret_type = type_method_body(instantiated_def, rec_type, node.args, node.block)
+    if blk = node.block
+      @block_breaks[blk] = [] of Type?
+    end
+    ret_type = call_result(node, type_method_body(instantiated_def, rec_type, node.args, node.block))
     if ret_type
       set_type(node, ret_type)
     end
@@ -1704,7 +2004,35 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : PointerOf) : Bool
+    exp = node.exp
+    if exp.is_a?(ClassVar) || exp.is_a?(InstanceVar)
+      return pointerof_variable(node, exp)
+    end
+    if exp.is_a?(Path)
+      exp.accept(self)
+      ct = @program.lookup_type_path?(exp.as(Path), @current_type)
+      if ct
+        if ct.const?
+          ct.as(Const).pointer_read = true
+          if et = child_type(exp)
+            set_type(node, type_node_system(@program).pointer_of(et.as(Type)))
+          end
+          return false
+        end
+      end
+    end
     visit_pointer_of(self, node)
+  end
+
+  # `pointerof(@x)` and `pointerof(@@x)`: a pointer to the variable's type, as the
+  # hosted pass binds it (main_visitor.cr 3108-3114). The `iyi_written` mark is the
+  # lowering's and is not set here.
+  def pointerof_variable(node : PointerOf, exp : ASTNode) : Bool
+    exp.accept(self)
+    t = child_type(exp)
+    return false if t.nil?
+    set_type(node, type_node_system(@program).pointer_of(t.as(Type)))
+    false
   end
 
   def visit(node : TypeOf) : Bool
@@ -1744,6 +2072,7 @@ pub class MainVisitor < TypeNodeHost
     inner.node_types = @node_types
     inner.untyped_reasons = @untyped_reasons
     inner.call_target_defs = @call_target_defs
+    inner.lib_call_targets = @lib_call_targets
     inner.total = @total
     inner.typing_stack = @typing_stack
     inner.refusals = @refusals

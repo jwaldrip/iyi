@@ -96,6 +96,39 @@ if [ "$RAISE" = 1 ]; then
   } > "$FLOOR_FILE"
 fi
 
+echo
+echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
+. "$REPO/bench/lib/mutation.sh"
+MUT_TD="$WORK/mut_typed_dump"
+# Rebuilds the typed dump from the patched source and checks the lib-call and jump fixtures
+# still reach their floors. Returns non-zero when a fixture falls below its floor.
+bodies_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return; do
+    fixture="$REPO/bench/fixtures/$name.iyi"
+    rel="bench/fixtures/$name.iyi"
+    "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+    "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+    matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
+    floor=$(awk -v r="$rel" '$1 == r { print $2 }' "$FLOOR_FILE" 2>/dev/null)
+    [ "$matched" -ge "${floor:-0}" ] || return 1
+  done
+  return 0
+}
+MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
+prove_mutation "lib call result type" "$MAIN_VISITOR" \
+  "set_type(node, target.result_type.as(Type))" \
+  "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
+prove_mutation "next value joins the block type" "$MAIN_VISITOR" \
+  "blk_type = merge_jump_values(child_type(blk.body), @next_types)" \
+  "blk_type = child_type(blk.body)" -- bodies_at_floor || status=1
+prove_mutation "return value joins the def type" "$MAIN_VISITOR" \
+  "body_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)" \
+  "body_type = child_type(body.as(ASTNode))" -- bodies_at_floor || status=1
+prove_mutation "self in a declared type names the receiver" "$MAIN_VISITOR" \
+  "return o.as(Type) unless o.is_a?(SemanticProgram)" \
+  "return @program.lookup_type_node(node, @current_type) unless o.is_a?(SemanticProgram)" -- bodies_at_floor || status=1
+
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"
