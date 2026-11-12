@@ -2,7 +2,7 @@ module compiler/semantic/top_level
 
 import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
-import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, Generic, ImplDef, Include, InstanceVar, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, Generic, ImplDef, Include, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -45,6 +45,17 @@ pub abstract class Type
 
   def to_s : String
     full_name
+  end
+
+  # The name this type takes inside a union. The hosted printer devirtualizes
+  # union members, so a virtual type prints its base type.
+  def member_name : String
+    full_name
+  end
+
+  # Registers a direct subclass. Only a class keeps a list of them.
+  def register_subclass(sub : Type) : Nil
+    nil
   end
 
   def ==(other : Type) : Bool
@@ -111,6 +122,11 @@ pub abstract class Type
 
   def public? : Bool
     @visibility == Visibility::Public
+  end
+
+  # The type with every typedef removed. Only a typedef changes it.
+  def remove_typedef : Type
+    self
   end
 
   def union? : Bool
@@ -195,6 +211,7 @@ end
 pub abstract class ModuleType < NamedType
   getter defs : Hash(String, Array(Def))
   getter parents : Array(Type)
+  getter including_types : Array(Type)
   getter instance_vars : Hash(String, MetaTypeVar)
   getter class_vars : Hash(String, MetaTypeVar)
   getter macros : Hash(String, Array(Macro))
@@ -204,6 +221,7 @@ pub abstract class ModuleType < NamedType
     super(program, namespace, name)
     @defs = Hash(String, Array(Def)).new
     @parents = [] of Type
+    @including_types = [] of Type
     @instance_vars = Hash(String, MetaTypeVar).new
     @class_vars = Hash(String, MetaTypeVar).new
     @macros = Hash(String, Array(Macro)).new
@@ -370,6 +388,16 @@ pub abstract class ModuleType < NamedType
 
   def include(mod : Type) : Nil
     @parents.insert(0, mod)
+    if mod.is_a?(NonGenericModuleType)
+      mod.as(NonGenericModuleType).add_including_type(self)
+    end
+  end
+
+  # Records a type that includes this module, for including_types.
+  def add_including_type(type : Type) : Nil
+    return nil if type.is_a?(GenericClassType) || type.is_a?(GenericModuleType)
+    @including_types << type
+    nil
   end
 
   def metaclass : ModuleType
@@ -412,14 +440,17 @@ pub abstract class ClassType < ModuleType
   property superclass_display : String?
   getter subclasses : Array(Type)
 
+  def register_subclass(sub : Type) : Nil
+    @subclasses << sub
+    nil
+  end
+
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @superclass : Type? = nil)
     super(program, namespace, name)
     @subclasses = [] of Type
     if sc = @superclass
       @parents << sc
-      if sc.is_a?(ClassType)
-        sc.as(ClassType).subclasses << self
-      end
+      sc.register_subclass(self)
     end
   end
 
@@ -440,14 +471,46 @@ pub abstract class ClassType < ModuleType
     @superclass_display = display_name || (sc ? sc.to_s : nil)
     if sc
       @parents << sc
-      if sc.is_a?(ClassType)
-        sc.as(ClassType).subclasses << self
-      end
+      sc.register_subclass(self)
     end
   end
 end
 
 pub class NonGenericClassType < ClassType
+end
+
+# Built-ins the hosted Program creates as their own kinds. They live here, not in
+# types.iyi, because types.iyi imports this module and an import cycle is refused.
+pub class NilType < NonGenericClassType
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, superclass : Type?)
+    super(program, namespace, name, superclass)
+    @struct = true
+  end
+end
+
+pub class VoidType < NamedType
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
+    super(program, namespace, name)
+    @struct = true
+  end
+
+  def void? : Bool
+    true
+  end
+end
+
+pub class NoReturnType < NamedType
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
+    super(program, namespace, name)
+  end
+
+  def no_return? : Bool
+    true
+  end
+
+  def subtype_of?(other : Type) : Bool
+    true
+  end
 end
 
 pub class TypeParameterType < Type
@@ -575,6 +638,12 @@ pub class AliasType < NamedType
     true
   end
 
+  # The hosted `simple` flag is cleared only for an alias that names no type. Every
+  # alias the port models names one (`process_value`), so the flag stays set.
+  def simple? : Bool
+    true
+  end
+
   def type_desc : String
     "alias"
   end
@@ -598,6 +667,32 @@ pub class AliasType < NamedType
         t
       end
     end
+  end
+end
+
+# A `type` (typedef) inside a `lib` declaration, such as `type Handle = Int32`.
+# It names its typedef's type; `remove_typedef` gives that type.
+pub class TypeDefType < NamedType
+  getter typedef : Type
+
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @typedef : Type)
+    super(program, namespace, name)
+  end
+
+  def remove_typedef : Type
+    @typedef.remove_typedef
+  end
+
+  def type_desc : String
+    "type def"
+  end
+end
+
+# A lib, like `lib LibC`: a namespace for its typedefs. The lib's link
+# annotations and call convention, and its functions and structs, are not ported.
+pub class LibType < ModuleType
+  def type_desc : String
+    "lib"
   end
 end
 
@@ -633,7 +728,23 @@ pub class UnionType < Type
   end
 
   def to_s : String
-    full_name
+    non_nil_names = [] of String
+    has_nil = false
+    i = 0
+    while i < @union_types.size
+      t = @union_types[i]
+      if t.full_name == "Nil"
+        has_nil = true
+      else
+        non_nil_names << t.member_name
+      end
+      i = i + 1
+    end
+    sorted = non_nil_names.sorted
+    if has_nil
+      sorted << "Nil"
+    end
+    "(#{sorted.join(" | ")})"
   end
 
   def ==(other : Type) : Bool
@@ -643,6 +754,15 @@ pub class UnionType < Type
       false
     end
   end
+end
+
+# Resolves written types and merges types for the semantic program. The type
+# system installs itself here, so the program resolves written types and merges
+# unions the way the hosted Program does. Until one is installed, the program
+# keeps its plain builders.
+pub abstract class TypeHook
+  abstract def merge_members(types : Array(Type)) : Type
+  abstract def resolve_node(node : ASTNode, current_type : ModuleType) : Type
 end
 
 pub class ImplRecord
@@ -656,6 +776,7 @@ end
 
 pub class SemanticProgram < NonGenericModuleType
   @object_type : ClassType?
+  property merge_hook : TypeHook?
   @value_type : ClassType?
   @reference_type : ClassType?
   @struct_type : ClassType?
@@ -721,6 +842,10 @@ pub class SemanticProgram < NonGenericModuleType
   end
 
   def type_merge(t1 : Type, t2 : Type) : Type
+    if hook = @merge_hook
+      merged : Type = hook.merge_members([t1, t2] of Type)
+      return merged
+    end
     return t1 if t1 == t2
 
     types = [] of Type
@@ -772,6 +897,10 @@ pub class SemanticProgram < NonGenericModuleType
   end
 
   def type_merge(types : Array(Type)) : Type
+    if hook = @merge_hook
+      merged : Type = hook.merge_members(types)
+      return merged
+    end
     if types.empty?
       return nil_type
     end
@@ -798,6 +927,7 @@ pub class SemanticProgram < NonGenericModuleType
 
   def initialize
     @initial_type_names = Set(String).new
+    @merge_hook = nil
     @impls = [] of ImplRecord
     @object_type = nil
     @value_type = nil
@@ -857,8 +987,7 @@ pub class SemanticProgram < NonGenericModuleType
     bool_t = NonGenericClassType.new(self, self, "Bool", val)
     bool_t.struct = true
     @types["Bool"] = bool_t
-    nil_t = NonGenericClassType.new(self, self, "Nil", val)
-    nil_t.struct = true
+    nil_t = NilType.new(self, self, "Nil", val)
     @types["Nil"] = nil_t
 
     sym_t = NonGenericClassType.new(self, self, "Symbol", val)
@@ -867,11 +996,9 @@ pub class SemanticProgram < NonGenericModuleType
 
     @types["String"] = NonGenericClassType.new(self, self, "String", ref)
 
-    void_t = NonGenericClassType.new(self, self, "Void", val)
-    void_t.struct = true
-    @types["Void"] = void_t
+    @types["Void"] = VoidType.new(self, self, "Void")
 
-    @types["NoReturn"] = NonGenericClassType.new(self, self, "NoReturn", val)
+    @types["NoReturn"] = NoReturnType.new(self, self, "NoReturn")
 
     st = NonGenericClassType.new(self, self, "Struct", val)
     st.abstract = true
@@ -931,6 +1058,17 @@ pub class SemanticProgram < NonGenericModuleType
       i = i + 1
     end
     curr
+  end
+
+  # The superclass a class declares. A type system installed in the program
+  # resolves a generic superclass to its instance (`class IntBox < Box(Int32)`),
+  # which the lookup below does not.
+  def lookup_superclass_node(node : ASTNode, current_type : ModuleType) : Type
+    if hook = @merge_hook
+      resolved : Type = hook.resolve_node(node, current_type)
+      return resolved
+    end
+    lookup_type_node(node, current_type)
   end
 
   def lookup_type_node(node : ASTNode, current_type : ModuleType) : Type
@@ -1279,17 +1417,17 @@ pub class TopLevelVisitor < Visitor
       if sc_node.is_a?(Generic)
         g = sc_node.as(Generic)
         base_sc = @program.lookup_type_node(g.name, @current_type)
-        superclass = base_sc
         superclass_display = "#{base_sc.full_name}(#{g.type_vars.map(&.to_s).join(", ")})"
+        superclass = @program.lookup_superclass_node(sc_node, @current_type)
       else
-        superclass = @program.lookup_type_node(sc_node, @current_type)
+        superclass = @program.lookup_superclass_node(sc_node, @current_type)
         superclass_display = superclass.full_name
       end
 
       if superclass == @program.enum_type
         raise("can't inherit Enum. Use the enum keyword to define enums")
       end
-      unless superclass.is_a?(ClassType)
+      unless superclass.is_a?(ClassType) || superclass.class?
         raise("#{superclass.full_name} is not a class, it's a #{superclass.type_desc}")
       end
     else
@@ -1308,7 +1446,7 @@ pub class TopLevelVisitor < Visitor
     end
 
     if superclass && (created_new_type || type.superclass.nil?)
-      sc_cls = superclass.as(ClassType)
+      sc_cls = superclass
       if node.struct != sc_cls.struct?
         raise("can't make #{node.struct ? "struct" : "class"} '#{node.name.names.last}' inherit #{sc_cls.type_desc} '#{sc_cls.full_name}'")
       end
@@ -1541,6 +1679,45 @@ pub class TopLevelVisitor < Visitor
     end
     scope.add_type(name, alias_type)
 
+    false
+  end
+
+  def visit(node : LibDef) : Bool
+    scope, name, existing = lookup_type_def(node, node.name)
+
+    lib_type : ModuleType
+
+    if ex = existing
+      unless ex.is_a?(LibType)
+        raise("#{name} is not a lib, it's a #{ex.type_desc}")
+      end
+      lib_type = ex.as(LibType)
+    else
+      lib_type = LibType.new(@program, scope, name)
+      scope.add_type(name, lib_type)
+    end
+
+    if vis = node.visibility
+      lib_type.visibility = vis
+    end
+
+    old_type = @current_type
+    @current_type = lib_type
+    node.body.accept(self)
+    @current_type = old_type
+
+    false
+  end
+
+  # Only the typedefs of a lib are registered here. The lib's functions, structs
+  # and external variables fall through to the default visit, as before.
+  def visit(node : TypeDef) : Bool
+    if @current_type.types[node.name]?
+      raise("#{node.name} is already defined")
+    end
+    typed = @program.lookup_type_node(node.type_spec, @current_type)
+    typedef = TypeDefType.new(@program, @current_type, node.name, typed)
+    @current_type.add_type(node.name, typedef)
     false
   end
 
