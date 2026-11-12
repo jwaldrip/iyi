@@ -134,6 +134,12 @@ prove_mutation "pointerof types its operand, not a pointer to it" "$TYPE_NODES" 
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "enum definition is not typed" "$REPO/src/compiler/semantic/main_visitor.iyi" \
+  "visit_enum_def(self, node)" \
+  "true" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
