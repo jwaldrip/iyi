@@ -1323,10 +1323,10 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
     if t.nil?
-      t = lookup_type(first_name)
+      t = @current_imports[first_name]?
     end
     if t.nil?
-      t = @current_imports[first_name]?
+      t = lookup_type(first_name)
     end
     if t.nil?
       return nil
@@ -1379,28 +1379,30 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
 
+    # The file's imports shadow the enclosing namespaces and the program root: a name
+    # the file imports is found before a same-named module beside the importing file.
+    if t.nil?
+      t = @current_imports[first_name]?
+    end
+
     # 4. Search enclosing namespaces
     if t.nil?
       ns = current_type.namespace
       while ns
+        # The program itself is searched last, in step 5, after the file's imports.
+        break if ns.is_a?(SemanticProgram)
         match = ns.lookup_type(first_name)
         if match
           t = match
-          break
-        end
-        if ns == self
           break
         end
         ns = ns.namespace
       end
     end
 
-    # 5. Search in program root
+    # 5. Search the program root
     if t.nil?
       t = self.lookup_type(first_name)
-    end
-    if t.nil?
-      t = @current_imports[first_name]?
     end
 
     if t.nil?
