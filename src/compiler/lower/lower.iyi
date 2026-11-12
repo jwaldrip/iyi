@@ -488,7 +488,7 @@ pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
     refuse_port("lower: variable #{var_node.name} is declared twice (hosted codegen.cr: declare_var)")
   end
   pointer = low.alloca(low.typer.llvm_type(dt), var_node.name)
-  low.current_context.vars[var_node.name] = LowerVar.new(pointer, dt, false)
+  low.current_context.vars[var_node.name] = LowerVar.new(pointer, dt, true)
   value = node.value
   if value.nil?
     low.last = llvm_nil(low)
