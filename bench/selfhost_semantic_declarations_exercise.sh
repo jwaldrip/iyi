@@ -61,12 +61,12 @@ status=0
 
 . "$REPO/bench/lib/mutation.sh"
 
-# Splits a dump into records, one per "Type:" or "Def:" header line, each with its
-# own property lines, joined onto one line with the record separator \036.
+# Splits a dump into records, one per "Type:", "Def:", "Ivar:" or "IvarOrder:" header line,
+# each with its own property lines, joined onto one line with the record separator \036.
 records() {
   awk '
     function flush() { if (cur != "") print cur }
-    /^ *(Type|Def|Ivar): / { flush(); cur = $0; next }
+    /^ *(Type|Def|Ivar|IvarOrder): / { flush(); cur = $0; next }
     { if (cur != "") cur = cur "\036" $0 }
     END { flush() }
   ' "$1"
@@ -99,7 +99,14 @@ for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semde
     echo "  $rel: ORACLE REJECTS: $(head -n 1 "$WORK/fx_oe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
   fi
-  if ! "$PORT" "$REPO/$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
+  # The typed fixtures (semdecl_ivar_typed_*) are declared with the type system installed: the
+  # generic arguments and virtual types of explicit instance variables need it. The oracle is
+  # always the hosted full pass, so it needs no flag.
+  port_mode=""
+  case "$(basename "$fixture")" in
+    semdecl_ivar_typed_*) port_mode="--typed" ;;
+  esac
+  if ! "$PORT" $port_mode "$REPO/$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
     echo "  $rel: PORT REJECTS: $(head -n 1 "$WORK/fx_pe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
   fi
@@ -127,6 +134,22 @@ else
   else
     echo "  semdecl_lib_types.iyi: PIN DIFFERS"
     diff "$lib_types_expected" "$WORK/lt_pin.txt" | head -n 20
+    status=1
+  fi
+fi
+
+echo "== 2b'. Constant facts once the program is declared: constants in declaration order, the predefined constants, a class variable's owner"
+echo "  (a port-side pin: the oracle has no dump of these, so the expected lines are written by hand)"
+const_facts_expected="$REPO/bench/selfhost_semantic_declarations_const_facts.expected"
+if ! "$PORT" --const-facts "$REPO/bench/fixtures/semdecl_const_facts.iyi" > "$WORK/cf_full.txt" 2> "$WORK/cf_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/cf_pe.txt")"; status=1
+else
+  awk '/^(const (A|B|C) |predef |cvar )/' "$WORK/cf_full.txt" > "$WORK/cf_pin.txt"
+  if cmp -s "$WORK/cf_pin.txt" "$const_facts_expected"; then
+    echo "  semdecl_const_facts.iyi: $(awk 'END{print NR}' "$WORK/cf_pin.txt") facts pinned"
+  else
+    echo "  semdecl_const_facts.iyi: PIN DIFFERS"
+    diff "$const_facts_expected" "$WORK/cf_pin.txt" | head -n 20
     status=1
   fi
 fi
@@ -369,6 +392,16 @@ check_lib_types_diverge() {
   return 0
 }
 
+check_const_facts_diverge() {
+  # Builds the driver as it now stands and compares the constant-facts pin. Returns non-zero (caught)
+  # when the driver fails to build or a constant, a predefined constant or a class variable's owner differs.
+  local probe="$WORK/mut_const_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --const-facts "$REPO/bench/fixtures/semdecl_const_facts.iyi" 2>/dev/null | awk '/^(const (A|B|C) |predef |cvar )/' > "$WORK/mut_cf.txt" || return 1
+  cmp -s "$WORK/mut_cf.txt" "$const_facts_expected" || return 1
+  return 0
+}
+
 echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
@@ -376,7 +409,7 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
@@ -456,6 +489,36 @@ prove_mutation "a file's own directory is never searched for an import" "$MUT_SE
   "      roots << \"/nonexistent-root\"" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_SEM" \
+  "@pending_ivars.each do |pi|" \
+  "@pending_ivars.reversed.each do |pi|" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
+  "@pending_ivars << PendingIvar.new(@current_type, arg.name, r)" \
+  "@pending_ivars.unshift(PendingIvar.new(@current_type, arg.name, r))" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an instance variable assigned from a typed argument is dropped" "$MUT_SEM" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r)" \
+  "nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
+  "t = hook.virtual_of(t)" \
+  "t = t" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
+  "di.owner.instance_vars[di.name] = mv" \
+  "nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an explicit instance variable is not recorded for re-resolution" "$MUT_SEM" \
+  "@program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)" \
+  "nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TS="$REPO/src/compiler/types/type_system.iyi"
 prove_mutation "a generic type node resolves to its base once the type system is installed" "$MUT_SEM" \
   "          return hook.instantiate_type(base_type, type_args)" \
@@ -471,6 +534,21 @@ prove_mutation "a lib fun's return type is dropped once the type system is insta
   "              f.resolved_return = lookup_type_node(rt, owner)" \
   "              f.resolved_return = nil" \
   -- check_lib_types_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a constant is never added to the program's constant list" "$MUT_SEM" \
+  "      @program.const_initializers << const" \
+  "      nil" \
+  -- check_const_facts_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a class variable is declared without its owner" "$MUT_SEM" \
+  "@current_type.class_vars[cvar_name] = mv" \
+  "@current_type.class_vars[cvar_name] = MetaTypeVar.new(cvar_name, decl_type, node.value)" \
+  -- check_const_facts_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "the predefined constants are not found by name" "$MUT_SEM" \
+  "if name == \"ARGC_UNSAFE\" || name == \"ARGV_UNSAFE\"" \
+  "if name == \"NOPE\"" \
+  -- check_const_facts_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
