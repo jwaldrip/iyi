@@ -223,7 +223,7 @@ dict_vals({x: 10, y: 20})
     engine = MacroEngine.new
     src = %(
 macro inspect_expr(e)
-  "expr: " + {{e.stringify}} + " id: " + {{"test_".id + e.id}}
+  "expr: " + {{e.stringify}} + " id: " + {{e.id.stringify}}
 end
 inspect_expr(my_var)
 )

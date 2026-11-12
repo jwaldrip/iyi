@@ -17,40 +17,32 @@ cannot read may only fall (`bench/macro_sites.floor`).
 
 | measure | sites |
 |---|---|
-| files | 121 |
+| files | 136 |
 | files the hosted parser cannot read (their sites are unpaired) | 1 |
-| sites, all | 105 |
-| expanded identically | 62 |
-| differing | 27 |
-| refused by the port | 1 |
+| sites, all | 106 |
+| expanded identically | 87 |
+| differing | 2 |
+| refused by the port | 2 |
 | unpaired | 1 |
 | needs the enclosing type (`@type`, `@top_level`, `@def`, `@caller`) | 8 |
 | in a macro body (expanded when called) | 6 |
-| compared | 91 |
+| compared | 92 |
 
 ## Top reasons
 
 | sites | category | reason |
 |---|---|---|
-| 13 | differing | oracle error "undefined constant T"; port text |
-| 3 | differing | oracle error "undefined constant LibLLVM::IS_LT_170"; port text |
-| 2 | differing | text differs |
-| 2 | differing | oracle error "undefined constant LibLLVM::IS_LT_150"; port text |
-| 2 | differing | oracle error "undefined constant LibLLVM::IS_LT_200"; port text |
-| 1 | differing | oracle error "undefined constant T"; port error |
+| 2 | refused | "macro method '`' is refused: it runs a command" |
 | 1 | unpaired | oracle: file-error oracle exit=1: Unhandled exception: unexpected token: "!" (Iyi::SyntaxException) |
 | 1 | differing | oracle error "Error opening file with mode 'r': './../../IYI_VERSION': No such file or directory"; port error |
 | 1 | differing | oracle error "Error opening file with mode 'r': './../../VERSION': No such file or directory"; port error |
-| 1 | differing | oracle error "undefined constant LibLLVM::IS_LT_190"; port text |
-| 1 | refused | "undefined macro method: 'compare_versions'" |
-| 1 | differing | oracle error "undefined constant LibLLVM::IS_LT_160"; port text |
 
 ## Per file
 
 | file | sites | identical | differing | refused | unpaired | needs-context | macro-body |
 |---|---|---|---|---|---|---|---|
 | `src/iyi/array.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| `src/iyi/atomic.iyi` | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
+| `src/iyi/atomic.iyi` | 3 | 3 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/chaos.iyi` | 2 | 2 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/chaos_points.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/concurrency.iyi` | 1 | 0 | 0 | 0 | 1 | 0 | 0 |
@@ -58,15 +50,15 @@ cannot read may only fall (`bench/macro_sites.floor`).
 | `src/iyi/file.iyi` | 3 | 3 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/float.iyi` | 4 | 4 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/hash.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| `src/iyi/io.iyi` | 5 | 4 | 1 | 0 | 0 | 0 | 0 |
+| `src/iyi/io.iyi` | 5 | 5 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/macros.iyi` | 6 | 0 | 0 | 0 | 0 | 0 | 6 |
 | `src/iyi/number.iyi` | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
-| `src/iyi/object.iyi` | 11 | 0 | 9 | 0 | 0 | 2 | 0 |
+| `src/iyi/object.iyi` | 11 | 9 | 0 | 0 | 0 | 2 | 0 |
 | `src/iyi/prelude.iyi` | 33 | 33 | 0 | 0 | 0 | 0 | 0 |
-| `src/iyi/primitives.iyi` | 5 | 3 | 1 | 0 | 0 | 1 | 0 |
+| `src/iyi/primitives.iyi` | 5 | 4 | 0 | 0 | 0 | 1 | 0 |
 | `src/iyi/range.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/set.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| `src/iyi/string.iyi` | 2 | 1 | 1 | 0 | 0 | 0 | 0 |
+| `src/iyi/string.iyi` | 2 | 2 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/testing.iyi` | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
 | `src/iyi/thread.iyi` | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/compiler.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -80,7 +72,7 @@ cannot read may only fall (`bench/macro_sites.floor`).
 | `src/compiler/backend/llvm/translate.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/codegen/codegen.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/command/daemon.iyi` | 7 | 7 | 0 | 0 | 0 | 0 | 0 |
-| `src/compiler/command/driver.iyi` | 4 | 1 | 3 | 0 | 0 | 0 | 0 |
+| `src/compiler/command/driver.iyi` | 4 | 1 | 2 | 1 | 0 | 0 | 0 |
 | `src/compiler/foundation/enums.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/foundation/errors.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/foundation/location.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -97,14 +89,15 @@ cannot read may only fall (`bench/macro_sites.floor`).
 | `src/compiler/ir/values.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/ir/verifier.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/llvm/builder.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| `src/compiler/llvm/context.iyi` | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
+| `src/compiler/llvm/context.iyi` | 2 | 2 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/llvm/lib_llvm.iyi` | 1 | 0 | 0 | 1 | 0 | 0 | 0 |
-| `src/compiler/llvm/llvm.iyi` | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
+| `src/compiler/llvm/llvm.iyi` | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/llvm/memory_buffer.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| `src/compiler/llvm/module.iyi` | 2 | 0 | 2 | 0 | 0 | 0 | 0 |
-| `src/compiler/llvm/pass_manager.iyi` | 3 | 0 | 3 | 0 | 0 | 0 | 0 |
+| `src/compiler/llvm/module.iyi` | 2 | 2 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/llvm/pass_manager.iyi` | 3 | 3 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/llvm/target.iyi` | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
-| `src/compiler/llvm/values.iyi` | 1 | 0 | 1 | 0 | 0 | 0 | 0 |
+| `src/compiler/llvm/values.iyi` | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/macros/answers.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/macros/ast.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/macros/engine.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/macros/interpreter.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -126,16 +119,27 @@ cannot read may only fall (`bench/macro_sites.floor`).
 | `src/compiler/native/aarch64/asm.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/aarch64/encode.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/aarch64/isel.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/aarch64/opcodes.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/aarch64/regs.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/amd64/abi.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/amd64/encode.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/amd64/regs.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/asm/constraints.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/asm/inventory.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/link/codesign.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/link/elf_exe.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/link/host_exports.iyi` | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/link/imports.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/link/link.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/link/macho_exe.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/obj/elf.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/obj/macho.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/obj/object.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/native/rt/builtins_text.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/rt/start_wasm32_text.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/wasm/codegen.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/wasm/leb.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/native/wasm/module.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/platform/flags.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/platform/linker.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/platform/target.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -157,10 +161,13 @@ cannot read may only fall (`bench/macro_sites.floor`).
 | `src/compiler/tools/formatter.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/tools/ir.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/tools/ir_core.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/tools/link_elf.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/tools/link_macho.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/tools/mod.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/tools/native_amd64.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/tools/native_asm.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/tools/native_cg.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `src/compiler/tools/obj_elf.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/tools/obj_macho.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/tools/parse.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | `src/compiler/tools/typed_dump.iyi` | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
@@ -178,40 +185,16 @@ left out: each is checked when its macro is called.
 
 | where | kind | context | category | reason |
 |---|---|---|---|---|
-| `src/iyi/atomic.iyi:51:5` | MacroIf | def:initialize | differing | oracle error "undefined constant T"; port error |
-| `src/iyi/atomic.iyi:69:5` | MacroExpression | def:add | differing | oracle error "undefined constant T"; port text |
-| `src/iyi/atomic.iyi:75:5` | MacroExpression | def:sub | differing | oracle error "undefined constant T"; port text |
 | `src/iyi/concurrency.iyi` | - | - | unpaired | oracle: file-error oracle exit=1: Unhandled exception: unexpected token: "!" (Iyi::SyntaxException) |
 | `src/iyi/enum.iyi:57:5` | MacroIf | def:to_s | needs-context |  |
 | `src/iyi/enum.iyi:114:5` | MacroFor | def:values | needs-context |  |
 | `src/iyi/enum.iyi:126:5` | MacroFor | def:names | needs-context |  |
 | `src/iyi/enum.iyi:143:5` | MacroFor | def:parse? | needs-context |  |
 | `src/iyi/enum.iyi:154:5` | MacroFor | def:from_value? | needs-context |  |
-| `src/iyi/io.iyi:459:3` | MacroFor | def:puts | differing | oracle error "undefined constant T"; port text |
 | `src/iyi/object.iyi:8:5` | MacroExpression | def:to_s | needs-context |  |
-| `src/iyi/object.iyi:27:5` | MacroFor | def:in? | differing | oracle error "undefined constant T"; port text |
 | `src/iyi/object.iyi:54:5` | MacroFor | def:== | needs-context |  |
-| `src/iyi/object.iyi:95:5` | MacroExpression | def:size | differing | oracle error "undefined constant T"; port text |
-| `src/iyi/object.iyi:101:5` | MacroFor | def:[] | differing | oracle error "undefined constant T"; port text |
-| `src/iyi/object.iyi:112:5` | MacroFor | def:== | differing | oracle error "undefined constant T"; port text |
-| `src/iyi/object.iyi:115:5` | MacroExpression | def:== | differing | oracle error "undefined constant T"; port text |
-| `src/iyi/object.iyi:121:5` | MacroExpression | def:=== | differing | oracle error "undefined constant T"; port text |
-| `src/iyi/object.iyi:131:5` | MacroFor | def:hash | differing | oracle error "undefined constant T"; port text |
-| `src/iyi/object.iyi:140:11` | MacroIf | def:to_s | differing | oracle error "undefined constant T"; port text |
-| `src/iyi/object.iyi:142:5` | MacroFor | def:to_s | differing | oracle error "undefined constant T"; port text |
 | `src/iyi/primitives.iyi:69:5` | MacroIf | def:hash | needs-context |  |
-| `src/iyi/primitives.iyi:228:1` | MacroIf | top | differing | text differs |
-| `src/iyi/string.iyi:576:5` | MacroFor | def:interpolation | differing | oracle error "undefined constant T"; port text |
 | `src/compiler/command/driver.iyi:173:18` | MacroExpression | class | differing | oracle error "Error opening file with mode 'r': './../../IYI_VERSION': No such file or directory"; port error |
 | `src/compiler/command/driver.iyi:174:18` | MacroExpression | class | differing | oracle error "Error opening file with mode 'r': './../../VERSION': No such file or directory"; port error |
-| `src/compiler/command/driver.iyi:176:3` | MacroIf | class | differing | text differs |
-| `src/compiler/llvm/context.iyi:76:5` | MacroIf | def:pointer | differing | oracle error "undefined constant LibLLVM::IS_LT_150"; port text |
-| `src/compiler/llvm/context.iyi:94:5` | MacroIf | def:const_string | differing | oracle error "undefined constant LibLLVM::IS_LT_190"; port text |
-| `src/compiler/llvm/lib_llvm.iyi:4:1` | MacroIf | class | refused | "undefined macro method: 'compare_versions'" |
-| `src/compiler/llvm/llvm.iyi:32:5` | MacroIf | def:version | differing | oracle error "undefined constant LibLLVM::IS_LT_160"; port text |
-| `src/compiler/llvm/module.iyi:102:10` | MacroIf | def:get_function? | differing | oracle error "undefined constant LibLLVM::IS_LT_200"; port text |
-| `src/compiler/llvm/module.iyi:142:9` | MacroIf | def:get_global? | differing | oracle error "undefined constant LibLLVM::IS_LT_200"; port text |
-| `src/compiler/llvm/pass_manager.iyi:68:5` | MacroIf | def:initialize | differing | oracle error "undefined constant LibLLVM::IS_LT_170"; port text |
-| `src/compiler/llvm/pass_manager.iyi:79:5` | MacroIf | def:run | differing | oracle error "undefined constant LibLLVM::IS_LT_170"; port text |
-| `src/compiler/llvm/pass_manager.iyi:91:5` | MacroIf | def:dispose | differing | oracle error "undefined constant LibLLVM::IS_LT_170"; port text |
-| `src/compiler/llvm/values.iyi:69:5` | MacroIf | def:pointer | differing | oracle error "undefined constant LibLLVM::IS_LT_150"; port text |
+| `src/compiler/command/driver.iyi:176:3` | MacroIf | class | refused | "macro method '`' is refused: it runs a command" |
+| `src/compiler/llvm/lib_llvm.iyi:4:1` | MacroIf | class | refused | "macro method '`' is refused: it runs a command" |

@@ -2,9 +2,10 @@ module compiler/macros/interpreter
 
 import compiler/syntax/ast::{ASTNode, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Unless, Until, Var, While, Yield, StringBuilder}
 import compiler/syntax/token::{NumberKind}
-import compiler/macros/ast::{MacroId}
+import compiler/macros/ast::{MacroId, TypeNode}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
+import compiler/macros/answers::{MacroAnswers}
 
 # Why an expansion stopped: a `raise`, an undefined name, or a refused macro
 # method. The line and column are the node that failed, as the hosted compiler
@@ -218,6 +219,51 @@ pub class MacroInterpreter
       return BoolLiteral.new(MacroMethods.has_flag?(MacroTargetFlags.host([] of String), flag_name_of(node)))
     end
 
+    if name == "compare_versions"
+      if node.args.size != 2
+        fail_at(node, "compare_versions takes two arguments")
+        return Nop.new
+      end
+      first = evaluate(node.args[0])
+      second = evaluate(node.args[1])
+      return Nop.new if halted?
+      if !MacroMethods.text_like?(first)
+        fail_at(node.args[0], "expected first argument to 'compare_versions' to be a StringLiteral, SymbolLiteral or MacroId, not #{MacroMethods.node_class_name(first)}")
+        return Nop.new
+      end
+      if !MacroMethods.text_like?(second)
+        fail_at(node.args[1], "expected second argument to 'compare_versions' to be a StringLiteral, SymbolLiteral or MacroId, not #{MacroMethods.node_class_name(second)}")
+        return Nop.new
+      end
+      if order = MacroMethods.compare_versions(MacroMethods.to_macro_id(first), MacroMethods.to_macro_id(second))
+        return NumberLiteral.new(order.to_s, NumberKind::I32)
+      end
+      fail_at(node, "compare_versions compares MAJOR.MINOR.PATCH versions: prerelease and build forms are not ported")
+      return Nop.new
+    end
+
+    if name == "read_file" || name == "read_file?"
+      if node.args.size != 1
+        fail_at(node, "#{name} takes one argument")
+        return Nop.new
+      end
+      path_node = evaluate(node.args[0])
+      return Nop.new if halted?
+      if !MacroMethods.text_like?(path_node)
+        fail_at(node.args[0], "expected argument to '#{name}' to be a StringLiteral, SymbolLiteral or MacroId, not #{MacroMethods.node_class_name(path_node)}")
+        return Nop.new
+      end
+      path = MacroMethods.to_macro_id(path_node)
+      if !File.exists?(path)
+        if name == "read_file?"
+          return NilLiteral.new
+        end
+        fail_at(node, "Error opening file with mode 'r': '#{path}': No such file or directory")
+        return Nop.new
+      end
+      return StringLiteral.new(File.read(path))
+    end
+
     if name == "env"
       key = node.args.empty? ? "" : macro_id_of(node.args[0])
       if value = ENV[key]?
@@ -302,6 +348,26 @@ pub class MacroInterpreter
     if node.is_a?(StringLiteral) || node.is_a?(NumberLiteral) || node.is_a?(CharLiteral) || node.is_a?(BoolLiteral) || node.is_a?(NilLiteral) || node.is_a?(SymbolLiteral)
       return node
     end
+    if node.is_a?(Path)
+      path = node.as(Path)
+      if path.names.size == 1 && MacroAnswers.builtin_type?(path.names[0])
+        return TypeNode.new(path.names[0])
+      end
+      fail_at(path, "undefined constant #{path.names.join("::")}")
+      return Nop.new
+    end
+
+    if node.is_a?(IsA)
+      isa = node.as(IsA)
+      rec = evaluate(isa.obj)
+      return Nop.new if halted?
+      if isa.nil_check
+        return BoolLiteral.new(MacroMethods.node_class_name(rec) == "NilLiteral")
+      end
+      const_name = isa.const.is_a?(Path) ? isa.const.as(Path).names.last : ""
+      actual = MacroMethods.node_class_name(rec)
+      return BoolLiteral.new(actual == const_name || const_name == "ASTNode")
+    end
 
     if node.is_a?(InstanceVar)
       iv = node.as(InstanceVar)
@@ -363,20 +429,29 @@ pub class MacroInterpreter
         if top = top_level_call(cl)
           return top
         end
-        if cl.args.empty?
+        if MacroAnswers.receiverless?(cl.name)
+          fail_at(cl, "macro method '#{cl.name}' is not ported")
+        elsif cl.args.empty?
           fail_at(cl, "undefined macro variable '#{cl.name}'")
         else
           fail_at(cl, "undefined macro method: '#{cl.name}'")
         end
         return Nop.new
       end
-      rec = if o = cl.obj
-              evaluate(o)
-            else
-              nil
-            end
+      obj = cl.obj.as(ASTNode)
+      receiver = evaluate(obj)
+      return Nop.new if halted?
+      class_name = MacroMethods.node_class_name(receiver)
+      unless MacroAnswers.receiver?(class_name, cl.name)
+        fail_at(cl, "undefined macro method '#{class_name}##{cl.name}'")
+        return Nop.new
+      end
       eval_args = cl.args.map { |a| evaluate(a) }
-      return MacroMethods.interpret_method(@flags, rec, cl.name, eval_args, nil, cl.block)
+      if value = MacroMethods.interpret_method(@flags, receiver, cl.name, eval_args, nil, cl.block)
+        return value
+      end
+      fail_at(cl, "macro method '#{class_name}##{cl.name}' is not ported")
+      return Nop.new
     end
 
     if node.is_a?(If)
