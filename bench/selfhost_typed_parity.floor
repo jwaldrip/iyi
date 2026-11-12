@@ -298,3 +298,8 @@ src/std/xz.iyi 0
 src/std/yaml.iyi 0
 src/std/zip.iyi 0
 src/std/zstd.iyi 0
+src/compiler/semantic/call.iyi 0
+src/compiler/semantic/match.iyi 0
+src/compiler/semantic/method_lookup.iyi 0
+src/compiler/semantic/restrictions.iyi 0
+src/compiler/semantic/call_error.iyi 0
