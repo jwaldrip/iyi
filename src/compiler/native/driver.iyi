@@ -19,6 +19,7 @@ import compiler/native/aarch64/encode::{encode_function, EncodedFunction, Encode
 import compiler/native/regalloc::{allocate}
 import compiler/native/frame::{lay_out}
 import compiler/native/emit::{SectionWriter, to_bytes, write_initializer, data_section_name}
+import compiler/native/thread_locals::{place_thread_locals}
 import compiler/native/aarch64/abi::{aarch64_target}
 import std/slice::{Slice, Bytes}
 
@@ -40,7 +41,8 @@ pub def symbol_table(mod : Module, obj : ObjectFile) : Hash(String, Int32)
     if g.initializer.nil? && g.linkage == Linkage::External
       obj.symbols << Symbol.new(g.name, SymbolKind::Undefined, SymbolBinding::Global)
     else
-      obj.symbols << Symbol.new(g.name, SymbolKind::Object, binding, -1)
+      kind = g.tls == TlsModel::None ? SymbolKind::Object : SymbolKind::Tls
+      obj.symbols << Symbol.new(g.name, kind, binding, -1)
     end
   end
   table
@@ -112,6 +114,11 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
   obj.sections << Section.new(".rodata", SectionKind::ReadOnly, 8, to_bytes(rodata.bytes), rodata.bytes.size.to_i64, rodata.relocs)
   obj.sections << Section.new(".data", SectionKind::Data, 8, to_bytes(data.bytes), data.bytes.size.to_i64, data.relocs)
   obj.sections << Section.new(".bss", SectionKind::ZeroFill, 8, to_bytes([] of UInt8), bss_size, [] of Reloc)
+  tls = place_thread_locals(mod, obj, syms, desc.darwin, 4)
+  return tls if tls.is_a?(String)
+  tls.as(Array(Section)).each do |s|
+    obj.sections << s
+  end
   obj
 end
 
@@ -157,5 +164,12 @@ def dump_inst(inst : MInst) : String
   text = text + " #imm=#{inst.imm}" if inst.imm != 0_i64
   text = text + " target=#{inst.target}" if inst.target >= 0
   text = text + " sym=#{inst.sym}" if inst.sym >= 0
+  unless inst.clobbers.empty?
+    names = [] of String
+    inst.clobbers.each do |r|
+      names << reg_name(r)
+    end
+    text = text + " clobbers=" + names.join(",")
+  end
   text
 end

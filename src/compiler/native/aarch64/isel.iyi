@@ -12,13 +12,13 @@ module compiler/native/aarch64/isel
 #
 # Failure. iyi has no exceptions, so an unsupported construct records its reason
 # with `fail` and selection stops emitting; `select_function` returns the reason.
-# Refused by name: i128, thread-local access, inline asm, constant expressions,
+# Refused by name: i128, inline asm, constant expressions,
 # reachable exception pads, and intrinsics outside the overflow family, trap,
 # expect, assume and donothing.
 
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value, Param}
-import compiler/ir/inst::{Op, Inst, CallConv, Ordering, Attribute, CallAux, GepAux, MemAux, IntrinsicAux}
+import compiler/ir/inst::{Op, Inst, CallConv, Ordering, Attribute, CallAux, GepAux, MemAux, IntrinsicAux, ThreadPointerKind}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout}
@@ -26,7 +26,7 @@ import compiler/ir/intrinsics::{IntrinsicId, intrinsic_stem}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
 import compiler/native/obj/object::{RelocKind}
 import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le}
-import compiler/native/target::{TargetDesc}
+import compiler/native/target::{TargetDesc, TlsForm}
 import compiler/native/aarch64/abi::{aarch64_target}
 import compiler/native/lower::{LeafLoc, CallAssignment, flatten_leaves, assign_call, assign_return, assign_iyi_call, assign_iyi_return, reachable_blocks, plan_gep, GepPlan, overflow_form, acquire_on_load?, release_on_store?, icmp_unsigned?}
 
@@ -275,7 +275,7 @@ class Isel
   # The address of a symbol: an adrp/add pair for a symbol defined here, the GOT entry for an external one.
   def symbol_address(name : String, tls : Bool, external : Bool) : Int32
     if tls
-      fail("thread-local access to #{name} is not lowered in this slice: the Mach-O TLV descriptor awaits its own slice")
+      fail("thread-local #{name} is reached through threadlocaladdr, not as an operand")
     end
     d = gpr
     m = mop(external ? MOp::LoadGot : MOp::AddrSym)
@@ -283,6 +283,107 @@ class Isel
     m.sym = symbol_index(name)
     emit(m)
     d
+  end
+
+  # ---- thread-local access (SPEC 3.5): the Mach-O TLV descriptor on darwin, the local-exec offset on Linux ------
+
+  # The clobbers of the thunk call. The thunk writes x0 (the variable's address), uses x16 and x17 as its own scratch,
+  # and writes the link register. The oracle's accessor keeps its out-pointer in x8 across the call, and LLVM keeps
+  # arguments in x1..x8 across it: those are observed. That x9..x15 and x19..x28 survive it as well is LLVM's TLS
+  # call mask, which this slice takes from the thunk's contract and did not read from the thunk's own code.
+  def tlv_clobbers : Array(Int32)
+    [0, 16, 17, 30]
+  end
+
+  # threadlocaladdr. Darwin: the address of the TLV descriptor (adrp and ldr through the TLVP relocations), the
+  # thunk (the descriptor's first word) loaded from it, the descriptor passed in x0, and the variable's address in
+  # x0 on return. Linux: the thread pointer plus the local-exec offset, two adds that carry the TPREL relocations.
+  # The sequence is emitted here, at this instruction, and every value it makes is bound to this instruction only.
+  def lower_thread_local_addr(i : Inst) : Nil
+    target = i.args[0]
+    unless target.is_a?(Global)
+      fail("threadlocaladdr names a value that is not a global")
+      return
+    end
+    g = target.as(Global)
+    if @desc.tls == TlsForm::LocalExec
+      tp = gpr
+      m = mop(MOp::Mrs)
+      m.imm = 0_i64
+      m.defs << vop(tp)
+      emit(m)
+      hi = gpr
+      m = mop(MOp::AddTprelHi)
+      m.sym = symbol_index(g.name)
+      m.defs << vop(hi)
+      m.uses << vop(tp)
+      emit(m)
+      lo = gpr
+      m = mop(MOp::AddTprelLo)
+      m.sym = symbol_index(g.name)
+      m.defs << vop(lo)
+      m.uses << vop(hi)
+      emit(m)
+      bind_result(i, [lo])
+      return
+    end
+    desc = gpr
+    m = mop(MOp::LoadTlvp)
+    m.sym = symbol_index(g.name)
+    m.defs << vop(desc)
+    emit(m)
+    thunk = gpr
+    m = mop(MOp::Ldr)
+    m.size = 64
+    m.imm = 0_i64
+    m.defs << vop(thunk)
+    m.uses << vop(desc)
+    emit(m)
+    m = mop(MOp::Mov)
+    m.defs << pop(0)
+    m.uses << vop(desc)
+    emit(m)
+    @mf.frame.has_calls = true
+    m = mop(MOp::Blr)
+    m.uses << vop(thunk)
+    m.call = true
+    m.clobbers = tlv_clobbers
+    emit(m)
+    addr = gpr
+    m = mop(MOp::Mov)
+    m.defs << vop(addr)
+    m.uses << pop(0)
+    emit(m)
+    bind_result(i, [addr])
+  end
+
+  # threadpointer. The kind names the register the target reads: tpidr_el0 on Linux, and tpidrro_el0 on darwin, whose
+  # low three bits hold the CPU number, so the value is taken with them cleared, as the oracle's thread_block takes
+  # it. Each kind is refused on the other target, and x86's %fs and %gs are refused by name.
+  def lower_thread_pointer(i : Inst) : Nil
+    kind = i.aux_int
+    darwin_reg = kind == ThreadPointerKind::TpidrroEl0.value.to_i64
+    linux_reg = kind == ThreadPointerKind::TpidrEl0.value.to_i64
+    unless (darwin_reg && @darwin) || (linux_reg && !@darwin)
+      fail("threadpointer #{kind} is not read on this target: darwin reads tpidrro_el0 and Linux reads tpidr_el0")
+      return
+    end
+    tp = gpr
+    m = mop(MOp::Mrs)
+    m.imm = darwin_reg ? 1_i64 : 0_i64
+    m.defs << vop(tp)
+    emit(m)
+    if darwin_reg
+      masked = gpr
+      m = mop(MOp::AndImm)
+      m.imm = -8_i64
+      m.defs << vop(masked)
+      m.uses << vop(tp)
+      emit(m)
+      bind_result(i, [masked])
+      return
+    end
+    bind_result(i, [tp])
   end
 
   # ---- normalisation -----------------------------------------------------------------------------
@@ -700,8 +801,10 @@ class Isel
       m = mop(MOp::Brk)
       m.imm = 1_i64
       emit(m)
-    elsif op == Op::ThreadLocalAddr || op == Op::ThreadPointer
-      fail("thread-local access is not lowered in this slice: the TLV descriptor and the thread pointer await their own slice")
+    elsif op == Op::ThreadLocalAddr
+      lower_thread_local_addr(i)
+    elsif op == Op::ThreadPointer
+      lower_thread_pointer(i)
     elsif op == Op::LandingPad || op == Op::Resume || op == Op::CatchSwitch || op == Op::CatchPad || op == Op::CatchRet || op == Op::CleanupPad || op == Op::CleanupRet
       fail("a reachable exception pad (#{op}) is a named error: iyi emits no exception tables")
     else
