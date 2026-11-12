@@ -195,7 +195,7 @@ src/compiler/types/types.iyi 181
 src/compiler/types/unification.iyi 17
 src/iyi/array.iyi 109
 src/iyi/atomic.iyi 8
-src/iyi/chaos.iyi 0
+src/iyi/chaos.iyi 70
 src/iyi/chaos_points.iyi 0
 src/iyi/concurrency.iyi 0
 src/iyi/enum.iyi 15
