@@ -187,8 +187,8 @@ prove_mutation "a read of an initialised constant is not a load" "$REPO/src/comp
   "  low.last = load_aligned(low, ir, g.as(Global))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
 prove_mutation "the constant initialiser has the C convention, not iyi" "$REPO/src/compiler/lower/const.iyi" \
   "  fn.call_convention = CallConv::Iyi" "  fn.call_convention = CallConv::C" -- lowglob_check || status=1
-prove_mutation "a literal class variable read is not a load of its global" "$REPO/src/compiler/lower/class_var.iyi" \
-  "    low.last = load_aligned(low, ir, g)" "    low.last = llvm_nil(low)" -- lowglob_check || status=1
+prove_mutation "a class variable read is not a load of its global" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  low.last = load_aligned(low, ir, class_var_pointer(low, cvar))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
 prove_mutation "a literal class variable is initialised by a function, not stored at its declaration" "$REPO/src/compiler/lower/class_var.iyi" \
   "  if simple_literal?(node)" "  if false" -- lowglob_check || status=1
 prove_mutation "a string constant's global is not emitted at the program's start" "$REPO/src/compiler/lower/const.iyi" \
@@ -200,6 +200,9 @@ prove_mutation "a string constant's global is initialised with null, not its add
 prove_mutation "a string constant's assignment initialises it a second time" "$REPO/src/compiler/lower/const.iyi" \
   "if string_const?(c)" \
   "if false" -- lowglob_check || status=1
+prove_mutation "a class variable assignment in a method stores the global's address, not the value" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  store_aligned(low, value, ptr)" \
+  "  store_aligned(low, ptr, ptr)" -- lowglob_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

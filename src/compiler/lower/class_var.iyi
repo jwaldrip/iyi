@@ -18,7 +18,6 @@ module compiler/lower/class_var
 #   - a class variable declared without an initialiser (its global has no initial value);
 #   - a class variable whose owner is in a namespace, is generic, or is not a class (its hosted `llvm_name`);
 #   - a string, symbol, nil or float initialiser, whose global is initialised by `initialize_simple_constants`;
-#   - an assignment to a class variable that is not its declaration (hosted `codegen_assign` with a typed target);
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
 # Thread-local class variables: the analysis has no thread-local flag on `MetaTypeVar` yet, so a thread-local
 # variable is lowered as an ordinary global; this gap is recorded in NEEDS.md and must close before the
@@ -263,32 +262,49 @@ pub def initialize_class_var(low : Lowerer, cvar : MetaTypeVar) : Nil
   low.builder.call(ft, fn.as(Function), [] of Value, "")
 end
 
-# The hosted `read_class_var_ptr` for a class variable of a plain class (class_var.cr:210-245), read as a value: a
-# literal is read from its global, which holds the literal; any other is a load of its global once it has been
-# initialised at its declaration. A read before that is the lazy path, refused by name.
-pub def codegen_class_var_read(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar) : Nil
-  cvar = class_var_of(low, node)
+# The hosted `read_class_var_ptr` for a class variable of a plain class (class_var.cr:210-245): the global the value of
+# the variable lives in, which a read loads and an assignment stores to. It marks the variable read. A literal is stored
+# in the global at its declaration; any other is set by its declaration's call, so a pointer taken before that needs the
+# lazy path, which is refused by name.
+pub def class_var_pointer(low : Lowerer, cvar : MetaTypeVar) : Global
   owner = cvar_owner(low, cvar.name)
   name = cvar_global_name(owner, cvar.name)
   st = low.globals.class_var_state(cvar_key(owner, cvar.name))
   st.read = true
   init = cvar.initializer
   if init.nil?
-    refuse_port("lower: read of class variable #{cvar.name}, which is declared without an initialiser: its hosted global has no initial value (hosted class_var.cr: read_class_var_ptr), not ported yet")
+    refuse_port("lower: class variable #{cvar.name} is declared without an initialiser: its hosted global has no initial value (hosted class_var.cr: read_class_var_ptr), not ported yet")
   end
   ir = cvar_ir_type(low, cvar)
   node_init = init.as(ASTNode)
   if simple_literal?(node_init)
-    g = simple_cvar_global(low, cvar, name, ir, node_init, st)
-    low.last = load_aligned(low, ir, g)
-    return
+    return simple_cvar_global(low, cvar, name, ir, node_init, st)
   end
   check_cvar_initializer(cvar, node_init)
   g = st.global
   if g.nil? || !st.no_init_flag
-    refuse_port("lower: read of class variable #{cvar.name} before its initialisation: the hosted lazy path (create_read_class_var_function, class_var.cr:236) is not ported yet")
+    refuse_port("lower: class variable #{cvar.name} is used before its initialisation: the hosted lazy path (create_read_class_var_function, class_var.cr:236) is not ported yet")
   end
-  low.last = load_aligned(low, ir, g.as(Global))
+  g.as(Global)
+end
+
+# The hosted `read_class_var` (class_var.cr:200-203): a load of the variable's global.
+pub def codegen_class_var_read(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar) : Nil
+  cvar = class_var_of(low, node)
+  ir = cvar_ir_type(low, cvar)
+  low.last = load_aligned(low, ir, class_var_pointer(low, cvar))
+end
+
+# The hosted `codegen_assign` for a class variable target with a type (codegen.cr:1555-1556), once the value is evaluated:
+# the value is stored in the variable's global. A value of another type is refused by name: the hosted assign into a
+# union is not ported yet (hosted cast.cr).
+pub def store_class_var(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar, value : Value, value_type : Type) : Inst
+  cvar = class_var_of(low, node)
+  ptr = class_var_pointer(low, cvar)
+  if cvar.type.full_name != value_type.full_name
+    refuse_port("lower: class variable #{cvar.name} is assigned a #{value_type.full_name}, not its type #{cvar.type.full_name}: the assign into a union is not ported yet (hosted codegen.cr: codegen_assign)")
+  end
+  store_aligned(low, value, ptr)
 end
 
 # The hosted `visit(TypeDeclaration)` for a class variable (codegen.cr:1814-1816): the declaration initialises the
@@ -300,13 +316,9 @@ pub def codegen_type_declaration_class_var(low : Lowerer, node : TypeDeclaration
 end
 
 # The hosted `codegen_assign` for a class variable target whose type is not known (codegen.cr:1530-1536): a class
-# body assignment is the variable's initialiser, and it emits nothing of its own. An assignment anywhere else
-# stores into the variable, which is not ported yet.
+# body assignment is the variable's initialiser, and it emits nothing of its own. The value is nil.
 pub def codegen_class_var_assign(low : Lowerer, node : Assign) : Nil
   target = node.target.as(Compiler::Syntax::Ast::ClassVar)
-  if !in_class_body?(low)
-    refuse_port("lower: an assignment to class variable #{target.name} that is not its declaration is not ported yet (hosted codegen.cr: codegen_assign with a typed class variable target)")
-  end
   cvar = class_var_of(low, target)
   initialize_class_var(low, cvar)
   low.last = llvm_nil(low)
