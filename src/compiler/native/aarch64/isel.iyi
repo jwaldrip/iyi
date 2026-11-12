@@ -28,7 +28,7 @@ import compiler/native/obj/object::{RelocKind}
 import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le}
 import compiler/native/target::{TargetDesc}
 import compiler/native/aarch64/abi::{aarch64_target}
-import compiler/native/lower::{LeafLoc, CallAssignment, flatten_leaves, assign_call, assign_return, reachable_blocks, plan_gep, GepPlan, overflow_form, acquire_on_load?, release_on_store?, icmp_unsigned?}
+import compiler/native/lower::{LeafLoc, CallAssignment, flatten_leaves, assign_call, assign_return, assign_iyi_call, assign_iyi_return, reachable_blocks, plan_gep, GepPlan, overflow_form, acquire_on_load?, release_on_store?, icmp_unsigned?}
 
 pub class IselError
   getter message : String
@@ -462,11 +462,47 @@ class Isel
     @mf
   end
 
+  # Whether a parameter list carries a byval attribute. byval needs the caller's copy, which is not lowered yet.
+  def attrs_byval?(attrs : Array(Array(Attribute))) : Bool
+    attrs.any? { |p| p.any? { |a| a.name == "byval" } }
+  end
+
+  # The parameter assignment of this function, by its convention.
+  def param_assignment(params : Array(IrType), sret_first : Bool) : CallAssignment | String
+    return assign_iyi_call(@layout, @desc, params, sret_first) if @fn.cc == CallConv::Iyi
+    assign_call(@layout, @desc, params, params.size, sret_first)
+  end
+
+  # The result assignment, by the convention the caller and the callee share.
+  def result_assignment(t : IrType, iyi : Bool) : Array(LeafLoc) | String
+    return assign_iyi_return(@layout, @desc, t) if iyi
+    assign_return(@layout, @desc, t)
+  end
+
+  # The argument assignment of a call, by the convention the call uses.
+  def call_assignment(types : Array(IrType), fixed : Int32, sret_first : Bool, iyi : Bool) : CallAssignment | String
+    return assign_iyi_call(@layout, @desc, types, sret_first) if iyi
+    assign_call(@layout, @desc, types, fixed, sret_first)
+  end
+
+  # Whether a call uses the internal convention. A direct call takes its callee's convention; an indirect call
+  # takes the one its call site names.
+  def callee_iyi?(i : Inst) : Bool
+    callee = i.args[0]
+    return callee.as(Function).cc == CallConv::Iyi if callee.is_a?(Function)
+    aux = i.aux
+    aux.is_a?(CallAux) && aux.as(CallAux).cc == CallConv::Iyi
+  end
+
   # Parameters arrive by the convention: registers, or the caller's outgoing area above the frame record.
   def lower_params : Nil
+    if attrs_byval?(@fn.param_attrs)
+      fail("a byval parameter is not lowered in this slice: its copy awaits the memcpy expansion")
+      return
+    end
     params = @fn.params.map { |p| p.type }
     sret_first = sret_param?(0)
-    assignment = assign_call(@layout, @desc, params, params.size, sret_first)
+    assignment = param_assignment(params, sret_first)
     if assignment.is_a?(String)
       fail(assignment.as(String))
       return
@@ -1174,7 +1210,7 @@ class Isel
   def lower_ret(i : Inst) : Nil
     ret_type = @fn.fn_type.return_type
     if !ret_type.void? && i.args.size == 1
-      assigned = assign_return(@layout, @desc, ret_type)
+      assigned = result_assignment(ret_type, @fn.cc == CallConv::Iyi)
       if assigned.is_a?(String)
         fail(assigned.as(String))
         return
@@ -1214,7 +1250,13 @@ class Isel
       attrs = cc_aux.param_attrs
       sret_first = attrs.size > 0 && attrs[0].any? { |a| a.name == "sret" }
     end
-    assignment = assign_call(@layout, @desc, types, fixed, sret_first)
+    if cc_aux
+      if attrs_byval?(cc_aux.param_attrs)
+        fail("a byval argument is not lowered in this slice: its copy awaits the memcpy expansion")
+        return
+      end
+    end
+    assignment = call_assignment(types, fixed, sret_first, callee_iyi?(i))
     if assignment.is_a?(String)
       fail(assignment.as(String))
       return
@@ -1272,7 +1314,7 @@ class Isel
       emit(m)
     end
     return if i.type.void?
-    assigned = assign_return(@layout, @desc, i.type)
+    assigned = result_assignment(i.type, callee_iyi?(i))
     if assigned.is_a?(String)
       fail(assigned.as(String))
       return

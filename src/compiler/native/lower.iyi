@@ -334,3 +334,82 @@ end
 pub def icmp_unsigned?(ordinal : Int64) : Bool
   ordinal == 2_i64 || ordinal == 3_i64 || ordinal == 4_i64 || ordinal == 5_i64
 end
+
+# The internal convention (SPEC 2.2): a scalar takes the platform C rule, and an aggregate is split into its
+# scalar leaves, each passed as its own scalar. Each leaf takes the next register of its class, and what does not
+# fit goes to the stack in order, one 8-byte slot per leaf. Unlike the C walk, no aggregate is refused for its
+# size, so a three-word struct travels in three registers.
+pub def assign_iyi_call(layout : DataLayout, desc : TargetDesc, params : Array(IrType), sret_first : Bool) : CallAssignment | String
+  gpr_next = 0
+  fpr_next = 0
+  stack = 0_i64
+  args = [] of Array(LeafLoc)
+  indirect = false
+  i = 0
+  while i < params.size
+    t = params[i]
+    if i == 0 && sret_first
+      indirect = true
+      args << [LeafLoc.new(0, desc.indirect_result, -1_i64, 64, false, t)]
+      i = i + 1
+      next
+    end
+    leaves = flatten_leaves(layout, t)
+    locs = [] of LeafLoc
+    k = 0
+    while k < leaves.size
+      leaf = leaves[k][1]
+      reason = refusal(leaf)
+      return reason if reason
+      if leaf.float?
+        if fpr_next < desc.fp_args.size
+          locs << LeafLoc.new(1, desc.fp_args[fpr_next], -1_i64, leaf.bits, true, leaf)
+          fpr_next = fpr_next + 1
+        else
+          locs << LeafLoc.new(2, -1, stack, leaf.bits, true, leaf)
+          stack = stack + 8_i64
+        end
+      else
+        bits = leaf.int? ? leaf.bits : 64
+        if gpr_next < desc.integer_args.size
+          locs << LeafLoc.new(0, desc.integer_args[gpr_next], -1_i64, bits, false, leaf)
+          gpr_next = gpr_next + 1
+        else
+          locs << LeafLoc.new(2, -1, stack, bits, false, leaf)
+          stack = stack + 8_i64
+        end
+      end
+      k = k + 1
+    end
+    args << locs
+    i = i + 1
+  end
+  CallAssignment.new(args, stack, indirect)
+end
+
+# The internal convention's result: each leaf of the result takes the next result register of its class. A result
+# that needs more registers than there are is refused by name.
+pub def assign_iyi_return(layout : DataLayout, desc : TargetDesc, t : IrType) : Array(LeafLoc) | String
+  return [] of LeafLoc if t.void?
+  leaves = flatten_leaves(layout, t)
+  acc = [] of LeafLoc
+  gpr_next = 0
+  fpr_next = 0
+  k = 0
+  while k < leaves.size
+    leaf = leaves[k][1]
+    reason = refusal(leaf)
+    return reason if reason
+    if leaf.float?
+      return "an internal result needs more than #{desc.fp_args.size} floating-point registers" if fpr_next >= desc.fp_args.size
+      acc << LeafLoc.new(1, desc.fp_args[fpr_next], -1_i64, leaf.bits, true, leaf)
+      fpr_next = fpr_next + 1
+    else
+      return "an internal result needs more than #{desc.integer_args.size} integer registers" if gpr_next >= desc.integer_args.size
+      acc << LeafLoc.new(0, desc.integer_args[gpr_next], -1_i64, leaf.int? ? leaf.bits : 64, false, leaf)
+      gpr_next = gpr_next + 1
+    end
+    k = k + 1
+  end
+  acc
+end
