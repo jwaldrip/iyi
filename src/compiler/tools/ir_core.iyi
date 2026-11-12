@@ -20,7 +20,7 @@ import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/values::{Value, Param}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, Ordering, IntPredicate, RealPredicate, AsmDialect, ThreadPointerKind, Attribute, CallAux}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
-import compiler/ir/intrinsics::{IntrinsicId}
+import compiler/ir/intrinsics::{IntrinsicId, all_intrinsic_ids, intrinsic_candidates, intrinsic_signature, intrinsic_name}
 import compiler/platform/target::{Target}
 
 lib LibC
@@ -30,11 +30,19 @@ end
 module IrCore
   def self.run : Nil
     args = Program.args
-    if args.size < 2
-      STDERR.puts "usage: ir_core print|roundtrip|verify|layout|structs FILE | emit NAME"
+    if args.empty?
+      STDERR.puts "usage: ir_core print|roundtrip|verify|layout|structs FILE | emit NAME | intrinsics"
       LibC.exit(2)
     end
     command = args[0]
+    if command == "intrinsics"
+      intrinsic_names
+      return
+    end
+    if args.size < 2
+      STDERR.puts "usage: ir_core print|roundtrip|verify|layout|structs FILE | emit NAME | intrinsics"
+      LibC.exit(2)
+    end
     argument = args[1]
     if command == "emit"
       emit(argument)
@@ -90,6 +98,50 @@ module IrCore
     STDOUT.puts "target datalayout = " + "\"" + built.as(DataLayout).llvm_string + "\""
   end
 
+  # Every intrinsic the IR accepts, one LLVM name per line, at each width its family accepts.
+  def self.intrinsic_names : Nil
+    t = TypeTable.new
+    all_intrinsic_ids.each do |id|
+      intrinsic_candidates(id, t).each do |overload|
+        STDOUT.puts intrinsic_name(id, overload)
+      end
+    end
+  end
+
+  # A call of every accepted intrinsic at every width its family accepts, with operands of the
+  # signature's types. Pointers are the function's parameter; integers and floats are constants.
+  def self.intrinsics_module : Module
+    mod = new_module("intrinsics", "x86_64-unknown-linux-gnu")
+    b = Builder.new(mod)
+    t = mod.types
+    fn = mod.add_function("every", t.func([t.ptr(0)], t.void), CallConv::Iyi)
+    fn.add_param(Param.new(t.ptr(0), "p", 0))
+    entry = fn.append_basic_block("entry")
+    b.position_at_end(entry)
+    all_intrinsic_ids.each do |id|
+      intrinsic_candidates(id, t).each do |overload|
+        signature = intrinsic_signature(id, overload, t)
+        args = [] of Value
+        signature[1].each { |pt| args << intrinsic_argument(b, pt, fn.param(0)) }
+        b.intrinsic(id, overload, args, "")
+      end
+    end
+    b.ret_void
+    mod
+  end
+
+  def self.intrinsic_argument(b : Builder, t : IrType, pointer : Value) : Value
+    if t.pointer?
+      pointer
+    elsif t.float?
+      b.const_float(t, 1.5)
+    elsif t.int?
+      b.const_int(t, t.bits == 1 ? 1_i64 : 2_i64)
+    else
+      raise "no argument for #{t}"
+    end
+  end
+
   # One line per named struct: `struct NAME size=N align=A` then `field I offset=O size=S` for each field.
   def self.structs(mod : Module) : Nil
     layout = mod.layout
@@ -127,6 +179,8 @@ module IrCore
       mod = calls_module
     elsif name == "runtime"
       mod = runtime_module
+    elsif name == "intrinsics"
+      mod = intrinsics_module
     else
       STDERR.puts "ir_core: no fixture named #{name}"
       LibC.exit(2)
@@ -172,7 +226,7 @@ module IrCore
     chosen = b.select(flt, b.const_float(f64, 0.0), sum, "chosen")
     as_int = b.fp_to_si(chosen, i32, "asint")
     back = b.si_to_fp(as_int, f64, "back")
-    root = b.intrinsic(IntrinsicId::SqrtF64, [f64], [back] of Value, "root")
+    root = b.intrinsic(IntrinsicId::Sqrt, [f64], [back] of Value, "root")
     b.ret(root)
 
     h = mod.add_function("pair", t.func([i32], t.struct_of([i32, t.int8])), CallConv::Iyi)
@@ -291,7 +345,7 @@ module IrCore
     asm_type = t.func([] of IrType, t.void)
     asm_callee = b.inline_asm(asm_type, "nop", "", true, false, AsmDialect::Att)
     b.call(asm_type, asm_callee, [] of Value, "")
-    sum = b.intrinsic(IntrinsicId::SaddWithOverflowI32, [i32], [b.const_int(i32, 1_i64), b.const_int(i32, 2_i64)] of Value, "sum")
+    sum = b.intrinsic(IntrinsicId::SAddOverflow, [i32], [b.const_int(i32, 1_i64), b.const_int(i32, 2_i64)] of Value, "sum")
     value = b.extract_value(sum, 0, "value")
     b.ret(value)
     mod

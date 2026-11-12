@@ -1,5 +1,5 @@
 ; iyi-ir 1
-module "everything"
+source_filename = "everything"
 target triple = "x86_64-unknown-linux-gnu"
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
 file "everything.iyi"
@@ -28,13 +28,29 @@ flag "branch-target-enforcement" = 1
 @poison = internal global ptr poison
 @nul = internal global ptr null
 @bool = internal global i1 true
+@wide = internal global i128 170141183460469231731687303715884105727
+@wide_neg = internal dso_local global i128 -170141183460469231731687303715884105728
+@shared = external dso_local hidden global i32 3
+@prot = external protected global i32 4
 declare external i32 @puts(noundef ptr)
 
 declare external iyicc void @raise_error()
 
 declare external i32 @printf(ptr, ...)
 
-define internal iyicc i32 @sum(i32 %a, i32 %b) {
+declare external protected iyicc i32 @prot_decl(i32)
+
+declare external hidden iyicc void @hidden_decl()
+
+define external dso_local hidden iyicc i32 @hidden_fn(i32 %x) {
+entry:
+  %w = add i128 123456789012345678901234567890, -98765432109876543210
+  %wt = trunc i128 %w to i32
+  %r = add i32 %wt, %x
+  ret i32 %r
+}
+
+define internal dso_local iyicc i32 @sum(i32 %a, i32 %b) {
 entry:
   %s = add nuw nsw i32 %a, %b
   %d = sdiv exact i32 %s, 2
