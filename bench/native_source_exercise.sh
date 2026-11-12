@@ -87,26 +87,52 @@ compare_run() {
   return 0
 }
 
-echo "== 3. every fixture against the hosted compiler's build (native vs hosted, port+LLVM as a second column)"
+# check_ceiling MEASURED CEILING LABEL: a fixture the run finds that the ceiling does not name fails the gate. A name the
+# ceiling lists that the run no longer finds may fall, so it is printed for removal by hand. Names are the first word of each line.
+check_ceiling() {
+  local measured="$1" ceiling="$2" label="$3" new ceiling_n measured_n
+  if [ ! -f "$ceiling" ]; then echo "FAIL: $label: no ceiling at $ceiling"; return 1; fi
+  new=$(awk 'NR == FNR { if (NF && $1 !~ /^#/) listed[$1] = 1; next } NF && !($1 in listed) { print "   NEW " $0 }' "$ceiling" "$measured")
+  ceiling_n=$(awk '!/^#/ && NF' "$ceiling" | awk 'END { print NR }')
+  measured_n=$(awk 'NF' "$measured" | awk 'END { print NR }')
+  echo "  $label: $measured_n measured, $ceiling_n in $(basename "$ceiling")"
+  if [ -n "$new" ]; then
+    echo "$new"
+    echo "  FAIL: $label: a fixture the ceiling does not name (above); the ceiling may only fall"
+    return 1
+  fi
+  awk 'NR == FNR { if (NF) seen[$1] = 1; next } !/^#/ && NF && !($1 in seen) { print "   ratchet: " $1 " no longer occurs; remove it from " FILENAME }' "$measured" "$ceiling"
+  return 0
+}
+
+echo "== 3. every fixture: the hosted reference, then the port+LLVM column and the native column"
 tripwire_setup "$WORK/tripwire" "$WORK/tripwire.log" || { echo "FAIL: tripwire setup"; exit 1; }
+FIX="${NATIVE_SOURCE_FIXTURES:-$FIXTURES}"
 total=0
 marked_refs=0
-# The hosted reference of a fixture the hosted source checker refuses for a C fun is built from a copy of EVERY fixture
-# with the same @[Unsafe] header, so each sibling module the fixture imports is marked too. Only the header is added.
-mkdir -p "$WORK/marked"
-for g in "$FIXTURES"/*.iyi; do
-  { printf '@[Unsafe("fixture declares C functions for the runtime test")]\n'; cat "$g"; } >"$WORK/marked/$(basename "$g")"
-done
-cp -R "$FIXTURES/compile_search_roots" "$WORK/marked/" 2>/dev/null || true
 n_equal=0
 g_gaps=0
 r_native_only=0
 s_shared=0
+p_accepts=0
 f_failed=0
 port_equal=0
 port_refused=0
 port_differs=0
-for f in "$FIXTURES"/compile_*.iyi "$FIXTURES"/cg_*.iyi; do
+: >"$WORK/p_measured.txt"
+: >"$WORK/u_measured.txt"
+# The hosted reference of a fixture the hosted source checker refuses for a C fun is built from a copy of EVERY fixture
+# with the same @[Unsafe] header, so each sibling module the fixture imports is marked too. Only the header is added.
+mkdir -p "$WORK/marked"
+for g in "$FIX"/*.iyi; do
+  { printf '@[Unsafe("fixture declares C functions for the runtime test")]\n'; cat "$g"; } >"$WORK/marked/$(basename "$g")"
+done
+cp -R "$FIX/compile_search_roots" "$WORK/marked/" 2>/dev/null || true
+# The first refusal line of a build's log, with the checkout and the scratch copies written as <repo> and <marked>.
+hosted_error() {
+  awk '/^(Error|iyi-compile-native:)/ { print; exit }' "$1" | awk -v repo="$REPO" -v work="$WORK" '{ gsub(repo, "<repo>"); gsub(work "/marked", "<marked>"); print }'
+}
+for f in "$FIX"/compile_*.iyi "$FIX"/cg_*.iyi; do
   [ -f "$f" ] || continue
   n=$(basename "$f" .iyi)
   total=$((total + 1))
@@ -116,45 +142,47 @@ for f in "$FIXTURES"/compile_*.iyi "$FIXTURES"/cg_*.iyi; do
   ref_how="as written"
   if "$IYI" build -o "$ref" "$f" >"$WORK/ref/$n.log" 2>&1; then
     ref_ok=1
+  elif IYI_PATH="$REPO/src:$FIX" "$IYI" build -o "$ref" "$WORK/marked/$n.iyi" >"$WORK/ref/$n.marked.log" 2>&1; then
+    ref_ok=1
+    ref_how="copy with @[Unsafe] header"
+    marked_refs=$((marked_refs + 1))
+    echo "$n" >>"$WORK/u_measured.txt"
+    echo "   U the hosted reference needs the @[Unsafe] header: $n"
   else
-    # The hosted source checker refuses a module that declares a C fun without @[Unsafe]. The reference is then the
-    # hosted build of a copy that adds only that header: the same program, which the checker otherwise refuses.
-    marked="$WORK/marked/$n.iyi"
-    if IYI_PATH="$REPO/src:$FIXTURES" "$IYI" build -o "$ref" "$marked" >"$WORK/ref/$n.log" 2>&1; then
-      ref_ok=1
-      ref_how="copy with @[Unsafe] header (hosted checker requires it for C funs)"
-    else
-      ref_ok=0
-    fi
+    ref_ok=0
   fi
-  if [ "$ref_ok" = 1 ] && [ "$ref_how" != "as written" ]; then marked_refs=$((marked_refs + 1)); fi
   if "$port" "$f" -o "$pexe" >"$WORK/port/$n.log" 2>&1; then port_ok=1; else port_ok=0; fi
   if PATH="$TRIPWIRE_PATH:$PATH" "$tool" "$f" -o "$nexe" >"$WORK/nat/$n.log" 2>&1; then nat_ok=1; else nat_ok=0; fi
 
   if [ "$ref_ok" = 0 ]; then
-    if [ "$nat_ok" = 1 ]; then
-      f_failed=$((f_failed + 1))
-      echo "FAIL: $n: the native tool builds what the hosted compiler refuses"
+    # The hosted compiler refuses this even with the header. A fixture the port or the native back end accepts is
+    # P, named in bench/native_source.ceiling. A fixture that nothing accepts is S, a shared refusal.
+    # The hosted compiler's first refusal. Its @[Unsafe] banner is not the program's refusal, so the marked copy's is used then.
+    err=$(hosted_error "$WORK/ref/$n.log")
+    case "$err" in *"does not check"*) err=$(hosted_error "$WORK/ref/$n.marked.log") ;; esac
+    if [ "$port_ok" = 1 ] || [ "$nat_ok" = 1 ]; then
+      p_accepts=$((p_accepts + 1))
+      echo "$n $err" >>"$WORK/p_measured.txt"
+      echo "   P port accepts what the hosted compiler refuses (port+LLVM $port_ok, native $nat_ok): $n: $err"
     else
       s_shared=$((s_shared + 1))
-      echo "   S refused by the hosted compiler too: $n: $(awk '/Error/ { print; exit }' "$WORK/ref/$n.log")"
+      echo "   S refused by the hosted compiler, the port and the native back end: $n: $err"
     fi
     continue
   fi
 
-  # The hosted compiler builds and runs this program.
+  # The hosted compiler builds this program (with the header where it needs one) and runs it.
   if [ "$port_ok" = 1 ]; then
     if compare_run "$ref" "$pexe" "port+LLVM" "$n" >/dev/null; then
       port_equal=$((port_equal + 1))
     else
       port_differs=$((port_differs + 1))
       f_failed=$((f_failed + 1))
-      echo "FAIL: $n: port+LLVM run differs from the hosted build"
+      echo "FAIL: $n: port+LLVM run differs from the hosted build ($ref_how)"
     fi
   else
     port_refused=$((port_refused + 1))
   fi
-
   if [ "$nat_ok" = 1 ]; then
     if compare_run "$ref" "$nexe" "native" "$n"; then
       n_equal=$((n_equal + 1))
@@ -163,21 +191,26 @@ for f in "$FIXTURES"/compile_*.iyi "$FIXTURES"/cg_*.iyi; do
     fi
   elif [ "$port_ok" = 1 ]; then
     r_native_only=$((r_native_only + 1))
-    echo "   R refused by the native back end only (port+LLVM builds it): $n: $(awk '/Error/ { print; exit }' "$WORK/nat/$n.log")"
+    echo "   R refused by the native back end only (port+LLVM builds it): $n: $(hosted_error "$WORK/nat/$n.log")"
   else
     g_gaps=$((g_gaps + 1))
-    echo "   G port gap (hosted builds and runs it; port+LLVM and native refuse): $n: $(awk '/Error/ { print; exit }' "$WORK/port/$n.log")"
+    echo "   G port gap (hosted builds and runs it; port+LLVM and native refuse): $n: $(hosted_error "$WORK/port/$n.log")"
   fi
 done
 
 if tripwire_fired "$WORK/tripwire.log"; then
   echo "FAIL: a host tool started during a native build:"
-  echo "$(awk '{ print }' "$WORK/tripwire.log")"
+  awk '{ print }' "$WORK/tripwire.log"
   status=1
 fi
 if [ "$f_failed" -ne 0 ]; then status=1; fi
 echo "  port+LLVM column: $port_equal equal to hosted, $port_differs differ, $port_refused refused"
-  echo "  Native source summary: $n_equal of $total run equal to the hosted compiler's build (native vs hosted; $marked_refs of the hosted references are a copy with the @[Unsafe] header); $g_gaps port gaps; $r_native_only refused by the native back end only; $s_shared refused by the hosted compiler too; $f_failed failed"
+echo "  Native source summary: $n_equal of $total run equal to the hosted compiler's build (native vs hosted); $g_gaps port gaps; $r_native_only refused by the native back end only; $s_shared refused by the hosted compiler too; $p_accepts port accepts what the hosted compiler refuses (P); $f_failed failed; $marked_refs need the @[Unsafe] header in the hosted reference (U)"
+
+echo "== 3b. ceilings: a count may only fall (P: the port accepts what the hosted compiler refuses; U: the hosted reference needs the @[Unsafe] header)"
+check_ceiling "$WORK/p_measured.txt" "$REPO/bench/native_source.ceiling" "P" || status=1
+check_ceiling "$WORK/u_measured.txt" "$REPO/bench/native_source_unsafe.ceiling" "U" || status=1
+if [ -n "${NATIVE_SOURCE_NO_SELFCHECK:-}" ]; then exit "$status"; fi
 
 echo "== 4. source mutations: each must be caught by a check that fails on the mutated source"
 mut_run=0
@@ -288,6 +321,21 @@ fi
 
 echo "  Mutation summary: $mut_caught/$mut_run source mutations caught (a: cc in native build, b: subtraction operands, c: unsigned executable, d: no-op patch refused)"
 if [ "$mut_caught" -ne "$mut_run" ]; then status=1; fi
+
+if [ -z "${NATIVE_SOURCE_NO_SELFCHECK:-}" ]; then
+  echo "== 5. ceiling self-check: a fixture the hosted compiler refuses and the port accepts, not in the ceiling, fails the gate"
+  mkdir -p "$WORK/mutfix"
+  cp "$FIXTURES/cg_strings.iyi" "$WORK/mutfix/cg_mutant_unlisted.iyi"
+  if NATIVE_SOURCE_FIXTURES="$WORK/mutfix" NATIVE_SOURCE_NO_SELFCHECK=1 bash "$0" >"$WORK/selfcheck.log" 2>&1; then
+    echo "  FAIL: the gate exited 0 with an unlisted fixture"
+    status=1
+  elif awk '/NEW cg_mutant_unlisted/ { found = 1 } END { exit !found }' "$WORK/selfcheck.log"; then
+    echo "  caught: the ceiling refused the unlisted fixture cg_mutant_unlisted"
+  else
+    echo "  FAIL: the gate failed, but not on the unlisted fixture"
+    status=1
+  fi
+fi
 
 echo
 if [ "$status" -eq 0 ]; then
