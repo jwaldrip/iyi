@@ -1,6 +1,6 @@
 module compiler/semantic/match
 
-import compiler/syntax/ast::{ASTNode, Def, Yield}
+import compiler/syntax/ast::{ASTNode, Def, Splat, Yield}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ModuleType, NoReturnType, Type}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
@@ -90,9 +90,10 @@ end
 # Matches one def against a call's signature: the port of CallSignature#match.
 # Positional arguments, a splat parameter (`*args`, which takes the arguments after
 # its prefix), named arguments, a double splat (`**opts`, which takes the names no
-# parameter has), and the block rule are ported. Refused by name: a splat with a
-# restriction, a parameter after the splat, a double splat with a restriction, and
-# free variables.
+# parameter has), free variables, and the block rule are ported. Refused by name: a
+# restricted splat parameter (the hosted pass leaves a free variable that only a
+# splat names undefined: `undefined constant T`), a parameter after the splat, and a
+# double splat with a restriction.
 pub class CallMatch
   def self.yields?(definition : Def) : Bool
     return true if definition.block_arg
@@ -112,7 +113,10 @@ pub class CallMatch
     if splat
       k = splat.as(Int32)
       return MatchAttempt.failed("parameters after a splat are not ported") if count > k + 1
-      return MatchAttempt.failed("a restricted splat parameter is not ported") if definition.args[k].restriction
+    end
+    splat_restriction = CallMatch.splat_restriction_of(definition, splat)
+    if splat_restriction && !splat_restriction.is_a?(Splat)
+      return MatchAttempt.failed("a restricted splat parameter is not ported")
     end
     dsplat = definition.double_splat
     if dsplat
@@ -136,7 +140,7 @@ pub class CallMatch
       end
       j = 0
       while j < free_names.size
-        return MatchAttempt.failed("free variable '#{free_names[j]}' is not bound by an argument") if bound[free_names[j]]?.nil?
+        return MatchAttempt.failed("undefined constant #{free_names[j]}") if bound[free_names[j]]?.nil?
         j += 1
       end
     end
@@ -180,6 +184,9 @@ pub class CallMatch
       i += 1
     end
 
+    if splat && splat_restriction
+      return MatchAttempt.failed("a restricted splat parameter is not ported")
+    end
     # The arguments past the prefix are the splat's elements, each unrestricted.
     if splat
       while i < given
@@ -228,6 +235,12 @@ pub class CallMatch
     end
 
     MatchAttempt.matched(Match.new(definition, matched, owner, defining, exact, named_matched, declared, bound))
+  end
+
+  # The restriction of a splat parameter, nil when it has none.
+  def self.splat_restriction_of(definition : Def, splat : Int32?) : ASTNode?
+    return nil if splat.nil?
+    definition.args[splat.as(Int32)].restriction
   end
 
   # The position of the def parameter a named argument refers to, or -1.
