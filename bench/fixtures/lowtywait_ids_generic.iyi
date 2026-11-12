@@ -1,0 +1,11 @@
+# Type ids of a generic class and its instances (NEEDS.md row 17). Waiting: the port's metaclass of
+# a class whose superclass is a generic instance cannot be built (top_level.iyi 477, a cast to
+# ModuleType), so the metaclass walk cannot run over such a class. This fixture has no such class.
+class Box(T)
+end
+
+class Pair(A, B)
+end
+
+# type: Box(Int32)
+# type: Pair(Int32, Int32)

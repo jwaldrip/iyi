@@ -7,7 +7,7 @@ import compiler/semantic/call_error::{CallFailure}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
-import compiler/types/types::{NamedArgumentType}
+import compiler/types/types::{GenericClassInstanceType, NamedArgumentType}
 import compiler/semantic/method_lookup::{MethodLookup}
 import compiler/semantic/match::{CallSignature, Match}
 
@@ -48,6 +48,9 @@ pub class CallReceiver
     found = TypeLookup.new(ts.instances).lookup(prog, node)
     return nil if found.is_a?(LookupError)
     scoped = found.as(Type)
+    if scoped.is_a?(GenericClassInstanceType)
+      return scoped.as(GenericClassInstanceType).metaclass
+    end
     return nil if !scoped.is_a?(ModuleType)
     scoped.as(ModuleType).metaclass
   end
@@ -75,7 +78,7 @@ pub class CallReceiver
     single = matches.matches[0]
     ret = single.definition.return_type
     return nil if ret.nil?
-    found = ArgRestriction.lookup_bound(ts, single.defining, ret.as(ASTNode), owner)
+    found = ArgRestriction.lookup_free(ts, single.defining, ret.as(ASTNode), owner, single.bound)
     return nil if found.is_a?(LookupError)
     found.as(Type)
   end
@@ -187,7 +190,7 @@ pub class CallRecalculation
       if ret.nil?
         return CallTarget.new(single.definition, rec_type, nil, true, nil)
       end
-      found = ArgRestriction.lookup_bound(ts, single.defining, ret.as(ASTNode), rec_type)
+      found = ArgRestriction.lookup_free(ts, single.defining, ret.as(ASTNode), rec_type, single.bound)
       return CallTarget.failed(found.as(LookupError).message) if found.is_a?(LookupError)
       return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil)
     end

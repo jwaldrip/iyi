@@ -4,7 +4,7 @@ import compiler/syntax/ast::{ASTNode, Arg, Generic, Path, Self}
 import compiler/semantic/top_level::{GenericClassType, ModuleType, Type}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericInstanceType}
+import compiler/types/types::{GenericInstanceType, PointerInstanceType}
 
 # The answer to "what does this argument's restriction name": a type, nil when
 # the argument has no restriction, or an error message when the written type does
@@ -54,6 +54,12 @@ pub class ArgRestriction
       if node.is_a?(Path)
         names = node.as(Path).names
         if names.size == 1
+          # A pointer instance's type variable is its element type; its type table is
+          # empty (PointerInstanceType is built without type_vars), so `def value : T` on
+          # Pointer(Int32) would stay unbound. Hosted, its `T` is the element type.
+          if names[0] == "T" && owner.is_a?(PointerInstanceType)
+            return owner.as(PointerInstanceType).element_type
+          end
           bound = instance.type_vars[names[0]]?
           return bound.as(Type) if bound
         end
@@ -75,5 +81,93 @@ pub class ArgRestriction
       end
     end
     TypeLookup.new(ts.instances).lookup(scope, node)
+  end
+
+  # The restriction of *arg* in *scope* when the def has free variables (`forall T`):
+  # the names in *bound* are the types the arguments gave them. With nothing bound it
+  # is ArgRestriction.of.
+  def self.of_bound(ts : TypeSystem, scope : ModuleType, arg : Arg, owner : Type?, bound : Hash(String, Type)) : ArgRestriction
+    return ArgRestriction.of(ts, scope, arg, owner) if bound.size == 0
+    node = arg.restriction
+    return ArgRestriction.none if node.nil?
+    found = ArgRestriction.lookup_free(ts, scope, node.as(ASTNode), owner, bound)
+    if found.is_a?(LookupError)
+      return ArgRestriction.failed(found.as(LookupError).message)
+    end
+    ArgRestriction.found(found.as(Type))
+  end
+
+  # The type a written type names when the def's free variables are bound: a name in
+  # *bound* is its bound type, a generic written with names is instantiated with its
+  # bound arguments (Pointer(T) with T bound is the pointer of that type), and anything
+  # else is lookup_bound's answer.
+  def self.lookup_free(ts : TypeSystem, scope : ModuleType, node : ASTNode, owner : Type?, bound : Hash(String, Type)) : Type | LookupError
+    return ArgRestriction.lookup_bound(ts, scope, node, owner) if bound.size == 0
+    if node.is_a?(Path)
+      names = node.as(Path).names
+      if names.size == 1
+        found = bound[names[0]]?
+        return found.as(Type) if found
+      end
+    end
+    if node.is_a?(Generic)
+      generic_node = node.as(Generic)
+      base = TypeLookup.new(ts.instances).lookup(scope, generic_node.name)
+      return base if base.is_a?(LookupError)
+      base_type = base.as(Type)
+      if base_type.is_a?(GenericClassType)
+        args = [] of Type
+        generic_node.type_vars.each do |arg_node|
+          arg = ArgRestriction.lookup_free(ts, scope, arg_node, owner, bound)
+          return arg if arg.is_a?(LookupError)
+          args << arg.as(Type)
+        end
+        return ts.pointer_of(args[0]) if base_type.name == "Pointer" && args.size == 1
+        return ts.instantiate_generic(base_type.as(GenericClassType), args)
+      end
+    end
+    ArgRestriction.lookup_bound(ts, scope, node, owner)
+  end
+end
+
+# The types a def's free variables (`forall T`) are bound to by the arguments that name
+# them: the hosted MatchContext's bound free variables, read from a restriction and an
+# argument's type together. A name written alone takes the argument's type; a generic
+# written with names (Pointer(T)) takes the argument's type arguments in turn.
+pub class FreeBindings
+  # Binds the free names *free* that *node* writes against *arg_type*. False when a name
+  # is already bound to a different type, so the argument does not match.
+  def self.bind(node : ASTNode, arg_type : Type, free : Array(String), bound : Hash(String, Type)) : Bool
+    if node.is_a?(Path)
+      names = node.as(Path).names
+      if names.size == 1 && FreeBindings.free?(names[0], free)
+        existing = bound[names[0]]?
+        if existing
+          return existing.as(Type).full_name == arg_type.full_name
+        end
+        bound[names[0]] = arg_type
+      end
+      return true
+    end
+    if node.is_a?(Generic) && arg_type.is_a?(GenericInstanceType)
+      generic_node = node.as(Generic)
+      inst = arg_type.as(GenericInstanceType)
+      return true if inst.type_args.size != generic_node.type_vars.size
+      i = 0
+      while i < generic_node.type_vars.size
+        return false if !FreeBindings.bind(generic_node.type_vars[i], inst.type_args[i], free, bound)
+        i += 1
+      end
+    end
+    true
+  end
+
+  def self.free?(name : String, free : Array(String)) : Bool
+    i = 0
+    while i < free.size
+      return true if free[i] == name
+      i += 1
+    end
+    false
   end
 end

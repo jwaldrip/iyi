@@ -448,6 +448,8 @@ class IrPrinter
       return ir_name_text(a.name) + "(" + t.to_s + ")"
     end
     if s = a.string_value
+      # LLVM writes the unwind table kind inside parentheses: uwtable(sync), uwtable(async).
+      return "uwtable(" + s + ")" if a.name == "uwtable"
       return ir_name_text(a.name) + "=" + ir_quote(s)
     end
     return ir_name_text(a.name) + "(" + a.int_value.to_s + ")" unless a.int_value == 0_u64

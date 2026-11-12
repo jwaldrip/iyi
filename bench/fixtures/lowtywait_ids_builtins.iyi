@@ -1,0 +1,7 @@
+# Builtin types and Nil in the hosted numbering. Not measured: the port's Object subtree holds
+# builtins the hosted one does not, so the ids differ by more than one shift (NEEDS.md row 16).
+# type: Nil
+# type: Int32
+# type: Bool
+# type: Char
+# type: Int8

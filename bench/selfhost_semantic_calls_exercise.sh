@@ -24,6 +24,8 @@ MATCH_FILE="$REPO/src/compiler/semantic/match.iyi"
 CALL_FILE="$REPO/src/compiler/semantic/call.iyi"
 ERROR_FILE="$REPO/src/compiler/semantic/call_error.iyi"
 DEFAULT_FILE="$REPO/src/compiler/semantic/default_arguments.iyi"
+LIB_FILE="$REPO/src/compiler/semantic/lib_call.iyi"
+RESTRICT_FILE="$REPO/src/compiler/semantic/restrictions.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -253,6 +255,71 @@ prove_mutation "a given positional argument is replaced by its default" "$DEFAUL
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a lib fun's owner is written with a dot, not a hash" "$LIB_FILE" \
+  '    owner = "#{target_lib.full_name}##{name}"' \
+  '    owner = "#{target_lib.full_name}.#{name}"' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a missing named argument of a lib call is not reported" "$LIB_FILE" \
+  '      return LibCallTarget.failed("missing argument: #{missing[0]}") if missing.size == 1' \
+  '      return LibCallTarget.failed("missing argument: #{missing[0]}") if missing.size == 7' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a fixed lib fun takes extra arguments as if it were variadic" "$LIB_FILE" \
+  '    if count < lib_fun.args.size || (!lib_fun.varargs? && count > lib_fun.args.size)' \
+  '    if count < lib_fun.args.size || (false && count > lib_fun.args.size)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a pointer instance's T stays unbound" "$RESTRICT_FILE" \
+  '          if names[0] == "T" && owner.is_a?(PointerInstanceType)' \
+  '          if names[0] == "T" && owner.is_a?(PointerInstanceType) && false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a wrapper for a magic-constant default is built anyway" "$DEFAULT_FILE" \
+  '      return nil if DefaultArguments.all_magic_from?(rec_def, given)' \
+  '      return nil if false && DefaultArguments.all_magic_from?(rec_def, given)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a wrapper for a named argument drops the argument's name" "$DEFAULT_FILE" \
+  '        new_name = "#{new_name}:#{named.name}"' \
+  '        new_name = "#{new_name}"' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a wrapper forwards to its own name, not the def's" "$DEFAULT_FILE" \
+  '      body_list << Call.new(nil, rec_def.name, call_args)' \
+  '      body_list << Call.new(nil, new_name, call_args)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a def with a restricted default is not kept whole" "$DEFAULT_FILE" \
+  '      retain = true if arg.default_value && arg.restriction' \
+  '      retain = true if false && arg.default_value && arg.restriction' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a call whose named arguments cover the defaults in order gets a wrapper" "$DEFAULT_FILE" \
+  '      if given + named_args.size == count && DefaultArguments.named_in_order?(rec_def, given, named_args)' \
+  '      if false && given + named_args.size == count && DefaultArguments.named_in_order?(rec_def, given, named_args)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a free variable is not bound from the argument that names it" "$RESTRICT_FILE" \
+  '        bound[names[0]] = arg_type' \
+  '        bound[names[0]] = arg_type if false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a return type is resolved without the bound free variables" "$CALL_FILE" \
+  'ret.as(ASTNode), rec_type, single.bound)' \
+  'ret.as(ASTNode), rec_type, Hash(String, Type).new)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

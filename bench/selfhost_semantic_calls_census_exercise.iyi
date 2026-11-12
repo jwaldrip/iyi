@@ -54,6 +54,7 @@ module BenchSelfhostSemanticCallsCensusExercise
   def self.load(path : String, prelude_req : String, prelude_only : Bool) : {SemanticProgram, TypeSystem}
     prog = SemanticProgram.new
     prog.search_path = search_path
+    prog.entry_dir = dir_of(path)
     nodes = [] of ASTNode
     nodes << Parser.new("require \"#{prelude_req}\"\n", path).parse
     if !prelude_only
