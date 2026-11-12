@@ -1,0 +1,10 @@
+lib LibSample
+  fun getpid : Int32
+  fun write(fd : Int32, buf : Void*, count : UInt64) : Int64
+  fun printf(format : UInt8*, ...) : Int32
+  fun malloc_atomic = GC_malloc_atomic(size : UInt64) : Void*
+  fun close(fd : Int32) : Int32
+end
+
+lib LibEmpty
+end

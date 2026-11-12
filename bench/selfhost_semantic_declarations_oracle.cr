@@ -19,6 +19,10 @@ def dump_def(d : Iyi::Def, io : IO, indent : String)
             else                "public"
             end
   io << indent << "  visibility: " << vis_str << "\n"
+  if d.is_a?(Iyi::External)
+    io << indent << "  real_name: " << d.real_name << "\n"
+    io << indent << "  varargs: " << d.varargs? << "\n"
+  end
   io << indent << "  abstract: " << d.abstract? << "\n"
   args_strs = d.args.map do |arg|
     s = arg.name
@@ -38,6 +42,7 @@ def dump_type(t : Iyi::Type, io : IO, indent : String)
          when Iyi::EnumType   then "enum"
          when Iyi::TraitType  then "trait"
          when Iyi::ClassType  then t.struct? ? "struct" : "class"
+         when Iyi::LibType    then "lib"
          when Iyi::ModuleType then "module"
          when Iyi::AliasType  then "alias"
          when Iyi::Const      then "constant"
@@ -90,7 +95,7 @@ def dump_type(t : Iyi::Type, io : IO, indent : String)
   if t.is_a?(Iyi::ModuleType)
     all_defs = [] of Iyi::Def
     t.defs.try &.each_value { |list| list.each { |item| all_defs << item.def } }
-    if (meta = t.metaclass) && meta.is_a?(Iyi::ModuleType)
+    if (meta = t.metaclass) && meta.is_a?(Iyi::ModuleType) && !meta.same?(t)
       meta.defs.try &.each_value do |list|
         list.each do |item|
           next if item.def.name == "allocate"

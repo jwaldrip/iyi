@@ -4126,6 +4126,7 @@ pub class FunDef < ASTNode
   property return_type : ASTNode?
   property body : ASTNode?
   property real_name : String?
+  property varargs : Bool = false
 
   def initialize(@name : String, @args : Array(Arg) = [] of Arg, @return_type : ASTNode? = nil, body : ASTNode? = nil, @real_name : String? = nil)
     @body = body
@@ -4133,7 +4134,9 @@ pub class FunDef < ASTNode
 
   def clone_without_location : self
     cloned_args = @args.map { |a| a.clone.as(Arg) }
-    FunDef.new(@name, cloned_args, clone_node(@return_type), clone_node(@body), @real_name)
+    cloned = FunDef.new(@name, cloned_args, clone_node(@return_type), clone_node(@body), @real_name)
+    cloned.varargs = @varargs
+    cloned
   end
 
   def accept_children(visitor) : Nil

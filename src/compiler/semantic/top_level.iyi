@@ -1,7 +1,7 @@
 module compiler/semantic/top_level
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, Generic, ImplDef, Include, InstanceVar, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -539,6 +539,33 @@ end
 pub class NonGenericModuleType < ModuleType
 end
 
+# One fun of a lib, as the top-level pass records it. The argument types and the
+# call resolution are filled by the later pass; this is what the declaration says.
+pub class LibFun
+  getter name : String
+  getter real_name : String
+  getter args : Array(String)
+  getter varargs : Bool
+  getter return_type : ASTNode?
+
+  def initialize(@name : String, @real_name : String, @args : Array(String), @varargs : Bool, @return_type : ASTNode?)
+  end
+end
+
+# A lib type, like `lib LibC`.
+pub class LibType < NonGenericModuleType
+  getter funs : Array(LibFun)
+
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
+    super(program, namespace, name)
+    @funs = [] of LibFun
+  end
+
+  def type_desc : String
+    "lib"
+  end
+end
+
 pub class GenericModuleType < ModuleType
   getter type_vars : Array(String)
   property splat_index : Int32?
@@ -753,6 +780,7 @@ pub class SemanticProgram < NonGenericModuleType
   @int32_type : ClassType?
   @initial_type_names : Set(String)
   @impls : Array(ImplRecord)
+  @global_funs : Array(LibFun)
 
   def object_type : ClassType
     @object_type.as(ClassType)
@@ -894,10 +922,16 @@ pub class SemanticProgram < NonGenericModuleType
     @impls
   end
 
+  # The `fun`s declared at the top level of the program, as LibFun records.
+  def global_funs : Array(LibFun)
+    @global_funs
+  end
+
   def initialize
     @initial_type_names = Set(String).new
     @merge_hook = nil
     @impls = [] of ImplRecord
+    @global_funs = [] of LibFun
     @object_type = nil
     @value_type = nil
     @reference_type = nil
@@ -1685,6 +1719,54 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
+  # A lib, like `lib LibC`. Its funs are recorded as LibFun records. The hosted pass also
+  # reads the lib's `@[Link]` libraries and call convention here, which are not ported yet.
+  def visit(node : LibDef) : Bool
+    scope, name, existing = lookup_type_def(node, node.name)
+
+    lib_type : LibType
+    if ex = existing
+      unless ex.is_a?(LibType)
+        raise("#{name} is not a lib, it's a #{ex.type_desc}")
+      end
+      lib_type = ex.as(LibType)
+    else
+      lib_type = LibType.new(@program, scope, name)
+      scope.add_type(name, lib_type)
+    end
+
+    if vis = node.visibility
+      lib_type.visibility = vis
+    end
+
+    old_type = @current_type
+    @current_type = lib_type
+    node.body.accept(self)
+    @current_type = old_type
+
+    false
+  end
+
+  # A fun inside a lib is a C declaration with no body. A fun at the top level of the
+  # program is not ported yet: the hosted pass adds it to the program's defs, and this
+  # pass records nothing for it.
+  def visit(node : FunDef) : Bool
+    if node.body && !@current_type.is_a?(SemanticProgram)
+      raise("can only declare fun at lib or global scope")
+    end
+    if @current_type.is_a?(LibType) || @current_type.is_a?(SemanticProgram)
+      arg_names = node.args.map { |arg| arg.name }
+      real = node.real_name || node.name
+      record = LibFun.new(node.name, real, arg_names, node.varargs, node.return_type)
+      if @current_type.is_a?(LibType)
+        @current_type.as(LibType).funs << record
+      else
+        @program.global_funs << record
+      end
+    end
+    false
+  end
+
   def visit(node : Alias) : Bool
     scope, name, existing = lookup_type_def(node, node.name)
 
@@ -1967,6 +2049,26 @@ pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
   io << indent << "  return_type: " << ret_str << "\n"
 end
 
+pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil
+  io << indent << "Def: " << f.name << "\n"
+  io << indent << "  visibility: public\n"
+  io << indent << "  real_name: " << f.real_name << "\n"
+  io << indent << "  varargs: " << (f.varargs ? "true" : "false") << "\n"
+  io << indent << "  abstract: false\n"
+  io << indent << "  args: [" << f.args.join(", ") << "]\n"
+  ret_str = if rt = f.return_type
+              rts = rt.to_s
+              if rts.starts_with?("::")
+                rts[2, rts.bytesize - 2]
+              else
+                rts
+              end
+            else
+              "nil"
+            end
+  io << indent << "  return_type: " << ret_str << "\n"
+end
+
 pub def dump_type(t : Type, io : String::Builder, indent : String) : Nil
   io << indent << "Type: " << t.full_name << " (" << t.type_desc << ")\n"
   vis_str = t.private? ? "private" : "public"
@@ -2056,6 +2158,14 @@ pub def dump_type(t : Type, io : String::Builder, indent : String) : Nil
     end
   end
 
+  # lib funs: a lib keeps its funs as LibFun records (see visit(FunDef)), not as defs.
+  if t.is_a?(LibType)
+    lib_type = t.as(LibType)
+    lib_type.funs.sorted_by { |f| f.name }.each do |f|
+      dump_lib_fun(f, io, "#{indent}  ")
+    end
+  end
+
   # nested types
   if t.is_a?(NamedType) && !t.is_a?(EnumType)
     nt = t.as(NamedType)
@@ -2076,8 +2186,17 @@ pub def dump_program_declarations(program : SemanticProgram) : String
     list.each { |d| top_defs << d }
   end
   top_defs = top_defs.sorted_by(&.name)
-  top_defs.each do |d|
-    dump_def(d, sb, "")
+  global_funs = program.global_funs.sorted_by { |f| f.name }
+  di = 0
+  gi = 0
+  while di < top_defs.size || gi < global_funs.size
+    if gi >= global_funs.size || (di < top_defs.size && top_defs[di].name <= global_funs[gi].name)
+      dump_def(top_defs[di], sb, "")
+      di += 1
+    else
+      dump_lib_fun(global_funs[gi], sb, "")
+      gi += 1
+    end
   end
 
   # User types

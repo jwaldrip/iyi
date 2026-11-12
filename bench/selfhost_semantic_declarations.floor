@@ -55,7 +55,7 @@ src/compiler/ir/verifier.iyi 0
 src/compiler/llvm.iyi 0
 src/compiler/llvm/builder.iyi 0
 src/compiler/llvm/context.iyi 0
-src/compiler/llvm/lib_llvm.iyi 6
+src/compiler/llvm/lib_llvm.iyi 8
 src/compiler/llvm/llvm.iyi 0
 src/compiler/llvm/memory_buffer.iyi 0
 src/compiler/llvm/module.iyi 0
@@ -138,13 +138,13 @@ src/iyi/chaos_points.iyi 7
 src/iyi/concurrency.iyi 0
 src/iyi/enum.iyi 0
 src/iyi/file.iyi 9
-src/iyi/float.iyi 44
+src/iyi/float.iyi 46
 src/iyi/hash.iyi 0
 src/iyi/io.iyi 40
 src/iyi/macros.iyi 0
 src/iyi/number.iyi 0
 src/iyi/object.iyi 0
-src/iyi/prelude.iyi 36
+src/iyi/prelude.iyi 46
 src/iyi/primitives.iyi 5
 src/iyi/range.iyi 0
 src/iyi/set.iyi 13

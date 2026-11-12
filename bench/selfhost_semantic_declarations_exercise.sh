@@ -321,6 +321,18 @@ prove_mutation "generated new drops the initialize arguments" "$MUT_SEM" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "lib fun records its own name as the real name" "$MUT_SEM" \
+  "real = node.real_name || node.name" \
+  "real = node.name" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "lib fun drops its varargs flag" "$MUT_SEM" \
+  "record = LibFun.new(node.name, real, arg_names, node.varargs, node.return_type)" \
+  "record = LibFun.new(node.name, real, arg_names, false, node.return_type)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
