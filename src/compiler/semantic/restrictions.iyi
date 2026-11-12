@@ -1,0 +1,41 @@
+module compiler/semantic/restrictions
+
+import compiler/syntax/ast::{Arg}
+import compiler/semantic/top_level::{ModuleType, Type}
+import compiler/types/lookup::{LookupError, TypeLookup}
+import compiler/types/type_system::{TypeSystem}
+
+# The answer to "what does this argument's restriction name": a type, nil when
+# the argument has no restriction, or an error message when the written type
+# does not resolve. The port of the restriction lookup in restrictions.cr.
+pub class ArgRestriction
+  getter type : Type?
+  getter error : String?
+
+  def initialize(@type : Type?, @error : String?)
+  end
+
+  def self.none : ArgRestriction
+    ArgRestriction.new(nil, nil)
+  end
+
+  def self.failed(message : String) : ArgRestriction
+    ArgRestriction.new(nil, message)
+  end
+
+  def self.found(type : Type) : ArgRestriction
+    ArgRestriction.new(type, nil)
+  end
+
+  # The restriction of *arg* as written in *scope*, the type the def was found
+  # on, as the hosted MatchContext resolves it (its defining type).
+  def self.of(ts : TypeSystem, scope : ModuleType, arg : Arg) : ArgRestriction
+    node = arg.restriction
+    return ArgRestriction.none if node.nil?
+    found = TypeLookup.new(ts.instances).lookup(scope, node)
+    if found.is_a?(LookupError)
+      return ArgRestriction.failed(found.as(LookupError).message)
+    end
+    ArgRestriction.found(found.as(Type))
+  end
+end

@@ -1,0 +1,95 @@
+module compiler/semantic/method_lookup
+
+import compiler/semantic/top_level::{ClassType, MetaclassType, ModuleType, Type}
+import compiler/types/type_system::{TypeSystem}
+import compiler/semantic/match::{CallMatch, CallSignature, Match}
+
+# The matches of a lookup, in the hosted order. *cover_all* says the first match
+# accepts every argument combination (an exact match, which ends the lookup
+# unless every overload is analysed). *error* is set when a restriction does not
+# resolve, and then the matches are not meaningful.
+pub class Matches
+  getter matches : Array(Match)
+  getter cover_all : Bool
+  getter error : String?
+
+  def initialize(@matches : Array(Match), @cover_all : Bool, @error : String? = nil)
+  end
+
+  def cover_all? : Bool
+    @cover_all
+  end
+
+  def empty? : Bool
+    @matches.empty?
+  end
+end
+
+# The port of Type#lookup_matches, lookup_matches_without_parents and the
+# parent walk, for the receivers that are not virtual. Virtual receivers (the
+# subclass dispatch of an abstract type) and `new` are later increments.
+pub class MethodLookup
+  # The types the walk visits after *type*. The port's MetaclassType records no
+  # parents, so the metaclass of a class is walked to the metaclass of its
+  # superclass here, which is what the hosted metaclass has. The declarations
+  # slice owns that wiring in top_level.iyi; this is the stand-in until it
+  # records it there. Extended modules are not walked yet.
+  def self.parents_of(type : ModuleType) : Array(Type)
+    if type.is_a?(MetaclassType)
+      instance = type.as(MetaclassType).instance_type
+      if instance.is_a?(ClassType)
+        superclass = instance.as(ClassType).superclass
+        if superclass && superclass.is_a?(ModuleType)
+          meta = superclass.as(ModuleType).metaclass
+          return [meta.as(Type)]
+        end
+      end
+      return [] of Type
+    end
+    type.parents
+  end
+
+  # The matches of *signature* on *type*, its own defs first and then each
+  # parent, as hosted: an exact match stops the walk.
+  def self.lookup_matches(type : ModuleType, ts : TypeSystem, signature : CallSignature, owner : Type, path_lookup : ModuleType, matches_array : Array(Match)) : Matches
+    own = lookup_without_parents(type, ts, signature, owner, path_lookup, matches_array)
+    return own if own.cover_all? || own.error
+    all = own.matches
+    cover = own.cover_all?
+
+    parents_of(type).each do |parent|
+      next unless parent.is_a?(ModuleType)
+      found = lookup_matches(parent.as(ModuleType), ts, signature, owner, parent.as(ModuleType), all)
+      return found if found.cover_all? || found.error
+      all = found.matches
+    end
+
+    Matches.new(all, cover)
+  end
+
+  # The matches among *type*'s own defs of the signature's name. Hosted order is
+  # the order the defs were declared. The first exact match ends the scan: the
+  # hosted scan skips every later def once it has an exact match.
+  def self.lookup_without_parents(type : ModuleType, ts : TypeSystem, signature : CallSignature, owner : Type, path_lookup : ModuleType, matches_array : Array(Match)) : Matches
+    defs = type.defs[signature.name]?
+    return Matches.new(matches_array, false) if defs.nil?
+
+    exact = false
+    defs.each do |item|
+      next if item.abstract
+      attempt = CallMatch.attempt(ts, signature, item, owner, path_lookup)
+      if attempt.error
+        return Matches.new(matches_array, false, attempt.error)
+      end
+      match = attempt.match
+      next if match.nil?
+      matches_array << match.as(Match)
+      if match.as(Match).exact
+        exact = true
+        break
+      end
+    end
+
+    Matches.new(matches_array, exact)
+  end
+end

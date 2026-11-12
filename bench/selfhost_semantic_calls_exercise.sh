@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Fails when the iyi call lookup stops agreeing with the hosted lookup.
+#
+# Each fixture (bench/fixtures/semcall_*.iyi) declares methods and lists call
+# sites as `# call <expr>` lines. The hosted oracle
+# (bench/selfhost_semantic_calls_oracle.cr) and the port's driver
+# (bench/selfhost_semantic_calls_exercise.iyi) each print one line per call
+# site, `<expr> => <result>`, and the two outputs must be byte-identical.
+#
+# Mutation proofs patch the ported code, rebuild the driver, and require the
+# gate to fail. A patch that changes nothing is refused by prove_mutation.
+#
+#   bash bench/selfhost_semantic_calls_exercise.sh
+set -u
+status=0
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+IYI="$REPO/bin/iyi"
+CRYSTAL="${CRYSTAL:-crystal}"
+LOOKUP_FILE="$REPO/src/compiler/semantic/method_lookup.iyi"
+MATCH_FILE="$REPO/src/compiler/semantic/match.iyi"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+. "$REPO/bench/lib/mutation.sh"
+
+echo "== 1. Building the hosted oracle and the port driver"
+LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" \
+  CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
+    -o "$WORK/oracle" "$REPO/bench/selfhost_semantic_calls_oracle.cr" || { echo "oracle build failed"; exit 1; }
+"$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" || { echo "port driver build failed"; exit 1; }
+
+echo
+echo "== 2. Each fixture's call sites, hosted oracle against the port"
+fixture_count=0
+total_calls=0
+for fixture in "$REPO"/bench/fixtures/semcall_*.iyi; do
+  fixture_name="bench/fixtures/$(basename "$fixture")"
+  "$WORK/port" "$fixture" > "$WORK/port.out" 2>"$WORK/port.err" || {
+    echo "  $fixture_name: port driver failed: $(awk 'NR==1' "$WORK/port.err")"
+    status=1
+    continue
+  }
+  "$WORK/oracle" "$fixture" > "$WORK/oracle.out" 2>"$WORK/oracle.err" || {
+    echo "  $fixture_name: hosted oracle failed: $(awk 'NR==1' "$WORK/oracle.err")"
+    status=1
+    continue
+  }
+  if diff -u "$WORK/oracle.out" "$WORK/port.out" > "$WORK/diff.out"; then
+    calls=$(awk 'END { print NR }' "$WORK/oracle.out")
+    echo "  $fixture_name: identical ($calls call sites)"
+    fixture_count=$((fixture_count + 1))
+    total_calls=$((total_calls + calls))
+  else
+    echo "  $fixture_name: DIVERGED from the hosted oracle"
+    cat "$WORK/diff.out"
+    status=1
+  fi
+done
+echo "  Parity summary: $fixture_count fixtures identical ($total_calls call sites compared)"
+if [ "$fixture_count" -eq 0 ]; then
+  echo "  no fixtures compared: this proves nothing"
+  status=1
+fi
+
+echo
+echo "== 3. Guarded mutation proofs (patch, rebuild, the gate must fail)"
+MUTATIONS_RUN=0
+
+# Rebuilds the driver from the patched source and compares every fixture. A
+# build failure, a run failure, or any divergence is the catch (non-zero).
+check_calls_diverge() {
+  "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" >/dev/null 2>&1 || return 1
+  local fixture
+  for fixture in "$REPO"/bench/fixtures/semcall_*.iyi; do
+    "$WORK/port_m" "$fixture" > "$WORK/pm.out" 2>/dev/null || return 1
+    "$WORK/oracle" "$fixture" > "$WORK/om.out" 2>/dev/null || return 1
+    diff -q "$WORK/pm.out" "$WORK/om.out" >/dev/null || return 1
+  done
+  return 0
+}
+
+prove_mutation "exact match does not end the lookup" "$LOOKUP_FILE" \
+  "      if match.as(Match).exact" \
+  "      if false" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "arguments beyond the def's parameters are accepted" "$MATCH_FILE" \
+  "    return MatchAttempt.none if given > definition.args.size" \
+  "    return MatchAttempt.none if false" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "restrictions are not applied to arguments" "$MATCH_FILE" \
+  "        restricted = ts.restrict(arg_type, allowed.as(Type))" \
+  "        restricted = arg_type" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "parent types are not searched for methods" "$LOOKUP_FILE" \
+  "    parents_of(type).each do |parent|" \
+  "    ([] of Type).each do |parent|" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+echo "  $MUTATIONS_RUN mutation proofs run"
+
+echo
+if [ "$status" -eq 0 ]; then
+  echo "SELFHOST SEMANTIC CALLS GATE PASSED"
+else
+  echo "SELFHOST SEMANTIC CALLS GATE FAILED"
+fi
+exit "$status"

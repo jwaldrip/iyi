@@ -1,0 +1,109 @@
+module compiler/semantic/match
+
+import compiler/syntax/ast::{Def}
+import compiler/semantic/top_level::{ModuleType, Type}
+import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/types/type_system::{TypeSystem}
+import compiler/types/types::{NamedArgumentType}
+
+# The name and argument types of a call: the hosted CallSignature (record in
+# method_lookup.cr). It lives here, not in method_lookup.iyi, because the matcher
+# reads it and the lookup imports the matcher: iyi imports form a DAG, so the
+# shared type sits below both. Its block is not ported yet.
+pub class CallSignature
+  getter name : String
+  getter arg_types : Array(Type)
+  getter named_args : Array(NamedArgumentType)?
+
+  def initialize(@name : String, @arg_types : Array(Type), @named_args : Array(NamedArgumentType)? = nil)
+  end
+end
+
+# One def that accepts a call: the hosted Match. *arg_types* are the argument
+# types after each restriction, *owner* the receiver's type, *defining* the
+# type the def was found on (the scope its restrictions are written in), and
+# *exact* says the restricted types are the argument types, which the hosted
+# matches_exactly? asks.
+pub class Match
+  getter definition : Def
+  getter arg_types : Array(Type)
+  getter owner : Type
+  getter defining : ModuleType
+  getter exact : Bool
+
+  def initialize(@definition : Def, @arg_types : Array(Type), @owner : Type, @defining : ModuleType, @exact : Bool)
+  end
+end
+
+# The outcome of trying one def: a match, nothing (the def does not accept the
+# call), or an error message (a restriction does not resolve).
+pub class MatchAttempt
+  getter match : Match?
+  getter error : String?
+
+  def initialize(@match : Match?, @error : String?)
+  end
+
+  def self.none : MatchAttempt
+    MatchAttempt.new(nil, nil)
+  end
+
+  def self.failed(message : String) : MatchAttempt
+    MatchAttempt.new(nil, message)
+  end
+
+  def self.matched(match : Match) : MatchAttempt
+    MatchAttempt.new(match, nil)
+  end
+end
+
+# Matches one def against a call's signature: the port of CallSignature#match
+# for the positional arguments. Not ported, and refused rather than answered:
+# named arguments, splats, double splats, block arguments and free variables
+# (their hosted rules are later increments of slice S1c).
+pub class CallMatch
+  def self.attempt(ts : TypeSystem, signature : CallSignature, definition : Def, owner : Type, defining : ModuleType) : MatchAttempt
+    if signature.named_args
+      return MatchAttempt.failed("named arguments are not ported")
+    end
+    if definition.splat_index || definition.double_splat
+      return MatchAttempt.failed("splat parameters are not ported")
+    end
+    if definition.free_vars
+      return MatchAttempt.failed("free variables are not ported")
+    end
+
+    given = signature.arg_types.size
+    return MatchAttempt.none if given > definition.args.size
+
+    required = 0
+    definition.args.each do |arg|
+      required += 1 if arg.default_value.nil?
+    end
+    return MatchAttempt.none if given < required
+
+    matched = [] of Type
+    exact = true
+    i = 0
+    while i < given
+      arg = definition.args[i]
+      arg_type = signature.arg_types[i]
+      restriction = ArgRestriction.of(ts, defining, arg)
+      if restriction.error
+        return MatchAttempt.failed(restriction.error.to_s)
+      end
+      allowed = restriction.type
+      if allowed.nil?
+        matched << arg_type
+      else
+        restricted = ts.restrict(arg_type, allowed.as(Type))
+        return MatchAttempt.none if restricted.nil?
+        matched << restricted.as(Type)
+        exact = false if restricted.as(Type) != arg_type
+      end
+      i += 1
+    end
+
+    MatchAttempt.matched(Match.new(definition, matched, owner, defining, exact))
+  end
+end
