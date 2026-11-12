@@ -21,6 +21,7 @@ import compiler/syntax/ast::{ASTNode}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{Block, Inst}
 import compiler/ir/values::{Value}
+import compiler/ir/types::{TypeKind}
 import compiler/ir/builder::{Builder}
 import compiler/ir/types::{IrType}
 import compiler/lower/typer::{LowerTyper}
@@ -189,7 +190,7 @@ pub class Lowerer
     old = @builder.insert_block
     @builder.position_at_end(current_alloca_block)
     inst = @builder.alloca(type, name)
-    inst.alignment = @typer.align_of(type)
+    inst.alignment = alloca_alignment(type, @typer)
     if o = old
       @builder.position_at_end(o.as(Block))
     end
@@ -243,4 +244,15 @@ pub class Lowerer
       @builder.position_at_end(b.as(Block))
     end
   end
+end
+
+# The alignment an alloca is emitted with. The hosted code writes none, so LLVM gives the alloca the
+# preferred alignment of its type: the same as the ABI alignment for an int, a float and a pointer, but
+# a word for an empty struct (the Nil type), whose ABI alignment is 1. Checked against the hosted module
+# of a Nil variable (bench/fixtures/lower_cond_nil.iyi); other aggregates are not observed yet.
+pub def alloca_alignment(type : IrType, typer : LowerTyper) : Int32
+  if type.kind == TypeKind::Struct && type.fields.empty?
+    return 8
+  end
+  typer.align_of(type)
 end
