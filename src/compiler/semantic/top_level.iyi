@@ -918,6 +918,9 @@ pub abstract class TypeHook
   abstract def merge_members(types : Array(Type)) : Type
   abstract def resolve_node(node : ASTNode, current_type : ModuleType) : Type
   abstract def instantiate_type(base : Type, type_args : Array(Type)) : Type
+  # The virtual type of a type, as the hosted `Type#virtual_type` (an explicit instance variable
+  # is typed by it: hosted declare_instance_var).
+  abstract def virtual_of(type : Type) : Type
 end
 
 pub class ImplRecord
@@ -932,6 +935,8 @@ end
 pub class SemanticProgram < NonGenericModuleType
   @object_type : ClassType?
   property merge_hook : TypeHook?
+  # The explicit instance variables the top-level passes declared, for `resolve_declared_types`.
+  getter declared_ivars : Array(DeclaredIvar)
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
   property total_mode : Bool = false
@@ -1147,6 +1152,18 @@ pub class SemanticProgram < NonGenericModuleType
         end
       end
     end
+    # The explicit instance variables are typed again through the type system: a generic type
+    # keeps its arguments, and a class with subclasses is typed by its virtual type.
+    @declared_ivars.each do |di|
+      @current_imports = di.imports
+      t = lookup_type_node(di.restriction, di.owner)
+      if di.virtual
+        if hook = @merge_hook
+          t = hook.virtual_of(t)
+        end
+      end
+      di.owner.instance_vars[di.name] = MetaTypeVar.new(di.name, t, di.initializer)
+    end
     @current_imports = saved
     nil
   end
@@ -1163,6 +1180,7 @@ pub class SemanticProgram < NonGenericModuleType
     @impls = [] of ImplRecord
     @global_funs = [] of LibFun
     @lib_funs_by_node = Hash(UInt64, LibFun).new
+    @declared_ivars = [] of DeclaredIvar
     @current_imports = Hash(String, Type).new
     @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
@@ -1621,8 +1639,24 @@ pub class PendingIvar
   property name : String
   property restriction : ASTNode
   property initializer : ASTNode?
+  # An explicit `@x : T` is typed by T's virtual type (hosted declare_instance_var).
+  property virtual : Bool
 
-  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil)
+  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false)
+  end
+end
+
+# An explicit instance variable as the file declared it, kept with the file's import table so
+# `resolve_declared_types` can resolve it again once a type system is installed.
+pub class DeclaredIvar
+  property owner : ModuleType
+  property name : String
+  property restriction : ASTNode
+  property initializer : ASTNode?
+  property virtual : Bool
+  property imports : Hash(String, Type)
+
+  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode?, @virtual : Bool, @imports : Hash(String, Type))
   end
 end
 
@@ -1645,6 +1679,7 @@ pub class TopLevelVisitor < Visitor
     @pending_ivars.each do |pi|
       arg_type = @program.lookup_type_node(pi.restriction, pi.owner)
       pi.owner.instance_vars[pi.name] = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
+      @program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)
     end
     @pending_ivars.clear
   end
@@ -2604,7 +2639,7 @@ pub class TopLevelVisitor < Visitor
         raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
       end
       ivar_name = node.var.as(InstanceVar).name
-      @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value)
+      @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value, true)
     elsif node.var.is_a?(ClassVar)
       if @current_type.is_a?(SemanticProgram)
         raise("can't use class variables at the top level")
@@ -2860,7 +2895,7 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
       cls.instance_vars.keys.each do |ivar_name|
         names << ivar_name
       end
-      io << indent << "  ivar_order: [" << names.join(", ") << "]\n"
+      io << indent << "  IvarOrder: [" << names.join(", ") << "]\n"
     end
   end
 
