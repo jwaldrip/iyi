@@ -167,7 +167,7 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
   end
 end
 
-def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entry : String?)
+def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entry : String?, typed : Bool = false)
   initial_types = Iyi::Program.new.types.keys.to_set
   visitor = Iyi::TopLevelVisitor.new(program)
   node.accept(visitor)
@@ -190,6 +190,34 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
   user_types = program.types
   user_types.keys.sort.each do |name|
     dump_type(user_types[name], io, "", entry)
+  end
+  if typed
+    dump_instances(program, io, initial_types)
+  end
+end
+
+# The instances of the program's own generic classes, with their instance variables, in the
+# typed mode only: the hosted pass always makes them, the port's untyped pass does not, so the
+# gate asks for them with `--typed` on the typed fixtures alone. Each instance is a record of its
+# own, sorted by its name, as the port's driver prints them.
+def dump_instances(program : Iyi::Program, io : IO, initial_types : Set(String))
+  program.types.keys.sort.each do |name|
+    next if initial_types.includes?(name)
+    generic = program.types[name]
+    next unless generic.is_a?(Iyi::GenericClassType)
+    generic.instantiated_types.sort_by(&.to_s).each do |inst|
+      next unless inst.is_a?(Iyi::GenericClassInstanceType)
+      full = inst.to_s
+      io << "Type: " << full << " (instance)\n"
+      ivars = inst.instance_vars
+      ivars.keys.each do |ivar_name|
+        io << "  Ivar: " << full << "#" << ivar_name << "\n"
+        io << "    type: " << ivars[ivar_name].type.to_s << "\n"
+      end
+      unless ivars.empty?
+        io << "  IvarOrder: [" << ivars.keys.join(", ") << "]\n"
+      end
+    end
   end
 end
 
@@ -240,13 +268,14 @@ if ARGV[0]? == "--chain"
   exit 0
 end
 
-path = ARGV[0]? || abort("usage: selfhost_semantic_declarations_oracle <file.iyi>")
+typed_mode = ARGV[0]? == "--typed"
+path = (typed_mode ? ARGV[1]? : ARGV[0]?) || abort("usage: selfhost_semantic_declarations_oracle [--typed] <file.iyi>")
 entry = File.expand_path(path)
 buffer = IO::Memory.new
 begin
   compiler = Iyi::Compiler.new
   program, node = compiler.declarations_program(Iyi::Compiler::Source.new(entry, File.read(entry)))
-  dump_declarations(node, buffer, program, entry)
+  dump_declarations(node, buffer, program, entry, typed_mode)
 rescue ex : Exception
   first_line = ex.message.to_s.lines.first? || ""
   STDERR.puts "ERROR: #{first_line}"
