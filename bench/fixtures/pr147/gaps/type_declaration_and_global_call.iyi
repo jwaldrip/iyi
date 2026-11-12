@@ -1,0 +1,11 @@
+# `type` outside a trait or impl is a variable name, so it takes a type declaration.
+class Info
+  getter type : Type
+end
+
+# A leading `::` before a method name is a global call, not a constant path.
+def sleep_for(delay : Int32)
+  slept = ::sleep(delay)
+  ::sleep delay
+  ::sleep
+end

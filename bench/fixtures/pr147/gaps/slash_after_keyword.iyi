@@ -1,0 +1,9 @@
+# Each keyword that ends a value must leave a following `/` as division.
+def scaled(scale : Float64) : Float64
+  (self / scale).round * scale
+end
+
+def halves(x : Int32) : Int32
+  x = self / 2
+  nil / 2
+end

@@ -987,7 +987,11 @@ pub class Parser < Lexer
       parse_const(false, location)
     when TokenKind::OP_COLON_COLON
       next_token_skip_space_or_newline
-      parse_const(true, location)
+      if @token.type == TokenKind::IDENT
+        parse_var_or_call(location, true)
+      else
+        parse_const(true, location)
+      end
     when TokenKind::OP_MINUS_GT
       parse_fun_literal
     when TokenKind::IDENT
@@ -1111,7 +1115,7 @@ pub class Parser < Lexer
           if @inside_trait_or_impl
             parse_assoc_type
           else
-            parse_var_or_call(location)
+            check_type_declaration { parse_var_or_call(location) }
           end
         else
           check_type_declaration { parse_var_or_call(location) }
@@ -1128,9 +1132,9 @@ pub class Parser < Lexer
     end
   end
 
-  def parse_var_or_call(location : Location) : ASTNode
+  def parse_var_or_call(location : Location, global : Bool = false) : ASTNode
     name = @token.value
-    is_var = var?(name)
+    is_var = !global && var?(name)
 
     next_token
 
@@ -1150,6 +1154,7 @@ pub class Parser < Lexer
 
       block = parse_block(block, @stop_on_do)
       c = Call.new(nil, name, args, block, block_arg, named_args).at(location)
+      c.global = global
       c.has_parentheses = has_parens
       c.name_location = location
       c.iyi_group = true if name == "group" && block && args.empty?
@@ -1158,7 +1163,9 @@ pub class Parser < Lexer
       if is_var
         Var.new(name).at(location)
       else
-        Call.new(nil, name).at(location)
+        c = Call.new(nil, name).at(location)
+        c.global = global
+        c
       end
     end
   end
@@ -4919,6 +4926,32 @@ pub class Parser < Lexer
         decl = parse_import
         decl.exported = true
         return decl.at(pub_location)
+      when Keyword::ANNOTATION
+        annotation_def = parse_annotation_def
+        annotation_def.visibility = Visibility::Public
+        return annotation_def.at(pub_location)
+      when Keyword::ALIAS
+        node_alias = parse_alias
+        node_alias.visibility = Visibility::Public
+        return node_alias.at(pub_location)
+      when Keyword::ABSTRACT
+        next_token_skip_space_or_newline
+        case @token.keyword
+        when Keyword::DEF
+          a_def = parse_def(is_abstract: true)
+          a_def.visibility = Visibility::Public
+          return a_def.at(pub_location)
+        when Keyword::CLASS
+          cls = parse_class_def(is_abstract: true)
+          cls.visibility = Visibility::Public
+          return cls.at(pub_location)
+        when Keyword::STRUCT
+          cls = parse_class_def(is_abstract: true, is_struct: true)
+          cls.visibility = Visibility::Public
+          return cls.at(pub_location)
+        else
+          unexpected_token("expected def, class, or struct after abstract")
+        end
       else
         syntax_error("can't apply `pub` to #{@token.type}", @token.location)
       end

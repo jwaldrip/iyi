@@ -1,0 +1,18 @@
+# `pub` takes the declaration forms the hosted front end accepts after it.
+module Gaps
+  pub alias DnsError = Std::Dns::DnsError
+  pub alias Errors = Hash(Symbol | String, Array(String))
+  pub annotation Checker
+  end
+  pub abstract class Page
+  end
+  pub abstract struct Frame
+  end
+  class Shape
+    pub abstract def area : Float64
+  end
+end
+
+# `\xHH` and octal escapes are single bytes, including the bytes 0x80 to 0xFF.
+GRISU_POWERS = "\x88\x02\x1c\xa0\xd5" \
+  "\200\377\101"

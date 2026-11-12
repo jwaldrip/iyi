@@ -341,6 +341,11 @@ pub class Lexer
   end
 
   def check_ident_or_keyword(keyword : Keyword, start_pos : Int32) : Token
+    # Callers return this token straight from next_token, which skips the reset
+    # of the value flags at its end. An identifier or keyword ends a value, so a
+    # `/` after it is division: `(self / scale)` is not a regex, as in Crystal.
+    @wants_regex = true
+    @slash_is_regex = false
     if ident_part_or_end?(peek_next_char) && !(@iyi && peek_next_char == '!')
       scan_ident(start_pos)
     else
@@ -1373,6 +1378,13 @@ pub class Lexer
     ((d1 << 4) | d2).to_u8
   end
 
+  # A `\xHH` or octal escape is one byte. `unsafe_chr` encodes 0x80..0xFF as the
+  # two bytes of that code point, so the string would not hold the byte the escape
+  # names. The hosted front end keeps the byte, and so does this.
+  private def escape_byte_string(b : UInt8) : String
+    String.new([b] of UInt8)
+  end
+
   private def consume_string_unicode_escape : String
     cp = consume_char_unicode_escape
     cp.unsafe_chr.to_s
@@ -1880,12 +1892,12 @@ pub class Lexer
         when 'e' then res = res + "\e"
         when 'x'
           b = consume_string_hex_escape
-          res = res + b.unsafe_chr.to_s
+          res = res + escape_byte_string(b)
         when 'u'
           res = res + consume_string_unicode_escape
         when '0'..'7'
           b = consume_octal_escape(current_char)
-          res = res + b.unsafe_chr.to_s
+          res = res + escape_byte_string(b)
         when '\n'
           incr_line_number(1)
           res = res + "\n"
@@ -2107,7 +2119,7 @@ pub class Lexer
           when 'x'
             b = consume_string_hex_escape
             next_char(TokenKind::STRING)
-            @token.value = b.unsafe_chr.to_s
+            @token.value = escape_byte_string(b)
           when 'u'
             u = consume_string_unicode_escape
             next_char(TokenKind::STRING)
@@ -2115,7 +2127,7 @@ pub class Lexer
           when '0'..'7'
             b = consume_octal_escape(current_char)
             next_char(TokenKind::STRING)
-            @token.value = b.unsafe_chr.to_s
+            @token.value = escape_byte_string(b)
           when '\r', '\n'
             handle_slash_r_slash_n_or_slash_n
             incr_line_number(1)
@@ -2446,6 +2458,12 @@ pub class Lexer
     nil
   end
 
+  # In a string inside macro text, the brace of `#{` is text, and the hosted front end
+  # keeps it in the literal. Any other `{` ends a literal, and so does `{{` or `{%` after `#`.
+  private def interpolation_brace_in_string?(in_string : Bool) : Bool
+    in_string && current_pos > 0 && @source.byte_at(current_pos - 1) == '#'.ord
+  end
+
   def next_macro_token(macro_state : MacroState, skip_whitespace : Bool = false) : Token
     reset_token
     nest = macro_state.nest
@@ -2617,7 +2635,7 @@ pub class Lexer
     end
 
     char = current_char
-    until char == '{' || char == '\0' ||
+    until (char == '{' && (!interpolation_brace_in_string?(!delimiter_state.nil?) || peek_next_char == '{' || peek_next_char == '%')) || char == '\0' ||
           (char == '\\' && (peek_next_char == '{' || peek_next_char == '%')) ||
           (whitespace && delimiter_state.nil? && char == 'e')
       case char
