@@ -1888,6 +1888,10 @@ class Isel
   # after allocation.
   def lower_asm(i : Inst, aux : AsmAux) : Nil
     return if failed?
+    if aux.unwind
+      fail("inline asm that may unwind is not lowered: iyi has no exceptions, so no call unwinds")
+      return
+    end
     if aux.dialect == AsmDialect::Intel
       fail("the Intel asm dialect is not lowered in this slice")
       return

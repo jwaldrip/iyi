@@ -548,8 +548,8 @@ pub class Builder
   end
 
   # An inline asm callee. Call it with `call`; the printer writes the template where the callee goes.
-  def inline_asm(fn_type : IrType, template : String, constraints : String, side_effects : Bool, align_stack : Bool, dialect : AsmDialect) : Value
-    aux = AsmAux.new(template, constraints, side_effects, align_stack, dialect)
+  def inline_asm(fn_type : IrType, template : String, constraints : String, side_effects : Bool, align_stack : Bool, dialect : AsmDialect, unwind : Bool = false) : Value
+    aux = AsmAux.new(template, constraints, side_effects, align_stack, dialect, unwind)
     Inst.new(Op::Call, fn_type, [] of Value, 0_i64, aux, [] of Block, [] of Int64)
   end
 

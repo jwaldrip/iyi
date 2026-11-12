@@ -137,6 +137,14 @@ cc_named_check() {
   echo "$out" | grep -q 'error\[cc-lowered\]'
 }
 
+# The unwinding inline asm in a nounwind function must be refused under asm-unwind. Non-zero when it is accepted or
+# refused another way.
+asm_unwind_check() {
+  local bin="$1" out
+  out=$("$bin" verify bench/fixtures/ir/bad/asm_unwind_nounwind.ir 2>&1) && return 1
+  echo "$out" | grep -q 'error\[asm-unwind\]'
+}
+
 # Rebuilds the driver from a mutated source and runs one check on it.
 mutant_check() {
   local check="$1"
@@ -352,6 +360,16 @@ prove_mutation "verifier: a named struct passes the C-convention rule" \
   'return false if t.packed_struct? || !t.struct_name.nil?' \
   'return false if t.packed_struct?' \
   cc_named_check
+prove_mutation "verifier: an unwinding asm is accepted in a nounwind function" \
+  src/compiler/ir/verifier.iyi \
+  'if inline_asm.unwind && f.attrs.any? { |a| a.name == "nounwind" }' \
+  'if inline_asm.unwind && f.attrs.any? { |a| a.name == "nounwind_never" }' \
+  asm_unwind_check
+prove_mutation "printer: the unwind word of inline asm is not written" \
+  src/compiler/ir/printer.iyi \
+  '    text += " unwind" if inline_asm.unwind' \
+  '    text += " unwind_" if inline_asm.unwind' \
+  roundtrip_check
 
 echo
 if [ "$failed" -eq 0 ]; then

@@ -218,8 +218,9 @@ pub struct AsmAux               # the callee of a Call that is inline asm
   getter side_effects : Bool
   getter align_stack : Bool
   getter dialect : AsmDialect
+  getter unwind : Bool            # LLVM's `unwind`: the asm may throw, so its call may unwind
 
-  def initialize(@template : String, @constraints : String, @side_effects : Bool = false, @align_stack : Bool = false, @dialect : AsmDialect = AsmDialect::Att)
+  def initialize(@template : String, @constraints : String, @side_effects : Bool = false, @align_stack : Bool = false, @dialect : AsmDialect = AsmDialect::Att, @unwind : Bool = false)
   end
 end
 

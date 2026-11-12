@@ -1272,23 +1272,25 @@ class IrParser
     end
   end
 
-  # `asm [sideeffect] [alignstack] [inteldialect] "template", "constraints"` as the callee of a call of fn_type.
+  # `asm [sideeffect] [alignstack] [inteldialect] [unwind] "template", "constraints"` as the callee of a call of fn_type.
   def parse_asm(c : Cursor, fn_type : IrType) : Inst
     c.expect_ident("asm")
     side = false
     align = false
     intel = false
-    while c.ident?("sideeffect") || c.ident?("alignstack") || c.ident?("inteldialect")
+    unwind = false
+    while c.ident?("sideeffect") || c.ident?("alignstack") || c.ident?("inteldialect") || c.ident?("unwind")
       word = c.take.text
       side = true if word == "sideeffect"
       align = true if word == "alignstack"
       intel = true if word == "inteldialect"
+      unwind = true if word == "unwind"
     end
     template = c.take.text
     c.expect_punct(",")
     constraints = c.take.text
     dialect = intel ? AsmDialect::Intel : AsmDialect::Att
-    Inst.new(Op::Call, fn_type, [] of Value, 0_i64, AsmAux.new(template, constraints, side, align, dialect), [] of Block, [] of Int64)
+    Inst.new(Op::Call, fn_type, [] of Value, 0_i64, AsmAux.new(template, constraints, side, align, dialect, unwind), [] of Block, [] of Int64)
   end
 
   # A pad parent: `none` (a null ptr) or a typed-by-context ptr value.

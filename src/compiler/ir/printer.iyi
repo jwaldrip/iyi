@@ -425,6 +425,7 @@ class IrPrinter
     text += " sideeffect" if inline_asm.side_effects
     text += " alignstack" if inline_asm.align_stack
     text += " inteldialect" if inline_asm.dialect == AsmDialect::Intel
+    text += " unwind" if inline_asm.unwind
     text + " " + ir_quote(inline_asm.template) + ", " + ir_quote(inline_asm.constraints)
   end
 
