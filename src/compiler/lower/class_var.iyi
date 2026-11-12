@@ -182,12 +182,6 @@ pub def declare_cvar_global(low : Lowerer, name : String, ir : IrType, st : Clas
   if g = st.global
     return g.as(Global)
   end
-  # A global of this name that another lowering of this module made (the pipeline lowers each def into one module with its
-  # own state) is the same global, so its state is taken from the module.
-  if found = low.module.get_global?(name)
-    st.global = found
-    return found.as(Global)
-  end
   g = low.module.add_global(name, ir)
   g.linkage = Linkage::Internal
   st.global = g
