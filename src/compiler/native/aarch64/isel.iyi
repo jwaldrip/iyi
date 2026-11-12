@@ -22,7 +22,7 @@ import compiler/ir/inst::{Op, Inst, CallConv, Ordering, Attribute, CallAux, GepA
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout}
-import compiler/ir/intrinsics::{IntrinsicId}
+import compiler/ir/intrinsics::{IntrinsicId, intrinsic_stem}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
 import compiler/native/obj/object::{RelocKind}
 import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le}
@@ -1344,6 +1344,8 @@ class Isel
       return
     elsif id == IntrinsicId::ExpectI1
       bind_result(i, copy_all(materialize(i.args[0])))
+    elsif !overflow_form(id).family
+      fail("intrinsic #{intrinsic_stem(id)} is not lowered in this slice")
     else
       lower_overflow(i, id)
     end
@@ -1356,7 +1358,11 @@ class Isel
     signed = form.signed
     mul = form.mul
     sub = form.sub
-    wide = form.wide
+    if i.args[0].type.bits == 128
+      fail("an i128 overflow intrinsic awaits the i128 slice")
+      return
+    end
+    wide = i.args[0].type.bits == 64
     t = i.args[0].type
     bits = t.bits
     a = first_leaf(i.args[0])

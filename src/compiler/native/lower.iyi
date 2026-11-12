@@ -301,24 +301,24 @@ end
 
 # ---- intrinsics and orderings -----------------------------------------------------------------------------
 
-# The overflow family, classified: signed or unsigned, multiply or subtract (otherwise add), and the 64-bit
-# width (otherwise a narrow form that compares its result with its own width).
+# The overflow family, classified: whether the intrinsic is one (`family`), its signedness, and whether it multiplies
+# or subtracts (otherwise it adds). The width is the operand's, read by the selector.
 pub class OverflowForm
+  getter family : Bool
   getter signed : Bool
   getter mul : Bool
   getter sub : Bool
-  getter wide : Bool
 
-  def initialize(@signed : Bool, @mul : Bool, @sub : Bool, @wide : Bool)
+  def initialize(@family : Bool, @signed : Bool, @mul : Bool, @sub : Bool)
   end
 end
 
 pub def overflow_form(id : IntrinsicId) : OverflowForm
-  signed = id == IntrinsicId::SaddWithOverflowI32 || id == IntrinsicId::SaddWithOverflowI64 || id == IntrinsicId::SsubWithOverflowI32 || id == IntrinsicId::SsubWithOverflowI64 || id == IntrinsicId::SmulWithOverflowI32 || id == IntrinsicId::SmulWithOverflowI64
-  mul = id == IntrinsicId::SmulWithOverflowI32 || id == IntrinsicId::SmulWithOverflowI64 || id == IntrinsicId::UmulWithOverflowI32 || id == IntrinsicId::UmulWithOverflowI64
-  sub = id == IntrinsicId::SsubWithOverflowI32 || id == IntrinsicId::SsubWithOverflowI64 || id == IntrinsicId::UsubWithOverflowI32 || id == IntrinsicId::UsubWithOverflowI64
-  wide = id == IntrinsicId::SaddWithOverflowI64 || id == IntrinsicId::UaddWithOverflowI64 || id == IntrinsicId::SsubWithOverflowI64 || id == IntrinsicId::UsubWithOverflowI64 || id == IntrinsicId::SmulWithOverflowI64 || id == IntrinsicId::UmulWithOverflowI64
-  OverflowForm.new(signed, mul, sub, wide)
+  family = id == IntrinsicId::SAddOverflow || id == IntrinsicId::UAddOverflow || id == IntrinsicId::SSubOverflow || id == IntrinsicId::USubOverflow || id == IntrinsicId::SMulOverflow || id == IntrinsicId::UMulOverflow
+  signed = id == IntrinsicId::SAddOverflow || id == IntrinsicId::SSubOverflow || id == IntrinsicId::SMulOverflow
+  mul = id == IntrinsicId::SMulOverflow || id == IntrinsicId::UMulOverflow
+  sub = id == IntrinsicId::SSubOverflow || id == IntrinsicId::USubOverflow
+  OverflowForm.new(family, signed, mul, sub)
 end
 
 # Whether an atomic load must have acquire semantics, and whether an atomic store must have release semantics.
