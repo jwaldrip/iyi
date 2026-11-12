@@ -173,7 +173,10 @@ bad_ver = bytearray(base)
 bad_ver[8] = 99; bad_ver[9] = 0; bad_ver[10] = 0; bad_ver[11] = 0
 open(f"{out}/bad_version.iyimod", "wb").write(bad_ver)
 corrupt_payload = bytearray(base)
-corrupt_payload[85] ^= 0xff
+# The Header is the first section, so its payload begins right after the section
+# table: 16 bytes of magic, version and count, then 16 bytes per entry.
+header_at = 16 + 16 * int.from_bytes(base[12:16], "little") + 4
+corrupt_payload[header_at] ^= 0xff
 open(f"{out}/corrupt_payload.iyimod", "wb").write(corrupt_payload)
 open(f"{out}/truncated_payload.iyimod", "wb").write(base[:-5])
 PY
@@ -210,7 +213,7 @@ check_refusal() {
 
 check_refusal "truncated header" "$REFUSAL_DIR/short.iyimod" "too short to be a .iyimod"
 check_refusal "invalid magic bytes" "$REFUSAL_DIR/bad_magic.iyimod" "is not a .iyimod"
-check_refusal "mismatched format version" "$REFUSAL_DIR/bad_version.iyimod" "format v99, this compiler writes v50"
+check_refusal "mismatched format version" "$REFUSAL_DIR/bad_version.iyimod" "format v99, this compiler writes v62"
 check_refusal "damaged section payload" "$REFUSAL_DIR/corrupt_payload.iyimod" "Header section is damaged, its checksum does not match"
 check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "ends inside a section"
 
