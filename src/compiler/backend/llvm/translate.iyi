@@ -373,7 +373,7 @@ class ModuleTranslator
     end
     builder = LibLLVM.create_builder_in_context(@ctx)
     @pending_phis = [] of {Inst, LibLLVM::ValueRef}
-    reverse_postorder(f).each do |b|
+    emit_order(f).each do |b|
       LibLLVM.position_builder_at_end(builder, @blocks[b])
       b.insts.each do |inst|
         emit_instruction(builder, inst)
@@ -391,6 +391,25 @@ class ModuleTranslator
       LibLLVM.add_incoming(pair[1], values, blocks, values.size.to_i32)
     end
     LibLLVM.dispose_builder(builder)
+  end
+
+  # Layout order when every non-phi operand is defined before it is used in that order, so LLVM's
+  # use lists (and so its predecessor comments) match the original; reverse postorder otherwise.
+  def emit_order(f : Function) : Array(Block)
+    all = Hash(Value, Bool).new
+    f.blocks.each { |b| b.insts.each { |i| all[i] = true } }
+    seen = Hash(Value, Bool).new
+    f.blocks.each do |b|
+      b.insts.each do |inst|
+        if inst.op != Op::Phi
+          inst.args.each do |a|
+            return reverse_postorder(f) if all[a]? && !seen[a]?
+          end
+        end
+        seen[inst] = true
+      end
+    end
+    f.blocks
   end
 
   def reverse_postorder(f : Function) : Array(Block)

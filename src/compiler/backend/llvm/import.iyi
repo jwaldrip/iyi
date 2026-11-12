@@ -1094,7 +1094,7 @@ class ModuleImporter
       i = 1
       while i < n
         targets << block_of(LibLLVM.get_successor(ref, i))
-        cases << LibLLVM.const_int_get_sext_value(LibLLVM.get_switch_case_value(ref, 0))
+        cases << LibLLVM.const_int_get_sext_value(LibLLVM.get_switch_case_value(ref, i))
         i = i + 1
       end
       return nil if failed?
