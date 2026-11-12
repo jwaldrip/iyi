@@ -21,6 +21,7 @@ set -u
 status=0
 diverged=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+. "$REPO/bench/lib/mutation.sh"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 DRIVER="$REPO/src/compiler/command/driver.iyi"
@@ -408,56 +409,26 @@ PY
 echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
-prove_mutation() {
-  label="$1"
-  old="$2"
-  new="$3"
-  echo "  [$label]"
-  cp "$DRIVER" "$DRIVER.orig"
-  python3 - "$DRIVER" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$DRIVER.orig" "$DRIVER" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$DRIVER.orig" "$DRIVER"; rm -f "$DRIVER.orig"
-    return
-  fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_command_exercise.iyi" >/dev/null 2>&1; then
-    if compare_all "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the command driver output diverged, as it must"
-    fi
-  else
-    echo "    caught: the mutated command driver did not build"
-  fi
-  cp "$DRIVER.orig" "$DRIVER"; rm -f "$DRIVER.orig"
-  echo "    reverted"
+check_command_mutant() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_command_exercise.iyi" >/dev/null 2>&1 || return 1
+  compare_all "$WORK/mut-exercise"
 }
 
 MUTATIONS_RUN=0
-run_proof() {
-  prove_mutation "$1" "$2" "$3"
-  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-}
 
-run_proof "build prefix matching stops accepting prefixes" \
+prove_mutation "build prefix matching stops accepting prefixes" "$DRIVER" \
   'when "build".starts_with?(command)' \
-  'when command == "build"'
+  'when command == "build"' \
+  -- check_command_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "dropping format option stops advertising or parsing -f" \
+prove_mutation "dropping format option stops advertising or parsing -f" "$DRIVER" \
   'parser.on("-f #{allowed_formats.join("|")}"' \
-  'if false; parser.on("-f #{allowed_formats.join("|")}"'
+  'if false; parser.on("-f #{allowed_formats.join("|")}"' \
+  -- check_command_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "invalid option exit code changes from failure to success" \
+prove_mutation "invalid option exit code changes from failure to success" "$DRIVER" \
   '    parser.banner = "Usage: #{CommandDriver.program_name} #{command} [options] [programfile] [--] [arguments]\n\nOptions:"
 
     parser.invalid_option do |flag|
@@ -465,18 +436,27 @@ run_proof "invalid option exit code changes from failure to success" \
   '    parser.banner = "Usage: #{CommandDriver.program_name} #{command} [options] [programfile] [--] [arguments]\n\nOptions:"
 
     parser.invalid_option do |flag|
-      abort "Invalid option: #{flag}", Exit::OK'
-run_proof "unknown command error message changes wording" \
+      abort "Invalid option: #{flag}", Exit::OK' \
+  -- check_command_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "unknown command error message changes wording" "$DRIVER" \
   'abort "unknown command: #{command}", Exit::USAGE_ERROR' \
-  'abort "bad command: #{command}", Exit::USAGE_ERROR'
+  'abort "bad command: #{command}", Exit::USAGE_ERROR' \
+  -- check_command_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "subcommand prefix matching stops accepting prefixes" \
+prove_mutation "subcommand prefix matching stops accepting prefixes" "$DRIVER" \
   'when "context".starts_with?(tool_sub)' \
-  'when tool_sub == "context"'
+  'when tool_sub == "context"' \
+  -- check_command_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "mod subcommand dispatch fails to recognize dump" \
+prove_mutation "mod subcommand dispatch fails to recognize dump" "$DRIVER" \
   'when "dump"' \
-  'when "d_u_m_p"'
+  'when "d_u_m_p"' \
+  -- check_command_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

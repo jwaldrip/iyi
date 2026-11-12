@@ -23,6 +23,8 @@ IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+. "$REPO/bench/lib/mutation.sh"
+
 status=0
 
 echo "== 1. Building and running selfhost AST exercise (plain mode)"
@@ -64,100 +66,42 @@ fi
 echo
 echo "== 3. Guarded mutation proofs (verify patch applies, exercise fails, revert passes)"
 
-# Mutation 1: Alter ASTNode#clone to drop doc preservation
-echo "  [mutation 1] altering ASTNode#clone doc preservation"
-cp "$REPO/src/compiler/syntax/ast.iyi" "$REPO/src/compiler/syntax/ast.iyi.orig"
-sed -i.bak 's/c[.]doc[ ]*=[ ]*@doc/c.doc = nil/' "$REPO/src/compiler/syntax/ast.iyi" && rm -f "$REPO/src/compiler/syntax/ast.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/ast.iyi.orig" "$REPO/src/compiler/syntax/ast.iyi" >/dev/null; then
-  echo "FAIL: mutation 1 patch did not apply"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_ast_exercise.iyi" > "$WORK/mut1.log" 2>&1; then
-  echo "FAIL: selfhost AST exercise succeeded despite corrupted clone doc"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/ast.iyi.orig" "$REPO/src/compiler/syntax/ast.iyi"
-rm -f "$REPO/src/compiler/syntax/ast.iyi.orig"
-echo "    reverted mutation 1"
+# The exercise must fail on the mutated tree; a passing run is the surviving mutation.
+check_ast_exercise_fails() {
+  "$IYI" run "$REPO/bench/selfhost_ast_exercise.iyi"
+}
 
-# Mutation 2: Alter Var#== structural equality
-echo "  [mutation 2] altering Var#== structural equality"
-cp "$REPO/src/compiler/syntax/ast.iyi" "$REPO/src/compiler/syntax/ast.iyi.orig"
-sed -i.bak 's/(@name[ ]*==[ ]*other[.]name)/false/' "$REPO/src/compiler/syntax/ast.iyi" && rm -f "$REPO/src/compiler/syntax/ast.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/ast.iyi.orig" "$REPO/src/compiler/syntax/ast.iyi" >/dev/null; then
-  echo "FAIL: mutation 2 patch did not apply"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_ast_exercise.iyi" > "$WORK/mut2.log" 2>&1; then
-  echo "FAIL: selfhost AST exercise succeeded despite corrupted Var equality"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/ast.iyi.orig" "$REPO/src/compiler/syntax/ast.iyi"
-rm -f "$REPO/src/compiler/syntax/ast.iyi.orig"
-echo "    reverted mutation 2"
+# Mutation 1: Alter ASTNode#clone to drop doc preservation
+prove_mutation "mutation 1: altering ASTNode#clone doc preservation" \
+  "$REPO/src/compiler/syntax/ast.iyi" "c.doc = @doc" "c.doc = nil" \
+  -- check_ast_exercise_fails || status=1
+
+# Mutation 2: Alter Var#== structural equality. The original sed replaced every
+# (@name == other.name) line (28 sites, Var among them), so every site is replaced.
+prove_mutation_all "mutation 2: altering Var#== structural equality" \
+  "$REPO/src/compiler/syntax/ast.iyi" \
+  "(@name == other.name)" "false" \
+  -- check_ast_exercise_fails || status=1
 
 # Mutation 3: Alter NodeMap#[]= side storage assignment
-echo "  [mutation 3] altering NodeMap#[]= key storage"
-cp "$REPO/src/compiler/syntax/ast.iyi" "$REPO/src/compiler/syntax/ast.iyi.orig"
-sed -i.bak 's/@store\[node[.]node_id\][ ]*=[ ]*value/@store[0_u64] = value/' "$REPO/src/compiler/syntax/ast.iyi" && rm -f "$REPO/src/compiler/syntax/ast.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/ast.iyi.orig" "$REPO/src/compiler/syntax/ast.iyi" >/dev/null; then
-  echo "FAIL: mutation 3 patch did not apply"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_ast_exercise.iyi" > "$WORK/mut3.log" 2>&1; then
-  echo "FAIL: selfhost AST exercise succeeded despite corrupted NodeMap"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/ast.iyi.orig" "$REPO/src/compiler/syntax/ast.iyi"
-rm -f "$REPO/src/compiler/syntax/ast.iyi.orig"
-echo "    reverted mutation 3"
+prove_mutation "mutation 3: altering NodeMap#[]= key storage" \
+  "$REPO/src/compiler/syntax/ast.iyi" \
+  "@store[node.node_id] = value" "@store[0_u64] = value" \
+  -- check_ast_exercise_fails || status=1
 
-# Mutation 4: Alter Transformer#transform(Assign) target transformation
-echo "  [mutation 4] altering Transformer#transform(Assign) target recursion"
-cp "$REPO/src/compiler/syntax/transformer.iyi" "$REPO/src/compiler/syntax/transformer.iyi.orig"
-sed -i.bak 's/node[.]target[ ]*=[ ]*node[.]target[.]transform(self)/# node.target bypassed/' "$REPO/src/compiler/syntax/transformer.iyi" && rm -f "$REPO/src/compiler/syntax/transformer.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/transformer.iyi.orig" "$REPO/src/compiler/syntax/transformer.iyi" >/dev/null; then
-  echo "FAIL: mutation 4 patch did not apply"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_ast_exercise.iyi" > "$WORK/mut4.log" 2>&1; then
-  echo "FAIL: selfhost AST exercise succeeded despite corrupted transformer"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/transformer.iyi.orig" "$REPO/src/compiler/syntax/transformer.iyi"
-rm -f "$REPO/src/compiler/syntax/transformer.iyi.orig"
-echo "    reverted mutation 4"
+# Mutation 4: Alter Transformer#transform(Assign) target transformation. Every
+# occurrence is replaced, as the original sed did (the Assign and OpAssign sites).
+prove_mutation_all "mutation 4: altering Transformer#transform(Assign) target recursion" \
+  "$REPO/src/compiler/syntax/transformer.iyi" \
+  "node.target = node.target.transform(self)" "# node.target bypassed" \
+  -- check_ast_exercise_fails || status=1
 
-# Mutation 5: Alter ToSVisitor#visit(Assign) formatting
-echo "  [mutation 5] altering ToSVisitor#visit(Assign) formatting"
-cp "$REPO/src/compiler/syntax/visitor.iyi" "$REPO/src/compiler/syntax/visitor.iyi.orig"
-sed -i.bak 's/node[.]to_s(@sb)/@sb << "mutated"/' "$REPO/src/compiler/syntax/visitor.iyi" && rm -f "$REPO/src/compiler/syntax/visitor.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/visitor.iyi.orig" "$REPO/src/compiler/syntax/visitor.iyi" >/dev/null; then
-  echo "FAIL: mutation 5 patch did not apply"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_ast_exercise.iyi" > "$WORK/mut5.log" 2>&1; then
-  echo "FAIL: selfhost AST exercise succeeded despite corrupted ToSVisitor formatting"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/visitor.iyi.orig" "$REPO/src/compiler/syntax/visitor.iyi"
-rm -f "$REPO/src/compiler/syntax/visitor.iyi.orig"
-echo "    reverted mutation 5"
+# Mutation 5: Alter ToSVisitor#visit formatting. Every node.to_s(@sb) is replaced,
+# as the original sed did, so every visit method formats as "mutated".
+prove_mutation_all "mutation 5: altering ToSVisitor#visit(Assign) formatting" \
+  "$REPO/src/compiler/syntax/visitor.iyi" \
+  "node.to_s(@sb)" "@sb << \"mutated\"" \
+  -- check_ast_exercise_fails || status=1
 
 echo
 echo "== Verification clean state confirmed"

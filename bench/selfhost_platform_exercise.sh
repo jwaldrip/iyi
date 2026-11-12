@@ -28,6 +28,7 @@ FLAGS_IYI="$REPO/src/compiler/platform/flags.iyi"
 LINKER_IYI="$REPO/src/compiler/platform/linker.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+. "$REPO/bench/lib/mutation.sh"
 
 echo "== 1. Building and running the platform exercise (plain mode)"
 if ! "$IYI" build -o "$WORK/exercise" "$REPO/bench/selfhost_platform_exercise.iyi"; then
@@ -71,11 +72,12 @@ class Iyi::Compiler
 end
 
 class Iyi::Program
+  # Only the shape matters: normalize_paths maps any absolute .../lib path to <LIBPATH> on both sides.
   def lib_flags(cross_compiling : Bool = false)
     if has_flag?("msvc")
-      "/LIBPATH:/opt/homebrew/opt/bdw-gc/lib"
+      "/LIBPATH:/usr/local/lib"
     else
-      "-L/opt/homebrew/opt/bdw-gc/lib"
+      "-L/usr/local/lib"
     end
   end
 end
@@ -197,52 +199,18 @@ done
 echo
 echo "== 5. Guarded mutation proofs (verify patch applies, exercise fails, revert passes)"
 
-prove_mutation() {
-  label="$1"
-  file_path="$2"
-  old="$3"
-  new="$4"
-  echo "  [$label]"
-  cp "$file_path" "$file_path.orig"
-  python3 - "$file_path" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$file_path.orig" "$file_path" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$file_path.orig" "$file_path"
-    rm -f "$file_path.orig"
-    return
-  fi
-  echo "    patch verified applied in working tree"
-
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_platform_exercise.iyi" >/dev/null 2>&1; then
-    "$WORK/mut-exercise" dump > "$WORK/mut-iyi.out" 2>&1
-    if diff -q "$WORK/crystal.out" "$WORK/mut-iyi.out" >/dev/null 2>&1; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the platform support output diverged, as it must"
-    fi
-  else
-    echo "    caught: the mutated platform code did not build"
-  fi
-
-  cp "$file_path.orig" "$file_path"
-  rm -f "$file_path.orig"
-  echo "    reverted"
+# The check for one mutation: non-zero (caught) when the mutated platform code no
+# longer builds, or when its dump stops matching the Crystal oracle.
+check_platform_matches_oracle() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_platform_exercise.iyi" >/dev/null 2>&1 || return 1
+  "$WORK/mut-exercise" dump > "$WORK/mut-iyi.out" 2>&1
+  diff -q "$WORK/crystal.out" "$WORK/mut-iyi.out" >/dev/null 2>&1
 }
 
 MUTATIONS_RUN=0
 run_proof() {
-  prove_mutation "$1" "$2" "$3" "$4"
   MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+  prove_mutation "$1" "$2" "$3" "$4" -- check_platform_matches_oracle || status=1
 }
 
 run_proof "altering aarch64 64-bit pointer width detection" \

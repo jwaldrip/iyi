@@ -17,12 +17,14 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 COMPILE_TOOL_SRC="$REPO/src/compiler/tools/compile.iyi"
 CODEGEN_SRC="$REPO/src/compiler/codegen/codegen.iyi"
+. "$REPO/bench/lib/mutation.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
-export CRYSTAL_CACHE_DIR="/tmp/iyi-irvalid-cache"
+if command -v brew >/dev/null 2>&1; then
+  LIBRARY_PATH="$(brew --prefix bdw-gc)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"; export LIBRARY_PATH
+fi
+export CRYSTAL_CACHE_DIR="${TMPDIR:-/tmp}/iyi-irvalid-cache"
 
 status=0
 
@@ -112,49 +114,31 @@ echo "== 4. Guarded mutation proofs: the gate must go red on invalid IR"
 mut_run=0
 mut_caught=0
 
+# Checks the mutated backend. Returns zero only while the probe still verifies (not caught);
+# a mutant that stops the backend building, or emits IR that fails verification, returns
+# non-zero (caught). MUT_PROBE names the probe file for this mutation.
+check_ir_still_verifies() {
+  "$IYI" build -o "$WORK/mut-compile" "$COMPILE_TOOL_SRC" >/dev/null 2>&1 || return 1
+  local out
+  out="$("$WORK/mut-compile" --probe-verify -o "$WORK/mut_out" "$MUT_PROBE" 2>&1 | tr -d '\0' || true)"
+  printf '%s' "$out" | grep -q '\[verify\] pass'
+}
+
 prove_invalid() {
-  local label="$1"
-  local target="$2"
-  local script="$3"
-  local probe="$4"
-
+  local label="$1" target="$2" old="$3" new="$4" probe="$5"
   mut_run=$((mut_run + 1))
-  echo "  [$label]"
-  cp "$target" "$target.orig"
-  sed -e "$script" "$target.orig" > "$target"
-  if cmp -s "$target.orig" "$target"; then
-    echo "    FAIL: mutation matched nothing, so it proves nothing"
-    mv "$target.orig" "$target"
-    status=1
-    return
-  fi
-
-  local caught=0
-  if "$IYI" build -o "$WORK/mut-compile" "$COMPILE_TOOL_SRC" >/dev/null 2>&1; then
-    local out
-    out="$("$WORK/mut-compile" --probe-verify -o "$WORK/mut_out" "$probe" 2>&1 | tr -d '\0' || true)"
-    if ! printf '%s' "$out" | grep -q '\[verify\] pass'; then
-      caught=1
-    fi
-  else
-    # A mutation that stops the backend building also stops it emitting
-    # invalid IR unnoticed, which is a catch rather than a miss.
-    caught=1
-  fi
-
-  mv "$target.orig" "$target"
-  if [ "$caught" -eq 1 ]; then
-    echo "    caught: the mutated backend no longer emits verifying IR, as it must"
+  MUT_PROBE="$probe"
+  if prove_mutation "$label" "$target" "$old" "$new" -- check_ir_still_verifies; then
     mut_caught=$((mut_caught + 1))
   else
-    echo "    FAIL: mutation left the IR verifying"
     status=1
   fi
 }
 
 prove_invalid "return a value from a void function" \
   "$CODEGEN_SRC" \
-  's/@builder\.ret_void/@builder.ret(@context.int32.const_int(0))/' \
+  "@builder.ret_void" \
+  "@builder.ret(@context.int32.const_int(0))" \
   "$REPO/bench/fixtures/cg_int_arith.iyi"
 
 # Each mutation below was confirmed to be detected by the probe named with it.
@@ -164,7 +148,8 @@ prove_invalid "return a value from a void function" \
 # still detect nothing.
 prove_invalid "declare a call with the wrong return type" \
   "$CODEGEN_SRC" \
-  's/method_fn_ty = LLVMType\.function(m_param_tys, call_ret_ty, false)/method_fn_ty = LLVMType.function(m_param_tys, @context.pointer, false)/' \
+  "method_fn_ty = LLVMType.function(m_param_tys, call_ret_ty, false)" \
+  "method_fn_ty = LLVMType.function(m_param_tys, @context.pointer, false)" \
   "$REPO/src/iyi/float.iyi"
 
 echo "  Mutation summary: $mut_caught/$mut_run invalid-IR mutations caught"

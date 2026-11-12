@@ -16,15 +16,18 @@ set -u
 status=0
 diverged=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+. "$REPO/bench/lib/mutation.sh"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 CG_SRC="$REPO/src/compiler/codegen/codegen.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
-export CRYSTAL_CACHE_DIR="/tmp/iyi-cg-cache"
+if command -v brew >/dev/null 2>&1; then
+  LIBRARY_PATH="$(brew --prefix bdw-gc)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+  export LIBRARY_PATH
+fi
+export CRYSTAL_CACHE_DIR="${TMPDIR:-/tmp}/iyi-cg-cache"
 export CRYSTAL_PATH="$REPO/src"
 
 echo "== 1. Building and running pure iyi codegen standalone check"
@@ -228,75 +231,50 @@ fi
 echo
 echo "== 5. Guarded mutation proofs"
 
-prove_cg_mutation() {
-  local label="$1"
-  local fix_name="$2"
-  local old="$3"
-  local new="$4"
-  echo "  [$label]"
-  cp "$CG_SRC" "$CG_SRC.orig"
-  python3 - "$CG_SRC" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  local rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$CG_SRC.orig" "$CG_SRC" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$CG_SRC.orig" "$CG_SRC"; rm -f "$CG_SRC.orig"
-    return
-  fi
-
-  if "$IYI" build -o "$WORK/mut_exercise" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1; then
-    "$WORK/mut_exercise" --dump-ir "$REPO/bench/fixtures/$fix_name" > "$WORK/mut_iyi.raw" 2>&1 || true
-    normalize_ir "$WORK/mut_iyi.raw" > "$WORK/mut_iyi.norm" 2>/dev/null || true
-    if diff -q "$WORK/cr_${fix_name}.norm" "$WORK/mut_iyi.norm" >/dev/null 2>&1; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the codegen output diverged or failed, as it must"
-    fi
-  else
-    echo "    caught: the mutated codegen did not build"
-  fi
-  cp "$CG_SRC.orig" "$CG_SRC"; rm -f "$CG_SRC.orig"
-  echo "    reverted"
+check_cg_mutant() {
+  local fixture="$1"
+  "$IYI" build -o "$WORK/mut_exercise" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1 || return 1
+  "$WORK/mut_exercise" --dump-ir "$REPO/bench/fixtures/$fixture" > "$WORK/mut_iyi.raw" 2>&1 || true
+  normalize_ir "$WORK/mut_iyi.raw" > "$WORK/mut_iyi.norm" 2>/dev/null || true
+  diff -q "$WORK/cr_${fixture}.norm" "$WORK/mut_iyi.norm" >/dev/null 2>&1
 }
 
 MUTATIONS_RUN=0
 
-prove_cg_mutation "corrupt addition opcode to subtraction" "cg_int_arith.iyi" \
+prove_mutation "corrupt addition opcode to subtraction" "$CG_SRC" \
   '@last = is_float ? @builder.fadd(lhs, rhs) : @builder.add(lhs, rhs)' \
-  '@last = is_float ? @builder.fsub(lhs, rhs) : @builder.sub(lhs, rhs)'
+  '@last = is_float ? @builder.fsub(lhs, rhs) : @builder.sub(lhs, rhs)' \
+  -- check_cg_mutant cg_int_arith.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt comparison predicate SLT to SGT" "cg_comparisons.iyi" \
+prove_mutation "corrupt comparison predicate SLT to SGT" "$CG_SRC" \
   'LibLLVM::IntPredicate::SLT' \
-  'LibLLVM::IntPredicate::SGT'
+  'LibLLVM::IntPredicate::SGT' \
+  -- check_cg_mutant cg_comparisons.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "bypass variable store in assignment" "cg_control.iyi" \
+prove_mutation "bypass variable store in assignment" "$CG_SRC" \
   '@builder.store(val, ptr)' \
-  '# @builder.store(val, ptr)'
+  '# @builder.store(val, ptr)' \
+  -- check_cg_mutant cg_control.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "invert if branch condition targets" "cg_control.iyi" \
+prove_mutation "invert if branch condition targets" "$CG_SRC" \
   '@builder.cond_br(cond_val, then_bb, else_bb)' \
-  '@builder.cond_br(cond_val, else_bb, then_bb)'
+  '@builder.cond_br(cond_val, else_bb, then_bb)' \
+  -- check_cg_mutant cg_control.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt while loop loopback branch" "cg_control.iyi" \
+prove_mutation "corrupt while loop loopback branch" "$CG_SRC" \
   '@builder.br(while_bb)' \
-  '@builder.br(fail_bb)'
+  '@builder.br(fail_bb)' \
+  -- check_cg_mutant cg_control.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt multiplication opcode to addition" "cg_int_arith.iyi" \
+prove_mutation "corrupt multiplication opcode to addition" "$CG_SRC" \
   '@last = is_float ? @builder.fmul(lhs, rhs) : @builder.mul(lhs, rhs)' \
-  '@last = is_float ? @builder.fadd(lhs, rhs) : @builder.add(lhs, rhs)'
+  '@last = is_float ? @builder.fadd(lhs, rhs) : @builder.add(lhs, rhs)' \
+  -- check_cg_mutant cg_int_arith.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # The IR normaliser rewrites every type_id value to <ID>, so no mutation of
@@ -304,68 +282,81 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # lazy sites that create a correctly named one on demand. This anchors on the
 # global's constness, which the comparison does see: `internal constant`
 # becomes `internal global`.
-prove_cg_mutation "corrupt module-level class type_id global" "cg_classes.iyi" \
+prove_mutation "corrupt module-level class type_id global" "$CG_SRC" \
   'tid_global.global_constant = true' \
-  'tid_global.global_constant = false'
+  'tid_global.global_constant = false' \
+  -- check_cg_mutant cg_classes.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_cg_mutation "corrupt virtual hierarchy match range predicate" "cg_virtual_dispatch.iyi" \
+prove_mutation "corrupt virtual hierarchy match range predicate" "$CG_SRC" \
   'sge = builder.icmp(LibLLVM::IntPredicate::SGE, arg0, min_val)' \
-  'sge = builder.icmp(LibLLVM::IntPredicate::SLT, arg0, min_val)'
+  'sge = builder.icmp(LibLLVM::IntPredicate::SLT, arg0, min_val)' \
+  -- check_cg_mutant cg_virtual_dispatch.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt nilable null check predicate" "cg_nilable.iyi" \
+prove_mutation "corrupt nilable null check predicate" "$CG_SRC" \
   'res = @builder.icmp(LibLLVM::IntPredicate::EQ, l_nil_tid2, sel)' \
-  'res = @builder.icmp(LibLLVM::IntPredicate::NE, l_nil_tid2, sel)'
+  'res = @builder.icmp(LibLLVM::IntPredicate::NE, l_nil_tid2, sel)' \
+  -- check_cg_mutant cg_nilable.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt block body evaluation during yield" "cg_blocks.iyi" \
+prove_mutation "corrupt block body evaluation during yield" "$CG_SRC" \
   'inlined.block.body.accept(self)' \
-  '# inlined.block.body.accept(self)'
+  '# inlined.block.body.accept(self)' \
+  -- check_cg_mutant cg_blocks.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt landing pad selector extraction index" "cg_exceptions.iyi" \
+prove_mutation "corrupt landing pad selector extraction index" "$CG_SRC" \
   'exception_type_id = @builder.extract_value(lp, 1)' \
-  'exception_type_id = @builder.extract_value(lp, 0)'
+  'exception_type_id = @builder.extract_value(lp, 0)' \
+  -- check_cg_mutant cg_exceptions.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt rescue type check predicate EQ to NE" "cg_exceptions.iyi" \
+prove_mutation "corrupt rescue type check predicate EQ to NE" "$CG_SRC" \
   '@builder.icmp(LibLLVM::IntPredicate::EQ, l_tid, exception_type_id)' \
-  '@builder.icmp(LibLLVM::IntPredicate::NE, l_tid, exception_type_id)'
+  '@builder.icmp(LibLLVM::IntPredicate::NE, l_tid, exception_type_id)' \
+  -- check_cg_mutant cg_exceptions.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt closure environment store" "cg_closures.iyi" \
+prove_mutation "corrupt closure environment store" "$CG_SRC" \
   'st = @builder.store(cval, slot)' \
-  '# st = @builder.store(cval, slot)'
+  '# st = @builder.store(cval, slot)' \
+  -- check_cg_mutant cg_closures.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt string literal constant global name delimiter" "cg_strings.iyi" \
+prove_mutation "corrupt string literal constant global name delimiter" "$CG_SRC" \
   "io << \"'\"" \
-  "io << \"$\""
+  "io << \"$\"" \
+  -- check_cg_mutant cg_strings.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt generic constructor name mangling" "cg_generics.iyi" \
+prove_mutation "corrupt generic constructor name mangling" "$CG_SRC" \
   '"*#{info.name}@#{gname}::new<#{arg_type_names.join(", ")}>:#{info.name}"' \
-  '"*#{info.name}@#{gname}::corrupted_new<#{arg_type_names.join(", ")}>:#{info.name}"'
+  '"*#{info.name}@#{gname}::corrupted_new<#{arg_type_names.join(", ")}>:#{info.name}"' \
+  -- check_cg_mutant cg_generics.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt class field offset index shift" "cg_layouts.iyi" \
+prove_mutation "corrupt class field offset index shift" "$CG_SRC" \
   'idx = info.is_struct ? fidx : fidx + 1' \
-  'idx = info.is_struct ? fidx : fidx + 5'
+  'idx = info.is_struct ? fidx : fidx + 5' \
+  -- check_cg_mutant cg_layouts.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt runtime raise symbol resolution" "cg_raise.iyi" \
+prove_mutation "corrupt runtime raise symbol resolution" "$CG_SRC" \
   'crystal_raise_fn = ensure_crystal_raise' \
-  'crystal_raise_fn = ensure_crystal_personality'
+  'crystal_raise_fn = ensure_crystal_personality' \
+  -- check_cg_mutant cg_raise.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt runtime personality symbol resolution" "cg_exceptions.iyi" \
+prove_mutation "corrupt runtime personality symbol resolution" "$CG_SRC" \
   'pers_fn = ensure_crystal_personality' \
-  'pers_fn = ensure_crystal_raise'
+  'pers_fn = ensure_crystal_raise' \
+  -- check_cg_mutant cg_exceptions.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_cg_mutation "corrupt runtime get_exception symbol resolution" "cg_exceptions.iyi" \
+prove_mutation "corrupt runtime get_exception symbol resolution" "$CG_SRC" \
   'get_ex_fn = ensure_crystal_get_exception' \
-  'get_ex_fn = ensure_crystal_raise'
+  'get_ex_fn = ensure_crystal_raise' \
+  -- check_cg_mutant cg_exceptions.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 

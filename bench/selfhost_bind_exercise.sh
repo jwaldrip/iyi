@@ -38,6 +38,7 @@ set -u
 status=0
 diverged=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+. "$REPO/bench/lib/mutation.sh"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 BIND="$REPO/src/compiler/tools/bind.iyi"
@@ -170,78 +171,60 @@ fi
 echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
-prove_mutation() {
-  label="$1"
-  old="$2"
-  new="$3"
-  echo "  [$label]"
-  cp "$BIND" "$BIND.orig"
-  python3 - "$BIND" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$BIND.orig" "$BIND" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$BIND.orig" "$BIND"; rm -f "$BIND.orig"
-    return
-  fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_bind_exercise.iyi" >/dev/null 2>&1; then
-    if compare_all "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the bound outputs diverged, as they must"
-    fi
-  else
-    echo "    caught: the mutated bind tool did not build"
-  fi
-  cp "$BIND.orig" "$BIND"; rm -f "$BIND.orig"
-  echo "    reverted"
+check_bind_mutant() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_bind_exercise.iyi" >/dev/null 2>&1 || return 1
+  compare_all "$WORK/mut-exercise"
 }
 
 MUTATIONS_RUN=0
-run_proof() {
-  prove_mutation "$1" "$2" "$3"
-  MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-}
 
-run_proof "untyped arguments stop triggering NeedsHuman verdict" \
+prove_mutation "untyped arguments stop triggering NeedsHuman verdict" "$BIND" \
   "verdict = BindVerdict::NeedsHuman" \
-  "verdict = BindVerdict::Ready"
+  "verdict = BindVerdict::Ready" \
+  -- check_bind_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "block detection is disabled across methods" \
+prove_mutation "block detection is disabled across methods" "$BIND" \
   "has_block = !node.block_arg.nil? || node.uses_block_arg?" \
-  "has_block = false"
+  "has_block = false" \
+  -- check_bind_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "ready method counting is bypassed in summary report" \
+prove_mutation "ready method counting is bypassed in summary report" "$BIND" \
   "ready = ready + 1" \
-  "ready = ready + 0"
+  "ready = ready + 0" \
+  -- check_bind_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "callable calculation requires unannotated block" \
+prove_mutation "callable calculation requires unannotated block" "$BIND" \
   "!@block || !@written_block.empty?" \
-  "!@block && !@written_block.empty?"
+  "!@block && !@written_block.empty?" \
+  -- check_bind_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "generic type instantiation refusal is disabled" \
+prove_mutation "generic type instantiation refusal is disabled" "$BIND" \
   "refused = \"generic type\"" \
-  "refused = \"\""
+  "refused = \"\"" \
+  -- check_bind_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "also declares output header is omitted" \
+prove_mutation "also declares output header is omitted" "$BIND" \
   "sb << \"also declares: \"" \
-  "sb << \"declares also: \""
+  "sb << \"declares also: \"" \
+  -- check_bind_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "empty methods early return in summary report is bypassed" \
+prove_mutation "empty methods early return in summary report is bypassed" "$BIND" \
   "if methods.empty?" \
-  "if false && methods.empty?"
+  "if false && methods.empty?" \
+  -- check_bind_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "empty root matching bypasses namespace scoping" \
+prove_mutation "empty root matching bypasses namespace scoping" "$BIND" \
   "!@root.empty? && (owner == @root || owner.starts_with?(\"#{@root}::\") || owner.starts_with?(\"#{@root}:\"))" \
-  "true || (owner == @root || owner.starts_with?(\"#{@root}::\") || owner.starts_with?(\"#{@root}:\"))"
+  "true || (owner == @root || owner.starts_with?(\"#{@root}::\") || owner.starts_with?(\"#{@root}:\"))" \
+  -- check_bind_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

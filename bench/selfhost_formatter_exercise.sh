@@ -15,6 +15,7 @@ status=0
 diverged=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
+. "$REPO/bench/lib/mutation.sh"
 FMT="$REPO/src/compiler/tools/formatter.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -123,44 +124,19 @@ fi
 echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
-prove_mutation() {
-  local label="$1"
-  local old="$2"
-  local new="$3"
-  echo "  [$label]"
-  cp "$FMT" "$FMT.orig"
-  python3 - "$FMT" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  local rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$FMT.orig" "$FMT" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$FMT.orig" "$FMT"; rm -f "$FMT.orig"
-    return
+# Each check rebuilds the formatter with the mutation applied and compares it with the
+# shipped formatter on the corpus. It returns zero only when the comparison still passes.
+check_formatter_parity() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_formatter_exercise.iyi" >/dev/null 2>&1 || return 1
+  if compare_corpus "$WORK/mut-exercise" >/dev/null 2>&1; then
+    return 0
   fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_formatter_exercise.iyi" >/dev/null 2>&1; then
-    if compare_corpus "$WORK/mut-exercise" >/dev/null 2>&1; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the formatted output diverged on corpus, as it must"
-    fi
-  else
-    echo "    caught: the mutated formatter did not build"
-  fi
-  cp "$FMT.orig" "$FMT"; rm -f "$FMT.orig"
-  echo "    reverted"
+  return 1
 }
 
 MUTATIONS_RUN=0
 run_proof() {
-  prove_mutation "$1" "$2" "$3"
+  prove_mutation "$1" "$FMT" "$2" "$3" -- check_formatter_parity || status=1
   MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 }
 
