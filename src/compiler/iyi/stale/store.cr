@@ -1,4 +1,5 @@
 require "json"
+require "file_utils"
 require "./encoding"
 require "./receipt"
 require "./toolchain"
@@ -12,9 +13,16 @@ module Iyi::Stale
     getter masks_dir : String
     getter markers_dir : String
     getter imported_dir : String
+    getter fast_dir : String
     getter lock_path : String
     getter seq_path : String
     getter key_path : String
+    # Imported snapshot files this store has parsed. A lookup served from the
+    # index does not count, so this measures how often the files were read.
+    getter imported_parses : Int32 = 0
+
+    # Imported snapshot files as this store last read them, by path.
+    @imported = {} of String => ImportedFile
 
     def initialize(cache_root : String? = nil)
       @cache_root = cache_root || ENV["IYI_CACHE_DIR"]? || ENV["CRYSTAL_CACHE_DIR"]? || CacheDir.instance.dir
@@ -23,6 +31,7 @@ module Iyi::Stale
       @masks_dir = File.join(@root_dir, "masks")
       @markers_dir = File.join(@root_dir, "markers")
       @imported_dir = File.join(@root_dir, "imported")
+      @fast_dir = File.join(@root_dir, "fast")
       @lock_path = File.join(@root_dir, "lock")
       @seq_path = File.join(@root_dir, "seq")
       @key_path = File.join(@root_dir, "key")
@@ -33,6 +42,7 @@ module Iyi::Stale
       Dir.mkdir_p(@masks_dir) unless Dir.exists?(@masks_dir)
       Dir.mkdir_p(@markers_dir) unless Dir.exists?(@markers_dir)
       Dir.mkdir_p(@imported_dir) unless Dir.exists?(@imported_dir)
+      Dir.mkdir_p(@fast_dir) unless Dir.exists?(@fast_dir)
     end
 
     # Atomic write: temp file, fsync, rename. On win32, MoveFileExW with
@@ -67,7 +77,14 @@ module Iyi::Stale
       raise ex
     end
 
-    # Advisory exclusive file lock using flock_exclusive
+    # Advisory exclusive file lock using flock_exclusive.
+    #
+    # Invariant the parallel runner relies on: nothing inside a lock block
+    # suspends the fiber. No channel send or receive, no sleep, no evented IO
+    # (a socket, a pipe read as it arrives). The flock is held by the thread,
+    # so a fiber that suspends inside the block lets another fiber on the same
+    # thread ask for the lock, and that request blocks the thread itself: the
+    # holder can never resume and the process deadlocks.
     def lock(&block)
       Dir.mkdir_p(@root_dir) unless Dir.exists?(@root_dir)
       File.open(@lock_path, "a") do |f|
@@ -112,9 +129,14 @@ module Iyi::Stale
       end
     end
 
-    def record_path(signature : String) : String
-      prefix = signature[0..1]
-      File.join(@records_dir, prefix, "#{signature}.json")
+    # The directory holding one test's receipts: records/<hex D(test)>/.
+    # Lookups for a test read this directory and no other test's.
+    def test_dir(test : TestId) : String
+      File.join(@records_dir, Stale.hex(Store.d_test_id(test)))
+    end
+
+    def record_path(test : TestId, signature : String) : String
+      File.join(test_dir(test), "#{signature}.json")
     end
 
     def mask_path(signature : String) : String
@@ -127,6 +149,19 @@ module Iyi::Stale
 
     def imported_path(namespace : String) : String
       File.join(@imported_dir, "#{Stale.hex(Store.d_namespace(namespace))}.json")
+    end
+
+    # The fast-path record of a test. Its contents belong to the fast-path
+    # writer; the store only locates and forgets it.
+    def fast_path(test : TestId) : String
+      File.join(@fast_dir, "#{Stale.hex(Store.d_test_id(test))}.json")
+    end
+
+    def forget_fast(test : TestId) : Nil
+      lock do
+        path = fast_path(test)
+        File.delete(path) if File.file?(path)
+      end
     end
 
     def has_marker?(test : TestId) : Bool
@@ -174,7 +209,7 @@ module Iyi::Stale
         receipt.ensure_signature!
         receipt.seq = advance_seq_under_lock
 
-        path = record_path(receipt.signature)
+        path = record_path(receipt.test, receipt.signature)
         if File.file?(path)
           begin
             existing_content = File.read(path)
@@ -193,36 +228,111 @@ module Iyi::Stale
       end
     end
 
-    # Candidates: local passes newest first, then unmasked imported receipts by namespace
-    def candidates(test : TestId, target : String) : Array(Receipt)
+    # One imported snapshot file as this store last read it. Every record is
+    # indexed by test, so a lookup reads its own test's records and not the
+    # whole file. A file that does not parse keeps no records, so it is not
+    # parsed again until its stamp changes.
+    class ImportedFile
+      getter stamp : {Int64, Time}
+      getter namespace : String
+      getter target : String
+      # Whether candidates may draw on this file: the same format and version
+      # gate an import applies. Revocation reads every file, usable or not.
+      getter? usable : Bool
+      # Every record of the file, whatever its mode, by test, in file order.
+      getter by_test : Hash(TestId, Array(Receipt))
+
+      def initialize(
+        @stamp : {Int64, Time},
+        @namespace : String,
+        @target : String,
+        @usable : Bool,
+        @by_test : Hash(TestId, Array(Receipt)),
+      )
+      end
+
+      def self.read(stamp : {Int64, Time}, path : String) : ImportedFile
+        by_test = Hash(TestId, Array(Receipt)).new
+        begin
+          snap = Snapshot.from_json(File.read(path))
+          snap.records.each do |rec|
+            rec.namespace = snap.namespace
+            rec.ensure_signature!
+            (by_test[rec.test] ||= [] of Receipt) << rec
+          end
+          usable = snap.format == "iyi-test-index" && snap.version == FORMAT_VERSION
+          new(stamp, snap.namespace, snap.target, usable, by_test)
+        rescue
+          new(stamp, "", "", false, Hash(TestId, Array(Receipt)).new)
+        end
+      end
+    end
+
+    # The imported snapshot files as they stand now. A file is parsed when its
+    # stamp (size and mtime) differs from the one this store last read, and
+    # reused otherwise. The stamp is taken before the file is read: a file
+    # replaced after the stamp is read as new content under the old stamp, so
+    # the next call reads it again. A stamp taken after the read could pair old
+    # content with a new stamp and never be re-read.
+    #
+    # Another process importing mid-run replaces the file by rename, which
+    # changes its size or mtime. The next lookup here parses the new content;
+    # lookups already made keep the snapshot they read, which is the answer an
+    # import from before the run would have given. A replacement with the same
+    # size and mtime as the one already read is not seen until the next change.
+    # Atomic writes make that rare, not impossible.
+    private def imported_files : Array(ImportedFile)
+      files = [] of ImportedFile
+      fresh = {} of String => ImportedFile
+      if Dir.exists?(@imported_dir)
+        Dir.each_child(@imported_dir) do |fname|
+          next unless fname.ends_with?(".json")
+          path = File.join(@imported_dir, fname)
+          info = File.info?(path)
+          next unless info
+
+          stamp = {info.size, info.modification_time}
+          file = @imported[path]?
+          if file.nil? || file.stamp != stamp
+            file = ImportedFile.read(stamp, path)
+            @imported_parses += 1
+          end
+          fresh[path] = file
+          files << file
+        end
+      end
+      @imported = fresh
+      files
+    end
+
+    # Candidates: local passes newest first, then unmasked imported receipts by
+    # namespace. With imported: false only the local passes are returned and no
+    # imported snapshot is read.
+    def candidates(test : TestId, target : String, imported : Bool = true) : Array(Receipt)
       # Persistent contradiction marker causes miss
       return [] of Receipt if has_marker?(test)
 
       local_passes = [] of Receipt
+      dir = test_dir(test)
 
-      if Dir.exists?(@records_dir)
-        Dir.each_child(@records_dir) do |ab|
-          ab_dir = File.join(@records_dir, ab)
-          next unless Dir.exists?(ab_dir)
-
-          Dir.each_child(ab_dir) do |fname|
-            next unless fname.ends_with?(".json")
-            fpath = File.join(ab_dir, fname)
-            begin
-              content = File.read(fpath)
-              receipt = Receipt.from_json(content)
-              if receipt.test == test && receipt.pass? && !receipt.contradicted
-                local_passes << receipt
-              end
-            rescue ex
-              # Corrupt record replaced under lock by marker
-              lock do
-                replace_corrupt_record_under_lock(fpath, test)
-              end
-              # If replaced by marker for test, test is now marked -> miss!
-              if has_marker?(test)
-                return [] of Receipt
-              end
+      if Dir.exists?(dir)
+        Dir.each_child(dir) do |fname|
+          next unless fname.ends_with?(".json")
+          fpath = File.join(dir, fname)
+          begin
+            content = File.read(fpath)
+            receipt = Receipt.from_json(content)
+            if receipt.test == test && receipt.pass? && !receipt.contradicted
+              local_passes << receipt
+            end
+          rescue ex
+            # Corrupt record replaced under lock by marker
+            lock do
+              replace_corrupt_record_under_lock(fpath, test)
+            end
+            # If replaced by marker for test, test is now marked -> miss!
+            if has_marker?(test)
+              return [] of Receipt
             end
           end
         end
@@ -231,38 +341,17 @@ module Iyi::Stale
       # Sort local passes newest first (seq descending)
       local_passes.sort_by! { |r| -r.seq.to_i64 }
 
+      return local_passes unless imported
+
       imported_candidates = [] of Receipt
-      if Dir.exists?(@imported_dir)
-        # Sort imported snapshots by namespace
-        snapshot_files = [] of String
-        Dir.each_child(@imported_dir) do |fname|
-          snapshot_files << File.join(@imported_dir, fname) if fname.ends_with?(".json")
-        end
-
-        snapshots = [] of Snapshot
-        snapshot_files.each do |sfile|
-          begin
-            scontent = File.read(sfile)
-            snap = Snapshot.from_json(scontent)
-            next unless snap.format == "iyi-test-index" && snap.version == FORMAT_VERSION
-            snap.records.each { |r| r.namespace = snap.namespace }
-            snapshots << snap
-          rescue
-            # Bad snapshot file ignored or skipped
-          end
-        end
-        snapshots.sort_by!(&.namespace)
-
-        snapshots.each do |snap|
-          next unless snap.target == target
-          snap.records.each do |rec|
-            if rec.test == test && rec.pass?
-              rec.ensure_signature!
-              rec.namespace = snap.namespace
-              # Skip masked imported receipts
-              next if is_masked?(rec.signature)
-              imported_candidates << rec
-            end
+      imported_files.select(&.usable?).sort_by(&.namespace).each do |file|
+        next unless file.target == target
+        if recs = file.by_test[test]?
+          recs.each do |rec|
+            next unless rec.pass?
+            # Skip masked imported receipts
+            next if is_masked?(rec.signature)
+            imported_candidates << rec
           end
         end
       end
@@ -274,24 +363,20 @@ module Iyi::Stale
     def blockers(test : TestId) : Array(Receipt)
       result = [] of Receipt
 
-      # 1. Local contradicted receipts
-      if Dir.exists?(@records_dir)
-        Dir.each_child(@records_dir) do |ab|
-          ab_dir = File.join(@records_dir, ab)
-          next unless Dir.exists?(ab_dir)
-
-          Dir.each_child(ab_dir) do |fname|
-            next unless fname.ends_with?(".json")
-            fpath = File.join(ab_dir, fname)
-            begin
-              content = File.read(fpath)
-              receipt = Receipt.from_json(content)
-              if receipt.test == test && receipt.contradicted
-                result << receipt
-              end
-            rescue ex
-              raise "cannot inspect receipt blocker #{fpath}: #{ex.message}"
+      # 1. Local contradicted receipts of this test
+      dir = test_dir(test)
+      if Dir.exists?(dir)
+        Dir.each_child(dir) do |fname|
+          next unless fname.ends_with?(".json")
+          fpath = File.join(dir, fname)
+          begin
+            content = File.read(fpath)
+            receipt = Receipt.from_json(content)
+            if receipt.test == test && receipt.contradicted
+              result << receipt
             end
+          rescue ex
+            raise "cannot inspect receipt blocker #{fpath}: #{ex.message}"
           end
         end
       end
@@ -322,61 +407,47 @@ module Iyi::Stale
       imported_count = 0
 
       lock do
-        # 1. Local receipts
-        if Dir.exists?(@records_dir)
-          Dir.each_child(@records_dir) do |ab|
-            ab_dir = File.join(@records_dir, ab)
-            next unless Dir.exists?(ab_dir)
-
-            Dir.each_child(ab_dir) do |fname|
-              next unless fname.ends_with?(".json")
-              fpath = File.join(ab_dir, fname)
-              begin
-                content = File.read(fpath)
-                receipt = Receipt.from_json(content)
-                if receipt.test == test
-                  if validates_now.call(receipt)
-                    receipt.contradicted = true
-                    Store.atomic_write(fpath, receipt.to_json)
-                    local_count += 1
-                  end
-                end
-              rescue
-              end
-            end
-          end
-        end
-
-        # 2. Imported receipts
-        if Dir.exists?(@imported_dir)
-          Dir.each_child(@imported_dir) do |fname|
+        # 1. Local receipts of this test
+        dir = test_dir(test)
+        if Dir.exists?(dir)
+          Dir.each_child(dir) do |fname|
             next unless fname.ends_with?(".json")
-            fpath = File.join(@imported_dir, fname)
+            fpath = File.join(dir, fname)
             begin
               content = File.read(fpath)
-              snap = Snapshot.from_json(content)
-              snap.records.each do |rec|
-                rec.namespace = snap.namespace
-                if rec.test == test
-                  rec.ensure_signature!
-                  mpath = mask_path(rec.signature)
-                  unless File.file?(mpath)
-                    if validates_now.call(rec)
-                      mask = Mask.new(
-                        test: rec.test,
-                        build: rec.build,
-                        profile: rec.profile,
-                        trace: rec.trace,
-                        signature: rec.signature
-                      )
-                      Store.atomic_write(mpath, mask.to_json)
-                      imported_count += 1
-                    end
-                  end
+              receipt = Receipt.from_json(content)
+              if receipt.test == test
+                if validates_now.call(receipt)
+                  receipt.contradicted = true
+                  Store.atomic_write(fpath, receipt.to_json)
+                  local_count += 1
                 end
               end
             rescue
             end
+          end
+        end
+
+        # 2. Imported receipts of this test, whatever their format
+        imported_files.each do |file|
+          recs = file.by_test[test]?
+          next unless recs
+          begin
+            recs.each do |rec|
+              mpath = mask_path(rec.signature)
+              next if File.file?(mpath)
+              next unless validates_now.call(rec)
+              mask = Mask.new(
+                test: rec.test,
+                build: rec.build,
+                profile: rec.profile,
+                trace: rec.trace,
+                signature: rec.signature
+              )
+              Store.atomic_write(mpath, mask.to_json)
+              imported_count += 1
+            end
+          rescue
           end
         end
       end
@@ -390,11 +461,15 @@ module Iyi::Stale
         ensure_directories!
         path = imported_path(snapshot.namespace)
         Store.atomic_write(path, snapshot.to_json)
+        # The file now holds new content, so its next lookup parses it.
+        @imported.delete(path)
         path
       end
     end
 
-    # Prune receipts from outdated toolchains
+    # Prune receipts from outdated toolchains. Two-character directories are the
+    # layout before per-test directories: lookups never read them, so they are
+    # deleted whole and the next lookup for each test misses once.
     def prune_outdated_toolchains(current_toolchain : String? = nil) : Int32
       lock do
         prune_outdated_toolchains_under_lock(current_toolchain)
@@ -410,13 +485,21 @@ module Iyi::Stale
       pruned = 0
       return 0 unless Dir.exists?(@records_dir)
 
-      Dir.each_child(@records_dir) do |ab|
-        ab_dir = File.join(@records_dir, ab)
-        next unless Dir.exists?(ab_dir)
+      Dir.each_child(@records_dir) do |entry|
+        dir = File.join(@records_dir, entry)
+        next unless Dir.exists?(dir)
 
-        Dir.each_child(ab_dir) do |fname|
+        unless test_dir_name?(entry)
+          Dir.each_child(dir) do |fname|
+            pruned += 1 if fname.ends_with?(".json")
+          end
+          FileUtils.rm_r(dir) rescue nil
+          next
+        end
+
+        Dir.each_child(dir) do |fname|
           next unless fname.ends_with?(".json")
-          fpath = File.join(ab_dir, fname)
+          fpath = File.join(dir, fname)
           begin
             content = File.read(fpath)
             receipt = Receipt.from_json(content)
@@ -428,10 +511,16 @@ module Iyi::Stale
           end
         end
 
-        Dir.delete(ab_dir) rescue nil
+        Dir.delete(dir) rescue nil
       end
 
       pruned
+    end
+
+    # A per-test directory is named by a 64-character digest. The
+    # two-character directories of the old layout are not.
+    private def test_dir_name?(name : String) : Bool
+      name.size == 64
     end
 
     private def replace_corrupt_record_under_lock(file_path : String, test : TestId? = nil) : Nil
