@@ -456,7 +456,7 @@ if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" 
   status=1
 else
 
-prove_mutation "struct default superclass switches to Reference" "$MUT_SEM" \
+prove_mutation_all "struct default superclass switches to Reference" "$MUT_SEM" \
   "superclass = node.struct ? @program.struct_type : @program.reference_type" \
   "superclass = @program.reference_type" \
   -- check_decl_fixtures_diverge || status=1
