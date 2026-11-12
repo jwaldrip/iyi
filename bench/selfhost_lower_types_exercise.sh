@@ -24,6 +24,7 @@ TYPER_FILE="$REPO/src/compiler/lower/typer.iyi"
 TYPE_ID_FILE="$REPO/src/compiler/lower/type_id.iyi"
 LAYOUTS_FILE="$REPO/src/compiler/lower/layouts.iyi"
 UNIONS_FILE="$REPO/src/compiler/lower/unions.iyi"
+HEADED_FILE="$REPO/src/compiler/lower/headed.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -111,6 +112,25 @@ done
 echo "  Type id summary: $ids_count fixtures agree in shape"
 if [ "$ids_count" -eq 0 ]; then
   echo "  no type id fixture was compared"
+  status=1
+fi
+headed_count=0
+for fixture in "$REPO"/bench/fixtures/lowhead_*.iyi; do
+  name="$(basename "$fixture" .iyi)"
+  "$WORK/oracle" "$fixture" "$TRIPLE" headed > "$WORK/$name.headed_oracle" 2>"$WORK/$name.oracle.err" || { echo "  $name: oracle failed"; diverged=$((diverged + 1)); continue; }
+  "$WORK/port" "$fixture" "$TRIPLE" headed > "$WORK/$name.headed_port" 2>"$WORK/$name.port.err" || { echo "  $name: port driver failed: $(head -n 2 "$WORK/$name.port.err")"; diverged=$((diverged + 1)); continue; }
+  if cmp -s "$WORK/$name.headed_oracle" "$WORK/$name.headed_port"; then
+    headed_count=$((headed_count + 1))
+    echo "  $name: headed bytes agree with the hosted census"
+  else
+    echo "  $name: headed bytes DIVERGE from the hosted census:"
+    diff "$WORK/$name.headed_oracle" "$WORK/$name.headed_port" | head -n 20
+    diverged=$((diverged + 1))
+  fi
+done
+echo "  Headed census summary: $headed_count fixtures agree"
+if [ "$headed_count" -eq 0 ]; then
+  echo "  no headed fixture was compared"
   status=1
 fi
 if [ "$fixture_count" -eq 0 ]; then
@@ -324,9 +344,25 @@ check_ids_diverge() {
   return 0
 }
 
+check_headed_diverges() {
+  "$IYI" build -o "$WORK/mut_port" "$REPO/bench/selfhost_lower_types_exercise.iyi" >/dev/null 2>&1 || return 1
+  for fixture in "$REPO"/bench/fixtures/lowhead_*.iyi; do
+    name="$(basename "$fixture" .iyi)"
+    "$WORK/mut_port" "$fixture" "$TRIPLE" headed > "$WORK/mut_headed.out" 2>/dev/null || return 1
+    cmp -s "$WORK/$name.headed_oracle" "$WORK/mut_headed.out" || return 1
+  done
+  return 0
+}
+
 prove_mutation "class instance variables stored as one i8 each" "$TYPER_FILE" \
   "      fields << llvm_embedded_type(var_type.as(Type), wants_size)" \
   "      fields << @table.int8" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic instance's fields are its generic's own, not its arguments'" "$TYPER_FILE" \
+  "type.as(GenericClassInstanceType).all_instance_vars" \
+  "type.as(GenericClassInstanceType).generic_type.as(ModuleType).all_instance_vars" \
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -461,6 +497,30 @@ prove_mutation "a module's own metaclass counted as an implementor" "$TYPER_FILE
   "    found << t unless t.is_a?(MetaclassType) || t.is_a?(VirtualMetaclassType)" \
   "    found << t" \
   -- check_own_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a builtin is a headed candidate (the primitive exclusion dropped)" "$HEADED_FILE" \
+  '  return false unless primitive_kind(type) == ""' \
+  '  return false if false' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "the sixteen-bit slot is zero bits wide" "$HEADED_FILE" \
+  '  65535' \
+  '  0' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "String is not headed by rule" "$HEADED_FILE" \
+  '  return true if type.full_name == "String"' \
+  '  return false if type.full_name == "String"' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an unheaded candidate answers headed" "$HEADED_FILE" \
+  '  return false unless headed_candidate?(type)' \
+  '  return true unless headed_candidate?(type)' \
+  -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"

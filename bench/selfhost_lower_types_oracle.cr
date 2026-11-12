@@ -82,9 +82,17 @@ end
 # Where the hosted typer lays a type out as a struct: a class or struct with
 # instance variables, a tuple, a named tuple, a static array. Primitives, nil,
 # pointers, procs, enums, metaclasses and unions have no struct of their own.
+
+# A generic class instance laid out as a struct of its own fields. Pointer and proc instances are
+# not measured here (their layout is a pointer or a function, the typer's other branches).
+def plain_generic_instance?(type : Iyi::Type) : Bool
+  type.is_a?(Iyi::GenericClassInstanceType) && !type.is_a?(Iyi::PointerInstanceType) && !type.is_a?(Iyi::ProcInstanceType)
+end
+
 def struct_applies?(type : Iyi::Type) : Bool
   return true if type.is_a?(Iyi::TupleInstanceType) || type.is_a?(Iyi::NamedTupleInstanceType)
   return true if type.is_a?(Iyi::StaticArrayInstanceType)
+  return true if plain_generic_instance?(type)
   type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
 end
 
@@ -96,8 +104,9 @@ end
 
 # The instance variables of a user class, in declaration order: `name:Type` (the name keeps its @), or `-`.
 def ivars_text(type : Iyi::Type) : String
-  return "-" unless type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
-  parts = type.all_instance_vars.map { |name, ivar| "#{name}:#{ivar.type}" }
+  return "-" unless (type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)) || plain_generic_instance?(type)
+  ivars = type.is_a?(Iyi::GenericClassInstanceType) ? type.as(Iyi::GenericClassInstanceType).all_instance_vars : type.as(Iyi::NonGenericClassType).all_instance_vars
+  parts = ivars.map { |name, ivar| "#{name}:#{ivar.type}" }
   parts.empty? ? "-" : parts.join(" ")
 end
 
@@ -117,6 +126,37 @@ def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
       io << "metaclass_id: -\n"
     end
   end
+end
+
+# The hosted census (gc_layouts.cr 204-221): the classes a virtual type over them was made of, their
+# subclasses, and the members of the program's reference unions, with their subclasses.
+def hosted_headed_candidate?(type : Iyi::Type) : Bool
+  type.is_a?(Iyi::NonGenericClassType) || type.is_a?(Iyi::GenericClassInstanceType)
+end
+
+def hosted_headed_census(program : Iyi::Program) : Array(Iyi::Type)
+  headed = [] of Iyi::Type
+  program.llvm_id.each_type do |type|
+    next unless hosted_headed_candidate?(type) && type.virtual_type_made?
+    headed << type
+    type.all_subclasses.each { |sub| headed << sub }
+  end
+  program.unions.each_value do |union|
+    next unless union.is_a?(Iyi::ReferenceUnionType) || union.is_a?(Iyi::NilableReferenceUnionType)
+    union.union_types.each do |member|
+      member = member.remove_alias
+      next unless hosted_headed_candidate?(member)
+      headed << member
+      member.all_subclasses.each { |sub| headed << sub }
+    end
+  end
+  headed
+end
+
+# The `headed` mode's block: `1` or `0`, the hosted `iyi_headed?` (gc_layouts.cr 173-177) of the type.
+def headed_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
+  headed = type.to_s == "String" || program.llvm_id.type_id(type) > 65535 || hosted_headed_census(program).includes?(type)
+  "== #{name}\nheaded: #{headed ? "1" : "0"}\n"
 end
 
 # The pointer map of a user class under iyi's object layout, as `alloc`, `cap` and the scan
@@ -328,6 +368,8 @@ begin
   pending.each do |expr, type|
     if mode == "ids"
       puts ids_block(expr, program, type)
+    elsif mode == "headed"
+      puts headed_block(expr, program, type)
     else
       puts block_text(expr, program, typer, type)
     end
