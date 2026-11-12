@@ -154,6 +154,12 @@ prove_mutation "new does not match the initialize overloads of its class" "$LOOK
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "an argument-type message is given even when the overloads disagree on the argument" "$ERROR_FILE" \
+  "        chosen = candidate if every" \
+  "        chosen = candidate if false" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

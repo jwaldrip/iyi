@@ -96,8 +96,8 @@ module BenchSelfhostSemanticCallsExercise
 
   # The first line of the error a call raises, as the oracle's `# error` lines
   # print it: `ok` when the call finds a match, and otherwise the message the port
-  # ported (undefined method, or wrong number of arguments). A message not ported
-  # is marked as such, so a fixture cannot pass by accident.
+  # ported. A message not ported is marked as such, so a fixture cannot pass by
+  # accident: a call with named arguments that finds no match is not ported.
   def self.evaluate_error(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
     node = Parser.new(expr, "call").parse
     if !node.is_a?(Call)
@@ -126,7 +126,20 @@ module BenchSelfhostSemanticCallsExercise
     if wrong
       return "error: #{wrong.as(String)}"
     end
-    "error: not ported: no overload message"
+    if call.named_args
+      return "error: not ported: named argument message"
+    end
+    arg_types = [] of Type
+    call.args.each do |arg|
+      typed = CallReceiver.argument_type(prog, arg)
+      return "error: argument is not a literal" if typed.nil?
+      arg_types << typed.as(Type)
+    end
+    message = CallError.no_match(scoped, ts, call.name, arg_types, defs)
+    if message
+      return "error: #{message.as(String)}"
+    end
+    "error: not ported: restriction message"
   end
 
   def self.run(src : String, filename : String) : String

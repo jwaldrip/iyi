@@ -1,8 +1,8 @@
-# Calls that the hosted call pass answers as ok, as "undefined method", or as
-# "wrong number of arguments", with the first line of the message the hosted
-# compile raises. Read by bench/selfhost_semantic_calls_exercise.sh: `# error`
-# lines are compiled by the hosted oracle as a whole program, and answered by the
-# port's call rules.
+# Calls that the hosted call pass answers as ok, as "undefined method", as
+# "wrong number of arguments", or as an argument-type message, with the first
+# line of the message the hosted compile raises. Read by
+# bench/selfhost_semantic_calls_exercise.sh: `# error` lines are compiled by the
+# hosted oracle as a whole program, and answered by the port's call rules.
 
 class Foo
   def bar(x : Int32) : String
@@ -28,6 +28,26 @@ class Bar < Foo
   end
 end
 
+def two(x : Int32, y : String) : Nil
+  nil
+end
+
+def pick(x : Int32) : Nil
+  nil
+end
+
+def pick(x : String) : Nil
+  nil
+end
+
+def diff(x : Int32, y : Bool) : Nil
+  nil
+end
+
+def diff(x : Bool, y : Int32) : Nil
+  nil
+end
+
 # error Foo.nope(1)
 # error Foo.bar(1)
 # error Bar.nope(1)
@@ -40,3 +60,9 @@ end
 # error Foo.make(1).dflt()
 # error Foo.make(1).dflt(1, "b", 2)
 # error Foo.make(1, 2)
+# error two(true, "a")
+# error two(1, 2)
+# error two(true, 2)
+# error pick(true)
+# error diff(true, true)
+# error Foo.make(true)
