@@ -2787,6 +2787,13 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
       io << indent << "  Ivar: " << t.full_name << "#" << ivar_name << "\n"
       io << indent << "    type: " << ivar.type.to_s << "\n"
     end
+    unless cls.instance_vars.empty?
+      names = [] of String
+      cls.instance_vars.keys.each do |ivar_name|
+        names << ivar_name
+      end
+      io << indent << "  ivar_order: [" << names.join(", ") << "]\n"
+    end
   end
 
   if t.is_a?(ModuleType)
