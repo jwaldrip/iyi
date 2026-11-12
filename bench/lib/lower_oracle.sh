@@ -9,14 +9,15 @@
 # type is more than one word, is left as LLVM printed it, and the port then refuses the
 # module by name.
 CALL_TYPES='
-function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w, types, i, head, name) {
+function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w, types, i, head, name, at) {
   p = index(line, " call ")
   if (p == 0) return line
   head = substr(line, 1, p + 5)
   rest = substr(line, p + 6)
-  n = split(rest, w, " ")
-  ret = w[1]
-  after = substr(rest, length(ret) + 2)
+  at = index(rest, " @")
+  if (at == 0) return line
+  ret = substr(rest, 1, at - 1)
+  after = substr(rest, at + 1)
   if (substr(after, 1, 1) != "@") return line
   op = index(after, "(")
   cl = index(after, ")")
@@ -63,13 +64,13 @@ function fix_arg(a,   n, w, i, aligns, typ, rest, tok) {
 }
 # An intrinsic call `[%r = ]call T @llvm.NAME(ARGS)` as the IR text form writes it:
 # `[%r = ]intrinsic llvm.NAME(ARGS)`.
-function intrinsic_line(line,   p, lhs, rest, ret, after, op, k, cl, name, args, n, parts, m, parts2, out, i) {
+function intrinsic_line(line,   p, lhs, rest, ret, after, op, k, cl, name, args, n, parts, m, parts2, out, i, at) {
   p = index(line, " call ")
   lhs = substr(line, 1, p - 1)
   rest = substr(line, p + 6)
-  n = split(rest, parts, " ")
-  ret = parts[1]
-  after = substr(rest, length(ret) + 2)
+  at = index(rest, " @")
+  ret = substr(rest, 1, at - 1)
+  after = substr(rest, at + 1)
   op = index(after, "(")
   cl = 0
   for (k = length(after); k > 0; k--) if (substr(after, k, 1) == ")") { cl = k; break }
