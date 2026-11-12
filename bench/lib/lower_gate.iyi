@@ -9,7 +9,7 @@ module bench/lib/lower_gate
 # `lower` and `emit` modes.
 #
 # `stand_in_libs` is the one place a gate reads a lib that the analysis does not type
-# yet (NEEDS.md, lowering core row 16): see stand_in_lib_types. Only the calls gate sets it.
+# yet (NEEDS.md, lowering calls row 31): see stand_in_lib_types. Only the calls gate sets it.
 
 import compiler/syntax/ast::{ASTNode, Def, Expressions, FunDef, LibDef}
 import compiler/syntax/parser::{Parser}
@@ -35,7 +35,7 @@ pub class Analysis
   end
 end
 
-# Stand-in for the semantic typing of `lib` definitions (NEEDS.md, lowering core row 16).
+# Stand-in for the semantic typing of `lib` definitions (NEEDS.md, lowering calls row 31).
 # The analysis records a lib's funs as names only and types no LibDef node, so a call
 # through a lib has no target to read. Here each LibDef is typed as nil, and each of its
 # funs is registered in the lib as a def that has no body and returns its declared type:
@@ -187,7 +187,7 @@ end
 # Appends each lowered def's attribute tokens to its define line, so a difference in attributes
 # is a difference in the line. Only the functions the calls and functions files lower (names that
 # start with `*`) are compared this way; `main` and `__crystal_main` wait on the core hook
-# (NEEDS.md, lowering calls row 19).
+# (NEEDS.md, lowering calls row 34).
 pub def attach_attrs(lines : Array(String), attrs : Hash(String, String)) : Array(String)
   out = [] of String
   lines.each do |line|
