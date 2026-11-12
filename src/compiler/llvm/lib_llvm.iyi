@@ -193,25 +193,36 @@ module compiler/llvm/lib_llvm
       TargetExt = 20
     end
 
+    # LLVMValueKind as llvm-c/Core.h declares it in LLVM 22 (the numbers, in the header's order).
     enum ValueKind
       Argument = 0
       BasicBlock = 1
-      Function = 2
-      GlobalAlias = 3
-      GlobalIFunc = 4
-      GlobalVariable = 5
-      BlockAddress = 6
-      ConstantExpr = 7
-      ConstantArray = 8
-      ConstantStruct = 9
-      ConstantVector = 10
-      UndefValue = 11
-      ConstantInt = 12
-      ConstantFP = 13
-      ConstantPointerNull = 14
-      ConstantDataArray = 15
-      ConstantDataVector = 16
-      Instruction = 17
+      MemoryUse = 2
+      MemoryDef = 3
+      MemoryPhi = 4
+      Function = 5
+      GlobalAlias = 6
+      GlobalIFunc = 7
+      GlobalVariable = 8
+      BlockAddress = 9
+      ConstantExpr = 10
+      ConstantArray = 11
+      ConstantStruct = 12
+      ConstantVector = 13
+      UndefValue = 14
+      ConstantAggregateZero = 15
+      ConstantDataArray = 16
+      ConstantDataVector = 17
+      ConstantInt = 18
+      ConstantFP = 19
+      ConstantPointerNull = 20
+      ConstantTokenNone = 21
+      MetadataAsValue = 22
+      InlineAsm = 23
+      Instruction = 24
+      PoisonValue = 25
+      ConstantTargetNone = 26
+      ConstantPtrAuth = 27
     end
 
     enum ModuleFlagBehavior
