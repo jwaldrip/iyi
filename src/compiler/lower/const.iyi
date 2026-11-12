@@ -21,7 +21,7 @@ module compiler/lower/const
 # The gate's known gap: the hosted program emits a global for an unread simple constant at program start
 # (`initialize_simple_constants`); a module with one differs.
 
-import compiler/syntax/ast::{Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
+import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
 import compiler/ir/values::{Value}
 import compiler/ir/inst::{Inst, Op, CallConv}
 import compiler/ir/function::{Function, Global, Linkage}
@@ -57,7 +57,12 @@ end
 # gave the constant's value; nil when the value is not a literal of a kind the port inlines (the hosted
 # `compile_time_value` is nil there, and the constant is initialised at run time).
 pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : Value?
-  value = const.value
+  literal_node_value(low, const.value)
+end
+
+# The value of a literal node (a Bool, Char or integer literal) as an IR constant of the type the analysis gave it;
+# nil for any other node. Shared by constants and class variables (hosted `compile_time_value`, `read_const`).
+pub def literal_node_value(low : Lowerer, value : ASTNode) : Value?
   t = low.analysed.type_of?(value)
   if t.nil?
     return nil
@@ -78,7 +83,7 @@ pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const
       return nil
     end
     if typ.full_name == "Int128" || typ.full_name == "UInt128"
-      refuse_port("lower: constant #{const.full_name} is a 128-bit integer: the literal path that emits int128 is not ported yet (hosted const.cr: read_const)")
+      refuse_port("lower: a 128-bit integer literal is not ported yet: the literal path that emits int128 (hosted const.cr: read_const)")
     end
     return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)
   end

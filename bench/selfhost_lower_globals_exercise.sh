@@ -32,8 +32,8 @@ WORK="$(mktemp -d)"
 
 trap 'rm -rf "$WORK"' EXIT
 
-# Fixtures the port refuses by name, for a reason in src/compiler/lower/NEEDS.md (none yet).
-WAITING_FIXTURES=""
+# Fixtures the port refuses by name: the two class-variable reads call a method on the class (K.v), a call on a class receiver that lower/call.iyi does not port yet (S2c5Calls).
+WAITING_FIXTURES="lowglob_cvar_literal lowglob_cvar_call"
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
@@ -149,6 +149,7 @@ lowglob_check() {
   "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port_m.build.log" 2>&1 || return 1
   for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     name="$(basename "$fixture" .iyi)"
+    case " $WAITING_FIXTURES " in *" $name "*) continue ;; esac
     "$WORK/port_m" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/m.out" 2>&1 || return 1
     summary="$(awk '/^SUMMARY/ { print }' "$WORK/m.out")"
     identical="$(echo "$summary" | awk '{ split($2, a, "="); print a[2] }')"
@@ -181,6 +182,10 @@ prove_mutation "a read of an initialised constant is not a load" "$REPO/src/comp
   "  low.last = load_aligned(low, ir, g.as(Global))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
 prove_mutation "the constant initialiser has the iyi convention, not C" "$REPO/src/compiler/lower/const.iyi" \
   "  fn.call_convention = CallConv::C" "  fn.call_convention = CallConv::Iyi" -- lowglob_check || status=1
+prove_mutation "a literal class variable is not stored in its global" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  g.initializer = value.as(Value)" "  g.initializer = low.builder.const_null(ir)" -- lowglob_check || status=1
+prove_mutation "a class variable is named without its owner" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  owner.full_name + cvar_suffix(name)" "  cvar_suffix(name)" -- lowglob_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

@@ -16,7 +16,7 @@ module compiler/lower/lower
 # folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
 # `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, Path, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA, Yield}
+import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, Path, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA, Yield}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -39,6 +39,7 @@ import compiler/lower/cast::{assign, union_temp}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
+import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_type_declaration_class_var}
 import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
 
 # The per-def probe the typed pipeline table reads (S3Pipeline): lowers one def's function into `m` the way a call
@@ -162,11 +163,19 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_path(low, node.as(Path))
     return
   end
+  if node.is_a?(ClassVar)
+    codegen_class_var_read(low, node.as(ClassVar))
+    return
+  end
   if node.is_a?(Assign)
     if node.as(Assign).target.is_a?(Path)
       codegen_path_assign(low, node.as(Assign))
       return
     end
+  end
+  if node.is_a?(Assign) && node.as(Assign).target.is_a?(ClassVar)
+    codegen_class_var_assign(low, node.as(Assign))
+    return
   end
   if node.is_a?(Assign)
     codegen_assign(low, node.as(Assign))
@@ -244,7 +253,9 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     # The hosted `visit(ClassDef)`: the body is visited for its declarations; the definition emits nothing and its value is nil.
     wants = low.needs_value
     low.needs_value = false
+    entered = class_body_enter(low, node.as(ClassDef))
     codegen_node(low, node.as(ClassDef).body)
+    class_body_leave(low, entered)
     low.needs_value = wants
     low.last = llvm_nil(low)
     return
@@ -287,7 +298,11 @@ pub def codegen_type_declaration(low : Lowerer, node : TypeDeclaration) : Nil
     codegen_declare_var(low, node)
     return
   end
-  pending_visit_node("TypeDeclaration of a class variable (hosted codegen.cr: visit(TypeDeclaration), initialize_class_var)")
+  if node.var.is_a?(ClassVar)
+    codegen_type_declaration_class_var(low, node)
+    return
+  end
+  pending_visit_node("TypeDeclaration of an unknown kind (hosted codegen.cr: visit(TypeDeclaration))")
 end
 
 # The hosted `declare_var` and the value of the declaration (codegen.cr:1800, codegen_assign): the variable's alloca is
