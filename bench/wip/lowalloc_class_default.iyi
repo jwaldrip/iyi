@@ -1,0 +1,19 @@
+# The allocate primitive for a class: `Box.new(2, 3)` runs the generated `new`, whose `_ = allocate`
+# allocates the instance through the collector and stores its type id, then the two-argument
+# `initialize` and the instance method. The class has no instance variables here, so no field is
+# read or written. The status is 7.
+@[Unsafe("the fixture calls exit from a C lib, a raw call the compiler does not check")]
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+class Box
+  def initialize(a : Int32, b : Int32)
+  end
+
+  def answer : Int32
+    7
+  end
+end
+
+LibC.exit(Box.new(2, 3).answer)

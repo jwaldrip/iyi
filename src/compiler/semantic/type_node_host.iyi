@@ -6,7 +6,7 @@ module compiler/semantic/type_node_host
 # cycle, and iyi keeps the import graph a DAG. The methods raise here so a
 # caller that reaches the base by mistake fails loudly.
 
-import compiler/syntax/ast::{ASTNode}
+import compiler/syntax/ast::{ASTNode, FunDef}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 
@@ -27,6 +27,22 @@ pub class TypeNodeHost < Visitor
   # `@in_type_args > 0`).
   def in_type_args? : Bool
     raise("TypeNodeHost#in_type_args? is implemented by MainVisitor")
+  end
+
+  # The local variables in scope (hosted `@vars`). A typeof puts them back.
+  def vars : Hash(String, Type)
+    raise("TypeNodeHost#vars is implemented by MainVisitor")
+  end
+
+  # How deep the node is inside type-argument brackets (hosted `@in_type_args`).
+  def type_args_depth : Int32
+    raise("TypeNodeHost#type_args_depth is implemented by MainVisitor")
+  end
+
+  # Records the analysed signature of a fun: its argument types in declared order
+  # and its declared return type (hosted external.args and return_type).
+  def record_fun_signature(node : FunDef, arg_types : Array(Type), return_type : Type?) : Nil
+    raise("TypeNodeHost#record_fun_signature is implemented by MainVisitor")
   end
 
   def set_type(node : ASTNode, type : Type) : Type

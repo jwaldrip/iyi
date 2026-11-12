@@ -1,0 +1,46 @@
+module compiler/lower/globals
+
+# The state the hosted code generator keeps on a constant (`Const`) while it generates
+# code: whether it was read (`read?`, which decides between the direct and the lazy
+# initialisation), whether it needs an init flag (`no_init_flag?`), and the value a simple
+# constant was initialised with (`initializer`, which a later read reuses). The hosted
+# code writes these fields on the analysed `Const` object; the port keeps them in one table
+# on the `Lowerer`, keyed by the constant's full name, so the analysed program stays
+# untouched. It is a plain data file: it imports no lowering module, so the core's
+# `Lowerer` can hold a `LowerGlobals` without an import cycle.
+
+import compiler/ir/values::{Value}
+
+# The hosted fields `read`, `no_init_flag` and `initializer` of one `Const`.
+pub class ConstState
+  property read : Bool
+  property no_init_flag : Bool
+  property initializer : Value?
+
+  def initialize
+    @read = false
+    @no_init_flag = false
+    @initializer = nil
+  end
+end
+
+# The table of constant states of one lowered program. A constant's state is created on
+# first use; the hosted generator's fields start false and nil, which is what a fresh
+# state holds.
+pub class LowerGlobals
+  getter consts : Hash(String, ConstState)
+
+  def initialize
+    @consts = Hash(String, ConstState).new
+  end
+
+  # The state of the constant with this full name, created when it is first asked for.
+  def const_state(name : String) : ConstState
+    if found = @consts[name]?
+      return found
+    end
+    fresh = ConstState.new
+    @consts[name] = fresh
+    fresh
+  end
+end

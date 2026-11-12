@@ -1,0 +1,11 @@
+# A generic class instance: the instance variable's type is the type argument. Not measured:
+# the port model has no all_instance_vars on a generic class instance (NEEDS.md row 3), and the
+# hosted compiler refuses a declared variable that initialize does not set.
+class Holder(T)
+  @value : T
+
+  def initialize(@value : T)
+  end
+end
+
+# waiting: Holder(Int32): generic class instances (NEEDS.md row 3)
