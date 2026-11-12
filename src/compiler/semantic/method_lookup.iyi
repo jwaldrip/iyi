@@ -49,6 +49,19 @@ pub class MethodLookup
     type.parents
   end
 
+  # True when *type* or one of its parents has a def named *name*, whether or not
+  # its parameters accept the call. The hosted call pass reports "undefined
+  # method" only when this is false.
+  def self.defines?(type : ModuleType, name : String) : Bool
+    defs = type.defs[name]?
+    return true if !defs.nil?
+    parents_of(type).each do |parent|
+      next unless parent.is_a?(ModuleType)
+      return true if defines?(parent.as(ModuleType), name)
+    end
+    false
+  end
+
   # The matches of *signature* on *type*, its own defs first and then each
   # parent, as hosted: an exact match stops the walk.
   def self.lookup_matches(type : ModuleType, ts : TypeSystem, signature : CallSignature, owner : Type, path_lookup : ModuleType, matches_array : Array(Match)) : Matches

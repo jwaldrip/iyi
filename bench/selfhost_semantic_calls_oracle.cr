@@ -3,19 +3,21 @@
 #   selfhost_semantic_calls_oracle <fixture.iyi>
 #
 # Builds the fixture's declarations into the hosted Program, then evaluates each
-# `# call <expr>` line and prints one line:
+# line of two kinds and prints one line for each:
 #
-#   <expr> => <matches> | none | error: <first line of the message>
+#   # call <expr>   =>  <expr> => <matches> | none | error: <first line of the message>
+#   # error <expr>  =>  <expr> => ok | error: <first line of the message>
 #
 # A call is `name(args)` (the program's own defs), `Type.name(args)` (the
 # metaclass of a type: its class methods and the ones it inherits from its
 # superclass), or `<receiver call>.name(args)` (an instance: the receiver call
 # must have exactly one match and a declared return type, and its return is the
 # receiver). Arguments are literals: an integer is Int32, a string String, true
-# or false Bool, and nil Nil. The lookup is the hosted `Type#lookup_matches` with
-# analyze_all off, the call the hosted call pass makes first.
+# or false Bool, and nil Nil.
 #
-# <matches> lists each match in the hosted order, joined by "; ", as
+# A `# call` line is the hosted lookup (`Type#lookup_matches`, analyze_all off),
+# the first step of the hosted call pass. Its matches are listed in the hosted
+# order, joined by "; ", as
 #
 #   <owner>::<name>(<restrictions>) -> <return>
 #
@@ -24,6 +26,11 @@
 # to the type the def was found on, or `_` when it has none. The return is the
 # def's declared return type, or `needs body typing` when it has none. A match
 # list that covers every argument combination ends with ` [cover all]`.
+#
+# An `# error` line runs the whole hosted compile of the fixture's declarations
+# with the call as its last expression, as the compile does (the top-level pass,
+# then the main pass, without a prelude), and reports the first line of the error
+# it raises, or `ok`. This is where the hosted call pass writes its messages.
 #
 # The port's driver (bench/selfhost_semantic_calls_exercise.iyi) prints the same
 # lines for the same fixtures, and the gate requires them byte-identical.
@@ -34,6 +41,17 @@
 require "compiler/requires"
 
 RECEIVER_ERROR = "receiver is not resolvable"
+
+# The hosted compile of a source as far as the main pass, without a prelude.
+class Iyi::Compiler
+  def bare_pass(source : Iyi::Compiler::Source) : Nil
+    program = new_program([source])
+    node = program.normalize(parse(program, source))
+    node, processor = program.top_level_semantic(node)
+    program.semantic_after_top_level(node, processor, cleanup: false)
+    nil
+  end
+end
 
 # The type of a literal argument, as the hosted type of the literal.
 def literal_type(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
@@ -49,7 +67,7 @@ def literal_type(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
   if node.is_a?(Iyi::NilLiteral)
     return program.types["Nil"].as(Iyi::Type)
   end
-  raise "argument is not a literal: #{node.class}"
+  raise "argument is not a literal"
 end
 
 # The type named by a receiver written as a path, such as `Foo` or `Outer::Foo`.
@@ -71,8 +89,8 @@ def last_dot(expr : String) : Int32?
   found
 end
 
-# The type a receiver text names: a path names its metaclass, and a call names
-# the instance type of its single declared return.
+# The type a receiver text names: a path names its metaclass, and a call names the
+# instance type of its single declared return.
 def receiver_type(program : Iyi::Program, text : String) : Iyi::Type
   node = Iyi::Parser.new(text).parse
   unless node.is_a?(Iyi::Call)
@@ -128,6 +146,16 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+# The first line of the error the hosted compile raises for `expr` after the
+# fixture's declarations, or `ok` when it raises none.
+def error_text(path : String, fixture : String, expr : String) : String
+  compiler = Iyi::Compiler.new
+  compiler.bare_pass(Iyi::Compiler::Source.new(path, fixture + "\n" + expr + "\n"))
+  "ok"
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 begin
   path = ARGV[0]? || abort("usage: selfhost_semantic_calls_oracle <fixture.iyi>")
   source = File.read(path)
@@ -135,9 +163,13 @@ begin
   node = Iyi::Parser.new(source).parse
   node.accept Iyi::TopLevelVisitor.new(program)
   source.each_line do |line|
-    next unless line.starts_with?("# call ")
-    expr = line[7..].strip
-    puts "#{expr} => #{evaluate(program, expr)}"
+    if line.starts_with?("# call ")
+      expr = line[7..].strip
+      puts "#{expr} => #{evaluate(program, expr)}"
+    elsif line.starts_with?("# error ")
+      expr = line[8..].strip
+      puts "#{expr} => #{error_text(path, source, expr)}"
+    end
   end
 rescue ex : Exception
   STDERR.puts "ERROR: #{ex.message.to_s.lines.first? || ""}"

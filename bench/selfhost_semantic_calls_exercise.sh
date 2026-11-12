@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Fails when the iyi call lookup stops agreeing with the hosted lookup.
+# Fails when the iyi call lookup stops agreeing with the hosted call pass.
 #
 # Each fixture (bench/fixtures/semcall_*.iyi) declares methods and lists call
-# sites as `# call <expr>` lines. The hosted oracle
-# (bench/selfhost_semantic_calls_oracle.cr) and the port's driver
-# (bench/selfhost_semantic_calls_exercise.iyi) each print one line per call
-# site, `<expr> => <result>`, and the two outputs must be byte-identical.
+# sites: `# call <expr>` lines are the hosted lookup's matches, and `# error <expr>`
+# lines are the first line of the error the hosted compile raises for the call
+# (or ok). The hosted oracle (bench/selfhost_semantic_calls_oracle.cr) and the
+# port's driver (bench/selfhost_semantic_calls_exercise.iyi) each print one line
+# per site, `<expr> => <result>`, and the two outputs must be byte-identical.
 #
 # Mutation proofs patch the ported code, rebuild the driver, and require the
 # gate to fail. A patch that changes nothing is refused by prove_mutation.
@@ -19,6 +20,7 @@ CRYSTAL="${CRYSTAL:-crystal}"
 LOOKUP_FILE="$REPO/src/compiler/semantic/method_lookup.iyi"
 MATCH_FILE="$REPO/src/compiler/semantic/match.iyi"
 CALL_FILE="$REPO/src/compiler/semantic/call.iyi"
+ERROR_FILE="$REPO/src/compiler/semantic/call_error.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -105,14 +107,26 @@ prove_mutation "missing arguments without a default are accepted" "$MATCH_FILE" 
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "parent types are not searched for methods" "$LOOKUP_FILE" \
-  "    parents_of(type).each do |parent|" \
-  "    ([] of Type).each do |parent|" \
+  "      found = lookup_matches(parent.as(ModuleType), ts, signature, owner, parent.as(ModuleType), all)" \
+  "      found = Matches.new(all, false)" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a type path as receiver resolves to its instance, not its metaclass" "$CALL_FILE" \
   "    named.as(ModuleType).metaclass" \
   "    named.as(ModuleType)" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "undefined method names a program's calls by the program, not top-level" "$ERROR_FILE" \
+  "? \"top-level\" : owner.to_s" \
+  "? \"program\" : owner.to_s" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "undefined method text loses its quotes" "$ERROR_FILE" \
+  "\"undefined method '#{name}' for #{owner_name}\"" \
+  "\"undefined method #{name} for #{owner_name}\"" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

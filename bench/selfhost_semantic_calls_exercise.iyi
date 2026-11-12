@@ -3,20 +3,21 @@ import compiler/syntax/ast::{ASTNode, Call}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
-import compiler/semantic/method_lookup::{MethodLookup}
+import compiler/semantic/method_lookup::{MethodLookup, Matches}
 import compiler/semantic/match::{CallSignature, Match}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/call::{CallReceiver}
+import compiler/semantic/call_error::{CallError}
 
 # Call-lookup driver for bench/selfhost_semantic_calls_exercise.sh.
 #
 #   selfhost_semantic_calls_exercise <fixture.iyi>
 #
-# Builds the fixture's declarations into a SemanticProgram, then resolves each
-# `# call <expr>` line and prints `<expr> => <result>`, the same lines the hosted
-# oracle (bench/selfhost_semantic_calls_oracle.cr) prints. The receiver rule and
-# the result format are the oracle's header. The receiver and argument typing
-# is in semantic/call.iyi, not here.
+# Builds the fixture's declarations into a SemanticProgram, then answers each
+# `# call <expr>` line and each `# error <expr>` line and prints the same lines
+# the hosted oracle (bench/selfhost_semantic_calls_oracle.cr) prints. The
+# receiver rule and the result formats are the oracle's header. The receiver and
+# argument typing is in semantic/call.iyi, and the messages in call_error.iyi.
 module BenchSelfhostSemanticCallsExercise
   # One match as the oracle writes it: owner, name, restrictions, return.
   def self.match_text(ts : TypeSystem, m : Match) : String
@@ -43,29 +44,37 @@ module BenchSelfhostSemanticCallsExercise
     "#{m.owner.to_s}::#{m.definition.name}(#{restrictions.join(", ")}) -> #{ret_text}"
   end
 
+  # The matches of the call *expr* with its receiver and literal arguments, or
+  # the message of why they cannot be found. The error text is the port's own
+  # answer: a receiver or argument the call rule cannot type says so.
+  def self.lookup(prog : SemanticProgram, ts : TypeSystem, call : Call) : Matches | String
+    scope = CallReceiver.scope(prog, ts, call.obj)
+    if scope.nil?
+      return "receiver is not resolvable"
+    end
+    owner = scope.as(ModuleType)
+    arg_types = [] of Type
+    call.args.each do |arg|
+      typed = CallReceiver.argument_type(prog, arg)
+      if typed.nil?
+        return "argument is not a literal"
+      end
+      arg_types << typed.as(Type)
+    end
+    signature = CallSignature.new(call.name, arg_types)
+    MethodLookup.lookup_matches(owner, ts, signature, owner, owner, [] of Match)
+  end
+
   def self.evaluate(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
     node = Parser.new(expr, "call").parse
     if !node.is_a?(Call)
       return "error: not a call"
     end
-    call = node.as(Call)
-
-    scope = CallReceiver.scope(prog, ts, call.obj)
-    if scope.nil?
-      return "error: receiver is not resolvable"
+    found = lookup(prog, ts, node.as(Call))
+    if found.is_a?(String)
+      return "error: #{found.as(String)}"
     end
-    owner = scope.as(ModuleType)
-
-    arg_types = [] of Type
-    call.args.each do |arg|
-      typed = CallReceiver.argument_type(prog, arg)
-      if typed.nil?
-        return "error: argument is not a literal"
-      end
-      arg_types << typed.as(Type)
-    end
-    signature = CallSignature.new(call.name, arg_types)
-    matches = MethodLookup.lookup_matches(owner, ts, signature, owner, owner, [] of Match)
+    matches = found.as(Matches)
     if matches.error
       return "error: #{matches.error.to_s}"
     end
@@ -81,6 +90,35 @@ module BenchSelfhostSemanticCallsExercise
     text
   end
 
+  # The first line of the error a call raises, as the oracle's `# error` lines
+  # print it: `ok` when the call finds a match, the undefined-method message when
+  # no def of its name exists, and a marked refusal for the messages not ported.
+  def self.evaluate_error(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
+    node = Parser.new(expr, "call").parse
+    if !node.is_a?(Call)
+      return "error: not a call"
+    end
+    call = node.as(Call)
+    found = lookup(prog, ts, call)
+    if found.is_a?(String)
+      return "error: #{found.as(String)}"
+    end
+    matches = found.as(Matches)
+    if matches.error
+      return "error: #{matches.error.to_s}"
+    end
+    return "ok" if !matches.empty?
+    owner = CallReceiver.scope(prog, ts, call.obj)
+    if owner.nil?
+      return "error: receiver is not resolvable"
+    end
+    scoped = owner.as(ModuleType)
+    if !MethodLookup.defines?(scoped, call.name)
+      return "error: #{CallError.undefined_method(scoped, call.name)}"
+    end
+    "error: not ported: no overload or arity message"
+  end
+
   def self.run(src : String, filename : String) : String
     parser = Parser.new(src, filename)
     node = parser.parse
@@ -93,6 +131,9 @@ module BenchSelfhostSemanticCallsExercise
       if line.starts_with?("# call ")
         expr = line[7, line.bytesize - 7].strip
         out << "#{expr} => #{evaluate(prog, ts, expr)}"
+      elsif line.starts_with?("# error ")
+        expr = line[8, line.bytesize - 8].strip
+        out << "#{expr} => #{evaluate_error(prog, ts, expr)}"
       end
     end
     out.join("\n") + "\n"

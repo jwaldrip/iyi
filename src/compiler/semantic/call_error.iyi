@@ -1,0 +1,19 @@
+module compiler/semantic/call_error
+
+import compiler/semantic/top_level::{ModuleType, SemanticProgram}
+
+# The messages the hosted call pass raises when a call has no match, first line
+# only (the oracle compares first lines). Ported: "undefined method", written by
+# raise_undefined_method in call_error.cr, which the hosted pass reaches when no
+# def of the name exists on the receiver or its parents. Not yet ported, and
+# refused by the driver rather than answered: "wrong number of arguments" and
+# "no overload matches", whose first line comes from compute_call_error_reason
+# and the argument checks (call_error.cr, raise_matches_not_found).
+pub class CallError
+  # The first line of the undefined-method error for *name* on *owner*. The
+  # program's own calls name their owner "top-level"; a metaclass prints Foo.class.
+  def self.undefined_method(owner : ModuleType, name : String) : String
+    owner_name = owner.is_a?(SemanticProgram) ? "top-level" : owner.to_s
+    "undefined method '#{name}' for #{owner_name}"
+  end
+end
