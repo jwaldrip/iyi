@@ -114,12 +114,12 @@ src/compiler/semantic/recursive_struct_checker.iyi 11
 src/compiler/semantic/top_level.iyi 0
 src/compiler/semantic/typed.iyi 2
 src/compiler/stage1.iyi 6
-src/compiler/syntax/ast.iyi 849
+src/compiler/syntax/ast.iyi 856
 src/compiler/syntax/lexer.iyi 156
 src/compiler/syntax/parser.iyi 0
 src/compiler/syntax/token.iyi 40
-src/compiler/syntax/transformer.iyi 113
-src/compiler/syntax/visitor.iyi 328
+src/compiler/syntax/transformer.iyi 114
+src/compiler/syntax/visitor.iyi 331
 src/compiler/tools/bind.iyi 0
 src/compiler/tools/compile.iyi 8
 src/compiler/tools/compile_native.iyi 28
