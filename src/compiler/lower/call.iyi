@@ -234,7 +234,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     low.last = llvm_nil(low)
     return
   end
-  func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner)
+  func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner, call_param_types(low, def_node, arg_types))
   inst = low.builder.call(func.fn_type, func, call_arguments(self_value, values), "")
   # Hosted codegen_call_or_invoke: a NoReturn call ends its block with `unreachable`, and its value is nil.
   if ret.is_a?(NoReturnType)
@@ -469,8 +469,9 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
       frame.vars["self"] = LowerVar.new(sv.as(Value), st, !self_by_pointer?(st))
     end
   end
-  allocate_def_vars(low, def_node, arg_types, frame.vars)
-  copy_args(low, def_node, arg_types, values, frame.vars)
+  param_types = call_param_types(low, def_node, arg_types)
+  allocate_def_vars(low, def_node, param_types, frame.vars)
+  copy_args(low, def_node, param_types, values, frame.vars)
 
   low.needs_value = true
   visit_node(low, def_node.body)
@@ -735,10 +736,11 @@ pub def lib_number_value(low : Lowerer, node : NumberLiteral, t : Type) : Value
 end
 
 # The argument types and values of a call, in order (hosted `prepare_call_args_non_external`
-# for scalars). Each argument's value is requested, so a value-less argument is a bug.
+# for scalars). Each argument's value is requested, so a value-less argument is a bug. The types are the
+# arguments' own: the callee is named by them (hosted mangled name), and its parameters are `call_param_types`.
 # A restriction converts the argument to the def's declared type (hosted prepare_call_args_non_external: the
-# upcast of an argument that implements the parameter, `convert_argument`); the callee is then typed with the
-# parameter, not with the argument. A NoReturn argument is refused by name: the analysis types a block call that
+# upcast of an argument that implements the parameter, `convert_argument`), so the value is the parameter's.
+# A NoReturn argument is refused by name: the analysis types a block call that
 # breaks with a value as NoReturn (the hosted call is Int32), so it cannot be told from a converted one yet
 # (NEEDS.md, lowering calls row 44).
 pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node : Def) : {Array(Type), Array(Value)}
@@ -764,11 +766,27 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
       converted = convert_argument(low, converted, at, param, node.name, i)
     end
     values << converted
-    arg_types << param
+    arg_types << at
     i += 1
   end
   low.needs_value = wants
   {arg_types, values}
+end
+
+# The parameter types of a call, one per argument: the def's declared restriction where it has one (hosted
+# target_def.args[i].type), else the argument's own type. The callee's signature and its variables are these types.
+pub def call_param_types(low : Lowerer, def_node : Def, arg_types : Array(Type)) : Array(Type)
+  params = [] of Type
+  i = 0
+  while i < arg_types.size
+    param = arg_types[i]
+    if restriction = def_node.args[i].restriction
+      param = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program).as(Type)
+    end
+    params << param
+    i += 1
+  end
+  params
 end
 
 # The hosted upcast of an argument to the def's declared (restricted) parameter type, for the two parameter types

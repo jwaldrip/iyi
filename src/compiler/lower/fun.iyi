@@ -66,7 +66,7 @@ end
 # The hosted `target_def_fun` for a def at these self and argument types, and its return type: the
 # function already in the module when there is one, otherwise a new one, emitted now. A method's
 # self is the first parameter, of the owner's type (hosted `codegen_fun_signature_non_external`).
-pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : Function
+pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil, param_types : Array(Type)? = nil) : Function
   name = mangled_name(target.name, self_type, arg_types, ret, class_owner)
   if existing = low.module.get_function?(name)
     return existing.as(Function)
@@ -79,12 +79,18 @@ pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types
       params << low.typer.llvm_type(st)
     end
   end
-  arg_types.each do |t|
+  # The parameters are the def's declared types (the restriction) where the call names them by the argument's
+  # type (hosted codegen_fun_signature: target_def.args[i].type); the name keeps the argument types.
+  sig_types = arg_types
+  if pt = param_types
+    sig_types = pt
+  end
+  sig_types.each do |t|
     params << low.typer.llvm_type(t)
   end
   ret_ir = low.typer.llvm_return_type(ret)
   fn_type = low.module.types.func(params, ret_ir)
-  fn = codegen_fun(low, name, target, self_type, arg_types, fn_type, ret_ir, class_owner)
+  fn = codegen_fun(low, name, target, self_type, sig_types, fn_type, ret_ir, class_owner)
   # Hosted codegen_fun: a def whose analysed return type is NoReturn carries `noreturn` (fun.cr).
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
