@@ -1,0 +1,15 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+class Fiber
+end
+
+class Holder
+  def take=(fiber : Fiber | Nil)
+    LibC.exit(42)
+  end
+end
+
+holder = Holder.new
+holder.take = Fiber.new

@@ -230,6 +230,8 @@ prove_mutation "a top-level fun with a body is emitted with the iyi calling conv
   "  CallConv::C
 end" "  CallConv::Iyi
 end" -- lower_calls_check || status=1
+prove_mutation "a restricted argument is passed as the argument's own type, not the parameter's (the callee is typed with the union)" "$REPO/src/compiler/lower/call.iyi" \
+  'arg_types << param' 'arg_types << at' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
