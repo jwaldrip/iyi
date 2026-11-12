@@ -1,4 +1,5 @@
 require "json"
+require "sync/mutex"
 require "file_utils"
 require "./encoding"
 require "./machine_key"
@@ -38,6 +39,15 @@ module Iyi::Stale
     end
   end
 
+  # What one test left for the run: its result, the receipt it wrote (if any),
+  # the `--explain` line it earns (if asked) and the compiler processes it
+  # started. The run reads these in file order once the pool has ended.
+  record Outcome,
+    result : TestResult,
+    receipt : Receipt? = nil,
+    explain : String? = nil,
+    builds : Int32 = 0
+
   class Runner
     def initialize(
       @files : Array(String)? = nil,
@@ -58,6 +68,7 @@ module Iyi::Stale
       store : Store? = nil,
       target : String? = nil,
       @chaos : Bool = false,
+      @parallel : Int32 = Command::TestPool.default_parallel,
     )
       @store = store || Store.new
       @target = target || Config.host_target.to_s
@@ -157,7 +168,7 @@ module Iyi::Stale
 
       if files.empty?
         if @as_json
-          puts %({"tests": [], "passed": 0, "failed": 0, "skipped": #{skipped}, "cached": 0, "audit": []})
+          puts %({"tests": [], "passed": 0, "failed": 0, "skipped": #{skipped}, "cached": 0, "builds": 0, "audit": []})
         else
           puts "0 to run, #{skipped} skipped: no test's imports reach the change"
         end
@@ -182,7 +193,7 @@ module Iyi::Stale
         files = files.each_with_index.select { |_, idx| (idx % shard_n) == (shard_k - 1) }.map(&.[0]).to_a
         if files.empty?
           if @as_json
-            puts %({"tests": [], "passed": 0, "failed": 0, "skipped": #{skipped}, "cached": 0, "audit": []})
+            puts %({"tests": [], "passed": 0, "failed": 0, "skipped": #{skipped}, "cached": 0, "builds": 0, "audit": []})
           else
             puts "0 to run: shard #{@shard} has no tests"
           end
@@ -193,448 +204,44 @@ module Iyi::Stale
       machine_key = MachineKey.load_or_create(@store.cache_root)
       keyer_local = Keyer.local(machine_key)
 
-      active_tree : Command::TestTree? = nil
-      Signal::INT.trap do
-        active_tree.try &.terminate
-        exit 130
+      # Read once for the run: a test's profile is made from these values and
+      # makes no syscalls of its own. The umask is flipped by `Profile.host`
+      # and nowhere else.
+      host = Profile.host(@target)
+      run_cwd = Dir.current
+
+      # Every build and run leads a process group that these traps end, so an
+      # interrupted run leaves no test running (exit 128 + the signal).
+      Command::TestTree.trap_endings
+
+      # Tests with one id share a scratch directory. Within this process they
+      # take turns on a fiber mutex: a fiber that waited on the scratch's file
+      # lock would hold the only thread, and the holder could never run to
+      # release it. The file lock still excludes other processes.
+      scratch_locks = Hash(String, Sync::Mutex).new
+      files.each do |file|
+        scratch_locks[scratch_path(file_test_ids[file])] ||= Sync::Mutex.new
       end
 
-      results = [] of TestResult
-      recorded_receipts = [] of Receipt
       audit_list = [] of Hash(String, JSON::Any)
 
-      files.each do |file|
+      outcomes = Command::TestPool.run(files.size, @parallel) do |index|
+        file = files[index]
         test_id = file_test_ids[file]
-        is_ambiguous = id_counts[test_id] > 1
-        s = File.expand_path(File.join(@store.root_dir, "scratch", Stale.hex(Store.d_test_id(test_id))))
-        roots = Roots.default_for_file(file, cache_root: @store.cache_root)
-        roots = Roots.new(
-          src: roots.src,
-          toolchain: roots.toolchain,
-          pkg: roots.pkg,
-          scratch: s,
-          abs: roots.abs
-        )
-        roots_map = {
-          "src"       => roots.src,
-          "toolchain" => roots.toolchain,
-          "pkg"       => roots.pkg,
-          "scratch"   => roots.scratch,
-          "abs"       => roots.abs,
-        }
-        test_argv = [s]
-        current_profile = Profile.current(
-          timeout: @timeout,
-          target: @target,
-          argv: test_argv,
-          cwd: roots.map(Dir.current)
-        )
+        check_one(file, test_id, id_counts[test_id] > 1, host, keyer_local, run_cwd, scratch_locks)
+      end
 
-        accept_rules = [] of KeyFile::StaleRule
-        block_rules = [] of KeyFile::StaleRule
-        newest_receipt : Receipt? = nil
-        candidates = [] of Receipt
-
-        unless @fresh || is_ambiguous
-          candidates = @store.candidates(test_id, @target)
-          blockers = @store.blockers(test_id)
-          newest_receipt = candidates.first?
-
-          valid = candidates.select do |rec|
-            rec.pass? && !rec.contradicted &&
-              rec.profile.fp == current_profile.fp &&
-              Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?
-          end
-
-          matching_blockers = blockers.select do |rec|
-            rec.version != FORMAT_VERSION || !Trace.supported?(rec.trace.observations) ||
-              (rec.profile.fp == current_profile.fp &&
-                Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?)
-          end
-          if blockers.any? { |rec| rec.version != FORMAT_VERSION || !Trace.supported?(rec.trace.observations) }
-            valid.clear
-          end
-
-          block_rules = matching_blockers.map { |b| KeyFile::StaleRule.new(b.mode, b.build.build) }
-          valid_rules = valid.map { |v| KeyFile::StaleRule.new(v.mode, v.build.build) }
-
-          accept_rules = valid_rules.reject do |vr|
-            block_rules.any? { |br| br.mode == vr.mode && br.build.compare(vr.build, case_insensitive: true) == 0 }
-          end
-        end
-        # Run test
-        lock_path = s + ".lock"
-        Dir.mkdir_p(File.dirname(lock_path))
-
-        File.open(lock_path, "a") do |lock_file|
-          lock_file.flock_exclusive do
-            begin
-              FileUtils.rm_r(s) if File.info?(s, follow_symlinks: false)
-              Dir.mkdir(s)
-            rescue ex : File::Error
-              abort! "#{file}: cannot empty scratch directory #{s}: #{ex.message}"
-            end
-
-            started = Time.instant
-            out_key_path = File.tempname("iyi-stale-key", ".json")
-            accept_path = File.tempname("iyi-stale-accept", ".json")
-            block_path = File.tempname("iyi-stale-block", ".json")
-            binary = File.tempname("iyi-test", {{ flag?(:win32) ? ".exe" : nil }})
-            trace_file = File.tempname("iyi-trace")
-            null_io : File? = nil
-
-            begin
-              File.write(accept_path, accept_rules.to_json)
-              File.write(block_path, block_rules.to_json)
-
-              build_out = IO::Memory.new
-
-              build_status = Process.run(
-                Process.executable_path.not_nil!,
-                [
-                  "build", file,
-                  "-o", binary,
-                  "-Diyi_observe",
-                  "--stale-key", out_key_path,
-                  "--stale-accept", accept_path,
-                  "--stale-block", block_path,
-                ],
-                env: Profile.build_env,
-                clear_env: true,
-                output: build_out,
-                error: build_out
-              )
-
-              key_data = if File.file?(out_key_path)
-                           KeyFile.parse(File.read(out_key_path)) rescue nil
-                         else
-                           nil
-                         end
-
-              # Case 1: Cached Hit!
-              if key_data && (hit = key_data.hit)
-                matching_rec = candidates.find do |c|
-                  c.mode == hit.mode && c.build.build.compare(hit.build, case_insensitive: true) == 0
-                end
-                source = if matching_rec
-                           if matching_rec.mode == "local"
-                             "local"
-                           else
-                             matching_rec.namespace || "imported"
-                           end
-                         else
-                           "local"
-                         end
-                p_build = key_data.portable.try(&.build) || (matching_rec && matching_rec.portable? ? matching_rec.build.build : nil)
-                res = TestResult.new(
-                  file: file,
-                  test: test_id,
-                  status: "pass",
-                  seconds: elapsed(started),
-                  output: "",
-                  cached: true,
-                  source: source,
-                  reuse: "hit",
-                  reason: nil,
-                  portable_build: p_build,
-                  profile: current_profile.fp,
-                  roots: roots_map,
-                  blocked: false
-                )
-                results << res
-                if @explain
-                  puts "#{file}: hit from #{source}"
-                end
-                next
-              end
-
-              # Case 2: Build failed
-              unless build_status.success?
-                if key_data && (key_data.local || key_data.portable)
-                  # Build failure after Build computed: revoke every receipt of test that validates now
-                  @store.revoke(test_id) do |rec|
-                    rec.profile.fp == current_profile.fp && Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?
-                  end
-                end
-                p_build = key_data.try(&.portable.try(&.build))
-                is_blocked = key_data.try(&.blocked) == true
-                res = TestResult.new(
-                  file: file,
-                  test: test_id,
-                  status: "does not build",
-                  seconds: elapsed(started),
-                  output: build_out.to_s,
-                  cached: false,
-                  source: "local",
-                  reuse: "miss",
-                  reason: nil,
-                  portable_build: p_build,
-                  profile: current_profile.fp,
-                  roots: roots_map,
-                  blocked: is_blocked
-                )
-                results << res
-                if @explain
-                  puts "#{file}: does not build"
-                end
-                next
-              end
-
-              # Case 3: Build succeeded and was not a hit -> execute under profile
-              child_env = Profile.clean_child_env(s, trace_file, ENV)
-              run_out = IO::Memory.new
-              null_io = File.open(File::NULL, "r")
-
-              process = Process.new(
-                binary,
-                args: test_argv,
-                env: child_env,
-                clear_env: true,
-                input: null_io,
-                output: run_out,
-                error: run_out,
-                process_group: true
-              )
-              tree = Command::TestTree.new(process)
-              active_tree = tree
-
-              done = ::Channel(Process::Status).new
-              spawn { done.send(process.wait) }
-
-              test_status : String = "fail"
-              test_output : String = ""
-
-              select
-              when status = done.receive
-                if status.success?
-                  test_status = "pass"
-                else
-                  test_status = "fail"
-                  evidence = run_out.to_s
-                  unless status.exit_reason.normal?
-                    evidence += "\n" unless evidence.empty? || evidence.ends_with?('\n')
-                    evidence += Command.death_sentence(status) + "\n"
-                  end
-                  test_output = evidence
-                end
-              when timeout(@timeout.seconds)
-                tree.terminate
-                done.receive
-                test_status = "hung: killed at #{@timeout}s"
-                test_output = run_out.to_s
-              end
-
-              # Process non-pass exit
-              if test_status != "pass"
-                # Non-pass exit (fail, signal, timeout kill, reserved status):
-                # revoke every receipt of test that validates now (whatever trace state)
-                @store.revoke(test_id) do |rec|
-                  rec.profile.fp == current_profile.fp && Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?
-                end
-                p_build = key_data.try(&.portable.try(&.build))
-                is_blocked = key_data.try(&.blocked) == true
-                res = TestResult.new(
-                  file: file,
-                  test: test_id,
-                  status: test_status,
-                  seconds: elapsed(started),
-                  output: test_output,
-                  cached: false,
-                  source: "local",
-                  reuse: "miss",
-                  reason: nil,
-                  portable_build: p_build,
-                  profile: current_profile.fp,
-                  roots: roots_map,
-                  blocked: is_blocked
-                )
-                results << res
-                if @explain
-                  explain_msg = compute_explain_reason(file, key_data, newest_receipt, current_profile, roots, keyer_local, is_ambiguous, nil)
-                  puts "#{file}: miss: #{explain_msg}"
-                end
-                next
-              end
-
-              # Pass! Parse trace
-              trace_res = if File.file?(trace_file)
-                            File.open(trace_file) { |io| Trace.parse(io, roots, keyer_local, check_disk_after_exit: true) }
-                          else
-                            TraceResult.new(complete: false, incomplete_reason: "no trace file")
-                          end
-
-              if !trace_res.complete
-                # Pass with trace incomplete: write nothing
-                p_build = key_data.try(&.portable.try(&.build))
-                is_blocked = key_data.try(&.blocked) == true
-                res = TestResult.new(
-                  file: file,
-                  test: test_id,
-                  status: "pass",
-                  seconds: elapsed(started),
-                  output: "",
-                  cached: false,
-                  source: "local",
-                  reuse: "miss",
-                  reason: "trace incomplete",
-                  portable_build: p_build,
-                  profile: current_profile.fp,
-                  roots: roots_map,
-                  blocked: is_blocked
-                )
-                results << res
-                if @explain
-                  explain_msg = compute_explain_reason(file, key_data, newest_receipt, current_profile, roots, keyer_local, is_ambiguous, "trace incomplete")
-                  puts "#{file}: miss: #{explain_msg}"
-                end
-                next
-              end
-
-              # Trace complete!
-              if @fresh
-                @store.clear_marker(test_id)
-              end
-
-              taint_reason : String? = nil
-              is_not_reusable = false
-
-              if !trace_res.taints.empty?
-                is_not_reusable = true
-                taint = trace_res.taints.first
-                kind = Iyi::EffectKind.from_value?(taint.kind).try(&.to_s.underscore) || "taint #{taint.kind}"
-                taint_reason = "#{kind} at #{taint.site}"
-              elsif !trace_res.a3_mismatches.empty?
-                is_not_reusable = true
-                taint_reason = trace_res.a3_mismatches.first
-              elsif key_data && key_data.not_reusable && !key_data.not_reusable.not_nil!.empty?
-                is_not_reusable = true
-                nr = key_data.not_reusable.not_nil!.first
-                taint_reason = nr.site ? "#{nr.reason} at #{nr.site}" : nr.reason
-              elsif is_ambiguous
-                is_not_reusable = true
-                taint_reason = "ambiguous test id"
-              end
-
-              p_build = key_data.try(&.portable.try(&.build))
-              is_blocked = key_data.try(&.blocked) == true
-              if is_not_reusable
-                reuse_tag = is_ambiguous ? "miss" : "not reusable"
-                res = TestResult.new(
-                  file: file,
-                  test: test_id,
-                  status: "pass",
-                  seconds: elapsed(started),
-                  output: "",
-                  cached: false,
-                  source: "local",
-                  reuse: reuse_tag,
-                  reason: taint_reason,
-                  portable_build: p_build,
-                  profile: current_profile.fp,
-                  roots: roots_map,
-                  blocked: is_blocked
-                )
-                results << res
-                if @explain
-                  explain_msg = compute_explain_reason(file, key_data, newest_receipt, current_profile, roots, keyer_local, is_ambiguous, taint_reason)
-                  puts "#{file}: miss: #{explain_msg}"
-                end
-              else
-                # Pass, complete, untainted, run inputs unchanged during run: write receipt!
-                if key_data && (mode_build = key_data.local)
-                  r_build = ReceiptBuild.new(
-                    build: mode_build.build,
-                    toolchain: mode_build.toolchain,
-                    behavior: mode_build.behavior,
-                    callpath: mode_build.callpath,
-                    link: mode_build.link,
-                    cenv: mode_build.cenv
-                  )
-                  r_trace = ReceiptTrace.new(
-                    fp: Stale.hex(Trace.compute_trace_fp(trace_res.observations)),
-                    observations: trace_res.observations
-                  )
-                  receipt = Receipt.new(
-                    test: test_id,
-                    build: r_build,
-                    profile: current_profile,
-                    trace: r_trace,
-                    explain: mode_build.explain,
-                    version: FORMAT_VERSION,
-                    mode: "local",
-                    newest: "pass"
-                  )
-                  # The twin a CI producer exports: the same run, keyed plainly.
-                  if (portable_build = key_data.portable) && File.file?(trace_file)
-                    portable_trace = File.open(trace_file) { |io| Trace.parse(io, roots, Keyer.portable, check_disk_after_exit: false) }
-                    if portable_trace.complete
-                      receipt.portable_twin = PortableRecord.new(
-                        ReceiptBuild.new(
-                          build: portable_build.build,
-                          toolchain: portable_build.toolchain,
-                          behavior: portable_build.behavior,
-                          callpath: portable_build.callpath,
-                          link: portable_build.link,
-                          cenv: portable_build.cenv
-                        ),
-                        portable_build.explain,
-                        ReceiptTrace.new(
-                          fp: Stale.hex(Trace.compute_trace_fp(portable_trace.observations)),
-                          observations: portable_trace.observations
-                        )
-                      )
-                    end
-                  end
-                  @store.record(receipt)
-                  recorded_receipts << receipt
-                end
-
-                p_build = key_data.try(&.portable.try(&.build))
-                is_blocked = key_data.try(&.blocked) == true
-                res = TestResult.new(
-                  file: file,
-                  test: test_id,
-                  status: "pass",
-                  seconds: elapsed(started),
-                  output: "",
-                  cached: false,
-                  source: "local",
-                  reuse: "miss",
-                  reason: nil,
-                  portable_build: p_build,
-                  profile: current_profile.fp,
-                  roots: roots_map,
-                  blocked: is_blocked
-                )
-                results << res
-                if @explain
-                  explain_msg = compute_explain_reason(file, key_data, newest_receipt, current_profile, roots, keyer_local, is_ambiguous, nil)
-                  puts "#{file}: miss: #{explain_msg}"
-                end
-              end
-            ensure
-              active_tree.try &.close
-              active_tree = nil
-              null_io.try &.close rescue nil
-              begin
-                FileUtils.rm_r(s) if File.info?(s, follow_symlinks: false)
-              rescue ex : File::Error
-                STDERR.puts "#{file}: scratch directory #{s} was not removed: #{ex.message}"
-              end
-              File.delete(trace_file) if File.file?(trace_file) rescue nil
-              File.delete(out_key_path) if File.file?(out_key_path) rescue nil
-              File.delete(accept_path) if File.file?(accept_path) rescue nil
-              File.delete(block_path) if File.file?(block_path) rescue nil
-              File.delete(binary) if File.file?(binary) rescue nil
-              {% if flag?(:win32) %}
-                File.delete(binary.rchop(".exe") + ".pdb") rescue nil
-              {% elsif flag?(:darwin) %}
-                File.delete("#{binary}.dwarf") rescue nil
-              {% end %}
-            end
+      # The report is made here, once every test has ended, in file order.
+      if @explain
+        outcomes.each do |outcome|
+          if line = outcome.explain
+            puts line
           end
         end
       end
+      results = outcomes.map(&.result)
+      recorded_receipts = outcomes.compact_map(&.receipt)
+      builds = outcomes.sum(&.builds)
 
       # Handle export indices
       unless @export_indices.empty?
@@ -697,6 +304,7 @@ module Iyi::Stale
             json.field "failed", failed
             json.field "skipped", skipped
             json.field "cached", cached_count
+            json.field "builds", builds
             json.field "audit" do
               json.array do
                 audit_list.each { |a| a.to_json(json) }
@@ -747,6 +355,479 @@ module Iyi::Stale
       end
 
       exit 1 unless failed.zero?
+    end
+
+    # A later change serves a test from its own record here, with no compiler,
+    # before any build starts. Nothing is served this way yet.
+    private def serve_without_compiler(file : String, test_id : TestId, is_ambiguous : Bool) : Outcome?
+      nil
+    end
+
+    private def scratch_path(test_id : TestId) : String
+      File.expand_path(File.join(@store.root_dir, "scratch", Stale.hex(Store.d_test_id(test_id))))
+    end
+
+    # One test, built and run or answered by its receipt, as one slot of the
+    # pool. It prints nothing: the run reports once the pool is done, in file
+    # order. Under the scratch lock the test's body reaches its outcome and
+    # leaves the block with `next`, so the lock is released in order.
+    private def check_one(
+      file : String,
+      test_id : TestId,
+      is_ambiguous : Bool,
+      host : Profile::HostState,
+      keyer_local : Keyer,
+      run_cwd : String,
+      scratch_locks : Hash(String, Sync::Mutex),
+    ) : Outcome
+      if served = serve_without_compiler(file, test_id, is_ambiguous)
+        return served
+      end
+
+      s = scratch_path(test_id)
+      roots = Roots.default_for_file(file, cache_root: @store.cache_root)
+      roots = Roots.new(
+        src: roots.src,
+        toolchain: roots.toolchain,
+        pkg: roots.pkg,
+        scratch: s,
+        abs: roots.abs
+      )
+      roots_map = {
+        "src"       => roots.src,
+        "toolchain" => roots.toolchain,
+        "pkg"       => roots.pkg,
+        "scratch"   => roots.scratch,
+        "abs"       => roots.abs,
+      }
+      test_argv = [s]
+      current_profile = Profile.current(
+        host: host,
+        argv: test_argv,
+        cwd: roots.map(run_cwd),
+        timeout: @timeout
+      )
+
+      accept_rules = [] of KeyFile::StaleRule
+      block_rules = [] of KeyFile::StaleRule
+      newest_receipt : Receipt? = nil
+      candidates = [] of Receipt
+
+      unless @fresh || is_ambiguous
+        candidates = @store.candidates(test_id, @target)
+        blockers = @store.blockers(test_id)
+        newest_receipt = candidates.first?
+
+        valid = candidates.select do |rec|
+          rec.pass? && !rec.contradicted &&
+            rec.profile.fp == current_profile.fp &&
+            Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?
+        end
+
+        matching_blockers = blockers.select do |rec|
+          rec.version != FORMAT_VERSION || !Trace.supported?(rec.trace.observations) ||
+            (rec.profile.fp == current_profile.fp &&
+              Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?)
+        end
+        if blockers.any? { |rec| rec.version != FORMAT_VERSION || !Trace.supported?(rec.trace.observations) }
+          valid.clear
+        end
+
+        block_rules = matching_blockers.map { |b| KeyFile::StaleRule.new(b.mode, b.build.build) }
+        valid_rules = valid.map { |v| KeyFile::StaleRule.new(v.mode, v.build.build) }
+
+        accept_rules = valid_rules.reject do |vr|
+          block_rules.any? { |br| br.mode == vr.mode && br.build.compare(vr.build, case_insensitive: true) == 0 }
+        end
+      end
+      # Run test
+      lock_path = s + ".lock"
+      Dir.mkdir_p(File.dirname(lock_path))
+
+      outcome : Outcome? = nil
+      scratch_locks[s].synchronize do
+        File.open(lock_path, "a") do |lock_file|
+          lock_file.flock_exclusive do
+            begin
+              FileUtils.rm_r(s) if File.info?(s, follow_symlinks: false)
+              Dir.mkdir(s)
+            rescue ex : File::Error
+              abort! "#{file}: cannot empty scratch directory #{s}: #{ex.message}"
+            end
+
+            started = Time.instant
+            out_key_path = File.tempname("iyi-stale-key", ".json")
+            accept_path = File.tempname("iyi-stale-accept", ".json")
+            block_path = File.tempname("iyi-stale-block", ".json")
+            binary = File.tempname("iyi-test", {{ flag?(:win32) ? ".exe" : nil }})
+            trace_file = File.tempname("iyi-trace")
+            null_io : File? = nil
+            tree : Command::TestTree? = nil
+            builds = 0
+
+            begin
+              File.write(accept_path, accept_rules.to_json)
+              File.write(block_path, block_rules.to_json)
+
+              build_out = IO::Memory.new
+
+              # A build leads its own process group, as a run does, so an interrupt ends it too.
+              build_process = Process.new(
+                Process.executable_path.not_nil!,
+                [
+                  "build", file,
+                  "-o", binary,
+                  "-Diyi_observe",
+                  "--stale-key", out_key_path,
+                  "--stale-accept", accept_path,
+                  "--stale-block", block_path,
+                ],
+                env: Profile.build_env,
+                clear_env: true,
+                input: Process::Redirect::Close,
+                output: build_out,
+                error: build_out,
+                process_group: true
+              )
+              builds += 1
+              build_tree = Command::TestTree.new(build_process)
+              build_status = begin
+                build_process.wait
+              ensure
+                build_tree.close
+              end
+
+              key_data = if File.file?(out_key_path)
+                           KeyFile.parse(File.read(out_key_path)) rescue nil
+                         else
+                           nil
+                         end
+
+              # Case 1: Cached Hit!
+              if key_data && (hit = key_data.hit)
+                matching_rec = candidates.find do |c|
+                  c.mode == hit.mode && c.build.build.compare(hit.build, case_insensitive: true) == 0
+                end
+                source = if matching_rec
+                           if matching_rec.mode == "local"
+                             "local"
+                           else
+                             matching_rec.namespace || "imported"
+                           end
+                         else
+                           "local"
+                         end
+                p_build = key_data.portable.try(&.build) || (matching_rec && matching_rec.portable? ? matching_rec.build.build : nil)
+                res = TestResult.new(
+                  file: file,
+                  test: test_id,
+                  status: "pass",
+                  seconds: elapsed(started),
+                  output: "",
+                  cached: true,
+                  source: source,
+                  reuse: "hit",
+                  reason: nil,
+                  portable_build: p_build,
+                  profile: current_profile.fp,
+                  roots: roots_map,
+                  blocked: false
+                )
+                explain = @explain ? "#{file}: hit from #{source}" : nil
+                outcome = Outcome.new(result: res, explain: explain, builds: builds)
+                next
+              end
+
+              # Case 2: Build failed
+              unless build_status.success?
+                if key_data && (key_data.local || key_data.portable)
+                  # Build failure after Build computed: revoke every receipt of test that validates now
+                  @store.revoke(test_id) do |rec|
+                    rec.profile.fp == current_profile.fp && Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?
+                  end
+                end
+                p_build = key_data.try(&.portable.try(&.build))
+                is_blocked = key_data.try(&.blocked) == true
+                res = TestResult.new(
+                  file: file,
+                  test: test_id,
+                  status: "does not build",
+                  seconds: elapsed(started),
+                  output: build_out.to_s,
+                  cached: false,
+                  source: "local",
+                  reuse: "miss",
+                  reason: nil,
+                  portable_build: p_build,
+                  profile: current_profile.fp,
+                  roots: roots_map,
+                  blocked: is_blocked
+                )
+                explain = @explain ? "#{file}: does not build" : nil
+                outcome = Outcome.new(result: res, explain: explain, builds: builds)
+                next
+              end
+
+              # Case 3: Build succeeded and was not a hit -> execute under profile
+              child_env = Profile.clean_child_env(s, trace_file, ENV)
+              run_out = IO::Memory.new
+              null_io = File.open(File::NULL, "r")
+
+              process = Process.new(
+                binary,
+                args: test_argv,
+                env: child_env,
+                clear_env: true,
+                input: null_io,
+                output: run_out,
+                error: run_out,
+                process_group: true
+              )
+              tree = Command::TestTree.new(process)
+
+              done = ::Channel(Process::Status).new
+              spawn { done.send(process.wait) }
+
+              test_status : String = "fail"
+              test_output : String = ""
+
+              select
+              when status = done.receive
+                if status.success?
+                  test_status = "pass"
+                else
+                  test_status = "fail"
+                  evidence = run_out.to_s
+                  unless status.exit_reason.normal?
+                    evidence += "\n" unless evidence.empty? || evidence.ends_with?('\n')
+                    evidence += Command.death_sentence(status) + "\n"
+                  end
+                  test_output = evidence
+                end
+              when timeout(@timeout.seconds)
+                tree.try &.terminate
+                done.receive
+                test_status = "hung: killed at #{@timeout}s"
+                test_output = run_out.to_s
+              end
+
+              # Process non-pass exit
+              if test_status != "pass"
+                # Non-pass exit (fail, signal, timeout kill, reserved status):
+                # revoke every receipt of test that validates now (whatever trace state)
+                @store.revoke(test_id) do |rec|
+                  rec.profile.fp == current_profile.fp && Trace.replay(rec.trace.observations, keyer_for(rec, keyer_local), roots).nil?
+                end
+                p_build = key_data.try(&.portable.try(&.build))
+                is_blocked = key_data.try(&.blocked) == true
+                res = TestResult.new(
+                  file: file,
+                  test: test_id,
+                  status: test_status,
+                  seconds: elapsed(started),
+                  output: test_output,
+                  cached: false,
+                  source: "local",
+                  reuse: "miss",
+                  reason: nil,
+                  portable_build: p_build,
+                  profile: current_profile.fp,
+                  roots: roots_map,
+                  blocked: is_blocked
+                )
+                explain = nil
+                if @explain
+                  explain_msg = compute_explain_reason(file, key_data, newest_receipt, current_profile, roots, keyer_local, is_ambiguous, nil)
+                  explain = "#{file}: miss: #{explain_msg}"
+                end
+                outcome = Outcome.new(result: res, explain: explain, builds: builds)
+                next
+              end
+
+              # Pass! Parse trace
+              trace_res = if File.file?(trace_file)
+                            File.open(trace_file) { |io| Trace.parse(io, roots, keyer_local, check_disk_after_exit: true) }
+                          else
+                            TraceResult.new(complete: false, incomplete_reason: "no trace file")
+                          end
+
+              if !trace_res.complete
+                # Pass with trace incomplete: write nothing
+                p_build = key_data.try(&.portable.try(&.build))
+                is_blocked = key_data.try(&.blocked) == true
+                res = TestResult.new(
+                  file: file,
+                  test: test_id,
+                  status: "pass",
+                  seconds: elapsed(started),
+                  output: "",
+                  cached: false,
+                  source: "local",
+                  reuse: "miss",
+                  reason: "trace incomplete",
+                  portable_build: p_build,
+                  profile: current_profile.fp,
+                  roots: roots_map,
+                  blocked: is_blocked
+                )
+                explain = nil
+                if @explain
+                  explain_msg = compute_explain_reason(file, key_data, newest_receipt, current_profile, roots, keyer_local, is_ambiguous, "trace incomplete")
+                  explain = "#{file}: miss: #{explain_msg}"
+                end
+                outcome = Outcome.new(result: res, explain: explain, builds: builds)
+                next
+              end
+
+              # Trace complete!
+              if @fresh
+                @store.clear_marker(test_id)
+              end
+
+              taint_reason : String? = nil
+              is_not_reusable = false
+
+              if !trace_res.taints.empty?
+                is_not_reusable = true
+                taint = trace_res.taints.first
+                kind = Iyi::EffectKind.from_value?(taint.kind).try(&.to_s.underscore) || "taint #{taint.kind}"
+                taint_reason = "#{kind} at #{taint.site}"
+              elsif !trace_res.a3_mismatches.empty?
+                is_not_reusable = true
+                taint_reason = trace_res.a3_mismatches.first
+              elsif key_data && key_data.not_reusable && !key_data.not_reusable.not_nil!.empty?
+                is_not_reusable = true
+                nr = key_data.not_reusable.not_nil!.first
+                taint_reason = nr.site ? "#{nr.reason} at #{nr.site}" : nr.reason
+              elsif is_ambiguous
+                is_not_reusable = true
+                taint_reason = "ambiguous test id"
+              end
+
+              p_build = key_data.try(&.portable.try(&.build))
+              is_blocked = key_data.try(&.blocked) == true
+              if is_not_reusable
+                reuse_tag = is_ambiguous ? "miss" : "not reusable"
+                res = TestResult.new(
+                  file: file,
+                  test: test_id,
+                  status: "pass",
+                  seconds: elapsed(started),
+                  output: "",
+                  cached: false,
+                  source: "local",
+                  reuse: reuse_tag,
+                  reason: taint_reason,
+                  portable_build: p_build,
+                  profile: current_profile.fp,
+                  roots: roots_map,
+                  blocked: is_blocked
+                )
+                explain = nil
+                if @explain
+                  explain_msg = compute_explain_reason(file, key_data, newest_receipt, current_profile, roots, keyer_local, is_ambiguous, taint_reason)
+                  explain = "#{file}: miss: #{explain_msg}"
+                end
+                outcome = Outcome.new(result: res, explain: explain, builds: builds)
+              else
+                # Pass, complete, untainted, run inputs unchanged during run: write receipt!
+                recorded : Receipt? = nil
+                if key_data && (mode_build = key_data.local)
+                  r_build = ReceiptBuild.new(
+                    build: mode_build.build,
+                    toolchain: mode_build.toolchain,
+                    behavior: mode_build.behavior,
+                    callpath: mode_build.callpath,
+                    link: mode_build.link,
+                    cenv: mode_build.cenv
+                  )
+                  r_trace = ReceiptTrace.new(
+                    fp: Stale.hex(Trace.compute_trace_fp(trace_res.observations)),
+                    observations: trace_res.observations
+                  )
+                  receipt = Receipt.new(
+                    test: test_id,
+                    build: r_build,
+                    profile: current_profile,
+                    trace: r_trace,
+                    explain: mode_build.explain,
+                    version: FORMAT_VERSION,
+                    mode: "local",
+                    newest: "pass"
+                  )
+                  # The twin a CI producer exports: the same run, keyed plainly.
+                  if (portable_build = key_data.portable) && File.file?(trace_file)
+                    portable_trace = File.open(trace_file) { |io| Trace.parse(io, roots, Keyer.portable, check_disk_after_exit: false) }
+                    if portable_trace.complete
+                      receipt.portable_twin = PortableRecord.new(
+                        ReceiptBuild.new(
+                          build: portable_build.build,
+                          toolchain: portable_build.toolchain,
+                          behavior: portable_build.behavior,
+                          callpath: portable_build.callpath,
+                          link: portable_build.link,
+                          cenv: portable_build.cenv
+                        ),
+                        portable_build.explain,
+                        ReceiptTrace.new(
+                          fp: Stale.hex(Trace.compute_trace_fp(portable_trace.observations)),
+                          observations: portable_trace.observations
+                        )
+                      )
+                    end
+                  end
+                  @store.record(receipt)
+                  recorded = receipt
+                end
+
+                p_build = key_data.try(&.portable.try(&.build))
+                is_blocked = key_data.try(&.blocked) == true
+                res = TestResult.new(
+                  file: file,
+                  test: test_id,
+                  status: "pass",
+                  seconds: elapsed(started),
+                  output: "",
+                  cached: false,
+                  source: "local",
+                  reuse: "miss",
+                  reason: nil,
+                  portable_build: p_build,
+                  profile: current_profile.fp,
+                  roots: roots_map,
+                  blocked: is_blocked
+                )
+                explain = nil
+                if @explain
+                  explain_msg = compute_explain_reason(file, key_data, newest_receipt, current_profile, roots, keyer_local, is_ambiguous, nil)
+                  explain = "#{file}: miss: #{explain_msg}"
+                end
+                outcome = Outcome.new(result: res, explain: explain, receipt: recorded, builds: builds)
+              end
+            ensure
+              tree.try &.close
+              null_io.try &.close rescue nil
+              begin
+                FileUtils.rm_r(s) if File.info?(s, follow_symlinks: false)
+              rescue ex : File::Error
+                STDERR.puts "#{file}: scratch directory #{s} was not removed: #{ex.message}"
+              end
+              File.delete(trace_file) if File.file?(trace_file) rescue nil
+              File.delete(out_key_path) if File.file?(out_key_path) rescue nil
+              File.delete(accept_path) if File.file?(accept_path) rescue nil
+              File.delete(block_path) if File.file?(block_path) rescue nil
+              File.delete(binary) if File.file?(binary) rescue nil
+              {% if flag?(:win32) %}
+                File.delete(binary.rchop(".exe") + ".pdb") rescue nil
+              {% elsif flag?(:darwin) %}
+                File.delete("#{binary}.dwarf") rescue nil
+              {% end %}
+            end
+          end
+        end
+      end
+
+      outcome.not_nil!
     end
 
     private def compute_explain_reason(
