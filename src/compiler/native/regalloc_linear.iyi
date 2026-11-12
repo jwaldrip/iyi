@@ -80,7 +80,7 @@ end
 # Whether an instruction transfers control or traps, so no fallthrough or fixed value crosses it.
 def terminator?(inst : MInst) : Bool
   op = inst.opcode
-  op == MOp::B || op == MOp::Bcond || op == MOp::Br || op == MOp::Ret || op == MOp::Brk
+  op == MOp::B || op == MOp::Bcond || op == MOp::Br || op == MOp::BrTable || op == MOp::Ret || op == MOp::Brk
 end
 
 # The blocks a block can transfer control to: its branch targets, and the next block when control can fall
@@ -92,11 +92,17 @@ def block_successors(fn : MFunction, b : Int32) : Array(Int32)
     if inst.opcode == MOp::B || inst.opcode == MOp::Bcond
       acc << inst.target
     end
+    if inst.opcode == MOp::BrTable
+      table_targets = fn.jump_tables[inst.table].targets
+      table_targets.each do |t|
+        acc << t
+      end
+    end
   end
   falls = true
   if block.insts.size > 0
     last = block.insts[block.insts.size - 1].opcode
-    falls = !(last == MOp::B || last == MOp::Br || last == MOp::Ret || last == MOp::Brk)
+    falls = !(last == MOp::B || last == MOp::Br || last == MOp::BrTable || last == MOp::Ret || last == MOp::Brk)
   end
   if falls && b + 1 < fn.blocks.size
     acc << (b + 1)

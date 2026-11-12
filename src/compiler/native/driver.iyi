@@ -14,6 +14,7 @@ import compiler/native/obj/object::{ObjectFile, ObjFormat, Section, SectionKind,
 import compiler/native/obj/macho::{write_object}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
 import compiler/native/aarch64/regs::{reg_name}
+import compiler/native/jump_table::{declare_jump_tables, place_jump_tables, jump_table_section_name}
 import compiler/native/aarch64/isel::{select_function, IselError}
 import compiler/native/aarch64/encode::{encode_function, EncodedFunction, EncodeError}
 import compiler/native/regalloc::{allocate}
@@ -70,17 +71,20 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
   text = SectionWriter.new
   rodata = SectionWriter.new
   data = SectionWriter.new
+  jump_tables = SectionWriter.new
   bss_size = 0_i64
   mod.functions.each do |fn|
     next if fn.declaration?
     mf = function_mir(mod, fn, syms, darwin)
     return mf if mf.is_a?(String)
+    declare_jump_tables(obj, mf.as(MFunction))
     encoded = encode_function(mf.as(MFunction))
     return "#{fn.name}: #{encoded.as(EncodeError).message}" if encoded.is_a?(EncodeError)
     enc = encoded.as(EncodedFunction)
     text.pad_to(4_i64)
     base = text.append(enc.bytes, enc.relocs)
     index = syms[fn.name]
+    place_jump_tables(obj, mf.as(MFunction), index, enc.block_offsets, jump_tables)
     obj.symbols[index].value = base
     obj.symbols[index].size = enc.bytes.size.to_i64
     obj.symbols[index].section = 0
@@ -112,6 +116,9 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
   obj.sections << Section.new(".rodata", SectionKind::ReadOnly, 8, to_bytes(rodata.bytes), rodata.bytes.size.to_i64, rodata.relocs)
   obj.sections << Section.new(".data", SectionKind::Data, 8, to_bytes(data.bytes), data.bytes.size.to_i64, data.relocs)
   obj.sections << Section.new(".bss", SectionKind::ZeroFill, 8, to_bytes([] of UInt8), bss_size, [] of Reloc)
+  if jump_tables.bytes.size > 0
+    obj.sections << Section.new(jump_table_section_name, SectionKind::ReadOnly, 8, to_bytes(jump_tables.bytes), jump_tables.bytes.size.to_i64, jump_tables.relocs)
+  end
   obj
 end
 
@@ -129,6 +136,10 @@ pub def dump_mfunction(mf : MFunction) : String
     b.insts.each do |inst|
       acc = acc + "  #{dump_inst(inst)}\n"
     end
+  end
+  mf.jump_tables.each_with_index do |t, k|
+    targets = t.targets.map { |b| b.to_s }.join(",")
+    acc = acc + "jump table #{k} entries=#{t.targets.size} low=#{t.low} targets=#{targets}\n"
   end
   acc
 end
@@ -156,6 +167,7 @@ def dump_inst(inst : MInst) : String
   text = text + " " + parts.join(", ") unless parts.empty?
   text = text + " #imm=#{inst.imm}" if inst.imm != 0_i64
   text = text + " target=#{inst.target}" if inst.target >= 0
+  text = text + " table=#{inst.table}" if inst.table >= 0
   text = text + " sym=#{inst.sym}" if inst.sym >= 0
   text
 end

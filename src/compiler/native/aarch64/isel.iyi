@@ -23,8 +23,9 @@ import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout}
 import compiler/ir/intrinsics::{IntrinsicId, intrinsic_stem}
-import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, JumpTable}
 import compiler/native/obj/object::{RelocKind}
+import compiler/native/jump_table::{SwitchTable, switch_table_plan}
 import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le}
 import compiler/native/target::{TargetDesc}
 import compiler/native/aarch64/abi::{aarch64_target}
@@ -1551,8 +1552,14 @@ class Isel
     emit(branch(f_dest))
   end
 
-  # A switch is a compare chain: each case compares the value and branches; the default follows.
+  # A switch is a jump table when switch_table_plan takes it (lower_jump_table). Otherwise it is a compare chain:
+  # each case compares the value and branches, and the default follows.
   def lower_switch(i : Inst) : Nil
+    plan = switch_table_plan(i.cases)
+    unless plan.nil?
+      lower_jump_table(i, plan.as(SwitchTable))
+      return
+    end
     v = first_leaf(i.args[0])
     k = 0
     while k < i.cases.size
@@ -1566,6 +1573,55 @@ class Isel
       k = k + 1
     end
     emit_edge_branch(i.targets[0].name)
+  end
+
+  # A switch as a jump table (slice C3e, jump_table.iyi): the value less the lowest case indexes a table of block
+  # addresses. The unsigned compare sends a value outside the table to the default, and a hole in the range is an
+  # entry for the default. Each entry is an edge of the switch, so phi copies land on the path that takes it.
+  def lower_jump_table(i : Inst, plan : SwitchTable) : Nil
+    v = first_leaf(i.args[0])
+    default_dest = edge_block(@cur_ir_name, i.targets[0].name, true)
+    entries = [] of Int32
+    filled = [] of Bool
+    k = 0
+    while k < plan.span
+      entries << default_dest
+      filled << false
+      k = k + 1
+    end
+    k = 0
+    while k < i.cases.size
+      slot = (i.cases[k] - plan.low).to_i32
+      unless filled[slot]
+        filled[slot] = true
+        entries[slot] = edge_block(@cur_ir_name, i.targets[k + 1].name, true)
+      end
+      k = k + 1
+    end
+    index = binop(MOp::Sub, v, const_gpr(plan.low))
+    compare(index, const_gpr(plan.span - 1_i64))
+    range_check = mop(MOp::Bcond)
+    range_check.cond = cond_hi
+    range_check.target = default_dest
+    emit(range_check)
+    table = @mf.jump_tables.size
+    @mf.jump_tables << JumpTable.new(plan.low, entries)
+    base = gpr
+    addr = mop(MOp::AddrTable)
+    addr.defs << vop(base)
+    addr.table = table
+    emit(addr)
+    target = gpr
+    load = mop(MOp::LdrIdx)
+    load.defs << vop(target)
+    load.uses << vop(base)
+    load.uses << vop(index)
+    emit(load)
+    branch_table = mop(MOp::BrTable)
+    branch_table.uses << vop(target)
+    branch_table.table = table
+    branch_table.terminator = true
+    emit(branch_table)
   end
 
   def lower_ret(i : Inst) : Nil
