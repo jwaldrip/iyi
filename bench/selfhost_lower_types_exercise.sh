@@ -163,6 +163,24 @@ prove_mutation "mixed unions not passed by value" "$TYPER_FILE" \
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "indirect threshold above a 136-byte value" "$TYPER_FILE" \
+  "    size_of(llvm_type(type)) > 128" \
+  "    size_of(llvm_type(type)) > 136" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "closure context pointer not prepended" "$TYPER_FILE" \
+  "    params << @table.ptr if closure" \
+  "    params << @table.ptr if false" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "indirect result returned as int32, not void" "$TYPER_FILE" \
+  "      return @table.func(params, @table.void)" \
+  "      return @table.func(params, @table.int32)" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

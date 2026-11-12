@@ -1,6 +1,6 @@
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, NonGenericClassType, NilType}
-import compiler/types/types::{TupleInstanceType, NamedTupleInstanceType, StaticArrayInstanceType}
+import compiler/types/types::{TupleInstanceType, NamedTupleInstanceType, StaticArrayInstanceType, ProcInstanceType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/merge::{TypeMerge}
@@ -86,6 +86,20 @@ module BenchSelfhostLowerTypesExercise
       raise "no metaclass for #{t}" if m.nil?
       return m
     end
+    if t.starts_with?("Proc(") && t.ends_with?(")")
+      parts = split_outside(t[5, t.bytesize - 6], ",")
+      members = [] of Type
+      parts.each do |p|
+        members << resolve(prog, ts, p)
+      end
+      arg_types = [] of Type
+      i = 0
+      while i < members.size - 1
+        arg_types << members[i]
+        i = i + 1
+      end
+      return ts.proc_of(arg_types, members[members.size - 1])
+    end
     found = TypeLookup.new(ts.instances).lookup(prog, Parser.new(t, "lower").parse)
     raise "unknown type #{t}" if found.is_a?(LookupError)
     found.as(Type)
@@ -129,6 +143,11 @@ module BenchSelfhostLowerTypesExercise
     out = out + "size: #{typer.size_of(typer.llvm_type(t))}\n"
     out = out + "align: #{typer.align_of(typer.llvm_type(t))}\n"
     out = out + "passed_by_value: #{bool_text(passed_by_value?(t))}\n"
+    out = out + "passed_indirectly: #{bool_text(typer.passed_indirectly?(t))}\n"
+    if t.is_a?(ProcInstanceType)
+      out = out + "proc_function: #{typer.proc_function(t).to_s}\n"
+      out = out + "closure_function: #{typer.closure_function(t).to_s}\n"
+    end
     out
   end
 

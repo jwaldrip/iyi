@@ -411,6 +411,41 @@ pub class LowerTyper
     named
   end
 
+  # The hosted `passed_indirectly?`: a value of more than INDIRECT_ABOVE (128) bytes travels
+  # through memory, not as an aggregate (types.cr). A C type's and an extern's are not here.
+  def passed_indirectly?(type : Type) : Bool
+    return false unless passed_by_value?(type)
+    size_of(llvm_type(type)) > 128
+  end
+
+  # The hosted `function_type`: the LLVM function type of a proc's call. A closure's
+  # context pointer comes first, an indirect argument is a pointer, and an indirect result
+  # is a pointer passed last and returned as void.
+  def function_type(arg_types : Array(Type), return_type : Type, closure : Bool) : IrType
+    params = [] of IrType
+    params << @table.ptr if closure
+    arg_types.each do |arg|
+      params << (passed_indirectly?(arg) ? @table.ptr : llvm_type(arg))
+    end
+    if passed_indirectly?(return_type)
+      params << @table.ptr
+      return @table.func(params, @table.void)
+    end
+    @table.func(params, llvm_type(return_type))
+  end
+
+  # The hosted `proc_type(ProcInstanceType)`: the function a proc value calls, without a context.
+  def proc_function(type : Type) : IrType
+    proc = type.as(ProcInstanceType)
+    function_type(proc.arg_types, proc.return_type, false)
+  end
+
+  # The hosted `closure_type(ProcInstanceType)`: the function a closure calls, with its context.
+  def closure_function(type : Type) : IrType
+    proc = type.as(ProcInstanceType)
+    function_type(proc.arg_types, proc.return_type, true)
+  end
+
   # The hosted `size_of` (`LLVMStoreSizeOfType`): bytes a value of the type takes
   # up, without the padding that follows it in an array. A struct is padded to its
   # alignment, which LLVM does in its struct layout.

@@ -11,9 +11,10 @@ Measured by `bench/selfhost_lower_types_exercise.sh` on the head of `selfhost/s2
 | `lowty_enums` | 4 | 4 |
 | `lowty_composites` | 6 | 6 |
 | `lowty_unions` | 7 | 7 |
-| **total** | **41** | **41** |
+| `lowty_procs` | 4 | 4 |
+| **total** | **45** | **45** |
 
-Types listed as `# waiting` in the fixtures are not counted. They wait on the rows of `NEEDS.md`: generic instance metaclasses, `StaticArray` and `NamedTuple`/`Proc` resolution, and class instance variables.
+Types listed as `# waiting` in the fixtures are not counted. They wait on the rows of `NEEDS.md`: generic instance metaclasses, `StaticArray` and `NamedTuple` resolution, and class instance variables. Classes and structs with instance variables are lowered by `instance_var_struct` but unmeasured: no fixture can type their instance variables until row 12 closes.
 
 ## Own source and the hello sample: not measured
 

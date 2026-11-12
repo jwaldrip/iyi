@@ -88,6 +88,12 @@ def struct_applies?(type : Iyi::Type) : Bool
   type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
 end
 
+# An LLVM function type as the IR writes it: `ret (params)`.
+def llvm_function_text(t : LLVM::Type) : String
+  params = t.params_types.map { |p| llvm_text(p) }
+  "#{llvm_text(t.return_type)} (#{params.join(", ")})"
+end
+
 def block_text(name : String, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
   String.build do |io|
     io << "== " << name << "\n"
@@ -110,6 +116,11 @@ def block_text(name : String, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
     io << "size: " << typer.size_of(typer.llvm_type(type)) << "\n"
     io << "align: " << typer.align_of(typer.llvm_type(type)) << "\n"
     io << "passed_by_value: " << (type.passed_by_value? ? "true" : "false") << "\n"
+    io << "passed_indirectly: " << (typer.passed_indirectly?(type) ? "true" : "false") << "\n"
+    if type.is_a?(Iyi::ProcInstanceType)
+      io << "proc_function: " << llvm_function_text(typer.proc_type(type)) << "\n"
+      io << "closure_function: " << llvm_function_text(typer.closure_type(type)) << "\n"
+    end
   end
 end
 
@@ -172,6 +183,9 @@ def resolve(program : Iyi::Program, name : String) : Iyi::Type
     raise "unknown generic #{name}" unless name.ends_with?(")")
     base_name = name[0...open]
     args = split_top(name[(open + 1)...-1]).map { |arg| resolve(program, arg) }
+    if base_name == "Proc"
+      return program.proc_of(args)
+    end
     base = resolve(program, base_name)
     unless base.is_a?(Iyi::GenericClassType)
       raise "#{base_name} takes no type arguments"
