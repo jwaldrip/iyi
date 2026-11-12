@@ -43,7 +43,7 @@ import compiler/lower/fun::{visit_node}
 import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
-import compiler/semantic/top_level::{ClassType, MetaTypeVar, Type}
+import compiler/semantic/top_level::{ClassType, MetaTypeVar, MetaclassType, Type}
 import compiler/types/types::{PointerInstanceType, VirtualType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
@@ -604,14 +604,20 @@ end
 # type (the hosted upcast of the instance). The header store is decided from codegen.cr 2790-2806,
 # not from the core's pointer function, which covers fields only.
 pub def primitive_allocate(low : Lowerer, t : Type) : Value
-  if t.is_a?(VirtualType)
+  # The hosted allocate_aggregate takes the instance type. A metaclass (the class-method context of `new`) is
+  # unwrapped to its instance type here, so the class's pointerful check reads a class, not a metaclass.
+  inst = t
+  if t.is_a?(MetaclassType)
+    inst = t.as(MetaclassType).instance_type
+  end
+  if inst.is_a?(VirtualType)
     pending_visit_node("allocate of a virtual type (hosted codegen_primitive_allocate, upcast of the instance)")
-    return low.builder.const_undef(low.typer.llvm_type(t))
+    return low.builder.const_undef(low.typer.llvm_type(inst))
   end
-  unless passed_by_value?(t)
-    return allocate_class(low, t)
+  unless passed_by_value?(inst)
+    return allocate_class(low, inst)
   end
-  struct_ir = low.typer.llvm_type(t)
+  struct_ir = low.typer.llvm_type(inst)
   ptr = low.alloca(struct_ir, "")
   zero_memory(low, ptr, struct_ir)
   ptr
