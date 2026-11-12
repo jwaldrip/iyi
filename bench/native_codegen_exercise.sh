@@ -171,6 +171,34 @@ PY
   fi
 done
 
+# ---- 3d. runtime helpers: builtins.ir compiled natively links and behaves as the C stand-ins and the hosted twin --
+# The fixture calls every helper over boundary values (zero lengths, overlapping moves both ways, the signed minimum,
+# powers of two, maximum values, division by one and by minus one). Linked with the native runtime, with rt_stub.c, and
+# built by the hosted compiler, the three print the same output and exit 0.
+echo "== 3d. the runtime helpers, compiled natively from builtins.ir, match the C stand-ins and the hosted twin"
+RTF=bench/fixtures/native_first_light
+if "$DRV" obj "$RTF/rt_helpers.ir" "$WORK/rth.o" >"$WORK/rth.obj.log" 2>&1 \
+   && "$DRV" obj src/compiler/native/rt/builtins.ir "$WORK/rt_native.o" >"$WORK/rt_native.log" 2>&1 \
+   && cc "$WORK/rth.o" "$WORK/rt_native.o" -o "$WORK/rth_native" \
+   && cc -c "$FIX/rt_stub.c" -o "$WORK/rt_stub.o" \
+   && cc "$WORK/rth.o" "$WORK/rt_stub.o" -o "$WORK/rth_stub" \
+   && ./bin/iyi build -o "$WORK/rth_hosted" "$RTF/rt_helpers.iyi" >"$WORK/rth_hosted.log" 2>&1; then
+  "$WORK/rth_native" >"$WORK/rth_native.out"; s1=$?
+  "$WORK/rth_stub" >"$WORK/rth_stub.out"; s2=$?
+  "$WORK/rth_hosted" >"$WORK/rth_hosted.out"; s3=$?
+  if [ "$s1" -ne 0 ] || [ "$s2" -ne 0 ] || [ "$s3" -ne 0 ]; then
+    fail "rt_helpers: exit statuses $s1 $s2 $s3 (native, stub, hosted)"
+  elif ! cmp -s "$WORK/rth_native.out" "$WORK/rth_stub.out"; then
+    fail "rt_helpers: the native runtime prints differently from rt_stub.c"
+  elif ! cmp -s "$WORK/rth_native.out" "$WORK/rth_hosted.out"; then
+    fail "rt_helpers: the native runtime prints differently from the hosted twin"
+  else
+    echo "   $(wc -l <"$WORK/rth_native.out" | tr -d ' ') lines identical across native runtime, rt_stub.c and the hosted twin"
+  fi
+else
+  fail "rt_helpers: the parity build failed (see $WORK/rth.obj.log, $WORK/rt_native.log, $WORK/rth_hosted.log)"
+fi
+
 # ---- 4. the 64 KiB frame: the MIR dump shows the probe page by page ----------------------------
 echo "== 4. the 64 KiB frame is entered page by page"
 probes=$("$DRV" mir "$FIX/frame64k.ir" big | grep -c 'ZeroSp')
