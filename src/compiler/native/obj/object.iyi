@@ -80,6 +80,11 @@ pub enum RelocKind
   WasmMemAddrI32
   WasmTypeIndexLeb
   WasmGlobalIndexLeb
+  X86Abs32S               # ELF R_X86_64_32S
+  X86GotPcRelX            # ELF R_X86_64_GOTPCRELX (a GOT entry, relaxable)
+  X86RexGotPcRelX         # ELF R_X86_64_REX_GOTPCRELX (a GOT entry, relaxable with a REX prefix)
+  A64TprelMovwG1          # ELF R_AARCH64_TLSLE_MOVW_TPREL_G1 (local-exec, movz with LSL 16)
+  A64TprelMovwG0Nc        # ELF R_AARCH64_TLSLE_MOVW_TPREL_G0_NC (local-exec, movk)
 end
 
 pub struct Reloc
@@ -103,8 +108,10 @@ pub class Section
   property size : Int64           # for zero-fill
   property relocs : Array(Reloc)
   property flags : Int64
+  property entsize : Int64        # ELF sh_entsize; 0 in other formats
 
   def initialize(@name : String, @kind : SectionKind, @align : Int32, @bytes : ::Std::Slice::Bytes, @size : Int64, @relocs : Array(Reloc) = [] of Reloc, @flags : Int64 = 0_i64)
+    @entsize = 0_i64
   end
 end
 
