@@ -15,6 +15,9 @@
 #   - check passes -> prints "    FAIL: mutation was not caught: <label>", returns 1
 #   - <old> absent, or the patch changes nothing -> prints
 #     "PATCH CHANGED NOTHING: this proves nothing", exits 3
+#   - MUTATION_SKIP=1 in the environment -> no file is touched, prints
+#     "    NOT RUN (MUTATION_SKIP=1, ...): <label>", returns 1. A gate run that
+#     way shows its fixtures quickly and always ends red.
 #
 # The check runs as a background job in its own process group. The file is
 # restored, and the copy aside removed, through traps on EXIT, INT and TERM,
@@ -90,6 +93,13 @@ _prove_mutation_run() {
   if [ "$#" -eq 0 ]; then
     echo "prove_mutation: no check command given ($label)" >&2
     exit 2
+  fi
+
+  # MUTATION_SKIP=1 is for a quick look at a gate's fixtures while working: no mutation is applied, and each proof
+  # answers as NOT caught, so the gate ends red by its own count and a quick run can never be read as a pass.
+  if [ "${MUTATION_SKIP:-0}" = 1 ]; then
+    echo "    NOT RUN (MUTATION_SKIP=1, so this gate cannot pass): $label"
+    return 1
   fi
 
   # The edit is made by perl, on bytes, with index and substr: literal text, never a pattern. It was a bash
