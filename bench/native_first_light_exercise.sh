@@ -9,7 +9,7 @@
 #    fail), run, and compared with the hosted compiler's build of the twin on stdout and exit status. Each executable
 #    must pass codesign -v --strict, link only libSystem, carry LC_BUILD_VERSION with zero tools, have no __stub_helper,
 #    no dyld_stub_binder import, and build to identical bytes twice. A fixture that needs a C helper is listed by name
-#    with its reason and is not counted as passing. A fixture the IR verifier refuses must be refused with its rule.
+#    with its reason and is not counted as passing.
 # 4. The tripwire log is empty.
 # 5. Mutation proofs: each mutation is applied to a copy of its source, the check must catch it, and the source is
 #    restored. A patch that changes nothing is refused by the proof helper.
@@ -93,15 +93,6 @@ excluded_reason() {
     *) echo "" ;;
   esac
 }
-# Fixtures the IR verifier refuses: the refusal must name the rule given here, and they count as neither passing nor
-# failing. The rule is the IR core's (verifier.iyi check_signature and the C-convention call check).
-refused_rule() {
-  case "$1" in
-    calls|structs) echo "uses the C convention but" ;;
-    iyiagg) echo "a C-convention call returns" ;;
-    *) echo "" ;;
-  esac
-}
 table="$work/table.txt"
 : >"$table"
 passing=0
@@ -112,19 +103,6 @@ for ir in "$FIX"/*.ir "$FL"/*.ir; do
   reason=$(excluded_reason "$n")
   if [ -n "$reason" ]; then
     printf '%-18s EXCLUDED  %s\n' "$n" "$reason" >>"$table"
-    continue
-  fi
-  rule=$(refused_rule "$n")
-  if [ -n "$rule" ]; then
-    if PATH="$TRIPWIRE_PATH:$PATH" "$tool" "$ir" -o "$work/native/$n" >"$work/$n.tool.log" 2>&1; then
-      printf '%-18s FAIL      the verifier accepted a fixture it refused before\n' "$n" >>"$table"
-      failures=$((failures + 1))
-    elif grep -q "$rule" "$work/$n.tool.log"; then
-      printf '%-18s REFUSED   %s\n' "$n" "$(grep -m1 "$rule" "$work/$n.tool.log" | sed 's/^iyi-compile-native: //')" >>"$table"
-    else
-      printf '%-18s FAIL      refused, but not by the expected rule\n' "$n" >>"$table"
-      failures=$((failures + 1))
-    fi
     continue
   fi
   if ! "$iyi" build -o "$work/hosted/$n" "$dir/$n.iyi" >"$work/hosted-$n.log" 2>&1; then

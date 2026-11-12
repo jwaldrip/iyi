@@ -110,6 +110,13 @@ tls_check() {
   echo "$out" | grep -q 'error\[tls-fresh\]'
 }
 
+# The named-struct C-convention fixture must be refused under cc-lowered. Non-zero when it is accepted or refused another way.
+cc_named_check() {
+  local bin="$1" out
+  out=$("$bin" verify bench/fixtures/ir/bad/cc_named_param.ir 2>&1) && return 1
+  echo "$out" | grep -q 'error\[cc-lowered\]'
+}
+
 # Rebuilds the driver from a mutated source and runs one check on it.
 mutant_check() {
   local check="$1"
@@ -288,6 +295,11 @@ prove_mutation "verifier: a call no longer kills thread-local values" \
   '    if i.op == Op::Call || i.op == Op::Invoke' \
   '    if i.op == Op::Call && i.op == Op::Invoke' \
   tls_check
+prove_mutation "verifier: a named struct passes the C-convention rule" \
+  src/compiler/ir/verifier.iyi \
+  'return false if t.packed_struct? || !t.struct_name.nil?' \
+  'return false if t.packed_struct?' \
+  cc_named_check
 
 echo
 if [ "$failed" -eq 0 ]; then
