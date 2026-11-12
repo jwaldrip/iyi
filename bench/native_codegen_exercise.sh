@@ -106,6 +106,70 @@ elif ! "$WORK/tp.bin"; then
 else
   echo "threadpointer: non-zero, 8-aligned and equal on both reads"
 fi
+# ---- 3b. naked bodies: the function's bytes and relocations equal the hosted compiler's naked function --------
+# The hosted compiler's LLVM may append a return to a naked body, so the oracle may hold the native body followed by one
+# trailing `ret`, and nothing else. Relocations are compared by offset within the body and by kind.
+echo "== 3b. each naked fixture's body equals the hosted compiler's naked function, bytes and relocations"
+for pair in asm_naked_const:const42 asm_naked_addimm:addimm asm_naked_pair:pair; do
+  base=${pair%%:*}
+  fn=${pair#*:}
+  if ! "$DRV" obj "$FIX/$base.ir" "$WORK/$base.nat.o" >"$WORK/$base.nat.log" 2>&1; then
+    fail "$base: the native backend refused the naked fixture"
+    continue
+  fi
+  if ! ./bin/iyi build --cross-compile --target aarch64-apple-darwin -o "$WORK/$base.oracle.o" "$FIX/$base.iyi" >"$WORK/$base.oracle.log" 2>&1; then
+    fail "$base: the hosted compiler does not build the oracle"
+    continue
+  fi
+  "$DRV" bytes "$WORK/$base.nat.o" >"$WORK/$base.nat.bytes" 2>/dev/null
+  "$DRV" bytes "$WORK/$base.oracle.o" >"$WORK/$base.oracle.bytes" 2>/dev/null
+  if python3 - "$WORK/$base.nat.bytes" "$WORK/$base.oracle.bytes" "$fn" <<'PY'
+import sys
+RET = bytes.fromhex("c0035fd6")
+def load(path):
+    secs, syms, relocs = {}, {}, {}
+    for line in open(path):
+        f = line.rstrip("\n").split("\t")
+        if f[0] == "section":
+            secs[int(f[1])] = bytes.fromhex(f[2])
+        elif f[0] == "reloc":
+            relocs.setdefault(int(f[1]), []).append((int(f[2]), f[3]))
+        elif f[0] == "sym":
+            syms[bytes.fromhex(f[1]).decode()] = (int(f[2]), int(f[3]))
+    return secs, syms, relocs
+def body(path, name):
+    secs, syms, relocs = load(path)
+    if name not in syms:
+        return None
+    si, start = syms[name]
+    if si not in secs:
+        return None
+    text = secs[si]
+    later = [v for (s, v) in syms.values() if s == si and v > start]
+    end = min(later) if later else len(text)
+    rel = sorted((off - start, kind) for (off, kind) in relocs.get(si, []) if start <= off < end)
+    return text[start:end], rel
+native = body(sys.argv[1], sys.argv[3])
+oracle = body(sys.argv[2], sys.argv[3])
+if native is None or oracle is None or not native[0]:
+    print("the function is missing from one of the objects")
+    sys.exit(1)
+nb, nr = native
+ob, orl = oracle
+if nr != orl:
+    print(f"relocations differ: native {nr} oracle {orl}")
+    sys.exit(1)
+if ob != nb and ob != nb + RET:
+    print(f"bytes differ: native {nb.hex()} oracle {ob.hex()}")
+    sys.exit(1)
+print(f"{sys.argv[3]}: {len(nb)} bytes, {len(nr)} relocations, equal to the hosted compiler's naked function")
+PY
+  then
+    :
+  else
+    fail "$base: the naked body differs from the hosted compiler's"
+  fi
+done
 
 # ---- 4. the 64 KiB frame: the MIR dump shows the probe page by page ----------------------------
 echo "== 4. the 64 KiB frame is entered page by page"
@@ -314,6 +378,11 @@ check_tbss_placed() {
 }
 check_tp_mask() { "$1" mir bench/fixtures/native_tp/threadpointer.ir tp_word | grep -q 'AndImm/64 .*#imm=-8'; }
 
+check_naked() { check_fixture "$1" asm_naked_const; }
+check_bind() { check_fixture "$1" asm_addone; }
+check_clobber() { check_fixture "$1" asm_clobber; }
+check_reloc() { check_fixture "$1" asm_reloc; }
+
 echo "== 6. mutations are each caught"
 prove_mutation "isel: the subtraction's operands swap" \
   src/compiler/native/aarch64/isel.iyi \
@@ -420,6 +489,27 @@ prove_mutation "threadpointer: the darwin read drops the low-bit mask" \
   '      m.imm = -8_i64' \
   '      m.imm = 0xf0_i64' \
   check_tp_mask
+prove_mutation "asm: each output's register is read from the input operands" \
+  src/compiler/native/aarch64/encode.iyi \
+  '      names << reg_name(inst.defs[k].reg)' \
+  '      names << reg_name(inst.uses[k].reg)' \
+  check_bind
+prove_mutation "asm: a naked body is given a prologue and epilogue" \
+  src/compiler/native/driver.iyi \
+  '  if mf.naked' \
+  '  if false' \
+  check_naked
+prove_mutation "asm: a register clobber is ignored" \
+  src/compiler/native/aarch64/isel.iyi \
+  '      defs << pop(reg)
+      note_callee_saved(reg) unless @mf.naked' \
+  '      note_callee_saved(reg) unless @mf.naked' \
+  check_clobber
+prove_mutation "asm: a relocation names the wrong symbol" \
+  src/compiler/native/aarch64/encode.iyi \
+  '      index = body.syms[r.name]?' \
+  '      index = body.syms["eight"]?' \
+  check_reloc
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \

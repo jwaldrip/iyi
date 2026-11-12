@@ -21,9 +21,10 @@ module compiler/native/regalloc_linear
 # Spills. A spilled interval has one 8-byte frame slot for the whole function. Each instruction reloads the
 # spilled operands it reads into scratch registers and stores the spilled value it writes from one.
 #
-# The collector's constraint (SPEC 2.2). No pointer-carrying value lives in a floating-point register across
-# a call. The MIR does not record pointer types, so a floating-point value counts as pointer-carrying when it
-# is a bit copy of a general-purpose value (fmov to fp). The constraint is asserted after assignment, and a
+# The collector's constraint (SPEC 2.2). No pointer-carrying value lives in a floating-point register across a call.
+# A vreg is pointer-carrying when the selector flagged it (MFunction#vreg_pointer: a pointer-typed value, a copy of
+# one, or its bits moved to fp), or when it is a bit copy of a general-purpose value (fmov to fp), which the
+# selector's flags also cover. The constraint is asserted after assignment on every pointer-carrying vreg, and a
 # function that breaks it is refused.
 #
 # Never allocated: x18 (the darwin platform register), x9..x15 (spill reload scratch), x16 and x17 (encoder
@@ -456,7 +457,7 @@ class LinearScan
         cross = @call_prefix[@ends[v]] - @call_prefix[@starts[v]] > 0
       end
       @crossing << cross
-      @pointer << pointers[v]
+      @pointer << (pointers[v] || @fn.vreg_pointer[v])
       v = v + 1
     end
   end

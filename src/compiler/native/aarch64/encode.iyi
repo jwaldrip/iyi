@@ -13,9 +13,10 @@ module compiler/native/aarch64/encode
 # `move_imm`), in which case the encoder uses x16 as the scratch the spec's
 # assembler uses for the same purpose.
 
-import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, FrameInfo}
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, FrameInfo, AsmBody}
 import compiler/native/obj/object::{Reloc, RelocKind}
-import compiler/native/aarch64/regs::{cond_invert}
+import compiler/native/aarch64/regs::{cond_invert, reg_name}
+import compiler/native/aarch64/asm::{AsmAssembler}
 
 pub class EncodeError
   getter message : String
@@ -53,12 +54,14 @@ pub class Encoder
   getter fixups : Array(BranchFixup)
   property frame : FrameInfo
   property table_syms : Array(Int32)   # the symbol of each jump table of the function, by table index
+  property failure : String?
 
   def initialize(@frame : FrameInfo)
     @bytes = [] of UInt8
     @relocs = [] of Reloc
     @fixups = [] of BranchFixup
     @table_syms = [] of Int32
+    @failure = nil
   end
 
   def here : Int64
@@ -362,8 +365,45 @@ pub class Encoder
     elsif op == MOp::AddTprelLo
       reloc(RelocKind::A64TprelLo12Nc, inst.sym)
       word(0x91000000_i64 | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::InlineAsm
+      emit_asm(inst)
     else
       raise "the encoder has no form for #{op}"
+    end
+  end
+
+  # An inline asm body: the template assembled over the registers regalloc gave its operands, outputs first and then
+  # inputs, which is the order `$N` numbers them. A relocation's symbol is looked up in the body's table; a name the
+  # module does not define is a failure, which encode_function reports.
+  def emit_asm(inst : MInst) : Nil
+    body = inst.asm.as(AsmBody)
+    names = [] of String
+    k = 0
+    while k < body.outputs
+      names << reg_name(inst.defs[k].reg)
+      k = k + 1
+    end
+    k = 0
+    while k < body.inputs
+      names << reg_name(inst.uses[k].reg)
+      k = k + 1
+    end
+    encoding = AsmAssembler.new(body.macho).assemble(body.template, names)
+    if msg = encoding.failure
+      @failure = msg
+      return
+    end
+    base = here
+    encoding.words.each do |w|
+      word(w)
+    end
+    encoding.relocs.each do |r|
+      index = body.syms[r.name]?
+      unless index
+        @failure = "the asm symbol #{r.name} is not in the module"
+        return
+      end
+      @relocs << Reloc.new(base + r.offset.to_i64, r.kind, index, r.addend)
     end
   end
 
@@ -498,6 +538,9 @@ pub def encode_function(fn : MFunction) : EncodedFunction | EncodeError
     end
   end
   enc.finish(offsets)
+  if msg = enc.failure
+    return EncodeError.new(msg)
+  end
   EncodedFunction.new(enc.bytes, enc.relocs, offsets)
 end
 

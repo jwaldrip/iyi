@@ -18,18 +18,21 @@ module compiler/native/aarch64/isel
 
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value, Param}
-import compiler/ir/inst::{Op, Inst, CallConv, Ordering, Attribute, CallAux, GepAux, MemAux, IntrinsicAux, ThreadPointerKind}
+import compiler/ir/inst::{Op, Inst, CallConv, Ordering, Attribute, CallAux, GepAux, MemAux, IntrinsicAux, ThreadPointerKind, AsmAux, AsmDialect}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout}
 import compiler/ir/intrinsics::{IntrinsicId, intrinsic_stem}
-import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, JumpTable}
+import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, JumpTable, AsmBody}
 import compiler/native/obj/object::{RelocKind}
 import compiler/native/jump_table::{SwitchTable, switch_table_plan}
-import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le}
+import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le, reg_name, callee_saved_gprs}
 import compiler/native/target::{TargetDesc, TlsForm}
 import compiler/native/aarch64/abi::{aarch64_target}
 import compiler/native/lower::{LeafLoc, CallAssignment, flatten_leaves, assign_call, assign_return, assign_iyi_call, assign_iyi_return, reachable_blocks, plan_gep, GepPlan, overflow_form, acquire_on_load?, release_on_store?, icmp_unsigned?}
+
+import compiler/native/asm/constraints::{parse_operand, parse_clobber, digits?, ConstraintClass, ConstraintError, OperandConstraint}
+import compiler/native/aarch64/asm::{AsmAssembler}
 
 pub class IselError
   getter message : String
@@ -131,7 +134,9 @@ class Isel
   def fresh_leaves(t : IrType) : Array(Int32)
     acc = [] of Int32
     flatten_leaves(@layout, t).each do |l|
-      acc << @mf.new_vreg(leaf_class(l[1]))
+      v = @mf.new_vreg(leaf_class(l[1]))
+      @mf.mark_pointer(v) if l[1].pointer?
+      acc << v
     end
     acc
   end
@@ -227,6 +232,7 @@ class Isel
     m.size = bits
     m.defs << vop(f)
     m.uses << vop(g)
+    @mf.mark_pointer(f) if @mf.vreg_pointer[g]
     emit(m)
     f
   end
@@ -279,6 +285,7 @@ class Isel
       fail("thread-local #{name} is reached through threadlocaladdr, not as an operand")
     end
     d = gpr
+    @mf.mark_pointer(d)
     m = mop(external ? MOp::LoadGot : MOp::AddrSym)
     m.defs << vop(d)
     m.sym = symbol_index(name)
@@ -459,6 +466,7 @@ class Isel
     m.fp = cls == RegClass::Fpr
     m.defs << vop(d)
     m.uses << vop(src)
+    @mf.mark_pointer(d) if @mf.vreg_pointer[src]
     emit(m)
     d
   end
@@ -532,6 +540,7 @@ class Isel
       m.fp = cls == RegClass::Fpr
       m.defs << vop(dest[k])
       m.uses << vop(regs[k])
+      @mf.mark_pointer(dest[k]) if @mf.vreg_pointer[regs[k]]
       emit(m)
       k = k + 1
     end
@@ -540,6 +549,7 @@ class Isel
   # ---- the function ------------------------------------------------------------------------------
 
   def run : MFunction
+    return run_naked if naked_fn?
     # One MIR block per IR block, in order, so block indices agree with the IR's.
     @fn.blocks.each do |b|
       @block_index[b.name] = @mf.blocks.size
@@ -827,6 +837,7 @@ class Isel
     align = @layout.abi_align(t) if align == 0
     slot = @mf.frame.add_slot(@layout.alloc_size(t), align)
     d = gpr
+    @mf.mark_pointer(d)
     m = mop(MOp::AddrFrame)
     m.defs << vop(d)
     m.uses << Operand.new(OperandKind::FrameSlot, slot, 0_i64)
@@ -1761,9 +1772,308 @@ class Isel
     emit(r)
   end
 
+  # ---- the naked function and inline asm ----------------------------------------------------------
+
+  # Whether a call's callee is an inline asm body rather than a function or a value.
+  def asm_call?(i : Inst) : Bool
+    return false unless i.op == Op::Call && i.args.size > 0
+    callee = i.args[0]
+    callee.is_a?(Inst) && callee.as(Inst).aux.is_a?(AsmAux)
+  end
+
+  # Whether the function carries the naked attribute: its body is an asm template and nothing else.
+  def naked_fn? : Bool
+    @fn.attrs.any? { |a| a.name == "naked" }
+  end
+
+  # A naked function (SPEC 2.2 step 3): the body is the assembled template alone. Its arguments stay where the
+  # convention left them, so nothing is bound for them and no prologue, epilogue, probe or save is emitted. The body
+  # is one block holding one void inline asm call with no operands, and an unreachable terminator.
+  def run_naked : MFunction
+    @mf.naked = true
+    @fn.blocks.each do |b|
+      @block_index[b.name] = @mf.blocks.size
+      new_block(b.name)
+    end
+    if @fn.blocks.size != 1
+      fail("a naked function is one block holding one inline asm call")
+      return @mf
+    end
+    @cur = @mf.blocks[0]
+    @cur_ir_name = @fn.blocks[0].name
+    @fn.blocks[0].insts.each do |i|
+      next if i.op == Op::Unreachable
+      unless asm_call?(i)
+        fail("a naked function holds one inline asm call and nothing else; #{i.op} is not allowed")
+        return @mf
+      end
+      lower_asm(i, i.args[0].as(Inst).aux.as(AsmAux))
+    end
+    @mf
+  end
+
+  # The constraint items of an asm call, split at their commas. An empty constraint string has none.
+  def asm_items(text : String) : Array(String)
+    acc = [] of String
+    return acc if text.bytesize == 0
+    start = 0
+    k = 0
+    while k <= text.bytesize
+      if k == text.bytesize || text.byte_at(k).to_i32 == 44
+        acc << text[start, k - start].strip
+        start = k + 1
+      end
+      k = k + 1
+    end
+    acc
+  end
+
+  # The register an asm operand names: x0..x30 and sp are general purpose, d0..d31 floating-point. -1 for any other.
+  def asm_register(name : String) : Int32
+    return 31 if name == "sp"
+    return -1 if name.bytesize < 2
+    letter = name.byte_at(0).to_i32
+    digits = name[1, name.bytesize - 1]
+    return -1 unless digits?(digits)
+    n = digits.to_i
+    return n if letter == 120 && n <= 30
+    return 32 + n if letter == 100 && n <= 31
+    -1
+  end
+
+  # A callee-saved register an asm body writes must be saved by a function that has a prologue.
+  def note_callee_saved(reg : Int32) : Nil
+    return unless callee_saved_gprs.includes?(reg)
+    @mf.frame.callee_saved << reg unless @mf.frame.callee_saved.includes?(reg)
+  end
+
+  # A copy between two operands, in the file `fp` names.
+  def asm_copy(dst : Operand, src : Operand, fp : Bool) : MInst
+    m = mop(fp ? MOp::FMov : MOp::Mov)
+    m.fp = fp
+    m.defs << dst
+    m.uses << src
+    m
+  end
+
+  # One inline asm call (SPEC 2.2 step 3). The constraint string names the operands: outputs (`=`), inputs, and
+  # clobbers (`~{name}`). An `r` or `x` operand takes a fresh virtual register of its class, which regalloc places in
+  # any free register of that class. A `{reg}` operand is a physical register: an input is moved into it before the
+  # template, and an output is moved out of it after. A tied input is moved into its output's register before the
+  # template. A register clobber is a physical definition with no value, so nothing live across the template stays in
+  # that register. `memory` and `cc` add no code: the selector keeps no memory value in a register across an
+  # instruction and emits every IR load and store in program order, so each load after the template reads what the
+  # template wrote. The template is checked here against the names its operands will carry; the encoder assembles it
+  # after allocation.
+  def lower_asm(i : Inst, aux : AsmAux) : Nil
+    return if failed?
+    if aux.dialect == AsmDialect::Intel
+      fail("the Intel asm dialect is not lowered in this slice")
+      return
+    end
+    items = asm_items(aux.constraints)
+    out_count = 0
+    items.each do |item|
+      out_count = out_count + 1 if item.starts_with?("=")
+    end
+    ops = [] of OperandConstraint
+    clobbers = [] of String
+    items.each do |item|
+      if item.starts_with?("~")
+        clobbers << item
+      else
+        parsed = parse_operand(item, item.starts_with?("="), out_count)
+        if parsed.is_a?(ConstraintError)
+          fail(parsed.as(ConstraintError).message)
+          return
+        end
+        ops << parsed.as(OperandConstraint)
+      end
+    end
+    outs = [] of OperandConstraint
+    ins = [] of OperandConstraint
+    ops.each do |c|
+      if c.output
+        outs << c
+      else
+        ins << c
+      end
+    end
+    out_types = [] of IrType
+    if i.type.struct?
+      out_types = i.type.struct_element_types
+    elsif !i.type.void?
+      out_types = [i.type]
+    end
+    if outs.size != out_types.size
+      fail("the asm call has #{outs.size} outputs and its result has #{out_types.size}")
+      return
+    end
+    if ins.size != i.args.size - 1
+      fail("the asm call has #{ins.size} inputs and #{i.args.size - 1} arguments")
+      return
+    end
+    if @mf.naked && (outs.size > 0 || ins.size > 0)
+      fail("a naked function's asm takes no operands in this slice")
+      return
+    end
+    out_types.each do |t|
+      if t.struct? || t.array? || (t.int? && t.bits > 64)
+        fail("an asm output must be a scalar of at most 64 bits in this slice")
+        return
+      end
+    end
+    defs = [] of Operand
+    uses = [] of Operand
+    names = [] of String
+    pre = [] of MInst
+    post = [] of MInst
+    out_regs = [] of Int32
+    out_phys = [] of Int32
+    k = 0
+    while k < outs.size
+      c = outs[k]
+      want_fp = out_types[k].float?
+      if c.cls == ConstraintClass::Specific
+        reg = asm_register(c.register)
+        if reg < 0
+          fail("'#{c.register}' is not an aarch64 register the native backend maps")
+          return
+        end
+        fp = reg >= 32
+        if fp != want_fp
+          fail("the output '#{c.text}' is in the other register file from its value")
+          return
+        end
+        v = @mf.new_vreg(fp ? RegClass::Fpr : RegClass::Gpr)
+        defs << pop(reg)
+        post << asm_copy(vop(v), pop(reg), fp)
+        out_regs << v
+        out_phys << reg
+        names << reg_name(reg)
+        note_callee_saved(reg) unless @mf.naked
+      else
+        fp = c.cls == ConstraintClass::Vector
+        if fp != want_fp
+          fail("the output '#{c.text}' is in the other register file from its value")
+          return
+        end
+        v = @mf.new_vreg(fp ? RegClass::Fpr : RegClass::Gpr)
+        defs << vop(v)
+        out_regs << v
+        out_phys << -1
+        names << (fp ? "d0" : "x0")
+      end
+      k = k + 1
+    end
+    k = 0
+    while k < ins.size
+      c = ins[k]
+      arg = i.args[k + 1]
+      if arg.type.struct? || arg.type.array? || (arg.type.int? && arg.type.bits > 64)
+        fail("an asm input must be a scalar of at most 64 bits in this slice")
+        return
+      end
+      src = first_leaf(arg)
+      src_fp = @mf.vreg_classes[src] == RegClass::Fpr
+      if c.cls == ConstraintClass::Tied
+        o = c.tied
+        if out_phys[o] >= 0
+          reg = out_phys[o]
+          if (reg >= 32) != src_fp
+            fail("the tied input of output #{o} is in the other register file from its output")
+            return
+          end
+          pre << asm_copy(pop(reg), vop(src), src_fp)
+          uses << pop(reg)
+          names << reg_name(reg)
+        else
+          dst = out_regs[o]
+          dst_fp = @mf.vreg_classes[dst] == RegClass::Fpr
+          if dst_fp != src_fp
+            fail("the tied input of output #{o} is in the other register file from its output")
+            return
+          end
+          pre << asm_copy(vop(dst), vop(src), dst_fp)
+          uses << vop(dst)
+          names << (dst_fp ? "d0" : "x0")
+        end
+      elsif c.cls == ConstraintClass::Specific
+        reg = asm_register(c.register)
+        if reg < 0
+          fail("'#{c.register}' is not an aarch64 register the native backend maps")
+          return
+        end
+        if (reg >= 32) != src_fp
+          fail("the input '#{c.text}' is in the other register file from its value")
+          return
+        end
+        pre << asm_copy(pop(reg), vop(src), src_fp)
+        uses << pop(reg)
+        names << reg_name(reg)
+      else
+        fp = c.cls == ConstraintClass::Vector
+        if fp != src_fp
+          fail("the input '#{c.text}' is in the other register file from its value")
+          return
+        end
+        uses << vop(src)
+        names << (fp ? "d0" : "x0")
+      end
+      k = k + 1
+    end
+    clobbers.each do |item|
+      name = parse_clobber(item)
+      if name.is_a?(ConstraintError)
+        fail(name.as(ConstraintError).message)
+        return
+      end
+      text = name.as(String)
+      next if text == "cc" || text == "memory"
+      reg = asm_register(text)
+      if reg < 0
+        fail("clobber '#{text}' is not an aarch64 register the native backend maps")
+        return
+      end
+      defs << pop(reg)
+      note_callee_saved(reg) unless @mf.naked
+    end
+    encoding = AsmAssembler.new(@darwin).assemble(aux.template, names)
+    if msg = encoding.failure
+      fail(msg)
+      return
+    end
+    encoding.relocs.each do |r|
+      unless @syms[r.name]?
+        fail("the asm symbol #{r.name} is not in the module's symbol table")
+        return
+      end
+    end
+    pre.each do |m|
+      emit(m)
+    end
+    body = mop(MOp::InlineAsm)
+    body.asm = AsmBody.new(aux.template, outs.size, ins.size, @syms, @darwin)
+    defs.each do |d|
+      body.defs << d
+    end
+    uses.each do |u|
+      body.uses << u
+    end
+    emit(body)
+    post.each do |m|
+      emit(m)
+    end
+    bind_result(i, out_regs) unless i.type.void?
+  end
+
   # ---- calls -------------------------------------------------------------------------------------
 
   def lower_call(i : Inst) : Nil
+    if asm_call?(i)
+      lower_asm(i, i.args[0].as(Inst).aux.as(AsmAux))
+      return
+    end
     aux = i.aux
     cc_aux = nil
     if aux.is_a?(CallAux)
