@@ -214,6 +214,10 @@ pub def declare_const_global(low : Lowerer, name : String, ir : IrType, st : Con
   if g = st.global
     return g.as(Global)
   end
+  if existing = low.module.get_global?(name)
+    st.global = existing
+    return existing.as(Global)
+  end
   g = low.module.add_global(name, ir)
   g.linkage = Linkage::Internal
   st.global = g
@@ -224,6 +228,10 @@ end
 pub def declare_const_flag(low : Lowerer, name : String, st : ConstState) : Global
   if f = st.flag
     return f.as(Global)
+  end
+  if existing = low.module.get_global?(name + ":const_init")
+    st.flag = existing
+    return existing.as(Global)
   end
   i1 = low.module.types.int(1)
   f = low.module.add_global(name + ":const_init", i1)
@@ -237,6 +245,9 @@ end
 # evaluates the constant's value and stores it in the global. A primitive literal result is kept as the
 # global's initialiser (and the constant's `initializer`), and the global is made constant.
 pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopLevel::Const, init_name : String, global : Global, st : ConstState) : Function
+  if existing = low.module.get_function?(init_name)
+    return existing.as(Function)
+  end
   ir = const_ir_type(low, const)
   saved = low.enter_main
   fun_type = low.module.types.func([] of IrType, low.module.types.void)
@@ -314,6 +325,10 @@ end
 pub def const_read_function(low : Lowerer, const : Compiler::Semantic::TopLevel::Const, name : String, st : ConstState) : Function
   if f = st.read_fn
     return f.as(Function)
+  end
+  if existing = low.module.get_function?("~" + name + ":const_read")
+    st.read_fn = existing
+    return existing.as(Function)
   end
   saved = low.enter_main
   ptr = low.module.types.ptr(0)

@@ -201,6 +201,10 @@ pub def declare_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir
   if g = st.global
     return g.as(Global)
   end
+  if existing = low.module.get_global?(name)
+    st.global = existing
+    return existing.as(Global)
+  end
   g = low.module.add_global(name, ir)
   g.linkage = Linkage::Internal
   if cvar.thread_local
@@ -232,6 +236,9 @@ end
 # evaluates the value and stores it in the global. A primitive constant result becomes the global's initializer,
 # and the function keeps nothing to do (as the hosted code does).
 pub def make_cvar_init_function(low : Lowerer, cvar : MetaTypeVar, init_name : String, global : Global, st : ClassVarState) : Function
+  if existing = low.module.get_function?(init_name)
+    return existing.as(Function)
+  end
   ir = cvar_ir_type(low, cvar)
   node = cvar.initializer.as(ASTNode)
   saved = low.enter_main
