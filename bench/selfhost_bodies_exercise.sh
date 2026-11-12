@@ -114,7 +114,7 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -146,7 +146,28 @@ prove_mutation "a call hits the def-instance cache" "$MAIN_VISITOR" \
 prove_mutation "a generic instance copies its declared instance variable with the argument" "$REPO/src/compiler/types/types.iyi" \
   "copied = MetaTypeVar.new(var_name, replacement)" \
   "copied = MetaTypeVar.new(var_name, source_type)" -- bodies_at_floor || status=1
+prove_mutation "an imported name is not in scope in its def's body" "$MAIN_VISITOR" \
+  "enter_file_scope(target_def)" \
+  "nil" -- bodies_at_floor || status=1
+prove_mutation "a block body is typed in the scope of the call that owns it" "$MAIN_VISITOR" \
+  "@scope = writer_scope" \
+  "@scope = @program" -- bodies_at_floor || status=1
+prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR" \
+  "return visit_global_fun_call(node, global_fun) if own.empty?" \
+  "return false if own.empty?" -- bodies_at_floor || status=1
+prove_mutation "a block whose declared output is _ is checked against a type" "$MAIN_VISITOR" \
+  "unless out_node.is_a?(Underscore)" \
+  "unless false" -- bodies_at_floor || status=1
 
+echo
+echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
+leak_typed=$("$TYPED" "$REPO/bench/fixtures/bodies_scope_leak_b.iyi" "$REPO/src" 2>/dev/null | awk '$1 ~ /^5:/' | wc -l | tr -d ' ')
+if [ "${leak_typed:-1}" -eq 0 ]; then
+  echo "  refused: bodies_scope_leak_b.iyi line 5 (scope_value_nowhere) is untyped"
+else
+  echo "  NOT REFUSED: bodies_scope_leak_b.iyi line 5 has $leak_typed typed node(s)"
+  status=1
+fi
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"

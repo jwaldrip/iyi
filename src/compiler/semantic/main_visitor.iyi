@@ -8,7 +8,7 @@ import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
-import compiler/semantic/top_level::{LibType}
+import compiler/semantic/top_level::{LibFun, LibType}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
@@ -66,8 +66,15 @@ end
 pub class BlockOwner
   getter def_node : Def?
   getter return_types : Array(Type?)?
+  # iyi: what a `yield` written in the block's body runs: the block of the def the block is
+  # written in, with that def's block context and self. Without them the body's own `yield`
+  # found the block it sits in and the typing never ended.
+  getter call_block : Block?
+  getter context_vars : Hash(String, Type)?
+  getter yield_nodes : Array(Yield)?
+  getter scope : Type?
 
-  def initialize(@def_node : Def?, @return_types : Array(Type?)?)
+  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil)
   end
 end
 
@@ -1192,14 +1199,35 @@ pub class MainVisitor < TypeNodeHost
       old_def_node = @current_def
       @break_types = @block_breaks[blk]?
       @next_types = [] of Type?
+      callee_block = @current_call_block
+      callee_context_vars = @current_block_context_vars
+      callee_yield_nodes = @current_yield_nodes
       if owner = @block_owners[blk]?
         @current_def = owner.def_node
         @return_types = owner.return_types
+        @current_call_block = owner.call_block
+        @current_block_context_vars = owner.context_vars
+        @current_yield_nodes = owner.yield_nodes
+        if writer_scope = owner.scope
+          @scope = writer_scope
+        end
       else
         @return_types = nil
+        @current_call_block = nil
+        @current_block_context_vars = nil
+        @current_yield_nodes = nil
       end
 
+      callee_imports = @program.current_imports
+      callee_import_defs = @program.current_import_defs
+      enter_file_scope(blk)
       blk.body.accept(self)
+      @program.current_imports = callee_imports
+      @program.current_import_defs = callee_import_defs
+      @current_call_block = callee_block
+      @current_block_context_vars = callee_context_vars
+      @current_yield_nodes = callee_yield_nodes
+      @scope = old_scope
       blk_type = merge_jump_values(child_type(blk.body), @next_types)
       if bt = blk_type
         set_type(blk, bt)
@@ -1228,9 +1256,12 @@ pub class MainVisitor < TypeNodeHost
               if r.is_a?(ProcNotation)
                 pn = r.as(ProcNotation)
                 if out_node = pn.output
-                  expected_ret = lookup_under(out_node, @scope)
-                  unless bt.subtype_of?(expected_ret)
-                    return refuse(node, "expected block to return #{expected_ret.full_name}, not #{bt.full_name}")
+                  # `& : T -> _` leaves the block's result free (hosted: an Underscore output matches any type).
+                  unless out_node.is_a?(Underscore)
+                    expected_ret = lookup_under(out_node, @scope)
+                    unless bt.subtype_of?(expected_ret)
+                      return refuse(node, "expected block to return #{expected_ret.full_name}, not #{bt.full_name}")
+                    end
                   end
                 end
               end
@@ -1268,6 +1299,19 @@ pub class MainVisitor < TypeNodeHost
       # A generic instance's defs are its generic type's (Box(Int32) has Box(T)'s initialize).
       collect_candidate_defs(rec_type.as(GenericInstanceType).generic_type, name, result, visited)
     end
+  end
+
+  # iyi: what a call with no receiver finds when the type it is written in has no such def: the
+  # defs its file imported by name (`import a/b::{parse}`), then the program's own (hosted
+  # Call#lookup_matches: `lookup_matches_in_type(program)` after the scope).
+  def collect_scope_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
+    if imported = @program.current_import_defs[name]?
+      imported.each { |d| result << d }
+    end
+    if result.empty? && !rec_type.is_a?(SemanticProgram)
+      collect_candidate_defs(@program, name, result, visited)
+    end
+    nil
   end
 
   def format_method_display_name(rec_type : Type, name : String) : String
@@ -1406,6 +1450,7 @@ pub class MainVisitor < TypeNodeHost
     candidates = [] of Def
     visited = Set(String).new
     collect_candidate_defs(rec_type, name, candidates, visited)
+    collect_scope_defs(rec_type, name, candidates, visited) if candidates.empty? && call_node.obj.nil?
 
     if candidates.empty?
       if obj_node = call_node.obj
@@ -1664,6 +1709,26 @@ pub class MainVisitor < TypeNodeHost
   # return-type mismatch.
   # `cache_key` (see def_instance_key) caches the finished instance; nil caches nothing.
   def type_method_body(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode? = nil, cache_key : String? = nil) : Type?
+    old_imports = @program.current_imports
+    old_import_defs = @program.current_import_defs
+    enter_file_scope(target_def)
+    result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
+    @program.current_imports = old_imports
+    @program.current_import_defs = old_import_defs
+    result
+  end
+
+  # iyi: the names a node's file imported become the names in scope (SPEC.md R-2b). A node with
+  # no location (a generated def) keeps the scope it is typed from.
+  def enter_file_scope(node : ASTNode) : Nil
+    if loc = node.location
+      @program.current_imports = @program.file_imports[loc.filename]? || Hash(String, Type).new
+      @program.current_import_defs = @program.file_import_defs[loc.filename]? || Hash(String, Array(Def)).new
+    end
+    nil
+  end
+
+  def type_method_body_in_file(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode?, cache_key : String?) : Type?
     body = target_def.body
     if body.nil? || body.is_a?(Nop) || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
@@ -1712,7 +1777,7 @@ pub class MainVisitor < TypeNodeHost
       @current_block_context_vars = @vars.dup
       @current_yield_nodes = [] of Yield
       if blk = block
-        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types)
+        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope)
       end
     end
 
@@ -1868,6 +1933,40 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     target = LibCall.recalculate(lib_type, @program, type_node_system(@program), node.name, args)
+    record_lib_call(node, target)
+  end
+
+  # A call with no receiver that names a `fun` the program declares at its top level
+  # (`__iyi_enter(argc, argv)`). The hosted pass adds such a fun to the program as an External
+  # def and the call finds it by ordinary lookup; the port keeps it in `global_funs` and records
+  # the call as a lib call, which is what the lowering emits for an External: a C call.
+  def visit_global_fun_call(node : Call, lib_fun : LibFun) : Bool
+    args = [] of LibCallArgument
+    node.args.each do |arg|
+      args << LibCallArgument.new(arg, type_of?(arg), nil)
+    end
+    if named = node.named_args
+      named.each do |na|
+        na.value.accept(self)
+        args << LibCallArgument.new(na.value, type_of?(na.value), na.name)
+      end
+    end
+    target = LibCall.recalculate_fun(lib_fun, node.name, @program, type_node_system(@program), args)
+    record_lib_call(node, target)
+  end
+
+  # The fun the program declares at its top level under *name*, or nil.
+  def global_fun_named(name : String) : LibFun?
+    funs = @program.global_funs
+    i = 0
+    while i < funs.size
+      return funs[i] if funs[i].name == name
+      i += 1
+    end
+    nil
+  end
+
+  def record_lib_call(node : Call, target : LibCallTarget) : Bool
     if msg = target.error
       return refuse(node, msg)
     end
@@ -2021,6 +2120,16 @@ pub class MainVisitor < TypeNodeHost
         set_type(node, merged_call_t)
       end
       return false
+    end
+
+    if node.obj.nil?
+      if global_fun = global_fun_named(node.name)
+        own = [] of Def
+        seen = Set(String).new
+        collect_candidate_defs(rec_type, node.name, own, seen)
+        collect_scope_defs(rec_type, node.name, own, seen) if own.empty?
+        return visit_global_fun_call(node, global_fun) if own.empty?
+      end
     end
 
     target_def = lookup_method_matching(rec_type, node.name, node.args, node)

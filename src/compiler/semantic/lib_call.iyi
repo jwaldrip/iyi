@@ -77,9 +77,14 @@ pub class LibCall
     if found.nil?
       return LibCallTarget.failed("undefined fun '#{name}' for #{target_lib.to_s}")
     end
-    lib_fun = found.as(LibFun)
-    owner = "#{target_lib.full_name}##{name}"
+    target = LibCall.recalculate_fun(found.as(LibFun), "#{target_lib.full_name}##{name}", prog, ts, args)
+    target_lib.used = true if target.error.nil?
+    target
+  end
 
+  # The checks of a call to one fun, whoever owns it: a lib's fun (recalculate), or a `fun` the
+  # program declares at its top level, which a call names with no receiver.
+  def self.recalculate_fun(lib_fun : LibFun, owner : String, prog : SemanticProgram, ts : TypeSystem, args : Array(LibCallArgument)) : LibCallTarget
     positional = [] of LibCallArgument
     named = [] of LibCallArgument
     args.each do |arg|
@@ -206,7 +211,6 @@ pub class LibCall
       i += 1
     end
 
-    target_lib.used = true
     lib_fun.used = true
 
     declared = lib_fun.resolved_return
