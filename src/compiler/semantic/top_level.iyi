@@ -3,7 +3,8 @@ module compiler/semantic/top_level
 import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Alias, And, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/token::{NumberKind}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -398,7 +399,17 @@ pub abstract class ModuleType < NamedType
       return false unless ta == tb
       i = i + 1
     end
-    true
+    # A block parameter is part of the signature: `fetch(key)` and `fetch(key, &block)` are two overloads.
+    ab = a.block_arg
+    bb = b.block_arg
+    if ab.nil? || bb.nil?
+      return ab.nil? && bb.nil?
+    end
+    ba_r = ab.restriction
+    bb_r = bb.restriction
+    ba_t = ba_r ? ba_r.to_s : ""
+    bb_t = bb_r ? bb_r.to_s : ""
+    ba_t == bb_t
   end
 
   def add_macro(a_macro : Macro) : Nil
@@ -904,6 +915,9 @@ pub class SemanticProgram < NonGenericModuleType
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
   # hosted pass keeps a scope per file; the port keeps the importing file's table here.
   property current_imports : Hash(String, Type)
+  # The lowercase names the importing file imports (`import a/b::{refuse_port}`), as
+  # the defs they name. Swapped per file like current_imports.
+  property current_import_defs : Hash(String, Array(Def))
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
   property search_path : Array(String)
@@ -1056,12 +1070,19 @@ pub class SemanticProgram < NonGenericModuleType
     @global_funs
   end
 
+  # Each class body the top-level pass visited, in order, with its type.
+  def type_bodies : Array(TypeBody)
+    @type_bodies
+  end
+
   def initialize
+    @type_bodies = [] of TypeBody
     @initial_type_names = Set(String).new
     @merge_hook = nil
     @impls = [] of ImplRecord
     @global_funs = [] of LibFun
     @current_imports = Hash(String, Type).new
+    @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
     @search_path = [] of String
     @loaded_files = Set(String).new
@@ -1203,6 +1224,15 @@ pub class SemanticProgram < NonGenericModuleType
     # for. A MacroLiteral carries the same text the hosted dump prints for them.
     @types["ARGC_UNSAFE"] = Const.new(self, self, "ARGC_UNSAFE", MacroLiteral.new("# primitive: argc"))
     @types["ARGV_UNSAFE"] = Const.new(self, self, "ARGV_UNSAFE", MacroLiteral.new("# primitive: argv"))
+    # The hosted Program declares these instance variables of its built-in types
+    # (String#@bytesize, @length, @c; StaticArray#@buffer : T), once every built-in
+    # type exists.
+    string_t = @types["String"].as(NonGenericClassType)
+    string_t.instance_vars["@bytesize"] = MetaTypeVar.new("@bytesize", @types["Int32"])
+    string_t.instance_vars["@length"] = MetaTypeVar.new("@length", @types["Int32"])
+    string_t.instance_vars["@c"] = MetaTypeVar.new("@c", @types["UInt8"])
+    static_array_t = @types["StaticArray"].as(GenericClassType)
+    static_array_t.instance_vars["@buffer"] = MetaTypeVar.new("@buffer", TypeParameterType.new(self, "T"))
     @initial_type_names = @types.keys.to_set
   end
 
@@ -1328,10 +1358,10 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
     if t.nil?
-      t = lookup_type(first_name)
+      t = @current_imports[first_name]?
     end
     if t.nil?
-      t = @current_imports[first_name]?
+      t = lookup_type(first_name)
     end
     if t.nil?
       return nil
@@ -1384,28 +1414,30 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
 
+    # The file's imports shadow the enclosing namespaces and the program root: a name
+    # the file imports is found before a same-named module beside the importing file.
+    if t.nil?
+      t = @current_imports[first_name]?
+    end
+
     # 4. Search enclosing namespaces
     if t.nil?
       ns = current_type.namespace
       while ns
+        # The program itself is searched last, in step 5, after the file's imports.
+        break if ns.is_a?(SemanticProgram)
         match = ns.lookup_type(first_name)
         if match
           t = match
-          break
-        end
-        if ns == self
           break
         end
         ns = ns.namespace
       end
     end
 
-    # 5. Search in program root
+    # 5. Search the program root
     if t.nil?
       t = self.lookup_type(first_name)
-    end
-    if t.nil?
-      t = @current_imports[first_name]?
     end
 
     if t.nil?
@@ -1456,6 +1488,16 @@ pub class UnresolvedType < Type
   end
 end
 
+# A class body the top-level pass visited: the type it reopens or creates, and
+# the body node. The instance-variable pass walks these after the top-level pass.
+pub class TypeBody
+  getter type : ModuleType
+  getter body : ASTNode
+
+  def initialize(@type : ModuleType, @body : ASTNode)
+  end
+end
+
 pub class PendingIvar
   property owner : ModuleType
   property name : String
@@ -1472,6 +1514,8 @@ pub class TopLevelVisitor < Visitor
   getter pending_ivars : Array(PendingIvar)
   @file : String?
   property unit : ModuleType? = nil
+  @enum_flags : Bool = false
+  @pending_flags : Bool = false
 
   def finish : Nil
     @pending_ivars.each do |pi|
@@ -1487,10 +1531,36 @@ pub class TopLevelVisitor < Visitor
     @pending_ivars = [] of PendingIvar
   end
 
+  # `@[Primitive(:name)]` makes a def's body the compiler's own primitive, located at
+  # the def: the hosted process_def_primitive_annotation (top_level_visitor.cr). The
+  # `@[Unsafe]` site note that pass also records is not ported yet.
+  def primitive_body(node : Def, ann : Annotation) : Nil
+    if ann.args.size != 1
+      raise("expected Primitive annotation to have one argument")
+    end
+    arg = ann.args[0]
+    unless arg.is_a?(SymbolLiteral)
+      raise("expected Primitive argument to be a symbol literal")
+    end
+    primitive = Primitive.new(arg.as(SymbolLiteral).value)
+    primitive.location = node.location
+    node.body = primitive
+    nil
+  end
+
   def visit(node : Expressions) : Bool
     @exp_nest = @exp_nest + 1
-    node.expressions.each do |exp|
+    i = 0
+    while i < node.expressions.size
+      exp = node.expressions[i]
+      if exp.is_a?(Def) && i > 0 && node.expressions[i - 1].is_a?(Annotation)
+        ann = node.expressions[i - 1].as(Annotation)
+        if ann.path.names.last == "Primitive"
+          primitive_body(exp.as(Def), ann)
+        end
+      end
       exp.accept(self)
+      i = i + 1
     end
     @exp_nest = @exp_nest - 1
     if @exp_nest == 0
@@ -1535,10 +1605,17 @@ pub class TopLevelVisitor < Visitor
       end
       names.each do |name|
         found = unit.as(ModuleType).types[name]?
-        unless found
-          refuse_port("undefined constant #{name} in '#{written}'")
+        if found
+          @program.current_imports[name] = found.as(Type)
+        else
+          # A lowercase name is a def the file declares (`import a/b::{refuse_port}`):
+          # the calls slice resolves calls to it, so the pass records it here.
+          defs = unit.as(ModuleType).defs[name]?
+          unless defs
+            refuse_port("undefined constant #{name} in '#{written}'")
+          end
+          @program.current_import_defs[name] = defs.as(Array(Def))
         end
-        @program.current_imports[name] = found.as(Type)
       end
     end
     false
@@ -1576,10 +1653,13 @@ pub class TopLevelVisitor < Visitor
     nodes = parser.parse
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
+    saved_defs = @program.current_import_defs
     @program.current_imports = Hash(String, Type).new
+    @program.current_import_defs = Hash(String, Array(Def)).new
     nodes.accept(inner)
     inner.finish
     @program.current_imports = saved
+    @program.current_import_defs = saved_defs
     if unit = inner.unit
       @program.loaded_units[file] = unit
     end
@@ -1755,6 +1835,7 @@ pub class TopLevelVisitor < Visitor
     end
 
     old_type = @current_type
+    @program.type_bodies << TypeBody.new(type, node.body)
     @current_type = type
     node.body.accept(self)
     @current_type = old_type
@@ -1921,6 +2002,14 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
+  # `@[Flags]` marks the enum that follows it: its members are bits, and it gets None and All.
+  def visit(node : Annotation) : Bool
+    if node.path.names.last == "Flags"
+      @pending_flags = true
+    end
+    false
+  end
+
   def visit(node : EnumDef) : Bool
     scope, name, existing = lookup_type_def(node, node.name)
 
@@ -1953,7 +2042,9 @@ pub class TopLevelVisitor < Visitor
       enum_type.visibility = Visibility::Private
     end
 
-    counter = 0_i64
+    @enum_flags = @pending_flags
+    @pending_flags = false
+    counter = @enum_flags ? 1_i64 : 0_i64
     direct_names = [] of String
     counter = add_enum_members(enum_type, node.members, counter, direct_names, false)
 
@@ -1961,6 +2052,21 @@ pub class TopLevelVisitor < Visitor
       raise("enum #{node.name.names.last} must have at least one member")
     end
 
+    if @enum_flags
+      if enum_type.members["None"]?.nil?
+        enum_type.add_member("None", NumberLiteral.new("0"))
+        none_def = Def.new("none?", return_type: Path.new("Bool"))
+        none_def.location = node.location
+        enum_type.add_def(none_def)
+      end
+      if enum_type.members["All"]?.nil?
+        all_value = 0_i64
+        enum_type.members.each_value do |member|
+          all_value = all_value | member.value.as(NumberLiteral).value.to_i64
+        end
+        enum_type.add_member("All", NumberLiteral.new(all_value.to_s))
+      end
+    end
     enum_type.add_def(Def.new("value"))
     direct_names.each do |mname|
       pname = "#{underscore(mname)}?"
@@ -1991,7 +2097,11 @@ pub class TopLevelVisitor < Visitor
         end
         enum_type.add_member(mname, NumberLiteral.new(counter.to_s))
         direct_names << mname unless in_macro
-        counter = counter + 1
+        if @enum_flags
+          counter = counter == 0 ? 1_i64 : counter * 2_i64
+        else
+          counter = counter + 1
+        end
       elsif node.is_a?(MacroIf)
         mi = node.as(MacroIf)
         branch = iyi_flag_cond?(mi.cond) ? mi.then : mi.else
@@ -2131,8 +2241,46 @@ pub class TopLevelVisitor < Visitor
     end
     type = NonGenericClassType.new(@program, @current_type, node.name, @program.struct_type)
     type.struct = true
+    if loc = node.location
+      type.add_location(loc)
+    end
     @current_type.add_type(node.name, type)
+    declare_c_struct_fields(type, node.body)
     false
+  end
+
+  # Each field of a C struct or union is an instance variable of the declared type,
+  # with a getter `name` and a setter `name=`, as the hosted pass declares them. The
+  # field's type is resolved in `finish`, so a field may name a struct declared
+  # later in the lib. Not ported yet: the void check, `check_allowed_in_lib`, and a
+  # field that includes another C struct (refused).
+  def declare_c_struct_fields(type : NonGenericClassType, body : ASTNode) : Nil
+    nodes = body.is_a?(Expressions) ? body.as(Expressions).expressions : [body]
+    nodes.each do |field|
+      if field.is_a?(Include)
+        refuse_port("include in a C struct or union is not ported yet")
+      end
+      next unless field.is_a?(TypeDeclaration)
+      decl = field.as(TypeDeclaration)
+      next unless decl.var.is_a?(Var)
+      field_name = decl.var.as(Var).name
+      var_name = "@" + field_name
+      if type.lookup_instance_var?(var_name)
+        raise("#{type.type_desc} #{type.full_name} already defines a field named '#{field_name}'")
+      end
+      @pending_ivars << PendingIvar.new(type, var_name, decl.declared_type)
+
+      setter = Def.new("#{field_name}=", [Arg.new("value")], Nop.new)
+      setter.visibility = Visibility::Public
+      setter.location = decl.location
+      type.add_def(setter)
+
+      getter = Def.new(field_name, [] of Arg, InstanceVar.new(var_name))
+      getter.visibility = Visibility::Public
+      getter.location = decl.location
+      type.add_def(getter)
+    end
+    nil
   end
 
   def visit(node : Alias) : Bool
@@ -2470,6 +2618,19 @@ pub def def_declared?(d : Def, entry : String?) : Bool
   normalize_path(loc.as(Location).filename) == entry.as(String)
 end
 
+# A default value as the hosted printer writes it: a number keeps its kind as a suffix
+# (`0_i64`), an `Int32` has none.
+def default_text(node : ASTNode) : String
+  if node.is_a?(NumberLiteral)
+    nl = node.as(NumberLiteral)
+    if nl.kind == NumberKind::I32
+      return nl.value
+    end
+    return "#{nl.value}_#{nl.kind.to_s.downcase}"
+  end
+  node.to_s
+end
+
 pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
   io << indent << "Def: " << (d.receiver ? "self." : "") << d.name << "\n"
   vis_str = case d.visibility
@@ -2484,7 +2645,7 @@ pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
       s = "#{s} : #{r.to_s}"
     end
     if dv = arg.default_value
-      s = "#{s} = #{dv.to_s}"
+      s = "#{s} = #{default_text(dv)}"
     end
     s
   end
@@ -2540,6 +2701,11 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
     cls = t.as(ClassType)
     if sc_disp = cls.superclass_display
       io << indent << "  superclass: " << sc_disp << "\n"
+    end
+    cls.instance_vars.keys.sorted.each do |ivar_name|
+      ivar = cls.instance_vars[ivar_name]
+      io << indent << "  Ivar: " << t.full_name << "#" << ivar_name << "\n"
+      io << indent << "    type: " << ivar.type.to_s << "\n"
     end
   end
 
@@ -2626,7 +2792,24 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
     sub_names = nt.types.keys.dup.sorted
     sub_names.each do |sname|
       sub = nt.types[sname]
-      dump_type(sub, io, "#{indent}  ", entry)
+      dump_tree_declared(sub, io, "#{indent}  ", entry)
+    end
+  end
+end
+
+# A type the entry declares is printed with its nested types. One it does not declare (a
+# namespace another file made, such as `Std` for a header `std/file` whose import made
+# it first) is not, but the types inside it that the entry declares still are, one level
+# deeper, as the hosted pass prints them.
+pub def dump_tree_declared(t : Type, io : String::Builder, indent : String, entry : String?) : Nil
+  if declared_in?(t.locations, entry)
+    dump_type(t, io, indent, entry)
+    return
+  end
+  if t.is_a?(NamedType) && !t.is_a?(EnumType)
+    nt = t.as(NamedType)
+    nt.types.keys.sorted.each do |sname|
+      dump_tree_declared(nt.types[sname], io, "#{indent}  ", entry)
     end
   end
 end
@@ -2654,20 +2837,13 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
     end
   end
 
-  # User types
-  user_type_names = [] of String
-  program.types.keys.each do |k|
-    unless program.initial_type_names.includes?(k)
-      user_type_names << k
-    end
-  end
-  user_type_names = user_type_names.sorted
+  # Every top-level type is walked: the entry filter prints what the entry declares, and
+  # a namespace the entry shares a name with a built-in (`module enum/x` under the built-in
+  # Enum) holds declarations the built-in set would have hidden.
+  user_type_names = program.types.keys.sorted
 
   user_type_names.each do |name|
-    t = program.types[name]
-    if declared_in?(t.locations, entry)
-      dump_type(t, sb, "", entry)
-    end
+    dump_tree_declared(program.types[name], sb, "", entry)
   end
 
   sb.to_s

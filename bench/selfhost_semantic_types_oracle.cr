@@ -176,15 +176,7 @@ def evaluate_restriction(program : Iyi::Program, op : String) : String
                 else                                  raise "no restriction for #{t.class}"
                 end
   return "nil" if restriction.nil?
-  # Outside a restriction context the hosted printer parenthesizes a proc, but a
-  # restriction is written without those parentheses (`Int32 -> String`), as the
-  # port prints it. The printer's parenthesis rule is a separate gap, owned by the
-  # syntax printer, and is not compared here.
-  text = restriction.to_s
-  if restriction.is_a?(Iyi::ProcNotation) && text.starts_with?("(") && text.ends_with?(")")
-    text = text[1...-1]
-  end
-  text
+  restriction.to_s
 rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
@@ -225,6 +217,11 @@ def evaluate(program : Iyi::Program, op : String) : String
   when "virtual_type"       then type_text(t.virtual_type)
   when "remove_alias"       then type_text(t.remove_alias)
   when "remove_typedef"     then type_text(t.remove_typedef)
+  when "unbound?"           then bool_text(t.unbound?)
+  when "remove_indirection" then type_text(t.remove_indirection)
+  when "extern?"            then bool_text(t.extern?)
+  when "extern_union?"      then bool_text(t.extern_union?)
+  when "packed?"            then bool_text(t.packed?)
   when "including_types"    then type_text(t.including_types)
   when "simple?"            then bool_text(t.as(Iyi::AliasType).simple?)
   when "splat_index"

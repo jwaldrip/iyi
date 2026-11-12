@@ -1,5 +1,6 @@
 module compiler/types/types
 
+import compiler/foundation/errors::{refuse_port}
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
 import compiler/syntax/token::{NumberKind}
@@ -804,5 +805,62 @@ pub class TypeQueries
       return type.as(GenericModuleType).splat_index
     end
     nil
+  end
+
+  # Hosted unbound?: the type still holds a free type parameter. A type parameter
+  # is unbound; a generic instance, tuple, named tuple or union is unbound when one
+  # of its arguments is; a virtual type is unbound when its base is. Anything else
+  # is bound.
+  def self.unbound?(type : Type) : Bool
+    if type.is_a?(TypeParameter)
+      return true
+    end
+    if type.is_a?(VirtualType)
+      return unbound?(type.as(VirtualType).base_type)
+    end
+    if type.is_a?(NamedTupleInstanceType)
+      return any_unbound?(type.as(NamedTupleInstanceType).entries.map(&.type))
+    end
+    if type.is_a?(TupleInstanceType)
+      return any_unbound?(type.as(TupleInstanceType).tuple_types)
+    end
+    if type.is_a?(GenericInstanceType)
+      return any_unbound?(type.as(GenericInstanceType).type_vars.values)
+    end
+    if type.is_a?(UnionType)
+      return any_unbound?(type.as(UnionType).union_types)
+    end
+    false
+  end
+
+  private def self.any_unbound?(types : Array(Type)) : Bool
+    i = 0
+    while i < types.size
+      return true if unbound?(types[i])
+      i = i + 1
+    end
+    false
+  end
+
+  # Hosted extern?, extern_union? and packed?: true only for an extern C struct or
+  # union, or one marked packed. The port builds no such type: lib struct and union
+  # definitions are not visited (top_level.iyi has no CStructOrUnionDef visit), so
+  # every type answers false, as the hosted base class does.
+  def self.extern?(type : Type) : Bool
+    false
+  end
+
+  def self.extern_union?(type : Type) : Bool
+    false
+  end
+
+  def self.packed?(type : Type) : Bool
+    false
+  end
+
+  # Hosted sizeof_type is computed from layouts, which the port does not build yet.
+  # It is refused by name, so no caller receives a wrong size.
+  def self.sizeof_type(type : Type) : Int32
+    refuse_port("sizeof_type: layouts are not ported yet")
   end
 end

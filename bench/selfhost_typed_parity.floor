@@ -309,3 +309,4 @@ src/std/zip.iyi 101
 src/std/zstd.iyi 148
 src/compiler/semantic/type_node_host.iyi 0
 src/compiler/semantic/type_nodes.iyi 0
+src/compiler/types/indirection.iyi 0
