@@ -194,12 +194,16 @@ prove_invalid "return a value from a void function" \
 # Several plausible-looking alternatives (phi widening, pointer offset
 # extension, return width conversion) are NOT here: no file that verifies
 # today reaches them, so a proof anchored there would patch real code and
-# still detect nothing.
-prove_invalid "declare a call with the wrong return type" \
+# still detect nothing. The return type of an ordinary method call is one of
+# them: the port converts a pointer result to the declared width before every
+# consumer the verifier checks, so that mutation still verifies. The dispatch
+# merge below is a consumer the verifier does check: its phi takes the
+# declared return type.
+prove_invalid "declare a dispatched call with the wrong return type" \
   "$CODEGEN_SRC" \
-  "method_fn_ty = LLVMType.function(m_param_tys, call_ret_ty, false)" \
-  "method_fn_ty = LLVMType.function(m_param_tys, @context.pointer, false)" \
-  "$REPO/bench/fixtures/cg_struct_methods.iyi"
+  "m_fn_ty = LLVMType.function(m_param_tys, ret_llvm_type, false)" \
+  "m_fn_ty = LLVMType.function(m_param_tys, @context.pointer, false)" \
+  "$REPO/bench/fixtures/cg_virtual_dispatch.iyi"
 
 echo "  Mutation summary: $mut_caught/$mut_run invalid-IR mutations caught"
 
