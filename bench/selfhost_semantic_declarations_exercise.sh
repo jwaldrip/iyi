@@ -181,6 +181,39 @@ else
 fi
 echo "  $(wc -l < "$RESULTS" | tr -d ' ') files measured"
 
+echo "== 3b. Whole program: every compiler and prelude file, with the prelude and its import closure loaded (total mode)"
+WHOLE="$WORK/whole.tsv"
+: > "$WHOLE"
+for f in $(find "$REPO/src/compiler" -name '*.iyi' | sort) "$REPO"/src/iyi/*.iyi; do
+  rel="${f#$REPO/}"
+  if "$PORT" --total "$f" > "$WORK/w_o.txt" 2> "$WORK/w_e.txt"; then
+    printf '%s\tok\n' "$rel" >> "$WHOLE"
+  else
+    msg=$(head -n 1 "$WORK/w_e.txt" | awk '{ gsub(/\/[^ :]*\//, "<path>/"); gsub(/[0-9]+/, "N"); print substr($0, 1, 140) }')
+    printf '%s\tfail\t%s\n' "$rel" "$msg" >> "$WHOLE"
+  fi
+done
+whole_total=$(wc -l < "$WHOLE" | tr -d ' ')
+whole_pass=$(awk -F'\t' '$2 == "ok"' "$WHOLE" | wc -l | tr -d ' ')
+echo "  whole program: $whole_pass of $whole_total files complete the port's declarations pass"
+echo "  failure table by first message:"
+awk -F'\t' '$2 == "fail" { print $3 }' "$WHOLE" | sort | uniq -c | sort -rn | head -25 | awk '{ print "    " $0 }'
+WHOLE_FLOOR_FILE="$REPO/bench/selfhost_whole_program.floor"
+whole_floor=$(awk '/^passing/ { print $2 }' "$WHOLE_FLOOR_FILE" 2>/dev/null)
+whole_floor=${whole_floor:-0}
+if [ "$whole_pass" -lt "$whole_floor" ]; then
+  echo "  WHOLE PROGRAM BELOW FLOOR: $whole_pass < $whole_floor. A regression: restore the declaration or lower nothing."
+  status=1
+elif [ "$whole_pass" -gt "$whole_floor" ]; then
+  if [ "$RAISE" = 1 ]; then
+    printf 'passing %s\n' "$whole_pass" > "$WHOLE_FLOOR_FILE"
+    echo "  whole-program floor raised to $whole_pass"
+  else
+    echo "  WHOLE PROGRAM RAISE THE FLOOR: $whole_pass > $whole_floor (SEMDECL_RAISE=1)"
+    status=1
+  fi
+fi
+
 echo
 echo "== 4. Checking each file against its committed floor"
 verdicts() {

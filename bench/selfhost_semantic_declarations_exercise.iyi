@@ -63,6 +63,33 @@ module BenchSelfhostSemanticDeclarationsExercise
     dump_program_declarations(prog, entry)
   end
 
+  # The whole-program load: the file and its import closure, with the prelude loaded
+  # first, in total mode (an impl of an unresolved target is carried past). It does not
+  # print a dump: it completes, or the port refuses the file.
+  def self.load_whole(path : String) : SemanticProgram
+    cwd = ENV["PWD"]? || "."
+    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    entry = normalize_path(absolute)
+    src = File.read(entry)
+    parser = Parser.new(src, entry)
+    node = parser.parse
+    prog = SemanticProgram.new
+    prog.loaded_files.add(entry)
+    prog.search_path = search_path
+    prog.project_root = project_root(node, entry)
+    prog.total_mode = true
+    prelude = TopLevelVisitor.new(prog)
+    prelude_file = prelude.import_file("iyi/prelude")
+    if prelude_file
+      prelude.load_file(prelude_file.as(String))
+    end
+    visitor = TopLevelVisitor.new(prog, entry)
+    node.accept(visitor)
+    visitor.finish
+    declare_guessed_instance_vars(prog)
+    prog
+  end
+
   # The parent chain of one type, each parent on its own line, indented by depth.
   def self.chain_show(t : Type, depth : Int32, indent : String) : String
     line = indent + t.to_s + "\n"
@@ -117,6 +144,9 @@ elsif Program.args[0] == "--initial"
   print BenchSelfhostSemanticDeclarationsExercise.dump_initial
 elsif Program.args[0] == "--chain"
   print BenchSelfhostSemanticDeclarationsExercise.dump_chain(Program.args[1])
+elsif Program.args[0] == "--total"
+  BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  print "ok\n"
 else
   print BenchSelfhostSemanticDeclarationsExercise.dump_file(Program.args[0])
 end

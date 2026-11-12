@@ -886,6 +886,9 @@ pub class SemanticProgram < NonGenericModuleType
   property current_import_defs : Hash(String, Array(Def))
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
+  # Whether a refusal the pass can carry on past (an impl of an unresolved target) is
+  # skipped instead of raised. The typed dump of a whole program sets it.
+  property total_mode : Bool
   property search_path : Array(String)
   # The files read so far (absolute paths), and the module each one declared.
   getter loaded_files : Set(String)
@@ -1050,6 +1053,7 @@ pub class SemanticProgram < NonGenericModuleType
     @current_imports = Hash(String, Type).new
     @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
+    @total_mode = false
     @search_path = [] of String
     @loaded_files = Set(String).new
     @loaded_units = Hash(String, ModuleType).new
@@ -1947,16 +1951,19 @@ pub class TopLevelVisitor < Visitor
   def visit(node : ImplDef) : Bool
     trait_type = @program.lookup_type_node(node.trait, @current_type)
     unless trait_type.trait?
-      raise("can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented")
+      refuse_port("can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented") unless @program.total_mode
+      return false
     end
 
     target_type = @program.lookup_type_node(node.target, @current_type)
     if target_type.trait?
-      raise("can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one — to give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)")
+      refuse_port("can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one. To give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)") unless @program.total_mode
+      return false
     end
 
     unless target_type.is_a?(ModuleType)
-      raise("can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}")
+      refuse_port("can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}") unless @program.total_mode
+      return false
     end
 
     target_mod = target_type.as(ModuleType)
