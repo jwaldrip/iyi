@@ -58,7 +58,7 @@ normalise() {
 # probe_one FILE NAME: sets REACHED, REFUSED_IN and REFUSAL for one file, probed alone with --probe-phase.
 probe_one() {
   local target="$1" name="$2" log="$WORK/probe/$2.log" rc fail_line
-  (cd "$WORK" && IYI_PATH="$REPO/src" "$tool" "$target" -o "$WORK/exe/$name" --probe-phase >"$log" 2>&1)
+  (cd "$WORK" && IYI_PATH="$REPO/src" "$tool" "$target" -o "$WORK/exe/$name" --probe-phase --prelude >"$log" 2>&1)
   rc=$?
   REACHED=$(awk '/^\[phase\] (parse|semantic|codegen|link): pass/ { r = $2; sub(":", "", r) } END { print (r == "" ? "none" : r) }' "$log")
   REFUSED_IN=""
@@ -111,7 +111,7 @@ echo "   probed $(awk 'END { print NR }' "$results") files"
 echo "== 3. whole programs, built to an executable (not probed)"
 for rel in src/compiler/tools/compile_native.iyi src/compiler/stage1.iyi; do
   base=$(basename "$rel" .iyi)
-  if (cd "$WORK" && IYI_PATH="$REPO/src" "$tool" "$REPO/$rel" -o "$WORK/exe/whole_$base" >"$WORK/whole_$base.log" 2>&1); then
+  if (cd "$WORK" && IYI_PATH="$REPO/src" "$tool" "$REPO/$rel" -o "$WORK/exe/whole_$base" --prelude >"$WORK/whole_$base.log" 2>&1); then
     outcome="built"
   else
     outcome="refused: $(awk '/^((parse|semantic|codegen|link): fail: |Error:|iyi-compile-native:|iyi: panic:)/ { print; exit }' "$WORK/whole_$base.log" | normalise)"
@@ -207,12 +207,12 @@ else
   fi
 fi
 
-echo "== 6. mutation proofs: the gate must go red when a file that reaches codegen regresses"
+echo "== 6. mutation proofs: the gate must go red when a file that reaches semantic or codegen regresses"
 mut_caught=0
 mut_run=0
 mut_rel=""
 while IFS=$'\t' read -r rel reached; do
-  case "$reached" in codegen|link) ;; *) continue ;; esac
+  case "$reached" in codegen|link|semantic) ;; *) continue ;; esac
   if awk '/^(pub )?(class|struct) / { found = 1 } END { exit !found }' "$REPO/$rel"; then
     mut_rel="$rel"
     break

@@ -68,6 +68,7 @@ module CompileNative
     output = args[2]
     target = TARGET
     probe = false
+    prelude = false
     i = 3
     while i < args.size
       if args[i] == "--target" && i + 1 < args.size
@@ -81,6 +82,9 @@ module CompileNative
         i = i + 2
       elsif args[i] == "--probe-phase"
         probe = true
+        i = i + 1
+      elsif args[i] == "--prelude"
+        prelude = true
         i = i + 1
       else
         fail("unknown argument #{args[i]}")
@@ -99,7 +103,9 @@ module CompileNative
         fail("source programs build for #{TARGET} with the native backend, and #{target} was asked for")
       end
       config = CompilerConfig.new(output, false, nil, false, target, probe, false, false)
-      Compiler.new(config, Loader.new, NativeBackend.new).compile(input)
+      loader = Loader.new
+      loader.load_prelude = prelude
+      Compiler.new(config, loader, NativeBackend.new).compile(input)
       print "BUILT #{output}\n" unless probe
       return nil
     end
