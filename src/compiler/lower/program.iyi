@@ -24,7 +24,7 @@ module compiler/lower/program
 #     the hosted analysis does (NEEDS.md, lowering calls row 31). Same as bench/lib/lower_gate.iyi.
 
 import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral}
-import compiler/semantic/top_level::{LibType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
+import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
@@ -35,6 +35,7 @@ import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program, lower_def_probe}
+import compiler/lower/fun::{mangled_name}
 import compiler/native/driver::{compile_module}
 import compiler/native/obj/object::{ObjectFile}
 import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
@@ -372,7 +373,7 @@ end
 # The lowering column of the table (PIPELINE.md): every reached def's instance lowered alone into one module, the way the
 # lowering reaches it (lower_def_probe). A def is lowered clean when each of its instances lowers with no refusal. A
 # lowering refusal names its def, not a node: the lowering carries no location yet.
-pub def lowering_table(typed : TypedProgram, triple : String, root : String) : Array(String)
+pub def lowering_table(typed : TypedProgram, triple : String, root : String, names : Array(String)) : Array(String)
   made = Module.for_target(root, Target.new(triple))
   if made.is_a?(LayoutError)
     return ["table: #{root} defs-lowered-clean=not-measured (#{made.as(LayoutError).to_s})"]
@@ -398,6 +399,25 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String) : A
     elsif !outcome.nil?
       failed = true
       message = outcome.as(String)
+    end
+    unless failed
+      # The function a clean instance defines, by the name lower_def_probe gives it (target_def_fun: the body's type is
+      # the return type). A name a failed probe created first is still found here, once a clean probe completes it.
+      if body_t = typed.visitor.type_of?(d.body)
+        # The call lowering names a metaclass receiver's method by its class (call.iyi class_owner, no self): `*Point::new`.
+        self_for = inst.self_type
+        class_owner : Type? = nil
+        if st = self_for
+          if st.is_a?(MetaclassType)
+            class_owner = st.as(MetaclassType).instance_type
+            self_for = nil
+          end
+        end
+        name = mangled_name(d.name, self_for, inst.arg_types, body_t.as(Type), class_owner)
+        if fn = m.get_function?(name)
+          names << name unless fn.declaration?
+        end
+      end
     end
     if failed
       bad[d.node_id] = true
