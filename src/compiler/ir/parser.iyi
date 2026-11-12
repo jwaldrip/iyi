@@ -180,10 +180,12 @@ end
 
 # Reads a quoted string after its opening quote: the decoded text and the index past the closing quote.
 def read_string(line : String, start : Int32) : {String, Int32}
+  # The closing quote is the first one that no backslash escapes: `\"` and `\\` are two bytes each.
   stop = start
   while stop < line.bytesize && line.byte_at(stop) != 34_u8
-    stop = stop + 1
+    stop = stop + (line.byte_at(stop) == 92_u8 && stop + 1 < line.bytesize ? 2 : 1)
   end
+  stop = line.bytesize if stop > line.bytesize
   out = String.build do |io|
     i = start
     while i < stop
@@ -637,7 +639,9 @@ class IrParser
       param_attrs << parse_attrs(c, mod.types)
       param_types << parse_type(c, mod.types)
       if is_define && c.peek.kind == TokKind::Local
-        param_names << c.take.text
+        # A parameter written `%0` has no name: its number is its place among the function's unnamed values.
+        written = c.take
+        param_names << (written.numeric ? "" : written.text)
       else
         param_names << ""
       end

@@ -84,6 +84,7 @@ src/compiler/native/amd64/encode.iyi 91
 src/compiler/native/amd64/regs.iyi 38
 src/compiler/native/asm/constraints.iyi 14
 src/compiler/native/asm/inventory.iyi 46
+src/compiler/native/const_expr.iyi 0
 src/compiler/native/driver.iyi 54
 src/compiler/native/emit.iyi 33
 src/compiler/native/frame.iyi 14

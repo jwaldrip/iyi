@@ -335,6 +335,8 @@ pub class AsmAssembler
       enc_svc(ops)
     elsif mnemonic == "msr"
       enc_msr(ops)
+    elsif mnemonic == "mrs"
+      enc_mrs(ops)
     elsif mnemonic == "yield" || mnemonic == "nop" || mnemonic == "wfe" || mnemonic == "wfi" || mnemonic == "sev"
       enc_hint(mnemonic, ops)
     elsif mnemonic == "isb"
@@ -344,7 +346,7 @@ pub class AsmAssembler
       end
       emit(0xD5033FDF_i64)
     else
-      fail("unsupported mnemonic '#{mnemonic}': the aarch64 assembler encodes stp, ldp, str, ldr, strb, ldrb, mov, movk, add, sub, adrp, adr, cbz, cbnz, b, bl, blr, ret, svc, yield, nop, wfe, wfi, sev and isb")
+      fail("unsupported mnemonic '#{mnemonic}': the aarch64 assembler encodes stp, ldp, str, ldr, strb, ldrb, mov, movk, add, sub, adrp, adr, cbz, cbnz, b, bl, blr, ret, svc, msr, mrs, yield, nop, wfe, wfi, sev and isb")
     end
   end
 
@@ -698,6 +700,17 @@ pub class AsmAssembler
       return
     end
     emit(0xD51BD040_i64 | reg_code(ops[1]).to_i64)
+  end
+
+  # `mrs xN, tpidrro_el0` and `mrs xN, tpidr_el0`: the thread-pointer reads (darwin's is the read-only register;
+  # the prelude reads it for the running thread's block). S3_3_C13_C0_3 and S3_3_C13_C0_2 with the MRS form,
+  # 0xD53BD060 and 0xD53BD040, and the destination in bits 0 to 4. Any other system register is refused by name.
+  def enc_mrs(ops : Array(String)) : Nil
+    if ops.size != 2 || !is_x?(ops[0]) || ops[0] == "sp" || !(ops[1] == "tpidrro_el0" || ops[1] == "tpidr_el0")
+      fail("mrs takes an x register and tpidrro_el0 or tpidr_el0 here, got #{ops.join(", ")}")
+      return
+    end
+    emit((ops[1] == "tpidrro_el0" ? 0xD53BD060_i64 : 0xD53BD040_i64) | reg_code(ops[0]).to_i64)
   end
 
   def enc_hint(mnemonic : String, ops : Array(String)) : Nil
