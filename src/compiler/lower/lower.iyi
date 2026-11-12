@@ -16,7 +16,7 @@ module compiler/lower/lower
 # and a store). Still refused by name: a def and a call (S2c), and the rest of the
 # core, which the next increments port.
 
-import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, Def, Expressions, NilLiteral, NumberLiteral, Var, If, While, CharLiteral}
+import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, Def, Expressions, LibDef, NilLiteral, NumberLiteral, Var, If, While, CharLiteral}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Linkage}
 import compiler/ir/inst::{CallConv}
@@ -29,6 +29,7 @@ import compiler/lower/cond::{cond_bool}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/call::{codegen_call_node}
+import compiler/lower/fun::{block_ended?}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type}
 
@@ -133,6 +134,11 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_call_node(low, node.as(Call))
     return
   end
+  if node.is_a?(LibDef)
+    # The hosted `visit(LibDef)`: a lib declares its funs and emits nothing where it stands.
+    low.last = llvm_nil(low)
+    return
+  end
   pending_visit_node(node_class_name(node))
 end
 
@@ -205,6 +211,7 @@ end
 # The hosted `llvm_nil` and `codegen_return`: a function returning void returns
 # nothing; any other returns the value of the expression visited last.
 pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
+  return if block_ended?(low)
   if ret_ir.void?
     low.builder.ret_void
     return
@@ -255,7 +262,7 @@ end
 pub def codegen_char(low : Lowerer, node : CharLiteral) : Nil
   t = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for a char literal (hosted codegen.cr: visit(CharLiteral))" if t.nil?
-  low.last = low.builder.const_int(low.typer.llvm_type(t.as(Type)), node.value.ord.to_i64)
+  low.last = low.builder.const_int(low.typer.llvm_type(t.as(Type)), node.value.ord.to_i64 + 1_i64)
 end
 
 # The hosted `visit(While)` without break or next: the condition is tested in the

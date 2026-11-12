@@ -50,3 +50,15 @@ The gate (bench/selfhost_lower_core_exercise.sh) compares the core's module with
 | The `if` with a non-Bool condition | cond.cr (`codegen_cond` of a union or nilable type) | refused by name in `cond.iyi` | S2c |
 | A lib definition typed by the semantic pass (`lib LibC` with `fun exit`) | semantic/main_visitor.iyi:407-408 (`Expressions` asks `type_of` of every child) | the main visitor sets no type for a LibDef, so analysis raises `BUG: node has no type: lib LibC`; `bench/fixtures/lower_exit.iyi` waits on it by name | the semantic owner (S1d or the lib slice); the lowering for a lib call (`declare` plus a C-convention call, `unreachable` after a NoReturn call) is the core's next increment once the analysis types it |
 | End-to-end observability | the hosted `main` returns 0 | every ported fixture ends with status 0 and empty stdout, so the end-to-end check proves the executable runs, not the value | the lib-call path above (exit status 42 for lower_exit) |
+
+## Lowering calls and functions (S2c): what the calls read and the port does not yet give
+
+The gate (bench/selfhost_lower_calls_exercise.sh) compares each call fixture with the hosted module. These rows are what the calls and functions read where the analysis does not give it.
+
+| # | Member or fact | Hosted line | Port today | Workaround in the port | Who fixes it | Waiting fixture |
+|---|---|---|---|---|---|---|
+| 16 | A `lib`'s funs and LibDef node: the analysis records each fun as names only (`LibFun`, top_level.iyi 561), types no LibDef node, and has no def for a lib fun, so `LibC.exit(x)` fails with "undefined method" | `lib` declarations in `semantic/main_visitor.iyi` and `codegen_extern_call` in call.cr | Not typed | bench/lib/lower_gate.iyi (`stand_in_lib_types`, calls gate only): each LibDef is typed nil and each fun is registered on the lib's metaclass as a body-less def with the declared types. Remove when the analysis types lib funs | S1d1Bodies (lib typing) | lower_exit (core gate waits; calls gate passes through the stand-in) |
+| 17 | The instantiated def's argument types on the clone's `Arg` nodes | `Def#mangled_name` reads `arg.type` (codegen/ast.cr 48) | `type_method_body` (main_visitor.iyi 892) sets the types in its local scope only | The lowering takes each parameter's type from the call's argument node, and refuses (by name) an argument whose restriction names another type | S1c2Calls (calls) | defaults, splats, and restrictions that convert an argument (no fixture yet) |
+| 18 | The owner of a def, for a receiver call (`self`, `Def#owner`) | `codegen_call` owner, call.cr:30 | Not used yet: receiver calls are refused by name | None (refused in call.iyi) | S2c increment 3 with the class lowering | a method on a class (no fixture yet) |
+
+Hosted rules the calls path follows that a reader might miss: a body that is a literal (nil, bool, number, char) is inlined at the call and no function is emitted, with the arguments still evaluated (`try_inline_call`, call.cr:561). The `lib` call is `declare` plus a C call, and a NoReturn call ends its block with `unreachable`; a function whose block already ends gets no return (`@builder.end`).

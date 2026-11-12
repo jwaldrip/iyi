@@ -1,53 +1,145 @@
 module compiler/lower/call
 
 # The port of `visit(Call)` (src/compiler/iyi/codegen/call.cr) for a call to one target
-# def, with no receiver and no block: the arguments are lowered in order, the callee is
-# found or emitted by `target_def_fun` (fun.iyi), and the call is an ordinary call. The
-# specification has no exception tables, so a call is always a plain call and no landing
-# pad is made (hosted `codegen_call_or_invoke` without a rescue block).
+# def, with no block: the arguments are lowered in order, the callee is found or emitted
+# by `target_def_fun` (fun.iyi), and the call is an ordinary call. The specification has
+# no exception tables, so a call is always a plain call and no landing pad is made (hosted
+# `codegen_call_or_invoke` without a rescue block).
 #
-# Ported: the argument values (`prepare_call_args_non_external`, the plain scalar case),
-# the call instruction, and the value of a call (a Nil result is `llvm_nil`, hosted
-# `codegen_call_or_invoke`). The argument types are the analysed types of the argument
-# nodes, which is how the analysed program instantiates a def (main_visitor.iyi,
-# type_method_body). A restriction is honoured only when it names the argument's own type.
+# Ported:
+#   - a call to a def in the program, with no receiver (`codegen_call_node`);
+#   - a call through a `lib`, `LibC.exit(42)`: the C declaration is made in the module
+#     (`declare`, C calling convention, the name the lib gives the fun), the call is a C
+#     call, and a NoReturn call is followed by `unreachable` (hosted `codegen_extern_call`
+#     and `codegen_call_or_invoke`).
+# The argument types are the analysed types of the argument nodes, which is how the
+# analysed program instantiates a def (main_visitor.iyi, type_method_body). A restriction
+# is honoured only when it names the argument's own type.
 #
-# Refused by name, at the call that reaches them (pending.iyi): a receiver, a block,
-# dispatch over several target defs, default arguments and splats, a restriction that
-# converts the argument, and a NoReturn result (`unreachable` comes with the lib calls).
+# Refused by name, at the call that reaches them (pending.iyi): a receiver that is not a
+# lib, a block, default arguments and splats, a restriction that converts the argument,
+# and a NoReturn def of the program (its `unreachable` is with the lib calls' path only).
 #
 # The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
-import compiler/syntax/ast::{ASTNode, Def}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, CharLiteral, Def, NilLiteral, NumberLiteral}
+import compiler/ir/function::{Function}
+import compiler/ir/inst::{CallConv}
+import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/fun::{target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil}
 import compiler/lower/pending::{pending_visit_node}
-import compiler/semantic/top_level::{NilType, NoReturnType, Type}
+import compiler/semantic/top_level::{LibType, LibFun, MetaclassType, NilType, NoReturnType, Type}
+
+# A body that is a literal, which the hosted call inlines (`try_inline_call`).
+pub def literal_body?(body : ASTNode) : Bool
+  body.is_a?(NilLiteral) || body.is_a?(BoolLiteral) || body.is_a?(NumberLiteral) || body.is_a?(CharLiteral)
+end
 
 pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Nil
-  unless node.obj.nil?
-    pending_visit_node("a call with a receiver (hosted call.cr, prepare_call_args): self is not ported yet")
-  end
-  unless node.block.nil?
-    pending_visit_node("a call with a block (hosted call.cr, codegen_call_with_block)")
-  end
   target = low.analysed.target_def?(node)
   raise "BUG: the call to #{node.name} has no target def (hosted call.cr: visit(Call))" if target.nil?
   def_node = target.as(Def)
-  if def_node.args.size != node.args.size || def_node.splat_index != nil
-    pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
-  end
-
   ret_type = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for the call to #{node.name} (hosted call.cr: visit(Call))" if ret_type.nil?
   ret = ret_type.as(Type)
-  if ret.is_a?(NoReturnType)
-    pending_visit_node("a call to a NoReturn def (hosted call.cr: unreachable after the call)")
+
+  unless node.block.nil?
+    pending_visit_node("a call with a block (hosted call.cr, codegen_call_with_block)")
+  end
+  if node.args.size != def_node.args.size || def_node.splat_index != nil
+    pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
   end
 
+  if the_lib = lib_of_receiver(low, node)
+    codegen_lib_call(low, node, the_lib.as(LibType), def_node, ret)
+    return
+  end
+
+  unless node.obj.nil?
+    pending_visit_node("a call with a receiver (hosted call.cr, prepare_call_args): self is not ported yet")
+  end
+  # Hosted `try_inline_call` (call.cr:561): a body that is a literal is inlined where the call
+  # stands, and no function is emitted. The arguments are still evaluated, in order.
+  if literal_body?(def_node.body)
+    lower_args(low, node, def_node)
+    if ret.is_a?(NilType)
+      low.last = llvm_nil(low)
+    elsif low.needs_value
+      visit_node(low, def_node.body)
+    end
+    return
+  end
+  if ret.is_a?(NoReturnType)
+    pending_visit_node("a call to a NoReturn def of the program (hosted call.cr: unreachable after the call)")
+  end
+
+  arg_types, values = lower_args(low, node, def_node)
+  func = target_def_fun(low, def_node, arg_types, ret)
+  inst = low.builder.call(func.fn_type, func, values, "")
+  if ret.is_a?(NilType)
+    low.last = llvm_nil(low)
+  else
+    low.last = inst
+  end
+end
+
+# The `lib` a call's receiver names, when the receiver is a lib: its analysed type is the
+# lib's metaclass. Nil for every other receiver, and for no receiver.
+pub def lib_of_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : LibType?
+  obj = node.obj
+  return nil if obj.nil?
+  t = low.analysed.type_of?(obj.as(ASTNode))
+  return nil if t.nil?
+  meta = t.as(Type)
+  return nil unless meta.is_a?(MetaclassType)
+  inst = meta.as(MetaclassType).instance_type
+  return nil unless inst.is_a?(LibType)
+  inst.as(LibType)
+end
+
+# The hosted `codegen_extern_call` for a fun of a lib: the fun is declared in the module
+# under the name the lib gives it (`real_name`), with the C calling convention, and called
+# with the arguments in order. A NoReturn fun ends the block with `unreachable`, and the
+# value of the call is nil.
+pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, the_lib : LibType, def_node : Def, ret : Type) : Nil
+  real = lib_real_name(the_lib, node.name)
+  arg_types, values = lower_args(low, node, def_node)
+  params = [] of IrType
+  arg_types.each do |t|
+    params << low.typer.llvm_type(t)
+  end
+  fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))
+
+  func = low.module.get_function?(real)
+  if func.nil?
+    func = low.module.add_function(real, fn_type, CallConv::C)
+  end
+  inst = low.builder.call(fn_type, func.as(Function), values, "")
+  if ret.is_a?(NoReturnType)
+    low.builder.unreachable
+    low.last = llvm_nil(low)
+  elsif ret.is_a?(NilType)
+    low.last = llvm_nil(low)
+  else
+    low.last = inst
+  end
+end
+
+# The C name of a fun a lib declares: the lib's record of the fun, by its iyi name.
+pub def lib_real_name(the_lib : LibType, name : String) : String
+  the_lib.funs.each do |f|
+    return f.real_name if f.name == name
+  end
+  raise "BUG: the lib #{the_lib.full_name} declares no fun #{name} (hosted call.cr: codegen_extern_call)"
+end
+
+# The argument types and values of a call, in order (hosted `prepare_call_args_non_external`
+# for scalars). Each argument's value is requested, so a value-less argument is a bug.
+pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node : Def) : {Array(Type), Array(Value)}
   arg_types = [] of Type
   values = [] of Value
   wants = low.needs_value
@@ -72,12 +164,5 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     i += 1
   end
   low.needs_value = wants
-
-  func = target_def_fun(low, def_node, arg_types, ret)
-  inst = low.builder.call(func.fn_type, func, values, "")
-  if ret.is_a?(NilType)
-    low.last = llvm_nil(low)
-  else
-    low.last = inst
-  end
+  {arg_types, values}
 end

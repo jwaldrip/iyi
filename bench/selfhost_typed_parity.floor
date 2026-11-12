@@ -295,3 +295,5 @@ src/compiler/lower/pending.iyi 0
 src/compiler/lower/helpers.iyi 0
 src/compiler/lower/cond.iyi 0
 src/compiler/lower/phi.iyi 0
+src/compiler/lower/fun.iyi 0
+src/compiler/lower/call.iyi 0
