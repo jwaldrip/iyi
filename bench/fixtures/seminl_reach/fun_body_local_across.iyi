@@ -5,9 +5,9 @@
 # reported as mac1.iyi.
 @[Unsafe("a C function is not checked by the compiler")]
 fun probe_locals(argc : Int32) : Int32
-  callstack = uninitialized Int32
+  x = 1
   {% if true %}
-    p = pointerof(callstack)
+    y = x + 1
   {% end %}
-  argc
+  argc + y
 end

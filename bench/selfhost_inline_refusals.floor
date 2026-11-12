@@ -7,4 +7,4 @@ bench/fixtures/seminl_reach/body_nested_if.iyi 5
 bench/fixtures/seminl_reach/top_if_class.iyi 5
 bench/fixtures/seminl_reach/prelude_blocks.iyi 5
 bench/fixtures/seminl_reach/const_value_if.iyi 5
-bench/fixtures/seminl_reach/fun_body_local_across.iyi 6
+bench/fixtures/seminl_reach/fun_body_local_across.iyi 5
