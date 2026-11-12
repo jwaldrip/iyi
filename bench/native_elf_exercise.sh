@@ -220,7 +220,7 @@ prove_mutation "skip the relative relocation table entries" "$exe_src" \
 cp "$work/bin/obj_elf.good" "$work/bin/obj_elf"
 cp "$work/bin/link_elf.good" "$work/bin/link_elf"
 echo "   listed: the TLS variant offset in the linker (tp_offset) and the relative relocation loop in the start code are"
-echo "           seen only by a Linux run (section 8), not by any structural check"
+echo "           seen only by a Linux run (section 6), not by any structural check"
 
 echo "== 4. start code"
 for ir in "$start_a64_ir" "$start_x86_ir"; do
