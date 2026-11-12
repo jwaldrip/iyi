@@ -38,12 +38,14 @@ site_exit() {
 
 echo "== 1. build the port with LLVM (tools/compile.iyi) and the native tool (compile_native.iyi), with ./bin/iyi"
 if ! build_port "$WORK/bin/port"; then
-  echo "FAIL: ./bin/iyi could not build $PORT_SRC"
+  echo "FAIL: ./bin/iyi could not build $PORT_SRC; the build said:"
+  grep -v '^ld: warning' "$WORK/bin/port.build.log" | tail -n 25 | sed 's/^/    /'
   exit 1
 fi
 echo "   built the port with LLVM from $PORT_SRC"
 if ! "$IYI" build -o "$WORK/bin/native" "$NATIVE_SRC" >"$WORK/bin/native.build.log" 2>&1; then
-  echo "FAIL: ./bin/iyi could not build $NATIVE_SRC"
+  echo "FAIL: ./bin/iyi could not build $NATIVE_SRC; the build said:"
+  grep -v '^ld: warning' "$WORK/bin/native.build.log" | tail -n 25 | sed 's/^/    /'
   exit 1
 fi
 echo "   built the native tool from $NATIVE_SRC"

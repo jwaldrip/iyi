@@ -69,6 +69,27 @@ def bool_row(n : Int32) : Array(Bool)
   acc
 end
 
+# A set of virtual registers as bits, 64 to a word: the liveness rows. A dense row of Bool per block per pass made
+# liveness the slowest part of a large program (the compiler's own tool: several thousand registers in a function).
+def bit_row(n : Int32) : Array(UInt64)
+  acc = [] of UInt64
+  words = (n + 63) >> 6
+  i = 0
+  while i < words
+    acc << 0_u64
+    i = i + 1
+  end
+  acc
+end
+
+def bit_set(row : Array(UInt64), v : Int32) : Nil
+  row[v >> 6] = row[v >> 6] | (1_u64 << (v & 63))
+end
+
+def bit?(row : Array(UInt64), v : Int32) : Bool
+  (row[v >> 6] & (1_u64 << (v & 63))) != 0_u64
+end
+
 def int_row(n : Int32, value : Int32) : Array(Int32)
   acc = [] of Int32
   i = 0
@@ -269,8 +290,8 @@ class LinearScan
   property block_last : Array(Int32)
   property call_prefix : Array(Int32)
   property succs : Array(Array(Int32))
-  property live_in : Array(Array(Bool))
-  property live_out : Array(Array(Bool))
+  property live_in : Array(Array(UInt64))
+  property live_out : Array(Array(UInt64))
   property starts : Array(Int32)
   property ends : Array(Int32)
   property has_interval : Array(Bool)
@@ -292,8 +313,8 @@ class LinearScan
     @block_last = [] of Int32
     @call_prefix = [] of Int32
     @succs = [] of Array(Int32)
-    @live_in = [] of Array(Bool)
-    @live_out = [] of Array(Bool)
+    @live_in = [] of Array(UInt64)
+    @live_out = [] of Array(UInt64)
     @starts = [] of Int32
     @ends = [] of Int32
     @has_interval = [] of Bool
@@ -352,54 +373,59 @@ class LinearScan
   def solve_liveness : Nil
     n = @vcount
     nb = @fn.blocks.size
-    uses_b = [] of Array(Bool)
-    defs_b = [] of Array(Bool)
+    words = (n + 63) >> 6
+    uses_b = [] of Array(UInt64)
+    defs_b = [] of Array(UInt64)
     b = 0
     while b < nb
-      u = bool_row(n)
-      d = bool_row(n)
+      u = bit_row(n)
+      d = bit_row(n)
       @fn.blocks[b].insts.each do |inst|
         inst.uses.each do |op|
           next unless op.kind == OperandKind::Virtual
-          u[op.reg] = true unless d[op.reg]
+          bit_set(u, op.reg) unless bit?(d, op.reg)
         end
         inst.defs.each do |op|
           next unless op.kind == OperandKind::Virtual
-          d[op.reg] = true
+          bit_set(d, op.reg)
         end
       end
       uses_b << u
       defs_b << d
-      @live_in << bool_row(n)
-      @live_out << bool_row(n)
+      @live_in << bit_row(n)
+      @live_out << bit_row(n)
       b = b + 1
     end
+    # The sets only grow, so each pass adds to the rows in place: live-out gathers the successors' live-in, and
+    # live-in is the uses and whatever is live-out and not defined here.
     changed = true
     while changed
       changed = false
       b = nb - 1
       while b >= 0
-        out = bool_row(n)
+        out = @live_out[b]
+        inn = @live_in[b]
         @succs[b].each do |s|
           if s >= 0 && s < nb
-            v = 0
-            while v < n
-              out[v] = true if @live_in[s][v]
-              v = v + 1
+            from = @live_in[s]
+            w = 0
+            while w < words
+              out[w] = out[w] | from[w]
+              w = w + 1
             end
           end
         end
-        inn = bool_row(n)
-        v = 0
-        while v < n
-          inn[v] = true if uses_b[b][v] || (out[v] && !defs_b[b][v])
-          if inn[v] != @live_in[b][v]
+        u = uses_b[b]
+        d = defs_b[b]
+        w = 0
+        while w < words
+          now = u[w] | (out[w] & (d[w] ^ 18446744073709551615_u64))
+          if now != inn[w]
+            inn[w] = now
             changed = true
           end
-          v = v + 1
+          w = w + 1
         end
-        @live_in[b] = inn
-        @live_out[b] = out
         b = b - 1
       end
     end
@@ -433,8 +459,8 @@ class LinearScan
       if @block_last[b] >= @block_first[b]
         v = 0
         while v < n
-          extend_at(v, @block_first[b]) if @live_in[b][v]
-          extend_at(v, @block_last[b]) if @live_out[b][v]
+          extend_at(v, @block_first[b]) if bit?(@live_in[b], v)
+          extend_at(v, @block_last[b]) if bit?(@live_out[b], v)
           v = v + 1
         end
       end

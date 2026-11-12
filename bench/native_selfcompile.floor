@@ -142,3 +142,4 @@ src/iyi/set.iyi semantic
 src/iyi/string.iyi parse
 src/iyi/testing.iyi semantic
 src/iyi/thread.iyi semantic
+src/compiler/native/const_expr.iyi parse
