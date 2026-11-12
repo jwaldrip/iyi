@@ -26,3 +26,11 @@ end
 fun standalone_add(a : Int32, b : Int32) : Int32
   return a + b
 end
+
+fun out_arguments : Int32
+  LibC.get_time(out seconds)
+  LibC.puts(out @buffer)
+  LibC.exit(out _)
+  LibC.printf(nil, count: out written)
+  seconds + written
+end

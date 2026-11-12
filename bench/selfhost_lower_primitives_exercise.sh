@@ -52,17 +52,13 @@ waiting_on() {
 }
 
 # Fixtures that lower with a known divergence, named, not yet fixed. The gate fails if one starts to match,
-# so the list stays honest. The class fixture differs only in its call's argument list: the oracle's awk
-# (bench/lib/lower_oracle.sh call_types) splits a constant expression argument on commas. The calls lane's
-# split_top fix is pending. Its type id (6 hosted, 36 port) is module-level only: LowerTypeIds, a shift of 30
-# (NEEDS.md row 16).
+# so the list stays honest. None now.
 known_divergence() {
   case "$1" in
-    lowprim_checked) echo "the port defines __crystal_raise_overflow external; the hosted fixture's is internal (core's visit(FunDef) linkage, codegen_fun; S2a4Core)" ;;
   esac
 }
-# Fixtures identical to the hosted module whose native executable waits by name: the native tool refuses the
-# port's module, so the executable is not built. The gate fails if one starts to run.
+# Fixtures identical to the hosted module whose native executable waits by name. None now: defs are emitted Iyi
+# (fun.iyi), so the native tool builds lowprim_alloc_struct.
 e2e_waiting_on() {
   case "$1" in
   esac
