@@ -107,6 +107,11 @@ pub enum MOp
   AddrTable       # gpr <- address of jump table `table` (adrp, add); the symbol is the table's, set once the object has one
   LdrIdx          # dst <- [base + index * 8]; uses[0] base, uses[1] index; 64-bit only
   BrTable         # branch through uses[0] to one of the entries of jump table `table`; the successors are those entries
+  Mrs             # dst <- system register imm: 0 tpidr_el0 (Linux), 1 tpidrro_el0 (darwin)
+  LoadTlvp        # dst <- address of the TLV descriptor of sym (adrp, ldr through the TLVP relocs)
+  AndImm          # dst <- uses[0] & imm, imm a 64-bit logical immediate (the encoder raises on any other value)
+  AddTprelHi      # dst <- uses[0] + the high 12 bits of sym's local-exec offset (add, lsl 12; ELF)
+  AddTprelLo      # dst <- uses[0] + the low 12 bits of sym's local-exec offset (add; ELF)
 end
 
 pub class Operand

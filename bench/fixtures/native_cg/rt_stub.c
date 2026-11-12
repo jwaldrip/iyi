@@ -3,6 +3,7 @@
  * division and remainder. The runtime-helpers slice defines them for real;
  * until it lands, the codegen gate links this file so that the fixtures can
  * run. Replace this file when that slice merges. */
+#include <pthread.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -32,4 +33,25 @@ __int128 __iyi_native_modti3(__int128 a, __int128 b) { return a % b; }
 unsigned __int128 __iyi_native_umodti3(unsigned __int128 a,
                                        unsigned __int128 b) {
   return a % b;
+}
+
+/* Runs fn(arg) on a thread of its own and returns what it returns. The threads
+ * fixture uses it to show that a thread-local is one copy per thread. */
+struct fixture_thread {
+  int64_t (*fn)(int64_t);
+  int64_t arg;
+  int64_t result;
+};
+static void *fixture_thread_entry(void *p) {
+  struct fixture_thread *t = p;
+  t->result = t->fn(t->arg);
+  return NULL;
+}
+int64_t __fixture_run_on_thread(int64_t (*fn)(int64_t), int64_t arg) {
+  struct fixture_thread t = {fn, arg, 0};
+  pthread_t th;
+  if (pthread_create(&th, NULL, fixture_thread_entry, &t) != 0)
+    return -1;
+  pthread_join(th, NULL);
+  return t.result;
 }

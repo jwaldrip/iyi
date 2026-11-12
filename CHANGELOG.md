@@ -4,12 +4,19 @@
 
 ### Added
 
+- **The native backend lowers thread-local globals.** On darwin a thread-local global has a TLV descriptor in
+  `__DATA,__thread_vars`, bound to `__tlv_bootstrap`, and its storage in `__DATA,__thread_data` or `__DATA,__thread_bss`
+  as the oracle's object lays them out. `threadlocaladdr` calls the descriptor's thunk, and `threadpointer` reads
+  `tpidrro_el0` with its low bits cleared on darwin or `tpidr_el0` on Linux. Fixtures match the hosted compiler's output,
+  including a thread that sees its own copy. The aarch64 Linux local-exec form encodes, but no ELF object is written yet,
+  so it is not run.
+
 - **The native backend lowers `i128` values, selects each atomic ordering exactly, and allocates registers with linear
   scan by default.** A 128-bit integer is a pair of 64-bit registers. Arithmetic, shifts, comparisons, division through
   the runtime helpers, the overflow family and AAPCS64 argument passing lower to aarch64 without LLVM, and the fixtures
   match the hosted compiler's output. Each atomic read-modify-write and compare-exchange selects the exclusive pair its
   ordering asks for. `IYI_NATIVE_REGALLOC=pin` still selects the reference allocator. Still refused by name: jump
-  tables for switches, thread-local access, inline assembly and naked functions, floating-point conversions of `i128`,
+  tables for switches, inline assembly and naked functions, floating-point conversions of `i128`,
   and atomic accesses to `i128`.
 
 - **`iyi test` runs tests at once, says what each named case came to, and

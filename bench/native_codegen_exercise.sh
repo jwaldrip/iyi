@@ -94,6 +94,19 @@ done
 [ "$count" -gt 0 ] || fail "no fixture ran"
 echo "ran $count fixtures against the hosted compiler"
 
+# ---- 3c. the thread pointer: the masked tpidrro_el0 read is non-zero, 8-aligned and the same on each read -----
+echo "== 3c. the thread pointer read on this thread is non-zero, 8-aligned and stable"
+if ! "$DRV" obj bench/fixtures/native_tp/threadpointer.ir "$WORK/tp.o" >"$WORK/tp.obj.log" 2>&1; then
+  cat "$WORK/tp.obj.log"
+  fail "threadpointer: the native backend refused the fixture"
+elif ! cc "$WORK/tp.o" bench/fixtures/native_tp/tp_main.c -o "$WORK/tp.bin" >"$WORK/tp.link.log" 2>&1; then
+  fail "threadpointer: cc did not link the native object"
+elif ! "$WORK/tp.bin"; then
+  fail "threadpointer: the masked thread pointer is zero, unaligned, or differs between reads"
+else
+  echo "threadpointer: non-zero, 8-aligned and equal on both reads"
+fi
+
 # ---- 4. the 64 KiB frame: the MIR dump shows the probe page by page ----------------------------
 echo "== 4. the 64 KiB frame is entered page by page"
 probes=$("$DRV" mir "$FIX/frame64k.ir" big | grep -c 'ZeroSp')
@@ -141,6 +154,74 @@ expect_table jump_widths neg32 10 -3 || fail "jump_widths: neg32 is not a 10-ent
 expect_table jump_loop run 6 0 || fail "jump_loop: run is not a 6-entry table at 0"
 expect_chain jump_sparse sparse || fail "jump_sparse: a sparse switch took a table"
 expect_chain jump_sparse none || fail "jump_sparse: a switch with no cases took a table"
+
+# ---- 4d. thread-local access: the descriptor sequence, the Linux local-exec form, and the sections' flags and
+# placement, as the oracle's object has them -------------------------------------------------------------------
+echo "== 4d. thread-local access lowers as the oracle's sequences; section flags and placement match its object"
+tls_mir=$("$DRV" mir "$FIX/tls_loop.ir" main)
+descs=$(printf '%s\n' "$tls_mir" | grep -c 'LoadTlvp/64')
+thunks=$(printf '%s\n' "$tls_mir" | grep -c 'Blr/64 .*clobbers=x0,x16,x17,x30')
+if [ "$descs" -eq 2 ] && [ "$thunks" -eq 2 ]; then
+  echo "tls_loop main: $descs descriptor loads, each followed by a thunk call that clobbers x0,x16,x17,x30"
+else
+  fail "tls_loop main: $descs descriptor loads and $thunks thunk calls, expected 2 and 2"
+fi
+sed -e 's/^target triple = .*/target triple = "aarch64-unknown-linux-gnu"/' \
+    -e 's/^target datalayout = .*/target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"/' \
+    "$FIX/tls_loop.ir" >"$WORK/tls_loop.linux.ir"
+linux_mir=$("$DRV" mir "$WORK/tls_loop.linux.ir" bump)
+if printf '%s\n' "$linux_mir" | grep -q 'Mrs/64 x[0-9]*$' && printf '%s\n' "$linux_mir" | grep -q 'AddTprelHi/64' \
+    && printf '%s\n' "$linux_mir" | grep -q 'AddTprelLo/64' && ! printf '%s\n' "$linux_mir" | grep -q 'Blr'; then
+  echo "linux bump: mrs tpidr_el0, then the two local-exec adds, and no thunk call"
+else
+  fail "linux bump: the local-exec sequence is not as expected"
+fi
+section_flags() {
+  otool -l "$1" | awk -v s="$2" '$1=="sectname" {n=$2} $1=="flags" && n==s {print $2; exit}'
+}
+section_size() {
+  llvm-objdump --macho --section-headers "$1" | awk -v s="$2" '$2==s {print $3}'
+}
+ti="$WORK/tls_init.o"
+tz="$WORK/tls_zero.o"
+if [ "$(section_flags "$ti" __thread_data)" = 0x00000011 ] && [ "$(section_flags "$ti" __thread_bss)" = 0x00000012 ] \
+    && [ "$(section_flags "$ti" __thread_vars)" = 0x00000013 ]; then
+  echo "sections: __thread_data 0x11, __thread_bss 0x12 and __thread_vars 0x13, as the oracle's object has them"
+else
+  fail "sections: the thread-local section flags differ from the oracle's object"
+fi
+if [ "$(section_size "$tz" __thread_bss)" = 00000008 ] && [ "$(section_size "$tz" __thread_data)" = 00000000 ] \
+    && [ "$(section_size "$ti" __thread_data)" = 00000008 ]; then
+  echo "placement: a zero initialiser is in __thread_bss, an initialised one in __thread_data"
+else
+  fail "placement: zero and initialised thread-locals are not in __thread_bss and __thread_data"
+fi
+if llvm-objdump --macho --reloc "$ti" | grep -q 'TLVLDP  ' && llvm-objdump --macho --reloc "$ti" | grep -q 'TLVLDPOFF'; then
+  echo "relocations: the descriptor is reached through TLVLDP and TLVLDPOFF, as in the oracle's object"
+else
+  fail "relocations: the descriptor is not reached through the TLVP relocations"
+fi
+# A thread-local model other than local-exec is refused on Linux by name; a plain global is refused on any target.
+lin_general="$WORK/tls_general.linux.ir"
+sed -e 's/^target triple = .*/target triple = "aarch64-unknown-linux-gnu"/' \
+    -e 's/^target datalayout = .*/target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"/' \
+    -e 's/thread_local(localexec)/thread_local(generaldynamic)/' "$FIX/tls_init.ir" >"$lin_general"
+if "$DRV" obj "$lin_general" "$WORK/tls_general.o" >"$WORK/tls_general.log" 2>&1; then
+  fail "refusal: a generaldynamic thread-local on Linux was lowered"
+elif grep -q 'Linux lowers only the local-exec model' "$WORK/tls_general.log"; then
+  echo "refusal: a generaldynamic thread-local on Linux is refused by name"
+else
+  fail "refusal: the generaldynamic refusal is not the named one"
+fi
+plain="$WORK/tls_plain.ir"
+sed -e 's/internal thread_local(localexec) global/internal global/' "$FIX/tls_init.ir" >"$plain"
+if "$DRV" obj "$plain" "$WORK/tls_plain.o" >"$WORK/tls_plain.log" 2>&1; then
+  fail "refusal: threadlocaladdr of a plain global was lowered"
+elif grep -q 'is not a thread-local global' "$WORK/tls_plain.log"; then
+  echo "refusal: threadlocaladdr of a plain global is refused by name"
+else
+  fail "refusal: the plain-global refusal is not the named one"
+fi
 
 
 # ---- 5. the Linux variant encodes; it is not executed here -------------------------------------
@@ -221,6 +302,17 @@ check_probe() {
   n=$("$1" mir "$FIX/frame64k.ir" big | grep -c 'ZeroSp')
   [ "$n" -ge 16 ]
 }
+check_tls_init() { check_fixture "$1" tls_init; }
+check_tlvp_kind() {
+  "$1" obj "$FIX/tls_init.ir" "$WORK/m.kind.o" >/dev/null 2>&1 || return 1
+  llvm-objdump --macho --reloc "$WORK/m.kind.o" | grep -q 'TLVLDP  '
+}
+check_tls_clobbers() { "$1" mir "$FIX/tls_loop.ir" bump | grep -q 'clobbers=x0,x16,x17,x30'; }
+check_tbss_placed() {
+  "$1" obj "$FIX/tls_zero.ir" "$WORK/m.tbss.o" >/dev/null 2>&1 || return 1
+  [ "$(section_size "$WORK/m.tbss.o" __thread_bss)" = 00000008 ]
+}
+check_tp_mask() { "$1" mir bench/fixtures/native_tp/threadpointer.ir tp_word | grep -q 'AndImm/64 .*#imm=-8'; }
 
 echo "== 6. mutations are each caught"
 prove_mutation "isel: the subtraction's operands swap" \
@@ -302,6 +394,32 @@ prove_mutation "jump table: the case-0 block is missing from the branch's succes
   '      table_targets.each do |t|
         acc << t unless t == table_targets[0]' \
   check_jump_loop
+prove_mutation "thread-local: the thunk call is skipped, so the descriptor's address is taken for the variable" \
+  src/compiler/native/aarch64/isel.iyi \
+  '    m.clobbers = tlv_clobbers
+    emit(m)' \
+  '    m.clobbers = tlv_clobbers' \
+  check_tls_init
+prove_mutation "thread-local: the TLV page is reached through the GOT's relocation kind" \
+  src/compiler/native/aarch64/encode.iyi \
+  'reloc(RelocKind::A64TlvpPage21, inst.sym)' \
+  'reloc(RelocKind::A64GotPage21, inst.sym)' \
+  check_tlvp_kind
+prove_mutation "thread-local: the thunk's clobbers lose x16 and x17" \
+  src/compiler/native/aarch64/isel.iyi \
+  '    [0, 16, 17, 30]' \
+  '    [0, 30]' \
+  check_tls_clobbers
+prove_mutation "thread-local: a zero initialiser is placed in __thread_data, not __thread_bss" \
+  src/compiler/native/thread_locals.iyi \
+  '    zero = w.relocs.empty?' \
+  '    zero = false' \
+  check_tbss_placed
+prove_mutation "threadpointer: the darwin read drops the low-bit mask" \
+  src/compiler/native/aarch64/isel.iyi \
+  '      m.imm = -8_i64' \
+  '      m.imm = 0xf0_i64' \
+  check_tp_mask
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \
