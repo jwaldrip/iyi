@@ -687,8 +687,12 @@ pub class MainVisitor < TypeNodeHost
       i = 0
       while i < node.expressions.size
         exp = node.expressions[i]
-        exp.accept(self)
-        last_type = child_type(exp)
+        # iyi: an annotation sits beside the def it annotates and is neither typed
+        # nor walked (the hosted pass does not), so it does not end the list's type.
+        unless exp.is_a?(Annotation)
+          exp.accept(self)
+          last_type = child_type(exp)
+        end
         i = i + 1
       end
       if lt = last_type
