@@ -83,6 +83,28 @@ pub class TypeUnification
       return unique.first
     end
 
+    if unique.empty?
+      return build_union_of(program, unique)
+    end
+
+    # The hosted program caches each union by the sorted object ids of its members
+    # (`program.unions`), so one set of members makes one union.
+    key = [] of UInt64
+    i = 0
+    while i < unique.size
+      key << unique[i].object_id
+      i = i + 1
+    end
+    key = key.sorted
+    if cached = program.unions[key]?
+      return cached
+    end
+    union = build_union_of(program, unique)
+    program.unions[key] = union
+    union
+  end
+
+  def self.build_union_of(program : SemanticProgram, unique : Array(Type)) : Type
     non_nil = [] of Type
     has_nil = false
     i = 0

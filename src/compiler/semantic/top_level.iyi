@@ -567,6 +567,7 @@ pub abstract class ClassType < ModuleType
 end
 
 pub class NonGenericClassType < ClassType
+  property virtual_type_cache : Type? = nil
 end
 
 # Built-ins the hosted Program creates as their own kinds. They live here, not in
@@ -1058,6 +1059,8 @@ pub class SemanticProgram < NonGenericModuleType
   @const_initializers : Array(Const)
   # The records of the funs the pass declared, by the node's id (`lib_fun_of`).
   @lib_funs_by_node : Hash(UInt64, LibFun)
+  # All unions the program made, keyed by the sorted object ids of their members (hosted program.unions).
+  getter unions : Hash(Array(UInt64), Type)
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
   # hosted pass keeps a scope per file; the port keeps the importing file's table here.
   property current_imports : Hash(String, Type)
@@ -1342,6 +1345,7 @@ pub class SemanticProgram < NonGenericModuleType
     @global_funs = [] of LibFun
     @const_initializers = [] of Const
     @lib_funs_by_node = Hash(UInt64, LibFun).new
+    @unions = Hash(Array(UInt64), Type).new
     @declared_ivars = [] of DeclaredIvar
     @current_imports = Hash(String, Type).new
     @current_import_defs = Hash(String, Array(Def)).new
