@@ -18,7 +18,7 @@ module BenchSelfhostDaemonExercise
       loop do
         k_str = io.read_bytes(1)
         break if k_str.empty?
-        kind = k_str.to_unsafe[0].to_i32
+        kind = k_str.byte_at(0).to_i32
         if kind == DAEMON_FRAME_EXIT.to_i32
           ec = BuildDaemon.read_u32_le(io)
           puts "FRAME EXIT: #{ec}"

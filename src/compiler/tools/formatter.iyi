@@ -1,3 +1,4 @@
+@[Unsafe("FormatterBuffer is the formatter's output buffer: raw malloc'd bytes grown with realloc and filled with copy_from. The compiler does not check those pointers or their bounds, and the buffer is the point of the module.")]
 module compiler/tools/formatter
 
 import compiler/foundation/location::{Location}

@@ -1,3 +1,4 @@
+@[Unsafe("The build daemon speaks over a UNIX socket: it builds the C argv array and sockaddr_un bytes for execvp and connect, reads and writes raw frame bytes, and binds POSIX calls (socket, connect, stat, execvp, getcwd, mkdir, readlink) in lib LibC. The compiler does not check those pointers or their bounds.")]
 module compiler/command/daemon
 
 import std/json::{JSON, Any}
@@ -8,6 +9,9 @@ import compiler/command/driver::{OutputBuffer, Exit}
 pub DAEMON_FRAME_EXIT   = 0_u8
 pub DAEMON_FRAME_STDOUT = 1_u8
 pub DAEMON_FRAME_STDERR = 2_u8
+# A daemon that cannot serve this build (rebuilt compiler, other version, other
+# library) answers with its own frame: a refusal, not a failed build.
+pub DAEMON_FRAME_REFUSE = 3_u8
 
 # Platform limit on UNIX socket path size in sockaddr_un
 # 103 bytes on Darwin (macOS), 107 on Linux
@@ -196,7 +200,7 @@ pub class BuildDaemon
       abort "the socket path is #{path.bytesize} bytes and the kernel takes " \
             "#{limit}: #{path}. A unix socket's path is a fixed field in " \
             "`sockaddr_un`, so this is the machine's limit rather than " \
-            "this compiler's. Pass a shorter `--socket`, or set TMPDIR to " \
+            "this compiler's. Pass a shorter `--socket`, or set IYI_CACHE_DIR to " \
             "a shorter directory and let the default sit under it",
         Exit::FAILURE
     end
@@ -337,9 +341,7 @@ pub class BuildDaemon
   end
 
   def self.write_refusal(io : IyiIO, message : String) : Nil
-    message.each_line do |line|
-      write_frame(io, DAEMON_FRAME_STDERR, "#{line}\n")
-    end
+    write_frame(io, DAEMON_FRAME_REFUSE, message.chomp)
     b = DAEMON_FRAME_EXIT
     io.write(pointerof(b), 1)
     write_u32_le(io, 1)
@@ -422,6 +424,17 @@ pub class BuildDaemon
         else
           print_error(str)
         end
+      when DAEMON_FRAME_REFUSE
+        size = BuildDaemon.read_u32_le(client)
+        str = client.read_bytes(size)
+        print_error("#{str}\n")
+        # The build asked for a binary, not for this daemon.
+        if fallback
+          print_error("#{@program_name}: building without it\n")
+          client.close
+          return
+        end
+        exit(1)
       else
         abort "daemon sent an unknown frame #{kind_byte}", Exit::SOFTWARE_ERROR
         client.close

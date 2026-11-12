@@ -2028,6 +2028,15 @@ pub class CommandDriver
     opts.on("--exclude-warnings <path>", "Exclude warnings from path (default: lib)") do |f|
       compiler_opts.exclude_warnings << f
     end
+    # The hosted compiler's spawn notes (SPEC.md III.4.15) are not ported yet.
+    # The flags are advertised with the hosted wording and refuse loudly,
+    # rather than being accepted and ignored.
+    opts.on("--explain-spawn", "Note where each spawn runs: in parallel in a unit of its own, or in its spawner's unit and why") do
+      abort "--explain-spawn is not in the self-hosted driver yet; spawn notes come from the hosted compiler", Exit::USAGE_ERROR
+    end
+    opts.on("--explain-spawn-std", "As --explain-spawn, and std's and the prelude's spawns too") do
+      abort "--explain-spawn-std is not in the self-hosted driver yet; spawn notes come from the hosted compiler", Exit::USAGE_ERROR
+    end
   end
 
   private def validate_emit_values(values : Array(String)) : Array(String)

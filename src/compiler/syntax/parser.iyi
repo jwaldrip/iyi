@@ -68,6 +68,16 @@ pub struct Piece
   end
 end
 
+# A construct the parser has opened and not yet closed. The stack is innermost
+# last; a failed parse abandons it with the parser.
+pub class Unclosed
+  property name : String
+  property location : Location
+
+  def initialize(@name : String, @location : Location)
+  end
+end
+
 pub class Parser < Lexer
   property var_scopes : Array(Set(String))
   property stop_on_do : Bool
@@ -87,6 +97,7 @@ pub class Parser < Lexer
   property inside_c_struct : Bool
   property no_type_declaration : Int32
   property in_macro_expression : Bool
+  property unclosed_stack : Array(Unclosed)
 
   def self.parse(str : String, string_pool : StringPool? = nil, var_scopes : Array(Set(String)) = [Set(String).new]) : ASTNode
     new(str, "", string_pool, var_scopes).parse
@@ -112,6 +123,7 @@ pub class Parser < Lexer
     @inside_c_struct = false
     @no_type_declaration = 0
     @in_macro_expression = false
+    @unclosed_stack = [] of Unclosed
   end
 
   def token_end_location : Location
@@ -1806,6 +1818,7 @@ pub class Parser < Lexer
 
     exps = [] of ASTNode
     @stop_on_do = false
+    @unclosed_stack.push(Unclosed.new("parenthesized expression", location))
 
     while true
       exps << parse_expression
@@ -1823,6 +1836,7 @@ pub class Parser < Lexer
         syntax_error("unterminated parenthesized expression", location)
       end
     end
+    @unclosed_stack.pop
 
     node = Expressions.new(exps).at(location)
     node.keyword = Expressions::Keyword::Paren
@@ -1848,6 +1862,7 @@ pub class Parser < Lexer
     location = @token.location
     set_slash_is_regex(true)
     next_token_skip_space_or_newline
+    @unclosed_stack.push(Unclosed.new("array literal", location))
     exps = [] of ASTNode
 
     while @token.type != TokenKind::OP_RSQUARE
@@ -1869,6 +1884,7 @@ pub class Parser < Lexer
         break
       end
     end
+    @unclosed_stack.pop
     next_token_skip_space
     of : ASTNode? = nil
     if @token.keyword == Keyword::OF
@@ -1991,6 +2007,7 @@ pub class Parser < Lexer
   end
 
   def parse_hash_literal(first_key : ASTNode, location : Location) : ASTNode
+    @unclosed_stack.push(Unclosed.new("hash literal", location))
     first_val = parse_op_assign
     entries = [HashLiteral::Entry.new(first_key, first_val)] of HashLiteral::Entry
 
@@ -2018,6 +2035,7 @@ pub class Parser < Lexer
       end
     end
     check(TokenKind::OP_RCURLY)
+    @unclosed_stack.pop
     next_token_skip_space
     of : HashLiteral::Entry? = nil
     if @token.keyword == Keyword::OF
@@ -5190,6 +5208,11 @@ pub class Parser < Lexer
 
   def check(kind : TokenKind) : Nil
     if @token.type != kind
+      # A closer that is missing names what it would close and where that
+      # began, as a missing `end` does. The head sentence stays as it was.
+      if (unclosed = @unclosed_stack.last?) && closes_unclosed?(kind, unclosed.name)
+        syntax_error("expecting token '#{kind}', not '#{@token.type}'; the #{unclosed.name} that began at line #{unclosed.location.line_number} is still open", @token.location)
+      end
       syntax_error("expecting token '#{kind}', not '#{@token.type}'", @token.location)
     end
   end
@@ -5200,7 +5223,25 @@ pub class Parser < Lexer
     end
   end
 
+  # A token that closes the innermost construct still open.
+  def closes_unclosed?(kind : TokenKind, name : String) : Bool
+    if kind == TokenKind::OP_RSQUARE
+      name == "array literal"
+    elsif kind == TokenKind::OP_RCURLY
+      name == "hash literal" || name == "tuple literal" || name == "named tuple literal"
+    elsif kind == TokenKind::OP_RPAREN
+      name == "call" || name == "parenthesized expression"
+    else
+      false
+    end
+  end
+
   def unexpected_token(msg : String? = nil) : NoReturn
+    # The file ends inside a construct: name the construct and where it began,
+    # not the last line's EOF.
+    if @token.type == TokenKind::EOF && (unclosed = @unclosed_stack.last?)
+      syntax_error("unterminated #{unclosed.name}", unclosed.location)
+    end
     token_str = @token.type == TokenKind::EOF ? "EOF" : @token.type.to_s
     if m = msg
       syntax_error("unexpected token: #{token_str} (#{m})", @token.location)
