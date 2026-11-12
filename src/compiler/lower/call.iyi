@@ -1,0 +1,83 @@
+module compiler/lower/call
+
+# The port of `visit(Call)` (src/compiler/iyi/codegen/call.cr) for a call to one target
+# def, with no receiver and no block: the arguments are lowered in order, the callee is
+# found or emitted by `target_def_fun` (fun.iyi), and the call is an ordinary call. The
+# specification has no exception tables, so a call is always a plain call and no landing
+# pad is made (hosted `codegen_call_or_invoke` without a rescue block).
+#
+# Ported: the argument values (`prepare_call_args_non_external`, the plain scalar case),
+# the call instruction, and the value of a call (a Nil result is `llvm_nil`, hosted
+# `codegen_call_or_invoke`). The argument types are the analysed types of the argument
+# nodes, which is how the analysed program instantiates a def (main_visitor.iyi,
+# type_method_body). A restriction is honoured only when it names the argument's own type.
+#
+# Refused by name, at the call that reaches them (pending.iyi): a receiver, a block,
+# dispatch over several target defs, default arguments and splats, a restriction that
+# converts the argument, and a NoReturn result (`unreachable` comes with the lib calls).
+#
+# The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
+# `compiler/lower/call`, and inside it the name `Call` means this module.
+
+import compiler/syntax/ast::{ASTNode, Def}
+import compiler/ir/values::{Value}
+import compiler/lower/context::{Lowerer}
+import compiler/lower/fun::{target_def_fun, visit_node}
+import compiler/lower/helpers::{llvm_nil}
+import compiler/lower/pending::{pending_visit_node}
+import compiler/semantic/top_level::{NilType, NoReturnType, Type}
+
+pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Nil
+  unless node.obj.nil?
+    pending_visit_node("a call with a receiver (hosted call.cr, prepare_call_args): self is not ported yet")
+  end
+  unless node.block.nil?
+    pending_visit_node("a call with a block (hosted call.cr, codegen_call_with_block)")
+  end
+  target = low.analysed.target_def?(node)
+  raise "BUG: the call to #{node.name} has no target def (hosted call.cr: visit(Call))" if target.nil?
+  def_node = target.as(Def)
+  if def_node.args.size != node.args.size || def_node.splat_index != nil
+    pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
+  end
+
+  ret_type = low.analysed.type_of?(node)
+  raise "BUG: the analysed program has no type for the call to #{node.name} (hosted call.cr: visit(Call))" if ret_type.nil?
+  ret = ret_type.as(Type)
+  if ret.is_a?(NoReturnType)
+    pending_visit_node("a call to a NoReturn def (hosted call.cr: unreachable after the call)")
+  end
+
+  arg_types = [] of Type
+  values = [] of Value
+  wants = low.needs_value
+  i = 0
+  while i < node.args.size
+    arg_node = node.args[i]
+    at_type = low.analysed.type_of?(arg_node)
+    raise "BUG: the analysed program has no type for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)" if at_type.nil?
+    at = at_type.as(Type)
+    if restriction = def_node.args[i].restriction
+      restricted = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program)
+      if restricted.full_name != at.full_name
+        pending_visit_node("a restriction that converts argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
+      end
+    end
+    low.needs_value = true
+    visit_node(low, arg_node)
+    value = low.last
+    raise "BUG: argument #{i} of #{node.name} left no value (hosted call.cr: prepare_call_args)" if value.nil?
+    values << value.as(Value)
+    arg_types << at
+    i += 1
+  end
+  low.needs_value = wants
+
+  func = target_def_fun(low, def_node, arg_types, ret)
+  inst = low.builder.call(func.fn_type, func, values, "")
+  if ret.is_a?(NilType)
+    low.last = llvm_nil(low)
+  else
+    low.last = inst
+  end
+end

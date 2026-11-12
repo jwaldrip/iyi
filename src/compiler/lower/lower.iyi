@@ -23,11 +23,12 @@ import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper}
-import compiler/lower/context::{Lowerer, LowerVar}
+import compiler/lower/context::{BodyVisit, Lowerer, LowerVar}
 import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned}
 import compiler/lower/cond::{cond_bool}
 import compiler/lower/phi::{LowerPhi}
-import compiler/lower/pending::{pending_visit_call, pending_visit_fun_def, pending_visit_node}
+import compiler/lower/pending::{pending_visit_node}
+import compiler/lower/call::{codegen_call_node}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type}
 
@@ -35,6 +36,7 @@ import compiler/semantic/top_level::{Type}
 # program's parsed tree, `analysed` the semantic pass that typed it.
 pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyper, m : Module) : Nil
   low = Lowerer.new(m, typer, analysed)
+  low.body_visitor = CoreBody.new
   i32 = m.types.int32
   ptr = m.types.ptr(0)
 
@@ -122,10 +124,14 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(Def)
-    pending_visit_fun_def
+    # The hosted `visit(Def)`: a def emits nothing where it stands. The call that reaches
+    # it makes its function (fun.iyi).
+    low.last = llvm_nil(low)
+    return
   end
   if node.is_a?(Call)
-    pending_visit_call
+    codegen_call_node(low, node.as(Call))
+    return
   end
   pending_visit_node(node_class_name(node))
 end
@@ -155,6 +161,11 @@ pub def codegen_var(low : Lowerer, node : Var) : Nil
   var = low.current_context.vars[node.name]?
   raise "BUG: variable #{node.name} is read before it is assigned (hosted codegen.cr: visit(Var))" if var.nil?
   v = var.as(LowerVar)
+  if v.already_loaded
+    # A parameter is read where it arrives: its value is the parameter itself (hosted visit(Var)).
+    low.last = v.pointer
+    return
+  end
   ir = low.typer.llvm_type(v.type)
   low.last = load_aligned(low, ir, v.pointer, "")
 end
@@ -167,6 +178,11 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
     pending_visit_node("Assign to a target that is not a variable")
   end
   target = node.target.as(Var)
+  if param = low.current_context.vars[target.name]?
+    if param.as(LowerVar).already_loaded
+      pending_visit_node("Assign to a parameter (hosted fun.cr, create_local_copy_of_arg)")
+    end
+  end
   codegen_node(low, node.value)
   value = low.last
   raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
@@ -265,4 +281,16 @@ pub def codegen_while(low : Lowerer, node : While) : Nil
 
   low.builder.position_at_end(fail_block)
   low.last = llvm_nil(low)
+end
+
+# The node visitor the calls and the functions reach this dispatch through (context.iyi, BodyVisit).
+pub class CoreBody
+  def initialize
+  end
+end
+
+impl BodyVisit for CoreBody
+  def visit_body(low : Lowerer, node : ASTNode) : Nil
+    codegen_node(low, node)
+  end
 end
