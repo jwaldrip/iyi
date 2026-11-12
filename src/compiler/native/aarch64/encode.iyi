@@ -314,6 +314,17 @@ pub class Encoder
       word(fp_word(inst.size == 64, 0x1E201800_i64, 0x1E601800_i64) | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::FNeg
       word(fp_word(inst.size == 64, 0x1E214000_i64, 0x1E614000_i64) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::FAbs
+      word(fp_word(inst.size == 64, 0x1E20C000_i64, 0x1E60C000_i64) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::FSqrt
+      word(fp_word(inst.size == 64, 0x1E21C000_i64, 0x1E61C000_i64) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::FRint
+      # frintn, frintp, frintm, frintz, frinta, frintx: the rounding mode is bits 15 to 17.
+      word(fp_word(inst.size == 64, 0x1E244000_i64, 0x1E644000_i64) | (inst.imm << 15) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::FMinNm
+      word(fp_word(inst.size == 64, 0x1E207800_i64, 0x1E607800_i64) | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::FMaxNm
+      word(fp_word(inst.size == 64, 0x1E206800_i64, 0x1E606800_i64) | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     elsif op == MOp::FCmp
       word(fp_word(inst.size == 64, 0x1E202000_i64, 0x1E602000_i64) | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5))
     elsif op == MOp::FCvt
