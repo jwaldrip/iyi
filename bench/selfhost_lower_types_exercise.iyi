@@ -1,0 +1,130 @@
+import compiler/syntax/parser::{Parser}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, NonGenericClassType, NilType}
+import compiler/types/types::{TupleInstanceType, NamedTupleInstanceType, StaticArrayInstanceType}
+import compiler/types/type_system::{TypeSystem}
+import compiler/types/unification::{TypeUnification}
+import compiler/types/lookup::{LookupError, TypeLookup}
+import compiler/ir/types::{IrType, TypeTable}
+import compiler/ir/layout::{DataLayout, LayoutError}
+import compiler/platform/target::{Target}
+import compiler/lower/typer::{LowerTyper, passed_by_value?, primitive_kind}
+
+# Lowering-types driver for bench/selfhost_lower_types_exercise.sh.
+#
+#   selfhost_lower_types_exercise <fixture.iyi> <target triple>
+#
+# Declares the fixture into a SemanticProgram, then prints one block per
+# `# type: <expr>` line, the same blocks the hosted oracle
+# (bench/selfhost_lower_types_oracle.cr) prints. The block form and its
+# normalisation are described in the oracle's header.
+module BenchSelfhostLowerTypesExercise
+  # Splits operands at the commas outside every parenthesis, trimmed.
+  def self.split_top(text : String) : Array(String)
+    parts = [] of String
+    depth = 0
+    start = 0
+    i = 0
+    while i < text.bytesize
+      c = text[i, 1]
+      if c == "("
+        depth = depth + 1
+      elsif c == ")"
+        depth = depth - 1
+      elsif c == "," && depth == 0
+        parts << text[start, i - start].strip
+        start = i + 1
+      end
+      i = i + 1
+    end
+    last = text[start, text.bytesize - start].strip
+    parts << last unless last.bytesize == 0
+    parts
+  end
+
+  # The analysed type a written type names: `Int32`, `Color`, `Pointer(Int32)`, `Color.class`.
+  def self.resolve(prog : SemanticProgram, ts : TypeSystem, name : String) : Type
+    t = name.strip
+    if t.ends_with?(".class")
+      inner = resolve(prog, ts, t[0, t.bytesize - 6])
+      m = TypeUnification.metaclass_of(inner)
+      raise "no metaclass for #{t}" if m.nil?
+      return m
+    end
+    found = TypeLookup.new(ts.instances).lookup(prog, Parser.new(t, "lower").parse)
+    raise "unknown type #{t}" if found.is_a?(LookupError)
+    found.as(Type)
+  end
+
+  # Where the hosted typer lays a type out as a struct (the oracle's struct_applies?).
+  def self.struct_applies?(t : Type) : Bool
+    return true if t.is_a?(TupleInstanceType) || t.is_a?(NamedTupleInstanceType)
+    return true if t.is_a?(StaticArrayInstanceType)
+    t.is_a?(NonGenericClassType) && !t.is_a?(NilType) && primitive_kind(t) == ""
+  end
+
+  def self.offsets_text(st : IrType, typer : LowerTyper) : String
+    parts = [] of String
+    i = 0
+    while i < st.struct_element_types.size
+      parts << typer.offset_of(st, i).to_s
+      i = i + 1
+    end
+    return "-" if parts.size == 0
+    parts.join(" ")
+  end
+
+  def self.block_text(expr : String, typer : LowerTyper, t : Type) : String
+    out = "== #{expr}\n"
+    out = out + "llvm_type: #{typer.llvm_type(t).to_s}\n"
+    out = out + "llvm_type(wants_size): #{typer.llvm_type(t, true).to_s}\n"
+    if struct_applies?(t)
+      st = typer.llvm_struct_type(t)
+      out = out + "llvm_struct_type: #{st.to_s}\n"
+      if st.struct?
+        out = out + "offsets: #{offsets_text(st, typer)}\n"
+      else
+        out = out + "offsets: -\n"
+      end
+    else
+      out = out + "llvm_struct_type: -\n"
+      out = out + "offsets: -\n"
+    end
+    out = out + "llvm_embedded_type: #{typer.llvm_embedded_type(t).to_s}\n"
+    out = out + "size: #{typer.size_of(typer.llvm_type(t))}\n"
+    out = out + "align: #{typer.align_of(typer.llvm_type(t))}\n"
+    out = out + "passed_by_value: #{bool_text(passed_by_value?(t))}\n"
+    out
+  end
+
+  def self.bool_text(b : Bool) : String
+    b ? "true" : "false"
+  end
+
+  def self.run(src : String, filename : String, triple : String) : String
+    parser = Parser.new(src, filename)
+    node = parser.parse
+    prog = SemanticProgram.new
+    # The type system is installed before the visitor runs, as the semantic driver does.
+    ts = TypeSystem.new(prog)
+    node.accept(TopLevelVisitor.new(prog))
+    layout_result = DataLayout.for(Target.new(triple))
+    raise "no DataLayout for #{triple}" if layout_result.is_a?(LayoutError)
+    layout = layout_result.as(DataLayout)
+    # The hosted Program#iyi_object_layout? is decided by the program declaring IyiRuntimeLock.
+    iyi = !prog.types["IyiRuntimeLock"]?.nil?
+    typer = LowerTyper.new(TypeTable.new, layout, iyi)
+    out = ""
+    src.split("\n").each do |line|
+      if line.starts_with?("# type: ")
+        expr = line[8, line.bytesize - 8].strip
+        out = out + block_text(expr, typer, resolve(prog, ts, expr))
+      end
+    end
+    out
+  end
+end
+
+if Program.args.size > 1
+  filename = Program.args[0]
+  print BenchSelfhostLowerTypesExercise.run(File.read(filename), filename, Program.args[1])
+end
