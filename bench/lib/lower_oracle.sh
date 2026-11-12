@@ -26,12 +26,13 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
   args = substr(after, op + 1, cl - op - 1)
   tail = substr(after, cl + 1)
   if (substr(tail, 1, 2) == " #") tail = ""
-  n = split(args, parts, ", ")
+  n = split_top(args, parts)
   types = ""
   for (i = 1; i <= n; i++) {
     split(parts[i], w, " ")
     types = types (i > 1 ? ", " : "") w[1]
   }
+  if (name ~ /^@"[*~]/) ret = "iyicc " ret
   return head ret " (" types ") " name "(" args ")" tail
 }
 # Splits the argument list of a call at its top-level commas, so a constant expression with commas
@@ -82,7 +83,18 @@ function intrinsic_line(line,   p, lhs, rest, ret, after, op, k, cl, name, args,
   if (lhs ~ /=$/) return lhs " intrinsic " name "(" out ")"
   return lhs "intrinsic " name "(" out ")"
 }
+# A def is `Iyi` (import.iyi convention_of: a name starting with `*` or `~`). The hosted text writes every
+# function `ccc`, so the defs of the oracle get the `iyicc` word of the port here, before the return type.
+function cc_define(line,   at, head, n, w, i, out) {
+  at = index(line, " @\"")
+  head = substr(line, 1, at - 1)
+  n = split(head, w, " ")
+  out = ""
+  for (i = 1; i < n; i++) out = out w[i] " "
+  return out "iyicc " w[n] substr(line, at)
+}
 {
+  if ($0 ~ /^define .* @"[*~]/) $0 = cc_define($0)
   if ($0 ~ /^declare .*@llvm\./) next
   if (index($0, " phi ") > 0) gsub(/, %/, ", label %")
   if (index($0, "@llvm.") > 0 && index($0, " call ") > 0) { print intrinsic_line($0); next }
