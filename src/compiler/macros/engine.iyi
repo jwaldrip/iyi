@@ -86,6 +86,24 @@ pub class MacroEngine
     MacroReport.new(sites, interp.to_s, interp.skipped, interp.failure)
   end
 
+  # Expands one top-level site as the hosted compiler expands an inline macro:
+  # with a fresh interpreter, so no variable carries from one site to the next.
+  # `scope_name` is what `@type` and `@top_level` name.
+  def site_report(site : ASTNode, scope_name : String = "<Program>") : MacroReport
+    interp = MacroInterpreter.new(nil, @flags, scope_name)
+    interp.interpret(site)
+
+    line = 0
+    column = 0
+    if loc = site.location
+      line = loc.line_number
+      column = loc.column_number
+    end
+    sites = [] of MacroSite
+    sites << MacroSite.new(MacroMethods.node_class_name(site), line, column, interp.to_s)
+    MacroReport.new(sites, interp.to_s, interp.skipped, interp.failure)
+  end
+
   def expand_to_s(a_macro : Macro, call : Call) : String
     rep = report(a_macro, call)
     if f = rep.failure

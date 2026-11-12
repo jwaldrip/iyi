@@ -1,0 +1,108 @@
+module compiler/macros/site_scan
+
+import compiler/syntax/ast::{ASTNode, ClassDef, Def, InstanceVar, Macro, MacroExpression, MacroFor, MacroIf, MacroVerbatim, ModuleDef}
+import compiler/syntax/visitor::{Visitor}
+
+# A macro site of a file and where it is written: `top` (the top of the file),
+# `class` (a class or module body), `def:<name>` (a def body), or `macro` (the
+# body of a macro definition, which expands when that macro is called).
+pub class MacroSiteRef
+  property node : ASTNode
+  property context : String
+
+  def initialize(@node : ASTNode, @context : String)
+  end
+end
+
+# Finds the macro sites of a parsed file in source order. A site is one `{% if %}`,
+# `{% for %}`, `{{ }}` or `verbatim` node that is not inside another site: the
+# hosted compiler expands a site as one unit, so the sites in its branches are
+# not listed. The bodies of defs, classes, modules and macros are searched;
+# default argument values are not.
+pub class MacroSiteScan < Visitor
+  property context : String
+  property sites : Array(MacroSiteRef)
+
+  def initialize(@context : String, @sites : Array(MacroSiteRef))
+  end
+
+  # Every site of a parsed file, in source order.
+  def self.scan(root : ASTNode) : Array(MacroSiteRef)
+    sites = [] of MacroSiteRef
+    root.accept(MacroSiteScan.new("top", sites))
+    sites
+  end
+
+  # Whether a site reads `@type`, `@top_level`, `@def` or `@caller`: each names
+  # the type or def the site is written in. Such a site needs that context
+  # passed in, and the engine does not guess it.
+  def self.needs_context?(node : ASTNode) : Bool
+    probe = MacroContextProbe.new
+    node.accept(probe)
+    probe.found
+  end
+
+  def visit(node : MacroIf) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : MacroFor) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : MacroExpression) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : MacroVerbatim) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : Macro) : Bool
+    scan_body("macro", node.body)
+    false
+  end
+
+  def visit(node : Def) : Bool
+    scan_body("def:#{node.name}", node.body)
+    false
+  end
+
+  def visit(node : ClassDef) : Bool
+    scan_body("class", node.body)
+    false
+  end
+
+  def visit(node : ModuleDef) : Bool
+    scan_body("class", node.body)
+    false
+  end
+
+  def add_site(node : ASTNode) : Nil
+    @sites << MacroSiteRef.new(node, @context)
+  end
+
+  def scan_body(context : String, body : ASTNode) : Nil
+    body.accept(MacroSiteScan.new(context, @sites))
+  end
+end
+
+# Finds a read of `@type`, `@top_level`, `@def` or `@caller` in a site.
+class MacroContextProbe < Visitor
+  getter found : Bool
+
+  def initialize
+    @found = false
+  end
+
+  def visit(node : InstanceVar) : Bool
+    if node.name == "@type" || node.name == "@top_level" || node.name == "@def" || node.name == "@caller"
+      @found = true
+    end
+    true
+  end
+end

@@ -6,6 +6,8 @@ import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/macro_parser::{MacroParser}
 import compiler/macros/engine::{MacroEngine, MacroReport}
 import compiler/macros/target_flags::{MacroTargetFlags}
+import compiler/syntax/parser::{Parser}
+import compiler/macros/site_scan::{MacroSiteScan}
 
 module BenchSelfhostMacrosExercise
   def self.assert(cond : Bool, msg : String) : Nil
@@ -16,26 +18,28 @@ module BenchSelfhostMacrosExercise
   end
 
   def self.escape_s(s : String) : String
-    res = "\""
+    res = StringBuilder.new
+    res << "\""
     i = 0
     while i < s.bytesize
       b = s.byte_at(i)
       if b == 10_u8
-        res = res + "\\n"
+        res << "\\n"
       elsif b == 13_u8
-        res = res + "\\r"
+        res << "\\r"
       elsif b == 9_u8
-        res = res + "\\t"
+        res << "\\t"
       elsif b == 92_u8
-        res = res + "\\\\"
+        res << "\\\\"
       elsif b == 34_u8
-        res = res + "\\\""
+        res << "\\\""
       else
-        res = res + b.unsafe_chr.to_s
+        res << b.unsafe_chr.to_s
       end
       i = i + 1
     end
-    res + "\""
+    res << "\""
+    res.to_s
   end
 
   # The dump both implementations print for a fixture: one line per top-level
@@ -56,6 +60,74 @@ module BenchSelfhostMacrosExercise
       s = s + "error #{f.line}:#{f.column} message=#{escape_s(f.message)}\n"
     end
     s + "output text=#{escape_s(rep.output)}\n"
+  end
+
+  # The port parses a file with its header annotations in place; the hosted
+  # parser does not, so the sites dump blanks them out on both sides.
+  def self.strip_header_annotations(source : String) : String
+    lines = source.split("\n")
+    module_at = -1
+    i = 0
+    while i < lines.size && module_at < 0
+      if lines[i].starts_with?("module ")
+        module_at = i
+      end
+      i = i + 1
+    end
+    out = StringBuilder.new
+    i = 0
+    while i < lines.size
+      line = lines[i]
+      if i < module_at && line.starts_with?("@[")
+        line = ""
+      end
+      out << line
+      out << "\n"
+      i = i + 1
+    end
+    out.to_s
+  end
+
+  # One line per macro site of a whole file, in source order: its index, its
+  # kind, where it is written, then what it did. `macro-body` sites are inside
+  # a macro definition and expand when it is called; `needs-context` sites read
+  # the type or def they are written in. The oracle's driver prints the same
+  # lines for the same file.
+  def self.site_dump(source : String, flags : Array(String)) : String
+    engine = MacroEngine.new(flags)
+    root = Parser.new(strip_header_annotations(source)).parse
+    refs = MacroSiteScan.scan(root)
+    s = ""
+    i = 0
+    while i < refs.size
+      ref = refs[i]
+      site = ref.node
+      head = "site #{i} #{MacroMethods.node_class_name(site)} #{BenchSelfhostMacrosExercise.line_col(site)} #{ref.context}"
+      if ref.context == "macro"
+        s = s + head + " macro-body\n"
+      elsif MacroSiteScan.needs_context?(site)
+        s = s + head + " needs-context\n"
+      else
+        rep = engine.site_report(site)
+        if f = rep.failure
+          s = s + head + " error #{f.line}:#{f.column} message=#{escape_s(f.message)}\n"
+        elsif rep.skipped
+          s = s + head + " skipped\n"
+        else
+          s = s + head + " text=#{escape_s(rep.output)}\n"
+        end
+      end
+      i = i + 1
+    end
+    s
+  end
+
+  def self.line_col(node : ASTNode) : String
+    if loc = node.location
+      "#{loc.line_number}:#{loc.column_number}"
+    else
+      "0:0"
+    end
   end
 
   def self.test_arg_substitution
@@ -234,6 +306,7 @@ if Program.args.size == 1 && Program.args[0] == "--host-target"
 elsif Program.args.size > 0
   filename = ""
   count = false
+  sites = false
   triple = ""
   defines = [] of String
   args = Program.args
@@ -242,6 +315,8 @@ elsif Program.args.size > 0
     a = args[idx]
     if a == "--count"
       count = true
+    elsif a == "--sites"
+      sites = true
     elsif a == "--target"
       idx = idx + 1
       triple = args[idx]
@@ -258,13 +333,17 @@ elsif Program.args.size > 0
     flags = MacroTargetFlags.for_triple(triple, defines)
   end
   source = File.read(filename)
-  engine = MacroEngine.new(flags)
-  the_macro, the_call = MacroParser.parse_fixture(source)
-  rep = engine.report(the_macro, the_call)
-  if count
-    puts rep.sites.size
+  if sites
+    print BenchSelfhostMacrosExercise.site_dump(source, flags)
   else
-    print BenchSelfhostMacrosExercise.dump_report(rep)
+    engine = MacroEngine.new(flags)
+    the_macro, the_call = MacroParser.parse_fixture(source)
+    rep = engine.report(the_macro, the_call)
+    if count
+      puts rep.sites.size
+    else
+      print BenchSelfhostMacrosExercise.dump_report(rep)
+    end
   end
 else
   BenchSelfhostMacrosExercise.run_all

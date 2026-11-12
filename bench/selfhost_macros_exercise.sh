@@ -109,9 +109,106 @@ class NodeCounter < Iyi::Visitor
   end
 end
 
+# The hosted parser wants `module` as the first thing in a file, and the port's
+# files put their `@[Unsafe(...)]` annotation above it. For the sites dump the
+# annotations above the header are blanked, which keeps every line where it was.
+def strip_header_annotations(src : String) : String
+  lines = src.split("\n")
+  module_at = lines.index { |l| l.starts_with?("module ") }
+  return src unless module_at
+  i = 0
+  while i < module_at
+    lines[i] = "" if lines[i].starts_with?("@[")
+    i += 1
+  end
+  lines.join("\n")
+end
+
+# Finds the top-level macro sites of a whole file, as the port's MacroSiteScan does.
+class SiteFinder < Iyi::Visitor
+  def visit(node : Iyi::ASTNode) : Bool
+    true
+  end
+
+  def initialize(@context : String, @sites : Array(Tuple(Iyi::ASTNode, String)))
+  end
+
+  def visit(node : Iyi::MacroIf) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : Iyi::MacroFor) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : Iyi::MacroExpression) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : Iyi::MacroVerbatim) : Bool
+    add_site(node)
+    false
+  end
+
+  def visit(node : Iyi::Macro) : Bool
+    scan_body("macro", node.body)
+    false
+  end
+
+  def visit(node : Iyi::Def) : Bool
+    scan_body("def:#{node.name}", node.body)
+    false
+  end
+
+  def visit(node : Iyi::ClassDef) : Bool
+    scan_body("class", node.body)
+    false
+  end
+
+  def visit(node : Iyi::ModuleDef) : Bool
+    scan_body("class", node.body)
+    false
+  end
+
+  private def add_site(node : Iyi::ASTNode) : Nil
+    @sites << {node, @context}
+  end
+
+  private def scan_body(context : String, body : Iyi::ASTNode) : Nil
+    body.accept(SiteFinder.new(context, @sites))
+  end
+end
+
+# Whether a site reads `@type`, `@top_level`, `@def` or `@caller`.
+class ContextProbe < Iyi::Visitor
+  getter found = false
+
+  def visit(node : Iyi::ASTNode) : Bool
+    true
+  end
+
+  def visit(node : Iyi::InstanceVar) : Bool
+    @found = true if ["@type", "@top_level", "@def", "@caller"].includes?(node.name)
+    true
+  end
+end
+
+def line_col(node : Iyi::ASTNode) : String
+  if loc = node.location
+    "#{loc.line_number}:#{loc.column_number}"
+  else
+    "0:0"
+  end
+end
+
+
 args = ARGV.to_a
 filename = ""
 count = false
+sites = false
 host = false
 target = ""
 defines = [] of String
@@ -120,6 +217,8 @@ while i < args.size
   a = args[i]
   if a == "--count"
     count = true
+  elsif a == "--sites"
+    sites = true
   elsif a == "--host-target"
     host = true
   elsif a == "--target"
@@ -140,8 +239,40 @@ if host
 end
 
 src = File.read(filename)
-parser = Iyi::Parser.new(src)
+parser = Iyi::Parser.new(sites ? strip_header_annotations(src) : src)
 node = parser.parse
+if sites
+  program = Iyi::Program.new
+  unless target.empty?
+    program.codegen_target = Iyi::Codegen::Target.new(target)
+  end
+  defines.each { |d| program.flags << d }
+  found = [] of Tuple(Iyi::ASTNode, String)
+  node.accept(SiteFinder.new("top", found))
+  found.each_with_index do |pair, idx|
+    site = pair[0]
+    context = pair[1]
+    head = "site #{idx} #{site.class.name.split("::").last} #{line_col(site)} #{context}"
+    probe = ContextProbe.new
+    site.accept(probe)
+    if context == "macro"
+      puts "#{head} macro-body"
+    elsif probe.found
+      puts "#{head} needs-context"
+    else
+      interp = Iyi::MacroInterpreter.new(program, program, program, site.location, in_macro: false)
+      begin
+        interp.accept(site)
+        puts "#{head} text=#{escape_s(interp.to_s)}"
+      rescue ex : Iyi::SkipMacroException
+        puts "#{head} skipped"
+      rescue ex : Iyi::TypeException
+        puts "#{head} error #{ex.gate_line}:#{ex.gate_column} message=#{escape_s(ex.message.to_s)}"
+      end
+    end
+  end
+  exit 0
+end
 
 the_macro : Iyi::Macro? = nil
 the_call : Iyi::Call? = nil
@@ -304,6 +435,16 @@ for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
 done
 echo "  Parity summary: $((fixture_count - diverged - refusal_count))/$((fixture_count - refusal_count)) comparable fixtures identical ($total_sites sites); $refusal_count refusal fixtures"
 
+echo "== 2b. Macro sites in the prelude and the port's source: the oracle and the port must agree site by site"
+SITES_DIR="$WORK/sites"
+mkdir -p "$SITES_DIR"
+python3 "$REPO/bench/macro_sites.py" --list > "$SITES_DIR/list"
+while IFS="$(printf '\t')" read -r name rel; do
+  "$WORK/dump_crystal" --sites "$REPO/$rel" > "$SITES_DIR/$name.oracle" 2> "$SITES_DIR/$name.oracle.err" || echo "file-error oracle exit=$?" > "$SITES_DIR/$name.oracle"
+  "$WORK/exercise" --sites "$REPO/$rel" > "$SITES_DIR/$name.port" 2> "$SITES_DIR/$name.port.err" || echo "file-error port exit=$?" > "$SITES_DIR/$name.port"
+done < "$SITES_DIR/list"
+python3 "$REPO/bench/macro_sites.py" "$SITES_DIR" --check || status=1
+echo
 echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
