@@ -201,5 +201,6 @@ pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
       end
     end
   end
+  visitor.set_type(node, visitor.program.nil_type)
   false
 end

@@ -1365,6 +1365,7 @@ pub class MainVisitor < TypeNodeHost
     end
     false
   end
+
   # --- type nodes: begin ---
   # The type-argument bracket the type-node functions use (hosted `@in_type_args`).
   def bracket_type_args(delta : Int32) : Nil
@@ -1782,7 +1783,6 @@ pub class CleanupTransformer < Transformer
     node.expressions = new_exps
     node
   end
-
 end
 
 pub def dump_program_expressions(program : SemanticProgram, node : ASTNode, visitor : MainVisitor) : String
