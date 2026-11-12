@@ -7,4 +7,4 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-LibC.exit(LibSecurity.SecRandomCopyBytes(nil, 0, nil) + 42)
+LibC.exit(LibSecurity.SecRandomCopyBytes(nil, 0, nil) | 42)

@@ -133,6 +133,23 @@ if ! lower_calls_check; then
   echo "  baseline: the unmutated port does not match the hosted module, so no mutation below is counted"
   exit 1
 fi
+# The import of a lib fun (contract 6b): the port's own text declares SecRandomCopyBytes with its framework. The
+# comparison above drops the `import` text on both sides (lower_gate.iyi strip_import), so this check is the one
+# that proves it. It rebuilds the driver from the current source, so a mutation of the import is what it tests.
+link_import_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$WORK/mut" emit "$REPO/bench/fixtures/lowcall_link_framework.iyi" "$WORK/lowcall_link_framework.oracle.ll" > "$WORK/mut.import.ir" 2>/dev/null || return 1
+  awk '/^declare / && /@SecRandomCopyBytes\(/ && / import "Security"/ { ok = 1 } END { exit !ok }' "$WORK/mut.import.ir"
+}
+echo "  the lib fun is imported from its framework (contract 6b):"
+if link_import_check; then
+  echo "    yes: SecRandomCopyBytes is declared import \"Security\""
+else
+  echo "    no: the port's module does not declare SecRandomCopyBytes import \"Security\""
+  status=1
+fi
+prove_mutation "a lib fun is imported from no library" "$REPO/src/compiler/lower/call.iyi" \
+  "    made.import_library = import_from" "    made.import_library = nil" -- link_import_check || status=1
 prove_mutation "a function's linkage is external" "$REPO/src/compiler/lower/fun.iyi" \
   "fn.linkage = Linkage::Internal" "fn.linkage = Linkage::External" -- lower_calls_check || status=1
 prove_mutation "a mangled argument list has no separator" "$REPO/src/compiler/lower/fun.iyi" \

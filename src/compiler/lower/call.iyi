@@ -580,7 +580,9 @@ end
 # are refused by name: the hosted link line is not ported.
 pub def lib_import_library(low : Lowerer, node : Compiler::Syntax::Ast::Call) : String?
   recv = node.obj
-  raise "BUG: a call on a lib has no receiver (hosted call.cr: codegen_extern_call)" if recv.nil?
+  # No receiver: the lib call record names a top-level fun with a body (`__iyi_main` and the like, the hosted External
+  # def), which belongs to no lib, so there is nothing to import.
+  return nil if recv.nil?
   t = low.analysed.type_of?(recv.as(ASTNode))
   raise "BUG: the analysed program has no type for the lib of #{node.name} (hosted call.cr: codegen_extern_call)" if t.nil?
   owner_lib = t.as(Type)
