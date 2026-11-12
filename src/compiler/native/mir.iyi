@@ -104,6 +104,11 @@ pub enum MOp
   Br              # branch through uses[0]
   Ret
   Brk             # trap with imm
+  Mrs             # dst <- system register imm: 0 tpidr_el0 (Linux), 1 tpidrro_el0 (darwin)
+  LoadTlvp        # dst <- address of the TLV descriptor of sym (adrp, ldr through the TLVP relocs)
+  AndImm          # dst <- uses[0] & imm, imm a 64-bit logical immediate (the encoder raises on any other value)
+  AddTprelHi      # dst <- uses[0] + the high 12 bits of sym's local-exec offset (add, lsl 12; ELF)
+  AddTprelLo      # dst <- uses[0] + the low 12 bits of sym's local-exec offset (add; ELF)
 end
 
 pub class Operand

@@ -332,6 +332,21 @@ pub class Encoder
       word(0xD65F03C0_i64)
     elsif op == MOp::Brk
       word(0xD4200000_i64 | (inst.imm << 5))
+    elsif op == MOp::Mrs
+      word(0xD53BD000_i64 | (inst.imm == 1_i64 ? 0x60_i64 : 0x40_i64) | field(inst.defs[0].reg))
+    elsif op == MOp::LoadTlvp
+      reloc(RelocKind::A64TlvpPage21, inst.sym)
+      word(0x90000000_i64 | field(inst.defs[0].reg))
+      reloc(RelocKind::A64TlvpLo12, inst.sym)
+      word(0xF9400000_i64 | (field(inst.defs[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::AndImm
+      word(0x92000000_i64 | logical_imm(inst.imm) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::AddTprelHi
+      reloc(RelocKind::A64TprelHi12, inst.sym)
+      word(0x91400000_i64 | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+    elsif op == MOp::AddTprelLo
+      reloc(RelocKind::A64TprelLo12Nc, inst.sym)
+      word(0x91000000_i64 | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
     else
       raise "the encoder has no form for #{op}"
     end
@@ -390,6 +405,33 @@ pub class Encoder
 
   def arith(base : Int64, inst : MInst) : Nil
     word(base | (field(inst.uses[1].reg) << 16) | (field(inst.uses[0].reg) << 5) | field(inst.defs[0].reg))
+  end
+
+  # The N, immr and imms fields of a 64-bit logical immediate, packed where the instruction holds them (N at bit
+  # 22, immr at 16, imms at 10). The value must be one run of ones, rotated within the 64 bits: zero and all-ones
+  # are not encodable. The run starts at bit `start`; immr rotates the canonical run (ones from bit 0) to there.
+  def logical_imm(value : Int64) : Int64
+    ones = 0
+    starts = 0
+    start = 0
+    i = 0
+    while i < 64
+      bit = (value.unsafe_shr(i.to_i64)) & 1_i64
+      if bit == 1_i64
+        ones = ones + 1
+        prev = (value.unsafe_shr(((i + 63) % 64).to_i64)) & 1_i64
+        if prev == 0_i64
+          starts = starts + 1
+          start = i
+        end
+      end
+      i = i + 1
+    end
+    if ones == 0 || ones == 64 || starts != 1
+      raise "the encoder cannot encode #{value} as a 64-bit logical immediate"
+    end
+    immr = (64 - start) % 64
+    (1_i64 << 22) | (immr.to_i64 << 16) | ((ones - 1).to_i64 << 10)
   end
 
   def fcvt_int_word(inst : MInst, w_single : Int64, w_double : Int64, x_single : Int64, x_double : Int64) : Int64
