@@ -296,8 +296,10 @@ prove_mutation "corrupt prefix flag propagation in command router" "$COMMAND_CR_
 rebuild_wiring_binary "$COMMAND_CR_SRC"
 
 prove_mutation "bypass status code in check mode" "$FORMAT_CR_SRC" \
-  '@status_code = 1' \
-  '@status_code = 0' \
+  'produced changes"
+        @status_code = 1' \
+  'produced changes"
+        @status_code = 0' \
   -- wiring_mutant_check "$FORMAT_CR_SRC" test_check_refusal || status=1
 rebuild_wiring_binary "$FORMAT_CR_SRC"
 
