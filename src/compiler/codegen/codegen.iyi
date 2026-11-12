@@ -24,6 +24,7 @@
 module compiler/codegen/codegen
 
 import compiler/foundation/location::{Location}
+import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Unless, Var, While, Yield, MacroIf, MacroLiteral}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
@@ -224,14 +225,6 @@ class LocalVarCollector < Visitor
     end
     true
   end
-end
-
-# The port refuses, by name and before it writes any IR, a call or operand it
-# cannot lower. Emitting nothing for one would leave a block unterminated and
-# hand the verifier invalid IR, so the emitter stops with exit status 1.
-def refuse_port(message : String) : NoReturn
-  STDERR.puts "Error: #{message}"
-  LibC.exit(1)
 end
 
 # Collects the assignments to instance variables in one method body. A nested def or

@@ -1,3 +1,4 @@
+@[Unsafe("refuse_port calls the C exit function to stop with a refusal's status; the compiler does not check C calls")]
 module compiler/foundation/errors
 
 import compiler/foundation/location::{Location}
@@ -27,4 +28,12 @@ pub class SyntaxException
       "Syntax error in #{@filename}:#{@line_number}:#{@column_number}: #{@message}"
     end
   end
+end
+
+# The port refuses, by name and before it writes any IR, a call or operand it cannot
+# lower. Emitting nothing for one would leave a block unterminated and hand the verifier
+# invalid IR, so the emitter stops with exit status 1.
+pub def refuse_port(message : String) : NoReturn
+  STDERR.puts "Error: #{message}"
+  LibC.exit(1)
 end
