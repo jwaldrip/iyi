@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Burn-down gate for typed parity between the iyi semantic port and the
-# Crystal-hosted compiler (specification S0, section 3.6).
+# hosted front end (specification S0, section 3.6).
 #
 # Every file of the prelude (src/iyi), std (src/std), samples (samples/iyi) and
-# the compiler's own source (src/compiler) is analysed twice: by the Crystal
-# compiler's full semantic pass (bench/selfhost_typed_oracle.cr) and by the iyi
+# the compiler's own source (src/compiler) is analysed twice: by the hosted front end's
+# full semantic pass (bench/selfhost_typed_oracle.cr) and by the iyi
 # port (src/compiler/tools/typed_dump.iyi). For each file the gate counts the
 # expression nodes the oracle typed and how many the port typed to the same
 # "line:col Kind type". The committed floor (bench/selfhost_typed_parity.floor)
@@ -44,6 +44,7 @@ WORK="$(mktemp -d)"
 MUTATED=""
 LC_ALL=C
 export LC_ALL
+export IYI_CACHE_DIR="$WORK/cache"
 trap 'if [ -n "$MUTATED" ]; then cp "$WORK/mutation.orig" "$MUTATED"; fi; rm -rf "$WORK"' EXIT INT TERM
 
 ORACLE="$WORK/oracle"

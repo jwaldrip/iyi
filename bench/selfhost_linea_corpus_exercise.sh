@@ -5,10 +5,10 @@
 # tools on the samples, the prelude, std, the parser's own source and its
 # fixtures. This gate runs line B's tools on the same corpora and prints agree
 # and differ counts beside line A's measured figures. Agreement is per file:
-# the tool's standard output is byte-identical to the Crystal-hosted front end's
+# the tool's standard output is byte-identical to the hosted front end's
 # output for that file, and the tool exits 0.
 #
-# The Crystal-hosted golden dumpers are the inline scripts the existing gates
+# The golden dumpers are the inline scripts the existing gates
 # already use (bench/selfhost_lexer_exercise.sh, bench/selfhost_parser_exercise.sh
 # and bench/selfhost_semantic_exercise.sh). They are extracted from those gates,
 # not copied, so the comparison cannot drift from the gates' own oracles.
@@ -35,6 +35,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT INT TERM
 LC_ALL=C
 export LC_ALL
+export IYI_CACHE_DIR="$WORK/cache"
 status=0
 RESULTS="$WORK/results.tsv"
 : > "$RESULTS"
@@ -79,10 +80,10 @@ linea_figure() {
 }
 
 extract_golden() {
-  sed -n "/^cat <<'CRYSTAL_GOLDEN_SCRIPT'/,/^CRYSTAL_GOLDEN_SCRIPT\$/p" "$1" | sed '1d;$d' > "$2"
+  sed -n "/^cat <<'[A-Z_]*GOLDEN_SCRIPT'/,/^[A-Z_]*GOLDEN_SCRIPT\$/p" "$1" | sed '1d;$d' > "$2"
 }
 
-echo "== 1. Building line B's lexer, parser and declaration tools and their Crystal dumpers"
+echo "== 1. Building line B's lexer, parser and declaration tools and their golden dumpers"
 extract_golden "$REPO/bench/selfhost_lexer_exercise.sh" "$WORK/dump_lexer.cr"
 extract_golden "$REPO/bench/selfhost_parser_exercise.sh" "$WORK/dump_parser.cr"
 extract_golden "$REPO/bench/selfhost_semantic_exercise.sh" "$WORK/dump_decls.cr"
@@ -105,7 +106,7 @@ CRYSTAL_PATH="$REPO/src" "$REPO/bin/crystal" build -o "$WORK/golden_parser" "$WO
 LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" CRYSTAL_PATH="$REPO/src" \
   "$CRYSTAL" build -Di_know_what_im_doing -o "$WORK/golden_decls" "$WORK/dump_decls.cr" > "$WORK/golden_decls.log" 2>&1 \
   || { cat "$WORK/golden_decls.log"; echo "  FAILED to build the declaration golden dumper"; exit 1; }
-echo "  built: lexer, parser and declaration tools; three Crystal golden dumpers"
+echo "  built: lexer, parser and declaration tools; three golden dumpers"
 
 # One file: run line B's tool and the golden dumper, record agree or differ.
 compare() {
