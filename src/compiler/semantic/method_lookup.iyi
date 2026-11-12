@@ -2,7 +2,7 @@ module compiler/semantic/method_lookup
 
 import compiler/syntax/ast::{Def, Nop}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaclassType, ModuleType, TraitType, Type, UnionType}
-import compiler/types/types::{GenericInstanceType, VirtualType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, VirtualType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/match::{CallMatch, CallSignature, Match}
 
@@ -358,6 +358,19 @@ pub class MethodLookup
     end
     if receiver.is_a?(VirtualType)
       return lookup_virtual(receiver.as(VirtualType), ts, signature)
+    end
+    # The metaclass of a generic instance (`Pointer(Int32).malloc`): its class methods are the
+    # defs of the generic type's own metaclass, looked up with the instance metaclass as owner,
+    # as the hosted pass does. Its own defs are empty, so this comes before the module branch.
+    if receiver.is_a?(GenericClassInstanceMetaclassType)
+      instance = receiver.as(GenericClassInstanceMetaclassType).instance_type
+      if instance.is_a?(GenericClassInstanceType)
+        generic = instance.as(GenericClassInstanceType).generic_type
+        if generic.is_a?(GenericClassType)
+          generic_meta = generic.as(GenericClassType).metaclass
+          return lookup_matches(generic_meta, ts, signature, receiver, generic_meta, [] of Match)
+        end
+      end
     end
     if receiver.is_a?(GenericInstanceType)
       generic = receiver.as(GenericInstanceType).generic_type
