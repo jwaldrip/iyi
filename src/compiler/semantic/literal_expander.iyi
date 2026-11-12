@@ -4,32 +4,36 @@ module compiler/semantic/literal_expander
 # LiteralExpander does (src/compiler/iyi/semantic/literal_expander.cr, the
 # hosted compiler). Phase S slice S1e ports it one literal kind per increment.
 #
-# Ported so far: range literals, string interpolation, and array literals.
+# Ported so far: range literals, string interpolation, array literals and hash
+# literals.
 #
 # `1 .. 3` is `Range.new(1, 3, false)` and `1 ... 3` is `Range.new(1, 3, true)`,
 # the `from` and `to` expressions left as written. `"a#{b}c"` is
 # `String.interpolation("a", b, "c")`, after the literal pieces that touch each
 # other are merged.
 #
-# Array literals: `[] of T` is `Array(T).new`; `[] ` is `Array(typeof()).new`
-# (the hosted typeof of no elements); `[a, b]` is an `unsafe_build` with each
-# element stored by index; a splat element switches to `new` and `<<`/`concat`.
-# An element that is not a plain variable or a simple literal is bound to a
-# `__temp_N` first, in element order. The expander is one step: the walk
-# (`transform`) continues into the expansion, so a literal inside an element is
-# expanded when the walk reaches it, which is the order the hosted visitor uses.
+# Array literals: `[] of T` is `Array(T).new`; `[a, b]` is an `unsafe_build` of
+# the capacity, then each element stored by index; a splat switches to `new`
+# and `<<`/`concat`. Hash literals: `{} of K => V` is `Hash(K, V).new`;
+# `{a => b}` is `Hash(typeof(keys), typeof(values)).new`, filled with `[]=`.
+# An element or key or value that is not a plain variable or a simple literal
+# is bound to a `__temp_N` first, in element order; for a hash all keys are
+# bound before any value. The expander is one step: the walk (`transform`)
+# continues into the expansion, so a literal inside an element is expanded when
+# the walk reaches it, which is the order the hosted visitor uses.
 #
-# The named form `Type{...}` takes its generic type from the program's types in
-# the hosted compiler. The walk here has no types, so it passes no generic type,
-# which is the non-generic branch. The generic branch is not ported.
+# The named forms `Type{...}` take their generic type from the program's types
+# in the hosted compiler. The walk here has no types, so it passes the name as
+# written, which is the non-generic branch. The generic branch is not ported.
+#
+# Named tuples have no expansion in the hosted expander either, so none here.
 #
 # Not ported yet, so a literal of these kinds is left as written and the
-# literal fixtures never contain one: hash literals (with their temporaries),
-# named tuples, `case`, multiple assignment, op-assign, `select`, regex and
-# proc literals.
+# literal fixtures never contain one: `case`, multiple assignment, op-assign,
+# `select`, regex and proc literals.
 
 import compiler/semantic/normalizer::{NormalizerProgram}
-import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, CharLiteral, ClassVar, Expressions, Generic, InstanceVar, NilLiteral, Nop, NumberLiteral, Path, RangeLiteral, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TypeOf, Var}
+import compiler/syntax/ast::{ASTNode, ArrayLiteral, Assign, BoolLiteral, Block, Call, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, InstanceVar, NilLiteral, Nop, NumberLiteral, Path, RangeLiteral, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TypeOf, Var}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
@@ -42,6 +46,11 @@ pub class LiteralExpander < Transformer
     else
       expanded = expand_array(node)
     end
+    expanded.transform(self)
+  end
+
+  def transform(node : HashLiteral) : ASTNode
+    expanded = expand_hash(node, node.name)
     expanded.transform(self)
   end
 
@@ -176,6 +185,61 @@ pub class LiteralExpander < Transformer
     Expressions.new(exps)
   end
 
+  # `{} of K => V` is `Hash(K, V).new`. `{a => b}` with no name is
+  # `Hash(typeof(keys), typeof(values)).new`. `T{a => b}` builds with `T.new`.
+  # Every key is bound to a temporary before any value, as the hosted pass does.
+  def expand_hash(node : HashLiteral, name : ASTNode?) : ASTNode
+    keys = [] of ASTNode
+    values = [] of ASTNode
+    i = 0
+    while i < node.entries.size
+      entry = node.entries[i]
+      keys << entry.key
+      values << entry.value
+      i += 1
+    end
+    key_temps = complex_elem_temp_vars(keys)
+    value_temps = complex_elem_temp_vars(values)
+
+    if of = node.of
+      generic = Generic.new(Path.global(["Hash"] of String), [of.key, of.value] of ASTNode)
+    elsif n = name
+      generic = n
+    else
+      typeof_key = TypeOf.new(temp_values(keys, key_temps))
+      typeof_value = TypeOf.new(temp_values(values, value_temps))
+      generic = Generic.new(Path.global(["Hash"] of String), [typeof_key, typeof_value] of ASTNode)
+    end
+    constructor = Call.new(generic, "new")
+    if node.entries.empty?
+      return constructor
+    end
+
+    count = node.entries.size
+    hash_var = temp_var
+    exps = [] of ASTNode
+    i = 0
+    while i < count
+      if t = key_temps[i]
+        exps << Assign.new(t, keys[i].clone)
+      end
+      if t = value_temps[i]
+        exps << Assign.new(t, values[i].clone)
+      end
+      i += 1
+    end
+    exps << Assign.new(hash_var.clone, constructor)
+    i = 0
+    while i < count
+      key_exp = value_or_temp(keys[i], key_temps[i])
+      value_exp = value_or_temp(values[i], value_temps[i])
+      exps << Call.new(hash_var.clone, "[]=", [key_exp, value_exp] of ASTNode)
+      i += 1
+    end
+    exps << hash_var
+    Expressions.new(exps)
+  end
+
   # Each element that is not a plain variable or a simple literal gets a
   # temporary, nil where it needs none. A splat is judged by what it splats.
   def complex_elem_temp_vars(elements : Array(ASTNode)) : Array(Var?)
@@ -212,6 +276,17 @@ pub class LiteralExpander < Transformer
       i += 1
     end
     TypeOf.new(type_exps)
+  end
+
+  # The element or temporary of each node, in order: what a `typeof` names.
+  def temp_values(elements : Array(ASTNode), temps : Array(Var?)) : Array(ASTNode)
+    values = [] of ASTNode
+    i = 0
+    while i < elements.size
+      values << value_or_temp(elements[i], temps[i])
+      i += 1
+    end
+    values
   end
 
   # Binds each complex element to its temporary, in element order. A splat

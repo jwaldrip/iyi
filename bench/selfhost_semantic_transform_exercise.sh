@@ -205,8 +205,8 @@ echo
 echo "== 5. Literal expansion: range literals, the port's walk against the hosted walk"
 # The literal fixtures (semtx_lit_*.iyi) are walked by the port (the driver's
 # `literals` mode) and by the hosted walk (the oracle's `literals` mode), and
-# the rewritten trees must match. Range literals, string interpolations and array
-# literals are lowered so far.
+# the rewritten trees must match. Range literals, string interpolations, array and
+# hash literals are lowered so far.
 # An interpolation made only of literal pieces is kept out of these fixtures:
 # the hosted parser folds it into one string (consume_interpolation in
 # src/compiler/iyi/syntax/parser.cr), and the port's parser keeps the pieces.
@@ -272,6 +272,14 @@ LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "a named splat block variable takes a plain temporary name" "$LITERAL" 'yield_var = temp_var_for(elem)' 'yield_var = temp_var' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "the walk stops at the array expansion" "$LITERAL" 'expanded.transform(self)' 'expanded' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a hash key is bound to the value's temporary" "$LITERAL" 'if t = key_temps[i]' 'if t = value_temps[i]' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a hash stores each value under its key's text" "$LITERAL" 'value_exp = value_or_temp(values[i], value_temps[i])' 'value_exp = value_or_temp(keys[i], value_temps[i])' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "an untyped hash swaps its key and value types" "$LITERAL" '[typeof_key, typeof_value] of ASTNode' '[typeof_value, typeof_key] of ASTNode' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a typed hash swaps its declared key and value" "$LITERAL" '[of.key, of.value] of ASTNode' '[of.value, of.key] of ASTNode' -- check_literals_agree || status=1
 echo "  $LIT_MUTATIONS literal mutation proofs run"
 
 echo
