@@ -21,7 +21,8 @@ module compiler/native/wasm/codegen
 
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value, Param}
-import compiler/ir/inst::{Op, Inst, Block, CallAux, GepAux, MemAux, Attribute, AsmAux}
+import compiler/ir/inst::{Op, Inst, Block, CallAux, GepAux, MemAux, Attribute, AsmAux, IntrinsicAux}
+import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/function::{Function, Global}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout}
@@ -304,7 +305,9 @@ class FnGen
 
   def i32c(v : Int64) : Nil
     @code << 65_u8
-    sleb(@code, v.to_i32.to_i64)
+    low = v & 4294967295_i64
+    wrapped = low >= 2147483648_i64 ? low - 4294967296_i64 : low
+    sleb(@code, wrapped)
   end
 
   def i64c(v : Int64) : Nil
@@ -885,6 +888,37 @@ class FnGen
     store_result(i)
   end
 
+  # memcpy and memmove become memory.copy, memset becomes memory.fill (the bulk-memory proposal, which the
+  # wasm32-wasi row of SPEC 2.2 allows). Lengths are i32 in wasm; a wider length is wrapped.
+  def intrinsic(i : Inst) : Nil
+    aux = i.aux
+    unless aux.is_a?(IntrinsicAux)
+      refuse("an intrinsic without an id")
+      return
+    end
+    id = aux.as(IntrinsicAux).id
+    if id == IntrinsicId::Memcpy || id == IntrinsicId::Memmove
+      push(i.args[0])
+      push(i.args[1])
+      push(i.args[2])
+      byte(167_u8) if i.args[2].type.bits == 64
+      @code << 252_u8
+      @code << 10_u8
+      @code << 0_u8
+      @code << 0_u8
+    elsif id == IntrinsicId::Memset
+      push(i.args[0])
+      push(i.args[1])
+      push(i.args[2])
+      byte(167_u8) if i.args[2].type.bits == 64
+      @code << 252_u8
+      @code << 11_u8
+      @code << 0_u8
+    else
+      refuse("intrinsic #{id} is not lowered by the wasm backend")
+    end
+  end
+
   # One non-terminator instruction.
   def emit_inst(i : Inst) : Nil
     case i.op
@@ -925,6 +959,8 @@ class FnGen
       store_result(i)
     when Op::Call
       call(i)
+    when Op::Intrinsic
+      intrinsic(i)
     when Op::Unreachable
       byte(0_u8)
     else
