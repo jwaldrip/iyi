@@ -72,16 +72,17 @@ measured=0
 for rel in $FILES; do
   [ -f "$REPO/$rel" ] || continue
   dir="$(dirname "$rel")"
-  # The prelude is required by a relative path from the file's own directory.
+  # The prelude is required by a path relative to the file's own directory: one
+  # `../` for each directory component, then src/iyi/prelude.
   IFS=/ read -r -a parts <<< "$dir"
-  up=$(( ${#parts[@]} - 1 ))
+  up=${#parts[@]}
   prefix=""
   i=0
   while [ "$i" -lt "$up" ]; do
     prefix="../$prefix"
     i=$((i + 1))
   done
-  prelude_req="${prefix}iyi/prelude"
+  prelude_req="${prefix}src/iyi/prelude"
   mode=""
   corpus="compiler"
   case "$rel" in
@@ -171,11 +172,12 @@ awk -F'\t' '
   $1 == "BELOW FLOOR"     { printf "  BELOW FLOOR: %s identical %s, floor %s. A regression: restore the lookup or lower nothing.\n", $3, $6, $7; bad = 1 }
   $1 == "RAISE THE FLOOR" { printf "  RAISE THE FLOOR: %s identical %s, floor %s. Raise the floor (CALLS_CENSUS_RAISE=1).\n", $3, $6, $7; bad = 1 }
   $1 == "NO FLOOR"        { printf "  NO FLOOR: %s has no floor entry. Add it (CALLS_CENSUS_RAISE=1).\n", $3; bad = 1 }
+  $1 == "PORT"           { printf "  PORT: %s did not load in the port (not measured). A failure: fix the port'\''s loader or the file.\n", $3; bad = 1 }
   END { exit bad ? 1 : 0 }' "$VERDICTS"
 if [ $? -ne 0 ] && [ "$RAISE" != 1 ]; then
   status=1
 fi
-fails=$(awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "NO FLOOR" { n += 1 } END { print n + 0 }' "$VERDICTS")
+fails=$(awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "NO FLOOR" || $1 == "PORT" { n += 1 } END { print n + 0 }' "$VERDICTS")
 echo "  $fails file(s) below or missing their floor"
 
 echo
