@@ -480,6 +480,9 @@ for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
 done
 echo "  Parity summary: $((fixture_count - diverged - refusal_count))/$((fixture_count - refusal_count)) comparable fixtures identical ($total_sites sites); $refusal_count refusal fixtures"
 
+echo "== 2a. The table of macro methods the hosted compiler answers is the one generated from its source"
+python3 "$REPO/bench/macro_method_table.py" --check || status=1
+
 echo "== 2b. Macro sites in the prelude and the port's source: the oracle and the port must agree site by site"
 SITES_DIR="$WORK/sites"
 mkdir -p "$SITES_DIR"
