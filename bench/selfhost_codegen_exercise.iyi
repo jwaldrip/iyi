@@ -13,9 +13,16 @@ import compiler/backend/llvm/emit::{print_llvm_module, verify_llvm_module, host_
 import compiler/ir/builder::{Builder}
 import compiler/ir/types::{IrType}
 
-# The triple the exercise compiles for: the one the gate's oracle dumps, and the one the
-# host target machine writes objects for.
-TRIPLE = "aarch64-apple-darwin"
+# The triple the exercise compiles for: the host's, which is the one the gate's oracle dumps and
+# writes objects for. The gate links the port's objects with the host's C compiler and runs them,
+# so an object for another system is refused by the linker (a Mach-O object on the Linux runner).
+{% if flag?(:linux) && flag?(:x86_64) %}
+  TRIPLE = "x86_64-unknown-linux-gnu"
+{% elsif flag?(:linux) && flag?(:aarch64) %}
+  TRIPLE = "aarch64-unknown-linux-gnu"
+{% else %}
+  TRIPLE = "aarch64-apple-darwin"
+{% end %}
 
 # The name of a printed LLVM function: `define internal ptr @"name"(...)` or `define i32 @name(...)`.
 def define_name(line : String) : String
