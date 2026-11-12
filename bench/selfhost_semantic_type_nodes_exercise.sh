@@ -163,8 +163,8 @@ prove_mutation "unbound generic name drops its type variables" "$TOP_LEVEL" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "nilable cast is typed as its target without Nil" "$TYPE_NODES" \
-  "visitor.program.type_merge(target.as(Type), visitor.program.nil_type)" \
-  "target.as(Type)" \
+  "visitor.program.type_merge(TypeQueries.virtual_type(result), visitor.program.nil_type)" \
+  "TypeQueries.virtual_type(result)" \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -230,8 +230,22 @@ prove_mutation "a generic whose name fails in scope is not rebuilt from its type
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a cast's upcast flag is not recorded" "$TYPE_NODES" \
-  "  node.upcast = cast_is_upcast(visitor, node.obj, target.as(Type), true)" \
-  "  node.upcast = false" \
+  "  node.upcast = upcast
+  result = to_type
+  if !upcast
+    if f = filtered
+      result = f.as(Type)
+    end
+  end
+  visitor.set_type(node, TypeQueries.virtual_type(result))" \
+  "  node.upcast = false
+  result = to_type
+  if !upcast
+    if f = filtered
+      result = f.as(Type)
+    end
+  end
+  visitor.set_type(node, TypeQueries.virtual_type(result))" \
   -- check_cast_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
