@@ -13,22 +13,32 @@
 # 3. Relocation coverage over the corpus: each ELF relocation kind with its count, zero counts included.
 # 4. Mutation proofs (object reader and writer; linker): each patch must be caught by its check. A patch whose text is
 #    absent fails the gate, because it would prove nothing.
-# 5. Start code: the aarch64 Linux start IR and the x86_64 one verify; the aarch64 one compiles to an ELF object.
-#    The x86_64 start code waits for the x86_64 code generator (slice D2), so its object is not built here.
+# 5. Start code: both Linux start IRs verify. The aarch64 one compiles through the native backend to an ELF object.
+#    Both are also translated by iyi-ir (the LLVM bridge, SPEC 3.3) and compiled by llc into bridged ELF objects. The
+#    x86_64 executables link against the bridged object, until the x86_64 code generator (slice D2) compiles the start.
 # 6. Executables: every corpus program for both architectures is linked as a static-PIE and checked structurally by
 #    bench/fixtures/native_elf/check_exe.py (no PT_INTERP, no PT_DYNAMIC, PT_TLS where TLS is used, GNU_STACK read-write,
 #    PT_GNU_RELRO, no crt symbols, no .comment, the entry point at _start, and every relative relocation entry non-zero
-#    and inside an allocated section). The x86_64 executables use a stand-in _start (one trap instruction) because the
-#    x86_64 start code does not compile yet, so they are checked and never run.
+#    and inside an allocated section). The x86_64 executables link against the bridged start object, so they are
+#    checked and never run here.
 # 7. Each executable links twice to identical bytes (cmp).
 # 8. Linux runs, not done on this host: each aarch64 and x86_64 program run and its stdout and exit status compared
 #    with the oracle binary, and the address-randomisation fixture run twice. These print a skip line and need the Linux
 #    job that runs them (native-arm64-linux and native-linux). The mutations that only a run can see are listed there.
+# 9. The run half. `--emit DIR` writes DIR/<arch>/ with each program's oracle object, its native executable and a
+#    MANIFEST. `sh bench/native_elf_run.sh DIR <arch>` runs them on a Linux host of that architecture. This gate checks
+#    that the emitted set equals what the script's --list expects, and that the script parses.
 #
 # Needs a built compiler (`make`). Runs the object and structural steps on any host; nothing here invokes a host tool
 # to build an executable.
 
 set -u
+
+emit_dir=""
+if [ "${1:-}" = "--emit" ]; then
+  [ -n "${2:-}" ] || { echo "usage: bench/native_elf_exercise.sh [--emit DIR]" >&2; exit 2; }
+  mkdir -p "$2" && emit_dir="$(cd "$2" && pwd)" || exit 1
+fi
 
 root="$(cd "$(dirname "$0")/.." && pwd)" || exit 1
 cd "$root" || exit 1
@@ -79,6 +89,12 @@ build_tools() {
 # filtered_listing FILE: the llvm-readelf listing of FILE without the two string-table-dependent lines.
 filtered_listing() {
   llvm-readelf -S -s -r -W "$1" 2>&1 | awk '!/section headers, starting at offset/ && !/ \.strtab /'
+}
+
+# oracle_flags BUILD_LOG: the link flags of the hosted compiler's link line for the cross-compiled object (cc OBJECT -o
+# EXE FLAGS, minus the host library directory), as one word, or `-` when it has none.
+oracle_flags() {
+  awk '/^cc /{ out = ""; for (i = 5; i <= NF; i++) if ($i !~ /^-L/) out = out " " $i; sub(/^ /, "", out); print (out == "" ? "-" : out); exit }' "$1"
 }
 
 # run_program EXE OUT: runs EXE from a scratch directory with no stdin for at most 30 seconds, writing stdout to OUT
@@ -151,7 +167,7 @@ for triple in $arches; do
   mkdir -p "$work/obj/$short"
   : >"$work/obj/$short/coverage.txt"
   ok=0
-  for src in samples/iyi/*.iyi bench/fixtures/native_obj/*.iyi; do
+  for src in samples/iyi/*.iyi bench/fixtures/native_obj/*.iyi bench/fixtures/native_elf/*.iyi; do
     [ -f "$src" ] || continue
     name="$(basename "$src" .iyi)"
     obj="$work/obj/$short/$name.o"
@@ -237,17 +253,47 @@ else
   fail "the aarch64 start code does not compile:"
   tail -n 5 "$work/start.log"
 fi
-echo "   x86_64 start code: verified only; its object waits for the x86_64 code generator (slice D2)"
-"$work/bin/link_elf" stub x86_64 "$work/stub_x86.o" >/dev/null 2>&1 || fail "the x86_64 stand-in _start does not build"
-"$work/bin/link_elf" stub aarch64 "$work/stub_a64.o" >/dev/null 2>&1 || fail "the aarch64 stand-in _start does not build"
+iyi_ir="$work/bin/iyi-ir"
+if ! "$iyi" build -o "$iyi_ir" src/compiler/tools/ir.iyi >"$work/iyi-ir.build" 2>&1; then
+  fail "iyi-ir does not build, the LLVM bridge that translates the start code; its log ends:"
+  tail -n 20 "$work/iyi-ir.build" | sed 's/^/     /'
+fi
+llc_tool="$(command -v llc 2>/dev/null || true)"
+[ -n "$llc_tool" ] || fail "llc is not on PATH: the bridged start objects are compiled with it"
+# bridge_start IR OBJ: iyi-ir translates the start IR to LLVM IR text, and llc compiles that text to an ELF object.
+bridge_start() {
+  "$iyi_ir" translate "$1" >"$2.ll" 2>"$2.translate" || return 1
+  "$llc_tool" -filetype=obj -relocation-model=pic -o "$2" "$2.ll" >"$2.llc" 2>&1
+}
+# bridge_check ARCH IR OBJ: bridges IR to OBJ, then links the oracle hello object of ARCH with it and checks the result.
+bridge_check() {
+  if ! bridge_start "$2" "$3"; then
+    fail "$1 start code: the LLVM bridge does not translate and compile it: $(head -n 3 "$3.translate" "$3.llc" 2>/dev/null | tr '\n' ' ')"
+    return
+  fi
+  exe="$work/hello_bridged_$1"
+  if "$work/bin/link_elf" link "$exe" _start "$3" "$work/obj/$1/hello.o" >"$exe.link" 2>&1 && python3 "$check" "$exe" --expect-tls >"$exe.check" 2>&1; then
+    echo "   $1 start code: iyi-ir translated $(basename "$2") and llc compiled it; it links with the oracle hello and passes the structural check"
+  else
+    fail "$1 bridged start code does not link with hello: $(head -n 1 "$exe.link" 2>/dev/null)"
+  fi
+}
+if [ -x "$iyi_ir" ] && [ -n "$llc_tool" ]; then
+  bridge_check x86_64 "$start_x86_ir" "$work/start_x86_64_bridge.o"
+  bridge_check aarch64 "$start_a64_ir" "$work/start_aarch64_bridge.o"
+fi
 
 echo "== 5. executables, aarch64: every corpus program links and is checked"
 exes=0
+for t in $arches; do
+  mkdir -p "$work/manifest"
+  : >"$work/manifest/$(arch_short "$t")"
+done
 for triple in $arches; do
   short="$(arch_short "$triple")"
   start="$work/start_a64.o"
   if [ "$short" = x86_64 ]; then
-    start="$work/stub_x86.o"
+    start="$work/start_x86_64_bridge.o"
   fi
   for obj in "$work/obj/$short"/*.o; do
     case "$obj" in *.rt.o) continue ;; esac
@@ -270,17 +316,61 @@ for triple in $arches; do
       continue
     fi
     exes=$((exes + 1))
+    expected=-
+    case "$name" in addr_main) expected=random-address ;; esac
+    flags="$(oracle_flags "$work/obj/$short/$name.build")"
+    case "$flags" in *" "*) fail "$short $name: the oracle's link line has several flag words: $flags" ;; esac
+    echo "$name $flags $expected" >>"$work/manifest/$short"
   done
   echo "   $short: executables linked and checked: $(ls "$work/exe/$short" 2>/dev/null | grep -vc '\.' || true)"
 done
 echo "   $exes executables linked, checked structurally, and linked twice to identical bytes"
-echo "   x86_64 executables link against the stand-in _start (one trap instruction); they are never run here"
+echo "   x86_64 executables link against the bridged start object (iyi-ir, then llc); they are never run here"
 
 echo "== 6. runs (Linux only)"
 echo "   skipped: needs Linux aarch64 (run each aarch64 executable and compare stdout and exit status with the oracle"
 echo "            binary, and run the address-randomisation fixture twice): the native-arm64-linux job runs it"
-echo "   skipped: needs Linux x86_64 (the same comparison for x86_64; the x86_64 start code is not compiled yet, so it"
-echo "            also needs slice D2): the native-linux job runs it"
+echo "   skipped: needs Linux x86_64 (sh bench/native_elf_run.sh DIR x86_64 after --emit DIR; the native-linux job's"
+echo "            run half)"
+
+echo "== 7. the run half: the emitted set, its manifest, and the run script"
+emit="$work/emit"
+rm -rf "$emit"
+for triple in $arches; do
+  short="$(arch_short "$triple")"
+  mkdir -p "$emit/$short"
+  cp "$work/manifest/$short" "$emit/$short/MANIFEST"
+  count=0
+  while read -r name flags expected; do
+    [ -n "$name" ] || continue
+    cp "$work/obj/$short/$name.o" "$emit/$short/$name.o" || fail "$short $name: no oracle object to emit"
+    cp "$work/exe/$short/$name" "$emit/$short/$name.native" || fail "$short $name: no native executable to emit"
+    if ! python3 "$check" "$emit/$short/$name.native" --expect-tls >/dev/null 2>&1; then
+      fail "$short $name: the emitted executable fails the structural check"
+    fi
+    count=$((count + 1))
+  done <"$work/manifest/$short"
+  listed="$(sh bench/native_elf_run.sh --list "$emit" "$short" | awk '$1 == "file" { print $2 }' | sort)"
+  present="$(find "$emit/$short" -type f | sort)"
+  if [ "$listed" = "$present" ]; then
+    echo "   $short: $count programs emitted; the file set equals what the run script's --list expects"
+  else
+    fail "$short: the emitted files differ from what the run script lists:"
+    diff <(printf '%s\n' "$listed") <(printf '%s\n' "$present") | sed 's/^/     /' | tail -n 6
+  fi
+done
+if sh -n bench/native_elf_run.sh; then
+  echo "   bench/native_elf_run.sh parses under sh -n"
+else
+  fail "bench/native_elf_run.sh does not parse under sh -n"
+fi
+if [ -n "$emit_dir" ]; then
+  if mkdir -p "$emit_dir" && cp -R "$emit/." "$emit_dir/"; then
+    echo "   emitted to $emit_dir"
+  else
+    fail "cannot write the emit directory $emit_dir"
+  fi
+fi
 
 if [ "$failures" -eq 0 ]; then
   echo "== ALL NATIVE_ELF CHECKS PASSED"
