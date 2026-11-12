@@ -395,6 +395,7 @@ check_probe() {
   [ "$n" -ge 16 ]
 }
 check_tls_init() { check_fixture "$1" tls_init; }
+check_constmul() { check_fixture "$1" constexpr_mul; }
 check_tlvp_kind() {
   "$1" obj "$FIX/tls_init.ir" "$WORK/m.kind.o" >/dev/null 2>&1 || return 1
   llvm-objdump --macho --reloc "$WORK/m.kind.o" | grep -q 'TLVLDP  '
@@ -540,6 +541,11 @@ prove_mutation "asm: a relocation names the wrong symbol" \
   '      index = body.syms[r.name]?' \
   '      index = body.syms["eight"]?' \
   check_reloc
+prove_mutation "constant expression: a product is reduced as a sum" \
+  src/compiler/native/const_expr.iyi \
+  '    return ConstAddress.new(nil, wrap_to_bits(a.offset * b.offset, i.type.int? ? i.type.bits : 64))' \
+  '    return ConstAddress.new(nil, wrap_to_bits(a.offset + b.offset, i.type.int? ? i.type.bits : 64))' \
+  check_constmul
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \
