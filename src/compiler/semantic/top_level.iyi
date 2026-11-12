@@ -880,8 +880,14 @@ pub class SemanticProgram < NonGenericModuleType
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
   # hosted pass keeps a scope per file; the port keeps the importing file's table here.
   property current_imports : Hash(String, Type)
+  # The lowercase names the importing file imports (`import a/b::{refuse_port}`), as
+  # the defs they name. Swapped per file like current_imports.
+  property current_import_defs : Hash(String, Array(Def))
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
+  # Whether a refusal the pass can carry on past (an impl of an unresolved target) is
+  # skipped instead of raised. The typed dump of a whole program sets it.
+  property total_mode : Bool
   property search_path : Array(String)
   # The files read so far (absolute paths), and the module each one declared.
   getter loaded_files : Set(String)
@@ -1044,7 +1050,9 @@ pub class SemanticProgram < NonGenericModuleType
     @impls = [] of ImplRecord
     @global_funs = [] of LibFun
     @current_imports = Hash(String, Type).new
+    @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
+    @total_mode = false
     @search_path = [] of String
     @loaded_files = Set(String).new
     @loaded_units = Hash(String, ModuleType).new
@@ -1319,10 +1327,10 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
     if t.nil?
-      t = lookup_type(first_name)
+      t = @current_imports[first_name]?
     end
     if t.nil?
-      t = @current_imports[first_name]?
+      t = lookup_type(first_name)
     end
     if t.nil?
       return nil
@@ -1375,28 +1383,30 @@ pub class SemanticProgram < NonGenericModuleType
       end
     end
 
+    # The file's imports shadow the enclosing namespaces and the program root: a name
+    # the file imports is found before a same-named module beside the importing file.
+    if t.nil?
+      t = @current_imports[first_name]?
+    end
+
     # 4. Search enclosing namespaces
     if t.nil?
       ns = current_type.namespace
       while ns
+        # The program itself is searched last, in step 5, after the file's imports.
+        break if ns.is_a?(SemanticProgram)
         match = ns.lookup_type(first_name)
         if match
           t = match
-          break
-        end
-        if ns == self
           break
         end
         ns = ns.namespace
       end
     end
 
-    # 5. Search in program root
+    # 5. Search the program root
     if t.nil?
       t = self.lookup_type(first_name)
-    end
-    if t.nil?
-      t = @current_imports[first_name]?
     end
 
     if t.nil?
@@ -1539,10 +1549,17 @@ pub class TopLevelVisitor < Visitor
       end
       names.each do |name|
         found = unit.as(ModuleType).types[name]?
-        unless found
-          refuse_port("undefined constant #{name} in '#{written}'")
+        if found
+          @program.current_imports[name] = found.as(Type)
+        else
+          # A lowercase name is a def the file declares (`import a/b::{refuse_port}`):
+          # the calls slice resolves calls to it, so the pass records it here.
+          defs = unit.as(ModuleType).defs[name]?
+          unless defs
+            refuse_port("undefined constant #{name} in '#{written}'")
+          end
+          @program.current_import_defs[name] = defs.as(Array(Def))
         end
-        @program.current_imports[name] = found.as(Type)
       end
     end
     false
@@ -1580,10 +1597,13 @@ pub class TopLevelVisitor < Visitor
     nodes = parser.parse
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
+    saved_defs = @program.current_import_defs
     @program.current_imports = Hash(String, Type).new
+    @program.current_import_defs = Hash(String, Array(Def)).new
     nodes.accept(inner)
     inner.finish
     @program.current_imports = saved
+    @program.current_import_defs = saved_defs
     if unit = inner.unit
       @program.loaded_units[file] = unit
     end
@@ -1901,16 +1921,19 @@ pub class TopLevelVisitor < Visitor
   def visit(node : ImplDef) : Bool
     trait_type = @program.lookup_type_node(node.trait, @current_type)
     unless trait_type.trait?
-      raise("can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented")
+      refuse_port("can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented") unless @program.total_mode
+      return false
     end
 
     target_type = @program.lookup_type_node(node.target, @current_type)
     if target_type.trait?
-      raise("can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one — to give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)")
+      refuse_port("can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one. To give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)") unless @program.total_mode
+      return false
     end
 
     unless target_type.is_a?(ModuleType)
-      raise("can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}")
+      refuse_port("can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}") unless @program.total_mode
+      return false
     end
 
     target_mod = target_type.as(ModuleType)

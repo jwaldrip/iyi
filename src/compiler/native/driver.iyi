@@ -10,7 +10,7 @@ import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout}
 import compiler/platform/target::{Target}
-import compiler/native/obj/object::{ObjectFile, ObjFormat, Section, SectionKind, Symbol, SymbolKind, SymbolBinding, BuildVersion, Reloc}
+import compiler/native/obj/object::{ObjectFile, ObjFormat, Section, SectionKind, Symbol, SymbolKind, SymbolBinding, BuildVersion, Reloc, DebugFunc, FrameDesc}
 import compiler/native/obj/macho::{write_object}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
 import compiler/native/aarch64/regs::{reg_name}
@@ -26,6 +26,59 @@ import compiler/native/aarch64/abi::{aarch64_target}
 import std/slice::{Slice, Bytes}
 import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
 
+# The runtime helpers the lowering calls by name.
+def runtime_helper?(name : String) : Bool
+  name == "__iyi_native_memcpy" || name == "__iyi_native_memmove" || name == "__iyi_native_memset"
+end
+
+# The helpers are entered in the symbol table before any function is selected, because selection asks for their
+# indices. One that no relocation names afterwards is taken out again and every later index moves down, so an object
+# that calls no helper carries no undefined symbol for the linker to resolve: the ELF start code links with no runtime
+# object beside it. A helper the module declares itself is the module's own symbol and stays.
+def drop_unreferenced_helpers(mod : Module, obj : ObjectFile) : Nil
+  used = [] of Bool
+  obj.symbols.each { |_| used << false }
+  obj.sections.each do |s|
+    s.relocs.each do |r|
+      used[r.symbol] = true if r.symbol >= 0 && r.symbol < used.size
+    end
+  end
+  remap = [] of Int32
+  kept = [] of Symbol
+  i = 0
+  while i < obj.symbols.size
+    sym = obj.symbols[i]
+    declared = mod.functions.any? { |fn| fn.name == sym.name }
+    if sym.kind == SymbolKind::Undefined && runtime_helper?(sym.name) && !used[i] && !declared
+      remap << -1
+    else
+      remap << kept.size
+      kept << sym
+    end
+    i = i + 1
+  end
+  return if kept.size == obj.symbols.size
+  obj.symbols = kept
+  obj.sections.each do |s|
+    relocs = [] of Reloc
+    s.relocs.each do |r|
+      index = r.symbol >= 0 && r.symbol < remap.size ? remap[r.symbol] : r.symbol
+      relocs << Reloc.new(r.offset, r.kind, index, r.addend)
+    end
+    s.relocs = relocs
+  end
+  debug_funcs = [] of DebugFunc
+  obj.debug_funcs.each do |d|
+    debug_funcs << DebugFunc.new(remap[d.symbol], d.display_name, d.rows)
+  end
+  obj.debug_funcs = debug_funcs
+  frame_descs = [] of FrameDesc
+  obj.frame_descs.each do |f|
+    frame_descs << FrameDesc.new(remap[f.symbol], f.size, f.events)
+  end
+  obj.frame_descs = frame_descs
+end
+
 # The symbol table of a module: every function and global by name, in the object's order.
 pub def symbol_table(mod : Module, obj : ObjectFile) : Hash(String, Int32)
   table = Hash(String, Int32).new
@@ -37,6 +90,13 @@ pub def symbol_table(mod : Module, obj : ObjectFile) : Hash(String, Int32)
     else
       obj.symbols << Symbol.new(fn.name, SymbolKind::Func, binding, 0)
     end
+  end
+  # The runtime helpers the lowering calls by name (isel's lower_transfer and lower_memset). The runtime object defines
+  # them and the linker resolves them; a module that defines one itself keeps its own entry.
+  ["__iyi_native_memcpy", "__iyi_native_memmove", "__iyi_native_memset"].each do |helper|
+    next if table[helper]?
+    table[helper] = obj.symbols.size
+    obj.symbols << Symbol.new(helper, SymbolKind::Undefined, SymbolBinding::Global)
   end
   mod.globals.each do |g|
     table[g.name] = obj.symbols.size
@@ -115,10 +175,15 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
     w = SectionWriter.new
     message = write_initializer(layout, w, syms, g.value_type, g.initializer, 0_i64)
     return "#{g.name}: #{message}" if message
-    target_writer = g.constant ? rodata : data
+    # A constant that holds an address (a table of names, a vtable) needs the loader to slide each entry, and no
+    # format lets it write into read-only text or .rodata. It goes with the writable data. LLVM gives such a
+    # constant its own section (__DATA,__const, .data.rel.ro) that is protected after loading; this places it in
+    # .data, which is correct and unprotected.
+    read_only = g.constant && w.relocs.size == 0
+    target_writer = read_only ? rodata : data
     target_writer.pad_to(align)
     base = target_writer.append(w.bytes, w.relocs)
-    obj.symbols[index].section = g.constant ? 1 : 2
+    obj.symbols[index].section = read_only ? 1 : 2
     obj.symbols[index].value = base
     obj.symbols[index].size = layout.store_size(g.value_type)
   end
@@ -136,6 +201,7 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
   tls.as(Array(Section)).each do |s|
     obj.sections << s
   end
+  drop_unreferenced_helpers(mod, obj)
   obj
 end
 
