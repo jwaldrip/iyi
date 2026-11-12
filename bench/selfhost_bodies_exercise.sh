@@ -144,8 +144,8 @@ prove_mutation "a call hits the def-instance cache" "$MAIN_VISITOR" \
   "      return @def_instances[k]?" \
   "      return nil" -- bodies_at_floor || status=1
 prove_mutation "a generic instance copies its declared instance variable with the argument" "$REPO/src/compiler/types/types.iyi" \
-  "copied = MetaTypeVar.new(var_name, replacement)" \
-  "copied = MetaTypeVar.new(var_name, source_type)" -- bodies_at_floor || status=1
+  "TypeQueries.replace_type_parameters(source_type, @type_vars)" \
+  "source_type" -- bodies_at_floor || status=1
 prove_mutation "an imported name is not in scope in its def's body" "$MAIN_VISITOR" \
   "enter_file_scope(target_def)" \
   "nil" -- bodies_at_floor || status=1
