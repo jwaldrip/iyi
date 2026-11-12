@@ -98,6 +98,13 @@
 
 ### Fixed
 
+- **The port's math fold no longer dies on x86-64 hardware.** `MathValue` and `MathExact` held an `Int128` and a
+  `UInt128` field. The hosted compiler reads a 128-bit field with a load aligned to 16 bytes (`movaps`), and the
+  prelude's allocator hands out an object with a header at 8 bytes past a 16-byte boundary about half the time (18
+  of 32 in a probe), so the fold of `//` and `%` was killed by a segmentation fault in the Linux self-host job.
+  arm64 and an x86-64 emulator do not check the alignment, which is why darwin was green. The two classes now keep
+  the value as two `UInt64` words; the six math fixtures fold to the same output. The hosted defect itself (a
+  16-byte-aligned load from an 8-byte-aligned object) is not fixed here and affects any class with a 128-bit field.
 - **`iyi run`'s exit is the program's, when Windows holds its executable a
   moment past the exit.** The runner deleted its program in a cleanup that
   raised when Windows refused - "being used by another process" - and the
