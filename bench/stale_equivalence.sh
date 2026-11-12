@@ -1110,3 +1110,4 @@ case "$MODE" in
     exit 1
     ;;
 esac
+# probe: selects this file's CI jobs; not for merge
