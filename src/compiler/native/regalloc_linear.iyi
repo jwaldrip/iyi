@@ -1,7 +1,7 @@
 module compiler/native/regalloc_linear
 
 # Linear-scan register allocation (SPEC 2.2 step 4, SPEC 3.5). The second allocator behind
-# compiler/native/regalloc: IYI_NATIVE_REGALLOC=linear selects it, pin keeps the reference.
+# compiler/native/regalloc: linear is the default; IYI_NATIVE_REGALLOC=pin selects the reference.
 #
 # Positions. Each instruction has one position: its index in the blocks taken in order. A virtual
 # register's interval is the inclusive hull of the positions where it is defined, used, or live across a

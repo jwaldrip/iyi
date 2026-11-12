@@ -2,7 +2,7 @@ module compiler/native/regalloc
 
 # Register allocation for the -O0 backend (SPEC 2.2 step 4). `allocate` is the entry point; two allocators sit
 # behind it, chosen by the environment variable IYI_NATIVE_REGALLOC:
-#   pin (the reference, and the default)  the first ten general-purpose virtual registers in definition order
+#   pin (the reference)  the first ten general-purpose virtual registers in definition order
 #       are pinned to the callee-saved set x19..x28 for the whole function; every other one lives in a frame
 #       slot. Simple and obviously correct; it spills far more than it needs to.
 #   linear                                linear scan over live intervals with callee-saved and caller-saved
@@ -26,11 +26,11 @@ pub def allocate(fn : MFunction) : Nil
   end
 end
 
-# Whether IYI_NATIVE_REGALLOC asks for the linear allocator. Unset means pin.
+# Whether IYI_NATIVE_REGALLOC asks for the linear allocator. Unset means linear, the default; pin is the reference.
 def linear_selected? : Bool
   choice = ENV["IYI_NATIVE_REGALLOC"]?
   if choice.nil?
-    return false
+    return true
   end
   name = choice.as(String)
   if name == "linear"
