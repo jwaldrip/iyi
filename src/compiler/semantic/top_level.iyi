@@ -1360,14 +1360,6 @@ pub class SemanticProgram < NonGenericModuleType
       lookup_type_path(node.as(Path), current_type)
     elsif node.is_a?(Generic)
       g = node.as(Generic)
-      # Once the type system is installed it resolves the whole node, type arguments
-      # included (`Pointer(Int32)`). Before that, only the base name is known here, as
-      # before; a lib fun's argument types are refreshed when they are first used
-      # (LibCall.refresh).
-      if hook = @merge_hook
-        resolved_generic : Type = hook.resolve_node(node, current_type)
-        return resolved_generic
-      end
       base_type = lookup_type_node(g.name, current_type)
       if hook = @merge_hook
         if plain_generic?(g, base_type)
