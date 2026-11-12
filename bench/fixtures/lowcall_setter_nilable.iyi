@@ -5,11 +5,11 @@ end
 class Fiber
 end
 
-class Holder
+struct Int32
   def take=(fiber : Fiber | Nil)
     LibC.exit(42)
   end
 end
 
-holder = Holder.new
-holder.take = Fiber.new
+seven = 7
+seven.take = nil
