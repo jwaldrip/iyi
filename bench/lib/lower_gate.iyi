@@ -15,6 +15,7 @@ import compiler/syntax/ast::{ASTNode, Def, Expressions, FunDef, LibDef}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{LibType, SemanticProgram, TopLevelVisitor}
 import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
@@ -74,6 +75,9 @@ end
 pub def analyse(source : String, filename : String, stand_in_libs : Bool) : Analysis
   parser = Parser.new(source, filename)
   root = parser.parse
+  normalizer = NormalizerProgram.new
+  normalizer.iyi_prelude = false
+  root = normalizer.normalize(root)
   prog = SemanticProgram.new
   tl = TopLevelVisitor.new(prog)
   root.accept(tl)

@@ -282,6 +282,24 @@ prove_mutation "pointer map reads field offsets by the wrong index" "$LAYOUTS_FI
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a by-value aggregate passed to C as itself, not behind a pointer" "$TYPER_FILE" \
+  "    if passed_by_value?(type)" \
+  "    if false" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a tuple returned by an intrinsic as void" "$TYPER_FILE" \
+  "      return @table.struct_of(fields)" \
+  "      return @table.void" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a proc argument to C not a pointer to its function" "$TYPER_FILE" \
+  "    if type.is_a?(ProcInstanceType) || type.is_a?(NilableProcType)" \
+  "    if type.is_a?(NilableProcType)" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

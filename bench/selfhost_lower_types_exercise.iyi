@@ -150,6 +150,10 @@ module BenchSelfhostLowerTypesExercise
     out = out + "passed_by_value: #{bool_text(passed_by_value?(t))}\n"
     out = out + "ivars: #{ivars_text(t)}\n"
     out = out + "layout: #{layout_text(t, typer)}\n"
+    out = out + "c_type: #{typer.llvm_c_type(t).to_s}\n"
+    out = out + "c_return_type: #{typer.llvm_c_return_type(t).to_s}\n"
+    out = out + "embedded_c_type: #{typer.llvm_embedded_c_type(t).to_s}\n"
+    out = out + "intrinsic_return_type: #{typer.llvm_intrinsic_return_type(t).to_s}\n"
     out = out + "passed_indirectly: #{bool_text(typer.passed_indirectly?(t))}\n"
     if t.is_a?(ProcInstanceType)
       out = out + "proc_function: #{typer.proc_function(t).to_s}\n"

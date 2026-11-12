@@ -1,30 +1,30 @@
 module compiler/lower/lower
 
-# The port of the entry of `src/compiler/iyi/codegen/codegen.cr`: `codegen` of the
-# program, `__crystal_main` and `main`, and the visitor's dispatch over the nodes the
-# core ports so far. Every other node goes to `pending.iyi` by name.
+# The port of the entry and the expression visitor of `src/compiler/iyi/codegen/codegen.cr`:
+# `codegen` of the program, `__crystal_main` and `main`, and the dispatch over the nodes the
+# core ports. Every node the core does not port goes to `pending.iyi` by name.
 #
-# The emitted shape is the hosted one: `__crystal_main` takes `argc` and `argv`,
-# stores them in the `ARGC_UNSAFE` and `ARGV_UNSAFE` globals, lowers the program's
-# expressions, and returns the type of the last one (void for `Nil`); `main` calls
-# it and returns 0. The hosted build constants (the `::BUILD_*` globals, which the
-# program stores on entry) are not emitted here: they are the compiler's identity,
-# not the program's, and the gate leaves them out on both sides.
+# The emitted shape is the hosted one: `__crystal_main` takes `argc` and `argv`, stores them
+# in the `ARGC_UNSAFE` and `ARGV_UNSAFE` globals, lowers the program's expressions, and returns
+# the type of the last one (void for `Nil`); `main` calls it and returns 0. The hosted build
+# constants (the `::BUILD_*` globals, which the program stores on entry) are not emitted: they
+# are the compiler's identity, not the program's, and the gate leaves them out on both sides.
 #
-# Ported so far: the entry; `nil`, the integer and boolean literals; sequences;
-# a variable read (`Var`, a load) and assignment to a variable (`Assign`, an alloca
-# and a store). Still refused by name: a def and a call (S2c), and the rest of the
-# core, which the next increments port.
+# Ported: the entry; `nil`, integer, boolean and char literals; sequences; `Var` (a load) and
+# `Assign` to a variable (an alloca and a store); `if`, `unless` and `&&`/`||` as branches
+# merged by a phi, with a literal `true`, `false` or `nil` condition folded as the hosted code
+# folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
+# `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, Def, Expressions, LibDef, NilLiteral, NumberLiteral, Var, If, While, CharLiteral}
+import compiler/syntax/ast::{ASTNode, And, Assign, BoolLiteral, Break, CharLiteral, Call, Def, Expressions, If, LibDef, Next, Not, NilLiteral, NumberLiteral, Or, Unless, Var, While}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Linkage}
-import compiler/ir/inst::{CallConv}
+import compiler/ir/inst::{Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerVar}
-import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned}
+import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?}
 import compiler/lower/cond::{cond_bool}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{pending_visit_node}
@@ -33,8 +33,8 @@ import compiler/lower/fun::{block_ended?}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type}
 
-# The hosted `codegen` of a program into `m`: the entry of the unit. `root` is the
-# program's parsed tree, `analysed` the semantic pass that typed it.
+# The hosted `codegen` of a program into `m`: the entry of the unit. `root` is the program's
+# parsed tree, `analysed` the semantic pass that typed it.
 pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyper, m : Module) : Nil
   low = Lowerer.new(m, typer, analysed)
   low.body_visitor = CoreBody.new
@@ -86,6 +86,9 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     while i < exprs.size
       low.needs_value = wants && i == exprs.size - 1
       codegen_node(low, exprs[i])
+      if i < exprs.size - 1 && at_terminator?(low)
+        pending_visit_node("code after a break or next in the same sequence (dead code, hosted codegen.cr)")
+      end
       i += 1
     end
     return
@@ -104,6 +107,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = int1(low, bool_bit(node.as(BoolLiteral).value))
     return
   end
+  if node.is_a?(CharLiteral)
+    codegen_char(low, node.as(CharLiteral))
+    return
+  end
   if node.is_a?(Var)
     codegen_var(low, node.as(Var))
     return
@@ -112,16 +119,36 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_assign(low, node.as(Assign))
     return
   end
-  if node.is_a?(CharLiteral)
-    codegen_char(low, node.as(CharLiteral))
+  if node.is_a?(If)
+    codegen_if(low, node.as(If))
+    return
+  end
+  if node.is_a?(Unless)
+    codegen_unless(low, node.as(Unless))
+    return
+  end
+  if node.is_a?(And)
+    codegen_and(low, node.as(And))
+    return
+  end
+  if node.is_a?(Or)
+    codegen_or(low, node.as(Or))
+    return
+  end
+  if node.is_a?(Not)
+    codegen_not(low, node.as(Not))
     return
   end
   if node.is_a?(While)
     codegen_while(low, node.as(While))
     return
   end
-  if node.is_a?(If)
-    codegen_if(low, node.as(If))
+  if node.is_a?(Break)
+    codegen_break(low, node.as(Break))
+    return
+  end
+  if node.is_a?(Next)
+    codegen_next(low, node.as(Next))
     return
   end
   if node.is_a?(Def)
@@ -150,8 +177,8 @@ pub def bool_bit(value : Bool) : Int64
   0_i64
 end
 
-# The hosted `visit(NumberLiteral)`: an integer constant of the type the analysis gave
-# the literal. Floats are not ported yet and are refused by name.
+# The hosted `visit(NumberLiteral)`: an integer constant of the type the analysis gave the
+# literal. Floats are not ported yet and are refused by name.
 pub def codegen_number(low : Lowerer, node : NumberLiteral) : Nil
   if node.value.includes?(".")
     pending_visit_node("NumberLiteral with a fraction")
@@ -160,6 +187,14 @@ pub def codegen_number(low : Lowerer, node : NumberLiteral) : Nil
   raise "BUG: the analysed program has no type for a number literal (hosted codegen.cr: visit(NumberLiteral))" if t.nil?
   ir = low.typer.llvm_type(t.as(Type))
   low.last = low.builder.const_int(ir, node.value.to_i64)
+end
+
+# The hosted `visit(CharLiteral)`: the code point, as an integer of the type the analysis gave
+# the literal (Char is an i32).
+pub def codegen_char(low : Lowerer, node : CharLiteral) : Nil
+  t = low.analysed.type_of?(node)
+  raise "BUG: the analysed program has no type for a char literal (hosted codegen.cr: visit(CharLiteral))" if t.nil?
+  low.last = low.builder.const_int(low.typer.llvm_type(t.as(Type)), node.value.ord.to_i64)
 end
 
 # The hosted `visit(Var)`: a load of the variable, read at the type it was declared with.
@@ -176,9 +211,9 @@ pub def codegen_var(low : Lowerer, node : Var) : Nil
   low.last = load_aligned(low, ir, v.pointer, "")
 end
 
-# The hosted `visit(Assign)` for a variable target: the value is stored in the
-# variable's alloca, which is made the first time the variable is assigned. The value
-# of the assignment is the value assigned.
+# The hosted `visit(Assign)` for a variable target: the value is stored in the variable's alloca,
+# which is made the first time the variable is assigned. The value of the assignment is the value
+# assigned.
 pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   if !node.target.is_a?(Var)
     pending_visit_node("Assign to a target that is not a variable")
@@ -207,72 +242,97 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   low.last = v
 end
 
-# The hosted `codegen_number`'s literal: `NumberLiteral` value text to an integer.
-# The hosted `llvm_nil` and `codegen_return`: a function returning void returns
-# nothing; any other returns the value of the expression visited last.
-pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
-  return if block_ended?(low)
-  if ret_ir.void?
-    low.builder.ret_void
-    return
-  end
-  value = low.last
-  raise "BUG: the program returns a value but its last expression left none (hosted codegen.cr: codegen_return)" if value.nil?
-  low.builder.ret(value.as(Value))
+# The hosted `visit(If)`: a literal condition folds (the hosted `truthy?` and `falsey?`), and any
+# other is a branch merged by a phi when the if's value is wanted.
+pub def codegen_if(low : Lowerer, node : If) : Nil
+  codegen_branch(low, node, node.cond, node.then, node.else)
 end
 
-# The hosted `visit(If)` for a condition that is not a literal (a literal folds in the
-# hosted code, and that case is refused by name in pending.iyi): the condition, a branch
-# on it into `then` and `else`, each branch's value merged in the exit block by a phi when
-# the if's value is wanted.
-pub def codegen_if(low : Lowerer, node : If) : Nil
+# The hosted `visit(Unless)`: the normaliser's `If` with the branches swapped.
+pub def codegen_unless(low : Lowerer, node : Unless) : Nil
+  codegen_branch(low, node, node.cond, node.else, node.then)
+end
+
+# The hosted `visit(And)` and `visit(Or)`: the normaliser's `If`. `a && b` is `if a then b else a`,
+# and `a || b` is `if a then a else b`; the left operand is lowered again in the branch that
+# takes it, which is what the hosted code emits.
+pub def codegen_and(low : Lowerer, node : And) : Nil
+  codegen_branch(low, node, node.left, node.right, node.left)
+end
+
+pub def codegen_or(low : Lowerer, node : Or) : Nil
+  codegen_branch(low, node, node.left, node.left, node.right)
+end
+
+# The branch shared by `if`, `unless`, `&&` and `||`. `node` gives the merged type.
+pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_node : ASTNode, else_node : ASTNode) : Nil
+  if cond_node.is_a?(BoolLiteral) || cond_node.is_a?(NilLiteral)
+    # The hosted `truthy?` and `falsey?` folds: the condition emits nothing, and only the branch
+    # taken is lowered, with its value as the value.
+    taken = cond_node.is_a?(BoolLiteral) && cond_node.as(BoolLiteral).value
+    if taken
+      codegen_node(low, then_node)
+    else
+      codegen_node(low, else_node)
+    end
+    return
+  end
+
   wants = low.needs_value
   blocks = low.new_blocks(["then", "else"])
   then_block = blocks[0]
   else_block = blocks[1]
 
   low.needs_value = true
-  codegen_node(low, node.cond)
-  cond_value = cond_bool(low, node.cond, low.last.as(Value))
+  codegen_node(low, cond_node)
+  cond_value = cond_bool(low, cond_node, low.last.as(Value))
   low.needs_value = wants
   low.builder.cond_br(cond_value, then_block, else_block)
 
   exit_block = low.new_block("exit")
   merge_type : IrType? = nil
   if wants
-    merged_ir = low.analysed.type_of?(node)
-    raise "BUG: the analysed program has no type for an if (hosted codegen.cr: visit(If))" if merged_ir.nil?
-    merge_type = low.typer.llvm_type(merged_ir.as(Type))
+    merged = low.analysed.type_of?(node)
+    raise "BUG: the analysed program has no type for a branch (hosted codegen.cr: visit(If))" if merged.nil?
+    merge_type = low.typer.llvm_type(merged.as(Type))
   end
   phi = LowerPhi.new(exit_block, wants, merge_type)
 
   low.builder.position_at_end(then_block)
-  codegen_node(low, node.then)
+  codegen_node(low, then_node)
   phi.add(low, low.last)
 
   low.builder.position_at_end(else_block)
-  codegen_node(low, node.else)
+  codegen_node(low, else_node)
   phi.add(low, low.last)
 
   phi.close(low)
 end
 
-# The hosted `visit(CharLiteral)`: the code point, as an integer of the type the analysis
-# gave the literal (Char is an i32).
-pub def codegen_char(low : Lowerer, node : CharLiteral) : Nil
-  t = low.analysed.type_of?(node)
-  raise "BUG: the analysed program has no type for a char literal (hosted codegen.cr: visit(CharLiteral))" if t.nil?
-  low.last = low.builder.const_int(low.typer.llvm_type(t.as(Type)), node.value.ord.to_i64)
+# The hosted `visit(Not)`: the condition's value, inverted with an `xor` against true.
+pub def codegen_not(low : Lowerer, node : Not) : Nil
+  wants = low.needs_value
+  low.needs_value = true
+  codegen_node(low, node.exp)
+  v = cond_bool(low, node.exp, low.last.as(Value))
+  low.needs_value = wants
+  low.last = low.builder.bitwise_xor(v, int1(low, 1_i64))
 end
 
-# The hosted `visit(While)` without break or next: the condition is tested in the
-# `while` block, the `body` runs and branches back, and the `fail` block is where the
-# loop leaves. The value of a while is nil.
+# The hosted `visit(While)`. The `while` block tests the condition, the `body` runs and branches
+# back, and `fail` is where the loop leaves. A `break` makes the `exit` block (created at the first
+# break), which `fail` then branches to. `next` branches to the `while` block. The value of a while
+# is nil.
 pub def codegen_while(low : Lowerer, node : While) : Nil
   blocks = low.new_blocks(["while", "body", "fail"])
   while_block = blocks[0]
   body_block = blocks[1]
   fail_block = blocks[2]
+
+  saved_next = low.loop_next
+  saved_break = low.loop_break
+  low.loop_next = while_block
+  low.loop_break = nil
 
   low.builder.br(while_block)
   low.builder.position_at_end(while_block)
@@ -284,9 +344,36 @@ pub def codegen_while(low : Lowerer, node : While) : Nil
   low.builder.position_at_end(body_block)
   low.needs_value = false
   codegen_node(low, node.body)
-  low.builder.br(while_block)
+  if !at_terminator?(low)
+    low.builder.br(while_block)
+  end
 
   low.builder.position_at_end(fail_block)
+  if exit_block = low.loop_break
+    low.builder.br(exit_block.as(Block))
+    low.builder.position_at_end(exit_block.as(Block))
+  end
+  low.last = llvm_nil(low)
+
+  low.loop_next = saved_next
+  low.loop_break = saved_break
+end
+
+# The hosted `visit(Break)` without a value: a branch to the loop's exit block, made at the first break.
+pub def codegen_break(low : Lowerer, node : Break) : Nil
+  if node.exp
+    pending_visit_node("break with a value (hosted codegen.cr: visit(Break))")
+  end
+  if low.loop_next.nil?
+    pending_visit_node("break outside a while (hosted codegen.cr: visit(Break))")
+  end
+  target = low.loop_break
+  if target.nil?
+    made = low.new_block("exit")
+    low.loop_break = made
+    target = made
+  end
+  low.builder.br(target.as(Block))
   low.last = llvm_nil(low)
 end
 
@@ -300,4 +387,31 @@ impl BodyVisit for CoreBody
   def visit_body(low : Lowerer, node : ASTNode) : Nil
     codegen_node(low, node)
   end
+end
+
+# The hosted `visit(Next)`: a branch to the loop's condition.
+pub def codegen_next(low : Lowerer, node : Next) : Nil
+  if node.exp
+    pending_visit_node("next with a value (hosted codegen.cr: visit(Next))")
+  end
+  target = low.loop_next
+  if target.nil?
+    pending_visit_node("next outside a while (hosted codegen.cr: visit(Next))")
+  end
+  low.builder.br(target.as(Block))
+  low.last = llvm_nil(low)
+end
+
+# The hosted `codegen_return`: a function returning void returns nothing; any other returns the
+# value of the expression visited last. A block that already ends (a NoReturn call's unreachable)
+# gets no return (the hosted `@builder.end`, fun.iyi `block_ended?`).
+pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
+  return if block_ended?(low)
+  if ret_ir.void?
+    low.builder.ret_void
+    return
+  end
+  value = low.last
+  raise "BUG: the program returns a value but its last expression left none (hosted codegen.cr: codegen_return)" if value.nil?
+  low.builder.ret(value.as(Value))
 end
