@@ -1,0 +1,120 @@
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{ASTNode, Assign, Call, Def, DoubleSplat, Expressions, Generic, If, InstanceVar, Nop, Path, Primitive, RespondsTo, Splat, Var}
+import compiler/syntax/visitor::{Visitor}
+import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/main_visitor::{MainVisitor}
+
+# Collects the `new` calls of the file, in tree order.
+class NewCallWalk < Visitor
+  getter calls : Array(Call)
+
+  def initialize
+    @calls = [] of Call
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    if node.is_a?(Call)
+      c = node.as(Call)
+      @calls << c if c.name == "new"
+    end
+    true
+  end
+end
+
+# Driver for bench/selfhost_semantic_new_exercise.sh: the port's new methods for a
+# fixture, printed with the same lines as the hosted oracle
+# (bench/selfhost_semantic_new_oracle.cr). It runs the top-level pass, the new pass
+# (finish) and the main pass over the fixture bare, with no prelude.
+#
+# Prints, sorted, one line per generated or explicit `new` on a user class's
+# metaclass, then one line per `new` call written in the file, in tree order.
+module BenchSelfhostSemanticNewExercise
+  def self.type_text(t : Type?) : String
+    return "nil" if t.nil?
+    t.full_name
+  end
+
+  # The kinds of node a generated body is described by. Other nodes print as Other.
+  def self.kind_text(node : ASTNode) : String
+    return "Assign" if node.is_a?(Assign)
+    return "Call" if node.is_a?(Call)
+    return "If" if node.is_a?(If)
+    return "Var" if node.is_a?(Var)
+    return "Nop" if node.is_a?(Nop)
+    return "Expressions" if node.is_a?(Expressions)
+    return "Splat" if node.is_a?(Splat)
+    return "DoubleSplat" if node.is_a?(DoubleSplat)
+    return "RespondsTo" if node.is_a?(RespondsTo)
+    return "Path" if node.is_a?(Path)
+    return "Generic" if node.is_a?(Generic)
+    return "InstanceVar" if node.is_a?(InstanceVar)
+    return "Primitive" if node.is_a?(Primitive)
+    "Other"
+  end
+
+  def self.body_text(body : ASTNode) : String
+    if body.is_a?(Expressions)
+      kinds = body.as(Expressions).expressions.map { |e| kind_text(e) }
+      return "[" + kinds.join(",") + "]"
+    end
+    kind_text(body)
+  end
+
+  def self.run(src : String, filename : String) : String
+    parser = Parser.new(src, filename)
+    node = parser.parse
+    prog = SemanticProgram.new
+    tl = TopLevelVisitor.new(prog)
+    node.accept(tl)
+    tl.finish
+    mv = MainVisitor.new(prog)
+    node.accept(mv)
+
+    initial = prog.initial_type_names
+    def_lines = [] of String
+    prog.types.each do |name, t|
+      next if initial.includes?(name)
+      next unless t.is_a?(ModuleType)
+      meta = t.as(ModuleType).metaclass
+      news = meta.defs["new"]?
+      next if news.nil?
+      news.as(Array(Def)).each do |d|
+        arg_names = d.args.map { |a| a.name }.join(", ")
+        def_lines << "def #{type_text(t)}.new(#{arg_names}) body #{body_text(d.body)}"
+      end
+    end
+
+    out = String::Builder.new
+    def_lines.sorted_by { |l| l }.each do |l|
+      out << l << "\n"
+    end
+
+    walk = NewCallWalk.new
+    node.accept(walk)
+    walk.calls.each do |c|
+      recv_text = "self"
+      if obj = c.obj
+        recv_text = obj.is_a?(Path) ? obj.as(Path).names.join("::") : kind_text(obj)
+      end
+      arg_types = c.args.map { |a| type_text(mv.type_of?(a)) }.join(", ")
+      result = type_text(mv.type_of?(c))
+      target_text = "target none"
+      if td = mv.target_def?(c)
+        target_text = "target #{td.name}(#{td.args.map { |a| a.name }.join(", ")}) targets 1"
+      end
+      line = 0
+      column = 0
+      if loc = c.location
+        line = loc.line_number
+        column = loc.column_number
+      end
+      out << "call #{line}:#{column} #{recv_text}.new(#{arg_types}) -> #{result} #{target_text}\n"
+    end
+    out.to_s
+  end
+end
+
+if Program.args.size > 0
+  filename = Program.args[0]
+  print BenchSelfhostSemanticNewExercise.run(File.read(filename), filename)
+end

@@ -12,6 +12,7 @@ import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
+import compiler/semantic/new::{define_new_methods}
 
 # iyi: two modes. Strict (the default) raises on the first construct it cannot
 # type, as the port always did, and every existing gate relies on that. Total
@@ -65,6 +66,9 @@ pub class MainVisitor < TypeNodeHost
   property def_var_unions : NodeMap(Hash(String, Type))
 
   def initialize(@program : SemanticProgram)
+    # The generated `new` methods are completed before any body is typed: the
+    # declarations pass has recorded the expansions, and this consumes them (idempotent).
+    define_new_methods(@program)
     @current_type = @program
     @scope = nil
     @vars = Hash(String, Type).new
@@ -357,7 +361,24 @@ pub class MainVisitor < TypeNodeHost
         return false
       end
     end
+    if node.name == "allocate"
+      if sc = @scope
+        if sc.is_a?(MetaclassType)
+          set_type(node, sc.as(MetaclassType).instance_type)
+          return false
+        end
+      end
+    end
     untyped(node, "primitive #{node.name} without a declared return type")
+    false
+  end
+
+  # `obj.responds_to?(:name)` is typed Bool. Its value depends on the obj's type and is
+  # decided by the lowering, not here (the hosted typer sets only the type).
+  def visit(node : RespondsTo) : Bool
+    obj = node.obj
+    obj.accept(self)
+    set_type(node, @program.bool_type)
     false
   end
 
@@ -1382,23 +1403,6 @@ pub class MainVisitor < TypeNodeHost
       rec_type = @scope || @current_type
     end
 
-    if node.name == "new" && rec_type.is_a?(MetaclassType)
-      inst_type = rec_type.as(MetaclassType).instance_type
-      if inst_type.is_a?(ClassType)
-        candidates = [] of Def
-        visited = Set(String).new
-        collect_candidate_defs(inst_type, "initialize", candidates, visited)
-        if candidates.size > 0 || node.args.size > 0
-          if init_def = lookup_method_matching(inst_type, "initialize", node.args, node)
-            type_method_body(init_def, inst_type, node.args, node.block, node)
-          else
-            return false
-          end
-        end
-        set_type(node, inst_type)
-        return false
-      end
-    end
 
     # Multiple dispatch over a union receiver
     if rec_type.is_a?(UnionType)
