@@ -405,10 +405,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(Annotation) && node.as(Annotation).path.names.last == "ThreadLocal"
-    # A `@[ThreadLocal]` class variable's global is local-exec (hosted class_var.cr declare_thread_local), but the
-    # body pass replaces the variable's MetaTypeVar without its thread_local flag (main_visitor.iyi visit(Assign) and
-    # visit(TypeDeclaration)), so lowering cannot see the flag. It is refused by name until the flag arrives.
-    refuse_port("lower: @[ThreadLocal] on a class variable: the body pass drops the thread_local flag before lowering (main_visitor.iyi visit(Assign), visit(TypeDeclaration)); hosted class_var.cr declare_thread_local")
+    # A `@[ThreadLocal]` class variable's global is local-exec (hosted class_var.cr declare_thread_local). The body pass
+    # keeps the flag only for a declaration that an earlier pass typed (main_visitor.iyi replace_class_var); the untyped
+    # `@[ThreadLocal] @@v = value` form never gets one, so lowering would drop the thread-local silently. Refused by name.
+    refuse_port("lower: @[ThreadLocal] on a class variable: the body pass keeps the thread_local flag only for a typed declaration (main_visitor.iyi replace_class_var); the untyped form is not flagged (hosted class_var.cr declare_thread_local)")
   end
   if node.is_a?(Alias) || node.is_a?(Macro) || node.is_a?(Annotation)
     # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil. The hosted

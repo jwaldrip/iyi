@@ -37,8 +37,9 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls"
-# lowglob_cvar_tls: a @[ThreadLocal] class variable is refused by name (lower.iyi, visit(Annotation)): the body pass drops its thread_local flag before lowering.
+WAITING_FIXTURES="lowglob_const_namespace_read lowglob_cvar_tls"
+# lowglob_const_namespace_read: `LibC.exit(Outer::Y)` is refused by analysis (`undefined constant Y`), before lowering.
+# lowglob_cvar_tls: an untyped `@[ThreadLocal] @@v = value` is refused by name (lower.iyi, visit(Annotation)): the body pass does not flag it.
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port.build.log" 2>&1; then

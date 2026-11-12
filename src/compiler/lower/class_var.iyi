@@ -20,10 +20,10 @@ module compiler/lower/class_var
 #   - a string, symbol, nil or float initialiser, whose global is initialised by `initialize_simple_constants`;
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
 # Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
-# class_var.cr:27-34), the model every non-Windows target uses, and `declare_cvar_global` sets it when the variable's
-# `thread_local` flag is set. The flag is dropped by the body pass (main_visitor.iyi visit(Assign) and visit(TypeDeclaration)
-# replace the declaration's MetaTypeVar), so lowering refuses `@[ThreadLocal]` by name (lower.iyi, visit(Annotation)) until
-# it is kept. The Windows general-dynamic model is not ported: the lowering cannot see the target's flags yet.
+# class_var.cr:27-34), the model every non-Windows target uses, and `declare_cvar_global` sets it from the variable's
+# `thread_local` flag. The body pass keeps that flag only for a typed declaration (main_visitor.iyi replace_class_var), so
+# lowering refuses `@[ThreadLocal]` by name (lower.iyi, visit(Annotation)) until the untyped form carries it too.
+# The Windows general-dynamic model is not ported: the lowering cannot see the target's flags yet.
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, CharLiteral, ClassDef, NumberLiteral, TypeDeclaration}
 import compiler/ir/values::{Value}
