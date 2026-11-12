@@ -11,6 +11,7 @@ import compiler/native/obj/object::{ObjFormat}
 pub enum TlsForm
   TlvDescriptor
   LocalExec
+  WindowsTlsIndex     # Windows: the TEB's thread-local index slot (gs:[0x58]), the x86_64-windows-msvc form
 end
 
 pub class TargetDesc
