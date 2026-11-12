@@ -1679,14 +1679,27 @@ pub class If < ASTNode
   property then : ASTNode
   property else : ASTNode
   property ternary : Bool
+  property from_and : Bool
+  property from_or : Bool
+  property truthy : Bool
+  property falsey : Bool
 
   def initialize(@cond : ASTNode, a_then : ASTNode? = nil, a_else : ASTNode? = nil, @ternary : Bool = false)
     @then = a_then || Nop.new
     @else = a_else || Nop.new
+    @from_and = false
+    @from_or = false
+    @truthy = false
+    @falsey = false
   end
 
   def clone_without_location : self
-    If.new(@cond.clone, @then.clone, @else.clone, @ternary)
+    copy = If.new(@cond.clone, @then.clone, @else.clone, @ternary)
+    copy.from_and = @from_and
+    copy.from_or = @from_or
+    copy.truthy = @truthy
+    copy.falsey = @falsey
+    copy
   end
 
   def accept_children(visitor) : Nil

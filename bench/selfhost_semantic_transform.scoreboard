@@ -1,0 +1,39 @@
+Literal expander and normalizer: what the port lowers, measured 2026-11-12.
+Occurrences are the port's parser counts over src/compiler/**/*.iyi and src/iyi/*.iyi,
+as printed by the transform gate's corpus section.
+
+Ported in src/compiler/semantic/literal_expander.iyi (fixtures and mutations in the gate):
+  ArrayLiteral          1795   expand_array, expand_named_array, expand_hash (HashLiteral 17)
+  Case                   310   subject, tuple subject (tuple_when_comparison), when chains
+  MultiAssign             54   values, single value, splat, call targets, strict count
+  Select                  --   select lowering, binds_it off for its own case
+  RangeLiteral            31
+  StringInterpolation   1363   contiguous literal merge
+  And                   1902   expand_and (left side tested in place, else bound to a temporary)
+  Or                    1656   expand_or (same forms as And)
+  Def                     --   walks receiver, argument defaults, body (shared transformer does not)
+  Arg                     --   walks default value and restriction
+
+Walked but left as written (the hosted walk does not enter them either):
+  MacroIf 183, MacroFor 20, MacroExpression 11, Macro 3
+
+Not ported (occurrences in the port's own source):
+  RegexLiteral            3   hosted expand(RegexLiteral) with Regex.new and options
+  ProcLiteral             2   hosted expand(ProcLiteral)
+  ProcPointer             0   listed for completeness
+  Propagate               1   expand not yet read
+  Defer                   4   expand not yet read
+  NamedTupleLiteral       1   hosted has no expansion either (comment in literal_expander.iyi)
+  Unless                940   normalizer side: status not yet measured here
+  Until                   7   normalizer side: status not yet measured here
+  OpAssign              187   normalizer side: status not yet measured here
+
+Not hidden by the shared Node token any more (the corpus gate lists each one with its count):
+  ImportDecl 482, UsingDecl 431, ModuleHeader 114, PointerOf 118, MagicConstant 18,
+  Require 15, SizeOf 1, ReadInstanceVar 1. Their children are not compared.
+
+Corpus (transform gate section 6): 131 of 135 files identical, 1 refused by the port
+(native/wasm/leb.iyi:8:10, a parser panic), 3 differing:
+  bind.iyi    case left as Case where the hosted walk produced If (first diff at line 54)
+  ast.iyi     Call "==" over Call "&" differs (first diff at line 115)
+  token.iyi   cmp differs but diff prints no hunk: investigate the bytes first

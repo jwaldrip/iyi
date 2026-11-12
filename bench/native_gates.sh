@@ -78,6 +78,10 @@ run_gate native_x86_64 any bench/native_x86_64_exercise.sh
 run_gate native_wasm any bench/native_wasm_exercise.sh
 run_gate native_elf any bench/native_elf_exercise.sh
 run_gate native_first_light darwin-arm64 bench/native_first_light_exercise.sh
+run_gate native_source darwin-arm64 bench/native_source_exercise.sh
+run_gate native_macro darwin-arm64 bench/native_macro_exercise.sh
+run_gate native_backend_select darwin-arm64 bench/native_backend_select_exercise.sh
+run_gate native_selfcompile darwin-arm64 bench/native_selfcompile_exercise.sh
 
 echo
 echo "== 2. Verdicts"
