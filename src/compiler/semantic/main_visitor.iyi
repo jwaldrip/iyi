@@ -10,13 +10,14 @@ import compiler/semantic/inline_macros::{splice_body_node, splice_inline_sites}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
+import compiler/semantic/top_level::{VoidType}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
-import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType}
+import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/new::{define_new_methods}
@@ -156,6 +157,7 @@ pub class MainVisitor < TypeNodeHost
   # The locals of the body being typed whose value has no type, by name, with the
   # reason their reads are reported with. Saved and restored per body.
   property untyped_locals : Hash(String, String)
+  property fun_inline_file : String?
 
   def initialize(@program : SemanticProgram)
     # The generated `new` methods are completed before any body is typed: the
@@ -171,6 +173,7 @@ pub class MainVisitor < TypeNodeHost
     @def_var_unions = NodeMap(Hash(String, Type)).new
     @untyped_locals = Hash(String, String).new
     @current_def = nil
+    @fun_inline_file = nil
     @current_call_block = nil
     @current_block_context_vars = nil
     @current_yield_nodes = nil
@@ -328,6 +331,16 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     @program.lookup_type_node(node, @current_type)
+  end
+
+  # iyi: a class variable that is replaced keeps the @[ThreadLocal] flag of the one it replaces
+  # (hosted types.cr 1265: var.thread_local = class_var.thread_local?).
+  def replace_class_var(mod_type : ModuleType, name : String, mv : MetaTypeVar) : Nil
+    if old = mod_type.class_vars[name]?
+      mv.thread_local = old.thread_local
+    end
+    mod_type.class_vars[name] = mv
+    nil
   end
 
   def type_from_literal_kind(kind : NumberKind) : Type
@@ -863,7 +876,7 @@ pub class MainVisitor < TypeNodeHost
           set_type(cvar_node, cvar.type)
         else
           cvar = MetaTypeVar.new(cvar_node.name, val_type, node.value)
-          mod_type.class_vars[cvar_node.name] = cvar
+          replace_class_var(mod_type, cvar_node.name, cvar)
           set_type(cvar_node, val_type)
         end
         set_type(node, val_type)
@@ -936,7 +949,7 @@ pub class MainVisitor < TypeNodeHost
                       end
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
-          mod_type.class_vars[cvar_node.name] = MetaTypeVar.new(cvar_node.name, decl_type, val)
+          replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, val))
           set_type(cvar_node, decl_type)
         end
       end
@@ -975,7 +988,7 @@ pub class MainVisitor < TypeNodeHost
                       end
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
-          mod_type.class_vars[cvar_node.name] = MetaTypeVar.new(cvar_node.name, decl_type, nil)
+          replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, nil))
           set_type(cvar_node, decl_type)
         end
       end
@@ -1037,17 +1050,22 @@ pub class MainVisitor < TypeNodeHost
         return loc.filename
       end
     end
-    ""
+    @fun_inline_file || ""
+  end
+
+  # Whether a body is spliced here: a def being typed, or a fun body (see visit(FunDef)).
+  def in_inline_body? : Bool
+    !@current_def.nil? || !@fun_inline_file.nil?
   end
 
   def splice_def_inline_sites(node : Expressions) : Nil
-    return nil if @current_def.nil?
+    return nil unless in_inline_body?
     node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false)
     nil
   end
 
   def splice_def_body(node : ASTNode) : ASTNode
-    return node if @current_def.nil?
+    return node unless in_inline_body?
     splice_body_node(node, def_inline_scope_name, def_inline_file, false)
   end
 
@@ -1197,6 +1215,19 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # A trait's body is typed in the trait's own type (hosted semantic_visitor.cr 1849-1856).
+  def visit(node : TraitDef) : Bool
+    t = @program.lookup_type_path?(node.name, @current_type)
+    if t && t.is_a?(TraitType)
+      old_type = @current_type
+      @current_type = t.as(TraitType)
+      node.body.accept(self)
+      @current_type = old_type
+    end
+    set_type(node, @program.nil_type)
+    false
+  end
+
   def visit(node : Def) : Bool
     set_type(node, @program.nil_type)
     false
@@ -1306,7 +1337,8 @@ pub class MainVisitor < TypeNodeHost
                   # `& : T -> _` leaves the block's result free (hosted: an Underscore output matches any type).
                   unless out_node.is_a?(Underscore)
                     expected_ret = lookup_under(out_node, @scope)
-                    unless bt.subtype_of?(expected_ret)
+                    # hosted call.cr 1433 and void_return_type?: a declared Nil or void output accepts any block value.
+                    unless expected_ret.nil_type? || expected_ret.is_a?(VoidType) || bt.subtype_of?(expected_ret)
                       return refuse(node, "expected block to return #{expected_ret.full_name}, not #{bt.full_name}")
                     end
                   end
@@ -2297,7 +2329,79 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : FunDef) : Bool
-    visit_fun_def(self, node)
+    # hosted: a fun body is spliced like a def body, in the program's scope and the fun's file.
+    file = ""
+    if loc = node.location
+      file = loc.filename
+    end
+    if body = node.body
+      node.body = splice_body_node(body, @program.full_name, file, false)
+    end
+    saved = @fun_inline_file
+    @fun_inline_file = file
+    typed = visit_fun_def(self, node)
+    @fun_inline_file = saved
+    typed
+  end
+
+  # `->(x : T) { body }` is typed `Proc(T, R)`, as the hosted pass types a ProcLiteral (main_visitor.cr
+  # 1373-1433 and ProcLiteral#update, bindings.cr 604-619). Its parameters are locals of its body; R is the
+  # declared return type, or else the body's type. Not ported: the closure analysis, the Proc argument
+  # check, force_nil, and the body's scope (the body is typed in the program's scope, not the literal's).
+  def visit(node : ProcLiteral) : Bool
+    return false if type_of?(node)
+    def_node = node.def
+    fun_vars = @vars.dup
+    arg_types = [] of Type
+    i = 0
+    while i < def_node.args.size
+      arg = def_node.args[i]
+      restriction = arg.restriction
+      if restriction.nil?
+        return refuse(node, "parameter '#{arg.name}' of Proc literal must have a type")
+      end
+      t = TypeQueries.virtual_type(lookup_under(restriction.as(ASTNode), @scope))
+      set_type(restriction.as(ASTNode), t)
+      set_type(arg, t)
+      arg_types << t
+      fun_vars[arg.name] = t
+      i = i + 1
+    end
+    declared = proc_literal_return(def_node)
+    body = def_node.body
+    inner = sub_visitor(fun_vars)
+    old_imports = @program.current_imports
+    old_import_defs = @program.current_import_defs
+    enter_file_scope(node)
+    body.accept(inner)
+    @program.current_imports = old_imports
+    @program.current_import_defs = old_import_defs
+    ret = declared
+    if bt = inner.child_type(body)
+      if rt = declared
+        merged = @program.type_merge(bt, rt)
+        if merged != rt
+          return refuse(node, "expected Proc to return #{rt.full_name} but it returned #{merged.full_name}")
+        end
+      else
+        ret = TypeQueries.virtual_type(bt)
+      end
+    end
+    if final = ret
+      set_type(def_node, final)
+      set_type(node, ProcInstanceType.new(@program, arg_types, final))
+    else
+      return refuse(node, "the body of the Proc literal was not typed")
+    end
+    false
+  end
+
+  # The declared return type of a Proc literal's def, or nil.
+  def proc_literal_return(def_node : Def) : Type?
+    if rt_node = def_node.return_type
+      return TypeQueries.virtual_type(lookup_under(rt_node, @scope))
+    end
+    nil
   end
 
   def visit(node : Self) : Bool
@@ -2380,6 +2484,7 @@ pub class MainVisitor < TypeNodeHost
     inner.typed_instances = @typed_instances
     inner.def_instances = @def_instances
     inner.untyped_locals = Hash(String, String).new
+    inner.fun_inline_file = @fun_inline_file
     inner
   end
 
