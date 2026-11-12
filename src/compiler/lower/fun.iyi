@@ -23,9 +23,10 @@ module compiler/lower/fun
 
 import compiler/syntax/ast::{ASTNode, Def}
 import compiler/ir/function::{Function, Linkage}
-import compiler/ir/inst::{Block, CallConv}
+import compiler/ir/inst::{Attribute, Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
+import compiler/ir/module::{Module}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
 import compiler/semantic/top_level::{Type}
 
@@ -78,6 +79,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, arg_types : Arra
   fn = low.module.define_function(name, fn_type)
   fn.call_convention = CallConv::C
   fn.linkage = Linkage::Internal
+  add_body_attributes(fn, low.module.triple)
 
   saved = LowerSavedState.new(low.context, low.alloca_block, low.entry_block, low.builder.insert_block, low.needs_value, low.in_main)
   low.context = LowerContext.new(fn, fn_type, nil, Hash(String, LowerVar).new)
@@ -121,4 +123,56 @@ pub def codegen_fun_return(low : Lowerer, ret_ir : IrType) : Nil
   value = low.last
   raise "BUG: a function returns a value but its body left none (hosted codegen.cr: codegen_return)" if value.nil?
   low.builder.ret(value.as(Value))
+end
+
+# The unwind table kind of a function with a body (hosted fun.cr:437-441): sync on aarch64,
+# async elsewhere.
+pub def uwtable_kind(triple : String) : String
+  if triple.includes?("aarch64")
+    return "sync"
+  end
+  "async"
+end
+
+# Whether the target is darwin, where the hosted code asks for frame pointers (fun.cr:445).
+pub def darwin_triple?(triple : String) : Bool
+  triple.includes?("darwin")
+end
+
+# The attributes a function with a body carries (hosted codegen_fun, fun.cr:437-450): the unwind
+# table, the frame pointers on darwin, and probe-stack (hosted finish, codegen.cr:833).
+pub def add_body_attributes(fn : Function, triple : String) : Nil
+  fn.attrs << Attribute.new("uwtable", 0_u64, uwtable_kind(triple), nil)
+  if darwin_triple?(triple)
+    fn.attrs << Attribute.new("frame-pointer", 0_u64, "all", nil)
+  end
+  fn.attrs << Attribute.new("probe-stack", 0_u64, "inline-asm", nil)
+end
+
+# Whether a function already carries the attribute of this name.
+pub def has_attr?(fn : Function, name : String) : Bool
+  i = 0
+  while i < fn.attrs.size
+    return true if fn.attrs[i].name == name
+    i += 1
+  end
+  false
+end
+
+# The hosted attributes of the functions that codegen_fun does not make: the module's `main`
+# (uwtable, frame pointers, probe-stack, as hosted define_main_function) and `__crystal_main`
+# (probe-stack). Every function with a body gets probe-stack, as the hosted finish does.
+# Called once by codegen_program after `main` is defined. Defs already carry theirs.
+pub def function_attributes(m : Module) : Nil
+  m.functions.each do |fn|
+    next if fn.basic_blocks.empty?
+    if fn.name == "main"
+      fn.attrs << Attribute.new("uwtable", 0_u64, uwtable_kind(m.triple), nil) unless has_attr?(fn, "uwtable")
+      if darwin_triple?(m.triple) && !has_attr?(fn, "frame-pointer")
+        fn.attrs << Attribute.new("frame-pointer", 0_u64, "all", nil)
+      end
+    end
+    next if has_attr?(fn, "probe-stack")
+    fn.attrs << Attribute.new("probe-stack", 0_u64, "inline-asm", nil)
+  end
 end
