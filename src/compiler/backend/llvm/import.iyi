@@ -362,6 +362,20 @@ pub def llvm_binary_op(opcode : Int32) : Op?
 end
 
 # The IR's conversion Op for an LLVM cast opcode number, or nil.
+# The binary operations a constant expression carries in the IR (LLVMOpcode add, sub, mul).
+pub def llvm_const_binary_op(opcode : Int32) : Op?
+  case opcode
+  when 8
+    Op::Add
+  when 10
+    Op::Sub
+  when 12
+    Op::Mul
+  else
+    nil
+  end
+end
+
 pub def llvm_cast_op(opcode : Int32) : Op?
   case opcode
   when 30
@@ -992,6 +1006,12 @@ class ModuleImporter
       return dummy if failed?
       inbounds = LibLLVM.is_in_bounds(ref) != 0
       return Inst.new(Op::ConstExpr, ty, args, Op::Gep.value.to_i64, GepAux.new(source, inbounds), [] of Block, [] of Int64)
+    end
+    binary = llvm_const_binary_op(opcode)
+    if binary
+      args = operands_of(ref)
+      return dummy if failed?
+      return Inst.new(Op::ConstExpr, ty, args, binary.value.to_i64, nil, [] of Block, [] of Int64)
     end
     cast = llvm_cast_op(opcode)
     if cast
