@@ -102,11 +102,21 @@ _prove_mutation_run() {
       exit 3
       ;;
   esac
-  if [ "$mode" = all ]; then
-    patched="${original//"$old"/"$new"}"
-  else
-    patched="${original/"$old"/"$new"}"
+  # The replacement is written unquoted. bash 3.2 (darwin's /bin/bash, which a runner with no newer bash on its PATH
+  # runs these gates with) keeps a quoted replacement's quotes as text: every mutation arrived wrapped in '"', and a
+  # patch that changes nothing changed two bytes and was run as a mutation. From bash 5.2 an unquoted '&' in a
+  # replacement is the matched text unless patsub_replacement is off, so it is turned off around the edit.
+  local patsub_was_on=0
+  if shopt -q patsub_replacement 2>/dev/null; then
+    patsub_was_on=1
+    shopt -u patsub_replacement
   fi
+  if [ "$mode" = all ]; then
+    patched="${original//"$old"/$new}"
+  else
+    patched="${original/"$old"/$new}"
+  fi
+  if [ "$patsub_was_on" -eq 1 ]; then shopt -s patsub_replacement; fi
   if [ "$patched" = "$original" ]; then
     echo "PATCH CHANGED NOTHING: this proves nothing ($label: replacement left $file unchanged)"
     exit 3
