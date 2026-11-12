@@ -183,6 +183,8 @@ prove_mutation "a lib call's function type returns nil" "$REPO/src/compiler/lowe
   'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))' 'fn_type = low.module.types.func(params, low.typer.llvm_return_type(low.analysed.program.nil_type))' -- lower_calls_check || status=1
 prove_mutation "a lib call's result is declared as an integer (a pointer result is caught)" "$REPO/src/compiler/lower/call.iyi" \
   'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))' 'fn_type = low.module.types.func(params, low.module.types.int32)' -- lower_calls_check || status=1
+prove_mutation "a class method is named with the instance separator (# not ::)" "$REPO/src/compiler/lower/fun.iyi" \
+  'text = text + co.full_name + "::"' 'text = text + co.full_name + "#"' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

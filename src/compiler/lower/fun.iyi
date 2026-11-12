@@ -35,8 +35,13 @@ import compiler/semantic/top_level::{NoReturnType, Type}
 # then the name, the argument types in `<>`, each by its full name, then `:` and the return type.
 # A def with no argument has no `<>`. The hosted escaping of a name that is not a plain identifier
 # is not ported: the caller refuses such a name. `self_type` is nil for a top-level def.
-pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type) : String
+pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : String
   text = "*"
+  # A method of a non-generic metaclass (`def self.go`) is named after its class and `::`, and passes no self
+  # (hosted Def#mangled_name, codegen/ast.cr: a metaclass owner writes `self_type.instance_type` then `::`).
+  if co = class_owner
+    text = text + co.full_name + "::"
+  end
   if st = self_type
     text = text + st.full_name + "#"
   end
@@ -61,8 +66,8 @@ end
 # The hosted `target_def_fun` for a def at these self and argument types, and its return type: the
 # function already in the module when there is one, otherwise a new one, emitted now. A method's
 # self is the first parameter, of the owner's type (hosted `codegen_fun_signature_non_external`).
-pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type) : Function
-  name = mangled_name(target.name, self_type, arg_types, ret)
+pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : Function
+  name = mangled_name(target.name, self_type, arg_types, ret, class_owner)
   if existing = low.module.get_function?(name)
     return existing.as(Function)
   end
