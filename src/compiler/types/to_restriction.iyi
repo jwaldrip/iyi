@@ -168,7 +168,7 @@ pub class TypeToRestriction
   # `from_type`, when there is one, and is relative to it.
   def type_to_path(type : Type) : Path
     common = nil
-    if !fully_public?(type)
+    if false
       common = common_namespace(type, @from_type)
     end
     names = [] of String

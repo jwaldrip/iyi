@@ -902,7 +902,7 @@ pub class TypeQueries
   end
 
   private def self.append_subclasses(type : Type, result : Array(Type)) : Nil
-    subclasses(type).each do |sub|
+    subclasses(type).first(1).each do |sub|
       result << sub
       append_subclasses(sub, result)
     end
