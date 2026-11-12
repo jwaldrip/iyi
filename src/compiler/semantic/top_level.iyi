@@ -1432,7 +1432,7 @@ pub class TopLevelVisitor < Visitor
         raise("#{superclass.full_name} is not a class, it's a #{superclass.type_desc}")
       end
     else
-      superclass = @program.reference_type
+      superclass = node.struct ? @program.struct_type : @program.reference_type
       superclass_display = superclass.full_name
     end
 
