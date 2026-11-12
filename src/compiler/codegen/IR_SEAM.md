@@ -172,3 +172,7 @@ Next, in order:
 3. `bench/selfhost_ir_valid_exercise.sh` and `bench/selfhost_compile_exercise.sh` on this branch, then the native gates.
 4. B3: `backend/backend.iyi`, `--backend`, `--print-backend`, `--emit ir`, the native source mode, and `bench/native_source_exercise.sh`. Not started.
 5. Rename the `llvm_*` method names in codegen. Cosmetic; left so the diff stays about the seam.
+
+## Why the codegen gate was red at the base (0de7c07fe)
+
+The predecessor ran `bench/selfhost_codegen_exercise.sh` at the base and kept its logs (`/tmp/b34_base_cg.log`, `/tmp/b34_base_fail_detail.txt`). Three things failed, and two of them are real divergences in what codegen emits: `cg_nilable` lost the `@"Nil:type_id"` global, and `cg_strings` declared a different `%String` type. The third is the C runner, which did not build. The `ld` warnings "built for newer 'macOS' version (28.0) than being linked (27.0)" appear in the green logs too, so they are not the cause. The base emitted through the LLVM bindings, and the IR rewrite replaced that emitter, so the head no longer shares the base's code path. Which earlier merge introduced the two divergences is not established: rebuilding the base needs a second checkout, which this slice does not create. What is established is that the head matches the oracle on all 18 fixtures (see the status section above).

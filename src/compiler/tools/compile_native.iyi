@@ -1,10 +1,13 @@
-# iyi-compile-native: compiles one IR program to a signed arm64 Mach-O executable.
+# iyi-compile-native: compiles one program to a signed arm64 Mach-O executable, with no LLVM and no host tool.
 #
-#   iyi-compile-native <program.ir> -o <exe> [--target aarch64-apple-darwin]
+#   iyi-compile-native <program.iyi> -o <exe> [--backend native] [--target aarch64-apple-darwin]
+#   iyi-compile-native <program.ir>  -o <exe> [--target aarch64-apple-darwin]
 #
-# The program is parsed and verified, each function is compiled by the native backend, and the object is linked with
-# the native runtime (rt/builtins.ir) by the native linker, which writes the signature too. No host tool takes part:
-# no ld, cc, clang, codesign or LLVM. A refusal names the function, construct or symbol, and the tool exits 1.
+# A .iyi program is compiled from source by the compiler pipeline with the native backend (compiler/backend/native).
+# A .ir program is IR text: it is parsed and verified, then compiled by the native backend the same way. Either way the
+# object is linked with the native runtime (rt/builtins.ir) by the native linker, which writes the signature too. No
+# host tool takes part: no ld, cc, clang, codesign or LLVM. A refusal names the function, construct or symbol, and the
+# tool exits 1 with no output written.
 
 @[Unsafe("declares the C library exit to set the process status; the tool handles no raw memory")]
 module compiler/tools/compile_native
@@ -18,6 +21,9 @@ import compiler/native/rt/start_wasm32_text::{start_wasm32_ir}
 import compiler/native/wasm/codegen::{compile_wasm}
 import compiler/native/emit::{to_bytes}
 import compiler/native/link/link::{LinkedImage}
+import compiler/compiler::{Compiler, CompilerConfig}
+import compiler/loader::{Loader}
+import compiler/backend/native::{NativeBackend}
 import std/file
 
 lib LibC
@@ -55,7 +61,7 @@ module CompileNative
   def self.run : Nil
     args = Program.args
     if args.size < 3 || args[1] != "-o"
-      fail("usage: iyi-compile-native <program.ir> -o <exe> [--target #{TARGET}]")
+      fail("usage: iyi-compile-native <program.iyi|program.ir> -o <exe> [--backend native] [--target #{TARGET}]")
     end
     input = args[0]
     output = args[2]
@@ -64,6 +70,12 @@ module CompileNative
     while i < args.size
       if args[i] == "--target" && i + 1 < args.size
         target = args[i + 1]
+        i = i + 2
+      elsif args[i] == "--backend" && i + 1 < args.size
+        # The native backend is the only backend this tool has. Any other name is refused by name.
+        unless args[i + 1] == "native"
+          fail("this tool has only the native backend, and #{args[i + 1]} was asked for")
+        end
         i = i + 2
       else
         fail("unknown argument #{args[i]}")
@@ -74,6 +86,17 @@ module CompileNative
     end
     unless File.exists?(input)
       fail("no such file: #{input}")
+    end
+    if input.ends_with?(".iyi")
+      # Source mode: the pipeline runs with the native backend, so the build links no LLVM. A refusal raises here, by
+      # name, before the output is written.
+      unless target == TARGET
+        fail("source programs build for #{TARGET} with the native backend, and #{target} was asked for")
+      end
+      config = CompilerConfig.new(output, false, nil, false, target, false, false, false)
+      Compiler.new(config, Loader.new, NativeBackend.new).compile(input)
+      print "BUILT #{output}\n"
+      return nil
     end
     mod = module_of(File.read(input), input)
     if target == "wasm32-wasi"

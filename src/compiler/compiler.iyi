@@ -9,17 +9,16 @@
 # 6. Emit: native object file emission
 # 7. Link: platform linker command construction and execution
 
-@[Unsafe("runs the platform linker through C's system and declares the C calls of its lib, which the compiler does not check")]
+@[Unsafe("reads string bytes through to_unsafe in its substring search, which the compiler does not check")]
 module compiler/compiler
 
 import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
 import compiler/semantic/main_visitor::{MainVisitor}
-import compiler/llvm
+import compiler/backend/backend::{Backend, BuildRequest}
 import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, refuse_exception_handlers, register_primitive_operators}
 import compiler/platform/target
-import compiler/platform/linker::{Linker}
 import compiler/loader::{Loader, ModuleInfo, IyiPath}
 import compiler/syntax/token::{NumberKind}
 import compiler/macros/interpreter::{MacroInterpreter}
@@ -28,16 +27,7 @@ import compiler/macros/methods::{MacroMethods}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/ir/verifier::{verify}
-import compiler/backend/llvm/translate::{translate, TranslateError}
-import compiler/backend/llvm/emit::{host_target_machine}
-
-alias LLVMTarget = ::Compiler::Llvm::Target::Target
 alias PlatformTarget = ::Compiler::Platform::Target::Target
-
-lib LibC
-  fun system(cmd : UInt8*) : Int32
-  fun exit(status : Int32) : NoReturn
-end
 
 # Configuration options for the compiler pipeline.
 pub struct CompilerConfig
@@ -85,7 +75,7 @@ pub class Compiler
   property config : CompilerConfig
   property loader : Loader
 
-  def initialize(@config : CompilerConfig = CompilerConfig.new, @loader : Loader = Loader.new)
+  def initialize(@config : CompilerConfig = CompilerConfig.new, @loader : Loader = Loader.new, @backend : Backend = Backend.new)
   end
 
   def compile(root_filename : String) : CompileResult
@@ -209,13 +199,12 @@ pub class Compiler
 
     # 5. Codegen: build the IR module for the target, then compile into it
     mod_name = Compiler.module_name_from_path(root_filename)
-    triple = @config.target_triple || LLVMTarget.default_target_triple
+    triple = @config.target_triple || @backend.default_triple
     built = Module.for_target(mod_name, PlatformTarget.new(triple))
     if built.is_a?(LayoutError)
       raise built.as(LayoutError).to_s
     end
     mod = built.as(Module)
-    tm = host_target_machine(triple)
 
     roots = resolved_modules.map { |mi| mi.ast.as(ASTNode) }
     compiled = group do |g|
@@ -250,77 +239,13 @@ pub class Compiler
     unless errors.empty?
       raise "IR verifier refused the module: " + errors[0].to_s
     end
-    # 6. Emit: replay the IR into LLVM, then write the native object file
-    llvm_module = translate(mod)
-    if llvm_module.is_a?(TranslateError)
-      raise llvm_module.as(TranslateError).message
-    end
-    llvm_ref = llvm_module.as(LibLLVM::ModuleRef)
+    # 6. Emit and link: the backend writes the output. A refusal is raised here, by name, and nothing is written.
     obj_path = @config.obj_output_filename || (@config.output_filename + ".o")
-    emitted = group do |g|
-      task = g.spawn { tm.emit_obj_to_file(llvm_ref, obj_path) }
-      task.value
+    request = BuildRequest.new(@config.output_filename, obj_path, !@config.obj_output_filename.nil?, @config.emit_obj_only, @config.verbose, @config.probe_phase, triple)
+    refusal = @backend.build(mod, request)
+    unless refusal.nil?
+      raise refusal.as(String)
     end
-    if emitted.is_a?(Panicked)
-      if @config.probe_phase
-        puts "object: fail: #{emitted.message}"
-        puts "reached: codegen"
-        return CompileResult.new(@config.output_filename, "", resolved_modules)
-      end
-      raise emitted.message
-    end
-
-    if @config.probe_phase
-      puts "[phase] object: pass"
-      STDOUT.flush
-    end
-
-    if @config.emit_obj_only
-      if @config.verbose
-        puts "Emitted object file: #{obj_path}"
-      end
-      if @config.probe_phase
-        puts "reached: object"
-      end
-      return CompileResult.new(@config.output_filename, obj_path, resolved_modules)
-    end
-
-    # 7. Link: construct platform linker command and link binary
-    plat_target = PlatformTarget.new(triple)
-    link_result = Linker.linker_command(plat_target, [obj_path], @config.output_filename)
-
-    cmd_template = link_result.cmd
-    quoted_objs = if objs = link_result.objects
-                    Linker.quote_posix(objs)
-                  else
-                    Linker.quote_posix([obj_path])
-                  end
-
-    final_cmd = Compiler.substitute_placeholder(cmd_template, "\"${@}\"", quoted_objs)
-    status = LibC.system(final_cmd.to_unsafe)
-    if @config.probe_phase
-      if status == 0
-        puts "[phase] link: pass"
-        puts "reached: link"
-      else
-        puts "link: fail: platform linker returned #{status}"
-        puts "reached: object"
-      end
-      if @config.obj_output_filename.nil? && File.exists?(obj_path)
-        File.delete(obj_path)
-      end
-      return CompileResult.new(@config.output_filename, obj_path, resolved_modules)
-    end
-
-    unless status == 0
-      STDERR.puts "Error: linking failed with exit code #{status}"
-      LibC.exit(1)
-    end
-    # Clean up temporary object file if not explicitly requested
-    if @config.obj_output_filename.nil? && File.exists?(obj_path)
-      File.delete(obj_path)
-    end
-
     CompileResult.new(@config.output_filename, obj_path, resolved_modules)
   end
 
