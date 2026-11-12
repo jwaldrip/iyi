@@ -23,6 +23,7 @@ samples/iyi/std_text.iyi 0
 samples/iyi/visited.iyi 3
 samples/iyi/webapp.iyi 0
 samples/iyi/workers.iyi 8
+src/compiler/backend/backend.iyi 0
 src/compiler/backend/llvm/emit.iyi 0
 src/compiler/backend/llvm/import.iyi 0
 src/compiler/backend/llvm/translate.iyi 0
@@ -55,11 +56,11 @@ src/compiler/llvm/values.iyi 0
 src/compiler/loader.iyi 0
 src/compiler/macros/answers.iyi 9
 src/compiler/macros/ast.iyi 17
-src/compiler/macros/interpreter.iyi 0
+src/compiler/macros/interpreter.iyi 20
 src/compiler/macros/macro_parser.iyi 0
 src/compiler/macros/methods.iyi 21
 src/compiler/macros/site_scan.iyi 29
-src/compiler/macros/target_flags.iyi 0
+src/compiler/macros/target_flags.iyi 10
 src/compiler/native/aarch64/regs.iyi 35
 src/compiler/native/amd64/regs.iyi 40
 src/compiler/native/asm/constraints.iyi 23
@@ -80,8 +81,8 @@ src/compiler/syntax/ast.iyi 979
 src/compiler/syntax/lexer.iyi 104
 src/compiler/syntax/parser.iyi 0
 src/compiler/syntax/token.iyi 231
-src/compiler/syntax/transformer.iyi 110
-src/compiler/syntax/visitor.iyi 327
+src/compiler/syntax/transformer.iyi 111
+src/compiler/syntax/visitor.iyi 328
 src/compiler/tools/bind.iyi 0
 src/compiler/tools/format.iyi 0
 src/compiler/tools/formatter.iyi 0
