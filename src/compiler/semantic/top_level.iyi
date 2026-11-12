@@ -4,7 +4,7 @@ import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
-import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/inline_macros::{expand_inline_macro}
@@ -222,6 +222,8 @@ pub class MetaTypeVar
   property location : Location?
   # iyi: the type a variable is declared in (hosted MetaTypeVar#owner); nil for a built-in one.
   property owner : Type? = nil
+  # iyi: a class variable declared `@[ThreadLocal]` (hosted MetaTypeVar#thread_local?).
+  property thread_local : Bool = false
 
   def initialize(@name : String, @var_type : Type? = nil, @initializer : ASTNode? = nil, @location : Location? = nil)
   end
@@ -670,9 +672,89 @@ pub class LibFun
   end
 end
 
+# iyi: a `@[Link]` annotation a lib records (hosted LinkAnnotation, codegen/link.cr): the library
+# names and flags as written. The positional arguments come in the hosted order: library,
+# ldflags, static, framework. `wasm_import_module` is not recorded: a lib's wasm module is not a
+# target here. (The fields are not named `lib` or `static`: those words are keywords here.)
+pub class LinkAnnotationRecord
+  property library : String? = nil
+  property ldflags : String? = nil
+  property is_static : Bool = false
+  property framework : String? = nil
+  property pkg_config : String? = nil
+  property dll : String? = nil
+
+  def self.from(ann : Annotation) : LinkAnnotationRecord
+    record = LinkAnnotationRecord.new
+    if ann.args.empty? && ann.named_args.nil?
+      raise("missing link arguments: must at least specify a library name")
+    end
+    i = 0
+    while i < ann.args.size
+      arg = ann.args[i]
+      if i == 2
+        if b = arg.as?(BoolLiteral)
+          record.is_static = b.value
+        else
+          raise("'static' link argument must be a Bool")
+        end
+      else
+        if s = arg.as?(StringLiteral)
+          if i == 0
+            record.library = s.value
+          elsif i == 1
+            record.ldflags = s.value
+          elsif i == 3
+            record.framework = s.value
+          else
+            raise("too many link arguments")
+          end
+        else
+          raise("link argument #{i + 1} must be a String")
+        end
+      end
+      i = i + 1
+    end
+    if named = ann.named_args
+      named.each do |na|
+        value = na.value
+        if na.name == "static"
+          if b = value.as?(BoolLiteral)
+            record.is_static = b.value
+          else
+            raise("'static' link argument must be a Bool")
+          end
+        elsif s = value.as?(StringLiteral)
+          if na.name == "lib"
+            record.library = s.value
+          elsif na.name == "ldflags"
+            record.ldflags = s.value
+          elsif na.name == "framework"
+            record.framework = s.value
+          elsif na.name == "pkg_config"
+            record.pkg_config = s.value
+          elsif na.name == "dll"
+            record.dll = s.value
+          elsif na.name == "wasm_import_module"
+            # not recorded (see above)
+          else
+            raise("unknown link argument: '#{na.name}'")
+          end
+        else
+          raise("'#{na.name}' link argument must be a String")
+        end
+      end
+    end
+    record
+  end
+end
+
 # A lib type, like `lib LibC`.
 pub class LibType < NonGenericModuleType
   getter funs : Array(LibFun)
+  # iyi: the `@[Link]` annotations of the lib, in declaration order, one per annotation on each
+  # reopening (LibType#link_annotations, the hosted lib's link annotations).
+  getter link_annotations : Array(LinkAnnotationRecord)
   # iyi: whether a call to one of this lib's funs was typed (hosted lib `used`). False until the
   # call pass sets it.
   property used : Bool = false
@@ -691,6 +773,7 @@ pub class LibType < NonGenericModuleType
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
     super(program, namespace, name)
     @funs = [] of LibFun
+    @link_annotations = [] of LinkAnnotationRecord
   end
 
   def type_desc : String
@@ -997,9 +1080,20 @@ pub class SemanticProgram < NonGenericModuleType
   # The files read so far (absolute paths), and the module each one declared.
   getter loaded_files : Set(String)
   getter loaded_units : Hash(String, ModuleType)
+  # The normalised tree the pipeline holds for each unit, by normalised path. It is registered before any unit is
+  # declared, so a require that reaches a unit before its own turn reads this tree, not a second parse of the file.
+  getter unit_trees : Hash(String, ASTNode)
 
   def object_type : ClassType
     @object_type.as(ClassType)
+  end
+
+  # The tree the pipeline holds for a unit file, or a fresh parse of the file when the pipeline holds none.
+  def unit_tree_or_parse(file : String) : ASTNode
+    if tree = @unit_trees[file]?
+      return tree
+    end
+    Parser.new(File.read(file), file).parse
   end
 
   def value_type : ClassType
@@ -1243,6 +1337,7 @@ pub class SemanticProgram < NonGenericModuleType
     @search_path = [] of String
     @loaded_files = Set(String).new
     @loaded_units = Hash(String, ModuleType).new
+    @unit_trees = Hash(String, ASTNode).new
     @object_type = nil
     @value_type = nil
     @reference_type = nil
@@ -1257,15 +1352,15 @@ pub class SemanticProgram < NonGenericModuleType
     @object_type = obj
     @types["Object"] = obj
 
+    ref = NonGenericClassType.new(self, self, "Reference", obj)
+    @reference_type = ref
+    @types["Reference"] = ref
+
     val = NonGenericClassType.new(self, self, "Value", obj)
     val.struct = true
     val.abstract = true
     @value_type = val
     @types["Value"] = val
-
-    ref = NonGenericClassType.new(self, self, "Reference", obj)
-    @reference_type = ref
-    @types["Reference"] = ref
 
     num = NonGenericClassType.new(self, self, "Number", val)
     num.struct = true
@@ -1749,6 +1844,8 @@ pub class TopLevelVisitor < Visitor
   property unit : ModuleType? = nil
   @enum_flags : Bool = false
   @pending_flags : Bool = false
+  # The annotations written since the last declaration (hosted process_annotations).
+  @pending_annotations : Array(Annotation) = [] of Annotation
 
   # Every explicit instance variable is recorded here, in the order the source
   # declares it. A restriction may name a type a later file declares (`concurrency.iyi`
@@ -1799,6 +1896,7 @@ pub class TopLevelVisitor < Visitor
     @current_type = @program
     @exp_nest = 0
     @pending_ivars = [] of PendingIvar
+    @pending_annotations = [] of Annotation
   end
 
   # `@[Primitive(:name)]` makes a def's body the compiler's own primitive, located at
@@ -1930,8 +2028,8 @@ pub class TopLevelVisitor < Visitor
       return @program.loaded_units[file]?
     end
     @program.loaded_files.add(file)
-    parser = Parser.new(File.read(file), file)
-    nodes = parser.parse
+    # The pipeline holds the file's normalised tree when it declared the units. Reading that tree keeps one tree per file.
+    nodes = @program.unit_tree_or_parse(file)
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
     saved_defs = @program.current_import_defs
@@ -2304,10 +2402,12 @@ pub class TopLevelVisitor < Visitor
   end
 
   # `@[Flags]` marks the enum that follows it: its members are bits, and it gets None and All.
+  # Every annotation is also kept for the declaration after it (hosted process_annotations).
   def visit(node : Annotation) : Bool
     if node.path.names.last == "Flags"
       @pending_flags = true
     end
+    @pending_annotations << node
     false
   end
 
@@ -2484,6 +2584,8 @@ pub class TopLevelVisitor < Visitor
   # A lib, like `lib LibC`. Its funs are recorded as LibFun records. The hosted pass also
   # reads the lib's `@[Link]` libraries and call convention here, which are not ported yet.
   def visit(node : LibDef) : Bool
+    annotations = @pending_annotations
+    @pending_annotations = [] of Annotation
     scope, name, existing = lookup_type_def(node, node.name)
 
     lib_type : LibType
@@ -2502,6 +2604,13 @@ pub class TopLevelVisitor < Visitor
     end
     if vis = node.visibility
       lib_type.visibility = vis
+    end
+    # iyi: the `@[Link]` annotations written before this reopening, in declaration order (the
+    # hosted process_annotations of a lib); the others are not lib records.
+    annotations.each do |ann|
+      if ann.path.names.last == "Link"
+        lib_type.link_annotations << LinkAnnotationRecord.from(ann)
+      end
     end
 
     old_type = @current_type
@@ -2643,6 +2752,8 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : Def) : Bool
+    # iyi: an annotation before a def belongs to the def, not to a later class variable.
+    @pending_annotations = [] of Annotation
     target_type : ModuleType
 
     if rec = node.receiver
@@ -2759,6 +2870,10 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : TypeDeclaration) : Bool
+    # iyi: the annotations written before this declaration (hosted process_annotations): a
+    # class variable takes @[ThreadLocal] from them, and each declaration consumes them.
+    annotations = @pending_annotations
+    @pending_annotations = [] of Annotation
     if node.var.is_a?(InstanceVar)
       if @current_type.is_a?(SemanticProgram)
         raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
@@ -2773,6 +2888,9 @@ pub class TopLevelVisitor < Visitor
       cvar_name = node.var.as(ClassVar).name
       mv = MetaTypeVar.new(cvar_name, decl_type, node.value)
       mv.owner = @current_type
+      annotations.each do |ann|
+        mv.thread_local = true if ann.path.names.last == "ThreadLocal"
+      end
       @current_type.class_vars[cvar_name] = mv
     end
     false
@@ -2825,9 +2943,6 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroIf) : Bool
-    # iyi: disabled until S1bInlineMacros3 fixes the expansion: the visit at this site dropped defs
-    # (hello defs reached 5218 to 168). Until then it answers as before 7092cb8eb: children walked.
-    return true
     if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
       expanded.accept(self)
     end
@@ -2835,9 +2950,6 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroFor) : Bool
-    # iyi: disabled until S1bInlineMacros3 fixes the expansion: the visit at this site dropped defs
-    # (hello defs reached 5218 to 168). Until then it answers as before 7092cb8eb: children walked.
-    return true
     if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
       expanded.accept(self)
     end
@@ -2845,9 +2957,6 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroExpression) : Bool
-    # iyi: disabled until S1bInlineMacros3 fixes the expansion: the visit at this site dropped defs
-    # (hello defs reached 5218 to 168). Until then it answers as before 7092cb8eb: children walked.
-    return true
     if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
       expanded.accept(self)
     end

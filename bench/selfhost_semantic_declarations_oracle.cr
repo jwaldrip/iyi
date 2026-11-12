@@ -268,6 +268,23 @@ if ARGV[0]? == "--chain"
   exit 0
 end
 
+# `--link-annotations` loads the file the way the dump does, then prints the `@[Link]`
+# annotations the lib named LibA records, one line each, in the order they were recorded.
+# The port's `--link-annotations` pin prints the same lines.
+if ARGV[0]? == "--link-annotations"
+  link_path = ARGV[1]? || abort("usage: selfhost_semantic_declarations_oracle --link-annotations <file.iyi>")
+  link_entry = File.expand_path(link_path)
+  link_compiler = Iyi::Compiler.new
+  link_program, link_node = link_compiler.declarations_program(Iyi::Compiler::Source.new(link_entry, File.read(link_entry)))
+  link_node.accept(Iyi::TopLevelVisitor.new(link_program))
+  if (link_lib = link_program.types["LibA"]?) && link_lib.is_a?(Iyi::LibType)
+    (link_lib.link_annotations || [] of Iyi::LinkAnnotation).each do |rec|
+      print "link lib=#{rec.lib || "-"} ldflags=#{rec.ldflags || "-"} static=#{rec.static?} framework=#{rec.framework || "-"} pkg_config=#{rec.pkg_config || "-"} dll=#{rec.dll || "-"}\n"
+    end
+  end
+  exit 0
+end
+
 typed_mode = ARGV[0]? == "--typed"
 path = (typed_mode ? ARGV[1]? : ARGV[0]?) || abort("usage: selfhost_semantic_declarations_oracle [--typed] <file.iyi>")
 entry = File.expand_path(path)
