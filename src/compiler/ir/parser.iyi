@@ -635,7 +635,7 @@ class IrParser
     fn.attrs = parse_attr_list(c, mod.types) if c.punct?("[")
     if is_define
       param_types.each_with_index do |t, i|
-        fn.add_param(Param.new(t, param_names[i], i))
+        fn.add_param_as_written(Param.new(t, param_names[i], i))
       end
     end
     @pending_clauses << {fn, c.pos}
@@ -790,7 +790,7 @@ class IrParser
     while i < stop
       toks = @toks[i]
       if toks.size >= 2 && (toks[0].kind == TokKind::Ident || toks[0].kind == TokKind::Str) && tok_is_punct?(toks[1], ":")
-        block = fn.append_basic_block(toks[0].text)
+        block = fn.append_basic_block_as_written(toks[0].text)
         @blocks[toks[0].text] = block
         block.no_vectorize = toks.size > 3 && tok_is_ident?(toks[2 + 1], "no_vectorize")
       end

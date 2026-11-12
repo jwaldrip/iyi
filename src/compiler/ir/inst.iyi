@@ -1,7 +1,7 @@
 module compiler/ir/inst
 
 import compiler/ir/types::{IrType}
-import compiler/ir/values::{Value}
+import compiler/ir/values::{Value, SymbolTable}
 import compiler/ir/intrinsics::{IntrinsicId}
 
 pub enum Op
@@ -332,6 +332,8 @@ pub class Block
   getter insts : Array(Inst)
   getter preds : Array(Block)
   property no_vectorize : Bool
+  # The symbol table of the function this block belongs to, so the builder can claim the names of what it places here.
+  property symbols : SymbolTable?
 
   def initialize(@name : String)
     @insts = [] of Inst

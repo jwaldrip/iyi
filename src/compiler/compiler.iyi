@@ -25,8 +25,11 @@ import compiler/syntax/token::{NumberKind}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/methods::{MacroMethods}
 
-import compiler/llvm/context::{Context}
-import compiler/llvm/module::{Module}
+import compiler/ir/module::{Module}
+import compiler/ir/layout::{LayoutError}
+import compiler/ir/verifier::{verify}
+import compiler/backend/llvm/translate::{translate, TranslateError}
+import compiler/backend/llvm/emit::{host_target_machine}
 
 alias LLVMTarget = ::Compiler::Llvm::Target::Target
 alias PlatformTarget = ::Compiler::Platform::Target::Target
@@ -204,27 +207,19 @@ pub class Compiler
       STDOUT.flush
     end
 
-    # 5. Codegen: create LLVM context, module, target machine, and compile
-    ctx = Context.new
+    # 5. Codegen: build the IR module for the target, then compile into it
     mod_name = Compiler.module_name_from_path(root_filename)
-    mod = Module.new(mod_name, ctx)
-
-    LLVMTarget.init_native_target
-    LLVMTarget.init_all_targets
     triple = @config.target_triple || LLVMTarget.default_target_triple
-    mod.target = triple
-    native_target = LLVMTarget.from_triple(triple)
-    tm = native_target.create_target_machine(
-      triple, "", "",
-      LibLLVM::CodeGenOptLevel::Default,
-      LibLLVM::RelocMode::PIC,
-      LibLLVM::CodeModel::Default
-    )
-    mod.data_layout = tm.data_layout
+    built = Module.for_target(mod_name, PlatformTarget.new(triple))
+    if built.is_a?(LayoutError)
+      raise built.as(LayoutError).to_s
+    end
+    mod = built.as(Module)
+    tm = host_target_machine(triple)
 
     roots = resolved_modules.map { |mi| mi.ast.as(ASTNode) }
     compiled = group do |g|
-      task = g.spawn { compile_declarations_to_module(classes, funs, defs, libs, root_filename, ctx, mod, prog, mv, roots) }
+      task = g.spawn { compile_declarations_to_module(classes, funs, defs, libs, root_filename, mod, prog, mv, roots) }
       task.value
     end
     if compiled.is_a?(Panicked)
@@ -241,20 +236,29 @@ pub class Compiler
       STDOUT.flush
     end
 
+    # The IR verifier decides first: an IR module it refuses never reaches a backend.
+    errors = verify(mod)
     if @config.probe_verify
-      is_valid, verify_err = mod.verify_safely
-      if is_valid
+      if errors.empty?
         puts "[verify] pass"
       else
-        puts "[verify] fail: " + verify_err
+        puts "[verify] fail: " + errors[0].to_s
       end
       STDOUT.flush
       return CompileResult.new(@config.output_filename, "", resolved_modules)
     end
-    # 6. Emit: write native object file
+    unless errors.empty?
+      raise "IR verifier refused the module: " + errors[0].to_s
+    end
+    # 6. Emit: replay the IR into LLVM, then write the native object file
+    llvm_module = translate(mod)
+    if llvm_module.is_a?(TranslateError)
+      raise llvm_module.as(TranslateError).message
+    end
+    llvm_ref = llvm_module.as(LibLLVM::ModuleRef)
     obj_path = @config.obj_output_filename || (@config.output_filename + ".o")
     emitted = group do |g|
-      task = g.spawn { tm.emit_obj_to_file(mod.to_unsafe, obj_path) }
+      task = g.spawn { tm.emit_obj_to_file(llvm_ref, obj_path) }
       task.value
     end
     if emitted.is_a?(Panicked)

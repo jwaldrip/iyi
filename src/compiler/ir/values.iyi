@@ -23,6 +23,38 @@ pub class Param < Value
   end
 end
 
+# The local names of one function, claimed the way LLVM's ValueSymbolTable claims them
+# (makeUniqueName). A free name is kept as given. A taken name gets the function's counter
+# appended with no separator, incremented until the result is free. The counter is shared by
+# every value in the function, blocks and parameters included, as LLVM's LastUnique is. "" is
+# unnamed and is never claimed. The text parser registers the names it reads as written, so the
+# verifier still sees a duplicate that the text itself contains.
+pub class SymbolTable
+  def initialize
+    @taken = Hash(String, Bool).new
+    @last_unique = 0
+  end
+
+  def taken?(name : String) : Bool
+    @taken.has_key?(name)
+  end
+
+  def register(name : String) : Nil
+    @taken[name] = true unless name.empty?
+  end
+
+  def claim(name : String) : String
+    return name if name.empty?
+    candidate = name
+    while taken?(candidate)
+      @last_unique += 1
+      candidate = "#{name}#{@last_unique}"
+    end
+    register(candidate)
+    candidate
+  end
+end
+
 # The bit pattern of a double, as a signed 64-bit integer.
 pub def double_bits(value : Float64) : Int64
   pointerof(value).as(Int64*).value
