@@ -37,7 +37,8 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # Fixtures the port refuses by name: the two class-variable reads call a method on the class (K.v), a call on a class receiver that lower/call.iyi does not port yet (S2c5Calls).
-WAITING_FIXTURES="lowglob_cvar_literal lowglob_cvar_call"
+WAITING_FIXTURES="lowglob_cvar_literal lowglob_cvar_call lowglob_const_namespace"
+# lowglob_const_namespace: a string constant in a module (Outer::S) is refused by name, its hosted llvm_name not ported yet.
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
