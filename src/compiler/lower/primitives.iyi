@@ -657,14 +657,19 @@ end
 # the hosted IR of bench/fixtures/lowprim_alloc_class.iyi. Under the header layout the hosted code stores
 # the id at P-4 instead, which is not ported and refuses here.
 pub def allocate_malloc_class(low : Lowerer, t : Type) : Value
-  if low.typer.iyi_layout
-    pending_visit_node("allocate of class #{t.full_name} under the header layout (hosted allocate_aggregate 2790, the type id at P-4, not ported)")
-    return low.builder.const_null_pointer
-  end
   refuse_program_malloc(low, t)
   struct_ir = low.typer.llvm_struct_type(t)
   c_malloc = c_malloc_function(low)
   ptr = low.builder.call(c_malloc.fn_type, c_malloc, [sizeof_expr(low, struct_ir)] of Value, "")
+  if low.typer.iyi_layout
+    # The header layout (hosted codegen.cr 2790-2793, 2797-2807 with iyi_object_layout?): the memset, then the
+    # type id a u32 at P-4 (the high half of the header word at P-8), and no store at field 0.
+    zero_memory(low, ptr, struct_ir)
+    back4 = low.builder.const_int(low.module.types.int64, -4_i64)
+    id_slot = low.builder.inbounds_gep(low.module.types.int8, ptr, [back4] of Value)
+    store_aligned(low, type_id_value(low, t), id_slot)
+    return ptr
+  end
   zero_memory(low, ptr, struct_ir)
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   slot = low.builder.inbounds_gep(struct_ir, ptr, [zero, zero] of Value)
