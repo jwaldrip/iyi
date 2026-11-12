@@ -136,7 +136,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
           self_value = storage.as(Value)
         else
           recv = lower_receiver(low, node)
-          self_value = self_argument(low, node.obj.as(ASTNode), recv, self_type.as(Type))
+          self_value = receiver_self(low, node, recv, self_type.as(Type))
         end
       end
     end
@@ -235,7 +235,14 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       ir = low.typer.llvm_type(ret)
       temp = low.alloca(ir, "")
       store_aligned(low, inst, temp)
-      low.last = load_aligned(low, ir, temp, "")
+      low.spill_node = node.object_id
+      low.spill_slot = temp
+      # A receiver that is this call takes the slot as its self (receiver_self), so no value is loaded from it.
+      if low.receiver_node == node.object_id && self_by_pointer?(ret)
+        low.last = temp
+      else
+        low.last = load_aligned(low, ir, temp, "")
+      end
     else
       low.last = llvm_nil(low)
     end
@@ -280,6 +287,20 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
   owner
 end
 
+# The self of a call on a struct receiver. A receiver that is itself a call with a struct result (`Point.new(1, 2).sum`)
+# was just spilled to an alloca by that call (codegen_call_node, hosted call.cr:707-713), and the hosted self is that
+# spill pointer: the port passes the spill slot as self and makes no second alloca. Any other receiver goes through
+# `self_argument`. `lower_receiver` cleared `spill_node` before it visited the receiver, so a match is this receiver's own spill.
+pub def receiver_self(low : Lowerer, node : Compiler::Syntax::Ast::Call, recv : Value, st : Type) : Value
+  obj = node.obj.as(ASTNode)
+  if self_by_pointer?(st) && low.spill_node != 0_u64 && low.spill_node == obj.object_id
+    if slot = low.spill_slot
+      return slot.as(Value)
+    end
+  end
+  self_argument(low, obj, recv, st)
+end
+
 # The receiver's value, evaluated as the hosted `request_value(obj)` does: the value the receiver
 # expression left, with its value wanted.
 pub def lower_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Value
@@ -287,7 +308,10 @@ pub def lower_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Valu
   raise "BUG: lower_receiver on a call with no receiver (hosted call.cr: prepare_call_args)" if obj.nil?
   wants = low.needs_value
   low.needs_value = true
+  low.spill_node = 0_u64
+  low.receiver_node = obj.object_id
   visit_node(low, obj.as(ASTNode))
+  low.receiver_node = 0_u64
   low.needs_value = wants
   v = low.last
   raise "BUG: the receiver of #{node.name} left no value (hosted call.cr: prepare_call_args)" if v.nil?

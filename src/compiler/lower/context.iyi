@@ -139,6 +139,12 @@ pub class Lowerer
   # The funs with a body the program never calls (hosted @unused_fun_defs): each is declared at its visit and its body is
   # emitted at the end of the module (emit_unused_fun_defs).
   property unused_fun_defs : Array(FunDef)
+  # The hosted struct spill of a call (call.cr:707-713), read by the receiver of a call: the object_id of the call node
+  # that spilled its struct result last (0 for none), and the spill slot, whose pointer is that receiver's self.
+  property spill_node : UInt64
+  property spill_slot : Value?
+  # The object_id of the call node being lowered as a receiver, whose struct result is wanted only as its spill slot (0 for none).
+  property receiver_node : UInt64
 
   def initialize(@module : Module, @typer : LowerTyper, @analysed : MainVisitor)
     @builder = Builder.new(@module)
@@ -157,6 +163,9 @@ pub class Lowerer
     @string_type_id = 0
     @type_ids = LowerTypeIds.new
     @globals = LowerGlobals.new
+    @spill_node = 0_u64
+    @spill_slot = nil
+    @receiver_node = 0_u64
     @fun_defs_done = Hash(String, Bool).new
     @unused_fun_defs = [] of FunDef
   end
