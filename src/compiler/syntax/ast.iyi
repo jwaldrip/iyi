@@ -79,14 +79,22 @@ pub class StringBuilder
 end
 
 # Out-of-band side map keyed by node object_id so ASTNode types are never reopened.
+#
+# The key is the node's address, so the map holds the node as well as the value. A map that kept only the address
+# let the collector free a node nothing else referred to (a discarded clone), and the next node allocated at that
+# address then found the dead node's entry: a type or a target that belonged to another node, and at a point that
+# depended on when the collector ran, so two runs of one compiler on one program could differ.
 pub class NodeMap(V)
   @store : Hash(UInt64, V)
+  @nodes : Hash(UInt64, ASTNode)
 
   def initialize
     @store = Hash(UInt64, V).new
+    @nodes = Hash(UInt64, ASTNode).new
   end
 
   def []=(node : ASTNode, value : V) : V
+    @nodes[node.node_id] = node
     @store[node.node_id] = value
     value
   end
@@ -108,6 +116,7 @@ pub class NodeMap(V)
   end
 
   def delete(node : ASTNode) : V?
+    @nodes.delete(node.node_id)
     @store.delete(node.node_id)
   end
 
@@ -121,6 +130,7 @@ pub class NodeMap(V)
 
   def clear : Nil
     @store = Hash(UInt64, V).new
+    @nodes = Hash(UInt64, ASTNode).new
   end
 end
 
