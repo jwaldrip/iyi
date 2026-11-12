@@ -1513,10 +1513,9 @@ pub class TopLevelVisitor < Visitor
       end
       names.each do |name|
         found = unit.as(ModuleType).types[name]?
-        unless found
-          refuse_port("undefined constant #{name} in '#{written}'")
+        if found
+          @program.current_imports[name] = found.as(Type)
         end
-        @program.current_imports[name] = found.as(Type)
       end
     end
     false

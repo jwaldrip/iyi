@@ -17,6 +17,7 @@
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+export IYI_PATH="$REPO/src"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 TYPER_FILE="$REPO/src/compiler/lower/typer.iyi"
@@ -116,6 +117,96 @@ fi
 if [ "$diverged" -ne 0 ]; then
   status=1
 fi
+
+echo
+echo "== 2c. Own source: every type each file declares, the hosted oracle against the port (floor)"
+own_list="$WORK/own_files.txt"
+if [ -n "${LOWER_TYPES_FILES:-}" ]; then
+  cp "$LOWER_TYPES_FILES" "$own_list"
+else
+  (cd "$REPO" && find src/compiler -name '*.iyi' | sort) > "$own_list"
+fi
+own_results="$WORK/own_results.tsv"
+own_reasons="$WORK/own_reasons.tsv"
+: > "$own_results"
+: > "$own_reasons"
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  id=$(printf '%s' "$file" | tr '/' '_')
+  timeout 900 "$WORK/oracle" --own "$REPO/$file" "$TRIPLE" > "$WORK/$id.o" 2> "$WORK/$id.oe"
+  oracle_status=$?
+  timeout 900 "$WORK/port" --own "$REPO/$file" "$TRIPLE" > "$WORK/$id.p" 2> "$WORK/$id.pe"
+  port_status=$?
+  declared=$(awk '/^== /{n++} END{print n+0}' "$WORK/$id.o")
+  if [ "$oracle_status" -ne 0 ]; then
+    printf '%s\tORACLE\t0\t0\t0\t0\t0\t%s\n' "$file" "$(awk 'NR==1' "$WORK/$id.oe" | tr -d '\t')" >> "$own_results"
+    continue
+  fi
+  if [ "$port_status" -ne 0 ]; then
+    printf '%s\tPORT\t%s\t0\t0\t0\t0\t%s\n' "$file" "$declared" "$(awk 'NR==1' "$WORK/$id.pe" | tr -d '\t')" >> "$own_results"
+    continue
+  fi
+  python3 "$REPO/bench/lib/lower_types_compare.py" "$WORK/$id.o" "$WORK/$id.p" > "$WORK/$id.cmp"
+  read -r declared identical failed missing differs < <(awk 'NR==1' "$WORK/$id.cmp")
+  awk -v f="$file" '/^REASON/ {print f "\t" $0}' "$WORK/$id.cmp" >> "$own_reasons"
+  printf '%s\tOK\t%s\t%s\t%s\t%s\t%s\t\n' "$file" "$declared" "$identical" "$failed" "$missing" "$differs" >> "$own_results"
+done < "$own_list"
+own_floor="$REPO/bench/selfhost_lower_types.floor"
+own_verdicts="$WORK/own_verdicts.tsv"
+awk -F'\t' -v floorf="$own_floor" '
+  BEGIN {
+    while ((getline line < floorf) > 0) {
+      if (line ~ /^#/ || line == "") continue
+      split(line, a, " "); floor[a[1]] = a[2]
+    }
+  }
+  {
+    file = $1; status = $2; identical = $4 + 0
+    if (status == "ORACLE") { print "NOT MEASURED\t" file "\t" $8; next }
+    if (!(file in floor)) { print "NO FLOOR\t" file "\t" identical "\t-"; next }
+    if (identical < floor[file] + 0) print "BELOW FLOOR\t" file "\t" identical "\t" floor[file]
+    else if (identical > floor[file] + 0) print "RAISE THE FLOOR\t" file "\t" identical "\t" floor[file]
+    else print "AT FLOOR\t" file "\t" identical "\t" floor[file]
+  }' "$own_results" > "$own_verdicts"
+if [ "${LOWER_TYPES_RAISE:-0}" = 1 ]; then
+  awk -F'\t' -v floorf="$own_floor" '
+    BEGIN {
+      while ((getline line < floorf) > 0) {
+        if (line ~ /^#/ || line == "") continue
+        split(line, a, " "); floor[a[1]] = a[2]
+      }
+    }
+    $2 == "OK" || $2 == "PORT" { if (!($1 in floor) || $4 + 0 > floor[$1] + 0) floor[$1] = $4 + 0 }
+    END { for (f in floor) print f " " floor[f] }' "$own_results" | LC_ALL=C sort > "$own_floor.new"
+  { echo "# lowering own-source floors: <repo-relative file> <identical types>."; echo "# A count may only rise. Raise with: LOWER_TYPES_RAISE=1 bash bench/selfhost_lower_types_exercise.sh"; cat "$own_floor.new"; } > "$own_floor"
+  rm -f "$own_floor.new"
+fi
+own_fails=$(awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "RAISE THE FLOOR" || $1 == "NO FLOOR"' "$own_verdicts" | wc -l | tr -d ' ')
+if [ "${LOWER_TYPES_RAISE:-0}" = 1 ]; then
+  own_fails=0
+fi
+awk -F'\t' '$1 == "BELOW FLOOR" { printf "  BELOW FLOOR: %s identical %s, floor %s. A regression: restore the lowering, lower nothing.\n", $2, $3, $4 }
+  $1 == "RAISE THE FLOOR" { printf "  RAISE THE FLOOR: %s identical %s, floor %s. Raise it (LOWER_TYPES_RAISE=1).\n", $2, $3, $4 }
+  $1 == "NO FLOOR" { printf "  NO FLOOR: %s has no floor entry (LOWER_TYPES_RAISE=1).\n", $2 }' "$own_verdicts"
+echo "  $own_fails file(s) below, above or missing their floor"
+if [ "$own_fails" -ne 0 ]; then
+  status=1
+fi
+echo "  per file: verdict, file, hosted types declared, identical, floor"
+awk -F'\t' '{ printf "  %-18s %-52s %6s %6s %6s %s\n", $1, $2, "", $3, "", $4 }' "$own_verdicts"
+own_totals=$(awk -F'\t' '
+  $2 == "OK" { measured++; declared += $3; identical += $4; differs += $7 }
+  $2 == "PORT" { port_failed++; declared += $3 }
+  $2 == "ORACLE" { oracle_failed++ }
+  END { printf "%d %d %d %d %d %d %d", measured + 0, port_failed + 0, oracle_failed + 0, declared + 0, identical + 0, differs + 0, NR }' "$own_results")
+read -r own_measured own_port_failed own_oracle_failed own_declared own_identical own_differs own_files_total <<< "$own_totals"
+echo "  own source: $own_files_total files, $own_measured measured, $own_oracle_failed hosted failures (not measured), $own_port_failed port failures"
+echo "  own source types: $own_identical identical of $own_declared declared ($own_differs differ) across the measured files"
+echo "  ranked reasons (types that differ or are not measured, by count):"
+awk -F'\t' '{ line = $2; sub(/^REASON /, "", line); n = line; sub(/ .*/, "", n); text = line; sub(/^[0-9]+ /, "", text); tot[text] += n }
+  END { for (t in tot) printf "%7d  %s\n", tot[t], t }' "$own_reasons" | sort -rn | awk 'NR <= 40'
+awk -F'\t' '$2 == "ORACLE" { print "  hosted: " $8 }' "$own_results" | sort | uniq -c | sort -rn | awk 'NR <= 15'
+awk -F'\t' '$2 == "PORT" { print "  port:   " $8 }' "$own_results" | sort | uniq -c | sort -rn | awk 'NR <= 15'
 
 echo
 echo "== 3. Guarded mutation proofs (patch, rebuild, the gate must fail)"
@@ -298,6 +389,43 @@ prove_mutation "a proc argument to C not a pointer to its function" "$TYPER_FILE
   "    if type.is_a?(ProcInstanceType) || type.is_a?(NilableProcType)" \
   "    if type.is_a?(NilableProcType)" \
   -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# The own-source probes: files whose floors a mutation of the namespace or struct rules must
+# lower below. A probe fails the check when the mutated port's identical count drops below its
+# floor, when the mutated driver does not build, or when the port fails the file.
+OWN_PROBES="src/compiler/foundation/location.iyi src/compiler/platform/target.iyi"
+check_own_diverges() {
+  "$IYI" build -o "$WORK/mut_port" "$REPO/bench/selfhost_lower_types_exercise.iyi" > /dev/null 2>&1 || return 1
+  for probe in $OWN_PROBES; do
+    id=$(printf '%s' "$probe" | tr '/' '_')
+    timeout 900 "$WORK/oracle" --own "$REPO/$probe" "$TRIPLE" > "$WORK/mut_$id.o" 2> /dev/null || return 1
+    timeout 900 "$WORK/mut_port" --own "$REPO/$probe" "$TRIPLE" > "$WORK/mut_$id.p" 2> /dev/null || return 1
+    got=$(python3 "$REPO/bench/lib/lower_types_compare.py" "$WORK/mut_$id.o" "$WORK/mut_$id.p" | awk 'NR==1 { print $2 }')
+    want=$(awk -v f="$probe" '$1 == f { print $2 }' "$own_floor")
+    [ "${want:-0}" -gt 0 ] || return 0
+    [ "${got:-0}" -ge "$want" ] || return 1
+  done
+  return 0
+}
+
+# The baseline: the unmutated port meets every probe floor. Without it a port that fails a probe would
+# count as a catch.
+if ! check_own_diverges; then
+  echo "  own-source probes fail on the unmutated port (the own mutation proofs would be vacuous)"
+  status=1
+fi
+
+prove_mutation "a namespace module lowered as one bit, not i32" "$TYPER_FILE" \
+  "    if type.is_a?(NonGenericModuleType) && !type.is_a?(LibType)" \
+  "    if false" \
+  -- check_own_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a struct's by-value answer removed (passed_by_value? of a class)" "$TYPER_FILE" \
+  "  if type.is_a?(ClassType)" \
+  "  if type.is_a?(ClassType) && false" \
+  -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"

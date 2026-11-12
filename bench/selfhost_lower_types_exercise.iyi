@@ -13,8 +13,9 @@ import compiler/lower/type_id::{LowerTypeIds}
 import compiler/lower/layouts::{GcLayouts}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
-import compiler/syntax/ast::{ClassDef, Expressions}
+import compiler/syntax/ast::{ASTNode, ClassDef, Expressions, ModuleHeader}
 import compiler/semantic/top_level::{ModuleType}
+import compiler/semantic/top_level::{dir_of, normalize_path, declared_in?, NamedType, EnumType}
 
 # Lowering-types driver for bench/selfhost_lower_types_exercise.sh.
 #
@@ -211,17 +212,11 @@ module BenchSelfhostLowerTypesExercise
     prog = SemanticProgram.new
     # The type system is installed before the visitor runs, as the semantic driver does.
     ts = TypeSystem.new(prog)
-    node.accept(TopLevelVisitor.new(prog))
-    # The port's main visitor declares the instance variables: explicit declarations and assignments.
-    # Only class definitions: the main visitor needs a type for an alias node, which the
-    # declarations pass does not give one here.
-    if node.is_a?(Expressions)
-      node.as(Expressions).expressions.each do |e|
-        e.accept(MainVisitor.new(prog)) if e.is_a?(ClassDef)
-      end
-    elsif node.is_a?(ClassDef)
-      node.accept(MainVisitor.new(prog))
-    end
+    visitor = TopLevelVisitor.new(prog)
+    node.accept(visitor)
+    # The explicit instance variable declarations are recorded by the top-level pass and finished
+    # here, as the declarations driver and the own-source mode do (NEEDS.md row 12).
+    visitor.finish
     # The instance variables typed by assignment in initialize (semantic/instance_vars.iyi).
     declare_guessed_instance_vars(prog)
     layout_result = DataLayout.for(Target.new(triple))
@@ -248,9 +243,90 @@ module BenchSelfhostLowerTypesExercise
     end
     out
   end
+
+  # The search path the import closure is read from (IYI_PATH, as the declarations gate sets it).
+  def self.search_path : Array(String)
+    text = ENV["IYI_PATH"]? || ""
+    text.split(":").select { |entry| !entry.empty? }
+  end
+
+  # The project root an import is resolved from first: the entry's directory, moved up one
+  # level for each segment of its module header's path but the last (the declarations driver's rule).
+  def self.project_root(node : ASTNode, entry : String) : String
+    root = dir_of(entry)
+    if node.is_a?(Expressions)
+      first = node.as(Expressions).expressions.first?
+      if first.is_a?(ModuleHeader)
+        depth = first.as(ModuleHeader).path.size - 1
+        i = 0
+        while i < depth
+          root = dir_of(root)
+          i = i + 1
+        end
+      end
+    end
+    root
+  end
+
+  # The entry file and its import closure, declared into one program by the top-level pass
+  # (`load_file` for each import), as the declarations driver loads them. Returns the program and the entry.
+  def self.load_program(path : String) : {SemanticProgram, String}
+    cwd = ENV["PWD"]? || "."
+    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    entry = normalize_path(absolute)
+    src = File.read(entry)
+    node = Parser.new(src, entry).parse
+    prog = SemanticProgram.new
+    prog.loaded_files.add(entry)
+    prog.search_path = search_path
+    prog.project_root = project_root(node, entry)
+    visitor = TopLevelVisitor.new(prog, entry)
+    # The prelude, loaded first, as the hosted build loads it (`self.prelude = "iyi/prelude"`).
+    if search_path.size > 0
+      visitor.load_file(normalize_path("#{search_path[0]}/iyi/prelude.iyi"))
+    end
+    node.accept(visitor)
+    visitor.finish
+    declare_guessed_instance_vars(prog)
+    {prog, entry}
+  end
+
+  # Every type the entry declares, nested types included: the hosted dump's rule (`dump_tree_declared`).
+  def self.collect_declared(t : Type, entry : String, found : Array(Type)) : Nil
+    found << t if declared_in?(t.locations, entry)
+    if t.is_a?(NamedType) && !t.is_a?(EnumType)
+      nt = t.as(NamedType)
+      nt.types.keys.sorted.each do |sname|
+        collect_declared(nt.types[sname], entry, found)
+      end
+    end
+    nil
+  end
+
+  # The whole-program mode the gate measures src/compiler with: one block per type the file
+  # declares, lowered by one typer for the target. A block is keyed `== <full name>`.
+  def self.own_text(path : String, triple : String) : String
+    prog, entry = load_program(path)
+    layout_result = DataLayout.for(Target.new(triple))
+    raise "no DataLayout for #{triple}" if layout_result.is_a?(LayoutError)
+    layout = layout_result.as(DataLayout)
+    iyi = !prog.types["IyiRuntimeLock"]?.nil?
+    typer = LowerTyper.new(TypeTable.new, layout, iyi)
+    types = [] of Type
+    prog.types.keys.sorted.each do |name|
+      collect_declared(prog.types[name], entry, types)
+    end
+    out = ""
+    types.each do |t|
+      out = out + block_text(t.full_name, typer, t)
+    end
+    out
+  end
 end
 
-if Program.args.size > 1
+if Program.args.size == 3 && Program.args[0] == "--own"
+  print BenchSelfhostLowerTypesExercise.own_text(Program.args[1], Program.args[2])
+elsif Program.args.size > 1
   filename = Program.args[0]
   mode = Program.args.size > 2 ? Program.args[2] : "blocks"
   print BenchSelfhostLowerTypesExercise.run(File.read(filename), filename, Program.args[1], mode)

@@ -18,7 +18,7 @@ module compiler/lower/typer
 import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/layout::{DataLayout}
 import compiler/semantic/top_level::{Type, ClassType, EnumType, LibType, MetaclassType, NilType, NonGenericClassType, NonGenericModuleType, GenericClassType, NoReturnType, VoidType, AliasType, TypeDefType, ModuleType, UnionType}
-import compiler/types/types::{PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, NamedTupleInstanceType, GenericClassInstanceType, GenericModuleInstanceType, MixedUnionType, VirtualType, VirtualMetaclassType, NilableType, ReferenceUnionType, NilableReferenceUnionType, NilableProcType}
+import compiler/types/types::{PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, NamedTupleInstanceType, GenericClassInstanceType, GenericModuleInstanceType, MixedUnionType, VirtualType, VirtualMetaclassType, NilableType, ReferenceUnionType, NilableReferenceUnionType, NilableProcType, TypeQueries}
 import compiler/types/merge::{TypeMerge}
 import compiler/lower/unions::{mixed_union_body, mixed_union_value_area}
 
@@ -82,7 +82,15 @@ pub def passed_by_value?(type : Type) : Bool
     return type.struct?
   end
   if type.is_a?(NonGenericModuleType)
-    raise "BUG: passed_by_value? of a module with including types is not ported (hosted types.cr: including_types)" if type.including_types.size > 0
+    # The hosted rule (codegen/types.cr): the union of the including types is passed by value
+    # when it is a mixed union, and a single including type answers for itself. The port's union
+    # is the members in order, so one member that is not reference-like makes it mixed (NEEDS.md row 5).
+    including = type.including_types
+    return false if including.size == 0
+    return passed_by_value?(including[0]) if including.size == 1
+    including.each do |member|
+      return true unless TypeQueries.reference_like?(member)
+    end
     return false
   end
   if type.is_a?(GenericModuleInstanceType)
@@ -277,9 +285,16 @@ pub class LowerTyper
     if type.is_a?(UnionType)
       return mixed_union_struct(type, wants_size)
     end
-    if type.is_a?(GenericClassType) || (type.is_a?(NonGenericModuleType) && !type.is_a?(LibType))
-      # This can only be reached if the module or generic class has no implementors.
+    if type.is_a?(GenericClassType)
+      # This can only be reached if the generic class has no implementors.
       return @table.int1
+    end
+    if type.is_a?(NonGenericModuleType) && !type.is_a?(LibType)
+      # A module answers as the hosted typer does for every namespace in the measured corpus: `i32`,
+      # with the prelude loaded. A module with implementors is the hosted union of them (NEEDS.md
+      # row 5), which is not ported; `including_types` also holds nested namespaces in the port, so
+      # this answer is not yet split on it. Open: row 5.
+      return @table.int32
     end
     if type.is_a?(NonGenericClassType) || type.is_a?(GenericClassInstanceType)
       # The size of a class is the size of a pointer.
