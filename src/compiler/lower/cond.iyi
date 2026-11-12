@@ -38,3 +38,11 @@ pub def cond_bool(low : Lowerer, node : ASTNode, value : Value) : Value
   end
   int1(low, 1_i64)
 end
+
+# Whether the condition's analysed type is Nil. The hosted `cond` folds a constant false
+# condition: the condition is evaluated for its effects, and the else branch is the only one lowered.
+pub def nil_condition?(low : Lowerer, node : ASTNode) : Bool
+  t = low.analysed.type_of?(node)
+  return false if t.nil?
+  t.as(Type).is_a?(NilType)
+end

@@ -25,11 +25,11 @@ import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?}
-import compiler/lower/cond::{cond_bool}
+import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{pending_visit_call, pending_visit_fun_def, pending_visit_node}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
-import compiler/semantic/top_level::{Type}
+import compiler/semantic/top_level::{Type, NilType}
 
 # The hosted `codegen` of a program into `m`: the entry of the unit. `root` is the program's
 # parsed tree, `analysed` the semantic pass that typed it.
@@ -216,7 +216,9 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
     low.current_context.vars[target.name] = made
     var = made
   end
-  store_aligned(low, v, var.as(LowerVar).pointer)
+  if !vt.is_a?(NilType)
+    store_aligned(low, v, var.as(LowerVar).pointer)
+  end
   low.last = v
 end
 
@@ -257,6 +259,11 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
   end
 
   wants = low.needs_value
+  if nil_condition?(low, cond_node)
+    codegen_node(low, cond_node)
+    codegen_node(low, else_node)
+    return
+  end
   blocks = low.new_blocks(["then", "else"])
   then_block = blocks[0]
   else_block = blocks[1]
