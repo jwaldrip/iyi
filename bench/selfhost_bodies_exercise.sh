@@ -123,7 +123,7 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_owner_constant sem_bodies_generic_path_return sem_bodies_generic_return_tuple; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -150,7 +150,7 @@ prove_mutation "return value joins the def type" "$MAIN_VISITOR" \
   "body_type = child_type(body.as(ASTNode))" -- bodies_at_floor || status=1
 prove_mutation "self in a declared type names the receiver" "$MAIN_VISITOR" \
   "return o.as(Type) unless o.is_a?(SemanticProgram)" \
-  "return @program.lookup_type_node(node, @current_type) unless o.is_a?(SemanticProgram)" -- bodies_at_floor || status=1
+  "return @program unless o.is_a?(SemanticProgram)" -- bodies_at_floor || status=1
 prove_mutation "a call hits the def-instance cache" "$MAIN_VISITOR" \
   "      return @def_instances[k]?" \
   "      return nil" -- bodies_at_floor || status=1
@@ -175,6 +175,15 @@ prove_mutation "a trait definition is typed in its own type" "$MAIN_VISITOR" \
 prove_mutation "a proc literal is typed as a Proc" "$MAIN_VISITOR" \
   "def visit(node : ProcLiteral) : Bool" \
   "def visit_proc_literal_off(node : ProcLiteral) : Bool" -- bodies_at_floor || status=1
+prove_mutation "a call's body is not typed in the scope of the receiver" "$MAIN_VISITOR" \
+  "    enter_owner_scope(rec_type)" \
+  "    nil" -- bodies_at_floor || status=1
+prove_mutation "a generic receiver does not bind its type parameters in a lookup" "$MAIN_VISITOR" \
+  "    @program.bound_type_vars = owner_type_vars(owner)" \
+  "    @program.bound_type_vars = nil" -- bodies_at_floor || status=1
+prove_mutation "overloads are not matched under the receiver's type parameters" "$MAIN_VISITOR" \
+  "    @program.bound_type_vars = owner_type_vars(rec_type)" \
+  "    @program.bound_type_vars = nil" -- bodies_at_floor || status=1
 prove_mutation "a block whose declared output is _ is checked against a type" "$MAIN_VISITOR" \
   "unless out_node.is_a?(Underscore)" \
   "unless false" -- bodies_at_floor || status=1

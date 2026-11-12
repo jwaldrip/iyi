@@ -1,0 +1,17 @@
+class Hdr
+  SIZE = 4_i32
+
+  def self.size : Int32
+    SIZE
+  end
+end
+
+class Buf
+  SIZE = 9_i64
+
+  def run : Int32
+    Hdr.size
+  end
+end
+
+Buf.new.run

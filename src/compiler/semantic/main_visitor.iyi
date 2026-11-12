@@ -75,8 +75,10 @@ pub class BlockOwner
   getter context_vars : Hash(String, Type)?
   getter yield_nodes : Array(Yield)?
   getter scope : Type?
+  getter lexical_type : ModuleType?
+  getter bound_type_vars : Hash(String, Type)?
 
-  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil)
+  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @lexical_type : ModuleType? = nil, @bound_type_vars : Hash(String, Type)? = nil)
   end
 end
 
@@ -98,6 +100,10 @@ pub class MainVisitor < TypeNodeHost
   property current_call_block : Block?
   property current_block_context_vars : Hash(String, Type)?
   property current_yield_nodes : Array(Yield)?
+  # iyi: the lexical type and bound type parameters at the call being typed, kept for the block the
+  # call passes (its body is typed in them, see BlockOwner).
+  property call_site_type : ModuleType? = nil
+  property call_site_bound : Hash(String, Type)? = nil
   property total : Bool = false
   property in_type_args : Int32 = 0
   # The instantiations whose body typing is in progress, by key (receiver, def
@@ -314,23 +320,25 @@ pub class MainVisitor < TypeNodeHost
   # hosted lookup does for an instantiated def; anything else is the lexical lookup
   # from the current type.
   def lookup_under(node : ASTNode, owner : Type?) : Type
-    if inst = receiver_instance(owner)
-      if node.is_a?(Path)
-        path = node.as(Path)
-        if !path.global && path.names.size == 1
-          if bound = inst.type_vars[path.names.first]?
-            return bound
-          end
-        end
-      end
-    end
     # `self` in a declared type is the receiver (hosted: the def's self type), not the lexical scope.
     if node.is_a?(Self)
       if o = owner
         return o.as(Type) unless o.is_a?(SemanticProgram)
       end
     end
-    @program.lookup_type_node(node, @current_type)
+    old_bound = @program.bound_type_vars
+    @program.bound_type_vars = owner_type_vars(owner)
+    found = @program.lookup_type_node(node, @current_type)
+    @program.bound_type_vars = old_bound
+    found
+  end
+
+  # The type parameters a generic instance (or its metaclass) binds, or nil for any other owner.
+  def owner_type_vars(owner : Type?) : Hash(String, Type)?
+    if inst = receiver_instance(owner)
+      return inst.type_vars
+    end
+    nil
   end
 
   # iyi: a class variable that is replaced keeps the @[ThreadLocal] flag of the one it replaces
@@ -1280,6 +1288,8 @@ pub class MainVisitor < TypeNodeHost
       callee_block = @current_call_block
       callee_context_vars = @current_block_context_vars
       callee_yield_nodes = @current_yield_nodes
+      callee_bound = @program.bound_type_vars
+      callee_current_type = @current_type
       if owner = @block_owners[blk]?
         @current_def = owner.def_node
         @return_types = owner.return_types
@@ -1288,6 +1298,10 @@ pub class MainVisitor < TypeNodeHost
         @current_yield_nodes = owner.yield_nodes
         if writer_scope = owner.scope
           @scope = writer_scope
+        end
+        @program.bound_type_vars = owner.bound_type_vars
+        if lexical = owner.lexical_type
+          @current_type = lexical
         end
       else
         @return_types = nil
@@ -1302,6 +1316,8 @@ pub class MainVisitor < TypeNodeHost
       blk.body.accept(self)
       @program.current_imports = callee_imports
       @program.current_import_defs = callee_import_defs
+      @program.bound_type_vars = callee_bound
+      @current_type = callee_current_type
       @current_call_block = callee_block
       @current_block_context_vars = callee_context_vars
       @current_yield_nodes = callee_yield_nodes
@@ -1539,6 +1555,15 @@ pub class MainVisitor < TypeNodeHost
   # The overload a call resolves to, or nil when it cannot: strict mode raises
   # the error, total mode records it on the call and returns nil.
   def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
+    # The candidates' restrictions are the receiver's to read: its type parameters, not the caller's.
+    old_bound = @program.bound_type_vars
+    @program.bound_type_vars = owner_type_vars(rec_type)
+    found = lookup_method_matching_bound(rec_type, name, args, call_node)
+    @program.bound_type_vars = old_bound
+    found
+  end
+
+  def lookup_method_matching_bound(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
     i = 0
     while i < args.size
       return nil if child_type(args[i]).nil?
@@ -1810,7 +1835,14 @@ pub class MainVisitor < TypeNodeHost
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(target_def)
+    old_bound = @program.bound_type_vars
+    old_current_type = @current_type
+    @call_site_type = old_current_type
+    @call_site_bound = old_bound
+    enter_owner_scope(rec_type)
     result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
+    @program.bound_type_vars = old_bound
+    @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
     result
@@ -1822,6 +1854,27 @@ pub class MainVisitor < TypeNodeHost
     if loc = node.location
       @program.current_imports = @program.file_imports[loc.filename]? || Hash(String, Type).new
       @program.current_import_defs = @program.file_import_defs[loc.filename]? || Hash(String, Array(Def)).new
+    end
+    nil
+  end
+
+  # iyi: a body's names are looked up from the type the def is called on, not from the type the
+  # call is written in: its constants (`HEADER_SIZE` in `String.new`) and, under a generic
+  # instance, its type parameters (`T` in a method of Array(String)).
+  def enter_owner_scope(rec_type : Type) : Nil
+    owner : Type = rec_type
+    if owner.is_a?(MetaclassType)
+      owner = owner.as(MetaclassType).instance_type
+    end
+    if owner.is_a?(GenericInstanceType)
+      instance = owner.as(GenericInstanceType)
+      @program.bound_type_vars = instance.type_vars
+      owner = instance.generic_type
+    else
+      @program.bound_type_vars = nil
+    end
+    if owner.is_a?(ModuleType) && !owner.is_a?(SemanticProgram)
+      @current_type = owner.as(ModuleType)
     end
     nil
   end
@@ -1875,7 +1928,7 @@ pub class MainVisitor < TypeNodeHost
       @current_block_context_vars = @vars.dup
       @current_yield_nodes = [] of Yield
       if blk = block
-        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope)
+        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, @call_site_type, @call_site_bound)
       end
     end
 

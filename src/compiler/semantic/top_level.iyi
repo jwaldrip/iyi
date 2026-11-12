@@ -1064,6 +1064,10 @@ pub class SemanticProgram < NonGenericModuleType
   # The lowercase names the importing file imports (`import a/b::{refuse_port}`), as
   # the defs they name. Swapped per file like current_imports.
   property current_import_defs : Hash(String, Array(Def))
+  # iyi: the type parameters of the generic instance a body is being typed under (`T` is String in
+  # a method of Array(String)): a one-name path that names one is that argument, at any depth of a
+  # type node (`Pointer(T)`), as the hosted lookup finds a type variable of the instantiated owner.
+  property bound_type_vars : Hash(String, Type)? = nil
   # iyi: each file's two import tables, by the file name its nodes carry (`import` records them).
   # The body typing reads them: a def's body is typed long after its file was declared, and the
   # names it may write are its own file's (the hosted pass keeps a scope per file).
@@ -1643,6 +1647,13 @@ pub class SemanticProgram < NonGenericModuleType
     end
 
     first_name = path.names.first
+    if path.names.size == 1
+      if bound = @bound_type_vars
+        if bound_type = bound[first_name]?
+          return bound_type
+        end
+      end
+    end
     t = current_type.lookup_type(first_name)
     if t.nil? && current_type.name == first_name
       t = current_type
@@ -1701,6 +1712,13 @@ pub class SemanticProgram < NonGenericModuleType
     end
 
     first_name = path.names.first
+    if path.names.size == 1
+      if bound = @bound_type_vars
+        if bound_type = bound[first_name]?
+          return bound_type
+        end
+      end
+    end
 
     # 1. Search in current_type
     t = current_type.lookup_type(first_name)
