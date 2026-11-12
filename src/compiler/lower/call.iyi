@@ -20,10 +20,10 @@ module compiler/lower/call
 #   - a body that is a literal, or `self`, is inlined at the call (hosted `try_inline_call`);
 #   - an argument that never returns (a NoReturn block call) ends the block before the call, and the
 #     call is not emitted (hosted `prepare_call_args`, `return false if @builder.end`);
-#   - a call through a `lib`, `LibC.exit(42)`: the C declaration is made in the module
-#     (`declare`, C calling convention, the name the lib gives the fun), the call is a C
-#     call, and a NoReturn call is followed by `unreachable` (hosted `codegen_extern_call`
-#     and `codegen_call_or_invoke`).
+#   - a call through a `lib`, `LibC.exit(42)`: the fun is declared in the module under the name the
+#     lib gives it (`real_name`), with the C calling convention, and called with the arguments the
+#     analysis recorded for the call (`MainVisitor#lib_call_target`); a NoReturn call is followed by
+#     `unreachable` (hosted `codegen_extern_call` and `codegen_call_or_invoke`).
 # The argument types are the analysed types of the argument nodes, which is how the
 # analysed program instantiates a def (main_visitor.iyi, type_method_body). A restriction
 # is honoured only when it names the argument's own type.
@@ -40,7 +40,7 @@ module compiler/lower/call
 # The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
-import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, InstanceVar, Nop, NilLiteral, NumberLiteral, Path, RespondsTo, Var}
+import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, Var}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
@@ -57,7 +57,8 @@ import compiler/semantic/top_level::{ClassType, LibType, LibFun, MetaclassType, 
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
-import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType, GenericClassInstanceType}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType}
+import compiler/semantic/lib_call::{LibCallTarget}
 
 # A body that is a literal or nothing (`Nop`, an empty def), which the hosted call inlines (`try_inline_call`:
 # `when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral`).
@@ -66,23 +67,26 @@ pub def literal_body?(body : ASTNode) : Bool
 end
 
 pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Nil
-  target = low.analysed.target_def?(node)
-  raise "BUG: the call to #{node.name} has no target def (hosted call.cr: visit(Call))" if target.nil?
-  def_node = target.as(Def)
   ret_type = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for the call to #{node.name} (hosted call.cr: visit(Call))" if ret_type.nil?
   ret = ret_type.as(Type)
 
-  if node.args.size != def_node.args.size || def_node.splat_index != nil
-    pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
-  end
-
-  if the_lib = lib_of_receiver(low, node)
+  # A call on a lib takes its target from the lib call record, not from a def: the fun has no body to
+  # target (hosted `target_def` of an External). The record is read by codegen_lib_call.
+  unless low.analysed.lib_call_target(node).nil?
     unless node.block.nil?
       pending_visit_node("a block passed to a lib fun (hosted call.cr: codegen_extern_call)")
     end
-    codegen_lib_call(low, node, the_lib.as(LibType), def_node, ret)
+    codegen_lib_call(low, node, ret)
     return
+  end
+
+  target = low.analysed.target_def?(node)
+  raise "BUG: the call to #{node.name} has no target def (hosted call.cr: visit(Call))" if target.nil?
+  def_node = target.as(Def)
+
+  if node.args.size != def_node.args.size || def_node.splat_index != nil
+    pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
   end
 
   unless primitive_name_of(def_node).nil?
@@ -128,8 +132,12 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       class_owner = recv_type.as(MetaclassType).instance_type
     else
       self_type = recv_type
-      # Hosted try_inline_call: an inlined Nop or literal body, where no value is wanted, reads no receiver.
-      unless literal_body?(def_node.body) && !low.needs_value
+      # Hosted prepare_call_args visits the receiver before try_inline_call: an inlined literal body reads the receiver
+      # (the hosted module loads it) and never uses self, so only the receiver is evaluated and no self value is made.
+      # A block call still needs self for its frame, so it takes the self path.
+      if literal_body?(def_node.body) && node.block.nil?
+        discard_receiver(low, node)
+      else
         if storage = receiver_storage(low, node, self_type.as(Type))
           self_value = storage.as(Value)
         else
@@ -242,9 +250,12 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       store_aligned(low, inst, temp)
       low.spill_node = node.object_id
       low.spill_slot = temp
-      # A receiver that is this call takes the slot as its self (receiver_self), so no value is loaded from it.
+      # A receiver that is this call takes the slot as its self (receiver_self), so no value is loaded from it. A
+      # receiver whose value an inlined literal body never reads is spilled and not loaded (hosted call.cr:707-713).
       if low.receiver_node == node.object_id && self_by_pointer?(ret)
         low.last = temp
+      elsif low.receiver_unused == node.object_id
+        low.last = llvm_nil(low)
       else
         low.last = load_aligned(low, ir, temp, "")
       end
@@ -352,13 +363,32 @@ pub def lower_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Valu
   wants = low.needs_value
   low.needs_value = true
   low.spill_node = 0_u64
+  prev_receiver = low.receiver_node
   low.receiver_node = obj.object_id
   visit_node(low, obj.as(ASTNode))
-  low.receiver_node = 0_u64
+  low.receiver_node = prev_receiver
   low.needs_value = wants
   v = low.last
   raise "BUG: the receiver of #{node.name} left no value (hosted call.cr: prepare_call_args)" if v.nil?
   v.as(Value)
+end
+
+# The receiver of a call whose body is an inlined literal: the hosted prepare_call_args visits the receiver, and the
+# literal never reads self. The receiver's call is made and its struct result is spilled, but no value is read back.
+pub def discard_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Nil
+  obj = node.obj
+  raise "BUG: discard_receiver on a call with no receiver (hosted call.cr: prepare_call_args)" if obj.nil?
+  o = obj.as(ASTNode)
+  # A variable has no effect, and the hosted receiver of an inlined literal is not read (no value is wanted).
+  return if o.is_a?(Var)
+  wants = low.needs_value
+  prev_unused = low.receiver_unused
+  low.needs_value = true
+  low.spill_node = 0_u64
+  low.receiver_unused = o.object_id
+  visit_node(low, o)
+  low.receiver_unused = prev_unused
+  low.needs_value = wants
 end
 
 # The values a call passes to its function: the receiver first, when there is one, then the arguments.
@@ -533,41 +563,102 @@ pub def copy_args(low : Lowerer, def_node : Def, arg_types : Array(Type), values
   end
 end
 
-# The `lib` a call's receiver names, when the receiver is a lib: its analysed type is the
-# lib's metaclass. Nil for every other receiver, and for no receiver.
-pub def lib_of_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : LibType?
-  obj = node.obj
-  return nil if obj.nil?
-  t = low.analysed.type_of?(obj.as(ASTNode))
-  return nil if t.nil?
-  meta = t.as(Type)
-  return nil unless meta.is_a?(MetaclassType)
-  inst = meta.as(MetaclassType).instance_type
-  return nil unless inst.is_a?(LibType)
-  inst.as(LibType)
-end
+# The hosted `codegen_extern_call` for a call on a fun of a lib, through the lib call record the analysis
+# made for the call (`MainVisitor#lib_call_target`, the port of Call#recalculate_lib_call). The fun's C
+# name is `real_name`, its parameters have their declared types, and the arguments are in the order the C
+# fun takes them: named arguments are already at their parameter's place. A number literal takes the type
+# the record gives it, an `out` argument passes the address of its variable (declared here when the body
+# has none), and nil passed to a pointer passes its null (hosted prepare_call_args_external). The fun is
+# declared in the module with the C calling convention. A NoReturn fun ends the block with `unreachable`,
+# and its value is nil. An argument that never returns ends the block, and the call is not made. Refused by
+# name: an argument converted by its to_unsafe method, nil to a proc or a variadic argument, an `out`
+# argument that is not a variable, and a number argument that is not a literal.
+pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret : Type) : Nil
+  record = low.analysed.lib_call_target(node)
+  raise "BUG: the call to #{node.name} on a lib has no lib call record (hosted call.cr: codegen_extern_call)" if record.nil?
+  target = record.as(LibCallTarget)
+  fun_opt = target.lib_fun
+  raise "BUG: the lib call record of #{node.name} has no fun (hosted call.cr: codegen_extern_call)" if fun_opt.nil?
+  lib_fun = fun_opt.as(LibFun)
+  if target.to_unsafe_index.size > 0
+    pending_visit_node("a lib argument converted by its to_unsafe method (hosted lib.cr, to_unsafe rewrite)")
+  end
 
-# The hosted `codegen_extern_call` for a fun of a lib: the fun is declared in the module
-# under the name the lib gives it (`real_name`), with the C calling convention, and called
-# with the arguments in order. A NoReturn fun ends the block with `unreachable`, and the
-# value of the call is nil. An argument that never returns ends the block, and the call is not made.
-pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, the_lib : LibType, def_node : Def, ret : Type) : Nil
-  real = lib_real_name(the_lib, node.name)
-  arg_types, values = lower_args(low, node, def_node)
-  if block_ended?(low)
+  params = [] of IrType
+  values = [] of Value
+  wants = low.needs_value
+  ended = false
+  i = 0
+  while i < target.arg_nodes.size && !ended
+    arg_node = target.arg_nodes[i]
+    fixed = i < lib_fun.args.size
+    out_at = lib_index_of(target.out_index, i)
+    literal_at = lib_index_of(target.literal_index, i)
+    if out_at >= 0
+      unless arg_node.is_a?(Out) && arg_node.as(Out).exp.is_a?(Var)
+        pending_visit_node("an out argument that is not a variable (hosted lib.cr, pointerof the argument)")
+      end
+      name = arg_node.as(Out).exp.as(Var).name
+      vars = low.current_context.vars
+      unless vars[name]?
+        alloca_local(low, vars, name, target.out_type[out_at])
+      end
+      var = vars[name].as(LowerVar)
+      check_lib_aggregate(lib_fun.arg_types[i], "argument")
+      params << low.typer.llvm_type(lib_fun.arg_types[i])
+      values << var.pointer
+    elsif literal_at >= 0
+      lit_t = target.literal_type[literal_at]
+      unless arg_node.is_a?(NumberLiteral)
+        pending_visit_node("a number argument that is not a literal (hosted Conversions.numeric_argument)")
+      end
+      check_lib_aggregate(lit_t, "argument")
+      params << low.typer.llvm_type(lit_t)
+      values << lib_number_value(low, arg_node.as(NumberLiteral), lit_t)
+    else
+      low.needs_value = true
+      visit_node(low, arg_node)
+      if block_ended?(low)
+        ended = true
+      else
+        v = low.last
+        raise "BUG: argument #{i} of #{node.name} left no value (hosted call.cr: prepare_call_args_external)" if v.nil?
+        at = low.analysed.type_of?(arg_node)
+        raise "BUG: the analysed program has no type for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args_external)" if at.nil?
+        arg_t = at.as(Type)
+        if arg_t.is_a?(NilType)
+          unless fixed
+            pending_visit_node("nil passed to a variadic argument of #{node.name} (hosted prepare_call_args_external, void pointer null)")
+          end
+          declared = lib_fun.arg_types[i]
+          if declared.is_a?(ProcInstanceType)
+            pending_visit_node("nil passed to a proc parameter of #{node.name} (hosted prepare_call_args_external, proc null)")
+          end
+          check_lib_aggregate(declared, "argument")
+          params << low.typer.llvm_type(declared)
+          values << low.builder.const_null(low.typer.llvm_type(declared)).as(Value)
+        else
+          pt = arg_t
+          if fixed
+            pt = lib_fun.arg_types[i]
+          end
+          check_lib_aggregate(pt, "argument")
+          params << low.typer.llvm_type(pt)
+          values << v.as(Value)
+        end
+      end
+    end
+    i += 1
+  end
+  low.needs_value = wants
+  if ended
     low.last = llvm_nil(low)
     return
   end
-  arg_types.each do |t|
-    check_lib_aggregate(t, "argument")
-  end
-  check_lib_aggregate(ret, "result")
-  params = [] of IrType
-  arg_types.each do |t|
-    params << low.typer.llvm_type(t)
-  end
-  fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret))
 
+  check_lib_aggregate(ret, "result")
+  real = lib_fun.real_name
+  fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)
   func = low.module.get_function?(real)
   if func.nil?
     func = low.module.add_function(real, fn_type, CallConv::C)
@@ -583,12 +674,24 @@ pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, the_
   end
 end
 
-# The C name of a fun a lib declares: the lib's record of the fun, by its iyi name.
-pub def lib_real_name(the_lib : LibType, name : String) : String
-  the_lib.funs.each do |f|
-    return f.real_name if f.name == name
+# The position of argument *i* in one of the lib call record's index lists (`out_index`, `literal_index`), or -1.
+pub def lib_index_of(indexes : Array(Int32), i : Int32) : Int32
+  j = 0
+  while j < indexes.size
+    return j if indexes[j] == i
+    j += 1
   end
-  raise "BUG: the lib #{the_lib.full_name} declares no fun #{name} (hosted call.cr: codegen_extern_call)"
+  -1
+end
+
+# A number literal passed to a lib fun: a constant of the type the record gives it (the C parameter's type),
+# as the hosted pass rewrites the literal's type.
+pub def lib_number_value(low : Lowerer, node : NumberLiteral, t : Type) : Value
+  ir = low.typer.llvm_type(t)
+  if node.value.includes?(".")
+    return low.builder.const_float(ir, node.value.to_f).as(Value)
+  end
+  low.builder.const_int(ir, node.value.to_i64).as(Value)
 end
 
 # The argument types and values of a call, in order (hosted `prepare_call_args_non_external`
