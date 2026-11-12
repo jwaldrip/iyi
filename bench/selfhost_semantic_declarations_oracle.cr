@@ -134,6 +134,18 @@ def dump_declarations(node : Iyi::ASTNode, io : IO)
   end
 end
 
+# `--initial` dumps the program's own built-in types (every name a new program
+# holds before any file is read), which the gate compares with the port's.
+if ARGV[0]? == "--initial"
+  buffer = IO::Memory.new
+  initial = Iyi::Program.new
+  initial.types.keys.sort.each do |name|
+    dump_type(initial.types[name], buffer, "")
+  end
+  print buffer.to_s
+  exit 0
+end
+
 path = ARGV[0]? || abort("usage: selfhost_semantic_declarations_oracle <file.iyi>")
 buffer = IO::Memory.new
 begin

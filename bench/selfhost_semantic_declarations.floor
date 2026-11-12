@@ -1,5 +1,6 @@
 # semantic declaration floors: <repo-relative file> <agreeing declarations>.
 # A count may only rise. Raise with: SEMDECL_RAISE=1 bash bench/selfhost_semantic_declarations_exercise.sh
+<initial> 69
 samples/iyi/basics.iyi 0
 samples/iyi/calc.iyi 0
 samples/iyi/collections.iyi 0

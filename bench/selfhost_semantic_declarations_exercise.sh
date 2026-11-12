@@ -110,6 +110,22 @@ for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
 done
 echo "  Parity summary: $((fixture_count - fixture_bad))/$fixture_count fixtures identical ($total_matched declarations compared)"
 
+echo
+echo "== 2b. Built-in types: the program's initial types dumped identically (a burn-down row)"
+if ! "$ORACLE" --initial > "$WORK/init_o.txt" 2> "$WORK/init_oe.txt"; then
+  b_nodes=0; b_matched=0; b_note="ORACLE: $(head -n 1 "$WORK/init_oe.txt")"
+elif ! "$PORT" --initial > "$WORK/init_p.txt" 2> "$WORK/init_pe.txt"; then
+  b_nodes=$(records "$WORK/init_o.txt" | wc -l | tr -d ' '); b_matched=0
+  b_note="PORT: $(head -n 1 "$WORK/init_pe.txt")"
+else
+  b_nodes=$(records "$WORK/init_o.txt" | wc -l | tr -d ' ')
+  b_matched=$(agreeing "$WORK/init_o.txt" "$WORK/init_p.txt")
+  b_note="-"
+fi
+echo "  built-in types: $b_matched of $b_nodes agree"
+printf 'builtins\t<initial>\t%s\t%s\t%s\n' "$b_nodes" "$b_matched" "$b_note" >> "$RESULTS"
+
+
 measure() {
   corpus="$1"
   rel="$2"

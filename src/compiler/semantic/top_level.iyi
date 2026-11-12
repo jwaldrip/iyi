@@ -444,6 +444,7 @@ pub abstract class ClassType < ModuleType
     @subclasses = [] of Type
     if sc = @superclass
       @parents << sc
+      @superclass_display = sc.full_name
       sc.register_subclass(self)
     end
   end
@@ -504,6 +505,12 @@ pub class NoReturnType < NamedType
 
   def subtype_of?(other : Type) : Bool
     true
+  end
+end
+
+pub class AnnotationType < NamedType
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
+    super(program, namespace, name)
   end
 end
 
@@ -907,6 +914,7 @@ pub class SemanticProgram < NonGenericModuleType
 
     val = NonGenericClassType.new(self, self, "Value", obj)
     val.struct = true
+    val.abstract = true
     @value_type = val
     @types["Value"] = val
 
@@ -916,10 +924,12 @@ pub class SemanticProgram < NonGenericModuleType
 
     num = NonGenericClassType.new(self, self, "Number", val)
     num.struct = true
+    num.abstract = true
     @types["Number"] = num
 
     int_t = NonGenericClassType.new(self, self, "Int", num)
     int_t.struct = true
+    int_t.abstract = true
     @types["Int"] = int_t
 
     i32 = NonGenericClassType.new(self, self, "Int32", int_t)
@@ -935,6 +945,7 @@ pub class SemanticProgram < NonGenericModuleType
 
     flt = NonGenericClassType.new(self, self, "Float", num)
     flt.struct = true
+    flt.abstract = true
     @types["Float"] = flt
     f32 = NonGenericClassType.new(self, self, "Float32", flt)
     f32.struct = true
@@ -974,13 +985,14 @@ pub class SemanticProgram < NonGenericModuleType
     @enum_type = en
     @types["Enum"] = en
 
-    @types["Class"] = NonGenericClassType.new(self, self, "Class", val)
+    klass = NonGenericClassType.new(self, self, "Class", val)
+    klass.abstract = true
+    @types["Class"] = klass
     @types["Array"] = GenericClassType.new(self, self, "Array", ["T"], nil, ref)
     @types["Hash"] = GenericClassType.new(self, self, "Hash", ["K", "V"], nil, ref)
-    ptr = GenericClassType.new(self, self, "Pointer", ["T"], nil, st)
+    ptr = GenericClassType.new(self, self, "Pointer", ["T"], nil, val)
     ptr.struct = true
     @types["Pointer"] = ptr
-    @types["Error"] = TraitType.new(self, self, "Error")
     proc_t = GenericClassType.new(self, self, "Proc", ["T", "R"], 0, val)
     proc_t.struct = true
     @types["Proc"] = proc_t
@@ -996,6 +1008,33 @@ pub class SemanticProgram < NonGenericModuleType
     range_t = GenericClassType.new(self, self, "Range", ["B", "E"], nil, st)
     range_t.struct = true
     @types["Range"] = range_t
+    @types["Enumerable"] = GenericModuleType.new(self, self, "Enumerable", ["T"])
+    @types["Indexable"] = GenericModuleType.new(self, self, "Indexable", ["T"])
+    @types["Crystal"] = NonGenericModuleType.new(self, self, "Crystal")
+    @types["Exception"] = NonGenericClassType.new(self, self, "Exception", ref)
+    @types["Regex"] = NonGenericClassType.new(self, self, "Regex", ref)
+    static_array = GenericClassType.new(self, self, "StaticArray", ["T", "N"], nil, val)
+    static_array.struct = true
+    @types["StaticArray"] = static_array
+    union_t = GenericClassType.new(self, self, "Union", ["T"], nil, val)
+    union_t.struct = true
+    @types["Union"] = union_t
+    ["AlwaysInline", "CallConvention", "Extern", "Flags", "Link", "Naked", "NoInline", "Packed", "Primitive", "Raises", "ReturnsTwice", "ThreadLocal", "Deprecated", "Experimental", "TargetFeature", "Share", "NoPreempt", "SafeReach", "UnsafeReach", "Unsafe"].each do |aname|
+      @types[aname] = AnnotationType.new(self, self, aname)
+    end
+    error_trait = TraitType.new(self, self, "Error")
+    error_message = Def.new("message")
+    error_message.abstract = true
+    error_message.return_type = Path.new(["String"], true)
+    error_trait.add_def(error_message)
+    @types["Error"] = error_trait
+    gc = NonGenericModuleType.new(self, self, "GC")
+    gc.metaclass.add_def(Def.new("add_finalizer", [Arg.new("object")], Nop.new))
+    @types["GC"] = gc
+    # The hosted Program holds these as `Primitive` nodes, which the port has no node
+    # for. A MacroLiteral carries the same text the hosted dump prints for them.
+    @types["ARGC_UNSAFE"] = Const.new(self, self, "ARGC_UNSAFE", MacroLiteral.new("# primitive: argc"))
+    @types["ARGV_UNSAFE"] = Const.new(self, self, "ARGV_UNSAFE", MacroLiteral.new("# primitive: argv"))
     @initial_type_names = @types.keys.to_set
   end
 

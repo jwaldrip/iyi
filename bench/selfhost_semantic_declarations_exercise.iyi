@@ -1,12 +1,14 @@
 import compiler/syntax/parser::{Parser}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dump_program_declarations}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dump_program_declarations, dump_type}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
 #   selfhost_semantic_declarations_exercise <file.iyi>
+#   selfhost_semantic_declarations_exercise --initial
 #
 # Analyses the file alone, with no prelude, through the port's top-level pass and
-# prints the declaration dump the oracle prints for the same file.
+# prints the declaration dump the oracle prints for the same file. `--initial`
+# dumps the built-in types a new program holds, as the oracle's `--initial` does.
 module BenchSelfhostSemanticDeclarationsExercise
   def self.dump_file(path : String) : String
     src = File.read(path)
@@ -18,6 +20,19 @@ module BenchSelfhostSemanticDeclarationsExercise
     visitor.finish
     dump_program_declarations(prog)
   end
+
+  def self.dump_initial : String
+    prog = SemanticProgram.new
+    sb = String::Builder.new
+    prog.types.keys.sorted.each do |name|
+      dump_type(prog.types[name], sb, "")
+    end
+    sb.to_s
+  end
 end
 
-print BenchSelfhostSemanticDeclarationsExercise.dump_file(Program.args[0])
+if Program.args[0] == "--initial"
+  print BenchSelfhostSemanticDeclarationsExercise.dump_initial
+else
+  print BenchSelfhostSemanticDeclarationsExercise.dump_file(Program.args[0])
+end
