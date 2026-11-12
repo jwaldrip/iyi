@@ -110,8 +110,8 @@ pub class VirtualMetaclassType < Type
     "virtual_metaclass"
   end
 
-  def metaclass : ModuleType
-    @program.types["Class"].as(ModuleType)
+  def metaclass : ClassType
+    @program.types["Class"].as(ClassType)
   end
 end
 

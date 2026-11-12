@@ -490,45 +490,6 @@ pub abstract class ModuleType < NamedType
   end
 end
 
-pub class MetaclassType < ModuleType
-  getter instance_type : Type
-
-  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @instance_type : Type)
-    super(program, namespace, name)
-    # The hosted rule: a class's metaclass inherits from its superclass's metaclass, an
-    # enum's from Enum's, and anything else (a class with no superclass, Object) from Class.
-    # iyi: Class itself is the metaclass of Value (program.cr 1423). Its parent, Object's metaclass,
-    # is set by the program once Class is registered, since building it needs types["Class"].
-    if name == "Class"
-      # parent set after registration
-    elsif @instance_type.is_a?(ClassType)
-      sc = @instance_type.as(ClassType).superclass
-      if sc
-        @parents << sc.as(ModuleType).metaclass
-      else
-        @parents << program.types["Class"]
-      end
-    elsif @instance_type.is_a?(EnumType)
-      @parents << program.enum_type.metaclass
-    else
-      @parents << program.types["Class"]
-    end
-  end
-
-  def full_name : String
-    return "Class" if @name == "Class"
-    "#{@instance_type.to_s}.class"
-  end
-
-  def to_s : String
-    full_name
-  end
-
-  def type_desc : String
-    "metaclass"
-  end
-end
-
 pub abstract class ClassType < ModuleType
   property superclass : Type?
   property superclass_display : String?
@@ -568,6 +529,64 @@ pub abstract class ClassType < ModuleType
       @parents << sc
       sc.register_subclass(self)
     end
+  end
+end
+
+pub class MetaclassType < ClassType
+  getter instance_type : Type
+
+  # iyi: as the hosted MetaclassType is a ClassType (types.cr), the metaclass records its superclass too.
+  # iyi: a metaclass is abstract when its instance type is (hosted MetaclassType delegates abstract?, types.cr 3310).
+  def abstract? : Bool
+    if @instance_type.is_a?(ModuleType)
+      return @instance_type.as(ModuleType).abstract?
+    end
+    false
+  end
+
+  # iyi: a module's or trait's metaclass is not a class (hosted: a trait's metaclass takes the module rule, SPEC II.6).
+  def class? : Bool
+    @instance_type.is_a?(ClassType) && !@struct
+  end
+
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @instance_type : Type)
+    super(program, namespace, name)
+    # The hosted rule: a class's metaclass inherits from its superclass's metaclass, an
+    # enum's from Enum's, and anything else (a class with no superclass, Object) from Class.
+    # iyi: Class itself is the metaclass of Value (program.cr 1423). Its parent, Object's metaclass,
+    # is set by the program once Class is registered, since building it needs types["Class"].
+    if name == "Class"
+      # superclass and parent set after registration
+    elsif @instance_type.is_a?(ClassType)
+      sc = @instance_type.as(ClassType).superclass
+      if sc
+        meta_sc = sc.as(ModuleType).metaclass
+        @superclass = meta_sc
+        @parents << meta_sc
+      else
+        @superclass = program.types["Class"]
+        @parents << program.types["Class"]
+      end
+    elsif @instance_type.is_a?(EnumType)
+      @superclass = program.enum_type.metaclass
+      @parents << program.enum_type.metaclass
+    else
+      @superclass = program.types["Class"]
+      @parents << program.types["Class"]
+    end
+  end
+
+  def full_name : String
+    return "Class" if @name == "Class"
+    "#{@instance_type.to_s}.class"
+  end
+
+  def to_s : String
+    full_name
+  end
+
+  def type_desc : String
+    "metaclass"
   end
 end
 
@@ -1457,6 +1476,9 @@ pub class SemanticProgram < NonGenericModuleType
     # is Value itself: the hosted chain prints Object.class under Class under Value (bench oracle --chain).
     klass = MetaclassType.new(self, self, "Class", val)
     @types["Class"] = klass
+    klass.superclass = val
+    klass.superclass_display = val.full_name
+    klass.abstract = true
     klass.parents << val
     @types["Array"] = GenericClassType.new(self, self, "Array", ["T"], nil, ref)
     @types["Hash"] = GenericClassType.new(self, self, "Hash", ["K", "V"], nil, ref)
@@ -2152,6 +2174,9 @@ pub class TopLevelVisitor < Visitor
       # its methods (==, ===, self.|) are added to that metaclass, as the hosted program adds them.
       if ex.is_a?(MetaclassType) && name == "Class"
         meta = ex.as(MetaclassType)
+        if loc = node.location
+          meta.add_location(loc)
+        end
         old_meta_scope = @current_type
         @program.type_bodies << TypeBody.new(meta, node.body)
         @current_type = meta
@@ -3165,7 +3190,9 @@ pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil
 end
 
 pub def dump_type(t : Type, io : String::Builder, indent : String, entry : String? = nil) : Nil
-  io << indent << "Type: " << t.full_name << " (" << t.type_desc << ")\n"
+  # iyi: the kind a dump prints follows the class, as the hosted dump does (a MetaclassType is a ClassType there).
+  kind = t.is_a?(ClassType) ? (t.as(ClassType).struct? ? "struct" : "class") : t.type_desc
+  io << indent << "Type: " << t.full_name << " (" << kind << ")\n"
   vis_str = t.private? ? "private" : "public"
   io << indent << "  visibility: " << vis_str << "\n"
   io << indent << "  abstract: " << (t.abstract? ? "true" : "false") << "\n"
