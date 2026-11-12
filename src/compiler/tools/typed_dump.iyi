@@ -64,11 +64,14 @@ pub class TypedNodeWalk < Visitor
 end
 
 module TypedDump
-  def self.dump(source : String, filename : String) : Array(String)
+  def self.dump(source : String, filename : String, root : String?) : Array(String)
     parser = Parser.new(source, filename)
     node = parser.parse
     prog = SemanticProgram.new
     prog.total_mode = true
+    if r = root
+      prog.search_path = [r] of String
+    end
     tl = TopLevelVisitor.new(prog)
     node.accept(tl)
     tl.finish
@@ -89,8 +92,12 @@ module TypedDumpTool
       raise "usage: typed_dump <file.iyi>"
     end
     path = args[0]
+    root : String? = nil
+    if args.size > 1
+      root = args[1]
+    end
     source = File.read(path)
-    TypedDump.dump(source, path).each { |line| puts line }
+    TypedDump.dump(source, path, root).each { |line| puts line }
   end
 end
 
