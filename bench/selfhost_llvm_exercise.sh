@@ -68,8 +68,14 @@ if [ ! -f "$WORK/plain_out/selfhost_llvm_test.o" ]; then
   exit 1
 fi
 
-# Check Mach-O / ELF object file
-file "$WORK/plain_out/selfhost_llvm_test.o"
+# Say what kind of object it is. The CI container has no `file`, and the gate
+# died there with 127 on a line that only describes: the link and the run below
+# are what check the object, so this prints the magic bytes where `file` is absent.
+if command -v file >/dev/null 2>&1; then
+  file "$WORK/plain_out/selfhost_llvm_test.o"
+else
+  echo "object magic: $(od -An -tx1 -N4 "$WORK/plain_out/selfhost_llvm_test.o" | tr -d ' \n')"
+fi
 
 # Create C driver to link against emitted object
 cat <<'C_RUNNER' > "$WORK/driver.c"

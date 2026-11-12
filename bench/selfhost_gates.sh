@@ -6,7 +6,9 @@
 #   bash bench/selfhost_gates.sh
 #
 # Each gate's full output goes to a log under $SELFHOST_GATE_LOGS (default: a
-# fresh temporary directory). A failing gate's last lines are printed.
+# fresh temporary directory). A failing gate's last lines are printed: twelve
+# at a desk, where the log is a path away, and $SELFHOST_GATE_TAIL (default
+# 200) under CI, where the runner is gone and the printed lines are all there is.
 # Exit status is 0 only when every gate exits 0.
 set -u
 
@@ -37,8 +39,10 @@ for gate in "${gates[@]}"; do
   if [ "$rc" -ne 0 ]; then
     status=1
     failed+=("$name")
-    echo "  last lines of $log:"
-    tail -n 12 "$log" | sed 's/^/    /'
+    lines=12
+    [ -n "${CI:-}" ] && lines="${SELFHOST_GATE_TAIL:-200}"
+    echo "  last $lines lines of $log:"
+    tail -n "$lines" "$log" | sed 's/^/    /'
   fi
 done
 
