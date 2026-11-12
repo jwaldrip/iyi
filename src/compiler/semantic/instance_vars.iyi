@@ -4,7 +4,7 @@ import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Arg, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{ClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
+import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
 
 # Instance variables typed only by assignment, as the hosted front end declares
 # them in its type declaration processor (`type_guess_visitor.cr` guesses each
@@ -426,7 +426,7 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   owners = [] of OwnerGuesses
   program.type_bodies.each do |body|
     owner = owner_guesses_for(owners, body.type)
-    if owner.owner.is_a?(NonGenericClassType)
+    if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)
       visitor = GuessVisitor.new(program, owner)
       body.body.accept(visitor)
     end
@@ -441,7 +441,7 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   depth = 0
   while depth <= max_depth
     owners.each do |og|
-      next unless og.owner.is_a?(NonGenericClassType)
+      next unless og.owner.is_a?(NonGenericClassType) || og.owner.is_a?(GenericClassType)
       next unless class_depth(og.owner) == depth
       compute_nonnil(owners, og)
       declare_guessed(program, owners, og)

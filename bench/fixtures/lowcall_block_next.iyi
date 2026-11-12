@@ -1,4 +1,4 @@
-def only
+def only(&)
   yield 5
 end
 

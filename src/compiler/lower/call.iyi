@@ -379,8 +379,14 @@ pub def discard_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Ni
   obj = node.obj
   raise "BUG: discard_receiver on a call with no receiver (hosted call.cr: prepare_call_args)" if obj.nil?
   o = obj.as(ASTNode)
-  # A variable has no effect, and the hosted receiver of an inlined literal is not read (no value is wanted).
-  return if o.is_a?(Var)
+  # The hosted receiver of an inlined literal is requested as a value (prepare_call_args), but a by-value struct variable
+  # is not read where the value is unused (lowprim_alloc_struct: the empty struct's receiver loads nothing). A class
+  # variable is read (lowprim_alloc_class).
+  if o.is_a?(Var)
+    vt = low.analysed.type_of?(o)
+    raise "BUG: the analysed program has no type for receiver variable #{o.name} (hosted call.cr: prepare_call_args)" if vt.nil?
+    return if passed_by_value?(vt.as(Type))
+  end
   wants = low.needs_value
   prev_unused = low.receiver_unused
   low.needs_value = true
@@ -420,7 +426,10 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   end
   body_t = low.analysed.type_of?(def_node.body)
   raise "BUG: the analysed program has no type for the body of #{node.name} (hosted call.cr: codegen_call_with_block)" if body_t.nil?
-  if body_t.as(Type).full_name != ret.full_name
+  # A body typed NoReturn never yields a value: its block jumps out with `break` or `next`, so the hosted upcast of the body's
+  # value does not apply and the body adds no value to the phi.
+  body_no_return = body_t.as(Type).is_a?(NoReturnType)
+  if !body_no_return && body_t.as(Type).full_name != ret.full_name
     pending_visit_node("a block call to #{node.name} whose body is #{body_t.as(Type).full_name} and whose call is #{ret.full_name} (hosted upcast of the body's value)")
   end
 
@@ -470,7 +479,9 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
       low.builder.unreachable
     end
   else
-    phi.add(low, low.last, true)
+    unless body_no_return
+      phi.add(low, low.last, true)
+    end
   end
   low.context = caller
   low.needs_value = wants

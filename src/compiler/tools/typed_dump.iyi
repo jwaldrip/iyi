@@ -79,12 +79,26 @@ pub class TypedDumpResult
 end
 
 module TypedDump
+  # The directory a file's path names: where its imports are looked for first (the entry
+  # directory of Program#iyi_import_root).
+  def self.directory_of(filename : String) : String
+    parts = filename.split('/')
+    dir = ""
+    i = 0
+    while i < parts.size - 1
+      dir = "#{dir}#{parts[i]}/"
+      i = i + 1
+    end
+    dir
+  end
+
   def self.analyse(source : String, filename : String, roots : Array(String)) : TypedDumpResult
     parser = Parser.new(source, filename)
     node = Normalizer.new(NormalizerProgram.new(false)).normalize(parser.parse)
     prog = SemanticProgram.new
     prog.total_mode = true
     prog.search_path = roots
+    prog.entry_dir = TypedDump.directory_of(filename)
     tl = TopLevelVisitor.new(prog, filename)
     node.accept(tl)
     tl.finish
