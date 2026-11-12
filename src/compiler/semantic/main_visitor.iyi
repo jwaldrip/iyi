@@ -9,6 +9,7 @@ import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
+import compiler/semantic/default_arguments::{DefaultArguments}
 
 # iyi: two modes. Strict (the default) raises on the first construct it cannot
 # type, as the port always did, and every existing gate relies on that. Total
@@ -1399,6 +1400,18 @@ pub class MainVisitor < Visitor
 
     target_def = lookup_method_matching(rec_type, node.name, node.args, node)
     return false if target_def.nil?
+    # A positional call that leaves parameters to their defaults gets them as
+    # cloned argument nodes, one per parameter (hosted expansion; the calls slice's
+    # DefaultArguments). The new nodes are visited here; the rest were visited above.
+    if node.named_args.nil? && DefaultArguments.supported?(target_def, node.args, nil)
+      original_count = node.args.size
+      node.args = DefaultArguments.expand(target_def, node.args, nil)
+      i = original_count
+      while i < node.args.size
+        node.args[i].accept(self)
+        i = i + 1
+      end
+    end
     instantiated_def = target_def.clone
     @call_target_defs[node] = instantiated_def
 
