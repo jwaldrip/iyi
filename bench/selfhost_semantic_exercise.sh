@@ -404,8 +404,8 @@ prove_mutation "struct default superclass switches to Reference" "$SEM" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "enum members start numbering at one instead of zero" "$SEM" \
-  "counter = 0_i64" \
-  "counter = 1_i64" \
+  "counter = @enum_flags ? 1_i64 : 0_i64" \
+  "counter = @enum_flags ? 1_i64 : 1_i64" \
   -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -427,9 +427,9 @@ prove_mutation "method visibility defaults to private instead of public" "$SEM" 
   -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "predefined struct Nil is marked as class instead of struct" "$SEM" \
-  "nil_t.struct = true" \
-  "nil_t.struct = false" \
+prove_mutation "predefined Nil built as a plain class instead of NilType" "$SEM" \
+  "nil_t = NilType.new(self, self, \"Nil\", val)" \
+  "nil_t = NonGenericClassType.new(self, self, \"Nil\", val)" \
   -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

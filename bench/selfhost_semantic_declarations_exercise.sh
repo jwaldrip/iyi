@@ -1,0 +1,424 @@
+#!/usr/bin/env bash
+# Burn-down gate for declaration parity between the iyi semantic port and the
+# hosted front end's top-level pass (specification S1b).
+#
+# Every file is analysed bare (no prelude), with the closure of what it imports
+# and requires, by the hosted front end's top-level pass
+# (bench/selfhost_semantic_declarations_oracle.cr) and by the iyi port
+# (bench/selfhost_semantic_declarations_exercise.iyi). Both search IYI_PATH, set
+# below to this checkout's src/. Both print one text dump of the declarations the
+# file itself makes: defs, types, nested types, their visibility, superclasses,
+# type variables, enum members, aliases and constants. A declaration belongs to
+# the file when its location is the file, so an imported file's declarations are
+# not repeated. The dump is split into records, one per declaration header
+# (a "Type:" or "Def:" line) with its own property lines. A record agrees when
+# both sides print it identically. The gate counts agreeing records per file.
+#
+#   bash bench/selfhost_semantic_declarations_exercise.sh
+#
+# Verifies:
+#   1. The oracle and the port's driver build.
+#   2. Every bench/fixtures/semdecl_*.iyi is dumped byte-identical by both sides.
+#   3-5. Corpora burn-down: the port's own source (src/compiler), the prelude
+#        (src/iyi), std (src/std) and the samples (samples/iyi). Each file's
+#        agreeing-record count is checked against the committed floor
+#        (bench/selfhost_semantic_declarations.floor), which may only rise. A
+#        file the oracle cannot analyse is reported ORACLE with its reason and
+#        is not measured. A file the port rejects counts zero and is reported PORT.
+#   6. Guarded mutation proofs on the fixtures (bench/lib/mutation.sh).
+#
+# Environment:
+#   SEMDECL_RAISE=1         write the floor up to the measured counts (never lower)
+#   SEMDECL_FILES=<f>       measure only the repo-relative paths listed in <f>
+#   SEMDECL_FLOOR=<f>       read and write this floor file instead of the default
+#
+# Exit status 0 when every check passes, 1 otherwise.
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$REPO" || exit 1
+export PWD="$REPO"
+IYI="$REPO/bin/iyi"
+CRYSTAL="$REPO/bin/crystal"
+FLOOR_FILE="${SEMDECL_FLOOR:-$REPO/bench/selfhost_semantic_declarations.floor}"
+RAISE="${SEMDECL_RAISE:-0}"
+FILES_LIST="${SEMDECL_FILES:-}"
+WORK="$(mktemp -d)"
+LC_ALL=C
+export LC_ALL
+export IYI_CACHE_DIR="$WORK/cache"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
+export IYI_PATH="$REPO/src"
+trap 'rm -rf "$WORK"' EXIT INT TERM
+
+ORACLE="$WORK/oracle"
+PORT="$WORK/port"
+RESULTS="$WORK/results.tsv"
+VERDICTS="$WORK/verdicts.tsv"
+status=0
+: > "$RESULTS"
+
+. "$REPO/bench/lib/mutation.sh"
+
+# Splits a dump into records, one per "Type:" or "Def:" header line, each with its
+# own property lines, joined onto one line with the record separator \036.
+records() {
+  awk '
+    function flush() { if (cur != "") print cur }
+    /^ *(Type|Def|Ivar): / { flush(); cur = $0; next }
+    { if (cur != "") cur = cur "\036" $0 }
+    END { flush() }
+  ' "$1"
+}
+
+# Number of records of FILE that also occur in REFERENCE, counted with multiplicity.
+agreeing() {
+  records "$1" | sort > "$WORK/agree_a"
+  records "$2" | sort > "$WORK/agree_b"
+  comm -12 "$WORK/agree_a" "$WORK/agree_b" | wc -l | tr -d ' '
+}
+
+echo "== 1. Building the hosted declaration oracle and the port's declaration driver"
+CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
+  -o "$ORACLE" "$REPO/bench/selfhost_semantic_declarations_oracle.cr" > "$WORK/oracle_build.log" 2>&1 \
+  || { cat "$WORK/oracle_build.log"; echo "FAILED to build the oracle"; exit 1; }
+"$IYI" build -o "$PORT" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/port_build.log" 2>&1 \
+  || { cat "$WORK/port_build.log"; echo "FAILED to build the port's declaration driver"; exit 1; }
+echo "  built: oracle, port driver"
+
+echo
+echo "== 2. Fixtures: every declaration dumped identically by both sides"
+fixture_count=0
+fixture_bad=0
+total_matched=0
+for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
+  rel="bench/fixtures/$(basename "$fixture")"
+  fixture_count=$((fixture_count + 1))
+  if ! "$ORACLE" "$REPO/$rel" > "$WORK/fx_o.txt" 2> "$WORK/fx_oe.txt"; then
+    echo "  $rel: ORACLE REJECTS: $(head -n 1 "$WORK/fx_oe.txt")"
+    fixture_bad=$((fixture_bad + 1)); status=1; continue
+  fi
+  if ! "$PORT" "$REPO/$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
+    echo "  $rel: PORT REJECTS: $(head -n 1 "$WORK/fx_pe.txt")"
+    fixture_bad=$((fixture_bad + 1)); status=1; continue
+  fi
+  if cmp -s "$WORK/fx_o.txt" "$WORK/fx_p.txt"; then
+    n=$(agreeing "$WORK/fx_o.txt" "$WORK/fx_p.txt")
+    total_matched=$((total_matched + n))
+    echo "  $rel: identical ($n declarations)"
+  else
+    echo "  $rel: DECLARATIONS DIFFER"
+    diff "$WORK/fx_o.txt" "$WORK/fx_p.txt" | head -n 20
+    fixture_bad=$((fixture_bad + 1)); status=1
+  fi
+done
+echo "  Parity summary: $((fixture_count - fixture_bad))/$fixture_count fixtures identical ($total_matched declarations compared)"
+
+echo "== 2c. Prelude parent chains: Nil, Object, Reference, Value, Int32, String and a user class, identical to the oracle"
+if ! "$ORACLE" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/chain_o.txt" 2> "$WORK/chain_oe.txt"; then
+  echo "  ORACLE REJECTS: $(head -n 1 "$WORK/chain_oe.txt")"; status=1
+elif ! "$PORT" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/chain_p.txt" 2> "$WORK/chain_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/chain_pe.txt")"; status=1
+elif cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt"; then
+  echo "  parent chains identical ($(awk 'END{print NR}' "$WORK/chain_o.txt") lines)"
+else
+  echo "  parent chains DIFFER"; status=1
+fi
+echo
+echo
+echo "== 2b. Built-in types: the program's initial types dumped identically (a burn-down row)"
+if ! "$ORACLE" --initial > "$WORK/init_o.txt" 2> "$WORK/init_oe.txt"; then
+  b_nodes=0; b_matched=0; b_note="ORACLE: $(head -n 1 "$WORK/init_oe.txt")"
+elif ! "$PORT" --initial > "$WORK/init_p.txt" 2> "$WORK/init_pe.txt"; then
+  b_nodes=$(records "$WORK/init_o.txt" | wc -l | tr -d ' '); b_matched=0
+  b_note="PORT: $(head -n 1 "$WORK/init_pe.txt")"
+else
+  b_nodes=$(records "$WORK/init_o.txt" | wc -l | tr -d ' ')
+  b_matched=$(agreeing "$WORK/init_o.txt" "$WORK/init_p.txt")
+  b_note="-"
+fi
+echo "  built-in types: $b_matched of $b_nodes agree"
+printf 'builtins\t<initial>\t%s\t%s\t%s\n' "$b_nodes" "$b_matched" "$b_note" >> "$RESULTS"
+
+
+measure() {
+  corpus="$1"
+  rel="$2"
+  abs="$REPO/$2"
+  if "$ORACLE" "$abs" > "$WORK/o.txt" 2> "$WORK/o.err"; then
+    nodes=$(records "$WORK/o.txt" | wc -l | tr -d ' ')
+    if "$PORT" "$abs" > "$WORK/p.txt" 2> "$WORK/p.err"; then
+      matched=$(agreeing "$WORK/o.txt" "$WORK/p.txt")
+      note="-"
+    else
+      matched=0
+      note="PORT: $(head -n 1 "$WORK/p.err" | tr '\t' ' ')"
+    fi
+  else
+    nodes=0
+    matched=0
+    note="ORACLE: $(head -n 1 "$WORK/o.err" | tr '\t' ' ')"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$corpus" "$rel" "$nodes" "$matched" "$note" >> "$RESULTS"
+}
+
+echo
+if [ -n "$FILES_LIST" ]; then
+  echo "== 3. Measuring the files listed in $FILES_LIST"
+  while IFS= read -r rel; do
+    case "$rel" in
+      ""|"#"*) continue ;;
+    esac
+    measure subset "$rel"
+  done < "$FILES_LIST"
+else
+  echo "== 3. Measuring the port's source, the prelude, std and the samples"
+  find "$REPO/src/compiler" -name '*.iyi' | sort | while IFS= read -r f; do measure compiler "${f#$REPO/}"; done
+  for f in "$REPO"/src/iyi/*.iyi; do measure prelude "${f#$REPO/}"; done
+  for f in "$REPO"/src/std/*.iyi; do measure std "${f#$REPO/}"; done
+  for f in "$REPO"/samples/iyi/*.iyi; do measure samples "${f#$REPO/}"; done
+fi
+echo "  $(wc -l < "$RESULTS" | tr -d ' ') files measured"
+
+echo "== 3b. Whole program: every compiler and prelude file, with the prelude and its import closure loaded (total mode)"
+WHOLE="$WORK/whole.tsv"
+CARRIED="$WORK/carried.tsv"
+: > "$WHOLE"
+: > "$CARRIED"
+for f in $(find "$REPO/src/compiler" -name '*.iyi' | sort) "$REPO"/src/iyi/*.iyi; do
+  rel="${f#$REPO/}"
+  if "$PORT" --total "$f" > "$WORK/w_o.txt" 2> "$WORK/w_e.txt"; then
+    printf '%s\tok\n' "$rel" >> "$WHOLE"
+    awk -v rel="$rel" '/^carried: / { m = substr($0, 10); gsub(/[0-9]+/, "N", m); print rel "\t" substr(m, 1, 140) }' "$WORK/w_o.txt" >> "$CARRIED"
+  else
+    msg=$(head -n 1 "$WORK/w_e.txt" | awk '{ gsub(/\/[^ :]*\//, "<path>/"); gsub(/[0-9]+/, "N"); print substr($0, 1, 140) }')
+    printf '%s\tfail\t%s\n' "$rel" "$msg" >> "$WHOLE"
+  fi
+done
+whole_total=$(wc -l < "$WHOLE" | tr -d ' ')
+whole_pass=$(awk -F'\t' '$2 == "ok"' "$WHOLE" | wc -l | tr -d ' ')
+carried_files=$(cut -f1 "$CARRIED" | sort -u | wc -l | tr -d ' ')
+clean_pass=$((whole_pass - carried_files))
+echo "  whole program: $whole_pass of $whole_total files complete the port's declarations pass"
+echo "    with no refusal carried: $clean_pass; with at least one refusal carried past in total mode: $carried_files"
+echo "  failure table by first message:"
+awk -F'\t' '$2 == "fail" { print $3 }' "$WHOLE" | sort | uniq -c | sort -rn | head -25 | awk '{ print "    " $0 }'
+echo "  refusals carried past in total mode, by message (occurrences, message):"
+cut -f2 "$CARRIED" | sort | uniq -c | sort -rn | head -25 | awk '{ print "    " $0 }'
+WHOLE_FLOOR_FILE="$REPO/bench/selfhost_whole_program.floor"
+whole_floor=$(awk '/^complete/ { print $2 }' "$WHOLE_FLOOR_FILE" 2>/dev/null)
+clean_floor=$(awk '/^clean/ { print $2 }' "$WHOLE_FLOOR_FILE" 2>/dev/null)
+whole_floor=${whole_floor:-0}
+clean_floor=${clean_floor:-0}
+if [ "$whole_pass" -lt "$whole_floor" ] || [ "$clean_pass" -lt "$clean_floor" ]; then
+  echo "  WHOLE PROGRAM BELOW FLOOR: complete $whole_pass (floor $whole_floor), clean $clean_pass (floor $clean_floor). A regression: restore the declaration or lower nothing."
+  status=1
+elif [ "$whole_pass" -gt "$whole_floor" ] || [ "$clean_pass" -gt "$clean_floor" ]; then
+  if [ "$RAISE" = 1 ]; then
+    printf 'complete %s\nclean %s\n' "$whole_pass" "$clean_pass" > "$WHOLE_FLOOR_FILE"
+    echo "  whole-program floors raised: complete $whole_pass, clean $clean_pass"
+  else
+    echo "  WHOLE PROGRAM RAISE THE FLOOR: complete $whole_pass (floor $whole_floor), clean $clean_pass (floor $clean_floor) (SEMDECL_RAISE=1)"
+    status=1
+  fi
+fi
+
+echo
+echo "== 4. Checking each file against its committed floor"
+verdicts() {
+awk -F'\t' -v floorfile="$FLOOR_FILE" '
+  BEGIN {
+    while ((getline line < floorfile) > 0) {
+      if (line ~ /^[ \t]*#/ || line ~ /^[ \t]*$/) continue
+      split(line, a, /[ \t]+/)
+      floor[a[1]] = a[2] + 0
+    }
+  }
+  {
+    corpus = $1; rel = $2; nodes = $3 + 0; matched = $4 + 0; note = $5
+    if (note ~ /^ORACLE/) verdict = "ORACLE"
+    else if (!(rel in floor)) verdict = "NO FLOOR"
+    else if (matched < floor[rel]) verdict = "BELOW FLOOR"
+    else if (matched > floor[rel]) verdict = "RAISE THE FLOOR"
+    else verdict = "ok"
+    fl = (rel in floor) ? floor[rel] : "-"
+    printf "%s\t%s\t%s\t%d\t%d\t%s\t%s\t%s\n", verdict, corpus, rel, nodes, matched, \
+      (nodes > 0 ? sprintf("%.1f%%", 100 * matched / nodes) : "n/a"), fl, note
+  }' "$RESULTS" > "$VERDICTS"
+}
+verdicts
+
+if [ "$RAISE" = 1 ]; then
+  python3 - "$VERDICTS" "$FLOOR_FILE" <<'PY'
+import sys
+verdicts, floor_path = sys.argv[1], sys.argv[2]
+floor = {}
+try:
+    for line in open(floor_path, encoding="utf-8"):
+        if line.strip() and not line.startswith("#"):
+            path, count = line.split()
+            floor[path] = int(count)
+except FileNotFoundError:
+    pass
+raised = 0
+for line in open(verdicts, encoding="utf-8"):
+    cols = line.rstrip("\n").split("\t")
+    verdict, rel, matched = cols[0], cols[2], int(cols[4])
+    if verdict == "BELOW FLOOR":
+        continue
+    old = floor.get(rel, 0)
+    if matched > old:
+        floor[rel] = matched
+        raised += 1
+    elif rel not in floor:
+        floor[rel] = old
+with open(floor_path, "w", encoding="utf-8") as out:
+    out.write("# semantic declaration floors: <repo-relative file> <agreeing declarations>.\n")
+    out.write("# A count may only rise. Raise with: SEMDECL_RAISE=1 bash bench/selfhost_semantic_declarations_exercise.sh\n")
+    for rel in sorted(floor):
+        out.write(f"{rel} {floor[rel]}\n")
+print(f"  floor written: {len(floor)} entries, {raised} raised")
+PY
+verdicts
+  fails=$(awk -F'\t' '$1 == "BELOW FLOOR"' "$VERDICTS" | wc -l | tr -d ' ')
+else
+  fails=$(awk -F'\t' '$1 == "BELOW FLOOR" || $1 == "RAISE THE FLOOR" || $1 == "NO FLOOR"' "$VERDICTS" | wc -l | tr -d ' ')
+fi
+awk -F'\t' '
+  $1 == "BELOW FLOOR"     { printf "  BELOW FLOOR: %s matched %s, floor %s. A regression: restore the declaration or lower nothing.\n", $3, $5, $7 }
+  $1 == "RAISE THE FLOOR" { printf "  RAISE THE FLOOR: %s matched %s, floor %s. Raise the floor in bench/selfhost_semantic_declarations.floor (SEMDECL_RAISE=1).\n", $3, $5, $7 }
+  $1 == "NO FLOOR"        { printf "  NO FLOOR: %s has no floor entry. Add it (SEMDECL_RAISE=1).\n", $3 }
+' "$VERDICTS"
+echo "  $fails file(s) below or missing their floor"
+if [ "$fails" -gt 0 ]; then
+  status=1
+fi
+
+echo
+echo "== 5. Per-file declaration parity: oracle declarations, port agreeing, fraction, floor"
+printf '  %-16s %-46s %7s %8s %8s %7s  %s\n' verdict file decls agree fraction floor note
+awk -F'\t' '{
+  printf "  %-16s %-46s %7s %8s %8s %7s  %s\n", $1, $3, $4, $5, $6, $7, substr($8, 1, 100)
+}' "$VERDICTS"
+
+echo
+echo "== 6. Corpus totals"
+awk -F'\t' '
+  {
+    nodes[$1] += $3; matched[$1] += $4; count[$1] += 1
+    if ($5 ~ /^ORACLE/) oracle[$1] += 1
+    if ($5 ~ /^PORT/) port[$1] += 1
+    total_nodes += $3; total_matched += $4; total_files += 1
+    if ($5 ~ /^ORACLE/) total_oracle += 1
+    if ($5 ~ /^PORT/) total_port += 1
+  }
+  END {
+    n = 0
+    for (k in nodes) keys[++n] = k
+    for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++) if (keys[j] < keys[i]) { t = keys[i]; keys[i] = keys[j]; keys[j] = t }
+    for (i = 1; i <= n; i++) {
+      k = keys[i]
+      printf "  %-10s files %4d  oracle-failed %3d  port-failed %4d  oracle declarations %7d  agreeing %7d  fraction %6.2f%%\n", \
+        k, count[k], oracle[k] + 0, port[k] + 0, nodes[k], matched[k], (nodes[k] ? 100 * matched[k] / nodes[k] : 0)
+    }
+    printf "  %-10s files %4d  oracle-failed %3d  port-failed %4d  oracle declarations %7d  agreeing %7d  fraction %6.2f%%\n", \
+      "ALL", total_files, total_oracle + 0, total_port + 0, total_nodes, total_matched, (total_nodes ? 100 * total_matched / total_nodes : 0)
+  }' "$RESULTS"
+
+check_decl_fixtures_diverge() {
+  # Builds the port's driver as it now stands and compares every fixture. Returns
+  # non-zero (caught) when the driver fails to build, or a fixture's dump differs from the oracle's.
+  local probe="$WORK/mut_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
+    rel="bench/fixtures/$(basename "$fixture")"
+    "$ORACLE" "$REPO/$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
+    "$probe" "$REPO/$rel" > "$WORK/mut_p.txt" 2>/dev/null || return 1
+    cmp -s "$WORK/mut_o.txt" "$WORK/mut_p.txt" || return 1
+  done
+  "$ORACLE" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/mut_co.txt" 2>/dev/null || return 1
+  "$probe" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/mut_cp.txt" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_co.txt" "$WORK/mut_cp.txt" || return 1
+  return 0
+}
+
+echo
+echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
+MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
+MUTATIONS_RUN=0
+
+prove_mutation "struct default superclass switches to Reference" "$MUT_SEM" \
+  "superclass = node.struct ? @program.struct_type : @program.reference_type" \
+  "superclass = @program.reference_type" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "enum members start numbering at one instead of zero" "$MUT_SEM" \
+  "counter = @enum_flags ? 1_i64 : 0_i64" \
+  "counter = @enum_flags ? 1_i64 : 1_i64" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "method visibility defaults to private instead of public" "$MUT_SEM" \
+  "node.visibility = Visibility::Public" \
+  "node.visibility = Visibility::Private" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "module path segments keep their written case" "$MUT_SEM" \
+  "mod = NonGenericModuleType.new(@program, base, pname)" \
+  "mod = NonGenericModuleType.new(@program, base, pname.downcase)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generated new is private instead of public" "$MUT_SEM" \
+  "new_def.visibility = Visibility::Public" \
+  "new_def.visibility = Visibility::Private" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generated new drops the initialize arguments" "$MUT_SEM" \
+  "new_def = Def.new(\"new\", node.args.dup, Nop.new)" \
+  "new_def = Def.new(\"new\", [] of Arg, Nop.new)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "lib fun records its own name as the real name" "$MUT_SEM" \
+  "real = node.real_name || node.name" \
+  "real = node.name" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "lib fun drops its varargs flag" "$MUT_SEM" \
+  "record = LibFun.new(node.name, real, arg_names, node.varargs, node.return_type)" \
+  "record = LibFun.new(node.name, real, arg_names, false, node.return_type)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "lib struct takes Reference as its superclass" "$MUT_SEM" \
+  "NonGenericClassType.new(@program, @current_type, node.name, @program.struct_type)" \
+  "NonGenericClassType.new(@program, @current_type, node.name, @program.reference_type)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a class reopened without a superclass takes the reference superclass" "$MUT_SEM" \
+  "    elsif created_new_type" \
+  "    else" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a metaclass takes Class as its parent even when its superclass has a metaclass" "$MUT_SEM" \
+  "        @parents << sc.as(ModuleType).metaclass" \
+  "        @parents << program.types[\"Class\"]" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+echo "  $MUTATIONS_RUN mutation proofs run"
+
+echo
+if [ "$status" -eq 0 ]; then
+  echo "ALL SEMANTIC DECLARATION CHECKS PASSED"
+else
+  echo "SEMANTIC DECLARATION CHECKS FAILED"
+fi
+exit "$status"

@@ -3,8 +3,8 @@ module compiler/types/rendering
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/token
-import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, TraitType, Type, UnionType}
-import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, UnionType, VoidType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
 
 pub class TypeRenderer
   def self.render(type : Type, skip_union_parens : Bool = false, generic_args : Bool = true, codegen : Bool = false) : String
@@ -127,6 +127,10 @@ pub class TypeRenderer
     i = 0
     while i < flat.size
       t = flat[i]
+      # The hosted printer devirtualizes a union member: `(Vehicle | Nil)`, not `(Vehicle+ | Nil)`.
+      if !codegen && t.is_a?(VirtualType)
+        t = t.as(VirtualType).base_type
+      end
       if t.full_name == "Nil"
         has_nil = true
       else
