@@ -175,7 +175,6 @@ pub def emit_fun_def(low : Lowerer, node : FunDef, rec : LibFun, ret : Type) : N
   raise "BUG: fun #{name} has no body (hosted visit(FunDef))" if body.nil?
   target = Def.new(node.name, node.args, body.as(ASTNode))
   fn = codegen_fun(low, name, target, nil, rec.arg_types, fun_def_type(low, rec, ret), low.typer.llvm_return_type(ret))
-  fn.call_convention = CallConv::C
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end

@@ -107,6 +107,14 @@ pub def declared_or_defined_fun(low : Lowerer, name : String, fn_type : IrType) 
   fn
 end
 
+# The calling convention of a function with a body (import.iyi convention_of, the rule the native back end
+# reads the oracle with): a def, named with a leading `*` or `~`, is `Iyi`; a `fun` and the runtime's entry
+# points (`__crystal_raise_overflow`, `main`) are `C`. The hosted code emits both as `ccc`; the IR keeps them apart.
+pub def def_convention(name : String) : CallConv
+  return CallConv::Iyi if name.starts_with?("*") || name.starts_with?("~")
+  CallConv::C
+end
+
 # The hosted `codegen_fun` (fun.cr:271), plain case. The function is declared first, so a recursive
 # call finds it. Its body is lowered in a frame of its own: the alloca and entry blocks as
 # `new_entry_block` makes them, `self` (when the owner is passed as self) and each parameter a value
@@ -114,7 +122,7 @@ end
 # back afterwards (hosted `old_position`, `old_alloca_block`, `old_needs_value`).
 pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, class_owner : Type? = nil) : Function
   fn = declared_or_defined_fun(low, name, fn_type)
-  fn.call_convention = CallConv::Iyi
+  fn.call_convention = def_convention(name)
   fn.linkage = Linkage::Internal
   add_body_attributes(fn, low.module.triple)
 
