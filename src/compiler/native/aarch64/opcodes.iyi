@@ -69,6 +69,11 @@ pub def aarch64_op(v : Int32) : MOp
   return MOp::FMul if v == MOp::FMul.value.to_i32
   return MOp::FDiv if v == MOp::FDiv.value.to_i32
   return MOp::FNeg if v == MOp::FNeg.value.to_i32
+  return MOp::FAbs if v == MOp::FAbs.value.to_i32
+  return MOp::FSqrt if v == MOp::FSqrt.value.to_i32
+  return MOp::FRint if v == MOp::FRint.value.to_i32
+  return MOp::FMinNm if v == MOp::FMinNm.value.to_i32
+  return MOp::FMaxNm if v == MOp::FMaxNm.value.to_i32
   return MOp::FCmp if v == MOp::FCmp.value.to_i32
   return MOp::FCvt if v == MOp::FCvt.value.to_i32
   return MOp::Scvtf if v == MOp::Scvtf.value.to_i32
