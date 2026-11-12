@@ -46,7 +46,7 @@ module BenchSelfhostSemanticDeclarationsExercise
   end
 
   # Loads a file and its closure into a fresh program. Returns the program and the entry.
-  def self.load_program(path : String, typed : Bool = false) : {SemanticProgram, String}
+  def self.load_program(path : String) : {SemanticProgram, String}
     cwd = ENV["PWD"]? || "."
     absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
     entry = normalize_path(absolute)
@@ -56,9 +56,6 @@ module BenchSelfhostSemanticDeclarationsExercise
     prog = SemanticProgram.new
     prog.loaded_files.add(entry)
     prog.search_path = search_path
-    # The typed mode installs the type system before the top-level pass, as the lowering path does, so
-    # that guessed and explicit instance variables resolve through it.
-    type_node_system(prog) if typed
     prog.project_root = project_root(node, entry)
     prog.entry_dir = dir_of(entry)
     visitor = TopLevelVisitor.new(prog, entry)
@@ -77,7 +74,7 @@ module BenchSelfhostSemanticDeclarationsExercise
   # mode does): an explicit instance variable keeps its generic arguments and a class with
   # subclasses its virtual type, as the hosted declaration pass gives them.
   def self.dump_file_typed(path : String) : String
-    prog, entry = load_program(path, true)
+    prog, entry = load_program(path)
     type_node_system(prog)
     dump_program_declarations(prog, entry) + dump_instances(prog)
   end

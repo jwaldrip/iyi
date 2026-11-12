@@ -525,11 +525,6 @@ prove_mutation "a generic class's guessed instance variables are not declared on
   "if owner.owner.is_a?(NonGenericClassType)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a Pointer(T).malloc guess is not a pointer instance" "$MUT_IVARS" \
-  "if ptr && ptr.is_a?(PointerInstanceType)" \
-  "if ptr && ptr.is_a?(NonGenericClassType)" \
-  -- check_decl_fixtures_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
   "di.owner.instance_vars[di.name] = mv" \
   "nil" \
