@@ -172,7 +172,7 @@ prove_mutation "a method's receiver is not passed to the call" "$REPO/src/compil
 prove_mutation "a method's mangled name has no owner" "$REPO/src/compiler/lower/fun.iyi" \
   'text = text + st.full_name + "#"' 'text = text + "#"' -- lower_calls_check || status=1
 prove_mutation "a block call does not bind self in the inlined def" "$REPO/src/compiler/lower/call.iyi" \
-  '      frame.vars["self"] = LowerVar.new(sv.as(Value), st, true)' '      frame.vars.size' -- lower_calls_check || status=1
+  '      frame.vars["self"] = LowerVar.new(sv.as(Value), st, !self_by_pointer?(st))' '      frame.vars.size' -- lower_calls_check || status=1
 prove_mutation "a method's self is not the first parameter" "$REPO/src/compiler/lower/fun.iyi" \
   '    first = 1' '    first = 0' -- lower_calls_check || status=1
 prove_mutation "a lib call passes no arguments" "$REPO/src/compiler/lower/call.iyi" \
