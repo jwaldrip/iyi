@@ -648,6 +648,33 @@ class MachOReader
     le_word(bytes, address, 4)
   end
 
+  # The in-place value of an absolute reloc is its addend in Mach-O, and the
+  # model keeps it in Reloc#addend instead. `fold_in_place` reads the value at
+  # the site, zeroes the site, and returns the addend. For a section-relative
+  # reloc (r_extern 0, the reference is -(section index + 1)) the in-place value
+  # is the target section's address plus the offset, so the addend is that
+  # offset: the in-place value less the target section's address in this object.
+  def fold_in_place(h : MachOSectionHeader, bytes : Bytes, address : Int64, width : Int64, ref : Int64) : Int64
+    if address + width > h.size
+      reject("#{h.label} has an absolute relocation at offset #{address} whose #{width} bytes run past the section")
+      return 0_i64
+    end
+    value = le_word(bytes, address, width.to_i32)
+    if width == 4_i64 && value >= 0x80000000_i64
+      value = value - 0x100000000_i64
+    end
+    k = 0_i64
+    while k < width
+      bytes[(address + k).to_i32] = 0_u8
+      k = k + 1_i64
+    end
+    if ref < 0_i64
+      target = @headers[(0_i64 - ref - 1_i64).to_i32]
+      value = value - target.addr
+    end
+    value
+  end
+
   # Decodes a section's relocation records into the model. An ADDEND record
   # carries the addend of the record after it; a SUBTRACTOR record is followed by
   # the UNSIGNED record it subtracts from, and the pair becomes a Sub64 reloc and
@@ -717,7 +744,13 @@ class MachOReader
           minuend_kind = RelocKind::Abs64
         end
         sink << Reloc.new(address, RelocKind::Sub64, subtrahend.to_i32, 0_i64)
-        sink << Reloc.new(address, minuend_kind, minuend.to_i32, addend)
+        minuend_width = 4_i64
+        if minuend_kind == RelocKind::Abs64
+          minuend_width = 8_i64
+        end
+        minuend_total = addend + fold_in_place(h, bytes, address, minuend_width, minuend)
+        return if @failure
+        sink << Reloc.new(address, minuend_kind, minuend.to_i32, minuend_total)
         addend = 0_i64
         addend_at = -1_i64
         i = i + 2
@@ -730,7 +763,16 @@ class MachOReader
         return if @failure
         target = symbol_ref(ext, symnum, h)
         return if @failure
-        sink << Reloc.new(address, kind, target.to_i32, addend)
+        width = 4_i64
+        if kind == RelocKind::Abs64
+          width = 8_i64
+        end
+        total = addend
+        if kind == RelocKind::Abs64 || kind == RelocKind::Abs32
+          total = addend + fold_in_place(h, bytes, address, width, target)
+        end
+        return if @failure
+        sink << Reloc.new(address, kind, target.to_i32, total)
         addend = 0_i64
         addend_at = -1_i64
         i = i + 1
@@ -883,6 +925,7 @@ class MachOPlan
   property offset : Int64
   property reloff : Int64
   property records : Array(Int64)
+  property inplace : Array(Reloc)
   property bytes : ::Std::Slice::Bytes
 
   def initialize(@name : String, @segment : String, @section : String, @kind : SectionKind, @flags : Int64, @align : Int64, @size : Int64, @bytes : ::Std::Slice::Bytes)
@@ -890,6 +933,7 @@ class MachOPlan
     @offset = 0_i64
     @reloff = 0_i64
     @records = [] of Int64
+    @inplace = [] of Reloc
   end
 
   def zero_fill? : Bool
@@ -1056,24 +1100,47 @@ class MachOWriter
           raise "section #{sec.name} has a Sub64 at offset #{r.offset} with no absolute reloc at that offset after it"
         end
         m = relocs[i + 1]
+        plan.inplace << m
         len = 2_i64
         if m.kind == RelocKind::Abs64
           len = 3_i64
         end
-        if m.addend != 0_i64
-          addend_record(plan, r.offset, m.addend)
-        end
+        # The minuend's addend is in place, not in an ADDEND record.
         record(plan, r.offset, symbol_number(r.symbol), symbol_ext(r.symbol), 0_i64, len, MachO::R_SUBTRACTOR)
         record(plan, r.offset, symbol_number(m.symbol), symbol_ext(m.symbol), 0_i64, len, MachO::R_UNSIGNED)
         i = i + 2
       else
         shape = arm64_relocation_shape(r.kind)
-        if r.addend != 0_i64
+        if r.kind == RelocKind::Abs64 || r.kind == RelocKind::Abs32
+          plan.inplace << r
+        elsif r.addend != 0_i64
           addend_record(plan, r.offset, r.addend)
         end
         record(plan, r.offset, symbol_number(r.symbol), symbol_ext(r.symbol), shape[1], shape[2], shape[0])
         i = i + 1
       end
+    end
+  end
+
+  # Writes an absolute reloc's addend into its site: the addend itself for an
+  # extern reloc, and the target section's address plus the addend for a
+  # section-relative one, which the reader took the offset from.
+  def patch_site(start : Int64, plan : MachOPlan, p : Reloc) : Nil
+    width = 8_i64
+    if p.kind == RelocKind::Abs32
+      width = 4_i64
+    end
+    value = p.addend
+    if p.symbol < 0
+      value = value + @plans[(0_i64 - p.symbol.to_i64 - 1_i64).to_i32].addr
+    end
+    if width == 4_i64 && (value < -0x80000000_i64 || value >= 0x100000000_i64)
+      raise "section #{plan.name} has an absolute value #{value} that a 32-bit site cannot state"
+    end
+    k = 0_i64
+    while k < width
+      @buf[(start + p.offset + k).to_i32] = ((value.unsafe_shr(8_i64 * k)) & 0xff_i64).to_u8
+      k = k + 1_i64
     end
   end
 
@@ -1252,10 +1319,14 @@ class MachOWriter
     @plans.each do |plan|
       next if plan.zero_fill?
       pad_to(plan.offset)
+      start = @buf.size.to_i64
       i = 0
       while i < plan.bytes.size
         @buf << plan.bytes[i]
         i = i + 1
+      end
+      plan.inplace.each do |p|
+        patch_site(start, plan, p)
       end
     end
     pad_to(data_end)
