@@ -9,4 +9,4 @@ class SeminlDefIf
   end
 end
 
-SeminlDefIf.new.pick
+puts SeminlDefIf.new.pick

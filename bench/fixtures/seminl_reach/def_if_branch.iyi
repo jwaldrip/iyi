@@ -11,4 +11,4 @@ class SeminlDefBranch
   end
 end
 
-SeminlDefBranch.new.pick(true)
+puts SeminlDefBranch.new.pick(true)

@@ -11,4 +11,4 @@ class SeminlDefWhile
   end
 end
 
-SeminlDefWhile.new.spin
+puts SeminlDefWhile.new.spin

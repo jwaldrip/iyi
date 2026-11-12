@@ -8,4 +8,4 @@ class SeminlDefSeq
   end
 end
 
-SeminlDefSeq.new.total
+puts SeminlDefSeq.new.total
