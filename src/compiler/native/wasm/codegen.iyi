@@ -315,6 +315,7 @@ class FnGen
   @code : Array(UInt8)
   @locals : Array(UInt8)
   @local_of : Hash(Value, Int32)
+  @local2_of : Hash(Value, Int32)
   @alloca_off : Hash(Value, Int64)
   getter error : String?
 
@@ -322,6 +323,7 @@ class FnGen
     @code = [] of UInt8
     @locals = [] of UInt8
     @local_of = Hash(Value, Int32).new
+    @local2_of = Hash(Value, Int32).new
     @alloca_off = Hash(Value, Int64).new
     @frame = 0_i64
     @error = nil
@@ -1012,6 +1014,121 @@ class FnGen
     end
   end
 
+  # A pair value {T, i1}, the result of cmpxchg: each element is a local, the value and the flag.
+  def pair_type?(t : IrType) : Bool
+    return false unless t.struct?
+    return false unless t.struct_element_types.size == 2
+    wasm_valtype(t.struct_element_types[0]) != 0_u8 && wasm_valtype(t.struct_element_types[1]) != 0_u8
+  end
+
+  # extractvalue of a pair: a copy of the element's local.
+  def extract_value(i : Inst) : Nil
+    src = i.args[0]
+    local = i.aux_int == 0_i64 ? @local_of[src]? : @local2_of[src]?
+    if local.nil?
+      refuse("an extractvalue of #{src.type} is not lowered by the wasm backend")
+      return
+    end
+    local_get(local)
+    local_set(@local_of[i])
+  end
+
+  # cmpxchg with one thread: load the old value, compare it with expected, and store new only when they are equal.
+  # The pair is {old, old == expected}.
+  def cmpxchg(i : Inst) : Nil
+    t = i.args[1].type
+    n = access_bytes(t)
+    if n == 0
+      refuse("a cmpxchg of #{t} is not lowered by the wasm backend")
+      return
+    end
+    push(i.args[0])
+    byte(mem_op_load(t))
+    memarg(i, n)
+    local_set(@local_of[i])
+    eqop = (t.int? && t.bits == 64) ? 81_u8 : 70_u8
+    local_get(@local_of[i])
+    push(i.args[1])
+    byte(eqop)
+    local_set(@local2_of[i])
+    local_get(@local2_of[i])
+    byte(4_u8)
+    byte(64_u8)
+    push(i.args[0])
+    push(i.args[2])
+    byte(mem_op_store(t))
+    memarg(i, n)
+    byte(11_u8)
+  end
+
+  # atomicrmw with one thread: load the old value, apply the operation, store the result. The instruction's value
+  # is the old value.
+  def atomic_rmw(i : Inst) : Nil
+    t = i.args[1].type
+    n = access_bytes(t)
+    unless i.aux.is_a?(MemAux) && t.int? && n > 0
+      refuse("an atomicrmw of #{t} is not lowered by the wasm backend")
+      return
+    end
+    op = i.aux.as(MemAux).rmw_op
+    w = t.bits
+    wide = w == 64
+    push(i.args[0])
+    byte(mem_op_load(t))
+    memarg(i, n)
+    local_set(@local_of[i])
+    push(i.args[0])
+    if op == "xchg"
+      push(i.args[1])
+    elsif op == "max" || op == "umax" || op == "min" || op == "umin"
+      signed = op == "max" || op == "min"
+      greater = op == "max" || op == "umax"
+      local_get(@local_of[i])
+      push(i.args[1])
+      local_get(@local_of[i])
+      sext_top(w) if signed
+      if signed
+        push_signed(i.args[1])
+      else
+        push(i.args[1])
+      end
+      cmpop = 0_u8
+      if wide
+        cmpop = greater ? (signed ? 85_u8 : 86_u8) : (signed ? 83_u8 : 84_u8)
+      else
+        cmpop = greater ? (signed ? 74_u8 : 75_u8) : (signed ? 72_u8 : 73_u8)
+      end
+      byte(cmpop)
+      byte(27_u8)
+    elsif op == "add" || op == "sub" || op == "and" || op == "or" || op == "xor" || op == "nand"
+      local_get(@local_of[i])
+      push(i.args[1])
+      if op == "add"
+        byte(wide ? 124_u8 : 106_u8)
+      elsif op == "sub"
+        byte(wide ? 125_u8 : 107_u8)
+      elsif op == "or"
+        byte(wide ? 132_u8 : 114_u8)
+      elsif op == "xor"
+        byte(wide ? 133_u8 : 115_u8)
+      else
+        byte(wide ? 131_u8 : 113_u8)
+        if op == "nand"
+          if wide
+            i64c(-1_i64)
+          else
+            i32c(-1_i64)
+          end
+          byte(wide ? 133_u8 : 115_u8)
+        end
+      end
+    else
+      refuse("atomicrmw #{op} is not lowered by the wasm backend")
+      return
+    end
+    byte(mem_op_store(t))
+    memarg(i, n)
+  end
   # One non-terminator instruction.
   def emit_inst(i : Inst) : Nil
     case i.op
@@ -1054,6 +1171,17 @@ class FnGen
       call(i)
     when Op::Intrinsic
       intrinsic(i)
+    when Op::ThreadLocalAddr
+      push(i.args[0])
+      store_result(i)
+    when Op::Fence
+      # One thread: a fence orders nothing, so it emits nothing.
+    when Op::CmpXchg
+      cmpxchg(i)
+    when Op::AtomicRmw
+      atomic_rmw(i)
+    when Op::ExtractValue
+      extract_value(i)
     when Op::Unreachable
       byte(0_u8)
     else
@@ -1196,6 +1324,11 @@ class FnGen
       b.insts.each do |i|
         next if i.op == Op::Store || i.op == Op::Unreachable || i.op == Op::Br || i.op == Op::CondBr || i.op == Op::Switch || i.op == Op::Ret
         next if i.type.void?
+        if pair_type?(i.type)
+          @local_of[i] = new_local(wasm_valtype(i.type.struct_element_types[0]))
+          @local2_of[i] = new_local(wasm_valtype(i.type.struct_element_types[1]))
+          next
+        end
         t = wasm_valtype(i.type)
         if t == 0_u8
           refuse("a value of type #{i.type} has no wasm value type")
