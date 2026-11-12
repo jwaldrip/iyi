@@ -225,6 +225,8 @@ def evaluate(program : Iyi::Program, op : String) : String
   when "virtual_type"       then type_text(t.virtual_type)
   when "remove_alias"       then type_text(t.remove_alias)
   when "remove_typedef"     then type_text(t.remove_typedef)
+  when "including_types"    then type_text(t.including_types)
+  when "simple?"            then bool_text(t.as(Iyi::AliasType).simple?)
   when "splat_index"
     idx = t.splat_index
     idx.nil? ? "nil" : idx.to_s

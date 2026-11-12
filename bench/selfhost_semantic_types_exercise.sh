@@ -242,6 +242,12 @@ prove_mutation "private types reached by a later path item are found" "$REPO/src
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "generic instances do not take the modules of their generic type" "$REPO/src/compiler/types/instances.iyi" \
+  "        inst.included_modules << parent" \
+  "        nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

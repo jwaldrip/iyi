@@ -638,6 +638,12 @@ pub class AliasType < NamedType
     true
   end
 
+  # The hosted `simple` flag is cleared only for an alias that names no type. Every
+  # alias the port models names one (`process_value`), so the flag stays set.
+  def simple? : Bool
+    true
+  end
+
   def type_desc : String
     "alias"
   end

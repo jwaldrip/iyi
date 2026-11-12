@@ -1,5 +1,5 @@
 import compiler/syntax/parser::{Parser}
-import compiler/semantic/top_level::{GenericClassType, ModuleType, SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/top_level::{AliasType, GenericClassType, ModuleType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/types/types::{TypeQueries}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/intersect::{TypeIntersect}
@@ -175,6 +175,12 @@ module BenchSelfhostSemanticTypesExercise
     end
     if member == "remove_typedef"
       return type_text(t.remove_typedef)
+    end
+    if member == "including_types"
+      return type_text(TypeIntersect.including_union(t.program, t))
+    end
+    if member == "simple?"
+      return bool_text(t.as(AliasType).simple?)
     end
     if member == "splat_index"
       idx = TypeQueries.splat_index(t)

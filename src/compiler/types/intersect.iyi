@@ -317,8 +317,12 @@ pub class TypeIntersect
     end
     result = [] of Type
     if t.is_a?(GenericClassInstanceType)
-      if sc = t.as(GenericClassInstanceType).superclass
+      inst = t.as(GenericClassInstanceType)
+      if sc = inst.superclass
         result << sc
+      end
+      inst.included_modules.each do |inc|
+        result << inc
       end
     end
     result

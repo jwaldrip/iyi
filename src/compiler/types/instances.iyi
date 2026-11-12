@@ -1,6 +1,6 @@
 module compiler/types/instances
 
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, SemanticProgram, Type, VoidType}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, NonGenericModuleType, SemanticProgram, Type, VoidType}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceType, NamedArgumentType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType}
 
 # The instances of the type model, one object per spelling. The lookup of
@@ -31,6 +31,14 @@ pub class TypeInstances
     end
 
     inst = GenericClassInstanceType.new(@program, generic_type, tv_map, type_args, generic_type.superclass)
+    # The instance includes what its generic type includes, so each such module
+    # records the instance as an includer (the hosted instance's `include`).
+    generic_type.parents.each do |parent|
+      if parent.is_a?(NonGenericModuleType)
+        inst.included_modules << parent
+        parent.as(NonGenericModuleType).add_including_type(inst)
+      end
+    end
     @generic_cache[key] = inst
     inst
   end
