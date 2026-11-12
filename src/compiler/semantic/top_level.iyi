@@ -1416,11 +1416,16 @@ pub class SemanticProgram < NonGenericModuleType
       g = node.as(Generic)
       base_type = lookup_type_node(g.name, current_type)
       if hook = @merge_hook
-        if plain_generic?(g, base_type)
-          type_args = g.type_vars.map { |t| lookup_type_node(t, current_type) }
-          return hook.instantiate_type(base_type, type_args)
+        # iyi: only a real generic base is instantiated or handed to the hook. A base that does not
+        # resolve (a total-mode placeholder) keeps the base-only answer: the hook's lookup cannot see
+        # this file's imports, and would raise on a name the total pass has already recorded.
+        if base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
+          if plain_generic?(g, base_type)
+            type_args = g.type_vars.map { |t| lookup_type_node(t, current_type) }
+            return hook.instantiate_type(base_type, type_args)
+          end
+          return hook.resolve_node(node, current_type)
         end
-        return hook.resolve_node(node, current_type)
       end
       base_type
     elsif node.is_a?(Union)
@@ -1707,12 +1712,12 @@ pub class TopLevelVisitor < Visitor
   @enum_flags : Bool = false
   @pending_flags : Bool = false
 
-  # Every explicit instance variable is recorded here, in the order the source declares it.
-  # Resolves the pending instance variables this visitor holds, once, after every file it
-  # read is declared. A restriction may name a type a later file declares (`concurrency.iyi`
-  # restricts an ivar to `IyiDeferNode`, declared in `prelude.iyi`). Each one resolves with
-  # the imports of the file that wrote it; resolving at the visit would move every later offset
-  # (the hosted declarations pass keeps declaration order: TypeDeclarationVisitor).
+  # Every explicit instance variable is recorded here, in the order the source
+  # declares it. A restriction may name a type a later file declares (`concurrency.iyi`
+  # restricts an ivar to `IyiDeferNode`, declared in `prelude.iyi`), so it resolves only
+  # once, after every file it read is declared, with the imports of the file that wrote it.
+  # Resolving at the visit would move every later offset (the hosted declarations pass
+  # keeps declaration order: TypeDeclarationVisitor).
   def finish : Nil
     saved = @program.current_imports
     @pending_ivars.each do |pi|
