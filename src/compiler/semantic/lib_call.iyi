@@ -7,7 +7,6 @@ import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/method_lookup::{MethodLookup}
 import compiler/semantic/match::{CallSignature}
 import compiler/semantic/call::{CallRecalculation, CallTarget}
-import compiler/syntax/ast::{ASTNode, FunDef}
 
 # One argument of a call on a lib, as the call writes it: the node (an `out` argument
 # is the Out node), its type when it has one, and the parameter name when it is a
@@ -79,7 +78,6 @@ pub class LibCall
       return LibCallTarget.failed("undefined fun '#{name}' for #{target_lib.to_s}")
     end
     lib_fun = found.as(LibFun)
-    LibCall.refresh(lib_fun, target_lib, ts)
     owner = "#{target_lib.full_name}##{name}"
 
     positional = [] of LibCallArgument
@@ -222,29 +220,6 @@ pub class LibCall
       nodes << arg.node
     end
     LibCallTarget.new(lib_fun, result_type, nil, nodes, literal_index, literal_type, out_index, out_type, to_unsafe_index, to_unsafe_target)
-  end
-
-  # The fun's declared argument and return types, resolved through the installed type
-  # system. The declaration pass runs before the type system exists and cannot
-  # instantiate a generic written in a fun (`Pointer(Int32)`): the record keeps the base
-  # name until this refresh, which the type system's lookup then answers in full.
-  def self.refresh(lib_fun : LibFun, target_lib : LibType, ts : TypeSystem) : Nil
-    fun_node = lib_fun.node
-    return if fun_node.nil?
-    f = fun_node.as(FunDef)
-    i = 0
-    while i < f.args.size && i < lib_fun.arg_types.size
-      restriction = f.args[i].restriction
-      if restriction
-        lib_fun.arg_types[i] = ts.resolve_node(restriction.as(ASTNode), target_lib)
-      end
-      i += 1
-    end
-    ret = f.return_type
-    if ret
-      lib_fun.resolved_return = ts.resolve_node(ret.as(ASTNode), target_lib)
-    end
-    nil
   end
 
   # The position of the parameter named *name*, or -1.

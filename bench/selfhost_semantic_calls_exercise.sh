@@ -266,9 +266,9 @@ prove_mutation "a missing named argument of a lib call is not reported" "$LIB_FI
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a lib call keeps the declaration pass's generic types, not the type system's" "$LIB_FILE" \
-  '    LibCall.refresh(lib_fun, target_lib, ts)' \
-  '    nil' \
+prove_mutation "a fixed lib fun takes extra arguments as if it were variadic" "$LIB_FILE" \
+  '    if count < lib_fun.args.size || (!lib_fun.varargs? && count > lib_fun.args.size)' \
+  '    if count < lib_fun.args.size || (false && count > lib_fun.args.size)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
