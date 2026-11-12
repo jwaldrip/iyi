@@ -7,7 +7,7 @@ import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
-import compiler/semantic/inline_macros::{expand_inline_macro}
+import compiler/semantic/inline_macros::{expand_inline_macro, splice_inline_sites}
 
 pub class TypeException
   getter message : String
@@ -1901,6 +1901,7 @@ pub class TopLevelVisitor < Visitor
 
   def visit(node : Expressions) : Bool
     @exp_nest = @exp_nest + 1
+    node.expressions = splice_inline_sites(node.expressions, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
     i = 0
     while i < node.expressions.size
       exp = node.expressions[i]

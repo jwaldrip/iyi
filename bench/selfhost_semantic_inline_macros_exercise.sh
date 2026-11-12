@@ -323,15 +323,9 @@ prove_mutation "the expansion is parsed with no file, so its declarations are no
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "the first inline site visited (a type body's or top-level if) is never declared" "$MUT_SEM" \
-  "expanded.accept(self)" \
-  "expanded.is_a?(ASTNode)" \
-  -- check_inline_fixtures_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-
-prove_mutation_all "no inline macro site (if, for or expression) is ever declared" "$MUT_SEM" \
-  "expanded.accept(self)" \
-  "expanded.is_a?(ASTNode)" \
+prove_mutation_all "no spliced inline macro expansion is ever declared (top-level and type-body sites)" "$MUT_INL" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib))" \
+  "out.concat([] of ASTNode)" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
