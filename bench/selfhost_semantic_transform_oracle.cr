@@ -633,6 +633,10 @@ if mode == "literals" || mode == "literals-strict"
   node = node.transform(LiteralWalk.new(walk_program))
 end
 
+if mode == "cleanup"
+  node = node.transform(Iyi::CleanupTransformer.new(Iyi::Program.new))
+end
+
 if ARGV.size > 1 && ARGV[1] == "--count"
   c = Counter.new
   node.accept(c)

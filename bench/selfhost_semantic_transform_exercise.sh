@@ -348,6 +348,56 @@ prove_mutation "an enum's members are not lowered" "$LITERAL" 'transform_many(no
 echo "  $LIT_MUTATIONS literal mutation proofs run"
 
 echo
+echo "== 5b. Cleanup: the untyped part of the hosted cleanup transform"
+# The cleanup fixtures (semtx_cleanup_*.iyi) are cleaned by the port (the driver's
+# `cleanup` mode) and by the hosted cleanup transform (the oracle's `cleanup`
+# mode), over the normalized tree; the two trees must match. The fixtures are
+# literal-condition programs: no call, case, assignment or def, since the hosted
+# transform refuses a call with no type and reads types for the rest.
+CLEANUP="$REPO/src/compiler/semantic/cleanup.iyi"
+cleanup_count=0
+cleanup_diverged=0
+for fixture in "$REPO"/bench/fixtures/semtx_cleanup_*.iyi; do
+  name="bench/fixtures/$(basename "$fixture")"
+  cleanup_count=$((cleanup_count + 1))
+  "$WORK/port_exercise" "$fixture" cleanup > "$WORK/cln_iyi.ast" 2> "$WORK/cln_iyi.err" || {
+    echo "  $name: CLEANUP PORT FAILED"; cat "$WORK/cln_iyi.err"; cleanup_diverged=$((cleanup_diverged + 1)); status=1; continue; }
+  IYI_PATH="$REPO/src" "$WORK/dump_crystal" "$fixture" cleanup > "$WORK/cln_oracle.ast" 2> "$WORK/cln_oracle.err" || {
+    echo "  $name: HOSTED CLEANUP FAILED"; cat "$WORK/cln_oracle.err"; cleanup_diverged=$((cleanup_diverged + 1)); status=1; continue; }
+  if cmp -s "$WORK/cln_iyi.ast" "$WORK/cln_oracle.ast"; then
+    echo "  $name: identical (the cleanup yields the same tree as the hosted transform)"
+  else
+    echo "  $name: CLEANUP TREES DIFFER"
+    diff -u "$WORK/cln_oracle.ast" "$WORK/cln_iyi.ast" | head -40
+    cleanup_diverged=$((cleanup_diverged + 1))
+    status=1
+  fi
+done
+echo "  Parity summary: cleanup $((cleanup_count - cleanup_diverged))/$cleanup_count fixtures clean identically"
+
+# A patch to the port's cleanup that the gate must catch: the patched module is
+# rebuilt into the port driver and walked over every cleanup fixture.
+check_cleanup_agree() {
+  "$IYI" build -o "$WORK/cln_mut_port" "$WORK/semtx_port.iyi" > /dev/null 2>&1 || return 1
+  for fixture in "$REPO"/bench/fixtures/semtx_cleanup_*.iyi; do
+    "$WORK/cln_mut_port" "$fixture" cleanup > "$WORK/cln_mut.ast" 2> /dev/null || return 1
+    IYI_PATH="$REPO/src" "$WORK/dump_crystal" "$fixture" cleanup > "$WORK/cln_mut_oracle.ast" || return 1
+    cmp -s "$WORK/cln_mut.ast" "$WORK/cln_mut_oracle.ast" || return 1
+  done
+  return 0
+}
+CLN_MUTATIONS=0
+CLN_MUTATIONS=$((CLN_MUTATIONS + 1))
+prove_mutation "a true condition is not marked truthy" "$CLEANUP" 'if truth == 1' 'if truth == 9' -- check_cleanup_agree || status=1
+CLN_MUTATIONS=$((CLN_MUTATIONS + 1))
+prove_mutation "a false condition is not marked falsey" "$CLEANUP" 'elsif truth == -1' 'elsif truth == 9' -- check_cleanup_agree || status=1
+CLN_MUTATIONS=$((CLN_MUTATIONS + 1))
+prove_mutation "a dead branch is walked anyway" "$CLEANUP" 'if !node.falsey' 'if true' -- check_cleanup_agree || status=1
+CLN_MUTATIONS=$((CLN_MUTATIONS + 1))
+prove_mutation "a nil condition is not falsey" "$CLEANUP" 'if node.is_a?(NilLiteral) || node.is_a?(Nop)' 'if node.is_a?(Nop)' -- check_cleanup_agree || status=1
+echo "  $CLN_MUTATIONS cleanup mutation proofs run"
+
+echo
 echo "== 6. Corpus: the transforms over the port's own source and prelude"
 # Every .iyi file of the port's compiler and of the prelude is walked by the
 # port and by the hosted walk, in the literal mode of section 5, and the two

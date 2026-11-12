@@ -12,6 +12,7 @@ import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 import compiler/semantic/normalizer::{NormalizerProgram, Normalizer}
 import compiler/semantic/literal_expander::{LiteralExpander}
+import compiler/semantic/cleanup::{CleanupTransformer}
 
 module BenchSemanticTransformExercise
   def self.assert(cond : Bool, msg : String)
@@ -659,6 +660,9 @@ else
       lit_program.set_flag("strict_multi_assign")
     end
     norm = norm.transform(LiteralExpander.new(lit_program))
+  end
+  if mode == "cleanup"
+    norm = norm.transform(CleanupTransformer.new)
   end
   print BenchSemanticTransformExercise.dump_ast(norm)
 end
