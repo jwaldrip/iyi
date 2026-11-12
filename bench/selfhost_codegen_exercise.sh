@@ -33,7 +33,7 @@ trap 'rm -rf "$WORK"' EXIT
 #   PORT_LIMIT_FIXTURES: the oracle is not asked for a verdict. The port cannot
 #     type a construct in these, so it must refuse by name and write no IR.
 REFUSAL_FIXTURES="cg_exceptions.iyi cg_raise.iyi"
-EMPTY_REFUSAL_FIXTURES="cg_undefined_raise.iyi cg_undefined_crystal_raise.iyi"
+EMPTY_REFUSAL_FIXTURES="cg_undefined_raise.iyi cg_undefined_runtime_raise.iyi"
 PORT_LIMIT_FIXTURES="cg_splat_loop.iyi"
 is_refusal() {
   case " $REFUSAL_FIXTURES $EMPTY_REFUSAL_FIXTURES $PORT_LIMIT_FIXTURES " in

@@ -127,7 +127,7 @@ for src in "$REPO"/bench/fixtures/cg_*.iyi; do
   # A refusal or port-limitation fixture has no IR to verify: the port refuses it by
   # name, and selfhost_codegen_exercise.sh checks that refusal against the oracle.
   case "$name" in
-    cg_exceptions.iyi|cg_raise.iyi|cg_undefined_raise.iyi|cg_undefined_crystal_raise.iyi|cg_splat_loop.iyi) continue ;;
+    cg_exceptions.iyi|cg_raise.iyi|cg_undefined_raise.iyi|cg_undefined_runtime_raise.iyi|cg_splat_loop.iyi) continue ;;
   esac
   fx_total=$((fx_total + 1))
   got="$(verify_one "$src")"
