@@ -1,7 +1,7 @@
 module compiler/ir/parser
 
-import compiler/ir/types::{IrType, TypeTable}
-import compiler/ir/values::{Value, Param, Wide128, i128_parse}
+import compiler/ir/types::{IrType, TypeTable, valid_int_bits?}
+import compiler/ir/values::{Value, Param, int_words_parse}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, Ordering, Attribute, ThreadPointerKind, DebugLoc}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel, DebugSubprogram, Visibility}
 import compiler/ir/module::{Module}
@@ -635,7 +635,7 @@ class IrParser
     fn.attrs = parse_attr_list(c, mod.types) if c.punct?("[")
     if is_define
       param_types.each_with_index do |t, i|
-        fn.add_param(Param.new(t, param_names[i], i))
+        fn.add_param_as_written(Param.new(t, param_names[i], i))
       end
     end
     @pending_clauses << {fn, c.pos}
@@ -790,7 +790,7 @@ class IrParser
     while i < stop
       toks = @toks[i]
       if toks.size >= 2 && (toks[0].kind == TokKind::Ident || toks[0].kind == TokKind::Str) && tok_is_punct?(toks[1], ":")
-        block = fn.append_basic_block(toks[0].text)
+        block = fn.append_basic_block_as_written(toks[0].text)
         @blocks[toks[0].text] = block
         block.no_vectorize = toks.size > 3 && tok_is_ident?(toks[2 + 1], "no_vectorize")
       end
@@ -1047,13 +1047,15 @@ class IrParser
       match = found
       signature = intrinsic_signature(match.id, match.overload, types)
       c.expect_punct("(")
+      param_attrs = [] of Array(Attribute)
       while !c.punct?(")") && !c.at_end?
+        param_attrs << parse_attrs(c, types)
         operand(c, types, resolve, shape, nil, true)
         break unless c.punct?(",")
         c.take
       end
       c.expect_punct(")")
-      shape.set(Op::Intrinsic, signature[0], 0_i64, IntrinsicAux.new(match.id, match.overload))
+      shape.set(Op::Intrinsic, signature[0], 0_i64, IntrinsicAux.new(match.id, match.overload, param_attrs))
     when "threadlocaladdr"
       operand(c, types, resolve, shape, nil, true)
       shape.set(Op::ThreadLocalAddr, types.ptr(0), 0_i64, nil)
@@ -1270,23 +1272,25 @@ class IrParser
     end
   end
 
-  # `asm [sideeffect] [alignstack] [inteldialect] "template", "constraints"` as the callee of a call of fn_type.
+  # `asm [sideeffect] [alignstack] [inteldialect] [unwind] "template", "constraints"` as the callee of a call of fn_type.
   def parse_asm(c : Cursor, fn_type : IrType) : Inst
     c.expect_ident("asm")
     side = false
     align = false
     intel = false
-    while c.ident?("sideeffect") || c.ident?("alignstack") || c.ident?("inteldialect")
+    unwind = false
+    while c.ident?("sideeffect") || c.ident?("alignstack") || c.ident?("inteldialect") || c.ident?("unwind")
       word = c.take.text
       side = true if word == "sideeffect"
       align = true if word == "alignstack"
       intel = true if word == "inteldialect"
+      unwind = true if word == "unwind"
     end
     template = c.take.text
     c.expect_punct(",")
     constraints = c.take.text
     dialect = intel ? AsmDialect::Intel : AsmDialect::Att
-    Inst.new(Op::Call, fn_type, [] of Value, 0_i64, AsmAux.new(template, constraints, side, align, dialect), [] of Block, [] of Int64)
+    Inst.new(Op::Call, fn_type, [] of Value, 0_i64, AsmAux.new(template, constraints, side, align, dialect, unwind), [] of Block, [] of Int64)
   end
 
   # A pad parent: `none` (a null ptr) or a typed-by-context ptr value.
@@ -1386,7 +1390,12 @@ class IrParser
       end
       if type_word?(word)
         c.take
-        return types.int(int_word_bits(word))
+        bits = word.bytesize > 8 ? 0 : int_word_bits(word)
+        unless valid_int_bits?(bits)
+          c.fail("no integer type of #{word[1, word.bytesize - 1]} bits in the IR")
+          return types.void
+        end
+        return types.int(bits)
       end
       c.fail("expected a type but found `#{word}`")
       return types.void
@@ -1500,13 +1509,13 @@ class IrParser
       return dummy(type)
     end
     if t.kind == TokKind::Int
-      if type.int? && type.bits == 128
-        if wide = i128_parse(t.text)
-          inst = make_const(Op::ConstInt, type, wide.lo)
-          inst.aux_hi = wide.hi
+      if type.int? && type.bits > 64
+        if words = int_words_parse(t.text, type.bits)
+          inst = make_const(Op::ConstInt, type, words[0])
+          inst.wide_words = words
           return inst
         end
-        c.fail("#{t.text} does not fit an i128")
+        c.fail("#{t.text} does not fit an i#{type.bits}")
         return dummy(type)
       end
       return make_const(Op::ConstInt, type, t.num)

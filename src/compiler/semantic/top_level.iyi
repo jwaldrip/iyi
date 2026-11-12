@@ -1,6 +1,7 @@
 module compiler/semantic/top_level
 
 import compiler/foundation/location::{Location}
+import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
@@ -1218,7 +1219,7 @@ pub class SemanticProgram < NonGenericModuleType
       if t
         return t
       end
-      raise("undefined constant #{path.to_s}")
+      refuse_port("undefined constant #{path.to_s}")
     end
 
     first_name = path.names.first
@@ -1269,7 +1270,7 @@ pub class SemanticProgram < NonGenericModuleType
     end
 
     if t.nil?
-      raise("undefined constant #{path.to_s}")
+      refuse_port("undefined constant #{path.to_s}")
     end
 
     if path.names.size == 1
@@ -1286,7 +1287,7 @@ pub class SemanticProgram < NonGenericModuleType
     if res
       res
     else
-      raise("undefined constant #{path.to_s}")
+      refuse_port("undefined constant #{path.to_s}")
     end
   end
 end

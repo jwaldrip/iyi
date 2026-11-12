@@ -2,11 +2,11 @@ module jump_sparse
 
 def sparse(n : Int32) : Int32
   case n
-  when 1 then 11
-  when 100 then 22
+  when     1 then 11
+  when   100 then 22
   when 10000 then 33
-  when 7 then 44
-  else -9
+  when     7 then 44
+  else            -9
   end
 end
 

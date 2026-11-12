@@ -13,7 +13,7 @@ def run(count : Int32) : Int32
     when 3 then acc = acc + 4
     when 4 then acc = acc + 5
     when 5 then acc = acc + 6
-    else acc = acc - 3
+    else        acc = acc - 3
     end
     i = i + 1
   end

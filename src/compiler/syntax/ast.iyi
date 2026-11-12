@@ -2064,6 +2064,7 @@ pub class ExceptionHandler < ASTNode
   property else : ASTNode?
   property ensure : ASTNode?
   property suffix : Bool
+  property implicit : Bool = false
 
   def initialize(body : ASTNode? = nil, @rescues : Array(Rescue)? = nil, @else : ASTNode? = nil, @ensure : ASTNode? = nil, @suffix : Bool = false)
     @body = body || Nop.new
@@ -3475,6 +3476,10 @@ pub class ModuleDef < ASTNode
   property body : ASTNode
   property type_vars : Array(String)?
   property splat_index : Int32?
+  # iyi: true for the module a `module app/x` header makes of the rest of its
+  # file. It is not in the source: the formatter writes no keyword and looks
+  # for no `end`.
+  property iyi_unit : Bool = false
 
   def initialize(
     @name : Path = Path.new(""),
@@ -3486,12 +3491,14 @@ pub class ModuleDef < ASTNode
   end
 
   def clone_without_location : self
-    ModuleDef.new(
+    copy = ModuleDef.new(
       @name.clone.as(Path),
       @body.clone,
       clone_opt_strings(@type_vars),
       @splat_index
     )
+    copy.iyi_unit = @iyi_unit
+    copy
   end
 
   def accept_children(visitor) : Nil

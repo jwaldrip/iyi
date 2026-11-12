@@ -3880,6 +3880,43 @@ jobs:
             echo "LLVM_CONFIG=$cfg" >> "$GITHUB_ENV"
           fi
 
+      # The x86_64 gate's oracle is the LLVM assembler and its reader is
+      # llvm-objdump: test-time tools that sit beside llvm-config.
+      - name: Put LLVM's tools on the PATH
+        run: |
+          if [ -n "${LLVM_CONFIG:-}" ]; then
+            "$LLVM_CONFIG" --bindir >> "$GITHUB_PATH"
+            ls "$("$LLVM_CONFIG" --bindir)" | grep -E '^llvm-(mc|objdump|readelf)' || echo "no llvm-mc, llvm-objdump or llvm-readelf beside llvm-config"
+          fi
+
+      # wasmtime runs what the wasm back end writes. The same script the
+      # wasi-run job uses; a key of its own, because this job's home is the
+      # container's. The container has no curl, and its libc may be older
+      # than wasmtime's: when wasmtime does not start here the wasm gate
+      # reports its run steps as skipped, never as passed.
+      - name: Restore the wasm toolchain
+        id: wasm-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/wasm-toolchain
+          key: wasm-toolchain-container-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-wasm-toolchain.sh') }}
+      - name: Install wasi-sdk and wasmtime (cache miss)
+        if: steps.wasm-cache.outputs.cache-hit != 'true'
+        run: |
+          if ! command -v curl >/dev/null; then
+            apt-get update -qq && apt-get install -y -qq curl xz-utils > /dev/null
+          fi
+          bash scripts/install-wasm-toolchain.sh "$HOME/wasm-toolchain"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Name wasmtime for the gates
+        run: |
+          if "$HOME/wasm-toolchain/wasmtime/bin/wasmtime" --version; then
+            echo "WASMTIME=$HOME/wasm-toolchain/wasmtime/bin/wasmtime" >> "$GITHUB_ENV"
+          else
+            echo "wasmtime does not start in this container: the wasm gate's run steps are skipped here"
+          fi
+
       - name: Build `iyi`
         run: make -o .build/crystal iyi
 
@@ -3919,6 +3956,14 @@ jobs:
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+
+      # The gates read objects back with llvm-objdump and assemble their
+      # x86_64 oracle with llvm-mc. The static LLVM installs both; Xcode's
+      # toolchain has neither under those names.
+      - name: Put LLVM's tools on the PATH
+        run: |
+          echo "$HOME/llvm-static/bin" >> "$GITHUB_PATH"
+          ls "$HOME/llvm-static/bin" | grep -E '^llvm-(mc|objdump|readelf)' || echo "no llvm-mc, llvm-objdump or llvm-readelf in the static LLVM"
 
       - name: Build `iyi`
         run: make iyi LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"

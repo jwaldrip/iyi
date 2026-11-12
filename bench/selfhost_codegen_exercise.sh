@@ -352,6 +352,13 @@ check_probe_mutant() {
   (cd "$REPO" && "$WORK/mut_exercise" --dump-ir "bench/fixtures/$name" >/dev/null 2>&1)
 }
 
+# Rebuilds the port with a mutated IR and runs the standalone check, which proves the builder's name claims.
+# Returns zero (not caught) only while the check still prints its passing line.
+check_standalone_mutant() {
+  "$IYI" build -o "$WORK/mut_exercise" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1 || return 1
+  "$WORK/mut_exercise" 2>&1 | grep -qF "ALL SELFHOST CODEGEN CHECKS PASSED SUCCESSFULLY!"
+}
+
 # Rebuilds the port with the unresolved-call refusal silenced too, and asks it to
 # write IR for a port-limit fixture. cg_splat_loop.iyi is refused by an unresolved
 # call before its binary operand, so the port refuses it by name only while both
@@ -388,14 +395,14 @@ prove_mutation "corrupt addition opcode to subtraction" "$CG_SRC" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "corrupt comparison predicate SLT to SGT" "$CG_SRC" \
-  'LibLLVM::IntPredicate::SLT' \
-  'LibLLVM::IntPredicate::SGT' \
+  'IntPredicate::SLT' \
+  'IntPredicate::SGT' \
   -- check_cg_mutant cg_comparisons.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "bypass variable store in assignment" "$CG_SRC" \
-  '@builder.store(val, ptr)' \
-  '# @builder.store(val, ptr)' \
+  's_inst = @builder.store(val_to_store, ptr)' \
+  's_inst = @builder.load(val_to_store.type, ptr)' \
   -- check_cg_mutant cg_control.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -428,20 +435,20 @@ prove_mutation "corrupt module-level class type_id global" "$CG_SRC" \
   -- check_cg_mutant cg_classes.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "corrupt virtual hierarchy match range predicate" "$CG_SRC" \
-  'sge = builder.icmp(LibLLVM::IntPredicate::SGE, arg0, min_val)' \
-  'sge = builder.icmp(LibLLVM::IntPredicate::SLT, arg0, min_val)' \
+  'sge = builder.icmp(IntPredicate::SGE, arg0, min_val)' \
+  'sge = builder.icmp(IntPredicate::SLT, arg0, min_val)' \
   -- check_cg_mutant cg_virtual_dispatch.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "corrupt nilable null check predicate" "$CG_SRC" \
-  'res = @builder.icmp(LibLLVM::IntPredicate::EQ, l_nil_tid2, sel)' \
-  'res = @builder.icmp(LibLLVM::IntPredicate::NE, l_nil_tid2, sel)' \
+  'res = @builder.icmp(IntPredicate::EQ, l_nil_tid2, sel)' \
+  'res = @builder.icmp(IntPredicate::NE, l_nil_tid2, sel)' \
   -- check_cg_mutant cg_nilable.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "corrupt block body evaluation during yield" "$CG_SRC" \
-  'inlined.block.body.accept(self)' \
-  '# inlined.block.body.accept(self)' \
+  'inlined.block_body.accept(self)' \
+  '# inlined.block_body.accept(self)' \
   -- check_cg_mutant cg_blocks.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -499,10 +506,29 @@ prove_mutation "corrupt the ensure refusal message" "$CG_SRC" \
   -- check_refusal_mutant cg_raise.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation_all "corrupt the refusal exit status" "$CG_SRC" \
-  'LibC.exit(1)' \
-  'LibC.exit(0)' \
+# The rescue refusal is a located one: it prints the source line and exits in
+# codegen.iyi's own refusal, not through foundation/errors.iyi's refuse_port.
+prove_mutation_all "corrupt the located refusal's exit status" "$CG_SRC" \
+  '  exit(1)' \
+  '  exit(0)' \
   -- check_refusal_mutant cg_exceptions.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# The by-name refusals (a call or an operand the port cannot resolve) exit
+# through refuse_port. The port-limit fixture is the one that reaches it: the
+# check holds only while the port still refuses it by name with a status that
+# is not zero, which is what section 3c requires.
+check_port_limit_status() {
+  local name="$1" got got_status
+  "$IYI" build -o "$WORK/mut_exercise" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1 || return 1
+  got="$(cd "$REPO" && "$WORK/mut_exercise" --dump-ir "bench/fixtures/$name" 2>&1)"
+  got_status=$?
+  [ "$got_status" -ne 0 ] && printf '%s\n' "$got" | grep -q '^Error: port limitation: the port cannot '
+}
+prove_mutation_all "corrupt refuse_port's exit status" "$REPO/src/compiler/foundation/errors.iyi" \
+  '  exit(1)' \
+  '  exit(0)' \
+  -- check_port_limit_status cg_splat_loop.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "drop the exit block of a statement if with no else" "$CG_SRC" \
@@ -519,7 +545,7 @@ prove_mutation "drop the exit block of a statement if with no else" "$CG_SRC" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "read a named struct type before it is created" "$CG_SRC" \
-  '    st = @context.struct_named(name)' \
+  '    st = @types.struct_named(name)' \
   '    st = @llvm_struct_types[name]' \
   -- check_probe_mutant fwd_struct_probe.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -535,8 +561,23 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # silent before the port writes IR for it, so the proof silences both.
 prove_mutation "return a constant for an unresolved binary operand" "$CG_SRC" \
   "refuse_port(\"port limitation: the port cannot type the #{side} operand '#{operand_text(operand)}' of '#{op_node.name}' in #{scope_name}, so it refuses instead of leaving the block unterminated (no IR is written)\")" \
-  "return @context.int32.const_int(0)" \
+  "return @builder.const_int(@types.int32, 0)" \
   -- check_port_limit_mutant cg_splat_loop.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a block name is not claimed in its function" "$REPO/src/compiler/ir/function.iyi" \
+  '    block = Block.new(@symbols.claim(name))' \
+  '    block = Block.new(name)' \
+  -- check_standalone_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a parameter name is not claimed in its function" "$REPO/src/compiler/ir/function.iyi" \
+  '    param.name = @symbols.claim(name)' \
+  '    param.name = name' \
+  -- check_standalone_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a placed instruction's name is not claimed" "$REPO/src/compiler/ir/builder.iyi" \
+  '      inst.name = symbols.claim(inst.name)' \
+  '      inst.name = inst.name' \
+  -- check_standalone_mutant || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 

@@ -6,8 +6,10 @@
 #   bash bench/native_gates.sh
 #
 # The list is written out rather than globbed, because two gates take a target
-# and one runs programs only an arm64 darwin host can run. That one is printed
-# as skipped elsewhere, never as passed: the native-darwin job runs it.
+# and three run programs only an arm64 darwin host can run (the allocator and
+# code generator gates build each fixture's twin for the host with aarch64
+# inline asm and run it). Those are printed as skipped elsewhere, never as
+# passed: the native-darwin job runs them.
 #
 # Each gate's full output goes to a log under $NATIVE_GATE_LOGS (default: a
 # fresh temporary directory). A failing gate's last lines are printed: twelve
@@ -21,61 +23,61 @@ LOGDIR="${NATIVE_GATE_LOGS:-$(mktemp -d)}"
 mkdir -p "$LOGDIR"
 cd "$REPO"
 
-# name | script and arguments | the host it needs ("any" or "darwin-arm64")
-gates=(
-  "native_ir|bench/native_ir_exercise.sh|any"
-  "native_obj|bench/native_obj_exercise.sh|any"
-  "native_link|bench/native_link_exercise.sh aarch64-apple-darwin|any"
-  "native_encode|bench/native_encode_exercise.sh|any"
-  "native_regalloc|bench/native_regalloc_exercise.sh|any"
-  "native_asm|bench/native_asm_exercise.sh aarch64|any"
-  "native_codegen|bench/native_codegen_exercise.sh|any"
-  "native_llvm_roundtrip|bench/native_llvm_roundtrip_exercise.sh|any"
-  "native_first_light|bench/native_first_light_exercise.sh|darwin-arm64"
-)
-
 host="any"
 if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
   host="darwin-arm64"
 fi
 
-echo "== 1. Running the native gates in order (logs: $LOGDIR)"
 status=0
 ran=0
 failed=()
 skipped=()
-for entry in "${gates[@]}"; do
-  name="${entry%%|*}"
-  rest="${entry#*|}"
-  command="${rest%%|*}"
-  needs="${rest#*|}"
-  script="${command%% *}"
+
+# run_gate NAME HOST SCRIPT [ARGUMENT...]: HOST is "any" or "darwin-arm64".
+# Each gate is a line that runs its script, which is what
+# bench/gates_reachable.py reads to know the gate is run.
+run_gate() {
+  local name="$1" needs="$2" script="$3"
+  shift 2
   if [ ! -f "$REPO/$script" ]; then
     printf '%-24s missing: %s\n' "$name" "$script"
     status=1
     failed+=("$name")
-    continue
+    return
   fi
   if [ "$needs" != "any" ] && [ "$needs" != "$host" ]; then
     printf '%-24s skipped: needs a %s host\n' "$name" "$needs"
     skipped+=("$name")
-    continue
+    return
   fi
-  log="$LOGDIR/$name.log"
-  # shellcheck disable=SC2086
-  bash $command > "$log" 2>&1
-  rc=$?
+  local log="$LOGDIR/$name.log"
+  bash "$@" > "$log" 2>&1
+  local rc=$?
   ran=$((ran + 1))
   printf '%-24s exit=%s\n' "$name" "$rc"
   if [ "$rc" -ne 0 ]; then
     status=1
     failed+=("$name")
-    lines=12
+    local lines=12
     [ -n "${CI:-}" ] && lines="${NATIVE_GATE_TAIL:-200}"
     echo "  last $lines lines of $log:"
     tail -n "$lines" "$log" | sed 's/^/    /'
   fi
-done
+}
+
+echo "== 1. Running the native gates in order (logs: $LOGDIR)"
+run_gate native_ir any bench/native_ir_exercise.sh
+run_gate native_obj any bench/native_obj_exercise.sh
+run_gate native_link any bench/native_link_exercise.sh aarch64-apple-darwin
+run_gate native_encode any bench/native_encode_exercise.sh
+run_gate native_regalloc darwin-arm64 bench/native_regalloc_exercise.sh
+run_gate native_asm any bench/native_asm_exercise.sh aarch64
+run_gate native_codegen darwin-arm64 bench/native_codegen_exercise.sh
+run_gate native_llvm_roundtrip any bench/native_llvm_roundtrip_exercise.sh
+run_gate native_x86_64 any bench/native_x86_64_exercise.sh
+run_gate native_wasm any bench/native_wasm_exercise.sh
+run_gate native_elf any bench/native_elf_exercise.sh
+run_gate native_first_light darwin-arm64 bench/native_first_light_exercise.sh
 
 echo
 echo "== 2. Verdicts"

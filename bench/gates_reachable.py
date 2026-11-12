@@ -73,6 +73,14 @@ TOOLS = {
     # README and BENCHMARKS.md point a reader at it before they re-take a
     # published number; on a CI runner it would describe the runner.
     "machine_probe.py",
+    # `sh bench/native_llvm_matrix.sh` round-trips the LLVM IR of every
+    # sample, std exercise and compile fixture through `iyi-ir` for five
+    # targets and prints a table of verdicts: a measurement of how much of
+    # what the hosted compiler emits the IR carries, not a pass or a fail.
+    # It takes the better part of an hour, and its inventory is the corpus
+    # half of bench/fixtures/llvm_roundtrip/COVERAGE.md. The gate beside
+    # it, `native_llvm_roundtrip_exercise.sh`, is what a job runs.
+    "native_llvm_matrix.sh",
     # The instruments: each measures seconds or megabytes with a release
     # compiler, and most against Go or the compatibility binary beside it,
     # which a shared runner can neither build nor time - the same binary

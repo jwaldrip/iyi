@@ -1,7 +1,7 @@
 module compiler/ir/printer
 
 import compiler/ir/types::{IrType, ir_quote, ir_name_text, ir_hex}
-import compiler/ir/values::{Value, i128_text}
+import compiler/ir/values::{Value, int_words_text}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, Ordering, Attribute, IntPredicate, RealPredicate, ThreadPointerKind, DebugLoc}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel, Visibility}
 import compiler/ir/module::{Module}
@@ -178,7 +178,7 @@ class IrPrinter
   def const_text(i : Inst, numbers : Hash(Value, Int32)) : String
     case i.op
     when Op::ConstInt
-      return i128_text(i.aux_hi, i.aux_int) if i.type.bits == 128
+      return int_words_text(i.int_words(i.type.bits), i.type.bits) if i.type.bits > 64
       return i.aux_int.to_s unless i.type.bits == 1
       i.aux_int == 0 ? "false" : "true"
     when Op::ConstFloat
@@ -329,7 +329,7 @@ class IrPrinter
     when Op::Intrinsic
       aux = i.aux.as(IntrinsicAux)
       name = intrinsic_name(aux.id, aux.overload)
-      args = i.args.map { |a| typed(a, numbers) }.join(", ")
+      args = intrinsic_args(i, aux, numbers)
       return "intrinsic #{ir_name_text(name)}(#{args})"
     when Op::ThreadLocalAddr
       return "threadlocaladdr #{typed(i.args[0], numbers)}"
@@ -407,12 +407,25 @@ class IrPrinter
     parts.join(", ")
   end
 
+  # The operands of an intrinsic call, each preceded by the attributes its operand carries, as an ordinary call writes them.
+  def intrinsic_args(i : Inst, aux : IntrinsicAux, numbers : Hash(Value, Int32)) : String
+    parts = [] of String
+    k = 0
+    while k < i.args.size
+      attrs = k < aux.param_attrs.size ? attrs_inline(aux.param_attrs[k]) : ""
+      parts << attrs + typed(i.args[k], numbers)
+      k = k + 1
+    end
+    parts.join(", ")
+  end
+
   def asm_text(i : Inst) : String
     inline_asm = i.aux.as(AsmAux)
     text = "asm"
     text += " sideeffect" if inline_asm.side_effects
     text += " alignstack" if inline_asm.align_stack
     text += " inteldialect" if inline_asm.dialect == AsmDialect::Intel
+    text += " unwind" if inline_asm.unwind
     text + " " + ir_quote(inline_asm.template) + ", " + ir_quote(inline_asm.constraints)
   end
 
@@ -518,24 +531,24 @@ class IrPrinter
 
   def binop_word(op : Op) : String
     case op
-    when Op::Add then "add"
-    when Op::Sub then "sub"
-    when Op::Mul then "mul"
+    when Op::Add  then "add"
+    when Op::Sub  then "sub"
+    when Op::Mul  then "mul"
     when Op::SDiv then "sdiv"
     when Op::UDiv then "udiv"
     when Op::SRem then "srem"
     when Op::URem then "urem"
-    when Op::Shl then "shl"
+    when Op::Shl  then "shl"
     when Op::LShr then "lshr"
     when Op::AShr then "ashr"
-    when Op::And then "and"
-    when Op::Or then "or"
-    when Op::Xor then "xor"
+    when Op::And  then "and"
+    when Op::Or   then "or"
+    when Op::Xor  then "xor"
     when Op::FAdd then "fadd"
     when Op::FSub then "fsub"
     when Op::FMul then "fmul"
     when Op::FDiv then "fdiv"
-    else "frem"
+    else               "frem"
     end
   end
 
