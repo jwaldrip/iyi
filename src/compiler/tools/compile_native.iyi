@@ -2,6 +2,7 @@
 #
 #   iyi-compile-native <program.iyi> -o <exe> [--backend native] [--target aarch64-apple-darwin]
 #   iyi-compile-native <program.ir>  -o <exe> [--target aarch64-apple-darwin]
+#   iyi-compile-native <program.ir>  -o <exe>   with <program.ir>.imports beside it: one library per line, loaded too
 #   iyi-compile-native <program.iyi> -o <exe> --probe-phase   prints the phase each stage reached, and writes no executable on a refusal
 #
 # A .iyi program is compiled from source by the compiler pipeline with the native backend (compiler/backend/native).
@@ -58,6 +59,21 @@ module CompileNative
     end
     fail("#{name}: the IR is not well formed") unless errors.empty?
     mod
+  end
+
+  # The libraries named beside an IR program, in `<program.ir>.imports`: one name per line, blank lines and lines
+  # that start with `#` skipped. IR written by this compiler names each import's library itself (`import "Security"`);
+  # IR bridged from the hosted compiler carries no @[Link], so what the program's lib blocks link is written beside
+  # it (SPEC 2.3). No file means no library beyond libSystem.
+  def self.sidecar_libraries(input : String) : Array(String)
+    names = [] of String
+    path = input + ".imports"
+    return names unless File.exists?(path)
+    File.read(path).split('\n').each do |line|
+      name = line.strip
+      names << name unless name.empty? || name.starts_with?("#")
+    end
+    names
   end
 
   def self.run : Nil
@@ -173,7 +189,7 @@ module CompileNative
     end
     runtime = module_of(builtins_ir, "rt/builtins.ir")
     parts = output.split('/')
-    result = link_native_program(mod, runtime, parts[parts.size - 1])
+    result = link_native_program(mod, runtime, parts[parts.size - 1], sidecar_libraries(input))
     if result.is_a?(String)
       fail("#{input}: #{result.as(String)}")
     end
