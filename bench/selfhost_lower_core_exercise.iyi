@@ -242,7 +242,8 @@ end
 def run : Nil
   args = Program.args
   if args.empty?
-    raise "usage: port oracle <oracle.ll> | port lower <fixture.iyi> <oracle.ll> | port context"
+    check_context
+    return
   end
   mode = args[0]
   if mode == "oracle"
