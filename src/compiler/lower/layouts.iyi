@@ -16,7 +16,7 @@ import compiler/ir/types::{IrType}
 import compiler/semantic/top_level::{Type, NilType, NonGenericClassType, AliasType, TypeDefType, UnionType, ClassType}
 import compiler/types/types::{PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, NamedTupleInstanceType, VirtualType, TypeQueries}
 import compiler/semantic/top_level::{VoidType, EnumType}
-import compiler/lower/typer::{LowerTyper, primitive_kind}
+import compiler/lower/typer::{LowerTyper, primitive_kind, reference_union?}
 
 # One TypeLayout row: the struct's allocation size, the unrounded instance size, and the
 # byte offsets of the pointer words, sorted and unique.
@@ -117,7 +117,7 @@ pub class GcLayouts
   def gc_field_offsets(field_type : Type, base : Int64, into : Array(Int64)) : Nil
     return if field_type.is_a?(NilType)
     return unless has_inner_pointers?(field_type)
-    if field_type.is_a?(PointerInstanceType) || TypeQueries.reference_like?(field_type)
+    if field_type.is_a?(PointerInstanceType) || TypeQueries.reference_like?(field_type) || (field_type.is_a?(UnionType) && reference_union?(field_type.as(UnionType)))
       into << base
       return
     end

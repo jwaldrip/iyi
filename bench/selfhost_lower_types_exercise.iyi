@@ -16,6 +16,7 @@ import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/syntax/ast::{ASTNode, ClassDef, Expressions, ModuleHeader}
 import compiler/semantic/top_level::{ModuleType}
 import compiler/semantic/top_level::{dir_of, normalize_path, declared_in?, NamedType, EnumType, Const}
+import compiler/types/rendering::{TypeRenderer}
 
 # Lowering-types driver for bench/selfhost_lower_types_exercise.sh.
 #
@@ -170,7 +171,7 @@ module BenchSelfhostLowerTypesExercise
     parts = [] of String
     t.as(ModuleType).all_instance_vars.each do |name, ivar|
       vt = ivar.var_type
-      parts << "#{name}:#{vt.nil? ? "untyped" : vt.as(Type).full_name}"
+      parts << "#{name}:#{vt.nil? ? "untyped" : TypeRenderer.render(vt.as(Type))}"
     end
     return "-" if parts.size == 0
     parts.join(" ")

@@ -178,3 +178,4 @@ src/compiler/types/lookup.iyi parse
 src/compiler/types/merge.iyi parse
 src/compiler/types/to_restriction.iyi parse
 src/compiler/lower/program.iyi parse
+src/compiler/lower/instance_var.iyi parse
