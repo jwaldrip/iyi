@@ -252,7 +252,17 @@ pub def compare(oracle : Array(String), port : Array(String)) : Int32
   if o_items == p_items
     puts "  module-level: identical (#{o_items.size} lines)"
   else
-    puts "  module-level: differs"
+    type_ids = 0
+    others = 0
+    o_items.each do |item|
+      next if p_items.includes?(item)
+      if item.includes?(":type_id")
+        type_ids += 1
+      else
+        others += 1
+      end
+    end
+    puts "  module-level: differs (#{type_ids} type-id constant(s), #{others} other item(s) differ)"
     puts "    oracle: #{o_items.join(" | ")}"
     puts "    port:   #{p_items.join(" | ")}"
   end
@@ -308,7 +318,8 @@ pub def run_lower(fixture : String, oracle_path : String, hosted : String, stand
   port = attach_attrs(normalised_lines(port_text, hosted), printed_attr_map(port_text))
   identical = compare(oracle, port)
   total = split_module(oracle)[2].size
-  puts "SUMMARY identical=#{identical} total=#{total}"
+  module_ok = split_module(oracle)[0] == split_module(port)[0]
+  puts "SUMMARY identical=#{identical} total=#{total} module=#{module_ok ? 1 : 0}"
 end
 
 # The `emit` mode: the port's module as text, for the native tool.
