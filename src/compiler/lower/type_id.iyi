@@ -12,6 +12,9 @@ module compiler/lower/type_id
 # subclasses depth first. Each metaclass takes the next id when it is first needed,
 # as `type_id(metaclass)` does in the hosted walk. A generic class takes its
 # instantiated types and its subclasses. A generic instance takes its subclasses.
+# The metaclass walk takes every subclass, generic instances included, as the hosted
+# `type.subclasses` does; the id walk leaves generic instance subclasses out
+# (`subclasses_of`), as the hosted `subclasses_of` does.
 
 import compiler/semantic/top_level::{Type, ClassType, NilType, NonGenericClassType, GenericClassType}
 import compiler/types/types::{GenericInstanceType, GenericClassInstanceType, TypeQueries}
@@ -86,9 +89,10 @@ pub class LowerTypeIds
       end
       return assign_id_from_subtypes(type, subtypes)
     end
-    # A generic instance takes its subclasses (hosted `assign_id_impl(GenericClassInstanceType)`).
+    # A generic instance takes its subclasses (hosted `assign_id_impl(GenericClassInstanceType)`,
+    # which reads `type.subclasses` without the generic instance filter).
     if type.is_a?(GenericClassInstanceType)
-      return assign_id_from_subtypes(type, subclasses_of(type))
+      return assign_id_from_subtypes(type, TypeQueries.subclasses(type))
     end
     if type.is_a?(NonGenericClassType)
       return assign_id_from_subtypes(type, subclasses_of(type))
@@ -121,8 +125,17 @@ pub class LowerTypeIds
   # The hosted `assign_id_to_metaclass`: the metaclass of each class, depth first from *type*,
   # each taking the next id when it is first needed.
   def assign_metaclass_id(type : Type) : Nil
-    # A generic instance has no metaclass id here yet (NEEDS.md row 17): the port's metaclass of an
-    # instance is not built by the walk.
+    # A generic instance's metaclass is numbered like a class's (hosted
+    # `assign_id_to_metaclass(GenericClassInstanceType | PrimitiveType)`), then its subclasses.
+    if type.is_a?(GenericClassInstanceType)
+      meta = type.as(GenericClassInstanceType).metaclass
+      @id_to_metaclass[type_id(type)] = metaclass_type_id(meta)
+      TypeQueries.subclasses(type).each do |sub|
+        assign_metaclass_id(sub)
+      end
+      return nil
+    end
+    # Other generic instances (module instances) have no metaclass in this walk.
     return nil if type.is_a?(GenericInstanceType)
     if type.is_a?(NonGenericClassType) || type.is_a?(GenericClassType)
       meta = type.as(ClassType).metaclass
@@ -133,7 +146,7 @@ pub class LowerTypeIds
           assign_metaclass_id(instance)
         end
       end
-      subclasses_of(type).each do |sub|
+      TypeQueries.subclasses(type).each do |sub|
         assign_metaclass_id(sub)
       end
     end
