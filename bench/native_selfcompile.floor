@@ -142,3 +142,17 @@ src/iyi/set.iyi semantic
 src/iyi/string.iyi parse
 src/iyi/testing.iyi semantic
 src/iyi/thread.iyi semantic
+src/compiler/lower/call.iyi parse
+src/compiler/lower/cond.iyi parse
+src/compiler/lower/context.iyi parse
+src/compiler/lower/fun.iyi parse
+src/compiler/lower/helpers.iyi parse
+src/compiler/lower/layouts.iyi parse
+src/compiler/lower/lower.iyi parse
+src/compiler/lower/pending.iyi semantic
+src/compiler/lower/phi.iyi parse
+src/compiler/lower/primitives.iyi parse
+src/compiler/lower/symbols.iyi parse
+src/compiler/lower/type_id.iyi parse
+src/compiler/lower/typer.iyi parse
+src/compiler/lower/unions.iyi semantic
