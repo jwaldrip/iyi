@@ -146,7 +146,6 @@ pub class GenericClassInstanceType < GenericInstanceType
   property superclass : Type?
   getter subclasses : Array(Type)
   getter included_modules : Array(Type)
-  getter instance_vars : Hash(String, MetaTypeVar)
   @metaclass : GenericClassInstanceMetaclassType?
 
   def register_subclass(sub : Type) : Nil
@@ -161,6 +160,7 @@ pub class GenericClassInstanceType < GenericInstanceType
     @included_modules = [] of Type
     @metaclass = nil
     @instance_vars = Hash(String, MetaTypeVar).new
+    @copied_from = Hash(String, MetaTypeVar).new
     if sc = @superclass
       if sc.is_a?(ClassType)
         sc.as(ClassType).subclasses << self
@@ -176,30 +176,6 @@ pub class GenericClassInstanceType < GenericInstanceType
 
   def struct? : Bool
     @generic_type.struct?
-  end
-
-  # The instance variable `var_name` of this instance. One recorded on the instance (an initialize
-  # parameter, typed with this instance's arguments) comes first. Otherwise the generic's declared
-  # instance variable is copied when its type is a bare type parameter, replaced by this instance's
-  # argument. Any other declared type is not copied, so the lookup is nil there.
-  def lookup_instance_var?(var_name : String) : MetaTypeVar?
-    if own = @instance_vars[var_name]?
-      return own
-    end
-    generic = @generic_type
-    if generic.is_a?(ModuleType)
-      if source = generic.as(ModuleType).instance_vars[var_name]?
-        source_type = source.type
-        if source_type.is_a?(TypeParameterType)
-          if replacement = @type_vars[source_type.as(TypeParameterType).name]?
-            copied = MetaTypeVar.new(var_name, replacement)
-            @instance_vars[var_name] = copied
-            return copied
-          end
-        end
-      end
-    end
-    nil
   end
 
   def type_desc : String
@@ -244,6 +220,53 @@ pub class GenericClassInstanceType < GenericInstanceType
 
   def implements?(other : Type) : Bool
     subtype_of?(other)
+  end
+
+  # The instance variables this instance holds: the generic type's own, each with its type
+  # parameters replaced by this instance's arguments. The hosted instantiation copies them
+  # (GenericClassType#instantiate) and again when the generic declares one later
+  # (each_instantiated_type). Here each read takes the copy from the generic's current table,
+  # so a later declaration reaches every existing instance without a push to each one.
+  def instance_vars : Hash(String, MetaTypeVar)
+    generic_type = @generic_type
+    if generic_type.is_a?(ModuleType)
+      generic_type.as(ModuleType).instance_vars.each do |name, source|
+        unless (copied = @copied_from[name]?) && copied == source
+          if source_type = source.var_type
+            mv = MetaTypeVar.new(name, TypeQueries.replace_type_parameters(source_type, @type_vars))
+            mv.owner = self
+            @instance_vars[name] = mv
+            @copied_from[name] = source
+          end
+        end
+      end
+    end
+    @instance_vars
+  end
+
+  # The instance variables of this instance and of its superclass, as the hosted
+  # all_instance_vars: the superclass's first, then its own.
+  def all_instance_vars : Hash(String, MetaTypeVar)
+    all = Hash(String, MetaTypeVar).new
+    if sc = @superclass
+      if sc.is_a?(ModuleType)
+        sc.as(ModuleType).all_instance_vars.each do |k, v|
+          all[k] = v
+        end
+      elsif sc.is_a?(GenericClassInstanceType)
+        sc.as(GenericClassInstanceType).all_instance_vars.each do |k, v|
+          all[k] = v
+        end
+      end
+    end
+    instance_vars.each do |k, v|
+      all[k] = v
+    end
+    all
+  end
+
+  def lookup_instance_var?(var_name : String) : MetaTypeVar?
+    all_instance_vars[var_name]?
   end
 end
 
@@ -734,6 +757,115 @@ pub class TypeQueries
   # The generic instance metaclasses derive from MetaclassType here.
   def self.metaclass?(type : Type) : Bool
     type.is_a?(MetaclassType) || type.is_a?(VirtualMetaclassType)
+  end
+
+  # Hosted Type#replace_type_parameters (types.cr): the type with each type parameter replaced by the
+  # instance argument of that name, rebuilt only where something changed. A generic instance
+  # is rebuilt through the type system's hook, since its arguments may name other instances.
+  # A virtual type is not replaced: its base is the generic's own class, not an argument.
+  def self.replace_type_parameters(type : Type, tv_map : Hash(String, Type)) : Type
+    if type.is_a?(TypeParameterType)
+      if replacement = tv_map[type.name]?
+        return replacement
+      end
+      return type
+    end
+    if type.is_a?(TypeSplat)
+      original = type.as(TypeSplat).splatted_type
+      splatted = replace_type_parameters(original, tv_map)
+      return splatted if splatted.is_a?(TupleInstanceType)
+      return type if splatted == original
+      return TypeSplat.new(type.program, splatted)
+    end
+    if type.is_a?(UnionType)
+      members = [] of Type
+      changed = false
+      type.as(UnionType).union_types.each do |member|
+        replaced = replace_type_parameters(member, tv_map)
+        changed = true unless replaced == member
+        members << replaced
+      end
+      return type unless changed
+      if hook = type.program.merge_hook
+        return hook.merge_members(members)
+      end
+      return type
+    end
+    if type.is_a?(GenericClassInstanceType)
+      return replace_generic_instance(type.as(GenericClassInstanceType), tv_map)
+    end
+    type
+  end
+
+  # The arguments of a replaced list, in order.
+  def self.replace_list(types : Array(Type), tv_map : Hash(String, Type)) : Array(Type)
+    replaced = [] of Type
+    types.each do |t|
+      replaced << replace_type_parameters(t, tv_map)
+    end
+    replaced
+  end
+
+  def self.same_types?(a : Array(Type), b : Array(Type)) : Bool
+    return false unless a.size == b.size
+    i = 0
+    while i < a.size
+      return false unless a[i] == b[i]
+      i = i + 1
+    end
+    true
+  end
+
+  # A generic instance, rebuilt with its replaced arguments. The built-in instances (tuple,
+  # named tuple, proc, pointer, static array) are rebuilt by their own constructors, as the
+  # hosted replace_type_parameters of each class does.
+  def self.replace_generic_instance(inst : GenericClassInstanceType, tv_map : Hash(String, Type)) : Type
+    if inst.is_a?(TupleInstanceType)
+      tuple_types = inst.as(TupleInstanceType).tuple_types
+      replaced = replace_list(tuple_types, tv_map)
+      return inst if same_types?(replaced, tuple_types)
+      return TupleInstanceType.new(inst.program, replaced)
+    end
+    if inst.is_a?(NamedTupleInstanceType)
+      entries = inst.as(NamedTupleInstanceType).entries
+      replaced_entries = [] of NamedArgumentType
+      changed = false
+      entries.each do |entry|
+        replaced_type = replace_type_parameters(entry.type, tv_map)
+        changed = true unless replaced_type == entry.type
+        replaced_entries << NamedArgumentType.new(entry.name, replaced_type)
+      end
+      return inst unless changed
+      return NamedTupleInstanceType.new(inst.program, replaced_entries)
+    end
+    if inst.is_a?(ProcInstanceType)
+      proc_type = inst.as(ProcInstanceType)
+      args = replace_list(proc_type.arg_types, tv_map)
+      ret = replace_type_parameters(proc_type.return_type, tv_map)
+      return inst if same_types?(args, proc_type.arg_types) && ret == proc_type.return_type
+      return ProcInstanceType.new(inst.program, args, ret)
+    end
+    if inst.is_a?(PointerInstanceType)
+      element = inst.as(PointerInstanceType).element_type
+      replaced = replace_type_parameters(element, tv_map)
+      return inst if replaced == element
+      return PointerInstanceType.new(inst.program, replaced)
+    end
+    if inst.is_a?(StaticArrayInstanceType)
+      array_type = inst.as(StaticArrayInstanceType)
+      replaced = replace_type_parameters(array_type.element_type, tv_map)
+      return inst if replaced == array_type.element_type
+      return StaticArrayInstanceType.new(inst.program, replaced, array_type.size_int)
+    end
+    generic = inst.generic_type
+    if generic.is_a?(GenericClassType)
+      args = replace_list(inst.type_args, tv_map)
+      return inst if same_types?(args, inst.type_args)
+      if hook = inst.program.merge_hook
+        return hook.instantiate_type(generic, args)
+      end
+    end
+    inst
   end
 
   # Hosted reference_like?: a single pointer represents the value. Nil and the

@@ -4,7 +4,7 @@ import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
-import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
@@ -222,6 +222,8 @@ pub class MetaTypeVar
   property location : Location?
   # iyi: the type a variable is declared in (hosted MetaTypeVar#owner); nil for a built-in one.
   property owner : Type? = nil
+  # iyi: a class variable declared `@[ThreadLocal]` (hosted MetaTypeVar#thread_local?).
+  property thread_local : Bool = false
 
   def initialize(@name : String, @var_type : Type? = nil, @initializer : ASTNode? = nil, @location : Location? = nil)
   end
@@ -670,9 +672,89 @@ pub class LibFun
   end
 end
 
+# iyi: a `@[Link]` annotation a lib records (hosted LinkAnnotation, codegen/link.cr): the library
+# names and flags as written. The positional arguments come in the hosted order: library,
+# ldflags, static, framework. `wasm_import_module` is not recorded: a lib's wasm module is not a
+# target here. (The fields are not named `lib` or `static`: those words are keywords here.)
+pub class LinkAnnotationRecord
+  property library : String? = nil
+  property ldflags : String? = nil
+  property is_static : Bool = false
+  property framework : String? = nil
+  property pkg_config : String? = nil
+  property dll : String? = nil
+
+  def self.from(ann : Annotation) : LinkAnnotationRecord
+    record = LinkAnnotationRecord.new
+    if ann.args.empty? && ann.named_args.nil?
+      raise("missing link arguments: must at least specify a library name")
+    end
+    i = 0
+    while i < ann.args.size
+      arg = ann.args[i]
+      if i == 2
+        if b = arg.as?(BoolLiteral)
+          record.is_static = b.value
+        else
+          raise("'static' link argument must be a Bool")
+        end
+      else
+        if s = arg.as?(StringLiteral)
+          if i == 0
+            record.library = s.value
+          elsif i == 1
+            record.ldflags = s.value
+          elsif i == 3
+            record.framework = s.value
+          else
+            raise("too many link arguments")
+          end
+        else
+          raise("link argument #{i + 1} must be a String")
+        end
+      end
+      i = i + 1
+    end
+    if named = ann.named_args
+      named.each do |na|
+        value = na.value
+        if na.name == "static"
+          if b = value.as?(BoolLiteral)
+            record.is_static = b.value
+          else
+            raise("'static' link argument must be a Bool")
+          end
+        elsif s = value.as?(StringLiteral)
+          if na.name == "lib"
+            record.library = s.value
+          elsif na.name == "ldflags"
+            record.ldflags = s.value
+          elsif na.name == "framework"
+            record.framework = s.value
+          elsif na.name == "pkg_config"
+            record.pkg_config = s.value
+          elsif na.name == "dll"
+            record.dll = s.value
+          elsif na.name == "wasm_import_module"
+            # not recorded (see above)
+          else
+            raise("unknown link argument: '#{na.name}'")
+          end
+        else
+          raise("'#{na.name}' link argument must be a String")
+        end
+      end
+    end
+    record
+  end
+end
+
 # A lib type, like `lib LibC`.
 pub class LibType < NonGenericModuleType
   getter funs : Array(LibFun)
+  # iyi: the `@[Link]` annotations of the lib, in declaration order, one per annotation on each
+  # reopening (LibType#link_annotations, the hosted lib's link annotations).
+  getter link_annotations : Array(LinkAnnotationRecord)
   # iyi: whether a call to one of this lib's funs was typed (hosted lib `used`). False until the
   # call pass sets it.
   property used : Bool = false
@@ -691,6 +773,7 @@ pub class LibType < NonGenericModuleType
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
     super(program, namespace, name)
     @funs = [] of LibFun
+    @link_annotations = [] of LinkAnnotationRecord
   end
 
   def type_desc : String
@@ -1213,18 +1296,37 @@ pub class SemanticProgram < NonGenericModuleType
     # keeps its arguments, and a class with subclasses is typed by its virtual type.
     @declared_ivars.each do |di|
       @current_imports = di.imports
-      t = lookup_type_node(di.restriction, di.owner)
-      if di.virtual
-        if hook = @merge_hook
-          t = hook.virtual_of(t)
-        end
-      end
+      t = declared_ivar_type(di.restriction, di.owner, di.virtual)
       mv = MetaTypeVar.new(di.name, t, di.initializer)
       mv.owner = di.owner
       di.owner.instance_vars[di.name] = mv
     end
     @current_imports = saved
     nil
+  end
+
+  # The type an instance variable's written type gives it. With a type system installed, an explicit
+  # declaration takes the virtual type of its class (hosted declare_instance_var); without one, the
+  # plain lookup stands.
+  def declared_ivar_type(restriction : ASTNode, owner : ModuleType, virtual : Bool) : Type
+    if hook = @merge_hook
+      resolved = remove_alias(lookup_type_node(restriction, owner))
+      if virtual
+        return hook.virtual_of(resolved)
+      end
+      return resolved
+    end
+    remove_alias(lookup_type_node(restriction, owner))
+  end
+
+  # The type an alias names, through any chain of aliases (hosted Type#remove_alias): a declared
+  # instance variable takes the type the alias stands for, not the alias.
+  def remove_alias(type : Type) : Type
+    current = type
+    while current.is_a?(AliasType)
+      current = current.as(AliasType).process_value
+    end
+    current
   end
 
   # Each class body the top-level pass visited, in order, with its type.
@@ -1265,15 +1367,15 @@ pub class SemanticProgram < NonGenericModuleType
     @object_type = obj
     @types["Object"] = obj
 
+    ref = NonGenericClassType.new(self, self, "Reference", obj)
+    @reference_type = ref
+    @types["Reference"] = ref
+
     val = NonGenericClassType.new(self, self, "Value", obj)
     val.struct = true
     val.abstract = true
     @value_type = val
     @types["Value"] = val
-
-    ref = NonGenericClassType.new(self, self, "Reference", obj)
-    @reference_type = ref
-    @types["Reference"] = ref
 
     num = NonGenericClassType.new(self, self, "Number", val)
     num.struct = true
@@ -1712,10 +1814,10 @@ pub class PendingIvar
   property owner : ModuleType
   property name : String
   property restriction : ASTNode
-  property imports : Hash(String, Type)? = nil
   property initializer : ASTNode?
   # An explicit `@x : T` is typed by T's virtual type (hosted declare_instance_var).
   property virtual : Bool
+  property imports : Hash(String, Type)? = nil
 
   def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false)
   end
@@ -1757,6 +1859,8 @@ pub class TopLevelVisitor < Visitor
   property unit : ModuleType? = nil
   @enum_flags : Bool = false
   @pending_flags : Bool = false
+  # The annotations written since the last declaration (hosted process_annotations).
+  @pending_annotations : Array(Annotation) = [] of Annotation
 
   # Every explicit instance variable is recorded here, in the order the source
   # declares it. A restriction may name a type a later file declares (`concurrency.iyi`
@@ -1766,13 +1870,21 @@ pub class TopLevelVisitor < Visitor
   # keeps declaration order: TypeDeclarationVisitor).
   def finish : Nil
     saved = @program.current_imports
+    # An explicit `@x : T` decides the type of `@x`. An inferred record for the same name (an
+    # initialize argument's restriction) does not replace it, as the hosted pass skips a guess for a
+    # variable that exists.
+    explicit = [] of String
+    @pending_ivars.each do |found|
+      explicit << "#{found.owner.full_name} #{found.name}" if found.virtual
+    end
     @pending_ivars.each do |pi|
+      next if !pi.virtual && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
       if imports = pi.imports
         @program.current_imports = imports
       else
         @program.current_imports = saved
       end
-      arg_type = @program.lookup_type_node(pi.restriction, pi.owner)
+      arg_type = @program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
       mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
       mv.owner = pi.owner
       pi.owner.instance_vars[pi.name] = mv
@@ -1799,6 +1911,7 @@ pub class TopLevelVisitor < Visitor
     @current_type = @program
     @exp_nest = 0
     @pending_ivars = [] of PendingIvar
+    @pending_annotations = [] of Annotation
   end
 
   # `@[Primitive(:name)]` makes a def's body the compiler's own primitive, located at
@@ -2318,10 +2431,12 @@ pub class TopLevelVisitor < Visitor
   end
 
   # `@[Flags]` marks the enum that follows it: its members are bits, and it gets None and All.
+  # Every annotation is also kept for the declaration after it (hosted process_annotations).
   def visit(node : Annotation) : Bool
     if node.path.names.last == "Flags"
       @pending_flags = true
     end
+    @pending_annotations << node
     false
   end
 
@@ -2498,6 +2613,8 @@ pub class TopLevelVisitor < Visitor
   # A lib, like `lib LibC`. Its funs are recorded as LibFun records. The hosted pass also
   # reads the lib's `@[Link]` libraries and call convention here, which are not ported yet.
   def visit(node : LibDef) : Bool
+    annotations = @pending_annotations
+    @pending_annotations = [] of Annotation
     scope, name, existing = lookup_type_def(node, node.name)
 
     lib_type : LibType
@@ -2516,6 +2633,13 @@ pub class TopLevelVisitor < Visitor
     end
     if vis = node.visibility
       lib_type.visibility = vis
+    end
+    # iyi: the `@[Link]` annotations written before this reopening, in declaration order (the
+    # hosted process_annotations of a lib); the others are not lib records.
+    annotations.each do |ann|
+      if ann.path.names.last == "Link"
+        lib_type.link_annotations << LinkAnnotationRecord.from(ann)
+      end
     end
 
     old_type = @current_type
@@ -2658,6 +2782,8 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : Def) : Bool
+    # iyi: an annotation before a def belongs to the def, not to a later class variable.
+    @pending_annotations = [] of Annotation
     target_type : ModuleType
 
     if rec = node.receiver
@@ -2774,6 +2900,10 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : TypeDeclaration) : Bool
+    # iyi: the annotations written before this declaration (hosted process_annotations): a
+    # class variable takes @[ThreadLocal] from them, and each declaration consumes them.
+    annotations = @pending_annotations
+    @pending_annotations = [] of Annotation
     if node.var.is_a?(InstanceVar)
       if @current_type.is_a?(SemanticProgram)
         raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
@@ -2788,6 +2918,9 @@ pub class TopLevelVisitor < Visitor
       cvar_name = node.var.as(ClassVar).name
       mv = MetaTypeVar.new(cvar_name, decl_type, node.value)
       mv.owner = @current_type
+      annotations.each do |ann|
+        mv.thread_local = true if ann.path.names.last == "ThreadLocal"
+      end
       @current_type.class_vars[cvar_name] = mv
     end
     false

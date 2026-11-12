@@ -10,6 +10,7 @@ import compiler/semantic/inline_macros::{splice_body_node, splice_inline_sites}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
+import compiler/semantic/top_level::{VoidType}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
@@ -20,8 +21,6 @@ import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericCla
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/new::{define_new_methods}
-import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of}
-import compiler/types/types::{GenericInstanceType, NamedArgumentType}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
 # One construct the body typing could not type or refused, as the pipeline's
@@ -330,6 +329,16 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     @program.lookup_type_node(node, @current_type)
+  end
+
+  # iyi: a class variable that is replaced keeps the @[ThreadLocal] flag of the one it replaces
+  # (hosted types.cr 1265: var.thread_local = class_var.thread_local?).
+  def replace_class_var(mod_type : ModuleType, name : String, mv : MetaTypeVar) : Nil
+    if old = mod_type.class_vars[name]?
+      mv.thread_local = old.thread_local
+    end
+    mod_type.class_vars[name] = mv
+    nil
   end
 
   def type_from_literal_kind(kind : NumberKind) : Type
@@ -865,7 +874,7 @@ pub class MainVisitor < TypeNodeHost
           set_type(cvar_node, cvar.type)
         else
           cvar = MetaTypeVar.new(cvar_node.name, val_type, node.value)
-          mod_type.class_vars[cvar_node.name] = cvar
+          replace_class_var(mod_type, cvar_node.name, cvar)
           set_type(cvar_node, val_type)
         end
         set_type(node, val_type)
@@ -938,7 +947,7 @@ pub class MainVisitor < TypeNodeHost
                       end
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
-          mod_type.class_vars[cvar_node.name] = MetaTypeVar.new(cvar_node.name, decl_type, val)
+          replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, val))
           set_type(cvar_node, decl_type)
         end
       end
@@ -977,7 +986,7 @@ pub class MainVisitor < TypeNodeHost
                       end
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
-          mod_type.class_vars[cvar_node.name] = MetaTypeVar.new(cvar_node.name, decl_type, nil)
+          replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, nil))
           set_type(cvar_node, decl_type)
         end
       end
@@ -1308,7 +1317,8 @@ pub class MainVisitor < TypeNodeHost
                   # `& : T -> _` leaves the block's result free (hosted: an Underscore output matches any type).
                   unless out_node.is_a?(Underscore)
                     expected_ret = lookup_under(out_node, @scope)
-                    unless bt.subtype_of?(expected_ret)
+                    # hosted call.cr 1433 and void_return_type?: a declared Nil or void output accepts any block value.
+                    unless expected_ret.nil_type? || expected_ret.is_a?(VoidType) || bt.subtype_of?(expected_ret)
                       return refuse(node, "expected block to return #{expected_ret.full_name}, not #{bt.full_name}")
                     end
                   end
