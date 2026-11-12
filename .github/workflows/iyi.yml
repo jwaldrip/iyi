@@ -3891,7 +3891,9 @@ jobs:
 
       # wasmtime runs what the wasm back end writes. The same script the
       # wasi-run job uses; a key of its own, because this job's home is the
-      # container's.
+      # container's. The container has no curl, and its libc may be older
+      # than wasmtime's: when wasmtime does not start here the wasm gate
+      # reports its run steps as skipped, never as passed.
       - name: Restore the wasm toolchain
         id: wasm-cache
         uses: actions/cache@v4
@@ -3900,13 +3902,20 @@ jobs:
           key: wasm-toolchain-container-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-wasm-toolchain.sh') }}
       - name: Install wasi-sdk and wasmtime (cache miss)
         if: steps.wasm-cache.outputs.cache-hit != 'true'
-        run: bash scripts/install-wasm-toolchain.sh "$HOME/wasm-toolchain"
+        run: |
+          if ! command -v curl >/dev/null; then
+            apt-get update -qq && apt-get install -y -qq curl xz-utils > /dev/null
+          fi
+          bash scripts/install-wasm-toolchain.sh "$HOME/wasm-toolchain"
         env:
           GITHUB_TOKEN: ${{ github.token }}
       - name: Name wasmtime for the gates
         run: |
-          "$HOME/wasm-toolchain/wasmtime/bin/wasmtime" --version
-          echo "WASMTIME=$HOME/wasm-toolchain/wasmtime/bin/wasmtime" >> "$GITHUB_ENV"
+          if "$HOME/wasm-toolchain/wasmtime/bin/wasmtime" --version; then
+            echo "WASMTIME=$HOME/wasm-toolchain/wasmtime/bin/wasmtime" >> "$GITHUB_ENV"
+          else
+            echo "wasmtime does not start in this container: the wasm gate's run steps are skipped here"
+          fi
 
       - name: Build `iyi`
         run: make -o .build/crystal iyi

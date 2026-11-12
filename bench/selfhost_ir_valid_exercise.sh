@@ -201,8 +201,8 @@ prove_invalid "return a value from a void function" \
 # declared return type.
 prove_invalid "declare a dispatched call with the wrong return type" \
   "$CODEGEN_SRC" \
-  "m_fn_ty = LLVMType.function(m_param_tys, ret_llvm_type, false)" \
-  "m_fn_ty = LLVMType.function(m_param_tys, @context.pointer, false)" \
+  "m_fn_ty = @types.func(m_param_tys, ret_llvm_type, false)" \
+  "m_fn_ty = @types.func(m_param_tys, @types.pointer, false)" \
   "$REPO/bench/fixtures/cg_virtual_dispatch.iyi"
 
 echo "  Mutation summary: $mut_caught/$mut_run invalid-IR mutations caught"

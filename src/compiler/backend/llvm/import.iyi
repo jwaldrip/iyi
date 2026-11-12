@@ -1124,9 +1124,16 @@ class ModuleImporter
       cases = [] of Int64
       n = LibLLVM.get_num_successors(ref)
       i = 1
+      # Successor 0 is the default block, and successor i is case i - 1. Before LLVM 22 a switch's operands are
+      # the value switched on, the default block, then a value and a block per case, so that case's value is
+      # operand 2 * i. LLVM 22 took the values out of the operands and added LLVMGetSwitchCaseValue to read them.
       while i < n
         targets << block_of(LibLLVM.get_successor(ref, i))
-        cases << LibLLVM.const_int_get_sext_value(LibLLVM.get_switch_case_value(ref, i))
+        {% if LibLLVM::IS_LT_220 %}
+          cases << LibLLVM.const_int_get_sext_value(LibLLVM.get_operand(ref, 2 * i))
+        {% else %}
+          cases << LibLLVM.const_int_get_sext_value(LibLLVM.get_switch_case_value(ref, i))
+        {% end %}
         i = i + 1
       end
       return nil if failed?

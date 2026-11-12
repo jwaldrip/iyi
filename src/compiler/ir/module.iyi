@@ -2,6 +2,7 @@ module compiler/ir/module
 
 import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/function::{Function, Global}
+import compiler/ir/values::{Param}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/layout::{DataLayout, LayoutError}
 import compiler/platform/target::{Target}
@@ -72,6 +73,16 @@ pub class Module
     fn = Function.new(name, type, @types.ptr(0), cc)
     @functions << fn
     @function_index[name] = fn
+    fn
+  end
+
+  # A function with a body: `add_function`, then one unnamed parameter per parameter type of `type`, the way
+  # the parser gives a `define` its parameters. A declaration keeps `add_function`, with no parameters.
+  def define_function(name : String, type : IrType, cc : CallConv = CallConv::Iyi) : Function
+    fn = add_function(name, type, cc)
+    type.param_types.each_with_index do |t, i|
+      fn.add_param(Param.new(t, "", i))
+    end
     fn
   end
 

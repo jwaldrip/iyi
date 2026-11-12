@@ -124,7 +124,7 @@ probe_one_file() {
   base="$(basename "$target")"
   local log="$WORK/probe_${base}.log"
   set +e
-  "$REPO/.build/iyi-compile" --probe-phase "$target" > "$log" 2>&1
+  (cd "$WORK" && "$REPO/.build/iyi-compile" --probe-phase "$target" > "$log" 2>&1)
   set -e
   if grep -qF "[phase] link: pass" "$log"; then
     echo "link"

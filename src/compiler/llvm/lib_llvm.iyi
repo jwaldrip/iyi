@@ -31,6 +31,7 @@ module compiler/llvm/lib_llvm
   {% is_lt_190 = compare_versions(llvm_version, "19.0.0") < 0 %}
   {% is_lt_200 = compare_versions(llvm_version, "20.0.0") < 0 %}
   {% is_lt_210 = compare_versions(llvm_version, "21.0.0") < 0 %}
+  {% is_lt_220 = compare_versions(llvm_version, "22.0.0") < 0 %}
 
   lib ::LibLLVM
     VERSION = {{ llvm_version.strip.gsub(/git/, "").gsub(/-?rc.*/, "") }}
@@ -46,6 +47,7 @@ module compiler/llvm/lib_llvm
     IS_LT_190 = {{ is_lt_190 }}
     IS_LT_200 = {{ is_lt_200 }}
     IS_LT_210 = {{ is_lt_210 }}
+    IS_LT_220 = {{ is_lt_220 }}
 
     alias Bool = Int32
     alias Char = UInt8
@@ -695,7 +697,11 @@ module compiler/llvm/lib_llvm
     fun get_section = LLVMGetSection(g : ValueRef) : Char*
     fun is_poison = LLVMIsPoison(v : ValueRef) : Bool
     fun has_personality_fn = LLVMHasPersonalityFn(f : ValueRef) : Bool
-    fun get_switch_case_value = LLVMGetSwitchCaseValue(sw : ValueRef, index : UInt) : ValueRef
+    # LLVM 22 stopped storing a switch's case values as operands and added this to read them. Before 22 it does
+    # not exist, and the values are operands (see the importer).
+    {% unless is_lt_220 %}
+      fun get_switch_case_value = LLVMGetSwitchCaseValue(sw : ValueRef, index : UInt) : ValueRef
+    {% end %}
     fun get_aggregate_element = LLVMGetAggregateElement(c : ValueRef, index : UInt) : ValueRef
   end
 {% end %}
