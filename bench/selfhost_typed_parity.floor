@@ -13,7 +13,7 @@ samples/iyi/format.iyi 64
 samples/iyi/formatting.iyi 33
 samples/iyi/generics.iyi 52
 samples/iyi/grid.iyi 19
-samples/iyi/hello.iyi 22
+samples/iyi/hello.iyi 25
 samples/iyi/immutable.iyi 45
 samples/iyi/init_order.iyi 5
 samples/iyi/inventory.iyi 9

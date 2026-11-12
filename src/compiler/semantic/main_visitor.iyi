@@ -1468,7 +1468,16 @@ pub class MainVisitor < TypeNodeHost
 
     return nil unless params_typed
     bt = body_type
-    return nil if bt.nil?
+    # A body that cannot be typed (its refusal is recorded on the body's own nodes)
+    # still leaves a call its declared return type, as the oracle types it
+    # (bench/fixtures/sem_bodies_primitive_add.iyi).
+    if bt.nil?
+      if rt = target_def.return_type
+        set_type(target_def, @program.lookup_type_node(rt, @current_type))
+        return @program.lookup_type_node(rt, @current_type)
+      end
+      return nil
+    end
 
     if rt = target_def.return_type
       declared_ret = @program.lookup_type_node(rt, @current_type)
