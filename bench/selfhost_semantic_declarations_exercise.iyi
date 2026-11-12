@@ -37,11 +37,14 @@ module BenchSelfhostSemanticDeclarationsExercise
   end
 
   def self.dump_file(path : String) : String
-    entry = normalize_path(path)
+    cwd = ENV["PWD"]? || "."
+    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    entry = normalize_path(absolute)
     src = File.read(entry)
     parser = Parser.new(src, entry)
     node = parser.parse
     prog = SemanticProgram.new
+    prog.loaded_files.add(entry)
     prog.search_path = search_path
     prog.project_root = project_root(node, entry)
     visitor = TopLevelVisitor.new(prog, entry)

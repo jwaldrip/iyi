@@ -220,6 +220,7 @@ pub class MetaTypeVar
 end
 
 pub abstract class ModuleType < NamedType
+  property iyi_unit : Bool = false
   getter defs : Hash(String, Array(Def))
   getter parents : Array(Type)
   getter including_types : Array(Type)
@@ -347,6 +348,9 @@ pub abstract class ModuleType < NamedType
     "module"
   end
 
+  # A def of a name and parameter restrictions the type already has replaces that one, as
+  # the hosted pass does (a user's `def begin_array?` replaces the enum's generated one).
+  # Overloads that differ in a restriction are kept side by side.
   def add_def(a_def : Def) : Nil
     list = @defs[a_def.name]?
     if list.nil?
@@ -354,8 +358,31 @@ pub abstract class ModuleType < NamedType
       @defs[a_def.name] = list
     end
     if l = list
-      l << a_def
+      replaced = false
+      i = 0
+      while i < l.size
+        if same_def_signature?(l[i], a_def)
+          l[i] = a_def
+          replaced = true
+        end
+        i = i + 1
+      end
+      l << a_def unless replaced
     end
+  end
+
+  def same_def_signature?(a : Def, b : Def) : Bool
+    return false unless a.args.size == b.args.size
+    i = 0
+    while i < a.args.size
+      ra = a.args[i].restriction
+      rb = b.args[i].restriction
+      ta = ra ? ra.to_s : ""
+      tb = rb ? rb.to_s : ""
+      return false unless ta == tb
+      i = i + 1
+    end
+    true
   end
 
   def add_macro(a_macro : Macro) : Nil
@@ -1452,7 +1479,7 @@ pub class TopLevelVisitor < Visitor
     while i < roots.size
       candidate = "#{roots[i]}/#{written}.iyi"
       if File.exists?(candidate)
-        return candidate
+        return normalize_path(candidate)
       end
       i = i + 1
     end
@@ -1594,6 +1621,9 @@ pub class TopLevelVisitor < Visitor
     if vis = node.visibility
       type.visibility = vis
     end
+    if iyi_unexported?(scope, node.visibility)
+      type.visibility = Visibility::Private
+    end
 
     # Superclass handling
     superclass : Type? = nil
@@ -1695,6 +1725,7 @@ pub class TopLevelVisitor < Visitor
 
     if node.iyi_unit
       @unit = type
+      type.iyi_unit = true
     end
     if loc = node.location
       type.add_location(loc)
@@ -1755,6 +1786,9 @@ pub class TopLevelVisitor < Visitor
     end
     if vis = node.visibility
       type.visibility = vis
+    end
+    if iyi_unexported?(scope, node.visibility)
+      type.visibility = Visibility::Private
     end
 
     # Supertraits
@@ -1838,6 +1872,9 @@ pub class TopLevelVisitor < Visitor
     if vis = node.visibility
       enum_type.visibility = vis
     end
+    if iyi_unexported?(scope, node.visibility)
+      enum_type.visibility = Visibility::Private
+    end
 
     counter = 0_i64
     direct_names = [] of String
@@ -1849,9 +1886,12 @@ pub class TopLevelVisitor < Visitor
 
     enum_type.add_def(Def.new("value"))
     direct_names.each do |mname|
-      predicate = Def.new("#{underscore(mname)}?", return_type: Path.new("Bool"))
-      predicate.location = node.location
-      enum_type.add_def(predicate)
+      pname = "#{underscore(mname)}?"
+      if enum_type.defs[pname]?.nil?
+        predicate = Def.new(pname, return_type: Path.new("Bool"))
+        predicate.location = node.location
+        enum_type.add_def(predicate)
+      end
     end
 
     false
@@ -2035,6 +2075,9 @@ pub class TopLevelVisitor < Visitor
     if vis = node.visibility
       alias_type.visibility = vis
     end
+    if iyi_unexported?(scope, node.visibility)
+      alias_type.visibility = Visibility::Private
+    end
     scope.add_type(name, alias_type)
 
     false
@@ -2049,6 +2092,9 @@ pub class TopLevelVisitor < Visitor
     end
     typed = @program.lookup_type_node(node.type_spec, @current_type)
     typedef = TypeDefType.new(@program, @current_type, node.name, typed)
+    if loc = node.location
+      typedef.add_location(loc)
+    end
     @current_type.add_type(node.name, typedef)
     false
   end
@@ -2073,9 +2119,9 @@ pub class TopLevelVisitor < Visitor
       end
     end
 
-    if vis = node.visibility
-      node.visibility = vis
-    else
+    if iyi_unexported?(@current_type, node.visibility)
+      node.visibility = Visibility::Private
+    elsif node.visibility.nil?
       node.visibility = Visibility::Public
     end
 
@@ -2166,6 +2212,9 @@ pub class TopLevelVisitor < Visitor
       if vis = node.visibility
         const.visibility = vis
       end
+      if iyi_unexported?(scope, node.visibility)
+        const.visibility = Visibility::Private
+      end
       scope.add_type(name, const)
     end
     false
@@ -2246,6 +2295,16 @@ pub class TopLevelVisitor < Visitor
   def visit(node : MacroLiteral) : Bool
     false
   end
+end
+
+# The hosted rule for an unmarked declaration (SPEC R-2): inside a module unit, a name
+# that is not `pub` (its visibility is nil or private) is the unit's own, so no other
+# module may reach it. A declaration outside a unit, or in a class or struct within one,
+# is not governed by it.
+pub def iyi_unexported?(scope : ModuleType, visibility : Visibility?) : Bool
+  return false unless scope.iyi_unit
+  return true if visibility.nil?
+  visibility.as(Visibility) != Visibility::Public
 end
 
 # The hosted `underscore`: a capital takes an `_` before it when the letter before is a

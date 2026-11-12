@@ -37,6 +37,7 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
+export PWD="$REPO"
 IYI="$REPO/bin/iyi"
 CRYSTAL="$REPO/bin/crystal"
 FLOOR_FILE="${SEMDECL_FLOOR:-$REPO/bench/selfhost_semantic_declarations.floor}"
@@ -94,11 +95,11 @@ total_matched=0
 for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
   rel="bench/fixtures/$(basename "$fixture")"
   fixture_count=$((fixture_count + 1))
-  if ! "$ORACLE" "$rel" > "$WORK/fx_o.txt" 2> "$WORK/fx_oe.txt"; then
+  if ! "$ORACLE" "$REPO/$rel" > "$WORK/fx_o.txt" 2> "$WORK/fx_oe.txt"; then
     echo "  $rel: ORACLE REJECTS: $(head -n 1 "$WORK/fx_oe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
   fi
-  if ! "$PORT" "$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
+  if ! "$PORT" "$REPO/$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
     echo "  $rel: PORT REJECTS: $(head -n 1 "$WORK/fx_pe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
   fi
@@ -133,9 +134,10 @@ printf 'builtins\t<initial>\t%s\t%s\t%s\n' "$b_nodes" "$b_matched" "$b_note" >> 
 measure() {
   corpus="$1"
   rel="$2"
-  if "$ORACLE" "$rel" > "$WORK/o.txt" 2> "$WORK/o.err"; then
+  abs="$REPO/$2"
+  if "$ORACLE" "$abs" > "$WORK/o.txt" 2> "$WORK/o.err"; then
     nodes=$(records "$WORK/o.txt" | wc -l | tr -d ' ')
-    if "$PORT" "$rel" > "$WORK/p.txt" 2> "$WORK/p.err"; then
+    if "$PORT" "$abs" > "$WORK/p.txt" 2> "$WORK/p.err"; then
       matched=$(agreeing "$WORK/o.txt" "$WORK/p.txt")
       note="-"
     else
@@ -277,8 +279,8 @@ check_decl_fixtures_diverge() {
   "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
     rel="bench/fixtures/$(basename "$fixture")"
-    "$ORACLE" "$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
-    "$probe" "$rel" > "$WORK/mut_p.txt" 2>/dev/null || return 1
+    "$ORACLE" "$REPO/$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
+    "$probe" "$REPO/$rel" > "$WORK/mut_p.txt" 2>/dev/null || return 1
     cmp -s "$WORK/mut_o.txt" "$WORK/mut_p.txt" || return 1
   done
   return 0
