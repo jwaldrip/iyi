@@ -150,7 +150,7 @@ lower_core_check() {
   "$IYI" build -o "$WORK/port-m" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/m.build.log" 2>&1 || return 1
   "$WORK/port-m" context > "$WORK/m.ctx" 2>&1 || return 1
   awk '/^CONTEXT OK$/ { ok = 1 } END { exit !ok }' "$WORK/m.ctx" || return 1
-  for n in lower_nil lower_int lower_bool lower_assign lower_if; do "$WORK/port-m" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" > "$WORK/m.out" 2> "$WORK/m.err" || return 1; awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] \&\& a[2] > 0) }' "$WORK/m.out" || return 1; done
+  for n in lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while; do "$WORK/port-m" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" > "$WORK/m.out" 2> "$WORK/m.err" || return 1; awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] \&\& a[2] > 0) }' "$WORK/m.out" || return 1; done
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/m.out"
 }
 prove_mutation "argv is stored from the argc parameter" "$REPO/src/compiler/lower/lower.iyi" \
@@ -165,6 +165,10 @@ prove_mutation "a store is aligned to one byte" "$REPO/src/compiler/lower/helper
   "set_align(st, low.typer.align_of(value.type))" "set_align(st, 1)" -- lower_core_check || status=1
 prove_mutation "the then and else branches are swapped" "$REPO/src/compiler/lower/lower.iyi" \
   "low.builder.cond_br(cond_value, then_block, else_block)" "low.builder.cond_br(cond_value, else_block, then_block)" -- lower_core_check || status=1
+prove_mutation "the while body is the condition" "$REPO/src/compiler/lower/lower.iyi" \
+  "codegen_node(low, node.body)" "codegen_node(low, node.cond)" -- lower_core_check || status=1
+prove_mutation "a char is its code point plus one" "$REPO/src/compiler/lower/lower.iyi" \
+  "node.value.ord.to_i64)" "node.value.ord.to_i64 + 1_i64)" -- lower_core_check || status=1
 prove_mutation "an empty alloca block is kept" "$REPO/src/compiler/lower/context.iyi" \
   "current_fun.blocks.delete(alloca)" "alloca.name" -- lower_core_check || status=1
 

@@ -16,7 +16,7 @@ module compiler/lower/lower
 # and a store). Still refused by name: a def and a call (S2c), and the rest of the
 # core, which the next increments port.
 
-import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, Def, Expressions, NilLiteral, NumberLiteral, Var, If}
+import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, Def, Expressions, NilLiteral, NumberLiteral, Var, If, While, CharLiteral}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Linkage}
 import compiler/ir/inst::{CallConv}
@@ -107,6 +107,14 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(Assign)
     codegen_assign(low, node.as(Assign))
+    return
+  end
+  if node.is_a?(CharLiteral)
+    codegen_char(low, node.as(CharLiteral))
+    return
+  end
+  if node.is_a?(While)
+    codegen_while(low, node.as(While))
     return
   end
   if node.is_a?(If)
@@ -224,4 +232,37 @@ pub def codegen_if(low : Lowerer, node : If) : Nil
   phi.add(low, low.last)
 
   phi.close(low)
+end
+
+# The hosted `visit(CharLiteral)`: the code point, as an integer of the type the analysis
+# gave the literal (Char is an i32).
+pub def codegen_char(low : Lowerer, node : CharLiteral) : Nil
+  t = low.analysed.type_of?(node)
+  raise "BUG: the analysed program has no type for a char literal (hosted codegen.cr: visit(CharLiteral))" if t.nil?
+  low.last = low.builder.const_int(low.typer.llvm_type(t.as(Type)), node.value.ord.to_i64)
+end
+
+# The hosted `visit(While)` without break or next: the condition is tested in the
+# `while` block, the `body` runs and branches back, and the `fail` block is where the
+# loop leaves. The value of a while is nil.
+pub def codegen_while(low : Lowerer, node : While) : Nil
+  blocks = low.new_blocks(["while", "body", "fail"])
+  while_block = blocks[0]
+  body_block = blocks[1]
+  fail_block = blocks[2]
+
+  low.builder.br(while_block)
+  low.builder.position_at_end(while_block)
+  low.needs_value = true
+  codegen_node(low, node.cond)
+  cond_value = cond_bool(low, node.cond, low.last.as(Value))
+  low.builder.cond_br(cond_value, body_block, fail_block)
+
+  low.builder.position_at_end(body_block)
+  low.needs_value = false
+  codegen_node(low, node.body)
+  low.builder.br(while_block)
+
+  low.builder.position_at_end(fail_block)
+  low.last = llvm_nil(low)
 end
