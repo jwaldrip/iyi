@@ -22,6 +22,7 @@ import compiler/ir/inst::{Op, Inst, CallConv, Ordering, Attribute, CallAux, GepA
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout}
+import compiler/native/const_expr::{ConstAddress, reduce_const}
 import compiler/ir/intrinsics::{IntrinsicId, intrinsic_stem}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass, JumpTable, AsmBody}
 import compiler/native/obj/object::{RelocKind}
@@ -29,7 +30,7 @@ import compiler/native/jump_table::{SwitchTable, switch_table_plan}
 import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le, reg_name, callee_saved_gprs}
 import compiler/native/target::{TargetDesc, TlsForm}
 import compiler/native/aarch64/abi::{aarch64_target}
-import compiler/native/lower::{LeafLoc, CallAssignment, flatten_leaves, assign_call, assign_return, assign_iyi_call, assign_iyi_return, reachable_blocks, plan_gep, GepPlan, overflow_form, acquire_on_load?, release_on_store?, icmp_unsigned?}
+import compiler/native/lower::{LeafLoc, CallAssignment, flatten_leaves, assign_call, assign_return, assign_iyi_call, assign_iyi_return, iyi_result_indirect?, reachable_blocks, plan_gep, GepPlan, overflow_form, acquire_on_load?, release_on_store?, icmp_unsigned?}
 
 import compiler/native/asm/constraints::{parse_operand, parse_clobber, digits?, ConstraintClass, ConstraintError, OperandConstraint}
 import compiler/native/aarch64/asm::{AsmAssembler}
@@ -111,6 +112,7 @@ class Isel
     @cur = MBlock.new(0, "")
     @cur_ir_name = ""
     @sret_vreg = -1
+    @iyi_result_vreg = -1
     @desc = aarch64_target(@darwin)
   end
 
@@ -191,6 +193,16 @@ class Isel
     if c.op == Op::ConstInt && i128?(t)
       return [const_gpr(c.aux_int), const_gpr(c.aux_hi)]
     end
+    if c.op == Op::ConstInt && long_int?(t)
+      given = c.int_words(64)
+      acc = [] of Int32
+      k = 0
+      while k < t.bits // 64
+        acc << const_gpr(k < given.size ? given[k] : 0_i64)
+        k = k + 1
+      end
+      return acc
+    end
     if c.op == Op::ConstInt
       v = c.aux_int
       v = v & 1_i64 if t.int? && t.bits == 1
@@ -210,8 +222,16 @@ class Isel
       end
       return acc
     end
-    fail("constant expressions are not lowered in this slice")
-    return [gpr]
+    # A constant expression: a symbol's address plus a byte offset, or a plain integer (const_expr.iyi).
+    reduced = reduce_const(@layout, c)
+    if reduced.is_a?(String)
+      fail(reduced.as(String))
+      return [gpr]
+    end
+    address = reduced.as(ConstAddress)
+    base = address.base
+    return [const_gpr(address.offset)] if base.nil?
+    return [add_imm(first_leaf(base.as(Value)), address.offset)]
   end
 
   def zero_leaves(t : IrType) : Array(Int32)
@@ -251,7 +271,8 @@ class Isel
   def materialize(v : Value) : Array(Int32)
     if v.is_a?(Global)
       g = v.as(Global)
-      return [symbol_address(g.name, g.tls != TlsModel::None, g.initializer.nil? && g.linkage == Linkage::External)]
+      return [thread_local_address(g)] if g.tls != TlsModel::None
+      return [symbol_address(g.name, false, g.initializer.nil? && g.linkage == Linkage::External)]
     end
     if v.is_a?(Function)
       f = v.as(Function)
@@ -318,9 +339,17 @@ class Isel
       fail("threadlocaladdr names #{g.name}, which is not a thread-local global")
       return
     end
+    bind_result(i, [thread_local_address(g)])
+  end
+
+  # The address of a thread-local global for the running thread, computed here. `threadlocaladdr` is one caller;
+  # the other is a thread-local global written as an operand, which is how the hosted compiler's module names
+  # one (`load ptr, ptr @g` on a `thread_local` global): each such use computes the address afresh, so no
+  # address outlives a call that may have moved the fiber to another thread.
+  def thread_local_address(g : Global) : Int32
     if @desc.tls == TlsForm::LocalExec && g.tls != TlsModel::LocalExec
       fail("thread-local #{g.name} has the #{g.tls} model; Linux lowers only the local-exec model in this slice")
-      return
+      return gpr
     end
     if @desc.tls == TlsForm::LocalExec
       tp = gpr
@@ -340,8 +369,7 @@ class Isel
       m.defs << vop(lo)
       m.uses << vop(hi)
       emit(m)
-      bind_result(i, [lo])
-      return
+      return lo
     end
     desc = gpr
     m = mop(MOp::LoadTlvp)
@@ -370,7 +398,7 @@ class Isel
     m.defs << vop(addr)
     m.uses << pop(0)
     emit(m)
-    bind_result(i, [addr])
+    addr
   end
 
   # threadpointer. The kind names the register the target reads: tpidr_el0 on Linux, and tpidrro_el0 on darwin, whose
@@ -548,26 +576,40 @@ class Isel
 
   # ---- the function ------------------------------------------------------------------------------
 
-  # An integer wider than 128 bits that the function's signature or instructions carry, or nil. The native backend lowers
-  # integers up to 128 bits, so such a function is refused before any of its values is given registers.
+  # Whether a type is an integer of more than 128 bits.
+  def long_int?(t : IrType) : Bool
+    t.int? && t.bits > 128
+  end
+
+  # An integer wider than 128 bits used in a way this back end does not lower, or nil. Such an integer is lowered as
+  # its 64-bit words for exactly what the hosted compiler does with one: an extension of a value of at most 64 bits,
+  # a constant, a plain load and store, and a truncation back to at most 64 bits. Arithmetic, comparison, a parameter
+  # or a result of that width is refused by name before any value is given registers.
   def first_wide_int : IrType?
-    wide = [] of IrType
-    @fn.fn_type.param_types.each { |t| wide << t if t.int? && t.bits > 128 }
+    @fn.fn_type.param_types.each { |t| return t if long_int?(t) }
     rt = @fn.fn_type.return_type
-    wide << rt if rt.int? && rt.bits > 128
+    return rt if long_int?(rt)
     @fn.blocks.each do |b|
       b.insts.each do |i|
-        wide << i.type if i.type.int? && i.type.bits > 128
-        i.args.each { |a| wide << a.type if a.type.int? && a.type.bits > 128 }
+        carried = long_int?(i.type) ? i.type : nil
+        i.args.each { |a| carried = a.type if long_int?(a.type) }
+        next unless carried
+        op = i.op
+        next if is_const_op?(op)
+        next if (op == Op::ZExt || op == Op::SExt) && long_int?(i.type) && i.args[0].type.int? && i.args[0].type.bits <= 64 && i.type.bits % 64 == 0
+        next if op == Op::Trunc && long_int?(i.args[0].type) && i.type.bits <= 64
+        next if op == Op::Load && i.aux.as(MemAux).ordering == Ordering::NotAtomic && i.type.bits % 64 == 0
+        next if op == Op::Store && i.aux.as(MemAux).ordering == Ordering::NotAtomic && long_int?(i.args[0].type) && !long_int?(i.args[1].type)
+        return carried
       end
     end
-    wide.empty? ? nil : wide[0]
+    nil
   end
 
   def run : MFunction
     wide = first_wide_int
     if wide
-      fail("an #{wide} value is not lowered in this slice: the native backend lowers integers up to 128 bits")
+      fail("an #{wide} value is used in a way that is not lowered: past 128 bits the native backend lowers an extension of a value of at most 64 bits, a constant, a plain load and store, and a truncation")
       return @mf
     end
     return run_naked if naked_fn?
@@ -686,6 +728,17 @@ class Isel
 
   # Parameters arrive by the convention: registers, or the caller's outgoing area above the frame record.
   def lower_params : Nil
+    # An internal result that travels in memory: the buffer's address arrives in the indirect-result register,
+    # and is taken before anything else can use that register.
+    if @fn.cc == CallConv::Iyi && iyi_result_indirect?(@layout, @desc, @fn.fn_type.return_type)
+      d = gpr
+      @mf.mark_pointer(d)
+      m = mop(MOp::Mov)
+      m.defs << vop(d)
+      m.uses << pop(@desc.indirect_result)
+      emit(m)
+      @iyi_result_vreg = d
+    end
     params = @fn.params.map { |p| p.type }
     sret_first = sret_param?(0)
     assignment = param_assignment(params, sret_first)
@@ -1391,13 +1444,15 @@ class Isel
     src_type = i.args[0].type
     src = first_leaf(i.args[0])
     t = i.type
-    if i128?(t)
-      if op == Op::ZExt
-        bind_result(i, [zext(src, src_type), const_gpr(0_i64)])
-      else
-        lo = sext64(src, src_type)
-        bind_result(i, [lo, binop(MOp::Asr, lo, const_gpr(63_i64))])
+    if i128?(t) || long_int?(t)
+      # The low word, then the words above it: zero for a zero extension, the sign for a sign extension.
+      words = [op == Op::ZExt ? zext(src, src_type) : sext64(src, src_type)] of Int32
+      k = 1
+      while k < t.bits // 64
+        words << (op == Op::ZExt ? const_gpr(0_i64) : binop(MOp::Asr, words[0], const_gpr(63_i64)))
+        k = k + 1
       end
+      bind_result(i, words)
       return
     end
     if op == Op::Trunc
@@ -1769,7 +1824,23 @@ class Isel
 
   def lower_ret(i : Inst) : Nil
     ret_type = @fn.fn_type.return_type
-    if !ret_type.void? && i.args.size == 1
+    if @iyi_result_vreg >= 0 && i.args.size == 1
+      # The result travels in memory: each leaf is written at its offset in the caller's buffer.
+      vals = materialize(i.args[0])
+      flat = flatten_leaves(@layout, ret_type)
+      k = 0
+      while k < flat.size
+        lt = flat[k][1]
+        m = mop(MOp::Str)
+        m.size = mem_bits(lt)
+        m.fp = lt.float?
+        m.imm = flat[k][0]
+        m.uses << vop(vals[k])
+        m.uses << vop(@iyi_result_vreg)
+        emit(m)
+        k = k + 1
+      end
+    elsif !ret_type.void? && i.args.size == 1
       assigned = result_assignment(ret_type, @fn.cc == CallConv::Iyi)
       if assigned.is_a?(String)
         fail(assigned.as(String))
@@ -1809,7 +1880,10 @@ class Isel
 
   # A naked function (SPEC 2.2 step 3): the body is the assembled template alone. Its arguments stay where the
   # convention left them, so nothing is bound for them and no prologue, epilogue, probe or save is emitted. The body
-  # is one block holding one void inline asm call with no operands, and an unreachable terminator.
+  # is one block holding one void inline asm call with no operands, and a terminator: `unreachable`, or the `ret`
+  # the hosted compiler writes after the template (the prelude's context switch and fiber entry end `ret void`
+  # and `ret i64 0`). The template returns itself, so that `ret` is never reached; it is emitted as LLVM emits it,
+  # the constant moved to the result register and a bare return, with no epilogue.
   def run_naked : MFunction
     @mf.naked = true
     @fn.blocks.each do |b|
@@ -1824,6 +1898,10 @@ class Isel
     @cur_ir_name = @fn.blocks[0].name
     @fn.blocks[0].insts.each do |i|
       next if i.op == Op::Unreachable
+      if i.op == Op::Ret
+        lower_ret(i)
+        next
+      end
       unless asm_call?(i)
         fail("a naked function holds one inline asm call and nothing else; #{i.op} is not allowed")
         return @mf
@@ -1831,6 +1909,48 @@ class Isel
       lower_asm(i, i.args[0].as(Inst).aux.as(AsmAux))
     end
     @mf
+  end
+
+  # The symbol constraint `s`, for the one template the prelude writes with it: the address of a thread-local
+  # global's TLV descriptor on darwin (`adrp $0, ${1:c}@TLVPPAGE` then `ldr $0, [$0, ${1:c}@TLVPPAGEOFF]`, with
+  # constraints `=r,s`). That pair is what LoadTlvp emits, with the same two relocations. Any other template with
+  # a symbol operand is refused by name.
+  def lower_asm_tlv_descriptor(i : Inst, aux : AsmAux) : Nil
+    # The template with each run of blanks, tabs and line ends as one blank.
+    words = String.build do |io|
+      gap = false
+      k = 0
+      while k < aux.template.bytesize
+        b = aux.template.byte_at(k)
+        if b == 32_u8 || b == 9_u8 || b == 10_u8 || b == 13_u8
+          gap = true
+        else
+          io << ' ' if gap && io.bytesize > 0
+          gap = false
+          io << aux.template[k, 1]
+        end
+        k = k + 1
+      end
+    end
+    unless words == "adrp $0, ${1:c}@TLVPPAGE ldr $0, [$0, ${1:c}@TLVPPAGEOFF]"
+      fail("inline asm with a symbol operand ('s') is lowered only for the TLV descriptor load; this template is not it")
+      return
+    end
+    unless @darwin
+      fail("the TLV descriptor load is a darwin form")
+      return
+    end
+    target = i.args.size == 2 ? i.args[1] : nil
+    unless target.is_a?(Global) && target.as(Global).tls != TlsModel::None
+      fail("the TLV descriptor load names a value that is not a thread-local global")
+      return
+    end
+    desc = gpr
+    m = mop(MOp::LoadTlvp)
+    m.sym = symbol_index(target.as(Global).name)
+    m.defs << vop(desc)
+    emit(m)
+    bind_result(i, [desc])
   end
 
   # The constraint items of an asm call, split at their commas. An empty constraint string has none.
@@ -1894,6 +2014,10 @@ class Isel
     end
     if aux.dialect == AsmDialect::Intel
       fail("the Intel asm dialect is not lowered in this slice")
+      return
+    end
+    if aux.constraints == "=r,s"
+      lower_asm_tlv_descriptor(i, aux)
       return
     end
     items = asm_items(aux.constraints)
@@ -2154,6 +2278,21 @@ class Isel
       end
       k = k + 1
     end
+    # An internal result that travels in memory: a buffer in this frame, its address in the indirect-result register.
+    result_slot = -1
+    if callee_iyi?(i) && iyi_result_indirect?(@layout, @desc, i.type)
+      result_slot = @mf.frame.add_slot(@layout.alloc_size(i.type), @layout.abi_align(i.type))
+      buffer = gpr
+      @mf.mark_pointer(buffer)
+      m = mop(MOp::AddrFrame)
+      m.defs << vop(buffer)
+      m.uses << Operand.new(OperandKind::FrameSlot, result_slot, 0_i64)
+      emit(m)
+      m = mop(MOp::Mov)
+      m.defs << pop(@desc.indirect_result)
+      m.uses << vop(buffer)
+      emit(m)
+    end
     callee = i.args[0]
     if callee.is_a?(Function)
       m = mop(MOp::Bl)
@@ -2171,6 +2310,30 @@ class Isel
       emit(m)
     end
     return if i.type.void?
+    if result_slot >= 0
+      base = gpr
+      @mf.mark_pointer(base)
+      m = mop(MOp::AddrFrame)
+      m.defs << vop(base)
+      m.uses << Operand.new(OperandKind::FrameSlot, result_slot, 0_i64)
+      emit(m)
+      read = [] of Int32
+      flatten_leaves(@layout, i.type).each do |l|
+        lt = l[1]
+        d = @mf.new_vreg(leaf_class(lt))
+        m = mop(MOp::Ldr)
+        m.size = mem_bits(lt)
+        m.fp = lt.float?
+        m.signed = lt.int? && lt.bits > 1
+        m.imm = l[0]
+        m.defs << vop(d)
+        m.uses << vop(base)
+        emit(m)
+        read << d
+      end
+      bind_result(i, read)
+      return
+    end
     assigned = result_assignment(i.type, callee_iyi?(i))
     if assigned.is_a?(String)
       fail(assigned.as(String))
@@ -2306,11 +2469,65 @@ class Isel
       lower_transfer(i, id == IntrinsicId::Memmove)
     elsif id == IntrinsicId::Memset
       lower_memset(i)
+    elsif id == IntrinsicId::Fabs
+      fp_unary(i, MOp::FAbs, 0_i64)
+    elsif id == IntrinsicId::Sqrt
+      fp_unary(i, MOp::FSqrt, 0_i64)
+    elsif id == IntrinsicId::Roundeven
+      fp_unary(i, MOp::FRint, 0_i64)
+    elsif id == IntrinsicId::Ceil
+      fp_unary(i, MOp::FRint, 1_i64)
+    elsif id == IntrinsicId::Floor
+      fp_unary(i, MOp::FRint, 2_i64)
+    elsif id == IntrinsicId::Trunc
+      fp_unary(i, MOp::FRint, 3_i64)
+    elsif id == IntrinsicId::Round
+      fp_unary(i, MOp::FRint, 4_i64)
+    elsif id == IntrinsicId::Rint
+      fp_unary(i, MOp::FRint, 6_i64)
+    elsif id == IntrinsicId::Minnum || id == IntrinsicId::Maxnum
+      bind_result(i, [fbinop(id == IntrinsicId::Minnum ? MOp::FMinNm : MOp::FMaxNm, first_leaf(i.args[0]), first_leaf(i.args[1]), i.type.bits)])
+    elsif id == IntrinsicId::Copysign
+      lower_copysign(i)
     elsif !overflow_form(id).family
       fail("intrinsic #{intrinsic_stem(id)} is not lowered in this slice")
     else
       lower_overflow(i, id)
     end
+  end
+
+  # A floating-point intrinsic that is one instruction of one operand: fabs, fsqrt and the frint family, whose
+  # rounding mode is `mode`.
+  def fp_unary(i : Inst, op : MOp, mode : Int64) : Nil
+    unless i.type.float?
+      fail("intrinsic #{intrinsic_stem(i.aux.as(IntrinsicAux).id)} on #{i.type} is not lowered: only float and double are")
+      return
+    end
+    d = @mf.new_vreg(RegClass::Fpr)
+    m = mop(op)
+    m.fp = true
+    m.size = i.type.bits
+    m.imm = mode
+    m.defs << vop(d)
+    m.uses << vop(first_leaf(i.args[0]))
+    emit(m)
+    bind_result(i, [d])
+  end
+
+  # copysign(x, y): the magnitude of x with the sign of y, computed on the bit patterns in integer registers.
+  def lower_copysign(i : Inst) : Nil
+    bits = i.type.bits
+    unless i.type.float? && (bits == 32 || bits == 64)
+      fail("intrinsic copysign on #{i.type} is not lowered: only float and double are")
+      return
+    end
+    sign = bits == 64 ? (1_i64 << 63) : 2147483648_i64
+    magnitude = bits == 64 ? 9223372036854775807_i64 : 2147483647_i64
+    x = move_bits_to_gp(first_leaf(i.args[0]), bits)
+    y = move_bits_to_gp(first_leaf(i.args[1]), bits)
+    kept = binop(MOp::And, x, const_gpr(magnitude))
+    taken = binop(MOp::And, y, const_gpr(sign))
+    bind_result(i, [move_bits_to_fp(binop(MOp::Orr, kept, taken), bits)])
   end
 
   # The overflow family: the value and a flag. Narrow widths compute in 64 bits and compare the result with

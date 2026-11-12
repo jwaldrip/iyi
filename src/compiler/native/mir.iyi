@@ -115,6 +115,11 @@ pub enum MOp
   FMul
   FDiv
   FNeg
+  FAbs
+  FSqrt
+  FRint # imm: the rounding mode field (0 nearest-even, 1 up, 2 down, 3 toward zero, 4 away, 6 current mode exact)
+  FMinNm
+  FMaxNm
   FCmp   # flags <- a ? b (fp); size 32 or 64
   FCvt   # fpr <- fpr; size is the destination width
   Scvtf  # fpr <- signed 64-bit gpr; size is the destination width

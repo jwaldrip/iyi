@@ -31,6 +31,7 @@ pub struct Target
     {% end %}
   end
 
+  # Every target the linked LLVM was built with: each `init_*` below is empty for a target it was not.
   def self.init_all_targets : Nil
     init_aarch64
     init_x86
@@ -43,95 +44,112 @@ pub struct Target
   end
 
   def self.init_aarch64 : Nil
-    LibLLVM.initialize_aarch64_target_info
-    LibLLVM.initialize_aarch64_target
-    LibLLVM.initialize_aarch64_target_mc
-    LibLLVM.initialize_aarch64_asm_printer
-    LibLLVM.initialize_aarch64_asm_parser
+    {% if LibLLVM::HAS_AARCH64_TARGET %}
+      LibLLVM.initialize_aarch64_target_info
+      LibLLVM.initialize_aarch64_target
+      LibLLVM.initialize_aarch64_target_mc
+      LibLLVM.initialize_aarch64_asm_printer
+      LibLLVM.initialize_aarch64_asm_parser
+    {% end %}
   end
 
   def self.init_x86 : Nil
-    LibLLVM.initialize_x86_target_info
-    LibLLVM.initialize_x86_target
-    LibLLVM.initialize_x86_target_mc
-    LibLLVM.initialize_x86_asm_printer
-    LibLLVM.initialize_x86_asm_parser
+    {% if LibLLVM::HAS_X86_TARGET %}
+      LibLLVM.initialize_x86_target_info
+      LibLLVM.initialize_x86_target
+      LibLLVM.initialize_x86_target_mc
+      LibLLVM.initialize_x86_asm_printer
+      LibLLVM.initialize_x86_asm_parser
+    {% end %}
   end
 
   def self.init_arm : Nil
-    LibLLVM.initialize_arm_target_info
-    LibLLVM.initialize_arm_target
-    LibLLVM.initialize_arm_target_mc
-    LibLLVM.initialize_arm_asm_printer
-    LibLLVM.initialize_arm_asm_parser
+    {% if LibLLVM::HAS_ARM_TARGET %}
+      LibLLVM.initialize_arm_target_info
+      LibLLVM.initialize_arm_target
+      LibLLVM.initialize_arm_target_mc
+      LibLLVM.initialize_arm_asm_printer
+      LibLLVM.initialize_arm_asm_parser
+    {% end %}
   end
 
   def self.init_webassembly : Nil
-    LibLLVM.initialize_webassembly_target_info
-    LibLLVM.initialize_webassembly_target
-    LibLLVM.initialize_webassembly_target_mc
-    LibLLVM.initialize_webassembly_asm_printer
-    LibLLVM.initialize_webassembly_asm_parser
+    {% if LibLLVM::HAS_WEBASSEMBLY_TARGET %}
+      LibLLVM.initialize_webassembly_target_info
+      LibLLVM.initialize_webassembly_target
+      LibLLVM.initialize_webassembly_target_mc
+      LibLLVM.initialize_webassembly_asm_printer
+      LibLLVM.initialize_webassembly_asm_parser
+    {% end %}
   end
 
   def self.init_riscv : Nil
-    LibLLVM.initialize_riscv_target_info
-    LibLLVM.initialize_riscv_target
-    LibLLVM.initialize_riscv_target_mc
-    LibLLVM.initialize_riscv_asm_printer
-    LibLLVM.initialize_riscv_asm_parser
+    {% if LibLLVM::HAS_RISCV_TARGET %}
+      LibLLVM.initialize_riscv_target_info
+      LibLLVM.initialize_riscv_target
+      LibLLVM.initialize_riscv_target_mc
+      LibLLVM.initialize_riscv_asm_printer
+      LibLLVM.initialize_riscv_asm_parser
+    {% end %}
   end
 
   def self.init_mips : Nil
-    LibLLVM.initialize_mips_target_info
-    LibLLVM.initialize_mips_target
-    LibLLVM.initialize_mips_target_mc
-    LibLLVM.initialize_mips_asm_printer
-    LibLLVM.initialize_mips_asm_parser
+    {% if LibLLVM::HAS_MIPS_TARGET %}
+      LibLLVM.initialize_mips_target_info
+      LibLLVM.initialize_mips_target
+      LibLLVM.initialize_mips_target_mc
+      LibLLVM.initialize_mips_asm_printer
+      LibLLVM.initialize_mips_asm_parser
+    {% end %}
   end
 
   def self.init_powerpc : Nil
-    LibLLVM.initialize_powerpc_target_info
-    LibLLVM.initialize_powerpc_target
-    LibLLVM.initialize_powerpc_target_mc
-    LibLLVM.initialize_powerpc_asm_printer
-    LibLLVM.initialize_powerpc_asm_parser
+    {% if LibLLVM::HAS_POWERPC_TARGET %}
+      LibLLVM.initialize_powerpc_target_info
+      LibLLVM.initialize_powerpc_target
+      LibLLVM.initialize_powerpc_target_mc
+      LibLLVM.initialize_powerpc_asm_printer
+      LibLLVM.initialize_powerpc_asm_parser
+    {% end %}
   end
 
   def self.init_bpf : Nil
-    LibLLVM.initialize_bpf_target_info
-    LibLLVM.initialize_bpf_target
-    LibLLVM.initialize_bpf_target_mc
-    LibLLVM.initialize_bpf_asm_printer
-    LibLLVM.initialize_bpf_asm_parser
+    {% if LibLLVM::HAS_BPF_TARGET %}
+      LibLLVM.initialize_bpf_target_info
+      LibLLVM.initialize_bpf_target
+      LibLLVM.initialize_bpf_target_mc
+      LibLLVM.initialize_bpf_asm_printer
+      LibLLVM.initialize_bpf_asm_parser
+    {% end %}
   end
 
+  # True when `name` is a target this LLVM was built with, initialized by the call.
   def self.init_target(name : String) : Bool
     case name.downcase
     when "aarch64", "arm64"
       init_aarch64
-      true
+      LibLLVM::HAS_AARCH64_TARGET
     when "x86", "x86_64", "x86-64", "i386", "i686"
       init_x86
-      true
+      LibLLVM::HAS_X86_TARGET
     when "arm"
       init_arm
-      true
+      LibLLVM::HAS_ARM_TARGET
     when "webassembly", "wasm", "wasm32"
       init_webassembly
-      true
+      LibLLVM::HAS_WEBASSEMBLY_TARGET
     when "riscv", "riscv32", "riscv64"
       init_riscv
-      true
+      LibLLVM::HAS_RISCV_TARGET
     when "mips"
       init_mips
-      true
+      LibLLVM::HAS_MIPS_TARGET
     when "powerpc", "ppc", "ppc64"
       init_powerpc
-      true
+      LibLLVM::HAS_POWERPC_TARGET
     when "bpf"
       init_bpf
-      true
+      LibLLVM::HAS_BPF_TARGET
     else
       false
     end

@@ -9,10 +9,11 @@ module compiler/native/emit
 
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/ir/inst::{Op, Inst, GepAux}
+import compiler/ir/inst::{Op, Inst}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{DataLayout}
+import compiler/native/const_expr::{ConstAddress, reduce_const}
 import compiler/native/obj/object::{ObjectFile, Section, SectionKind, Symbol, SymbolKind, SymbolBinding, Reloc, RelocKind}
 import compiler/native/aarch64/regs::{reg_name}
 import std/slice::{Slice, Bytes}
@@ -93,10 +94,22 @@ pub def write_initializer(layout : DataLayout, w : SectionWriter, index : Hash(S
     return "unsupported initializer value"
   end
   i = v.as(Inst)
-  if i.op == Op::ConstExpr && i.aux.is_a?(GepAux)
-    # A getelementptr over a global: a pointer to the global plus a constant byte offset. The offset is the
-    # relocation's addend; the bytes at the site stay zero (C1's object contract).
-    return gep_address(layout, index, w, i)
+  if i.op == Op::ConstExpr || i.op == Op::GlobalAddr || i.op == Op::FunctionAddr
+    # A constant expression reduces to a symbol plus a byte offset, or to a plain integer (const_expr.iyi). With
+    # a symbol the offset is the relocation's addend and the bytes at the site stay zero (C1's object contract).
+    reduced = reduce_const(layout, i)
+    return reduced.as(String) if reduced.is_a?(String)
+    address = reduced.as(ConstAddress)
+    if address.base.nil?
+      w.put_le(address.offset, layout.store_size(t).to_i32)
+      return nil
+    end
+    return "the address of #{address.symbol_name} is written into #{layout.store_size(t)} bytes" unless layout.store_size(t) == 8_i64
+    sym = index[address.symbol_name]?
+    return "no symbol for #{address.symbol_name}" unless sym
+    w.reloc(RelocKind::Abs64, sym, address.offset)
+    w.put_le(0_i64, 8)
+    return nil
   end
   if i.op == Op::ConstInt
     w.put_le(i.aux_int, layout.store_size(t).to_i32)
@@ -140,39 +153,6 @@ pub def write_initializer(layout : DataLayout, w : SectionWriter, index : Hash(S
     end
   end
   "constant expressions and this initializer form are not lowered in this slice (#{i.op})"
-end
-
-# The byte offset a constant getelementptr adds to its base, and the symbol it names.
-def gep_address(layout : DataLayout, index : Hash(String, Int32), w : SectionWriter, i : Inst) : String?
-  base = i.args[0]
-  name = base.is_a?(Global) ? base.as(Global).name : (base.is_a?(Function) ? base.as(Function).name : "")
-  return "a constant getelementptr must name a global or function" if name.empty?
-  sym = index[name]?
-  return "no symbol for #{name}" unless sym
-  g = i.aux.as(GepAux)
-  off = 0_i64
-  cur = g.source_type
-  k = 1
-  while k < i.args.size
-    ix = i.args[k]
-    return "a constant getelementptr index must be a constant integer" unless ix.is_a?(Inst) && ix.as(Inst).op == Op::ConstInt
-    n = ix.as(Inst).aux_int
-    if k == 1
-      off = off + n * layout.alloc_size(cur)
-    elsif cur.struct?
-      off = off + layout.offset_of(cur, n.to_i32)
-      cur = cur.struct_element_types[n.to_i32]
-    elsif cur.array?
-      off = off + n * layout.alloc_size(cur.element_type)
-      cur = cur.element_type
-    else
-      return "a constant getelementptr walks into #{cur}"
-    end
-    k = k + 1
-  end
-  w.reloc(RelocKind::Abs64, sym, off)
-  w.put_le(0_i64, 8)
-  nil
 end
 
 def pad_to_offset(w : SectionWriter, at : Int64) : Nil
