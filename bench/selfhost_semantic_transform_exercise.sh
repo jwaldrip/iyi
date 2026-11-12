@@ -333,6 +333,16 @@ LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "an or binds a temporary and runs the right side on true" "$LITERAL" 'If.new(Assign.new(temp.clone, left), temp.clone, node.right)' 'If.new(Assign.new(temp.clone, left), node.right, temp.clone)' -- check_literals_agree || status=1
 LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
 prove_mutation "an or is expanded as an and" "$LITERAL" 'expanded = expand_or(node)' 'expanded = expand_and(node)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a tuple subject binds no temporaries for the when chain" "$LITERAL" 'tuple_temps = temps' 'tuple_temps = nil' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a tuple condition compares its underscore elements" "$LITERAL" 'if !lh.is_a?(Underscore)' 'if true' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a tuple condition's elements are or-ed" "$LITERAL" 'comp = And.new(prev, sub_comp)' 'comp = Or.new(prev, sub_comp)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a condition against a tuple subject is tested with the first element" "$LITERAL" 'case_when_comparison(TupleLiteral.new(whole), cond)' 'case_when_comparison(temps[0], cond)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a definition's argument defaults are not lowered" "$LITERAL" 'transform_many(node.args)' 'node.args.size' -- check_literals_agree || status=1
 echo "  $LIT_MUTATIONS literal mutation proofs run"
 
 echo

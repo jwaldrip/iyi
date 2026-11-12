@@ -49,7 +49,7 @@ module compiler/semantic/literal_expander
 # Named tuples have no expansion in the hosted expander either, so none here.
 
 import compiler/semantic/normalizer::{NormalizerProgram}
-import compiler/syntax/ast::{ASTNode, And, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, Cast, CharLiteral, ClassVar, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, MacroExpression, MacroFor, MacroIf, Metaclass, MultiAssign, NilLiteral, Nop, Not, NumberLiteral, Or, Path, RangeLiteral, Select, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
+import compiler/syntax/ast::{ASTNode, And, ArrayLiteral, Assign, BoolLiteral, Block, Call, Case, Cast, CharLiteral, ClassVar, Def, Expressions, Generic, HashLiteral, If, InstanceVar, IsA, MacroExpression, MacroFor, MacroIf, Metaclass, MultiAssign, NilLiteral, Nop, Not, NumberLiteral, Or, Path, RangeLiteral, Select, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeOf, Underscore, Var, When}
 import compiler/syntax/transformer::{Transformer}
 
 pub class LiteralExpander < Transformer
@@ -71,10 +71,6 @@ pub class LiteralExpander < Transformer
   end
 
   def transform(node : Case) : ASTNode
-    # A tuple subject is not ported: the case stays as written.
-    if node.cond.is_a?(TupleLiteral)
-      return node
-    end
     expanded = expand_case(node)
     expanded.transform(self)
   end
@@ -114,6 +110,29 @@ pub class LiteralExpander < Transformer
   end
 
   def transform(node : MacroExpression) : ASTNode
+    node
+  end
+
+  # The shared transformer returns an argument as written. The hosted walk
+  # reaches an argument's default value and restriction, so this one does too.
+  def transform(node : Arg) : ASTNode
+    if d = node.default_value
+      node.default_value = d.transform(self)
+    end
+    if r = node.restriction
+      node.restriction = r.transform(self)
+    end
+    node
+  end
+
+  # The shared transformer does not enter a definition's arguments. The hosted
+  # walk visits them, so their default values are lowered, before the body.
+  def transform(node : Def) : ASTNode
+    if r = node.receiver
+      node.receiver = r.transform(self)
+    end
+    transform_many(node.args)
+    node.body = node.body.transform(self)
     node
   end
 
@@ -328,7 +347,24 @@ pub class LiteralExpander < Transformer
     end
 
     assigns = [] of ASTNode
-    subject = bind_subject(cond, assigns)
+    subject : ASTNode? = nil
+    tuple_temps : Array(ASTNode)? = nil
+    if cond.is_a?(TupleLiteral)
+      temps = [] of ASTNode
+      elems = cond.as(TupleLiteral).elements
+      i = 0
+      while i < elems.size
+        if t = bind_subject(elems[i], assigns)
+          temps << t
+        end
+        i += 1
+      end
+      tuple_temps = temps
+      # The parser sets binds_it? only for a case whose subject is not a tuple,
+      # so a tuple subject leaves `it` unbound, even with one element.
+    else
+      subject = bind_subject(cond, assigns)
+    end
     it_subject = subject
     if !binds_it
       it_subject = nil
@@ -342,7 +378,7 @@ pub class LiteralExpander < Transformer
     chain = else_or_nop(node.else, it_subject)
     i = node.whens.size - 1
     while i >= 0
-      chain = when_chain(node.whens[i], bodies[i], subject, chain)
+      chain = when_chain(node.whens[i], bodies[i], subject, chain, tuple_temps)
       i -= 1
     end
     if assigns.empty?
@@ -395,13 +431,20 @@ pub class LiteralExpander < Transformer
 
   # One `when`: an `if` over its conditions, with `tail` as its `else`. When every
   # condition is a type, one `if` per type, each with its own copy of the body.
-  def when_chain(wh : When, body : ASTNode, subject : ASTNode?, tail : ASTNode) : ASTNode
+  # `tuple_temps` holds the subject's temporaries when the subject is a tuple.
+  def when_chain(wh : When, body : ASTNode, subject : ASTNode?, tail : ASTNode, tuple_temps : Array(ASTNode)? = nil) : ASTNode
     comps = [] of ASTNode
     j = 0
     while j < wh.conds.size
       wh_cond = wh.conds[j]
       if !wh_cond.is_a?(Underscore)
-        comps << case_when_comparison(subject, wh_cond)
+        if temps = tuple_temps
+          if tuple_comp = tuple_when_comparison(temps, wh_cond)
+            comps << tuple_comp
+          end
+        else
+          comps << case_when_comparison(subject, wh_cond)
+        end
       end
       j += 1
     end
@@ -416,6 +459,38 @@ pub class LiteralExpander < Transformer
       return cur
     end
     If.new(or_all(comps), body, tail)
+  end
+
+  # A `when` against a tuple subject, as the hosted expansion: a tuple condition
+  # is the `and` of its elements against the subject's temporaries, skipping `_`
+  # elements; any other condition is tested against the whole tuple. Nil when
+  # every element is `_`, which the hosted pass drops.
+  def tuple_when_comparison(temps : Array(ASTNode), cond : ASTNode) : ASTNode?
+    if cond.is_a?(TupleLiteral)
+      comp : ASTNode? = nil
+      elems = cond.as(TupleLiteral).elements
+      i = 0
+      while i < elems.size && i < temps.size
+        lh = elems[i]
+        if !lh.is_a?(Underscore)
+          sub_comp = case_when_comparison(temps[i], lh)
+          if prev = comp
+            comp = And.new(prev, sub_comp)
+          else
+            comp = sub_comp
+          end
+        end
+        i += 1
+      end
+      return comp
+    end
+    whole = [] of ASTNode
+    i = 0
+    while i < temps.size
+      whole << temps[i].clone
+      i += 1
+    end
+    case_when_comparison(TupleLiteral.new(whole), cond)
   end
 
   # The hosted `case_when_comparison`: a `nil` or a type is an `is_a?`, `X.class`
