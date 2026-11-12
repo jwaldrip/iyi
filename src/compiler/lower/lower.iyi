@@ -162,6 +162,8 @@ pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
   fn_type = low.module.types.func(params, ret_ir)
   target = Def.new(node.name, node.args, body.as(ASTNode))
   fn = codegen_fun(low, name, target, nil, rec.arg_types, fn_type, ret_ir)
+  # A `fun` definition is a C function (hosted External with no call_convention, call.cr:661); codegen_fun gives every def the iyi convention.
+  fn.call_convention = CallConv::C
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end
