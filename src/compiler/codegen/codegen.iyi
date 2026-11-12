@@ -226,6 +226,33 @@ class LocalVarCollector < Visitor
   end
 end
 
+# The port refuses, by name and before it writes any IR, a call or operand it
+# cannot lower. Emitting nothing for one would leave a block unterminated and
+# hand the verifier invalid IR, so the emitter stops with exit status 1.
+def refuse_port(message : String) : NoReturn
+  STDERR.puts "Error: #{message}"
+  status = 1
+  LibC.exit(status)
+end
+
+# The source form of an operand or call, for a refusal message.
+def operand_text(node : ASTNode) : String
+  if node.is_a?(Var)
+    node.as(Var).name
+  elsif node.is_a?(Call)
+    call = node.as(Call)
+    if recv = call.obj
+      "#{operand_text(recv)}.#{call.name}"
+    else
+      call.name
+    end
+  elsif node.is_a?(InstanceVar)
+    node.as(InstanceVar).name
+  else
+    "an expression"
+  end
+end
+
 # iyi has no `rescue` or `ensure` (SPEC.md III.1): an error is a value the caller
 # handles, and a panic is caught at a task boundary, never by a handler in the
 # body. The oracle refuses both in an iyi file with these sentences, and so does
@@ -402,6 +429,7 @@ pub class CodeGenVisitor < Visitor
   property llvm_struct_types : Hash(String, LLVMType)
   property current_self : LLVMValue?
   property current_self_type : String?
+  property current_method_name : String?
   property struct_call_temps : Array(LLVMValue)
   property struct_temp_index : Int32
   property block_methods : Hash(String, Def)
@@ -439,6 +467,7 @@ pub class CodeGenVisitor < Visitor
     @llvm_struct_types = Hash(String, LLVMType).new
     @current_self = nil
     @current_self_type = nil
+    @current_method_name = nil
     @struct_call_temps = [] of LLVMValue
     @struct_temp_index = 0
     @block_methods = Hash(String, Def).new
@@ -770,7 +799,7 @@ pub class CodeGenVisitor < Visitor
         @context.pointer
       elsif info = @custom_types[clean_name]?
         if info.is_struct
-          @llvm_struct_types[clean_name]
+          @llvm_struct_types[clean_name]? || forward_struct_type(clean_name)
         else
           @context.pointer
         end
@@ -778,6 +807,15 @@ pub class CodeGenVisitor < Visitor
         @context.int32
       end
     end
+  end
+
+  # A struct referenced before its definition is created here, named and with no
+  # body yet. Its definition sets the body on this same type, so the name is
+  # never created twice.
+  def forward_struct_type(name : String) : LLVMType
+    st = @context.struct_named(name)
+    @llvm_struct_types[name] = st
+    st
   end
 
   def llvm_type(t : Type) : LLVMType
@@ -1218,6 +1256,7 @@ pub class CodeGenVisitor < Visitor
     @current_fn = fn
     @current_fn_return_type = ret_type
     @current_fun_def = node
+    @current_method_name = nil
 
     @vars.clear
     @last = nil
@@ -2036,16 +2075,20 @@ pub class CodeGenVisitor < Visitor
     @builder.cond_br(cond_val, then_bb, else_bb)
 
     if node.else.nil? || node.else.is_a?(Nop)
-      # then branch
+      # The oracle lowers an if with no else through an exit block: the then
+      # branch and the empty else branch both jump to it, and code continues there.
+      exit_bb = fn.append_basic_block("exit")
       @builder.position_at_end(then_bb)
       @terminated = false
       node.then.accept(self)
       unless @terminated
-        @builder.br(else_bb)
+        @builder.br(exit_bb)
       end
 
-      # Code continues in else_bb
       @builder.position_at_end(else_bb)
+      @builder.br(exit_bb)
+
+      @builder.position_at_end(exit_bb)
       @terminated = false
       return false
     end
@@ -2292,6 +2335,43 @@ pub class CodeGenVisitor < Visitor
     end
     @terminated = true
     false
+  end
+
+  # The value of one operand of a binary operator. An operand that emits no
+  # value is refused by name: the port cannot type it, so it stops here rather
+  # than leave the operator's block open.
+  def binary_operand(operand : ASTNode, op_node : Call, side : String) : LLVMValue
+    @last = nil
+    operand.accept(self)
+    if val = @last
+      return val
+    end
+    refuse_port("port limitation: the port cannot type the #{side} operand '#{operand_text(operand)}' of '#{op_node.name}' in #{scope_name}, so it refuses instead of leaving the block unterminated (no IR is written)")
+  end
+
+  # A call with no definition the port can lower. A receiver-less call gets the
+  # oracle's own wording; a call on a receiver the port cannot type is named as a
+  # port limitation, because the oracle's wording depends on the receiver's type.
+  def refuse_undefined_call(node : Call) : NoReturn
+    if node.obj
+      refuse_port("port limitation: the port cannot type the call '#{operand_text(node)}' in #{scope_name}, so it refuses instead of leaving the call out of the IR (no IR is written)")
+    end
+    receiver = "top-level"
+    if st = @current_self_type
+      receiver = st
+    end
+    refuse_port("undefined method '#{node.name}' for #{receiver}")
+  end
+
+  # The function or method whose IR is being emitted, for a refusal message.
+  def scope_name : String
+    if name = @current_method_name
+      "'#{name}'"
+    elsif fd = @current_fun_def
+      "'#{fd.name}'"
+    else
+      "the top level"
+    end
   end
 
   def visit(node : Call) : Bool
@@ -3412,12 +3492,8 @@ pub class CodeGenVisitor < Visitor
 
       # Binary primitive operation
       if node.args.size == 1
-        @last = nil
-        obj.accept(self)
-        return false unless lhs = @last
-        @last = nil
-        node.args[0].accept(self)
-        return false unless rhs = @last
+        lhs = binary_operand(obj, node, "left")
+        rhs = binary_operand(node.args[0], node, "right")
 
         # Determine if float or signed
         is_float = (lhs.type.to_s == "double" || lhs.type.to_s == "float")
@@ -3557,6 +3633,8 @@ pub class CodeGenVisitor < Visitor
     if fn_val = fn
       callee_type = @fn_types[node.name]
       @last = @builder.call(callee_type, fn_val.to_value, arg_vals)
+    else
+      refuse_undefined_call(node)
     end
 
     @terminated = false
@@ -3660,6 +3738,7 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       cg.current_fn_return_type = init_ret_ty
       cg.current_self = self_param
       cg.current_self_type = info.name
+      cg.current_method_name = "#{info.name}#initialize"
 
       cg.param_values.clear
       cg.var_type_names.clear
@@ -4029,6 +4108,7 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       self_param.name = "self"
       cg.current_self = self_param
       cg.current_self_type = info.name
+      cg.current_method_name = "#{info.name}##{mname}"
       mdef.args.each_with_index do |a, aidx|
         m_fn.param(aidx + 1).name = a.name
       end
@@ -4581,7 +4661,7 @@ pub def compile_declarations_to_module(
   # Create LLVM struct types
   cg.custom_types.each_value do |info|
     next if CodeGenVisitor.primitive_type_name?(info.name) || info.name.starts_with?("Pointer(")
-    st = context.struct_named(info.name)
+    st = cg.llvm_struct_types[info.name]? || context.struct_named(info.name)
     elem_types = [] of LLVMType
     unless info.is_struct
       elem_types << context.int32

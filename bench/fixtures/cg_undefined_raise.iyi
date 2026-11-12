@@ -1,0 +1,11 @@
+class Boom
+  def go : Int32
+    raise "boom"
+    1
+  end
+end
+
+fun test_undefined_raise : Int32
+  b = Boom.new
+  b.go
+end

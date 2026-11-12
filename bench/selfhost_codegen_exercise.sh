@@ -23,14 +23,29 @@ CG_SRC="$REPO/src/compiler/codegen/codegen.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-# Refusal fixtures: iyi refuses these programs, so they have no IR to compare.
-# The port must refuse each one with the oracle's message and exit status (3b).
+# Refusal lists: these programs have no IR to compare, so the port must refuse
+# each one by name with the message and exit status recorded for it.
+#   REFUSAL_FIXTURES: compared with the oracle under its default prelude (section 3b).
+#   UNDEFINED_FIXTURES: compared with the oracle under --prelude=empty (section 3c).
+#   PORT_LIMIT_FIXTURES: the oracle accepts them under its default prelude, so the
+#     port's own message is recorded in section 3d, not an oracle message.
 REFUSAL_FIXTURES="cg_exceptions.iyi cg_raise.iyi"
+UNDEFINED_FIXTURES="cg_undefined_raise.iyi cg_undefined_runtime_raise.iyi"
+PORT_LIMIT_FIXTURES="cg_splat_operand.iyi"
+REFUSED_FIXTURES="$REFUSAL_FIXTURES $UNDEFINED_FIXTURES $PORT_LIMIT_FIXTURES"
 is_refusal() {
-  case " $REFUSAL_FIXTURES " in
+  case " $REFUSED_FIXTURES " in
     *" $1 "*) return 0 ;;
   esac
   return 1
+}
+
+# The expected port message for each port-limitation fixture, recorded here so a
+# change to the port's wording is a deliberate, reviewed change.
+port_limit_expected() {
+  case "$1" in
+    cg_splat_operand.iyi) echo "Error: port limitation: the port cannot type the call 'keys.size' in 'Gather#run_splat', so it refuses instead of leaving the call out of the IR (no IR is written)" ;;
+  esac
 }
 
 if command -v brew >/dev/null 2>&1; then
@@ -205,7 +220,7 @@ for fixture in "$REPO"/bench/fixtures/cg_*.iyi; do
 done
 echo "  Parity summary: $((fixture_count - diverged))/$fixture_count codegen fixtures match 100% ($total_functions functions compared)"
 
-echo "== 3b. Refusal fixtures: the port must refuse each with the oracle's message and exit status"
+echo "== 3b. Refusal fixtures (oracle under its default prelude, which refuses rescue and ensure only under iyi's own library): the port must refuse each with the oracle's message and exit status"
 refusal_count=0
 refusal_diverged=0
 for name in $REFUSAL_FIXTURES; do
@@ -229,6 +244,58 @@ for name in $REFUSAL_FIXTURES; do
   fi
 done
 echo "  Refusal summary: $((refusal_count - refusal_diverged))/$refusal_count refusal fixtures match the oracle's message and exit status"
+
+echo "== 3c. Undefined-method refusals: the port must refuse each with the oracle's message and exit status under --prelude=empty"
+undefined_count=0
+undefined_diverged=0
+for name in $UNDEFINED_FIXTURES; do
+  fixture="$REPO/bench/fixtures/$name"
+  undefined_count=$((undefined_count + 1))
+  oracle_out="$("$IYI" build --prelude=empty -o "$WORK/oracle_refusal_$name" "$fixture" 2>&1)"
+  oracle_status=$?
+  printf '%s\n' "$oracle_out" | grep '^Error: ' | head -1 > "$WORK/oracle_refusal_$name.msg"
+  printf '%s\n' "$oracle_status" > "$WORK/oracle_refusal_$name.status"
+  "$WORK/exercise" --dump-ir "$fixture" > "$WORK/port_refusal_$name.out" 2>&1
+  port_status=$?
+  grep '^Error: ' "$WORK/port_refusal_$name.out" | head -1 > "$WORK/port_refusal_$name.msg"
+  if [ "$oracle_status" -ne 0 ] && [ "$oracle_status" -eq "$port_status" ] && [ -s "$WORK/oracle_refusal_$name.msg" ] && cmp -s "$WORK/oracle_refusal_$name.msg" "$WORK/port_refusal_$name.msg"; then
+    echo "  $name: refused as the oracle refuses it (exit $port_status): $(cat "$WORK/oracle_refusal_$name.msg")"
+  else
+    echo "  FAIL: $name: oracle exit $oracle_status, port exit $port_status"
+    echo "    oracle: $(cat "$WORK/oracle_refusal_$name.msg")"
+    echo "    port:   $(cat "$WORK/port_refusal_$name.msg")"
+    undefined_diverged=$((undefined_diverged + 1))
+    status=1
+  fi
+done
+echo "  Undefined-method summary: $((undefined_count - undefined_diverged))/$undefined_count undefined-method fixtures match the oracle's message and exit status"
+
+echo "== 3d. Port-limitation refusals: the port must refuse each by name with its recorded message and exit status 1; the oracle accepts each under its default prelude"
+port_limit_count=0
+port_limit_diverged=0
+for name in $PORT_LIMIT_FIXTURES; do
+  fixture="$REPO/bench/fixtures/$name"
+  port_limit_count=$((port_limit_count + 1))
+  oracle_ok=0
+  if "$IYI" build -o "$WORK/oracle_accept_$name" "$fixture" > /dev/null 2>&1; then
+    oracle_ok=1
+  fi
+  "$WORK/exercise" --dump-ir "$fixture" > "$WORK/port_limit_$name.out" 2>&1
+  port_status=$?
+  got="$(grep '^Error: ' "$WORK/port_limit_$name.out" | head -1)"
+  expected="$(port_limit_expected "$name")"
+  if [ "$oracle_ok" -eq 1 ] && [ "$port_status" -eq 1 ] && [ -n "$expected" ] && [ "$got" = "$expected" ]; then
+    echo "  $name: oracle accepts it; port refuses by name (exit 1): $got"
+  else
+    echo "  FAIL: $name: oracle accepts $oracle_ok, port exit $port_status"
+    echo "    expected: $expected"
+    echo "    port:     $got"
+    port_limit_diverged=$((port_limit_diverged + 1))
+    status=1
+  fi
+done
+echo "  Port-limitation summary: $((port_limit_count - port_limit_diverged))/$port_limit_count port-limitation fixtures refused by name as recorded"
+
 
 echo
 echo "== 4. Emitted native object linking and C driver execution comparison"
@@ -412,6 +479,28 @@ prove_mutation "corrupt the refusal exit status" "$CG_SRC" \
   'LibC.exit(1)' \
   'LibC.exit(0)' \
   -- check_refusal_mutant cg_exceptions.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an undefined method emits nothing instead of refusing" "$CG_SRC" \
+  '      refuse_undefined_call(node)' \
+  '      # refuse_undefined_call(node)' \
+  -- check_refusal_mutant cg_undefined_raise.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "the port refusal exits with status 0" "$CG_SRC" \
+  '  status = 1' \
+  '  status = 0' \
+  -- check_refusal_mutant cg_undefined_runtime_raise.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an if with no else branches straight to its else block" "$CG_SRC" \
+'      @builder.br(exit_bb)
+
+      @builder.position_at_end(exit_bb)' \
+'      @builder.br(else_bb)
+
+      @builder.position_at_end(exit_bb)' \
+  -- check_cg_mutant cg_nil_local.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 

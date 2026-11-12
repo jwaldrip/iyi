@@ -1,0 +1,4 @@
+fun test_undefined_crystal_raise : Int32
+  __crystal_raise("boom", 1)
+  1
+end

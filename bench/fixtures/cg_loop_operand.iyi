@@ -1,0 +1,22 @@
+class Ring
+  @size : Int32
+
+  def initialize(size : Int32)
+    @size = size
+  end
+
+  def total : Int32
+    sum = 0
+    at = 0
+    while at < @size
+      sum = sum &+ at
+      at = at &+ 1
+    end
+    sum
+  end
+end
+
+fun test_loop_operand : Int32
+  r = Ring.new(3)
+  r.total
+end

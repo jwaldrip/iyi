@@ -1,0 +1,15 @@
+class Gather
+  def [](key : Int32) : Int32
+    key &+ 1
+  end
+
+  def run_splat(*keys : Int32) : Int32
+    total = 0
+    at = 0
+    while at < keys.size
+      total = total &+ self[keys[at]]
+      at = at + 1
+    end
+    total
+  end
+end
