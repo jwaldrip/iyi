@@ -173,6 +173,7 @@ pub class Lowerer
     old = @builder.insert_block
     @builder.position_at_end(current_alloca_block)
     inst = @builder.alloca(type, name)
+    inst.alignment = @typer.align_of(type)
     if o = old
       @builder.position_at_end(o.as(Block))
     end

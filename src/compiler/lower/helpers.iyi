@@ -1,0 +1,45 @@
+module compiler/lower/helpers
+
+# The helpers of the hosted `src/compiler/iyi/codegen/llvm_builder_helper.cr` and
+# `iyi_llvm_builder.cr` that the core lowering uses, under their hosted names, over the
+# IR builder (`compiler/ir/builder`). A helper that emits an instruction also sets the
+# alignment the hosted helper sets (hosted `set_align`, codegen.cr), so the text of a
+# load or a store matches the hosted module's.
+#
+# Helpers the core does not call yet (the call and cast families, the string and
+# symbol constants) are not here: each is ported by the slice that reads it.
+
+import compiler/ir/inst::{Inst}
+import compiler/ir/values::{Value}
+import compiler/ir/types::{IrType}
+import compiler/lower/context::{Lowerer}
+
+# The hosted `int1(n)`: an i1 constant of `value` (0 or 1).
+pub def int1(low : Lowerer, value : Int64) : Value
+  low.builder.const_int(low.module.types.int(1), value)
+end
+
+# The hosted `llvm_nil`: the one value of type `Nil`. The lowering keeps it only as a
+# marker: a function returning Nil returns void, and no instruction reads it.
+pub def llvm_nil(low : Lowerer) : Value
+  low.builder.const_undef(low.typer.nil_type)
+end
+
+# The hosted `set_align(value, bytes)`: the alignment an instruction is emitted with.
+pub def set_align(inst : Inst, bytes : Int32) : Nil
+  inst.alignment = bytes
+end
+
+# The hosted `store(value, ptr)`: a store aligned to the stored value's type.
+pub def store_aligned(low : Lowerer, value : Value, pointer : Value) : Inst
+  st = low.builder.store(value, pointer)
+  set_align(st, low.typer.align_of(value.type))
+  st
+end
+
+# The hosted `load(type, ptr)`: a load aligned to the type it reads.
+pub def load_aligned(low : Lowerer, type : IrType, pointer : Value, name : String = "") : Inst
+  ld = low.builder.load(type, pointer, name)
+  set_align(ld, low.typer.align_of(type))
+  ld
+end

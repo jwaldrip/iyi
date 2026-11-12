@@ -72,7 +72,7 @@ def triple_of(text : String) : String
 end
 
 # The IR text of a module, normalised the way the gate compares it.
-def normalised_lines(text : String) : Array(String)
+def normalised_lines(text : String, hosted : String) : Array(String)
   out = [] of String
   text.split("\n").each do |line|
     stripped = line.strip
@@ -81,9 +81,13 @@ def normalised_lines(text : String) : Array(String)
     next if stripped.starts_with?("source_filename")
     next if stripped.starts_with?("attributes #")
     next if stripped.starts_with?("declare") && stripped.includes?("@printf(")
-    next if stripped.includes?("::BUILD_") || stripped.starts_with?("%Nil = type")
+    next if stripped.includes?(hosted) || stripped.starts_with?("%Nil = type")
     next if stripped.includes?("@\"'")
     next if stripped.includes?("@\"''\"")
+    if pidx = line.index(" ; preds")
+      out << line[0, pidx]
+      next
+    end
     if idx = line.index(" #")
       out << line[0, idx] + " {"
     else
@@ -169,27 +173,37 @@ def compare(oracle : Array(String), port : Array(String)) : Int32
   identical
 end
 
-def run_oracle(path : String) : Nil
+def hosted_prefix(path : String) : String
+  found = ""
+  File.read(path).split("\n").each do |line|
+    stripped = line.strip
+    found = stripped if found.empty? && !stripped.empty? && !stripped.starts_with?("#")
+  end
+  raise "the hosted names file #{path} names no prefix" if found.empty?
+  found
+end
+
+def run_oracle(path : String, hosted : String) : Nil
   text = File.read(path)
   parsed = parse(text)
   if parsed.is_a?(IrParseError)
     raise parsed.as(IrParseError).to_s
   end
-  normalised_lines(print(parsed.as(Module))).each { |line| puts line }
+  normalised_lines(print(parsed.as(Module)), hosted).each { |line| puts line }
 end
 
-def run_lower(fixture : String, oracle_path : String) : Nil
+def run_lower(fixture : String, oracle_path : String, hosted : String) : Nil
   oracle_text = File.read(oracle_path)
   parsed = parse(oracle_text)
   raise parsed.as(IrParseError).to_s if parsed.is_a?(IrParseError)
-  oracle = normalised_lines(print(parsed.as(Module)))
+  oracle = normalised_lines(print(parsed.as(Module)), hosted)
   triple = triple_of(oracle_text)
 
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
   typer = LowerTyper.new(m.types, m.layout, true)
   codegen_program(analysis.root, analysis.visitor, typer, m)
-  port = normalised_lines(print(m))
+  port = normalised_lines(print(m), hosted)
   identical = compare(oracle, port)
   total = split_module(oracle)[2].size
   puts "SUMMARY identical=#{identical} total=#{total}"
@@ -229,9 +243,9 @@ def run : Nil
   end
   mode = args[0]
   if mode == "oracle"
-    run_oracle(args[1])
+    run_oracle(args[1], hosted_prefix(args[2]))
   elsif mode == "lower"
-    run_lower(args[1], args[2])
+    run_lower(args[1], args[2], hosted_prefix(args[3]))
   elsif mode == "context"
     check_context
   else

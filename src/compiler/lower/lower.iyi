@@ -7,18 +7,24 @@ module compiler/lower/lower
 # The emitted shape is the hosted one: `__crystal_main` takes `argc` and `argv`,
 # stores them in the `ARGC_UNSAFE` and `ARGV_UNSAFE` globals, lowers the program's
 # expressions, and returns the type of the last one (void for `Nil`); `main` calls
-# it and returns 0. The hosted build constants (`::BUILD_*`, which the program
-# stores on entry) are not emitted here: they are the compiler's own identity, not the
-# program's, and the gate leaves them out on both sides.
+# it and returns 0. The hosted build constants (the `::BUILD_*` globals, which the
+# program stores on entry) are not emitted here: they are the compiler's identity,
+# not the program's, and the gate leaves them out on both sides.
+#
+# Ported so far: the entry; `nil`, the integer and boolean literals; sequences;
+# a variable read (`Var`, a load) and assignment to a variable (`Assign`, an alloca
+# and a store). Still refused by name: a def and a call (S2c), and the rest of the
+# core, which the next increments port.
 
-import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, NilLiteral}
+import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, Def, Expressions, NilLiteral, NumberLiteral, Var}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Linkage}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper}
-import compiler/lower/context::{Lowerer}
+import compiler/lower/context::{Lowerer, LowerVar}
+import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_call, pending_visit_fun_def, pending_visit_node}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type}
@@ -48,18 +54,16 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   fn.call_convention = CallConv::C
   fn.name_param(fn.param(0), "argc")
   fn.name_param(fn.param(1), "argv")
-  st_argc = low.builder.store(fn.param(0), argc_global)
-  st_argc.alignment = low.typer.align_of(fn.param(0).type)
-  st_argv = low.builder.store(fn.param(1), argv_global)
-  st_argv.alignment = low.typer.align_of(fn.param(1).type)
+  store_aligned(low, fn.param(0), argc_global)
+  store_aligned(low, fn.param(1), argv_global)
   codegen_node(low, root)
   codegen_return(low, ret_ir)
   low.finish_main_function
 
   main_fn = m.define_function("main", m.types.func([i32, ptr] of IrType, i32))
+  main_fn.call_convention = CallConv::C
   main_fn.name_param(main_fn.param(0), "argc")
   main_fn.name_param(main_fn.param(1), "argv")
-  main_fn.call_convention = CallConv::C
   main_entry = main_fn.append_basic_block("entry")
   low.builder.position_at_end(main_entry)
   low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
@@ -83,6 +87,23 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if node.is_a?(NumberLiteral)
+    codegen_number(low, node.as(NumberLiteral))
+    return
+  end
+  if node.is_a?(BoolLiteral)
+    # The hosted `visit(BoolLiteral)`: `@last = int1(value ? 1 : 0)`.
+    low.last = int1(low, bool_bit(node.as(BoolLiteral).value))
+    return
+  end
+  if node.is_a?(Var)
+    codegen_var(low, node.as(Var))
+    return
+  end
+  if node.is_a?(Assign)
+    codegen_assign(low, node.as(Assign))
+    return
+  end
   if node.is_a?(Def)
     pending_visit_fun_def
   end
@@ -92,19 +113,70 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   pending_visit_node(node_class_name(node))
 end
 
-# The hosted `llvm_nil`: the one value of type `Nil`.
-pub def llvm_nil(low : Lowerer) : Value
-  low.builder.const_undef(low.typer.nil_type)
+# 1 for true, 0 for false: the bit a bool literal is in the IR.
+pub def bool_bit(value : Bool) : Int64
+  if value
+    return 1_i64
+  end
+  0_i64
 end
 
-# The hosted `codegen_return`: a function returning void returns nothing; any other
-# returns the value of the expression visited last.
+# The hosted `visit(NumberLiteral)`: an integer constant of the type the analysis gave
+# the literal. Floats are not ported yet and are refused by name.
+pub def codegen_number(low : Lowerer, node : NumberLiteral) : Nil
+  if node.value.includes?(".")
+    pending_visit_node("NumberLiteral with a fraction")
+  end
+  t = low.analysed.type_of?(node)
+  raise "BUG: the analysed program has no type for a number literal (hosted codegen.cr: visit(NumberLiteral))" if t.nil?
+  ir = low.typer.llvm_type(t.as(Type))
+  low.last = low.builder.const_int(ir, node.value.to_i64)
+end
+
+# The hosted `visit(Var)`: a load of the variable, read at the type it was declared with.
+pub def codegen_var(low : Lowerer, node : Var) : Nil
+  var = low.current_context.vars[node.name]?
+  raise "BUG: variable #{node.name} is read before it is assigned (hosted codegen.cr: visit(Var))" if var.nil?
+  v = var.as(LowerVar)
+  ir = low.typer.llvm_type(v.type)
+  low.last = load_aligned(low, ir, v.pointer, "")
+end
+
+# The hosted `visit(Assign)` for a variable target: the value is stored in the
+# variable's alloca, which is made the first time the variable is assigned. The value
+# of the assignment is the value assigned.
+pub def codegen_assign(low : Lowerer, node : Assign) : Nil
+  if !node.target.is_a?(Var)
+    pending_visit_node("Assign to a target that is not a variable")
+  end
+  target = node.target.as(Var)
+  codegen_node(low, node.value)
+  value = low.last
+  raise "BUG: the assigned value left no value (hosted codegen.cr: codegen_assign)" if value.nil?
+  v = value.as(Value)
+  value_type = low.analysed.type_of?(node.value)
+  raise "BUG: the analysed program has no type for the assigned value (hosted codegen.cr: codegen_assign)" if value_type.nil?
+  vt = value_type.as(Type)
+  var = low.current_context.vars[target.name]?
+  if var.nil?
+    pointer = low.alloca(low.typer.llvm_type(vt), target.name)
+    made = LowerVar.new(pointer, vt, false)
+    low.current_context.vars[target.name] = made
+    var = made
+  end
+  store_aligned(low, v, var.as(LowerVar).pointer)
+  low.last = v
+end
+
+# The hosted `codegen_number`'s literal: `NumberLiteral` value text to an integer.
+# The hosted `llvm_nil` and `codegen_return`: a function returning void returns
+# nothing; any other returns the value of the expression visited last.
 pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
   if ret_ir.void?
     low.builder.ret_void
     return
   end
   value = low.last
-  raise "BUG: the program returns #{ret_ir.to_s} but its last expression left no value (hosted codegen.cr: codegen_return)" if value.nil?
+  raise "BUG: the program returns a value but its last expression left none (hosted codegen.cr: codegen_return)" if value.nil?
   low.builder.ret(value.as(Value))
 end

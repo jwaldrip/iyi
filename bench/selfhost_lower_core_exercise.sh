@@ -35,6 +35,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 . "$REPO/bench/lib/mutation.sh"
 WORK="$(mktemp -d)"
+HOSTED="$REPO/bench/selfhost_lower_core_hosted.txt"
 trap 'rm -rf "$WORK"' EXIT
 
 # Adds the function type to each direct call of a printed LLVM module, from the types
@@ -103,13 +104,13 @@ for fixture in "$REPO"/bench/fixtures/lower_*.iyi; do
   fi
   awk "$CALL_TYPES" "$WORK/$name.ll" > "$WORK/$name.oracle.ll"
 
-  if ! "$WORK/port" oracle "$WORK/$name.oracle.ll" > "$WORK/$name.oracle.txt" 2> "$WORK/$name.oracle.err"; then
+  if ! "$WORK/port" oracle "$WORK/$name.oracle.ll" "$HOSTED" > "$WORK/$name.oracle.txt" 2> "$WORK/$name.oracle.err"; then
     echo "  $name: the port's IR parser refuses the hosted module: $(awk 'NR==1' "$WORK/$name.oracle.err")"
     diverged=$((diverged + 1))
     continue
   fi
 
-  if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
+  if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" "$HOSTED" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     reason="$(awk 'NR==1' "$WORK/$name.port.err")"
     echo "  $name: WAITING: $reason"
     waiting=$((waiting + 1))
@@ -146,15 +147,19 @@ lower_core_check() {
   "$IYI" build -o "$WORK/port-m" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/m.build.log" 2>&1 || return 1
   "$WORK/port-m" context > "$WORK/m.ctx" 2>&1 || return 1
   awk '/^CONTEXT OK$/ { ok = 1 } END { exit !ok }' "$WORK/m.ctx" || return 1
-  "$WORK/port-m" lower "$REPO/bench/fixtures/lower_nil.iyi" "$WORK/lower_nil.oracle.ll" > "$WORK/m.out" 2> "$WORK/m.err" || return 1
+  for n in lower_nil lower_int lower_bool lower_assign; do "$WORK/port-m" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" "$HOSTED" > "$WORK/m.out" 2> "$WORK/m.err" || return 1; awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] \&\& a[2] > 0) }' "$WORK/m.out" || return 1; done
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/m.out"
 }
 prove_mutation "argv is stored from the argc parameter" "$REPO/src/compiler/lower/lower.iyi" \
-  "low.builder.store(fn.param(1), argv_global)" "low.builder.store(fn.param(0), argv_global)" -- lower_core_check || status=1
+  "store_aligned(low, fn.param(1), argv_global)" "store_aligned(low, fn.param(0), argv_global)" -- lower_core_check || status=1
 prove_mutation "main returns 1" "$REPO/src/compiler/lower/lower.iyi" \
   "low.builder.ret(low.builder.const_int(i32, 0))" "low.builder.ret(low.builder.const_int(i32, 1))" -- lower_core_check || status=1
 prove_mutation "the alloca block is named after the entry block" "$REPO/src/compiler/lower/context.iyi" \
   'new_blocks(["alloca", "entry"])' 'new_blocks(["entry", "alloca"])' -- lower_core_check || status=1
+prove_mutation "a bool literal is false" "$REPO/src/compiler/lower/lower.iyi" \
+  "return 1_i64" "return 0_i64" -- lower_core_check || status=1
+prove_mutation "a store is aligned to one byte" "$REPO/src/compiler/lower/helpers.iyi" \
+  "set_align(st, low.typer.align_of(value.type))" "set_align(st, 1)" -- lower_core_check || status=1
 prove_mutation "an empty alloca block is kept" "$REPO/src/compiler/lower/context.iyi" \
   "current_fun.blocks.delete(alloca)" "alloca.name" -- lower_core_check || status=1
 
