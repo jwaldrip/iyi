@@ -1,7 +1,8 @@
 module compiler/semantic/method_lookup
 
 import compiler/syntax/ast::{Def, Nop}
-import compiler/semantic/top_level::{ClassType, MetaclassType, ModuleType, Type}
+import compiler/semantic/top_level::{ClassType, MetaclassType, ModuleType, Type, UnionType}
+import compiler/types/types::{VirtualType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/match::{CallMatch, CallSignature, Match}
 
@@ -26,9 +27,9 @@ pub class Matches
   end
 end
 
-# The port of Type#lookup_matches, lookup_matches_without_parents and the
-# parent walk, for the receivers that are not virtual. Virtual receivers (the
-# subclass dispatch of an abstract type) are a later increment.
+# The port of Type#lookup_matches, lookup_matches_without_parents and the parent
+# walk, for a module receiver; the virtual receiver (VirtualTypeLookup) and the
+# union receiver (call.cr's lookup_matches_in over a union) are below.
 #
 # `new` on a metaclass: the hosted pass gives a class a `self.new` for every
 # instance `initialize` (the same arguments, no body), added before any explicit
@@ -181,5 +182,97 @@ pub class MethodLookup
     end
 
     Matches.new(matches_array, exact)
+  end
+
+  # The virtual form of a module type, as hosted virtual_type: a class that has
+  # subclasses is seen through its VirtualType (`Base+`), so a call on it reaches
+  # the subclasses' overrides. A type nothing subclasses is its own form.
+  def self.virtual_of(type : ModuleType) : Type
+    if type.is_a?(ClassType)
+      return VirtualType.new(type.program, type) if !type.as(ClassType).subclasses.empty?
+    end
+    type
+  end
+
+  # True when a subtype is skipped by the virtual walk: an abstract type nothing
+  # subclasses has no instance to dispatch to.
+  def self.abstract_leaf?(type : ModuleType) : Bool
+    return false if !type.abstract?
+    if type.is_a?(ClassType)
+      return type.as(ClassType).subclasses.empty?
+    end
+    true
+  end
+
+  # The matches of *signature* on a virtual receiver, as hosted VirtualTypeLookup:
+  # the base's matches first; a non-abstract base that does not cover every
+  # argument combination returns those uncovered. Otherwise each subtype's own
+  # defs are looked up with the subtype's virtual form as owner, and a subtype's
+  # matches go ahead of the matches collected so far. The result covers when any
+  # match exists. Subtypes' parents are not walked (the hosted walk is over their
+  # included modules, which the port does not record yet).
+  def self.lookup_virtual(receiver : VirtualType, ts : TypeSystem, signature : CallSignature) : Matches
+    base = receiver.base_type
+    return Matches.new([] of Match, false) if !base.is_a?(ModuleType)
+    base_module = base.as(ModuleType)
+    base_found = lookup_matches(base_module, ts, signature, receiver, base_module, [] of Match)
+    return base_found if base_found.error
+    covers = base_found.cover_all?
+    return Matches.new(base_found.matches, false) if !base_module.abstract? && !covers
+
+    matches = [] of Match
+    base_found.matches.each do |m|
+      matches << m
+    end
+    receiver.subtypes.each do |sub|
+      next if sub == base
+      next unless sub.is_a?(ModuleType)
+      sub_module = sub.as(ModuleType)
+      sub_owner = virtual_of(sub_module)
+      sub_found = lookup_without_parents(sub_module, ts, signature, sub_owner, sub_module, [] of Match)
+      return sub_found if sub_found.error
+      if !sub_module.abstract? && !covers && !sub_found.cover_all?
+        return Matches.new(sub_found.matches, false)
+      end
+      if !sub_found.empty? && !abstract_leaf?(sub_module)
+        joined = [] of Match
+        sub_found.matches.each do |m|
+          joined << m
+        end
+        matches.each do |m|
+          joined << m
+        end
+        matches = joined
+      end
+    end
+    Matches.new(matches, !matches.empty?)
+  end
+
+  # The matches of *signature* on a receiver of any form. A union receiver is one
+  # lookup per member, the members' matches joined in member order; it covers
+  # when every member covers. A virtual receiver is looked up as above, and a
+  # module receiver as its own lookup. Other types are not ported.
+  def self.lookup_receiver(receiver : Type, ts : TypeSystem, signature : CallSignature) : Matches
+    if receiver.is_a?(UnionType)
+      all = [] of Match
+      cover = true
+      receiver.as(UnionType).union_types.each do |member|
+        found = lookup_receiver(member, ts, signature)
+        return Matches.new(all, false, found.error) if found.error
+        found.matches.each do |m|
+          all << m
+        end
+        cover = false if !found.cover_all?
+      end
+      return Matches.new(all, cover)
+    end
+    if receiver.is_a?(VirtualType)
+      return lookup_virtual(receiver.as(VirtualType), ts, signature)
+    end
+    if receiver.is_a?(ModuleType)
+      module_type = receiver.as(ModuleType)
+      return lookup_matches(module_type, ts, signature, module_type, module_type, [] of Match)
+    end
+    Matches.new([] of Match, false)
   end
 end

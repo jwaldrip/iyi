@@ -16,6 +16,7 @@ set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 export IYI_PATH="$REPO/src"
+METHOD_FILE="$REPO/src/compiler/semantic/method_lookup.iyi"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 LOOKUP_FILE="$REPO/src/compiler/semantic/method_lookup.iyi"
@@ -164,6 +165,30 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "recalculate reports a unique target as an error" "$CALL_FILE" \
   "    if matches.matches.size == 1" \
   "    if matches.matches.size == 9" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a virtual receiver does not reach its subtypes" "$METHOD_FILE" \
+  "    receiver.subtypes.each do |sub|" \
+  "    ([] of Type).each do |sub|" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a subtype's matches do not go ahead of the base's" "$METHOD_FILE" \
+  "        matches.each do |m|" \
+  "        ([] of Match).each do |m|" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a union receiver drops the matches of its members" "$METHOD_FILE" \
+  "        found.matches.each do |m|" \
+  "        ([] of Match).each do |m|" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a virtual receiver answers covered when it has matches" "$METHOD_FILE" \
+  "    Matches.new(matches, !matches.empty?)" \
+  "    Matches.new(matches, false)" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

@@ -1,6 +1,6 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Call}
-import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type, dir_of}
+import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/semantic/method_lookup::{MethodLookup, Matches}
@@ -12,20 +12,14 @@ import compiler/semantic/call::{CallReceiver, CallRecalculation}
 #
 #   selfhost_semantic_calls_exercise <fixture.iyi>
 #
-# Loads the fixture with the prelude, through the port's top-level pass and the
-# closure of what it requires (IYI_PATH is the search path, as the declarations
-# gate reads it), then answers each `# call <expr>` line and each `# error <expr>`
-# line and prints the same lines the hosted oracle
+# Builds the fixture's declarations into a SemanticProgram (bare: no prelude, as
+# the oracle compiles it), then answers each `# call <expr>` line and each
+# `# error <expr>` line and prints the same lines the hosted oracle
 # (bench/selfhost_semantic_calls_oracle.cr) prints. The receiver rule and the
 # result formats are the oracle's header. `# call` lines print the lookup's
-# matches; `# error` lines run CallRecalculation.recalculate and print `ok` when the
-# call has a target, or its error line.
+# matches; `# error` lines run CallRecalculation.recalculate and print `ok` when
+# the call has a target, or its error line.
 module BenchSelfhostSemanticCallsExercise
-  def self.search_path : Array(String)
-    text = ENV["IYI_PATH"]? || ""
-    text.split(":").select { |entry| !entry.empty? }
-  end
-
   # One match as the oracle writes it: owner, name, restrictions, return.
   def self.match_text(ts : TypeSystem, m : Match) : String
     defining = m.defining
@@ -58,7 +52,6 @@ module BenchSelfhostSemanticCallsExercise
     if scope.nil?
       return "receiver is not resolvable"
     end
-    owner = scope.as(ModuleType)
     arg_types = [] of Type
     call.args.each do |arg|
       typed = CallReceiver.argument_type(prog, arg)
@@ -72,7 +65,7 @@ module BenchSelfhostSemanticCallsExercise
       return "argument is not a literal"
     end
     signature = CallSignature.new(call.name, arg_types, named_types, call.block != nil)
-    MethodLookup.lookup_matches(owner, ts, signature, owner, owner, [] of Match)
+    MethodLookup.lookup_receiver(scope.as(Type), ts, signature)
   end
 
   def self.evaluate(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
@@ -112,7 +105,7 @@ module BenchSelfhostSemanticCallsExercise
     if scope.nil?
       return "error: receiver is not resolvable"
     end
-    target = CallRecalculation.recalculate(scope.as(ModuleType), ts, prog, call.name, call.args, call.named_args, call.block != nil)
+    target = CallRecalculation.recalculate(scope.as(Type), ts, prog, call.name, call.args, call.named_args, call.block != nil)
     if target.error
       return "error: #{target.error.to_s}"
     end
@@ -121,8 +114,6 @@ module BenchSelfhostSemanticCallsExercise
 
   def self.run(src : String, filename : String) : String
     prog = SemanticProgram.new
-    prog.search_path = search_path
-    prog.project_root = dir_of(filename)
     # Bare, as the oracle compiles the fixture: no prelude (see the oracle's header).
     node = Parser.new(src, filename).parse
     visitor = TopLevelVisitor.new(prog, filename)

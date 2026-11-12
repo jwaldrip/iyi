@@ -16,6 +16,10 @@
 # or false Bool, and nil Nil. A call may write named arguments (`name: literal`)
 # and a block (`{ ... }`).
 #
+# A receiver that is a union is looked up one member at a time, in member order,
+# as the hosted call pass dispatches it, and the matches are joined. A receiver
+# that is a class with subclasses is dispatched by the hosted VirtualTypeLookup.
+#
 # A `# call` line is the hosted lookup (`Type#lookup_matches`, analyze_all off),
 # the first step of the hosted call pass. Its matches are listed in the hosted
 # order, joined by "; ", as
@@ -23,10 +27,11 @@
 #   <owner>::<name>(<restrictions>) -> <return>
 #
 # The owner is the receiver's type, as the hosted context names it (a metaclass
-# prints Foo.class). A restriction is the type its written form names, relative
-# to the type the def was found on, or `_` when it has none. The return is the
-# def's declared return type, or `needs body typing` when it has none. A match
-# list that covers every argument combination ends with ` [cover all]`.
+# prints Foo.class, a virtual type Foo+). A restriction is the type its written
+# form names, relative to the type the def was found on, or `_` when it has none.
+# The return is the def's declared return type, or `needs body typing` when it has
+# none. A match list that covers every argument combination ends with
+# ` [cover all]`.
 #
 # An `# error` line runs the whole hosted compile of the fixture's declarations
 # with the call as its last expression, as the compile does (the top-level pass,
@@ -37,9 +42,9 @@
 # lines for the same fixtures, and the gate requires them byte-identical.
 #
 # Not covered here (and not written in the fixtures): splats, autocast of
-# literals, free variables, and virtual receivers. Their hosted behaviour is later
-# increments of slice S1c. The prelude is not loaded: restrictions on prelude
-# types overflow the port's type model (see the report of the prelude step).
+# literals, and free variables. Their hosted behaviour is later increments of
+# slice S1c. The prelude is not loaded: restrictions on prelude types overflow the
+# port's type model (see the report of the prelude step).
 require "compiler/requires"
 
 RECEIVER_ERROR = "receiver is not resolvable"
@@ -81,6 +86,23 @@ def signature_of(program : Iyi::Program, call : Iyi::Call) : Iyi::CallSignature
   Iyi::CallSignature.new(call.name, arg_types, call.block, named_types)
 end
 
+# The matches of a signature on a receiver, and whether they cover every argument
+# combination. A union receiver is one lookup per member, in member order.
+def dispatch_matches(receiver : Iyi::Type, signature : Iyi::CallSignature) : {Array(Iyi::Match), Bool}
+  if receiver.is_a?(Iyi::UnionType)
+    all = [] of Iyi::Match
+    cover = true
+    receiver.as(Iyi::UnionType).union_types.each do |member|
+      found, member_cover = dispatch_matches(member, signature)
+      all.concat(found)
+      cover = false unless member_cover
+    end
+    return {all, cover}
+  end
+  matches = receiver.lookup_matches(signature)
+  {matches.matches || [] of Iyi::Match, matches.cover_all? == true}
+end
+
 # The type named by a receiver written as a path, such as `Foo` or `Outer::Foo`.
 def receiver_scope(program : Iyi::Program, name : String) : Iyi::Type
   found = program.lookup_path(Iyi::Path.new(name.split("::")))
@@ -101,17 +123,19 @@ def last_dot(expr : String) : Int32?
 end
 
 # The type a receiver text names: a path names its metaclass, and a call names the
-# instance type of its single declared return.
+# type of its single declared return.
 def receiver_type(program : Iyi::Program, text : String) : Iyi::Type
+  if text.starts_with?("virtual(") && text.ends_with?(")")
+    return receiver_scope(program, text[8...-1]).virtual_type
+  end
   node = Iyi::Parser.new(text).parse
   unless node.is_a?(Iyi::Call)
     return receiver_scope(program, text).metaclass
   end
   call = node.as(Iyi::Call)
   scope = call_scope(program, text)
-  matches = scope.lookup_matches(signature_of(program, call))
-  found = matches.matches
-  raise RECEIVER_ERROR if found.nil? || found.size != 1
+  found, _ = dispatch_matches(scope, signature_of(program, call))
+  raise RECEIVER_ERROR if found.size != 1
   ret = found[0].def.return_type
   raise RECEIVER_ERROR if ret.nil?
   found[0].context.defining_type.lookup_type(ret).as(Iyi::Type)
@@ -143,12 +167,11 @@ def evaluate(program : Iyi::Program, expr : String) : String
   raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
   call = node.as(Iyi::Call)
   receiver = call_scope(program, expr)
-  matches = receiver.lookup_matches(signature_of(program, call))
-  found = matches.matches
-  return "none" if found.nil? || found.empty?
+  found, cover = dispatch_matches(receiver, signature_of(program, call))
+  return "none" if found.empty?
   parts = found.map { |m| match_text(m) }
   text = parts.join("; ")
-  text += " [cover all]" if matches.cover_all?
+  text += " [cover all]" if cover
   text
 rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"

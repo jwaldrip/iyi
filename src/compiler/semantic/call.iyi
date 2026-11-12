@@ -14,22 +14,34 @@ import compiler/semantic/match::{CallSignature, Match}
 # semantic/call.cr. The hosted call pass types an argument from its body, and the
 # bodies slice provides that later. Until then an argument is typed only when it
 # is a literal, and a receiver only when it is a type path or a call with a
-# single match that declares its return type. Anything else is nil, and the
-# caller says why. A call node is read through CallNodes, because this module's
-# name is `call`.
+# single match that declares its return type. A union return is a union receiver.
+#
+# A value typed as a class with subclasses is a virtual type in the hosted pass
+# only once a body has typed it (`self`, an expression's merged type); a declared
+# return keeps the class. The port writes that value as `virtual(T)` in a fixture,
+# which is `T+`, the form the bodies slice will produce. Anything else is nil, and
+# the caller says why. A call node is read through CallNodes, because this
+# module's name is `call`.
 pub class CallReceiver
   # The type a call's receiver is: the program for a call without one (*obj* is
   # nil), else the receiver's type, or nil when the receiver cannot be typed.
-  def self.scope(prog : SemanticProgram, ts : TypeSystem, obj : ASTNode?) : ModuleType?
+  def self.scope(prog : SemanticProgram, ts : TypeSystem, obj : ASTNode?) : Type?
     return prog if obj.nil?
     receiver_type(prog, ts, obj.as(ASTNode))
   end
 
-  # The type a receiver node names: a call names the instance type of its
-  # single match's declared return; a type path names its metaclass, where its
-  # class methods are.
-  def self.receiver_type(prog : SemanticProgram, ts : TypeSystem, node : ASTNode) : ModuleType?
+  # The type a receiver node names: `virtual(T)` is T's virtual form; a call names
+  # the type of its single match's declared return; a type path names its
+  # metaclass, where its class methods are.
+  def self.receiver_type(prog : SemanticProgram, ts : TypeSystem, node : ASTNode) : Type?
     if call = CallNodes.as_call(node)
+      if call.obj.nil? && call.name == "virtual" && call.args.size == 1
+        named = TypeLookup.new(ts.instances).lookup(prog, call.args[0])
+        return nil if named.is_a?(LookupError)
+        base = named.as(Type)
+        return nil if !base.is_a?(ModuleType)
+        return MethodLookup.virtual_of(base.as(ModuleType))
+      end
       return return_type_of(prog, ts, call.obj, call.name, call.args, call.named_args, call.block != nil)
     end
     found = TypeLookup.new(ts.instances).lookup(prog, node)
@@ -39,11 +51,12 @@ pub class CallReceiver
     scoped.as(ModuleType).metaclass
   end
 
-  # The instance type of the single match of a call with receiver *obj*, method
-  # *name*, positional arguments *args*, named arguments *named_args* and a block
-  # when *block* is true, or nil unless the match is unique and declares its
-  # return type. The lookup is the hosted one with analyze_all off.
-  def self.return_type_of(prog : SemanticProgram, ts : TypeSystem, obj : ASTNode?, name : String, args : Array(ASTNode), named_args : Array(NamedArgument)?, block : Bool) : ModuleType?
+  # The type of the single match of a call with receiver *obj*, method *name*,
+  # positional arguments *args*, named arguments *named_args* and a block when
+  # *block* is true, or nil unless the match is unique and declares its return
+  # type. A receiver that is a union or a virtual type dispatches to every member.
+  # The lookup is the hosted one with analyze_all off.
+  def self.return_type_of(prog : SemanticProgram, ts : TypeSystem, obj : ASTNode?, name : String, args : Array(ASTNode), named_args : Array(NamedArgument)?, block : Bool) : Type?
     arg_types = [] of Type
     args.each do |arg|
       typed = argument_type(prog, arg)
@@ -54,9 +67,8 @@ pub class CallReceiver
     return nil if typed_named.nil?
     owner = scope(prog, ts, obj)
     return nil if owner.nil?
-    scoped = owner.as(ModuleType)
     signature = CallSignature.new(name, arg_types, typed_named, block)
-    matches = MethodLookup.lookup_matches(scoped, ts, signature, scoped, scoped, [] of Match)
+    matches = MethodLookup.lookup_receiver(owner.as(Type), ts, signature)
     return nil if matches.error
     return nil if matches.matches.size != 1
     single = matches.matches[0]
@@ -64,9 +76,7 @@ pub class CallReceiver
     return nil if ret.nil?
     found = TypeLookup.new(ts.instances).lookup(single.defining, ret.as(ASTNode))
     return nil if found.is_a?(LookupError)
-    instance = found.as(Type)
-    return nil if !instance.is_a?(ModuleType)
-    instance.as(ModuleType)
+    found.as(Type)
   end
 
   # The named arguments of a call with their types: an empty list when the call
@@ -104,16 +114,17 @@ end
 # The target of a call on a receiver type: the hosted Call#recalculate's result.
 # *definition* is the one def the call resolves to, *declared_return* its declared
 # return type, and *untyped* says the def declares none, so its type waits on the
-# body (the bodies slice). *error* is the first line of the message the hosted
-# call pass raises, or a marked refusal for a shape this port does not answer.
+# body (the bodies slice). *owner* is the receiver it was found on. *error* is the
+# first line of the message the hosted call pass raises, or a marked refusal for a
+# shape this port does not answer.
 pub class CallTarget
   getter definition : Def?
-  getter owner : ModuleType?
+  getter owner : Type?
   getter declared_return : Type?
   getter untyped : Bool
   getter error : String?
 
-  def initialize(@definition : Def?, @owner : ModuleType?, @declared_return : Type?, @untyped : Bool, @error : String?)
+  def initialize(@definition : Def?, @owner : Type?, @declared_return : Type?, @untyped : Bool, @error : String?)
   end
 
   def self.failed(message : String) : CallTarget
@@ -125,11 +136,12 @@ end
 # receiver type rec_type, found by the lookup of the call's name, arguments and
 # block, as the hosted call pass finds it before it instantiates the body. It is
 # the entry the bodies slice's visit(Call) calls where the hosted pass calls
-# recalculate, with the receiver first and the hosted names kept. Arguments are
-# typed as CallReceiver types them (literals only until the bodies slice types
-# them), so an argument it cannot type is refused by name.
+# recalculate, with the receiver first and the hosted names kept. The receiver
+# may be a module type, a virtual type or a union; a receiver with several matches
+# is a dispatch, answered as not ported until the bodies slice instantiates
+# several targets. Arguments are typed as CallReceiver types them.
 pub class CallRecalculation
-  def self.recalculate(rec_type : ModuleType, ts : TypeSystem, prog : SemanticProgram, name : String, args : Array(ASTNode), named_args : Array(NamedArgument)?, block : Bool) : CallTarget
+  def self.recalculate(rec_type : Type, ts : TypeSystem, prog : SemanticProgram, name : String, args : Array(ASTNode), named_args : Array(NamedArgument)?, block : Bool) : CallTarget
     arg_types = [] of Type
     args.each do |arg|
       typed = CallReceiver.argument_type(prog, arg)
@@ -139,7 +151,7 @@ pub class CallRecalculation
     typed_named = CallReceiver.named_argument_types(prog, named_args)
     return CallTarget.failed("argument is not a literal") if typed_named.nil?
     signature = CallSignature.new(name, arg_types, typed_named, block)
-    matches = MethodLookup.lookup_matches(rec_type, ts, signature, rec_type, rec_type, [] of Match)
+    matches = MethodLookup.lookup_receiver(rec_type, ts, signature)
     return CallTarget.failed(matches.error.to_s) if matches.error
     if matches.matches.size > 1
       return CallTarget.failed("not ported: several matches")
@@ -155,8 +167,12 @@ pub class CallRecalculation
       return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil)
     end
     return CallTarget.failed("not ported: named argument message") if named_args
-    defined = MethodLookup.defines?(rec_type, name)
-    defs = MethodLookup.all_defs(rec_type, name, [] of Def)
-    CallTarget.failed(CallFailure.first_line(rec_type, ts, name, arg_types, defs, defined))
+    if !rec_type.is_a?(ModuleType)
+      return CallTarget.failed("not ported: virtual or union receiver message")
+    end
+    module_type = rec_type.as(ModuleType)
+    defined = MethodLookup.defines?(module_type, name)
+    defs = MethodLookup.all_defs(module_type, name, [] of Def)
+    CallTarget.failed(CallFailure.first_line(module_type, ts, name, arg_types, defs, defined))
   end
 end
