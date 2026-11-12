@@ -230,8 +230,8 @@ prove_mutation "a top-level fun with a body is emitted with the iyi calling conv
   "  CallConv::C
 end" "  CallConv::Iyi
 end" -- lower_calls_check || status=1
-prove_mutation "a restricted argument's callee is typed by the argument, not the parameter (the signature loses the union)" "$REPO/src/compiler/lower/call.iyi" \
-  ', class_owner, call_param_types(low, def_node, arg_types))' ', class_owner)' -- lower_calls_check || status=1
+prove_mutation "a restriction the argument implements is refused (the nil argument into Fiber | Nil)" "$REPO/src/compiler/lower/call.iyi" \
+  'unless at.implements?(restricted.as(Type))' 'if at.implements?(restricted.as(Type))' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

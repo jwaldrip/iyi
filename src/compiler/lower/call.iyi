@@ -50,7 +50,6 @@ import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
 import compiler/lower/fun::{block_ended?, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
-import compiler/lower/cast::{upcast, nilable_reference_type?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
@@ -234,7 +233,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     low.last = llvm_nil(low)
     return
   end
-  func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner, call_param_types(low, def_node, arg_types))
+  func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner)
   inst = low.builder.call(func.fn_type, func, call_arguments(self_value, values), "")
   # Hosted codegen_call_or_invoke: a NoReturn call ends its block with `unreachable`, and its value is nil.
   if ret.is_a?(NoReturnType)
@@ -469,9 +468,8 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
       frame.vars["self"] = LowerVar.new(sv.as(Value), st, !self_by_pointer?(st))
     end
   end
-  param_types = call_param_types(low, def_node, arg_types)
-  allocate_def_vars(low, def_node, param_types, frame.vars)
-  copy_args(low, def_node, param_types, values, frame.vars)
+  allocate_def_vars(low, def_node, arg_types, frame.vars)
+  copy_args(low, def_node, arg_types, values, frame.vars)
 
   low.needs_value = true
   visit_node(low, def_node.body)
@@ -736,13 +734,10 @@ pub def lib_number_value(low : Lowerer, node : NumberLiteral, t : Type) : Value
 end
 
 # The argument types and values of a call, in order (hosted `prepare_call_args_non_external`
-# for scalars). Each argument's value is requested, so a value-less argument is a bug. The types are the
-# arguments' own: the callee is named by them (hosted mangled name), and its parameters are `call_param_types`.
-# A restriction converts the argument to the def's declared type (hosted prepare_call_args_non_external: the
-# upcast of an argument that implements the parameter, `convert_argument`), so the value is the parameter's.
-# A NoReturn argument is refused by name: the analysis types a block call that
-# breaks with a value as NoReturn (the hosted call is Int32), so it cannot be told from a converted one yet
-# (NEEDS.md, lowering calls row 44).
+# for scalars). Each argument's value is requested, so a value-less argument is a bug.
+# A restriction that converts an argument is refused, NoReturn included: the analysis types a
+# block call that breaks with a value as NoReturn (the hosted call is Int32), so a NoReturn
+# argument cannot be told from a converted one yet (NEEDS.md, lowering calls row 44).
 pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node : Def) : {Array(Type), Array(Value)}
   arg_types = [] of Type
   values = [] of Value
@@ -753,63 +748,25 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
     at_type = low.analysed.type_of?(arg_node)
     raise "BUG: the analysed program has no type for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)" if at_type.nil?
     at = at_type.as(Type)
-    param = at
     if restriction = def_node.args[i].restriction
-      param = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program).as(Type)
+      # Hosted restrict: a restriction the argument implements leaves the argument's own type as the parameter's
+      # (a Nil argument into `Fiber | Nil` is a Nil parameter, and the callee is named by it). Only an argument
+      # that does not implement the restriction would convert, and that is refused by name.
+      restricted = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program)
+      unless at.implements?(restricted.as(Type))
+        pending_visit_node("a restriction that does not hold for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
+      end
     end
     low.needs_value = true
     visit_node(low, arg_node)
     value = low.last
     raise "BUG: argument #{i} of #{node.name} left no value (hosted call.cr: prepare_call_args)" if value.nil?
-    converted = value.as(Value)
-    if param.full_name != at.full_name
-      converted = convert_argument(low, converted, at, param, node.name, i)
-    end
-    values << converted
+    values << value.as(Value)
     arg_types << at
     i += 1
   end
   low.needs_value = wants
   {arg_types, values}
-end
-
-# The parameter types of a call, one per argument: the def's declared restriction where it has one (hosted
-# target_def.args[i].type), else the argument's own type. The callee's signature and its variables are these types.
-pub def call_param_types(low : Lowerer, def_node : Def, arg_types : Array(Type)) : Array(Type)
-  params = [] of Type
-  i = 0
-  while i < arg_types.size
-    param = arg_types[i]
-    if restriction = def_node.args[i].restriction
-      param = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program).as(Type)
-    end
-    params << param
-    i += 1
-  end
-  params
-end
-
-# The hosted upcast of an argument to the def's declared (restricted) parameter type, for the two parameter types
-# the port lowers: a nilable reference (one pointer, so a reference value is passed as it is and a nil argument is
-# the null pointer it already is), and a mixed union (`upcast`). Any other conversion, and any argument that does
-# not implement the parameter (a downcast), is refused by name.
-pub def convert_argument(low : Lowerer, value : Value, at : Type, param : Type, name : String, index : Int32) : Value
-  if at.is_a?(NoReturnType)
-    pending_visit_node("a NoReturn argument #{index} of #{name} converted to #{param.full_name} (hosted call.cr: prepare_call_args; the block break value, NEEDS.md row 44)")
-    return value
-  end
-  unless at.implements?(param)
-    pending_visit_node("a restriction that narrows argument #{index} of #{name} to #{param.full_name} (hosted call.cr: prepare_call_args, downcast)")
-    return value
-  end
-  if nilable_reference_type?(param)
-    return value
-  end
-  if param.is_a?(MixedUnionType)
-    return upcast(low, value, at, param)
-  end
-  pending_visit_node("a restriction that converts argument #{index} of #{name} to #{param.full_name} (hosted call.cr: prepare_call_args, upcast)")
-  value
 end
 
 # The hosted `responds_to?` (RespondsTo, expanded by the hosted typer to a Bool literal): true when the
