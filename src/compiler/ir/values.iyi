@@ -86,6 +86,28 @@ pub def canonical_words(words : Array(Int64), bits : Int32) : Array(Int64)
   sign_extend_words(words.map { |w| w.unsafe_to_u64 }, bits).map { |w| u64_as_i64(w) }
 end
 
+# A 128-bit constant as two 64-bit halves in two's complement: `hi` holds bits 64 to 127, `lo` bits 0 to 63.
+pub class Wide128
+  getter hi : Int64
+  getter lo : Int64
+
+  def initialize(@hi : Int64, @lo : Int64)
+  end
+end
+
+# The 128-bit value of `text` in decimal, LLVM's signed form. Nil when it does not fit [-2^127, 2^127 - 1].
+pub def i128_parse(text : String) : Wide128?
+  if words = int_words_parse(text, 128)
+    return Wide128.new(words[1], words[0])
+  end
+  nil
+end
+
+# A 128-bit two's complement constant as LLVM's signed decimal text.
+pub def i128_text(hi : Int64, lo : Int64) : String
+  int_words_text([lo, hi], 128)
+end
+
 # The 64-bit words of the `bits`-bit integer that `text` writes in decimal (LLVM's signed form, `-5`), least
 # significant first and sign-extended to whole words. Nil when the text is not a decimal number or does not fit the
 # signed range [-2^(bits-1), 2^(bits-1) - 1].
