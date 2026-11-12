@@ -7984,9 +7984,9 @@ one a person notices second. The answer that was built is the small one: a
 test is a program, and its exit status is the verdict.
 
 
-**Native stale testing: opt-in `--cached`, `--fresh`, and `--explain`.** Default `iyi test` behavior and output are unchanged. `--cached` is opt-in. A test reports as passing from a receipt without generating code, linking, or running a test process when two conditions hold: its build key matches the recorded build key, and every recorded run observation replays equal now. Every `--cached` check type-checks the test first. The compiler computes the build key itself after semantic analysis and before codegen; a hit stops there. The source-side build key is `CallPathFp`, a SHA signature over the typed call path (every function, initializer, and type layout reached from program entry, with program-wide numbering left out), linked object units from `.iyimod` artifacts by content, linker flags (`LinkFp` including `CHILD_ENV`), compiler environment reads (`CompilerEnvFp`), toolchain identity, and the effective compiler behavior key.
+**Native stale testing: opt-in `--cached`, `--fresh`, and `--explain`.** Default `iyi test` behavior and output are unchanged. `--cached` is opt-in. A test reports as passing from a receipt without generating code, linking, or running a test process when two conditions hold: its build key matches the recorded build key, and every recorded run observation replays equal now. A `--cached` check that starts a compiler type-checks the test first. The compiler computes the build key itself after semantic analysis and before codegen; a hit stops there. A test whose recorded inputs are unchanged is reported from its receipt with no compiler started: the stale build records the files, listings, environment values and `pkg-config` answers it read, and a fast serve checks them without one. The source-side build key is `CallPathFp`, a SHA signature over the typed call path (every function, initializer, and type layout reached from program entry, with program-wide numbering left out), linked object units from `.iyimod` artifacts by content, linker flags (`LinkFp` including `CHILD_ENV`), compiler environment reads (`CompilerEnvFp`), toolchain identity, and the effective compiler behavior key.
 
-`--fresh` forces execution and records a receipt under observation. `--explain` prints one decision line per test naming why it ran: toolchain, behavior, compiler environment, link, call path (with files whose elements differ), profile, or run observation mismatch. JSON output (`--json`) reports per-test fields: `cached` (boolean), `source` (`local` or imported namespace), `reuse` (`hit`, `miss`, or `not reusable`), and `reason` (mismatch or taint site).
+`--fresh` forces execution and records a receipt under observation. `--explain` prints one decision line per test naming why it ran: toolchain, behavior, compiler environment, link, call path (with files whose elements differ), profile, or run observation mismatch. JSON output (`--json`) reports per-test fields: `cached` (boolean), `source` (`local` or imported namespace), `reuse` (`hit`, `miss`, or `not reusable`), `reason` (mismatch or taint site), `check` (`inputs` when no compiler started, else `compiler`), and `check_reason` (the first cause, for `compiler`). The top-level `builds` count is the compiler processes started.
 
 **What makes a test not reusable.** An observation build monitors the run. A test is marked not reusable and runs without producing a reusable receipt when it uses:
 - *Requested effects:* `clock`, `entropy`, `timer`, `network`, `process`, `signal`, `runtime_timing`, `code_location`, `dir_stream`, or `host_state`.
@@ -7999,13 +7999,15 @@ Crystal mode (`IYI_OPTS="--crystal"`) always runs fresh with reason `Crystal lib
 Chaos mode: combining `--cached` with chaos testing (`--chaos`, `--chaos=SEED`, or `--chaos-runs`) is refused before execution with `--cached cannot be combined with chaos testing; run chaos tests fresh` (III.4.17). Chaos testing exercises scheduling permutations and always runs fresh.
 
 **Limits a user must know.**
-- *Every hit type-checks:* Parse, semantic analysis, and macro execution (including macro `run` programs) execute on every check. Only codegen, linking, and program execution are skipped.
+- *A fast serve starts no compiler:* A test whose recorded inputs are unchanged is served with no parse, semantic analysis, macro execution (including macro `run` programs), codegen, link or run. Any other `--cached` check parses, type-checks and runs its macros first, as before.
+- *Imported receipts take the compiler path:* A fast serve uses only local receipts, so a CI runner that imports master's snapshot still starts a compiler for each test.
 - *Flaky tests and unspecified values:* Verdicts depending on compiler numbering (type ids, symbol indices) can change across unrelated edits and remain hidden until a `--fresh` run or master shadow audit. Non-deterministic behavior is bounded by contradiction detection (a non-pass exit revokes any validating receipt) and shadow audit.
 - *Adversarial code:* Detection assumes cooperative code; deliberately adversarial test code is not defended against.
 - *Artifact granularity:* Modules read from `.iyimod` artifacts are keyed per linked object unit, not per function.
 - *Search path libraries:* Libraries found by search path are identified by link flags, `CHILD_ENV`, and toolchain, not by library content.
 - *Edits behind NoReturn:* Where codegen stops after `NoReturn`, edits behind it still rerun because the reach walk does not truncate.
-- *Preserved mtimes:* File writers that preserve size and mtime (`cp -p`, `tar`, `rsync -t`) cannot be observed if contents change while size and mtime hold still.
+- *Preserved mtimes:* File writers that preserve size and mtime (`cp -p`, `tar`, `rsync -t`) cannot be observed by the run's stat comparison if contents change while size and mtime hold still. A fast serve also compares ctime and inode, which user-space tools cannot set, so these writers cannot hide a content change from it.
+- *Fast-path stamps:* The stamp argument assumes the clock moves forward and that the file system keeps ctime. A clock set backwards, or a file system without ctime, can leave a changed file with the stamp its record holds, so a fast serve can miss a change the compiler check would see. Windows writes no fast-path records, so no fast serve happens there.
 - *Process limits:* Process limits or loader settings outside recorded profile properties are unspecified.
 - *Per-file unit:* The unit of reuse is the whole `*_test.iyi` file. There is no per-case reuse within a test file.
 - *Host only:* Non-host targets are not supported.
@@ -8018,11 +8020,11 @@ Chaos mode: combining `--cached` with chaos testing (`--chaos`, `--chaos=SEED`, 
 - *Windows:* Nothing on Windows is reusable yet. Its platform arms are not classified (RG3 below), so every test reaches an unclassified site and runs. macOS and Linux are classified.
 - *Host questions:* A test that asks the machine something through an `@[Effect(:host)]` def (its name, its page size, who the program runs as, an account or a group) is never reused. The answer is recorded, but a check has no way to ask the question again, so the receipt is not one it can validate and the test runs.
 - *Chaos mode:* `--cached` cannot be combined with `--chaos`, `--chaos=SEED`, or `--chaos-runs`; chaos runs always execute fresh.
-- *No speedup promised:* No speedup is promised or claimed.
+- *No speedup promised:* No speedup is promised or claimed. A fast serve starts no compiler; what that saves on a suite is measured below, not promised.
 
-**Verification gates (RG1-RG9).**
+**Verification gates (RG1-RG10).**
 
-The status entries below are of the tree reconciled with upstream master at `140375a3b`: on Linux in the workflow's `iyi`, `stale-fresh`, `stale-callpath` and `stale-equivalence` jobs (runs 43137318814 and 43160142332), and on darwin arm64 by hand with the same scripts. RG6 is the one gate still unproven.
+The status entries below are of the tree reconciled with upstream master at `140375a3b`: on Linux in the workflow's `iyi`, `stale-fresh`, `stale-callpath` and `stale-equivalence` jobs (runs 43137318814 and 43160142332), and on darwin arm64 by hand with the same scripts. RG6 is still unproven, and RG10 has not yet run on this tree.
 
 | Gate | Proves | Status | How Proven |
 |---|---|---|---|
@@ -8035,8 +8037,9 @@ The status entries below are of the tree reconciled with upstream master at `140
 | RG7 | Threads 1 vs 8 identical executables, all 28 C2 programs | green, x86_64 Linux | bench/stale_reproducible.sh |
 | RG8 | Over 7 programs (5 C2 + 2 C3) and 14 kinds of single-site mutation, 3 'unreached' mutations rerun because the compiler does emit them (over-approximation, never a missed rerun) | green, darwin arm64 and x86_64 Linux | bench/stale_rg8.py via bench/stale_callpath.sh |
 | RG9 | CallPathFp equal across two processes with ASLR and with/without preanalysed prelude, all 140 programs | green, darwin arm64 and x86_64 Linux | bench/stale_rg9.py via bench/stale_callpath.sh |
+| RG10 | A fast serve is one the compiler check agrees with: under `IYI_STALE_FAST_AUDIT=1` every test the fast-path rule serves also runs the compiler path and must hit with the record's `local.build`, across `bench/stale_tests.sh`, the census and `bench/stale_suite_speed.py --audit` | MEASUREMENT PENDING: not yet run on the reconciled tree | bench/stale_tests.sh, bench/stale_census.sh, bench/stale_suite_speed.py |
 
-Acceptance rows from design section 12: rows 1-22 and 25-50 are automated in `bench/stale_tests.sh` and green on darwin arm64 and x86_64 Linux. Rows 23-24 are CI-only and wait for master.
+Acceptance rows from design section 12: rows 1-22 and 25-59 are automated in `bench/stale_tests.sh`. Rows 1-22 and 25-50 were green on darwin arm64 and x86_64 Linux before the fast path. MEASUREMENT PENDING: the status of rows 51-59 on both platforms. Rows 23-24 are CI-only and wait for master.
 
 **Census as measured on the reconciled tree.** x86_64 Linux, the `stale-fresh` job of run 43137318814, across the 140 programs (28 C2 samples/iyi, 112 C3 bench/std_*_exercise):
 - Runtime reusable on second run: 81 of 140 (57.9%). C2: 24 of 28 (85.7%). C3: 57 of 112 (50.9%).
@@ -8071,7 +8074,7 @@ Acceptance rows from design section 12: rows 1-22 and 25-50 are automated in `be
 | std_int_exercise.iyi | 1.798s | 63.267s | 3.946s | 2065 | 91 B | 8011 B | 7823 B |
 | std_bit_array_exercise.iyi | 2.668s | 67.103s | N/A | 1913 | 0 B | 0 B | 8051 B |
 
-A `--cached` check took 3.6 to 4.8 s there, against 1.2 to 2.1 s to build and run the same program: a hit is slower than the run it saves for each of the six. On `hello.iyi` the check spent 0.512 s hashing the call path and build key, 0.286 s and 0.250 s in the two semantic passes, and ran no codegen.
+A `--cached` check took 3.6 to 4.8 s there, against 1.2 to 2.1 s to build and run the same program: a hit is slower than the run it saves for each of the six. On `hello.iyi` the check spent 0.512 s hashing the call path and build key, 0.286 s and 0.250 s in the two semantic passes, and ran no codegen. A fast serve starts no compiler, so it spends none of that time. MEASUREMENT PENDING: the fast path's per-serve time and the 1,000-test table, by hand on darwin arm64 with an unoptimized compiler, beside the plain 117.0 s and `--fresh` 1,254.8 s baseline.
 
 **Census as measured (historical, original 141-program corpus).** Measured on macOS arm64 on this machine across 141 programs (27 C2 samples/iyi, 114 C3 bench/std_*_exercise), before four std exercises became tests; not taken again on darwin since:
 - Runtime reusable on second run: 87 of 141 (61.7%). C2: 25 of 27 (92.6%). C3: 62 of 114 (54.4%).
@@ -8109,14 +8112,14 @@ Top not-reusable reasons:
 
 `--fresh` starts from an empty private cache, so it includes compiling the runtime with `-Diyi_observe`. `--cached` is the second run in that cache, validated against the first run's receipt. `std_bit_array_exercise.iyi` was not reusable, so it has no cached validation time or receipt. The normal and preanalysed-prelude consumer runs both hit with exit 0 and no codegen.
 
-No speedup is claimed. No warm-cache `--fresh` numbers were measured.
+No speedup is claimed by these historical numbers. No warm-cache `--fresh` numbers were measured. MEASUREMENT PENDING: the fast path's numbers, by hand, with the machine and compiler named.
 
 **Completion status (design section 13).** Completion is NOT met and the default stays off:
 - Rows 23-24 and RG6 need master CI.
 - The census has two opaque program constructs that prevent reuse, and one internal reason: a test that asks the host a question is recorded and never reused.
 - Consumption and audit on master are unproven.
 - Cross-machine hits and hits across commits wait on RG1 in CI.
-- A check costs more than the build and run it replaces, for every program measured.
+- A check that starts a compiler costs more than the build and run it replaces, for every program measured. A fast serve starts none. MEASUREMENT PENDING: its cost per serve, by hand, with the machine and compiler named.
 One thing was a bug rather than a design question: `iyi tool` printed
 `Usage: crystal tool`, because the name fix reached the top-level commands and
 not the subcommand's own usage. It prints `Usage: iyi tool` now.

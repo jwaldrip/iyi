@@ -22,6 +22,16 @@
   FILE -o BINARY` and nothing else, so neither the optimised program nor a
   flag-gated path could be tested; a `--chaos` failure's `reproduce:` line
   carries the flags, since without them the seed reruns another program.
+- **`iyi test --cached` starts no compiler for a test whose recorded inputs
+  are unchanged.** A stale build records the files, directory listings,
+  environment values and `pkg-config` answers it read. When the test's local
+  receipt is valid and each one still answers the same, the test passes from
+  its receipt with no compiler. `--json` marks that as `check: "inputs"` and
+  counts the compiler processes a run started (`builds`); `--explain` says
+  `hit from local (inputs unchanged)`. Any other cause runs the check as
+  before and names its first cause in `check_reason`. `-p N` now applies to
+  `--cached`, `--fresh`, `--explain`, `--shard`, `--import-index` and
+  `--export-index` too, with the report in file order.
 
 ### Changed
 
