@@ -24,6 +24,8 @@ MATCH_FILE="$REPO/src/compiler/semantic/match.iyi"
 CALL_FILE="$REPO/src/compiler/semantic/call.iyi"
 ERROR_FILE="$REPO/src/compiler/semantic/call_error.iyi"
 DEFAULT_FILE="$REPO/src/compiler/semantic/default_arguments.iyi"
+LIB_FILE="$REPO/src/compiler/semantic/lib_call.iyi"
+RESTRICT_FILE="$REPO/src/compiler/semantic/restrictions.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -250,6 +252,30 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a given positional argument is replaced by its default" "$DEFAULT_FILE" \
   "out << args[k]" \
   "out << args[args.size - 1]" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a lib fun's owner is written with a dot, not a hash" "$LIB_FILE" \
+  '    owner = "#{target_lib.full_name}##{name}"' \
+  '    owner = "#{target_lib.full_name}.#{name}"' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a missing named argument of a lib call is not reported" "$LIB_FILE" \
+  '      return LibCallTarget.failed("missing argument: #{missing[0]}") if missing.size == 1' \
+  '      return LibCallTarget.failed("missing argument: #{missing[0]}") if missing.size == 7' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a fixed lib fun takes extra arguments as if it were variadic" "$LIB_FILE" \
+  '    if count < lib_fun.args.size || (!lib_fun.varargs? && count > lib_fun.args.size)' \
+  '    if count < lib_fun.args.size || (false && count > lib_fun.args.size)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a pointer instance's T stays unbound" "$RESTRICT_FILE" \
+  '          if names[0] == "T" && owner.is_a?(PointerInstanceType)' \
+  '          if names[0] == "T" && owner.is_a?(PointerInstanceType) && false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

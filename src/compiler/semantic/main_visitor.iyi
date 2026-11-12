@@ -13,6 +13,10 @@ import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
+import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
+import compiler/types/types::{NamedArgumentType, GenericInstanceType}
+import compiler/types/lookup::{LookupError}
+import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/new::{define_new_methods}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of}
 import compiler/types/types::{GenericInstanceType, NamedArgumentType}
@@ -210,12 +214,63 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
+  # The type a declared type names, or nil when it names none. A declared type never
+  # raises here (the trunk's lookup raises on an unresolved name): the caller records
+  # the refusal on its node. Generic receivers bind their type parameters as lookup_under does.
+  def lookup_declared?(node : ASTNode, owner : Type?) : Type?
+    if receiver_instance(owner).nil?
+      return @program.lookup_type_node?(node, @current_type)
+    end
+    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
+    return found.as(Type) unless found.is_a?(LookupError)
+    nil
+  end
+
+  # The name a declared type is refused by: the base of a generic.
+  def declared_base_name(node : ASTNode) : String
+    if node.is_a?(Generic)
+      return node.as(Generic).name.to_s
+    end
+    node.to_s
+  end
+
   def untyped_reason?(node : ASTNode) : String?
     @untyped_reasons[node]?
   end
 
   def target_def?(call : Call) : Def?
     @call_target_defs[call]?
+  end
+
+  # The generic instance a body or signature is typed under: the receiver, or the
+  # instance a metaclass stands for (`Pointer(UInt64).new` binds `T` to UInt64).
+  def receiver_instance(owner : Type?) : GenericInstanceType?
+    o : Type? = owner
+    if o.is_a?(MetaclassType)
+      o = o.as(MetaclassType).instance_type
+    end
+    if o.is_a?(GenericInstanceType)
+      return o.as(GenericInstanceType)
+    end
+    nil
+  end
+
+  # The type a type node names under `owner`. A generic instance binds its type
+  # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), as the
+  # hosted lookup does for an instantiated def; anything else is the lexical lookup
+  # from the current type.
+  def lookup_under(node : ASTNode, owner : Type?) : Type
+    if inst = receiver_instance(owner)
+      if node.is_a?(Path)
+        path = node.as(Path)
+        if !path.global && path.names.size == 1
+          if bound = inst.type_vars[path.names.first]?
+            return bound
+          end
+        end
+      end
+    end
+    @program.lookup_type_node(node, @current_type)
   end
 
   def type_from_literal_kind(kind : NumberKind) : Type
@@ -704,7 +759,11 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : TypeDeclaration) : Bool
-    decl_type = @program.lookup_type_node(node.declared_type, @current_type)
+    decl_found = lookup_declared?(node.declared_type, @scope)
+    if decl_found.nil?
+      return refuse(node, "undefined constant #{declared_base_name(node.declared_type)}")
+    end
+    decl_type = decl_found.as(Type)
     if val = node.value
       val.accept(self)
       vt = child_type(val)
@@ -804,9 +863,25 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Path) : Bool
+    if inst = receiver_instance(@scope)
+      path = node
+      if !path.global && path.names.size == 1
+        if bound = inst.type_vars[path.names.first]?
+          # A type parameter in an expression names the bound type's metaclass, as a
+          # type name does (`T.new`), except inside a type argument.
+          if @in_type_args == 0 && bound.is_a?(ModuleType)
+            set_type(node, bound.as(ModuleType).metaclass)
+          else
+            set_type(node, bound)
+          end
+          return false
+        end
+      end
+    end
     t = @program.lookup_type_path(node, @current_type)
     if t.const?
       c = t.as(Const)
+      c.used = true
       if c_type = type_of?(c.value)
         set_type(node, c_type)
       else
@@ -885,7 +960,7 @@ pub class MainVisitor < TypeNodeHost
       return false if exp_type.nil?
       if cd = @current_def
         if rt = cd.return_type
-          expected_ret = @program.lookup_type_node(rt, @current_type)
+          expected_ret = lookup_under(rt, @scope)
           unless exp_type.as(Type).subtype_of?(expected_ret)
             return refuse(node, "type mismatch for return type: expected #{expected_ret.full_name}, got #{exp_type.as(Type).full_name}")
           end
@@ -1000,7 +1075,7 @@ pub class MainVisitor < TypeNodeHost
               if r.is_a?(ProcNotation)
                 pn = r.as(ProcNotation)
                 if out_node = pn.output
-                  expected_ret = @program.lookup_type_node(out_node, @current_type)
+                  expected_ret = lookup_under(out_node, @scope)
                   unless bt.subtype_of?(expected_ret)
                     return refuse(node, "expected block to return #{expected_ret.full_name}, not #{bt.full_name}")
                   end
@@ -1096,19 +1171,19 @@ pub class MainVisitor < TypeNodeHost
     count
   end
 
-  def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode)) : Bool
+  def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode), owner : Type) : Bool
     has_strict = false
     i = 0
     while i < args.size
       p1 = d1.args[i]
       p2 = d2.args[i]
       t1 = if r1 = p1.restriction
-             @program.lookup_type_node(r1, @current_type)
+             lookup_under(r1, owner)
            else
              @program.object_type
            end
       t2 = if r2 = p2.restriction
-             @program.lookup_type_node(r2, @current_type)
+             lookup_under(r2, owner)
            else
              @program.object_type
            end
@@ -1124,7 +1199,7 @@ pub class MainVisitor < TypeNodeHost
     has_strict
   end
 
-  def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode)) : Array(Def)
+  def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode), owner : Type) : Array(Def)
     if candidates.size <= 1
       return candidates
     end
@@ -1133,7 +1208,7 @@ pub class MainVisitor < TypeNodeHost
     candidates.each do |cand|
       subsumed = false
       candidates.each do |other|
-        if cand != other && def_more_specific?(other, cand, args)
+        if cand != other && def_more_specific?(other, cand, args, owner)
           subsumed = true
           break
         end
@@ -1263,7 +1338,7 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if exact_matches.size > 0
-      most_specific = filter_most_specific_overloads(exact_matches, args)
+      most_specific = filter_most_specific_overloads(exact_matches, args, rec_type)
       return most_specific.first
     end
 
@@ -1281,7 +1356,7 @@ pub class MainVisitor < TypeNodeHost
           arg_t = type_of(arg)
           param = d.args[i]
           if r = param.restriction
-            expected_t = @program.lookup_type_node(r, @current_type)
+            expected_t = lookup_under(r, rec_type)
             if arg_t.subtype_of?(expected_t)
               # exact subtype match
             elsif arg.is_a?(NumberLiteral) && number_literal_matches_type?(arg.as(NumberLiteral), expected_t)
@@ -1329,7 +1404,7 @@ pub class MainVisitor < TypeNodeHost
         arg_t = type_of(args[i])
         param = d.args[i]
         if r = param.restriction
-          exp_t = @program.lookup_type_node(r, @current_type)
+          exp_t = lookup_under(r, rec_type)
           unless arg_t.subtype_of?(exp_t)
             first_mismatch = i
             break
@@ -1353,7 +1428,7 @@ pub class MainVisitor < TypeNodeHost
       count_matches.each do |d|
         param = d.args[mismatch_idx]
         if r = param.restriction
-          exp_t = @program.lookup_type_node(r, @current_type)
+          exp_t = lookup_under(r, rec_type)
           expected_types_list << exp_t.full_name
         end
       end
@@ -1416,7 +1491,7 @@ pub class MainVisitor < TypeNodeHost
     body = target_def.body
     if body.nil? || body.is_a?(Nop) || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
-        return @program.lookup_type_node(rt, @current_type)
+        return lookup_under(rt, rec_type)
       else
         return @program.nil_type
       end
@@ -1428,7 +1503,7 @@ pub class MainVisitor < TypeNodeHost
     key = instance_key(rec_type, target_def, args, block)
     if @typing_stack.includes?(key)
       if rt = target_def.return_type
-        return @program.lookup_type_node(rt, @current_type)
+        return lookup_under(rt, rec_type)
       end
       # No declared return type: until the body's own type is known the recursive
       # call contributes nothing to a merge, so it is NoReturn (the bottom of the
@@ -1477,7 +1552,7 @@ pub class MainVisitor < TypeNodeHost
         dv.accept(self)
         param_type = child_type(dv)
       elsif r = param.restriction
-        param_type = @program.lookup_type_node(r, @current_type)
+        param_type = lookup_under(r, rec_type)
       else
         param_type = @program.nil_type
       end
@@ -1551,14 +1626,14 @@ pub class MainVisitor < TypeNodeHost
     # (bench/fixtures/sem_bodies_primitive_add.iyi).
     if bt.nil?
       if rt = target_def.return_type
-        set_type(target_def, @program.lookup_type_node(rt, @current_type))
-        return @program.lookup_type_node(rt, @current_type)
+        set_type(target_def, lookup_under(rt, rec_type))
+        return lookup_under(rt, rec_type)
       end
       return nil
     end
 
     if rt = target_def.return_type
-      declared_ret = @program.lookup_type_node(rt, @current_type)
+      declared_ret = lookup_under(rt, rec_type)
       unless bt.subtype_of?(declared_ret)
         mismatch = "type mismatch for return type: expected #{declared_ret.full_name}, got #{bt.full_name}"
         if s = site
@@ -1726,7 +1801,35 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : PointerOf) : Bool
+    exp = node.exp
+    if exp.is_a?(ClassVar) || exp.is_a?(InstanceVar)
+      return pointerof_variable(node, exp)
+    end
+    if exp.is_a?(Path)
+      exp.accept(self)
+      ct = @program.lookup_type_path?(exp.as(Path), @current_type)
+      if ct
+        if ct.const?
+          ct.as(Const).pointer_read = true
+          if et = child_type(exp)
+            set_type(node, type_node_system(@program).pointer_of(et.as(Type)))
+          end
+          return false
+        end
+      end
+    end
     visit_pointer_of(self, node)
+  end
+
+  # `pointerof(@x)` and `pointerof(@@x)`: a pointer to the variable's type, as the
+  # hosted pass binds it (main_visitor.cr 3108-3114). The `iyi_written` mark is the
+  # lowering's and is not set here.
+  def pointerof_variable(node : PointerOf, exp : ASTNode) : Bool
+    exp.accept(self)
+    t = child_type(exp)
+    return false if t.nil?
+    set_type(node, type_node_system(@program).pointer_of(t.as(Type)))
+    false
   end
 
   def visit(node : TypeOf) : Bool
