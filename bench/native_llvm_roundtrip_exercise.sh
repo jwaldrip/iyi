@@ -79,9 +79,11 @@ else
   failed=1
 fi
 
-step 2 "every fixture that passes today round-trips identically"
+step 2 "every fixture round-trips identically, and the one the translator refuses is refused by name"
 count=0
-for name in arith control probe_switch probe_phi memory consts calls sizeof; do
+total=0
+for name in arith control probe_switch probe_phi memory consts calls sizeof visibility wide_int overflow8_16 variadic; do
+  total=$((total + 1))
   verdict=$("$TOOL" roundtrip "$FX/$name.ll" 2>&1)
   if [ "$verdict" = "identical" ]; then
     count=$((count + 1))
@@ -91,7 +93,12 @@ for name in arith control probe_switch probe_phi memory consts calls sizeof; do
     failed=1
   fi
 done
-echo "identical fixtures: $count of 8"
+verdict=$("$TOOL" roundtrip "$FX/dso_local.ll" 2>&1)
+case "$verdict" in
+  "refused by the translator: LLVM 22's C API cannot set dso_local"*) echo "refused by name: dso_local" ;;
+  *) echo "NOT refused by name: dso_local: $(echo "$verdict" | head -1)"; failed=1 ;;
+esac
+echo "identical fixtures: $count of $total"
 
 step 3 "mutation: drop nsw in the translator"
 prove_mutation "drop nsw in translate" \
@@ -99,6 +106,13 @@ prove_mutation "drop nsw in translate" \
   "LibLLVM.set_nsw(result, 1) if (flags & 2_i64) != 0" \
   "LibLLVM.set_nsw(result, 0) if (flags & 2_i64) != 0" \
   "\"$TOOL\" roundtrip \"$FX/arith.ll\" | grep -qx identical"
+
+step 3b "mutation: write hidden as default in the translator"
+prove_mutation "write hidden as default in translate" \
+  src/compiler/backend/llvm/translate.iyi \
+  "LibLLVM.set_visibility(fn, visibility_number(f.visibility))" \
+  "LibLLVM.set_visibility(fn, 0)" \
+  "\"$TOOL\" roundtrip \"$FX/visibility.ll\" | grep -qx identical"
 
 step 4 "mutation: remove llvm.memcpy from the importer's accepted intrinsics"
 prove_mutation "remove llvm.memcpy from the importer" \

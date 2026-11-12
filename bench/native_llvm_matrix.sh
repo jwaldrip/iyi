@@ -18,9 +18,9 @@ CRYSTAL_CACHE_DIR=${CRYSTAL_CACHE_DIR:-/tmp/iyi-b2-cache}
 export CRYSTAL_CACHE_DIR
 
 IY=./bin/iyi
-TOOL=.build/iyi-ir
+TOOL=${TOOL:-.build/iyi-ir}
 SCR=${SCR:-/tmp/iyi-native-llvm-matrix}
-TARGETS="aarch64-apple-darwin aarch64-linux-gnu x86_64-linux-gnu x86_64-windows-msvc wasm32-wasi"
+TARGETS=${TARGETS:-"aarch64-apple-darwin aarch64-linux-gnu x86_64-linux-gnu x86_64-windows-msvc wasm32-wasi"}
 
 rm -rf "$SCR"
 mkdir -p "$SCR"

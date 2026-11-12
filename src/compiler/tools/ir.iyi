@@ -351,9 +351,28 @@ class Coverage
     end
   end
 
+  # Whether the LLVM-C builder folds this instruction when the translator rebuilds it: an arithmetic,
+  # conversion, comparison, select, GEP or aggregate op whose every operand is a plain constant (an
+  # undef, an integer, a float or a null). Constant expressions and globals are not plain, and the
+  # folder leaves them alone.
+  def would_fold?(inst : LibLLVM::ValueRef) : Bool
+    opcode = LibLLVM.get_instruction_opcode(inst)
+    foldable = (opcode >= 8 && opcode <= 25) || (opcode >= 29 && opcode <= 43) || opcode == 46 || opcode == 53 || opcode == 54
+    return false unless foldable
+    count = LibLLVM.get_num_operands(inst)
+    i = 0
+    while i < count
+      kind = llvm_value_kind(LibLLVM.get_operand(inst, i))
+      return false unless kind == 14 || kind == 18 || kind == 19 || kind == 20
+      i = i + 1
+    end
+    count > 0
+  end
+
   def add_instruction(inst : LibLLVM::ValueRef) : Nil
     opcode = LibLLVM.get_instruction_opcode(inst)
     note("opcode", llvm_opcode_name(opcode), opcode_in_ir?(opcode))
+    note("would fold", llvm_opcode_name(opcode), true) if would_fold?(inst)
     if opcode == 45 || opcode == 5
       callee = LibLLVM.get_called_value(inst)
       if llvm_value_kind(callee) == vk_inline_asm

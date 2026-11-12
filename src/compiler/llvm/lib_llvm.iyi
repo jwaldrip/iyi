@@ -556,7 +556,6 @@ module compiler/llvm/lib_llvm
     fun write_bitcode_to_file = LLVMWriteBitcodeToFile(m : ModuleRef, path : Char*) : Int32
     fun write_bitcode_to_memory_buffer = LLVMWriteBitcodeToMemoryBuffer(m : ModuleRef) : MemoryBufferRef
     fun create_memory_buffer_with_contents_of_file = LLVMCreateMemoryBufferWithContentsOfFile(path : Char*, out_mem_buf : MemoryBufferRef*, out_message : Char**) : Bool
-    fun create_memory_buffer_with_memory_range_copy = LLVMCreateMemoryBufferWithMemoryRangeCopy(input_data : Char*, input_data_length : SizeT, buffer_name : Char*) : MemoryBufferRef
     fun get_buffer_start = LLVMGetBufferStart(mem_buf : MemoryBufferRef) : Char*
     fun get_buffer_size = LLVMGetBufferSize(mem_buf : MemoryBufferRef) : SizeT
     fun dispose_memory_buffer = LLVMDisposeMemoryBuffer(mem_buf : MemoryBufferRef)
@@ -648,7 +647,8 @@ module compiler/llvm/lib_llvm
     fun get_inline_asm_side_effects = LLVMGetInlineAsmHasSideEffects(v : ValueRef) : Bool
     fun get_inline_asm_align_stack = LLVMGetInlineAsmNeedsAlignedStack(v : ValueRef) : Bool
     fun get_inline_asm_type = LLVMGetInlineAsmFunctionType(v : ValueRef) : TypeRef
-    fun get_inline_asm = LLVMGetInlineAsm(ty : TypeRef, asm_string : Char*, asm_len : SizeT, constraints : Char*, constraints_len : SizeT, side_effects : Bool, align_stack : Bool, dialect : Int32) : ValueRef
+    fun get_inline_asm_can_unwind = LLVMGetInlineAsmCanUnwind(v : ValueRef) : Bool
+    fun get_inline_asm = LLVMGetInlineAsm(ty : TypeRef, asm_string : Char*, asm_len : SizeT, constraints : Char*, constraints_len : SizeT, side_effects : Bool, align_stack : Bool, dialect : Int32, can_throw : Bool) : ValueRef
     fun instruction_get_debug_loc = LLVMInstructionGetDebugLoc(v : ValueRef) : MetadataRef
     fun get_debug_loc_line = LLVMGetDebugLocLine(v : ValueRef) : UInt
     fun get_debug_loc_column = LLVMGetDebugLocColumn(v : ValueRef) : UInt

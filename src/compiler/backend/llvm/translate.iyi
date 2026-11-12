@@ -6,9 +6,8 @@ import compiler/ir/values::{Value}
 import compiler/ir/inst::{Op, Inst, Block, Ordering, Attribute, CallAux, AsmAux, GepAux, MemAux, IntrinsicAux}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel, Visibility}
 import compiler/ir/module::{Module}
-import compiler/ir/printer::{print}
 import compiler/ir/intrinsics::{intrinsic_name, intrinsic_signature}
-import compiler/llvm/lib_llvm::{to_c_str, string_and_dispose}
+import compiler/llvm/lib_llvm::{to_c_str}
 import compiler/backend/llvm/import::{ir_int_predicate_to_llvm, ir_real_predicate_to_llvm, ir_ordering_to_llvm, atomic_rmw_operation_names, ir_module_flag_behavior}
 
 # LibLLVM's enum for an IR linkage, for LLVMSetLinkage.
@@ -56,27 +55,11 @@ end
 
 # Replays an IR module into an LLVM module, in a fresh LLVM context. The caller owns the result.
 pub def translate(m : Module) : LibLLVM::ModuleRef | TranslateError
-  return translate_through_text(m) if carries_dso_local?(m)
   ModuleTranslator.new(m).run
 end
 
-# LLVM 22's C API cannot set dso_local. A module that carries it is printed in the IR's text form, which is
-# LLVM's own IR syntax, and parsed back. The instruction builders below do not build such a module.
-pub def translate_through_text(m : Module) : LibLLVM::ModuleRef | TranslateError
-  text = print(m)
-  ctx = LibLLVM.create_context
-  buffer = LibLLVM.create_memory_buffer_with_memory_range_copy(to_c_str(text), text.bytesize.to_u64, to_c_str(m.name))
-  module_slot = Pointer(LibLLVM::ModuleRef).malloc(1_u64)
-  message = Pointer(UInt8).new(0_u64)
-  rc = LibLLVM.parse_ir_in_context(ctx, buffer, module_slot, pointerof(message))
-  LibLLVM.dispose_memory_buffer(buffer)
-  if rc != 0
-    return TranslateError.new(string_and_dispose(message))
-  end
-  module_slot[0]
-end
-
-def carries_dso_local?(m : Module) : Bool
+# LLVM 22's C API has no setter for dso_local, so a module that carries it is refused by name.
+pub def carries_dso_local?(m : Module) : Bool
   m.globals.any? { |g| g.dso_local } || m.functions.any? { |f| f.dso_local }
 end
 
@@ -167,6 +150,10 @@ class ModuleTranslator
   end
 
   def run : LibLLVM::ModuleRef | TranslateError
+    if carries_dso_local?(@ir)
+      refuse("LLVM 22's C API cannot set dso_local, so a module that carries it is refused by name")
+      return @error.as(TranslateError)
+    end
     LibLLVM.set_module_identifier(@llvm, to_c_str(@ir.name), @ir.name.bytesize.to_u64)
     LibLLVM.set_source_file_name(@llvm, to_c_str(@ir.name), @ir.name.bytesize.to_u64)
     LibLLVM.set_target(@llvm, to_c_str(@ir.triple))
@@ -396,7 +383,7 @@ class ModuleTranslator
 
   def inline_asm_ref(c : Inst) : LibLLVM::ValueRef
     aux = c.aux.as(AsmAux)
-    LibLLVM.get_inline_asm(type_ref(c.type), to_c_str(aux.template), aux.template.bytesize.to_u64, to_c_str(aux.constraints), aux.constraints.bytesize.to_u64, llvm_bool(aux.side_effects), llvm_bool(aux.align_stack), aux.dialect.value)
+    LibLLVM.get_inline_asm(type_ref(c.type), to_c_str(aux.template), aux.template.bytesize.to_u64, to_c_str(aux.constraints), aux.constraints.bytesize.to_u64, llvm_bool(aux.side_effects), llvm_bool(aux.align_stack), aux.dialect.value, llvm_bool(false))
   end
 
   # ---- bodies -------------------------------------------------------------------------------

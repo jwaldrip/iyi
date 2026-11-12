@@ -1006,6 +1006,10 @@ class ModuleImporter
 
   # Inline asm as a callee: an Op::Call with no arguments that carries the template (SPEC 3.2).
   def inline_asm_value(ref : LibLLVM::ValueRef, fn_type_ref : LibLLVM::TypeRef) : Value
+    if LibLLVM.get_inline_asm_can_unwind(ref) != 0
+      refuse("an inline asm that may unwind is not in the IR, which has no unwind on asm")
+      return dummy
+    end
     if known = @values[ref.address]?
       return known
     end
@@ -1443,6 +1447,14 @@ class ModuleImporter
     end
     args = call_arguments(ref)
     return nil if failed?
+    param = 1
+    while param <= args.size
+      if LibLLVM.get_callsite_attribute_count(ref, param) != 0
+        refuse("the intrinsic #{llvm_name} is called with a parameter attribute, which the IR does not model")
+        return nil
+      end
+      param = param + 1
+    end
     signature = intrinsic_signature(found.id, found.overload, @ir.types)
     Inst.new(Op::Intrinsic, signature[0], args, 0_i64, IntrinsicAux.new(found.id, found.overload), [] of Block, [] of Int64, name)
   end
