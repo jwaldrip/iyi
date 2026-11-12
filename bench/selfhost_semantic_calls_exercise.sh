@@ -256,8 +256,8 @@ prove_mutation "a given positional argument is replaced by its default" "$DEFAUL
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a lib fun's owner is written with a dot, not a hash" "$LIB_FILE" \
-  '    owner = "#{target_lib.full_name}##{name}"' \
-  '    owner = "#{target_lib.full_name}.#{name}"' \
+  '    target = LibCall.recalculate_fun(found.as(LibFun), "#{target_lib.full_name}##{name}", prog, ts, args)' \
+  '    target = LibCall.recalculate_fun(found.as(LibFun), "#{target_lib.full_name}.#{name}", prog, ts, args)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -270,12 +270,6 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a fixed lib fun takes extra arguments as if it were variadic" "$LIB_FILE" \
   '    if count < lib_fun.args.size || (!lib_fun.varargs? && count > lib_fun.args.size)' \
   '    if count < lib_fun.args.size || (false && count > lib_fun.args.size)' \
-  -- check_calls_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-
-prove_mutation "a pointer instance's T stays unbound" "$RESTRICT_FILE" \
-  '          if names[0] == "T" && owner.is_a?(PointerInstanceType)' \
-  '          if names[0] == "T" && owner.is_a?(PointerInstanceType) && false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

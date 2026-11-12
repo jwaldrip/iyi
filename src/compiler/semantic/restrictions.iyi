@@ -4,7 +4,7 @@ import compiler/syntax/ast::{ASTNode, Arg, Generic, Path, Self}
 import compiler/semantic/top_level::{GenericClassType, ModuleType, Type}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericInstanceType, PointerInstanceType}
+import compiler/types/types::{GenericInstanceType}
 
 # The answer to "what does this argument's restriction name": a type, nil when
 # the argument has no restriction, or an error message when the written type does
@@ -54,12 +54,6 @@ pub class ArgRestriction
       if node.is_a?(Path)
         names = node.as(Path).names
         if names.size == 1
-          # A pointer instance's type variable is its element type; its type table is
-          # empty (PointerInstanceType is built without type_vars), so `def value : T` on
-          # Pointer(Int32) would stay unbound. Hosted, its `T` is the element type.
-          if names[0] == "T" && owner.is_a?(PointerInstanceType)
-            return owner.as(PointerInstanceType).element_type
-          end
           bound = instance.type_vars[names[0]]?
           return bound.as(Type) if bound
         end
