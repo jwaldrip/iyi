@@ -25,8 +25,10 @@ import compiler/ir/layout::{DataLayout}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
 import compiler/native/obj/object::{RelocKind}
-import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le, caller_saved_gprs, caller_saved_fprs, fp_reg}
-import compiler/native/aarch64/abi::{assign_call, assign_return, flatten_leaves, CallAssignment, LeafLoc}
+import compiler/native/aarch64/regs::{cond_eq, cond_ne, cond_cs, cond_cc, cond_mi, cond_vs, cond_vc, cond_hi, cond_ls, cond_ge, cond_lt, cond_gt, cond_le}
+import compiler/native/target::{TargetDesc}
+import compiler/native/aarch64/abi::{aarch64_target}
+import compiler/native/lower::{LeafLoc, CallAssignment, flatten_leaves, assign_call, assign_return, reachable_blocks, plan_gep, GepPlan, overflow_form, acquire_on_load?, release_on_store?, icmp_unsigned?}
 
 pub class IselError
   getter message : String
@@ -76,16 +78,13 @@ def int_cond(ordinal : Int64) : Int32
   cond_le
 end
 
-def int_unsigned?(ordinal : Int64) : Bool
-  ordinal == 2_i64 || ordinal == 3_i64 || ordinal == 4_i64 || ordinal == 5_i64
-end
-
 class Isel
   getter mf : MFunction
   getter layout : DataLayout
   getter fn : Function
   getter syms : Hash(String, Int32)
   getter darwin : Bool
+  getter desc : TargetDesc
   getter values : Array(Value)
   getter leaves : Array(Array(Int32))
   getter block_index : Hash(String, Int32)
@@ -108,6 +107,7 @@ class Isel
     @cur = MBlock.new(0, "")
     @cur_ir_name = ""
     @sret_vreg = -1
+    @desc = aarch64_target(@darwin)
   end
 
   # ---- failure and register bookkeeping ----------------------------------------------------------
@@ -435,7 +435,7 @@ class Isel
     @fn.params.each do |p|
       bind(p, fresh_leaves(p.type))
     end
-    reachable = reachable_blocks
+    reachable = reachable_blocks(@fn)
     @fn.blocks.each do |b|
       next unless reachable[@block_index[b.name]]
       b.insts.each do |i|
@@ -462,36 +462,11 @@ class Isel
     @mf
   end
 
-  # Which IR blocks are reachable from the entry through normal edges.
-  def reachable_blocks : Array(Bool)
-    seen = [] of Bool
-    @fn.blocks.each do |b|
-      seen << false
-    end
-    work = [0]
-    while !work.empty?
-      k = work.pop
-      next if seen[k]
-      seen[k] = true
-      block = @fn.blocks[k]
-      next unless block.terminated?
-      t = block.terminator
-      if t.op == Op::Invoke
-        work << @block_index[t.targets[0].name]
-      else
-        t.targets.each do |s|
-          work << @block_index[s.name]
-        end
-      end
-    end
-    seen
-  end
-
   # Parameters arrive by the convention: registers, or the caller's outgoing area above the frame record.
   def lower_params : Nil
     params = @fn.params.map { |p| p.type }
     sret_first = sret_param?(0)
-    assignment = assign_call(@layout, params, params.size, false, sret_first)
+    assignment = assign_call(@layout, @desc, params, params.size, sret_first)
     if assignment.is_a?(String)
       fail(assignment.as(String))
       return
@@ -522,7 +497,7 @@ class Isel
           m.fp = loc.fp
           m.imm = 16_i64 + loc.offset
           m.defs << vop(dst)
-          m.uses << pop(fp_reg)
+          m.uses << pop(@desc.frame_pointer)
           emit(m)
         end
         k = k + 1
@@ -669,14 +644,6 @@ class Isel
     t.bits
   end
 
-  def atomic_load?(ordering : Ordering) : Bool
-    ordering == Ordering::Acquire || ordering == Ordering::SeqCst || ordering == Ordering::AcqRel
-  end
-
-  def atomic_store?(ordering : Ordering) : Bool
-    ordering == Ordering::Release || ordering == Ordering::SeqCst || ordering == Ordering::AcqRel
-  end
-
   def lower_load(i : Inst) : Nil
     aux = i.aux.as(MemAux)
     base = first_leaf(i.args[0])
@@ -684,7 +651,7 @@ class Isel
     flatten_leaves(@layout, i.type).each do |l|
       off = l[0]
       lt = l[1]
-      if atomic_load?(aux.ordering)
+      if acquire_on_load?(aux.ordering)
         addr = add_imm(base, off)
         g = gpr
         m = mop(MOp::Ldar)
@@ -719,7 +686,7 @@ class Isel
       off = flat[k][0]
       lt = flat[k][1]
       v = vals[k]
-      if atomic_store?(aux.ordering)
+      if release_on_store?(aux.ordering)
         src = lt.float? ? move_bits_to_gp(v, lt.bits) : v
         m = mop(MOp::Stlr)
         m.size = mem_bits(lt)
@@ -743,47 +710,19 @@ class Isel
   # Constant offsets fold into one add. A dynamic index into an array multiplies by its element size; a
   # dynamic index into a struct is refused, since a struct field is named by a constant.
   def lower_gep(i : Inst) : Nil
-    layout = @layout
     aux = i.aux.as(GepAux)
     base = first_leaf(i.args[0])
-    const_off = 0_i64
-    dyn = base
-    cur = aux.source_type
-    k = 1
-    while k < i.args.size
-      index = i.args[k]
-      is_const = index.is_a?(Inst) && index.as(Inst).op == Op::ConstInt
-      if k == 1
-        stride = layout.alloc_size(cur)
-        if is_const
-          const_off = const_off + index.as(Inst).aux_int * stride
-        else
-          dyn = scaled_add(dyn, index, stride)
-        end
-      elsif cur.struct?
-        if !is_const
-          fail("a struct field in a getelementptr needs a constant index")
-          return
-        end
-        n = index.as(Inst).aux_int.to_i32
-        const_off = const_off + layout.offset_of(cur, n)
-        cur = cur.struct_element_types[n]
-      elsif cur.array?
-        element = cur.element_type
-        stride = layout.alloc_size(element)
-        if is_const
-          const_off = const_off + index.as(Inst).aux_int * stride
-        else
-          dyn = scaled_add(dyn, index, stride)
-        end
-        cur = element
-      else
-        fail("getelementptr indexes into #{cur}")
-        return
-      end
-      k = k + 1
+    plan = plan_gep(@layout, aux.source_type, i.args)
+    if plan.is_a?(String)
+      fail(plan.as(String))
+      return
     end
-    bind_result(i, [add_imm(dyn, const_off)])
+    gep = plan.as(GepPlan)
+    dyn = base
+    gep.terms.each do |t|
+      dyn = scaled_add(dyn, i.args[t[0]], t[1])
+    end
+    bind_result(i, [add_imm(dyn, gep.const_off)])
   end
 
   # dyn + index * stride, for a dynamic index value.
@@ -869,7 +808,7 @@ class Isel
     t = i.args[0].type
     a = first_leaf(i.args[0])
     b = first_leaf(i.args[1])
-    if int_unsigned?(ordinal)
+    if icmp_unsigned?(ordinal)
       a = zext(a, t)
       b = zext(b, t)
     end
@@ -1235,7 +1174,7 @@ class Isel
   def lower_ret(i : Inst) : Nil
     ret_type = @fn.fn_type.return_type
     if !ret_type.void? && i.args.size == 1
-      assigned = assign_return(@layout, ret_type)
+      assigned = assign_return(@layout, @desc, ret_type)
       if assigned.is_a?(String)
         fail(assigned.as(String))
         return
@@ -1275,7 +1214,7 @@ class Isel
       attrs = cc_aux.param_attrs
       sret_first = attrs.size > 0 && attrs[0].any? { |a| a.name == "sret" }
     end
-    assignment = assign_call(@layout, types, fixed, @darwin, sret_first)
+    assignment = assign_call(@layout, @desc, types, fixed, sret_first)
     if assignment.is_a?(String)
       fail(assignment.as(String))
       return
@@ -1322,18 +1261,18 @@ class Isel
       m.sym = symbol_index(callee.as(Function).name)
       m.reloc = RelocKind::A64Call26
       m.call = true
-      m.clobbers = caller_saved_gprs + caller_saved_fprs
+      m.clobbers = @desc.caller_saved
       emit(m)
     else
       target = first_leaf(callee)
       m = mop(MOp::Blr)
       m.uses << vop(target)
       m.call = true
-      m.clobbers = caller_saved_gprs + caller_saved_fprs
+      m.clobbers = @desc.caller_saved
       emit(m)
     end
     return if i.type.void?
-    assigned = assign_return(@layout, i.type)
+    assigned = assign_return(@layout, @desc, i.type)
     if assigned.is_a?(String)
       fail(assigned.as(String))
       return
@@ -1371,10 +1310,11 @@ class Isel
   # The overflow family: the value and a flag. Narrow widths compute in 64 bits and compare the result with
   # its own width; 64-bit forms use the flag-setting adds and subs, and the high half of a multiply.
   def lower_overflow(i : Inst, id : IntrinsicId) : Nil
-    signed = id == IntrinsicId::SaddWithOverflowI32 || id == IntrinsicId::SaddWithOverflowI64 || id == IntrinsicId::SsubWithOverflowI32 || id == IntrinsicId::SsubWithOverflowI64 || id == IntrinsicId::SmulWithOverflowI32 || id == IntrinsicId::SmulWithOverflowI64
-    mul = id == IntrinsicId::SmulWithOverflowI32 || id == IntrinsicId::SmulWithOverflowI64 || id == IntrinsicId::UmulWithOverflowI32 || id == IntrinsicId::UmulWithOverflowI64
-    sub = id == IntrinsicId::SsubWithOverflowI32 || id == IntrinsicId::SsubWithOverflowI64 || id == IntrinsicId::UsubWithOverflowI32 || id == IntrinsicId::UsubWithOverflowI64
-    wide = id == IntrinsicId::SaddWithOverflowI64 || id == IntrinsicId::UaddWithOverflowI64 || id == IntrinsicId::SsubWithOverflowI64 || id == IntrinsicId::UsubWithOverflowI64 || id == IntrinsicId::SmulWithOverflowI64 || id == IntrinsicId::UmulWithOverflowI64
+    form = overflow_form(id)
+    signed = form.signed
+    mul = form.mul
+    sub = form.sub
+    wide = form.wide
     t = i.args[0].type
     bits = t.bits
     a = first_leaf(i.args[0])

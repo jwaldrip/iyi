@@ -1,0 +1,36 @@
+module compiler/native/target
+
+# The per-target description (SPEC 2.2, 3.1). The legalizer (lower.iyi), the calling convention, the selector
+# and the frame read a target through this record and never name a register or a platform directly. Each
+# target fills one in: aarch64 darwin and aarch64 linux today, in compiler/native/aarch64/abi.iyi.
+
+# How a thread-local variable is reached. Darwin goes through a TLV descriptor in __DATA,__thread_vars,
+# bound to _tlv_bootstrap, and calls the descriptor's thunk. Linux reads the thread pointer and adds a
+# local-exec offset.
+pub enum TlsForm
+  TlvDescriptor
+  LocalExec
+end
+
+pub class TargetDesc
+  getter name : String
+  getter darwin : Bool
+  getter pointer_bits : Int32
+  getter stack_align : Int64            # bytes; the stack pointer is kept aligned to this at every call
+  getter integer_args : Array(Int32)    # physical registers that carry integer and pointer arguments, in order
+  getter fp_args : Array(Int32)         # physical registers that carry floating-point arguments, in order
+  getter indirect_result : Int32        # the register that carries an sret pointer
+  getter aggregate_reg_bytes : Int64    # an aggregate up to this many bytes may be passed in registers
+  getter fp_aggregate_max : Int32       # a homogeneous floating-point aggregate up to this many elements is in fp registers
+  getter variadic_on_stack : Bool       # every variadic argument goes on the stack (darwin)
+  getter callee_saved : Array(Int32)
+  getter caller_saved : Array(Int32)
+  getter scratch_gprs : Array(Int32)
+  getter scratch_fprs : Array(Int32)
+  getter frame_pointer : Int32
+  getter link_register : Int32
+  getter tls : TlsForm
+
+  def initialize(@name : String, @darwin : Bool, @pointer_bits : Int32, @stack_align : Int64, @integer_args : Array(Int32), @fp_args : Array(Int32), @indirect_result : Int32, @aggregate_reg_bytes : Int64, @fp_aggregate_max : Int32, @variadic_on_stack : Bool, @callee_saved : Array(Int32), @caller_saved : Array(Int32), @scratch_gprs : Array(Int32), @scratch_fprs : Array(Int32), @frame_pointer : Int32, @link_register : Int32, @tls : TlsForm)
+  end
+end
