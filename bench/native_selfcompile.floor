@@ -162,3 +162,4 @@ src/compiler/lower/globals.iyi parse
 src/compiler/semantic/inline_macros.iyi parse
 src/compiler/semantic/type_node_host.iyi parse
 src/compiler/semantic/type_nodes.iyi parse
+src/compiler/native/const_expr.iyi parse

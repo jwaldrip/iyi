@@ -328,3 +328,4 @@ src/compiler/semantic/method_lookup.iyi 0
 src/compiler/semantic/restrictions.iyi 0
 src/compiler/semantic/type_node_host.iyi 17
 src/compiler/semantic/type_nodes.iyi 29
+src/compiler/native/const_expr.iyi 0
