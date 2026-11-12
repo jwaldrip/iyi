@@ -515,8 +515,8 @@ prove_mutation "a typed argument's instance variable takes its restriction type"
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
-  "t = hook.virtual_of(t)" \
-  "t = t" \
+  "return hook.virtual_of(resolved)" \
+  "return resolved" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
