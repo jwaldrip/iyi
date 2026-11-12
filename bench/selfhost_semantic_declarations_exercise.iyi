@@ -1,17 +1,19 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dump_program_declarations, dump_type, dir_of, normalize_path}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, dump_program_declarations, dump_type, dir_of, normalize_path}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
 #   selfhost_semantic_declarations_exercise <file.iyi>
 #   selfhost_semantic_declarations_exercise --initial
+#   selfhost_semantic_declarations_exercise --chain <file.iyi>
 #
 # Loads the file through the port's top-level pass, bare (no prelude), with the
 # closure of what it imports and requires: each imported file is read, parsed and
 # declared into the same program. The search path is IYI_PATH, the one the oracle
 # reads. It prints the declarations the file itself makes, the same form the oracle
 # prints for the same file. `--initial` dumps the built-in types a new program holds.
+# `--chain` prints the parent chain of a fixed list of types, to a fixed depth.
 module BenchSelfhostSemanticDeclarationsExercise
   def self.search_path : Array(String)
     text = ENV["IYI_PATH"]? || ""
@@ -36,7 +38,8 @@ module BenchSelfhostSemanticDeclarationsExercise
     root
   end
 
-  def self.dump_file(path : String) : String
+  # Loads a file and its closure into a fresh program. Returns the program and the entry.
+  def self.load_program(path : String) : {SemanticProgram, String}
     cwd = ENV["PWD"]? || "."
     absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
     entry = normalize_path(absolute)
@@ -50,7 +53,41 @@ module BenchSelfhostSemanticDeclarationsExercise
     visitor = TopLevelVisitor.new(prog, entry)
     node.accept(visitor)
     visitor.finish
+    {prog, entry}
+  end
+
+  def self.dump_file(path : String) : String
+    prog, entry = load_program(path)
     dump_program_declarations(prog, entry)
+  end
+
+  # The parent chain of one type, each parent on its own line, indented by depth.
+  def self.chain_show(t : Type, depth : Int32, indent : String) : String
+    line = indent + t.to_s + "\n"
+    if depth == 0
+      return line
+    end
+    if t.is_a?(ModuleType)
+      mod = t.as(ModuleType)
+      mod.parents.each do |p|
+        line = line + chain_show(p, depth - 1, indent + "  ")
+      end
+    end
+    line
+  end
+
+  def self.dump_chain(path : String) : String
+    prog, entry = load_program(path)
+    sb = ""
+    ["Nil", "Object", "Reference", "Value", "Int32", "String", "Mine"].each do |name|
+      t = prog.types[name]?
+      if t
+        sb = sb + chain_show(t, 4, "")
+      else
+        sb = sb + name + " missing\n"
+      end
+    end
+    sb
   end
 
   def self.dump_initial : String
@@ -65,6 +102,8 @@ end
 
 if Program.args[0] == "--initial"
   print BenchSelfhostSemanticDeclarationsExercise.dump_initial
+elsif Program.args[0] == "--chain"
+  print BenchSelfhostSemanticDeclarationsExercise.dump_chain(Program.args[1])
 else
   print BenchSelfhostSemanticDeclarationsExercise.dump_file(Program.args[0])
 end

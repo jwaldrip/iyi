@@ -586,6 +586,7 @@ end
 # One fun of a lib, as the top-level pass records it. The argument types and the
 # call resolution are filled by the later pass; this is what the declaration says.
 pub class LibFun
+  property location : Location? = nil
   getter name : String
   getter real_name : String
   getter args : Array(String)
@@ -1645,7 +1646,7 @@ pub class TopLevelVisitor < Visitor
       unless superclass.is_a?(ClassType) || superclass.class?
         raise("#{superclass.full_name} is not a class, it's a #{superclass.type_desc}")
       end
-    else
+    elsif created_new_type
       superclass = node.struct ? @program.struct_type : @program.reference_type
       superclass_display = superclass.full_name
     end
@@ -2035,6 +2036,7 @@ pub class TopLevelVisitor < Visitor
       arg_names = node.args.map { |arg| arg.name }
       real = node.real_name || node.name
       record = LibFun.new(node.name, real, arg_names, node.varargs, node.return_type)
+      record.location = node.location
       if @current_type.is_a?(LibType)
         @current_type.as(LibType).funs << record
       else
@@ -2378,6 +2380,13 @@ pub def declared_in?(locations : Array(Location)?, entry : String?) : Bool
   false
 end
 
+pub def lib_fun_declared?(f : LibFun, entry : String?) : Bool
+  return true if entry.nil?
+  loc = f.location
+  return false if loc.nil?
+  normalize_path(loc.as(Location).filename) == entry.as(String)
+end
+
 pub def def_declared?(d : Def, entry : String?) : Bool
   return true if entry.nil?
   loc = d.location
@@ -2556,7 +2565,7 @@ pub def dump_program_declarations(program : SemanticProgram, entry : String? = n
   end
   top_defs = top_defs.sorted_by(&.name)
   top_defs = top_defs.select { |d| def_declared?(d, entry) }
-  global_funs = program.global_funs.sorted_by { |f| f.name }
+  global_funs = program.global_funs.select { |f| lib_fun_declared?(f, entry) }.sorted_by { |f| f.name }
   di = 0
   gi = 0
   while di < top_defs.size || gi < global_funs.size
