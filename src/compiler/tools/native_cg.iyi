@@ -144,6 +144,8 @@ def forms : Array(Form)
   acc << Form.new("stlr x1, [x2]", atomic(MOp::Stlr, 64, 1, 2, 0))
   acc << Form.new("ldaxr x1, [x2]", atomic(MOp::Ldaxr, 64, 1, 2, 0))
   acc << Form.new("stlxr w3, x1, [x2]", atomic(MOp::Stlxr, 64, 1, 2, 3))
+  acc << Form.new("ldxr x1, [x2]", atomic(MOp::Ldxr, 64, 1, 2, 0))
+  acc << Form.new("stxr w3, x1, [x2]", atomic(MOp::Stxr, 64, 1, 2, 3))
   m = mk(MOp::Dmb)
   m.imm = 0_i64
   acc << Form.new("dmb ish", m)
@@ -194,6 +196,10 @@ def forms : Array(Form)
   acc << Form.new("umulh x0, x1, x2", arith(MOp::Umulh, 0, 1, 2))
   acc << Form.new("adds x0, x1, x2", arith(MOp::Adds, 0, 1, 2))
   acc << Form.new("subs x0, x1, x2", arith(MOp::Subs, 0, 1, 2))
+  acc << Form.new("adc x0, x1, x2", arith(MOp::Adc, 0, 1, 2))
+  acc << Form.new("sbc x0, x1, x2", arith(MOp::Sbc, 0, 1, 2))
+  acc << Form.new("adcs x0, x1, x2", arith(MOp::Adcs, 0, 1, 2))
+  acc << Form.new("sbcs x0, x1, x2", arith(MOp::Sbcs, 0, 1, 2))
   m = mk(MOp::Cmp)
   m.uses << reg(1)
   m.uses << reg(2)
@@ -317,7 +323,7 @@ end
 def atomic(op : MOp, bits : Int32, rt : Int32, rn : Int32, status : Int32) : MInst
   m = mk(op)
   m.size = bits
-  if op == MOp::Ldar || op == MOp::Ldaxr
+  if op == MOp::Ldar || op == MOp::Ldaxr || op == MOp::Ldxr
     m.defs << reg(rt)
     m.uses << reg(rn)
   elsif op == MOp::Stlr
