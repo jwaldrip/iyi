@@ -1,30 +1,39 @@
 module compiler/semantic/main_visitor
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Arg, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, Macro, ModuleDef, NilLiteral, NodeMap, Nop, NumberLiteral, Path, ProcNotation, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Var, While, Yield}
+import compiler/syntax/ast::{ASTNode, NodeMap, Alias, AlignOf, And, Annotation, AnnotationDef, Arg, ArrayLiteral, Asm, AsmOperand, Assign, AssocTypeDecl, Block, BoolLiteral, Break, CStructOrUnionDef, Call, Case, Cast, CharLiteral, ClassDef, ClassVar, Def, Defer, DoubleSplat, EnumDef, ExceptionHandler, Expressions, Extend, ExternalVar, FunDef, Generic, Global, HashLiteral, If, ImplDef, ImplicitObj, ImportDecl, Include, InstanceAlignOf, InstanceSizeOf, InstanceVar, IsA, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant, Metaclass, ModuleDef, ModuleHeader, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, NilableCast, Nop, Not, NumberLiteral, OffsetOf, OpAssign, Or, Out, Path, PointerOf, ProcLiteral, ProcNotation, ProcPointer, Propagate, RangeLiteral, ReadInstanceVar, Recover, RegexLiteral, Require, Rescue, RespondsTo, Return, Select, Self, SizeOf, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TraitDef, TupleLiteral, TypeDeclaration, TypeDef, TypeOf, Underscore, UninitializedVar, Union, Unless, Until, UsingDecl, Var, VisibilityModifier, When, While, Yield}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 
+# iyi: two modes. Strict (the default) raises on the first construct it cannot
+# type, as the port always did, and every existing gate relies on that. Total
+# (`total = true`, the typed dump's mode) records the reason on the node that
+# cannot be typed and goes on, so one unsupported construct costs its own nodes
+# and not the file. A node with no type is never printed as typed, so it never
+# counts as matched.
 pub class MainVisitor < Visitor
   property program : SemanticProgram
   property current_type : ModuleType
   property scope : Type?
   property vars : Hash(String, Type)
   property node_types : NodeMap(Type)
+  property untyped_reasons : NodeMap(String)
   property call_target_defs : NodeMap(Def)
   property current_def : Def?
   property current_call_block : Block?
   property current_block_context_vars : Hash(String, Type)?
   property current_yield_nodes : Array(Yield)?
+  property total : Bool = false
 
   def initialize(@program : SemanticProgram)
     @current_type = @program
     @scope = nil
     @vars = Hash(String, Type).new
     @node_types = NodeMap(Type).new
+    @untyped_reasons = NodeMap(String).new
     @call_target_defs = NodeMap(Def).new
     @current_def = nil
     @current_call_block = nil
@@ -33,6 +42,10 @@ pub class MainVisitor < Visitor
   end
 
   def set_type(node : ASTNode, type : Type) : Type
+    if type.is_a?(UnresolvedType)
+      untyped(node, "undefined constant #{type.name}")
+      return type
+    end
     @node_types[node] = type
     type
   end
@@ -47,6 +60,36 @@ pub class MainVisitor < Visitor
     else
       raise("BUG: node has no type: #{node.to_s}")
     end
+  end
+
+  # The type of a node a visit has already visited. Strict mode raises when it
+  # has none, as `type_of` does; total mode returns nil and the caller leaves its
+  # own node untyped.
+  def child_type(node : ASTNode) : Type?
+    if t = @node_types[node]?
+      return t
+    end
+    raise("BUG: node has no type: #{node.to_s}") unless @total
+    nil
+  end
+
+  # The reason a node could not be typed. Total mode records it and returns
+  # false, so a visit can end with `return untyped(node, "...")`.
+  def untyped(node : ASTNode, reason : String) : Bool
+    @untyped_reasons[node] = reason
+    false
+  end
+
+  # A construct the port refuses. Strict mode raises the message (the program's
+  # error, as before); total mode records it on the node.
+  def refuse(node : ASTNode, message : String) : Bool
+    raise(message) unless @total
+    @untyped_reasons[node] = message
+    false
+  end
+
+  def untyped_reason?(node : ASTNode) : String?
+    @untyped_reasons[node]?
   end
 
   def target_def?(call : Call) : Def?
@@ -82,10 +125,87 @@ pub class MainVisitor < Visitor
     false
   end
 
+  # iyi: the `module` header the parser leaves as the file's first statement. The
+  # hosted tree has no such node (its parser makes the ModuleDef alone, parser.cr
+  # 349-402), so the header is typed nothing, recorded nothing, and not walked.
+  def visit(node : ModuleHeader) : Bool
+    false
+  end
+
+  # iyi: an argument of a def, block or enum member. The hosted pass skips it
+  # (semantic_visitor.cr: "Arg nodes are also used for Enum constants"): it is
+  # neither typed nor walked.
+  def visit(node : Arg) : Bool
+    false
+  end
+
+  # iyi: declarations the hosted base visitor types as nil without walking them
+  # (semantic_visitor.cr 1861-1911).
+  def visit(node : ImportDecl) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : UsingDecl) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : Extend) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : Include) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : Alias) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : AnnotationDef) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : LibDef) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : AssocTypeDecl) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  # iyi: the visibility modifier types what it modifies and is nil itself. A call
+  # with no expansion is refused, as the hosted pass refuses it.
+  def visit(node : VisibilityModifier) : Bool
+    exp = node.exp
+    exp.accept(self)
+    if exp.is_a?(Call) && exp.expanded.nil?
+      return refuse(node, "can't apply visibility modifier")
+    end
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  # iyi: a node of a kind this visitor does not type yet. The walk goes on into
+  # its children, so the children are typed; the node itself is recorded.
+  def visit(node : ASTNode) : Bool
+    untyped(node, "unsupported node: #{node_class_name(node)}")
+    true
+  end
+
   def expand_macro(node : Call) : Bool
     if exp = node.expanded
       exp.accept(self)
-      set_type(node, type_of(exp))
+      if et = child_type(exp)
+        set_type(node, et)
+      end
       return true
     end
 
@@ -96,7 +216,9 @@ pub class MainVisitor < Visitor
         expanded_ast = engine.expand(a_macro, node)
         node.expanded = expanded_ast
         expanded_ast.accept(self)
-        set_type(node, type_of(expanded_ast))
+        if et = child_type(expanded_ast)
+          set_type(node, et)
+        end
         return true
       end
     end
@@ -145,7 +267,7 @@ pub class MainVisitor < Visitor
         set_type(node, sc)
         return false
       else
-        raise("there's no self in this scope")
+        return refuse(node, "there's no self in this scope")
       end
     end
 
@@ -157,8 +279,9 @@ pub class MainVisitor < Visitor
     if zero_arg
       call = Call.new(nil, node.name).at(node)
       @call_target_defs[call] = zero_arg
-      ret_type = type_method_body(zero_arg, rec_type, [] of ASTNode, nil)
-      set_type(node, ret_type)
+      if ret_type = type_method_body(zero_arg, rec_type, [] of ASTNode, nil, node)
+        set_type(node, ret_type)
+      end
       return false
     end
 
@@ -167,12 +290,12 @@ pub class MainVisitor < Visitor
                  else
                    "top-level"
                  end
-    raise("undefined local variable or method '#{node.name}' for #{scope_name}")
+    refuse(node, "undefined local variable or method '#{node.name}' for #{scope_name}")
   end
 
   def visit(node : InstanceVar) : Bool
     if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-      raise("can't use instance variables at the top level")
+      return refuse(node, "can't use instance variables at the top level")
     end
     target_scope = @scope || @current_type
     target_type = if target_scope.is_a?(MetaclassType)
@@ -186,12 +309,12 @@ pub class MainVisitor < Visitor
         return false
       end
     end
-    raise("can't infer the type of instance variable '#{node.name}' of #{target_type.full_name}")
+    refuse(node, "can't infer the type of instance variable '#{node.name}' of #{target_type.full_name}")
   end
 
   def visit(node : ClassVar) : Bool
     if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-      raise("can't use class variables at the top level")
+      return refuse(node, "can't use class variables at the top level")
     end
     target_scope = @scope || @current_type
     target_type = if target_scope.is_a?(MetaclassType)
@@ -205,12 +328,14 @@ pub class MainVisitor < Visitor
         return false
       end
     end
-    raise("undefined class variable '#{node.name}' for #{target_type.full_name}")
+    refuse(node, "undefined class variable '#{node.name}' for #{target_type.full_name}")
   end
 
   def visit(node : Assign) : Bool
     node.value.accept(self)
-    val_type = type_of(node.value)
+    vt = child_type(node.value)
+    return false if vt.nil?
+    val_type = vt.as(Type)
 
     if node.target.is_a?(Var)
       v = node.target.as(Var)
@@ -220,7 +345,7 @@ pub class MainVisitor < Visitor
     elsif node.target.is_a?(InstanceVar)
       ivar_node = node.target.as(InstanceVar)
       if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-        raise("can't use instance variables at the top level")
+        return refuse(node, "can't use instance variables at the top level")
       end
       target_scope = @scope || @current_type
       target_type = if target_scope.is_a?(MetaclassType)
@@ -232,7 +357,7 @@ pub class MainVisitor < Visitor
         mod_type = target_type.as(ModuleType)
         if ivar = mod_type.lookup_instance_var?(ivar_node.name)
           unless val_type.subtype_of?(ivar.type)
-            raise("instance variable '#{ivar_node.name}' of #{mod_type.full_name} must be #{ivar.type.full_name}, not (#{ivar.type.full_name} | #{val_type.full_name})")
+            return refuse(node, "instance variable '#{ivar_node.name}' of #{mod_type.full_name} must be #{ivar.type.full_name}, not (#{ivar.type.full_name} | #{val_type.full_name})")
           end
           set_type(ivar_node, ivar.type)
         else
@@ -242,12 +367,12 @@ pub class MainVisitor < Visitor
         end
         set_type(node, val_type)
       else
-        raise("can't use instance variables in #{target_type.full_name}")
+        return refuse(node, "can't use instance variables in #{target_type.full_name}")
       end
     elsif node.target.is_a?(ClassVar)
       cvar_node = node.target.as(ClassVar)
       if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-        raise("can't use class variables at the top level")
+        return refuse(node, "can't use class variables at the top level")
       end
       target_scope = @scope || @current_type
       target_type = if target_scope.is_a?(MetaclassType)
@@ -259,7 +384,7 @@ pub class MainVisitor < Visitor
         mod_type = target_type.as(ModuleType)
         if cvar = mod_type.lookup_class_var?(cvar_node.name)
           unless val_type.subtype_of?(cvar.type)
-            raise("type mismatch for class variable '#{cvar_node.name}': expected #{cvar.type.full_name}, got #{val_type.full_name}")
+            return refuse(node, "type mismatch for class variable '#{cvar_node.name}': expected #{cvar.type.full_name}, got #{val_type.full_name}")
           end
           set_type(cvar_node, cvar.type)
         else
@@ -269,7 +394,7 @@ pub class MainVisitor < Visitor
         end
         set_type(node, val_type)
       else
-        raise("can't use class variables in #{target_type.full_name}")
+        return refuse(node, "can't use class variables in #{target_type.full_name}")
       end
     elsif node.target.is_a?(Path)
       p = node.target.as(Path)
@@ -285,7 +410,9 @@ pub class MainVisitor < Visitor
     decl_type = @program.lookup_type_node(node.declared_type, @current_type)
     if val = node.value
       val.accept(self)
-      val_type = type_of(val)
+      vt = child_type(val)
+      return false if vt.nil?
+      val_type = vt.as(Type)
       unless val_type.subtype_of?(decl_type)
         if node.var.is_a?(InstanceVar)
           target_scope = @scope || @current_type
@@ -294,9 +421,9 @@ pub class MainVisitor < Visitor
                         else
                           target_scope
                         end
-          raise("instance variable '#{node.var.as(InstanceVar).name}' of #{target_type.full_name} must be #{decl_type.full_name}, not (#{decl_type.full_name} | #{val_type.full_name})")
+          return refuse(node, "instance variable '#{node.var.as(InstanceVar).name}' of #{target_type.full_name} must be #{decl_type.full_name}, not (#{decl_type.full_name} | #{val_type.full_name})")
         end
-        raise("expected type #{decl_type.full_name}, got #{val_type.full_name}")
+        return refuse(node, "expected type #{decl_type.full_name}, got #{val_type.full_name}")
       end
       if node.var.is_a?(Var)
         v = node.var.as(Var)
@@ -305,7 +432,7 @@ pub class MainVisitor < Visitor
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-          raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
+          return refuse(node, "can only declare instance variables of a non-generic class, not a main (<Program>)")
         end
         target_scope = @scope || @current_type
         target_type = if target_scope.is_a?(MetaclassType)
@@ -321,7 +448,7 @@ pub class MainVisitor < Visitor
       elsif node.var.is_a?(ClassVar)
         cvar_node = node.var.as(ClassVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-          raise("can't use class variables at the top level")
+          return refuse(node, "can't use class variables at the top level")
         end
         target_scope = @scope || @current_type
         target_type = if target_scope.is_a?(MetaclassType)
@@ -344,7 +471,7 @@ pub class MainVisitor < Visitor
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-          raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
+          return refuse(node, "can only declare instance variables of a non-generic class, not a main (<Program>)")
         end
         target_scope = @scope || @current_type
         target_type = if target_scope.is_a?(MetaclassType)
@@ -360,7 +487,7 @@ pub class MainVisitor < Visitor
       elsif node.var.is_a?(ClassVar)
         cvar_node = node.var.as(ClassVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-          raise("can't use class variables at the top level")
+          return refuse(node, "can't use class variables at the top level")
         end
         target_scope = @scope || @current_type
         target_type = if target_scope.is_a?(MetaclassType)
@@ -387,8 +514,9 @@ pub class MainVisitor < Visitor
         set_type(node, c_type)
       else
         c.value.accept(self)
-        c_type = type_of(c.value)
-        set_type(node, c_type)
+        if c_type = child_type(c.value)
+          set_type(node, c_type)
+        end
       end
     elsif t.is_a?(ModuleType)
       set_type(node, t.as(ModuleType).metaclass)
@@ -402,12 +530,19 @@ pub class MainVisitor < Visitor
     if node.expressions.empty?
       set_type(node, @program.nil_type)
     else
-      last_type = @program.nil_type
-      node.expressions.each do |exp|
+      # The type of an expression list is the type of its last expression. An
+      # expression the port cannot type leaves the list untyped too.
+      last_type : Type? = nil
+      i = 0
+      while i < node.expressions.size
+        exp = node.expressions[i]
         exp.accept(self)
-        last_type = type_of(exp)
+        last_type = child_type(exp)
+        i = i + 1
       end
-      set_type(node, last_type)
+      if lt = last_type
+        set_type(node, lt)
+      end
     end
     false
   end
@@ -415,13 +550,15 @@ pub class MainVisitor < Visitor
   def visit(node : If) : Bool
     node.cond.accept(self)
     node.then.accept(self)
-    then_type = type_of(node.then)
-
     node.else.accept(self)
-    else_type = type_of(node.else)
-
-    merged = @program.type_merge(then_type, else_type)
-    set_type(node, merged)
+    then_type = child_type(node.then)
+    else_type = child_type(node.else)
+    if then_type
+      if else_type
+        merged = @program.type_merge(then_type, else_type)
+        set_type(node, merged)
+      end
+    end
     false
   end
 
@@ -435,12 +572,13 @@ pub class MainVisitor < Visitor
   def visit(node : Return) : Bool
     if exp = node.exp
       exp.accept(self)
-      exp_type = type_of(exp)
+      exp_type = child_type(exp)
+      return false if exp_type.nil?
       if cd = @current_def
         if rt = cd.return_type
           expected_ret = @program.lookup_type_node(rt, @current_type)
-          unless exp_type.subtype_of?(expected_ret)
-            raise("type mismatch for return type: expected #{expected_ret.full_name}, got #{exp_type.full_name}")
+          unless exp_type.as(Type).subtype_of?(expected_ret)
+            return refuse(node, "type mismatch for return type: expected #{expected_ret.full_name}, got #{exp_type.as(Type).full_name}")
           end
         end
       end
@@ -450,8 +588,7 @@ pub class MainVisitor < Visitor
   end
 
   def visit(node : ClassDef) : Bool
-    name = node.name.names.last
-    t = @current_type.lookup_type(name)
+    t = @program.lookup_type_path?(node.name, @current_type)
     if t && t.is_a?(ClassType)
       old_type = @current_type
       @current_type = t.as(ClassType)
@@ -461,7 +598,7 @@ pub class MainVisitor < Visitor
       cls = t.as(ClassType)
       cls.class_vars.each_value do |cvar|
         if cvar.initializer.nil? && !cvar.type.nilable?
-          raise("class variable '#{cvar.name}' of #{cls.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")
+          return refuse(node, "class variable '#{cvar.name}' of #{cls.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")
         end
       end
     end
@@ -470,8 +607,7 @@ pub class MainVisitor < Visitor
   end
 
   def visit(node : ModuleDef) : Bool
-    name = node.name.names.last
-    t = @current_type.lookup_type(name)
+    t = @program.lookup_type_path?(node.name, @current_type)
     if t && t.is_a?(ModuleType)
       old_type = @current_type
       @current_type = t.as(ModuleType)
@@ -481,7 +617,7 @@ pub class MainVisitor < Visitor
       mod = t.as(ModuleType)
       mod.class_vars.each_value do |cvar|
         if cvar.initializer.nil? && !cvar.type.nilable?
-          raise("class variable '#{cvar.name}' of #{mod.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")
+          return refuse(node, "class variable '#{cvar.name}' of #{mod.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")
         end
       end
     end
@@ -515,24 +651,27 @@ pub class MainVisitor < Visitor
       while i < blk.args.size
         b_arg = blk.args[i]
         if i < node.exps.size
-          arg_t = type_of(node.exps[i])
-          current_arg_t = type_of?(b_arg)
-          new_arg_t = if cat = current_arg_t
-                        @program.type_merge(cat, arg_t)
-                      else
-                        arg_t
-                      end
-          blk_vars[b_arg.name] = new_arg_t
-          set_type(b_arg, new_arg_t)
+          if arg_t = child_type(node.exps[i])
+            current_arg_t = type_of?(b_arg)
+            new_arg_t = if cat = current_arg_t
+                          @program.type_merge(cat, arg_t)
+                        else
+                          arg_t
+                        end
+            blk_vars[b_arg.name] = new_arg_t
+            set_type(b_arg, new_arg_t)
+          end
         end
         i = i + 1
       end
       @vars = blk_vars
 
       blk.body.accept(self)
-      blk_type = type_of(blk.body)
-      set_type(blk, blk_type)
-      set_type(node, blk_type)
+      blk_type = child_type(blk.body)
+      if bt = blk_type
+        set_type(blk, bt)
+        set_type(node, bt)
+      end
 
       if ctx = @current_block_context_vars
         ctx.keys.each do |k|
@@ -542,24 +681,26 @@ pub class MainVisitor < Visitor
         end
       end
 
-      if cd = @current_def
-        if ba = cd.block_arg
-          if r = ba.restriction
-            if r.is_a?(ProcNotation)
-              pn = r.as(ProcNotation)
-              if out_node = pn.output
-                expected_ret = @program.lookup_type_node(out_node, @current_type)
-                unless blk_type.subtype_of?(expected_ret)
-                  raise("expected block to return #{expected_ret.full_name}, not #{blk_type.full_name}")
+      @vars = old_vars
+      @scope = old_scope
+
+      if bt = blk_type
+        if cd = @current_def
+          if ba = cd.block_arg
+            if r = ba.restriction
+              if r.is_a?(ProcNotation)
+                pn = r.as(ProcNotation)
+                if out_node = pn.output
+                  expected_ret = @program.lookup_type_node(out_node, @current_type)
+                  unless bt.subtype_of?(expected_ret)
+                    return refuse(node, "expected block to return #{expected_ret.full_name}, not #{bt.full_name}")
+                  end
                 end
               end
             end
           end
         end
       end
-
-      @vars = old_vars
-      @scope = old_scope
     else
       set_type(node, @program.nil_type)
     end
@@ -568,7 +709,9 @@ pub class MainVisitor < Visitor
 
   def visit(node : Block) : Bool
     node.body.accept(self)
-    set_type(node, type_of(node.body))
+    if bt = child_type(node.body)
+      set_type(node, bt)
+    end
     false
   end
 
@@ -711,7 +854,15 @@ pub class MainVisitor < Visitor
     end
   end
 
-  def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def
+  # The overload a call resolves to, or nil when it cannot: strict mode raises
+  # the error, total mode records it on the call and returns nil.
+  def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
+    i = 0
+    while i < args.size
+      return nil if child_type(args[i]).nil?
+      i = i + 1
+    end
+
     candidates = [] of Def
     visited = Set(String).new
     collect_candidate_defs(rec_type, name, candidates, visited)
@@ -720,9 +871,9 @@ pub class MainVisitor < Visitor
       if obj_node = call_node.obj
         obj_t = type_of(obj_node)
         if obj_t.is_a?(UnionType)
-          raise("undefined method '#{name}' for #{rec_type.full_name} (compile-time type is #{obj_t.full_name})")
+          return refuse_call(call_node, "undefined method '#{name}' for #{rec_type.full_name} (compile-time type is #{obj_t.full_name})")
         else
-          raise("undefined method '#{name}' for #{rec_type.full_name}")
+          return refuse_call(call_node, "undefined method '#{name}' for #{rec_type.full_name}")
         end
       else
         scope_name = if rec_type.is_a?(SemanticProgram)
@@ -730,7 +881,7 @@ pub class MainVisitor < Visitor
                      else
                        rec_type.full_name
                      end
-        raise("undefined local variable or method '#{name}' for #{scope_name}")
+        return refuse_call(call_node, "undefined local variable or method '#{name}' for #{scope_name}")
       end
     end
 
@@ -755,7 +906,7 @@ pub class MainVisitor < Visitor
                        max_all = candidates.map { |d| d.args.size }.max
                        min_all == max_all ? min_all.to_s : "#{min_all}..#{max_all}"
                      end
-      raise("wrong number of arguments for '#{method_disp}' (given #{args.size}, expected #{expected_str})\n#{overloads_str}")
+      return refuse_call(call_node, "wrong number of arguments for '#{method_disp}' (given #{args.size}, expected #{expected_str})\n#{overloads_str}")
     end
 
     # 2. Check exact / subtype argument matches
@@ -831,7 +982,7 @@ pub class MainVisitor < Visitor
             uniq_types << tn
           end
         end
-        raise("ambiguous call, implicit cast of #{lit_val} matches all of #{uniq_types.join(", ")}")
+        return refuse_call(call_node, "ambiguous call, implicit cast of #{lit_val} matches all of #{uniq_types.join(", ")}")
       elsif autocast_matches.size == 1
         return autocast_matches.first
       end
@@ -881,15 +1032,25 @@ pub class MainVisitor < Visitor
       end
       expected_types_str = uniq_exp.join(" or ")
       actual_type_str = type_of(args[mismatch_idx]).full_name
-      raise("expected argument ##{mismatch_idx + 1} to '#{method_disp}' to be #{expected_types_str}, not #{actual_type_str}\n\n#{overloads_str}")
+      refuse_call(call_node, "expected argument ##{mismatch_idx + 1} to '#{method_disp}' to be #{expected_types_str}, not #{actual_type_str}\n\n#{overloads_str}")
     else
       arg_types_strs = args.map { |a| type_of(a).full_name }
       plural = (args.size > 1) ? "s" : ""
-      raise("no overload matches '#{method_disp}' with type#{plural} #{arg_types_strs.join(", ")}\n\n#{overloads_str}")
+      refuse_call(call_node, "no overload matches '#{method_disp}' with type#{plural} #{arg_types_strs.join(", ")}\n\n#{overloads_str}")
     end
   end
 
-  def type_method_body(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?) : Type
+  # A call the port cannot resolve: strict mode raises, total mode records the
+  # reason on the call and answers nil.
+  def refuse_call(call_node : Call, message : String) : Nil
+    refuse(call_node, message)
+    nil
+  end
+
+  # The type a body evaluates to with `args` bound to its parameters, or nil when
+  # the body or an argument cannot be typed. `site` is the node that reports a
+  # return-type mismatch.
+  def type_method_body(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode? = nil) : Type?
     body = target_def.body
     if body.nil? || body.is_a?(Nop)
       if rt = target_def.return_type
@@ -920,24 +1081,30 @@ pub class MainVisitor < Visitor
       new_vars["self"] = rec_type
     end
 
+    params_typed = true
     i = 0
     while i < target_def.args.size
       param = target_def.args[i]
-      param_type = if i < args.size
-                     type_of(args[i])
-                   elsif dv = param.default_value
-                     dv.accept(self)
-                     type_of(dv)
-                   elsif r = param.restriction
-                     @program.lookup_type_node(r, @current_type)
-                   else
-                     @program.nil_type
-                   end
-      new_vars[param.name] = param_type
-      if param.name.starts_with?("@") && !param.name.starts_with?("@@")
-        if rec_type.is_a?(ModuleType)
-          rec_type.as(ModuleType).instance_vars[param.name] = MetaTypeVar.new(param.name, param_type)
+      param_type : Type? = nil
+      if i < args.size
+        param_type = child_type(args[i])
+      elsif dv = param.default_value
+        dv.accept(self)
+        param_type = child_type(dv)
+      elsif r = param.restriction
+        param_type = @program.lookup_type_node(r, @current_type)
+      else
+        param_type = @program.nil_type
+      end
+      if pt = param_type
+        new_vars[param.name] = pt
+        if param.name.starts_with?("@") && !param.name.starts_with?("@@")
+          if rec_type.is_a?(ModuleType)
+            rec_type.as(ModuleType).instance_vars[param.name] = MetaTypeVar.new(param.name, pt)
+          end
         end
+      else
+        params_typed = false
       end
       i = i + 1
     end
@@ -947,7 +1114,7 @@ pub class MainVisitor < Visitor
     @current_call_block = block
 
     body.as(ASTNode).accept(self)
-    body_type = type_of(body.as(ASTNode))
+    body_type = child_type(body.as(ASTNode))
 
     if block && (ctx_vars = @current_block_context_vars)
       ctx_vars.each do |k, new_v|
@@ -960,10 +1127,11 @@ pub class MainVisitor < Visitor
     end
 
     if block
-      final_blk_t = type_of(block)
-      if y_nodes = @current_yield_nodes
-        y_nodes.each do |ynode|
-          set_type(ynode, final_blk_t)
+      if final_blk_t = child_type(block)
+        if y_nodes = @current_yield_nodes
+          y_nodes.each do |ynode|
+            set_type(ynode, final_blk_t)
+          end
         end
       end
     end
@@ -975,16 +1143,26 @@ pub class MainVisitor < Visitor
     @current_block_context_vars = old_block_context_vars
     @current_yield_nodes = old_yield_nodes
 
+    return nil unless params_typed
+    bt = body_type
+    return nil if bt.nil?
+
     if rt = target_def.return_type
       declared_ret = @program.lookup_type_node(rt, @current_type)
-      unless body_type.subtype_of?(declared_ret)
-        raise("type mismatch for return type: expected #{declared_ret.full_name}, got #{body_type.full_name}")
+      unless bt.subtype_of?(declared_ret)
+        mismatch = "type mismatch for return type: expected #{declared_ret.full_name}, got #{bt.full_name}"
+        if s = site
+          refuse(s, mismatch)
+        else
+          raise(mismatch) unless @total
+        end
+        return nil
       end
       set_type(target_def, declared_ret)
       declared_ret
     else
-      set_type(target_def, body_type)
-      body_type
+      set_type(target_def, bt)
+      bt
     end
   end
 
@@ -1007,7 +1185,11 @@ pub class MainVisitor < Visitor
     rec_type : Type
     if obj = node.obj
       obj.accept(self)
-      rec_type = type_of(obj)
+      if ot = child_type(obj)
+        rec_type = ot
+      else
+        return false
+      end
     else
       rec_type = @scope || @current_type
     end
@@ -1019,8 +1201,11 @@ pub class MainVisitor < Visitor
         visited = Set(String).new
         collect_candidate_defs(inst_type, "initialize", candidates, visited)
         if candidates.size > 0 || node.args.size > 0
-          init_def = lookup_method_matching(inst_type, "initialize", node.args, node)
-          type_method_body(init_def, inst_type, node.args, node.block)
+          if init_def = lookup_method_matching(inst_type, "initialize", node.args, node)
+            type_method_body(init_def, inst_type, node.args, node.block, node)
+          else
+            return false
+          end
         end
         set_type(node, inst_type)
         return false
@@ -1033,14 +1218,19 @@ pub class MainVisitor < Visitor
       ret_types = [] of Type
       first_target_def : Def? = nil
 
-      union_t.union_types.each do |ut|
+      i = 0
+      while i < union_t.union_types.size
+        ut = union_t.union_types[i]
         target_def = lookup_method_matching(ut, node.name, node.args, node)
+        return false if target_def.nil?
         instantiated_def = target_def.clone
-        ret_t = type_method_body(instantiated_def, ut, node.args, node.block)
+        ret_t = type_method_body(instantiated_def, ut, node.args, node.block, node)
+        return false if ret_t.nil?
         if first_target_def.nil?
           first_target_def = instantiated_def
         end
         ret_types << ret_t
+        i = i + 1
       end
 
       if td = first_target_def
@@ -1053,62 +1243,227 @@ pub class MainVisitor < Visitor
     end
 
     target_def = lookup_method_matching(rec_type, node.name, node.args, node)
+    return false if target_def.nil?
     instantiated_def = target_def.clone
     @call_target_defs[node] = instantiated_def
 
     ret_type = type_method_body(instantiated_def, rec_type, node.args, node.block)
-    set_type(node, ret_type)
+    if ret_type
+      set_type(node, ret_type)
+    end
     false
   end
 end
 
 pub def node_class_name(node : ASTNode) : String
-  if node.is_a?(Expressions)
-    "Expressions"
+  if node.is_a?(Alias)
+    "Alias"
+  elsif node.is_a?(AlignOf)
+    "AlignOf"
+  elsif node.is_a?(And)
+    "And"
+  elsif node.is_a?(Annotation)
+    "Annotation"
+  elsif node.is_a?(AnnotationDef)
+    "AnnotationDef"
+  elsif node.is_a?(Arg)
+    "Arg"
+  elsif node.is_a?(ArrayLiteral)
+    "ArrayLiteral"
+  elsif node.is_a?(Asm)
+    "Asm"
+  elsif node.is_a?(AsmOperand)
+    "AsmOperand"
   elsif node.is_a?(Assign)
     "Assign"
-  elsif node.is_a?(Var)
-    "Var"
-  elsif node.is_a?(InstanceVar)
-    "InstanceVar"
-  elsif node.is_a?(ClassVar)
-    "ClassVar"
-  elsif node.is_a?(Path)
-    "Path"
-  elsif node.is_a?(NilLiteral)
-    "NilLiteral"
+  elsif node.is_a?(AssocTypeDecl)
+    "AssocTypeDecl"
+  elsif node.is_a?(Block)
+    "Block"
   elsif node.is_a?(BoolLiteral)
     "BoolLiteral"
+  elsif node.is_a?(Break)
+    "Break"
+  elsif node.is_a?(CStructOrUnionDef)
+    "CStructOrUnionDef"
+  elsif node.is_a?(Call)
+    "Call"
+  elsif node.is_a?(Case)
+    "Case"
+  elsif node.is_a?(Cast)
+    "Cast"
   elsif node.is_a?(CharLiteral)
     "CharLiteral"
+  elsif node.is_a?(ClassDef)
+    "ClassDef"
+  elsif node.is_a?(ClassVar)
+    "ClassVar"
+  elsif node.is_a?(Def)
+    "Def"
+  elsif node.is_a?(Defer)
+    "Defer"
+  elsif node.is_a?(DoubleSplat)
+    "DoubleSplat"
+  elsif node.is_a?(EnumDef)
+    "EnumDef"
+  elsif node.is_a?(ExceptionHandler)
+    "ExceptionHandler"
+  elsif node.is_a?(Expressions)
+    "Expressions"
+  elsif node.is_a?(Extend)
+    "Extend"
+  elsif node.is_a?(ExternalVar)
+    "ExternalVar"
+  elsif node.is_a?(FunDef)
+    "FunDef"
+  elsif node.is_a?(Generic)
+    "Generic"
+  elsif node.is_a?(Global)
+    "Global"
+  elsif node.is_a?(HashLiteral)
+    "HashLiteral"
+  elsif node.is_a?(If)
+    "If"
+  elsif node.is_a?(ImplDef)
+    "ImplDef"
+  elsif node.is_a?(ImplicitObj)
+    "ImplicitObj"
+  elsif node.is_a?(ImportDecl)
+    "ImportDecl"
+  elsif node.is_a?(Include)
+    "Include"
+  elsif node.is_a?(InstanceAlignOf)
+    "InstanceAlignOf"
+  elsif node.is_a?(InstanceSizeOf)
+    "InstanceSizeOf"
+  elsif node.is_a?(InstanceVar)
+    "InstanceVar"
+  elsif node.is_a?(IsA)
+    "IsA"
+  elsif node.is_a?(LibDef)
+    "LibDef"
+  elsif node.is_a?(Macro)
+    "Macro"
+  elsif node.is_a?(MacroExpression)
+    "MacroExpression"
+  elsif node.is_a?(MacroFor)
+    "MacroFor"
+  elsif node.is_a?(MacroIf)
+    "MacroIf"
+  elsif node.is_a?(MacroLiteral)
+    "MacroLiteral"
+  elsif node.is_a?(MacroVar)
+    "MacroVar"
+  elsif node.is_a?(MacroVerbatim)
+    "MacroVerbatim"
+  elsif node.is_a?(MagicConstant)
+    "MagicConstant"
+  elsif node.is_a?(Metaclass)
+    "Metaclass"
+  elsif node.is_a?(ModuleDef)
+    "ModuleDef"
+  elsif node.is_a?(ModuleHeader)
+    "ModuleHeader"
+  elsif node.is_a?(MultiAssign)
+    "MultiAssign"
+  elsif node.is_a?(NamedArgument)
+    "NamedArgument"
+  elsif node.is_a?(NamedTupleLiteral)
+    "NamedTupleLiteral"
+  elsif node.is_a?(Next)
+    "Next"
+  elsif node.is_a?(NilLiteral)
+    "NilLiteral"
+  elsif node.is_a?(NilableCast)
+    "NilableCast"
+  elsif node.is_a?(Nop)
+    "Nop"
+  elsif node.is_a?(Not)
+    "Not"
   elsif node.is_a?(NumberLiteral)
     "NumberLiteral"
+  elsif node.is_a?(OffsetOf)
+    "OffsetOf"
+  elsif node.is_a?(OpAssign)
+    "OpAssign"
+  elsif node.is_a?(Or)
+    "Or"
+  elsif node.is_a?(Out)
+    "Out"
+  elsif node.is_a?(Path)
+    "Path"
+  elsif node.is_a?(PointerOf)
+    "PointerOf"
+  elsif node.is_a?(ProcLiteral)
+    "ProcLiteral"
+  elsif node.is_a?(ProcNotation)
+    "ProcNotation"
+  elsif node.is_a?(ProcPointer)
+    "ProcPointer"
+  elsif node.is_a?(Propagate)
+    "Propagate"
+  elsif node.is_a?(RangeLiteral)
+    "RangeLiteral"
+  elsif node.is_a?(ReadInstanceVar)
+    "ReadInstanceVar"
+  elsif node.is_a?(Recover)
+    "Recover"
+  elsif node.is_a?(RegexLiteral)
+    "RegexLiteral"
+  elsif node.is_a?(Require)
+    "Require"
+  elsif node.is_a?(Rescue)
+    "Rescue"
+  elsif node.is_a?(RespondsTo)
+    "RespondsTo"
+  elsif node.is_a?(Return)
+    "Return"
+  elsif node.is_a?(Select)
+    "Select"
+  elsif node.is_a?(Self)
+    "Self"
+  elsif node.is_a?(SizeOf)
+    "SizeOf"
+  elsif node.is_a?(Splat)
+    "Splat"
+  elsif node.is_a?(StringInterpolation)
+    "StringInterpolation"
   elsif node.is_a?(StringLiteral)
     "StringLiteral"
   elsif node.is_a?(SymbolLiteral)
     "SymbolLiteral"
-  elsif node.is_a?(If)
-    "If"
+  elsif node.is_a?(TraitDef)
+    "TraitDef"
+  elsif node.is_a?(TupleLiteral)
+    "TupleLiteral"
+  elsif node.is_a?(TypeDeclaration)
+    "TypeDeclaration"
+  elsif node.is_a?(TypeDef)
+    "TypeDef"
+  elsif node.is_a?(TypeOf)
+    "TypeOf"
+  elsif node.is_a?(Underscore)
+    "Underscore"
+  elsif node.is_a?(UninitializedVar)
+    "UninitializedVar"
+  elsif node.is_a?(Union)
+    "Union"
+  elsif node.is_a?(Unless)
+    "Unless"
+  elsif node.is_a?(Until)
+    "Until"
+  elsif node.is_a?(UsingDecl)
+    "UsingDecl"
+  elsif node.is_a?(Var)
+    "Var"
+  elsif node.is_a?(VisibilityModifier)
+    "VisibilityModifier"
+  elsif node.is_a?(When)
+    "When"
   elsif node.is_a?(While)
     "While"
   elsif node.is_a?(Yield)
     "Yield"
-  elsif node.is_a?(Return)
-    "Return"
-  elsif node.is_a?(Call)
-    "Call"
-  elsif node.is_a?(Block)
-    "Block"
-  elsif node.is_a?(Def)
-    "Def"
-  elsif node.is_a?(ClassDef)
-    "ClassDef"
-  elsif node.is_a?(TypeDeclaration)
-    "TypeDeclaration"
-  elsif node.is_a?(Nop)
-    "Nop"
-  elsif node.is_a?(Macro)
-    "Macro"
   else
     "ASTNode"
   end

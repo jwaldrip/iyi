@@ -53,6 +53,8 @@ RESULTS="$WORK/results.tsv"
 VERDICTS="$WORK/verdicts.tsv"
 status=0
 : > "$RESULTS"
+UNTYPED="$WORK/untyped.tsv"
+: > "$UNTYPED"
 
 fatal() {
   echo "  $1"
@@ -105,6 +107,7 @@ measure() {
       sort "$WORK/p.txt" > "$WORK/p.sorted"
       matched=$(comm -12 "$WORK/o.sorted" "$WORK/p.sorted" | wc -l | tr -d ' ')
       note="-"
+      grep '^untyped: ' "$WORK/p.txt" | sed 's/^untyped: //' | awk -v c="$corpus" '{ print c "\t" $0 }' >> "$UNTYPED"
     else
       matched=0
       note="PORT: $(head -n 1 "$WORK/p.err" | tr '\t' ' ')"
@@ -254,6 +257,25 @@ awk -F'\t' '
     for (c in cls) printf "  %5d  %s\n", cls[c], c
     printf "  %5d  total port failures\n", total + 0
   }' "$RESULTS" | sort -k1,1nr
+
+echo
+echo "== 6c. Untyped nodes by reason (the port's work list; own = the compiler's source and the prelude)"
+awk -F'\t' '
+  BEGIN { q = "\047" }
+  {
+    r = $2
+    gsub(q "[^" q "]*" q, q "X" q, r)
+    gsub(/ for [^ ]*$/, " for X", r)
+    gsub(/undefined constant .*/, "undefined constant X", r)
+    if (length(r) > 120) r = substr(r, 1, 120)
+    n[r]++
+    if ($1 == "compiler" || $1 == "prelude") own[r]++
+    total++
+  }
+  END {
+    for (k in n) printf "  %7d  %7d  %s\n", n[k], own[k] + 0, k
+    printf "  %7d  total untyped nodes (all corpora)\n", total + 0
+  }' "$UNTYPED" | sort -k2,2nr -k1,1nr | head -n 45
 echo
 echo "== 7. The ten largest gaps (oracle nodes the port did not type identically)"
 awk -F'\t' '$4 > 0 || $3 > 0 { printf "%d\t%d\t%d\t%s\n", $3 - $4, $3, $4, $2 }' "$RESULTS" \
