@@ -1380,7 +1380,7 @@ pub class Lexer
 
   # A `\xHH` or octal escape is one byte. `unsafe_chr` encodes 0x80..0xFF as the
   # two bytes of that code point, so the string would not hold the byte the escape
-  # names. Crystal keeps the byte, and so does this.
+  # names. The hosted front end keeps the byte, and so does this.
   private def escape_byte_string(b : UInt8) : String
     String.new([b] of UInt8)
   end
@@ -2458,8 +2458,8 @@ pub class Lexer
     nil
   end
 
-  # In a string inside macro text, the brace of `#{` is text, and Crystal keeps it in
-  # the literal. Any other `{` ends a literal, and so does `{{` or `{%` after `#`.
+  # In a string inside macro text, the brace of `#{` is text, and the hosted front end
+  # keeps it in the literal. Any other `{` ends a literal, and so does `{{` or `{%` after `#`.
   private def interpolation_brace_in_string?(in_string : Bool) : Bool
     in_string && current_pos > 0 && @source.byte_at(current_pos - 1) == '#'.ord
   end

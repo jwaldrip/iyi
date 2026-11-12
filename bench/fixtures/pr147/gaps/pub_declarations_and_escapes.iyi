@@ -1,4 +1,4 @@
-# `pub` takes the declaration forms Crystal accepts after it.
+# `pub` takes the declaration forms the hosted front end accepts after it.
 module Gaps
   pub alias DnsError = Std::Dns::DnsError
   pub alias Errors = Hash(Symbol | String, Array(String))

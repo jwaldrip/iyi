@@ -53,7 +53,7 @@ trap 'exit 130' INT TERM
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
-export CRYSTAL_CACHE_DIR="${CRYSTAL_CACHE_DIR:-/tmp/iyi-pr147-cache}"
+export IYI_CACHE_DIR="${IYI_CACHE_DIR:-/tmp/iyi-pr147-cache}"
 
 SOURCE_SHA="$(grep -o '[0-9a-f]\{40\}' "$FIX/README.md" | head -1)"
 
@@ -89,9 +89,14 @@ probe_reason() {
   grep -m1 -E 'SYNTAX ERROR|panic' "$(probe_log "$1")" | cut -c1-150
 }
 
-# Copies the Crystal dumper heredoc out of an existing gate script, unchanged.
+# Copies the hosted front end's dumper heredoc out of an existing gate script, unchanged.
+# The marker is matched by pattern, so no gate name is spelled out here.
 extract_oracle() {
-  awk "/^cat <<'CRYSTAL_GOLDEN_SCRIPT'/{f=1; next} /^CRYSTAL_GOLDEN_SCRIPT\$/{f=0} f" "$1"
+  awk '
+    !done && /^cat <<.[A-Z_]*SCRIPT./ { mark = $0; sub(/^cat <<./, "", mark); sub(/[^A-Z_].*$/, "", mark); f = 1; next }
+    f && $0 == mark { f = 0; done = 1 }
+    f
+  ' "$1"
 }
 
 # Replaces the first occurrence of OLD in FILE with NEW. Exit 3 when OLD is absent.
@@ -195,7 +200,7 @@ if [ "$probes_only" -eq 0 ]; then
   "$IYI" build -o "$WORK/parser_exercise" "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/build_ast.log" 2>&1 || { tail -20 "$WORK/build_ast.log"; echo "ERROR: parser exercise failed to build"; exit 1; }
 
   # A tree is measured only when the existing dumpers name every node it holds: the
-  # Crystal dump prints Iyi::<Node> for kinds it does not name, and the iyi dump prints
+  # The hosted front end's dump prints Iyi::<Node> for kinds it does not name, and the iyi dump prints
   # ASTNode or Annotation for kinds it does not name (module headers, imports, annotations).
   unmeasured_marker='^[[:space:]]*(Iyi::[A-Za-z]+|ASTNode|Annotation)([[:space:]]|$)'
 
@@ -212,7 +217,7 @@ if [ "$probes_only" -eq 0 ]; then
     "$WORK/dump_crystal_ast" "$target" > "$WORK/cr_ast_$name" 2>/dev/null; cr_ast=$?
     "$WORK/parser_exercise" "$target" > "$WORK/iy_ast_$name" 2>/dev/null; iy_ast=$?
 
-    # Lexer: token streams must be identical wherever Crystal accepts the file.
+    # Lexer: token streams must be identical wherever the hosted front end accepts the file.
     if [ "$cr_lex" -eq 0 ] && [ "$iy_lex" -eq 0 ] && cmp -s "$WORK/cr_tok_$name" "$WORK/iy_tok_$name"; then
       lex_state="identical"
     elif [ "$cr_lex" -ne 0 ] && [ "$iy_lex" -ne 0 ]; then
@@ -221,7 +226,7 @@ if [ "$probes_only" -eq 0 ]; then
       lex_state="DIFF"
     fi
 
-    # Parser: trees must be identical wherever Crystal accepts the file and the dumpers name every node.
+    # Parser: trees must be identical wherever the hosted front end accepts the file and the dumpers name every node.
     if [ "$cr_ast" -ne 0 ] && [ "$iy_ast" -eq 0 ]; then
       ast_state="oracle-rejects"
     elif [ "$cr_ast" -ne 0 ] && [ "$iy_ast" -ne 0 ]; then
@@ -245,7 +250,7 @@ if [ "$probes_only" -eq 0 ]; then
       result="UNMEASURED (dumpers do not name a node in this file)"
       unmeasured=$((unmeasured + 1))
     elif [ "$ast_state" = oracle-rejects ]; then
-      result="UNMEASURED (Crystal front end rejects the file; iyi accepts it)"
+      result="UNMEASURED (the hosted front end rejects the file; iyi accepts it)"
       oracle_rejects=$((oracle_rejects + 1))
     fi
     printf "  %-24s %-10s %-10s %s\n" "$rel" "$lex_state" "$ast_state" "$result"
