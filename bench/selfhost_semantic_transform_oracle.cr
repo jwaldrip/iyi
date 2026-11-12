@@ -509,12 +509,28 @@ class Counter < Iyi::Visitor
   end
 end
 
+# The literal walk: the hosted expander lowers each range literal when the
+# walk reaches it, and the walk continues into the call it built, so a literal
+# inside a range is lowered too. Only range literals are lowered here.
+class LiteralWalk < Iyi::Transformer
+  def initialize(@program : Iyi::Program)
+  end
+
+  def transform(node : Iyi::RangeLiteral) : Iyi::ASTNode
+    Iyi::LiteralExpander.new(@program).expand(node).transform(self)
+  end
+end
+
 filename = ARGV[0]
 src = File.read(filename)
 parser = Iyi::Parser.new(src)
 parser.filename = filename
 node = parser.parse
 node = Iyi::Program.new.normalize(node)
+
+if ARGV.size > 1 && ARGV[1] == "literals"
+  node = node.transform(LiteralWalk.new(Iyi::Program.new))
+end
 
 if ARGV.size > 1 && ARGV[1] == "--count"
   c = Counter.new

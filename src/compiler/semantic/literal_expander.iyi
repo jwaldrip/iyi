@@ -1,0 +1,50 @@
+module compiler/semantic/literal_expander
+
+# Lowers literal forms into the calls they stand for, as the hosted
+# LiteralExpander does (src/compiler/iyi/semantic/literal_expander.cr, the
+# hosted compiler). Phase S slice S1e ports it one literal kind per increment.
+#
+# Ported so far: range literals. `1 .. 3` is `Range.new(1, 3, false)` and
+# `1 ... 3` is `Range.new(1, 3, true)`, the `from` and `to` expressions left as
+# written: a literal inside them is lowered by the walk that reaches it, as the
+# hosted pipeline does when its visitor reaches the call.
+#
+# Not ported yet, so a literal of these kinds is left as written and the
+# literal fixtures never contain one: array and hash literals (with their
+# temporaries), named containers, string interpolation, `case`, multiple
+# assignment, op-assign, `select`, regex and proc literals.
+
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Expressions, Path, RangeLiteral}
+import compiler/syntax/transformer::{Transformer}
+
+pub class LiteralExpander < Transformer
+  # The hosted base transformer answers a list of one expression with that
+  # expression, which drops a paren group around it, and flattens a list
+  # returned into its parent. The port's base transformer does neither, so the
+  # walk does both itself until the base is brought into line.
+  def transform(node : Expressions) : ASTNode
+    exps = [] of ASTNode
+    i = 0
+    while i < node.expressions.size
+      new_exp = node.expressions[i].transform(self)
+      if new_exp.is_a?(Expressions)
+        exps.concat(new_exp.as(Expressions).expressions)
+      else
+        exps << new_exp
+      end
+      i += 1
+    end
+    if exps.size == 1
+      return exps[0]
+    end
+    node.expressions = exps
+    node
+  end
+
+  def transform(node : RangeLiteral) : ASTNode
+    path = Path.global(["Range"] of String)
+    bool = BoolLiteral.new(node.exclusive)
+    call = Call.new(path, "new", [node.from, node.to, bool] of ASTNode)
+    call.transform(self)
+  end
+end

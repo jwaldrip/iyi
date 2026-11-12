@@ -202,6 +202,53 @@ prove_mutation "the MIN / -1 overflow carries the wrong message" "$MATH" '"Overf
 echo "  $MATH_MUTATIONS math mutation proofs run"
 
 echo
+echo "== 5. Literal expansion: range literals, the port's walk against the hosted walk"
+# The literal fixtures (semtx_lit_*.iyi) are walked by the port (the driver's
+# `literals` mode) and by the hosted walk (the oracle's `literals` mode), and
+# the rewritten trees must match. Only range literals are lowered so far.
+LITERAL="$REPO/src/compiler/semantic/literal_expander.iyi"
+lit_count=0
+lit_diverged=0
+for fixture in "$REPO"/bench/fixtures/semtx_lit_*.iyi; do
+  name="bench/fixtures/$(basename "$fixture")"
+  lit_count=$((lit_count + 1))
+  "$WORK/port_exercise" "$fixture" literals > "$WORK/lit_iyi.ast" 2> "$WORK/lit_iyi.err" || {
+    echo "  $name: LITERAL PORT FAILED"; cat "$WORK/lit_iyi.err"; lit_diverged=$((lit_diverged + 1)); status=1; continue; }
+  IYI_PATH="$REPO/src" "$WORK/dump_crystal" "$fixture" literals > "$WORK/lit_oracle.ast" 2> "$WORK/lit_oracle.err" || {
+    echo "  $name: HOSTED LITERAL WALK FAILED"; cat "$WORK/lit_oracle.err"; lit_diverged=$((lit_diverged + 1)); status=1; continue; }
+  if cmp -s "$WORK/lit_iyi.ast" "$WORK/lit_oracle.ast"; then
+    echo "  $name: identical (the literal walk lowers the same trees as the hosted walk)"
+  else
+    echo "  $name: LITERAL TREES DIFFER"
+    diff -u "$WORK/lit_oracle.ast" "$WORK/lit_iyi.ast" | head -40
+    lit_diverged=$((lit_diverged + 1))
+    status=1
+  fi
+done
+echo "  Parity summary: literal $((lit_count - lit_diverged))/$lit_count fixtures lower identically"
+
+# A patch to the port's literal expander that the gate must catch. The copy of
+# the port driver made at the start is rebuilt from the patched module and
+# walked over every literal fixture; a difference or a failed build is caught.
+check_literals_agree() {
+  "$IYI" build -o "$WORK/lit_mut_port" "$WORK/semtx_port.iyi" > /dev/null 2>&1 || return 1
+  for fixture in "$REPO"/bench/fixtures/semtx_lit_*.iyi; do
+    "$WORK/lit_mut_port" "$fixture" literals > "$WORK/lit_mut.ast" 2> /dev/null || return 1
+    IYI_PATH="$REPO/src" "$WORK/dump_crystal" "$fixture" literals > "$WORK/lit_mut_oracle.ast" || return 1
+    cmp -s "$WORK/lit_mut.ast" "$WORK/lit_mut_oracle.ast" || return 1
+  done
+  return 0
+}
+LIT_MUTATIONS=0
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a range literal's exclusive flag is inverted" "$LITERAL" 'BoolLiteral.new(node.exclusive)' 'BoolLiteral.new(!node.exclusive)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a range literal names the wrong global type" "$LITERAL" 'Path.global(["Range"] of String)' 'Path.global(["Ranges"] of String)' -- check_literals_agree || status=1
+LIT_MUTATIONS=$((LIT_MUTATIONS + 1))
+prove_mutation "a range nested in a range is not lowered" "$LITERAL" 'call.transform(self)' 'call' -- check_literals_agree || status=1
+echo "  $LIT_MUTATIONS literal mutation proofs run"
+
+echo
 if [ "$status" -eq 0 ]; then
   echo "ALL SELFHOST SEMANTIC TRANSFORM CHECKS PASSED SUCCESSFULLY!"
 else

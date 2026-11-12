@@ -8,6 +8,7 @@ import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral,
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 import compiler/semantic/normalizer::{NormalizerProgram, Normalizer}
+import compiler/semantic/literal_expander::{LiteralExpander}
 
 module BenchSemanticTransformExercise
   def self.assert(cond : Bool, msg : String)
@@ -533,5 +534,8 @@ else
   node = parser.parse
   prog = NormalizerProgram.new
   norm = prog.normalize(node)
+  if Program.args.size > 1 && Program.args[1] == "literals"
+    norm = norm.transform(LiteralExpander.new)
+  end
   print BenchSemanticTransformExercise.dump_ast(norm)
 end
