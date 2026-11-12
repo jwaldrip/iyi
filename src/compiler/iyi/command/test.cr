@@ -90,8 +90,7 @@ class Iyi::Command
     # own. 24 tests on 12 logical cores took 6.3 to 7.2 s at 12 at once, 7.4
     # to 7.6 s at 6 and 9.5 to 9.9 s at 4 (a non-release compiler), so the
     # other half bought a tenth of the time for twice the memory.
-    parallel = (::System.cpu_count // 2).clamp(1, nil)
-    parallel_given = false
+    parallel = TestPool.default_parallel
     only : String? = nil
     verbose = false
     # What every test is built with beyond `build FILE -o BINARY`: the
@@ -170,7 +169,6 @@ class Iyi::Command
           abort! "#{option} takes a number of tests to run at once, at least 1, not '#{value}'", :USAGE_ERROR
         end
         parallel = count
-        parallel_given = true
       when "--run"
         # Text, not a pattern: the program matches it, and the prelude
         # has no regular expressions. "" would be in every name, which is
@@ -204,10 +202,11 @@ class Iyi::Command
       abort! "cannot pass both --cached and --fresh", :USAGE_ERROR
     end
     # The receipt runner (`--cached` and what goes with it) builds and runs each
-    # test one way: one at a time, every named case, under its own build flags,
-    # because a receipt says what one whole test did under one build. So it
-    # refuses the options that would have it run another way, as `--chaos` is
-    # refused below, rather than take them and do something else.
+    # test one way: every named case, under the runner's own build, because a
+    # receipt says what one whole test did under one build. So it refuses the
+    # options that would have it run another way, as `--chaos` is refused below,
+    # rather than take them and do something else. Tests run `-p` at a time, as
+    # plain runs do.
     receipts = if cached
                  "--cached"
                elsif fresh
@@ -226,8 +225,6 @@ class Iyi::Command
         abort! "cannot pass both --run and #{receipts}: a receipt is for a test's every named case", :USAGE_ERROR
       elsif !build_flags.empty?
         abort! "cannot pass both #{build_flags.first} and #{receipts}: a receipt's build is the runner's own", :USAGE_ERROR
-      elsif parallel_given
-        abort! "cannot pass both -p and #{receipts}: tests with receipts run one at a time", :USAGE_ERROR
       elsif verbose
         abort! "cannot pass both -v and #{receipts}: a test answered from its receipt printed nothing to show", :USAGE_ERROR
       end
@@ -342,6 +339,7 @@ class Iyi::Command
         as_json: as_json,
         timeout: timeout,
         affected: affected,
+        parallel: parallel,
         cached: cached,
         fresh: fresh,
         explain: explain,
@@ -368,7 +366,7 @@ class Iyi::Command
       plan = {first, chaos_runs || (chaos_seed ? 1 : CHAOS_RUNS)}
     end
 
-    results = run_tests(files, parallel) { |file| run_one_test(file, timeout, plan, workers, only, build_flags, verbose) }
+    results = TestPool.run(files.size, parallel) { |index| run_one_test(files[index], timeout, plan, workers, only, build_flags, verbose) }
     failed = results.count { |result| result[:status] != "pass" }
     # `--run` with a name that matches no case ran none of them, and a run
     # that tested nothing it was asked to is not a pass: a mistyped name
@@ -591,35 +589,43 @@ class Iyi::Command
     end
   end
 
-  # Every file through *run*, *parallel* at a time, the results in the
-  # files' order. A fiber each: a test's build and its run are processes,
-  # so what is waited on is the processes, and one thread waits on all of
-  # them. An exception escaping a test is raised here, after the others
-  # have ended, as it was raised when they ran one by one.
-  private def run_tests(files : Array(String), parallel : Int32, &run : String -> TestResult) : Array(TestResult)
-    slots = Array(TestResult?).new(files.size, nil)
-    queue = ::Channel(Int32).new(files.size)
-    files.each_index { |index| queue.send(index) }
-    queue.close
-    ended = ::Channel(Exception?).new
-    runners = parallel.clamp(1, files.size)
-    runners.times do
-      spawn do
-        escaped = nil
-        begin
-          while index = queue.receive?
-            slots[index] = run.call(files[index])
-          end
-        rescue ex
-          escaped = ex
-        end
-        ended.send(escaped)
-      end
+  # The pool every run goes through, the plain one and the receipt runner
+  # alike: *size* items through *run* (given the item's index), *parallel* at
+  # a time, the results in the items' order. A fiber each: a test's build and
+  # its run are processes, so what is waited on is the processes, and one
+  # thread waits on all of them. An exception escaping an item is raised
+  # here, after the others have ended, as it was raised when they ran one by
+  # one.
+  module TestPool
+    def self.default_parallel : Int32
+      (::System.cpu_count // 2).clamp(1, nil)
     end
-    escaped = nil
-    runners.times { ended.receive.try { |ex| escaped ||= ex } }
-    escaped.try { |ex| raise ex }
-    slots.map(&.not_nil!)
+
+    def self.run(size : Int32, parallel : Int32, &run : Int32 -> T) : Array(T) forall T
+      slots = Array(T?).new(size, nil)
+      queue = ::Channel(Int32).new(size)
+      size.times { |index| queue.send(index) }
+      queue.close
+      ended = ::Channel(Exception?).new
+      runners = parallel.clamp(1, size)
+      runners.times do
+        spawn do
+          escaped = nil
+          begin
+            while index = queue.receive?
+              slots[index] = run.call(index)
+            end
+          rescue ex
+            escaped = ex
+          end
+          ended.send(escaped)
+        end
+      end
+      escaped = nil
+      runners.times { ended.receive.try { |ex| escaped ||= ex } }
+      escaped.try { |ex| raise ex }
+      slots.map(&.not_nil!)
+    end
   end
 
   # The test built once, then run once - or, under `--chaos`, once per seed
@@ -792,6 +798,7 @@ class Iyi::Command
       @job : LibC::HANDLE = LibC::HANDLE.null
     {% else %}
       @@running = Set(Int64).new
+      @@running_lock = Sync::Mutex.new
       @@trapped = false
     {% end %}
 
@@ -814,7 +821,7 @@ class Iyi::Command
         @job = job
       {% else %}
         TestTree.trap_endings
-        @@running << @process.pid
+        @@running_lock.synchronize { @@running << @process.pid }
       {% end %}
     end
 
@@ -840,17 +847,22 @@ class Iyi::Command
         LibC.CloseHandle(@job) unless @job.null?
         @job = LibC::HANDLE.null
       {% else %}
-        @@running.delete(@process.pid)
+        @@running_lock.synchronize { @@running.delete(@process.pid) }
       {% end %}
     end
 
-    {% unless flag?(:win32) %}
+    {% if flag?(:win32) %}
+      # A tree on Windows ends with its job object; nothing registers them.
+      def self.trap_endings : Nil
+      end
+    {% else %}
       def self.trap_endings : Nil
         return if @@trapped
         @@trapped = true
         [Signal::INT, Signal::TERM, Signal::HUP].each do |signal|
           signal.trap do
-            @@running.each { |pid| LibC.kill(-pid.to_i32, Signal::KILL.value) }
+            pids = @@running_lock.synchronize { @@running.to_a }
+            pids.each { |pid| LibC.kill(-pid.to_i32, Signal::KILL.value) }
             exit 128 + signal.value
           end
         end
@@ -875,8 +887,8 @@ class Iyi::Command
     prints its own evidence. `--json` reports the run as data, each named
     case (`test "name" { }`) with its verdict.
 
-    `-p N` (`--parallel N`) builds and runs N tests at once; half as many as
-    the machine has cores unless given. The report is in file order.
+    `-p N` (`--parallel N`) builds and runs N tests at once, receipts included;
+    half as many as the machine has cores unless given. The report is in file order.
 
     `-v` (`--verbose`) shows what a passing test printed too, which is
     otherwise shown only for a failure. `--release` and `-D FLAG` build
@@ -901,9 +913,8 @@ class Iyi::Command
     `--shard K/N` runs shard K of N shards dealt round-robin.
     `--import-index NS=FILE` imports verified test receipts for namespace NS.
     `--export-index NS=FILE` exports test receipts for namespace NS (requires --fresh).
-    These run each test one at a time, every named case, under the runner's
-    own build, so they are not taken with `--run`, `-p`, `-v`, `--release`
-    or `-D`.
+    These take the runner's own build of each test, every named case, so they
+    are not taken with `--run`, `-v`, `--release` or `-D`.
 
     `--chaos` builds each test for the chaos scheduler and runs it once per
     seed, `--chaos-runs N` seeds (100 unless given) from one drawn at
