@@ -182,6 +182,9 @@ class Isel
   # The leaves of a constant. A float constant's bits go through a gpr.
   def const_leaves(c : Inst) : Array(Int32)
     t = c.type
+    if c.op == Op::ConstInt && i128?(t)
+      return [const_gpr(c.aux_int), const_gpr(c.aux_hi)]
+    end
     if c.op == Op::ConstInt
       v = c.aux_int
       v = v & 1_i64 if t.int? && t.bits == 1
@@ -597,6 +600,10 @@ class Isel
 
   def lower_inst(i : Inst) : Nil
     return if failed?
+    if wide_unsupported?(i)
+      fail("#{i.op} on an i128 is not lowered in this slice")
+      return
+    end
     op = i.op
     if op == Op::Alloca
       lower_alloca(i)
@@ -820,6 +827,10 @@ class Isel
 
   def lower_int_binop(i : Inst) : Nil
     t = i.type
+    if i128?(t)
+      wide_binop(i)
+      return
+    end
     a = first_leaf(i.args[0])
     b = first_leaf(i.args[1])
     op = i.op
@@ -867,6 +878,250 @@ class Isel
     bind_result(i, [canon(binop(kind, a, b), t)])
   end
 
+  # ---- i128: a value is two registers, low then high (SPEC 2.2: i128 values are pairs) -------------------------
+
+  def i128?(t : IrType) : Bool
+    t.int? && t.bits == 128
+  end
+
+  # The operations on i128 this slice does not lower, refused by name: floating-point conversions, casts other than
+  # the extensions and the truncation, switches, and atomic accesses (a 128-bit atomic is not a pair of 64-bit ones).
+  def wide_unsupported?(i : Inst) : Bool
+    op = i.op
+    if op == Op::SIToFP || op == Op::UIToFP
+      return i128?(i.args[0].type)
+    end
+    if op == Op::FPToSI || op == Op::FPToUI
+      return i128?(i.type)
+    end
+    if op == Op::Trunc || op == Op::ZExt || op == Op::SExt || op == Op::PtrToInt || op == Op::IntToPtr || op == Op::BitCast || op == Op::AddrSpaceCast
+      return true if i128?(i.type) && op != Op::ZExt && op != Op::SExt
+      return i128?(i.args[0].type) && op != Op::Trunc
+    end
+    return i128?(i.args[0].type) if op == Op::Switch
+    return i128?(i.args[1].type) if op == Op::CmpXchg || op == Op::AtomicRmw
+    return i128?(i.type) && i.aux.as(MemAux).ordering != Ordering::NotAtomic if op == Op::Load
+    return i128?(i.args[0].type) && i.aux.as(MemAux).ordering != Ordering::NotAtomic if op == Op::Store
+    false
+  end
+
+  def wide_binop(i : Inst) : Nil
+    a = materialize(i.args[0])
+    b = materialize(i.args[1])
+    op = i.op
+    if op == Op::Add
+      lo = binop(MOp::Adds, a[0], b[0])
+      bind_result(i, [lo, binop(MOp::Adc, a[1], b[1])])
+    elsif op == Op::Sub
+      lo = binop(MOp::Subs, a[0], b[0])
+      bind_result(i, [lo, binop(MOp::Sbc, a[1], b[1])])
+    elsif op == Op::Mul
+      bind_result(i, wide_mul(a, b))
+    elsif op == Op::And
+      bind_result(i, [binop(MOp::And, a[0], b[0]), binop(MOp::And, a[1], b[1])])
+    elsif op == Op::Or
+      bind_result(i, [binop(MOp::Orr, a[0], b[0]), binop(MOp::Orr, a[1], b[1])])
+    elsif op == Op::Xor
+      bind_result(i, [binop(MOp::Eor, a[0], b[0]), binop(MOp::Eor, a[1], b[1])])
+    elsif op == Op::Shl || op == Op::LShr || op == Op::AShr
+      bind_result(i, wide_shift(op, a, b[0]))
+    else
+      bind_result(i, wide_divide(op, a, b))
+    end
+  end
+
+  # The low 128 bits of a product: the low halves give the low word, and the cross products of the low halves
+  # give the high word. Products of the high halves lie wholly above 2^128 and drop out.
+  def wide_mul(a : Array(Int32), b : Array(Int32)) : Array(Int32)
+    lo = binop(MOp::Mul, a[0], b[0])
+    h0 = binop(MOp::Umulh, a[0], b[0])
+    t1 = binop(MOp::Mul, a[0], b[1])
+    t2 = binop(MOp::Mul, a[1], b[0])
+    [lo, binop(MOp::Add, binop(MOp::Add, h0, t1), t2)]
+  end
+
+  # The full unsigned 128 x 128 product's low 128 bits and an overflow flag (0 or 1): [lo, hi, overflow]. Overflow when
+  # any partial product lies at or above 2^128, or the carries out of the middle word are nonzero.
+  def umul_wide(a : Array(Int32), b : Array(Int32)) : Array(Int32)
+    lo = binop(MOp::Mul, a[0], b[0])
+    h0 = binop(MOp::Umulh, a[0], b[0])
+    l1 = binop(MOp::Mul, a[0], b[1])
+    h1 = binop(MOp::Umulh, a[0], b[1])
+    l2 = binop(MOp::Mul, a[1], b[0])
+    h2 = binop(MOp::Umulh, a[1], b[0])
+    l3 = binop(MOp::Mul, a[1], b[1])
+    h3 = binop(MOp::Umulh, a[1], b[1])
+    s1 = binop(MOp::Adds, h0, l1)
+    c1 = set_flag(cond_cs)
+    s2 = binop(MOp::Adds, s1, l2)
+    c2 = set_flag(cond_cs)
+    wide = binop(MOp::Orr, binop(MOp::Orr, l3, h3), binop(MOp::Orr, binop(MOp::Orr, h1, h2), binop(MOp::Orr, c1, c2)))
+    compare_zero(wide)
+    [lo, s2, set_flag(cond_ne)]
+  end
+
+  # |x| as a 128-bit magnitude, computed as (x ^ m) - m with m the sign mask: [lo, hi, m].
+  def abs_wide(x : Array(Int32)) : Array(Int32)
+    m = binop(MOp::Asr, x[1], const_gpr(63_i64))
+    x0 = binop(MOp::Eor, x[0], m)
+    x1 = binop(MOp::Eor, x[1], m)
+    lo = binop(MOp::Subs, x0, m)
+    [lo, binop(MOp::Sbc, x1, m), m]
+  end
+
+  # Signed 128-bit multiply with overflow: [lo, hi, overflow]. The magnitudes multiply unsigned; the product is negated
+  # when the signs differ. It overflows when the magnitude product overflows, or when bit 127 is set and the value
+  # is not exactly -2^127.
+  def signed_mul_overflow(a : Array(Int32), b : Array(Int32)) : Array(Int32)
+    pa = abs_wide(a)
+    pb = abs_wide(b)
+    mag = umul_wide([pa[0], pa[1]], [pb[0], pb[1]])
+    neg_mask = binop(MOp::Eor, pa[2], pb[2])
+    neg = binop(MOp::Lsr, neg_mask, const_gpr(63_i64))
+    r0 = binop(MOp::Eor, mag[0], neg_mask)
+    r1 = binop(MOp::Eor, mag[1], neg_mask)
+    lo = binop(MOp::Subs, r0, neg_mask)
+    hi = binop(MOp::Sbc, r1, neg_mask)
+    bit = binop(MOp::Lsr, mag[1], const_gpr(63_i64))
+    min_hi = binop(MOp::Lsl, const_gpr(1_i64), const_gpr(63_i64))
+    compare_zero(mag[0])
+    e_lo = set_flag(cond_eq)
+    compare(mag[1], min_hi)
+    e_hi = set_flag(cond_eq)
+    exact = binop(MOp::And, binop(MOp::And, e_lo, e_hi), neg)
+    bad = binop(MOp::And, bit, binop(MOp::Eor, exact, const_gpr(1_i64)))
+    [lo, hi, binop(MOp::Orr, mag[2], bad)]
+  end
+
+  # A 128-bit shift by the low half of the amount. The halves shift separately; an amount of 64 or more moves one half
+  # into the other and fills the vacated half with zero or the sign. Each half comes from a conditional select on
+  # whether the amount exceeds 63, with the shifts masked to 0..63 and the carried bits taken as a two-step shift so a
+  # zero amount moves nothing.
+  def wide_shift(op : Op, a : Array(Int32), s : Int32) : Array(Int32)
+    amt = binop(MOp::And, s, const_gpr(63_i64))
+    inv = binop(MOp::Sub, const_gpr(63_i64), amt)
+    one = const_gpr(1_i64)
+    zero = const_gpr(0_i64)
+    if op == Op::Shl
+      part = binop(MOp::Lsl, a[0], amt)
+      carry = binop(MOp::Lsr, binop(MOp::Lsr, a[0], one), inv)
+      hi_small = binop(MOp::Orr, binop(MOp::Lsl, a[1], amt), carry)
+      compare(s, const_gpr(63_i64))
+      return [csel_cond(zero, part, cond_hi), csel_cond(part, hi_small, cond_hi)]
+    end
+    if op == Op::LShr
+      part = binop(MOp::Lsr, a[1], amt)
+      carry = binop(MOp::Lsl, binop(MOp::Lsl, a[1], one), inv)
+      lo_small = binop(MOp::Orr, binop(MOp::Lsr, a[0], amt), carry)
+      compare(s, const_gpr(63_i64))
+      return [csel_cond(part, lo_small, cond_hi), csel_cond(zero, part, cond_hi)]
+    end
+    part = binop(MOp::Asr, a[1], amt)
+    carry = binop(MOp::Lsl, binop(MOp::Lsl, a[1], one), inv)
+    lo_small = binop(MOp::Orr, binop(MOp::Lsr, a[0], amt), carry)
+    sign = binop(MOp::Asr, a[1], const_gpr(63_i64))
+    compare(s, const_gpr(63_i64))
+    [csel_cond(part, lo_small, cond_hi), csel_cond(sign, part, cond_hi)]
+  end
+
+  # Division and remainder: the runtime helpers take two 128-bit values in x0..x3 and return one in x0:x1.
+  def wide_divide(op : Op, a : Array(Int32), b : Array(Int32)) : Array(Int32)
+    name = "__iyi_native_divti3"
+    if op == Op::UDiv
+      name = "__iyi_native_udivti3"
+    elsif op == Op::SRem
+      name = "__iyi_native_modti3"
+    elsif op == Op::URem
+      name = "__iyi_native_umodti3"
+    end
+    @mf.frame.has_calls = true
+    regs = [a[0], a[1], b[0], b[1]]
+    k = 0
+    while k < 4
+      m = mop(MOp::Mov)
+      m.defs << pop(k)
+      m.uses << vop(regs[k])
+      emit(m)
+      k = k + 1
+    end
+    call = mop(MOp::Bl)
+    call.sym = symbol_index(name)
+    call.reloc = RelocKind::A64Call26
+    call.call = true
+    call.clobbers = @desc.caller_saved
+    emit(call)
+    lo = gpr
+    m0 = mop(MOp::Mov)
+    m0.defs << vop(lo)
+    m0.uses << pop(0)
+    emit(m0)
+    hi = gpr
+    m1 = mop(MOp::Mov)
+    m1.defs << vop(hi)
+    m1.uses << pop(1)
+    emit(m1)
+    [lo, hi]
+  end
+
+  # An i128 comparison. Equality compares the xor of the halves with zero. An ordering compares the low halves, then
+  # subtracts the high halves with that borrow, so the flags describe the whole 128-bit difference. The two operands
+  # swap for the predicates that read the first operand as the smaller.
+  def lower_icmp128(i : Inst) : Nil
+    ordinal = i.aux_int
+    a = materialize(i.args[0])
+    b = materialize(i.args[1])
+    if ordinal == 0_i64 || ordinal == 1_i64
+      diff = binop(MOp::Orr, binop(MOp::Eor, a[0], b[0]), binop(MOp::Eor, a[1], b[1]))
+      compare_zero(diff)
+      bind_result(i, [set_flag(int_cond(ordinal))])
+      return
+    end
+    x = a
+    y = b
+    if ordinal == 2_i64 || ordinal == 5_i64 || ordinal == 6_i64 || ordinal == 9_i64
+      x = b
+      y = a
+    end
+    cond = cond_lt
+    if ordinal == 2_i64 || ordinal == 4_i64
+      cond = cond_cc
+    elsif ordinal == 3_i64 || ordinal == 5_i64
+      cond = cond_cs
+    elsif ordinal == 7_i64 || ordinal == 9_i64
+      cond = cond_ge
+    end
+    compare(x[0], y[0])
+    binop(MOp::Sbcs, x[1], y[1])
+    bind_result(i, [set_flag(cond)])
+  end
+
+  # The overflow family at 128 bits: the value's two halves and the flag. Add and subtract chain the carry or borrow
+  # through the flag-setting pair; multiply takes the unsigned or signed form above.
+  def lower_overflow128(i : Inst, id : IntrinsicId) : Nil
+    form = overflow_form(id)
+    a = materialize(i.args[0])
+    b = materialize(i.args[1])
+    if form.mul
+      if form.signed
+        bind_result(i, signed_mul_overflow(a, b))
+      else
+        bind_result(i, umul_wide(a, b))
+      end
+      return
+    end
+    if form.sub
+      lo = binop(MOp::Subs, a[0], b[0])
+      hi = binop(MOp::Sbcs, a[1], b[1])
+      cond = form.signed ? cond_vs : cond_cc
+      bind_result(i, [lo, hi, set_flag(cond)])
+      return
+    end
+    lo = binop(MOp::Adds, a[0], b[0])
+    hi = binop(MOp::Adcs, a[1], b[1])
+    cond = form.signed ? cond_vs : cond_cs
+    bind_result(i, [lo, hi, set_flag(cond)])
+  end
+
   def lower_fp_binop(i : Inst) : Nil
     a = first_leaf(i.args[0])
     b = first_leaf(i.args[1])
@@ -882,6 +1137,10 @@ class Isel
   end
 
   def lower_icmp(i : Inst) : Nil
+    if i128?(i.args[0].type)
+      lower_icmp128(i)
+      return
+    end
     ordinal = i.aux_int
     t = i.args[0].type
     a = first_leaf(i.args[0])
@@ -988,10 +1247,21 @@ class Isel
     src_type = i.args[0].type
     src = first_leaf(i.args[0])
     t = i.type
+    if i128?(t)
+      if op == Op::ZExt
+        bind_result(i, [zext(src, src_type), const_gpr(0_i64)])
+      else
+        lo = sext64(src, src_type)
+        bind_result(i, [lo, binop(MOp::Asr, lo, const_gpr(63_i64))])
+      end
+      return
+    end
     if op == Op::Trunc
       bind_result(i, [canon(src, t)])
     elsif op == Op::ZExt
       bind_result(i, [canon(zext(src, src_type), t)])
+    elsif op == Op::SExt
+      bind_result(i, [canon(sext64(src, src_type), t)])
     elsif op == Op::PtrToInt
       bind_result(i, [canon(src, t)])
     elsif op == Op::BitCast && src_type.float? && t.int?
@@ -1001,6 +1271,18 @@ class Isel
     else
       bind_result(i, [src])
     end
+  end
+
+  # The sign-extended 64-bit form of a value of type t. Canonical values already are, except i1, whose 1 widens to -1.
+  def sext64(v : Int32, t : IrType) : Int32
+    return v unless t.int? && t.bits == 1
+    d = gpr
+    m = mop(MOp::Sbfm)
+    m.imm = 1_i64
+    m.defs << vop(d)
+    m.uses << vop(v)
+    emit(m)
+    d
   end
 
   # The index of the first leaf of field or element `index` of an aggregate type.
@@ -1525,8 +1807,8 @@ class Isel
     signed = form.signed
     mul = form.mul
     sub = form.sub
-    if i.args[0].type.bits == 128
-      fail("an i128 overflow intrinsic awaits the i128 slice")
+    if i128?(i.args[0].type)
+      lower_overflow128(i, id)
       return
     end
     wide = i.args[0].type.bits == 64

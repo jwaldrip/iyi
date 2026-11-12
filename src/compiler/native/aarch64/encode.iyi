@@ -237,6 +237,14 @@ pub class Encoder
       arith(0xAB000000_i64, inst)
     elsif op == MOp::Subs
       arith(0xEB000000_i64, inst)
+    elsif op == MOp::Adc
+      arith(0x9A000000_i64, inst)
+    elsif op == MOp::Sbc
+      arith(0xDA000000_i64, inst)
+    elsif op == MOp::Adcs
+      arith(0xBA000000_i64, inst)
+    elsif op == MOp::Sbcs
+      arith(0xFA000000_i64, inst)
     elsif op == MOp::And
       arith(0x8A000000_i64, inst)
     elsif op == MOp::Orr

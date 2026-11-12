@@ -181,6 +181,7 @@ check_iyiagg() { check_fixture "$1" iyiagg; }
 check_byval() { check_fixture "$1" byval; }
 check_rmw() { check_fixture "$1" rmw; }
 check_mem() { check_fixture "$1" mem; }
+check_wide() { check_fixture "$1" wide; }
 check_probe() {
   local n
   n=$("$1" mir "$FIX/frame64k.ir" big | grep -c 'ZeroSp')
@@ -229,6 +230,21 @@ prove_mutation "memmove: a large move calls the copy helper" \
   'overlap ? "__iyi_native_memmove" : "__iyi_native_memcpy"' \
   '"__iyi_native_memcpy"' \
   check_mem
+prove_mutation "i128 add: the two halves of the sum are bound in reverse" \
+  src/compiler/native/aarch64/isel.iyi \
+  'bind_result(i, [lo, binop(MOp::Adc, a[1], b[1])])' \
+  'bind_result(i, [binop(MOp::Adc, a[1], b[1]), lo])' \
+  check_wide
+prove_mutation "i128 add: the carry into the high half is dropped" \
+  src/compiler/native/aarch64/isel.iyi \
+  'bind_result(i, [lo, binop(MOp::Adc, a[1], b[1])])' \
+  'bind_result(i, [lo, binop(MOp::Add, a[1], b[1])])' \
+  check_wide
+prove_mutation "i128 argument: the high half is passed in the low half's register" \
+  src/compiler/native/lower.iyi \
+  'LeafLoc.new(0, desc.integer_args[gpr_next + 1], -1_i64, 64, false, leaves[1][1])' \
+  'LeafLoc.new(0, desc.integer_args[gpr_next], -1_i64, 64, false, leaves[1][1])' \
+  check_wide
 echo "a mutation that changes nothing is refused by the proof helper:"
 if prove_mutation "no-op: the same text on both sides" \
     src/compiler/native/frame.iyi \

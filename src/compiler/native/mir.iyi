@@ -76,6 +76,10 @@ pub enum MOp
   Umulh           # high 64 bits of a * b, unsigned
   Adds            # dst <- a + b, sets flags
   Subs            # dst <- a - b, sets flags
+  Adc             # dst <- a + b + carry (the carry of the previous Adds or Adcs)
+  Sbc             # dst <- a - b - !carry (the borrow of the previous Subs or Sbcs)
+  Adcs            # as Adc, and sets flags
+  Sbcs            # as Sbc, and sets flags
   Cmp             # flags <- a - b
   CmpImm          # flags <- a - imm
   Cset            # dst <- cond ? 1 : 0
