@@ -232,8 +232,8 @@ end" "  CallConv::Iyi
 end" -- lower_calls_check || status=1
 prove_mutation "a restriction the argument implements is refused (the nil argument into Fiber | Nil)" "$REPO/src/compiler/lower/call.iyi" \
   'unless at.implements?(restricted.as(Type))' 'if at.implements?(restricted.as(Type))' -- lower_calls_check || status=1
-prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted llvm_nil)" "$REPO/src/compiler/lower/call.iyi" \
-  'values << (at.is_a?(NilType) ? llvm_nil(low) : value.as(Value))' 'values << value.as(Value)' -- lower_calls_check || status=1
+prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
+  'values << (at.is_a?(NilType) ? low.builder.const_null(low.typer.nil_type).as(Value) : value.as(Value))' 'values << value.as(Value)' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

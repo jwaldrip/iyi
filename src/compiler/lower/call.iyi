@@ -761,8 +761,9 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
     visit_node(low, arg_node)
     value = low.last
     raise "BUG: argument #{i} of #{node.name} left no value (hosted call.cr: prepare_call_args)" if value.nil?
-    # Hosted prepare_call_args_non_external: a nil argument is the nil value (`llvm_nil`), not what the visit left.
-    values << (at.is_a?(NilType) ? llvm_nil(low) : value.as(Value))
+    # Hosted prepare_call_args_non_external: a nil argument is the nil value, the null constant of the nil type
+    # (zeroinitializer); the helper `llvm_nil` is an undef constant in this port, so it is not used here.
+    values << (at.is_a?(NilType) ? low.builder.const_null(low.typer.nil_type).as(Value) : value.as(Value))
     arg_types << at
     i += 1
   end
