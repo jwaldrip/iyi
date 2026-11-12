@@ -4,7 +4,7 @@ import compiler/syntax/ast::{ASTNode, Call, Expressions, Macro, MacroLiteral}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/normalizer::{Normalizer}
 import compiler/macros/ast
-import compiler/macros/methods
+import compiler/macros/methods::{MacroMethods}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/interpreter::{MacroInterpreter, MacroFailure}
 import compiler/macros/macro_parser::{MacroParser}
