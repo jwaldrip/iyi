@@ -3683,42 +3683,46 @@ module Iyi
         modules
       end
 
-      output_dir = CacheDir.instance.directory_for(sources)
+      # iyi: everything written into the cache directory is written under
+      # its lock, `bc_flags` included, which used to be written before the
+      # lock was taken (`CacheDir#claim`).
+      built = CacheDir.instance.claim(sources.first.filename) do |output_dir|
+        bc_flags_changed = bc_flags_changed? output_dir
+        target_triple = target_machine.triple
 
-      bc_flags_changed = bc_flags_changed? output_dir
-      target_triple = target_machine.triple
-
-      units = llvm_modules.map do |type_name, info|
-        llvm_mod = info.mod
-        llvm_mod.target = target_triple
-        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, verify: !single_module)
-      end
-
-      # iyi: one optimised module is cut into partitions that are optimised
-      # on as many cores (`ReleasePartition`). Not for a cross-compile or an
-      # `--emit`, which each answer with the one module's file, and not
-      # where the partitions would need LLVM's legacy pass manager.
-      {% unless LibLLVM::IS_LT_130 %}
-        if single_module && !@cross_compile && @emit_targets.none? && !@optimization_mode.o0? && units.size == 1
-          @progress_tracker.stage("Codegen (partition)") do
-            units.first.partition(release_partitions, release_import, release_inline)
-          end
+        units = llvm_modules.map do |type_name, info|
+          llvm_mod = info.mod
+          llvm_mod.target = target_triple
+          CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, verify: !single_module)
         end
-      {% end %}
 
-      {% if LibLLVM::IS_LT_170 %}
-        # initialize the legacy pass manager once in the main thread/process
-        # before we start codegen in threads (MT) or processes (fork)
-        init_llvm_legacy_pass_manager unless optimization_mode.o0?
-      {% end %}
+        # iyi: one optimised module is cut into partitions that are optimised
+        # on as many cores (`ReleasePartition`). Not for a cross-compile or an
+        # `--emit`, which each answer with the one module's file, and not
+        # where the partitions would need LLVM's legacy pass manager.
+        {% unless LibLLVM::IS_LT_130 %}
+          if single_module && !@cross_compile && @emit_targets.none? && !@optimization_mode.o0? && units.size == 1
+            @progress_tracker.stage("Codegen (partition)") do
+              units.first.partition(release_partitions, release_import, release_inline)
+            end
+          end
+        {% end %}
 
-      if @cross_compile
-        cross_compile program, units, output_filename
-      else
-        units = with_file_lock(output_dir) do
+        {% if LibLLVM::IS_LT_170 %}
+          # initialize the legacy pass manager once in the main thread/process
+          # before we start codegen in threads (MT) or processes (fork)
+          init_llvm_legacy_pass_manager unless optimization_mode.o0?
+        {% end %}
+
+        if @cross_compile
+          cross_compile program, units, output_filename
+          units
+        else
           codegen program, units, output_filename, output_dir
         end
+      end
 
+      unless @cross_compile
         {% if flag?(:darwin) %}
           run_dsymutil(output_filename) unless debug.none?
         {% end %}
@@ -3730,15 +3734,7 @@ module Iyi
 
       CacheDir.instance.cleanup if @cleanup
 
-      units
-    end
-
-    private def with_file_lock(output_dir, &)
-      File.open(File.join(output_dir, "compiler.lock"), "w") do |file|
-        file.flock_exclusive do
-          yield
-        end
-      end
+      built
     end
 
     private def run_dsymutil(filename)
