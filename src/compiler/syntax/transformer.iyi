@@ -208,7 +208,21 @@ pub abstract class Transformer
   end
 
   def transform(node : Expressions) : ASTNode
-    transform_many(node.expressions)
+    exps = [] of ASTNode
+    i = 0
+    while i < node.expressions.size
+      new_exp = node.expressions[i].transform(self)
+      if new_exp.is_a?(Expressions)
+        exps.concat(new_exp.as(Expressions).expressions)
+      else
+        exps << new_exp
+      end
+      i = i + 1
+    end
+    if exps.size == 1
+      return exps[0]
+    end
+    node.expressions = exps
     node
   end
 
