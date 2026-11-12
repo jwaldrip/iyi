@@ -184,14 +184,14 @@ echo
 echo "== 4. Per-file call census: sites, typed by the hosted pass, identical"
 printf '  %-16s %-46s %7s %7s %9s %8s  %s\n' verdict file total typed identical fraction note
 awk -F'\t' '{
-  frac = ($4 > 0) ? sprintf("%.1f%%", 100 * $6 / $4) : "n/a"
+  frac = ($5 > 0) ? sprintf("%.1f%%", 100 * $6 / $5) : "n/a"
   printf "  %-16s %-46s %7s %7s %9s %8s  %s\n", $1, $3, $4, $5, $6, frac, $8
 }' "$VERDICTS"
 
 echo
 echo "== 5. Corpus totals (sites the hosted pass reached, and identical ones)"
 awk -F'\t' '
-  { total[$2] += $4; typed[$2] += $5; ident[$2] += $6; files[$2] += 1 }
+  { total[$2] += $3; typed[$2] += $4; ident[$2] += $5; files[$2] += 1 }
   END {
     for (k in total) {
       printf "  %-10s files %4d  sites %8d  typed by hosted %8d  identical %8d  of typed %6.2f%%\n", \
