@@ -1,0 +1,31 @@
+class Node
+  def initialize(@value : Int32)
+  end
+
+  def value : Int32
+    @value
+  end
+end
+
+class K
+  @@head : Node?
+
+  def self.put(node : Node)
+    @@head = node
+  end
+
+  def self.value : Int32
+    if node = @@head
+      node.value
+    else
+      0
+    end
+  end
+end
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+K.put(Node.new(7))
+LibC.exit(K.value)
