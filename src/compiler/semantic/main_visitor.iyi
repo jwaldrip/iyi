@@ -15,7 +15,7 @@ import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
-import compiler/types/types::{NamedArgumentType, GenericInstanceType}
+import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/new::{define_new_methods}
@@ -562,10 +562,35 @@ pub class MainVisitor < TypeNodeHost
         return false
       end
     end
-    if node.name == "allocate"
+    if node.name == "allocate" || node.name == "pointer_malloc" || node.name == "pointer_new"
       if sc = @scope
         if sc.is_a?(MetaclassType)
-          set_type(node, sc.as(MetaclassType).instance_type)
+          instance = sc.as(MetaclassType).instance_type
+          if node.name == "pointer_malloc" && instance.is_a?(GenericClassType)
+            return refuse(node, "can't malloc pointer without type, use Pointer(Type).malloc(size)")
+          end
+          if node.name == "pointer_new" && instance.is_a?(GenericClassType)
+            return refuse(node, "can't create pointer without type, use Pointer(Type).new(address)")
+          end
+          set_type(node, instance)
+          return false
+        end
+      end
+    end
+    if node.name == "pointer_set"
+      if sc = @scope
+        if sc.is_a?(PointerInstanceType)
+          if vt = @vars["value"]?
+            set_type(node, vt)
+            return false
+          end
+        end
+      end
+    end
+    if node.name == "class"
+      if sc = @scope
+        if sc.is_a?(ModuleType)
+          set_type(node, sc.as(ModuleType).metaclass)
           return false
         end
       end
@@ -702,6 +727,12 @@ pub class MainVisitor < TypeNodeHost
         return false
       end
     end
+    if target_type.is_a?(GenericClassInstanceType)
+      if ivar = target_type.as(GenericClassInstanceType).lookup_instance_var?(node.name)
+        set_type(node, ivar.type)
+        return false
+      end
+    end
     refuse(node, "can't infer the type of instance variable '#{node.name}' of #{target_type.full_name}")
   end
 
@@ -775,6 +806,18 @@ pub class MainVisitor < TypeNodeHost
         else
           ivar = MetaTypeVar.new(ivar_node.name, val_type, node.value)
           mod_type.instance_vars[ivar_node.name] = ivar
+          set_type(ivar_node, val_type)
+        end
+        set_type(node, val_type)
+      elsif target_type.is_a?(GenericClassInstanceType)
+        gen_type = target_type.as(GenericClassInstanceType)
+        if ivar = gen_type.lookup_instance_var?(ivar_node.name)
+          unless val_type.subtype_of?(ivar.type)
+            return refuse(node, "instance variable '#{ivar_node.name}' of #{gen_type.full_name} must be #{ivar.type.full_name}, not (#{ivar.type.full_name} | #{val_type.full_name})")
+          end
+          set_type(ivar_node, ivar.type)
+        else
+          gen_type.instance_vars[ivar_node.name] = MetaTypeVar.new(ivar_node.name, val_type, node.value)
           set_type(ivar_node, val_type)
         end
         set_type(node, val_type)

@@ -114,7 +114,7 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -143,6 +143,9 @@ prove_mutation "self in a declared type names the receiver" "$MAIN_VISITOR" \
 prove_mutation "a call hits the def-instance cache" "$MAIN_VISITOR" \
   "      return @def_instances[k]?" \
   "      return nil" -- bodies_at_floor || status=1
+prove_mutation "a generic instance copies its declared instance variable with the argument" "$REPO/src/compiler/types/types.iyi" \
+  "copied = MetaTypeVar.new(var_name, replacement)" \
+  "copied = MetaTypeVar.new(var_name, source_type)" -- bodies_at_floor || status=1
 
 if [ "$status" -eq 0 ]; then
   echo
