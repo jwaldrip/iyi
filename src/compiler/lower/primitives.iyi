@@ -47,6 +47,7 @@ import compiler/semantic/top_level::{ClassType, MetaTypeVar, Type}
 import compiler/types/types::{VirtualType}
 import compiler/lower/helpers::{store_aligned}
 import compiler/lower/typer::{passed_by_value?}
+import compiler/lower/headed::{headed?}
 import compiler/lower/layouts::{has_inner_pointers?}
 
 # An integer operand as the hosted codegen reads it: its width in bytes, its signedness and
@@ -630,11 +631,17 @@ pub def c_malloc_function(low : Lowerer) : Function
   low.module.add_function("malloc", fn_type, CallConv::C)
 end
 
-# The `:headed` byte of a class, as the hosted `iyi_headed_flag` loads it. Not ported: it is the
-# whole-program census's answer (gc_layouts.cr iyi_headed?), so this refuses by name for every class.
+# The `:headed` byte of a class (`headed?`, lower/headed.iyi, the typer's port of the hosted census). The
+# accessor decides String, builtins and ids above UInt16::MAX. A candidate class waits on the census's two
+# inputs (virtual types made, reference unions, NEEDS.md rows 26-27), so its nil refuses by name here rather
+# than guessing a byte.
 pub def headed_byte(low : Lowerer, t : Type) : Value
-  pending_visit_node("allocate of class #{t.full_name}: the :headed byte is the program-wide census (gc_layouts.cr iyi_headed?), not ported")
-  low.builder.const_int(low.module.types.int8, 0_i64)
+  answer = headed?(t, low.type_ids)
+  if answer.nil?
+    pending_visit_node("allocate of class #{t.full_name}: the :headed byte is the program-wide census (lower/headed.iyi, NEEDS.md rows 26-27), not decided")
+    return low.builder.const_int(low.module.types.int8, 0_i64)
+  end
+  low.builder.const_int(low.module.types.int8, answer.as(Bool) ? 1_i64 : 0_i64)
 end
 
 # The `__iyi_new` runtime function, declared in the module with the C convention when the program
