@@ -1,0 +1,373 @@
+import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Unless, Until, Var, While, Yield, StringBuilder}
+import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
+import compiler/macros/ast::{MacroId}
+import compiler/macros/methods::{MacroMethods}
+import compiler/macros/interpreter::{MacroInterpreter}
+import compiler/macros/macro_parser::{MacroParser}
+import compiler/macros/engine::{MacroEngine, MacroReport}
+import compiler/macros/target_flags::{MacroTargetFlags}
+import compiler/syntax/parser::{Parser}
+import compiler/macros/site_scan::{MacroSiteScan}
+
+module BenchSelfhostMacrosExercise
+  def self.assert(cond : Bool, msg : String) : Nil
+    unless cond
+      puts "Assertion failed: " + msg
+      raise "Assertion failed: " + msg
+    end
+  end
+
+  def self.escape_s(s : String) : String
+    res = StringBuilder.new
+    res << "\""
+    i = 0
+    while i < s.bytesize
+      b = s.byte_at(i)
+      if b == 10_u8
+        res << "\\n"
+      elsif b == 13_u8
+        res << "\\r"
+      elsif b == 9_u8
+        res << "\\t"
+      elsif b == 92_u8
+        res << "\\\\"
+      elsif b == 34_u8
+        res << "\\\""
+      else
+        res << b.unsafe_chr.to_s
+      end
+      i = i + 1
+    end
+    res << "\""
+    res.to_s
+  end
+
+  # The dump both implementations print for a fixture: one line per top-level
+  # site, how the expansion ended (`skipped` or `error`), and the whole output.
+  # The oracle's driver prints these same lines for the same fixture.
+  def self.dump_report(rep : MacroReport) : String
+    s = ""
+    i = 0
+    while i < rep.sites.size
+      site = rep.sites[i]
+      s = s + "site #{i} #{site.kind} #{site.line}:#{site.column} text=#{escape_s(site.text)}\n"
+      i = i + 1
+    end
+    if rep.skipped
+      s = s + "skipped\n"
+    end
+    if f = rep.failure
+      s = s + "error #{f.line}:#{f.column} message=#{escape_s(f.message)}\n"
+    end
+    s + "output text=#{escape_s(rep.output)}\n"
+  end
+
+  # The port parses a file with its header annotations in place; the hosted
+  # parser does not, so the sites dump blanks them out on both sides.
+  def self.strip_header_annotations(source : String) : String
+    lines = source.split("\n")
+    module_at = -1
+    i = 0
+    while i < lines.size && module_at < 0
+      if lines[i].starts_with?("module ")
+        module_at = i
+      end
+      i = i + 1
+    end
+    out = StringBuilder.new
+    i = 0
+    while i < lines.size
+      line = lines[i]
+      if i < module_at && line.starts_with?("@[")
+        line = ""
+      end
+      out << line
+      out << "\n"
+      i = i + 1
+    end
+    out.to_s
+  end
+
+  # One line per macro site of a whole file, in source order: its index, its
+  # kind, where it is written, then what it did. `macro-body` sites are inside
+  # a macro definition and expand when it is called; `needs-context` sites read
+  # the type or def they are written in. The oracle's driver prints the same
+  # lines for the same file.
+  def self.site_dump(source : String, flags : Array(String)) : String
+    engine = MacroEngine.new(flags)
+    root = Parser.new(strip_header_annotations(source)).parse
+    refs = MacroSiteScan.scan(root)
+    s = ""
+    i = 0
+    while i < refs.size
+      ref = refs[i]
+      site = ref.node
+      head = "site #{i} #{MacroMethods.node_class_name(site)} #{BenchSelfhostMacrosExercise.line_col(site)} #{ref.context}"
+      if ref.context == "macro"
+        s = s + head + " macro-body\n"
+      elsif MacroSiteScan.needs_context?(site, ref.type_name, ref.generic)
+        s = s + head + " needs-context\n"
+      else
+        scope = ref.type_name.empty? ? "<Program>" : ref.type_name
+        rep = engine.site_report(site, scope)
+        if f = rep.failure
+          s = s + head + " error #{f.line}:#{f.column} message=#{escape_s(f.message)}\n"
+        elsif rep.skipped
+          s = s + head + " skipped\n"
+        else
+          s = s + head + " text=#{escape_s(rep.output)}\n"
+        end
+      end
+      i = i + 1
+    end
+    s
+  end
+
+  def self.line_col(node : ASTNode) : String
+    if loc = node.location
+      "#{loc.line_number}:#{loc.column_number}"
+    else
+      "0:0"
+    end
+  end
+
+  def self.test_arg_substitution
+    print "testing macro argument substitution... "
+    engine = MacroEngine.new
+    src = %(
+macro add_two(a, b = 10, c = 20)
+  {{a}} + {{b}} + {{c}}
+end
+add_two(5, c: 30)
+)
+    expanded = engine.expand(src)
+    assert(expanded.is_a?(Call), "expansion produces Call")
+    call_node = expanded.as(Call)
+    assert(call_node.name == "+", "outer call is +")
+    puts "ok"
+  end
+
+  def self.test_splats
+    print "testing macro splats and double splats... "
+    engine = MacroEngine.new
+    src = %(
+macro sum_all(*items)
+  0 {% for x in items %} + {{x}} {% end %}
+end
+sum_all(1, 2, 3, 4)
+)
+    expanded = engine.expand(src)
+    assert(expanded.is_a?(Call), "expansion produces Call")
+    puts "ok"
+  end
+
+  def self.test_control_flow
+    print "testing macro control flow (if, unless, elsif, else)... "
+    engine = MacroEngine.new
+    src1 = %(
+macro check_sign(val)
+  {% if val > 0 %}
+    "positive"
+  {% elsif val == 0 %}
+    "zero"
+  {% else %}
+    "negative"
+  {% end %}
+end
+check_sign(5)
+)
+    exp1 = engine.expand(src1)
+    assert(exp1.is_a?(StringLiteral), "if branch produces StringLiteral")
+    assert(exp1.as(StringLiteral).value == "positive", "if branch value matches")
+
+    src2 = %(
+macro check_fallback(flag, val)
+  {% unless flag %}
+    {{val}}
+  {% else %}
+    0
+  {% end %}
+end
+check_fallback(false, 99)
+)
+    exp2 = engine.expand(src2)
+    assert(exp2.is_a?(NumberLiteral), "unless branch produces NumberLiteral")
+    assert(exp2.as(NumberLiteral).value == "99", "unless branch value matches")
+    puts "ok"
+  end
+
+  def self.test_iteration
+    print "testing macro iteration (for over arrays, tuples, named tuples, ranges)... "
+    engine = MacroEngine.new
+    src_range = %(
+macro loop_range(n)
+  0 {% for i in 1..n %} + {{i}} {% end %}
+end
+loop_range(3)
+)
+    exp_range = engine.expand(src_range)
+    assert(exp_range.is_a?(Call), "range loop produces Call chain")
+
+    src_nt = %(
+macro dict_vals(nt)
+  { {% for k, v in nt %} {{k.id}}: {{v}}, {% end %} }
+end
+dict_vals({x: 10, y: 20})
+)
+    exp_nt = engine.expand(src_nt)
+    assert(exp_nt.is_a?(NamedTupleLiteral), "named tuple iteration produces NamedTupleLiteral")
+    puts "ok"
+  end
+
+  def self.test_stringification
+    print "testing macro stringification and identifier methods... "
+    engine = MacroEngine.new
+    src = %(
+macro inspect_expr(e)
+  "expr: " + {{e.stringify}} + " id: " + {{e.id.stringify}}
+end
+inspect_expr(my_var)
+)
+    expanded = engine.expand(src)
+    assert(expanded.is_a?(Call), "string concatenation produces Call")
+    puts "ok"
+  end
+
+  def self.test_ast_methods
+    print "testing macro AST node methods... "
+    engine = MacroEngine.new
+    src = %(
+macro get_call_info(c)
+  {
+    name: {{c.name.stringify}},
+    first_arg: {{c.args.first}},
+    size: {{c.args.size}}
+  }
+end
+get_call_info(run(10, 20))
+)
+    expanded = engine.expand(src)
+    assert(expanded.is_a?(NamedTupleLiteral), "AST inspection produces NamedTupleLiteral")
+    puts "ok"
+  end
+
+  def self.test_fresh_vars
+    print "testing macro fresh variable generation... "
+    engine = MacroEngine.new
+    src = %(
+macro make_swap(a, b)
+  %t = {{a}};
+  {{a}} = {{b}};
+  {{b}} = %t
+end
+make_swap(x, y)
+)
+    expanded = engine.expand(src)
+    assert(expanded.is_a?(Expressions), "swap produces Expressions")
+    puts "ok"
+  end
+
+  def self.test_code_generation
+    print "testing macro code and definition generation... "
+    engine = MacroEngine.new
+    src = %(
+macro make_getter(name, val)
+  def {{name.id}}
+    {{val}}
+  end
+end
+make_getter(answer, 42)
+)
+    expanded = engine.expand(src)
+    assert(expanded.is_a?(Def), "def generation produces Def")
+    def_node = expanded.as(Def)
+    assert(def_node.name == "answer", "def name matches")
+    puts "ok"
+  end
+
+  def self.test_type_node
+    print "testing @type as the enclosing class's TypeNode... "
+    src = %(
+class Object
+  def to_s
+    {{ @type.name.stringify }}
+  end
+end
+)
+    refs = MacroSiteScan.scan(Parser.new(src).parse)
+    assert(refs.size == 1, "one site in the class")
+    ref = refs[0]
+    assert(ref.type_name == "Object", "the site is written in class Object")
+    assert(!MacroSiteScan.needs_context?(ref.node, ref.type_name, ref.generic), "a name-only site is compared, not needs-context")
+    assert(MacroSiteScan.needs_context?(ref.node, "", false), "the same site at the top of a file needs its context")
+    rep = MacroEngine.new.site_report(ref.node, ref.type_name)
+    assert(rep.failure.nil?, "the class-name expansion does not fail")
+    assert(rep.output == "\"Object\"", "the site expands to the class name as a string")
+    puts "ok"
+  end
+
+  def self.run_all : Nil
+    puts "Running Selfhost Macro Engine Verification Suite (pure iyi stage 0)"
+    puts "============================================================="
+    test_arg_substitution
+    test_splats
+    test_control_flow
+    test_iteration
+    test_stringification
+    test_ast_methods
+    test_fresh_vars
+    test_code_generation
+    test_type_node
+    puts "============================================================="
+    puts "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"
+    puts "============================================================="
+  end
+end
+
+if Program.args.size == 1 && Program.args[0] == "--host-target"
+  puts MacroTargetFlags.host_triple
+elsif Program.args.size > 0
+  filename = ""
+  count = false
+  sites = false
+  triple = ""
+  defines = [] of String
+  args = Program.args
+  idx = 0
+  while idx < args.size
+    a = args[idx]
+    if a == "--count"
+      count = true
+    elsif a == "--sites"
+      sites = true
+    elsif a == "--target"
+      idx = idx + 1
+      triple = args[idx]
+    elsif a == "-D"
+      idx = idx + 1
+      defines << args[idx]
+    else
+      filename = a
+    end
+    idx = idx + 1
+  end
+  flags = MacroTargetFlags.host(defines)
+  unless triple.empty?
+    flags = MacroTargetFlags.for_triple(triple, defines)
+  end
+  source = File.read(filename)
+  if sites
+    print BenchSelfhostMacrosExercise.site_dump(source, flags)
+  else
+    engine = MacroEngine.new(flags)
+    the_macro, the_call = MacroParser.parse_fixture(source)
+    rep = engine.report(the_macro, the_call)
+    if count
+      puts rep.sites.size
+    else
+      print BenchSelfhostMacrosExercise.dump_report(rep)
+    end
+  end
+else
+  BenchSelfhostMacrosExercise.run_all
+end
