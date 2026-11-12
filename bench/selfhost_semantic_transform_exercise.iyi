@@ -8,6 +8,7 @@ import compiler/syntax/ast::{ASTNode, Expressions, Nop, NilLiteral, BoolLiteral,
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 import compiler/semantic/normalizer::{NormalizerProgram, Normalizer}
+
 module BenchSemanticTransformExercise
   def self.assert(cond : Bool, msg : String)
     unless cond

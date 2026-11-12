@@ -17,7 +17,7 @@ def escape_s(s : String) : String
     when '\t' then res += "\\t"
     when '\\' then res += "\\\\"
     when '"'  then res += "\\\""
-    else res += s.byte_at(i).chr.to_s
+    else           res += s.byte_at(i).chr.to_s
     end
     i += 1
   end
@@ -30,10 +30,10 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
   case node
   when Iyi::Expressions
     kw = case node.keyword
-         when .none? then "none"
+         when .none?  then "none"
          when .paren? then "paren"
          when .begin? then "begin"
-         else "none"
+         else              "none"
          end
     s = "#{p}Expressions keyword=#{kw}\n"
     node.expressions.each { |e| s += dump_ast(e, indent + 1) }
@@ -502,12 +502,12 @@ end
 
 class Counter < Iyi::Visitor
   getter count = 0
+
   def visit(node : Iyi::ASTNode) : Bool
     @count += 1
     true
   end
 end
-
 
 filename = ARGV[0]
 src = File.read(filename)
