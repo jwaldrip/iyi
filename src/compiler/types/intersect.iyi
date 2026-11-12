@@ -1,6 +1,6 @@
 module compiler/types/intersect
 
-import compiler/semantic/top_level::{ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NilType, NonGenericModuleType, SemanticProgram, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NilType, NonGenericModuleType, SemanticProgram, Type, UnionType, VoidType}
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericInstanceType, NamedTupleInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualMetaclassType, VirtualType}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/unification::{TypeUnification}
@@ -12,11 +12,25 @@ import compiler/types/unification::{TypeUnification}
 # The hosted code has one overload per pair of type kinds, and the hosted compiler
 # picks the most specific. The dispatch below tests the same pairs in the same order of
 # specificity. Three hosted paths need state the port does not carry, and they
-# answer nil here: including_types (the types that include a module), generic
-# instances of a generic type (instantiated_types), and typedefs and aliases,
-# which the fixtures do not build. Each is named at its branch.
+# answer nil here: generic instances of a generic type (instantiated_types, which
+# the port keeps in no list), and typedefs, which the port does not declare yet.
+# Including types, aliases and procs are ported; each is named at its branch.
 pub class TypeIntersect
   def self.common_descendent(program : SemanticProgram, t1 : Type, t2 : Type) : Type?
+    # Aliases stand for the type they name. The hosted overloads for an alias
+    # remove it first, and two aliases meet only when they are the same one.
+    if t1.is_a?(AliasType) && t2.is_a?(AliasType)
+      return t1 if t1 == t2
+      return common_descendent(program, TypeMerge.remove_alias(t1), TypeMerge.remove_alias(t2))
+    end
+    if t1.is_a?(AliasType)
+      return common_descendent(program, TypeMerge.remove_alias(t1), t2)
+    end
+    if t2.is_a?(AliasType)
+      return t1 if t1 == t2
+      return common_descendent(program, t1, TypeMerge.remove_alias(t2))
+    end
+
     if t1.is_a?(TupleInstanceType) && t2.is_a?(TupleInstanceType)
       return t1 if t1.implements?(t2)
       return nil
@@ -26,9 +40,7 @@ pub class TypeIntersect
       return nil
     end
     if t1.is_a?(ProcInstanceType) && t2.is_a?(ProcInstanceType)
-      # The hosted code asks compatible_with?, which the port has no separate
-      # notion of; a procedure that is a subtype is compatible.
-      return t2 if t1.subtype_of?(t2)
+      return t2 if compatible_proc?(t1.as(ProcInstanceType), t2.as(ProcInstanceType))
       return nil
     end
 
@@ -42,14 +54,17 @@ pub class TypeIntersect
       return union_or_nil(program, types)
     end
     if module_like?(t1) && t2.is_a?(VirtualType)
-      # including_types: the port keeps no list of the types that include a module.
-      return nil
+      return including_descendent(program, t1, t2)
     end
     if module_like?(t1) && t2.is_a?(GenericClassType)
-      return instance_and_generic(program, t1, t2)
+      found = instance_and_generic(program, t1, t2)
+      return found unless found.nil?
+      return including_descendent(program, t1, t2)
     end
     if module_like?(t1)
-      return base_descendent(t1, t2)
+      found = base_descendent(t1, t2)
+      return found unless found.nil?
+      return including_descendent(program, t1, t2)
     end
 
     if t1.is_a?(GenericClassInstanceType) && t2.is_a?(GenericClassType)
@@ -151,11 +166,62 @@ pub class TypeIntersect
     base_descendent(t1, t2)
   end
 
+  # ProcInstanceType#compatible_with?: a procedure is compatible when its
+  # return type is the other's, or the other returns Nil (any value may be
+  # discarded), or it returns NoReturn; and its arguments are the other's, in
+  # number and in type. Arguments are invariant.
+  def self.compatible_proc?(t1 : ProcInstanceType, t2 : ProcInstanceType) : Bool
+    rt1 = t1.return_type
+    rt2 = t2.return_type
+    unless rt1 == rt2 || rt2.nil_type? || TypeQueries.no_return?(rt1)
+      return false
+    end
+    return false if t1.arg_types.size != t2.arg_types.size
+    i = 0
+    while i < t1.arg_types.size
+      return false unless t1.arg_types[i] == t2.arg_types[i]
+      i = i + 1
+    end
+    true
+  end
+
   # common_descendent_base: t1 when it is t2 or inherits or includes it.
   def self.base_descendent(t1 : Type, t2 : Type) : Type?
     return t1 if t1 == t2
     parents_of(t1).each do |parent|
       return t1 if parent.implements?(t2)
+    end
+    nil
+  end
+
+  # common_descendent_including_types: the module's including types, as a union
+  # of virtual types, narrowed to t2. A module narrows to the types that
+  # include it, which base_descendent cannot see.
+  def self.including_descendent(program : SemanticProgram, mod : Type, t2 : Type) : Type?
+    inc = including_union(program, mod)
+    return nil if inc.nil?
+    common_descendent(program, inc, t2)
+  end
+
+  # The union of the virtual types of the types that include a module, the
+  # including types of a module that is itself included counted in turn.
+  def self.including_union(program : SemanticProgram, mod : Type) : Type?
+    all = [] of Type
+    add_including_types(mod, all)
+    union_or_nil(program, all)
+  end
+
+  # add_to_including_types: a module's includers, each as its virtual type, and
+  # the includers of a module that includes this one, in place of the module.
+  def self.add_including_types(mod : Type, all : Array(Type)) : Nil
+    return nil unless mod.is_a?(ModuleType)
+    mod.as(ModuleType).including_types.each do |inc|
+      if module_like?(inc)
+        add_including_types(inc, all)
+      else
+        vt = TypeQueries.virtual_type(inc)
+        all << vt unless includes_type?(all, vt)
+      end
     end
     nil
   end

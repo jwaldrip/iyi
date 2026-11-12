@@ -47,7 +47,9 @@ end
 # op merge(Dog, Dog.class)
 # op merge(Dog, Holder)
 # op merge(NoReturn, Dog, Cat)
-# Not gated: merge(Dog, Cat, Holder) is (Animal | Holder) in the hosted code and
-# (Animal+ | Holder) in the port; the three-member type_combine path is open.
+# op merge(Dog, Cat, Holder)
+# op merge(Dog, Holder, Cat)
+# op merge(Dog, Cat, Puppy)
+# op merge(Dog, Cat, Cat)
 # op merge(Dog, Puppy, Cat)
 # op merge(Int32, String, Nil)

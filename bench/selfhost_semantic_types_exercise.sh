@@ -20,6 +20,8 @@ TYPES_FILE="$REPO/src/compiler/types/types.iyi"
 MERGE_FILE="$REPO/src/compiler/types/merge.iyi"
 INTERSECT_FILE="$REPO/src/compiler/types/intersect.iyi"
 FILTERS_FILE="$REPO/src/compiler/types/filters.iyi"
+TYPE_SYSTEM_FILE="$REPO/src/compiler/types/type_system.iyi"
+TOP_LEVEL_FILE="$REPO/src/compiler/semantic/top_level.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -79,6 +81,12 @@ if [ "$fixture_count" -eq 0 ]; then
 fi
 
 echo
+echo "== 2b. Known divergences, waiting on later slices (reported, not compared)"
+awk '/^# waiting /{ sub(/^# waiting /, ""); print "  known divergence, waiting on " $0 }' "$REPO"/bench/fixtures/semty_*.iyi > "$WORK/waiting.out"
+cat "$WORK/waiting.out"
+echo "  $(awk 'END { print NR }' "$WORK/waiting.out") operations wait on later slices"
+
+echo
 echo "== 3. Guarded mutation proofs (patch, rebuild, the gate must fail)"
 MUTATIONS_RUN=0
 
@@ -127,6 +135,54 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "is_a? narrows to the tested value, not the target" "$FILTERS_FILE" \
   "        return TypeIntersect.common_descendent(program, other, target)" \
   "        return other" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "including types ignored in intersect" "$INTERSECT_FILE" \
+  "    inc = including_union(program, mod)" \
+  "    inc = nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "proc argument invariance bypassed in compatibility" "$INTERSECT_FILE" \
+  "      return false unless t1.arg_types[i] == t2.arg_types[i]" \
+  "      return false unless true" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "left alias removal bypassed in intersect" "$INTERSECT_FILE" \
+  "      return common_descendent(program, TypeMerge.remove_alias(t1), t2)" \
+  "      return nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "Void return cast to Nil bypassed in proc_of" "$TYPE_SYSTEM_FILE" \
+  "    ret = @program.nil_type if return_type.is_a?(VoidType)" \
+  "    ret = return_type if false" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generic instances stop registering with their generic type" "$TYPES_FILE" \
+  "    @generic_type.register_subclass(sub)" \
+  "    nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generic type stands for itself bypassed in virtual_type" "$TYPES_FILE" \
+  "    if type.is_a?(GenericClassType)" \
+  "    if false" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "union members printed by full name, not devirtualized" "$TOP_LEVEL_FILE" \
+  "        non_nil_names << t.member_name" \
+  "        non_nil_names << t.full_name" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "type hook bypassed in SemanticProgram lookup" "$TOP_LEVEL_FILE" \
+  "      return resolved" \
+  "      return current_type" \
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

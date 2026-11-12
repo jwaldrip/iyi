@@ -27,8 +27,7 @@ end
 # op intersect(Dog, Cat)
 # op intersect(Dog, Holder)
 # op intersect(Dog, Walkable)
-# Not gated: intersect(Walkable, Dog) needs including_types, which the port
-# does not carry (the hosted answer is Dog+).
+# op intersect(Walkable, Dog)
 # op intersect(Animal, Animal)
 # op intersect(Point, Int32)
 # op intersect(Int32, Int32)

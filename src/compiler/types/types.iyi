@@ -26,6 +26,10 @@ pub class VirtualType < Type
     full_name
   end
 
+  def member_name : String
+    @base_type.full_name
+  end
+
   def type_desc : String
     "virtual"
   end
@@ -97,6 +101,10 @@ pub class VirtualMetaclassType < Type
     full_name
   end
 
+  def member_name : String
+    "#{@instance_type.base_type.full_name}.class"
+  end
+
   def type_desc : String
     "virtual_metaclass"
   end
@@ -137,6 +145,12 @@ pub class GenericClassInstanceType < GenericInstanceType
   property superclass : Type?
   getter subclasses : Array(Type)
   @metaclass : GenericClassInstanceMetaclassType?
+
+  def register_subclass(sub : Type) : Nil
+    @subclasses << sub
+    @generic_type.register_subclass(sub)
+    nil
+  end
 
   def initialize(program : SemanticProgram, generic_type : Type, type_vars : Hash(String, Type), type_args : Array(Type), @superclass : Type? = nil)
     super(program, generic_type, type_vars, type_args)
@@ -738,6 +752,10 @@ pub class TypeQueries
   # struct stands for itself; any other class is its virtual type. Non-class
   # types stand for themselves.
   def self.virtual_type(type : Type) : Type
+    if type.is_a?(GenericClassType)
+      # A generic type stands for itself, as the hosted GenericType does.
+      return type
+    end
     if type.is_a?(MetaclassType)
       # The metaclass of a virtual type is the virtual metaclass (Animal+.class).
       inst = virtual_type(type.as(MetaclassType).instance_type)

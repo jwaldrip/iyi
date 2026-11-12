@@ -3,21 +3,31 @@ module compiler/types/type_system
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Call, Generic, Metaclass, NamedArgument, NumberLiteral, Path, ProcNotation, Union}
 import compiler/syntax/token
-import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeHook, UnionType, VoidType}
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/filtering::{TypeFiltering}
+import compiler/types/intersect::{TypeIntersect}
 import compiler/types/restrictions::{TypeRestrictions}
 import compiler/types/rendering::{TypeRenderer}
 
-pub class TypeSystem
+pub class TypeSystem < TypeHook
   property program : SemanticProgram
   @generic_cache : Hash(String, GenericInstanceType)
 
   def initialize(@program : SemanticProgram = SemanticProgram.new)
     @generic_cache = Hash(String, GenericInstanceType).new
     register_builtin_types
+    @program.merge_hook = self
+  end
+
+  def merge_members(types : Array(Type)) : Type
+    TypeMerge.merge_all(@program, types)
+  end
+
+  def resolve_node(node : ASTNode, current_type : ModuleType) : Type
+    lookup_type_node(node, current_type)
   end
 
   private def register_builtin_types : Nil
@@ -410,7 +420,9 @@ pub class TypeSystem
   end
 
   def proc_of(arg_types : Array(Type), return_type : Type) : ProcInstanceType
-    ProcInstanceType.new(@program, arg_types, return_type)
+    ret = return_type
+    ret = @program.nil_type if return_type.is_a?(VoidType)
+    ProcInstanceType.new(@program, arg_types, ret)
   end
 
   def pointer_of(element_type : Type) : PointerInstanceType
@@ -442,7 +454,7 @@ pub class TypeSystem
   end
 
   def filter_by(type : Type, target : Type) : Type?
-    TypeFiltering.filter_by(@program, type, target)
+    TypeIntersect.common_descendent(@program, type, target)
   end
 
   def filter_by_responds_to(type : Type, name : String) : Type?
