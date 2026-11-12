@@ -89,6 +89,7 @@ src/compiler/semantic/main_visitor.iyi parse
 src/compiler/semantic/math_interpreter.iyi parse
 src/compiler/semantic/normalizer.iyi parse
 src/compiler/semantic/recursive_struct_checker.iyi parse
+src/compiler/semantic/inline_macros.iyi parse
 src/compiler/semantic/top_level.iyi parse
 src/compiler/semantic/typed.iyi semantic
 src/compiler/stage1.iyi parse
