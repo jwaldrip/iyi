@@ -1396,11 +1396,16 @@ pub class SemanticProgram < NonGenericModuleType
       g = node.as(Generic)
       base_type = lookup_type_node(g.name, current_type)
       if hook = @merge_hook
-        if plain_generic?(g, base_type)
-          type_args = g.type_vars.map { |t| lookup_type_node(t, current_type) }
-          return hook.instantiate_type(base_type, type_args)
+        # iyi: only a real generic base is instantiated or handed to the hook. A base that does not
+        # resolve (a total-mode placeholder) keeps the base-only answer: the hook's lookup cannot see
+        # this file's imports, and would raise on a name the total pass has already recorded.
+        if base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
+          if plain_generic?(g, base_type)
+            type_args = g.type_vars.map { |t| lookup_type_node(t, current_type) }
+            return hook.instantiate_type(base_type, type_args)
+          end
+          return hook.resolve_node(node, current_type)
         end
-        return hook.resolve_node(node, current_type)
       end
       base_type
     elsif node.is_a?(Union)
