@@ -226,8 +226,8 @@ prove_mutation "a long string constant is named in full, not truncated" "$REPO/s
   'name_text = str[0, 19] + "..."' 'name_text = str' -- long_name_check || status=1
 prove_mutation "a runtime fun's name is external, not internal" "$REPO/src/compiler/lower/lower.iyi" \
   'if name.starts_with?("__crystal_")' 'if name.starts_with?("__crystal_no_such_")' -- lower_core_check || status=1
-prove_mutation "the well-known raise_overflow fun is not emitted on entry" "$REPO/src/compiler/lower/lower.iyi" \
-  'name == "__crystal_raise_overflow"' 'name == "__crystal_no_such_fun"' -- lower_core_check || status=1
+prove_mutation "a fun is not marked emitted, so its body is lowered again" "$REPO/src/compiler/lower/lower.iyi" \
+  "low.fun_defs_done[name] = true" "low.fun_defs_done.size" -- lower_core_check || status=1
 prove_mutation "argv is stored from the argc parameter" "$REPO/src/compiler/lower/lower.iyi" \
   "store_aligned(low, fn.param(1), argv_global)" "store_aligned(low, fn.param(0), argv_global)" -- lower_core_check || status=1
 prove_mutation "main returns 1" "$REPO/src/compiler/lower/lower.iyi" \
