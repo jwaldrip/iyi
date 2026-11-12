@@ -179,6 +179,30 @@ pub class GenericClassInstanceType < GenericInstanceType
     @generic_type.struct?
   end
 
+  # The instance variable `var_name` of this instance. One recorded on the instance (an initialize
+  # parameter, typed with this instance's arguments) comes first. Otherwise the generic's declared
+  # instance variable is copied when its type is a bare type parameter, replaced by this instance's
+  # argument. Any other declared type is not copied, so the lookup is nil there.
+  def lookup_instance_var?(var_name : String) : MetaTypeVar?
+    if own = @instance_vars[var_name]?
+      return own
+    end
+    generic = @generic_type
+    if generic.is_a?(ModuleType)
+      if source = generic.as(ModuleType).instance_vars[var_name]?
+        source_type = source.type
+        if source_type.is_a?(TypeParameterType)
+          if replacement = @type_vars[source_type.as(TypeParameterType).name]?
+            copied = MetaTypeVar.new(var_name, replacement)
+            @instance_vars[var_name] = copied
+            return copied
+          end
+        end
+      end
+    end
+    nil
+  end
+
   def type_desc : String
     struct? ? "struct" : "class"
   end
