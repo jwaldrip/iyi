@@ -21,44 +21,44 @@ import compiler/native/obj/object::{ObjectFile, ObjFormat, Section, SectionKind,
 import std/slice::{Slice, Bytes}
 
 class ElfConst
-  MAGIC = 0x464c457f_i64
-  CLASS64 = 2_i64
-  LITTLE = 1_i64
-  ET_REL = 1_i64
-  EM_X86_64 = 62_i64
-  EM_AARCH64 = 183_i64
-  EHDR_SIZE = 64_i64
-  SHDR_SIZE = 64_i64
-  SYM_SIZE = 24_i64
-  RELA_SIZE = 24_i64
-  SHT_PROGBITS = 1_i64
-  SHT_SYMTAB = 2_i64
-  SHT_STRTAB = 3_i64
-  SHT_RELA = 4_i64
-  SHT_NOBITS = 8_i64
-  SHT_GROUP = 17_i64
-  SHT_SYMTAB_SHNDX = 18_i64
+  MAGIC             = 0x464c457f_i64
+  CLASS64           =          2_i64
+  LITTLE            =          1_i64
+  ET_REL            =          1_i64
+  EM_X86_64         =         62_i64
+  EM_AARCH64        =        183_i64
+  EHDR_SIZE         =         64_i64
+  SHDR_SIZE         =         64_i64
+  SYM_SIZE          =         24_i64
+  RELA_SIZE         =         24_i64
+  SHT_PROGBITS      =          1_i64
+  SHT_SYMTAB        =          2_i64
+  SHT_STRTAB        =          3_i64
+  SHT_RELA          =          4_i64
+  SHT_NOBITS        =          8_i64
+  SHT_GROUP         =         17_i64
+  SHT_SYMTAB_SHNDX  =         18_i64
   SHT_X86_64_UNWIND = 0x70000001_i64
-  SHF_WRITE = 0x1_i64
-  SHF_ALLOC = 0x2_i64
-  SHF_EXECINSTR = 0x4_i64
-  SHF_INFO_LINK = 0x40_i64
-  SHF_TLS = 0x400_i64
-  SHN_UNDEF = 0_i64
-  SHN_LORESERVE = 0xff00_i64
-  SHN_ABS = 0xfff1_i64
-  STB_LOCAL = 0_i64
-  STB_GLOBAL = 1_i64
-  STB_WEAK = 2_i64
-  STT_NOTYPE = 0_i64
-  STT_OBJECT = 1_i64
-  STT_FUNC = 2_i64
-  STT_SECTION = 3_i64
-  STT_FILE = 4_i64
-  STT_TLS = 6_i64
-  TYPED = 0x10000_i64
-  TYPE_SHIFT = 32_i64
-  TYPED_MASK = 0xffffffff_i64
+  SHF_WRITE         =        0x1_i64
+  SHF_ALLOC         =        0x2_i64
+  SHF_EXECINSTR     =        0x4_i64
+  SHF_INFO_LINK     =       0x40_i64
+  SHF_TLS           =      0x400_i64
+  SHN_UNDEF         =          0_i64
+  SHN_LORESERVE     =     0xff00_i64
+  SHN_ABS           =     0xfff1_i64
+  STB_LOCAL         =          0_i64
+  STB_GLOBAL        =          1_i64
+  STB_WEAK          =          2_i64
+  STT_NOTYPE        =          0_i64
+  STT_OBJECT        =          1_i64
+  STT_FUNC          =          2_i64
+  STT_SECTION       =          3_i64
+  STT_FILE          =          4_i64
+  STT_TLS           =          6_i64
+  TYPED             =    0x10000_i64
+  TYPE_SHIFT        =         32_i64
+  TYPED_MASK        = 0xffffffff_i64
 end
 
 # The ELF type of a relocation kind on one architecture, or -1 when the kind has no ELF form there.
@@ -883,7 +883,6 @@ class ElfWriter
     put_header(@symtab_elf, @symtab_name, ElfConst::SHT_SYMTAB, 0_i64, @sym_off, (@obj.symbols.size.to_i64 + 1_i64) * ElfConst::SYM_SIZE, 1_i64, @nlocal + 1_i64, 8_i64, ElfConst::SYM_SIZE)
     array_bytes(@buf)
   end
-
 
   def emit_sections : Nil
     k = 0

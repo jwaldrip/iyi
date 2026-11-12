@@ -47,6 +47,7 @@ module LinkElfTool
     File.write(dest, String.new(write_object(obj)))
     print "STUB #{arch} #{dest}\n"
   end
+
   # Parses one IR text and verifies it. Raises naming the first rule it breaks.
   def self.module_of(text : String, name : String) : Module
     parsed = parse(text)
