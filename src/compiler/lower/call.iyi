@@ -379,8 +379,14 @@ pub def discard_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Ni
   obj = node.obj
   raise "BUG: discard_receiver on a call with no receiver (hosted call.cr: prepare_call_args)" if obj.nil?
   o = obj.as(ASTNode)
-  # A variable has no effect, and the hosted receiver of an inlined literal is not read (no value is wanted).
-  return if o.is_a?(Var)
+  # The hosted receiver of an inlined literal is requested as a value (prepare_call_args), but a by-value struct variable
+  # is not read where the value is unused (lowprim_alloc_struct: the empty struct's receiver loads nothing). A class
+  # variable is read (lowprim_alloc_class).
+  if o.is_a?(Var)
+    vt = low.analysed.type_of?(o)
+    raise "BUG: the analysed program has no type for receiver variable #{o.name} (hosted call.cr: prepare_call_args)" if vt.nil?
+    return if passed_by_value?(vt.as(Type))
+  end
   wants = low.needs_value
   prev_unused = low.receiver_unused
   low.needs_value = true
