@@ -16,7 +16,7 @@ module compiler/lower/lower
 # folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
 # `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, And, Assign, BoolLiteral, Break, CharLiteral, Call, Def, Expressions, If, LibDef, Next, Not, NilLiteral, NumberLiteral, Or, StringLiteral, SymbolLiteral, Unless, Var, While, IsA}
+import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, CharLiteral, Call, ClassDef, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NumberLiteral, Or, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var, While, IsA}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -195,7 +195,50 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if node.is_a?(ClassDef)
+    # The hosted `visit(ClassDef)`: the body is visited for its declarations; the definition emits nothing and its value is nil.
+    wants = low.needs_value
+    low.needs_value = false
+    codegen_node(low, node.as(ClassDef).body)
+    low.needs_value = wants
+    low.last = llvm_nil(low)
+    return
+  end
+  if node.is_a?(ModuleDef)
+    # The hosted `visit(ModuleDef)`: the same as a class.
+    wants = low.needs_value
+    low.needs_value = false
+    codegen_node(low, node.as(ModuleDef).body)
+    low.needs_value = wants
+    low.last = llvm_nil(low)
+    return
+  end
+  if node.is_a?(Alias) || node.is_a?(Macro)
+    # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil.
+    low.last = llvm_nil(low)
+    return
+  end
+  if node.is_a?(TypeDeclaration)
+    codegen_type_declaration(low, node.as(TypeDeclaration))
+    return
+  end
+  if node.is_a?(Nop)
+    # The hosted `visit(Nop)`: an empty body (an empty class or module) emits nothing and its value is nil.
+    low.last = llvm_nil(low)
+    return
+  end
   pending_visit_node(node_class_name(node))
+end
+
+# The hosted `visit(TypeDeclaration)` for an instance variable (`@x : Int32`): the hosted case has no branch for an
+# instance variable, so the declaration emits nothing and the value is nil. A variable declaration (declare_var and the
+# assignment of its value) is refused by name until the variable slice ports it.
+pub def codegen_type_declaration(low : Lowerer, node : TypeDeclaration) : Nil
+  if node.var.is_a?(InstanceVar)
+    low.last = llvm_nil(low)
+    return
+  end
+  pending_visit_node("TypeDeclaration of a variable (hosted codegen.cr: visit(TypeDeclaration), declare_var)")
 end
 
 # 1 for true, 0 for false: the bit a bool literal is in the IR.
