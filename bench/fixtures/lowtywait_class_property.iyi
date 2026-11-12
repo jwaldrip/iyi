@@ -1,0 +1,9 @@
+# Instance variables from property and getter declarations (macro-generated declarations).
+# Not measured: the port's bare program has no property macro ("undefined ... 'property'"),
+# and the hosted bare program declares no instance variables for it (NEEDS.md row 14).
+class Box
+  property value : Int32
+  getter label : Bool
+end
+
+# waiting: Box: property and getter declarations are not expanded in a bare program on either side (NEEDS.md row 14)

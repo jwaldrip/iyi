@@ -1,0 +1,167 @@
+module compiler/lower/instance_var
+
+# The port of the hosted instance variable access in `src/compiler/iyi/codegen/codegen.cr`:
+# `instance_var_ptr` (codegen.cr:3428), the read of an `InstanceVar` node (`visit(InstanceVar)`
+# and `read_instance_var`, codegen.cr:1897-1943), and the store to an `InstanceVar` target of
+# `codegen_assign` (codegen.cr:1525-1589). It also holds the one `self` convention they need.
+#
+# The `self` convention (hosted `passed_as_self?` with `passed_by_value?`, fun.cr): a struct's
+# self is a pointer to the receiver's storage, so an instance variable written through self
+# reaches the caller's struct. A class's self is its object pointer, as it always was. A builtin
+# primitive (Int32, Bool, ...) is passed by value, as the hosted primitives are. Expressions in
+# the port hold a struct as an SSA value, so a read of self loads it (`self_as_value`) and a
+# receiver is given the address of its variable where it has one (`self_argument`).
+#
+# Not ported, refused by name: an instance variable of a union, a virtual type or an extern
+# union (the hosted union field pointer and virtual base cast), and the class variables and
+# getters that read through `instance_var_ptr` in another form (ReadInstanceVar).
+#
+# The index of an instance variable is its position in `all_instance_vars`, the order the typer's
+# `instance_var_struct` lays the fields out in. Under iyi's object layout the type-id header is not
+# a field, so no element is added in front (hosted `instance_var_ptr`: `index += 1` only for a class
+# under Crystal's layout).
+
+import compiler/ir/values::{Value}
+import compiler/ir/types::{IrType}
+import compiler/semantic/top_level::{ClassType, NilType, Type, MetaTypeVar}
+import compiler/syntax/ast::{ASTNode, Var}
+import compiler/lower/context::{Lowerer, LowerVar}
+import compiler/lower/typer::{passed_by_value?, primitive_kind}
+import compiler/lower/cast::{assign, downcast}
+import compiler/lower/helpers::{load_aligned, store_aligned}
+import compiler/lower/pending::{pending_visit_node, refuse_port}
+
+# Whether a value of this self type is passed as a pointer to its storage (see the header). A struct
+# that is not a builtin primitive. Nil for a top-level def (no self).
+pub def self_by_pointer?(t : Type?) : Bool
+  st = t
+  return false if st.nil?
+  s = st.as(Type)
+  return false unless s.is_a?(ClassType)
+  return false unless s.as(ClassType).struct?
+  primitive_kind(s) == ""
+end
+
+# The value of self as an expression: a struct self is loaded from its pointer, anything else is
+# the value itself (a class's object pointer, a primitive).
+pub def self_as_value(low : Lowerer, self_value : Value, st : Type) : Value
+  return self_value unless self_by_pointer?(st)
+  load_aligned(low, low.typer.llvm_type(st), self_value, "")
+end
+
+# The receiver of a call on a struct, as the callee's self: the address of the variable it was read
+# from when the receiver is such a variable, otherwise a temporary holding its value. A class receiver,
+# a primitive and an expression that is not a stored variable keep their value as the callee's self.
+pub def self_argument(low : Lowerer, obj : ASTNode, value : Value, st : Type) : Value
+  return value unless self_by_pointer?(st)
+  if obj.is_a?(Var)
+    var = low.current_context.vars[obj.as(Var).name]?
+    if !var.nil?
+      lv = var.as(LowerVar)
+      if !lv.already_loaded && lv.type.full_name == st.full_name
+        return lv.pointer
+      end
+    end
+  end
+  temp = low.alloca(low.typer.llvm_type(st), "")
+  store_aligned(low, value, temp)
+  temp
+end
+
+# The declared type of an instance variable of an owner (hosted `lookup_instance_var(name).type`).
+pub def instance_var_type(owner : Type, name : String) : Type
+  if !owner.is_a?(ClassType)
+    refuse_port("lower: instance variable #{name} of #{owner.full_name}: not a class or struct (hosted instance_var_ptr, union or virtual owner) (slice S2a)")
+  end
+  iv = owner.as(ClassType).all_instance_vars[name]?
+  if iv.nil?
+    raise "BUG: #{owner.full_name} has no instance variable #{name} (hosted lookup_instance_var)"
+  end
+  var_type = iv.as(MetaTypeVar).var_type
+  if var_type.nil?
+    raise "BUG: instance variable #{name} of #{owner.full_name} has no type yet (declarations slice)"
+  end
+  var_type.as(Type)
+end
+
+# The position of an instance variable among its owner's fields (`all_instance_vars` order).
+pub def instance_var_index(owner : Type, name : String) : Int32
+  names = owner.as(ClassType).all_instance_vars.keys
+  i = 0
+  while i < names.size
+    return i if names[i] == name
+    i += 1
+  end
+  raise "BUG: #{owner.full_name} has no instance variable #{name} (hosted index_of_instance_var)"
+end
+
+# The hosted `instance_var_ptr`: the address of an instance variable of `owner`, from the pointer to
+# the owner's storage (the object for a class, the struct for a struct self).
+pub def instance_var_pointer(low : Lowerer, owner : Type, name : String, pointer : Value) : Value
+  instance_var_type(owner, name)
+  index = instance_var_index(owner, name)
+  # Hosted `instance_var_ptr`: under Crystal's layout a class's type id is an i32 in front of its fields.
+  index += 1 if !owner.as(ClassType).struct? && !low.typer.iyi_layout
+  struct_t = low.typer.llvm_struct_type(owner)
+  zero = low.builder.const_int(low.module.types.int32, 0_i64)
+  field = low.builder.const_int(low.module.types.int32, index.to_i64)
+  low.builder.gep(struct_t, pointer, [zero, field] of Value, "")
+end
+
+# The read of an instance variable of `owner` at `pointer`, as a value of `node_type` (the hosted
+# `read_instance_var`). The field is loaded at its declared type, the port's value of it, and read as
+# `node_type` through the same `downcast` the hosted code makes.
+pub def read_instance_var(low : Lowerer, node_type : Type, owner : Type, name : String, pointer : Value) : Value
+  ivar_t = instance_var_type(owner, name)
+  ptr = instance_var_pointer(low, owner, name, pointer)
+  current = load_aligned(low, low.typer.llvm_type(ivar_t), ptr, "")
+  downcast_loaded(low, current, node_type, ivar_t)
+end
+
+# The hosted `downcast` of a value already loaded at `from_type`, read as `to_type`. The same type is the
+# value itself; any other goes through `downcast_distinct` (cast.iyi), which refuses what is not ported.
+pub def downcast_loaded(low : Lowerer, value : Value, to_type : Type, from_type : Type) : Value
+  return value if from_type.full_name == to_type.full_name
+  downcast(low, value, to_type, from_type, true)
+end
+
+# `visit(InstanceVar)` (codegen.cr:1897): the instance variable of the self being lowered, read at the
+# type the analysis gave the node.
+pub def codegen_instance_var_read(low : Lowerer, node : Compiler::Syntax::Ast::InstanceVar) : Nil
+  owner = low.current_context.type
+  if owner.nil?
+    pending_visit_node("an instance variable outside a class or struct (hosted visit(InstanceVar), context.type)")
+  end
+  self_var = low.current_context.vars["self"]?
+  if self_var.nil?
+    raise "BUG: instance variable #{node.name} is read with no self (hosted llvm_self_ptr)"
+  end
+  node_t = low.analysed.type_of?(node)
+  if node_t.nil?
+    raise "BUG: the analysed program has no type for instance variable #{node.name} (hosted visit(InstanceVar))"
+  end
+  low.last = read_instance_var(low, node_t.as(Type), owner.as(Type), node.name, self_var.as(LowerVar).pointer)
+end
+
+# The store to an instance variable of the self being lowered (the hosted `codegen_assign` for an
+# `InstanceVar` target): a value of the variable's own type is stored as it is, a nil stores nothing,
+# and another type goes through `assign`. The value is already evaluated.
+pub def store_instance_var(low : Lowerer, name : String, value : Value, value_type : Type) : Nil
+  owner = low.current_context.type
+  if owner.nil?
+    pending_visit_node("an instance variable assignment outside a class or struct (hosted codegen_assign, context.type)")
+  end
+  self_var = low.current_context.vars["self"]?
+  if self_var.nil?
+    raise "BUG: instance variable #{name} is assigned with no self (hosted llvm_self_ptr)"
+  end
+  ivar_t = instance_var_type(owner.as(Type), name)
+  ptr = instance_var_pointer(low, owner.as(Type), name, self_var.as(LowerVar).pointer)
+  if ivar_t.full_name != value_type.full_name
+    assign(low, ptr, ivar_t, value_type, value)
+    return
+  end
+  if !value_type.is_a?(NilType)
+    store_aligned(low, value, ptr)
+  end
+end
