@@ -4,7 +4,9 @@
 # default visibility, removing an intrinsic from the importer's accepted set, dropping the align on an intrinsic operand,
 # and a patch that changes nothing.
 # Job: native-linux (the integrator adds it to iyi.yml). The matrix over the corpus is
-# bench/native_llvm_matrix.sh, which is not part of this gate.
+# bench/native_llvm_matrix.sh, which is not part of this gate. The linked LLVM's major version is read through
+# `iyi-ir version`. A fixture annotated `; needs-llvm: N` is reported as skipped, never as passed, when the linked major
+# is below N. The COVERAGE.md comparison is reported as skipped when that file was written by a different LLVM major.
 set -u
 
 root=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -77,11 +79,24 @@ else
   echo "iyi-ir did not build; see .build/iyi-ir-build.log"
   failed=1
 fi
+llvm_version=$("$TOOL" version 2>&1)
+llvm_major=${llvm_version%%.*}
+case "$llvm_major" in
+  ''|*[!0-9]*) echo "cannot read the linked LLVM version: $llvm_version"; failed=1; llvm_major=0 ;;
+  *) echo "linked LLVM: $llvm_version" ;;
+esac
 
 step 2 "every fixture round-trips identically, and the one the translator refuses is refused by name"
 count=0
 total=0
+skipped=0
 for name in arith control probe_switch probe_phi memory consts calls sizeof visibility wide_int overflow8_16 variadic flags_attrs memset_param_align int192 asm_unwind; do
+  need=$(awk '/^; needs-llvm: /{ print $3; exit }' "$FX/$name.ll")
+  if [ -n "$need" ] && [ "$llvm_major" -lt "$need" ]; then
+    skipped=$((skipped + 1))
+    echo "skipped: $name needs LLVM >= $need (linked LLVM $llvm_version)"
+    continue
+  fi
   total=$((total + 1))
   verdict=$("$TOOL" roundtrip "$FX/$name.ll" 2>&1)
   if [ "$verdict" = "identical" ]; then
@@ -94,10 +109,10 @@ for name in arith control probe_switch probe_phi memory consts calls sizeof visi
 done
 verdict=$("$TOOL" roundtrip "$FX/dso_local.ll" 2>&1)
 case "$verdict" in
-  "refused by the translator: LLVM 22's C API cannot set dso_local"*) echo "refused by name: dso_local" ;;
+  "refused by the translator: the linked LLVM's C API cannot set dso_local"*) echo "refused by name: dso_local" ;;
   *) echo "NOT refused by name: dso_local: $(echo "$verdict" | head -1)"; failed=1 ;;
 esac
-echo "identical fixtures: $count of $total"
+echo "identical fixtures: $count of $total run; skipped: $skipped"
 
 step 3 "mutation: drop nsw in the translator"
 prove_mutation "drop nsw in translate" \
@@ -150,9 +165,15 @@ rebuild_tool || failed=1
 step 7 "the coverage inventory of the fixtures and gap reproducers matches COVERAGE.md"
 COV=$FX/COVERAGE.md
 cov_tsv=.build/iyi-ir-coverage.tsv
-"$TOOL" coverage "$FX"/*.ll "$FX"/gaps/*.ll > "$cov_tsv" 2>&1
+if ls "$FX"/gaps/*.ll > /dev/null 2>&1; then
+  "$TOOL" coverage "$FX"/*.ll "$FX"/gaps/*.ll > "$cov_tsv" 2>&1
+else
+  "$TOOL" coverage "$FX"/*.ll > "$cov_tsv" 2>&1
+fi
 {
   echo "# LLVM round-trip coverage: committed fixtures and gap reproducers"
+  echo
+  echo "Linked LLVM: $llvm_version"
   echo
   echo "Written by \`bench/native_llvm_roundtrip_exercise.sh\` from \`iyi-ir coverage\` over every fixture and gap reproducer. The gate fails when this file is stale; \`COVERAGE_WRITE=1\` rewrites it. The corpus inventory is written by \`bench/native_llvm_matrix.sh\`."
   echo
@@ -160,15 +181,20 @@ cov_tsv=.build/iyi-ir-coverage.tsv
   cat "$cov_tsv"
   echo '```'
 } > .build/iyi-ir-COVERAGE.md
+cov_written=$(awk '/^Linked LLVM: /{ print $3; exit }' "$COV")
 if [ "${COVERAGE_WRITE:-0}" = "1" ]; then
   cp .build/iyi-ir-COVERAGE.md "$COV"
   echo "COVERAGE.md written"
+elif [ "${cov_written%%.*}" != "$llvm_major" ]; then
+  echo "skipped: COVERAGE.md was written by LLVM ${cov_written:-unknown}, the linked LLVM is $llvm_version; not compared"
+  skipped=$((skipped + 1))
 elif cmp -s .build/iyi-ir-COVERAGE.md "$COV"; then
   echo "COVERAGE.md is current"
 else
   echo "COVERAGE.md is stale: rerun with COVERAGE_WRITE=1"
   failed=1
 fi
+echo "skipped checks: $skipped (reported, never counted as passed)"
 
 if [ "$failed" -eq 0 ]; then
   echo "== ALL NATIVE LLVM ROUNDTRIP CHECKS PASSED"

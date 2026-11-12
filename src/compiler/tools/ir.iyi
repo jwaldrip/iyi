@@ -10,6 +10,7 @@
 #   iyi-ir coverage FILES...    count every opcode, intrinsic, attribute, convention, linkage, TLS mode,
 #                               ordering, inline-asm template, value kind and type kind seen, and say
 #                               whether the IR has it
+#   iyi-ir version              the linked LLVM's version, MAJOR.MINOR.PATCH, read through the C API
 
 @[Unsafe("drives LLVM through the bridge's raw handles and exits the process with a status")]
 module compiler/tools/ir
@@ -34,8 +35,12 @@ end
 module IrTool
   def self.run : Nil
     args = Program.args
+    if args.size == 1 && args[0] == "version"
+      print_version
+      LibC.exit(0)
+    end
     if args.size < 2
-      STDERR.puts "usage: iyi-ir import|print|verify|translate|roundtrip FILE | coverage FILES..."
+      STDERR.puts "usage: iyi-ir import|print|verify|translate|roundtrip FILE | coverage FILES... | version"
       LibC.exit(2)
     end
     command = args[0]
@@ -55,6 +60,15 @@ module IrTool
       STDERR.puts "iyi-ir: unknown command #{command}"
       LibC.exit(2)
     end
+  end
+
+  # The linked LLVM's version, read through the C API. The gate reads its major version from here.
+  def self.print_version : Nil
+    major = 0
+    minor = 0
+    patch = 0
+    LibLLVM.get_version(pointerof(major), pointerof(minor), pointerof(patch))
+    STDOUT.puts "#{major}.#{minor}.#{patch}"
   end
 
   def self.read_text(path : String) : String

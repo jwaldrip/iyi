@@ -58,7 +58,8 @@ pub def translate(m : Module) : LibLLVM::ModuleRef | TranslateError
   ModuleTranslator.new(m).run
 end
 
-# LLVM 22's C API has no setter for dso_local, so a module that carries it is refused by name.
+# The linked LLVM's C API has no setter for dso_local (checked in LLVM 20.1.2 and 22.1.8), so a module that carries it is
+# refused by name.
 pub def carries_dso_local?(m : Module) : Bool
   m.globals.any? { |g| g.dso_local } || m.functions.any? { |f| f.dso_local }
 end
@@ -151,7 +152,7 @@ class ModuleTranslator
 
   def run : LibLLVM::ModuleRef | TranslateError
     if carries_dso_local?(@ir)
-      refuse("LLVM 22's C API cannot set dso_local, so a module that carries it is refused by name")
+      refuse("the linked LLVM's C API cannot set dso_local, so a module that carries it is refused by name")
       return @error.as(TranslateError)
     end
     LibLLVM.set_module_identifier(@llvm, to_c_str(@ir.name), @ir.name.bytesize.to_u64)
