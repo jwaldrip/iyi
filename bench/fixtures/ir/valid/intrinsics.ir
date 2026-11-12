@@ -1,0 +1,89 @@
+; iyi-ir 1
+module "intrinsics"
+target triple = "x86_64-unknown-linux-gnu"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+define internal iyicc void @every(ptr %p, i8 %b, i1 %c, i32 %i, i64 %l, float %f, double %d) {
+entry:
+  intrinsic llvm.memcpy.p0.p0.i64(ptr %p, ptr %p, i64 %l, i1 %c)
+  intrinsic llvm.memmove.p0.p0.i64(ptr %p, ptr %p, i64 %l, i1 %c)
+  intrinsic llvm.memset.p0.i64(ptr %p, i8 %b, i64 %l, i1 %c)
+  %r3 = intrinsic llvm.sadd.with.overflow.i32(i32 %i, i32 %i)
+  %r4 = intrinsic llvm.sadd.with.overflow.i64(i64 %l, i64 %l)
+  %r5 = intrinsic llvm.uadd.with.overflow.i32(i32 %i, i32 %i)
+  %r6 = intrinsic llvm.uadd.with.overflow.i64(i64 %l, i64 %l)
+  %r7 = intrinsic llvm.ssub.with.overflow.i32(i32 %i, i32 %i)
+  %r8 = intrinsic llvm.ssub.with.overflow.i64(i64 %l, i64 %l)
+  %r9 = intrinsic llvm.usub.with.overflow.i32(i32 %i, i32 %i)
+  %r10 = intrinsic llvm.usub.with.overflow.i64(i64 %l, i64 %l)
+  %r11 = intrinsic llvm.smul.with.overflow.i32(i32 %i, i32 %i)
+  %r12 = intrinsic llvm.smul.with.overflow.i64(i64 %l, i64 %l)
+  %r13 = intrinsic llvm.umul.with.overflow.i32(i32 %i, i32 %i)
+  %r14 = intrinsic llvm.umul.with.overflow.i64(i64 %l, i64 %l)
+  %r15 = intrinsic llvm.sqrt.f32(float %f)
+  %r16 = intrinsic llvm.sqrt.f64(double %d)
+  %r17 = intrinsic llvm.fabs.f32(float %f)
+  %r18 = intrinsic llvm.fabs.f64(double %d)
+  %r19 = intrinsic llvm.sin.f64(double %d)
+  %r20 = intrinsic llvm.cos.f64(double %d)
+  %r21 = intrinsic llvm.exp.f64(double %d)
+  %r22 = intrinsic llvm.exp2.f64(double %d)
+  %r23 = intrinsic llvm.log.f64(double %d)
+  %r24 = intrinsic llvm.log2.f64(double %d)
+  %r25 = intrinsic llvm.log10.f64(double %d)
+  %r26 = intrinsic llvm.pow.f64(double %d, double %d)
+  %r27 = intrinsic llvm.powi.f64.i32(double %d, i32 %i)
+  %r28 = intrinsic llvm.floor.f64(double %d)
+  %r29 = intrinsic llvm.ceil.f64(double %d)
+  %r30 = intrinsic llvm.trunc.f64(double %d)
+  %r31 = intrinsic llvm.round.f64(double %d)
+  %r32 = intrinsic llvm.roundeven.f64(double %d)
+  %r33 = intrinsic llvm.rint.f64(double %d)
+  %r34 = intrinsic llvm.fma.f64(double %d, double %d, double %d)
+  %r35 = intrinsic llvm.minnum.f64(double %d, double %d)
+  %r36 = intrinsic llvm.maxnum.f64(double %d, double %d)
+  %r37 = intrinsic llvm.copysign.f64(double %d, double %d)
+  %r38 = intrinsic llvm.ctpop.i32(i32 %i)
+  %r39 = intrinsic llvm.ctpop.i64(i64 %l)
+  %r40 = intrinsic llvm.ctlz.i32(i32 %i, i1 %c)
+  %r41 = intrinsic llvm.ctlz.i64(i64 %l, i1 %c)
+  %r42 = intrinsic llvm.cttz.i32(i32 %i, i1 %c)
+  %r43 = intrinsic llvm.cttz.i64(i64 %l, i1 %c)
+  %r44 = intrinsic llvm.bswap.i32(i32 %i)
+  %r45 = intrinsic llvm.bswap.i64(i64 %l)
+  %r46 = intrinsic llvm.fshl.i64(i64 %l, i64 %l, i64 %l)
+  %r47 = intrinsic llvm.fshr.i64(i64 %l, i64 %l, i64 %l)
+  intrinsic llvm.trap()
+  intrinsic llvm.debugtrap()
+  %r50 = intrinsic llvm.expect.i1(i1 %c, i1 %c)
+  intrinsic llvm.assume(i1 %c)
+  intrinsic llvm.donothing()
+  %r53 = intrinsic llvm.frameaddress.p0(i32 %i)
+  %r54 = intrinsic llvm.returnaddress(i32 %i)
+  %r55 = intrinsic llvm.stacksave.p0()
+  intrinsic llvm.stackrestore.p0(ptr %p)
+  intrinsic llvm.va_start(ptr %p)
+  intrinsic llvm.va_end(ptr %p)
+  %r59 = intrinsic llvm.readcyclecounter()
+  intrinsic llvm.x86.sse2.pause()
+  %r61 = intrinsic llvm.aarch64.hint(i32 %i)
+  %r62 = intrinsic llvm.wasm.memory.grow.i32(i32 %i, i32 %i)
+  call void () asm sideeffect alignstack inteldialect "nop", "~{memory}"()
+  call void () asm "pause", ""()
+  %lu = load i64, ptr %p, align 8 atomic unordered
+  %lm = load i64, ptr %p, align 8 atomic monotonic
+  %la = load i64, ptr %p, align 8 atomic acquire
+  %ls = load i64, ptr %p, align 8 atomic seq_cst singlethread
+  store i64 %l, ptr %p, align 8 atomic unordered
+  fence acquire
+  fence release
+  fence acq_rel
+  %tg = threadpointer gs
+  %tt = threadpointer tpidr_el0
+  %tr = threadpointer tpidrro_el0
+  %cxs = cmpxchg ptr %p, i64 %l, i64 %l, align 8 monotonic monotonic
+  %cxa = cmpxchg ptr %p, i64 %l, i64 %l, align 8 acq_rel monotonic
+  %rmx = atomicrmw xchg ptr %p, i64 %l, align 8 unordered
+  %rmn = atomicrmw nand ptr %p, i64 %l, align 8 release
+  ret void
+}
+
