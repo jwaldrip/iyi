@@ -7,22 +7,28 @@ module compiler/lower/primitives
 #
 # How the primitive is found: the port has no Primitive node, so a primitive def's body
 # carries the primitive's name as the hosted dump prints it, `# primitive: <name>`
-# (`primitive_name`). NEEDS.md (S2d rows) records the form the semantic pass is asked to
-# give it.
+# (`primitive_name`). NEEDS.md (S2d rows 19-23) records the form the semantic pass is
+# asked to give it.
 #
-# Increment 1 (this file): the `binary` primitive on two operands of the same integer
-# type: the wrapping `&+`, `&-`, `&*`, and the comparisons `==`, `!=`, `<`, `<=`, `>`,
-# `>=` (signed or unsigned as the type is). Bool and Char equality and order, and Symbol
-# equality, follow the hosted codegen_binary_op overloads for those types. Refused by name
-# for now: the checked `+`, `-`, `*` (they need the overflow intrinsic and the runtime
-# raise), mixed-type operands (codegen_binary_extend_int), and the integer division,
-# remainder, shifts and bit operations (hosted codegen_binary_op, the rest of the case).
+# Ported:
+#   - `binary` on two operands of one integer type: the wrapping `&+`, `&-`, `&*`, and the
+#     comparisons `==`, `!=`, `<`, `<=`, `>`, `>=` (signed or unsigned as the type is); Bool
+#     and Symbol equality; Char equality and order (unsigned code points).
+#   - `convert` and `unchecked_convert` from an integer to an integer: the same width is the
+#     value, a wider type extends (sign extension for a signed source), a narrower truncates
+#     (hosted codegen_convert, integer overloads); Char to an integer zero-extends
+#     (`Char#ord`); Symbol to an integer is the value (`Symbol#to_i`).
+# Refused by name, at the primitive that reaches them: the checked `+`, `-`, `*` (they need
+# the overflow intrinsic and the runtime raise), mixed-type operands (codegen_binary_extend_int),
+# the integer division, remainder, shifts and bit operations, the checked conversions (their
+# range check raises an overflow), and every other primitive name.
 #
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
 import compiler/syntax/ast::{ASTNode, Call, Def, MacroLiteral}
 import compiler/ir/inst::{IntPredicate}
+import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/fun::{visit_node}
@@ -72,6 +78,12 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     low.last = codegen_primitive_binary(low, target.name, t1, arg_types[0], values[0], values[1])
     return
   end
+  if name == "convert" || name == "unchecked_convert"
+    ret_type = low.analysed.type_of?(node)
+    raise "BUG: the analysed program has no type for a conversion (hosted codegen_primitive_convert)" if ret_type.nil?
+    low.last = codegen_primitive_convert(low, t1, ret_type.as(Type), values[0], name == "convert")
+    return
+  end
   pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
 end
 
@@ -86,11 +98,11 @@ end
 # The hosted `codegen_primitive_binary`: `binary` names an operator on the receiver (`t1`)
 # and the argument (`t2`); the operator is the def's name (hosted `target_def.name`).
 pub def codegen_primitive_binary(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
-  return codegen_binary_op(low, op, t1, t2, p1, p2)
+  codegen_binary_op(low, op, t1, t2, p1, p2)
 end
 
-# The hosted `codegen_binary_op` overloads for the types increment 1 covers. A pair of
-# different types is refused by name (mixed operands are a later increment).
+# The hosted `codegen_binary_op` overloads for the types ported so far. A pair of different
+# types is refused by name (mixed operands are a later increment).
 pub def codegen_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
   kind = primitive_kind(t1)
   if t1.full_name != t2.full_name
@@ -138,7 +150,7 @@ end
 # result is in that type: the wrapping operators, and the comparisons with the predicate of
 # the type's signedness. Checked arithmetic is refused (hosted codegen_addsub_with_overflow).
 pub def int_binary_op(low : Lowerer, op : String, t : Type, p1 : Value, p2 : Value) : Value
-  signed = !t.full_name.starts_with?("U")
+  signed = is_signed?(t)
   if op == "&+"
     return low.builder.add(p1, p2)
   end
@@ -155,17 +167,81 @@ pub def int_binary_op(low : Lowerer, op : String, t : Type, p1 : Value, p2 : Val
     return low.builder.icmp(IntPredicate::NE, p1, p2)
   end
   if op == "<"
-    return low.builder.icmp(signed ? IntPredicate::SLT : IntPredicate::ULT, p1, p2)
+    return low.builder.icmp(signed_pred(signed, IntPredicate::SLT, IntPredicate::ULT), p1, p2)
   end
   if op == "<="
-    return low.builder.icmp(signed ? IntPredicate::SLE : IntPredicate::ULE, p1, p2)
+    return low.builder.icmp(signed_pred(signed, IntPredicate::SLE, IntPredicate::ULE), p1, p2)
   end
   if op == ">"
-    return low.builder.icmp(signed ? IntPredicate::SGT : IntPredicate::UGT, p1, p2)
+    return low.builder.icmp(signed_pred(signed, IntPredicate::SGT, IntPredicate::UGT), p1, p2)
   end
   if op == ">="
-    return low.builder.icmp(signed ? IntPredicate::SGE : IntPredicate::UGE, p1, p2)
+    return low.builder.icmp(signed_pred(signed, IntPredicate::SGE, IntPredicate::UGE), p1, p2)
   end
   pending_visit_node("binary #{op} on #{t.full_name} (checked arithmetic or a later operator, hosted codegen_binary_op)")
   p1
+end
+
+# Whether an integer builtin is signed: every builtin integer but the `U` ones.
+pub def is_signed?(t : Type) : Bool
+  !t.full_name.starts_with?("U")
+end
+
+# The predicate for a signed or an unsigned comparison.
+pub def signed_pred(signed : Bool, signed_pred : IntPredicate, unsigned_pred : IntPredicate) : IntPredicate
+  if signed
+    signed_pred
+  else
+    unsigned_pred
+  end
+end
+
+# The hosted `codegen_primitive_convert`: `convert` is checked, `unchecked_convert` is not.
+# Char to an integer zero-extends and Symbol to an integer is the value, with or without the
+# check (their hosted overloads take no check). A checked integer conversion raises on
+# overflow and is refused by name.
+pub def codegen_primitive_convert(low : Lowerer, from : Type, to : Type, value : Value, checked : Bool) : Value
+  from_kind = primitive_kind(from)
+  to_kind = primitive_kind(to)
+  if from_kind == "char" && to_kind == "int"
+    return low.builder.zext(value, low.typer.llvm_type(to))
+  end
+  if from_kind == "symbol" && to_kind == "int"
+    return value
+  end
+  if from_kind == "int" && to_kind == "int"
+    return codegen_convert_int(low, from, to, value, checked)
+  end
+  pending_visit_node("convert #{from.full_name} to #{to.full_name} (hosted codegen_convert, not ported)")
+  value
+end
+
+# The hosted integer-to-integer `codegen_convert`. The same width is the value (a checked
+# change of signedness at that width needs a range check, refused); a wider target extends,
+# with the source's signedness (hosted `extend_int`), and a checked widening from a signed
+# source to an unsigned target needs a range check, refused; a narrower target truncates,
+# and a checked truncation needs a range check, refused.
+pub def codegen_convert_int(low : Lowerer, from : Type, to : Type, value : Value, checked : Bool) : Value
+  from_bytes = primitive_bytes(from)
+  to_bytes = primitive_bytes(to)
+  to_ir = low.typer.llvm_type(to)
+  if from_bytes == to_bytes
+    if checked && from.full_name != to.full_name
+      pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} at one width (hosted codegen_convert, range check)")
+    end
+    return value
+  end
+  if from_bytes < to_bytes
+    if checked && is_signed?(from) && !is_signed?(to)
+      pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} (hosted codegen_convert, range check)")
+    end
+    if is_signed?(from)
+      return low.builder.sext(value, to_ir)
+    end
+    return low.builder.zext(value, to_ir)
+  end
+  if checked
+    pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} (hosted codegen_convert, range check)")
+  end
+  low.builder.trunc(value, to_ir)
 end
