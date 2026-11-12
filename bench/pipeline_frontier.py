@@ -156,11 +156,26 @@ def breakdown(root, hosted, port, by_label, reached):
         counts[owner] += 1
         owners[owner].append(name)
     print(f"breakdown: {root} hosted={len(hosted)} port-clean={len(port)} missing={len(missing)}")
-    print(f"breakdown: {root} by cause: " + ", ".join(f"{c} {n}" for c, n in causes.most_common()))
+    print(f"breakdown: {root} by name shape (the hosted name's form, not a naming defect): " + ", ".join(f"{c} {n}" for c, n in causes.most_common()))
     for owner, n in counts.most_common():
         print(f"breakdown: {root} {n:6d} {owner}")
         for ex in owners[owner][:3]:
             print(f"breakdown: {root}        e.g. {ex}")
+
+
+def statuses(dset, clean, by_label, reached):
+    """Each missing hosted function's status: refused (its label has a refusal), name-differs (the port lowered its label under another name) or not-reached."""
+    status = {}
+    for n in dset - clean:
+        lab = label_of(n)
+        status[n] = "refused" if lab in by_label else ("name-differs" if lab in reached else "not-reached")
+    return status
+
+
+def status_line(root, dset, clean, status):
+    count = collections.Counter(status.values())
+    return (f"frontier: {root} hosted={len(dset)} clean={len(clean)} missing={len(status)} refused={count['refused']} "
+            f"name-differs={count['name-differs']} not-reached={count['not-reached']}")
 
 
 def frontier(root, hosted_ll, names_path, refusals_path, topn):
@@ -168,13 +183,8 @@ def frontier(root, hosted_ll, names_path, refusals_path, topn):
     clean = hosted_names(hosted_ll) & port_names(names_path)
     by_label, reached, full = load_refusals(refusals_path)
     missing = dset - clean
-    status = {}
-    for n in missing:
-        lab = label_of(n)
-        status[n] = "refused" if lab in by_label else ("name-differs" if lab in reached else "not-reached")
-    count = collections.Counter(status.values())
-    print(f"frontier: {root} hosted={len(dset)} clean={len(clean)} missing={len(missing)} refused={count['refused']} "
-          f"name-differs={count['name-differs']} not-reached={count['not-reached']}")
+    status = statuses(dset, clean, by_label, reached)
+    print(status_line(root, dset, clean, status))
     callers = collections.defaultdict(set)
     for caller, callees in graph.items():
         for callee in callees:
