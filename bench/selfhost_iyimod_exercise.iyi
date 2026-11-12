@@ -14,7 +14,7 @@ module BenchSelfhostIyimodExercise
   def self.test_constants
     print "testing format constants (MAGIC, FORMAT_VERSION, Section count)... "
     assert(IyiMod::MAGIC == "IYIMOD\0\0", "MAGIC matches")
-    assert(IyiMod::FORMAT_VERSION == 50_u32, "FORMAT_VERSION matches")
+    assert(IyiMod::FORMAT_VERSION == 62_u32, "FORMAT_VERSION matches")
     assert(Section::Header.value == 1_u16, "Header section id")
     assert(Section::Hashes.value == 2_u16, "Hashes section id")
     assert(Section::Imports.value == 3_u16, "Imports section id")
@@ -34,6 +34,11 @@ module BenchSelfhostIyimodExercise
     assert(Section::Reopened.value == 17_u16, "Reopened section id")
     assert(Section::Libs.value == 18_u16, "Libs section id")
     assert(Section::TopLevelFuns.value == 19_u16, "TopLevelFuns section id")
+    assert(Section::Inputs.value == 20_u16, "Inputs section id")
+    assert(Section::SymbolLiterals.value == 21_u16, "SymbolLiterals section id")
+    assert(Section::SourcePositions.value == 65_u16, "SourcePositions section id")
+    assert(Section::Spawns.value == 66_u16, "Spawns section id")
+    assert(Section::Reaches.value == 67_u16, "Reaches section id")
     assert(Section::Layouts.value == 64_u16, "Layouts section id")
     puts "ok"
   end

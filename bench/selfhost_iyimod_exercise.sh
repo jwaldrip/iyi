@@ -224,7 +224,8 @@ open(f"{out}/bad_version.iyimod", "wb").write(bad_ver)
 
 # 4. Corrupted payload byte
 corrupt_payload = bytearray(base)
-corrupt_payload[85] ^= 0xff
+header_at = 16 + 16 * int.from_bytes(base[12:16], "little") + 4
+corrupt_payload[header_at] ^= 0xff
 open(f"{out}/corrupt_payload.iyimod", "wb").write(corrupt_payload)
 
 # 5. Truncated payload
@@ -263,7 +264,7 @@ check_refusal() {
 
 check_refusal "truncated header" "$REFUSAL_DIR/short.iyimod" "too short to be a .iyimod"
 check_refusal "invalid magic bytes" "$REFUSAL_DIR/bad_magic.iyimod" "is not a .iyimod"
-check_refusal "mismatched format version" "$REFUSAL_DIR/bad_version.iyimod" "format v99, this compiler writes v50"
+check_refusal "mismatched format version" "$REFUSAL_DIR/bad_version.iyimod" "format v99, this compiler writes v62"
 check_refusal "damaged section payload" "$REFUSAL_DIR/corrupt_payload.iyimod" "Header section is damaged, its checksum does not match"
 check_refusal "truncated section payload" "$REFUSAL_DIR/truncated_payload.iyimod" "ends inside a section"
 
@@ -305,8 +306,8 @@ run_proof "altering magic bytes breaks container verification" \
   'MAGIC               = "BADMOD\0\0"'
 
 run_proof "altering format version allows or writes wrong version" \
-  'FORMAT_VERSION      = 50_u32' \
-  'FORMAT_VERSION      = 51_u32'
+  'FORMAT_VERSION      = 62_u32' \
+  'FORMAT_VERSION      = 63_u32'
 
 run_proof "bypassing section checksum verification accepts damaged payload" \
   'return if checksum(payload) == sum' \
@@ -319,6 +320,27 @@ run_proof "corrupting checksum calculation algorithm" \
 run_proof "corrupting section table entry padding" \
   'w.write_u16_le(0_u16) # padding' \
   'w.write_u16_le(1_u16) # padding'
+
+# A writer that stamps the wrong format version must be refused by the hosted
+# reader, with the hosted reader's own message. Detected means the refusal is
+# printed; a file the hosted reader accepts is not caught.
+check_oracle_refuses_written_version() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_iyimod_exercise.iyi" >/dev/null 2>&1 || return 1
+  local written="$WORK/mut_version.iyimod"
+  "$WORK/mut-exercise" write "$CORPUS_DIR/calc/lexer.iyimod" "$written" >/dev/null 2>&1 || return 1
+  local verdict
+  verdict=$("$WORK/oracle" read "$written" 2>&1 || true)
+  if echo "$verdict" | grep -qF "is .iyimod format v61, this compiler writes v62"; then
+    return 1
+  fi
+  return 0
+}
+
+prove_mutation "writing format v61 is refused by the hosted reader" "$IYIMOD" \
+  'w.write_u32_le(FORMAT_VERSION)' \
+  'w.write_u32_le(61_u32)' \
+  -- check_oracle_refuses_written_version || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 
