@@ -82,9 +82,17 @@ end
 # Where the hosted typer lays a type out as a struct: a class or struct with
 # instance variables, a tuple, a named tuple, a static array. Primitives, nil,
 # pointers, procs, enums, metaclasses and unions have no struct of their own.
+
+# A generic class instance laid out as a struct of its own fields. Pointer and proc instances are
+# not measured here (their layout is a pointer or a function, the typer's other branches).
+def plain_generic_instance?(type : Iyi::Type) : Bool
+  type.is_a?(Iyi::GenericClassInstanceType) && !type.is_a?(Iyi::PointerInstanceType) && !type.is_a?(Iyi::ProcInstanceType)
+end
+
 def struct_applies?(type : Iyi::Type) : Bool
   return true if type.is_a?(Iyi::TupleInstanceType) || type.is_a?(Iyi::NamedTupleInstanceType)
   return true if type.is_a?(Iyi::StaticArrayInstanceType)
+  return true if plain_generic_instance?(type)
   type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
 end
 
@@ -96,8 +104,9 @@ end
 
 # The instance variables of a user class, in declaration order: `name:Type` (the name keeps its @), or `-`.
 def ivars_text(type : Iyi::Type) : String
-  return "-" unless type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
-  parts = type.all_instance_vars.map { |name, ivar| "#{name}:#{ivar.type}" }
+  return "-" unless (type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)) || plain_generic_instance?(type)
+  ivars = type.is_a?(Iyi::GenericClassInstanceType) ? type.as(Iyi::GenericClassInstanceType).all_instance_vars : type.as(Iyi::NonGenericClassType).all_instance_vars
+  parts = ivars.map { |name, ivar| "#{name}:#{ivar.type}" }
   parts.empty? ? "-" : parts.join(" ")
 end
 

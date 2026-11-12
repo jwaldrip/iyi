@@ -1,6 +1,6 @@
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, NonGenericClassType, NilType}
-import compiler/types/types::{TupleInstanceType, NamedTupleInstanceType, StaticArrayInstanceType, ProcInstanceType}
+import compiler/types/types::{TupleInstanceType, NamedTupleInstanceType, StaticArrayInstanceType, ProcInstanceType, GenericClassInstanceType, PointerInstanceType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/merge::{TypeMerge}
@@ -119,6 +119,7 @@ module BenchSelfhostLowerTypesExercise
   def self.struct_applies?(t : Type) : Bool
     return true if t.is_a?(TupleInstanceType) || t.is_a?(NamedTupleInstanceType)
     return true if t.is_a?(StaticArrayInstanceType)
+    return true if t.is_a?(GenericClassInstanceType) && !t.is_a?(PointerInstanceType) && !t.is_a?(ProcInstanceType)
     t.is_a?(NonGenericClassType) && !t.is_a?(NilType) && primitive_kind(t) == ""
   end
 
@@ -169,9 +170,11 @@ module BenchSelfhostLowerTypesExercise
 
   # The instance variables of a user class, in declaration order: `name:Type` (the name keeps its @), or `-`.
   def self.ivars_text(t : Type) : String
-    return "-" unless t.is_a?(NonGenericClassType) && !t.is_a?(NilType)
+    generic = t.is_a?(GenericClassInstanceType) && !t.is_a?(PointerInstanceType) && !t.is_a?(ProcInstanceType)
+    return "-" unless generic || (t.is_a?(NonGenericClassType) && !t.is_a?(NilType))
     parts = [] of String
-    t.as(ModuleType).all_instance_vars.each do |name, ivar|
+    ivars = generic ? t.as(GenericClassInstanceType).all_instance_vars : t.as(ModuleType).all_instance_vars
+    ivars.each do |name, ivar|
       vt = ivar.var_type
       parts << "#{name}:#{vt.nil? ? "untyped" : TypeRenderer.render(vt.as(Type))}"
     end

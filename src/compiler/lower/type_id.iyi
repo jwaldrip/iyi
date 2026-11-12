@@ -129,7 +129,7 @@ pub class LowerTypeIds
     # `assign_id_to_metaclass(GenericClassInstanceType | PrimitiveType)`), then its subclasses.
     if type.is_a?(GenericClassInstanceType)
       meta = type.as(GenericClassInstanceType).metaclass
-      @id_to_metaclass[type_id(type)] = metaclass_type_id(meta)
+      @id_to_metaclass[hosted_type_id(type)] = metaclass_type_id(meta)
       TypeQueries.subclasses(type).each do |sub|
         assign_metaclass_id(sub)
       end
@@ -139,7 +139,7 @@ pub class LowerTypeIds
     return nil if type.is_a?(GenericInstanceType)
     if type.is_a?(NonGenericClassType) || type.is_a?(GenericClassType)
       meta = type.as(ClassType).metaclass
-      @id_to_metaclass[type_id(type)] = metaclass_type_id(meta)
+      @id_to_metaclass[hosted_type_id(type)] = metaclass_type_id(meta)
       # A generic class also walks its instantiated types (hosted `assign_id_to_metaclass(GenericClassType)`).
       if type.is_a?(GenericClassType)
         type.as(GenericClassType).instantiated_types.each do |instance|
@@ -159,6 +159,16 @@ pub class LowerTypeIds
     return pair[1] if pair
     id = next_id
     put(meta, id, id)
+    id
+  end
+
+  # The hosted `type_id(type)` as the metaclass walk calls it: a type the id walk did not reach (a generic
+  # instance among the subclasses, which the id walk leaves out) is numbered as a leaf when first asked.
+  def hosted_type_id(type : Type) : Int32
+    pair = min_max(type)
+    return pair[1] if pair
+    id = next_id
+    put(type, id, id)
     id
   end
 

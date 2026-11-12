@@ -418,8 +418,10 @@ pub class LowerTyper
     if id_in_front
       fields << @table.int32
     end
-    raise "BUG: llvm_struct_type of generic instance #{type.full_name} is not ported: the port model has no all_instance_vars for it (see NEEDS.md)" if type.is_a?(GenericClassInstanceType)
-    type.as(ModuleType).all_instance_vars.each do |ivar_name, ivar|
+    # A generic instance's fields are its generic's, with the type parameters replaced by its arguments
+    # (`GenericClassInstanceType#all_instance_vars`, types.iyi), as the hosted instance's ivars are.
+    ivars = type.is_a?(GenericClassInstanceType) ? type.as(GenericClassInstanceType).all_instance_vars : type.as(ModuleType).all_instance_vars
+    ivars.each do |ivar_name, ivar|
       var_type = ivar.var_type
       raise "BUG: instance variable #{ivar_name} of #{type.full_name} has no type yet (declarations slice)" if var_type.nil?
       fields << llvm_embedded_type(var_type.as(Type), wants_size)

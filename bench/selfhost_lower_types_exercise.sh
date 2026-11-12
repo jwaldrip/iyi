@@ -360,6 +360,12 @@ prove_mutation "class instance variables stored as one i8 each" "$TYPER_FILE" \
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a generic instance's fields are its generic's own, not its arguments'" "$TYPER_FILE" \
+  "type.as(GenericClassInstanceType).all_instance_vars" \
+  "type.as(GenericClassInstanceType).generic_type.as(ModuleType).all_instance_vars" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "object header id placed in front under the iyi layout" "$TYPER_FILE" \
   "    id_in_front = !type.struct? && !@iyi_layout" \
   "    id_in_front = !type.struct? && @iyi_layout" \
