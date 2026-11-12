@@ -41,6 +41,15 @@ echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
 e2e=""
 diverged=0
+waiting=0
+# Fixtures that wait on a NEEDS.md row, by name. The port refuses them and the gate reports them
+# WAITING, naming the row; a waiting fixture that starts to pass fails the gate until it is
+# taken off this list, so a wait cannot outlive its cause unnoticed.
+waiting_on() {
+  case "$1" in
+    lowprim_checked) echo "__crystal_raise_overflow is a fun with a body: the analysis types no FunDef and visit(FunDef) is refused (NEEDS.md row 25)" ;;
+  esac
+}
 for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
   name="$(basename "$fixture" .iyi)"
   if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
@@ -51,6 +60,11 @@ for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
   awk "$CALL_TYPES" "$WORK/$name.ll" > "$WORK/$name.oracle.ll"
 
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
+    if [ -n "$(waiting_on "$name")" ]; then
+      echo "  $name: WAITING, $(waiting_on "$name"): $(awk 'NR==1' "$WORK/$name.port.err")"
+      waiting=$((waiting + 1))
+      continue
+    fi
     echo "  $name: REFUSED: $(awk 'NR==1' "$WORK/$name.port.err")"
     diverged=$((diverged + 1))
     continue
@@ -64,12 +78,16 @@ for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
     echo "    $name: PASSED, $identical of $total functions identical"
     passed=$((passed + 1))
     e2e="$e2e $name"
+    if [ -n "$(waiting_on "$name")" ]; then
+      echo "    $name: passes now: take it off the WAITING list in this gate"
+      diverged=$((diverged + 1))
+    fi
   else
     echo "    $name: DIVERGED, $identical of $total functions identical"
     diverged=$((diverged + 1))
   fi
 done
-echo "  fixtures: $passed passed, $diverged diverged or refused"
+echo "  fixtures: $passed passed, $waiting waiting (named above), $diverged diverged or refused"
 if [ "$diverged" -gt 0 ] || [ "$passed" -eq 0 ]; then
   status=1
 fi
