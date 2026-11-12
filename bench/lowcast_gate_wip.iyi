@@ -1,6 +1,6 @@
-module bench/selfhost_lower_cast_exercise
+module bench/lowcast_gate_wip
 
-# The port's side of the primitives gate (bench/selfhost_lower_cast_exercise.sh): the
+# The port's side of the cast gate (bench/lowcast_gate.wip.sh): the
 # same modes as the calls gate's driver, for the fixtures that call a builtin primitive
 # (lowcast_*). The analysis runs with the lib stand-in (bench/lib/lower_gate.iyi), the
 # same as the calls gate: a lib's funs are not typed by the semantic pass yet.

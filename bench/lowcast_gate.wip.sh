@@ -15,7 +15,7 @@
 # a fixture that the unmutated port lowers identically. While no fixture is identical, the
 # mutations cannot be proven, and the gate fails and says so: it does not pass on nothing.
 #
-#   bash bench/selfhost_lower_cast_exercise.sh
+#   bash bench/lowcast_gate.wip.sh
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,7 +27,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== 1. Building the port driver"
-if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
+if ! "$IYI" build -o "$WORK/port" "$REPO/bench/lowcast_gate_wip.iyi" > "$WORK/port.build.log" 2>&1; then
   echo "  the port driver does not build (see $WORK/port.build.log)"
   exit 1
 fi
@@ -136,7 +136,7 @@ echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the mixed-union fixture
 # to be identical to the hosted module, which holds only when the store helpers are right.
 cast_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/lowcast_gate_wip.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_mixed.iyi" "$WORK/lowcast_mixed.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out" && return 0
   return 1
