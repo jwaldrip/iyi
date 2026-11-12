@@ -150,7 +150,7 @@ prove_mutation "return value joins the def type" "$MAIN_VISITOR" \
   "body_type = child_type(body.as(ASTNode))" -- bodies_at_floor || status=1
 prove_mutation "self in a declared type names the receiver" "$MAIN_VISITOR" \
   "return o.as(Type) unless o.is_a?(SemanticProgram)" \
-  "return @program.lookup_type_node(node, @current_type) unless o.is_a?(SemanticProgram)" -- bodies_at_floor || status=1
+  "return @program unless o.is_a?(SemanticProgram)" -- bodies_at_floor || status=1
 prove_mutation "a call hits the def-instance cache" "$MAIN_VISITOR" \
   "      return @def_instances[k]?" \
   "      return nil" -- bodies_at_floor || status=1
