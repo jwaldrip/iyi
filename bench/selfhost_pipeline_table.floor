@@ -1,4 +1,4 @@
 # selfhost pipeline table floor: <root> <defs reached by the body typer> <defs typed with no refusal> <defs lowered with no refusal>. A count may only rise. Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh.
-hello 257 149 66
-parse 267 138 63
-compile_native 315 152 68
+hello 320 211 77
+parse 316 206 72
+compile_native 377 250 85
