@@ -27,13 +27,13 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper}
 import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
-import compiler/lower/context::{BodyVisit, Lowerer, LowerVar}
+import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
 import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node}
-import compiler/lower/block::{lower_yield}
+import compiler/lower/block::{branch_to_phi, lower_yield}
 import compiler/lower/fun::{block_ended?, function_attributes}
 import compiler/lower/cast::{assign}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
@@ -500,11 +500,17 @@ end
 
 # The hosted `visit(Break)` without a value: a branch to the loop's exit block, made at the first break.
 pub def codegen_break(low : Lowerer, node : Break) : Nil
-  if node.exp
-    pending_visit_node("break with a value (hosted codegen.cr: visit(Break))")
-  end
   if low.loop_next.nil?
-    pending_visit_node("break outside a while (hosted codegen.cr: visit(Break))")
+    # A break outside a while leaves the block call it is written in: its value goes to the call's phi (hosted break_phi).
+    block_phi = low.current_context.break_phi
+    if block_phi.nil?
+      pending_visit_node("break outside a while or a block (hosted codegen.cr: visit(Break))")
+    end
+    branch_to_phi(low, block_phi.as(BranchPhi), node.exp)
+    return
+  end
+  if node.exp
+    pending_visit_node("break with a value in a while (hosted codegen.cr: visit(Break))")
   end
   target = low.loop_break
   if target.nil?
@@ -530,8 +536,17 @@ end
 
 # The hosted `visit(Next)`: a branch to the loop's condition.
 pub def codegen_next(low : Lowerer, node : Next) : Nil
+  if low.loop_next.nil?
+    # A next outside a while goes to the block's next: its value is the yield's value (hosted next_phi).
+    yield_phi = low.current_context.next_phi
+    if yield_phi.nil?
+      pending_visit_node("next outside a while or a block (hosted codegen.cr: visit(Next))")
+    end
+    branch_to_phi(low, yield_phi.as(BranchPhi), node.exp)
+    return
+  end
   if node.exp
-    pending_visit_node("next with a value (hosted codegen.cr: visit(Next))")
+    pending_visit_node("next with a value in a while (hosted codegen.cr: visit(Next))")
   end
   target = low.loop_next
   if target.nil?
@@ -563,8 +578,9 @@ pub def codegen_return_node(low : Lowerer, node : Return) : Nil
   if low.current_context.top_level
     pending_visit_node("return at the top level (hosted codegen.cr: visit(Return), node.target is not a Def)")
   end
-  if !low.current_context.return_phi.nil?
-    refuse_port("lower: return inside a block call's inlined def (hosted codegen_return_node, return_phi): not ported yet")
+  if rp = low.current_context.return_phi
+    branch_to_phi(low, rp.as(BranchPhi), node.exp)
+    return
   end
   ret_ir = low.current_context.fun_type.return_type
   exp = node.exp

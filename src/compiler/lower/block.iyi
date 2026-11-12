@@ -25,10 +25,10 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
 import compiler/lower/cast::{assign}
-import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
+import compiler/lower/context::{BranchPhi, Lowerer, LowerContext, LowerVar}
 import compiler/lower/fun::{visit_node}
-import compiler/lower/helpers::{store_aligned}
-import compiler/lower/pending::{pending_visit_node}
+import compiler/lower/helpers::{llvm_nil, store_aligned}
+import compiler/lower/pending::{pending_visit_node, refuse_port}
 import compiler/lower/phi::{LowerPhi}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{NilType, NoReturnType, Type, VoidType}
@@ -193,4 +193,37 @@ end
 pub def lower_block(low : Lowerer, node : Compiler::Syntax::Ast::Block, phi : LowerPhi) : Nil
   visit_node(low, node.body)
   phi.add(low, low.last, true)
+end
+
+# The hosted `break_phi.add @last, node_type`, `next_phi.add` and `return_phi.add` (codegen.cr visit(Break),
+# visit(Next), codegen_return_node): the value of the expression goes to the phi, which branches to its
+# exit. A nil or void value adds no value to the phi; a value of another type than the phi's merges is
+# refused by name (the hosted upcast).
+pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?) : Nil
+  nil_ir = low.typer.llvm_type(low.analysed.program.nil_type)
+  value : Value? = nil
+  got_ir = nil_ir
+  if e = exp
+    wants = low.needs_value
+    low.needs_value = true
+    visit_node(low, e)
+    low.needs_value = wants
+    v = low.last
+    raise "BUG: a branch's expression left no value (hosted codegen.cr: accept_control_expression)" if v.nil?
+    et = low.analysed.type_of?(e)
+    raise "BUG: the analysed program has no type for a branch's expression (hosted codegen.cr: accept_control_expression)" if et.nil?
+    et_t = et.as(Type)
+    unless et_t.is_a?(NilType) || et_t.is_a?(VoidType)
+      value = v.as(Value)
+      got_ir = low.typer.llvm_type(et_t)
+    end
+  else
+    low.last = llvm_nil(low)
+  end
+  merged = phi.merge_type
+  if !merged.nil? && merged.as(IrType).to_s != got_ir.to_s
+    refuse_port("a break, next or return of a block call with a value of another type than the call (hosted upcast, not ported)")
+  end
+  phi.add_branch(low, value, false)
+  low.last = llvm_nil(low)
 end

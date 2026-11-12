@@ -34,6 +34,7 @@ import compiler/lower/type_id::{LowerTypeIds}
 # lives in this module because phi.iyi imports this one.
 pub trait BranchPhi
   abstract def add_branch(low : Lowerer, value : Value?, last : Bool) : Nil
+  abstract def merge_type : IrType?
 end
 
 # The visitor of a node, which the calls and the functions call back into when they
