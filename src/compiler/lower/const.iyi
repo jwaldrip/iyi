@@ -11,7 +11,7 @@ module compiler/lower/const
 # `create_read_const_function`).
 #
 # Refused by name, with the hosted function each stands for, until ported:
-#   - a constant in a namespace (its hosted `llvm_name` is a namespaced spelling);
+#   - a constant of a generic class or module (its hosted `llvm_name` spelling is not ported yet);
 #   - a value that may be a compile-time value: a path to another constant, or an operator call (hosted
 #     `compile_time_value` runs the MathInterpreter, which inlines it at each read instead of storing it);
 #   - a symbol, nil or float literal (hosted `initialize_simple_constants`): its global is not ported yet;
@@ -88,14 +88,17 @@ pub def literal_node_value(low : Lowerer, value : ASTNode) : Value?
   nil
 end
 
-# The name of a constant the lowering can give a global: a constant of the program itself. A constant in a
-# namespace refuses by name (its hosted spelling is not ported).
+# The name of a constant's global (hosted `llvm_name`, which for a constant is its full name: `NAME` at the top
+# level of the program, `Owner::NAME` in a module or class). A constant of a generic owner refuses by name: its
+# hosted spelling is not ported.
 pub def program_const_name(const : Compiler::Semantic::TopLevel::Const) : String
-  ns = const.namespace
-  if !ns.is_a?(SemanticProgram)
-    refuse_port("lower: constant #{const.full_name} is in a namespace: its hosted llvm_name is not ported yet (hosted const.cr: declare_const)")
+  if const.namespace.is_a?(SemanticProgram)
+    return const.name
   end
-  const.name
+  if const.full_name.includes?("(")
+    refuse_port("lower: constant #{const.full_name} is in a generic class or module: its hosted llvm_name is not ported yet (hosted const.cr: declare_const)")
+  end
+  return const.full_name
 end
 
 # The IR type of a constant's value (hosted `llvm_type(const.value.type)`).

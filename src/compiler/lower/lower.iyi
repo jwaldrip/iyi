@@ -404,6 +404,12 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if node.is_a?(Annotation) && node.as(Annotation).path.names.last == "ThreadLocal"
+    # A `@[ThreadLocal]` class variable's global is local-exec (hosted class_var.cr declare_thread_local), but the
+    # body pass replaces the variable's MetaTypeVar without its thread_local flag (main_visitor.iyi visit(Assign) and
+    # visit(TypeDeclaration)), so lowering cannot see the flag. It is refused by name until the flag arrives.
+    refuse_port("lower: @[ThreadLocal] on a class variable: the body pass drops the thread_local flag before lowering (main_visitor.iyi visit(Assign), visit(TypeDeclaration)); hosted class_var.cr declare_thread_local")
+  end
   if node.is_a?(Alias) || node.is_a?(Macro) || node.is_a?(Annotation)
     # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil. The hosted
     # `visit(Annotation)` (codegen.cr:838) emits nothing and returns without setting `@last`; the value is

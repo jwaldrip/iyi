@@ -37,8 +37,8 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_const_namespace"
-# lowglob_const_namespace: a string constant in a module (Outer::S) is refused by name, its hosted llvm_name not ported yet.
+WAITING_FIXTURES="lowglob_cvar_tls"
+# lowglob_cvar_tls: a @[ThreadLocal] class variable is refused by name (lower.iyi, visit(Annotation)): the body pass drops its thread_local flag before lowering.
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
@@ -205,6 +205,10 @@ prove_mutation "a class variable assignment in a method stores the global's addr
   "  store_aligned(low, ptr, ptr)" -- lowglob_check || status=1
 prove_mutation "a nilable reference class variable's global has no null initialiser" "$REPO/src/compiler/lower/class_var.iyi" \
   "    g.initializer = low.builder.const_null(ir)" "    g.initializer = nil" -- lowglob_check || status=1
+prove_mutation "a namespaced constant is named by its bare name, not its full name" "$REPO/src/compiler/lower/const.iyi" \
+  "  return const.full_name" "  return const.name" -- lowglob_check || status=1
+prove_mutation "a @[ThreadLocal] class variable is lowered as a plain global (its refusal is lifted)" "$REPO/src/compiler/lower/lower.iyi" \
+  '  if node.is_a?(Annotation) && node.as(Annotation).path.names.last == "ThreadLocal"' "  if false" -- lowglob_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
