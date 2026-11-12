@@ -1,193 +1,101 @@
 # The bootstrap contract
 
-What it would take for iyi to compile itself, what each stage has to prove
-before the next one starts, and what is still linked when it is done.
+What it takes for iyi to compile itself, what each stage has to prove before the next one starts, and what is still linked when it is done.
 
-Every number here is measured from this tree by `python3 bench/doc_numbers.py`
-and `bash bench/dependency_floor.sh`, not estimated.
+Every figure here was measured at commit 9a2a08173, with the command written beside it. A gate verdict is the exit code that the baseline run recorded in `/tmp/iyi-b-baseline/matrix.txt` at that commit. `bench/doc_numbers.py` does not read this file, and no figure here depends on it.
 
-## Where this actually stands
+## Where this stands
 
-`src/compiler` is **110,105 lines of Crystal and 39,650 lines of iyi**. The
-iyi side is the lexer, the token, the AST, the visitor and transformer, the
-parser's expressions and declarations, the normalizer, the top-level declaration
-and expression and method body typing passes of semantic analysis, the type
-system (unification, generics, virtual types, nilable handling, restrictions,
-narrowing, and rendering), the artifact format, the bind tool, the command
-driver and build daemon, the formatter, the macro engine, platform support
-(targets, flags, and linker commands), the four foundation files, the LLVM
-bindings, and the first slice of code generation:
+Measured at 9a2a08173:
 
-| in iyi | lines | proved by |
-|---|---|---|
-| `syntax/lexer.iyi`, `syntax/token.iyi` | 3,467 | `bench/selfhost_lexer_exercise.sh`: 43 fixtures, 21,168 tokens identical to the Crystal front end, six guarded mutation proofs |
-| `syntax/ast.iyi`, `visitor.iyi`, `transformer.iyi` | 7,216 | `bench/selfhost_ast_exercise.sh`, five guarded mutation proofs |
-| `syntax/parser.iyi` | 5,130 | `bench/selfhost_parser_exercise.sh`: 25 fixtures, 1,677 normalised nodes identical to the Crystal front end, nine guarded mutation proofs |
-| `semantic/normalizer.iyi` | 705 | `bench/selfhost_normalizer_exercise.sh`: 11 fixtures, 577 normalised nodes identical to the Crystal front end, five guarded mutation proofs |
-| `semantic/top_level.iyi`, `semantic/main_visitor.iyi`, `semantic/recursive_struct_checker.iyi` | 2,996 | `bench/selfhost_semantic_exercise.sh`: 42 fixtures (9 declaration fixtures, 39 declarations; 10 typed expression fixtures, 312 typed nodes; 23 error fixtures rejected with identical errors), sixteen guarded mutation proofs. Top-level declarations, method bodies, instance variable type inference across a type, class variable initializers, recursive struct check, overload resolution by argument types with specificity ranking and autocast ambiguity detection, multiple dispatch over union receivers, and block and closure type inference |
-| `types/*.iyi`, `types.iyi` | 2,123 | `bench/selfhost_types_exercise.sh`: 13 fixtures (7 type declaration fixtures, 66 types identical to the Crystal front end; 6 error fixtures rejected with identical errors), six guarded mutation proofs. Type hierarchy extensions, virtual types and virtual metaclasses, generic class/module/trait instances, tuples, named tuples, procs, pointers, static arrays, union classification and unification, type filtering and is_a? narrowing, type restrictions, and type rendering with full options |
-| `tools/bind.iyi` | 1,213 | `bench/selfhost_bind_exercise.sh`: full eleven-fixture corpus driven against the shipped `Iyi.print_bind`; 11/11 bind identically (28 public methods). Eight guarded mutation proofs, all caught |
-| `tools/formatter.iyi` | 2,436 | `bench/selfhost_formatter_exercise.sh`: 35 files, 106,026 bytes identical to the shipped formatter, idempotency on each file, eight guarded mutation proofs. Still not in the port: alignment (when/hash/assign/comments), doc comment code block formatting, heredoc fixes, and macros |
-| `artifact/iyimod.iyi` | 2,681 | `bench/selfhost_iyimod_exercise.sh`: 16 modules, 80,414 bytes identical to the Crystal front end, cross-reading, refusal, five guarded mutation proofs |
-| `tools/mod.iyi` | 59 | `bench/selfhost_mod_wiring_exercise.sh`: 16 modules, 100% byte-for-byte dump and declarations parity, refusal parity on corrupted artifacts, four guarded mutation proofs. Shipped compiler calls it behind `iyi mod dump --selfhost` |
-| `tools/format.iyi` | 36 | `bench/selfhost_format_wiring_exercise.sh`: 35 files, 100% byte-for-byte formatting parity across stdin, in-place, and prefix flags, check mode and refusal parity, five guarded mutation proofs. Shipped compiler calls it behind `iyi tool format --selfhost` |
-| `command/driver.iyi` | 1,963 | `bench/selfhost_command_exercise.sh`: 115 argument vectors dispatched identically to the Crystal driver, six guarded mutation proofs. Dispatch only: vectors that would compile or run a program are out of scope, and the driver does no compiling |
-| `command/daemon.iyi` | 717 | `bench/selfhost_daemon_exercise.sh`: 30 scenarios across socket path selection, kernel limit refusal, candidate search order, identity calculation, and error text identical to the shipped daemon, six guarded mutation proofs |
-| `llvm/*.iyi` | 2,285 | `bench/selfhost_llvm_exercise.sh`: a real object file emitted from iyi code, linked against a C driver, run |
-| `foundation/*.iyi` | 122 | compiled by the above |
-| `macros/*.iyi` | 1,583 | `bench/selfhost_macros_exercise.sh`: 12 fixtures, 71 expanded nodes identical to the Crystal front end, five guarded mutation proofs. Macro expansion interpreter, argument binding (positional, defaults, splats, double splats, named arguments, blocks), control flow ({% if %}, {% for %}), stringification and macro methods on AST nodes. Still not in the port: TypeNode semantic table inspection, external macro run, and semantic hook callbacks |
-| `platform/*.iyi` | 698 | `bench/selfhost_platform_exercise.sh`: 24 target triples across darwin, linux (gnu/musl), windows (msvc/gnu), wasm32-wasi, freebsd, and openbsd identical to the Crystal front end, malformed triple rejection, six guarded mutation proofs |
-| `codegen/codegen.iyi` | 3,334 | `bench/selfhost_codegen_exercise.sh`: 18 fixtures, 108 functions, 15 struct, class, generic, string and closure types, 10 type ID globals, and allocator declarations with 100% identical LLVM IR and identical native object execution linked with C driver, 19 guarded mutation proofs. Emits LLVM IR for `fun` declarations with integer and float arithmetic, comparisons, local variable allocation and assignments, `if`/`else` (with phi value merges), `while` loops, and inter-function calls; structs (stack allocation, zero-initialization via memset, field accessors, pass-by-value arguments, methods, initializers, and constructors); pointer operations (pointerof, value, value=, ptr + offset, ptr - ptr, address); classes (heap allocation via malloc, zero-initialization via memset, type_id header initialization and hierarchical type_id global constants, instance variable accessors, single-inheritance field layout, methods, initializers, and constructors); virtual hierarchy dynamic dispatch tables and match functions (`~match<Base+>`); nilable values (nil as null pointer, `nil?` predicate, pointer truthiness checks); inline block expansion with yield, block arguments, outer variable capture, and loop yields; exception handling (begin/rescue/else/ensure, LLVM landing-pad and personality function bindings, exception type matching via type ID and virtual match functions, re-raising, and caught exception access); full proc closures with captured environments (closure allocation via malloc, closure environment structs `%closure_N`, closure variable capture and indirect calls with context null-checks and phi merges); string literals with constant pool reuse and Crystal string struct layout; user-defined generic class and struct instantiation with monomorphized constructors, initializers, and methods; heap layout maps for instance variable offsets across structs and classes; runtime symbol declarations (`__crystal_raise`, `__crystal_personality`, `__crystal_get_exception`); and top-level statements wrapped into an entry point. Excluded: runtime garbage collection interface (classes use malloc directly) and uninstantiated generic types in .iyimod |
-| `loader.iyi` | 304 | `bench/selfhost_compile_exercise.sh`: multi-file dependency graph and import resolver with IYI_PATH search and cycle detection, two guarded mutation proofs |
-| `compiler.iyi` | 278 | `bench/selfhost_compile_exercise.sh`: top-level compiler pipeline orchestrator (resolve, parse, normalise, semantic, codegen, emit, link), sharing the entry point wrapper with the single-file path, three guarded mutation proofs |
-| `tools/compile.iyi` | 100 | `bench/selfhost_compile_exercise.sh`: 10 fixtures including multi-file import, diamond dependency and top-level statements, 100% execution parity and dependency floor against the shipped compiler, refusal parity on missing imports, seven guarded mutation proofs |
-| `bench/selfhost_prelude_exercise.sh` | - | `bench/selfhost_prelude_exercise.sh`: 17 prelude files (13,949 lines) phase tracking against committed floor (3 to object, 1 to codegen, 4 to semantic), four guarded mutation proofs |
+- Crystal in `src/compiler`: 138,424 lines in 201 files. `find src/compiler -name '*.cr' -print0 | xargs -0 cat | wc -l`
+- iyi in `src/compiler`: 41,938 lines in 52 files. `find src/compiler -name '*.iyi' -print0 | xargs -0 cat | wc -l`
+- Prelude in `src/iyi`: 28,880 lines in 20 files. `cat src/iyi/*.iyi | wc -l`
+- Selfhost gates: 23. `ls bench/selfhost_*_exercise.sh | wc -l`
+- Stage-one entry point: `src/compiler/stage1.iyi`, 37 lines. `wc -l src/compiler/stage1.iyi`
 
-### Prelude Compilation Status (Hole 3)
+The port, component by component. Paths are under `src/compiler/`. Each line count is `wc -l` over the files in that row, and the rows add to 41,938, the iyi total above. The verdict is the exit code the gate recorded in the baseline matrix.
 
-The prelude compilation gate (`bench/selfhost_prelude_exercise.sh`) tracks the highest compiler phase reached by each of the 17 prelude files in `src/iyi/*.iyi`:
+| Component | Files | Lines | Gate | Verdict |
+|---|---|---:|---|---|
+| Foundation | `foundation/*.iyi` (4 files) | 133 | none of its own; named by the lexer, AST and bind gates | no gate targets it alone |
+| Lexer and token | `syntax/lexer.iyi`, `syntax/token.iyi` | 3,468 | `selfhost_lexer_exercise` | pending |
+| AST, visitor, transformer | `syntax/ast.iyi`, `syntax/visitor.iyi`, `syntax/transformer.iyi` | 7,220 | `selfhost_ast_exercise` | pending |
+| Parser | `syntax/parser.iyi` | 5,194 | `selfhost_parser_exercise`, `selfhost_parser_wiring_exercise` | pending, pending |
+| Normalizer | `semantic/normalizer.iyi` | 701 | `selfhost_normalizer_exercise` | pending |
+| Semantic passes | `semantic/top_level.iyi`, `semantic/main_visitor.iyi`, `semantic/recursive_struct_checker.iyi` | 3,258 | `selfhost_semantic_exercise` | pending |
+| Types | `types.iyi`, `types/*.iyi` (7 files) | 2,086 | `selfhost_types_exercise` | pending |
+| Macro engine | `macros/*.iyi` (5 files) | 1,607 | `selfhost_macros_exercise` | pending |
+| LLVM bindings | `llvm.iyi`, `llvm/*.iyi` (10 files) | 2,359 | `selfhost_llvm_exercise` | pending |
+| Platform | `platform/*.iyi` (3 files) | 696 | `selfhost_platform_exercise` | pending |
+| Code generation | `codegen/codegen.iyi` | 4,801 | `selfhost_codegen_exercise`, `selfhost_ir_valid_exercise` | pending, pending |
+| Artifact format | `artifact/iyimod.iyi` | 2,677 | `selfhost_iyimod_exercise`, `selfhost_mod_wiring_exercise` | pending, pending |
+| Command driver | `command/driver.iyi` | 2,152 | `selfhost_command_exercise` | pending |
+| Daemon | `command/daemon.iyi` | 715 | `selfhost_daemon_exercise` | pending |
+| Formatter | `tools/formatter.iyi` | 2,487 | `selfhost_formatter_exercise`, `selfhost_format_wiring_exercise` | pending, pending |
+| Bind tool | `tools/bind.iyi` | 1,208 | `selfhost_bind_exercise` | pending |
+| Companion tools | `tools/format.iyi` (33), `tools/mod.iyi` (39), `tools/parse.iyi` (41), `tools/compile.iyi` (108) | 221 | `selfhost_format_wiring_exercise`, `selfhost_mod_wiring_exercise`, `selfhost_parser_wiring_exercise`, `selfhost_compile_exercise` | see the rows above |
+| Loader | `loader.iyi` | 343 | `selfhost_compile_exercise` | pending |
+| Pipeline | `compiler.iyi` | 575 | `selfhost_compile_exercise` | pending |
+| Stage-one entry | `stage1.iyi` | 37 | `selfhost_stage_one_exercise` | pending |
 
-| File | Lines | Phase Reached | Current Blocker / Status |
-|---|---|---|---|
-| `macros.iyi` | 63 | object | Cleanly compiles to object code |
-| `range.iyi` | 87 | object | Cleanly compiles to object code |
-| `hash.iyi` | 175 | object | Cleanly compiles to object code |
-| `set.iyi` | 68 | codegen | Compiles through LLVM code generation |
-| `array.iyi` | 507 | semantic | Reaches codegen; stops on missing `__crystal_raise` runtime symbol |
-| `number.iyi` | 240 | semantic | Reaches codegen; stops on missing `__crystal_raise` runtime symbol |
-| `float.iyi` | 718 | semantic | Reaches codegen; stops on AST type extraction |
-| `file.iyi` | 65 | semantic | Reaches codegen; stops on missing `__crystal_personality` runtime symbol |
-| `io.iyi` | 421 | none | Advanced past line 170 return block; stops at line 337 on `{%` |
-| `atomic.iyi` | 89 | none | Stops at line 50 on macro delimiter grammar `{%` |
-| `concurrency.iyi` | 1946 | none | Stops at line 59 on macro delimiter grammar `{%` |
-| `enum.iyi` | 161 | none | Stops at line 57 on macro delimiter grammar `{%` |
-| `object.iyi` | 153 | none | Stops at line 10 on macro expression grammar `{{` |
-| `prelude.iyi` | 7471 | none | Stops at line 48 on macro delimiter grammar `{%` |
-| `primitives.iyi` | 260 | none | Stops at line 64 on macro delimiter grammar `{%` |
-| `string.iyi` | 583 | none | Stops at line 36 on macro delimiter grammar `{%` |
-| `thread.iyi` | 942 | none | Stops at line 60 on macro delimiter grammar `{%` |
-The bind gate is now a real parity gate against the shipped `Iyi.print_bind`
-over a corpus the shipped tool can analyse. The oracle consumes a semantically
-analysed program. The five original parser fixtures were syntax exercises rather
-than valid programs, rejected semantically by the shipped compiler (a `class < self`
-superclass, `fun redefinition with different signature` in a `lib` block,
-`include self` on a class, a trait requiring a generic module, and top-level
-ivars). Rather than trimming the corpus, five companion fixtures
-(`bind_classes_and_structs`, `bind_lib_and_fun`, `bind_modules_and_inclusion`,
-`bind_traits_and_impls`, `bind_types_and_vars`) cover the exact same declaration
-surface as programs the shipped compiler accepts. All eleven fixtures in the
-corpus bind identically (28 public methods), and all eight mutation proofs are
-caught.
+The prelude in `src/iyi` is gated by `selfhost_prelude_exercise` and `selfhost_prelude_whole_exercise`. Their verdicts are pending and pending. STAGE_TWO.md section 4 records what each one measures.
 
-What is **not** in iyi: semantic analysis beyond the top-level declaration,
-expression and method body typing passes, instance and class variable type
-inference, recursive struct check, overload resolution, multiple dispatch,
-and block and closure type inference (first-class captured proc values and
-exception handling typing),
-TypeNode inspection in macros, and codegen beyond the fun, struct, class,
-virtual dispatch, nilable, block inlining, exception, proc closure, string literal,
-user-defined generic instantiation, heap layout, and runtime symbol declaration slices (and the GC interface). That is the
-109,871. The formatter, macro engine and codegen are partly ported, and their
-rows above say which parts are not.
-Before this change, nothing in the build called any of the ports above: each
-was checked against the code it would replace, not used in its place. Two
-wiring steps are now active: `iyi mod dump --selfhost` routes artifact inspection
-through the pure iyi port (`src/compiler/tools/mod.iyi` and
-`src/compiler/artifact/iyimod.iyi`), proved byte-identical across the entire
-module corpus by `bench/selfhost_mod_wiring_exercise.sh`; and
-`iyi tool format --selfhost` routes source code formatting through the pure iyi
-port (`src/compiler/tools/format.iyi` and `src/compiler/tools/formatter.iyi`),
-proved byte-identical across all 35 corpus files by
-`bench/selfhost_format_wiring_exercise.sh`.
+The baseline gate results, and the output lines each gate prints for its own summary, are in STAGE_ONE.md (section 7) and STAGE_TWO.md (section 3).
 
-The artifact row proves binary parity: 16 modules across `samples/iyi` and
-`src/std` (80,414 bytes) produce byte-identical `.iyimod` files between Crystal
-and iyi, each implementation cross-reads what the other wrote with identical
-dumps, and damaged or corrupted artifacts are refused by both with identical
-verdicts. What this gate does not prove on its own is standalone artifact
-emission from un-analyzed user source code: extracting exported signatures,
-type definitions, and layout pointer maps requires semantic analysis and the
-type checker, which remain in Crystal. Once semantic analysis lands in iyi,
-the artifact writer can be plugged directly into the front-end AST walk.
+### What is not in iyi
 
-The parser is the one thing in between. Expressions and declarations are
-ported, 5,130 lines of iyi against the 7,384 of
-`src/compiler/iyi/syntax/parser.cr`, and `bench/selfhost_parser_exercise.sh`
-requires every one of twenty-five syntax fixtures to produce a normalised tree
-identical to the frontend's, 1,677 nodes in all. Declarations here means `def`
-in its argument and return-type forms, `class`, `struct`, `module`, `enum`,
-`trait`, `impl` with `forall`, `annotation`, `lib` and `fun`, type and
-variable declarations, `alias`, inclusion, visibility, and macro control grammar
-(`{% if %}`, `{% elsif %}`, `{% else %}`, `{% unless %}`, `{% for %}`, `{% begin %}`,
-`{% verbatim %}`, and `{{ ... }}`).
-
-Macro control grammar modes are parsed and lexed by the pure iyi front end,
-supported by `next_macro_token` in `syntax/lexer.iyi`.
+- **The Crystal semantic analyzer is still the only complete one.** `src/compiler/iyi/semantic/*.cr` holds 48 files and 36,838 lines (`cat src/compiler/iyi/semantic/*.cr | wc -l`). The three iyi passes above cover part of it.
+- **The macro engine has no TypeNode inspection, no external macro run and no semantic hooks.** `grep -rn TypeNode src/compiler/macros/*.iyi | wc -l` prints 0. `grep -rn 'macro run\|inherited\|included' src/compiler/macros/*.iyi | wc -l` prints 0.
+- **Code generation never reads the main visitor it is given.** The class takes one (`property main_visitor` at `codegen.iyi` line 349, and the constructor parameter at line 386). `grep -rn '\.main_visitor' src/compiler --include='*.iyi' | wc -l` prints 0.
+- **The stage-one entry point does not compile at this commit.** `bin/iyi build -o .build/iyi-stage1 src/compiler/stage1.iyi` exits 1. STAGE_ONE.md section 5 has the output.
+- **No minimal compiler prelude exists.** `src/compiler/prelude.iyi` is absent (`ls src/compiler/prelude.iyi`).
 
 ## The stages
 
-Stage zero is the contract, not a build. It is the set of statements a later
-stage is measured against, so that "it bootstrapped" is a checkable claim
-rather than a feeling.
+Stage zero is the contract, not a build. It is the set of statements a later stage is measured against, so that "it bootstrapped" is a checkable claim rather than a feeling.
 
 **Stage 0, the contract.** No compiler is built. What has to be true:
 
-1. Every iyi file under `src/compiler` compiles with the current compiler and
-   is exercised by a gate that carries a failure proof. True today for all five
-   groups above.
-2. A stage-one compiler is built *by Crystal* from iyi sources. Its output is
-   the thing under test, never its own source.
-3. A stage-two compiler is built *by stage one* from the same sources.
-4. Stage two is byte-identical to a stage-three built by stage two. That is the
-   fixed point, and it is the only evidence that accepts the compiler as
-   self-describing. Stage one and stage two are NOT expected to be identical:
-   they were produced by different compilers.
-5. The reproduction is measured with `SOURCE_DATE_EPOCH` pinned and the
-   artifact paths normalised, because otherwise the comparison proves the
-   filesystem rather than the compiler.
+1. Every iyi file under `src/compiler` compiles with the current compiler and is exercised by a gate that carries a failure proof. Three files are named by no bench script at this commit: `src/compiler/llvm/lib_llvm.iyi`, `src/compiler/types/filtering.iyi`, `src/compiler/types/restrictions.iyi`. The check is `for f in $(find src/compiler -name '*.iyi'); do m=${f#src/}; m=${m%.iyi}; b=$(basename "$f" .iyi); grep -rqF -e "$f" -e "$m" -e "/$b" bench/*.sh bench/*.iyi || echo "$f"; done`. A file exercised only through an import from another gated file is not counted here.
+2. A stage-one compiler is built *by Crystal* from iyi sources. Its output is the thing under test, never its own source. The gate is `selfhost_stage_one_exercise`, verdict pending.
+3. A stage-two compiler is built *by stage one* from the same sources. Not reached: there is no stage-one binary to build it (STAGE_ONE.md section 5).
+4. Stage two is byte-identical to a stage three built by stage two. Not reached, for the same reason.
+5. The reproduction is measured with `SOURCE_DATE_EPOCH` pinned and the artifact paths normalised, because otherwise the comparison proves the filesystem rather than the compiler. No gate pins it yet.
 
-**Stage 1.** Crystal compiles iyi sources into a compiler. Blocked on the ten
-components listed above being written in iyi. This is the long pole and it is
-not close: 109,871 lines of it.
+**Stage 1.** Crystal compiles iyi sources into a compiler, `src/compiler/stage1.iyi` and the modules it imports. The entry point exists. Whether it builds is the verdict above, and what it does once built is STAGE_ONE.md section 5.
 
-**Stage 2.** Stage one compiles the same sources. The first moment iyi is
-written in iyi.
+**Stage 2.** Stage one compiles the same sources. The first moment iyi is compiled by an iyi binary. Not reached.
 
-**Stage 3.** Stage two compiles the same sources. `cmp` stage two against
-stage three. Equal is the pass.
+**Stage 3.** Stage two compiles the same sources. `cmp` stage two against stage three. Equal is the pass. Not reached.
 
-## What is still linked when this is done
+## What is still linked
 
-This is the part worth being plain about, because "self-hosted" is often heard
-as "dependency free" and it is not the same claim.
+This is the part worth being plain about, because "self-hosted" is often heard as "dependency free", and it is not the same claim.
 
-A self-hosted iyi compiler still links:
+Measured on the Crystal-built compiler at this commit, which is what `bin/iyi` runs (`bin/iyi` execs `.build/iyi`):
 
-- **libLLVM**, and **libstdc++** with it. `src/compiler/llvm/lib_llvm.iyi:11`
-  carries `@[Link("stdc++")]` and the LLVM ldflags. The bindings being written
-  in iyi changes who calls LLVM, not whether LLVM is there.
-- **the platform libc**, which is the floor for any program on a supported
-  target and is Apple's only supported interface on darwin.
+```
+$ otool -L .build/iyi
+	/opt/homebrew/opt/llvm/lib/libLLVM.dylib
+	/usr/lib/libSystem.B.dylib
+```
 
-What it stops linking is **libgc**: the collector is iyi's own, and a program
-iyi builds already links no collector unless `-Dgc_boehm` asks for one. The
-compiler links libgc today only because it is a Crystal program and Crystal's
-runtime is built on Boehm.
+The iyi bindings say why LLVM is there. `grep -n '@\[Link' src/compiler/llvm/lib_llvm.iyi` prints line 18, `@[Link("stdc++")]`, and line 20, `@[Link(ldflags: {{ llvm_ldflags }})]`. So a self-hosted compiler links libLLVM and libstdc++ through those bindings. Writing the bindings in iyi changes who calls LLVM, not whether LLVM is there.
 
-So the honest end state of this work is: **a compiler that needs LLVM and a
-libc.** Removing LLVM is a separate decision about a native back end, and
-nothing here assumes it.
+LLVM leaves the iyi-written compiler one target at a time, as each target's native back end lands. Until the last target has one, the bindings stay. Removing them is part of the native back end work, and nothing here assumes that work is done.
+
+The platform libc remains. Every program built for a supported target links it, and the dependency floor gate is where that is measured.
+
+The collector is a separate question. Earlier builds of this checkout also linked `libgc` (`otool -L` on the binary from 14 September printed `libgc.1.dylib`). The build at this commit does not. The prelude links libgc only in a build with `-Dgc_boehm` (`src/iyi/prelude.iyi`, the `{% if flag?(:gc_boehm) %}` block at line 1585, whose comment at line 1577 says so).
+
+So the honest end state of this work is a compiler that needs libc and, until each native back end lands, LLVM.
 
 ## What would make this contract false
 
-Each of these is a way the claim could read as satisfied while being wrong, so
-each one is a gate or it is not being checked:
+Each of these is a way the claim could read as satisfied while being wrong, so each one is a gate or it is not being checked:
 
-- A stage-two build that reuses stage one's artifacts rather than recompiling.
-  The reproduction must start from a clean artifact directory.
-- Comparing stage one against stage two and calling it a fixed point. It is
-  not; they had different producers.
-- A byte comparison that passes because both binaries embed the same timestamp
-  path rather than the same code.
-- `src/compiler/*.iyi` growing a file no gate exercises. The five groups above
-  each have one; a sixth needs one in the same commit.
+- A stage-two build that reuses stage one's artifacts rather than recompiling. The reproduction must start from a clean artifact directory.
+- Comparing stage one against stage two and calling it a fixed point. It is not; they had different producers.
+- A byte comparison that passes because both binaries embed the same timestamp path rather than the same code.
+- A file under `src/compiler` that no gate names. The coverage command in stage 0 finds these.
