@@ -95,17 +95,18 @@ total_matched=0
 for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semdecl_*/*.iyi "$REPO"/bench/fixtures/semdecl_*/*/*.iyi; do
   rel="${fixture#$REPO/}"
   fixture_count=$((fixture_count + 1))
-  if ! "$ORACLE" "$REPO/$rel" > "$WORK/fx_o.txt" 2> "$WORK/fx_oe.txt"; then
+  # The typed fixtures (semdecl_ivar_typed_*) are declared with the type system installed: the
+  # generic arguments and virtual types of explicit instance variables need it. The oracle and the
+  # port both print the instance variables of generic instances with --typed, on these fixtures only.
+  oracle_mode=""
+  port_mode=""
+  case "$(basename "$fixture")" in
+    semdecl_ivar_typed_*) oracle_mode="--typed"; port_mode="--typed" ;;
+  esac
+  if ! "$ORACLE" $oracle_mode "$REPO/$rel" > "$WORK/fx_o.txt" 2> "$WORK/fx_oe.txt"; then
     echo "  $rel: ORACLE REJECTS: $(head -n 1 "$WORK/fx_oe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
   fi
-  # The typed fixtures (semdecl_ivar_typed_*) are declared with the type system installed: the
-  # generic arguments and virtual types of explicit instance variables need it. The oracle is
-  # always the hosted full pass, so it needs no flag.
-  port_mode=""
-  case "$(basename "$fixture")" in
-    semdecl_ivar_typed_*) port_mode="--typed" ;;
-  esac
   if ! "$PORT" $port_mode "$REPO/$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
     echo "  $rel: PORT REJECTS: $(head -n 1 "$WORK/fx_pe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
@@ -372,8 +373,13 @@ check_decl_fixtures_diverge() {
   "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semdecl_*/*.iyi "$REPO"/bench/fixtures/semdecl_*/*/*.iyi; do
     rel="${fixture#$REPO/}"
-    "$ORACLE" "$REPO/$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
-    "$probe" "$REPO/$rel" > "$WORK/mut_p.txt" 2>/dev/null || return 1
+    oracle_mode=""
+    port_mode=""
+    case "$(basename "$fixture")" in
+      semdecl_ivar_typed_*) oracle_mode="--typed"; port_mode="--typed" ;;
+    esac
+    "$ORACLE" $oracle_mode "$REPO/$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
+    "$probe" $port_mode "$REPO/$rel" > "$WORK/mut_p.txt" 2>/dev/null || return 1
     cmp -s "$WORK/mut_o.txt" "$WORK/mut_p.txt" || return 1
   done
   "$ORACLE" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/mut_co.txt" 2>/dev/null || return 1
@@ -549,6 +555,22 @@ prove_mutation "the predefined constants are not found by name" "$MUT_SEM" \
   "if name == \"ARGC_UNSAFE\" || name == \"ARGV_UNSAFE\"" \
   "if name == \"NOPE\"" \
   -- check_const_facts_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+MUT_TYPES="$REPO/src/compiler/types/types.iyi"
+prove_mutation "a generic instance's instance variable keeps its type parameter" "$MUT_TYPES" \
+  "if replacement = tv_map[type.name]?" \
+  "if replacement = tv_map[\"no such parameter\"]?" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic instance's nested generic argument is not rebuilt" "$MUT_TYPES" \
+  "return hook.instantiate_type(generic, args)" \
+  "return inst" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic instance copies no instance variable the first time" "$MUT_TYPES" \
+  "unless (copied = @copied_from[name]?) && copied == source" \
+  "if (copied = @copied_from[name]?) && copied == source" \
+  -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi

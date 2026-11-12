@@ -205,9 +205,9 @@ def dump_instances(program : Iyi::Program, io : IO, initial_types : Set(String))
     next if initial_types.includes?(name)
     generic = program.types[name]
     next unless generic.is_a?(Iyi::GenericClassType)
-    generic.instantiated_types.sort_by(&.full_name).each do |inst|
+    generic.instantiated_types.sort_by(&.to_s).each do |inst|
       next unless inst.is_a?(Iyi::GenericClassInstanceType)
-      full = inst.full_name
+      full = inst.to_s
       io << "Type: " << full << " (instance)\n"
       ivars = inst.instance_vars
       ivars.keys.each do |ivar_name|
