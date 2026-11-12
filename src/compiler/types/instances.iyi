@@ -63,18 +63,35 @@ pub class TypeInstances
     inst
   end
 
+  # iyi: one Tuple instance per spelling, recorded in Tuple's instantiated types as the hosted
+  # `Tuple#instantiate` does, so the type-id walk numbers it.
   def tuple_of(elements : Array(Type)) : TupleInstanceType
-    TupleInstanceType.new(@program, elements)
+    key = "Tuple*(#{elements.map(&.full_name).join(", ")})"
+    if cached = @generic_cache[key]?
+      return cached.as(TupleInstanceType)
+    end
+    inst = TupleInstanceType.new(@program, elements)
+    @generic_cache[key] = inst
+    @program.types["Tuple"].as(GenericClassType).instantiated_types << inst
+    inst
   end
 
   def named_tuple_of(entries : Array(NamedArgumentType)) : NamedTupleInstanceType
     NamedTupleInstanceType.new(@program, entries)
   end
 
+  # iyi: one Proc instance per spelling, recorded in Proc's instantiated types as hosted `Proc#instantiate`.
   def proc_of(arg_types : Array(Type), return_type : Type) : ProcInstanceType
     ret = return_type
     ret = @program.nil_type if return_type.is_a?(VoidType)
-    ProcInstanceType.new(@program, arg_types, ret)
+    key = "Proc*(#{arg_types.map(&.full_name).join(", ")} -> #{ret.full_name})"
+    if cached = @generic_cache[key]?
+      return cached.as(ProcInstanceType)
+    end
+    inst = ProcInstanceType.new(@program, arg_types, ret)
+    @generic_cache[key] = inst
+    @program.types["Proc"].as(GenericClassType).instantiated_types << inst
+    inst
   end
 
   # iyi: a pointer type is one instance of Pointer per spelling, recorded in Pointer's instantiated

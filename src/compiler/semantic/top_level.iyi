@@ -1457,12 +1457,14 @@ pub class SemanticProgram < NonGenericModuleType
     proc_t = GenericClassType.new(self, self, "Proc", ["T", "R"], 0, val)
     proc_t.struct = true
     @types["Proc"] = proc_t
-    slice_t = GenericClassType.new(self, self, "Slice", ["T"], nil, st)
-    slice_t.struct = true
-    @types["Slice"] = slice_t
+    # iyi: Range before Slice, as the hosted program creates them (program.cr 1435, 1437): the
+    # order of Struct's subclasses is the order the type-id walk numbers them.
     range_t = GenericClassType.new(self, self, "Range", ["B", "E"], nil, st)
     range_t.struct = true
     @types["Range"] = range_t
+    slice_t = GenericClassType.new(self, self, "Slice", ["T"], nil, st)
+    slice_t.struct = true
+    @types["Slice"] = slice_t
     @types["Enumerable"] = GenericModuleType.new(self, self, "Enumerable", ["T"])
     @types["Indexable"] = GenericModuleType.new(self, self, "Indexable", ["T"])
     @types["Crystal"] = NonGenericModuleType.new(self, self, "Crystal")
