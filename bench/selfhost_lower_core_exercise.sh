@@ -42,6 +42,25 @@ trap 'rm -rf "$WORK"' EXIT
 # shared with the calls gate (bench/lib/lower_oracle.sh).
 . "$REPO/bench/lib/lower_oracle.sh"
 
+# The oracle rewriter reads a callee up to its own closing parenthesis: a quoted generic name holds
+# parentheses of its own (`@"*Box(Int32)^Box(T)::new<Int32>:Box(Int32)"`). The check re-sources the library
+# in a subshell, so a mutation of bench/lib/lower_oracle.sh is what it tests.
+quoted_callee_line='  %2 = call %"Box(Int32)" @"*Box(Int32)^Box(T)::new<Int32>:Box(Int32)"(i32 %1, i32 7) #3'
+quoted_callee_expected='  %2 = call iyicc %"Box(Int32)" (i32, i32) @"*Box(Int32)^Box(T)::new<Int32>:Box(Int32)"(i32 %1, i32 7)'
+quoted_callee_check() {
+  local got
+  got="$(bash -c '. "$1"; awk "$CALL_TYPES" <<< "$2"' _ "$REPO/bench/lib/lower_oracle.sh" "$quoted_callee_line")" || return 1
+  [ "$got" = "$quoted_callee_expected" ]
+}
+echo "== 0. The oracle rewriter reads a quoted callee name whole"
+if quoted_callee_check; then
+  echo "  $quoted_callee_expected"
+else
+  echo "  FAIL: the oracle rewriter does not write the quoted callee's type (lower_oracle.sh CALL_TYPES)"
+  status=1
+fi
+echo
+
 # A prose line for each fixture verdict, so the summary can be read without the logs.
 verdict_lines=""
 
@@ -286,6 +305,8 @@ prove_mutation "a fun definition is internal, not external" "$REPO/src/compiler/
   "fn.linkage = Linkage::External" "fn.linkage = Linkage::Internal" -- lower_core_check || status=1
 prove_mutation "an implicit self call passes no self" "$REPO/src/compiler/lower/call.iyi" \
   "self_value = implicit_self_value(low)" "self_value = nil" -- lower_core_check || status=1
+prove_mutation "the oracle rewriter reads a quoted callee name to its first parenthesis" "$REPO/bench/lib/lower_oracle.sh" \
+  'if (substr(s, i, 1) == "\"") return i' 'if (substr(s, i, 1) == "\"") return index(s, "(") - 1' -- quoted_callee_check || status=1
 
 # The module-level count: how many CORE_CHECK_FIXTURES match the hosted module in every item, module-level included.
 # A patch that changes only module-level text lowers the count, and this check catches it.
