@@ -218,3 +218,18 @@ pub class CallError
     out
   end
 end
+
+# The first line of the error a call with no matching target raises, as the
+# hosted call pass chooses it: undefined method, then wrong number of arguments,
+# then the argument-type message. Shared by the driver's `# error` lines and by
+# CallRecalculation.recalculate, so that both answer from one rule.
+pub class CallFailure
+  def self.first_line(owner : ModuleType, ts : TypeSystem, name : String, arg_types : Array(Type), defs : Array(Def), defined : Bool) : String
+    return CallError.undefined_method(owner, name) if !defined
+    wrong = CallError.wrong_number(owner, name, arg_types.size, defs)
+    return wrong.as(String) if wrong
+    message = CallError.no_match(owner, ts, name, arg_types, defs)
+    return message.as(String) if message
+    "not ported: restriction message"
+  end
+end

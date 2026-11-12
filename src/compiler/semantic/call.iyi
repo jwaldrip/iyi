@@ -1,7 +1,8 @@
 module compiler/semantic/call
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, NamedArgument, NilLiteral, NumberLiteral, StringLiteral}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Def, NamedArgument, NilLiteral, NumberLiteral, StringLiteral}
 import compiler/semantic/call_nodes::{CallNodes}
+import compiler/semantic/call_error::{CallFailure}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
@@ -97,5 +98,65 @@ pub class CallReceiver
       return prog.types["Nil"]
     end
     nil
+  end
+end
+
+# The target of a call on a receiver type: the hosted Call#recalculate's result.
+# *definition* is the one def the call resolves to, *declared_return* its declared
+# return type, and *untyped* says the def declares none, so its type waits on the
+# body (the bodies slice). *error* is the first line of the message the hosted
+# call pass raises, or a marked refusal for a shape this port does not answer.
+pub class CallTarget
+  getter definition : Def?
+  getter owner : ModuleType?
+  getter declared_return : Type?
+  getter untyped : Bool
+  getter error : String?
+
+  def initialize(@definition : Def?, @owner : ModuleType?, @declared_return : Type?, @untyped : Bool, @error : String?)
+  end
+
+  def self.failed(message : String) : CallTarget
+    CallTarget.new(nil, nil, nil, false, message)
+  end
+end
+
+# The port of Call#recalculate for the bodies slice: the call's target on the
+# receiver type rec_type, found by the lookup of the call's name, arguments and
+# block, as the hosted call pass finds it before it instantiates the body. It is
+# the entry the bodies slice's visit(Call) calls where the hosted pass calls
+# recalculate, with the receiver first and the hosted names kept. Arguments are
+# typed as CallReceiver types them (literals only until the bodies slice types
+# them), so an argument it cannot type is refused by name.
+pub class CallRecalculation
+  def self.recalculate(rec_type : ModuleType, ts : TypeSystem, prog : SemanticProgram, name : String, args : Array(ASTNode), named_args : Array(NamedArgument)?, block : Bool) : CallTarget
+    arg_types = [] of Type
+    args.each do |arg|
+      typed = CallReceiver.argument_type(prog, arg)
+      return CallTarget.failed("argument is not a literal") if typed.nil?
+      arg_types << typed.as(Type)
+    end
+    typed_named = CallReceiver.named_argument_types(prog, named_args)
+    return CallTarget.failed("argument is not a literal") if typed_named.nil?
+    signature = CallSignature.new(name, arg_types, typed_named, block)
+    matches = MethodLookup.lookup_matches(rec_type, ts, signature, rec_type, rec_type, [] of Match)
+    return CallTarget.failed(matches.error.to_s) if matches.error
+    if matches.matches.size > 1
+      return CallTarget.failed("not ported: several matches")
+    end
+    if matches.matches.size == 1
+      single = matches.matches[0]
+      ret = single.definition.return_type
+      if ret.nil?
+        return CallTarget.new(single.definition, rec_type, nil, true, nil)
+      end
+      found = TypeLookup.new(ts.instances).lookup(single.defining, ret.as(ASTNode))
+      return CallTarget.failed(found.as(LookupError).message) if found.is_a?(LookupError)
+      return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil)
+    end
+    return CallTarget.failed("not ported: named argument message") if named_args
+    defined = MethodLookup.defines?(rec_type, name)
+    defs = MethodLookup.all_defs(rec_type, name, [] of Def)
+    CallTarget.failed(CallFailure.first_line(rec_type, ts, name, arg_types, defs, defined))
   end
 end

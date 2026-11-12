@@ -160,6 +160,12 @@ prove_mutation "an argument-type message is given even when the overloads disagr
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "recalculate reports a unique target as an error" "$CALL_FILE" \
+  "    if matches.matches.size == 1" \
+  "    if matches.matches.size == 9" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

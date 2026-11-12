@@ -1,13 +1,12 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Call, Def}
+import compiler/syntax/ast::{ASTNode, Call}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/semantic/method_lookup::{MethodLookup, Matches}
 import compiler/semantic/match::{CallSignature, Match}
 import compiler/semantic/restrictions::{ArgRestriction}
-import compiler/semantic/call::{CallReceiver}
-import compiler/semantic/call_error::{CallError}
+import compiler/semantic/call::{CallReceiver, CallRecalculation}
 
 # Call-lookup driver for bench/selfhost_semantic_calls_exercise.sh.
 #
@@ -16,8 +15,9 @@ import compiler/semantic/call_error::{CallError}
 # Builds the fixture's declarations into a SemanticProgram, then answers each
 # `# call <expr>` line and each `# error <expr>` line and prints the same lines
 # the hosted oracle (bench/selfhost_semantic_calls_oracle.cr) prints. The
-# receiver rule and the result formats are the oracle's header. The receiver and
-# argument typing is in semantic/call.iyi, and the messages in call_error.iyi.
+# receiver rule and the result formats are the oracle's header. `# call` lines
+# print the lookup's matches; `# error` lines run CallRecalculation.recalculate
+# and print `ok` when the call has a target, or its error line.
 module BenchSelfhostSemanticCallsExercise
   # One match as the oracle writes it: owner, name, restrictions, return.
   def self.match_text(ts : TypeSystem, m : Match) : String
@@ -45,8 +45,7 @@ module BenchSelfhostSemanticCallsExercise
   end
 
   # The matches of the call with its receiver, literal arguments, named arguments
-  # and block, or the message of why they cannot be found. A receiver or argument
-  # the call rule cannot type says so.
+  # and block, or the message of why they cannot be found.
   def self.lookup(prog : SemanticProgram, ts : TypeSystem, call : Call) : Matches | String
     scope = CallReceiver.scope(prog, ts, call.obj)
     if scope.nil?
@@ -94,52 +93,23 @@ module BenchSelfhostSemanticCallsExercise
     text
   end
 
-  # The first line of the error a call raises, as the oracle's `# error` lines
-  # print it: `ok` when the call finds a match, and otherwise the message the port
-  # ported. A message not ported is marked as such, so a fixture cannot pass by
-  # accident: a call with named arguments that finds no match is not ported.
+  # `ok` when the call has a target, otherwise the first line of its error, as the
+  # hosted call pass raises it. A message not ported is marked as such.
   def self.evaluate_error(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
     node = Parser.new(expr, "call").parse
     if !node.is_a?(Call)
       return "error: not a call"
     end
     call = node.as(Call)
-    found = lookup(prog, ts, call)
-    if found.is_a?(String)
-      return "error: #{found.as(String)}"
-    end
-    matches = found.as(Matches)
-    if matches.error
-      return "error: #{matches.error.to_s}"
-    end
-    return "ok" if !matches.empty?
-    owner = CallReceiver.scope(prog, ts, call.obj)
-    if owner.nil?
+    scope = CallReceiver.scope(prog, ts, call.obj)
+    if scope.nil?
       return "error: receiver is not resolvable"
     end
-    scoped = owner.as(ModuleType)
-    if !MethodLookup.defines?(scoped, call.name)
-      return "error: #{CallError.undefined_method(scoped, call.name)}"
+    target = CallRecalculation.recalculate(scope.as(ModuleType), ts, prog, call.name, call.args, call.named_args, call.block != nil)
+    if target.error
+      return "error: #{target.error.to_s}"
     end
-    defs = MethodLookup.all_defs(scoped, call.name, [] of Def)
-    wrong = CallError.wrong_number(scoped, call.name, call.args.size, defs)
-    if wrong
-      return "error: #{wrong.as(String)}"
-    end
-    if call.named_args
-      return "error: not ported: named argument message"
-    end
-    arg_types = [] of Type
-    call.args.each do |arg|
-      typed = CallReceiver.argument_type(prog, arg)
-      return "error: argument is not a literal" if typed.nil?
-      arg_types << typed.as(Type)
-    end
-    message = CallError.no_match(scoped, ts, call.name, arg_types, defs)
-    if message
-      return "error: #{message.as(String)}"
-    end
-    "error: not ported: restriction message"
+    "ok"
   end
 
   def self.run(src : String, filename : String) : String
