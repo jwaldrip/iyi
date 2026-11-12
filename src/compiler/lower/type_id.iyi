@@ -24,11 +24,13 @@ pub class LowerTypeIds
   @ids : Hash(String, Array(Int32))
   @id_to_metaclass : Hash(Int32, Int32)
   @next_id : Int32
+  @names : Hash(Int32, String)
 
   def initialize
     @ids = Hash(String, Array(Int32)).new
     @id_to_metaclass = Hash(Int32, Int32).new
     @next_id = 0
+    @names = Hash(Int32, String).new
   end
 
   # The hosted `LLVMId#initialize`: number every class reachable from *root* (Object), then
@@ -55,6 +57,21 @@ pub class LowerTypeIds
   # type is not a class the metaclass walk reached.
   def metaclass_id(type : Type) : Int32?
     @id_to_metaclass[type_id(type)]?
+  end
+
+  # The name of the type numbered *id*, or nil: the driver's table mode reads the numbering through this.
+  def name_of_id(id : Int32) : String?
+    @names[id]?
+  end
+
+  # The metaclass id of the type numbered *id*, or nil (the hosted `id_to_metaclass[id]?`).
+  def metaclass_of_id(id : Int32) : Int32?
+    @id_to_metaclass[id]?
+  end
+
+  # The largest id handed out so far (the hosted `@next_id`).
+  def last_id : Int32
+    @next_id
   end
 
   # The hosted `assign_id`: a type already numbered answers its max, otherwise the
@@ -183,6 +200,7 @@ pub class LowerTypeIds
 
   def put(type : Type, min : Int32, max : Int32) : Nil
     @ids[type.full_name] = [min, max]
+    @names[max] = type.full_name
     nil
   end
 

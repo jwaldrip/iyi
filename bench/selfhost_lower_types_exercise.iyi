@@ -221,6 +221,21 @@ module BenchSelfhostLowerTypesExercise
     "== #{expr}\nheaded: #{word}\n"
   end
 
+  # The `table` mode: every numbered type in id order as `id name meta=<id|->`, the rows the hosted
+  # oracle's table mode prints, so the two numberings diff line by line.
+  def self.table_text(ids : LowerTypeIds) : String
+    out = ""
+    num = 0
+    while num <= ids.last_id
+      if name = ids.name_of_id(num)
+        meta = ids.metaclass_of_id(num)
+        out = out + "#{num} #{name} meta=#{meta.nil? ? "-" : meta.to_s}\n"
+      end
+      num = num + 1
+    end
+    out
+  end
+
   def self.run(src : String, filename : String, triple : String, mode : String) : String
     parser = Parser.new(src, filename)
     node = parser.parse
@@ -255,6 +270,9 @@ module BenchSelfhostLowerTypesExercise
     ids = LowerTypeIds.new
     if root = prog.types["Object"]?
       ids.assign_all(root)
+    end
+    if mode == "table"
+      return BenchSelfhostLowerTypesExercise.table_text(ids)
     end
     out = ""
     i = 0
