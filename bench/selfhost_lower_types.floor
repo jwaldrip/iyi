@@ -37,6 +37,7 @@ src/compiler/llvm/pass_manager.iyi 0
 src/compiler/llvm/target.iyi 0
 src/compiler/llvm/values.iyi 0
 src/compiler/loader.iyi 2
+src/compiler/lower/headed.iyi 1
 src/compiler/lower/layouts.iyi 2
 src/compiler/lower/type_id.iyi 1
 src/compiler/lower/typer.iyi 1
