@@ -15,11 +15,12 @@ Measured by `bench/selfhost_lower_types_exercise.sh` on the head of `selfhost/s2
 | `lowty_class_explicit` (iyi object layout) | 1 | 1 |
 | `lowty_class_layout` (Crystal object layout) | 1 | 1 |
 | `lowty_class_pointers` | 2 | 2 |
-| **total** | **49** | **49** |
+| `lowty_class_assigned` (ivars typed by assignment, `semantic/instance_vars.iyi`) | 1 | 1 |
+| **total** | **50** | **50** |
 
 Type ids are gated by shape in `lowtyid_hierarchy`: the port's ids equal the hosted ids shifted by 30 across every value. Exact equality waits on NEEDS.md row 16.
 
-Types in `lowtywait_*` fixtures are not counted. They are the property declarations, the assignment-typed instance variables, the generic class instance, and the builtins' ids. Each waits on its row in NEEDS.md.
+Types in `lowtywait_*` fixtures are not counted. They are the property declarations, the generic class instance, and the builtins' ids. Each waits on its row in NEEDS.md.
 
 ## Own source and hello.iyi: not measured
 
@@ -34,7 +35,7 @@ Identical of total: **0 of 538** for the own source and **0 of N** for hello.iyi
 
 Ranked by what they block in the own source, from the declarations and not from a count: a type with a blocked reason cannot be measured at all, so the reasons are listed by how many types each would block once the lowering reaches them.
 
-1. Instance variables assigned in `initialize` have no recorded type (NEEDS.md row 15). Most classes in the compiler assign their fields that way, so this blocks the most types.
+1. Instance variables typed by assignment now come from `semantic/instance_vars.iyi` (NEEDS.md row 15, closed by S1b4). The lowering driver calls `declare_guessed_instance_vars` after its class visits; `lowty_class_assigned` matches the hosted oracle.
 2. `property` and `getter` declarations are not expanded in a bare program (NEEDS.md row 14). Both sides fail on them.
 3. Instance variables of a generic class instance have no `all_instance_vars` (NEEDS.md row 3). Every generic class in the source is blocked by this.
 4. The builtins are struct classes in the port, not primitives (NEEDS.md row 1). The name adapter in `typer.iyi` covers the lowering, and it does not cover the ids (row 16).
