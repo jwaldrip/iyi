@@ -126,6 +126,7 @@ pub class Loader
   property import_stack : Array(String)
   property header_root : String?
   property project_root : String?
+  property load_prelude : Bool
 
   def initialize(@iyi_path : IyiPath = IyiPath.new)
     @modules = Hash(String, ModuleInfo).new
@@ -133,6 +134,7 @@ pub class Loader
     @import_stack = [] of String
     @header_root = nil
     @project_root = nil
+    @load_prelude = false
   end
 
   # Resolves all dependencies starting from root_file.
@@ -145,6 +147,16 @@ pub class Loader
 
     cleaned_root = Loader.clean_path(root_file)
     @project_root = Loader.dirname(cleaned_root)
+    # The prelude a real build loads before the program, as a dependency, so the root's names resolve as they do there.
+    # Off unless the caller asks: whole-program builds that do not need it stay as they were.
+    if @load_prelude
+      found_prelude = @iyi_path.find("iyi/prelude", Loader.dirname(cleaned_root), nil)
+      unless prelude_fn = found_prelude
+        STDERR.puts "Error: can't find the prelude 'iyi/prelude.iyi' on IYI_PATH"
+        LibC.exit(1)
+      end
+      resolve_file(Loader.clean_path(prelude_fn), nil)
+    end
     resolve_file(cleaned_root, nil)
 
     result = [] of ModuleInfo

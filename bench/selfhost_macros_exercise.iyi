@@ -4,7 +4,10 @@ import compiler/macros/ast::{MacroId}
 import compiler/macros/methods::{MacroMethods}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/macro_parser::{MacroParser}
-import compiler/macros/engine::{MacroEngine}
+import compiler/macros/engine::{MacroEngine, MacroReport}
+import compiler/macros/target_flags::{MacroTargetFlags}
+import compiler/syntax/parser::{Parser}
+import compiler/macros/site_scan::{MacroSiteScan}
 
 module BenchSelfhostMacrosExercise
   def self.assert(cond : Bool, msg : String) : Nil
@@ -15,172 +18,116 @@ module BenchSelfhostMacrosExercise
   end
 
   def self.escape_s(s : String) : String
-    res = "\""
+    res = StringBuilder.new
+    res << "\""
     i = 0
     while i < s.bytesize
       b = s.byte_at(i)
       if b == 10_u8
-        res = res + "\\n"
+        res << "\\n"
       elsif b == 13_u8
-        res = res + "\\r"
+        res << "\\r"
       elsif b == 9_u8
-        res = res + "\\t"
+        res << "\\t"
       elsif b == 92_u8
-        res = res + "\\\\"
+        res << "\\\\"
       elsif b == 34_u8
-        res = res + "\\\""
+        res << "\\\""
       else
-        res = res + b.unsafe_chr.to_s
+        res << b.unsafe_chr.to_s
       end
       i = i + 1
     end
-    res + "\""
+    res << "\""
+    res.to_s
   end
 
-  def self.dump_ast(node : ASTNode?, indent : Int32 = 0) : String
-    return ("  " * indent) + "nil\n" if node.nil?
-    p = "  " * indent
-    case node
-    when Expressions
-      kw = case node.keyword
-           when Expressions::Keyword::Paren then "paren"
-           when Expressions::Keyword::Begin then "begin"
-           else                                  "none"
-           end
-      s = "#{p}Expressions keyword=#{kw}\n"
-      node.expressions.each { |e| s += dump_ast(e, indent + 1) }
-      s
-    when Nop
-      "#{p}Nop\n"
-    when NilLiteral
-      "#{p}NilLiteral\n"
-    when BoolLiteral
-      "#{p}BoolLiteral value=#{node.value}\n"
-    when NumberLiteral
-      "#{p}NumberLiteral value=\"#{node.value}\" kind=#{node.kind.to_s.downcase}\n"
-    when CharLiteral
-      "#{p}CharLiteral value=#{node.value.ord}\n"
-    when StringLiteral
-      "#{p}StringLiteral value=#{escape_s(node.value)}\n"
-    when StringInterpolation
-      s = "#{p}StringInterpolation\n"
-      node.expressions.each { |e| s += dump_ast(e, indent + 1) }
-      s
-    when SymbolLiteral
-      "#{p}SymbolLiteral value=#{escape_s(node.value)}\n"
-    when Var
-      "#{p}Var name=#{escape_s(node.name)}\n"
-    when InstanceVar
-      "#{p}InstanceVar name=#{escape_s(node.name)}\n"
-    when ClassVar
-      "#{p}ClassVar name=#{escape_s(node.name)}\n"
-    when Global
-      "#{p}Global name=#{escape_s(node.name)}\n"
-    when Path
-      "#{p}Path names=#{node.names.join("::")} global=#{node.global}\n"
-    when ArrayLiteral
-      s = "#{p}ArrayLiteral\n"
-      node.elements.each { |e| s += dump_ast(e, indent + 1) }
-      s
-    when HashLiteral
-      s = "#{p}HashLiteral\n"
-      node.entries.each do |entry|
-        s += "#{p}  entry:\n"
-        s += "#{p}    key:\n" + dump_ast(entry.key, indent + 3)
-        s += "#{p}    value:\n" + dump_ast(entry.value, indent + 3)
+  # The dump both implementations print for a fixture: one line per top-level
+  # site, how the expansion ended (`skipped` or `error`), and the whole output.
+  # The oracle's driver prints these same lines for the same fixture.
+  def self.dump_report(rep : MacroReport) : String
+    s = ""
+    i = 0
+    while i < rep.sites.size
+      site = rep.sites[i]
+      s = s + "site #{i} #{site.kind} #{site.line}:#{site.column} text=#{escape_s(site.text)}\n"
+      i = i + 1
+    end
+    if rep.skipped
+      s = s + "skipped\n"
+    end
+    if f = rep.failure
+      s = s + "error #{f.line}:#{f.column} message=#{escape_s(f.message)}\n"
+    end
+    s + "output text=#{escape_s(rep.output)}\n"
+  end
+
+  # The port parses a file with its header annotations in place; the hosted
+  # parser does not, so the sites dump blanks them out on both sides.
+  def self.strip_header_annotations(source : String) : String
+    lines = source.split("\n")
+    module_at = -1
+    i = 0
+    while i < lines.size && module_at < 0
+      if lines[i].starts_with?("module ")
+        module_at = i
       end
-      s
-    when TupleLiteral
-      s = "#{p}TupleLiteral\n"
-      node.elements.each { |e| s += dump_ast(e, indent + 1) }
-      s
-    when NamedTupleLiteral
-      s = "#{p}NamedTupleLiteral\n"
-      node.entries.each do |entry|
-        s += "#{p}  entry key=#{escape_s(entry.key)}:\n" + dump_ast(entry.value, indent + 2)
+      i = i + 1
+    end
+    out = StringBuilder.new
+    i = 0
+    while i < lines.size
+      line = lines[i]
+      if i < module_at && line.starts_with?("@[")
+        line = ""
       end
-      s
-    when RangeLiteral
-      s = "#{p}RangeLiteral exclusive=#{node.exclusive}\n"
-      s += "#{p}  from:\n" + dump_ast(node.from, indent + 2)
-      s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
-      s
-    when Call
-      s = "#{p}Call name=#{escape_s(node.name)}\n"
-      if obj = node.obj
-        s += "#{p}  obj:\n" + dump_ast(obj, indent + 2)
+      out << line
+      out << "\n"
+      i = i + 1
+    end
+    out.to_s
+  end
+
+  # One line per macro site of a whole file, in source order: its index, its
+  # kind, where it is written, then what it did. `macro-body` sites are inside
+  # a macro definition and expand when it is called; `needs-context` sites read
+  # the type or def they are written in. The oracle's driver prints the same
+  # lines for the same file.
+  def self.site_dump(source : String, flags : Array(String)) : String
+    engine = MacroEngine.new(flags)
+    root = Parser.new(strip_header_annotations(source)).parse
+    refs = MacroSiteScan.scan(root)
+    s = ""
+    i = 0
+    while i < refs.size
+      ref = refs[i]
+      site = ref.node
+      head = "site #{i} #{MacroMethods.node_class_name(site)} #{BenchSelfhostMacrosExercise.line_col(site)} #{ref.context}"
+      if ref.context == "macro"
+        s = s + head + " macro-body\n"
+      elsif MacroSiteScan.needs_context?(site, ref.type_name, ref.generic)
+        s = s + head + " needs-context\n"
+      else
+        scope = ref.type_name.empty? ? "<Program>" : ref.type_name
+        rep = engine.site_report(site, scope)
+        if f = rep.failure
+          s = s + head + " error #{f.line}:#{f.column} message=#{escape_s(f.message)}\n"
+        elsif rep.skipped
+          s = s + head + " skipped\n"
+        else
+          s = s + head + " text=#{escape_s(rep.output)}\n"
+        end
       end
-      if !node.args.empty?
-        s += "#{p}  args:\n"
-        node.args.each { |a| s += dump_ast(a, indent + 2) }
-      end
-      if named_args = node.named_args
-        s += "#{p}  named_args:\n"
-        named_args.each { |na| s += dump_ast(na, indent + 2) }
-      end
-      if block_arg = node.block_arg
-        s += "#{p}  block_arg:\n" + dump_ast(block_arg, indent + 2)
-      end
-      if block = node.block
-        s += "#{p}  block:\n" + dump_ast(block, indent + 2)
-      end
-      s
-    when NamedArgument
-      s = "#{p}NamedArgument name=#{escape_s(node.name)}:\n"
-      s += dump_ast(node.value, indent + 1)
-      s
-    when Block
-      arg_names = node.args.map(&.name).join(", ")
-      splat = node.splat_index ? node.splat_index.to_s : "none"
-      s = "#{p}Block args=[#{arg_names}] splat=#{splat}:\n"
-      s += dump_ast(node.body, indent + 1)
-      s
-    when Assign
-      s = "#{p}Assign\n"
-      s += "#{p}  target:\n" + dump_ast(node.target, indent + 2)
-      s += "#{p}  value:\n" + dump_ast(node.value, indent + 2)
-      s
-    when If
-      s = "#{p}If ternary=#{node.ternary}\n"
-      s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
-      s += "#{p}  then:\n" + dump_ast(node.then, indent + 2)
-      s += "#{p}  else:\n" + dump_ast(node.else, indent + 2)
-      s
-    when Def
-      receiver_s = node.receiver ? " receiver" : ""
-      abstract_s = node.abstract ? " abstract=true" : ""
-      splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
-      s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}\n"
-      if r = node.receiver
-        s += "#{p}  receiver:\n" + dump_ast(r, indent + 2)
-      end
-      if !node.args.empty?
-        s += "#{p}  args:\n"
-        node.args.each { |a| s += dump_ast(a, indent + 2) }
-      end
-      if ds = node.double_splat
-        s += "#{p}  double_splat:\n" + dump_ast(ds, indent + 2)
-      end
-      if ba = node.block_arg
-        s += "#{p}  block_arg:\n" + dump_ast(ba, indent + 2)
-      end
-      if rt = node.return_type
-        s += "#{p}  return_type:\n" + dump_ast(rt, indent + 2)
-      end
-      s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
-      s
-    when Arg
-      ext_s = (ext = node.external_name) && ext != node.name ? " external_name=#{escape_s(ext)}" : ""
-      s = "#{p}Arg name=#{escape_s(node.name)}#{ext_s}\n"
-      if rest = node.restriction
-        s += "#{p}  restriction:\n" + dump_ast(rest, indent + 2)
-      end
-      if def_val = node.default_value
-        s += "#{p}  default_value:\n" + dump_ast(def_val, indent + 2)
-      end
-      s
+      i = i + 1
+    end
+    s
+  end
+
+  def self.line_col(node : ASTNode) : String
+    if loc = node.location
+      "#{loc.line_number}:#{loc.column_number}"
     else
-      "#{p}ASTNode\n"
+      "0:0"
     end
   end
 
@@ -277,7 +224,7 @@ dict_vals({x: 10, y: 20})
     engine = MacroEngine.new
     src = %(
 macro inspect_expr(e)
-  "expr: " + {{e.stringify}} + " id: " + {{"test_".id + e.id}}
+  "expr: " + {{e.stringify}} + " id: " + {{e.id.stringify}}
 end
 inspect_expr(my_var)
 )
@@ -338,6 +285,27 @@ make_getter(answer, 42)
     puts "ok"
   end
 
+  def self.test_type_node
+    print "testing @type as the enclosing class's TypeNode... "
+    src = %(
+class Object
+  def to_s
+    {{ @type.name.stringify }}
+  end
+end
+)
+    refs = MacroSiteScan.scan(Parser.new(src).parse)
+    assert(refs.size == 1, "one site in the class")
+    ref = refs[0]
+    assert(ref.type_name == "Object", "the site is written in class Object")
+    assert(!MacroSiteScan.needs_context?(ref.node, ref.type_name, ref.generic), "a name-only site is compared, not needs-context")
+    assert(MacroSiteScan.needs_context?(ref.node, "", false), "the same site at the top of a file needs its context")
+    rep = MacroEngine.new.site_report(ref.node, ref.type_name)
+    assert(rep.failure.nil?, "the class-name expansion does not fail")
+    assert(rep.output == "\"Object\"", "the site expands to the class name as a string")
+    puts "ok"
+  end
+
   def self.run_all : Nil
     puts "Running Selfhost Macro Engine Verification Suite (pure iyi stage 0)"
     puts "============================================================="
@@ -349,27 +317,56 @@ make_getter(answer, 42)
     test_ast_methods
     test_fresh_vars
     test_code_generation
+    test_type_node
     puts "============================================================="
     puts "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"
     puts "============================================================="
   end
 end
 
-if Program.args.size > 0
-  if Program.args.size > 1 && Program.args[1] == "--count"
-    filename = Program.args[0]
-    source = File.read(filename)
-    engine = MacroEngine.new
-    expanded = engine.expand(source)
-    counter = NodeCounterVisitor.new
-    expanded.accept(counter)
-    puts counter.count
+if Program.args.size == 1 && Program.args[0] == "--host-target"
+  puts MacroTargetFlags.host_triple
+elsif Program.args.size > 0
+  filename = ""
+  count = false
+  sites = false
+  triple = ""
+  defines = [] of String
+  args = Program.args
+  idx = 0
+  while idx < args.size
+    a = args[idx]
+    if a == "--count"
+      count = true
+    elsif a == "--sites"
+      sites = true
+    elsif a == "--target"
+      idx = idx + 1
+      triple = args[idx]
+    elsif a == "-D"
+      idx = idx + 1
+      defines << args[idx]
+    else
+      filename = a
+    end
+    idx = idx + 1
+  end
+  flags = MacroTargetFlags.host(defines)
+  unless triple.empty?
+    flags = MacroTargetFlags.for_triple(triple, defines)
+  end
+  source = File.read(filename)
+  if sites
+    print BenchSelfhostMacrosExercise.site_dump(source, flags)
   else
-    filename = Program.args[0]
-    source = File.read(filename)
-    engine = MacroEngine.new
-    expanded = engine.expand(source)
-    print BenchSelfhostMacrosExercise.dump_ast(expanded)
+    engine = MacroEngine.new(flags)
+    the_macro, the_call = MacroParser.parse_fixture(source)
+    rep = engine.report(the_macro, the_call)
+    if count
+      puts rep.sites.size
+    else
+      print BenchSelfhostMacrosExercise.dump_report(rep)
+    end
   end
 else
   BenchSelfhostMacrosExercise.run_all

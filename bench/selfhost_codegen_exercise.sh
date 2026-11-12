@@ -35,8 +35,11 @@ trap 'rm -rf "$WORK"' EXIT
 REFUSAL_FIXTURES="cg_exceptions.iyi cg_raise.iyi"
 EMPTY_REFUSAL_FIXTURES="cg_undefined_raise.iyi cg_undefined_runtime_raise.iyi"
 PORT_LIMIT_FIXTURES="cg_splat_loop.iyi"
+# Whole programs, each with its own `fun main`: a C runner cannot link them with the other fixtures, and the Crystal oracle
+# refuses their @[Unsafe] header. They are compared by the exit status of their hosted and port builds (section 3e).
+PROGRAM_FIXTURES="cg_macro_site.iyi cg_macro_target.iyi cg_call_on_call.iyi"
 is_refusal() {
-  case " $REFUSAL_FIXTURES $EMPTY_REFUSAL_FIXTURES $PORT_LIMIT_FIXTURES " in
+  case " $REFUSAL_FIXTURES $EMPTY_REFUSAL_FIXTURES $PORT_LIMIT_FIXTURES $PROGRAM_FIXTURES " in
     *" $1 "*) return 0 ;;
   esac
   return 1
@@ -287,6 +290,35 @@ else
   status=1
 fi
 
+echo
+echo "== 3e. Program fixtures: whole programs compared by exit status"
+echo "    No IR or C-runner comparison: the oracle refuses their @[Unsafe] header, and each defines fun main."
+port_built=1
+if ! "$IYI" build -o "$WORK/port" "$REPO/src/compiler/tools/compile.iyi" > "$WORK/port.build.log" 2>&1; then
+  echo "  FAIL: the port did not build"
+  status=1
+  port_built=0
+fi
+for base in $PROGRAM_FIXTURES; do
+  fixture="$REPO/bench/fixtures/$base"
+  stem="${base%.iyi}"
+  hosted_rc="missing"
+  port_rc="missing"
+  if "$IYI" build -o "$WORK/prog_hosted_$stem" "$fixture" > "$WORK/prog_hosted_$stem.log" 2>&1; then
+    "$WORK/prog_hosted_$stem" > /dev/null 2>&1
+    hosted_rc=$?
+  fi
+  if [ "$port_built" = 1 ] && "$WORK/port" "$fixture" -o "$WORK/prog_port_$stem" > "$WORK/prog_port_$stem.log" 2>&1; then
+    "$WORK/prog_port_$stem" > /dev/null 2>&1
+    port_rc=$?
+  fi
+  if [ "$hosted_rc" != "missing" ] && [ "$port_rc" = "$hosted_rc" ]; then
+    echo "  $base: the port's exit $port_rc equals the hosted build's exit $hosted_rc"
+  else
+    echo "  FAIL: $base: hosted exit $hosted_rc, port exit $port_rc"
+    status=1
+  fi
+done
 echo
 echo "== 4. Emitted native object linking and C driver execution comparison"
 for fixture in "$REPO"/bench/fixtures/cg_*.iyi; do
@@ -578,6 +610,18 @@ prove_mutation "a placed instruction's name is not claimed" "$REPO/src/compiler/
   '      inst.name = symbols.claim(inst.name)' \
   '      inst.name = inst.name' \
   -- check_standalone_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+# cg_call_on_call.iyi reads its String result's bytesize from the field's slot. Read the type id slot instead and the exit moves.
+check_call_result_mutant() {
+  "$IYI" build -o "$WORK/mut_port" "$REPO/src/compiler/tools/compile.iyi" > "$WORK/mut_port.log" 2>&1 || return 1
+  "$WORK/mut_port" "$REPO/bench/fixtures/cg_call_on_call.iyi" -o "$WORK/mut_exe" > "$WORK/mut_exe.log" 2>&1 || return 1
+  "$WORK/mut_exe" > /dev/null 2>&1
+  [ "$?" -eq 10 ]
+}
+prove_mutation "a field of a call result is read from the type id slot" "$CG_SRC" \
+  'r_info.fields[node.name] + 1)])' \
+  'r_info.fields[node.name] + 0)])' \
+  -- check_call_result_mutant || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 

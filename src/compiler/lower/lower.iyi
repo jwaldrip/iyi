@@ -16,7 +16,7 @@ module compiler/lower/lower
 # folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
 # `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, And, Assign, BoolLiteral, Break, CharLiteral, Call, Def, Expressions, If, LibDef, Next, Not, NilLiteral, NumberLiteral, Or, StringLiteral, SymbolLiteral, Unless, Var, While}
+import compiler/syntax/ast::{ASTNode, And, Assign, BoolLiteral, Break, CharLiteral, Call, Def, Expressions, If, LibDef, Next, Not, NilLiteral, NumberLiteral, Or, StringLiteral, SymbolLiteral, Unless, Var, While, IsA}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -26,15 +26,16 @@ import compiler/ir/inst::{Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper}
+import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerVar}
 import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
-import compiler/lower/pending::{pending_visit_node}
+import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node}
-import compiler/lower/fun::{block_ended?}
+import compiler/lower/fun::{block_ended?, function_attributes}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
-import compiler/semantic/top_level::{Type, NilType}
+import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 
 # The hosted `codegen` of a program into `m`: the entry of the unit. `root` is the program's
 # parsed tree, `analysed` the semantic pass that typed it.
@@ -49,6 +50,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   program = analysed.program
   ids = LowerTypeIds.new
   ids.assign_all(program.object_type)
+  low.type_ids = ids
   low.string_type_id = ids.type_id(program.string_type)
   collector = SymbolCollector.new
   root.accept(collector)
@@ -87,6 +89,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   low.builder.position_at_end(main_entry)
   low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
   low.builder.ret(low.builder.const_int(i32, 0))
+  function_attributes(m)
 end
 
 # The hosted `codegen` visitor's dispatch over one node. A sequence visits each of its
@@ -173,6 +176,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_symbol(low, node.as(SymbolLiteral))
     return
   end
+  if node.is_a?(IsA)
+    codegen_is_a(low, node.as(IsA))
+    return
+  end
   if node.is_a?(Def)
     # The hosted `visit(Def)`: a def emits nothing where it stands. The call that reaches
     # it makes its function (fun.iyi).
@@ -199,16 +206,18 @@ pub def bool_bit(value : Bool) : Int64
   0_i64
 end
 
-# The hosted `visit(NumberLiteral)`: an integer constant of the type the analysis gave the
-# literal. Floats are not ported yet and are refused by name.
+# The hosted `visit(NumberLiteral)`: a constant of the type the analysis gave the literal. An integer is
+# a const_int; a literal with a fraction is a const_float of its float type (double or float), read from
+# the literal's text the way the hosted code reads it (`to_f64`).
 pub def codegen_number(low : Lowerer, node : NumberLiteral) : Nil
-  if node.value.includes?(".")
-    pending_visit_node("NumberLiteral with a fraction")
-  end
   t = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for a number literal (hosted codegen.cr: visit(NumberLiteral))" if t.nil?
   ir = low.typer.llvm_type(t.as(Type))
-  low.last = low.builder.const_int(ir, node.value.to_i64)
+  if node.value.includes?(".")
+    low.last = low.builder.const_float(ir, node.value.to_f)
+  else
+    low.last = low.builder.const_int(ir, node.value.to_i64)
+  end
 end
 
 # The hosted `visit(CharLiteral)`: the code point, as an integer of the type the analysis gave
@@ -443,4 +452,42 @@ pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
   value = low.last
   raise "BUG: the program returns a value but its last expression left none (hosted codegen.cr: codegen_return)" if value.nil?
   low.builder.ret(value.as(Value))
+end
+
+# The hosted `visit(IsA)` (codegen.cr codegen_type_filter): the object is evaluated, and with its value
+# wanted the answer is an equality of type ids (hosted match_type_id). For a concrete object and a concrete
+# restriction the hosted type ids are constants, and LLVM folds the comparison to an i1 constant; the port
+# computes that constant from its own ids (type_id.iyi). Refused by name: a union or nilable object (its
+# type-id word is read from the union value, which the casts slice builds with `upcast`, S2c3), and a
+# virtual or union restriction (the hosted match_any_type_id range, not ported yet).
+pub def codegen_is_a(low : Lowerer, node : IsA) : Nil
+  wants = low.needs_value
+  codegen_node(low, node.obj)
+  if !wants
+    return
+  end
+  obj_t = low.analysed.type_of?(node.obj)
+  if obj_t.nil?
+    pending_visit_node("IsA of an object with no analysed type (hosted codegen.cr: codegen_type_filter)")
+  end
+  ot = obj_t.as(Type)
+  if ot.is_a?(MixedUnionType) || ot.is_a?(ReferenceUnionType) || ot.is_a?(NilableType) || ot.is_a?(NilableReferenceUnionType) || ot.is_a?(NilableProcType) || ot.is_a?(VirtualType)
+    refuse_port("lower: is_a? of #{ot.full_name} reads the union's or virtual type's id word (hosted match_type_id), not ported yet (slice S2c3)")
+  end
+  const_t = low.analysed.type_of?(node.const)
+  if const_t.nil?
+    refuse_port("lower: is_a? of #{ot.full_name}: the restriction has no analysed type (hosted codegen.cr: codegen_type_filter)")
+  end
+  ct = const_t.as(Type)
+  if ct.is_a?(MetaclassType)
+    ct = ct.as(MetaclassType).instance_type
+  end
+  if ct.is_a?(VirtualType) || ct.is_a?(UnionType)
+    refuse_port("lower: is_a? of #{ot.full_name} against #{ct.full_name}: a virtual or union restriction is a range of type ids (hosted match_any_type_id), not ported yet")
+  end
+  if low.type_ids.type_id(ct) == low.type_ids.type_id(ot)
+    low.last = int1(low, 1_i64)
+  else
+    low.last = int1(low, 0_i64)
+  end
 end
