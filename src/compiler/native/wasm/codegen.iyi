@@ -210,6 +210,10 @@ end
 # Writes an initializer of type `t` into the data buffer at `off` (offsets are from DATA_BASE).
 def write_init(ctx : WasmCtx, buf : Array(UInt8), t : IrType, v : Value?, off : Int64) : Nil
   size = ctx.layout.store_size(t)
+  if off + size > buf.size.to_i64
+    ctx.refuse("an initializer of type #{t} runs past the data segment")
+    return
+  end
   return if v.nil?
   x = v.as(Value)
   if x.is_a?(Global) || x.is_a?(Function) || (x.is_a?(Inst) && x.as(Inst).op == Op::ConstExpr)
@@ -230,6 +234,10 @@ def write_init(ctx : WasmCtx, buf : Array(UInt8), t : IrType, v : Value?, off : 
       put_le(buf, off + 8_i64, i.aux_hi, 8)
     end
   when Op::ConstBytes
+    if i.args.size.to_i64 > size
+      ctx.refuse("a constant's bytes are longer than its type")
+      return
+    end
     k = 0
     i.args.each do |a|
       buf[off.to_i32 + k] = a.as(Inst).aux_int.to_u8
