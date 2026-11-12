@@ -458,6 +458,20 @@ pub class MetaclassType < ModuleType
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @instance_type : Type)
     super(program, namespace, name)
+    # The hosted rule: a class's metaclass inherits from its superclass's metaclass, an
+    # enum's from Enum's, and anything else (a class with no superclass, Object) from Class.
+    if @instance_type.is_a?(ClassType)
+      sc = @instance_type.as(ClassType).superclass
+      if sc
+        @parents << sc.as(ModuleType).metaclass
+      else
+        @parents << program.types["Class"]
+      end
+    elsif @instance_type.is_a?(EnumType)
+      @parents << program.enum_type.metaclass
+    else
+      @parents << program.types["Class"]
+    end
   end
 
   def full_name : String
@@ -566,10 +580,12 @@ end
 
 pub class GenericClassType < ClassType
   getter type_vars : Array(String)
+  getter instantiated_types : Array(Type)
   property splat_index : Int32?
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String), @splat_index : Int32? = nil, superclass : Type? = nil)
     super(program, namespace, name, superclass)
+    @instantiated_types = [] of Type
   end
 
   def lookup_type(name : String) : Type?

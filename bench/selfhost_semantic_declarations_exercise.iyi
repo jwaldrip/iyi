@@ -87,6 +87,14 @@ module BenchSelfhostSemanticDeclarationsExercise
         sb = sb + name + " missing\n"
       end
     end
+    ["Object", "Mine", "Int32"].each do |name|
+      t = prog.types[name]?
+      if t
+        if t.is_a?(ModuleType)
+          sb = sb + chain_show(t.as(ModuleType).metaclass, 4, "")
+        end
+      end
+    end
     sb
   end
 

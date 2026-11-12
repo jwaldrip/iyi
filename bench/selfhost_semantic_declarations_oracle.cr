@@ -217,6 +217,11 @@ if ARGV[0]? == "--chain"
       print "#{name} missing\n"
     end
   end
+  ["Object", "Mine", "Int32"].each do |name|
+    if (t = chain_program.types[name]?) && t.is_a?(Iyi::ModuleType)
+      print chain_show(t.metaclass, 4, "")
+    end
+  end
   exit 0
 end
 
