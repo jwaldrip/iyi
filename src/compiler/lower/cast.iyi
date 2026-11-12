@@ -26,6 +26,7 @@ module compiler/lower/cast
 # increments); downcast from any other union, and downcast of a nilable or virtual type.
 
 import compiler/ir/function::{Global, Linkage}
+import compiler/ir/inst::{Inst, Op}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
@@ -148,6 +149,19 @@ pub def assign_mixed_union(low : Lowerer, pointer : Value, target : MixedUnionTy
   store_in_union(low, target, pointer, value_type, value)
 end
 
+# A Bool widened to the area's width. A constant bool is folded here to the constant 0 or 1, as
+# the hosted builder folds a zext of a constant; any other bool is zero-extended.
+pub def bool_widened(low : Lowerer, value : Value, int_type : IrType) : Value
+  if value.is_a?(Inst) && value.as(Inst).op == Op::ConstInt
+    bit = value.as(Inst).aux_int
+    if bit == 0_i64
+      return low.builder.const_int(int_type, 0_i64)
+    end
+    return low.builder.const_int(int_type, 1_i64)
+  end
+  low.builder.zext(value, int_type)
+end
+
 # The hosted `store_in_union` (unions.cr): the type id, then the value into the value area.
 # A Bool is zero-extended to the width of the area (hosted store_bool_in_union), a nil writes
 # the zeroed area (hosted store_nil_in_union), and a number, Char or Symbol is stored at its
@@ -164,7 +178,7 @@ pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, 
   end
   if kind == "bool"
     bits = low.typer.size_of(area) * 8
-    widened = low.builder.zext(value, low.module.types.int(bits.to_i32))
+    widened = bool_widened(low, value, low.module.types.int(bits.to_i32))
     store_aligned(low, widened, field)
     return
   end
