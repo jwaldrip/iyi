@@ -77,8 +77,18 @@ pub class TypeInstances
     ProcInstanceType.new(@program, arg_types, ret)
   end
 
+  # iyi: a pointer type is one instance of Pointer per spelling, recorded in Pointer's instantiated
+  # types as the hosted `Pointer.instantiate` does, so the type-id walk numbers it. Its own cache key
+  # keeps it apart from a Pointer(T) that instantiate_generic makes.
   def pointer_of(element_type : Type) : PointerInstanceType
-    PointerInstanceType.new(@program, element_type)
+    key = "Pointer*(#{element_type.full_name})"
+    if cached = @generic_cache[key]?
+      return cached.as(PointerInstanceType)
+    end
+    inst = PointerInstanceType.new(@program, element_type)
+    @generic_cache[key] = inst
+    @program.types["Pointer"].as(GenericClassType).instantiated_types << inst
+    inst
   end
 
   def static_array_of(element_type : Type, size : Int64) : StaticArrayInstanceType
