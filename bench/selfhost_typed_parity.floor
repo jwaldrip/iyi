@@ -117,7 +117,7 @@ src/compiler/semantic/call_nodes.iyi 6
 src/compiler/semantic/cleanup.iyi 10
 src/compiler/semantic/instance_vars.iyi 0
 src/compiler/semantic/literal_expander.iyi 0
-src/compiler/semantic/main_visitor.iyi 121
+src/compiler/semantic/main_visitor.iyi 132
 src/compiler/semantic/match.iyi 0
 src/compiler/semantic/math_interpreter.iyi 45
 src/compiler/semantic/method_lookup.iyi 0
@@ -125,8 +125,8 @@ src/compiler/semantic/normalizer.iyi 0
 src/compiler/semantic/recursive_struct_checker.iyi 11
 src/compiler/semantic/restrictions.iyi 0
 src/compiler/semantic/top_level.iyi 242
-src/compiler/semantic/type_node_host.iyi 17
-src/compiler/semantic/type_nodes.iyi 29
+src/compiler/semantic/type_node_host.iyi 20
+src/compiler/semantic/type_nodes.iyi 37
 src/compiler/semantic/typed.iyi 2
 src/compiler/stage1.iyi 6
 src/compiler/syntax/ast.iyi 860
