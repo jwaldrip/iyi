@@ -795,6 +795,13 @@ module BenchSelfhostParserExercise
       "bench/fixtures/decl_visibility_and_annotations.iyi",
       "bench/fixtures/syntax_macro_control_grammar.iyi",
       "bench/fixtures/syntax_string_concat_and_magic.iyi",
+      "bench/fixtures/syntax_macro_text_splits.iyi",
+      "bench/fixtures/syntax_macro_keywords_and_escapes.iyi",
+      "bench/fixtures/syntax_proc_literals.iyi",
+      "bench/fixtures/syntax_index_tuples_and_keyword_names.iyi",
+      "bench/fixtures/syntax_type_list_then_call.iyi",
+      "bench/fixtures/syntax_heredoc_command_and_folds.iyi",
+      "bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi",
     ]
 
     total_nodes = 0

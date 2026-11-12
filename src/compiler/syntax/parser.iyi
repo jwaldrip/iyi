@@ -894,7 +894,7 @@ pub class Parser < Lexer
         next_token
       when TokenKind::OP_LSQUARE
         next_token_skip_space_or_newline
-        call_args = preserve_stop_on_do { parse_call_args_space_consumed(false, true) }
+        call_args = preserve_stop_on_do { parse_call_args_space_consumed(true, true, true) }
         skip_space_or_newline
         check(TokenKind::OP_RSQUARE)
         next_token
@@ -1288,7 +1288,7 @@ pub class Parser < Lexer
     end
   end
 
-  def parse_var_or_call(location : Location, global : Bool = false) : ASTNode
+  def parse_var_or_call(location : Location, global : Bool = false, call_only : Bool = false) : ASTNode
     name = @token.value
     is_var = !global && var?(name)
 
@@ -1301,7 +1301,7 @@ pub class Parser < Lexer
       block_arg = call_args.block_arg
       named_args = call_args.named_args
       has_parens = call_args.has_parentheses
-      force_call = has_parens || !args.empty? || (named_args ? !named_args.empty? : false) || !block.nil? || !block_arg.nil?
+      force_call = call_only || has_parens || !args.empty? || (named_args ? !named_args.empty? : false) || !block.nil? || !block_arg.nil?
 
       if is_var && !force_call
         var = Var.new(name).at(location)
@@ -1316,7 +1316,7 @@ pub class Parser < Lexer
       c.iyi_group = true if name == "group" && block && args.empty?
       c
     else
-      if is_var
+      if is_var && !call_only
         Var.new(name).at(location)
       else
         c = Call.new(nil, name).at(location)
@@ -1368,7 +1368,7 @@ pub class Parser < Lexer
           if @token.type == TokenKind::OP_PERIOD
             next_token_skip_space
             temp_arg = Var.new(temp_arg_name)
-            call = parse_var_or_call(@token.location)
+            call = parse_var_or_call(@token.location, false, true)
             if call.is_a?(Call)
               call.obj = temp_arg
             end
@@ -1432,7 +1432,7 @@ pub class Parser < Lexer
          TokenKind::INSTANCE_VAR, TokenKind::CLASS_VAR, TokenKind::CONST, TokenKind::GLOBAL,
          TokenKind::OP_DOLLAR_TILDE, TokenKind::OP_DOLLAR_QUESTION, TokenKind::GLOBAL_MATCH_DATA_INDEX,
          TokenKind::OP_LPAREN, TokenKind::OP_BANG, TokenKind::OP_LSQUARE, TokenKind::OP_LSQUARE_RSQUARE,
-         TokenKind::OP_TILDE, TokenKind::UNDERSCORE
+         TokenKind::OP_TILDE, TokenKind::UNDERSCORE, TokenKind::OP_MINUS_GT
       # valid argument start
     when TokenKind::OP_STAR, TokenKind::OP_STAR_STAR
       return nil if current_char.ascii_whitespace?
@@ -1447,7 +1447,7 @@ pub class Parser < Lexer
     if kw = @token.keyword
       case kw
       when Keyword::IF, Keyword::UNLESS, Keyword::WHILE, Keyword::UNTIL, Keyword::RESCUE, Keyword::ENSURE
-        return nil
+        return nil unless next_comes_colon_space?
       end
     end
 
@@ -1463,7 +1463,7 @@ pub class Parser < Lexer
         if @token.type == TokenKind::OP_PERIOD
           next_token_skip_space
           temp_arg = Var.new(temp_arg_name)
-          call = parse_var_or_call(@token.location)
+          call = parse_var_or_call(@token.location, false, true)
           if call.is_a?(Call)
             call.obj = temp_arg
           end
@@ -1485,9 +1485,10 @@ pub class Parser < Lexer
 
       skip_space
       if @token.type == TokenKind::OP_COMMA
-        next_token_skip_space
-        if @token.type == TokenKind::NEWLINE || @token.type == TokenKind::OP_SEMICOLON || end_token?
-          break
+        comma_location = @token.location
+        next_token_skip_space_or_newline
+        if (@token.keyword == Keyword::END && !next_comes_colon_space?) || @token.type == TokenKind::EOF
+          syntax_error("invalid trailing comma in call", comma_location)
         end
       else
         break
@@ -1899,7 +1900,14 @@ pub class Parser < Lexer
     if rescues || a_ensure || a_else
       ExceptionHandler.new(body, rescues, a_else, a_ensure).at(location)
     else
-      body
+      if body.is_a?(Expressions)
+        body.keyword = Expressions::Keyword::Begin
+        body
+      else
+        node = Expressions.new([body] of ASTNode).at(location)
+        node.keyword = Expressions::Keyword::Begin
+        node
+      end
     end
   end
 
@@ -3027,13 +3035,46 @@ pub class Parser < Lexer
 
   def type_start_check : Bool
     case @token.type
-    when TokenKind::CONST, TokenKind::OP_COLON_COLON, TokenKind::UNDERSCORE, TokenKind::OP_LCURLY, TokenKind::OP_MINUS_GT
+    when TokenKind::CONST
+      return false if named_tuple_start?
+      type_path_start?
+    when TokenKind::OP_COLON_COLON, TokenKind::UNDERSCORE, TokenKind::OP_LCURLY, TokenKind::OP_MINUS_GT
       true
     when TokenKind::OP_LPAREN
       true
     when TokenKind::IDENT
       kw = @token.keyword
       kw == Keyword::SELF || kw == Keyword::TYPEOF || @token.value == "self?"
+    else
+      false
+    end
+  end
+
+  # A constant starts a type only when the path ends at a delimiter, a type
+  # suffix or `.class`: `[] of Arg, Foo.new` leaves `Foo.new` as a call.
+  def type_path_start? : Bool
+    while @token.type == TokenKind::CONST
+      next_token
+      break unless @token.type == TokenKind::OP_COLON_COLON
+      next_token_skip_space_or_newline
+    end
+
+    skip_space
+    delimiter_or_type_suffix?
+  end
+
+  def delimiter_or_type_suffix? : Bool
+    case @token.type
+    when TokenKind::OP_PERIOD
+      next_token_skip_space_or_newline
+      @token.value == "class"
+    when TokenKind::OP_QUESTION, TokenKind::OP_STAR, TokenKind::OP_STAR_STAR
+      next_token_skip_space
+      delimiter_or_type_suffix?
+    when TokenKind::OP_MINUS_GT, TokenKind::OP_BAR, TokenKind::OP_COMMA, TokenKind::OP_EQ_GT,
+         TokenKind::NEWLINE, TokenKind::EOF, TokenKind::OP_EQ, TokenKind::OP_SEMICOLON,
+         TokenKind::OP_LPAREN, TokenKind::OP_RPAREN, TokenKind::OP_LSQUARE, TokenKind::OP_RSQUARE
+      true
     else
       false
     end
@@ -5664,6 +5705,10 @@ pub class Parser < Lexer
         end
       end
     end
+    if delimiter_state.kind == DelimiterKind::HEREDOC
+      return StringInterpolation.new(remove_heredoc_indent(pieces, delimiter_state.heredoc_indent)).at(location)
+    end
+
     has_interp = false
     pieces.each do |p|
       if p.value.is_a?(ASTNode)
@@ -5681,7 +5726,7 @@ pub class Parser < Lexer
           nodes << val
         end
       end
-      StringInterpolation.new(nodes).at(location)
+      wrap_command(StringInterpolation.new(nodes).at(location), delimiter_state.kind, location)
     else
       str = ""
       pieces.each do |p|
@@ -5693,7 +5738,7 @@ pub class Parser < Lexer
       if delimiter_state.kind == DelimiterKind::REGEX
         RegexLiteral.new(StringLiteral.new(str)).at(location)
       else
-        StringLiteral.new(str).at(location)
+        wrap_command(StringLiteral.new(str).at(location), delimiter_state.kind, location)
       end
     end
   end
@@ -5711,7 +5756,11 @@ pub class Parser < Lexer
         interp_exp = parse_expression
         skip_space_or_newline
         check(TokenKind::OP_RCURLY)
-        pieces << Piece.new(interp_exp, @token.line_number)
+        if interp_exp.is_a?(StringLiteral) && delimiter_state.kind != DelimiterKind::HEREDOC
+          pieces << Piece.new(interp_exp.value, @token.line_number)
+        else
+          pieces << Piece.new(interp_exp, @token.line_number)
+        end
       when TokenKind::DELIMITER_END, TokenKind::EOF
         break
       end
@@ -5720,6 +5769,146 @@ pub class Parser < Lexer
     end
     next_token
     delimiter_state
+  end
+
+  # The heredoc body starts on the line after the opener, so the newline that ends the
+  # opener line is not part of the body.
+  def heredoc_body(pieces : Array(Piece)) : Array(Piece)
+    body = [] of Piece
+    return body if pieces.size == 0
+    first = pieces[0]
+    first_value = first.value
+    if first_value.is_a?(String) && (first_value.starts_with?("\n") || first_value.starts_with?("\r\n"))
+      cut = first_value.starts_with?("\n") ? 1 : 2
+      if cut < first_value.bytesize
+        body << Piece.new(first_value[cut, first_value.bytesize - cut], first.line_number)
+      end
+      idx = 1
+      while idx < pieces.size
+        body << pieces[idx]
+        idx = idx + 1
+      end
+    else
+      pieces.each { |piece| body << piece }
+    end
+    body
+  end
+
+  # A command literal is a call to the backtick, as the hosted parser builds it.
+  def wrap_command(node : ASTNode, kind : DelimiterKind, location : Location) : ASTNode
+    return node unless kind == DelimiterKind::COMMAND
+    Call.new(nil, "`", node).at(location)
+  end
+
+  # The heredoc body without the indent of its terminator, as the hosted parser reads it:
+  # each line loses `indent` leading characters, and the text between interpolations is one
+  # string piece. Interpolations pass through unchanged.
+  def remove_heredoc_indent(pieces : Array(Piece), indent : Int32) : Array(ASTNode)
+    pieces = heredoc_body(pieces)
+    current_line = StringBuilder.new
+    remove_indent = true
+    new_pieces = [] of ASTNode | String
+    previous_line_number = 0
+    idx = 0
+    while idx < pieces.size
+      piece = pieces[idx]
+      value = piece.value
+      line_number = piece.line_number
+      this_piece_is_in_new_line = line_number != previous_line_number
+      next_piece_is_in_new_line = idx == pieces.size - 1 || pieces[idx + 1].line_number != line_number
+      if value.is_a?(String)
+        if value == "\n" || value == "\r\n"
+          current_line << value
+          if this_piece_is_in_new_line || next_piece_is_in_new_line
+            line = current_line.to_s
+            line = remove_heredoc_from_line(line, indent) if remove_indent
+            add_heredoc_text(new_pieces, line)
+            current_line = StringBuilder.new
+            remove_indent = true
+          end
+        elsif value.starts_with?("\n") || value.starts_with?("\r\n")
+          slash_n = value.starts_with?("\n")
+          current_line << (slash_n ? "\n" : "\r\n")
+          line = current_line.to_s
+          line = remove_heredoc_from_line(line, indent) if remove_indent
+          add_heredoc_text(new_pieces, line)
+          current_line = StringBuilder.new
+          remove_indent = true
+          rest_start = slash_n ? 1 : 2
+          current_line << value[rest_start, value.bytesize - rest_start]
+        else
+          current_line << value
+        end
+      else
+        if remove_indent
+          line = current_line.to_s
+          if line.bytesize < indent || !heredoc_indent_ok?(line, indent)
+            raise_syntax_error("heredoc line must have an indent greater than or equal to #{indent}")
+          end
+          line = line[indent, line.bytesize - indent]
+          add_heredoc_text(new_pieces, line) unless line.empty?
+          new_pieces << value
+          remove_indent = false
+          current_line = StringBuilder.new
+        else
+          unless current_line.empty?
+            add_heredoc_text(new_pieces, current_line.to_s)
+            current_line = StringBuilder.new
+          end
+          new_pieces << value
+        end
+      end
+      previous_line_number = line_number
+      idx = idx + 1
+    end
+    unless current_line.empty?
+      line = current_line.to_s
+      line = remove_heredoc_from_line(line, indent) if remove_indent
+      add_heredoc_text(new_pieces, line)
+    end
+
+    nodes = [] of ASTNode
+    new_pieces.each do |piece|
+      if piece.is_a?(String)
+        nodes << StringLiteral.new(piece)
+      else
+        nodes << piece
+      end
+    end
+    nodes
+  end
+
+  def add_heredoc_text(pieces : Array(ASTNode | String), text : String) : Nil
+    if pieces.size > 0
+      last = pieces[pieces.size - 1]
+      if last.is_a?(String)
+        pieces[pieces.size - 1] = last + text
+        return
+      end
+    end
+    pieces << text
+  end
+
+  def heredoc_indent_ok?(line : String, indent : Int32) : Bool
+    count = indent < line.bytesize ? indent : line.bytesize
+    i = 0
+    while i < count
+      return false unless line.byte_at(i).unsafe_chr.ascii_whitespace?
+      i = i + 1
+    end
+    true
+  end
+
+  # One heredoc line without its indent: a blank line becomes a newline.
+  def remove_heredoc_from_line(line : String, indent : Int32) : String
+    unless heredoc_indent_ok?(line, indent)
+      raise_syntax_error("heredoc line must have an indent greater than or equal to #{indent}")
+    end
+    if line.bytesize - 1 < indent
+      "\n"
+    else
+      line[indent, line.bytesize - indent]
+    end
   end
 
   def parse_string_array : ASTNode

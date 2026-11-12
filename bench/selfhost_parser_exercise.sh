@@ -46,7 +46,7 @@ for phrase in \
   "testing call and block parsing... ok (calls and blocks verified)" \
   "testing control expressions (if, unless, while, until, case, modifiers)... ok (control expressions verified)" \
   "testing declaration parsing... ok (declarations verified)" \
-  "testing real syntax fixtures parsing... ok (1863 nodes across 29 fixtures)" \
+  "testing real syntax fixtures parsing... ok (2186 nodes across 36 fixtures)" \
   "ALL SELFHOST PARSER CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -746,7 +746,14 @@ for fixture in \
   "$REPO"/bench/fixtures/decl_types_and_vars.iyi \
   "$REPO"/bench/fixtures/decl_visibility_and_annotations.iyi \
   "$REPO"/bench/fixtures/syntax_macro_control_grammar.iyi \
-  "$REPO"/bench/fixtures/syntax_string_concat_and_magic.iyi; do
+  "$REPO"/bench/fixtures/syntax_string_concat_and_magic.iyi \
+  "$REPO"/bench/fixtures/syntax_macro_text_splits.iyi \
+  "$REPO"/bench/fixtures/syntax_macro_keywords_and_escapes.iyi \
+  "$REPO"/bench/fixtures/syntax_proc_literals.iyi \
+  "$REPO"/bench/fixtures/syntax_index_tuples_and_keyword_names.iyi \
+  "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi \
+  "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi \
+  "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi; do
   fixture_name="${fixture#"$REPO/"}"
   "$WORK/exercise-plain" "$fixture" > "$WORK/iyi.ast"
   "$WORK/dump_crystal" "$fixture" > "$WORK/crystal.ast"
@@ -863,6 +870,63 @@ run_proof "mutation 13: mixing up the asm volatile and alignstack options" \
 # reads an assignment back, so a parser that refuses it fails.
 run_proof "mutation 14: refusing the assignment form of a select when" \
   'if node.is_a?(Assign)' 'if false && node.is_a?(Assign)'
+
+# Mutations 15-27: each fixed rule of this slice, reverted in the file that holds it.
+# The exercise run above checks only its own assertions, not the tree, so a fixture
+# proof checks the rebuilt exercise's tree against the hosted parser's, for the new fixtures.
+new_fixtures_match() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_parser_exercise.iyi" > /dev/null 2>&1 || return 1
+  for fixture in \
+    "$REPO"/bench/fixtures/syntax_macro_text_splits.iyi \
+    "$REPO"/bench/fixtures/syntax_macro_keywords_and_escapes.iyi \
+    "$REPO"/bench/fixtures/syntax_proc_literals.iyi \
+    "$REPO"/bench/fixtures/syntax_index_tuples_and_keyword_names.iyi \
+    "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi \
+    "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi \
+    "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi; do
+    "$WORK/mut-exercise" "$fixture" > "$WORK/mut.ast" 2>/dev/null || return 1
+    "$WORK/dump_crystal" "$fixture" > "$WORK/mut_cr.ast" 2>/dev/null || return 1
+    cmp -s "$WORK/mut.ast" "$WORK/mut_cr.ast" || return 1
+  done
+  return 0
+}
+run_proof_in() {
+  prove_mutation "$1" "$2" "$3" "$4" -- new_fixtures_match || status=1
+}
+
+LEXER="$REPO/src/compiler/syntax/lexer.iyi"
+run_proof_in "mutation 15: no string state push for a #{ interpolation in macro text" "$LEXER" \
+  $'if peek_next_char == \'{\'\n            char = next_char\n            @macro_curly_count' \
+  $'if false && peek_next_char == \'{\'\n            char = next_char\n            @macro_curly_count'
+run_proof_in "mutation 16: iyi impl no longer opens a macro block" "$LEXER" \
+  "if @iyi && char_sequence?('p', 'l')" "if false && char_sequence?('p', 'l')"
+run_proof_in "mutation 17: iyi end! no longer closes a macro block" "$LEXER" \
+  "if whitespace && (!ident_part_or_end?(peek_next_char) || (@iyi && peek_next_char == '!'))" \
+  "if whitespace && (!ident_part_or_end?(peek_next_char) || false)"
+PARSER="$REPO/src/compiler/syntax/parser.iyi"
+run_proof_in "mutation 18: -> is not a call argument start" "$PARSER" \
+  "TokenKind::OP_TILDE, TokenKind::UNDERSCORE, TokenKind::OP_MINUS_GT" "TokenKind::OP_TILDE, TokenKind::UNDERSCORE"
+run_proof_in "mutation 19: index arguments refuse a tuple literal" "$PARSER" \
+  "parse_call_args_space_consumed(true, true, true)" "parse_call_args_space_consumed(false, true)"
+run_proof_in "mutation 20: a keyword name followed by a colon is refused in call arguments" "$PARSER" \
+  "        return nil unless next_comes_colon_space?" "        return nil"
+run_proof_in "mutation 21: a constant always starts a type in a bare proc type list" "$PARSER" \
+  $'      type_path_start?\n    when TokenKind::OP_COLON_COLON' $'      true\n    when TokenKind::OP_COLON_COLON'
+run_proof_in "mutation 22: a literal interpolation is not folded into the string" "$PARSER" \
+  "if interp_exp.is_a?(StringLiteral) && delimiter_state.kind != DelimiterKind::HEREDOC" \
+  "if false && interp_exp.is_a?(StringLiteral) && delimiter_state.kind != DelimiterKind::HEREDOC"
+run_proof_in "mutation 23: a command literal is not a backtick call" "$PARSER" \
+  "    return node unless kind == DelimiterKind::COMMAND" "    return node"
+run_proof_in "mutation 24: a heredoc is not read with its indent removed" "$PARSER" \
+  $'if delimiter_state.kind == DelimiterKind::HEREDOC\n      return StringInterpolation' \
+  $'if false && delimiter_state.kind == DelimiterKind::HEREDOC\n      return StringInterpolation'
+run_proof_in "mutation 25: a begin block gets the paren keyword" "$PARSER" \
+  "        body.keyword = Expressions::Keyword::Begin" "        body.keyword = Expressions::Keyword::Paren"
+run_proof_in "mutation 26: &.name with a local of that name reads the local" "$PARSER" \
+  "      if is_var && !call_only" "      if is_var"
+run_proof_in "mutation 27: a comma does not continue a call across the line break" "$PARSER" \
+  $'        next_token_skip_space_or_newline\n        if (@token.keyword == Keyword::END' \
+  $'        next_token_skip_space\n        if (@token.keyword == Keyword::END'
 
 echo
 echo "== Verification clean state confirmed"

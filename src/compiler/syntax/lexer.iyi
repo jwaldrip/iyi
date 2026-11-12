@@ -74,6 +74,7 @@ pub class Lexer
   @temp_token : Token
   @string_pool : StringPool
   @macro_curly_count : Int32
+  @delimiter_state_stack : Array(DelimiterState)
 
   @stacked : Bool
   @stacked_filename : String
@@ -108,6 +109,7 @@ pub class Lexer
     @comment_is_doc = true
     @count_whitespace = false
     @macro_curly_count = 0
+    @delimiter_state_stack = [] of DelimiterState
 
     @stacked = false
     @stacked_filename = ""
@@ -2295,17 +2297,19 @@ pub class Lexer
   end
 
   private def check_heredoc_end(delimiter_state : DelimiterState) : Bool
-    # Skip leading whitespace on line
+    # The terminator's indent is the column it starts at: the parser removes it from every body line.
     save_pos = @pos
     save_col = @column_number
     while current_char == ' ' || current_char == '\t'
       next_char
     end
+    indent = @column_number - 1
     str_end = delimiter_state.the_end
     if matches_string?(str_end)
       advance_bytes(str_end.bytesize)
       if current_char == '\n' || current_char == '\r' || current_char == '\0'
         @token.type = TokenKind::DELIMITER_END
+        @token.delimiter_state = delimiter_state.with_heredoc_indent(indent)
         return true
       end
     end
@@ -2402,8 +2406,16 @@ pub class Lexer
         return MacroKeywordState::Other
       end
     when 'i'
-      if beginning_of_line && next_char == 'f' && peek_not_ident_part_or_end_next_char
-        return MacroKeywordState::Other
+      case next_char
+      when 'f'
+        if beginning_of_line && peek_not_ident_part_or_end_next_char
+          return MacroKeywordState::Other
+        end
+      when 'm'
+        # iyi: `impl` opens a block that its `end` closes, in a `.iyi` file only.
+        if @iyi && char_sequence?('p', 'l') && peek_not_ident_part_or_end_next_char
+          return MacroKeywordState::Other
+        end
       end
     when 'l'
       if char_sequence?('i', 'b') && peek_not_ident_part_or_end_next_char
@@ -2433,6 +2445,10 @@ pub class Lexer
           return MacroKeywordState::Other
         end
       end
+    when 't'
+      if @iyi && char_sequence?('r', 'a', 'i', 't') && peek_not_ident_part_or_end_next_char
+        return MacroKeywordState::Other
+      end
     when 'u'
       if next_char == 'n'
         case next_char
@@ -2458,10 +2474,15 @@ pub class Lexer
     nil
   end
 
-  # In a string inside macro text, the brace of `#{` is text, and the hosted front end
-  # keeps it in the literal. Any other `{` ends a literal, and so does `{{` or `{%` after `#`.
-  private def interpolation_brace_in_string?(in_string : Bool) : Bool
-    in_string && current_pos > 0 && @source.byte_at(current_pos - 1) == '#'.ord
+  # Leaves a `#{...}` interpolation: the `}` that matches it restores the string
+  # state the `#` pushed. Other braces inside the interpolation only count down.
+  private def pop_macro_interpolation(current : DelimiterState?) : DelimiterState?
+    restored = current
+    if @macro_curly_count == 1
+      restored = @delimiter_state_stack.pop
+    end
+    @macro_curly_count = @macro_curly_count - 1
+    restored
   end
 
   def next_macro_token(macro_state : MacroState, skip_whitespace : Bool = false) : Token
@@ -2551,6 +2572,8 @@ pub class Lexer
         next_char(TokenKind::MACRO_CONTROL_START)
         @token.macro_state = MacroState.new(whitespace, nest, control_nest, delimiter_state, beginning_of_line, yields, comment, nil)
         return @token
+      else
+        @macro_curly_count = @macro_curly_count + 1 if @macro_curly_count > 0
       end
     end
 
@@ -2610,7 +2633,7 @@ pub class Lexer
         beginning_of_line = false
         case next_char
         when 'd'
-          if whitespace && !ident_part_or_end?(peek_next_char) && peek_next_char != ':'
+          if whitespace && (!ident_part_or_end?(peek_next_char) || (@iyi && peek_next_char == '!')) && peek_next_char != ':'
             if nest == 0 && control_nest == 0
               next_char(TokenKind::MACRO_END)
               @token.macro_state = MacroState.default
@@ -2635,7 +2658,7 @@ pub class Lexer
     end
 
     char = current_char
-    until (char == '{' && (!interpolation_brace_in_string?(!delimiter_state.nil?) || peek_next_char == '{' || peek_next_char == '%')) || char == '\0' ||
+    until char == '{' || char == '\0' ||
           (char == '\\' && (peek_next_char == '{' || peek_next_char == '%')) ||
           (whitespace && delimiter_state.nil? && char == 'e')
       case char
@@ -2678,7 +2701,13 @@ pub class Lexer
           end
         end
       when '#'
-        if delimiter_state
+        if ds = delimiter_state
+          if peek_next_char == '{'
+            char = next_char
+            @macro_curly_count = @macro_curly_count + 1
+            @delimiter_state_stack.push(ds)
+            delimiter_state = nil
+          end
           whitespace = false
         else
           break
@@ -2691,7 +2720,11 @@ pub class Lexer
             else
               delimiter_state = ds.with_open_count_delta(-1)
             end
+          elsif @macro_curly_count > 0
+            delimiter_state = pop_macro_interpolation(delimiter_state)
           end
+        elsif @macro_curly_count > 0
+          delimiter_state = pop_macro_interpolation(delimiter_state)
         end
       else
         if ds = delimiter_state

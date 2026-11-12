@@ -54,9 +54,9 @@ floor_of() {
     lexer:self)            echo 54 ;;
     lexer:fixtures)        echo 15 ;;
     parser:samples)        echo 28 ;;
-    parser:prelude)        echo 19 ;;
-    parser:std)            echo 119 ;;
-    parser:self)           echo 49 ;;
+    parser:prelude)        echo 20 ;;
+    parser:std)            echo 126 ;;
+    parser:self)           echo 54 ;;
     parser:fixtures)       echo 15 ;;
     declarations:samples)  echo 5 ;;
     declarations:prelude)  echo 10 ;;
