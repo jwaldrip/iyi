@@ -183,11 +183,14 @@ echo "  $(wc -l < "$RESULTS" | tr -d ' ') files measured"
 
 echo "== 3b. Whole program: every compiler and prelude file, with the prelude and its import closure loaded (total mode)"
 WHOLE="$WORK/whole.tsv"
+CARRIED="$WORK/carried.tsv"
 : > "$WHOLE"
+: > "$CARRIED"
 for f in $(find "$REPO/src/compiler" -name '*.iyi' | sort) "$REPO"/src/iyi/*.iyi; do
   rel="${f#$REPO/}"
   if "$PORT" --total "$f" > "$WORK/w_o.txt" 2> "$WORK/w_e.txt"; then
     printf '%s\tok\n' "$rel" >> "$WHOLE"
+    awk -v rel="$rel" '/^carried: / { m = substr($0, 10); gsub(/[0-9]+/, "N", m); print rel "\t" substr(m, 1, 140) }' "$WORK/w_o.txt" >> "$CARRIED"
   else
     msg=$(head -n 1 "$WORK/w_e.txt" | awk '{ gsub(/\/[^ :]*\//, "<path>/"); gsub(/[0-9]+/, "N"); print substr($0, 1, 140) }')
     printf '%s\tfail\t%s\n' "$rel" "$msg" >> "$WHOLE"
@@ -195,21 +198,28 @@ for f in $(find "$REPO/src/compiler" -name '*.iyi' | sort) "$REPO"/src/iyi/*.iyi
 done
 whole_total=$(wc -l < "$WHOLE" | tr -d ' ')
 whole_pass=$(awk -F'\t' '$2 == "ok"' "$WHOLE" | wc -l | tr -d ' ')
+carried_files=$(cut -f1 "$CARRIED" | sort -u | wc -l | tr -d ' ')
+clean_pass=$((whole_pass - carried_files))
 echo "  whole program: $whole_pass of $whole_total files complete the port's declarations pass"
+echo "    with no refusal carried: $clean_pass; with at least one refusal carried past in total mode: $carried_files"
 echo "  failure table by first message:"
 awk -F'\t' '$2 == "fail" { print $3 }' "$WHOLE" | sort | uniq -c | sort -rn | head -25 | awk '{ print "    " $0 }'
+echo "  refusals carried past in total mode, by message (occurrences, message):"
+cut -f2 "$CARRIED" | sort | uniq -c | sort -rn | head -25 | awk '{ print "    " $0 }'
 WHOLE_FLOOR_FILE="$REPO/bench/selfhost_whole_program.floor"
-whole_floor=$(awk '/^passing/ { print $2 }' "$WHOLE_FLOOR_FILE" 2>/dev/null)
+whole_floor=$(awk '/^complete/ { print $2 }' "$WHOLE_FLOOR_FILE" 2>/dev/null)
+clean_floor=$(awk '/^clean/ { print $2 }' "$WHOLE_FLOOR_FILE" 2>/dev/null)
 whole_floor=${whole_floor:-0}
-if [ "$whole_pass" -lt "$whole_floor" ]; then
-  echo "  WHOLE PROGRAM BELOW FLOOR: $whole_pass < $whole_floor. A regression: restore the declaration or lower nothing."
+clean_floor=${clean_floor:-0}
+if [ "$whole_pass" -lt "$whole_floor" ] || [ "$clean_pass" -lt "$clean_floor" ]; then
+  echo "  WHOLE PROGRAM BELOW FLOOR: complete $whole_pass (floor $whole_floor), clean $clean_pass (floor $clean_floor). A regression: restore the declaration or lower nothing."
   status=1
-elif [ "$whole_pass" -gt "$whole_floor" ]; then
+elif [ "$whole_pass" -gt "$whole_floor" ] || [ "$clean_pass" -gt "$clean_floor" ]; then
   if [ "$RAISE" = 1 ]; then
-    printf 'passing %s\n' "$whole_pass" > "$WHOLE_FLOOR_FILE"
-    echo "  whole-program floor raised to $whole_pass"
+    printf 'complete %s\nclean %s\n' "$whole_pass" "$clean_pass" > "$WHOLE_FLOOR_FILE"
+    echo "  whole-program floors raised: complete $whole_pass, clean $clean_pass"
   else
-    echo "  WHOLE PROGRAM RAISE THE FLOOR: $whole_pass > $whole_floor (SEMDECL_RAISE=1)"
+    echo "  WHOLE PROGRAM RAISE THE FLOOR: complete $whole_pass (floor $whole_floor), clean $clean_pass (floor $clean_floor) (SEMDECL_RAISE=1)"
     status=1
   fi
 fi
