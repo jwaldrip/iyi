@@ -56,18 +56,28 @@ end
 
 # The hosted `build_string_constant(str)` (codegen.cr) under Crystal's object layout: a private
 # constant global of the literal struct `{ i32 type_id, i32 bytesize, i32 length, [bytesize+1 x i8] }`,
-# with the string's bytes and a trailing zero. The global is named `'text'` (with `@` written as `.`),
-# and the program's pointer to the string is the global itself (a pointer cast is free in opaque
-# pointers). Equal texts share one global, as the hosted `@strings` does. A text longer than 18
-# bytes has a truncated name in the hosted code and is refused by name until that is ported.
+# with the string's bytes and a trailing zero. The global is named after the text (`@` written as `.`),
+# in quotes: a text longer than 18 bytes is cut to its first 19 bytes and `...` is added (codegen.cr:3463,
+# `name[0..18]`), which is the hosted name for each long literal. The program's pointer to the string is the
+# global itself (a pointer cast is free in opaque pointers). Equal texts share one global, as the hosted
+# `@strings` does. Refused by name: a long text that is not ASCII (its cut could split a character), and a
+# long text whose cut name is already a global (two texts with one 19-byte prefix; LLVM would rename the
+# second, which is not ported).
 pub def build_string_constant(low : Lowerer, str : String) : Global
   if found = low.strings[str]?
     return found
   end
+  name_text = str
   if str.bytesize > 18
-    refuse_port("lower: a string constant longer than 18 bytes needs the hosted truncated global name (codegen.cr build_string_constant), not ported yet")
+    if str.size != str.bytesize
+      refuse_port("lower: a string constant longer than 18 bytes that is not ASCII: the hosted name cuts a character (codegen.cr build_string_constant), not ported yet")
+    end
+    name_text = str[0, 19] + "..."
   end
-  name = "'" + str.split('@').join(".") + "'"
+  name = "'" + name_text.split('@').join(".") + "'"
+  if low.module.get_global?(name)
+    refuse_port("lower: two string constants share the name #{name} (the hosted LLVM renames the second, not ported)")
+  end
   types = low.module.types
   i32 = types.int32
   bytes = types.array_of(types.int(8), str.bytesize.to_i64 + 1_i64)
