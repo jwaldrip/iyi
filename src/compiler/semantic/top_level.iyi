@@ -1331,15 +1331,15 @@ pub class SemanticProgram < NonGenericModuleType
     @object_type = obj
     @types["Object"] = obj
 
+    ref = NonGenericClassType.new(self, self, "Reference", obj)
+    @reference_type = ref
+    @types["Reference"] = ref
+
     val = NonGenericClassType.new(self, self, "Value", obj)
     val.struct = true
     val.abstract = true
     @value_type = val
     @types["Value"] = val
-
-    ref = NonGenericClassType.new(self, self, "Reference", obj)
-    @reference_type = ref
-    @types["Reference"] = ref
 
     num = NonGenericClassType.new(self, self, "Number", val)
     num.struct = true
