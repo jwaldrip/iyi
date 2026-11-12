@@ -511,7 +511,8 @@ pub class Builder
   # ---- calls --------------------------------------------------------------------------
 
   def call(fn_type : IrType, callee : Value, args : Array(Value), name : String = "") : Inst
-    call_aux(CallAux.new(fn_type), callee, args, name)
+    cc = callee.is_a?(Function) ? callee.as(Function).call_convention : CallConv::C
+    call_aux(CallAux.new(fn_type, cc), callee, args, name)
   end
 
   def call(fn_type : IrType, callee : Value, arg1 : Value, name : String = "") : Inst
