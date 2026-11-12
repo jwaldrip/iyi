@@ -10,7 +10,7 @@ import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, Gene
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/type_node_host::{TypeNodeHost}
-import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast}
+import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of}
 import compiler/semantic/default_arguments::{DefaultArguments}
 
 # iyi: two modes. Strict (the default) raises on the first construct it cannot
@@ -33,6 +33,32 @@ pub class MainVisitor < TypeNodeHost
   property current_yield_nodes : Array(Yield)?
   property total : Bool = false
   property in_type_args : Int32 = 0
+
+  def type_args_depth : Int32
+    @in_type_args
+  end
+
+  # The analysed signature of each fun, keyed by its FunDef node: argument types
+  # in declared order and the declared return type. The lowering reads them.
+  property fun_arg_types_by_node : NodeMap(Array(Type)) = NodeMap(Array(Type)).new
+  property fun_return_types_by_node : NodeMap(Type) = NodeMap(Type).new
+
+  def record_fun_signature(node : FunDef, arg_types : Array(Type), return_type : Type?) : Nil
+    @fun_arg_types_by_node[node] = arg_types
+    if rt = return_type
+      @fun_return_types_by_node[node] = rt
+    end
+    nil
+  end
+
+  def fun_arg_types(node : FunDef) : Array(Type)?
+    @fun_arg_types_by_node[node]?
+  end
+
+  def fun_return_type(node : FunDef) : Type?
+    @fun_return_types_by_node[node]?
+  end
+
   # The union of the types each variable of the body being typed is assigned, keyed
   # by name; `def_var_unions` keeps it per instantiated def (the lowering's storage type).
   property var_unions : Hash(String, Type)
@@ -1452,6 +1478,26 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : Self) : Bool
     visit_self(self, node)
+  end
+
+  def visit(node : TypeOf) : Bool
+    visit_type_of(self, node)
+  end
+
+  def visit(node : SizeOf) : Bool
+    visit_size_of(self, node)
+  end
+
+  def visit(node : AlignOf) : Bool
+    visit_align_of(self, node)
+  end
+
+  def visit(node : InstanceSizeOf) : Bool
+    visit_instance_size_of(self, node)
+  end
+
+  def visit(node : InstanceAlignOf) : Bool
+    visit_instance_align_of(self, node)
   end
 
   # The visitor of a fun body: the same node types and errors, its own locals.

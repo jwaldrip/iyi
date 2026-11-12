@@ -19,9 +19,9 @@ module compiler/semantic/type_nodes
 # accepts, so the port refuses them by name; and the `raises` mark a cast leaves
 # on its method, which the port does not track yet.
 
-import compiler/syntax/ast::{ASTNode, Cast, FunDef, Generic, Metaclass, NilableCast, ProcNotation, Self, Union}
+import compiler/syntax/ast::{ASTNode, AlignOf, Cast, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, ProcNotation, Self, SizeOf, TypeOf, Union, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
-import compiler/semantic/top_level::{SemanticProgram, Type, TypeHook}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, SemanticProgram, Type, TypeHook}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TypeQueries}
 import compiler/types/unification::{TypeUnification}
@@ -221,6 +221,7 @@ pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
   lookup = type_node_lookup(visitor)
 
   vars = Hash(String, Type).new
+  arg_types = [] of Type
   i = 0
   while i < node.args.size
     arg = node.args[i]
@@ -233,6 +234,7 @@ pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
       return visitor.refuse(node, arg_type.as(LookupError).message)
     end
     vars[arg.name] = arg_type.as(Type)
+    arg_types << arg_type.as(Type)
     i = i + 1
   end
 
@@ -244,6 +246,7 @@ pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
     end
     declared = declared_type.as(Type)
   end
+  visitor.record_fun_signature(node, arg_types, declared)
 
   inner = visitor.sub_visitor(vars)
   body.accept(inner)
@@ -258,4 +261,75 @@ pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
   end
   visitor.set_type(node, visitor.program.nil_type)
   false
+end
+
+# `typeof(e1, e2)`: the merged type of its expressions (hosted `visit(node : TypeOf)`
+# 3144-3170). The expressions are typed outside any type argument, and the locals
+# they bind are put back afterwards, so a typeof never changes a variable's type.
+# Type filters do not apply: the port has none yet.
+pub def visit_type_of(visitor : TypeNodeHost, node : TypeOf) : Bool
+  saved = visitor.vars.dup
+  depth = visitor.type_args_depth
+  visitor.bracket_type_args(-depth)
+  types = [] of Type
+  complete = true
+  i = 0
+  while i < node.expressions.size
+    expression = node.expressions[i]
+    expression.accept(visitor)
+    if t = visitor.child_type(expression)
+      types << t.as(Type)
+    else
+      complete = false
+    end
+    i = i + 1
+  end
+  visitor.bracket_type_args(depth)
+  visitor.vars.clear
+  saved.each do |name, t|
+    visitor.vars[name] = t
+  end
+  return false unless complete
+  merged = visitor.program.type_merge(types)
+  meta = type_node_metaclass(merged)
+  if meta.nil?
+    return visitor.refuse(node, "#{merged.full_name} doesn't have a metaclass")
+  end
+  visitor.set_type(node, meta.as(Type))
+  false
+end
+
+# `sizeof(T)`, `alignof(T)`, `instance_sizeof(T)` and `instance_alignof(T)` are
+# Int32 (hosted `visit_size_or_align_of` and `visit_instance_size_or_align_of`,
+# 3172-3245). The hosted pass also replaces the node with a literal of the size.
+# That needs layouts, which the port does not build yet (types.iyi sizeof_type
+# refuses), so the expansion is not made here; the typed node is.
+pub def visit_size_of_node(visitor : TypeNodeHost, node : ASTNode, exp : ASTNode, what : String) : Bool
+  visitor.bracket_type_args(1)
+  exp.accept(visitor)
+  visitor.bracket_type_args(-1)
+  t = visitor.child_type(exp)
+  return false if t.nil?
+  type = t.as(Type)
+  if type.is_a?(GenericClassType) || type.is_a?(GenericModuleType)
+    return visitor.refuse(node, "can't take #{what} of uninstantiated generic type #{type.full_name}")
+  end
+  visitor.set_type(node, visitor.program.int32_type)
+  false
+end
+
+pub def visit_size_of(visitor : TypeNodeHost, node : SizeOf) : Bool
+  visit_size_of_node(visitor, node, node.exp, "size")
+end
+
+pub def visit_align_of(visitor : TypeNodeHost, node : AlignOf) : Bool
+  visit_size_of_node(visitor, node, node.exp, "alignment")
+end
+
+pub def visit_instance_size_of(visitor : TypeNodeHost, node : InstanceSizeOf) : Bool
+  visit_size_of_node(visitor, node, node.exp, "instance size")
+end
+
+pub def visit_instance_align_of(visitor : TypeNodeHost, node : InstanceAlignOf) : Bool
+  visit_size_of_node(visitor, node, node.exp, "instance alignment")
 end
