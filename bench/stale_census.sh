@@ -208,9 +208,11 @@ def run_single_program(item):
     t_fresh = time.time() - t0
 
     # 2. Cached test run
+    # The cached pass runs under the audit: each fast serve must agree with the compiler check (RG10).
+    cached_env = dict(env, IYI_STALE_FAST_AUDIT='1')
     t0 = time.time()
     res_cached = subprocess.run([iyi, 'test', '--cached', '--json', '--explain', test_file],
-                                capture_output=True, text=True, env=env, cwd=p_scratch)
+                                capture_output=True, text=True, env=cached_env, cwd=p_scratch)
     t_cached = time.time() - t0
 
     fresh_json = None
@@ -797,11 +799,13 @@ def measure_overhead(results):
         sys.exit(1)
 
 results = []
+audit_failures = []
 if mode in ('all', 'census'):
     print(f'Running census over {len(all_progs)} programs ({len(c2_files)} C2, {len(c3_files)} C3) using 8 workers...')
     t0 = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         results = list(ex.map(run_single_program, all_progs))
+    audit_failures = [r['name'] for r in results if any('fast path served' in str(r.get(key, '')) for key in ('cached_status', 'verdict'))]
     dt = time.time() - t0
     print(f'Completed census in {dt:.2f}s.')
     print()
@@ -819,4 +823,7 @@ try:
     shutil.rmtree(work, ignore_errors=True)
 except:
     pass
+if audit_failures:
+    print("ERROR: the cached pass served what the compiler check would not: " + ", ".join(audit_failures), file=sys.stderr)
+    sys.exit(1)
 EOF

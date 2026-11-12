@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What `iyi test --cached` gives back on a suite, against plain `iyi test`.
 
-    python3 bench/stale_suite_speed.py [--tests 1000] [--compiler PATH]
+    python3 bench/stale_suite_speed.py [--tests 1000] [--compiler PATH] [--audit] [--expect-faster]
 
 The point of stale testing is time back on a large suite, and the census
 (`bench/stale_census.sh`) cannot say whether it gives any: it times one test
@@ -34,8 +34,13 @@ test would have: the input to deciding which tests are worth checking at
 all.
 
 A tool, not a gate: it prints seconds, and a shared runner's seconds are
-weather. Exits non-zero only if a run failed or served a wrong number of
-tests.
+weather. Exits non-zero if a run failed or served a wrong number of tests.
+`--audit` sets IYI_STALE_FAST_AUDIT=1 on the cached runs, so every fast serve
+is also checked against the compiler's own answer. `--expect-faster` also
+requires the unchanged cached run to start no compiler and to be quicker than
+plain. The `builds` column counts the compiler processes a cached run started,
+and `reasons` counts the tests whose check gave a reason; a dash means the
+compiler does not report it yet.
 """
 import argparse
 import json
@@ -170,6 +175,12 @@ def suite_run(compiler, mode, cwd, env):
         "passed": data.get("passed", 0),
         "failed": data.get("failed", 0),
         "served": sum(1 for test in tests if test.get("cached")),
+        # The compiler processes this run started, from the JSON's `builds`.
+        # None from a compiler that does not report it yet, which the table shows as a dash.
+        "builds": data.get("builds"),
+        # Tests whose check gave a reason. A check served from the recorded inputs
+        # gives none, so this counts the checks that ran the compiler.
+        "check_reasons": sum(1 for test in tests if test.get("check_reason")),
         "seconds": {os.path.basename(test["file"]): test.get("seconds", 0.0) for test in tests},
         # With what the test printed: "does not build" under a loaded machine
         # is a finding about the runner, and the status alone cannot say which.
@@ -207,6 +218,10 @@ def main():
     parser.add_argument("--iterations", default="", help="MEDIUM,SLOW loop counts, instead of measuring them")
     parser.add_argument("--json", default="", help="write every number to this file")
     parser.add_argument("--keep", action="store_true", help="leave the suite and its cache where they are")
+    parser.add_argument("--audit", action="store_true",
+                        help="set IYI_STALE_FAST_AUDIT=1 on cached runs: each fast serve must agree with the compiler check")
+    parser.add_argument("--expect-faster", action="store_true",
+                        help="exit 1 unless the unchanged cached run starts no compiler and is quicker than plain")
     args = parser.parse_args()
 
     wanted = [name for name in args.scenarios.split(",") if name]
@@ -243,7 +258,9 @@ def main():
               "load_average": os.getloadavg()[0], "compiler": compiler, "scenarios": {}}
     wrong = []
     recorded = False
-    header = f"{'scenario':10s} {'plain':>9s} {'--cached':>9s} {'ratio':>7s} {'served':>7s} {'should':>7s}  note"
+    # --audit checks each fast serve against the compiler's own answer (RG10); plain runs never set it.
+    cached_env = dict(env, IYI_STALE_FAST_AUDIT="1") if args.audit else env
+    header = f"{'scenario':10s} {'plain':>9s} {'--cached':>9s} {'ratio':>7s} {'served':>7s} {'should':>7s} {'builds':>7s} {'reasons':>8s}  note"
     print(header)
 
     def edit(name):
@@ -279,7 +296,7 @@ def main():
             reruns = edit(name)
             should_serve = args.tests - reruns
             plain = suite_run(compiler, "plain", suite.root, env)
-            cached = suite_run(compiler, "cached", suite.root, env)
+            cached = suite_run(compiler, "cached", suite.root, cached_env)
 
         notes = []
         for label, result in (("plain", plain), ("cached", cached)):
@@ -298,8 +315,11 @@ def main():
                 notes.append(f"reran {should_serve - served} it could have served")
         ratio = cached["wall"] / plain["wall"] if plain["wall"] else 0.0
         mode = "--fresh" if name == "record" else "--cached"
-        print(f"{name:10s} {plain['wall']:8.1f}s {cached['wall']:8.1f}s {ratio:6.1f}x {served:7d} {should_serve:7d}  "
-              + (f"({mode}) " if name == "record" else "") + "; ".join(notes), flush=True)
+        builds = cached.get("builds")
+        builds_text = "-" if builds is None else str(builds)
+        reasons_text = str(cached["check_reasons"]) if "check_reasons" in cached else "-"
+        print(f"{name:10s} {plain['wall']:8.1f}s {cached['wall']:8.1f}s {ratio:6.1f}x {served:7d} {should_serve:7d} "
+              f"{builds_text:>7s} {reasons_text:>8s}  " + (f"({mode}) " if name == "record" else "") + "; ".join(notes), flush=True)
         report["scenarios"][name] = {"plain": plain, "cached": cached, "should_serve": should_serve, "mode": mode}
         if args.json:
             with open(args.json, "w", encoding="utf-8") as handle:
@@ -321,6 +341,17 @@ def main():
                   f"check median {check_s[len(check_s) // 2]:.2f}; the check cost more than the run for {dearer}")
         report["per_test_note"] = "plain seconds are measured with several tests running at once, cached checks one at a time"
         print("  (plain tests run several at once and cached checks one at a time, so the two columns are not the same load)")
+
+    if args.expect_faster:
+        unchanged = report["scenarios"].get("unchanged")
+        if unchanged is None:
+            wrong.append("--expect-faster: the unchanged scenario did not run")
+        else:
+            plain_wall, cached_wall = unchanged["plain"]["wall"], unchanged["cached"]["wall"]
+            if not cached_wall < plain_wall:
+                wrong.append(f"--expect-faster: unchanged cached run took {cached_wall:.1f}s, plain took {plain_wall:.1f}s")
+            if unchanged["cached"].get("builds") != 0:
+                wrong.append(f"--expect-faster: unchanged cached run started {unchanged['cached'].get('builds')!r} compiler processes, not 0")
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as handle:
