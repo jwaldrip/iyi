@@ -352,6 +352,33 @@ check_probe_mutant() {
   (cd "$REPO" && "$WORK/mut_exercise" --dump-ir "bench/fixtures/$name" >/dev/null 2>&1)
 }
 
+# Rebuilds the port with the unresolved-call refusal silenced too, and asks it to
+# write IR for a port-limit fixture. cg_splat_loop.iyi is refused by an unresolved
+# call before its binary operand, so the port refuses it by name only while both
+# refusals stand. prove_mutation has already silenced the binary operand; this
+# silences the call. It passes, meaning not caught, only while the fixture is
+# still refused by name, and the caller's copy of the source is restored.
+check_port_limit_mutant() {
+  local name="$1" keep="$WORK/cg_first_mutant.iyi" built out got_status
+  cp "$CG_SRC" "$keep" || return 1
+  python3 - "$CG_SRC" <<'PY' || { cp "$keep" "$CG_SRC"; return 1; }
+import sys
+p = sys.argv[1]
+s = open(p).read()
+call = "refuse_undefined_call(node)"
+if s.count(call) != 1:
+    sys.exit(1)
+open(p, "w").write(s.replace(call, "nil", 1))
+PY
+  "$IYI" build -o "$WORK/mut_limit" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1
+  built=$?
+  cp "$keep" "$CG_SRC"
+  [ "$built" -eq 0 ] || return 1
+  out="$(cd "$REPO" && "$WORK/mut_limit" --dump-ir "bench/fixtures/$name" 2>&1)"
+  got_status=$?
+  [ "$got_status" -ne 0 ] && printf '%s\n' "$out" | grep -q '^Error: port limitation: the port cannot '
+}
+
 MUTATIONS_RUN=0
 
 prove_mutation "corrupt addition opcode to subtraction" "$CG_SRC" \
@@ -501,6 +528,15 @@ prove_mutation "corrupt the undefined-method refusal wording" "$CG_SRC" \
   "    message = \"undefined method '#{node.name}' for top-level\"" \
   "    message = \"undefined method '#{node.name}' for toplevel\"" \
   -- check_refusal_mutant cg_undefined_raise.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# cg_splat_loop.iyi is refused by name at its binary operand once the call is
+# silenced, and by the unresolved call while it stands. Both refusals must be
+# silent before the port writes IR for it, so the proof silences both.
+prove_mutation "return a constant for an unresolved binary operand" "$CG_SRC" \
+  "refuse_port(\"port limitation: the port cannot type the #{side} operand '#{operand_text(operand)}' of '#{op_node.name}' in #{scope_name}, so it refuses instead of leaving the block unterminated (no IR is written)\")" \
+  "return @context.int32.const_int(0)" \
+  -- check_port_limit_mutant cg_splat_loop.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 
