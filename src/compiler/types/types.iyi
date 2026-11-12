@@ -3,7 +3,7 @@ module compiler/types/types
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
 import compiler/syntax/token::{NumberKind}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TraitType, Type, TypeException, UnionType}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, UnionType, VoidType}
 
 pub class VirtualType < Type
   property base_type : Type
@@ -613,36 +613,6 @@ pub class SymbolType < PrimitiveType
   end
 end
 
-pub class NilType < PrimitiveType
-  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, superclass : Type?)
-    super(program, namespace, name, superclass, 0)
-  end
-end
-
-pub class NoReturnType < NamedType
-  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
-    super(program, namespace, name)
-  end
-
-  def no_return? : Bool
-    true
-  end
-
-  def subtype_of?(other : Type) : Bool
-    true
-  end
-end
-
-pub class VoidType < NamedType
-  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
-    super(program, namespace, name)
-  end
-
-  def void? : Bool
-    true
-  end
-end
-
 pub class TypeParameter < Type
   getter param_name : String
 
@@ -680,14 +650,12 @@ pub class TypeQueries
     type.is_a?(ProcInstanceType)
   end
 
-  # The port builds Void and NoReturn as NonGenericClassType (top_level.iyi), so
-  # these match the built-in by its full name, as nil_type? does for Nil.
   def self.void?(type : Type) : Bool
-    type.is_a?(VoidType) || type.full_name == "Void"
+    type.is_a?(VoidType)
   end
 
   def self.no_return?(type : Type) : Bool
-    type.is_a?(NoReturnType) || type.full_name == "NoReturn"
+    type.is_a?(NoReturnType)
   end
 
   def self.virtual?(type : Type) : Bool
@@ -770,8 +738,25 @@ pub class TypeQueries
   # struct stands for itself; any other class is its virtual type. Non-class
   # types stand for themselves.
   def self.virtual_type(type : Type) : Type
+    if type.is_a?(MetaclassType)
+      # The metaclass of a virtual type is the virtual metaclass (Animal+.class).
+      inst = virtual_type(type.as(MetaclassType).instance_type)
+      if inst.is_a?(VirtualType)
+        return VirtualMetaclassType.new(type.program, inst.as(VirtualType))
+      end
+      return type
+    end
     if type.is_a?(ClassType)
       is_leaf = leaf?(type)
+      is_abstract = type.abstract?
+      is_struct = type.struct?
+      return type if is_leaf && !is_abstract
+      return virtual_type_bang(type) if is_struct && is_abstract && !is_leaf
+      return type if is_struct
+      return virtual_type_bang(type)
+    end
+    if type.is_a?(GenericClassInstanceType)
+      is_leaf = leaf?(type.as(GenericClassInstanceType).generic_type)
       is_abstract = type.abstract?
       is_struct = type.struct?
       return type if is_leaf && !is_abstract

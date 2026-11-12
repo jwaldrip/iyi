@@ -4,7 +4,8 @@ import compiler/semantic/top_level::{AliasType, ClassType, EnumType, GenericClas
 import compiler/semantic/main_visitor
 import compiler/types
 
-import compiler/types/types::{FloatType, GenericClassInstanceType, IntegerType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, PrimitiveType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualType}
+import compiler/semantic/top_level::{NilType}
+import compiler/types/types::{FloatType, GenericClassInstanceType, IntegerType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, PrimitiveType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualType}
 import compiler/types/type_system::{TypeSystem}
 
 module BenchSelfhostTypesExercise

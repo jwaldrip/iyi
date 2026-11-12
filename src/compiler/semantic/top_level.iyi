@@ -449,6 +449,40 @@ end
 pub class NonGenericClassType < ClassType
 end
 
+# Built-ins the hosted Program creates as their own kinds. They live here, not in
+# types.iyi, because types.iyi imports this module and an import cycle is refused.
+pub class NilType < NonGenericClassType
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, superclass : Type?)
+    super(program, namespace, name, superclass)
+    @struct = true
+  end
+end
+
+pub class VoidType < NamedType
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
+    super(program, namespace, name)
+    @struct = true
+  end
+
+  def void? : Bool
+    true
+  end
+end
+
+pub class NoReturnType < NamedType
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
+    super(program, namespace, name)
+  end
+
+  def no_return? : Bool
+    true
+  end
+
+  def subtype_of?(other : Type) : Bool
+    true
+  end
+end
+
 pub class TypeParameterType < Type
   def initialize(program : SemanticProgram, name : String)
     super(program, nil, name)
@@ -856,8 +890,7 @@ pub class SemanticProgram < NonGenericModuleType
     bool_t = NonGenericClassType.new(self, self, "Bool", val)
     bool_t.struct = true
     @types["Bool"] = bool_t
-    nil_t = NonGenericClassType.new(self, self, "Nil", val)
-    nil_t.struct = true
+    nil_t = NilType.new(self, self, "Nil", val)
     @types["Nil"] = nil_t
 
     sym_t = NonGenericClassType.new(self, self, "Symbol", val)
@@ -866,11 +899,9 @@ pub class SemanticProgram < NonGenericModuleType
 
     @types["String"] = NonGenericClassType.new(self, self, "String", ref)
 
-    void_t = NonGenericClassType.new(self, self, "Void", val)
-    void_t.struct = true
-    @types["Void"] = void_t
+    @types["Void"] = VoidType.new(self, self, "Void")
 
-    @types["NoReturn"] = NonGenericClassType.new(self, self, "NoReturn", val)
+    @types["NoReturn"] = NoReturnType.new(self, self, "NoReturn")
 
     st = NonGenericClassType.new(self, self, "Struct", val)
     st.abstract = true

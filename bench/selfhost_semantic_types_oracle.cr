@@ -12,10 +12,17 @@
 # The port's driver (bench/selfhost_semantic_types_exercise.iyi) prints the same
 # lines for the same fixtures, and the gate requires them byte-identical.
 #
-# Operations (the receiver is a type name, with no dot in it, then one member):
-#   T.nil_type? T.pointer? T.proc? T.void? T.no_return? T.virtual? T.metaclass?
-#   T.virtual_metaclass? T.struct? T.reference_like? T.leaf?
-#   T.subclasses T.all_subclasses T.instance_type T.virtual_type T.splat_index
+# Operations:
+#   T.<member>                     the receiver is a type name, with no dot in it,
+#                                  or `T.class` for its metaclass. Members:
+#     nil_type? pointer? proc? void? no_return? virtual? metaclass?
+#     virtual_metaclass? struct? reference_like? leaf? subclasses
+#     all_subclasses instance_type virtual_type splat_index
+#   merge(A, B) merge(A, B, C)     Program#type_merge (types/merge.iyi)
+#   intersect(T, U)                Type.common_descendent (types/intersect.iyi)
+#   filter(T, kind[, args])        a type filter applied to T (types/filters.iyi):
+#     is_a, U | nil? | not_is_a, U | not_nil? | truthy | not_truthy |
+#     responds_to, name | or_is_a, U, V | and_is_a, U, V
 require "compiler/requires"
 
 def type_text(t : Iyi::Type?) : String
@@ -32,12 +39,57 @@ def list_text(types : Array(Iyi::Type)) : String
 end
 
 def resolve(program : Iyi::Program, name : String) : Iyi::Type
+  if name.ends_with?(".class")
+    return resolve(program, name[0...-6]).metaclass
+  end
   t = program.types[name]?
   raise "unknown type #{name}" if t.nil?
   t
 end
 
+def evaluate_merge(program : Iyi::Program, op : String) : String
+  parts = op[6...-1].split(", ")
+  case parts.size
+  when 2
+    type_text(program.type_merge(resolve(program, parts[0]), resolve(program, parts[1])))
+  when 3
+    type_text(program.type_merge([resolve(program, parts[0]), resolve(program, parts[1]), resolve(program, parts[2])] of Iyi::Type?))
+  else
+    raise "merge takes two or three types: #{op}"
+  end
+end
+
+def evaluate_intersect(program : Iyi::Program, op : String) : String
+  parts = op[10...-1].split(", ")
+  raise "intersect takes two types: #{op}" unless parts.size == 2
+  type_text(Iyi::Type.common_descendent(resolve(program, parts[0]), resolve(program, parts[1])))
+end
+
+def evaluate_filter(program : Iyi::Program, op : String) : String
+  parts = op[7...-1].split(", ")
+  t = resolve(program, parts[0])
+  nil_t = resolve(program, "Nil")
+  filter = case parts[1]
+           when "is_a"        then Iyi::SimpleTypeFilter.new(resolve(program, parts[2]))
+           when "nil?"        then Iyi::SimpleTypeFilter.new(nil_t)
+           when "not_is_a"    then Iyi::SimpleTypeFilter.new(resolve(program, parts[2])).not
+           when "not_nil?"    then Iyi::SimpleTypeFilter.new(nil_t).not
+           when "truthy"      then Iyi::TruthyFilter.instance
+           when "not_truthy"  then Iyi::TruthyFilter.instance.not
+           when "responds_to" then Iyi::RespondsToTypeFilter.new(parts[2])
+           when "or_is_a"
+             Iyi::OrTypeFilter.new(Iyi::SimpleTypeFilter.new(resolve(program, parts[2])), Iyi::SimpleTypeFilter.new(resolve(program, parts[3])))
+           when "and_is_a"
+             Iyi::AndTypeFilter.new(Iyi::SimpleTypeFilter.new(resolve(program, parts[2])), Iyi::SimpleTypeFilter.new(resolve(program, parts[3])))
+           else raise "unknown filter #{parts[1]}"
+           end
+  type_text(filter.apply(t))
+end
+
 def evaluate(program : Iyi::Program, op : String) : String
+  return evaluate_merge(program, op) if op.starts_with?("merge(")
+  return evaluate_intersect(program, op) if op.starts_with?("intersect(")
+  return evaluate_filter(program, op) if op.starts_with?("filter(")
   dot = op.index('.') || raise "malformed operation #{op}"
   t = resolve(program, op[0...dot])
   member = op[(dot + 1)..]

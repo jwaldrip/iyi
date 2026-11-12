@@ -1,6 +1,10 @@
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{GenericClassType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/types/types::{TypeQueries}
+import compiler/types/merge::{TypeMerge}
+import compiler/types/intersect::{TypeIntersect}
+import compiler/types/filters::{TypeFilter, TypeFilterSpec}
+import compiler/types/unification::{TypeUnification}
 
 # Type-model driver for bench/selfhost_semantic_types_exercise.sh.
 #
@@ -9,9 +13,15 @@ import compiler/types/types::{TypeQueries}
 # Builds the fixture's declarations into a SemanticProgram, then evaluates each
 # `# op <op>` line and prints `<op> => <result>`, the same lines the hosted
 # oracle (bench/selfhost_semantic_types_oracle.cr) prints. The operations are
-# listed in the oracle's header; a type name in an operation has no dot in it.
+# listed in the oracle's header.
 module BenchSelfhostSemanticTypesExercise
   def self.resolve(prog : SemanticProgram, name : String) : Type
+    if dot = name.index(".")
+      base = resolve(prog, name[0, dot])
+      m = TypeUnification.metaclass_of(base)
+      raise "no metaclass for #{name}" if m.nil?
+      return m
+    end
     t = prog.types[name]?
     raise "unknown type #{name}" if t.nil?
     t
@@ -94,7 +104,71 @@ module BenchSelfhostSemanticTypesExercise
     raise "unknown operation #{member}"
   end
 
+  def self.evaluate_merge(prog : SemanticProgram, op : String) : String
+    parts = op[6, op.bytesize - 7].split(", ")
+    if parts.size == 2
+      return type_text(TypeMerge.merge(prog, resolve(prog, parts[0]), resolve(prog, parts[1])))
+    end
+    if parts.size == 3
+      types = [resolve(prog, parts[0]), resolve(prog, parts[1]), resolve(prog, parts[2])] of Type
+      return type_text(TypeMerge.merge_all(prog, types))
+    end
+    raise "merge takes two or three types: #{op}"
+  end
+
+  def self.evaluate_intersect(prog : SemanticProgram, op : String) : String
+    parts = op[10, op.bytesize - 11].split(", ")
+    raise "intersect takes two types: #{op}" unless parts.size == 2
+    type_text(TypeIntersect.common_descendent(prog, resolve(prog, parts[0]), resolve(prog, parts[1])))
+  end
+
+  def self.is_a_spec(prog : SemanticProgram, name : String) : TypeFilterSpec
+    TypeFilterSpec.new("is_a", resolve(prog, name))
+  end
+
+  def self.build_filter(prog : SemanticProgram, parts : Array(String)) : TypeFilterSpec
+    kind = parts[1]
+    if kind == "is_a"
+      return is_a_spec(prog, parts[2])
+    end
+    if kind == "nil?"
+      return is_a_spec(prog, "Nil")
+    end
+    if kind == "not_is_a"
+      return TypeFilter.negate(is_a_spec(prog, parts[2]))
+    end
+    if kind == "not_nil?"
+      return TypeFilter.negate(is_a_spec(prog, "Nil"))
+    end
+    if kind == "truthy"
+      return TypeFilterSpec.new("truthy")
+    end
+    if kind == "not_truthy"
+      return TypeFilter.negate(TypeFilterSpec.new("truthy"))
+    end
+    if kind == "responds_to"
+      return TypeFilterSpec.new("responds_to", nil, parts[2])
+    end
+    if kind == "or_is_a"
+      return TypeFilterSpec.new("or", nil, "", is_a_spec(prog, parts[2]), is_a_spec(prog, parts[3]))
+    end
+    if kind == "and_is_a"
+      return TypeFilterSpec.new("and", nil, "", is_a_spec(prog, parts[2]), is_a_spec(prog, parts[3]))
+    end
+    raise "unknown filter #{kind}"
+  end
+
+  def self.evaluate_filter(prog : SemanticProgram, op : String) : String
+    parts = op[7, op.bytesize - 8].split(", ")
+    t = resolve(prog, parts[0])
+    spec = build_filter(prog, parts)
+    type_text(TypeFilter.apply(prog, spec, t))
+  end
+
   def self.evaluate(prog : SemanticProgram, op : String) : String
+    return evaluate_merge(prog, op) if op.starts_with?("merge(")
+    return evaluate_intersect(prog, op) if op.starts_with?("intersect(")
+    return evaluate_filter(prog, op) if op.starts_with?("filter(")
     if dot = op.index(".")
       t = resolve(prog, op[0, dot])
       return apply(t, op[dot + 1, op.bytesize - dot - 1])

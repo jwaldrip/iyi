@@ -3,8 +3,9 @@ module compiler/types/type_system
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Call, Generic, Metaclass, NamedArgument, NumberLiteral, Path, ProcNotation, Union}
 import compiler/syntax/token
-import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, TraitType, Type, TypeException, UnionType}
-import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, UnionType, VoidType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
+import compiler/types/merge::{TypeMerge}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/filtering::{TypeFiltering}
 import compiler/types/restrictions::{TypeRestrictions}
@@ -433,11 +434,11 @@ pub class TypeSystem
   end
 
   def type_merge(types : Array(Type)) : Type
-    TypeUnification.type_merge(@program, types)
+    TypeMerge.merge_all(@program, types)
   end
 
   def type_merge(t1 : Type, t2 : Type) : Type
-    TypeUnification.type_merge(@program, t1, t2)
+    TypeMerge.merge(@program, t1, t2)
   end
 
   def filter_by(type : Type, target : Type) : Type?

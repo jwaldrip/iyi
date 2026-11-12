@@ -3,8 +3,9 @@ module compiler/types/filtering
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/token
-import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, Type, UnionType}
-import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualMetaclassType, VirtualType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, Type, UnionType, VoidType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, VirtualMetaclassType, VirtualType}
+import compiler/types/merge::{TypeMerge}
 import compiler/types/unification::{TypeUnification}
 
 pub class TypeFiltering
@@ -44,7 +45,7 @@ pub class TypeFiltering
         i = i + 1
       end
       return nil if filtered.empty?
-      return TypeUnification.type_merge(program, filtered)
+      return TypeMerge.merge_all(program, filtered)
     end
 
     if type2.is_a?(UnionType)
@@ -59,7 +60,7 @@ pub class TypeFiltering
         i = i + 1
       end
       return nil if filtered.empty?
-      return TypeUnification.type_merge(program, filtered)
+      return TypeMerge.merge_all(program, filtered)
     end
 
     if type1.is_a?(VirtualType)
@@ -137,7 +138,7 @@ pub class TypeFiltering
         i = i + 1
       end
       return nil if filtered.empty?
-      return TypeUnification.type_merge(program, filtered)
+      return TypeMerge.merge_all(program, filtered)
     end
 
     if type.is_a?(ModuleType)
@@ -169,7 +170,7 @@ pub class TypeFiltering
         end
       end
       return nil if sub_res.empty?
-      return TypeUnification.type_merge(program, sub_res)
+      return TypeMerge.merge_all(program, sub_res)
     end
 
     nil

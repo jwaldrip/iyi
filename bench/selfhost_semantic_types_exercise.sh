@@ -17,6 +17,9 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 TYPES_FILE="$REPO/src/compiler/types/types.iyi"
+MERGE_FILE="$REPO/src/compiler/types/merge.iyi"
+INTERSECT_FILE="$REPO/src/compiler/types/intersect.iyi"
+FILTERS_FILE="$REPO/src/compiler/types/filters.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -106,6 +109,24 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "splat_index drops the generic class splat position" "$TYPES_FILE" \
   "      return type.as(GenericClassType).splat_index" \
   "      return nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "NoReturn elimination bypassed in merge_all" "$MERGE_FILE" \
+  "kept << t unless TypeQueries.no_return?(t)" \
+  "kept << t" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "base_descendent ignores declared parents" "$INTERSECT_FILE" \
+  "    parents_of(t1).each do |parent|" \
+  "    ([] of Type).each do |parent|" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "is_a? narrows to the tested value, not the target" "$FILTERS_FILE" \
+  "        return TypeIntersect.common_descendent(program, other, target)" \
+  "        return other" \
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

@@ -18,6 +18,7 @@ CRYSTAL="${CRYSTAL:-crystal}"
 TYPES_DIR="$REPO/src/compiler/types"
 TYPES_MAIN="$REPO/src/compiler/types/types.iyi"
 UNIF_FILE="$REPO/src/compiler/types/unification.iyi"
+MERGE_FILE="$REPO/src/compiler/types/merge.iyi"
 REND_FILE="$REPO/src/compiler/types/rendering.iyi"
 TSYS_FILE="$REPO/src/compiler/types/type_system.iyi"
 WORK="$(mktemp -d)"
@@ -219,17 +220,12 @@ check_type_outputs_diverge() {
   compare_all "$WORK/mut-exercise"
 }
 
-prove_mutation "virtual root bypass in unification" "$UNIF_FILE" \
+prove_mutation "virtual root bypass in type merge" "$MERGE_FILE" \
   "if ancestor && virtual_root?(ancestor)" \
   "if false && ancestor && virtual_root?(ancestor)" \
   -- check_type_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "NoReturn elimination bypassed in union unification" "$UNIF_FILE" \
-  "unless t.full_name == \"NoReturn\" || (t.is_a?(NoReturnType) && t.as(NoReturnType).no_return?)" \
-  "unless false" \
-  -- check_type_outputs_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "NilableType classification bypassed in union_of" "$UNIF_FILE" \
   "return NilableType.new(program, not_nil_t)" \
