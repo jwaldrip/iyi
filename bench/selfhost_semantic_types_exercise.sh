@@ -205,6 +205,25 @@ prove_mutation "unbound generic accepted as a written type argument" "$LOOKUP_MU
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+RESTRICT_MUTATION_FILE="$REPO/src/compiler/types/to_restriction.iyi"
+prove_mutation "proc returning Nil keeps its Nil output in the restriction" "$RESTRICT_MUTATION_FILE" \
+  "    if !type.return_type.is_a?(NilType)" \
+  "    if true" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "restriction paths drop their namespaces" "$RESTRICT_MUTATION_FILE" \
+  "    append_namespace(type, names)" \
+  "    nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "restriction names are written in lower case" "$RESTRICT_MUTATION_FILE" \
+  "    names << type.name" \
+  "    names << type.name.downcase" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

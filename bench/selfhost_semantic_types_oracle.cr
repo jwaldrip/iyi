@@ -143,11 +143,39 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+# `restriction(scope, written)`: the restriction the written type converts to in
+# the scope, as hosted TypeToRestriction writes it, or `nil` when it has none.
+# The hosted converter is overloaded by static type, so the type is dispatched here.
+def evaluate_restriction(program : Iyi::Program, op : String) : String
+  parts = split_top(op[12...-1])
+  scope = scope_of(program, parts[0])
+  t = scope.lookup_type(Iyi::Parser.new(parts[1..].join(", ")).parse)
+  converter = Iyi::TypeToRestriction.new(scope)
+  restriction = case t
+                when Iyi::NilType                then converter.convert(t)
+                when Iyi::IntegerType            then converter.convert(t)
+                when Iyi::NonGenericClassType    then converter.convert(t)
+                when Iyi::NonGenericModuleType   then converter.convert(t)
+                when Iyi::AliasType              then converter.convert(t)
+                when Iyi::UnionType              then converter.convert(t)
+                when Iyi::MetaclassType          then converter.convert(t)
+                when Iyi::TupleInstanceType      then converter.convert(t)
+                when Iyi::NamedTupleInstanceType then converter.convert(t)
+                when Iyi::ProcInstanceType       then converter.convert(t)
+                when Iyi::GenericInstanceType    then converter.convert(t)
+                when Iyi::GenericClassType       then converter.convert(t)
+                when Iyi::GenericModuleType      then converter.convert(t)
+                else raise "no restriction for #{t.class}"
+                end
+  restriction.nil? ? "nil" : restriction.to_s
+end
+
 def evaluate(program : Iyi::Program, op : String) : String
   return evaluate_merge(program, op) if op.starts_with?("merge(")
   return evaluate_intersect(program, op) if op.starts_with?("intersect(")
   return evaluate_filter(program, op) if op.starts_with?("filter(")
   return evaluate_lookup(program, op) if op.starts_with?("lookup(")
+  return evaluate_restriction(program, op) if op.starts_with?("restriction(")
   # The receiver may carry arguments, so the member starts after the last
   # dot that is outside parentheses.
   dot = nil

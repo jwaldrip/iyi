@@ -7,6 +7,8 @@ import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/lookup::{LookupError, TypeLookup}
+import compiler/types/to_restriction::{TypeToRestriction}
+import compiler/syntax/ast::{ASTNode}
 
 # Type-model driver for bench/selfhost_semantic_types_exercise.sh.
 #
@@ -261,11 +263,33 @@ module BenchSelfhostSemanticTypesExercise
     type_text(found.as(Type))
   end
 
+  # `restriction(scope, written)`: the restriction the written type converts to in
+  # the scope, or `nil` when it has none.
+  def self.evaluate_restriction(prog : SemanticProgram, ts : TypeSystem, op : String) : String
+    parts = split_top(op[12, op.bytesize - 13])
+    scope = scope_of(prog, parts[0])
+    written = ""
+    i = 1
+    while i < parts.size
+      written = i == 1 ? parts[i] : "#{written}, #{parts[i]}"
+      i = i + 1
+    end
+    node = Parser.new(written, "restriction").parse
+    found = TypeLookup.new(ts.instances).lookup(scope, node)
+    if found.is_a?(LookupError)
+      return "error: #{found.as(LookupError).message}"
+    end
+    restriction = TypeToRestriction.new(scope).convert(found.as(Type))
+    return "nil" if restriction.nil?
+    restriction.as(ASTNode).to_s
+  end
+
   def self.evaluate(prog : SemanticProgram, ts : TypeSystem, op : String) : String
     return evaluate_merge(prog, ts, op) if op.starts_with?("merge(")
     return evaluate_intersect(prog, ts, op) if op.starts_with?("intersect(")
     return evaluate_filter(prog, ts, op) if op.starts_with?("filter(")
     return evaluate_lookup(prog, ts, op) if op.starts_with?("lookup(")
+    return evaluate_restriction(prog, ts, op) if op.starts_with?("restriction(")
     dot = member_dot(op)
     raise "malformed operation #{op}" if dot < 0
     t = resolve(prog, ts, op[0, dot])
