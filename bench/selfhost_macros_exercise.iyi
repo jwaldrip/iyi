@@ -229,7 +229,9 @@ make_getter(answer, 42)
   end
 end
 
-if Program.args.size > 0
+if Program.args.size == 1 && Program.args[0] == "--host-target"
+  puts MacroTargetFlags.host_triple
+elsif Program.args.size > 0
   filename = ""
   count = false
   triple = ""

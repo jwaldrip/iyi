@@ -26,8 +26,13 @@ INTERP="$REPO/src/compiler/macros/interpreter.iyi"
 PARSER="$REPO/src/compiler/macros/macro_parser.iyi"
 ENGINE="$REPO/src/compiler/macros/engine.iyi"
 . "$REPO/bench/lib/mutation.sh"
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+if [ -n "${MACRO_GATE_KEEP:-}" ]; then
+  WORK="$MACRO_GATE_KEEP"
+  mkdir -p "$WORK"
+else
+  WORK="$(mktemp -d)"
+  trap 'rm -rf "$WORK"' EXIT
+fi
 
 echo "== 1. Building and running the macro engine exercise"
 "$IYI" build -o "$WORK/exercise" "$REPO/bench/selfhost_macros_exercise.iyi"
@@ -228,6 +233,12 @@ if [ -z "$HOST_TRIPLE" ]; then
   echo "  THE ORACLE REPORTED NO HOST TRIPLE: this gate cannot conclude anything"
   exit 1
 fi
+# The port's host triple is the hosted compiler's own, at run time.
+PORT_HOST="$("$WORK/exercise" --host-target)"
+if [ "$PORT_HOST" != "$HOST_TRIPLE" ]; then
+  echo "  THE PORT'S HOST TRIPLE DIFFERS: port $PORT_HOST, hosted compiler $HOST_TRIPLE"
+  status=1
+fi
 fixture_args() {
   awk -v host="$HOST_TRIPLE" '
     /^# target: / { t = $3 }
@@ -401,6 +412,17 @@ prove_mutation "raise location moved to the brace" "$PARSER" \
   "exp.location = open_loc" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "hash size counts one entry too many" "$METHODS" \
+  "return NumberLiteral.new(hash.entries.size.to_s, NumberKind::I32)" \
+  "return NumberLiteral.new((hash.entries.size + 1).to_s, NumberKind::I32)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "symbols print bare whatever their text" "$METHODS" \
+  "plain = false" \
+  "plain = plain" \
+  -- check_macros_still_match || status=1
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

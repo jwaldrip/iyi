@@ -572,6 +572,10 @@ pub class MacroInterpreter
           @str << val.as(MacroId).value
         elsif val.is_a?(Nop)
           # nothing
+        elsif val.is_a?(StringLiteral)
+          @str << MacroMethods.string_text(val.as(StringLiteral).value)
+        elsif val.is_a?(SymbolLiteral)
+          @str << MacroMethods.symbol_text(val.as(SymbolLiteral).value)
         else
           if me.exp.is_a?(Yield)
             # The hosted compiler writes a yielded block as `begin ... end`.

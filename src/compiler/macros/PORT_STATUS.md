@@ -5,19 +5,24 @@ AST type) against the port (`src/compiler/macros/*.iyi`).
 
 - **hosted on**: the hosted types whose `interpret` dispatch answers the name.
 - **port**: `named` when a `when "name"` in the port's macro dispatch answers it,
-  `not yet` otherwise. This is name-level: a name marked `named` may still lack
-  some of the hosted types it is listed under. Per-type checking is the next
-  step of increment 4 and is not done here.
+  `not yet` otherwise. This is name-level. The per-type record is in "Checked per
+  type" below, and only that section says a name works for a type.
 - **uses**: occurrences of `.name` inside `{% %}` and `{{ }}` across the prelude
   (`src/iyi`), std (`src/std`) and the port's own source (`src/compiler/**/*.iyi`),
   counted by `bench/macro_method_usage.py`. The port is filled in this order.
 
-Regenerate with `python3 bench/macro_method_usage.py --status > /tmp/x.md`.
+Regenerate the table with `python3 bench/macro_method_usage.py --status`.
 
-Not in this table, by design: the interpreter's own forms (`if`, `for`, `begin`,
-`verbatim`, macro variables, `@type`, `@def`, `@top_level`, `env`, `flag?`,
-`host_flag?`, `raise`, `debug`, `skip_file`, `system`, `run`) belong to increment 3
-and are reported there. `host_flag?` is not yet in the port.
+## Interpreter forms (increment 3)
+
+Each form has a fixture, and the gate compares its per-site dump with the hosted
+compiler's: `if`/`unless`/`elsif`/`else`, `for` over arrays, tuples, hashes, named
+tuples and ranges (with index variables), `begin` blocks, `verbatim` blocks, macro
+variables and their scope, `@type`, `@top_level`, `@def`, `env`, `flag?`,
+`host_flag?` (always the host's set), `raise` (message and location), undefined
+macro variables and methods, `skip_file`, `puts`, `print`, and `debug(format: false)`.
+`yield` is written as `begin ... end`, as the hosted compiler writes it. Refused by
+name: `system`, the backtick, `run`.
 
 ## Methods
 
@@ -27,7 +32,7 @@ and are reported there. `host_flag?` is not yet in the port.
 | 66 | `size` | HashLiteral, NamedTupleLiteral, StringLiteral, TypeNode | named |
 | 39 | `stringify` | ASTNode, MacroId, SymbolLiteral | named |
 | 27 | `keys` | HashLiteral, NamedTupleLiteral, TypeNode | named |
-| 23 | `symbolize` | ASTNode, MacroId, SymbolLiteral | not yet |
+| 23 | `symbolize` | ASTNode, MacroId, SymbolLiteral | named |
 | 20 | `includes?` | StringLiteral | named |
 | 13 | `nilable?` | TypeNode | not yet |
 | 11 | `name` | Alias, Annotation, AnnotationDef, Arg, CStructOrUnionDef, Call, ClassDef, ClassVar, Def, EnumDef, Extend, ExternalVar, FunDef, Generic, Global, Include, InstanceVar, LibDef, Macro, MacroVar, MetaMacroVar, ModuleDef, NamedArgument, Primitive, ProcPointer, ReadInstanceVar, Rescue, RespondsTo, TypeDef, TypeNode | named |
@@ -85,7 +90,6 @@ and are reported there. `host_flag?` is not yet in the port.
 | 0 | `[]` | Annotation, HashLiteral, NamedTupleLiteral, StringLiteral, TypeNode | named |
 | 0 | `[]=` | HashLiteral, NamedTupleLiteral | not yet |
 | 0 | `^` | NumberLiteral | not yet |
-| 0 | ``` | MacroInterpreter | not yet |
 | 0 | `abstract?` | ClassDef, Def, TypeNode | not yet |
 | 0 | `accepts_block?` | Def | not yet |
 | 0 | `alignstack?` | Asm | not yet |
@@ -141,7 +145,7 @@ and are reported there. `host_flag?` is not yet in the port.
 | 0 | `has_inner_pointers?` | TypeNode | not yet |
 | 0 | `has_key?` | HashLiteral, NamedTupleLiteral | named |
 | 0 | `has_method?` | TypeNode | not yet |
-| 0 | `host_flag?` | MacroInterpreter | not yet |
+| 0 | `host_flag?` | MacroInterpreter | named |
 | 0 | `identify` | StringLiteral | not yet |
 | 0 | `includers` | TypeNode | not yet |
 | 0 | `inputs` | Asm, ProcNotation | not yet |
@@ -156,7 +160,7 @@ and are reported there. `host_flag?` is not yet in the port.
 | 0 | `match` | StringLiteral | not yet |
 | 0 | `module?` | TypeNode | not yet |
 | 0 | `names` | Path | not yet |
-| 0 | `nil?` | ASTNode | not yet |
+| 0 | `nil?` | ASTNode | named |
 | 0 | `obj` | Cast, NilableCast, ProcPointer, ReadInstanceVar | named |
 | 0 | `of_key` | HashLiteral | not yet |
 | 0 | `of_value` | HashLiteral | not yet |
@@ -191,13 +195,13 @@ and are reported there. `host_flag?` is not yet in the port.
 | 0 | `run` | MacroInterpreter | not yet |
 | 0 | `scan` | StringLiteral | not yet |
 | 0 | `scope` | Yield | not yet |
-| 0 | `skip_file` | MacroInterpreter | not yet |
+| 0 | `skip_file` | MacroInterpreter | named |
 | 0 | `source` | RegexLiteral | not yet |
 | 0 | `splat_index` | Block, ClassDef, Def, Macro, ModuleDef | not yet |
 | 0 | `struct?` | ClassDef, TypeNode | not yet |
 | 0 | `subclasses` | TypeNode | not yet |
 | 0 | `superclass` | ClassDef, TypeNode | not yet |
-| 0 | `system` | MacroInterpreter | not yet |
+| 0 | `system` | MacroInterpreter | refused |
 | 0 | `targets` | MultiAssign | not yet |
 | 0 | `text` | Asm | not yet |
 | 0 | `then` | If, MacroIf | not yet |
@@ -220,5 +224,53 @@ and are reported there. `host_flag?` is not yet in the port.
 | 0 | `warning` | ASTNode, MacroInterpreter | not yet |
 | 0 | `whens` | Case, Select | not yet |
 | 0 | `zero?` | NumberLiteral | not yet |
-| 0 | `|` | NumberLiteral | not yet |
+| 0 | `\|` | NumberLiteral | not yet |
 | 0 | `~` | NumberLiteral | not yet |
+
+## Checked per type
+
+Every entry is an exact match with the hosted compiler, on the fixture named.
+
+- `id`, `stringify`, `symbolize`: ASTNode types Var, StringLiteral, SymbolLiteral,
+  NumberLiteral, NilLiteral, BoolLiteral, CharLiteral, ArrayLiteral, HashLiteral and
+  Call (`macro_method_id_stringify.iyi`); MacroId through `key.id` on named tuple
+  keys (`macro_for_named_tuple.iyi`); StringLiteral for `symbolize`
+  (`macro_method_string_search.iyi`).
+- `size`: StringLiteral, HashLiteral, NamedTupleLiteral, ArrayLiteral
+  (`macro_method_size_keys.iyi`, `macro_method_string_search.iyi`).
+- `keys`: HashLiteral, NamedTupleLiteral (`macro_method_size_keys.iyi`).
+- `empty?`: StringLiteral, HashLiteral, NamedTupleLiteral (`macro_method_size_keys.iyi`).
+- `includes?`, `starts_with?`, `ends_with?`, `upcase`, `downcase`, `capitalize`:
+  StringLiteral (`macro_method_string_search.iyi`).
+- `nil?`: NilLiteral and a node that is not nil (`macro_env_lookup.iyi`).
+
+Not checked by any fixture, so not claimed: every TypeNode method, the Def, Arg,
+Annotation and Macro accessors (`args`, `name`, `type`, `var`, `exp`,
+`named_args`), and the rest of the StringLiteral methods (`strip`, `chomp`, `split`,
+`gsub`, `tr`).
+
+## Divergences the port keeps
+
+- A method the port does not define returns its receiver without an error. The
+  hosted compiler raises `undefined macro method 'Class#name'`. No fixture reaches
+  this path.
+- `verbatim` keeps the body's raw text. The hosted compiler re-prints the body from
+  its parse, so `{{i}}` comes out as `{{ i }}`. Fixtures use the spelling that
+  re-prints unchanged.
+- `debug` with formatting (the default) is refused: the hosted compiler formats the
+  expansion with its formatter, which the port does not have.
+- `p`, `pp`, `p!`, `pp!`, `read_file`, `file_exists?`, `ecr_process`,
+  `ecr_process_string`, `parse_type`, `compare_versions`, `warning` and `@caller`
+  are not ported. Each falls under the first divergence above.
+- `system`, the backtick and `run` are refused by name (`is refused`).
+- The host triple is the hosted `Config.host_target` at run time: LLVM's default,
+  with the macOS version from `MACOSX_DEPLOYMENT_TARGET`. Not ported: the Linux C
+  library the hosted compiler detects with `ldd`, and `IYI_CONFIG_TARGET`, which the
+  hosted compiler reads when it is built. The gate checks the host triple with
+  `--host-target`.
+- A macro's strings and symbols are quoted by the macro engine itself
+  (`MacroMethods.string_text`, `symbol_text`), as the hosted compiler quotes them.
+  The shared printer in `src/compiler/syntax/ast.iyi` is outside this slice and still
+  prints symbols bare elsewhere.
+- Not started: the TypeNode model (increment 5) and the macro hooks `inherited`,
+  `included`, `extended`, `finished` and `method_missing` (increment 6).

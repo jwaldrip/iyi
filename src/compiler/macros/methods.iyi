@@ -29,6 +29,8 @@ pub class MacroMethods
       node.as(StringLiteral).value
     elsif node.is_a?(SymbolLiteral)
       node.as(SymbolLiteral).value
+    elsif node.is_a?(CharLiteral)
+      node.as(CharLiteral).value.to_s
     elsif node.is_a?(Var)
       node.as(Var).name
     else
@@ -39,15 +41,72 @@ pub class MacroMethods
   end
 
   def self.node_stringify(node : ASTNode) : String
-    if node.is_a?(StringLiteral)
-      node.as(StringLiteral).value
-    elsif node.is_a?(MacroId)
+    if node.is_a?(MacroId)
       node.as(MacroId).value
     else
       sb = StringBuilder.new
       node.to_s(sb)
       sb.to_s
     end
+  end
+
+  # A symbol as the hosted compiler writes it: bare when it is a plain name,
+  # quoted with its quotes and backslashes escaped otherwise.
+  def self.symbol_text(value : String) : String
+    plain = value.bytesize > 0
+    i = 0
+    while i < value.bytesize
+      c = value.byte_at(i).unsafe_chr
+      ok_start = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+      ok_rest = ok_start || (c >= '0' && c <= '9') || ((c == '?' || c == '!' || c == '=') && i == value.bytesize - 1)
+      if (i == 0 && !ok_start) || (i > 0 && !ok_rest)
+        plain = false
+      end
+      i = i + 1
+    end
+    if plain
+      ":" + value
+    else
+      sb = StringBuilder.new
+      sb << ":\""
+      j = 0
+      while j < value.bytesize
+        c = value.byte_at(j).unsafe_chr
+        if c == '"' || c == '\\'
+          sb << "\\"
+        end
+        sb << c
+        j = j + 1
+      end
+      sb << "\""
+      sb.to_s
+    end
+  end
+
+  # A string literal as the hosted compiler writes it: quoted, with its quotes,
+  # backslashes and line breaks escaped.
+  def self.string_text(value : String) : String
+    sb = StringBuilder.new
+    sb << "\""
+    i = 0
+    while i < value.bytesize
+      c = value.byte_at(i).unsafe_chr
+      if c == '"' || c == '\\'
+        sb << "\\"
+        sb << c
+      elsif c == '\n'
+        sb << "\\n"
+      elsif c == '\r'
+        sb << "\\r"
+      elsif c == '\t'
+        sb << "\\t"
+      else
+        sb << c
+      end
+      i = i + 1
+    end
+    sb << "\""
+    sb.to_s
   end
 
   def self.node_class_name(node : ASTNode) : String
@@ -223,6 +282,8 @@ pub class MacroMethods
       return StringLiteral.new(node_stringify(rec))
     when "class_name", "class_desc"
       return StringLiteral.new(node_class_name(rec))
+    when "symbolize"
+      return SymbolLiteral.new(node_stringify(rec))
     when "nil?"
       return BoolLiteral.new(rec.is_a?(NilLiteral) || rec.is_a?(Nop))
     when "=="
@@ -395,6 +456,23 @@ pub class MacroMethods
         return BoolLiteral.new(!b.value)
       end
       return b
+    end
+
+    if rec.is_a?(HashLiteral)
+      hash = rec.as(HashLiteral)
+      case method
+      when "size"
+        return NumberLiteral.new(hash.entries.size.to_s, NumberKind::I32)
+      when "empty?"
+        return BoolLiteral.new(hash.entries.empty?)
+      when "keys"
+        keys = [] of ASTNode
+        hash.entries.each do |entry|
+          keys << entry.key
+        end
+        return ArrayLiteral.new(keys)
+      end
+      return hash
     end
 
     if rec.is_a?(ArrayLiteral)
