@@ -317,8 +317,13 @@ fi
 
 if [ "$darwin" -eq 1 ]; then
   echo "== 8. mutation proofs"
+  # The broken signature is refused by codesign; the binary is not executed,
+  # because a program with a bad page hash can hang in the kernel where
+  # alarm cannot reach it.
   check_page_hash() {
-    check_hello
+    build_tool || return 1
+    "$work/bin/link_macho" hello "$work/hello-page" >/dev/null 2>&1 || return 1
+    /usr/bin/codesign -v --strict "$work/hello-page" >/dev/null 2>&1
   }
   prove_mutation "hash one CodeDirectory page wrong" "$codesign_src" \
     "    digest = SHA256.digest(image[start.to_i32, count.to_i32])" \
@@ -342,6 +347,14 @@ if [ "$darwin" -eq 1 ]; then
     "    @exe.rebases << p # rebase: dyld slides this pointer by the load slide" \
     "    # the rebase of this pointer is dropped" \
     check_drop_rebase
+
+  check_ignore_addend() {
+    check_corpus
+  }
+  prove_mutation "ignore Reloc#addend for absolute pointers" "$link_src" \
+    "      patch_abs64(dst_out, off, code, r.addend)" \
+    "      patch_abs64(dst_out, off, code, 0_i64)" \
+    check_ignore_addend
   cp "$work/bin/link_macho.good" "$work/bin/link_macho"
 else
   echo "== 8. mutation proofs: not run on $(uname -s): the native-darwin job runs them"
