@@ -114,7 +114,7 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -158,6 +158,9 @@ prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR
 prove_mutation "a block whose declared output is _ is checked against a type" "$MAIN_VISITOR" \
   "unless out_node.is_a?(Underscore)" \
   "unless false" -- bodies_at_floor || status=1
+prove_mutation "__LINE__ is typed as a String" "$MAIN_VISITOR" \
+  "if node.name == TokenKind::MAGIC_LINE || node.name == TokenKind::MAGIC_END_LINE" \
+  "if false" -- bodies_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
