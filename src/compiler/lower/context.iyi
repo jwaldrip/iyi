@@ -82,6 +82,9 @@ pub class Lowerer
   property in_main : Bool
   # The type of the program's last expression, which `__crystal_main` returns.
   property main_ret_type : Type?
+  # The hosted `break_phi`/`next` targets of the innermost while: the block `next` branches to, and the exit block `break` branches to (made at the first break).
+  property loop_next : Block?
+  property loop_break : Block?
 
   def initialize(@module : Module, @typer : LowerTyper, @analysed : MainVisitor)
     @builder = Builder.new(@module)
@@ -92,6 +95,8 @@ pub class Lowerer
     @needs_value = false
     @in_main = false
     @main_ret_type = nil
+    @loop_next = nil
+    @loop_break = nil
   end
 
   # The function being lowered (the hosted `context`). Raises when none is.

@@ -9,7 +9,7 @@ module compiler/lower/helpers
 # Helpers the core does not call yet (the call and cast families, the string and
 # symbol constants) are not here: each is ported by the slice that reads it.
 
-import compiler/ir/inst::{Inst}
+import compiler/ir/inst::{Block, Inst}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{Lowerer}
@@ -42,4 +42,12 @@ pub def load_aligned(low : Lowerer, type : IrType, pointer : Value, name : Strin
   ld = low.builder.load(type, pointer, name)
   set_align(ld, low.typer.align_of(type))
   ld
+end
+
+# The hosted `builder.end`: whether the block the builder is in already ends in a terminator (a
+# break, a next, a return or a branch), so nothing more may be emitted into it.
+pub def at_terminator?(low : Lowerer) : Bool
+  b = low.builder.insert_block
+  return false if b.nil?
+  b.as(Block).terminated?
 end

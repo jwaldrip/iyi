@@ -13,6 +13,7 @@ import compiler/ir/inst::{Block}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{Lowerer}
+import compiler/lower/helpers::{at_terminator?}
 
 pub class LowerPhi
   getter exit_block : Block
@@ -29,7 +30,7 @@ pub class LowerPhi
   # The hosted `add(value, type, last)`: records the value and the block the branch
   # ends in, then branches to the exit block. A branch with no value adds no pair.
   def add(low : Lowerer, value : Value?) : Nil
-    if @needs_value
+    if @needs_value && !at_terminator?(low)
       if v = value
         if here = low.builder.insert_block
           @values << v.as(Value)
@@ -37,7 +38,7 @@ pub class LowerPhi
         end
       end
     end
-    low.builder.br(@exit_block)
+    low.builder.br(@exit_block) unless at_terminator?(low)
   end
 
   # The hosted `close`: the exit block is current, and it holds the phi when a value

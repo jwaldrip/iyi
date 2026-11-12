@@ -1,25 +1,40 @@
 module compiler/lower/cond
 
-# The port of the Bool case of `src/compiler/iyi/codegen/cond.cr` (`codegen_cond` for a
-# type): a condition whose analysed type is Bool is already an i1, and a branch on it
-# uses that value as it is. Every other condition type (the nilable and union tests
-# that cond.cr builds) is refused by name in pending.iyi until it is ported.
+# The port of `src/compiler/iyi/codegen/cond.cr` (`codegen_cond` of a type), for the cases a
+# fixture reaches so far:
+#   Bool          the value itself (an i1)
+#   Nil           false (hosted `llvm_false`)
+#   any other type that is not a union or a nilable one: true (hosted `llvm_true`); an Int32 is
+#                 always truthy
+# A nilable type, a reference union, a nilable proc and a mixed union test the value's pointer or
+# type id (hosted `not_null_pointer?` and `union_type_and_value_pointer`). Those are refused by
+# name in pending.iyi until a fixture with the typed union reaches them.
 #
-# The caller lowers the condition expression itself and passes the value in, so this
-# file does not import the visitor (`lower.iyi` imports this file, not the reverse).
+# The caller lowers the condition expression itself and passes the value in, so this file does
+# not import the visitor (`lower.iyi` imports this file, not the reverse).
 
 import compiler/syntax/ast::{ASTNode}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
+import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{refuse_port}
-import compiler/semantic/top_level::{Type}
+import compiler/semantic/top_level::{Type, NilType}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType}
 
-# The hosted `codegen_cond(node)` for a condition of Bool type: the value itself.
+# The hosted `codegen_cond(type)` for the value of `node`, which the caller already lowered.
 pub def cond_bool(low : Lowerer, node : ASTNode, value : Value) : Value
   t = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for a condition (hosted cond.cr: codegen_cond)" if t.nil?
-  if t.as(Type).full_name != "Bool"
-    refuse_port("lower: codegen_cond of a #{t.as(Type).full_name} is not ported yet (hosted cond.cr, slice S2c)")
+  ty = t.as(Type)
+  if ty.full_name == "Bool"
+    return value
   end
-  value
+  if ty.is_a?(NilType)
+    refuse_port("lower: codegen_cond of Nil is not ported yet (hosted cond helper folds a constant false condition, slice S2c)")
+    return value
+  end
+  if ty.is_a?(NilableType) || ty.is_a?(NilableReferenceUnionType) || ty.is_a?(NilableProcType) || ty.is_a?(MixedUnionType)
+    refuse_port("lower: codegen_cond of #{ty.full_name} is not ported yet (hosted cond.cr: nilable and union tests, slice S2c)")
+  end
+  int1(low, 1_i64)
 end
