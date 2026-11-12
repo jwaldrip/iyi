@@ -1,5 +1,6 @@
 import compiler/syntax/parser::{Parser}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dump_program_declarations, dump_type}
+import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dump_program_declarations, dump_type, dir_of, normalize_path}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
@@ -17,13 +18,32 @@ module BenchSelfhostSemanticDeclarationsExercise
     text.split(":").select { |entry| !entry.empty? }
   end
 
+  # The project root an import is resolved from first: the entry's directory, moved
+  # up one level for each segment of its module header's path but the last.
+  def self.project_root(node : ASTNode, entry : String) : String
+    root = dir_of(entry)
+    if node.is_a?(Expressions)
+      first = node.as(Expressions).expressions.first?
+      if first.is_a?(ModuleHeader)
+        depth = first.as(ModuleHeader).path.size - 1
+        i = 0
+        while i < depth
+          root = dir_of(root)
+          i = i + 1
+        end
+      end
+    end
+    root
+  end
+
   def self.dump_file(path : String) : String
-    entry = File.expand_path(path)
+    entry = normalize_path(path)
     src = File.read(entry)
     parser = Parser.new(src, entry)
     node = parser.parse
     prog = SemanticProgram.new
     prog.search_path = search_path
+    prog.project_root = project_root(node, entry)
     visitor = TopLevelVisitor.new(prog, entry)
     node.accept(visitor)
     visitor.finish

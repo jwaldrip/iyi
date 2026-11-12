@@ -17,9 +17,11 @@
 require "compiler/requires"
 
 class Iyi::Compiler
-  # iyi: the entry file as a build reads it, bare. `parse` is private to the
+  # iyi: the entry file as a build reads it, bare, in iyi's library (the prelude
+  # name selects it, so `import std/x` is iyi's own). `parse` is private to the
   # compiler, so this reaches it from inside the class, as the typed oracle does.
   def declarations_program(source : Iyi::Compiler::Source) : {Program, ASTNode}
+    self.prelude = "iyi/prelude"
     program = new_program([source])
     {program, parse(program, source)}
   end

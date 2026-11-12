@@ -2,7 +2,8 @@ module compiler/semantic/top_level
 
 import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
-import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Require, Self, StringLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -24,11 +25,21 @@ pub abstract class Type
   property visibility : Visibility
   property abstract : Bool
   property struct : Bool
+  property locations : Array(Location)? = nil
 
   def initialize(@program : SemanticProgram, @namespace : ModuleType?, @name : String)
     @visibility = Visibility::Public
     @abstract = false
     @struct = false
+  end
+
+  # Records a place this type is declared, as the hosted pass does (`attach_doc`).
+  def add_location(location : Location) : Nil
+    if @locations.nil?
+      @locations = [] of Location
+    end
+    @locations.as(Array(Location)) << location
+    nil
   end
 
   def full_name : String
@@ -811,6 +822,15 @@ pub class SemanticProgram < NonGenericModuleType
   @initial_type_names : Set(String)
   @impls : Array(ImplRecord)
   @global_funs : Array(LibFun)
+  # The names this file imports, name to type: `import a/b::{Name}` adds one. The
+  # hosted pass keeps a scope per file; the port keeps the importing file's table here.
+  property current_imports : Hash(String, Type)
+  # Where an import is looked for: the project root, then IYI_PATH's entries.
+  property project_root : String?
+  property search_path : Array(String)
+  # The files read so far (absolute paths), and the module each one declared.
+  getter loaded_files : Set(String)
+  getter loaded_units : Hash(String, ModuleType)
 
   def object_type : ClassType
     @object_type.as(ClassType)
@@ -962,6 +982,11 @@ pub class SemanticProgram < NonGenericModuleType
     @merge_hook = nil
     @impls = [] of ImplRecord
     @global_funs = [] of LibFun
+    @current_imports = Hash(String, Type).new
+    @project_root = nil
+    @search_path = [] of String
+    @loaded_files = Set(String).new
+    @loaded_units = Hash(String, ModuleType).new
     @object_type = nil
     @value_type = nil
     @reference_type = nil
@@ -1080,7 +1105,7 @@ pub class SemanticProgram < NonGenericModuleType
     static_array = GenericClassType.new(self, self, "StaticArray", ["T", "N"], nil, val)
     static_array.struct = true
     @types["StaticArray"] = static_array
-    union_t = GenericClassType.new(self, self, "Union", ["*T"], 0, val)
+    union_t = GenericClassType.new(self, self, "Union", ["T"], 0, val)
     union_t.struct = true
     @types["Union"] = union_t
     ["AlwaysInline", "CallConvention", "Extern", "Flags", "Link", "Naked", "NoInline", "Packed", "Primitive", "Raises", "ReturnsTwice", "ThreadLocal", "Deprecated", "Experimental", "TargetFeature", "Share", "NoPreempt", "SafeReach", "UnsafeReach", "Unsafe"].each do |aname|
@@ -1227,6 +1252,9 @@ pub class SemanticProgram < NonGenericModuleType
       t = lookup_type(first_name)
     end
     if t.nil?
+      t = @current_imports[first_name]?
+    end
+    if t.nil?
       return nil
     end
     if path.names.size > 1
@@ -1297,6 +1325,9 @@ pub class SemanticProgram < NonGenericModuleType
     if t.nil?
       t = self.lookup_type(first_name)
     end
+    if t.nil?
+      t = @current_imports[first_name]?
+    end
 
     if t.nil?
       refuse_port("undefined constant #{path.to_s}")
@@ -1335,6 +1366,8 @@ pub class TopLevelVisitor < Visitor
   property current_type : ModuleType
   property exp_nest : Int32
   getter pending_ivars : Array(PendingIvar)
+  @file : String?
+  property unit : ModuleType? = nil
 
   def finish : Nil
     @pending_ivars.each do |pi|
@@ -1344,7 +1377,7 @@ pub class TopLevelVisitor < Visitor
     @pending_ivars.clear
   end
 
-  def initialize(@program : SemanticProgram)
+  def initialize(@program : SemanticProgram, @file : String? = nil)
     @current_type = @program
     @exp_nest = 0
     @pending_ivars = [] of PendingIvar
@@ -1368,6 +1401,88 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
+  # A `require "./x"` reads that file, relative to this one, as the hosted pass
+  # does. A library name is not part of this unit and is refused.
+  def visit(node : Require) : Bool
+    name = node.string
+    unless name.starts_with?(".")
+      refuse_port("require \"#{name}\" names a library; a unit reaches its files with a relative require or an import")
+    end
+    base = "."
+    if here = @file
+      base = dir_of(here)
+    end
+    load_file(normalize_path("#{base}/#{name}.iyi"))
+    false
+  end
+
+  # `import a/b` reads `a/b.iyi` from the project root, then from IYI_PATH (the
+  # order the hosted pass tries), and brings the listed types into this file.
+  def visit(node : ImportDecl) : Bool
+    written = node.path.join("/")
+    file = import_file(written)
+    unless file
+      refuse_port("can't find module '#{written}'")
+    end
+    unit = load_file(file.as(String))
+    if names = node.names
+      if unit.nil?
+        refuse_port("import '#{written}' names types of a file that is still being read")
+      end
+      names.each do |name|
+        found = unit.as(ModuleType).types[name]?
+        unless found
+          refuse_port("undefined constant #{name} in '#{written}'")
+        end
+        @program.current_imports[name] = found.as(Type)
+      end
+    end
+    false
+  end
+
+  def import_file(written : String) : String?
+    roots = [] of String
+    if root = @program.project_root
+      roots << root
+    end
+    @program.search_path.each do |entry|
+      roots << entry
+    end
+    i = 0
+    while i < roots.size
+      candidate = "#{roots[i]}/#{written}.iyi"
+      if File.exists?(candidate)
+        return candidate
+      end
+      i = i + 1
+    end
+    nil
+  end
+
+  # Reads, parses and declares one file into this program, once. Returns the module
+  # the file declares with its `module` header, or nil for a file with none. The
+  # file's imports belong to the file, so the program's import table is swapped for
+  # the visit and restored after it.
+  def load_file(file : String) : ModuleType?
+    if @program.loaded_files.includes?(file)
+      return @program.loaded_units[file]?
+    end
+    @program.loaded_files.add(file)
+    parser = Parser.new(File.read(file), file)
+    nodes = parser.parse
+    inner = TopLevelVisitor.new(@program, file)
+    saved = @program.current_imports
+    @program.current_imports = Hash(String, Type).new
+    nodes.accept(inner)
+    inner.finish
+    @program.current_imports = saved
+    if unit = inner.unit
+      @program.loaded_units[file] = unit
+    end
+    inner.unit
+  end
+
+
   def lookup_type_def_scope(node : ASTNode, path : Path) : ModuleType
     if path.names.size == 1
       path.global ? @program : @current_type
@@ -1386,6 +1501,9 @@ pub class TopLevelVisitor < Visitor
         if sub.nil?
           mod = NonGenericModuleType.new(@program, base, pname)
           base.add_type(pname, mod)
+          if ploc = path.location
+            mod.add_location(ploc)
+          end
           base = mod
         elsif sub.is_a?(ModuleType)
           base = sub.as(ModuleType)
@@ -1471,6 +1589,9 @@ pub class TopLevelVisitor < Visitor
       type.struct = node.struct
     end
 
+    if loc = node.location
+      type.add_location(loc)
+    end
     if vis = node.visibility
       type.visibility = vis
     end
@@ -1573,6 +1694,12 @@ pub class TopLevelVisitor < Visitor
       scope.add_type(name, type)
     end
 
+    if node.iyi_unit
+      @unit = type
+    end
+    if loc = node.location
+      type.add_location(loc)
+    end
     if vis = node.visibility
       type.visibility = vis
     end
@@ -1624,6 +1751,9 @@ pub class TopLevelVisitor < Visitor
       scope.add_type(name, type)
     end
 
+    if loc = node.location
+      type.add_location(loc)
+    end
     if vis = node.visibility
       type.visibility = vis
     end
@@ -1703,6 +1833,9 @@ pub class TopLevelVisitor < Visitor
       scope.add_type(name, enum_type)
     end
 
+    if loc = node.location
+      enum_type.add_location(loc)
+    end
     if vis = node.visibility
       enum_type.visibility = vis
     end
@@ -1730,7 +1863,9 @@ pub class TopLevelVisitor < Visitor
 
     enum_type.add_def(Def.new("value"))
     enum_type.members.keys.each do |mname|
-      enum_type.add_def(Def.new("#{underscore(mname)}?", return_type: Path.new("Bool")))
+      predicate = Def.new("#{underscore(mname)}?", return_type: Path.new("Bool"))
+      predicate.location = node.location
+      enum_type.add_def(predicate)
     end
 
     false
@@ -1752,6 +1887,9 @@ pub class TopLevelVisitor < Visitor
       scope.add_type(name, lib_type)
     end
 
+    if loc = node.location
+      lib_type.add_location(loc)
+    end
     if vis = node.visibility
       lib_type.visibility = vis
     end
@@ -1809,6 +1947,9 @@ pub class TopLevelVisitor < Visitor
     end
 
     alias_type = AliasType.new(@program, scope, name, node.value)
+    if loc = node.location
+      alias_type.add_location(loc)
+    end
     if vis = node.visibility
       alias_type.visibility = vis
     end
@@ -1906,6 +2047,7 @@ pub class TopLevelVisitor < Visitor
     # the same at this point; its body is filled in once the whole program is known.
     if node.name == "initialize" && node.receiver.nil?
       new_def = Def.new("new", node.args.dup, Nop.new)
+      new_def.location = node.location
       new_def.splat_index = node.splat_index
       new_def.block_arg = node.block_arg
       new_def.visibility = Visibility::Public
@@ -1936,6 +2078,9 @@ pub class TopLevelVisitor < Visitor
       end
 
       const = Const.new(@program, scope, name, node.value)
+      if loc = node.location
+        const.add_location(loc)
+      end
       if vis = node.visibility
         const.visibility = vis
       end
@@ -2021,6 +2166,9 @@ pub class TopLevelVisitor < Visitor
   end
 end
 
+# The hosted `underscore`: a capital takes an `_` before it when the letter before is a
+# lower-case letter or a digit, or when it ends an acronym (`HTTPServer` is `http_server`,
+# `ALRM` is `alrm`, `E2BIG` is `e2_big`).
 def underscore(s : String) : String
   sb = String::Builder.new
   i = 0
@@ -2028,7 +2176,12 @@ def underscore(s : String) : String
     b = s.byte_at(i)
     if b >= 65_u8 && b <= 90_u8
       if i > 0
-        sb << '_'
+        prev = s.byte_at(i - 1)
+        after_lower = (prev >= 97_u8 && prev <= 122_u8) || (prev >= 48_u8 && prev <= 57_u8)
+        ends_acronym = prev >= 65_u8 && prev <= 90_u8 && i + 1 < s.bytesize && s.byte_at(i + 1) >= 97_u8 && s.byte_at(i + 1) <= 122_u8
+        if after_lower || ends_acronym
+          sb << '_'
+        end
       end
       sb << (b + 32_u8).unsafe_chr
     else
@@ -2037,6 +2190,58 @@ def underscore(s : String) : String
     i = i + 1
   end
   sb.to_s
+end
+
+# Path helpers for the import closure, on plain strings. The prelude's File has no
+# dirname, join or expand_path (those are std's), so the closure builds paths itself.
+# A path is normalised by dropping `.` segments and resolving `..`, so two spellings
+# of one file compare equal.
+pub def normalize_path(path : String) : String
+  parts = [] of String
+  path.split("/").each do |seg|
+    if seg == ".."
+      parts.pop unless parts.empty?
+    elsif !(seg.empty? || seg == ".")
+      parts << seg
+    end
+  end
+  joined = parts.join("/")
+  path.starts_with?("/") ? "/#{joined}" : joined
+end
+
+# The directory a file lives in.
+pub def dir_of(path : String) : String
+  parts = path.split("/")
+  parts.pop unless parts.empty?
+  joined = parts.join("/")
+  if joined.empty?
+    return path.starts_with?("/") ? "/" : "."
+  end
+  joined
+end
+
+# Whether a declaration with these locations belongs to the entry file, which is the
+# oracle's rule: a declaration is printed when one of its locations is the file. With
+# no entry (the built-in types) everything belongs.
+pub def declared_in?(locations : Array(Location)?, entry : String?) : Bool
+  return true if entry.nil?
+  return false if locations.nil?
+  list = locations.as(Array(Location))
+  i = 0
+  while i < list.size
+    if normalize_path(list[i].filename) == entry.as(String)
+      return true
+    end
+    i = i + 1
+  end
+  false
+end
+
+pub def def_declared?(d : Def, entry : String?) : Bool
+  return true if entry.nil?
+  loc = d.location
+  return false if loc.nil?
+  normalize_path(loc.as(Location).filename) == entry.as(String)
 end
 
 pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
@@ -2091,7 +2296,7 @@ pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil
   io << indent << "  return_type: " << ret_str << "\n"
 end
 
-pub def dump_type(t : Type, io : String::Builder, indent : String) : Nil
+pub def dump_type(t : Type, io : String::Builder, indent : String, entry : String? = nil) : Nil
   io << indent << "Type: " << t.full_name << " (" << t.type_desc << ")\n"
   vis_str = t.private? ? "private" : "public"
   io << indent << "  visibility: " << vis_str << "\n"
@@ -2175,6 +2380,7 @@ pub def dump_type(t : Type, io : String::Builder, indent : String) : Nil
       end
     end
     all_defs = all_defs.sorted_by { |d| "#{d.receiver ? "self." : ""}#{d.name}" }
+    all_defs = all_defs.select { |d| def_declared?(d, entry) }
     all_defs.each do |d|
       dump_def(d, io, "#{indent}  ")
     end
@@ -2194,12 +2400,12 @@ pub def dump_type(t : Type, io : String::Builder, indent : String) : Nil
     sub_names = nt.types.keys.dup.sorted
     sub_names.each do |sname|
       sub = nt.types[sname]
-      dump_type(sub, io, "#{indent}  ")
+      dump_type(sub, io, "#{indent}  ", entry)
     end
   end
 end
 
-pub def dump_program_declarations(program : SemanticProgram) : String
+pub def dump_program_declarations(program : SemanticProgram, entry : String? = nil) : String
   sb = String::Builder.new
 
   # Top level defs
@@ -2208,6 +2414,7 @@ pub def dump_program_declarations(program : SemanticProgram) : String
     list.each { |d| top_defs << d }
   end
   top_defs = top_defs.sorted_by(&.name)
+  top_defs = top_defs.select { |d| def_declared?(d, entry) }
   global_funs = program.global_funs.sorted_by { |f| f.name }
   di = 0
   gi = 0
@@ -2232,7 +2439,9 @@ pub def dump_program_declarations(program : SemanticProgram) : String
 
   user_type_names.each do |name|
     t = program.types[name]
-    dump_type(t, sb, "")
+    if declared_in?(t.locations, entry)
+      dump_type(t, sb, "", entry)
+    end
   end
 
   sb.to_s
