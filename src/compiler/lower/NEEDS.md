@@ -28,3 +28,57 @@ Each row is a member, or a model fact, that the typer in `src/compiler/lower/typ
 - Row 1 is the one the typer depends on today. Until it is fixed, `Bool`, `Char`, `Symbol` and the integers reach the typer by name. Any builtin added to the prelude under another name needs a branch in `primitive_kind`.
 - Row 9 is in `src/compiler/ir/layout.iyi`, which this slice does not own.
 - Row 12 is the gate for every class-shaped increment: until the declarations pass runs in the drivers, no class fixture can be measured.
+
+## Lowering core (S2a): what the core reads and the port does not yet give
+
+The gate (bench/selfhost_lower_core_exercise.sh) compares the core's module with the hosted module of each fixture. These rows are what the core needs and where it stands.
+
+| Member or fact | Hosted line | Port today | Who fixes it |
+|---|---|---|---|
+| `visit(FunDef)` and `codegen_fun` | codegen.cr:842, fun.cr | refused by name in `pending.iyi` (`pending_visit_fun_def`) | S2c |
+| `visit(Call)` and `codegen_call` | codegen.cr, call.cr | refused by name in `pending.iyi` (`pending_visit_call`) | S2c |
+| IR block removal for an empty alloca block | codegen.cr:741 (`alloca_block.delete`) | removes the block from `Function#blocks`; its name stays in the symbol table | the IR owner (`ir/function.iyi`) |
+| Store alignment from the stored type | codegen.cr:612 (`set_align`) | `Inst#alignment=` set from `LowerTyper#align_of` | the typer owner for the table; the IR owner for `alignment=` |
+| Call function type in the printed text | LLVM 22 prints `call T @f(A)` | the gate writes `call T (types) @f(A)` into the oracle before the port reads it | the IR text parser owner (`ir/parser.iyi`), if LLVM text is to be read unrewritten |
+| Call-site attribute groups `#N` after a call | LLVM prints them | the gate drops them, as it drops the attribute groups | the IR text parser owner |
+| The `%Nil` named type | the hosted normaliser also drops `%Nil` | `LowerTyper#nil_type` declares it when `const_undef` of `Nil` is built | the typer owner (no change needed for the gate) |
+| Calling convention of `__crystal_main` and `main` | codegen.cr:2456 (`define_main_function`, C calling convention) | `CallConv::C` set explicitly | the core (done) |
+| `printf` declaration from constant printing | codegen.cr printf helper | dropped by the gate on both sides | the constants slice (S2e) |
+| `Crystal::BUILD_*` globals and stores | `codegen.cr` constant initialisation | not emitted; dropped by the gate on both sides | the entry owner when the build identity is ported (S2g) |
+| Phi incoming pairs without the `label` keyword | LLVM 22 prints `[ 1, %then ]` | the gate writes `label` into the oracle's phi pairs before the port reads it (same as the call type) | the IR text parser owner, if LLVM text is to be read unrewritten |
+| The `if` with a literal condition | codegen.cr:1330 (`node.truthy?` folds it, no blocks) | not ported: a literal condition is refused by name by the lowering reaching it (`pending_visit_node`) | the core owner, with the typed truthiness (S2c or a later increment) |
+| The `if` with a non-Bool condition | cond.cr (`codegen_cond` of a union or nilable type) | refused by name in `cond.iyi` | S2c |
+| A lib definition typed by the semantic pass (`lib LibC` with `fun exit`) | semantic/main_visitor.iyi:407-408 (`Expressions` asks `type_of` of every child) | the main visitor sets no type for a LibDef, so analysis raises `BUG: node has no type: lib LibC`; `bench/fixtures/lower_exit.iyi` waits on it by name | the semantic owner (S1d or the lib slice); the lowering for a lib call (`declare` plus a C-convention call, `unreachable` after a NoReturn call) is the core's next increment once the analysis types it |
+| End-to-end observability | the hosted `main` returns 0 | every ported fixture ends with status 0 and empty stdout, so the end-to-end check proves the executable runs, not the value | the lib-call path above (exit status 42 for lower_exit) |
+| Float literals (`ret double 1.500000e+00`) | LLVM prints doubles in decimal exponent form | the IR text parser refuses that form (`unexpected ... after the instruction` at the float constant), so no float fixture can be gated; floats are refused by name in `lower.iyi` (`NumberLiteral with a fraction`) | the IR text parser owner (`ir/parser.iyi`): read LLVM's decimal float literal, or the gate writes the hex bit form before the port reads it |
+| `String` type id in string constants (`i32 1` in the hosted module, `i32 31` in the port) | codegen.cr build_string_constant: `llvm_id.type_id(program.string)`; the port's LowerTypeIds numbering (type_id.iyi, typer slice) gives String 31 | the string and symbol fixtures (`lower_string`, `lower_symbol`) differ only in that word; the gate lists them under KNOWN_DIVERGED and fails if they start matching | the typer slice: the walk over Object's subclasses must number types as llvm_id.cr does (String is 1 for `--prelude empty`) |
+| Symbol table as an internal constant of absolute pointers | the hosted `:symbol_table` (`[1 x ptr] [ptr @"'abc'"]`) | iyi-compile-native refuses it: an absolute pointer in read-only __TEXT,__const cannot be rebased; the gate reports this as WAITING, by name | the native backend (C6 / compile_native) |
+| String constants longer than 18 bytes | codegen.cr build_string_constant truncates the global name | refused by name in helpers.iyi | the core, when a fixture needs it |
+
+## Lowering calls and functions (S2c): what the calls read and the port does not yet give
+
+The gate (bench/selfhost_lower_calls_exercise.sh) compares each call fixture with the hosted module. These rows are what the calls and functions read where the analysis does not give it.
+
+| # | Member or fact | Hosted line | Port today | Workaround in the port | Who fixes it | Waiting fixture |
+|---|---|---|---|---|---|---|
+| 16 | A `lib`'s funs and LibDef node: the analysis records each fun as names only (`LibFun`, top_level.iyi 561), types no LibDef node, and has no def for a lib fun, so `LibC.exit(x)` fails with "undefined method" | `lib` declarations in `semantic/main_visitor.iyi` and `codegen_extern_call` in call.cr | Not typed | bench/lib/lower_gate.iyi (`stand_in_lib_types`, calls gate only): each LibDef is typed nil and each fun is registered on the lib's metaclass as a body-less def with the declared types. Remove when the analysis types lib funs | S1d1Bodies (lib typing) | lower_exit (core gate waits; calls gate passes through the stand-in) |
+| 17 | The instantiated def's argument types on the clone's `Arg` nodes | `Def#mangled_name` reads `arg.type` (codegen/ast.cr 48) | `type_method_body` (main_visitor.iyi 892) sets the types in its local scope only | The lowering takes each parameter's type from the call's argument node, and refuses (by name) an argument whose restriction names another type | S1c2Calls (calls) | defaults, splats, and restrictions that convert an argument (no fixture yet) |
+| 18 | The owner of a def, for a receiver call (`self`, `Def#owner`) | `codegen_call` owner, call.cr:30 | Not used yet: receiver calls are refused by name | None (refused in call.iyi) | S2c increment 3 with the class lowering | a method on a class (no fixture yet) |
+| 19 | The hook call for `__crystal_main` and `main` attributes | `codegen_program` attributes of `main` and `__crystal_main` (codegen.cr finish, define_main_function) | RESOLVED at 875bf5ed2: `codegen_program` calls `function_attributes(m)` (lower.iyi) | none | S2a (done) | none |
+| 20 | `@[NoInline]`, `@[AlwaysInline]`, `@[Naked]` on a def | `Def#no_inline?`, `always_inline?`, `naked?` (codegen fun.cr 836-854, 2156) | The parser reads the annotation on a parameter but drops it on a def; `Def` has no annotations field | not ported: such a def's function gets no inline attribute | the syntax owner (`Def#annotations`) and the analysis that carries it | `@[NoInline]` def (no fixture yet) |
+| 21 | Call-site `noinline` (hosted call.cr:746) | `set_call_attributes`, a call to a function that uses a GC scan helper | Not ported; the call-site attribute group is dropped by CALL_TYPES on both sides, so the gate does not compare it | not ported | the calls owner in a later increment | `lowcall_pick` prints `#2 noinline` on its call; unchecked by the gate |
+
+Hosted rules the calls path follows that a reader might miss: a body that is a literal (nil, bool, number, char) is inlined at the call and no function is emitted, with the arguments still evaluated (`try_inline_call`, call.cr:561). The `lib` call is `declare` plus a C call, and a NoReturn call ends its block with `unreachable`; a function whose block already ends gets no return (`@builder.end`).
+
+## Lowering core (S2a), increments 1 to 6: what each waits on
+
+| Increment | Waits on | Owner | Gate state |
+|---|---|---|---|
+| 1 `visit(IsA)` on type ids | the analysis types `IsA` as Bool (no branch has `visit(IsA)` in main_visitor.iyi yet); union and nilable objects need `upcast` (cast.iyi) | S1d1Bodies (queued); S2dPrimitives (cast.iyi) | lower_isa_same WAITING by name; concrete comparison written, not yet measured |
+| 2 instance variables and `new` | `primitive_allocate(low, type)` (primitives.iyi, S2d) and a class fixture the analysis types with `new` | S2dPrimitives; S1d1Bodies | not started |
+| 3 union values | `upcast` and `assign` (cast.iyi) | S2dPrimitives | not started |
+| 4 `yield` and blocks | the analysis typing `Yield` and `Block`; the block call in call.iyi | S1d1Bodies; S2c2Calls | not started |
+| 5 closures and procs | `ProcLiteral` and `ProcPointer` typing, closure context | S1d1Bodies | not started |
+| 6 remaining forms | typing of `SizeOf`, `TypeOf`, `TupleLiteral`, `PointerOf`, `MultiAssign` in the analysis; `Path` constants to the globals slice | S1d1Bodies; globals slice | every form is refused by name in `lower.iyi` (fallback `pending_visit_node`) |
+
+Waiting on semantic typing alone: `and`, `or`, `not`, `next` (lower_and, lower_or, lower_not, lower_next), and `exit` on `lib` typing (lower_exit). The symbol fixture (lower_symbol) waits on the native tool's rebase; the repro went to the integrator at 875bf5ed2.

@@ -1,0 +1,48 @@
+module compiler/lower/cond
+
+# The port of `src/compiler/iyi/codegen/cond.cr` (`codegen_cond` of a type), for the cases a
+# fixture reaches so far:
+#   Bool          the value itself (an i1)
+#   Nil           false (hosted `llvm_false`)
+#   any other type that is not a union or a nilable one: true (hosted `llvm_true`); an Int32 is
+#                 always truthy
+# A nilable type, a reference union, a nilable proc and a mixed union test the value's pointer or
+# type id (hosted `not_null_pointer?` and `union_type_and_value_pointer`). Those are refused by
+# name in pending.iyi until a fixture with the typed union reaches them.
+#
+# The caller lowers the condition expression itself and passes the value in, so this file does
+# not import the visitor (`lower.iyi` imports this file, not the reverse).
+
+import compiler/syntax/ast::{ASTNode}
+import compiler/ir/values::{Value}
+import compiler/lower/context::{Lowerer}
+import compiler/lower/helpers::{int1}
+import compiler/lower/pending::{refuse_port}
+import compiler/semantic/top_level::{Type, NilType}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType}
+
+# The hosted `codegen_cond(type)` for the value of `node`, which the caller already lowered.
+pub def cond_bool(low : Lowerer, node : ASTNode, value : Value) : Value
+  t = low.analysed.type_of?(node)
+  raise "BUG: the analysed program has no type for a condition (hosted cond.cr: codegen_cond)" if t.nil?
+  ty = t.as(Type)
+  if ty.full_name == "Bool"
+    return value
+  end
+  if ty.is_a?(NilType)
+    refuse_port("lower: codegen_cond of Nil is not ported yet (hosted cond helper folds a constant false condition, slice S2c)")
+    return value
+  end
+  if ty.is_a?(NilableType) || ty.is_a?(NilableReferenceUnionType) || ty.is_a?(NilableProcType) || ty.is_a?(MixedUnionType)
+    refuse_port("lower: codegen_cond of #{ty.full_name} is not ported yet (hosted cond.cr: nilable and union tests, slice S2c)")
+  end
+  int1(low, 1_i64)
+end
+
+# Whether the condition's analysed type is Nil. The hosted `cond` folds a constant false
+# condition: the condition is evaluated for its effects, and the else branch is the only one lowered.
+pub def nil_condition?(low : Lowerer, node : ASTNode) : Bool
+  t = low.analysed.type_of?(node)
+  return false if t.nil?
+  t.as(Type).is_a?(NilType)
+end
