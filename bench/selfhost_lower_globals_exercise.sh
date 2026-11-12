@@ -30,10 +30,15 @@ IYI="$REPO/bin/iyi"
 . "$REPO/bench/lib/lower_oracle.sh"
 WORK="$(mktemp -d)"
 
+# The shared comparator (bench/lib/lower_gate.iyi) counts only the functions it reproduces: a module-level item (a global,
+# a declaration) that differs is reported but not counted. This gate also requires the module-level items to match.
+module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }' "$1"; }
+
 trap 'rm -rf "$WORK"' EXIT
 
-# Fixtures the port refuses by name, for a reason in src/compiler/lower/NEEDS.md (none yet).
-WAITING_FIXTURES=""
+# The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
+WAITING_FIXTURES="lowglob_const_namespace"
+# lowglob_const_namespace: a string constant in a module (Outer::S) is refused by name, its hosted llvm_name not ported yet.
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
@@ -87,7 +92,7 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
   summary="$(awk '/^SUMMARY/ { print }' "$WORK/$name.port.out")"
   identical="$(echo "$summary" | awk '{ split($2, a, "="); print a[2] }')"
   total="$(echo "$summary" | awk '{ split($3, a, "="); print a[2] }')"
-  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ]; then
+  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ] && module_same "$WORK/$name.port.out"; then
     if [ "$named" = 1 ]; then
       echo "    $name: now identical to the hosted module: remove it from WAITING_FIXTURES"
       diverged=$((diverged + 1))
@@ -149,11 +154,12 @@ lowglob_check() {
   "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port_m.build.log" 2>&1 || return 1
   for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     name="$(basename "$fixture" .iyi)"
+    case " $WAITING_FIXTURES " in *" $name "*) continue ;; esac
     "$WORK/port_m" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/m.out" 2>&1 || return 1
     summary="$(awk '/^SUMMARY/ { print }' "$WORK/m.out")"
     identical="$(echo "$summary" | awk '{ split($2, a, "="); print a[2] }')"
     total="$(echo "$summary" | awk '{ split($3, a, "="); print a[2] }')"
-    [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ] || return 1
+    [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ] && module_same "$WORK/m.out" || return 1
   done
   return 0
 }
@@ -172,6 +178,31 @@ prove_mutation "a true Bool constant is false" "$REPO/src/compiler/lower/const.i
 prove_mutation "a literal integer constant is refused rather than inlined" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return nil" -- lowglob_check || status=1
+prove_mutation "the initialiser is not called at the assignment" "$REPO/src/compiler/lower/const.iyi" \
+  '  low.builder.call(ft, fn.as(Function), [] of Value, "")' \
+  '  low.builder.const_int(low.module.types.int(1), 0_i64)' -- lowglob_check || status=1
+prove_mutation "a constant with a constant value is stored at run time, not folded" "$REPO/src/compiler/lower/const.iyi" \
+  "  if val.is_a?(Inst) && (val.as(Inst).op == Op::ConstInt || val.as(Inst).op == Op::ConstFloat)" "  if false" -- lowglob_check || status=1
+prove_mutation "a read of an initialised constant is not a load" "$REPO/src/compiler/lower/const.iyi" \
+  "  low.last = load_aligned(low, ir, g.as(Global))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
+prove_mutation "the constant initialiser has the C convention, not iyi" "$REPO/src/compiler/lower/const.iyi" \
+  "  fn.call_convention = CallConv::Iyi" "  fn.call_convention = CallConv::C" -- lowglob_check || status=1
+prove_mutation "a class variable read is not a load of its global" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  low.last = load_aligned(low, ir, class_var_pointer(low, cvar))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
+prove_mutation "a literal class variable is initialised by a function, not stored at its declaration" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if simple_literal?(node)" "  if false" -- lowglob_check || status=1
+prove_mutation "a string constant's global is not emitted at the program's start" "$REPO/src/compiler/lower/const.iyi" \
+  "initialize_simple_const(low, const)" \
+  "low.last = llvm_nil(low)" -- lowglob_check || status=1
+prove_mutation "a string constant's global is initialised with null, not its address" "$REPO/src/compiler/lower/const.iyi" \
+  "global.initializer = str.as(Value)" \
+  "global.initializer = low.builder.const_null(ir)" -- lowglob_check || status=1
+prove_mutation "a string constant's assignment initialises it a second time" "$REPO/src/compiler/lower/const.iyi" \
+  "if string_const?(c)" \
+  "if false" -- lowglob_check || status=1
+prove_mutation "a class variable assignment in a method stores the global's address, not the value" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  store_aligned(low, value, ptr)" \
+  "  store_aligned(low, ptr, ptr)" -- lowglob_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
