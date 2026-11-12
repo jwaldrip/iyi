@@ -129,8 +129,8 @@ pub abstract class GenericInstanceType < Type
   end
 
   def full_name : String
-    args_strs = @type_args.map(&.full_name)
-    "#{@generic_type.full_name}(#{args_strs.join(", ")})"
+    args_strs = @type_args.map(&.arg_full_name)
+    "#{@generic_type.base_full_name}(#{args_strs.join(", ")})"
   end
 
   def to_s : String
@@ -315,7 +315,7 @@ pub class TupleInstanceType < GenericClassInstanceType
   end
 
   def full_name : String
-    types_s = @tuple_types.map(&.full_name)
+    types_s = @tuple_types.map(&.arg_full_name)
     "Tuple(#{types_s.join(", ")})"
   end
 
@@ -377,7 +377,7 @@ pub class NamedTupleInstanceType < GenericClassInstanceType
   end
 
   def full_name : String
-    entries_s = @entries.map { |e| "#{e.name}: #{e.type.full_name}" }
+    entries_s = @entries.map { |e| "#{e.name}: #{e.type.arg_full_name}" }
     "NamedTuple(#{entries_s.join(", ")})"
   end
 
@@ -544,8 +544,12 @@ pub class NilableType < UnionType
     true
   end
 
+  def arg_full_name : String
+    "#{@not_nil_type.full_name} | Nil"
+  end
+
   def full_name : String
-    "(#{@not_nil_type.full_name} | Nil)"
+    "(#{arg_full_name})"
   end
 
   def to_s : String
