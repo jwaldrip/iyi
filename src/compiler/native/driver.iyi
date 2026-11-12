@@ -54,6 +54,12 @@ pub def function_mir(mod : Module, fn : Function, syms : Hash(String, Int32), da
   end
   mf = selected.as(MFunction)
   allocate(mf)
+  if mf.naked
+    if mf.frame.slots.size > 0 || mf.frame.callee_saved.size > 0
+      return "#{fn.name}: a naked function holds no value in a frame slot or a callee-saved register"
+    end
+    return mf
+  end
   lay_out(mf, aarch64_target(darwin).stack_align)
   mf
 end

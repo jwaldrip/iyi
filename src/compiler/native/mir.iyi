@@ -104,6 +104,7 @@ pub enum MOp
   Br              # branch through uses[0]
   Ret
   Brk             # trap with imm
+  InlineAsm       # the raw bytes of an inline asm template over its operands (see AsmBody)
 end
 
 pub class Operand
@@ -112,6 +113,21 @@ pub class Operand
   getter imm : Int64
 
   def initialize(@kind : OperandKind, @reg : Int32, @imm : Int64 = 0_i64)
+  end
+end
+
+# An inline asm body (SPEC 2.2 step 3). `outputs` says how many of the MInst's defs are outputs (the first
+# defs, in order; any later defs are clobbers), and `inputs` how many of its uses are inputs, in order. The
+# encoder assembles the template once regalloc has named every operand's register, so the bytes and the
+# relocations are those of the registers the allocator chose. `syms` names the module's symbols.
+pub class AsmBody
+  getter template : String
+  getter outputs : Int32
+  getter inputs : Int32
+  getter syms : Hash(String, Int32)
+  getter macho : Bool
+
+  def initialize(@template : String, @outputs : Int32, @inputs : Int32, @syms : Hash(String, Int32), @macho : Bool)
   end
 end
 
@@ -130,6 +146,7 @@ pub class MInst
   property target : Int32          # block index for branches, or -1
   property call : Bool
   property terminator : Bool
+  property asm : AsmBody?
 
   def initialize(@opcode : MOp)
     @size = 64
@@ -145,6 +162,7 @@ pub class MInst
     @target = -1
     @call = false
     @terminator = false
+    @asm = nil
   end
 end
 
@@ -192,6 +210,8 @@ pub class MFunction
   property vreg_classes : Array(RegClass)
   property vreg_home : Array(Int32)          # regalloc: physical register, or -1 for a spill slot
   property vreg_slot : Array(Int32)          # regalloc: spill slot index when vreg_home is -1
+  property vreg_pointer : Array(Bool)        # the vreg holds a pointer or a copy of one's bits; see mark_pointer
+  property naked : Bool                      # a naked body: no prologue, epilogue, probe or callee-saved save
 
   def initialize(@name : String)
     @blocks = [] of MBlock
@@ -199,11 +219,19 @@ pub class MFunction
     @vreg_classes = [] of RegClass
     @vreg_home = [] of Int32
     @vreg_slot = [] of Int32
+    @vreg_pointer = [] of Bool
+    @naked = false
   end
 
   def new_vreg(cls : RegClass) : Int32
     @vreg_classes << cls
+    @vreg_pointer << false
     @vreg_classes.size - 1
+  end
+
+  # Flags a vreg as holding a pointer, or a copy of one's bits. The collector's constraint is checked on the flag.
+  def mark_pointer(v : Int32) : Nil
+    @vreg_pointer[v] = true
   end
 
   def vreg_operand(cls : RegClass) : Operand

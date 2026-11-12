@@ -245,6 +245,15 @@ check_pointer_output() {
   return 0
 }
 
+# Check: the pointer-flag fixture under the linear allocator still equals the hosted compiler's program.
+check_pointer_flag_output() {
+  local drv=$1 prefix="$WORK/mut.pointer_flag_fp"
+  native_run "$drv" linear "$FIX_RA/pointer_flag_fp.ir" "$prefix" || return 1
+  cmp -s "$prefix.out" "$WORK/expect.pointer_flag_fp.out" || return 1
+  cmp -s "$prefix.status" "$WORK/expect.pointer_flag_fp.status" || return 1
+  return 0
+}
+
 echo "== 6. mutations are each caught"
 prove_mutation "linear: a register is given to an interval that overlaps an active one" \
   src/compiler/native/regalloc_linear.iyi check_linear_outputs \
@@ -268,6 +277,12 @@ prove_mutation "collector: a floating-point value across a call may take an fp r
   src/compiler/native/regalloc_linear.iyi check_pointer_output \
   '        return [] of Int32' \
   '        return @fpr_pool'
+prove_mutation "collector: a flagged value may take a floating-point register across a call; the assertion catches it" \
+  src/compiler/native/regalloc_linear.iyi check_pointer_flag_output \
+  '      if @crossing[iv]
+        return [] of Int32' \
+  '      if @crossing[iv] && !@pointer[iv]
+        return [] of Int32'
 prove_mutation "linear: a value live into a block that starts with a call is not counted as crossing it" \
   src/compiler/native/regalloc_linear.iyi check_linear_outputs \
   '        cross = @call_prefix[@ends[v]] - @call_prefix[@starts[v]] > 0' \
