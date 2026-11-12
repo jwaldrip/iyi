@@ -141,7 +141,7 @@ pub struct HKDF
     HMAC.digest(algorithm, s, i)
   end
 
-  def self.extract(algorithm : Symbol, salt, ikm) : Array(UInt8)
+  def self.extract(algorithm : Symbol, salt : String | Array(UInt8) | Slice(UInt8), ikm : String | Array(UInt8) | Slice(UInt8)) : Array(UInt8)
     case algorithm
     when :sha256 then extract(SHA256, salt, ikm)
     when :sha384 then extract(SHA384, salt, ikm)
@@ -151,7 +151,7 @@ pub struct HKDF
     end
   end
 
-  def self.expand(algorithm : Symbol, prk, info, length : Int32) : Array(UInt8)
+  def self.expand(algorithm : Symbol, prk : String | Array(UInt8) | Slice(UInt8), info : String | Array(UInt8) | Slice(UInt8), length : Int32) : Array(UInt8)
     case algorithm
     when :sha256 then expand(SHA256, prk, info, length)
     when :sha384 then expand(SHA384, prk, info, length)

@@ -306,11 +306,18 @@ pub class Bearer < AccessToken
       (@extra || ({} of String => String)) == (b.extra || ({} of String => String))
   end
 
-  def hash(hasher)
-    hasher = @access_token.hash(hasher)
-    hasher = @expires_in.hash(hasher)
-    hasher = @refresh_token.hash(hasher)
-    @scope.hash(hasher)
+  def hash : Int32
+    mix = @access_token.hash
+    if exp = @expires_in
+      mix = (mix &* 31) &+ exp.hash
+    end
+    if refresh = @refresh_token
+      mix = (mix &* 31) &+ refresh.hash
+    end
+    if sc = @scope
+      mix = (mix &* 31) &+ sc.hash
+    end
+    mix
   end
 
   def to_s(io : IO) : Nil
@@ -416,11 +423,14 @@ pub class Mac < AccessToken
       (@extra || ({} of String => String)) == (m.extra || ({} of String => String))
   end
 
-  def hash(hasher)
-    hasher = @access_token.hash(hasher)
-    hasher = @mac_algorithm.hash(hasher)
-    hasher = @mac_key.hash(hasher)
-    @refresh_token.hash(hasher)
+  def hash : Int32
+    mix = @access_token.hash
+    mix = (mix &* 31) &+ @mac_algorithm.hash
+    mix = (mix &* 31) &+ @mac_key.hash
+    if refresh = @refresh_token
+      mix = (mix &* 31) &+ refresh.hash
+    end
+    mix
   end
 
   def to_s(io : IO) : Nil

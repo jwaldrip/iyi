@@ -61,15 +61,15 @@ end
 
 def bytes_to_hex(b : Bytes) : String
   hex_chars = "0123456789abcdef"
-  String.new(b.size * 2) do |ptr|
-    i = 0
-    while i < b.size
-      byte = b[i].to_i32
-      ptr[i * 2] = hex_chars.to_unsafe[byte >> 4]
-      ptr[i * 2 + 1] = hex_chars.to_unsafe[byte & 0x0f]
-      i = i + 1
-    end
+  hex_bytes = Bytes.new(b.size * 2)
+  i = 0
+  while i < b.size
+    byte = b[i].to_i32
+    hex_bytes[i * 2] = hex_chars.byte_at(byte >> 4)
+    hex_bytes[i * 2 + 1] = hex_chars.byte_at(byte & 0x0f)
+    i = i + 1
   end
+  String.new(hex_bytes)
 end
 
 def assert_bytes_equal(actual : Bytes, expected : Bytes, label : String) : Nil
