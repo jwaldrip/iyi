@@ -114,7 +114,7 @@ pub def triple_of(text : String) : String
 end
 
 # The IR text of a module, normalised the way the gates compare it.
-pub def normalised_lines(text : String, hosted : String) : Array(String)
+pub def normalised_lines(text : String, builds : Array(String)) : Array(String)
   out = [] of String
   text.split("\n").each do |line|
     stripped = line.strip
@@ -123,7 +123,7 @@ pub def normalised_lines(text : String, hosted : String) : Array(String)
     next if stripped.starts_with?("source_filename")
     next if stripped.starts_with?("attributes #")
     next if stripped.starts_with?("declare") && stripped.includes?("@printf(")
-    next if stripped.starts_with?("@") && stripped.includes?(hosted) || stripped.starts_with?("%Nil = type")
+    next if stripped.starts_with?("@") && build_constant?(stripped, builds) || stripped.starts_with?("%Nil = type")
     next if stripped.includes?("@\"'")
     next if stripped.includes?("@\"''\"")
     if pidx = line.index(" ; preds")
@@ -139,6 +139,30 @@ pub def normalised_lines(text : String, hosted : String) : Array(String)
     end
   end
   out
+end
+
+# The hosted build constants of an oracle module: each `store` of the compiler's own identity names its
+# destination global (`@"Crystal::BUILD_COMMIT"`) and the private text it stores (`@"'b598d221d'"`). Both are
+# dropped before comparison. A destination counts only when it contains `marker` (the hosted `::` identity), so a
+# program's own global, such as a class variable `@"K::v"`, is compared like any other global.
+pub def build_names(text : String, marker : String) : Array(String)
+  names = [] of String
+  text.split("\n").each do |line|
+    next unless line.includes?("store ptr @\"")
+    parts = line.split("\"")
+    next unless parts.size >= 4 && parts[3].includes?(marker)
+    names << parts[1]
+    names << parts[3]
+  end
+  names
+end
+
+# Whether a line names one of the build constants in `builds`: a `@"name"` definition, reference or store.
+pub def build_constant?(stripped : String, builds : Array(String)) : Bool
+  builds.each do |name|
+    return true if stripped.includes?("@\"#{name}\"")
+  end
+  false
 end
 
 # The tokens of an attribute list, sorted and joined by spaces, so the two sides compare as sets.
@@ -299,7 +323,7 @@ pub def run_oracle(path : String, hosted : String) : Nil
   if parsed.is_a?(IrParseError)
     raise parsed.as(IrParseError).to_s
   end
-  normalised_lines(print(parsed.as(Module)), hosted).each { |line| puts line }
+  normalised_lines(print(parsed.as(Module)), build_names(text, hosted)).each { |line| puts line }
 end
 
 # The `lower` mode: lowers the fixture and compares the port's module with the oracle's.
@@ -307,7 +331,8 @@ pub def run_lower(fixture : String, oracle_path : String, hosted : String, stand
   oracle_text = File.read(oracle_path)
   parsed = parse(oracle_text)
   raise parsed.as(IrParseError).to_s if parsed.is_a?(IrParseError)
-  oracle = attach_attrs(normalised_lines(print(parsed.as(Module)), hosted), oracle_attr_map(oracle_text))
+  builds = build_names(oracle_text, hosted)
+  oracle = attach_attrs(normalised_lines(print(parsed.as(Module)), builds), oracle_attr_map(oracle_text))
   triple = triple_of(oracle_text)
 
   analysis = analyse(File.read(fixture), fixture, stand_in_libs)
@@ -315,7 +340,7 @@ pub def run_lower(fixture : String, oracle_path : String, hosted : String, stand
   typer = LowerTyper.new(m.types, m.layout, true)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   port_text = print(m)
-  port = attach_attrs(normalised_lines(port_text, hosted), printed_attr_map(port_text))
+  port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
   identical = compare(oracle, port)
   total = split_module(oracle)[2].size
   module_ok = split_module(oracle)[0] == split_module(port)[0]

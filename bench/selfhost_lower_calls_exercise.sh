@@ -64,7 +64,8 @@ for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
   summary="$(awk '/^SUMMARY/ { print }' "$WORK/$name.port.out")"
   identical="$(echo "$summary" | awk '{ split($2, a, "="); print a[2] }')"
   total="$(echo "$summary" | awk '{ split($3, a, "="); print a[2] }')"
-  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ]; then
+  module="$(echo "$summary" | awk '{ split($4, a, "="); print a[2] }')"
+  if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ] && [ "$module" = 1 ]; then
     echo "    $name: PASSED, $identical of $total functions identical"
     passed=$((passed + 1))
     e2e="$e2e $name"
@@ -123,10 +124,16 @@ lower_calls_check() {
   for fixture in "$REPO"/bench/fixtures/lowcall_*.iyi; do
     name="$(basename "$fixture" .iyi)"
     "$WORK/mut" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/mut.out" 2>/dev/null || return 1
-    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+$/ { split($2, a, "="); split($3, b, "="); if (a[2] != b[2] || b[2] == 0) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
+  awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
   done
   return 0
 }
+# A mutation is caught only when the unmutated port matches the hosted module: a check that fails on the
+# unmutated tree would "catch" every patch, so the baseline must pass first.
+if ! lower_calls_check; then
+  echo "  baseline: the unmutated port does not match the hosted module, so no mutation below is counted"
+  status=1
+fi
 prove_mutation "a function's linkage is external" "$REPO/src/compiler/lower/fun.iyi" \
   "fn.linkage = Linkage::Internal" "fn.linkage = Linkage::External" -- lower_calls_check || status=1
 prove_mutation "a mangled argument list has no separator" "$REPO/src/compiler/lower/fun.iyi" \
@@ -199,6 +206,8 @@ prove_mutation "a struct call receiver gets a second alloca (hosted reuses the s
   'if self_by_pointer?(st) && low.spill_node != 0_u64 && low.spill_node == obj.object_id' 'if false' -- lower_calls_check || status=1
 prove_mutation "a struct call receiver loads its spill slot though the slot is its self" "$REPO/src/compiler/lower/call.iyi" \
   'if low.receiver_node == node.object_id && self_by_pointer?(ret)' 'if false' -- lower_calls_check || status=1
+prove_mutation "a module-level build constant is kept in the module (the module check catches it)" "$REPO/bench/lib/lower_gate.iyi" \
+  'next if stripped.starts_with?("@") && build_constant?(stripped, builds) || stripped.starts_with?("%Nil = type")' 'next if stripped.starts_with?("%Nil = type")' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

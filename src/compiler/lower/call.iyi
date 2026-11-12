@@ -130,8 +130,11 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       class_owner = recv_type.as(MetaclassType).instance_type
     else
       self_type = recv_type
-      # Hosted try_inline_call: an inlined Nop or literal body, where no value is wanted, reads no receiver.
-      unless literal_body?(def_node.body) && !low.needs_value
+      # Hosted prepare_call_args visits the receiver before try_inline_call: an inlined literal body where no value is
+      # wanted still reads the receiver (the hosted module loads it), and only the value is skipped.
+      if literal_body?(def_node.body) && !low.needs_value
+        lower_receiver(low, node)
+      else
         if storage = receiver_storage(low, node, self_type.as(Type))
           self_value = storage.as(Value)
         else
