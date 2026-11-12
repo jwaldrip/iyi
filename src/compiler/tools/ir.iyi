@@ -288,7 +288,7 @@ class Coverage
     while g.address != 0
       note("linkage", linkage_name(llvm_linkage(g)), linkage_in_ir?(llvm_linkage(g)))
       note("tls", tls_name(LibLLVM.get_thread_local_mode(g)), true)
-      note("visibility", visibility_name(LibLLVM.get_visibility_int(g)), LibLLVM.get_visibility_int(g) == 0)
+      note("visibility", visibility_name(LibLLVM.get_visibility_int(g)), LibLLVM.get_visibility_int(g) <= 2)
       note("unnamed_addr", unnamed_name(LibLLVM.get_unnamed_address(g)), LibLLVM.get_unnamed_address(g) != 2)
       note("value", "global variable", true)
       g = LibLLVM.get_next_global(g)
@@ -325,7 +325,7 @@ class Coverage
     name = string_from_c(LibLLVM.get_value_name(f))
     note("calling convention", cc_name(llvm_calling_convention(f)), llvm_calling_convention(f) == 0)
     note("linkage", linkage_name(llvm_linkage(f)), linkage_in_ir?(llvm_linkage(f)))
-    note("visibility", visibility_name(LibLLVM.get_visibility_int(f)), LibLLVM.get_visibility_int(f) == 0)
+    note("visibility", visibility_name(LibLLVM.get_visibility_int(f)), LibLLVM.get_visibility_int(f) <= 2)
     note("value", "function", true)
     pers = LibLLVM.has_personality_fn(f) != 0 ? LibLLVM.get_personality_fn(f) : Pointer(Void).new(0_u64)
     if pers.address != 0

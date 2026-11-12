@@ -76,7 +76,7 @@ value	function	35	yes
 value	global variable	18	yes
 value	inline asm	1	yes
 visibility	default	48	yes
-visibility	hidden	3	no
-visibility	protected	2	no
-entries_not_in_ir	5
+visibility	hidden	3	yes
+visibility	protected	2	yes
+entries_not_in_ir	3
 ```
