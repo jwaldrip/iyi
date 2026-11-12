@@ -52,7 +52,7 @@ import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/semantic/top_level::{LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, Type, UnionType, VoidType}
-import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?}
+import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
@@ -152,8 +152,31 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
     return
   end
+  # Hosted `try_inline_call` (call.cr:614): a body that is an instance variable is read from self where the
+  # call stands; no function is emitted. The read is made only when the value is wanted (`return true unless
+  # @needs_value`), after the arguments, as the hosted `prepare_call_args` does.
   if body.is_a?(InstanceVar)
-    pending_visit_node("a getter #{node.name} inlined in its call (hosted call.cr: try_inline_call, read_instance_var), waiting on instance_var_pointer")
+    st = self_type
+    sv = self_value
+    if st.nil? || sv.nil?
+      pending_visit_node("a getter #{node.name} with no receiver (hosted call.cr: try_inline_call, read_instance_var)")
+    end
+    lower_args(low, node, def_node)
+    if block_ended?(low)
+      low.last = llvm_nil(low)
+      return
+    end
+    if low.needs_value
+      node_t = low.analysed.type_of?(body)
+      raise "BUG: the analysed program has no type for instance variable #{body.name} (hosted call.cr: try_inline_call)" if node_t.nil?
+      if ret.full_name != node_t.as(Type).full_name
+        pending_visit_node("a getter #{node.name} whose variable is #{node_t.as(Type).full_name} and whose call is #{ret.full_name} (hosted upcast, inline_call_return_value)")
+      end
+      low.last = read_instance_var(low, node_t.as(Type), st.as(Type), body.name, sv.as(Value))
+    else
+      low.last = llvm_nil(low)
+    end
+    return
   end
 
   arg_types, values = lower_args(low, node, def_node)
