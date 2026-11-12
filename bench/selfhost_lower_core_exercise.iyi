@@ -226,6 +226,15 @@ def check_context : Nil
   puts "CONTEXT OK"
 end
 
+def run_emit(fixture : String, oracle_path : String) : Nil
+  triple = triple_of(File.read(oracle_path))
+  analysis = analyse(File.read(fixture), fixture)
+  m = ir_module(triple)
+  typer = LowerTyper.new(m.types, m.layout, true)
+  codegen_program(analysis.root, analysis.visitor, typer, m)
+  puts print(m)
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -236,6 +245,8 @@ def run : Nil
     run_oracle(args[1], "::")
   elsif mode == "lower"
     run_lower(args[1], args[2], "::")
+  elsif mode == "emit"
+    run_emit(args[1], args[2])
   elsif mode == "context"
     check_context
   else

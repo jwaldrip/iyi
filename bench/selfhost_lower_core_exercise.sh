@@ -95,6 +95,7 @@ fi
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
+e2e=""
 diverged=0
 waiting=0
 for fixture in "$REPO"/bench/fixtures/lower_*.iyi; do
@@ -127,6 +128,7 @@ for fixture in "$REPO"/bench/fixtures/lower_*.iyi; do
   if [ -n "$total" ] && [ "$total" -gt 0 ] && [ "$identical" = "$total" ]; then
     echo "    $name: PASSED, $identical of $total functions identical"
     passed=$((passed + 1))
+    e2e="$e2e $name"
   else
     echo "    $name: DIVERGED, $identical of $total functions identical"
     diverged=$((diverged + 1))
@@ -138,6 +140,42 @@ if [ "$diverged" -gt 0 ]; then
 fi
 if [ "$passed" -eq 0 ]; then
   echo "  no fixture passed: the gate proves nothing yet"
+  status=1
+fi
+
+echo
+echo "== 2b. End to end: each fixture the port lowers identically, built to a native executable and run"
+e2e_pass=0
+e2e_fail=0
+if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/tool.build.log" 2>&1; then
+  for name in $e2e; do
+    fixture="$REPO/bench/fixtures/$name.iyi"
+    if ! "$WORK/port" emit "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.ir" 2> "$WORK/$name.emit.err"; then
+      echo "  $name: the port writes no module: $(awk 'NR==1' "$WORK/$name.emit.err")"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
+    if ! "$WORK/compile_native" "$WORK/$name.port.ir" -o "$WORK/$name.native" > "$WORK/$name.native.log" 2>&1; then
+      echo "  $name: the native tool refuses the port's module: $(awk 'NR==1' "$WORK/$name.native.log")"
+      e2e_fail=$((e2e_fail + 1))
+      continue
+    fi
+    timeout 30 "$WORK/$name.native" > "$WORK/$name.native.out" 2>&1; ns=$?
+    timeout 30 "$WORK/$name" > "$WORK/$name.hosted.out" 2>&1; hs=$?
+    if [ "$ns" = "$hs" ] && cmp -s "$WORK/$name.native.out" "$WORK/$name.hosted.out"; then
+      echo "  $name: native executable runs to the hosted result (status $hs, stdout identical)"
+      e2e_pass=$((e2e_pass + 1))
+    else
+      echo "  $name: native status $ns, hosted $hs; stdout differs or status differs"
+      e2e_fail=$((e2e_fail + 1))
+    fi
+  done
+else
+  echo "  the native tool does not build (see $WORK/tool.build.log)"
+  e2e_fail=1
+fi
+echo "  end to end: $e2e_pass fixture(s) run to the hosted result, $e2e_fail failed"
+if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
   status=1
 fi
 
