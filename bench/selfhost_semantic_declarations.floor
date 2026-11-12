@@ -2,7 +2,7 @@
 # A count may only rise. Raise with: SEMDECL_RAISE=1 bash bench/selfhost_semantic_declarations_exercise.sh
 <initial> 73
 samples/iyi/basics.iyi 2
-samples/iyi/calc.iyi 0
+samples/iyi/calc.iyi 3
 samples/iyi/collections.iyi 0
 samples/iyi/config.iyi 9
 samples/iyi/cores.iyi 0
@@ -16,7 +16,7 @@ samples/iyi/generics.iyi 38
 samples/iyi/grid.iyi 2
 samples/iyi/hello.iyi 19
 samples/iyi/immutable.iyi 0
-samples/iyi/init_order.iyi 0
+samples/iyi/init_order.iyi 2
 samples/iyi/inventory.iyi 9
 samples/iyi/io.iyi 2
 samples/iyi/modules.iyi 0
@@ -27,7 +27,7 @@ samples/iyi/std_iterator.iyi 7
 samples/iyi/std_text.iyi 0
 samples/iyi/std_time.iyi 0
 samples/iyi/visited.iyi 3
-samples/iyi/webapp.iyi 0
+samples/iyi/webapp.iyi 2
 samples/iyi/workers.iyi 9
 src/compiler/artifact/iyimod.iyi 0
 src/compiler/backend/backend.iyi 18

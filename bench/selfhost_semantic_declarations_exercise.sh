@@ -92,8 +92,8 @@ echo "== 2. Fixtures: every declaration dumped identically by both sides"
 fixture_count=0
 fixture_bad=0
 total_matched=0
-for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
-  rel="bench/fixtures/$(basename "$fixture")"
+for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semdecl_*/*.iyi "$REPO"/bench/fixtures/semdecl_*/*/*.iyi; do
+  rel="${fixture#$REPO/}"
   fixture_count=$((fixture_count + 1))
   if ! "$ORACLE" "$REPO/$rel" > "$WORK/fx_o.txt" 2> "$WORK/fx_oe.txt"; then
     echo "  $rel: ORACLE REJECTS: $(head -n 1 "$WORK/fx_oe.txt")"
@@ -331,8 +331,8 @@ check_decl_fixtures_diverge() {
   # non-zero (caught) when the driver fails to build, or a fixture's dump differs from the oracle's.
   local probe="$WORK/mut_port"
   "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
-    rel="bench/fixtures/$(basename "$fixture")"
+  for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi "$REPO"/bench/fixtures/semdecl_*/*.iyi "$REPO"/bench/fixtures/semdecl_*/*/*.iyi; do
+    rel="${fixture#$REPO/}"
     "$ORACLE" "$REPO/$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
     "$probe" "$REPO/$rel" > "$WORK/mut_p.txt" 2>/dev/null || return 1
     cmp -s "$WORK/mut_o.txt" "$WORK/mut_p.txt" || return 1
@@ -347,6 +347,13 @@ echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
 MUTATIONS_RUN=0
+# A mutation proof means something only against a baseline the fixtures and the prelude
+# chains already agree on: a fixture the oracle rejects fails every patched run and would
+# count as a catch.
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ]; then
+  echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
+  status=1
+else
 
 prove_mutation "struct default superclass switches to Reference" "$MUT_SEM" \
   "superclass = node.struct ? @program.struct_type : @program.reference_type" \
@@ -413,7 +420,18 @@ prove_mutation "a metaclass takes Class as its parent even when its superclass h
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation_all "a file's imports are never consulted when a name is looked up" "$MUT_SEM" \
+  "      t = @current_imports[first_name]?" \
+  "      t = nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a file's own directory is never searched for an import" "$MUT_SEM" \
+  "      roots << dir" \
+  "      roots << \"/nonexistent-root\"" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
+fi
 
 echo
 if [ "$status" -eq 0 ]; then
