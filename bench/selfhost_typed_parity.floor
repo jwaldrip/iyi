@@ -38,7 +38,7 @@ src/compiler/backend/native.iyi 22
 src/compiler/codegen/codegen.iyi 184
 src/compiler/command/daemon.iyi 48
 src/compiler/command/driver.iyi 182
-src/compiler/compiler.iyi 46
+src/compiler/compiler.iyi 49
 src/compiler/foundation/enums.iyi 7
 src/compiler/foundation/errors.iyi 9
 src/compiler/foundation/location.iyi 13
@@ -126,6 +126,8 @@ src/compiler/semantic/normalizer.iyi 62
 src/compiler/semantic/recursive_struct_checker.iyi 11
 src/compiler/semantic/restrictions.iyi 19
 src/compiler/semantic/top_level.iyi 236
+src/compiler/semantic/type_node_host.iyi 0
+src/compiler/semantic/type_nodes.iyi 0
 src/compiler/semantic/typed.iyi 2
 src/compiler/stage1.iyi 6
 src/compiler/syntax/ast.iyi 860
