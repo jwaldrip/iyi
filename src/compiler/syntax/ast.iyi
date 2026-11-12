@@ -364,7 +364,6 @@ end
 pub class Nop < ASTNode
   def initialize
   end
-
   def clone_without_location : self
     Nop.new
   end
@@ -386,6 +385,23 @@ pub class Nop < ASTNode
   end
 
   def to_s(sb : StringBuilder) : Nil
+  end
+end
+# The body of a def declared `@[Primitive(:name)]`: the compiler supplies the code,
+# so the body is this node, not Ruby-style statements. Hosted `Primitive` in the
+# AST, set by process_def_primitive_annotation (top_level_visitor.cr).
+pub class Primitive < ASTNode
+  property name : String
+
+  def initialize(@name : String)
+  end
+
+  def clone_without_location : self
+    Primitive.new(@name)
+  end
+
+  def to_s(sb : StringBuilder) : Nil
+    sb << "# primitive: " << @name
   end
 end
 

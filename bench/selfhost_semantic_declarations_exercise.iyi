@@ -51,6 +51,11 @@ module BenchSelfhostSemanticDeclarationsExercise
     prog.loaded_files.add(entry)
     prog.search_path = search_path
     prog.project_root = project_root(node, entry)
+    prelude = TopLevelVisitor.new(prog)
+    prelude_file = prelude.import_file("iyi/prelude")
+    if prelude_file
+      prelude.load_file(prelude_file.as(String))
+    end
     visitor = TopLevelVisitor.new(prog, entry)
     node.accept(visitor)
     visitor.finish
