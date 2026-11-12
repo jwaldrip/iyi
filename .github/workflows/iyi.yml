@@ -2650,9 +2650,16 @@ jobs:
         run: |
           # stdin_park.iyi reads the pipe bench/concurrency_exercise.sh feeds
           # it - a line two seconds in - and an empty stdin is its failure.
+          # The last three are drivers of the compiler written in iyi that a
+          # bare `iyi run` cannot link here: two bind LibLLVM, which this job
+          # does not provision (their gates run in the self-host jobs), and
+          # the build daemon's driver speaks POSIX sockets, whose Windows arm
+          # is not ported yet.
           $skip = @(
             "std_http_server.iyi", "arena_large_probe.iyi", "wasm32_exercise.iyi",
-            "stdin_park.iyi", "std_debug_cross.iyi"
+            "stdin_park.iyi", "std_debug_cross.iyi",
+            "selfhost_codegen_exercise.iyi", "selfhost_llvm_exercise.iyi",
+            "selfhost_daemon_exercise.iyi"
           )
           $env:TEST_SANDBOX = Join-Path $env:RUNNER_TEMP "sandbox"
           $env:IYI_FILE_SANDBOX = Join-Path $env:RUNNER_TEMP "filesandbox"

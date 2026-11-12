@@ -98,7 +98,14 @@ module BenchSelfhostIyimodExercise
     art.top_level = [Signature.new("top_def", "", [] of String, "", "Nil")]
     art.object_code = [ObjectUnit.new("Widget", "fake_object_code_bytes")]
 
-    tmp_path = "/tmp/selfhost_all_sections_test.iyimod"
+    # Under TEST_SANDBOX when it is set: `/tmp` is not a directory on Windows,
+    # where the runtime job sets the variable and runs this file bare.
+    sandbox_env = Program.env("TEST_SANDBOX")
+    tmp_path = if sandbox_env && !sandbox_env.empty?
+                 sandbox_env + "/selfhost_all_sections_test.iyimod"
+               else
+                 "/tmp/selfhost_all_sections_test.iyimod"
+               end
     IyiMod.write(art, tmp_path)
 
     art_read = IyiMod.read(tmp_path, true)
