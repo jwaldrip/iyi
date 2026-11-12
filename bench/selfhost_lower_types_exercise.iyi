@@ -12,6 +12,7 @@ import compiler/lower/typer::{LowerTyper, passed_by_value?, primitive_kind}
 import compiler/lower/type_id::{LowerTypeIds}
 import compiler/lower/layouts::{GcLayouts}
 import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/syntax/ast::{ClassDef, Expressions}
 import compiler/semantic/top_level::{ModuleType}
 
@@ -221,6 +222,8 @@ module BenchSelfhostLowerTypesExercise
     elsif node.is_a?(ClassDef)
       node.accept(MainVisitor.new(prog))
     end
+    # The instance variables typed by assignment in initialize (semantic/instance_vars.iyi).
+    declare_guessed_instance_vars(prog)
     layout_result = DataLayout.for(Target.new(triple))
     raise "no DataLayout for #{triple}" if layout_result.is_a?(LayoutError)
     layout = layout_result.as(DataLayout)

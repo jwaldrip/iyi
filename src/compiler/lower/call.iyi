@@ -33,6 +33,7 @@ import compiler/lower/fun::{target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/semantic/top_level::{LibType, LibFun, MetaclassType, NilType, NoReturnType, Type}
+import compiler/lower/primitives::{primitive_name_of, lower_primitive_call}
 
 # A body that is a literal, which the hosted call inlines (`try_inline_call`).
 pub def literal_body?(body : ASTNode) : Bool
@@ -59,6 +60,10 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     return
   end
 
+  unless primitive_name_of(def_node).nil?
+    lower_primitive_call(low, node, def_node)
+    return
+  end
   unless node.obj.nil?
     pending_visit_node("a call with a receiver (hosted call.cr, prepare_call_args): self is not ported yet")
   end

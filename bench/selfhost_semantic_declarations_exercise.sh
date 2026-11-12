@@ -37,6 +37,7 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
+export PWD="$REPO"
 IYI="$REPO/bin/iyi"
 CRYSTAL="$REPO/bin/crystal"
 FLOOR_FILE="${SEMDECL_FLOOR:-$REPO/bench/selfhost_semantic_declarations.floor}"
@@ -65,7 +66,7 @@ status=0
 records() {
   awk '
     function flush() { if (cur != "") print cur }
-    /^ *(Type|Def): / { flush(); cur = $0; next }
+    /^ *(Type|Def|Ivar): / { flush(); cur = $0; next }
     { if (cur != "") cur = cur "\036" $0 }
     END { flush() }
   ' "$1"
@@ -94,11 +95,11 @@ total_matched=0
 for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
   rel="bench/fixtures/$(basename "$fixture")"
   fixture_count=$((fixture_count + 1))
-  if ! "$ORACLE" "$rel" > "$WORK/fx_o.txt" 2> "$WORK/fx_oe.txt"; then
+  if ! "$ORACLE" "$REPO/$rel" > "$WORK/fx_o.txt" 2> "$WORK/fx_oe.txt"; then
     echo "  $rel: ORACLE REJECTS: $(head -n 1 "$WORK/fx_oe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
   fi
-  if ! "$PORT" "$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
+  if ! "$PORT" "$REPO/$rel" > "$WORK/fx_p.txt" 2> "$WORK/fx_pe.txt"; then
     echo "  $rel: PORT REJECTS: $(head -n 1 "$WORK/fx_pe.txt")"
     fixture_bad=$((fixture_bad + 1)); status=1; continue
   fi
@@ -114,6 +115,17 @@ for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
 done
 echo "  Parity summary: $((fixture_count - fixture_bad))/$fixture_count fixtures identical ($total_matched declarations compared)"
 
+echo "== 2c. Prelude parent chains: Nil, Object, Reference, Value, Int32, String and a user class, identical to the oracle"
+if ! "$ORACLE" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/chain_o.txt" 2> "$WORK/chain_oe.txt"; then
+  echo "  ORACLE REJECTS: $(head -n 1 "$WORK/chain_oe.txt")"; status=1
+elif ! "$PORT" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/chain_p.txt" 2> "$WORK/chain_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/chain_pe.txt")"; status=1
+elif cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt"; then
+  echo "  parent chains identical ($(awk 'END{print NR}' "$WORK/chain_o.txt") lines)"
+else
+  echo "  parent chains DIFFER"; status=1
+fi
+echo
 echo
 echo "== 2b. Built-in types: the program's initial types dumped identically (a burn-down row)"
 if ! "$ORACLE" --initial > "$WORK/init_o.txt" 2> "$WORK/init_oe.txt"; then
@@ -133,9 +145,10 @@ printf 'builtins\t<initial>\t%s\t%s\t%s\n' "$b_nodes" "$b_matched" "$b_note" >> 
 measure() {
   corpus="$1"
   rel="$2"
-  if "$ORACLE" "$rel" > "$WORK/o.txt" 2> "$WORK/o.err"; then
+  abs="$REPO/$2"
+  if "$ORACLE" "$abs" > "$WORK/o.txt" 2> "$WORK/o.err"; then
     nodes=$(records "$WORK/o.txt" | wc -l | tr -d ' ')
-    if "$PORT" "$rel" > "$WORK/p.txt" 2> "$WORK/p.err"; then
+    if "$PORT" "$abs" > "$WORK/p.txt" 2> "$WORK/p.err"; then
       matched=$(agreeing "$WORK/o.txt" "$WORK/p.txt")
       note="-"
     else
@@ -277,10 +290,13 @@ check_decl_fixtures_diverge() {
   "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   for fixture in "$REPO"/bench/fixtures/semdecl_*.iyi; do
     rel="bench/fixtures/$(basename "$fixture")"
-    "$ORACLE" "$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
-    "$probe" "$rel" > "$WORK/mut_p.txt" 2>/dev/null || return 1
+    "$ORACLE" "$REPO/$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
+    "$probe" "$REPO/$rel" > "$WORK/mut_p.txt" 2>/dev/null || return 1
     cmp -s "$WORK/mut_o.txt" "$WORK/mut_p.txt" || return 1
   done
+  "$ORACLE" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/mut_co.txt" 2>/dev/null || return 1
+  "$probe" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/mut_cp.txt" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_co.txt" "$WORK/mut_cp.txt" || return 1
   return 0
 }
 
@@ -296,8 +312,8 @@ prove_mutation "struct default superclass switches to Reference" "$MUT_SEM" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "enum members start numbering at one instead of zero" "$MUT_SEM" \
-  "counter = 0_i64" \
-  "counter = 1_i64" \
+  "counter = @enum_flags ? 1_i64 : 0_i64" \
+  "counter = @enum_flags ? 1_i64 : 1_i64" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -340,6 +356,17 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "lib struct takes Reference as its superclass" "$MUT_SEM" \
   "NonGenericClassType.new(@program, @current_type, node.name, @program.struct_type)" \
   "NonGenericClassType.new(@program, @current_type, node.name, @program.reference_type)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a class reopened without a superclass takes the reference superclass" "$MUT_SEM" \
+  "    elsif created_new_type" \
+  "    else" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a metaclass takes Class as its parent even when its superclass has a metaclass" "$MUT_SEM" \
+  "        @parents << sc.as(ModuleType).metaclass" \
+  "        @parents << program.types[\"Class\"]" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
