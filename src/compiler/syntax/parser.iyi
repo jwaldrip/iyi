@@ -153,6 +153,16 @@ pub class Parser < Lexer
     apply_module_header(nodes)
   end
 
+  # iyi: an inline macro's expansion written in a `lib` body is read as a lib body
+  # is: `fun` declarations with no body, as the hosted parser reads it in its Lib
+  # mode. The declarations pass uses this for a site inside a `lib`.
+  def parse_lib_body : ASTNode
+    next_token_skip_statement_end
+    nodes = parse_lib_body_expressions
+    check(TokenKind::EOF)
+    Expressions.from(nodes)
+  end
+
   def parse_expressions : ASTNode
     preserve_stop_on_do { parse_expressions_internal }
   end
