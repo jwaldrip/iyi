@@ -548,7 +548,28 @@ class Isel
 
   # ---- the function ------------------------------------------------------------------------------
 
+  # An integer wider than 128 bits that the function's signature or instructions carry, or nil. The native backend lowers
+  # integers up to 128 bits, so such a function is refused before any of its values is given registers.
+  def first_wide_int : IrType?
+    wide = [] of IrType
+    @fn.fn_type.param_types.each { |t| wide << t if t.int? && t.bits > 128 }
+    rt = @fn.fn_type.return_type
+    wide << rt if rt.int? && rt.bits > 128
+    @fn.blocks.each do |b|
+      b.insts.each do |i|
+        wide << i.type if i.type.int? && i.type.bits > 128
+        i.args.each { |a| wide << a.type if a.type.int? && a.type.bits > 128 }
+      end
+    end
+    wide.empty? ? nil : wide[0]
+  end
+
   def run : MFunction
+    wide = first_wide_int
+    if wide
+      fail("an #{wide} value is not lowered in this slice: the native backend lowers integers up to 128 bits")
+      return @mf
+    end
     return run_naked if naked_fn?
     # One MIR block per IR block, in order, so block indices agree with the IR's.
     @fn.blocks.each do |b|
@@ -1867,6 +1888,10 @@ class Isel
   # after allocation.
   def lower_asm(i : Inst, aux : AsmAux) : Nil
     return if failed?
+    if aux.unwind
+      fail("inline asm that may unwind is not lowered: iyi has no exceptions, so no call unwinds")
+      return
+    end
     if aux.dialect == AsmDialect::Intel
       fail("the Intel asm dialect is not lowered in this slice")
       return

@@ -65,6 +65,12 @@ pub def ir_hex(value : Int64, digits : Int32) : String
   end
 end
 
+# The integer widths the IR accepts: every width from 1 up to LLVM's own limit of 2^23 - 1 bits. The hosted compiler
+# emits widths beyond 128 (an i192 is in one program of the corpus), so no narrower set is right.
+pub def valid_int_bits?(bits : Int32) : Bool
+  bits >= 1 && bits <= 8388607
+end
+
 # A canonical IR type. TypeTable interns every type, so equal types are the same object.
 pub class IrType
   getter kind : TypeKind
@@ -244,9 +250,7 @@ pub class TypeTable
   end
 
   def int(bits : Int32) : IrType
-    unless bits == 1 || bits == 8 || bits == 16 || bits == 32 || bits == 64 || bits == 128
-      raise "no integer type of #{bits} bits in the IR"
-    end
+    raise "no integer type of #{bits} bits in the IR" unless valid_int_bits?(bits)
     canonical("i#{bits}", TypeKind::Int, bits, 0, [] of IrType, false, nil, 0_i64, [] of IrType, nil, false)
   end
 

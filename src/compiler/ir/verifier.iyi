@@ -358,7 +358,16 @@ class Verifier
   end
 
   # A call's operands against its signature: the callee's type, the argument count, and each argument's type.
+  # An inline asm that may unwind (`asm unwind`) is called only in a function that may unwind: a nounwind function
+  # (one with the `nounwind` attribute) cannot let an exception out of its call.
   def check_call(f : Function, i : Inst) : Nil
+    callee = i.args[0]
+    if callee.is_a?(Inst) && callee.as(Inst).aux.is_a?(AsmAux)
+      inline_asm = callee.as(Inst).aux.as(AsmAux)
+      if inline_asm.unwind && f.attrs.any? { |a| a.name == "nounwind" }
+        report("asm-unwind", "an inline asm that may unwind is called in @#{f.name}, which is nounwind", f)
+      end
+    end
     aux = i.aux
     return unless aux.is_a?(CallAux)
     fn_type = aux.as(CallAux).fn_type

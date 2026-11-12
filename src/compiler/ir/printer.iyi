@@ -1,7 +1,7 @@
 module compiler/ir/printer
 
 import compiler/ir/types::{IrType, ir_quote, ir_name_text, ir_hex}
-import compiler/ir/values::{Value, i128_text}
+import compiler/ir/values::{Value, int_words_text}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, Ordering, Attribute, IntPredicate, RealPredicate, ThreadPointerKind, DebugLoc}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel, Visibility}
 import compiler/ir/module::{Module}
@@ -178,7 +178,7 @@ class IrPrinter
   def const_text(i : Inst, numbers : Hash(Value, Int32)) : String
     case i.op
     when Op::ConstInt
-      return i128_text(i.aux_hi, i.aux_int) if i.type.bits == 128
+      return int_words_text(i.int_words(i.type.bits), i.type.bits) if i.type.bits > 64
       return i.aux_int.to_s unless i.type.bits == 1
       i.aux_int == 0 ? "false" : "true"
     when Op::ConstFloat
@@ -425,6 +425,7 @@ class IrPrinter
     text += " sideeffect" if inline_asm.side_effects
     text += " alignstack" if inline_asm.align_stack
     text += " inteldialect" if inline_asm.dialect == AsmDialect::Intel
+    text += " unwind" if inline_asm.unwind
     text + " " + ir_quote(inline_asm.template) + ", " + ir_quote(inline_asm.constraints)
   end
 

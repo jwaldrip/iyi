@@ -144,6 +144,20 @@ done
 cat "$table"
 echo "   $passing fixtures run end to end with no host tool"
 
+echo "== 3b. the native backend refuses what it does not lower, and names what it refused"
+for ir in bench/fixtures/native_refused/*.ir; do
+  n=$(basename "$ir" .ir)
+  want=$(sed -n 's/^; refused: //p' "$ir" | head -n 1)
+  [ -n "$want" ] || { fail "$ir names no expected refusal"; continue; }
+  if PATH="$TRIPWIRE_PATH:$PATH" "$tool" "$ir" -o "$work/refused-$n" >"$work/refused-$n.log" 2>&1; then
+    fail "$n was built, but the native backend does not lower it"
+  elif grep -q "$want" "$work/refused-$n.log"; then
+    echo "   refused by name: $n ($want)"
+  else
+    fail "$n was refused, but not for '$want': $(cat "$work/refused-$n.log")"
+  fi
+done
+
 echo "== 4. the tripwire log is empty: no ld, cc, clang, gcc, codesign, dsymutil, llvm-config or as ran"
 if tripwire_fired "$work/tripwire.log"; then
   fail "the native build ran a host tool: $(cat "$work/tripwire.log")"
