@@ -165,6 +165,12 @@ prove_mutation "a fun's declared types are read before the type system resolves 
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a pointerof of a local is refused, in a fun body or anywhere" "$TYPE_NODES" \
+  "  if exp.is_a?(Var)" \
+  "  if false" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
