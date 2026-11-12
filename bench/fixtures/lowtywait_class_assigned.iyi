@@ -1,0 +1,11 @@
+# Instance variables typed only by assignment in initialize, with no declaration.
+# Not measured: the hosted compiler types them from the assignments (TypeGuessVisitor), the port's
+# main visitor records no type for them (NEEDS.md row 15).
+class Counter
+  def initialize
+    @count = 0
+    @flag = true
+  end
+end
+
+# waiting: Counter: instance variables typed from assignments in initialize (NEEDS.md row 15)

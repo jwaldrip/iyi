@@ -9,6 +9,9 @@ import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/layout::{DataLayout, LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper, passed_by_value?, primitive_kind}
+import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/syntax/ast::{ClassDef, Expressions}
+import compiler/semantic/top_level::{ModuleType}
 
 # Lowering-types driver for bench/selfhost_lower_types_exercise.sh.
 #
@@ -143,12 +146,25 @@ module BenchSelfhostLowerTypesExercise
     out = out + "size: #{typer.size_of(typer.llvm_type(t))}\n"
     out = out + "align: #{typer.align_of(typer.llvm_type(t))}\n"
     out = out + "passed_by_value: #{bool_text(passed_by_value?(t))}\n"
+    out = out + "ivars: #{ivars_text(t)}\n"
     out = out + "passed_indirectly: #{bool_text(typer.passed_indirectly?(t))}\n"
     if t.is_a?(ProcInstanceType)
       out = out + "proc_function: #{typer.proc_function(t).to_s}\n"
       out = out + "closure_function: #{typer.closure_function(t).to_s}\n"
     end
     out
+  end
+
+  # The instance variables of a user class, in declaration order: `name:Type` (the name keeps its @), or `-`.
+  def self.ivars_text(t : Type) : String
+    return "-" unless t.is_a?(NonGenericClassType) && !t.is_a?(NilType)
+    parts = [] of String
+    t.as(ModuleType).all_instance_vars.each do |name, ivar|
+      vt = ivar.var_type
+      parts << "#{name}:#{vt.nil? ? "untyped" : vt.as(Type).full_name}"
+    end
+    return "-" if parts.size == 0
+    parts.join(" ")
   end
 
   def self.bool_text(b : Bool) : String
@@ -162,6 +178,16 @@ module BenchSelfhostLowerTypesExercise
     # The type system is installed before the visitor runs, as the semantic driver does.
     ts = TypeSystem.new(prog)
     node.accept(TopLevelVisitor.new(prog))
+    # The port's main visitor declares the instance variables: explicit declarations and assignments.
+    # Only class definitions: the main visitor needs a type for an alias node, which the
+    # declarations pass does not give one here.
+    if node.is_a?(Expressions)
+      node.as(Expressions).expressions.each do |e|
+        e.accept(MainVisitor.new(prog)) if e.is_a?(ClassDef)
+      end
+    elsif node.is_a?(ClassDef)
+      node.accept(MainVisitor.new(prog))
+    end
     layout_result = DataLayout.for(Target.new(triple))
     raise "no DataLayout for #{triple}" if layout_result.is_a?(LayoutError)
     layout = layout_result.as(DataLayout)

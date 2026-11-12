@@ -94,6 +94,13 @@ def llvm_function_text(t : LLVM::Type) : String
   "#{llvm_text(t.return_type)} (#{params.join(", ")})"
 end
 
+# The instance variables of a user class, in declaration order: `name:Type` (the name keeps its @), or `-`.
+def ivars_text(type : Iyi::Type) : String
+  return "-" unless type.is_a?(Iyi::NonGenericClassType) && !type.is_a?(Iyi::NilType)
+  parts = type.all_instance_vars.map { |name, ivar| "#{name}:#{ivar.type}" }
+  parts.empty? ? "-" : parts.join(" ")
+end
+
 def block_text(name : String, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
   String.build do |io|
     io << "== " << name << "\n"
@@ -116,6 +123,7 @@ def block_text(name : String, typer : Iyi::LLVMTyper, type : Iyi::Type) : String
     io << "size: " << typer.size_of(typer.llvm_type(type)) << "\n"
     io << "align: " << typer.align_of(typer.llvm_type(type)) << "\n"
     io << "passed_by_value: " << (type.passed_by_value? ? "true" : "false") << "\n"
+    io << "ivars: " << ivars_text(type) << "\n"
     io << "passed_indirectly: " << (typer.passed_indirectly?(type) ? "true" : "false") << "\n"
     if type.is_a?(Iyi::ProcInstanceType)
       io << "proc_function: " << llvm_function_text(typer.proc_type(type)) << "\n"
@@ -204,7 +212,9 @@ begin
   program = Iyi::Program.new
   program.codegen_target = Iyi::Codegen::Target.new(triple)
   node = Iyi::Parser.new(source).parse
-  node.accept Iyi::TopLevelVisitor.new(program)
+  # The hosted declaration passes: top-level declarations, then the instance variable
+  # declarations and the types guessed from assignments (program.cr top_level_semantic).
+  program.top_level_semantic(node)
   typer = program.llvm_typer
   source.each_line do |line|
     next unless line.starts_with?("# type: ")
