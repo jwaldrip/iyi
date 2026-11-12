@@ -30,6 +30,13 @@ import compiler/semantic/top_level::{Type}
 import compiler/lower/type_id::{LowerTypeIds}
 import compiler/lower/globals::{LowerGlobals}
 
+# A phi a branch of a block call adds its value to: the `break`, `next` and `return` of an inlined
+# block call write their values here (hosted `Phi#add`). `LowerPhi` (phi.iyi) implements it. The trait
+# lives in this module because phi.iyi imports this one.
+pub trait BranchPhi
+  abstract def add_branch(low : Lowerer, value : Value?, last : Bool) : Nil
+end
+
 # The visitor of a node, which the calls and the functions call back into when they
 # emit an argument or a body. The core's dispatch (lower.iyi) implements it, so the
 # calls and functions files need not import the dispatch: iyi refuses import cycles.
@@ -58,10 +65,21 @@ pub class LowerContext
   property return_type : Type?
   # True for the unit that begin_main_function makes (`__crystal_main`): a return there has no def to leave.
   property top_level : Bool
+  # The block frame and the phis of the context (hosted Context#return_phi, break_phi, next_phi, block, block_context).
+  property return_phi : BranchPhi?
+  property break_phi : BranchPhi?
+  property next_phi : BranchPhi?
+  property block_node : ASTNode?
+  property block_context : LowerContext?
 
   def initialize(@fun : Function, @fun_type : IrType, @type : Type?, @vars : Hash(String, LowerVar))
     @return_type = nil
     @top_level = false
+    @return_phi = nil
+    @break_phi = nil
+    @next_phi = nil
+    @block_node = nil
+    @block_context = nil
   end
 end
 

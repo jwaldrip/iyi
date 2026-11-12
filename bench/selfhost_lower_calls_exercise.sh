@@ -151,6 +151,14 @@ prove_mutation "a NoReturn def call is not followed by unreachable" "$REPO/src/c
   "  if ret.is_a?(NoReturnType)
     low.builder.unreachable" "  if ret.is_a?(NilType)
     low.builder.unreachable" -- lower_calls_check || status=1
+prove_mutation "a block argument is never stored at a yield" "$REPO/src/compiler/lower/block.iyi" \
+  "        store_local(low, var.as(LowerVar), exp_types[i], exp_values[i])" "        low.last = low.last" -- lower_calls_check || status=1
+prove_mutation "a block call's value is merged as a non-final branch" "$REPO/src/compiler/lower/call.iyi" \
+  "  phi.add(low, low.last, true)" "  phi.add(low, low.last, false)" -- lower_calls_check || status=1
+prove_mutation "a block call allocates none of the block's variables" "$REPO/src/compiler/lower/call.iyi" \
+  "  allocate_block_vars(low, block, block_ctx.vars)" "  block_ctx.vars.size" -- lower_calls_check || status=1
+prove_mutation "an inlined def's argument is allocated with the nil type" "$REPO/src/compiler/lower/call.iyi" \
+  "    alloca_local(low, vars, arg.name, arg_types[i])" "    alloca_local(low, vars, arg.name, low.analysed.program.nil_type)" -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

@@ -146,6 +146,7 @@ src/iyi/set.iyi semantic
 src/iyi/string.iyi parse
 src/iyi/testing.iyi semantic
 src/iyi/thread.iyi semantic
+src/compiler/lower/block.iyi parse
 src/compiler/lower/call.iyi parse
 src/compiler/lower/cond.iyi parse
 src/compiler/lower/context.iyi parse

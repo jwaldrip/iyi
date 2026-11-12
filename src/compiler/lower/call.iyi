@@ -1,13 +1,17 @@
 module compiler/lower/call
 
 # The port of `visit(Call)` (src/compiler/iyi/codegen/call.cr) for a call to one target
-# def, with no block: the arguments are lowered in order, the callee is found or emitted
+# def, with no receiver: the arguments are lowered in order, the callee is found or emitted
 # by `target_def_fun` (fun.iyi), and the call is an ordinary call. The specification has
 # no exception tables, so a call is always a plain call and no landing pad is made (hosted
 # `codegen_call_or_invoke` without a rescue block).
 #
 # Ported:
 #   - a call to a def in the program, with no receiver (`codegen_call_node`);
+#   - a call with a block to a def with no receiver and no `&block` parameter: the def's body is
+#     inlined where the call stands, and each `yield` in it runs the block (`codegen_call_with_block`,
+#     hosted call.cr:356, with block.iyi for the yield and the block body). The block's variables
+#     are made first, then the def's, and the def's value is the call's value, merged by a phi;
 #   - a call through a `lib`, `LibC.exit(42)`: the C declaration is made in the module
 #     (`declare`, C calling convention, the name the lib gives the fun), the call is a C
 #     call, and a NoReturn call is followed by `unreachable` (hosted `codegen_extern_call`
@@ -17,22 +21,27 @@ module compiler/lower/call
 # is honoured only when it names the argument's own type.
 #
 # Refused by name, at the call that reaches them (pending.iyi): a receiver that is not a
-# lib, a block, default arguments and splats, a restriction that converts the argument,
-# and a NoReturn def of the program (its `unreachable` is with the lib calls' path only).
+# lib, default arguments and splats, a restriction that converts the argument, a NoReturn def
+# of the program (its `unreachable` is with the lib calls' path only), a block with a receiver,
+# a lib fun or a primitive, a def with a `&block` parameter (the hosted fun literal, closures),
+# and a block call that returns void or never returns.
 #
 # The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, CharLiteral, Def, NilLiteral, NumberLiteral}
+import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, NilLiteral, NumberLiteral}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
-import compiler/lower/context::{Lowerer}
+import compiler/lower/block::{LocalCollector, alloca_local, copy_vars}
+import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
 import compiler/lower/fun::{target_def_fun, visit_node}
-import compiler/lower/helpers::{llvm_nil}
+import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
-import compiler/semantic/top_level::{LibType, LibFun, MetaclassType, NilType, NoReturnType, Type}
+import compiler/lower/phi::{LowerPhi}
+import compiler/lower/typer::{passed_by_value?}
+import compiler/semantic/top_level::{LibType, LibFun, MetaclassType, NilType, NoReturnType, Type, VoidType}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call}
 
 # A body that is a literal, which the hosted call inlines (`try_inline_call`).
@@ -48,24 +57,32 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   raise "BUG: the analysed program has no type for the call to #{node.name} (hosted call.cr: visit(Call))" if ret_type.nil?
   ret = ret_type.as(Type)
 
-  unless node.block.nil?
-    pending_visit_node("a call with a block (hosted call.cr, codegen_call_with_block)")
-  end
   if node.args.size != def_node.args.size || def_node.splat_index != nil
     pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
   end
 
   if the_lib = lib_of_receiver(low, node)
+    unless node.block.nil?
+      pending_visit_node("a block passed to a lib fun (hosted call.cr: codegen_extern_call)")
+    end
     codegen_lib_call(low, node, the_lib.as(LibType), def_node, ret)
     return
   end
 
   unless primitive_name_of(def_node).nil?
+    unless node.block.nil?
+      pending_visit_node("a block passed to a primitive (hosted call.cr: codegen_call, Primitive body)")
+    end
     lower_primitive_call(low, node, def_node)
     return
   end
   unless node.obj.nil?
     pending_visit_node("a call with a receiver (hosted call.cr, prepare_call_args): self is not ported yet")
+  end
+  if block = node.block
+    arg_types, values = lower_args(low, node, def_node)
+    codegen_call_with_block(low, node, block.as(Block), def_node, ret, arg_types, values)
+    return
   end
   # Hosted `try_inline_call` (call.cr:561): a body that is a literal is inlined where the call
   # stands, and no function is emitted. The arguments are still evaluated, in order.
@@ -90,6 +107,139 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     low.last = llvm_nil(low)
   else
     low.last = inst
+  end
+end
+
+# The hosted `codegen_call_with_block` (call.cr:356) for a def with no receiver and no `&block`
+# parameter. The arguments are already evaluated. The block's own variables (its arguments and its
+# locals) are made in a copy of the caller's variables, the way the hosted code makes them before it
+# clones the context. The def's body is then inlined in a frame of its own: the def's arguments and
+# locals are allocas, the arguments are stored into them, and each `yield` in the body runs the block
+# (block.iyi). The value of the body is the call's value, merged by a phi (hosted `Phi.open(self, node)`,
+# which always wants a value).
+pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Call, block : Block, def_node : Def, ret : Type, arg_types : Array(Type), values : Array(Value)) : Nil
+  unless def_node.block_arg.nil?
+    pending_visit_node("a call to a def with a &block parameter (hosted call.cr: codegen_call_with_block_as_fun_literal, closures)")
+  end
+  if ret.is_a?(NoReturnType) || ret.is_a?(VoidType)
+    pending_visit_node("a block call of type #{ret.full_name} (hosted codegen_call_with_block: unreachable and void results)")
+  end
+  body_t = low.analysed.type_of?(def_node.body)
+  raise "BUG: the analysed program has no type for the body of #{node.name} (hosted call.cr: codegen_call_with_block)" if body_t.nil?
+  if body_t.as(Type).full_name != ret.full_name
+    pending_visit_node("a block call to #{node.name} whose body is #{body_t.as(Type).full_name} and whose call is #{ret.full_name} (hosted upcast of the body's value)")
+  end
+
+  wants = low.needs_value
+  caller = low.current_context
+
+  # The block's variables, in a copy of the caller's (hosted `context.vars = old_block_context.vars.dup`).
+  block_ctx = LowerContext.new(caller.fun, caller.fun_type, caller.type, copy_vars(caller.vars))
+  block_ctx.top_level = caller.top_level
+  block_ctx.return_type = caller.return_type
+  block_ctx.return_phi = caller.return_phi
+  block_ctx.block_node = caller.block_node
+  block_ctx.block_context = caller.block_context
+  allocate_block_vars(low, block, block_ctx.vars)
+
+  # The inlined def's frame (hosted `with_cloned_context`): the block it yields to, the block's
+  # context, and the phi the value and the `break`s of the call go to.
+  phi = LowerPhi.new(true, low.typer.llvm_type(ret))
+  frame = LowerContext.new(caller.fun, caller.fun_type, nil, Hash(String, LowerVar).new)
+  frame.block_node = block
+  frame.block_context = block_ctx
+  frame.return_phi = phi
+  low.context = frame
+  allocate_def_vars(low, def_node, arg_types, frame.vars)
+  copy_args(low, def_node, arg_types, values, frame.vars)
+
+  low.needs_value = true
+  visit_node(low, def_node.body)
+  phi.add(low, low.last, true)
+  low.context = caller
+  low.needs_value = wants
+  phi.close(low)
+end
+
+# The block's arguments, then its own locals, as the hosted `alloca_non_closured_vars(block.vars)`
+# makes them: an alloca for each, named by the variable, in the alloca block. An argument shadows a
+# caller variable of the same name (hosted `undef_vars`). A block argument never yielded to has the nil
+# type, as the hosted `var.type? || @program.nil`.
+pub def allocate_block_vars(low : Lowerer, block : Block, vars : Hash(String, LowerVar)) : Nil
+  i = 0
+  while i < block.args.size
+    arg = block.args[i]
+    if arg.name != "_"
+      t = low.analysed.type_of?(arg.as(ASTNode))
+      nil_t = low.analysed.program.nil_type
+      alloca_local(low, vars, arg.name, t.nil? ? nil_t : t.as(Type))
+    end
+    i += 1
+  end
+  collector = LocalCollector.new(low.analysed)
+  block.body.accept(collector)
+  if collector.declared
+    pending_visit_node("a typed declaration in a block (hosted alloca_non_closured_vars, TypeDeclaration), not ported yet")
+  end
+  j = 0
+  while j < collector.names.size
+    name = collector.names[j]
+    unless vars[name]?
+      alloca_local(low, vars, name, collector.types[j])
+    end
+    j += 1
+  end
+end
+
+# The def's arguments, then its locals, as the hosted `alloca_vars(target_def.vars)` makes them before
+# the arguments are copied: every argument gets an alloca (the inlined def's arguments are not read in
+# place), and each local assigned in the body gets one, in the order its first assignment is met.
+pub def allocate_def_vars(low : Lowerer, def_node : Def, arg_types : Array(Type), vars : Hash(String, LowerVar)) : Nil
+  i = 0
+  while i < def_node.args.size
+    arg = def_node.args[i]
+    if arg.name == "_"
+      pending_visit_node("an argument named _ in an inlined def (hosted create_local_copy_of_arg)")
+    end
+    alloca_local(low, vars, arg.name, arg_types[i])
+    i += 1
+  end
+  collector = LocalCollector.new(low.analysed)
+  def_node.body.accept(collector)
+  if collector.declared
+    pending_visit_node("a typed declaration in an inlined def (hosted alloca_vars, TypeDeclaration), not ported yet")
+  end
+  j = 0
+  while j < collector.names.size
+    name = collector.names[j]
+    unless vars[name]?
+      alloca_local(low, vars, name, collector.types[j])
+    end
+    j += 1
+  end
+end
+
+# The hosted `create_local_copy_of_arg` for an argument of an inlined def: the value is stored into the
+# argument's alloca. A value passed by value goes through an alloca of its own first (hosted
+# `pointer2`, then `assign`), which the loaded value is read from.
+pub def copy_args(low : Lowerer, def_node : Def, arg_types : Array(Type), values : Array(Value), vars : Hash(String, LowerVar)) : Nil
+  i = 0
+  while i < def_node.args.size
+    arg = def_node.args[i]
+    var = vars[arg.name]?
+    raise "BUG: argument #{arg.name} of an inlined def has no variable (hosted fun.cr: create_local_copy_of_arg)" if var.nil?
+    v = var.as(LowerVar)
+    t = arg_types[i]
+    ir = low.typer.llvm_type(t)
+    if passed_by_value?(t)
+      temp = low.alloca(ir, "")
+      store_aligned(low, values[i], temp)
+      loaded = load_aligned(low, ir, temp, "")
+      store_aligned(low, loaded, v.pointer)
+    else
+      store_aligned(low, values[i], v.pointer)
+    end
+    i += 1
   end
 end
 
