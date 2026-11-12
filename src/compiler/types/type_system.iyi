@@ -4,7 +4,7 @@ import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Call, Generic, Metaclass, NamedArgument, NumberLiteral, Path, ProcNotation, Union}
 import compiler/syntax/token
 import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeHook, UnionType, VoidType}
-import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeQueries, TypeSplat, VirtualMetaclassType, VirtualType}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/filtering::{TypeFiltering}
@@ -23,6 +23,7 @@ pub class TypeSystem < TypeHook
     @instances = TypeInstances.new(@program)
     register_builtin_types
     @program.merge_hook = self
+    @program.resolve_declared_types
   end
 
   def merge_members(types : Array(Type)) : Type
@@ -97,6 +98,16 @@ pub class TypeSystem < TypeHook
 
   def instantiate_generic(generic_type : GenericClassType, type_args : Array(Type)) : GenericClassInstanceType
     @instances.instantiate_generic(generic_type, type_args)
+  end
+
+  # The instance of a generic whose type arguments are resolved: each argument is made virtual, as
+  # lookup_type_args makes it, and the lookup instantiates the base.
+  def instantiate_type(base : Type, type_args : Array(Type)) : Type
+    stored = [] of Type
+    type_args.each do |t|
+      stored << TypeQueries.virtual_type(t)
+    end
+    TypeLookup.new(@instances).instantiate(base, stored)
   end
 
   def instantiate_generic_module(generic_type : GenericModuleType, type_args : Array(Type)) : GenericModuleInstanceType
