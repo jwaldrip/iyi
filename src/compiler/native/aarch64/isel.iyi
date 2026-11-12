@@ -306,6 +306,14 @@ class Isel
       return
     end
     g = target.as(Global)
+    if g.tls == TlsModel::None
+      fail("threadlocaladdr names #{g.name}, which is not a thread-local global")
+      return
+    end
+    if @desc.tls == TlsForm::LocalExec && g.tls != TlsModel::LocalExec
+      fail("thread-local #{g.name} has the #{g.tls} model; Linux lowers only the local-exec model in this slice")
+      return
+    end
     if @desc.tls == TlsForm::LocalExec
       tp = gpr
       m = mop(MOp::Mrs)

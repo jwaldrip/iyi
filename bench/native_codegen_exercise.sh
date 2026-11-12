@@ -186,6 +186,27 @@ if llvm-objdump --macho --reloc "$ti" | grep -q 'TLVLDP  ' && llvm-objdump --mac
 else
   fail "relocations: the descriptor is not reached through the TLVP relocations"
 fi
+# A thread-local model other than local-exec is refused on Linux by name; a plain global is refused on any target.
+lin_general="$WORK/tls_general.linux.ir"
+sed -e 's/^target triple = .*/target triple = "aarch64-unknown-linux-gnu"/' \
+    -e 's/^target datalayout = .*/target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"/' \
+    -e 's/thread_local(localexec)/thread_local(generaldynamic)/' "$FIX/tls_init.ir" >"$lin_general"
+if "$DRV" obj "$lin_general" "$WORK/tls_general.o" >"$WORK/tls_general.log" 2>&1; then
+  fail "refusal: a generaldynamic thread-local on Linux was lowered"
+elif grep -q 'Linux lowers only the local-exec model' "$WORK/tls_general.log"; then
+  echo "refusal: a generaldynamic thread-local on Linux is refused by name"
+else
+  fail "refusal: the generaldynamic refusal is not the named one"
+fi
+plain="$WORK/tls_plain.ir"
+sed -e 's/internal thread_local(localexec) global/internal global/' "$FIX/tls_init.ir" >"$plain"
+if "$DRV" obj "$plain" "$WORK/tls_plain.o" >"$WORK/tls_plain.log" 2>&1; then
+  fail "refusal: threadlocaladdr of a plain global was lowered"
+elif grep -q 'is not a thread-local global' "$WORK/tls_plain.log"; then
+  echo "refusal: threadlocaladdr of a plain global is refused by name"
+else
+  fail "refusal: the plain-global refusal is not the named one"
+fi
 
 
 # ---- 5. the Linux variant encodes; it is not executed here -------------------------------------
