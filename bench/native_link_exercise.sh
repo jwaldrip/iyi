@@ -317,7 +317,7 @@ fi
 
 if [ "$darwin" -eq 1 ]; then
   echo "== 8. mutation proofs"
-  check_drop_page_hash() {
+  check_page_hash() {
     check_hello
   }
   prove_mutation "hash one CodeDirectory page wrong" "$codesign_src" \
@@ -326,7 +326,7 @@ if [ "$darwin" -eq 1 ]; then
     if page == 0_i64
       digest[0] = digest[0] ^ 1_u8
     end" \
-    check_drop_page_hash
+    check_page_hash
 
   check_wrong_ordinal() {
     check_hello
