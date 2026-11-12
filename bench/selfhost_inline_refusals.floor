@@ -3,3 +3,5 @@
 bench/fixtures/seminl_reach/body_single_for.iyi 14
 bench/fixtures/seminl_reach/body_single_if.iyi 14
 bench/fixtures/seminl_reach/body_nested_if.iyi 14
+bench/fixtures/seminl_reach/top_if_class.iyi 14
+bench/fixtures/seminl_reach/prelude_blocks.iyi 14
