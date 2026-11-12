@@ -23,7 +23,7 @@ def round_up(n : Int64, to : Int64) : Int64
 end
 
 # Lays acc the frame, then inserts the prologue at the start of the entry block and an epilogue before every return.
-pub def lay_out(fn : MFunction) : Nil
+pub def lay_out(fn : MFunction, stack_align : Int64) : Nil
   f = fn.frame
   offset = round_up(f.outgoing_bytes, 8_i64)
   f.saves_offset = offset
@@ -35,7 +35,7 @@ pub def lay_out(fn : MFunction) : Nil
     f.offsets << offset
     offset = offset + slot[0]
   end
-  f.frame_size = round_up(offset, 16_i64)
+  f.frame_size = round_up(offset, stack_align)
   insert_prologue(fn)
   fn.blocks.each do |block|
     insert_epilogues(fn, block)

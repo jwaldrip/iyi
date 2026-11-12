@@ -19,6 +19,7 @@ import compiler/native/aarch64/encode::{encode_function, EncodedFunction, Encode
 import compiler/native/regalloc::{allocate}
 import compiler/native/frame::{lay_out}
 import compiler/native/emit::{SectionWriter, to_bytes, write_initializer, data_section_name}
+import compiler/native/aarch64/abi::{aarch64_target}
 import std/slice::{Slice, Bytes}
 
 # The symbol table of a module: every function and global by name, in the object's order.
@@ -53,15 +54,16 @@ pub def function_mir(mod : Module, fn : Function, syms : Hash(String, Int32), da
   end
   mf = selected.as(MFunction)
   allocate(mf)
-  lay_out(mf)
+  lay_out(mf, aarch64_target(darwin).stack_align)
   mf
 end
 
 # Compiles the whole module. The object is returned, or the reason compilation stopped.
 pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
   target = mod.target
-  obj = ObjectFile.new(ObjFormat::MachO, target, "iyi-native")
-  if darwin
+  desc = aarch64_target(darwin)
+  obj = ObjectFile.new(desc.object_format, target, "iyi-native")
+  if desc.darwin
     obj.build_version = BuildVersion.new(1, 0x000E0400, 0x000E0400)
   end
   syms = symbol_table(mod, obj)
