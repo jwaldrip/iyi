@@ -868,7 +868,6 @@ pub class ImplRecord
 end
 
 pub class SemanticProgram < NonGenericModuleType
-  property defer_pending_ivars : Bool = false
   @object_type : ClassType?
   property merge_hook : TypeHook?
   @value_type : ClassType?
@@ -1438,6 +1437,7 @@ pub class PendingIvar
   property owner : ModuleType
   property name : String
   property restriction : ASTNode
+  property imports : Hash(String, Type)? = nil
 
   def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode)
   end
@@ -1453,20 +1453,34 @@ pub class TopLevelVisitor < Visitor
   @enum_flags : Bool = false
   @pending_flags : Bool = false
 
+  # Resolves the pending instance variables this visitor holds, once, after every file it
+  # read is declared. A restriction may name a type a later file declares (`concurrency.iyi`
+  # restricts an ivar to `IyiDeferNode`, declared in `prelude.iyi`). Each one resolves with
+  # the imports of the file that wrote it.
   def finish : Nil
+    saved = @program.current_imports
     @pending_ivars.each do |pi|
+      if imports = pi.imports
+        @program.current_imports = imports
+      else
+        @program.current_imports = saved
+      end
       arg_type = @program.lookup_type_node(pi.restriction, pi.owner)
       pi.owner.instance_vars[pi.name] = MetaTypeVar.new(pi.name, arg_type)
     end
+    @program.current_imports = saved
     @pending_ivars.clear
   end
 
-  # iyi: a file that `load_file` reads hands its pending instance variables to the
-  # file that reads it, which resolves them once the whole program is declared. A
-  # restriction may name a type a later file declares (`concurrency.iyi` restricts an
-  # ivar to `IyiDeferNode`, declared in `prelude.iyi`).
+  # A file that `load_file` reads hands its pending instance variables to the file that
+  # reads it. Each keeps the imports of the file that wrote it.
   def take_pending_ivars : Array(PendingIvar)
     taken = @pending_ivars
+    taken.each do |pi|
+      if pi.imports.nil?
+        pi.imports = @program.current_imports
+      end
+    end
     @pending_ivars = [] of PendingIvar
     taken
   end
@@ -1567,18 +1581,12 @@ pub class TopLevelVisitor < Visitor
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
     @program.current_imports = Hash(String, Type).new
-    # With `defer_pending_ivars` (the prelude-first measure in the inline macros gate),
-    # a required file is nested in the file that reads it: its pending instance variables
-    # wait for the reader, which finishes once, so a type a later file declares resolves.
-    # Otherwise each file finishes its own, as the hosted pass does file by file.
-    if @program.defer_pending_ivars
-      inner.exp_nest = 1
-      nodes.accept(inner)
-      inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
-    else
-      nodes.accept(inner)
-      inner.finish
-    end
+    # A required file never finishes its own pending instance variables. It hands them to
+    # the file that reads it, and the root that read them finishes once, after every file
+    # it read is declared (the hosted pass resolves them after all top-level declarations).
+    inner.exp_nest = 1
+    nodes.accept(inner)
+    inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
     @program.current_imports = saved
     if unit = inner.unit
       @program.loaded_units[file] = unit
