@@ -1310,13 +1310,23 @@ pub class SemanticProgram < NonGenericModuleType
   # plain lookup stands.
   def declared_ivar_type(restriction : ASTNode, owner : ModuleType, virtual : Bool) : Type
     if hook = @merge_hook
-      resolved = lookup_type_node(restriction, owner)
+      resolved = remove_alias(lookup_type_node(restriction, owner))
       if virtual
         return hook.virtual_of(resolved)
       end
       return resolved
     end
-    lookup_type_node(restriction, owner)
+    remove_alias(lookup_type_node(restriction, owner))
+  end
+
+  # The type an alias names, through any chain of aliases (hosted Type#remove_alias): a declared
+  # instance variable takes the type the alias stands for, not the alias.
+  def remove_alias(type : Type) : Type
+    current = type
+    while current.is_a?(AliasType)
+      current = current.as(AliasType).process_value
+    end
+    current
   end
 
   # Each class body the top-level pass visited, in order, with its type.
