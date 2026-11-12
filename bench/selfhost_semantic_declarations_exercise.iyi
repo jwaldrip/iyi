@@ -226,10 +226,17 @@ elsif Program.args[0] == "--const-facts"
   if holder = prog.types["Holder"]?
     holder.as(ModuleType).class_vars.each_value do |mv|
       if owner = mv.owner
-        print "cvar #{mv.name} owner #{owner.full_name}\n"
+        print "cvar #{mv.name} owner #{owner.full_name} thread_local=#{mv.thread_local}\n"
       else
-        print "cvar #{mv.name} owner none\n"
+        print "cvar #{mv.name} owner none thread_local=#{mv.thread_local}\n"
       end
+    end
+  end
+elsif Program.args[0] == "--link-annotations"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  if link_lib = prog.types["LibA"]?
+    link_lib.as(LibType).link_annotations.each do |rec|
+      print "link lib=#{rec.library || "-"} ldflags=#{rec.ldflags || "-"} static=#{rec.is_static} framework=#{rec.framework || "-"} pkg_config=#{rec.pkg_config || "-"} dll=#{rec.dll || "-"}\n"
     end
   end
 else

@@ -1,5 +1,7 @@
 class Holder
   @@count : Int32
+  @[ThreadLocal]
+  @@seen : Int32
 end
 
 A = 1
