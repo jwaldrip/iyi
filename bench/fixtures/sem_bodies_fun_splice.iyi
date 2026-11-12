@@ -1,0 +1,17 @@
+@[Unsafe("fixture: a top-level fun is a C function the compiler does not check")]
+
+def inner_def(x : Int32) : Int32
+  x
+end
+
+# The body is one macro node: only the fun-body splice reaches the calls in its branches,
+# so the typed instance of inner_def exists only when the splice runs.
+fun splice_entry(x : Int32) : Int32
+  {% if flag?(:darwin) %}
+    inner_def(x)
+  {% else %}
+    inner_def(x + 1)
+  {% end %}
+end
+
+splice_entry(3)
