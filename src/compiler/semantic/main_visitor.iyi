@@ -1188,6 +1188,9 @@ pub class MainVisitor < Visitor
       end
       if pt = param_type
         new_vars[param.name] = pt
+        # iyi: the instantiated clone's parameter carries its type, so the lowering
+        # reads the argument types from the def (hosted codegen/ast.cr 48).
+        set_type(param, pt)
         if param.name.starts_with?("@") && !param.name.starts_with?("@@")
           if rec_type.is_a?(ModuleType)
             rec_type.as(ModuleType).instance_vars[param.name] = MetaTypeVar.new(param.name, pt)
