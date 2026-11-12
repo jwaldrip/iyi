@@ -262,7 +262,7 @@ end
 pub def codegen_char(low : Lowerer, node : CharLiteral) : Nil
   t = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for a char literal (hosted codegen.cr: visit(CharLiteral))" if t.nil?
-  low.last = low.builder.const_int(low.typer.llvm_type(t.as(Type)), node.value.ord.to_i64 + 1_i64)
+  low.last = low.builder.const_int(low.typer.llvm_type(t.as(Type)), node.value.ord.to_i64)
 end
 
 # The hosted `visit(While)` without break or next: the condition is tested in the
