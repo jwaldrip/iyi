@@ -1,7 +1,8 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, dump_program_declarations, dump_type, dir_of, normalize_path}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, LibFun, LibType, dump_program_declarations, dump_type, dir_of, normalize_path}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
+import compiler/semantic/type_nodes::{type_node_system}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
@@ -141,6 +142,15 @@ module BenchSelfhostSemanticDeclarationsExercise
     end
     sb.to_s
   end
+
+  # The resolved return type's name, or "nil" for a fun without one.
+  def self.return_name(f : LibFun) : String
+    if rt = f.resolved_return
+      rt.full_name
+    else
+      "nil"
+    end
+  end
 end
 
 if Program.args.empty?
@@ -156,6 +166,20 @@ elsif Program.args[0] == "--total"
     print "carried: #{message}\n"
   end
   print "ok\n"
+elsif Program.args[0] == "--lib-types"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  type_node_system(prog)
+  prog.global_funs.each do |f|
+    print "fun #{f.name}: #{f.arg_types.map(&.full_name).join(", ")} -> #{BenchSelfhostSemanticDeclarationsExercise.return_name(f)}\n"
+  end
+  prog.types.keys.sorted.each do |name|
+    t = prog.types[name]
+    if t.is_a?(LibType)
+      t.as(LibType).funs.each do |f|
+        print "lib #{name}.#{f.name}: #{f.arg_types.map(&.full_name).join(", ")} -> #{BenchSelfhostSemanticDeclarationsExercise.return_name(f)}\n"
+      end
+    end
+  end
 else
   print BenchSelfhostSemanticDeclarationsExercise.dump_file(Program.args[0])
 end

@@ -39,7 +39,7 @@ module compiler/lower/call
 # The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
-import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, InstanceVar, NilLiteral, NumberLiteral, Var}
+import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, InstanceVar, NilLiteral, NumberLiteral, Path, RespondsTo, Var}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
@@ -50,9 +50,10 @@ import compiler/lower/fun::{block_ended?, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
-import compiler/lower/typer::{passed_by_value?}
-import compiler/semantic/top_level::{LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, Type, UnionType, VoidType}
-import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?}
+import compiler/lower/typer::{passed_by_value?, primitive_kind}
+import compiler/lower/helpers::{int1}
+import compiler/semantic/top_level::{ClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, Type, UnionType, VoidType}
+import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
@@ -86,6 +87,9 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     unless node.block.nil?
       pending_visit_node("a block passed to a primitive (hosted call.cr: codegen_call, Primitive body)")
     end
+    if node.obj.nil? && primitive_name_of(def_node) == "allocate"
+      pending_visit_node("allocate with no receiver in a class method (hosted codegen_primitive_allocate): waits on primitive_allocate (lower/primitives.iyi, S2d2Primitives)")
+    end
     lower_primitive_call(low, node, def_node)
     return
   end
@@ -98,12 +102,20 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   end
 
   # The receiver is evaluated before the arguments (hosted `prepare_call_args`), and is the callee's self.
+  # A non-generic metaclass receiver (`Sched.go`) passes no self and is not evaluated (hosted `passed_as_self?`
+  # is false and the path is not a target const); its method is named after the class (`class_owner`).
   self_type : Type? = nil
   self_value : Value? = nil
+  class_owner : Type? = nil
   unless node.obj.nil?
-    self_type = receiver_owner(low, node)
-    recv = lower_receiver(low, node)
-    self_value = self_argument(low, node.obj.as(ASTNode), recv, self_type.as(Type))
+    recv_type = receiver_owner(low, node)
+    if recv_type.is_a?(MetaclassType)
+      class_owner = recv_type.as(MetaclassType).instance_type
+    else
+      self_type = recv_type
+      recv = lower_receiver(low, node)
+      self_value = self_argument(low, node.obj.as(ASTNode), recv, self_type.as(Type))
+    end
   end
 
   if block = node.block
@@ -152,8 +164,31 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
     return
   end
+  # Hosted `try_inline_call` (call.cr:614): a body that is an instance variable is read from self where the
+  # call stands; no function is emitted. The read is made only when the value is wanted (`return true unless
+  # @needs_value`), after the arguments, as the hosted `prepare_call_args` does.
   if body.is_a?(InstanceVar)
-    pending_visit_node("a getter #{node.name} inlined in its call (hosted call.cr: try_inline_call, read_instance_var), waiting on instance_var_pointer")
+    st = self_type
+    sv = self_value
+    if st.nil? || sv.nil?
+      pending_visit_node("a getter #{node.name} with no receiver (hosted call.cr: try_inline_call, read_instance_var)")
+    end
+    lower_args(low, node, def_node)
+    if block_ended?(low)
+      low.last = llvm_nil(low)
+      return
+    end
+    if low.needs_value
+      node_t = low.analysed.type_of?(body)
+      raise "BUG: the analysed program has no type for instance variable #{body.name} (hosted call.cr: try_inline_call)" if node_t.nil?
+      if ret.full_name != node_t.as(Type).full_name
+        pending_visit_node("a getter #{node.name} whose variable is #{node_t.as(Type).full_name} and whose call is #{ret.full_name} (hosted upcast, inline_call_return_value)")
+      end
+      low.last = read_instance_var(low, node_t.as(Type), st.as(Type), body.name, sv.as(Value))
+    else
+      low.last = llvm_nil(low)
+    end
+    return
   end
 
   arg_types, values = lower_args(low, node, def_node)
@@ -161,7 +196,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     low.last = llvm_nil(low)
     return
   end
-  func = target_def_fun(low, def_node, self_type, arg_types, ret)
+  func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner)
   inst = low.builder.call(func.fn_type, func, call_arguments(self_value, values), "")
   # Hosted codegen_call_or_invoke: a NoReturn call ends its block with `unreachable`, and its value is nil.
   if ret.is_a?(NoReturnType)
@@ -183,7 +218,23 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
   t = low.analysed.type_of?(obj.as(ASTNode))
   raise "BUG: the analysed program has no type for the receiver of #{node.name} (hosted call.cr: prepare_call_args)" if t.nil?
   owner = t.as(Type)
-  if owner.is_a?(MetaclassType) || owner.is_a?(UnionType) || owner.is_a?(MixedUnionType) || owner.is_a?(VirtualType) || owner.is_a?(NilableType) || owner.is_a?(NilableReferenceUnionType) || owner.is_a?(NilableProcType) || owner.is_a?(NilType)
+  if owner.is_a?(MetaclassType)
+    # A class method of a non-generic class or module, called on the constant path that names it (`Sched.go`).
+    # The hosted code does not evaluate the path, and the method is the metaclass's own def (an inherited one is
+    # refused: the hosted target owner is the superclass).
+    inst = owner.as(MetaclassType).instance_type
+    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""
+      pending_visit_node("a class method call on #{owner.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
+    end
+    unless obj.as(ASTNode).is_a?(Path)
+      pending_visit_node("a class method call on a receiver that is not a constant path (hosted call.cr: prepare_call_args, Path)")
+    end
+    if owner.as(MetaclassType).defs[node.name]?.nil?
+      pending_visit_node("a class method #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")
+    end
+    return owner
+  end
+  if owner.is_a?(UnionType) || owner.is_a?(MixedUnionType) || owner.is_a?(VirtualType) || owner.is_a?(NilableType) || owner.is_a?(NilableReferenceUnionType) || owner.is_a?(NilableProcType) || owner.is_a?(NilType)
     pending_visit_node("a call on a receiver of type #{owner.full_name} (hosted call.cr: prepare_call_args, owner is not a class or struct)")
   end
   if owner.is_a?(ModuleType)
@@ -469,4 +520,28 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
   end
   low.needs_value = wants
   {arg_types, values}
+end
+
+# The hosted `responds_to?` (RespondsTo, expanded by the hosted typer to a Bool literal): true when the
+# receiver's type, or a superclass of it, defines a method of that name. The analysis types the node Bool and
+# leaves the value here (semantic/main_visitor.iyi, visit(RespondsTo)). The value is a constant i1.
+pub def codegen_responds_to(low : Lowerer, node : RespondsTo) : Nil
+  t = low.analysed.type_of?(node.obj)
+  raise "BUG: the analysed program has no type for the receiver of responds_to? (hosted codegen: RespondsTo)" if t.nil?
+  value = responds_to_name?(t.as(Type), node.name)
+  low.last = int1(low, value ? 1_i64 : 0_i64)
+end
+
+# Whether a type, or a superclass of it, defines a method of this name (the hosted lookup for responds_to?).
+pub def responds_to_name?(t : Type, name : String) : Bool
+  if t.is_a?(ModuleType)
+    return true unless t.as(ModuleType).defs[name]?.nil?
+  end
+  if t.is_a?(ClassType)
+    sup = t.as(ClassType).superclass
+    if s = sup
+      return responds_to_name?(s.as(Type), name)
+    end
+  end
+  false
 end

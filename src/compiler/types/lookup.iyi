@@ -316,6 +316,12 @@ pub class TypeLookup
     return args if args.is_a?(LookupError)
     type_args = args.as(Array(Type))
 
+    instantiate(base_type, type_args)
+  end
+
+  # The instance of *base_type* with its type arguments resolved: the tail of lookup_generic. The type
+  # system calls it for the type nodes the declaration pass resolves.
+  def instantiate(base_type : Type, type_args : Array(Type)) : Type
     if base_type.is_a?(GenericModuleType)
       return @instances.instantiate_generic_module(base_type.as(GenericModuleType), type_args)
     end
