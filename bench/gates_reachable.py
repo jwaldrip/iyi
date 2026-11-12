@@ -81,6 +81,12 @@ TOOLS = {
     # half of bench/fixtures/llvm_roundtrip/COVERAGE.md. The gate beside
     # it, `native_llvm_roundtrip_exercise.sh`, is what a job runs.
     "native_llvm_matrix.sh",
+    # `python3 bench/macro_method_usage.py` counts how often the prelude, std
+    # and the port's own source call each macro method, and lists the hosted
+    # compiler's macro methods by the type that defines them. Its count is
+    # the order the macro port is filled in, recorded in
+    # src/compiler/macros/PORT_STATUS.md, which says to regenerate from it.
+    "macro_method_usage.py",
     # The instruments: each measures seconds or megabytes with a release
     # compiler, and most against Go or the compatibility binary beside it,
     # which a shared runner can neither build nor time - the same binary
