@@ -7,34 +7,54 @@ module compiler/lower/primitives
 #
 # How the primitive is found: the port has no Primitive node, so a primitive def's body
 # carries the primitive's name as the hosted dump prints it, `# primitive: <name>`
-# (`primitive_name`). NEEDS.md (S2d rows 19-23) records the form the semantic pass is
+# (`primitive_name`). NEEDS.md (S2d rows 19-25) records the form the semantic pass is
 # asked to give it.
 #
 # Ported:
-#   - `binary` on two operands of one integer type: the wrapping `&+`, `&-`, `&*`, and the
-#     comparisons `==`, `!=`, `<`, `<=`, `>`, `>=` (signed or unsigned as the type is); Bool
-#     and Symbol equality; Char equality and order (unsigned code points).
+#   - `binary` on two integers: the checked `+`, `-`, `*` (the overflow intrinsic and the
+#     raise, hosted codegen_addsub_with_overflow, codegen_mul_with_overflow), for operands of
+#     one signedness at any widths and of mixed signedness for `+` and `-` (the bias of
+#     hosted codegen_addsub_with_overflow). A checked `+` of an unsigned operand wider than
+#     the other needs the range check of the hosted codegen (refused by name).
+#   - `binary` on two operands of one integer type: the wrapping `&+`, `&-`, `&*`, the bitwise
+#     `|`, `&`, `^`, the unchecked shifts and divisions, and the comparisons `==`, `!=`, `<`,
+#     `<=`, `>`, `>=` (signed or unsigned as the type is); Bool and Symbol equality; Char
+#     equality and order (unsigned code points).
 #   - `convert` and `unchecked_convert` from an integer to an integer: the same width is the
 #     value, a wider type extends (sign extension for a signed source), a narrower truncates
 #     (hosted codegen_convert, integer overloads); Char to an integer zero-extends
 #     (`Char#ord`); Symbol to an integer is the value (`Symbol#to_i`).
-# Refused by name, at the primitive that reaches them: the checked `+`, `-`, `*` (they need
-# the overflow intrinsic and the runtime raise), mixed-type operands (codegen_binary_extend_int),
-# the integer division, remainder, shifts and bit operations, the checked conversions (their
-# range check raises an overflow), and every other primitive name.
+# Refused by name, at the primitive that reaches them: mixed-type operands other than the
+# checked `+` and `-` (codegen_binary_extend_int), a multiplication of mixed signedness, the
+# range checks of the checked conversions and of a checked widening, every other primitive.
 #
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
 import compiler/syntax/ast::{ASTNode, Call, Def, MacroLiteral}
+import compiler/ir/function::{Function}
 import compiler/ir/inst::{IntPredicate}
+import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/fun::{visit_node}
+import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{Type}
+
+# An integer operand as the hosted codegen reads it: its width in bytes, its signedness and
+# its IR type. A mixed-signedness operation biases one operand to the other signedness at the
+# same width, so the shape is built here rather than taken from the analysed type.
+pub class IntShape
+  getter bytes : Int32
+  getter signed : Bool
+  getter ir : IrType
+
+  def initialize(@bytes : Int32, @signed : Bool, @ir : IrType)
+  end
+end
 
 # The name of a primitive from its def's body (`# primitive: binary` gives `binary`), or
 # nil for a def that is not a primitive.
@@ -101,15 +121,14 @@ pub def codegen_primitive_binary(low : Lowerer, op : String, t1 : Type, t2 : Typ
   codegen_binary_op(low, op, t1, t2, p1, p2)
 end
 
-# The hosted `codegen_binary_op` overloads for the types ported so far. A pair of different
-# types is refused by name (mixed operands are a later increment).
+# The hosted `codegen_binary_op` overloads for the types ported so far.
 pub def codegen_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
   kind = primitive_kind(t1)
+  if kind == "int" && primitive_kind(t2) == "int"
+    return codegen_int_binary_op(low, op, t1, t2, p1, p2)
+  end
   if t1.full_name != t2.full_name
     pending_visit_node("binary #{op} on #{t1.full_name} and #{t2.full_name} (mixed operands, hosted codegen_binary_extend_int)")
-  end
-  if kind == "int"
-    return int_binary_op(low, op, t1, p1, p2)
   end
   if kind == "bool" || kind == "symbol"
     if op == "=="
@@ -146,9 +165,25 @@ pub def codegen_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 :
   p1
 end
 
+# The hosted integer `codegen_binary_op` for two integer operands. The checked `+` and `-`
+# and the `*` are the overflow forms; the other operators need one type on both sides.
+pub def codegen_int_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
+  if op == "+" || op == "-"
+    return addsub_with_overflow(low, op, int_shape(low, t1), int_shape(low, t2), p1, p2)
+  end
+  if op == "*"
+    return mul_with_overflow(low, int_shape(low, t1), int_shape(low, t2), p1, p2)
+  end
+  if t1.full_name != t2.full_name
+    pending_visit_node("binary #{op} on #{t1.full_name} and #{t2.full_name} (mixed operands, hosted codegen_binary_extend_int)")
+    return p1
+  end
+  int_binary_op(low, op, t1, p1, p2)
+end
+
 # The hosted integer overloads of `codegen_binary_op` for operands of one type, where the
-# result is in that type: the wrapping operators, and the comparisons with the predicate of
-# the type's signedness. Checked arithmetic is refused (hosted codegen_addsub_with_overflow).
+# result is in that type: the wrapping operators, the bitwise operators, the unchecked
+# shifts and divisions, and the comparisons with the predicate of the type's signedness.
 pub def int_binary_op(low : Lowerer, op : String, t : Type, p1 : Value, p2 : Value) : Value
   signed = is_signed?(t)
   if op == "&+"
@@ -208,8 +243,13 @@ pub def int_binary_op(low : Lowerer, op : String, t : Type, p1 : Value, p2 : Val
     end
     return low.builder.urem(p1, p2)
   end
-  pending_visit_node("binary #{op} on #{t.full_name} (checked arithmetic or a later operator, hosted codegen_binary_op)")
+  pending_visit_node("binary #{op} on #{t.full_name} (hosted codegen_binary_op)")
   p1
+end
+
+# The shape of an integer type: its width, its signedness, and its IR type.
+pub def int_shape(low : Lowerer, t : Type) : IntShape
+  IntShape.new(primitive_bytes(t), is_signed?(t), low.typer.llvm_type(t))
 end
 
 # Whether an integer builtin is signed: every builtin integer but the `U` ones.
@@ -224,6 +264,174 @@ pub def signed_pred(signed : Bool, signed_pred : IntPredicate, unsigned_pred : I
   else
     unsigned_pred
   end
+end
+
+# An integer constant of an operand's type, from its value as an Int64 bit pattern.
+pub def int_const(low : Lowerer, value : Int64, t : IntShape) : Value
+  low.builder.const_int(t.ir, value)
+end
+
+# The signed minimum of a width, as the Int64 bit pattern that is its sign bit (hosted
+# `int(sign_bit, t1)`). Computed with wrapping operations, so the 64-bit minimum is exact.
+pub def sign_bit_value(bytes : Int32) : Int64
+  0_i64 &- 1_i64.unsafe_shl((bytes * 8 - 1).to_i64)
+end
+
+# The largest unsigned value of a width, as the Int64 bit pattern of that value.
+pub def unsigned_max_value(bytes : Int32) : Int64
+  if bytes == 8
+    return 0_i64 &- 1_i64
+  end
+  1_i64.unsafe_shl((bytes * 8).to_i64) &- 1_i64
+end
+
+# The hosted `extend_int`: a source of its own signedness, widened to the target's IR type.
+pub def extend_int(low : Lowerer, from : IntShape, to : IntShape, value : Value) : Value
+  if from.signed
+    return low.builder.sext(value, to.ir)
+  end
+  low.builder.zext(value, to.ir)
+end
+
+# A truncation to `ir`, and the value itself when it already has that type (hosted `trunc`
+# on a value of the target type emits nothing).
+pub def trunc_to(low : Lowerer, value : Value, ir : IrType) : Value
+  if value.type == ir
+    return value
+  end
+  low.builder.trunc(value, ir)
+end
+
+# The overflow intrinsic of an operation at a signedness (hosted `call_binary_overflow_fun`).
+pub def overflow_id(op : String, signed : Bool) : IntrinsicId
+  if op == "+"
+    if signed
+      return IntrinsicId::SAddOverflow
+    end
+    return IntrinsicId::UAddOverflow
+  end
+  if op == "-"
+    if signed
+      return IntrinsicId::SSubOverflow
+    end
+    return IntrinsicId::USubOverflow
+  end
+  if signed
+    return IntrinsicId::SMulOverflow
+  end
+  IntrinsicId::UMulOverflow
+end
+
+# The hosted `call_binary_overflow_fun`: the result of the operation and its overflow flag,
+# from the overflow intrinsic at the operand's type.
+pub def call_binary_overflow(low : Lowerer, op : String, t : IntShape, p1 : Value, p2 : Value) : {Value, Value}
+  id = overflow_id(op, t.signed)
+  res = low.builder.intrinsic(id, [t.ir] of IrType, [p1, p2] of Value)
+  result = low.builder.extract_value(res, 0)
+  overflow = low.builder.extract_value(res, 1)
+  {result.as(Value), overflow.as(Value)}
+end
+
+# The hosted `codegen_raise_overflow_cond`: a branch on the overflow flag (with the expect
+# hint of the hosted codegen), to the raise, or on to the code that follows.
+pub def raise_overflow_cond(low : Lowerer, overflow : Value) : Nil
+  op_overflow = low.new_block("overflow")
+  op_normal = low.new_block("normal")
+  expected = low.builder.intrinsic(IntrinsicId::ExpectI1, [] of IrType, [overflow, int1(low, 0_i64)] of Value)
+  low.builder.cond_br(expected, op_overflow, op_normal)
+  low.builder.position_at_end(op_overflow)
+  raise_overflow(low)
+  low.builder.position_at_end(op_normal)
+end
+
+# The hosted `codegen_raise_overflow`: a call to `__crystal_raise_overflow`, then unreachable.
+# The function is the program's own (a `fun` with a body, in the prelude or the program); it
+# must already be in the module, as the hosted `crystal_raise_overflow_fun` requires.
+pub def raise_overflow(low : Lowerer) : Nil
+  fn = low.module.get_function?("__crystal_raise_overflow")
+  if fn.nil?
+    pending_visit_node("a checked operation with no __crystal_raise_overflow in the module (hosted crystal_raise_overflow_fun)")
+    return
+  end
+  raise_fn = fn.as(Function)
+  low.builder.call(raise_fn.fn_type, raise_fn, [] of Value, "")
+  low.builder.unreachable
+end
+
+# The hosted `codegen_addsub_with_overflow`: a checked `+` or `-` of two integers. Operands
+# of different signedness are biased by the sign bit of the first, so that one signedness
+# remains, and the result is biased back.
+pub def addsub_with_overflow(low : Lowerer, op : String, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  if t1.signed != t2.signed
+    bias = int_const(low, sign_bit_value(t1.bytes), t1)
+    p1_biased = low.builder.build_xor(p1, bias)
+    biased = IntShape.new(t1.bytes, !t1.signed, t1.ir)
+    result_biased = same_signedness_addsub(low, op, biased, t2, p1_biased, p2)
+    return low.builder.build_xor(result_biased, bias)
+  end
+  same_signedness_addsub(low, op, t1, t2, p1, p2)
+end
+
+# The hosted `codegen_addsub_same_signedness_with_overflow`. A wider second operand of an
+# unsigned type is truncated to the first's width, and a range check catches a value that
+# does not fit (hosted, after the overflow check). A wider signed operand needs the checked
+# conversion back, which is refused by name.
+pub def same_signedness_addsub(low : Lowerer, op : String, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  if t2.bytes > t1.bytes
+    if t2.signed
+      pending_visit_node("checked #{op} with a wider signed operand (hosted codegen_convert, range check)")
+      return p1
+    end
+    p2_trunc = trunc_to(low, p2, t1.ir)
+    pair = call_binary_overflow(low, op, t1, p1, p2_trunc)
+    raise_overflow_cond(low, pair[1])
+    p2_too_large = low.builder.icmp(IntPredicate::UGT, p2, int_const(low, unsigned_max_value(t1.bytes), t2))
+    raise_overflow_cond(low, p2_too_large)
+    return pair[0]
+  end
+  q2 = p2
+  if t2.bytes < t1.bytes
+    q2 = extend_int(low, t2, t1, p2)
+  end
+  pair = call_binary_overflow(low, op, t1, p1, q2)
+  raise_overflow_cond(low, pair[1])
+  pair[0]
+end
+
+# The hosted `codegen_mul_with_overflow`. A multiplication of mixed signedness is refused by
+# name (its hosted overloads read the sign of each operand and raise on the mixed case).
+pub def mul_with_overflow(low : Lowerer, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  if t1.signed != t2.signed
+    pending_visit_node("checked * of mixed signedness (hosted codegen_mul_*_signed_with_overflow)")
+    return p1
+  end
+  mul_same_signedness_with_overflow(low, t1, t2, p1, p2)
+end
+
+# The hosted `codegen_mul_same_signedness_with_overflow`: the operands are widened to the
+# larger width, multiplied with the overflow intrinsic, and the product is checked against
+# its truncation when it was computed wider than the result.
+pub def mul_same_signedness_with_overflow(low : Lowerer, t1 : IntShape, t2 : IntShape, p1 : Value, p2 : Value) : Value
+  tmax = t1
+  q1 = p1
+  q2 = p2
+  if t1.bytes < t2.bytes
+    q1 = extend_int(low, t1, t2, p1)
+    tmax = t2
+  elsif t2.bytes < t1.bytes
+    q2 = extend_int(low, t2, t1, p2)
+  end
+  pair = call_binary_overflow(low, "*", tmax, q1, q2)
+  result = pair[0]
+  overflow = pair[1]
+  if tmax.bytes > t1.bytes
+    result_trunc = trunc_to(low, result, t1.ir)
+    result_trunc_ext = extend_int(low, t1, tmax, result_trunc)
+    unequal = low.builder.icmp(IntPredicate::NE, result, result_trunc_ext)
+    overflow = low.builder.build_or(overflow, unequal)
+  end
+  raise_overflow_cond(low, overflow)
+  trunc_to(low, result, t1.ir)
 end
 
 # The hosted `codegen_primitive_convert`: `convert` is checked, `unchecked_convert` is not.
@@ -278,7 +486,7 @@ end
 
 # The primitive name of a def: from its body when the semantic pass gives it a primitive body
 # (`primitive_name`), otherwise from the marker in its free_vars. The marker is the gate-only
-# stand-in's form (bench/lib/primitive_stand_in.iyi, NEEDS.md row 21): the analysis reads a
+# stand-in's form (bench/lib/primitive_stand_in.iyi, NEEDS.md row 24): the analysis reads a
 # def's free_vars only for a `forall`, and a marker that is not a type name is never looked up.
 # Deleted with the stand-in.
 pub def primitive_name_of(target : Def) : String?

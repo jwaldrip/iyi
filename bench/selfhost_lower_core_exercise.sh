@@ -165,17 +165,36 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil"
+# The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
+# module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
   "$IYI" build -o "$WORK/port-m" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/m.build.log" 2>&1 || return 1
   "$WORK/port-m" context > "$WORK/m.ctx" 2>&1 || return 1
   awk '/^CONTEXT OK$/ { ok = 1 } END { exit !ok }' "$WORK/m.ctx" || return 1
-  for n in lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_string lower_symbol; do "$WORK/port-m" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" > "$WORK/m.out" 2> "$WORK/m.err" || return 1; awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] \&\& a[2] > 0) }' "$WORK/m.out" || return 1; done
-  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/m.out"
+  for n in $CORE_CHECK_FIXTURES; do
+    "$WORK/port-m" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" > "$WORK/m.out" 2> "$WORK/m.err" || return 1
+    awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/m.out" || return 1
+  done
+  return 0
 }
+echo "  the mutation check passes on the unmutated code:"
+if lower_core_check; then
+  echo "    yes"
+else
+  echo "    NO: the mutation proofs below would prove nothing"
+  status=1
+fi
 prove_mutation "argv is stored from the argc parameter" "$REPO/src/compiler/lower/lower.iyi" \
   "store_aligned(low, fn.param(1), argv_global)" "store_aligned(low, fn.param(0), argv_global)" -- lower_core_check || status=1
 prove_mutation "main returns 1" "$REPO/src/compiler/lower/lower.iyi" \
   "low.builder.ret(low.builder.const_int(i32, 0))" "low.builder.ret(low.builder.const_int(i32, 1))" -- lower_core_check || status=1
+prove_mutation "a declared variable's value is not stored" "$REPO/src/compiler/lower/lower.iyi" \
+  "store_aligned(low, v.as(Value), pointer)" "low.last = v" -- lower_core_check || status=1
+prove_mutation "a return of a constant zero" "$REPO/src/compiler/lower/lower.iyi" \
+  "low.builder.ret(returned)" "low.builder.ret(low.builder.const_int(ret_ir, 0_i64))" -- lower_core_check || status=1
+prove_mutation "a declared variable is read without a load" "$REPO/src/compiler/lower/lower.iyi" \
+  "LowerVar.new(pointer, dt, false)" "LowerVar.new(pointer, dt, true)" -- lower_core_check || status=1
 prove_mutation "the alloca block is named after the entry block" "$REPO/src/compiler/lower/context.iyi" \
   'new_blocks(["alloca", "entry"])' 'new_blocks(["entry", "alloca"])' -- lower_core_check || status=1
 prove_mutation "a bool literal is false" "$REPO/src/compiler/lower/lower.iyi" \
