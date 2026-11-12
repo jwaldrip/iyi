@@ -7,7 +7,7 @@ import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
-import compiler/semantic/inline_macros::{expand_inline_macro}
+import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
 
 pub class TypeException
   getter message : String
@@ -997,9 +997,20 @@ pub class SemanticProgram < NonGenericModuleType
   # The files read so far (absolute paths), and the module each one declared.
   getter loaded_files : Set(String)
   getter loaded_units : Hash(String, ModuleType)
+  # The normalised tree the pipeline holds for each unit, by normalised path. It is registered before any unit is
+  # declared, so a require that reaches a unit before its own turn reads this tree, not a second parse of the file.
+  getter unit_trees : Hash(String, ASTNode)
 
   def object_type : ClassType
     @object_type.as(ClassType)
+  end
+
+  # The tree the pipeline holds for a unit file, or a fresh parse of the file when the pipeline holds none.
+  def unit_tree_or_parse(file : String) : ASTNode
+    if tree = @unit_trees[file]?
+      return tree
+    end
+    Parser.new(File.read(file), file).parse
   end
 
   def value_type : ClassType
@@ -1234,6 +1245,7 @@ pub class SemanticProgram < NonGenericModuleType
     @search_path = [] of String
     @loaded_files = Set(String).new
     @loaded_units = Hash(String, ModuleType).new
+    @unit_trees = Hash(String, ASTNode).new
     @object_type = nil
     @value_type = nil
     @reference_type = nil
@@ -1801,8 +1813,16 @@ pub class TopLevelVisitor < Visitor
     nil
   end
 
+  # A class, module or lib body that is one inline macro node is spliced in the body's
+  # own scope, as a body of several nodes is (see splice_body_node). The typer then
+  # reads the expansion, not the macro node.
+  def splice_body(body : ASTNode) : ASTNode
+    splice_body_node(body, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+  end
+
   def visit(node : Expressions) : Bool
     @exp_nest = @exp_nest + 1
+    node.expressions = splice_inline_sites(node.expressions, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
     i = 0
     while i < node.expressions.size
       exp = node.expressions[i]
@@ -1913,8 +1933,8 @@ pub class TopLevelVisitor < Visitor
       return @program.loaded_units[file]?
     end
     @program.loaded_files.add(file)
-    parser = Parser.new(File.read(file), file)
-    nodes = parser.parse
+    # The pipeline holds the file's normalised tree when it declared the units. Reading that tree keeps one tree per file.
+    nodes = @program.unit_tree_or_parse(file)
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
     saved_defs = @program.current_import_defs
@@ -2110,8 +2130,9 @@ pub class TopLevelVisitor < Visitor
     end
 
     old_type = @current_type
-    @program.type_bodies << TypeBody.new(type, node.body)
     @current_type = type
+    node.body = splice_body(node.body)
+    @program.type_bodies << TypeBody.new(type, node.body)
     node.body.accept(self)
     @current_type = old_type
     false
@@ -2169,6 +2190,7 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = type
+    node.body = splice_body(node.body)
     node.body.accept(self)
     @current_type = old_type
 
@@ -2489,6 +2511,7 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = lib_type
+    node.body = splice_body(node.body)
     node.body.accept(self)
     @current_type = old_type
 

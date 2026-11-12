@@ -65,6 +65,8 @@ src/compiler/llvm/pass_manager.iyi 0
 src/compiler/llvm/target.iyi 0
 src/compiler/llvm/values.iyi 0
 src/compiler/loader.iyi 28
+src/compiler/lower/pending.iyi 5
+src/compiler/lower/unions.iyi 4
 src/compiler/macros/answers.iyi 9
 src/compiler/macros/ast.iyi 17
 src/compiler/macros/engine.iyi 0
@@ -84,6 +86,7 @@ src/compiler/native/amd64/encode.iyi 0
 src/compiler/native/amd64/regs.iyi 40
 src/compiler/native/asm/constraints.iyi 23
 src/compiler/native/asm/inventory.iyi 47
+src/compiler/native/const_expr.iyi 8
 src/compiler/native/driver.iyi 0
 src/compiler/native/emit.iyi 0
 src/compiler/native/frame.iyi 0
@@ -111,12 +114,14 @@ src/compiler/native/wasm/module.iyi 0
 src/compiler/platform/flags.iyi 5
 src/compiler/platform/linker.iyi 14
 src/compiler/platform/target.iyi 42
+src/compiler/semantic/call_nodes.iyi 4
 src/compiler/semantic/cleanup.iyi 7
+src/compiler/semantic/default_arguments.iyi 7
 src/compiler/semantic/inline_macros.iyi 0
 src/compiler/semantic/instance_vars.iyi 0
 src/compiler/semantic/literal_expander.iyi 0
 src/compiler/semantic/main_visitor.iyi 0
-src/compiler/semantic/math_interpreter.iyi 44
+src/compiler/semantic/math_interpreter.iyi 51
 src/compiler/semantic/normalizer.iyi 0
 src/compiler/semantic/recursive_struct_checker.iyi 0
 src/compiler/semantic/top_level.iyi 0
@@ -159,7 +164,7 @@ src/compiler/types/to_restriction.iyi 0
 src/compiler/types/type_system.iyi 0
 src/compiler/types/types.iyi 0
 src/compiler/types/unification.iyi 0
-src/iyi/array.iyi 96
+src/iyi/array.iyi 97
 src/iyi/atomic.iyi 9
 src/iyi/chaos.iyi 0
 src/iyi/chaos_points.iyi 6
@@ -219,7 +224,7 @@ src/std/fileserver.iyi 0
 src/std/float.iyi 15
 src/std/format.iyi 40
 src/std/gc.iyi 16
-src/std/heap.iyi 10
+src/std/heap.iyi 11
 src/std/hpack.iyi 0
 src/std/hpke.iyi 0
 src/std/html.iyi 10
