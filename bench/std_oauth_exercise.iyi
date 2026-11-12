@@ -1,0 +1,91 @@
+# Exercises `std/oauth` (OAuth 1.0, RFC 5849): the signature base string, the
+# HMAC-SHA1 signature, parameter normalisation, percent-encoding and the
+# Authorization header.
+#
+# Run via:
+#     ./bin/iyi run bench/std_oauth_exercise.iyi
+#
+# Every input is the RFC's own: its consumer and token secrets, nonces and
+# timestamps. Each expected value is printed in RFC 5849, or reproduced by an
+# independent HMAC-SHA1 computed outside iyi from the RFC's base string rules.
+# Where Errata 2550 corrects a printed signature, the corrected value is used
+# and the printed one is named.
+
+module bench/std_oauth_exercise
+
+import std/oauth::{Signature}
+import std/http::{Request, Headers}
+
+def assert_str(expected : String, actual : String, msg : String) : Nil
+  raise "ASSERTION FAILED: #{msg}\n  expected #{expected.inspect}\n  got      #{actual.inspect}" unless expected == actual
+end
+
+def headers_with(host : String, content_type : String? = nil) : Headers
+  h = Headers.new
+  h["Host"] = host
+  if ct = content_type
+    h["Content-Type"] = ct
+  end
+  h
+end
+
+puts "== RFC 5849 Section 1.2: temporary credentials request"
+# POST /initiate to https://photos.example.net. The printed signature is
+# "74KNZJeDHnMBp0EMJ9ZHt%2FXKycU%3D" in the header, percent-encoded.
+callback = {} of String => String
+callback["oauth_callback"] = "http://printer.example.com/ready"
+initiate = Signature.new("dpf43f3p2l4k3l03", "kd94hf93k423kf44", nil, nil, callback)
+initiate_req = Request.new("POST", "/initiate", headers_with("photos.example.net"))
+assert_str "74KNZJeDHnMBp0EMJ9ZHt/XKycU=", initiate.compute(initiate_req, true, "137131200", "wIjqoS"), "RFC 5849 Section 1.2 initiate signature"
+puts "  initiate signature 74KNZJeDHnMBp0EMJ9ZHt/XKycU="
+
+# The header carries the same parameters, in this module's order, with the
+# signature and callback percent-encoded per Section 3.5.1.
+assert_str "OAuth oauth_consumer_key=\"dpf43f3p2l4k3l03\", oauth_signature_method=\"HMAC-SHA1\", oauth_timestamp=\"137131200\", oauth_nonce=\"wIjqoS\", oauth_signature=\"74KNZJeDHnMBp0EMJ9ZHt%2FXKycU%3D\", oauth_callback=\"http%3A%2F%2Fprinter.example.com%2Fready\"", initiate.authorization_header(initiate_req, true, "137131200", "wIjqoS"), "RFC 5849 Section 1.2 Authorization header"
+puts "  Authorization header: parameters, order and encoding"
+
+puts "\n== RFC 5849 Section 1.2: token request (token secret in the key)"
+# POST /token with the temporary token and its secret, and the verifier.
+verifier = {} of String => String
+verifier["oauth_verifier"] = "hfdp7dh39dks9884"
+token_sig = Signature.new("dpf43f3p2l4k3l03", "kd94hf93k423kf44", "hh5s93j4hdidpola", "hdhd0244k9j7ao03", verifier)
+token_req = Request.new("POST", "/token", headers_with("photos.example.net"))
+assert_str "gKgrFCywp7rO0OXSjdot/IHF7IU=", token_sig.compute(token_req, true, "137131201", "walatlh"), "RFC 5849 Section 1.2 token request signature"
+puts "  token signature gKgrFCywp7rO0OXSjdot/IHF7IU="
+
+puts "\n== RFC 5849 Section 1.2: protected resource request"
+# The RFC signs the plain-http URI for this request, though the token request
+# above is over TLS. Its query parameters join the base string.
+photo_sig = Signature.new("dpf43f3p2l4k3l03", "kd94hf93k423kf44", "nnch734d00sl2jdk", "pfkkdhi9sl3r4s00")
+photo_req = Request.new("GET", "/photos?file=vacation.jpg&size=original", headers_with("photos.example.net"))
+assert_str "MdpQcU8iPSUjWoN/UDMsK2sui9I=", photo_sig.compute(photo_req, false, "137131202", "chapoH"), "RFC 5849 Section 1.2 protected resource signature"
+puts "  resource signature MdpQcU8iPSUjWoN/UDMsK2sui9I="
+
+puts "\n== RFC 5849 Section 3.4.1.1: base string and signature"
+# The Section 3.4.1.1 request: repeated `a3` (its values sort as "2 q" then
+# "a"), an empty `c@` and `c2`, a form-encoded body, and a token secret.
+form = headers_with("example.com", "application/x-www-form-urlencoded")
+base_req = Request.new("POST", "/request?b5=%3D%253D&a3=a&c%40=&a2=r%20b", form, "c2&a3=2+q")
+base_sig = Signature.new("9djdj82h48djs9d2", "j49sk3j29djd", "kkk9d7dh3k39sjv7", "dh893hdasih9")
+assert_str "POST&http%3A%2F%2Fexample.com%2Frequest&a2%3Dr%2520b%26a3%3D2%2520q%26a3%3Da%26b5%3D%253D%25253D%26c%2540%3D%26c2%3D%26oauth_consumer_key%3D9djdj82h48djs9d2%26oauth_nonce%3D7d8f3e4a%26oauth_signature_method%3DHMAC-SHA1%26oauth_timestamp%3D137131201%26oauth_token%3Dkkk9d7dh3k39sjv7", base_sig.base_string(base_req, false, "137131201", "7d8f3e4a"), "RFC 5849 Section 3.4.1.1 base string"
+puts "  base string matches Section 3.4.1.1, byte for byte"
+
+# The signature printed in the RFC is djosJKDKJSD8743243/jdk33klY=, which
+# Errata 2550 corrects to the value below.
+assert_str "r6/TJjbCOr97/+UU0NsvSne7s5g=", base_sig.compute(base_req, false, "137131201", "7d8f3e4a"), "RFC 5849 Section 3.4.1.1 signature (Errata 2550)"
+puts "  signature r6/TJjbCOr97/+UU0NsvSne7s5g= (Errata 2550)"
+
+puts "\n== RFC 5849 Section 3.6: percent-encoding of the secrets in the key"
+# Unreserved bytes (ALPHA, DIGIT, '-', '.', '_', '~') pass; every other byte,
+# space included, becomes %XX with uppercase hex. The key is
+# encoded-client-secret "&" encoded-token-secret.
+enc_sig = Signature.new("k", "AZaz09-._~ *&\u00e9%+", nil, "+/=")
+assert_str "AZaz09-._~%20%2A%26%C3%A9%25%2B&%2B%2F%3D", enc_sig.key, "RFC 5849 Section 3.6 percent-encoding of the key"
+puts "  unreserved pass, space %20, '*' %2A, '&' %26, UTF-8 bytes %C3%A9, '%' %25, '+' %2B"
+
+# The `&` separator stays even when the token secret is absent.
+none_sig = Signature.new("k", "secret")
+assert_str "secret&", none_sig.key, "key with no token secret ends in &"
+puts "  no token secret: key ends in &"
+
+puts "\nALL CHECKS PASSED"

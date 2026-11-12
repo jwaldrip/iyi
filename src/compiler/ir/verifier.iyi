@@ -122,16 +122,32 @@ class Verifier
     end
   end
 
-  # A function with the C convention takes and returns only scalars: its signature is already lowered.
+  # A function with the C convention takes and returns only the forms the C ABI lowering produces.
   def check_signature(f : Function) : Nil
     return unless f.cc == CallConv::C
     lowered = f.fn_type.return_type
-    unless scalar_type?(lowered)
+    unless c_lowered?(lowered)
       report("cc-lowered", "@#{f.name} uses the C convention but returns #{lowered}", f)
     end
     f.fn_type.param_types.each do |t|
-      report("cc-lowered", "@#{f.name} uses the C convention but takes #{t}", f) unless scalar_type?(t)
+      report("cc-lowered", "@#{f.name} uses the C convention but takes #{t}", f) unless c_lowered?(t)
     end
+  end
+
+  # What a C-convention signature may carry: a scalar, or an aggregate in the form LLVM's C ABI lowering gives it.
+  # That is an array of integers or of floats (`[2 x i64]`, `[4 x float]`) or a literal struct of scalars
+  # (`{ i64, i64 }`). A named struct, a packed struct, and any aggregate nested in those are refused.
+  def c_lowered?(t : IrType) : Bool
+    return true if scalar_type?(t)
+    if t.array?
+      element = t.element_type
+      return element.int? || element.float?
+    end
+    if t.struct?
+      return false if t.packed_struct? || !t.struct_name.nil?
+      return t.struct_element_types.all? { |f| scalar_type?(f) }
+    end
+    false
   end
 
   def scalar_type?(t : IrType) : Bool
@@ -342,7 +358,16 @@ class Verifier
   end
 
   # A call's operands against its signature: the callee's type, the argument count, and each argument's type.
+  # An inline asm that may unwind (`asm unwind`) is called only in a function that may unwind: a nounwind function
+  # (one with the `nounwind` attribute) cannot let an exception out of its call.
   def check_call(f : Function, i : Inst) : Nil
+    callee = i.args[0]
+    if callee.is_a?(Inst) && callee.as(Inst).aux.is_a?(AsmAux)
+      inline_asm = callee.as(Inst).aux.as(AsmAux)
+      if inline_asm.unwind && f.attrs.any? { |a| a.name == "nounwind" }
+        report("asm-unwind", "an inline asm that may unwind is called in @#{f.name}, which is nounwind", f)
+      end
+    end
     aux = i.aux
     return unless aux.is_a?(CallAux)
     fn_type = aux.as(CallAux).fn_type
@@ -360,8 +385,11 @@ class Verifier
       end
     end
     if aux.as(CallAux).cc == CallConv::C
-      unless scalar_type?(fn_type.return_type)
+      unless c_lowered?(fn_type.return_type)
         report("cc-lowered", "a C-convention call returns #{fn_type.return_type}", f)
+      end
+      params.each do |p|
+        report("cc-lowered", "a C-convention call takes #{p}", f) unless c_lowered?(p)
       end
     end
   end

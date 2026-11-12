@@ -6,8 +6,10 @@
 #   bash bench/native_gates.sh
 #
 # The list is written out rather than globbed, because two gates take a target
-# and one runs programs only an arm64 darwin host can run. That one is printed
-# as skipped elsewhere, never as passed: the native-darwin job runs it.
+# and three run programs only an arm64 darwin host can run (the allocator and
+# code generator gates build each fixture's twin for the host with aarch64
+# inline asm and run it). Those are printed as skipped elsewhere, never as
+# passed: the native-darwin job runs them.
 #
 # Each gate's full output goes to a log under $NATIVE_GATE_LOGS (default: a
 # fresh temporary directory). A failing gate's last lines are printed: twelve
@@ -27,10 +29,12 @@ gates=(
   "native_obj|bench/native_obj_exercise.sh|any"
   "native_link|bench/native_link_exercise.sh aarch64-apple-darwin|any"
   "native_encode|bench/native_encode_exercise.sh|any"
-  "native_regalloc|bench/native_regalloc_exercise.sh|any"
+  "native_regalloc|bench/native_regalloc_exercise.sh|darwin-arm64"
   "native_asm|bench/native_asm_exercise.sh aarch64|any"
-  "native_codegen|bench/native_codegen_exercise.sh|any"
+  "native_codegen|bench/native_codegen_exercise.sh|darwin-arm64"
   "native_llvm_roundtrip|bench/native_llvm_roundtrip_exercise.sh|any"
+  "native_x86_64|bench/native_x86_64_exercise.sh|any"
+  "native_wasm|bench/native_wasm_exercise.sh|any"
   "native_first_light|bench/native_first_light_exercise.sh|darwin-arm64"
 )
 

@@ -29,8 +29,8 @@ pub enum TlsModel
 end
 
 pub class DebugSubprogram
-  getter display_name : String    # what a PDB S_GPROC32 carries ("inner")
-  getter linkage_name : String    # the mangled symbol ("*Named^Named::inner<Int32>:Int32")
+  getter display_name : String # what a PDB S_GPROC32 carries ("inner")
+  getter linkage_name : String # the mangled symbol ("*Named^Named::inner<Int32>:Int32")
   getter file : Int32
   getter line : Int32
 

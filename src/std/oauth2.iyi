@@ -49,7 +49,7 @@ end
 pub struct Error
   getter message : String
 
-  def initialize(@message : String, cause = nil)
+  def initialize(@message : String)
   end
 
   def to_s : String
@@ -147,7 +147,7 @@ pub abstract class AccessToken
   property extra : Hash(String, String)?
 
   def initialize(@access_token : String,
-                 expires_in : Int? = nil,
+                 expires_in : Int64? = nil,
                  @refresh_token : String? = nil,
                  @scope : String? = nil,
                  @extra : Hash(String, String)? = nil)
@@ -256,7 +256,7 @@ end
 
 pub class Bearer < AccessToken
   def initialize(access_token : String,
-                 expires_in : Int? = nil,
+                 expires_in : Int64? = nil,
                  refresh_token : String? = nil,
                  scope : String? = nil,
                  extra : Hash(String, String)? = nil)
@@ -335,7 +335,7 @@ pub class Mac < AccessToken
   property issued_at : Int64
 
   def initialize(access_token : String,
-                 expires_in : Int?,
+                 expires_in : Int64?,
                  @mac_algorithm : String,
                  @mac_key : String,
                  refresh_token : String? = nil,

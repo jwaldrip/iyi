@@ -58,7 +58,8 @@ pub def translate(m : Module) : LibLLVM::ModuleRef | TranslateError
   ModuleTranslator.new(m).run
 end
 
-# LLVM 22's C API has no setter for dso_local, so a module that carries it is refused by name.
+# The linked LLVM's C API has no setter for dso_local (checked in LLVM 20.1.2 and 22.1.8), so a module that carries it is
+# refused by name.
 pub def carries_dso_local?(m : Module) : Bool
   m.globals.any? { |g| g.dso_local } || m.functions.any? { |f| f.dso_local }
 end
@@ -151,7 +152,7 @@ class ModuleTranslator
 
   def run : LibLLVM::ModuleRef | TranslateError
     if carries_dso_local?(@ir)
-      refuse("LLVM 22's C API cannot set dso_local, so a module that carries it is refused by name")
+      refuse("the linked LLVM's C API cannot set dso_local, so a module that carries it is refused by name")
       return @error.as(TranslateError)
     end
     LibLLVM.set_module_identifier(@llvm, to_c_str(@ir.name), @ir.name.bytesize.to_u64)
@@ -304,11 +305,11 @@ class ModuleTranslator
   def constant_ref(c : Inst) : LibLLVM::ValueRef
     ty = type_ref(c.type)
     if c.op == Op::ConstInt
-      if c.type.int? && c.type.bits == 128
-        words = Pointer(UInt64).malloc(2_u64)
-        words[0] = u64_bits(c.aux_int)
-        words[1] = u64_bits(c.aux_hi)
-        return LibLLVM.const_int_of_arbitrary_precision(ty, 2_u32, words)
+      if c.type.int? && c.type.bits > 64
+        ints = c.int_words(c.type.bits)
+        words = Pointer(UInt64).malloc(ints.size.to_u64)
+        ints.each_with_index { |w, i| words[i] = u64_bits(w) }
+        return LibLLVM.const_int_of_arbitrary_precision(ty, ints.size.to_i32, words)
       end
       return LibLLVM.const_int(ty, u64_bits(c.aux_int), 1)
     end
@@ -383,7 +384,7 @@ class ModuleTranslator
 
   def inline_asm_ref(c : Inst) : LibLLVM::ValueRef
     aux = c.aux.as(AsmAux)
-    LibLLVM.get_inline_asm(type_ref(c.type), to_c_str(aux.template), aux.template.bytesize.to_u64, to_c_str(aux.constraints), aux.constraints.bytesize.to_u64, llvm_bool(aux.side_effects), llvm_bool(aux.align_stack), aux.dialect.value, llvm_bool(false))
+    LibLLVM.get_inline_asm(type_ref(c.type), to_c_str(aux.template), aux.template.bytesize.to_u64, to_c_str(aux.constraints), aux.constraints.bytesize.to_u64, llvm_bool(aux.side_effects), llvm_bool(aux.align_stack), aux.dialect.value, llvm_bool(aux.unwind))
   end
 
   # ---- bodies -------------------------------------------------------------------------------
@@ -725,7 +726,16 @@ class ModuleTranslator
     end
     args = inst.args.map { |a| value_ref(a) }
     name = signature[0].void? ? to_c_str("") : to_c_str(inst.name)
-    LibLLVM.build_call2(builder, LibLLVM.global_get_value_type(decl), decl, args, args.size.to_i32, name)
+    call = LibLLVM.build_call2(builder, LibLLVM.global_get_value_type(decl), decl, args, args.size.to_i32, name)
+    aux.param_attrs.each_with_index do |list, i|
+      list.each { |a| add_intrinsic_param_attribute(call, i + 1, a) }
+    end
+    call
+  end
+
+  # One attribute of an intrinsic operand, written on that operand of the call.
+  def add_intrinsic_param_attribute(call : LibLLVM::ValueRef, index : Int32, a : Attribute) : Nil
+    LibLLVM.add_callsite_attribute(call, index, create_attribute(a))
   end
 
   def emit_landing_pad(builder : LibLLVM::BuilderRef, inst : Inst) : LibLLVM::ValueRef

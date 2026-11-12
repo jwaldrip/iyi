@@ -57,11 +57,11 @@ end
 
 # One scalar leaf of an argument or a return value: its register class and register, or its stack offset.
 pub class LeafLoc
-  getter kind : Int32       # 0 gpr, 1 fpr, 2 stack
-  getter reg : Int32        # physical register for kinds 0 and 1; -1 for the stack
-  getter offset : Int64     # byte offset from sp for kind 2; -1 otherwise
-  getter bits : Int32       # the leaf's width in bits
-  getter fp : Bool          # the leaf is floating point
+  getter kind : Int32   # 0 gpr, 1 fpr, 2 stack
+  getter reg : Int32    # physical register for kinds 0 and 1; -1 for the stack
+  getter offset : Int64 # byte offset from sp for kind 2; -1 otherwise
+  getter bits : Int32   # the leaf's width in bits
+  getter fp : Bool      # the leaf is floating point
   getter leaf_type : IrType
 
   def initialize(@kind : Int32, @reg : Int32, @offset : Int64, @bits : Int32, @fp : Bool, @leaf_type : IrType)
@@ -73,7 +73,7 @@ end
 pub class CallAssignment
   getter args : Array(Array(LeafLoc))
   getter stack_bytes : Int64
-  getter indirect_result : Bool       # sret: the caller passes the result pointer in the indirect result register
+  getter indirect_result : Bool # sret: the caller passes the result pointer in the indirect result register
 
   def initialize(@args : Array(Array(LeafLoc)), @stack_bytes : Int64, @indirect_result : Bool)
   end
@@ -137,7 +137,6 @@ pub def homogeneous_float?(leaves : Array({Int64, IrType}), max : Int32) : Bool
   return false unless first.float?
   leaves.all? { |l| l[1].float? && l[1].bits == first.bits }
 end
-
 
 # ---- the C-convention walk ----------------------------------------------------------------------------------
 

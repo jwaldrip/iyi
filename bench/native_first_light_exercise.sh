@@ -9,7 +9,7 @@
 #    fail), run, and compared with the hosted compiler's build of the twin on stdout and exit status. Each executable
 #    must pass codesign -v --strict, link only libSystem, carry LC_BUILD_VERSION with zero tools, have no __stub_helper,
 #    no dyld_stub_binder import, and build to identical bytes twice. A fixture that needs a C helper is listed by name
-#    with its reason and is not counted as passing. A fixture the IR verifier refuses must be refused with its rule.
+#    with its reason and is not counted as passing.
 # 4. The tripwire log is empty.
 # 5. Mutation proofs: each mutation is applied to a copy of its source, the check must catch it, and the source is
 #    restored. A patch that changes nothing is refused by the proof helper.
@@ -93,15 +93,6 @@ excluded_reason() {
     *) echo "" ;;
   esac
 }
-# Fixtures the IR verifier refuses: the refusal must name the rule given here, and they count as neither passing nor
-# failing. The rule is the IR core's (verifier.iyi check_signature and the C-convention call check).
-refused_rule() {
-  case "$1" in
-    calls|structs) echo "uses the C convention but" ;;
-    iyiagg) echo "a C-convention call returns" ;;
-    *) echo "" ;;
-  esac
-}
 table="$work/table.txt"
 : >"$table"
 passing=0
@@ -112,19 +103,6 @@ for ir in "$FIX"/*.ir "$FL"/*.ir; do
   reason=$(excluded_reason "$n")
   if [ -n "$reason" ]; then
     printf '%-18s EXCLUDED  %s\n' "$n" "$reason" >>"$table"
-    continue
-  fi
-  rule=$(refused_rule "$n")
-  if [ -n "$rule" ]; then
-    if PATH="$TRIPWIRE_PATH:$PATH" "$tool" "$ir" -o "$work/native/$n" >"$work/$n.tool.log" 2>&1; then
-      printf '%-18s FAIL      the verifier accepted a fixture it refused before\n' "$n" >>"$table"
-      failures=$((failures + 1))
-    elif grep -q "$rule" "$work/$n.tool.log"; then
-      printf '%-18s REFUSED   %s\n' "$n" "$(grep -m1 "$rule" "$work/$n.tool.log" | sed 's/^iyi-compile-native: //')" >>"$table"
-    else
-      printf '%-18s FAIL      refused, but not by the expected rule\n' "$n" >>"$table"
-      failures=$((failures + 1))
-    fi
     continue
   fi
   if ! "$iyi" build -o "$work/hosted/$n" "$dir/$n.iyi" >"$work/hosted-$n.log" 2>&1; then
@@ -165,6 +143,20 @@ for ir in "$FIX"/*.ir "$FL"/*.ir; do
 done
 cat "$table"
 echo "   $passing fixtures run end to end with no host tool"
+
+echo "== 3b. the native backend refuses what it does not lower, and names what it refused"
+for ir in bench/fixtures/native_refused/*.ir; do
+  n=$(basename "$ir" .ir)
+  want=$(sed -n 's/^; refused: //p' "$ir" | head -n 1)
+  [ -n "$want" ] || { fail "$ir names no expected refusal"; continue; }
+  if PATH="$TRIPWIRE_PATH:$PATH" "$tool" "$ir" -o "$work/refused-$n" >"$work/refused-$n.log" 2>&1; then
+    fail "$n was built, but the native backend does not lower it"
+  elif grep -q "$want" "$work/refused-$n.log"; then
+    echo "   refused by name: $n ($want)"
+  else
+    fail "$n was refused, but not for '$want': $(cat "$work/refused-$n.log")"
+  fi
+done
 
 echo "== 4. the tripwire log is empty: no ld, cc, clang, gcc, codesign, dsymutil, llvm-config or as ran"
 if tripwire_fired "$work/tripwire.log"; then
@@ -268,6 +260,17 @@ check_no_library() {
   return 0
 }
 
+# A C import libSystem does not export must stop the link, by name. Unmutated, the tool refuses the fixture (the
+# check passes, 0); with the question answered yes for every name, the tool builds it (caught, 1).
+check_missing_import() {
+  b="$work/mut-tool"
+  "$iyi" build -o "$b" "$TOOL_SRC" >"$work/mut-build.log" 2>&1 || return 3
+  if "$b" bench/fixtures/native_refused/no_such_import.ir -o "$work/mut-noimport" >"$work/mut-noimport.log" 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
 check_helper_parity() {
   drv="$work/native_cg"
   "$iyi" build -o "$drv" src/compiler/tools/native_cg.iyi >"$work/mut-ncg.log" 2>&1 || return 3
@@ -295,6 +298,8 @@ prove_mutation "import: libSystem resolves to no library at all" "$LINK_SRC" che
   '    if owner == ""
       return MachOLibs::LIBSYSTEM_ORDINAL' '    if owner == ""
       return 0_i64'
+prove_mutation "import: a C name libSystem does not export is bound anyway" "$LINK_SRC" check_missing_import -- \
+  '      if owner == "" && !libsystem_exports?(name)' '      if owner == "" && !libsystem_exports?(name) && false'
 prove_mutation "helper: unsigned division subtracts when the remainder reaches the divisor, not when it exceeds it" \
   "$RT_SRC" check_helper_parity -- \
   '  %ge = icmp uge i128 %r1b, %b' '  %ge = icmp ugt i128 %r1b, %b'

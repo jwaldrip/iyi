@@ -12,7 +12,7 @@ def dense(n : Int32) : Int32
   when 7 then 177
   when 8 then 188
   when 9 then 199
-  else -1
+  else        -1
   end
 end
 

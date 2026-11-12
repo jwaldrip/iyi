@@ -1,8 +1,8 @@
 @[Unsafe("reads LLVM's C objects through raw handles this module does not own, which the compiler does not check")]
 module compiler/backend/llvm/import
 
-import compiler/ir/types::{IrType}
-import compiler/ir/values::{Value, Param, i128_parse}
+import compiler/ir/types::{IrType, valid_int_bits?}
+import compiler/ir/values::{Value, Param, canonical_words, int_words_parse}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, Ordering, Attribute, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, DebugLoc}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel, Visibility}
 import compiler/ir/module::{Module}
@@ -507,6 +507,7 @@ class ModuleImporter
   getter ir : Module
 
   @attribute_kinds : Hash(Int32, String)
+
   def initialize(@llvm : LibLLVM::ModuleRef, @ir : Module)
     @err = nil
     @values = Hash(UInt64, Value).new
@@ -590,8 +591,8 @@ class ModuleImporter
     if kind == 0
       result = types.void
     elsif kind == 8
-      bits = LibLLVM.get_int_type_width(ref)
-      if bits == 1 || bits == 8 || bits == 16 || bits == 32 || bits == 64 || bits == 128
+      bits = LibLLVM.get_int_type_width(ref).to_i32
+      if valid_int_bits?(bits)
         result = types.int(bits)
       else
         refuse("an i#{bits} is not an IR integer type")
@@ -784,16 +785,16 @@ class ModuleImporter
     text.split('\n')[0].includes?(" dso_local ")
   end
 
-  # A 128-bit constant. The C API reads an integer constant only up to 64 bits, so the printed value
-  # (`i128 <signed decimal>`) is parsed instead.
+  # An integer constant wider than 64 bits. The C API reads an integer constant only up to 64 bits, so the printed
+  # value (`iN <signed decimal>`) is parsed into its words instead.
   def wide_constant(ref : LibLLVM::ValueRef, ty : IrType, factory : ConstantFactory) : Value
     text = string_and_dispose(LibLLVM.print_value_to_string(ref))
-    wide = i128_parse(text.split(' ')[1])
-    unless wide
-      refuse("the constant #{text} is outside the signed 128-bit range")
+    words = int_words_parse(text.split(' ')[1], ty.bits)
+    unless words
+      refuse("the constant #{text} is outside the signed #{ty.bits}-bit range")
       return dummy
     end
-    factory.wide(ty, wide.hi, wide.lo)
+    factory.wide_words(ty, words)
   end
 
   def read_global(ref : LibLLVM::ValueRef, global : Global) : Nil
@@ -927,11 +928,8 @@ class ModuleImporter
     elsif kind == vk_null_pointer
       built = factory.null_pointer(ty)
     elsif kind == vk_constant_int
-      if ty.int? && ty.bits == 128
+      if ty.int? && ty.bits > 64
         built = wide_constant(ref, ty, factory)
-      elsif ty.int? && ty.bits > 64
-        refuse("an integer constant of #{ty} is wider than 64 bits and is not i128, which the IR does not model")
-        return dummy
       else
         built = factory.integer(ty, LibLLVM.const_int_get_sext_value(ref))
       end
@@ -1007,10 +1005,6 @@ class ModuleImporter
 
   # Inline asm as a callee: an Op::Call with no arguments that carries the template (SPEC 3.2).
   def inline_asm_value(ref : LibLLVM::ValueRef, fn_type_ref : LibLLVM::TypeRef) : Value
-    if LibLLVM.get_inline_asm_can_unwind(ref) != 0
-      refuse("an inline asm that may unwind is not in the IR, which has no unwind on asm")
-      return dummy
-    end
     if known = @values[ref.address]?
       return known
     end
@@ -1021,7 +1015,8 @@ class ModuleImporter
     align = LibLLVM.get_inline_asm_align_stack(ref) != 0
     dialect = LibLLVM.get_inline_asm_dialect(ref) == 1 ? AsmDialect::Intel : AsmDialect::Att
     return dummy if failed?
-    inst = Inst.new(Op::Call, fn_type, [] of Value, 0_i64, AsmAux.new(template, constraints, side, align, dialect), [] of Block, [] of Int64)
+    unwind = LibLLVM.get_inline_asm_can_unwind(ref) != 0
+    inst = Inst.new(Op::Call, fn_type, [] of Value, 0_i64, AsmAux.new(template, constraints, side, align, dialect, unwind), [] of Block, [] of Int64)
     @values[ref.address] = inst
     inst
   end
@@ -1448,16 +1443,10 @@ class ModuleImporter
     end
     args = call_arguments(ref)
     return nil if failed?
-    param = 1
-    while param <= args.size
-      if LibLLVM.get_callsite_attribute_count(ref, param) != 0
-        refuse("the intrinsic #{llvm_name} is called with a parameter attribute, which the IR does not model")
-        return nil
-      end
-      param = param + 1
-    end
+    param_attrs = param_attributes(ref, args.size, true)
+    return nil if failed?
     signature = intrinsic_signature(found.id, found.overload, @ir.types)
-    Inst.new(Op::Intrinsic, signature[0], args, 0_i64, IntrinsicAux.new(found.id, found.overload), [] of Block, [] of Int64, name)
+    Inst.new(Op::Intrinsic, signature[0], args, 0_i64, IntrinsicAux.new(found.id, found.overload, param_attrs), [] of Block, [] of Int64, name)
   end
 end
 
@@ -1486,9 +1475,9 @@ class ConstantFactory
     Inst.new(Op::ConstInt, ty, [] of Value, value, nil, [] of Block, [] of Int64)
   end
 
-  def wide(ty : IrType, hi : Int64, lo : Int64) : Inst
-    inst = Inst.new(Op::ConstInt, ty, [] of Value, lo, nil, [] of Block, [] of Int64)
-    inst.aux_hi = hi
+  def wide_words(ty : IrType, words : Array(Int64)) : Inst
+    inst = Inst.new(Op::ConstInt, ty, [] of Value, words[0], nil, [] of Block, [] of Int64)
+    inst.wide_words = canonical_words(words, ty.bits)
     inst
   end
 

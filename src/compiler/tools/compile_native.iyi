@@ -14,6 +14,9 @@ import compiler/ir/module::{Module}
 import compiler/ir/verifier::{verify}
 import compiler/native/driver::{link_native_program}
 import compiler/native/rt/builtins_text::{builtins_ir}
+import compiler/native/rt/start_wasm32_text::{start_wasm32_ir}
+import compiler/native/wasm/codegen::{compile_wasm}
+import compiler/native/emit::{to_bytes}
 import compiler/native/link/link::{LinkedImage}
 import std/file
 
@@ -66,13 +69,27 @@ module CompileNative
         fail("unknown argument #{args[i]}")
       end
     end
-    if target != TARGET
-      fail("the native backend builds #{TARGET} only, and #{target} was asked for")
+    unless target == TARGET || target == "wasm32-wasi"
+      fail("the native backend builds #{TARGET} and wasm32-wasi only, and #{target} was asked for")
     end
     unless File.exists?(input)
       fail("no such file: #{input}")
     end
     mod = module_of(File.read(input), input)
+    if target == "wasm32-wasi"
+      unless mod.target.architecture == "wasm32" && mod.target.wasi?
+        fail("#{input}: the module's target is not wasm32-wasi")
+      end
+      runtime = module_of(start_wasm32_ir, "rt/start_wasm32.ir")
+      built = compile_wasm(mod, runtime)
+      if built.is_a?(String)
+        fail("#{input}: #{built.as(String)}")
+      end
+      bytes = built.as(Array(UInt8))
+      File.write(output, String.new(to_bytes(bytes)))
+      print "BUILT #{output} #{bytes.size}\n"
+      return nil
+    end
     unless mod.target.architecture == "aarch64" && mod.target.darwin?
       fail("#{input}: the module's target is not #{TARGET}")
     end

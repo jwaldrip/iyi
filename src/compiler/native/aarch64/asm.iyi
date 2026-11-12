@@ -333,6 +333,8 @@ pub class AsmAssembler
       enc_ret(ops)
     elsif mnemonic == "svc"
       enc_svc(ops)
+    elsif mnemonic == "msr"
+      enc_msr(ops)
     elsif mnemonic == "yield" || mnemonic == "nop" || mnemonic == "wfe" || mnemonic == "wfi" || mnemonic == "sev"
       enc_hint(mnemonic, ops)
     elsif mnemonic == "isb"
@@ -685,6 +687,17 @@ pub class AsmAssembler
       return
     end
     emit(0xD4000001_i64 | (value << 5))
+  end
+
+  # `msr tpidr_el0, xN`: the thread-pointer write the Linux start code makes. The system register encodes as
+  # S3_3_C13_C0_2 (op0 3, op1 3, CRn 13, CRm 0, op2 2) with the MSR form, 0xD51BD040, and the source register in
+  # bits 0 to 4. Any other system register is refused by name.
+  def enc_msr(ops : Array(String)) : Nil
+    if ops.size != 2 || ops[0] != "tpidr_el0" || !is_x?(ops[1]) || ops[1] == "sp"
+      fail("msr takes tpidr_el0 and an x register here, got #{ops.join(", ")}")
+      return
+    end
+    emit(0xD51BD040_i64 | reg_code(ops[1]).to_i64)
   end
 
   def enc_hint(mnemonic : String, ops : Array(String)) : Nil

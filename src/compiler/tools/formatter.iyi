@@ -139,6 +139,7 @@ pub class Formatter < Visitor
 
   def self.format(source : String, filename : String = "") : String
     parser = Parser.new(source, filename)
+    parser.iyi_source_only = true
     nodes = parser.parse
 
     formatter = Formatter.new(source)
@@ -1637,6 +1638,30 @@ pub class Formatter < Visitor
   end
 
   def visit(node : ModuleDef) : Bool
+    # iyi: a `module app/greeter` header parses as two nodes, the header and a
+    # `ModuleDef` wrapping everything under it. The header was written by the
+    # visitor below and the wrapper is not in the source at all, so there is
+    # no keyword to write here and no `end` to find.
+    if node.iyi_unit
+      # The wrapper's body opens with an `extend self` the parser wrote. It
+      # carries the header's location and is not in the source, so the one
+      # way to know it is where it always is.
+      body = node.body
+      if body.is_a?(Expressions)
+        rest = body.as(Expressions).expressions
+        first = rest.first?
+        if first && first.is_a?(Extend) && first.as(Extend).name.is_a?(Self)
+          body = Expressions.from(rest[1..])
+        end
+      elsif body.is_a?(Extend)
+        # A file with nothing under its header: `Expressions.from` gave back
+        # the single node rather than a list of one.
+        body = Nop.new if body.as(Extend).name.is_a?(Self)
+      end
+      accept(body)
+      return false
+    end
+
     write_keyword(Keyword::MODULE, " ")
     accept(node.name)
     format_nested_with_end(node.body)
