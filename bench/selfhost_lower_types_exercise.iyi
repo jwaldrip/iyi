@@ -304,6 +304,9 @@ module BenchSelfhostLowerTypesExercise
     src = File.read(entry)
     node = Parser.new(src, entry).parse
     prog = SemanticProgram.new
+    # Total mode: an impl of a generic with a free type variable (`impl Enumerable(T)`) is carried past,
+    # as the hosted pass allows it. Strict mode raises on the variable, and the own-source run stops.
+    prog.total_mode = true
     prog.loaded_files.add(entry)
     prog.search_path = search_path
     prog.project_root = project_root(node, entry)
@@ -320,6 +323,11 @@ module BenchSelfhostLowerTypesExercise
     if ENV["S2B_TYPE_SYSTEM"]? == "1"
       type_node_system(prog)
     end
+    # The type system is installed after the declarations, as the declarations driver does: its install
+    # re-resolves the explicit instance variables through it, so a generic type's declared variable keeps
+    # its arguments (NEEDS.md row 22). Installed before them, the declarations pass takes the hook paths
+    # that are not ported yet (a module named as a superclass, an impl's free variable).
+    own_types = TypeSystem.new(prog)
     declare_guessed_instance_vars(prog)
     {prog, entry}
   end

@@ -1,0 +1,13 @@
+# A union of two reference classes: the hosted program makes it a ReferenceUnionType, a UnionType,
+# which the typer lowers as one pointer. The reference-union mutation needs a UnionType like this one.
+class Animal
+end
+
+class Dog < Animal
+end
+
+class Cat < Animal
+end
+
+# type: Animal | Dog
+# type: Animal | Cat

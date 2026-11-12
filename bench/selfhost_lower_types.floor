@@ -128,7 +128,7 @@ src/compiler/semantic/type_node_host.iyi 2
 src/compiler/semantic/type_nodes.iyi 1
 src/compiler/semantic/typed.iyi 0
 src/compiler/stage1.iyi 2
-src/compiler/syntax/ast.iyi 33
+src/compiler/syntax/ast.iyi 99
 src/compiler/syntax/lexer.iyi 1
 src/compiler/syntax/parser.iyi 5
 src/compiler/syntax/token.iyi 9
