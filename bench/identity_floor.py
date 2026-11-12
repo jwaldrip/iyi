@@ -102,6 +102,19 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     (r"^bench/(machine_probe|dependency_floor|build_tool_floor|build_tool_scan)", "measures the compatibility binary, its libraries, and build tools"),
     (r"^spec/compiler/util_spec\.cr$", "specs Crystal's own util module"),
     (r"^samples/iyi/", "programs whose comments compare iyi with Crystal"),
+    # The self-hosting platform support oracle. It verifies target triple parsing,
+    # flags, naming, and linker command generation against the frontend iyi is
+    # still bootstrapped from.
+    (r"^bench/selfhost_platform_exercise\.sh$", "the frontend the selfhost platform support is checked against"),
+    # The self-hosting lexer's oracle. It proves the iyi-written lexer agrees
+    # token for token with the frontend iyi is still bootstrapped from, so the
+    # other language is the thing being compared against, by name.
+    (r"^bench/selfhost_lexer_exercise\.sh$", "the frontend the selfhost lexer is checked against"),
+    # The self-hosting parser's oracle, for the same reason as the lexer's: it
+    # parses each fixture with the iyi parser and with the frontend iyi is
+    # still bootstrapped from, and requires the normalised trees identical.
+    # The other language is what is being compared against, so it is named.
+    (r"^bench/selfhost_parser_exercise\.sh$", "the frontend the selfhost parser is checked against"),
 ]
 
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.
