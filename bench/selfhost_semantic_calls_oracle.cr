@@ -2,23 +2,23 @@
 #
 #   selfhost_semantic_calls_oracle <fixture.iyi>
 #
-# Builds the fixture's declarations into the hosted Program (bare, no prelude),
-# then evaluates each line of two kinds and prints one line for each:
+# Compiles the fixture the way a build compiles an entry file: the prelude, then
+# the fixture, through the top-level pass and the main pass (as the typed oracle
+# does). Then it evaluates each line of two kinds and prints one line for each:
 #
 #   # call <expr>   =>  <expr> => <matches> | none | error: <first line of the message>
 #   # error <expr>  =>  <expr> => ok | error: <first line of the message>
 #
-# A call is `name(args)` (the program's own defs), `Type.name(args)` (the
-# metaclass of a type: its class methods and the ones it inherits from its
-# superclass), or `<receiver call>.name(args)` (an instance: the receiver call
-# must have exactly one match and a declared return type, and its return is the
-# receiver). Arguments are literals: an integer is Int32, a string String, true
-# or false Bool, and nil Nil. A call may write named arguments (`name: literal`)
-# and a block (`{ ... }`).
+# A call is `name(args)` (the program's own defs and the prelude's), `Type.name(args)`
+# (the metaclass of a type: its class methods and the ones it inherits), or
+# `<receiver call>.name(args)` (an instance: the receiver call must have exactly
+# one match and a declared return type, and its return is the receiver). A receiver
+# written `virtual(T)` is the value typed T+. Arguments are literals: an integer is
+# Int32, a string String, true or false Bool, and nil Nil. A call may write named
+# arguments (`name: literal`) and a block (`{ ... }`).
 #
 # A receiver that is a union is looked up one member at a time, in member order,
-# as the hosted call pass dispatches it, and the matches are joined. A receiver
-# that is a class with subclasses is dispatched by the hosted VirtualTypeLookup.
+# as the hosted call pass dispatches it, and the matches are joined.
 #
 # A `# call` line is the hosted lookup (`Type#lookup_matches`, analyze_all off),
 # the first step of the hosted call pass. Its matches are listed in the hosted
@@ -26,38 +26,44 @@
 #
 #   <owner>::<name>(<restrictions>) -> <return>
 #
-# The owner is the receiver's type, as the hosted context names it (a metaclass
-# prints Foo.class, a virtual type Foo+). A restriction is the type its written
-# form names, relative to the type the def was found on, or `_` when it has none.
-# The return is the def's declared return type, or `needs body typing` when it has
-# none. A match list that covers every argument combination ends with
-# ` [cover all]`.
+# The owner is the receiver's type, as the hosted context names it. A restriction is
+# the type its written form names, relative to the type the def was found on, or `_`
+# when it has none. The return is the def's declared return type, or `needs body
+# typing` when it has none. A match list that covers every argument combination
+# ends with ` [cover all]`.
 #
-# An `# error` line runs the whole hosted compile of the fixture's declarations
-# with the call as its last expression, as the compile does (the top-level pass,
-# then the main pass, without a prelude), and reports the first line of the error
-# it raises, or `ok`. This is where the hosted call pass writes its messages.
+# An `# error` line runs the whole hosted compile of the prelude and the fixture
+# with the call as its last expression, and reports the first line of the error it
+# raises, or `ok`.
 #
 # The port's driver (bench/selfhost_semantic_calls_exercise.iyi) prints the same
 # lines for the same fixtures, and the gate requires them byte-identical.
 #
-# Not covered here (and not written in the fixtures): splats, autocast of
-# literals, and free variables. Their hosted behaviour is later increments of
-# slice S1c. The prelude is not loaded: restrictions on prelude types overflow the
-# port's type model (see the report of the prelude step).
+# Not covered here: autocast of literals, and free variables. Their hosted
+# behaviour is a later increment of slice S1c.
 require "compiler/requires"
 
 RECEIVER_ERROR = "receiver is not resolvable"
 
-# The hosted compile of a source as far as the main pass, without a prelude.
+# The hosted compile of a source with the prelude, through the main pass.
 class Iyi::Compiler
-  def bare_pass(source : Iyi::Compiler::Source) : Nil
+  def prelude_pass(source : Iyi::Compiler::Source) : Iyi::Program
     program = new_program([source])
-    node = program.normalize(parse(program, source))
+    node = parse(program, [source])
     node, processor = program.top_level_semantic(node)
     program.semantic_after_top_level(node, processor, cleanup: false)
-    nil
+    program
   end
+end
+
+# A compiler configured the way the typed oracle configures it, with the prelude.
+def new_compiler : Iyi::Compiler
+  compiler = Iyi::Compiler.new
+  compiler.prelude = "iyi/prelude"
+  compiler.no_codegen = true
+  compiler.stdout = IO::Memory.new
+  compiler.stderr = IO::Memory.new
+  compiler
 end
 
 # The type of a literal argument, as the hosted type of the literal.
@@ -77,8 +83,8 @@ def literal_type(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
   raise "argument is not a literal"
 end
 
-# The signature of a call: its literal arguments, named arguments and block, as
-# the hosted call pass builds it.
+# The signature of a call: its literal arguments, named arguments and block, as the
+# hosted call pass builds it.
 def signature_of(program : Iyi::Program, call : Iyi::Call) : Iyi::CallSignature
   arg_types = call.args.map { |arg| literal_type(program, arg) }
   named = call.named_args
@@ -122,8 +128,8 @@ def last_dot(expr : String) : Int32?
   found
 end
 
-# The type a receiver text names: a path names its metaclass, and a call names the
-# type of its single declared return.
+# The type a receiver text names: `virtual(T)` is T's virtual form; a path names its
+# metaclass; a call names the type of its single declared return.
 def receiver_type(program : Iyi::Program, text : String) : Iyi::Type
   if text.starts_with?("virtual(") && text.ends_with?(")")
     return receiver_scope(program, text[8...-1]).virtual_type
@@ -177,11 +183,10 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
-# The first line of the error the hosted compile raises for `expr` after the
-# fixture's declarations, or `ok` when it raises none.
+# The first line of the error the hosted compile raises for `expr` after the prelude
+# and the fixture, or `ok` when it raises none.
 def error_text(path : String, fixture : String, expr : String) : String
-  compiler = Iyi::Compiler.new
-  compiler.bare_pass(Iyi::Compiler::Source.new(path, fixture + "\n" + expr + "\n"))
+  new_compiler.prelude_pass(Iyi::Compiler::Source.new(path, fixture + "\n" + expr + "\n"))
   "ok"
 rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
@@ -190,9 +195,7 @@ end
 begin
   path = ARGV[0]? || abort("usage: selfhost_semantic_calls_oracle <fixture.iyi>")
   source = File.read(path)
-  program = Iyi::Program.new
-  node = Iyi::Parser.new(source).parse
-  node.accept Iyi::TopLevelVisitor.new(program)
+  program = new_compiler.prelude_pass(Iyi::Compiler::Source.new(path, source))
   source.each_line do |line|
     if line.starts_with?("# call ")
       expr = line[7..].strip

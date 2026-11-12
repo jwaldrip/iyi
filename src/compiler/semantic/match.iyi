@@ -137,7 +137,7 @@ pub class CallMatch
     while i < given && i < prefix
       arg = definition.args[i]
       arg_type = signature.arg_types[i]
-      restriction = ArgRestriction.of(ts, defining, arg)
+      restriction = ArgRestriction.of(ts, defining, arg, owner)
       if restriction.error
         return MatchAttempt.failed(restriction.error.to_s)
       end
@@ -175,7 +175,7 @@ pub class CallMatch
         return MatchAttempt.none if splat && index == splat.as(Int32)
         return MatchAttempt.none if mandatory[index]
         mandatory[index] = true
-        restriction = ArgRestriction.of(ts, defining, definition.args[index])
+        restriction = ArgRestriction.of(ts, defining, definition.args[index], owner)
         if restriction.error
           return MatchAttempt.failed(restriction.error.to_s)
         end

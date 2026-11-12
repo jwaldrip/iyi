@@ -2,7 +2,7 @@ module compiler/semantic/method_lookup
 
 import compiler/syntax/ast::{Def, Nop}
 import compiler/semantic/top_level::{ClassType, MetaclassType, ModuleType, Type, UnionType}
-import compiler/types/types::{VirtualType}
+import compiler/types/types::{GenericInstanceType, VirtualType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/semantic/match::{CallMatch, CallSignature, Match}
 
@@ -268,6 +268,13 @@ pub class MethodLookup
     end
     if receiver.is_a?(VirtualType)
       return lookup_virtual(receiver.as(VirtualType), ts, signature)
+    end
+    if receiver.is_a?(GenericInstanceType)
+      generic = receiver.as(GenericInstanceType).generic_type
+      if generic.is_a?(ModuleType)
+        generic_module = generic.as(ModuleType)
+        return lookup_matches(generic_module, ts, signature, receiver, generic_module, [] of Match)
+      end
     end
     if receiver.is_a?(ModuleType)
       module_type = receiver.as(ModuleType)

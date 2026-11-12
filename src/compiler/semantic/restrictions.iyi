@@ -1,13 +1,14 @@
 module compiler/semantic/restrictions
 
-import compiler/syntax/ast::{Arg}
-import compiler/semantic/top_level::{ModuleType, Type}
+import compiler/syntax/ast::{ASTNode, Arg, Generic, Path, Self}
+import compiler/semantic/top_level::{GenericClassType, ModuleType, Type}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/type_system::{TypeSystem}
+import compiler/types/types::{GenericInstanceType}
 
 # The answer to "what does this argument's restriction name": a type, nil when
-# the argument has no restriction, or an error message when the written type
-# does not resolve. The port of the restriction lookup in restrictions.cr.
+# the argument has no restriction, or an error message when the written type does
+# not resolve. The port of the restriction lookup in restrictions.cr.
 pub class ArgRestriction
   getter type : Type?
   getter error : String?
@@ -27,15 +28,52 @@ pub class ArgRestriction
     ArgRestriction.new(type, nil)
   end
 
-  # The restriction of *arg* as written in *scope*, the type the def was found
-  # on, as the hosted MatchContext resolves it (its defining type).
-  def self.of(ts : TypeSystem, scope : ModuleType, arg : Arg) : ArgRestriction
+  # The restriction of *arg* as written in *scope*, the type the def was found on,
+  # as the hosted MatchContext resolves it. When the receiver *owner* is a generic
+  # instance, its type arguments are bound first (see lookup_bound).
+  def self.of(ts : TypeSystem, scope : ModuleType, arg : Arg, owner : Type? = nil) : ArgRestriction
     node = arg.restriction
     return ArgRestriction.none if node.nil?
-    found = TypeLookup.new(ts.instances).lookup(scope, node)
+    found = ArgRestriction.lookup_bound(ts, scope, node.as(ASTNode), owner)
     if found.is_a?(LookupError)
       return ArgRestriction.failed(found.as(LookupError).message)
     end
     ArgRestriction.found(found.as(Type))
+  end
+
+  # The type a written type names in *scope*. For a receiver *owner* that is a
+  # generic instance, the instance's type arguments bind their parameter names
+  # (`T` is Int32 in Array(Int32)), Self is the instance, and a generic written with
+  # those names (`Array(T)`) is instantiated with the bound arguments, as the hosted
+  # MatchContext of a generic instance resolves them. Anything else is the scope's
+  # own lookup.
+  def self.lookup_bound(ts : TypeSystem, scope : ModuleType, node : ASTNode, owner : Type?) : Type | LookupError
+    if owner.is_a?(GenericInstanceType)
+      instance = owner.as(GenericInstanceType)
+      return instance if node.is_a?(Self)
+      if node.is_a?(Path)
+        names = node.as(Path).names
+        if names.size == 1
+          bound = instance.type_vars[names[0]]?
+          return bound.as(Type) if bound
+        end
+      end
+      if node.is_a?(Generic)
+        generic_node = node.as(Generic)
+        base = TypeLookup.new(ts.instances).lookup(scope, generic_node.name)
+        return base if base.is_a?(LookupError)
+        base_type = base.as(Type)
+        if base_type.is_a?(GenericClassType)
+          args = [] of Type
+          generic_node.type_vars.each do |arg_node|
+            arg = ArgRestriction.lookup_bound(ts, scope, arg_node, owner)
+            return arg if arg.is_a?(LookupError)
+            args << arg.as(Type)
+          end
+          return ts.instantiate_generic(base_type.as(GenericClassType), args)
+        end
+      end
+    end
+    TypeLookup.new(ts.instances).lookup(scope, node)
   end
 end

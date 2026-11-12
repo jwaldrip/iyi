@@ -1,5 +1,6 @@
 module compiler/semantic/call
 
+import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/syntax/ast::{ASTNode, BoolLiteral, Def, NamedArgument, NilLiteral, NumberLiteral, StringLiteral, Visibility}
 import compiler/semantic/call_nodes::{CallNodes}
 import compiler/semantic/call_error::{CallFailure}
@@ -74,7 +75,7 @@ pub class CallReceiver
     single = matches.matches[0]
     ret = single.definition.return_type
     return nil if ret.nil?
-    found = TypeLookup.new(ts.instances).lookup(single.defining, ret.as(ASTNode))
+    found = ArgRestriction.lookup_bound(ts, single.defining, ret.as(ASTNode), owner)
     return nil if found.is_a?(LookupError)
     found.as(Type)
   end
@@ -165,7 +166,7 @@ pub class CallRecalculation
       if ret.nil?
         return CallTarget.new(single.definition, rec_type, nil, true, nil)
       end
-      found = TypeLookup.new(ts.instances).lookup(single.defining, ret.as(ASTNode))
+      found = ArgRestriction.lookup_bound(ts, single.defining, ret.as(ASTNode), rec_type)
       return CallTarget.failed(found.as(LookupError).message) if found.is_a?(LookupError)
       return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil)
     end
