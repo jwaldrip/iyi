@@ -76,7 +76,7 @@ def triple_of(text : String) : String
 end
 
 # The IR text of a module, normalised the way the gate compares it.
-def normalised_lines(text : String, hosted : String) : Array(String)
+def normalised_lines(text : String, builds : Array(String)) : Array(String)
   out = [] of String
   text.split("\n").each do |line|
     stripped = line.strip
@@ -85,9 +85,8 @@ def normalised_lines(text : String, hosted : String) : Array(String)
     next if stripped.starts_with?("source_filename")
     next if stripped.starts_with?("attributes #")
     next if stripped.starts_with?("declare") && stripped.includes?("@printf(")
-    next if stripped.starts_with?("@") && stripped.includes?(hosted) || stripped.starts_with?("%Nil = type")
-    next if stripped.includes?("@\"'")
-    next if stripped.includes?("@\"''\"")
+    next if stripped.starts_with?("@") && stripped.includes?("::") || stripped.starts_with?("%Nil = type")
+    next if stripped.starts_with?("store ") && stripped.includes?("::") || build_constant?(stripped, builds)
     if pidx = line.index(" ; preds")
       out << line[0, pidx]
       next
@@ -142,8 +141,8 @@ end
 def compare(oracle : Array(String), port : Array(String)) : Int32
   o_items, o_fns, o_order = split_module(oracle)
   p_items, p_fns, p_order = split_module(port)
-  identical = 0
-  total = o_order.size
+  identical = o_items == p_items ? 1 : 0
+  total = o_order.size + 1
   if o_items == p_items
     puts "  module-level: identical (#{o_items.size} lines)"
   else
@@ -177,29 +176,30 @@ def compare(oracle : Array(String), port : Array(String)) : Int32
   identical
 end
 
-def run_oracle(path : String, hosted : String) : Nil
+def run_oracle(path : String) : Nil
   text = File.read(path)
   parsed = parse(text)
   if parsed.is_a?(IrParseError)
     raise parsed.as(IrParseError).to_s
   end
-  normalised_lines(print(parsed.as(Module)), hosted).each { |line| puts line }
+  normalised_lines(print(parsed.as(Module)), build_names(text)).each { |line| puts line }
 end
 
-def run_lower(fixture : String, oracle_path : String, hosted : String) : Nil
+def run_lower(fixture : String, oracle_path : String) : Nil
   oracle_text = File.read(oracle_path)
   parsed = parse(oracle_text)
   raise parsed.as(IrParseError).to_s if parsed.is_a?(IrParseError)
-  oracle = normalised_lines(print(parsed.as(Module)), hosted)
+  builds = build_names(oracle_text)
+  oracle = normalised_lines(print(parsed.as(Module)), builds)
   triple = triple_of(oracle_text)
 
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
   typer = LowerTyper.new(m.types, m.layout, true)
   codegen_program(analysis.root, analysis.visitor, typer, m)
-  port = normalised_lines(print(m), hosted)
+  port = normalised_lines(print(m), builds)
   identical = compare(oracle, port)
-  total = split_module(oracle)[2].size
+  total = split_module(oracle)[2].size + 1
   puts "SUMMARY identical=#{identical} total=#{total}"
 end
 
@@ -239,6 +239,33 @@ def run_emit(fixture : String, oracle_path : String) : Nil
   puts print(m)
 end
 
+# The hosted build constants: the text of each global the compiler stores into its own `::`
+# identity on entry. The oracle names them in its `store` lines; both sides drop the same names, so a
+# program's own string constant with other text is still compared.
+def build_names(text : String) : Array(String)
+  names = [] of String
+  lines = text.split("\n")
+  i = 0
+  while i < lines.size
+    line = lines[i]
+    if line.includes?("store ptr @\"") && line.includes?("::")
+      parts = line.split("\"")
+      names << parts[1] if parts.size >= 4 && parts[3].includes?("::")
+    end
+    i += 1
+  end
+  names
+end
+
+def build_constant?(stripped : String, builds : Array(String)) : Bool
+  i = 0
+  while i < builds.size
+    return true if stripped.includes?("@\"#{builds[i]}\"")
+    i += 1
+  end
+  false
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -247,9 +274,9 @@ def run : Nil
   end
   mode = args[0]
   if mode == "oracle"
-    run_oracle(args[1], "::")
+    run_oracle(args[1])
   elsif mode == "lower"
-    run_lower(args[1], args[2], "::")
+    run_lower(args[1], args[2])
   elsif mode == "emit"
     run_emit(args[1], args[2])
   elsif mode == "context"
