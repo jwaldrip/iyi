@@ -39,7 +39,7 @@ module compiler/lower/call
 # The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
-import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, InstanceVar, NilLiteral, NumberLiteral, Path, RespondsTo, Var}
+import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, InstanceVar, Nop, NilLiteral, NumberLiteral, Path, RespondsTo, Var}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
@@ -58,9 +58,10 @@ import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, prim
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
 
-# A body that is a literal, which the hosted call inlines (`try_inline_call`).
+# A body that is a literal or nothing (`Nop`, an empty def), which the hosted call inlines (`try_inline_call`:
+# `when Nop, NilLiteral, BoolLiteral, CharLiteral, StringLiteral, NumberLiteral, SymbolLiteral`).
 pub def literal_body?(body : ASTNode) : Bool
-  body.is_a?(NilLiteral) || body.is_a?(BoolLiteral) || body.is_a?(NumberLiteral) || body.is_a?(CharLiteral)
+  body.is_a?(Nop) || body.is_a?(NilLiteral) || body.is_a?(BoolLiteral) || body.is_a?(NumberLiteral) || body.is_a?(CharLiteral)
 end
 
 pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Nil
@@ -123,8 +124,15 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       class_owner = recv_type.as(MetaclassType).instance_type
     else
       self_type = recv_type
-      recv = lower_receiver(low, node)
-      self_value = self_argument(low, node.obj.as(ASTNode), recv, self_type.as(Type))
+      # Hosted try_inline_call: an inlined Nop or literal body, where no value is wanted, reads no receiver.
+      unless literal_body?(def_node.body) && !low.needs_value
+        if storage = receiver_storage(low, node, self_type.as(Type))
+          self_value = storage.as(Value)
+        else
+          recv = lower_receiver(low, node)
+          self_value = self_argument(low, node.obj.as(ASTNode), recv, self_type.as(Type))
+        end
+      end
     end
   end
 
@@ -559,4 +567,21 @@ pub def responds_to_name?(t : Type, name : String) : Bool
     end
   end
   false
+end
+
+# The address of a receiver that is a stored struct variable, which a method takes as its self without a load
+# (the hosted self is the variable's storage: no value is read). Nil for any other receiver, a parameter read where
+# it arrives, a class (its self is the object pointer), or a variable of another type.
+pub def receiver_storage(low : Lowerer, node : Compiler::Syntax::Ast::Call, st : Type) : Value?
+  obj = node.obj
+  return nil if obj.nil?
+  o = obj.as(ASTNode)
+  return nil unless o.is_a?(Var)
+  return nil unless self_by_pointer?(st)
+  var = low.current_context.vars[o.as(Var).name]?
+  return nil if var.nil?
+  lv = var.as(LowerVar)
+  return nil if lv.already_loaded
+  return nil if lv.type.full_name != st.full_name
+  lv.pointer
 end
