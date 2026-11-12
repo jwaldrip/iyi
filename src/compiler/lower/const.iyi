@@ -100,6 +100,15 @@ pub def literal_node_value(low : Lowerer, value : ASTNode) : Value?
     if typ.full_name == "Int128" || typ.full_name == "UInt128"
       refuse_port("lower: a 128-bit integer literal is not ported yet: the literal path that emits int128 (hosted const.cr: read_const)")
     end
+    if typ.full_name == "UInt64"
+      unsigned_value = text.to_u64
+      if unsigned_value > 9223372036854775807_u64
+        # The IR constant holds the bit pattern, as the hosted code's `to_u64` gives it (codegen.cr:682): a value above
+        # Int64 max is negative as an Int64, which subtracting 2^63 and then Int64::MAX + 1 gives without overflow.
+        bits = (unsigned_value &- 9223372036854775808_u64).to_i64 &- 9223372036854775807_i64 &- 1_i64
+        return low.builder.const_int(low.typer.llvm_type(typ), bits)
+      end
+    end
     return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)
   end
   nil

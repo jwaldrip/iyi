@@ -208,6 +208,12 @@ prove_mutation "a nilable reference class variable's global has no null initiali
   "    g.initializer = low.builder.const_null(ir)" "    g.initializer = nil" -- lowglob_check || status=1
 prove_mutation "a @[ThreadLocal] class variable is lowered as a plain global (its refusal is lifted)" "$REPO/src/compiler/lower/lower.iyi" \
   '  if node.is_a?(Annotation) && node.as(Annotation).path.names.last == "ThreadLocal"' "  if false" -- lowglob_check || status=1
+prove_mutation "a typed @[ThreadLocal] class variable is lowered as a plain global (its flag is ignored)" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if cvar.thread_local" "  if false" -- lowglob_check || status=1
+prove_mutation "a thread-local class variable is read through its global, not its accessor" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  thread_local_address(low, cvar, cvar_global_name(owner, cvar.name), g)" "  g" -- lowglob_check || status=1
+prove_mutation "a UInt64 literal above Int64 max loses its sign bit" "$REPO/src/compiler/lower/const.iyi" \
+  ".to_i64 &- 9223372036854775807_i64 &- 1_i64" ".to_i64" -- lowglob_check || status=1
 prove_mutation "a namespaced constant is named by its bare name, not its full name" "$REPO/src/compiler/lower/const.iyi" \
   "  return const.full_name" "  return const.name" -- lowglob_check || status=1
 
