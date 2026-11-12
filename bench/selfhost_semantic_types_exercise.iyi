@@ -1,11 +1,12 @@
 import compiler/syntax/parser::{Parser}
-import compiler/semantic/top_level::{GenericClassType, SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/top_level::{GenericClassType, ModuleType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/types/types::{TypeQueries}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/intersect::{TypeIntersect}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/unification::{TypeUnification}
+import compiler/types/lookup::{LookupError, TypeLookup}
 
 # Type-model driver for bench/selfhost_semantic_types_exercise.sh.
 #
@@ -234,10 +235,37 @@ module BenchSelfhostSemanticTypesExercise
     type_text(TypeFilter.apply(prog, spec, t))
   end
 
+  # The scope a lookup starts in: `program`, or a type's path such as `Outer::Inner`.
+  def self.scope_of(prog : SemanticProgram, name : String) : ModuleType
+    return prog if name == "program"
+    found = prog.lookup_path_names(name.split("::"), prog)
+    raise "unknown scope #{name}" if found.nil?
+    found.as(ModuleType)
+  end
+
+  # `lookup(scope, written)`: the type the written type names, or `error: <message>`.
+  def self.evaluate_lookup(prog : SemanticProgram, ts : TypeSystem, op : String) : String
+    parts = split_top(op[7, op.bytesize - 8])
+    scope = scope_of(prog, parts[0])
+    written = ""
+    i = 1
+    while i < parts.size
+      written = i == 1 ? parts[i] : "#{written}, #{parts[i]}"
+      i = i + 1
+    end
+    node = Parser.new(written, "lookup").parse
+    found = TypeLookup.new(ts.instances).lookup(scope, node)
+    if found.is_a?(LookupError)
+      return "error: #{found.as(LookupError).message}"
+    end
+    type_text(found.as(Type))
+  end
+
   def self.evaluate(prog : SemanticProgram, ts : TypeSystem, op : String) : String
     return evaluate_merge(prog, ts, op) if op.starts_with?("merge(")
     return evaluate_intersect(prog, ts, op) if op.starts_with?("intersect(")
     return evaluate_filter(prog, ts, op) if op.starts_with?("filter(")
+    return evaluate_lookup(prog, ts, op) if op.starts_with?("lookup(")
     dot = member_dot(op)
     raise "malformed operation #{op}" if dot < 0
     t = resolve(prog, ts, op[0, dot])

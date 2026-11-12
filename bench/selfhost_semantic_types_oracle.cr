@@ -124,10 +124,30 @@ def evaluate_filter(program : Iyi::Program, op : String) : String
   type_text(filter.apply(t))
 end
 
+# The scope a lookup starts in: `program`, or a type's path such as `Outer::Inner`.
+def scope_of(program : Iyi::Program, name : String) : Iyi::Type
+  return program if name == "program"
+  found = program.lookup_path(Iyi::Path.new(name.split("::")))
+  raise "unknown scope #{name}" if found.nil?
+  found.as(Iyi::Type)
+end
+
+# `lookup(scope, written)`: the type the written type names, or `error: <message>`
+# with the first line of the message the hosted lookup raises.
+def evaluate_lookup(program : Iyi::Program, op : String) : String
+  parts = split_top(op[7...-1])
+  scope = scope_of(program, parts[0])
+  node = Iyi::Parser.new(parts[1..].join(", ")).parse
+  type_text(scope.lookup_type(node))
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 def evaluate(program : Iyi::Program, op : String) : String
   return evaluate_merge(program, op) if op.starts_with?("merge(")
   return evaluate_intersect(program, op) if op.starts_with?("intersect(")
   return evaluate_filter(program, op) if op.starts_with?("filter(")
+  return evaluate_lookup(program, op) if op.starts_with?("lookup(")
   # The receiver may carry arguments, so the member starts after the last
   # dot that is outside parentheses.
   dot = nil

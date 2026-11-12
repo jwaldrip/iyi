@@ -156,7 +156,7 @@ prove_mutation "left alias removal bypassed in intersect" "$INTERSECT_FILE" \
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "Void return cast to Nil bypassed in proc_of" "$TYPE_SYSTEM_FILE" \
+prove_mutation "Void return cast to Nil bypassed in proc_of" "$REPO/src/compiler/types/instances.iyi" \
   "    ret = @program.nil_type if return_type.is_a?(VoidType)" \
   "    ret = return_type if false" \
   -- check_type_queries_diverge || status=1
@@ -183,6 +183,25 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "type hook bypassed in SemanticProgram lookup" "$TOP_LEVEL_FILE" \
   "      return resolved" \
   "      return current_type" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+LOOKUP_MUTATION_FILE="$REPO/src/compiler/types/lookup.iyi"
+prove_mutation "lookup searches the enclosing namespaces for a first item not at all" "$LOOKUP_MUTATION_FILE" \
+  "      if ns = scope.namespace" \
+  "      if ns = nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generic type argument count is not checked" "$LOOKUP_MUTATION_FILE" \
+  "    elsif given != type_vars.size" \
+  "    elsif false" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "unbound generic accepted as a written type argument" "$LOOKUP_MUTATION_FILE" \
+  "      return false" \
+  "      return true" \
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
