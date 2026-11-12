@@ -206,16 +206,18 @@ pub def bool_bit(value : Bool) : Int64
   0_i64
 end
 
-# The hosted `visit(NumberLiteral)`: an integer constant of the type the analysis gave the
-# literal. Floats are not ported yet and are refused by name.
+# The hosted `visit(NumberLiteral)`: a constant of the type the analysis gave the literal. An integer is
+# a const_int; a literal with a fraction is a const_float of its float type (double or float), read from
+# the literal's text the way the hosted code reads it (`to_f64`).
 pub def codegen_number(low : Lowerer, node : NumberLiteral) : Nil
-  if node.value.includes?(".")
-    pending_visit_node("NumberLiteral with a fraction")
-  end
   t = low.analysed.type_of?(node)
   raise "BUG: the analysed program has no type for a number literal (hosted codegen.cr: visit(NumberLiteral))" if t.nil?
   ir = low.typer.llvm_type(t.as(Type))
-  low.last = low.builder.const_int(ir, node.value.to_i64)
+  if node.value.includes?(".")
+    low.last = low.builder.const_float(ir, node.value.to_f)
+  else
+    low.last = low.builder.const_int(ir, node.value.to_i64)
+  end
 end
 
 # The hosted `visit(CharLiteral)`: the code point, as an integer of the type the analysis gave
