@@ -14,8 +14,6 @@ PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 export PATH
 LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}
 export LIBRARY_PATH
-CRYSTAL_CACHE_DIR=${CRYSTAL_CACHE_DIR:-/tmp/iyi-b2-cache}
-export CRYSTAL_CACHE_DIR
 
 IY=./bin/iyi
 TOOL=${TOOL:-.build/iyi-ir}
@@ -37,7 +35,7 @@ for target in $TARGETS; do
     out="$SCR/$base-$target"
     emit=$("$IY" build --emit llvm-ir --cross-compile --target "$target" -o "$out" "$program" 2>&1)
     if [ ! -f "$out.ll" ]; then
-      first=$(echo "$emit" | awk 'NF' | head -1)
+      first=$(echo "$emit" | awk '/^Error:/ { print; f=1; exit } NF && !g { g=$0 } END { if (!f) print g }')
       printf '%s\t%s\tnot-emitted\t%s\n' "$target" "$program" "$first" >> "$VERDICTS"
       rm -f "$out" "$out".*
       continue

@@ -12,8 +12,6 @@ PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 export PATH
 LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}
 export LIBRARY_PATH
-CRYSTAL_CACHE_DIR=${CRYSTAL_CACHE_DIR:-/tmp/iyi-native-llvm-roundtrip-cache}
-export CRYSTAL_CACHE_DIR
 
 IY=./bin/iyi
 TOOL=.build/iyi-ir
@@ -140,6 +138,29 @@ else
   failed=1
 fi
 rebuild_tool || failed=1
+
+step 7 "the coverage inventory of the fixtures and gap reproducers matches COVERAGE.md"
+COV=$FX/COVERAGE.md
+cov_tsv=.build/iyi-ir-coverage.tsv
+"$TOOL" coverage "$FX"/*.ll "$FX"/gaps/*.ll > "$cov_tsv" 2>&1
+{
+  echo "# LLVM round-trip coverage: committed fixtures and gap reproducers"
+  echo
+  echo "Written by \`bench/native_llvm_roundtrip_exercise.sh\` from \`iyi-ir coverage\` over every fixture and gap reproducer. The gate fails when this file is stale; \`COVERAGE_WRITE=1\` rewrites it. The corpus inventory is written by \`bench/native_llvm_matrix.sh\`."
+  echo
+  echo '```'
+  cat "$cov_tsv"
+  echo '```'
+} > .build/iyi-ir-COVERAGE.md
+if [ "${COVERAGE_WRITE:-0}" = "1" ]; then
+  cp .build/iyi-ir-COVERAGE.md "$COV"
+  echo "COVERAGE.md written"
+elif cmp -s .build/iyi-ir-COVERAGE.md "$COV"; then
+  echo "COVERAGE.md is current"
+else
+  echo "COVERAGE.md is stale: rerun with COVERAGE_WRITE=1"
+  failed=1
+fi
 
 if [ "$failed" -eq 0 ]; then
   echo "== ALL NATIVE LLVM ROUNDTRIP CHECKS PASSED"
