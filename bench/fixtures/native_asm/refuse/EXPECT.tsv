@@ -1,8 +1,8 @@
-mnemonic.s	unsupported mnemonic 'fmla'
-intel_operands.s	is not an encoded form
-barrier.s	unsupported mnemonic 'dsb'
-modifier.s	operand modifier
-wide_immediate.s	must fit 16 bits
-undefined_label.s	has no definition in its direction
-missing_register.s	operand $0 has no register
-unpaired_offset.s	must be a multiple of 8
+mnemonic.tmpl	unsupported mnemonic 'fmla'
+intel_operands.tmpl	is not an encoded form
+barrier.tmpl	unsupported mnemonic 'dsb'
+modifier.tmpl	operand modifier
+wide_immediate.tmpl	must fit 16 bits
+undefined_label.tmpl	has no definition in its direction
+missing_register.tmpl	operand $0 has no register
+unpaired_offset.tmpl	must be a multiple of 8

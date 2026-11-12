@@ -189,7 +189,9 @@ for pair in "macho aarch64-apple-darwin oracle-macho" "elf aarch64-linux-gnu ora
 done
 
 echo "== 5. refusals: outside the supported set, refused by name"
-for fixture in "$fixtures"/refuse/*.s; do
+# The fixtures end in .tmpl, not .s: the tree ignores *.s, and an ignored
+# fixture is on one machine only.
+for fixture in "$fixtures"/refuse/*.tmpl; do
   name="$(basename "$fixture")"
   expect="$(awk -F'\t' -v f="$name" '$1 == f { print $2 }' "$fixtures/refuse/EXPECT.tsv")"
   got="$("$work/bin/native_asm" refuse "$fixture" 2>&1)"
