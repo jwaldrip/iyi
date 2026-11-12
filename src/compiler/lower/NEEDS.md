@@ -23,3 +23,20 @@ Each row is a member, or a model fact, that the typer in `src/compiler/lower/typ
 - Row 1 is the one the typer depends on today. Until it is fixed, `Bool`, `Char`, `Symbol` and the integers reach the typer by name. Any builtin added to the prelude under another name needs a branch in `primitive_kind`.
 - Row 9 is in `src/compiler/ir/layout.iyi`, which this slice does not own.
 - Row 12 is the gate for every class-shaped increment: until the declarations pass runs in the drivers, no class fixture can be measured.
+
+## Lowering core (S2a): what the core reads and the port does not yet give
+
+The gate (bench/selfhost_lower_core_exercise.sh) compares the core's module with the hosted module of each fixture. These rows are what the core needs and where it stands.
+
+| Member or fact | Hosted line | Port today | Who fixes it |
+|---|---|---|---|
+| `visit(FunDef)` and `codegen_fun` | codegen.cr:842, fun.cr | refused by name in `pending.iyi` (`pending_visit_fun_def`) | S2c |
+| `visit(Call)` and `codegen_call` | codegen.cr, call.cr | refused by name in `pending.iyi` (`pending_visit_call`) | S2c |
+| IR block removal for an empty alloca block | codegen.cr:741 (`alloca_block.delete`) | removes the block from `Function#blocks`; its name stays in the symbol table | the IR owner (`ir/function.iyi`) |
+| Store alignment from the stored type | codegen.cr:612 (`set_align`) | `Inst#alignment=` set from `LowerTyper#align_of` | the typer owner for the table; the IR owner for `alignment=` |
+| Call function type in the printed text | LLVM 22 prints `call T @f(A)` | the gate writes `call T (types) @f(A)` into the oracle before the port reads it | the IR text parser owner (`ir/parser.iyi`), if LLVM text is to be read unrewritten |
+| Call-site attribute groups `#N` after a call | LLVM prints them | the gate drops them, as it drops the attribute groups | the IR text parser owner |
+| The `%Nil` named type | the hosted normaliser also drops `%Nil` | `LowerTyper#nil_type` declares it when `const_undef` of `Nil` is built | the typer owner (no change needed for the gate) |
+| Calling convention of `__crystal_main` and `main` | codegen.cr:2456 (`define_main_function`, C calling convention) | `CallConv::C` set explicitly | the core (done) |
+| `printf` declaration from constant printing | codegen.cr printf helper | dropped by the gate on both sides | the constants slice (S2e) |
+| `Crystal::BUILD_*` globals and stores | `codegen.cr` constant initialisation | not emitted; dropped by the gate on both sides | the entry owner when the build identity is ported (S2g) |

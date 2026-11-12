@@ -1,0 +1,110 @@
+module compiler/lower/lower
+
+# The port of the entry of `src/compiler/iyi/codegen/codegen.cr`: `codegen` of the
+# program, `__crystal_main` and `main`, and the visitor's dispatch over the nodes the
+# core ports so far. Every other node goes to `pending.iyi` by name.
+#
+# The emitted shape is the hosted one: `__crystal_main` takes `argc` and `argv`,
+# stores them in the `ARGC_UNSAFE` and `ARGV_UNSAFE` globals, lowers the program's
+# expressions, and returns the type of the last one (void for `Nil`); `main` calls
+# it and returns 0. The hosted build constants (`::BUILD_*`, which the program
+# stores on entry) are not emitted here: they are the compiler's own identity, not the
+# program's, and the gate leaves them out on both sides.
+
+import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, NilLiteral}
+import compiler/ir/module::{Module}
+import compiler/ir/function::{Linkage}
+import compiler/ir/inst::{CallConv}
+import compiler/ir/types::{IrType}
+import compiler/ir/values::{Value}
+import compiler/lower/typer::{LowerTyper}
+import compiler/lower/context::{Lowerer}
+import compiler/lower/pending::{pending_visit_call, pending_visit_fun_def, pending_visit_node}
+import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
+import compiler/semantic/top_level::{Type}
+
+# The hosted `codegen` of a program into `m`: the entry of the unit. `root` is the
+# program's parsed tree, `analysed` the semantic pass that typed it.
+pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyper, m : Module) : Nil
+  low = Lowerer.new(m, typer, analysed)
+  i32 = m.types.int32
+  ptr = m.types.ptr(0)
+
+  argc_global = m.add_global("ARGC_UNSAFE", i32)
+  argc_global.linkage = Linkage::Internal
+  argc_global.initializer = low.builder.const_int(i32, 0)
+  argv_global = m.add_global("ARGV_UNSAFE", ptr)
+  argv_global.linkage = Linkage::Internal
+  argv_global.initializer = low.builder.const_null(ptr)
+
+  program_type = analysed.type_of?(root)
+  raise "BUG: the analysed program has no type for its root expression (hosted codegen.cr: codegen)" if program_type.nil?
+  low.main_ret_type = program_type
+  ret_ir = typer.llvm_return_type(program_type.as(Type))
+  entry_type = m.types.func([i32, ptr] of IrType, ret_ir)
+
+  fn = low.begin_main_function("__crystal_main", entry_type, true)
+  fn.linkage = Linkage::Internal
+  fn.call_convention = CallConv::C
+  fn.name_param(fn.param(0), "argc")
+  fn.name_param(fn.param(1), "argv")
+  st_argc = low.builder.store(fn.param(0), argc_global)
+  st_argc.alignment = low.typer.align_of(fn.param(0).type)
+  st_argv = low.builder.store(fn.param(1), argv_global)
+  st_argv.alignment = low.typer.align_of(fn.param(1).type)
+  codegen_node(low, root)
+  codegen_return(low, ret_ir)
+  low.finish_main_function
+
+  main_fn = m.define_function("main", m.types.func([i32, ptr] of IrType, i32))
+  main_fn.name_param(main_fn.param(0), "argc")
+  main_fn.name_param(main_fn.param(1), "argv")
+  main_fn.call_convention = CallConv::C
+  main_entry = main_fn.append_basic_block("entry")
+  low.builder.position_at_end(main_entry)
+  low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
+  low.builder.ret(low.builder.const_int(i32, 0))
+end
+
+# The hosted `codegen` visitor's dispatch over one node. A sequence visits each of its
+# expressions in order; the value of the last one is `low.last`.
+pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
+  if node.is_a?(Expressions)
+    exprs = node.as(Expressions).expressions
+    i = 0
+    while i < exprs.size
+      codegen_node(low, exprs[i])
+      i += 1
+    end
+    return
+  end
+  if node.is_a?(NilLiteral)
+    # The hosted `visit(NilLiteral)`: `@last = llvm_nil`.
+    low.last = llvm_nil(low)
+    return
+  end
+  if node.is_a?(Def)
+    pending_visit_fun_def
+  end
+  if node.is_a?(Call)
+    pending_visit_call
+  end
+  pending_visit_node(node_class_name(node))
+end
+
+# The hosted `llvm_nil`: the one value of type `Nil`.
+pub def llvm_nil(low : Lowerer) : Value
+  low.builder.const_undef(low.typer.nil_type)
+end
+
+# The hosted `codegen_return`: a function returning void returns nothing; any other
+# returns the value of the expression visited last.
+pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
+  if ret_ir.void?
+    low.builder.ret_void
+    return
+  end
+  value = low.last
+  raise "BUG: the program returns #{ret_ir.to_s} but its last expression left no value (hosted codegen.cr: codegen_return)" if value.nil?
+  low.builder.ret(value.as(Value))
+end
