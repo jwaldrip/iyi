@@ -325,3 +325,4 @@ src/compiler/semantic/instance_vars.iyi 0
 src/compiler/semantic/match.iyi 0
 src/compiler/semantic/method_lookup.iyi 0
 src/compiler/semantic/restrictions.iyi 0
+src/compiler/lower/abi/aarch64.iyi 0

@@ -53,6 +53,7 @@ import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/semantic/top_level::{LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, Type, UnionType, VoidType}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call}
+import compiler/lower/abi/aarch64::{check_lib_aggregate}
 import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, VirtualType}
 
 # A body that is a literal, which the hosted call inlines (`try_inline_call`).
@@ -397,6 +398,10 @@ pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, the_
     low.last = llvm_nil(low)
     return
   end
+  arg_types.each do |t|
+    check_lib_aggregate(t, "argument")
+  end
+  check_lib_aggregate(ret, "result")
   params = [] of IrType
   arg_types.each do |t|
     params << low.typer.llvm_type(t)
