@@ -1,11 +1,11 @@
 module compiler/ir/builder
 
 import compiler/ir/types::{IrType, TypeTable}
-import compiler/ir/values::{Value, double_bits, single_bits}
+import compiler/ir/values::{Value, double_bits, single_bits, u64_as_i64}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, Attribute, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, InstAux, Ordering, IntPredicate, RealPredicate, ThreadPointerKind, DebugLoc, terminator_op?}
 import compiler/ir/function::{Function, Global}
 import compiler/ir/module::{Module}
-import compiler/ir/intrinsics::{IntrinsicId, intrinsic_spec, intrinsic_type}
+import compiler/ir/intrinsics::{IntrinsicId, intrinsic_accepts?, intrinsic_signature, intrinsic_name}
 
 # Builds instructions and constants into a module, with the method names and argument order of
 # compiler/llvm/builder.iyi. Constants are created without a block, so they are Insts that are never
@@ -50,9 +50,20 @@ pub class Builder
 
   # ---- constants ----------------------------------------------------------------------
 
+  # An integer constant. For i128 the high half is the sign extension of `value`.
   def const_int(type : IrType, value : Int64) : Inst
     raise "a ConstInt needs an integer type, not #{type}" unless type.int?
-    Inst.new(Op::ConstInt, type, [] of Value, value, nil, [] of Block, [] of Int64)
+    inst = Inst.new(Op::ConstInt, type, [] of Value, value, nil, [] of Block, [] of Int64)
+    inst.aux_hi = value < 0_i64 ? -1_i64 : 0_i64
+    inst
+  end
+
+  # A 128-bit integer constant from its two halves in two's complement.
+  def const_wide(type : IrType, hi : Int64, lo : Int64) : Inst
+    raise "a wide constant needs an i128, not #{type}" unless type.int? && type.bits == 128
+    inst = Inst.new(Op::ConstInt, type, [] of Value, lo, nil, [] of Block, [] of Int64)
+    inst.aux_hi = hi
+    inst
   end
 
   def const_int(type : IrType, value : Int32) : Inst
@@ -61,9 +72,7 @@ pub class Builder
 
   # An unsigned constant: its bit pattern is stored, and printed as the signed value of that pattern.
   def const_uint(type : IrType, value : UInt64) : Inst
-    bit63 = (value >> 63) & 1_u64
-    low = (value & 0x7FFFFFFFFFFFFFFF_u64).to_i64
-    const_int(type, bit63 == 1_u64 ? low - 9223372036854775807_i64 - 1_i64 : low)
+    const_int(type, u64_as_i64(value))
   end
 
   def const_float(type : IrType, value : Float64) : Inst
@@ -502,16 +511,14 @@ pub class Builder
     emit(Op::Call, aux.fn_type.return_type, operands, 0_i64, aux, [] of Block, [] of Int64, name)
   end
 
+  # An intrinsic call. `overload` is the set of types the LLVM name spells, and the result type follows
+  # from it: the IR refuses an overload its family does not accept, rather than guessing a signature.
   def intrinsic(id : IntrinsicId, overload : Array(IrType), args : Array(Value), name : String = "") : Inst
-    spec = intrinsic_spec(id)
-    expected = spec.overload.map { |t| intrinsic_type(t, types) }
-    raise "#{spec.name} takes #{expected.size} overload types, got #{overload.size}" unless overload.size == expected.size
-    i = 0
-    while i < expected.size
-      raise "#{spec.name} overload #{i} must be #{expected[i]}, not #{overload[i]}" unless overload[i] == expected[i]
-      i = i + 1
+    unless intrinsic_accepts?(id, overload)
+      raise "#{intrinsic_name(id, overload)} is not an intrinsic the IR accepts at these types"
     end
-    emit(Op::Intrinsic, intrinsic_type(spec.ret, types), args, 0_i64, IntrinsicAux.new(id, overload), [] of Block, [] of Int64, name)
+    signature = intrinsic_signature(id, overload, types)
+    emit(Op::Intrinsic, signature[0], args, 0_i64, IntrinsicAux.new(id, overload), [] of Block, [] of Int64, name)
   end
 
   # An inline asm callee. Call it with `call`; the printer writes the template where the callee goes.

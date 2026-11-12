@@ -1,12 +1,12 @@
 module compiler/ir/parser
 
 import compiler/ir/types::{IrType, TypeTable}
-import compiler/ir/values::{Value, Param}
+import compiler/ir/values::{Value, Param, Wide128, i128_parse}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, Ordering, Attribute, ThreadPointerKind, DebugLoc}
-import compiler/ir/function::{Function, Global, Linkage, TlsModel, DebugSubprogram}
+import compiler/ir/function::{Function, Global, Linkage, TlsModel, DebugSubprogram, Visibility}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
-import compiler/ir/intrinsics::{intrinsic_from_name, intrinsic_spec, intrinsic_type}
+import compiler/ir/intrinsics::{intrinsic_match, intrinsic_signature}
 import compiler/platform/target::{Target}
 
 # A parse failure: the line it is on and what was wrong there.
@@ -136,7 +136,7 @@ def tokenize(line : String) : Array(Tok)
           j = j + 1
         end
         value = 0_i64 &- value if negative
-        toks << Tok.new(TokKind::Int, "", value, false, [] of Int64)
+        toks << Tok.new(TokKind::Int, line[i, j - i], value, false, [] of Int64)
         i = j
       end
     elsif ident_start?(b)
@@ -434,6 +434,10 @@ class IrParser
       if c.ident?("module")
         c.take
         name = c.take.text if c.peek.kind == TokKind::Str
+      elsif c.ident?("source_filename")
+        c.take
+        c.expect_punct("=")
+        name = c.take.text
       elsif c.ident?("target")
         c.take
         what = c.take.text
@@ -535,6 +539,8 @@ class IrParser
     name = c.take.text
     c.expect_punct("=")
     linkage = take_linkage(c)
+    dso = take_dso_local(c)
+    vis = take_visibility(c)
     tls = TlsModel::None
     if c.ident?("thread_local")
       c.take
@@ -547,6 +553,8 @@ class IrParser
     value_type = parse_type(c, mod.types)
     global = mod.add_global(name, value_type)
     global.linkage = linkage
+    global.dso_local = dso
+    global.visibility = vis
     global.tls = tls
     global.global_constant = constant
     unless c.at_end? || c.punct?(",")
@@ -583,6 +591,8 @@ class IrParser
     c = Cursor.new(toks, line)
     is_define = c.take.text == "define"
     linkage = take_linkage(c)
+    dso = take_dso_local(c)
+    vis = take_visibility(c)
     cc = CallConv::C
     if c.ident?("iyicc")
       c.take
@@ -618,6 +628,8 @@ class IrParser
     fn_type = mod.types.func(param_types, ret, varargs)
     fn = mod.add_function(name_tok.text, fn_type, cc)
     fn.linkage = linkage
+    fn.dso_local = dso
+    fn.visibility = vis
     fn.ret_attrs = ret_attrs
     fn.param_attrs = param_attrs
     fn.attrs = parse_attr_list(c, mod.types) if c.punct?("[")
@@ -634,7 +646,6 @@ class IrParser
 
   def take_linkage(c : Cursor) : Linkage
     t = c.peek
-    return Linkage::External if false
     if t.kind == TokKind::Ident
       word = t.text
       if word == "external"
@@ -658,6 +669,31 @@ class IrParser
       end
     end
     Linkage::External
+  end
+
+  # `dso_local` after the linkage, as LLVM writes it.
+  def take_dso_local(c : Cursor) : Bool
+    if c.ident?("dso_local")
+      c.take
+      return true
+    end
+    false
+  end
+
+  # A visibility after the linkage and dso_local. `default` is accepted and is what nothing prints.
+  def take_visibility(c : Cursor) : Visibility
+    if c.ident?("hidden")
+      c.take
+      return Visibility::Hidden
+    end
+    if c.ident?("protected")
+      c.take
+      return Visibility::Protected
+    end
+    if c.ident?("default")
+      c.take
+    end
+    Visibility::Default
   end
 
   def tls_model(word : String) : TlsModel
@@ -1003,14 +1039,13 @@ class IrParser
       walk_call(c, mod, resolve, shape, false, true)
     when "intrinsic"
       name = c.take.text
-      found = intrinsic_from_name(name)
+      found = intrinsic_match(name, types)
       unless found
         c.fail("unknown intrinsic #{name}")
         return shape
       end
-      id = found
-      spec = intrinsic_spec(id)
-      overloads = spec.overload.map { |t| intrinsic_type(t, types) }
+      match = found
+      signature = intrinsic_signature(match.id, match.overload, types)
       c.expect_punct("(")
       while !c.punct?(")") && !c.at_end?
         operand(c, types, resolve, shape, nil, true)
@@ -1018,7 +1053,7 @@ class IrParser
         c.take
       end
       c.expect_punct(")")
-      shape.set(Op::Intrinsic, intrinsic_type(spec.ret, types), 0_i64, IntrinsicAux.new(id, overloads))
+      shape.set(Op::Intrinsic, signature[0], 0_i64, IntrinsicAux.new(match.id, match.overload))
     when "threadlocaladdr"
       operand(c, types, resolve, shape, nil, true)
       shape.set(Op::ThreadLocalAddr, types.ptr(0), 0_i64, nil)
@@ -1465,6 +1500,15 @@ class IrParser
       return dummy(type)
     end
     if t.kind == TokKind::Int
+      if type.int? && type.bits == 128
+        if wide = i128_parse(t.text)
+          inst = make_const(Op::ConstInt, type, wide.lo)
+          inst.aux_hi = wide.hi
+          return inst
+        end
+        c.fail("#{t.text} does not fit an i128")
+        return dummy(type)
+      end
       return make_const(Op::ConstInt, type, t.num)
     end
     if t.kind == TokKind::Hex

@@ -183,7 +183,7 @@ echo "checked $count valid fixtures"
 
 # ---- 4. builder-constructed modules ------------------------------------------------------------
 echo "== 4. modules built with the Builder print identically after a parse"
-for name in arith memory control calls runtime; do
+for name in arith memory control calls runtime intrinsics; do
   "$DRV" emit "$name" >"$WORK/$name.ir" || { fail "emit $name"; continue; }
   out=$("$DRV" roundtrip "$WORK/$name.ir" 2>&1) || { fail "$name: $out"; continue; }
   [ "$out" = "identical" ] || fail "built module $name does not round-trip: $out"
@@ -202,6 +202,30 @@ for f in bench/fixtures/ir/bad/*.ir; do
 done
 [ "$count" -gt 0 ] || fail "no malformed fixtures found"
 echo "refused $count malformed fixtures under their rules"
+
+# ---- 5b. the parser's acceptances and refusals -------------------------------------------------
+echo "== 5b. the ModuleID header is ignored and the module is named by source_filename; the rejected literals and intrinsics are refused"
+out=$("$DRV" print bench/fixtures/ir/accept/moduleid.ir 2>&1) || fail "moduleid.ir: $out"
+echo "$out" | grep -q '^source_filename = "moduleid.iyi"$' || fail "moduleid.ir does not keep source_filename as its module identifier: $out"
+count=0
+for f in bench/fixtures/ir/reject/*.ir; do
+  count=$((count + 1))
+  want=$(sed -n 's/^; reject: //p' "$f" | head -n 1)
+  [ -n "$want" ] || { fail "$f names no expected refusal"; continue; }
+  out=$("$DRV" print "$f" 2>&1) && { fail "$f was accepted"; continue; }
+  echo "$out" | grep -q "$want" || fail "$f was refused for another reason, not '$want': $out"
+done
+[ "$count" -gt 0 ] || fail "no rejected fixtures found"
+echo "refused $count literal and intrinsic fixtures under their reasons"
+
+# ---- 5c. every intrinsic the IR accepts, at every width its family accepts ----------------------
+echo "== 5c. the accepted intrinsic names match the checked-in list"
+"$DRV" intrinsics >"$WORK/intrinsic-names.txt" || fail "the driver lists no intrinsics"
+if diff bench/fixtures/ir/intrinsic-names.txt "$WORK/intrinsic-names.txt" >"$WORK/diff.txt"; then
+  echo "accepts $(wc -l <"$WORK/intrinsic-names.txt" | tr -d ' ') intrinsic names"
+else
+  fail "the accepted intrinsic names changed: $(cat "$WORK/diff.txt")"
+fi
 
 # ---- 6. DataLayout against the oracle ----------------------------------------------------------
 echo "== 6. DataLayout#llvm_string equals the oracle's target datalayout on all five targets"
@@ -253,6 +277,11 @@ prove_mutation "printer: the Add and Sub mnemonics swap" \
   src/compiler/ir/printer.iyi \
   '    when Op::Add then "add"' \
   '    when Op::Add then "sub"' \
+  roundtrip_check
+prove_mutation "printer: hidden visibility is written as nothing" \
+  src/compiler/ir/printer.iyi \
+  '      "hidden"' \
+  '      ""' \
   roundtrip_check
 prove_mutation "verifier: a call no longer kills thread-local values" \
   src/compiler/ir/verifier.iyi \
