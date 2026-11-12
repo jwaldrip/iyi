@@ -15,7 +15,7 @@
 # a fixture that the unmutated port lowers identically. While no fixture is identical, the
 # mutations cannot be proven, and the gate fails and says so: it does not pass on nothing.
 #
-#   bash bench/lowcast_gate.wip.sh
+#   bash bench/selfhost_lower_cast_exercise.sh
 set -u
 status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,16 +27,15 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== 1. Building the port driver"
-if ! "$IYI" build -o "$WORK/port" "$REPO/bench/lowcast_gate_wip.iyi" > "$WORK/port.build.log" 2>&1; then
+if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
   echo "  the port driver does not build (see $WORK/port.build.log)"
   exit 1
 fi
 echo "  driver built"
 
-# Fixtures waiting on another slice, by name (the reason is printed with the result).
+# Fixtures waiting on another slice, by name (none now: the three cast fixtures are identical).
 waiting_on() {
   case "$1" in
-    lowcast_mixed) echo "a Bool stored into the mixed union Bool | Int32: the port emits '%6 = zext i1 true to i64' where the hosted module has 'store i64 1' (a constant store: the port's builder does not fold a constant zext, cast.iyi store_bool_in_union, casts slice)" ;;
   esac
 }
 
@@ -139,7 +138,7 @@ echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the mixed-union fixture
 # to be identical to the hosted module, which holds only when the store helpers are right.
 cast_check() {
-  "$IYI" build -o "$WORK/mut" "$REPO/bench/lowcast_gate_wip.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_mixed.iyi" "$WORK/lowcast_mixed.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out" && return 0
   return 1
@@ -150,12 +149,12 @@ if [ "$passed" -eq 0 ]; then
   echo "  as soon as lowcast_mixed (or another cast fixture) is identical."
   status=1
 else
-  prove_mutation "a bool is extended with sign extension" "$REPO/src/compiler/lower/cast.iyi" \
-    "widened = low.builder.zext(value, low.module.types.int(bits.to_i32))" "widened = low.builder.sext(value, low.module.types.int(bits.to_i32))" -- cast_check || status=1
+  prove_mutation "a true bool folds to zero" "$REPO/src/compiler/lower/cast.iyi" \
+    "return low.builder.const_int(int_type, 1_i64)" "return low.builder.const_int(int_type, 0_i64)" -- cast_check || status=1
   prove_mutation "the value area is field zero" "$REPO/src/compiler/lower/cast.iyi" \
     "  index = low.builder.const_int(low.module.types.int32, 1_i64)" "  index = low.builder.const_int(low.module.types.int32, 0_i64)" -- cast_check || status=1
-  prove_mutation "the type id globals are external" "$REPO/src/compiler/lower/cast.iyi" \
-    "    made.linkage = Linkage::Internal" "    made.linkage = Linkage::External" -- cast_check || status=1
+  prove_mutation "the type id load is not aligned" "$REPO/src/compiler/lower/cast.iyi" \
+    "  load_aligned(low, low.module.types.int32, global.as(Global))" "  low.builder.load(low.module.types.int32, global.as(Global))" -- cast_check || status=1
 fi
 
 echo
