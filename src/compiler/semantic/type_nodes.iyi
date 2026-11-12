@@ -88,7 +88,9 @@ pub def visit_generic(visitor : TypeNodeHost, node : Generic) : Bool
 
   resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)
   if resolved.is_a?(LookupError)
-    return visitor.refuse(node, resolved.as(LookupError).message)
+    rebuilt = generic_of_typed_args(visitor, node)
+    return visitor.refuse(node, resolved.as(LookupError).message) if rebuilt.nil?
+    resolved = rebuilt
   end
   instance = resolved.as(Type)
   if visitor.in_type_args?
@@ -101,6 +103,25 @@ pub def visit_generic(visitor : TypeNodeHost, node : Generic) : Bool
   end
   visitor.set_type(node, meta.as(Type))
   false
+end
+
+# A generic whose name does not resolve in the current scope, because its arguments name a type
+# parameter that the scope binds (`T` in a generic instance's metaclass), is instantiated from
+# the arguments the visitor has typed. nil when the base or an argument is not typed.
+pub def generic_of_typed_args(visitor : TypeNodeHost, node : Generic) : Type?
+  ts = type_node_system(visitor.program)
+  base = TypeLookup.new(ts.instances).lookup(visitor.current_type, node.name)
+  return nil if base.is_a?(LookupError)
+  base_type = base.as(Type)
+  return nil unless base_type.is_a?(GenericClassType)
+  args = [] of Type
+  node.type_vars.each do |arg|
+    t = visitor.child_type(arg)
+    return nil if t.nil?
+    args << t.as(Type)
+  end
+  return ts.pointer_of(args[0]) if base_type.name == "Pointer" && args.size == 1
+  ts.instantiate_generic(base_type.as(GenericClassType), args)
 end
 
 # `Int32 | String`: typed as the merged union type, the type a union written in

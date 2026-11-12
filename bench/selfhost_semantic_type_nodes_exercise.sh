@@ -171,6 +171,12 @@ prove_mutation "a pointerof of a local is refused, in a fun body or anywhere" "$
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a generic whose name fails in scope is not rebuilt from its typed arguments" "$TYPE_NODES" \
+  "    rebuilt = generic_of_typed_args(visitor, node)" \
+  "    rebuilt = nil" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
