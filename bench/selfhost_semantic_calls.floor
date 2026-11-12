@@ -1,0 +1,19 @@
+# call census floors: <repo-relative file> <identical call sites>.
+# A count may only rise. Raise with: CALLS_CENSUS_RAISE=1 bash bench/selfhost_semantic_calls_census.sh
+samples/iyi/basics.iyi 79
+samples/iyi/config.iyi 9
+samples/iyi/enums.iyi 28
+samples/iyi/errors.iyi 15
+samples/iyi/files.iyi 10
+samples/iyi/formatting.iyi 23
+samples/iyi/generics.iyi 20
+samples/iyi/grid.iyi 27
+samples/iyi/hello.iyi 13
+samples/iyi/inventory.iyi 21
+samples/iyi/io.iyi 5
+samples/iyi/sessions.iyi 6
+samples/iyi/shapes.iyi 18
+samples/iyi/std_iterator.iyi 18
+samples/iyi/std_text.iyi 12
+samples/iyi/visited.iyi 21
+samples/iyi/workers.iyi 6
