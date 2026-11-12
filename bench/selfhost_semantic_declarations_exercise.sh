@@ -154,6 +154,27 @@ else
     status=1
   fi
 fi
+echo "== 2b''. Link annotations once the program is declared: a lib's @[Link] records, in declaration order, positional and named"
+echo "  (a port-side pin: the expected lines are written by hand; the oracle's own dump of the same fixture must agree with them)"
+link_annotations_expected="$REPO/bench/selfhost_semantic_declarations_link_annotations.expected"
+if ! "$PORT" --link-annotations "$REPO/bench/fixtures/semdecl_link_annotations.iyi" > "$WORK/la_p.txt" 2> "$WORK/la_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/la_pe.txt")"; status=1
+else
+  awk '/^link /' "$WORK/la_p.txt" > "$WORK/la_pin.txt"
+  if ! "$ORACLE" --link-annotations "$REPO/bench/fixtures/semdecl_link_annotations.iyi" > "$WORK/la_o.txt" 2> "$WORK/la_oe.txt"; then
+    echo "  ORACLE REJECTS: $(head -n 1 "$WORK/la_oe.txt")"; status=1
+  elif ! cmp -s "$WORK/la_o.txt" "$link_annotations_expected"; then
+    echo "  semdecl_link_annotations.iyi: ORACLE DIFFERS FROM THE PIN"
+    diff "$link_annotations_expected" "$WORK/la_o.txt" | head -n 20
+    status=1
+  elif cmp -s "$WORK/la_pin.txt" "$link_annotations_expected"; then
+    echo "  semdecl_link_annotations.iyi: $(awk 'END{print NR}' "$WORK/la_pin.txt") link records pinned, and the oracle agrees"
+  else
+    echo "  semdecl_link_annotations.iyi: PIN DIFFERS"
+    diff "$link_annotations_expected" "$WORK/la_pin.txt" | head -n 20
+    status=1
+  fi
+fi
 echo "== 2d. Total mode with the type system installed: an unresolved superclass is carried past; the class takes the default superclass"
 total_typed_expected="$REPO/bench/selfhost_semantic_declarations_total_typed.expected"
 if ! "$PORT" --total-typed "$REPO/bench/fixtures/total_unresolved_superclass.iyi" > "$WORK/tt_p.txt" 2> "$WORK/tt_pe.txt"; then
@@ -443,6 +464,16 @@ check_pins_diverge() {
   return 0
 }
 
+check_link_annotations_diverge() {
+  # Builds the driver as it now stands and compares the link annotation pin. Returns non-zero (caught)
+  # when the driver fails to build or a lib's @[Link] records differ from the pinned lines.
+  local probe="$WORK/mut_link_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --link-annotations "$REPO/bench/fixtures/semdecl_link_annotations.iyi" 2>/dev/null | awk '/^link /' > "$WORK/mut_la.txt" || return 1
+  cmp -s "$WORK/mut_la.txt" "$link_annotations_expected" || return 1
+  return 0
+}
+
 echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
 MUT_SEM="$REPO/src/compiler/semantic/top_level.iyi"
@@ -450,12 +481,12 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
 
-prove_mutation "struct default superclass switches to Reference" "$MUT_SEM" \
+prove_mutation_all "struct default superclass switches to Reference" "$MUT_SEM" \
   "superclass = node.struct ? @program.struct_type : @program.reference_type" \
   "superclass = @program.reference_type" \
   -- check_decl_fixtures_diverge || status=1
@@ -594,6 +625,21 @@ prove_mutation "the predefined constants are not found by name" "$MUT_SEM" \
   "if name == \"ARGC_UNSAFE\" || name == \"ARGV_UNSAFE\"" \
   "if name == \"NOPE\"" \
   -- check_const_facts_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a named framework argument of a link annotation is refused" "$MUT_SEM" \
+  "          elsif na.name == \"framework\"" \
+  "          elsif na.name == \"frameworkX\"" \
+  -- check_link_annotations_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a positional ldflags argument of a link annotation is refused" "$MUT_SEM" \
+  "          elsif i == 1" \
+  "          elsif i == 9" \
+  -- check_link_annotations_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a lib records only its first link annotation" "$MUT_SEM" \
+  "      if ann.path.names.last == \"Link\"" \
+  "      if ann.path.names.last == \"Link\" && lib_type.link_annotations.empty?" \
+  -- check_link_annotations_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an unresolvable written type raises once the type system is installed, even in total mode" "$MUT_TS" \
   "      raise(message) unless @program.total_mode" \
