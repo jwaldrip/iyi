@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # Fails when the iyi macro engine stops agreeing with the one it replaces.
 #
-# Every fixture is expanded twice, once by each implementation, dumped in one
-# text form, and required byte-identical.
+# Every fixture is expanded by each implementation site by site: the text each
+# top-level `{% %}` and `{{ }}` site expands to, in source order, with where it
+# is written. How the expansion ended (a skip, or a raise with its message and
+# location) and the whole output follow. The two dumps are required
+# byte-identical.
+#
+# A fixture whose header is `# refuse: <name>` names a macro method the port
+# refuses by name. The oracle is not run on it (it would run the command); the
+# port must report the refusal.
 #
 # The mutation proofs follow the rule the other selfhost gates use: the patched
 # file is compared against the original, and a patch that matched nothing is
@@ -16,6 +23,8 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 INTERP="$REPO/src/compiler/macros/interpreter.iyi"
+PARSER="$REPO/src/compiler/macros/macro_parser.iyi"
+ENGINE="$REPO/src/compiler/macros/engine.iyi"
 . "$REPO/bench/lib/mutation.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -50,9 +59,25 @@ for phrase in \
 done
 
 echo
-echo "== 2. Macro expansion AST comparison against the front end being replaced"
+echo "== 2. Per-site expansion dump: the oracle and the port must print the same bytes"
 cat <<'CRYSTAL_GOLDEN_SCRIPT' > "$WORK/dump_crystal_macro.cr"
 require "compiler/requires"
+
+# iyi: the line and column a TypeException was raised at, which the hosted
+# class keeps in instance variables. The gate reads them through methods added
+# here, in the oracle driver only; `CodeError` is abstract, so its own
+# variables cannot be typed from here.
+module Iyi
+  class TypeException
+    def gate_line : Int32
+      @line_number || 0
+    end
+
+    def gate_column : Int32
+      @column_number || 0
+    end
+  end
+end
 
 def escape_s(s : String) : String
   res = "\""
@@ -69,157 +94,6 @@ def escape_s(s : String) : String
     i += 1
   end
   res + "\""
-end
-
-def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
-  return ("  " * indent) + "nil\n" if node.nil?
-  p = "  " * indent
-  case node
-  when Iyi::Expressions
-    kw = case node.keyword
-         when .none? then "none"
-         when .paren? then "paren"
-         when .begin? then "begin"
-         else "none"
-         end
-    s = "#{p}Expressions keyword=#{kw}\n"
-    node.expressions.each { |e| s += dump_ast(e, indent + 1) }
-    s
-  when Iyi::Nop
-    "#{p}Nop\n"
-  when Iyi::NilLiteral
-    "#{p}NilLiteral\n"
-  when Iyi::BoolLiteral
-    "#{p}BoolLiteral value=#{node.value}\n"
-  when Iyi::NumberLiteral
-    "#{p}NumberLiteral value=\"#{node.value}\" kind=#{node.kind.to_s.downcase}\n"
-  when Iyi::CharLiteral
-    "#{p}CharLiteral value=#{node.value.ord}\n"
-  when Iyi::StringLiteral
-    "#{p}StringLiteral value=#{escape_s(node.value)}\n"
-  when Iyi::StringInterpolation
-    s = "#{p}StringInterpolation\n"
-    node.expressions.each { |e| s += dump_ast(e, indent + 1) }
-    s
-  when Iyi::SymbolLiteral
-    "#{p}SymbolLiteral value=#{escape_s(node.value)}\n"
-  when Iyi::Var
-    "#{p}Var name=#{escape_s(node.name)}\n"
-  when Iyi::InstanceVar
-    "#{p}InstanceVar name=#{escape_s(node.name)}\n"
-  when Iyi::ClassVar
-    "#{p}ClassVar name=#{escape_s(node.name)}\n"
-  when Iyi::Global
-    "#{p}Global name=#{escape_s(node.name)}\n"
-  when Iyi::Path
-    "#{p}Path names=#{node.names.join("::")} global=#{node.global?}\n"
-  when Iyi::ArrayLiteral
-    s = "#{p}ArrayLiteral\n"
-    node.elements.each { |e| s += dump_ast(e, indent + 1) }
-    s
-  when Iyi::HashLiteral
-    s = "#{p}HashLiteral\n"
-    node.entries.each do |entry|
-      s += "#{p}  entry:\n"
-      s += "#{p}    key:\n" + dump_ast(entry.key, indent + 3)
-      s += "#{p}    value:\n" + dump_ast(entry.value, indent + 3)
-    end
-    s
-  when Iyi::TupleLiteral
-    s = "#{p}TupleLiteral\n"
-    node.elements.each { |e| s += dump_ast(e, indent + 1) }
-    s
-  when Iyi::NamedTupleLiteral
-    s = "#{p}NamedTupleLiteral\n"
-    node.entries.each do |entry|
-      s += "#{p}  entry key=#{escape_s(entry.key)}:\n" + dump_ast(entry.value, indent + 2)
-    end
-    s
-  when Iyi::RangeLiteral
-    s = "#{p}RangeLiteral exclusive=#{node.exclusive?}\n"
-    s += "#{p}  from:\n" + dump_ast(node.from, indent + 2)
-    s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
-    s
-  when Iyi::Call
-    s = "#{p}Call name=#{escape_s(node.name)}\n"
-    if obj = node.obj
-      s += "#{p}  obj:\n" + dump_ast(obj, indent + 2)
-    end
-    if !node.args.empty?
-      s += "#{p}  args:\n"
-      node.args.each { |a| s += dump_ast(a, indent + 2) }
-    end
-    if named_args = node.named_args
-      s += "#{p}  named_args:\n"
-      named_args.each { |na| s += dump_ast(na, indent + 2) }
-    end
-    if block_arg = node.block_arg
-      s += "#{p}  block_arg:\n" + dump_ast(block_arg, indent + 2)
-    end
-    if block = node.block
-      s += "#{p}  block:\n" + dump_ast(block, indent + 2)
-    end
-    s
-  when Iyi::NamedArgument
-    s = "#{p}NamedArgument name=#{escape_s(node.name)}:\n"
-    s += dump_ast(node.value, indent + 1)
-    s
-  when Iyi::Block
-    arg_names = node.args.map(&.name).join(", ")
-    splat = node.splat_index ? node.splat_index.to_s : "none"
-    s = "#{p}Block args=[#{arg_names}] splat=#{splat}:\n"
-    s += dump_ast(node.body, indent + 1)
-    s
-  when Iyi::Assign
-    s = "#{p}Assign\n"
-    s += "#{p}  target:\n" + dump_ast(node.target, indent + 2)
-    s += "#{p}  value:\n" + dump_ast(node.value, indent + 2)
-    s
-  when Iyi::If
-    s = "#{p}If ternary=#{node.ternary?}\n"
-    s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
-    s += "#{p}  then:\n" + dump_ast(node.then, indent + 2)
-    s += "#{p}  else:\n" + dump_ast(node.else, indent + 2)
-    s
-  when Iyi::Def
-    receiver_s = node.receiver ? " receiver" : ""
-    abstract_s = node.abstract? ? " abstract=true" : ""
-    splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
-    s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}\n"
-    if r = node.receiver
-      s += "#{p}  receiver:\n" + dump_ast(r, indent + 2)
-    end
-    if !node.args.empty?
-      s += "#{p}  args:\n"
-      node.args.each { |a| s += dump_ast(a, indent + 2) }
-    end
-    if ds = node.double_splat
-      s += "#{p}  double_splat:\n" + dump_ast(ds, indent + 2)
-    end
-    if ba = node.block_arg
-      s += "#{p}  block_arg:\n" + dump_ast(ba, indent + 2)
-    end
-    if rt = node.return_type
-      s += "#{p}  return_type:\n" + dump_ast(rt, indent + 2)
-    end
-    if fv = node.free_vars
-      s += "#{p}  free_vars=[#{fv.join(", ")}]\n"
-    end
-    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
-    s
-  when Iyi::Arg
-    ext_s = (ext = node.external_name) && ext != node.name ? " external_name=#{escape_s(ext)}" : ""
-    s = "#{p}Arg name=#{escape_s(node.name)}#{ext_s}\n"
-    if rest = node.restriction
-      s += "#{p}  restriction:\n" + dump_ast(rest, indent + 2)
-    end
-    if def_val = node.default_value
-      s += "#{p}  default_value:\n" + dump_ast(def_val, indent + 2)
-    end
-    s
-  else
-    "#{p}#{node.class}\n"
-  end
 end
 
 class NodeCounter < Iyi::Visitor
@@ -287,15 +161,55 @@ unless target.empty?
   program.codegen_target = Iyi::Codegen::Target.new(target)
 end
 defines.each { |d| program.flags << d }
-expanded_str, pragmas = program.expand_macro(the_macro.not_nil!, the_call.not_nil!, program, program)
-expanded_ast = program.parse_macro_source(expanded_str, pragmas, the_macro.not_nil!, the_call.not_nil!, Set(String).new)
+
+# The same interpreter `Program#expand_macro` builds, driven one top-level
+# site at a time so each site's text can be read back.
+interp = Iyi::MacroInterpreter.new(program, program, program, the_macro.not_nil!, the_call.not_nil!, nil, in_macro: true)
+body = the_macro.not_nil!.body
+nodes = [] of Iyi::ASTNode
+if body.is_a?(Iyi::Expressions)
+  body.expressions.each { |e| nodes << e }
+else
+  nodes << body
+end
+
+lines = [] of String
+skipped = false
+failure : {Int32, Int32, String}? = nil
+nodes.each do |site|
+  break if skipped || failure
+  before = interp.to_s.bytesize
+  begin
+    interp.accept(site)
+  rescue ex : Iyi::SkipMacroException
+    skipped = true
+    next
+  rescue ex : Iyi::TypeException
+    failure = {ex.gate_line, ex.gate_column, ex.message.to_s}
+    next
+  end
+  next if site.is_a?(Iyi::MacroLiteral)
+  after = interp.to_s
+  text = after.byte_slice(before, after.bytesize - before)
+  line = 0
+  column = 0
+  if loc = site.location
+    line = loc.line_number
+    column = loc.column_number
+  end
+  kind = site.class.name.split("::").last
+  lines << "site #{lines.size} #{kind} #{line}:#{column} text=#{escape_s(text)}"
+end
 
 if count
-  c = NodeCounter.new
-  expanded_ast.accept(c)
-  puts c.count
+  puts lines.size
 else
-  print dump_ast(expanded_ast)
+  lines.each { |l| puts l }
+  puts "skipped" if skipped
+  if f = failure
+    puts "error #{f[0]}:#{f[1]} message=#{escape_s(f[2])}"
+  end
+  puts "output text=#{escape_s(interp.to_s)}"
 end
 CRYSTAL_GOLDEN_SCRIPT
 
@@ -321,42 +235,69 @@ fixture_args() {
     END { printf "--target %s%s", (t == "" ? host : t), d }' "$1"
 }
 
+is_refusal() {
+  awk '/^# refuse: / { found = 1 } END { exit !found }' "$1"
+}
+
 compare_all() {
   runner="$1"
   out_status=0
   for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
-    "$runner" $(fixture_args "$fixture") "$fixture" > "$WORK/a.ast" 2>/dev/null || { out_status=1; continue; }
-    "$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" > "$WORK/b.ast"
-    cmp -s "$WORK/a.ast" "$WORK/b.ast" || out_status=1
+    if is_refusal "$fixture"; then
+      "$runner" $(fixture_args "$fixture") "$fixture" > "$WORK/a.dump" 2>/dev/null || { out_status=1; continue; }
+      grep -q "^error .* message=.*is refused" "$WORK/a.dump" || out_status=1
+      continue
+    fi
+    "$runner" $(fixture_args "$fixture") "$fixture" > "$WORK/a.dump" 2>/dev/null || { out_status=1; continue; }
+    "$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" > "$WORK/b.dump" 2>/dev/null || { out_status=1; continue; }
+    cmp -s "$WORK/a.dump" "$WORK/b.dump" || out_status=1
   done
   return $out_status
 }
 
 fixture_count=0
-total_matched_nodes=0
+refusal_count=0
+total_sites=0
 for fixture in "$REPO"/bench/fixtures/macro_*.iyi; do
   fixture_name="bench/fixtures/$(basename "$fixture")"
-  "$WORK/exercise" $(fixture_args "$fixture") "$fixture" > "$WORK/iyi.ast"
-  "$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" > "$WORK/crystal.ast"
-  if ! cmp -s "$WORK/iyi.ast" "$WORK/crystal.ast"; then
-    echo "  $fixture_name: EXPANDED TREES DIFFER"
+  fixture_count=$((fixture_count + 1))
+  if is_refusal "$fixture"; then
+    refusal_count=$((refusal_count + 1))
+    "$WORK/exercise" $(fixture_args "$fixture") "$fixture" > "$WORK/iyi.dump" 2>/dev/null || true
+    if grep -q "^error .* message=.*is refused" "$WORK/iyi.dump"; then
+      echo "  $fixture_name: refused by name, as the port's contract says"
+    else
+      echo "  $fixture_name: NOT REFUSED"
+      diverged=$((diverged + 1))
+      status=1
+    fi
+    continue
+  fi
+  if ! "$WORK/exercise" $(fixture_args "$fixture") "$fixture" > "$WORK/iyi.dump" 2> "$WORK/iyi.err"; then
+    echo "  $fixture_name: THE PORT FAILED: $(awk 'NR==1' "$WORK/iyi.err")"
     diverged=$((diverged + 1))
-    diff -u "$WORK/crystal.ast" "$WORK/iyi.ast" | head -20
+    status=1
+    continue
+  fi
+  "$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" > "$WORK/crystal.dump"
+  if ! cmp -s "$WORK/iyi.dump" "$WORK/crystal.dump"; then
+    echo "  $fixture_name: DUMPS DIFFER"
+    diff -u "$WORK/crystal.dump" "$WORK/iyi.dump" | head -30
+    diverged=$((diverged + 1))
     status=1
   else
-    nodes_count=$("$WORK/dump_crystal" $(fixture_args "$fixture") "$fixture" --count)
-    echo "  $fixture_name: identical ($nodes_count expanded nodes match the front end)"
-    total_matched_nodes=$((total_matched_nodes + nodes_count))
+    nodes_count=$(grep -c '^site ' "$WORK/crystal.dump" || true)
+    echo "  $fixture_name: identical ($nodes_count sites match the hosted compiler)"
+    total_sites=$((total_sites + nodes_count))
   fi
-  fixture_count=$((fixture_count + 1))
 done
-echo "  Parity summary: $((fixture_count - diverged))/$fixture_count fixtures expand identically ($total_matched_nodes total nodes)"
+echo "  Parity summary: $((fixture_count - diverged - refusal_count))/$((fixture_count - refusal_count)) comparable fixtures identical ($total_sites sites); $refusal_count refusal fixtures"
 
 echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
-# Each check rebuilds the macro engine with the mutation applied and compares its expansions
-# with the shipped engine. It returns zero only when the comparison still passes.
+# Each check rebuilds the macro engine with the mutation applied and compares its dumps
+# with the hosted compiler's. It returns zero only when the comparison still passes.
 check_macros_still_match() {
   "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_macros_exercise.iyi" >/dev/null 2>&1 || return 1
   if compare_all "$WORK/mut-exercise"; then
@@ -368,10 +309,10 @@ check_macros_still_match() {
 MUTATIONS_RUN=0
 
 prove_mutation "macro if condition truthiness inverted" "$INTERP" \
-  "c = evaluate(mi.cond)
-      if MacroMethods.truthy?(c)" \
-  "c = evaluate(mi.cond)
-      if !MacroMethods.truthy?(c)" \
+  "      if MacroMethods.truthy?(c)
+        interpret(mi.then)" \
+  "      if !MacroMethods.truthy?(c)
+        interpret(mi.then)" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -388,8 +329,8 @@ prove_mutation "macro expression output stringification suppressed" "$INTERP" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "for loop element binding corrupts loop variable" "$INTERP" \
-  "@vars[var1.name] = elems[i]" \
-  "@vars[var1.name] = NilLiteral.new" \
+  "@vars[mf.vars[0].name] = firsts[i]" \
+  "@vars[mf.vars[0].name] = NilLiteral.new" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -419,12 +360,54 @@ prove_mutation "-D defines dropped from the flag set" "$TARGET_FLAGS" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "host_flag? answers from the target's set, not the host's" "$INTERP" \
+  "MacroMethods.has_flag?(MacroTargetFlags.host([] of String), flag_name_of(node))" \
+  "MacroMethods.has_flag?(@flags, flag_name_of(node))" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "verbatim nesting ignores for blocks" "$PARSER" \
+  "tag.starts_with?(\"for \") || tag.starts_with?(\"verbatim\")" \
+  "tag.starts_with?(\"verbatim\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "skip_file does not stop the expansion" "$INTERP" \
+  "@skipped = true" \
+  "@skipped = false" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "raise message altered" "$INTERP" \
+  "fail_at(node, raise_message(node.args))" \
+  "fail_at(node, raise_message(node.args) + \"!\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "hash for loop binds the value to the key variable" "$INTERP" \
+  "firsts << entries[i].key" \
+  "firsts << entries[i].value" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "range for loop drops its inclusive end" "$INTERP" \
+  "limit = rng.exclusive ? to_v : to_v + 1" \
+  "limit = rng.exclusive ? to_v : to_v" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "raise location moved to the brace" "$PARSER" \
+  "exp.location = tag_loc" \
+  "exp.location = open_loc" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
 if [ "$status" -eq 0 ]; then
-  echo "== ALL SELFHOST MACRO CHECKS PASSED"
+  echo "ALL SELFHOST MACRO EXPANSION CHECKS PASSED"
 else
-  echo "== SELFHOST MACRO CHECKS FAILED"
+  echo "SELFHOST MACRO EXPANSION CHECKS FAILED"
 fi
 exit $status

@@ -3,6 +3,7 @@ module compiler/macros/macro_parser
 import compiler/syntax/ast::{ASTNode, Arg, BoolLiteral, Call, Expressions, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, Nop, NumberLiteral, StringLiteral, Var, StringBuilder}
 import compiler/syntax/parser::{Parser}
 import compiler/macros/ast::{MacroId}
+import compiler/foundation/location::{Location}
 
 class MacroBodyScanner
   property source : String
@@ -39,6 +40,18 @@ class MacroBodyScanner
 
   def has_more? : Bool
     @pos < @len
+  end
+
+  # Skips spaces and tabs only, so the newline that ends a header is still seen.
+  def skip_blanks : Nil
+    while has_more?
+      c = current_char
+      if c == ' ' || c == '\t'
+        next_char
+      else
+        break
+      end
+    end
   end
 
   def skip_whitespace : Nil
@@ -97,6 +110,23 @@ class MacroBodyScanner
     end
 
     @source[start_pos, @pos - start_pos]
+  end
+
+  # The location (1-based line and column) of the byte at `pos` in the source.
+  def location_at(pos : Int32) : Location
+    line = 1
+    column = 1
+    i = 0
+    while i < pos && i < @len
+      if @source.byte_at(i) == 10_u8
+        line = line + 1
+        column = 1
+      else
+        column = column + 1
+      end
+      i = i + 1
+    end
+    Location.new("", line, column)
   end
 end
 
@@ -189,6 +219,38 @@ pub class MacroParser
     {args, double_splat, block_arg, splat_index}
   end
 
+  # The raw text of a `verbatim` block: nothing in it is interpreted. Its
+  # closing `{% end %}` is the one that ends the block, counting the blocks
+  # nested inside it.
+  def self.parse_verbatim_raw(scanner : MacroBodyScanner) : String
+    sb = StringBuilder.new
+    nest = 0
+    while scanner.has_more?
+      if scanner.current_char == '{' && scanner.peek_char == '%'
+        start = scanner.pos
+        scanner.next_char
+        scanner.next_char
+        tag = scanner.find_matching_delimiter('%', '}').strip
+        if tag == "end"
+          if nest == 0
+            return sb.to_s
+          end
+          nest = nest - 1
+        elsif tag.starts_with?("if ") || tag.starts_with?("unless ") || tag.starts_with?("for ") || tag.starts_with?("verbatim")
+          nest = nest + 1
+        end
+        i = start
+        while i < scanner.pos
+          sb << scanner.source.byte_at(i).unsafe_chr
+          i = i + 1
+        end
+      else
+        sb << scanner.next_char
+      end
+    end
+    sb.to_s
+  end
+
   def self.parse_macro_body_pieces(scanner : MacroBodyScanner, stop_tags : Array(String)) : {Array(ASTNode), String}
     pieces = [] of ASTNode
     lit_sb = StringBuilder.new
@@ -199,22 +261,34 @@ pub class MacroParser
       c = scanner.current_char
       p = scanner.peek_char
 
+      # Every site carries the location of its opening brace, and the
+      # expression inside it the location where that expression starts: the
+      # hosted compiler reports a failure at the call it came from.
       if c == '{' && p == '{'
+        open_loc = scanner.location_at(scanner.pos)
         if !lit_sb.empty?
           pieces << MacroLiteral.new(lit_sb.to_s)
           lit_sb = StringBuilder.new
         end
         scanner.next_char
         scanner.next_char
+        scanner.skip_whitespace
+        expr_loc = scanner.location_at(scanner.pos)
         expr_text = scanner.find_matching_delimiter('}', '}').strip
         exp = Parser.new(expr_text).parse
-        pieces << MacroExpression.new(exp, output: true)
+        exp.location = expr_loc
+        site = MacroExpression.new(exp, output: true)
+        site.location = open_loc
+        pieces << site
         next
       end
 
       if c == '{' && p == '%'
+        open_loc = scanner.location_at(scanner.pos)
         scanner.next_char
         scanner.next_char
+        scanner.skip_whitespace
+        tag_loc = scanner.location_at(scanner.pos)
         tag_text = scanner.find_matching_delimiter('%', '}').strip
 
         # Check if tag_text matches any stop_tag
@@ -242,11 +316,13 @@ pub class MacroParser
           cond_str = tag_text[3, tag_text.bytesize - 3].strip
           cond = Parser.new(cond_str).parse
           then_body, stop_reason = parse_control_branches(scanner, cond)
+          then_body.location = open_loc
           pieces << then_body
         elsif tag_text.starts_with?("unless ")
           cond_str = tag_text[7, tag_text.bytesize - 7].strip
           cond = Parser.new(cond_str).parse
           then_body, stop_reason = parse_control_branches(scanner, cond, is_unless: true)
+          then_body.location = open_loc
           pieces << then_body
         elsif tag_text.starts_with?("for ")
           for_content = tag_text[4, tag_text.bytesize - 4].strip
@@ -259,19 +335,24 @@ pub class MacroParser
             end
             iter_exp = Parser.new(iter_part).parse
             body_nodes, _ = parse_macro_body_pieces(scanner, ["end"])
-            pieces << MacroFor.new(loop_vars, iter_exp, Expressions.new(body_nodes))
+            for_node = MacroFor.new(loop_vars, iter_exp, Expressions.new(body_nodes))
+            pieces << for_node
           end
         elsif tag_text.starts_with?("verbatim")
-          body_nodes, _ = parse_macro_body_pieces(scanner, ["end"])
-          pieces << MacroVerbatim.new(Expressions.new(body_nodes))
+          verbatim_node = MacroVerbatim.new(MacroLiteral.new(parse_verbatim_raw(scanner)))
+          pieces << verbatim_node
         else
           exp = Parser.new(tag_text).parse
-          pieces << MacroExpression.new(exp, output: false)
+          exp.location = tag_loc
+          site = MacroExpression.new(exp, output: false)
+          site.location = open_loc
+          pieces << site
         end
         next
       end
 
       if c == '%' && scanner.pos + 1 < scanner.len && (p >= 'a' && p <= 'z' || p >= 'A' && p <= 'Z' || p == '_')
+        var_loc = scanner.location_at(scanner.pos)
         if !lit_sb.empty?
           pieces << MacroLiteral.new(lit_sb.to_s)
           lit_sb = StringBuilder.new
@@ -287,7 +368,9 @@ pub class MacroParser
             break
           end
         end
-        pieces << MacroVar.new(vname.to_s)
+        macro_var = MacroVar.new(vname.to_s)
+        macro_var.location = var_loc
+        pieces << macro_var
         next
       end
 
@@ -394,7 +477,7 @@ pub class MacroParser
       scanner.next_char
     end
     macro_name = name_sb.to_s.strip
-    scanner.skip_whitespace
+    scanner.skip_blanks
 
     param_str = ""
     if scanner.current_char == '('

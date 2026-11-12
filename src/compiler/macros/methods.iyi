@@ -93,6 +93,8 @@ pub class MacroMethods
       "MacroLiteral"
     elsif node.is_a?(MacroVar)
       "MacroVar"
+    elsif node.is_a?(MacroVerbatim)
+      "MacroVerbatim"
     elsif node.is_a?(Expressions)
       "Expressions"
     elsif node.is_a?(TypeDeclaration)
@@ -221,6 +223,8 @@ pub class MacroMethods
       return StringLiteral.new(node_stringify(rec))
     when "class_name", "class_desc"
       return StringLiteral.new(node_class_name(rec))
+    when "nil?"
+      return BoolLiteral.new(rec.is_a?(NilLiteral) || rec.is_a?(Nop))
     when "=="
       if args.size > 0
         return BoolLiteral.new(ast_equal?(rec, args[0]))

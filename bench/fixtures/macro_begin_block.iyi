@@ -1,0 +1,5 @@
+macro block_value
+  {{ begin; 1; 2; end }}
+end
+
+block_value
