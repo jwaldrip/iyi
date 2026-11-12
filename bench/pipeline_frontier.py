@@ -27,13 +27,13 @@ SLICE_OWNER = {
     "bodies": "agent://S1d13Bodies",
     "declarations": "agent://S1b17Declarations",
     "calls": "agent://S1c9Calls",
-    "macros": "agent://S1bInlineMacros10",
+    "macros": "agent://S1bInlineMacros11",
     "lowering core": "agent://S2a12Core",
     "lowering": "agent://S2a12Core",
     "unassigned": "unassigned (no rule in typed_owner)",
 }
 STRUCTURAL = {
-    "entry": "agent://S3iPipeline (program assembly)",
+    "entry": "agent://S3jPipeline (program assembly)",
     "proc": "agent://S2a12Core (closures)",
     "const": "agent://S2e10Globals",
     "generic": "agent://S2a12Core (mangled_name: ^Generic(T) segment)",
