@@ -34,6 +34,18 @@ pub abstract class Type
     @struct = false
   end
 
+  # The name without type parameters: a namespace prefix and a generic's base
+  # name (hosted `to_s_with_options(generic_args: false)`).
+  def base_full_name : String
+    full_name
+  end
+
+  # The name as a type argument. The hosted printer passes skip_union_parens to
+  # a type argument, so a union loses its outer parentheses.
+  def arg_full_name : String
+    full_name
+  end
+
   # Records a place this type is declared, as the hosted pass does (`attach_doc`).
   def add_location(location : Location) : Nil
     if @locations.nil?
@@ -43,16 +55,20 @@ pub abstract class Type
     nil
   end
 
-  def full_name : String
+  def base_full_name : String
     if ns = @namespace
       if ns.is_a?(SemanticProgram)
         @name
       else
-        "#{ns.full_name}::#{@name}"
+        "#{ns.base_full_name}::#{@name}"
       end
     else
       @name
     end
+  end
+
+  def full_name : String
+    base_full_name
   end
 
   def to_s : String
@@ -486,7 +502,7 @@ pub class MetaclassType < ModuleType
   end
 
   def full_name : String
-    "#{@instance_type.full_name}.class"
+    "#{@instance_type.to_s}.class"
   end
 
   def to_s : String
@@ -594,6 +610,12 @@ pub class GenericClassType < ClassType
   getter instantiated_types : Array(Type)
   property splat_index : Int32?
 
+  # The unbound generic with its type variables, `Box(T)`: the hosted
+  # `to_s_with_options` (2204-2215). `full_name` is the name without them.
+  def to_s : String
+    "#{base_full_name}(#{@type_vars.join(", ")})"
+  end
+
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String), @splat_index : Int32? = nil, superclass : Type? = nil)
     super(program, namespace, name, superclass)
     @instantiated_types = [] of Type
@@ -641,6 +663,12 @@ end
 pub class GenericModuleType < ModuleType
   getter type_vars : Array(String)
   property splat_index : Int32?
+
+  # The unbound generic with its type variables, `Box(T)`: the hosted
+  # `to_s_with_options` (2204-2215). `full_name` is the name without them.
+  def to_s : String
+    "#{base_full_name}(#{@type_vars.join(", ")})"
+  end
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String), @splat_index : Int32? = nil)
     super(program, namespace, name)
@@ -799,7 +827,7 @@ pub class UnionType < Type
     true
   end
 
-  def full_name : String
+  def arg_full_name : String
     non_nil_names = [] of String
     has_nil = false
     i = 0
@@ -816,7 +844,11 @@ pub class UnionType < Type
     if has_nil
       sorted << "Nil"
     end
-    "(#{sorted.join(" | ")})"
+    sorted.join(" | ")
+  end
+
+  def full_name : String
+    "(#{arg_full_name})"
   end
 
   def to_s : String
@@ -869,6 +901,9 @@ end
 pub class SemanticProgram < NonGenericModuleType
   @object_type : ClassType?
   property merge_hook : TypeHook?
+  # iyi: the typed dump's mode. Strict (the default) refuses a name the program
+  # cannot resolve, as it always has; total mode records it and goes on.
+  property total_mode : Bool = false
   @value_type : ClassType?
   @reference_type : ClassType?
   @struct_type : ClassType?
@@ -888,6 +923,9 @@ pub class SemanticProgram < NonGenericModuleType
   # Whether a refusal the pass can carry on past (an impl of an unresolved target) is
   # skipped instead of raised. The typed dump of a whole program sets it.
   property total_mode : Bool
+  # The refusals the pass carried past in total mode, by message: a file that completes
+  # with one of these did not declare what it refused, so the gate counts them apart.
+  getter carried_refusals : Array(String)
   property search_path : Array(String)
   # The files read so far (absolute paths), and the module each one declared.
   getter loaded_files : Set(String)
@@ -1053,6 +1091,7 @@ pub class SemanticProgram < NonGenericModuleType
     @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
     @total_mode = false
+    @carried_refusals = [] of String
     @search_path = [] of String
     @loaded_files = Set(String).new
     @loaded_units = Hash(String, ModuleType).new
@@ -1354,7 +1393,7 @@ pub class SemanticProgram < NonGenericModuleType
       if t
         return t
       end
-      refuse_port("undefined constant #{path.to_s}")
+      return refuse_constant(path)
     end
 
     first_name = path.names.first
@@ -1410,7 +1449,7 @@ pub class SemanticProgram < NonGenericModuleType
     end
 
     if t.nil?
-      refuse_port("undefined constant #{path.to_s}")
+      return refuse_constant(path)
     end
 
     if path.names.size == 1
@@ -1427,8 +1466,33 @@ pub class SemanticProgram < NonGenericModuleType
     if res
       res
     else
-      refuse_port("undefined constant #{path.to_s}")
+      refuse_constant(path)
     end
+  end
+
+  # iyi: a name the program cannot resolve. Strict mode refuses it as the port
+  # always has. Total mode answers an UnresolvedType, so the nodes that name it
+  # are recorded untyped with the reason and the pass goes on.
+  def refuse_constant(path : Path) : Type
+    message = "undefined constant #{path.to_s}"
+    refuse_port(message) unless @total_mode
+    UnresolvedType.new(self, path.to_s)
+  end
+end
+
+# iyi: the type of a name the program cannot resolve (see refuse_constant). Its
+# full name cannot equal the name of a type the program declares.
+pub class UnresolvedType < Type
+  def initialize(program : SemanticProgram, name : String)
+    super(program, nil, name)
+  end
+
+  def full_name : String
+    "<unresolved #{@name}>"
+  end
+
+  def type_desc : String
+    "unresolved"
   end
 end
 
@@ -1921,18 +1985,24 @@ pub class TopLevelVisitor < Visitor
   def visit(node : ImplDef) : Bool
     trait_type = @program.lookup_type_node(node.trait, @current_type)
     unless trait_type.trait?
-      refuse_port("can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented") unless @program.total_mode
+      message = "can't implement #{trait_type.full_name}, it's a #{trait_type.type_desc}. Only a trait can be implemented"
+      refuse_port(message) unless @program.total_mode
+      @program.carried_refusals << message
       return false
     end
 
     target_type = @program.lookup_type_node(node.target, @current_type)
     if target_type.trait?
-      refuse_port("can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one. To give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)") unless @program.total_mode
+      message = "can't implement #{trait_type.full_name} for #{target_type.full_name}, it's a trait. A trait is implemented for a type, and a trait is not one. To give every implementer of #{target_type.full_name} a default #{trait_type.full_name}, iyi has no blanket impls (SPEC.md II.7)"
+      refuse_port(message) unless @program.total_mode
+      @program.carried_refusals << message
       return false
     end
 
     unless target_type.is_a?(ModuleType)
-      refuse_port("can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}") unless @program.total_mode
+      message = "can't implement a trait for #{target_type.full_name}, it's a #{target_type.type_desc}"
+      refuse_port(message) unless @program.total_mode
+      @program.carried_refusals << message
       return false
     end
 
