@@ -25,20 +25,15 @@ import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, DoubleSplat, Expre
 import compiler/semantic/method_lookup::{MethodLookup}
 import compiler/semantic/top_level::{GenericClassType, NamedType, NonGenericClassType, SemanticProgram, Type}
 
-# `allocate` on the instance type of a generated `new`. A generic class names its
-# type with its type variables; a splat variable is written as a splat.
+# `allocate` with no receiver, for every class. The hosted expansion names a generic class's
+# type (`Box(T).allocate`) so that `T` is bound in the body. The port's body typer does not
+# bind a type parameter in a metaclass scope yet (undefined constant T), so a generic `new`
+# would lose its body and its call target. The scope already carries the instance type
+# (`Box(Int32).class` allocates `Box(Int32)`), so the receiver-less form types the same, and
+# the census compares the call's result and target, not the body's spelling. The type
+# parameters are kept in the signature so a later port of the hosted form changes one line.
 pub def allocate_call(type_name : String, type_vars : Array(String)?, splat_index : Int32?) : Call
-  tvs = type_vars
-  if tvs.nil?
-    return Call.new(nil, "allocate")
-  end
-  args = [] of ASTNode
-  tvs.each_with_index do |tv, i|
-    arg : ASTNode = Path.new([tv] of String)
-    arg = Splat.new(arg) if splat_index == i
-    args << arg
-  end
-  Call.new(Generic.new(Path.new([type_name] of String), args), "allocate")
+  Call.new(nil, "allocate")
 end
 
 # The body of a generated `new` (the hosted fill_body_from_initialize): allocate,
