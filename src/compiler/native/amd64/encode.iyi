@@ -25,13 +25,13 @@ import compiler/native/amd64/regs::{hw}
 # optionally based on %fs or %gs. A displacement that names a symbol is a
 # relocated field of `sym`.
 pub class XMem
-  getter base : Int32        # a gpr, or -1 for no base
-  getter index : Int32       # a gpr, or -1 for no index
-  getter scale : Int32       # 1, 2, 4 or 8
+  getter base : Int32  # a gpr, or -1 for no base
+  getter index : Int32 # a gpr, or -1 for no index
+  getter scale : Int32 # 1, 2, 4 or 8
   getter disp : Int64
-  getter rip : Bool          # rip-relative: base and index are not used
-  getter seg : Int32         # 0 none, 1 %fs, 2 %gs
-  getter has_reloc : Bool    # the displacement is a relocated field
+  getter rip : Bool       # rip-relative: base and index are not used
+  getter seg : Int32      # 0 none, 1 %fs, 2 %gs
+  getter has_reloc : Bool # the displacement is a relocated field
   getter reloc_kind : RelocKind
   getter sym : Int32
 
@@ -69,23 +69,23 @@ end
 
 # One instruction shape. Fields not set by a constructor are zero or false.
 pub class XForm
-  property two_byte : Bool     # the opcode is 0F xx
-  property opc : Int32         # the opcode byte (the second one when two_byte)
-  property pfx : Int32         # 0, or a prefix byte before REX: 0x66, 0xF2 or 0xF3
-  property rex_w : Bool        # REX.W: a 64-bit operand
-  property lock : Bool         # the F0 lock prefix
-  property reg_byte : Bool     # the reg operand is 8 bits: spl, bpl, sil, dil need REX
-  property rm_byte : Bool      # the rm register operand is 8 bits
-  property opc_reg : Bool      # the register (in rm) is added to the opcode's low three bits
-  property modrm : Bool        # a ModRM byte follows the opcode
-  property digit : Bool        # reg is an opcode extension (/digit), not a register
+  property two_byte : Bool # the opcode is 0F xx
+  property opc : Int32     # the opcode byte (the second one when two_byte)
+  property pfx : Int32     # 0, or a prefix byte before REX: 0x66, 0xF2 or 0xF3
+  property rex_w : Bool    # REX.W: a 64-bit operand
+  property lock : Bool     # the F0 lock prefix
+  property reg_byte : Bool # the reg operand is 8 bits: spl, bpl, sil, dil need REX
+  property rm_byte : Bool  # the rm register operand is 8 bits
+  property opc_reg : Bool  # the register (in rm) is added to the opcode's low three bits
+  property modrm : Bool    # a ModRM byte follows the opcode
+  property digit : Bool    # reg is an opcode extension (/digit), not a register
   property reg : Int32
-  property rm : Int32          # the register operand when has_mem is false
-  property has_mem : Bool      # the r/m operand is `mem`
+  property rm : Int32     # the register operand when has_mem is false
+  property has_mem : Bool # the r/m operand is `mem`
   property mem : XMem
-  property imm : Int64         # the immediate, or the addend's value when has_reloc
-  property imm_size : Int32    # bytes of immediate: 0, 1, 2, 4 or 8
-  property has_reloc : Bool    # the immediate is a relocated field of `sym`
+  property imm : Int64      # the immediate, or the addend's value when has_reloc
+  property imm_size : Int32 # bytes of immediate: 0, 1, 2, 4 or 8
+  property has_reloc : Bool # the immediate is a relocated field of `sym`
   property reloc_kind : RelocKind
   property sym : Int32
 
@@ -496,7 +496,7 @@ end
 
 pub class EncodedForm
   getter bytes : Array(UInt8)
-  getter relocs : Array(Reloc)     # offsets are from the instruction's first byte
+  getter relocs : Array(Reloc) # offsets are from the instruction's first byte
 
   def initialize(@bytes : Array(UInt8), @relocs : Array(Reloc))
   end
