@@ -222,6 +222,18 @@ prove_mutation "a private method called with an explicit receiver is allowed" "$
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a trait receiver is looked up over the wrong implementers" "$LOOKUP_FILE" \
+  "      targets << rec.target_type if rec.trait_type == trait_type" \
+  "      targets << rec.target_type if rec.trait_type != trait_type" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "trait implementers are walked in declaration order, not by name" "$LOOKUP_FILE" \
+  "    sorted = sorted_by_name(targets)" \
+  "    sorted = targets" \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

@@ -112,6 +112,14 @@ def dispatch_matches(receiver : Iyi::Type, signature : Iyi::CallSignature) : {Ar
     end
     return {all, cover}
   end
+  # A trait receiver is looked up over the types that implement it, as the hosted
+  # call pass dispatches it (NonGenericModuleType#including_types), not over the
+  # trait's own abstract defs.
+  if receiver.is_a?(Iyi::TraitType)
+    including = receiver.as(Iyi::TraitType).including_types
+    return {[] of Iyi::Match, false} if including.nil?
+    return dispatch_matches(including.as(Iyi::Type), signature)
+  end
   matches = receiver.lookup_matches(signature)
   {matches.matches || [] of Iyi::Match, matches.cover_all? == true}
 end
