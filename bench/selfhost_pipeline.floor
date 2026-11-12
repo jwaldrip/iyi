@@ -44,6 +44,7 @@ bench/fixtures/lower_exit.iyi run-equal
 bench/fixtures/lower_float.iyi run-equal
 bench/fixtures/lower_fold.iyi run-equal
 bench/fixtures/lower_fun_body.iyi run-equal
+bench/fixtures/lower_fun_iyi.iyi run-equal
 bench/fixtures/lower_fun_main.iyi run-equal
 bench/fixtures/lower_fun_nil.iyi run-equal
 bench/fixtures/lower_fun_unused.iyi run-equal

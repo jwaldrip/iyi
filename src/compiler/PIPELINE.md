@@ -46,11 +46,15 @@ port lowers clean under the same name. The hosted list is the `define` names of 
 -o <dir>/hosted <root>`. The port's list is `<output>.names`, written by the tool under `--keep-going` (one name per clean
 instance). `bench/pipeline_coverage.py <hosted.ll> <output>.names <root>` prints the line and the first missing names.
 
-As measured on 2026-11-12, head `ed86befc5` (the port's names as the call lowering names them: a class method by its
-class, `*Point::new`, as `call.iyi` passes `class_owner`):
+As measured on 2026-11-12 on `selfhost/s3-pipeline` after the declarations, ivars, calls, primitives, globals and core merges
+(the port's names as the call lowering names them: a class method by its class, `*Point::new`, as `call.iyi` passes
+`class_owner`; an instance-variable getter is not listed, since a call reads it in place, call.iyi 207):
 
-- `hello`: hosted 698 functions; 49 match the port's clean list; 649 missing; 55 extra.
-- `compile_native` (as root): hosted 10,776 functions; 51 match; 10,725 missing; 56 extra.
+- `hello`: hosted 698 functions; 52 match the port's clean list; 646 missing; 13 extra.
+- `compile_native` (as root): hosted 11,596 functions; 59 match; 11,537 missing; 31 extra.
+
+The hosted `compile_native` count is 11,596 here, against 10,793 on the earlier head. The cause is not checked: the hosted
+build was rerun for this measurement, and its source may have changed since.
 
 The comparison is on exact `define` names. What is still counted as missing or extra and is not work:
 
@@ -69,6 +73,23 @@ and recorded here.
 
 The table below counts instances per call site (the typer had no instance cache on this head). Its reach counts are not
 a measure of progress and are not a floor to chase; the coverage line above is.
+
+## Owners and known exceptions
+
+Program assembly (lower/program.iyi, this slice): the top-level code is named `__iyi_main`, and the C `main` is emitted only
+when the root has no `fun main` of its own (fixture lower_fun_main). The name follows the prelude in the lowering core's
+`codegen_program` once the s2a-core head carrying that change is merged (agent://S2a9Core); until then every build names
+it `__iyi_main`.
+
+- Proc literals (`~procProc`, `~proc2Proc`, `~proc3Proc`): owner agent://S2a9Core (lowering core, closures).
+- Runtime shims `__iyi_*`, `memcpy`, `memmove`, `memset`, `bzero`: owner agent://S2a9Core (landed on s2a-core as d6b6bdbb9).
+- `~NAME:const_init` and the `STDOUT`/`STDERR` constants: owner agent://S2e6Globals. The port emits no `~STDOUT:const_init`
+  or `~STDERR:const_init`, so a read of `STDOUT` refuses.
+- Exception: a `@[ThreadLocal]` class variable (`IyiScheduler.class#state`) is lowered as a plain global, silently, on
+  s2e-globals b2ef4c5b0. It is not counted as lowered clean until agent://S2e6Globals refuses or lowers it. Until then it
+  is an exception here.
+- Instance-variable getters (a def whose body is one instance variable) are read at the call (call.iyi 207, hosted
+  call.cr 614) and are not listed as functions in the names. Their lowering still counts as clean.
 
 ## Table
 
