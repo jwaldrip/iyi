@@ -1,0 +1,42 @@
+module bench/lib/primitive_stand_in
+
+# Stand-in for the library's builtin primitive declarations (NEEDS.md, S2d rows). The
+# hosted library declares them in src/primitives.cr, loaded under `--prelude empty`; the
+# port's bare analysis declares none, so `a &+ b` on Int32 has no method to type. The
+# gates call this from `analyse` (bench/lib/lower_gate.iyi) when they stand in the libs.
+#
+# Each builtin integer gets the binary operators the lowering covers (the wrapping and
+# checked arithmetic, and the six comparisons), with the same receiver type as the
+# argument, as the library declares them: `def &+(other : Int32) : Int32`. Each def's body
+# is the primitive's name as the hosted dump prints it (`# primitive: binary`). Remove this
+# file when the declarations and the primitive bodies come from the semantic pass.
+
+import compiler/syntax/ast::{ASTNode, Arg, Def, MacroLiteral, Path}
+import compiler/semantic/top_level::{NonGenericClassType, SemanticProgram}
+import compiler/semantic/main_visitor::{MainVisitor}
+
+pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : MainVisitor) : Nil
+  int_names = ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Int128", "UInt128"]
+  int_names.each do |tn|
+    owner = prog.lookup_type_node(Path.new(tn), prog).as(NonGenericClassType)
+    ["&+", "&-", "&*", "+", "-", "*"].each do |op|
+      owner.add_def(binary_def(op, tn, tn))
+    end
+    ["==", "!=", "<", "<=", ">", ">="].each do |op|
+      owner.add_def(binary_def(op, tn, "Bool"))
+    end
+  end
+  bool = prog.lookup_type_node(Path.new("Bool"), prog).as(NonGenericClassType)
+  ["==", "!="].each do |op|
+    bool.add_def(binary_def(op, "Bool", "Bool"))
+  end
+  char = prog.lookup_type_node(Path.new("Char"), prog).as(NonGenericClassType)
+  ["==", "!=", "<", "<=", ">", ">="].each do |op|
+    char.add_def(binary_def(op, "Char", "Bool"))
+  end
+end
+
+# A builtin's binary operator: one argument of the receiver's type, and the result type.
+pub def binary_def(op : String, operand : String, result : String) : Def
+  Def.new(op, [Arg.new("other", nil, Path.new(operand))] of Arg, MacroLiteral.new("# primitive: binary"), nil, nil, Path.new(result))
+end

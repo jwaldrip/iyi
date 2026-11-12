@@ -1,0 +1,171 @@
+module compiler/lower/primitives
+
+# The port of `src/compiler/iyi/codegen/primitives.cr`: a call whose target def is a
+# primitive (`@[Primitive(:name)]`, primitives.iyi in the prelude) emits the instruction
+# the primitive names, instead of a function. The hosted `codegen_primitive` is ported
+# here, one name at a time; the names that are not ported are refused by name.
+#
+# How the primitive is found: the port has no Primitive node, so a primitive def's body
+# carries the primitive's name as the hosted dump prints it, `# primitive: <name>`
+# (`primitive_name`). NEEDS.md (S2d rows) records the form the semantic pass is asked to
+# give it.
+#
+# Increment 1 (this file): the `binary` primitive on two operands of the same integer
+# type: the wrapping `&+`, `&-`, `&*`, and the comparisons `==`, `!=`, `<`, `<=`, `>`,
+# `>=` (signed or unsigned as the type is). Bool and Char equality and order, and Symbol
+# equality, follow the hosted codegen_binary_op overloads for those types. Refused by name
+# for now: the checked `+`, `-`, `*` (they need the overflow intrinsic and the runtime
+# raise), mixed-type operands (codegen_binary_extend_int), and the integer division,
+# remainder, shifts and bit operations (hosted codegen_binary_op, the rest of the case).
+#
+# The lowering of the receiver and the arguments is the hosted prepare_call_args order:
+# the receiver first, then each argument, each requested as a value.
+
+import compiler/syntax/ast::{ASTNode, Call, Def, MacroLiteral}
+import compiler/ir/inst::{IntPredicate}
+import compiler/ir/values::{Value}
+import compiler/lower/context::{Lowerer}
+import compiler/lower/fun::{visit_node}
+import compiler/lower/pending::{pending_visit_node}
+import compiler/lower/typer::{primitive_kind, primitive_bytes}
+import compiler/semantic/top_level::{Type}
+
+# The name of a primitive from its def's body (`# primitive: binary` gives `binary`), or
+# nil for a def that is not a primitive.
+pub def primitive_name(body : ASTNode) : String?
+  return nil unless body.is_a?(MacroLiteral)
+  parts = body.as(MacroLiteral).value.split(": ")
+  return nil unless parts.size == 2 && parts[0] == "# primitive"
+  parts[1]
+end
+
+# The hosted `visit(Call)` for a call whose target def is a primitive: the receiver and
+# the arguments are lowered in order, then `codegen_primitive` emits the instruction. The
+# value of the call is left in `low.last`.
+pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
+  name = primitive_name(target.body)
+  raise "BUG: lower_primitive_call on a def that is not a primitive (hosted call.cr)" if name.nil?
+  obj = node.obj
+  raise "BUG: a primitive call has no receiver (hosted call.cr: codegen_primitive)" if obj.nil?
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, obj.as(ASTNode))
+  recv = low.last
+  raise "BUG: the receiver of a primitive left no value (hosted call.cr: prepare_call_args)" if recv.nil?
+  t1 = receiver_type(low, obj.as(ASTNode))
+  values = [recv.as(Value)] of Value
+  arg_types = [] of Type
+  node.args.each do |arg_node|
+    arg_type = low.analysed.type_of?(arg_node)
+    raise "BUG: the analysed program has no type for a primitive argument (hosted call.cr: prepare_call_args)" if arg_type.nil?
+    arg_types << arg_type.as(Type)
+    visit_node(low, arg_node)
+    value = low.last
+    raise "BUG: a primitive argument left no value (hosted call.cr: prepare_call_args)" if value.nil?
+    values << value.as(Value)
+  end
+  low.needs_value = wants
+  if name == "binary"
+    if values.size != 2
+      pending_visit_node("binary primitive with #{values.size - 1} arguments (hosted codegen_primitive_binary)")
+    end
+    low.last = codegen_primitive_binary(low, target.name, t1, arg_types[0], values[0], values[1])
+    return
+  end
+  pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
+end
+
+# The analysed type of a receiver. A primitive's owner is the type its receiver has (the
+# builtin is never a subclass), so the receiver's type is the hosted `target_def.owner`.
+pub def receiver_type(low : Lowerer, obj : ASTNode) : Type
+  t = low.analysed.type_of?(obj)
+  raise "BUG: the analysed program has no type for a primitive receiver (hosted call.cr: codegen_primitive)" if t.nil?
+  t.as(Type)
+end
+
+# The hosted `codegen_primitive_binary`: `binary` names an operator on the receiver (`t1`)
+# and the argument (`t2`); the operator is the def's name (hosted `target_def.name`).
+pub def codegen_primitive_binary(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
+  return codegen_binary_op(low, op, t1, t2, p1, p2)
+end
+
+# The hosted `codegen_binary_op` overloads for the types increment 1 covers. A pair of
+# different types is refused by name (mixed operands are a later increment).
+pub def codegen_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
+  kind = primitive_kind(t1)
+  if t1.full_name != t2.full_name
+    pending_visit_node("binary #{op} on #{t1.full_name} and #{t2.full_name} (mixed operands, hosted codegen_binary_extend_int)")
+  end
+  if kind == "int"
+    return int_binary_op(low, op, t1, p1, p2)
+  end
+  if kind == "bool" || kind == "symbol"
+    if op == "=="
+      return low.builder.icmp(IntPredicate::EQ, p1, p2)
+    end
+    if op == "!="
+      return low.builder.icmp(IntPredicate::NE, p1, p2)
+    end
+    pending_visit_node("binary #{op} on #{t1.full_name} (hosted codegen_binary_op)")
+  end
+  if kind == "char"
+    # Char compares as an unsigned code point (hosted codegen_binary_op for CharType).
+    if op == "=="
+      return low.builder.icmp(IntPredicate::EQ, p1, p2)
+    end
+    if op == "!="
+      return low.builder.icmp(IntPredicate::NE, p1, p2)
+    end
+    if op == "<"
+      return low.builder.icmp(IntPredicate::ULT, p1, p2)
+    end
+    if op == "<="
+      return low.builder.icmp(IntPredicate::ULE, p1, p2)
+    end
+    if op == ">"
+      return low.builder.icmp(IntPredicate::UGT, p1, p2)
+    end
+    if op == ">="
+      return low.builder.icmp(IntPredicate::UGE, p1, p2)
+    end
+    pending_visit_node("binary #{op} on #{t1.full_name} (hosted codegen_binary_op)")
+  end
+  pending_visit_node("binary #{op} on #{t1.full_name} (hosted codegen_binary_op: no overload for this type yet)")
+  p1
+end
+
+# The hosted integer overloads of `codegen_binary_op` for operands of one type, where the
+# result is in that type: the wrapping operators, and the comparisons with the predicate of
+# the type's signedness. Checked arithmetic is refused (hosted codegen_addsub_with_overflow).
+pub def int_binary_op(low : Lowerer, op : String, t : Type, p1 : Value, p2 : Value) : Value
+  signed = !t.full_name.starts_with?("U")
+  if op == "&+"
+    return low.builder.add(p1, p2)
+  end
+  if op == "&-"
+    return low.builder.sub(p1, p2)
+  end
+  if op == "&*"
+    return low.builder.mul(p1, p2)
+  end
+  if op == "=="
+    return low.builder.icmp(IntPredicate::EQ, p1, p2)
+  end
+  if op == "!="
+    return low.builder.icmp(IntPredicate::NE, p1, p2)
+  end
+  if op == "<"
+    return low.builder.icmp(signed ? IntPredicate::SLT : IntPredicate::ULT, p1, p2)
+  end
+  if op == "<="
+    return low.builder.icmp(signed ? IntPredicate::SLE : IntPredicate::ULE, p1, p2)
+  end
+  if op == ">"
+    return low.builder.icmp(signed ? IntPredicate::SGT : IntPredicate::UGT, p1, p2)
+  end
+  if op == ">="
+    return low.builder.icmp(signed ? IntPredicate::SGE : IntPredicate::UGE, p1, p2)
+  end
+  pending_visit_node("binary #{op} on #{t.full_name} (checked arithmetic or a later operator, hosted codegen_binary_op)")
+  p1
+end
