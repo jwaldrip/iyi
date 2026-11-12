@@ -4,25 +4,42 @@
 #   typed_dump <file.iyi>
 #
 # Prints one line per expression node of the file that the iyi semantic port
-# typed, as "<line>:<col> <Kind> <type>", in tree order. The program is the file
-# alone: the port has no prelude yet. The root block of the program is not
-# counted, and neither is a prelude require (the oracle's dump skips the same
-# nodes). A file the port cannot analyse raises, which exits non-zero with the
-# message on stderr; the gate records that file as zero matched.
+# typed, as "<line>:<col> <Kind> <type>", in tree order. A node the port cannot
+# type prints "untyped: <reason>" in its place and never counts as matched; the
+# gate totals those reasons, which is the work list for the semantic port. The
+# program is the file alone: the port has no prelude yet. The root block of the
+# program is not counted, and neither is a prelude require (the oracle's dump
+# skips the same nodes). A file the port cannot analyse at all raises, which
+# exits non-zero with the message on stderr; the gate records that file as zero
+# matched.
+#
+# The dump runs the port in total mode (SemanticProgram#total_mode and
+# MainVisitor#total): a name it cannot resolve or a construct it does not type
+# costs those nodes, not the file.
 
 module compiler/tools/typed_dump
 
 import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/top_level::{NamedType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
+import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 
 # The type label one typed node is printed with. The gate's mutation proof
 # replaces this body to print a wrong type for one node kind.
 def typed_label(node : ASTNode, t : Type) : String
-  t.full_name
+  if t.is_a?(NamedType)
+    t.full_name
+  else
+    t.to_s
+  end
+end
+
+# The first line of a reason, so one reason is always one output line.
+def first_line(reason : String) : String
+  reason.split("\n").first
 end
 
 pub class TypedNodeWalk < Visitor
@@ -38,6 +55,8 @@ pub class TypedNodeWalk < Visitor
       if loc.filename == @file
         if t = @visitor.type_of?(node)
           @lines << "#{loc.line_number}:#{loc.column_number} #{node_class_name(node)} #{typed_label(node, t)}"
+        elsif reason = @visitor.untyped_reason?(node)
+          @lines << "untyped: #{first_line(reason)}"
         end
       end
     end
@@ -46,14 +65,17 @@ pub class TypedNodeWalk < Visitor
 end
 
 module TypedDump
-  def self.dump(source : String, filename : String) : Array(String)
+  def self.dump(source : String, filename : String, roots : Array(String)) : Array(String)
     parser = Parser.new(source, filename)
-    node = parser.parse
+    node = Normalizer.new(NormalizerProgram.new(false)).normalize(parser.parse)
     prog = SemanticProgram.new
-    tl = TopLevelVisitor.new(prog)
+    prog.total_mode = true
+    prog.search_path = roots
+    tl = TopLevelVisitor.new(prog, filename)
     node.accept(tl)
     tl.finish
     mv = MainVisitor.new(prog)
+    mv.total = true
     node.accept(mv)
     RecursiveStructChecker.new(prog).run
     walk = TypedNodeWalk.new(mv, filename, node)
@@ -69,8 +91,14 @@ module TypedDumpTool
       raise "usage: typed_dump <file.iyi>"
     end
     path = args[0]
+    roots = [] of String
+    i = 1
+    while i < args.size
+      roots << args[i]
+      i = i + 1
+    end
     source = File.read(path)
-    TypedDump.dump(source, path).each { |line| puts line }
+    TypedDump.dump(source, path, roots).each { |line| puts line }
   end
 end
 
