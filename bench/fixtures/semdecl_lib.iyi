@@ -4,6 +4,15 @@ lib LibSample
   fun printf(format : UInt8*, ...) : Int32
   fun malloc_atomic = GC_malloc_atomic(size : UInt64) : Void*
   fun close(fd : Int32) : Int32
+
+  struct Pair
+    left : Int32
+    right : Int32
+  end
+
+  union Bits
+    word : UInt64
+  end
 end
 
 lib LibEmpty

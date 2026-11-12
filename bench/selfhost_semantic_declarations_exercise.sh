@@ -333,6 +333,12 @@ prove_mutation "lib fun drops its varargs flag" "$MUT_SEM" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "lib struct takes Reference as its superclass" "$MUT_SEM" \
+  "NonGenericClassType.new(@program, @current_type, node.name, @program.struct_type)" \
+  "NonGenericClassType.new(@program, @current_type, node.name, @program.reference_type)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

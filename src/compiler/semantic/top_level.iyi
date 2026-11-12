@@ -1,7 +1,7 @@
 module compiler/semantic/top_level
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Self, StringLiteral, TraitDef, TypeDeclaration, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -1764,6 +1764,19 @@ pub class TopLevelVisitor < Visitor
         @program.global_funs << record
       end
     end
+    false
+  end
+
+  # A C struct or union inside a lib. Hosted, it is an extern struct of the lib; its fields
+  # and layout are read by the later type-declaration pass, which this one does not reach.
+  # A union is also a struct here: the hosted dump does not tell them apart.
+  def visit(node : CStructOrUnionDef) : Bool
+    if @current_type.types[node.name]?
+      raise("#{node.name} is already defined")
+    end
+    type = NonGenericClassType.new(@program, @current_type, node.name, @program.struct_type)
+    type.struct = true
+    @current_type.add_type(node.name, type)
     false
   end
 
