@@ -145,3 +145,4 @@ src/iyi/testing.iyi semantic
 src/iyi/thread.iyi semantic
 src/compiler/semantic/type_node_host.iyi parse
 src/compiler/semantic/type_nodes.iyi parse
+src/compiler/native/const_expr.iyi parse

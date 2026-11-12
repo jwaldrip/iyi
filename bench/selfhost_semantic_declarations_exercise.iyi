@@ -69,6 +69,15 @@ module BenchSelfhostSemanticDeclarationsExercise
     dump_program_declarations(prog, entry)
   end
 
+  # The declarations pass with the type system installed (`type_node_system`, as the lib-types
+  # mode does): an explicit instance variable keeps its generic arguments and a class with
+  # subclasses its virtual type, as the hosted declaration pass gives them.
+  def self.dump_file_typed(path : String) : String
+    prog, entry = load_program(path)
+    type_node_system(prog)
+    dump_program_declarations(prog, entry)
+  end
+
   # The whole-program load: the file and its import closure, with the prelude loaded
   # first, in total mode (an impl of an unresolved target is carried past). It does not
   # print a dump: it completes, or the port refuses the file.
@@ -166,6 +175,8 @@ elsif Program.args[0] == "--total"
     print "carried: #{message}\n"
   end
   print "ok\n"
+elsif Program.args[0] == "--typed"
+  print BenchSelfhostSemanticDeclarationsExercise.dump_file_typed(Program.args[1])
 elsif Program.args[0] == "--lib-types"
   prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
   type_node_system(prog)
