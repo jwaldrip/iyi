@@ -1,0 +1,49 @@
+module bench/lib/primitive_stand_in
+
+# Stand-in for the library's builtin primitive declarations (NEEDS.md, S2d rows 19-24). The
+# hosted library declares them in src/primitives.cr, loaded under `--prelude empty`; the
+# port's bare analysis declares none, so `a &+ b` on Int32 has no method to type. The gates
+# call this from `analyse` (bench/lib/lower_gate.iyi) when they stand in the libs.
+#
+# Each builtin integer, Bool and Char gets the binary operators the lowering covers, with
+# the operand's type as parameter and the result type as the return type, as the library
+# declares them: `def &+(other : Int32) : Int32`. Each def's body is `Nop`, which the
+# analysis accepts (type_method_body returns the declared return type); the primitive's
+# name is the marker `# primitive: binary` in the def's free_vars, which the lowering reads
+# (primitive_name_of, lower/primitives.iyi). Checked `+`, `-` and `*` are declared too, the
+# bitwise and unchecked operators as well, so their fixtures analyse; the lowering refuses the checked ones by name. Delete this file,
+# and the marker reads in primitives.iyi, when the semantic pass gives primitive defs their
+# own body.
+
+import compiler/syntax/ast::{ASTNode, Arg, Def, Path}
+import compiler/semantic/top_level::{NonGenericClassType, SemanticProgram}
+import compiler/semantic/main_visitor::{MainVisitor}
+
+pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : MainVisitor) : Nil
+  int_names = ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Int128", "UInt128"]
+  int_names.each do |tn|
+    owner = prog.lookup_type_node(Path.new(tn), prog).as(NonGenericClassType)
+    ["&+", "&-", "&*", "+", "-", "*", "|", "&", "^", "unsafe_shl", "unsafe_shr", "unsafe_div", "unsafe_mod"].each do |op|
+      owner.add_def(binary_def(op, tn, tn))
+    end
+    ["==", "!=", "<", "<=", ">", ">="].each do |op|
+      owner.add_def(binary_def(op, tn, "Bool"))
+    end
+  end
+  bool = prog.lookup_type_node(Path.new("Bool"), prog).as(NonGenericClassType)
+  ["==", "!="].each do |op|
+    bool.add_def(binary_def(op, "Bool", "Bool"))
+  end
+  char = prog.lookup_type_node(Path.new("Char"), prog).as(NonGenericClassType)
+  ["==", "!=", "<", "<=", ">", ">="].each do |op|
+    char.add_def(binary_def(op, "Char", "Bool"))
+  end
+end
+
+# A builtin's binary operator: one argument of the operand's type, the result type, a Nop
+# body, and the primitive marker in free_vars.
+pub def binary_def(op : String, operand : String, result : String) : Def
+  d = Def.new(op, [Arg.new("other", nil, Path.new(operand))] of Arg, nil, nil, nil, Path.new(result))
+  d.free_vars = ["# primitive: binary"] of String
+  d
+end

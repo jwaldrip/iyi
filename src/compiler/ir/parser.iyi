@@ -1499,6 +1499,11 @@ class IrParser
         c.expect_punct(")")
         return Attribute.new(name, number, nil, nil)
       end
+      if c.peek.kind == TokKind::Ident && (c.peek.text == "sync" || c.peek.text == "async")
+        kind = c.take.text
+        c.expect_punct(")")
+        return Attribute.new(name, 0_u64, kind, nil)
+      end
       t = parse_type(c, types)
       c.expect_punct(")")
       return Attribute.new(name, 0_u64, nil, t)

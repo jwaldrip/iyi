@@ -312,3 +312,13 @@ src/compiler/lower/layouts.iyi 0
 src/compiler/lower/type_id.iyi 0
 src/compiler/lower/typer.iyi 0
 src/compiler/lower/unions.iyi 0
+src/compiler/lower/context.iyi 0
+src/compiler/lower/lower.iyi 0
+src/compiler/lower/pending.iyi 0
+src/compiler/lower/helpers.iyi 0
+src/compiler/lower/cond.iyi 0
+src/compiler/lower/phi.iyi 0
+src/compiler/lower/primitives.iyi 0
+src/compiler/lower/cast.iyi 0
+src/compiler/lower/fun.iyi 0
+src/compiler/lower/call.iyi 0
