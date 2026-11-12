@@ -3,7 +3,7 @@ module compiler/semantic/top_level
 import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Alias, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, NumberLiteral, Path, ProcNotation, Require, Self, StringLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, And, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 
@@ -1840,34 +1840,117 @@ pub class TopLevelVisitor < Visitor
     end
 
     counter = 0_i64
-    node.members.each do |member_node|
-      if member_node.is_a?(Arg)
-        arg = member_node.as(Arg)
-        mname = arg.name
-        if def_val = arg.default_value
-          if def_val.is_a?(NumberLiteral)
-            nl = def_val.as(NumberLiteral)
-            counter = nl.value.to_i64
-          end
-        end
-        val_lit = NumberLiteral.new(counter.to_s)
-        enum_type.add_member(mname, val_lit)
-        counter = counter + 1
-      end
-    end
+    direct_names = [] of String
+    counter = add_enum_members(enum_type, node.members, counter, direct_names, false)
 
     if enum_type.members.empty?
       raise("enum #{node.name.names.last} must have at least one member")
     end
 
     enum_type.add_def(Def.new("value"))
-    enum_type.members.keys.each do |mname|
+    direct_names.each do |mname|
       predicate = Def.new("#{underscore(mname)}?", return_type: Path.new("Bool"))
       predicate.location = node.location
       enum_type.add_def(predicate)
     end
 
     false
+  end
+
+  # The members of an enum body. A `{% if %}` in the body takes the branch its flags
+  # choose, as the hosted pass expands it. Implicit values go on across the branches in
+  # the order they are written, and an explicit value starts a new run.
+  def add_enum_members(enum_type : EnumType, nodes : Array(ASTNode), counter : Int64, direct_names : Array(String), in_macro : Bool) : Int64
+    i = 0
+    while i < nodes.size
+      node = nodes[i]
+      if node.is_a?(Arg)
+        arg = node.as(Arg)
+        mname = arg.name
+        if def_val = arg.default_value
+          if def_val.is_a?(NumberLiteral)
+            counter = def_val.as(NumberLiteral).value.to_i64
+          end
+        end
+        enum_type.add_member(mname, NumberLiteral.new(counter.to_s))
+        direct_names << mname unless in_macro
+        counter = counter + 1
+      elsif node.is_a?(MacroIf)
+        mi = node.as(MacroIf)
+        branch = iyi_flag_cond?(mi.cond) ? mi.then : mi.else
+        counter = add_enum_members(enum_type, enum_branch_members(branch, node.location), counter, direct_names, true)
+      elsif node.is_a?(Expressions)
+        counter = add_enum_members(enum_type, node.as(Expressions).expressions, counter, direct_names, in_macro)
+      else
+        old_type = @current_type
+        @current_type = enum_type
+        node.accept(self)
+        @current_type = old_type
+      end
+      i = i + 1
+    end
+    counter
+  end
+
+  def expressions_of(node : ASTNode) : Array(ASTNode)
+    if node.is_a?(Expressions)
+      return node.as(Expressions).expressions
+    end
+    [node] of ASTNode
+  end
+
+  # The members a macro branch of an enum body writes. The parser keeps such a branch as
+  # the text it is written in, so the text is parsed again as the body of an enum, which
+  # gives the members the same nodes they have outside a macro. A branch that holds code
+  # the port does not expand is refused.
+  def enum_branch_members(branch : ASTNode, location : Location?) : Array(ASTNode)
+    text = String::Builder.new
+    expressions_of(branch).each do |piece|
+      if piece.is_a?(MacroLiteral)
+        text << piece.as(MacroLiteral).value
+      elsif !piece.is_a?(Nop)
+        refuse_port("an enum body's macro branch that holds code, which the port does not expand")
+      end
+    end
+    file = ""
+    if loc = location
+      file = loc.filename
+    end
+    wrapped = Parser.new("enum Branch\n#{text.to_s}\nend\n", file).parse
+    wrapped_def = expressions_of(wrapped)[0].as(EnumDef)
+    wrapped_def.members
+  end
+
+  # The flags of the host this compiler builds on: macOS on arm64. A flag it does not
+  # name is off, as `flag?` answers for an unknown flag.
+  def iyi_host_flag?(name : String) : Bool
+    name == "darwin" || name == "aarch64" || name == "unix"
+  end
+
+  # `flag?(:name)` joined by `!`, `&&` and `||`: every condition an enum body in the
+  # library writes. Any other condition is refused rather than guessed.
+  def iyi_flag_cond?(cond : ASTNode) : Bool
+    if cond.is_a?(Not)
+      return !iyi_flag_cond?(cond.as(Not).exp)
+    end
+    if cond.is_a?(And)
+      both = cond.as(And)
+      return iyi_flag_cond?(both.left) && iyi_flag_cond?(both.right)
+    end
+    if cond.is_a?(Or)
+      either = cond.as(Or)
+      return iyi_flag_cond?(either.left) || iyi_flag_cond?(either.right)
+    end
+    if cond.is_a?(Expressions) && cond.as(Expressions).expressions.size == 1
+      return iyi_flag_cond?(cond.as(Expressions).expressions[0])
+    end
+    if cond.is_a?(Call)
+      call = cond.as(Call)
+      if call.name == "flag?" && call.args.size == 1 && call.args[0].is_a?(SymbolLiteral)
+        return iyi_host_flag?(call.args[0].as(SymbolLiteral).value)
+      end
+    end
+    refuse_port("a macro condition in an enum body that the port does not evaluate")
   end
 
   # A lib, like `lib LibC`. Its funs are recorded as LibFun records. The hosted pass also
