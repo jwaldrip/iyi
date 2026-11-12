@@ -146,10 +146,13 @@ end
 # `restriction(scope, written)`: the restriction the written type converts to in
 # the scope, as hosted TypeToRestriction writes it, or `nil` when it has none.
 # The hosted converter is overloaded by static type, so the type is dispatched here.
+# A metaclass is written `T.class`: the hosted parser reads that in expression
+# position as a call, so it is resolved by name, as the other operations do.
 def evaluate_restriction(program : Iyi::Program, op : String) : String
   parts = split_top(op[12...-1])
   scope = scope_of(program, parts[0])
-  t = scope.lookup_type(Iyi::Parser.new(parts[1..].join(", ")).parse)
+  written = parts[1..].join(", ")
+  t = written.ends_with?(".class") ? resolve(program, written) : scope.lookup_type(Iyi::Parser.new(written).parse)
   converter = Iyi::TypeToRestriction.new(scope)
   restriction = case t
                 when Iyi::NilType                then converter.convert(t)
@@ -165,9 +168,20 @@ def evaluate_restriction(program : Iyi::Program, op : String) : String
                 when Iyi::GenericInstanceType    then converter.convert(t)
                 when Iyi::GenericClassType       then converter.convert(t)
                 when Iyi::GenericModuleType      then converter.convert(t)
-                else raise "no restriction for #{t.class}"
+                else                                  raise "no restriction for #{t.class}"
                 end
-  restriction.nil? ? "nil" : restriction.to_s
+  return "nil" if restriction.nil?
+  # Outside a restriction context the hosted printer parenthesizes a proc, but a
+  # restriction is written without those parentheses (`Int32 -> String`), as the
+  # port prints it. The printer's parenthesis rule is a separate gap, owned by the
+  # syntax printer, and is not compared here.
+  text = restriction.to_s
+  if restriction.is_a?(Iyi::ProcNotation) && text.starts_with?("(") && text.ends_with?(")")
+    text = text[1...-1]
+  end
+  text
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
 def evaluate(program : Iyi::Program, op : String) : String

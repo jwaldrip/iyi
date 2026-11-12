@@ -1,8 +1,8 @@
 module compiler/types/to_restriction
 
 import compiler/syntax/ast::{ASTNode, Generic, Metaclass, NamedArgument, NumberLiteral, Path, ProcNotation, Splat, Underscore, Union}
-import compiler/semantic/top_level::{AliasType, GenericClassType, MetaclassType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, SemanticProgram, Type, TypeParameterType, UnionType, VoidType}
-import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericModuleInstanceMetaclassType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
+import compiler/semantic/top_level::{AliasType, EnumType, MetaclassType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, SemanticProgram, Type, TypeParameterType, UnionType, VoidType}
+import compiler/types/types::{BoolType, CharType, FloatType, GenericInstanceType, IntegerType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, SymbolType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType}
 
 # Turns a type into the restriction AST that names it, from the context of
 # *from_type*: the port of type_to_restriction.cr. A type is written by its full
@@ -11,7 +11,10 @@ import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassIns
 # restriction returns nil; the caller writes `_` for it, as hosted does.
 #
 # Not ported: the Crystal-only and interpreter kinds (LibType, AnnotationType,
-# Const) and the autocast kinds, which cannot be instance variable types.
+# Const), the autocast kinds (NumberAutocastType, SymbolAutocastType), which
+# cannot be instance variable types, and TypeDefType, which waits on the typedef
+# increment. Unbound generics (GenericClassType, GenericModuleType) return nil,
+# as they do in the hosted converter.
 pub class TypeToRestriction
   getter from_type : Type
 
@@ -28,7 +31,11 @@ pub class TypeToRestriction
     if type.is_a?(NoReturnType)
       return Path.global("NoReturn")
     end
-    if type.is_a?(NonGenericClassType) || type.is_a?(NonGenericModuleType) || type.is_a?(AliasType)
+    # The built-in scalars are written by their own names, as hosted writes them.
+    if type.is_a?(BoolType) || type.is_a?(CharType) || type.is_a?(SymbolType) || type.is_a?(IntegerType) || type.is_a?(FloatType)
+      return Path.global(type.name)
+    end
+    if type.is_a?(NonGenericClassType) || type.is_a?(NonGenericModuleType) || type.is_a?(EnumType) || type.is_a?(AliasType)
       return type_to_path(type)
     end
     if type.is_a?(TypeParameterType)
@@ -52,16 +59,14 @@ pub class TypeToRestriction
     if type.is_a?(StaticArrayInstanceType)
       return convert_static_array(type.as(StaticArrayInstanceType))
     end
-    if type.is_a?(GenericClassInstanceType)
-      return convert_generic_instance(type.as(GenericClassInstanceType))
+    if type.is_a?(GenericInstanceType)
+      return convert_generic_instance(type.as(GenericInstanceType))
     end
     if type.is_a?(UnionType)
       return convert_union(type.as(UnionType))
     end
+    # Generic class and module metaclasses are MetaclassType subclasses too.
     if type.is_a?(MetaclassType)
-      return convert_metaclass(type.as(MetaclassType).instance_type)
-    end
-    if type.is_a?(GenericClassInstanceMetaclassType) || type.is_a?(GenericModuleInstanceMetaclassType)
       return convert_metaclass(type.as(MetaclassType).instance_type)
     end
     if type.is_a?(VirtualMetaclassType)
@@ -125,15 +130,14 @@ pub class TypeToRestriction
     Generic.new(Path.global("StaticArray"), [argument(type.element_type), NumberLiteral.new(type.size_int.to_s).as(ASTNode)] of ASTNode)
   end
 
-  # A generic instance: its generic type's path, with each type argument.
-  def convert_generic_instance(type : GenericClassInstanceType) : ASTNode?
-    generic = type.generic_type
-    return nil if generic.nil?
+  # A generic instance, class or module: its generic type's path, with each type
+  # argument.
+  def convert_generic_instance(type : GenericInstanceType) : ASTNode
     args = [] of ASTNode
     type.type_args.each do |arg|
       args << argument(arg)
     end
-    Generic.new(type_to_path(generic), args)
+    Generic.new(type_to_path(type.generic_type), args)
   end
 
   # A union: a Union node of its members, or the generic `Union(...)` when a

@@ -264,7 +264,8 @@ module BenchSelfhostSemanticTypesExercise
   end
 
   # `restriction(scope, written)`: the restriction the written type converts to in
-  # the scope, or `nil` when it has none.
+  # the scope, or `nil` when it has none. A metaclass is written `T.class`, which
+  # the parser reads as a call in expression position, so it is resolved by name.
   def self.evaluate_restriction(prog : SemanticProgram, ts : TypeSystem, op : String) : String
     parts = split_top(op[12, op.bytesize - 13])
     scope = scope_of(prog, parts[0])
@@ -274,12 +275,20 @@ module BenchSelfhostSemanticTypesExercise
       written = i == 1 ? parts[i] : "#{written}, #{parts[i]}"
       i = i + 1
     end
+    if written.ends_with?(".class")
+      return restriction_text(scope, resolve(prog, ts, written))
+    end
     node = Parser.new(written, "restriction").parse
     found = TypeLookup.new(ts.instances).lookup(scope, node)
     if found.is_a?(LookupError)
       return "error: #{found.as(LookupError).message}"
     end
-    restriction = TypeToRestriction.new(scope).convert(found.as(Type))
+    restriction_text(scope, found.as(Type))
+  end
+
+  # The restriction of *t* in *scope* as hosted writes it, or `nil`.
+  def self.restriction_text(scope : ModuleType, t : Type) : String
+    restriction = TypeToRestriction.new(scope).convert(t)
     return "nil" if restriction.nil?
     restriction.as(ASTNode).to_s
   end
