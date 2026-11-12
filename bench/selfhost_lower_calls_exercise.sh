@@ -16,7 +16,7 @@
 # fixtures return computed values through `LibC.exit`, so the status is observable.
 #
 # The analysis runs with the lib stand-in (bench/lib/lower_gate.iyi, stand_in_lib_types):
-# the semantic pass types no lib definition yet (NEEDS.md, lowering core row 16).
+# the semantic pass types no lib definition yet (NEEDS.md, lowering calls row 31).
 #
 # Mutation proofs patch the ported code, rebuild the driver, and require the check to
 # fail. A patch that changes nothing is refused by prove_mutation.
