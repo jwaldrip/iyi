@@ -19,6 +19,10 @@ pub class TypeNodeHost < Visitor
     raise("TypeNodeHost#current_type is implemented by MainVisitor")
   end
 
+  def scope_type : Type?
+    raise("TypeNodeHost#scope_type is implemented by MainVisitor")
+  end
+
   def bracket_type_args(delta : Int32) : Nil
     raise("TypeNodeHost#bracket_type_args is implemented by MainVisitor")
   end
