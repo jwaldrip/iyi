@@ -14,6 +14,7 @@ module compiler/llvm/lib_llvm
     {% llvm_ldflags = env("LLVM_LDFLAGS") || `#{llvm_config.id} --libs --system-libs --ldflags 2> /dev/null || true`.strip.gsub(/\n/, " ").stringify %}
     {% llvm_ldflags = "-lLLVM" if llvm_ldflags.empty? %}
   {% end %}
+  {% llvm_targets = "X86 AArch64 ARM WebAssembly RISCV Mips PowerPC BPF" if llvm_targets.empty? %}
 
   @[Link("stdc++")]
   {% if llvm_ldflags && !llvm_ldflags.empty? %}
@@ -48,6 +49,17 @@ module compiler/llvm/lib_llvm
     IS_LT_200 = {{ is_lt_200 }}
     IS_LT_210 = {{ is_lt_210 }}
     IS_LT_220 = {{ is_lt_220 }}
+
+    # The targets the linked LLVM was built with (`llvm-config --targets-built`, or LLVM_TARGETS). A static LLVM built
+    # with five targets has no LLVMInitializeRISCVTarget to link, so `Target.init_*` asks before it names one.
+    HAS_X86_TARGET         = {{ llvm_targets.includes?("X86") }}
+    HAS_AARCH64_TARGET     = {{ llvm_targets.includes?("AArch64") }}
+    HAS_ARM_TARGET         = {{ llvm_targets.includes?("ARM") }}
+    HAS_WEBASSEMBLY_TARGET = {{ llvm_targets.includes?("WebAssembly") }}
+    HAS_RISCV_TARGET       = {{ llvm_targets.includes?("RISCV") }}
+    HAS_MIPS_TARGET        = {{ llvm_targets.includes?("Mips") }}
+    HAS_POWERPC_TARGET     = {{ llvm_targets.includes?("PowerPC") }}
+    HAS_BPF_TARGET         = {{ llvm_targets.includes?("BPF") }}
 
     alias Bool = Int32
     alias Char = UInt8
