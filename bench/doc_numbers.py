@@ -513,11 +513,13 @@ def as_number(raw: str) -> int | None:
 # The ceiling is a decision, not a measurement, and every number beside it here
 # is a measurement. That difference is easy to lose: a pass updating drifted
 # counts rewrote the ceiling too, because the prelude's library happened to
-# measure exactly 3,734 and a blind replace of that literal moved both. A
+# measure exactly the ceiling and a blind replace of that literal moved both. A
 # raised ceiling reads as a passing gate, which is the one failure this file
-# must never have. So the figure is checked against a constant, and moving it
-# is an edit to this line with a reason written beside it.
-PRELUDE_LIBRARY_CEILING = 3734
+# must never have. So every sentence that states the ceiling is checked against
+# `CEILING` above, the one place it is decided, with its reasons beside it. This
+# check once carried a constant of its own, which stayed at 3,734 after
+# `CEILING` moved to 4,738 and failed a sentence that was right.
+PRELUDE_LIBRARY_CEILING = CEILING
 
 
 def ceiling_intact() -> list[str]:

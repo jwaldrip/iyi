@@ -15,6 +15,7 @@ class ExceptionHandlerLike
   property ensure : Int32?
   getter rescue : Int32
   setter else : Int32
+
   def initialize(@ensure : Int32? = nil)
   end
 end
