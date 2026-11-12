@@ -479,7 +479,6 @@ class Coverage
     ["notatomic", "unordered", "monotonic", "ordering3", "acquire", "release", "acq_rel", "seq_cst"][value]? || "ordering##{value}"
   end
 
-
   def report : Nil
     STDOUT.puts "category\tname\tcount\tin_iyi_ir"
     missing = 0

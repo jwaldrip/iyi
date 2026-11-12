@@ -11,7 +11,7 @@ set -u
 
 root=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
 cd "$root" || exit 1
-PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH
 export PATH
 LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}
 export LIBRARY_PATH
@@ -26,8 +26,18 @@ step() {
   echo "== $1. $2"
 }
 
+stop_gate() {
+  echo "== NATIVE LLVM ROUNDTRIP GATE STOPPED: $1"
+  exit 1
+}
+
 rebuild_tool() {
-  "$IY" build -o "$TOOL" "$SRC" > .build/iyi-ir-build.log 2>&1
+  if "$IY" build -o "$TOOL" "$SRC" > .build/iyi-ir-build.log 2>&1; then
+    return 0
+  fi
+  echo "iyi-ir build failed; last 60 lines of .build/iyi-ir-build.log:"
+  tail -n 60 .build/iyi-ir-build.log
+  return 1
 }
 
 # prove_mutation LABEL FILE OLD NEW CHECK
@@ -61,7 +71,11 @@ open(path, "w").write(text.replace(old, new, 1))' "$file" "$old" "$new"
     failed=1
     return
   fi
-  rebuild_tool
+  if ! rebuild_tool; then
+    cp "$backup" "$file"
+    rm -f "$backup"
+    stop_gate "iyi-ir did not build with the mutation $label; sources restored"
+  fi
   if sh -c "$check" > /dev/null 2>&1; then
     echo "NOT CAUGHT: $label"
     failed=1
@@ -76,8 +90,7 @@ step 1 "build iyi-ir"
 if rebuild_tool; then
   echo "iyi-ir built: $TOOL"
 else
-  echo "iyi-ir did not build; see .build/iyi-ir-build.log"
-  failed=1
+  stop_gate "iyi-ir did not build; the log is above"
 fi
 llvm_version=$("$TOOL" version 2>&1)
 llvm_major=${llvm_version%%.*}
@@ -160,7 +173,7 @@ else
   echo "sources differ from HEAD after the mutations"
   failed=1
 fi
-rebuild_tool || failed=1
+rebuild_tool || stop_gate "iyi-ir did not rebuild from the restored sources"
 
 step 7 "the coverage inventory of the fixtures and gap reproducers matches COVERAGE.md"
 COV=$FX/COVERAGE.md
@@ -186,7 +199,8 @@ if [ "${COVERAGE_WRITE:-0}" = "1" ]; then
   cp .build/iyi-ir-COVERAGE.md "$COV"
   echo "COVERAGE.md written"
 elif [ "${cov_written%%.*}" != "$llvm_major" ]; then
-  echo "skipped: COVERAGE.md was written by LLVM ${cov_written:-unknown}, the linked LLVM is $llvm_version; not compared"
+  cov_major=${cov_written%%.*}
+  echo "skipped: COVERAGE.md was written with LLVM ${cov_major:-unknown}, this is LLVM $llvm_major (not compared)"
   skipped=$((skipped + 1))
 elif cmp -s .build/iyi-ir-COVERAGE.md "$COV"; then
   echo "COVERAGE.md is current"

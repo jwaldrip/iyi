@@ -507,6 +507,7 @@ class ModuleImporter
   getter ir : Module
 
   @attribute_kinds : Hash(Int32, String)
+
   def initialize(@llvm : LibLLVM::ModuleRef, @ir : Module)
     @err = nil
     @values = Hash(UInt64, Value).new
