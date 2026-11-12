@@ -13,9 +13,13 @@
 # and bench/selfhost_semantic_exercise.sh). They are extracted from those gates,
 # not copied, so the comparison cannot drift from the gates' own oracles.
 #
-# The gate fails only when a corpus agrees on fewer files than its committed
-# floor (the FLOOR table below). A corpus that gets better is reported so the
-# floor can be raised; it does not fail.
+# A file is agree (byte-identical output), refused (the hosted front end and line
+# B refuse it with the same normalised message and exit status, counted as
+# agreement in its own column), or differ (its first difference is printed with
+# the oracle's node kind or message). The gate fails only when a corpus agrees on
+# fewer files (agree plus refused) than its committed floor (the FLOOR table
+# below). A corpus that gets better is reported so the floor can be raised; it
+# does not fail.
 #
 #   bash bench/selfhost_linea_corpus_exercise.sh
 #
