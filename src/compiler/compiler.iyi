@@ -24,7 +24,7 @@ import compiler/syntax/token::{NumberKind}
 import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
-import compiler/lower/program::{TypedProgram, declare_program, type_bodies, lower_program, native_objects, link_program, link_names}
+import compiler/lower/program::{TypedProgram, declare_program, type_bodies, lower_program, native_objects, link_program, link_names, refusal_table}
 
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
@@ -316,6 +316,10 @@ pub class Compiler
       return typed_refuse("bodies", reached, bodies.message)
     end
     reached = typed_pass("bodies")
+    if @config.keep_going
+      refusal_table(typed, Compiler.module_name_from_path(root_filename)).each { |line| puts line }
+      STDOUT.flush
+    end
 
     typed_start("lower")
     name = Compiler.module_name_from_path(root_filename)

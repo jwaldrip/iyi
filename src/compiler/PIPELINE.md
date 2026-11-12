@@ -1,75 +1,495 @@
-# The typed pipeline: status
+# The typed pipeline: status and refusal table
 
 The typed pipeline takes one program from source to a native executable through the typed analysis
 and the typed lowering, with no LLVM and no host tool. It is `compile_typed` in `compiler/compiler.iyi`
 and the program assembly in `compiler/lower/program.iyi`, reached from `iyi-compile-native <program.iyi>
--o <exe> --pipeline typed [--prelude] [--probe-phase] [--emit ir]`. The default pipeline is still the
-codegen path; the integrator flips it.
+-o <exe> --pipeline typed [--prelude] [--probe-phase] [--keep-going] [--emit ir]`. The default pipeline is
+still the codegen path; the integrator flips it.
 
 Phases, in order: `parse`, `declarations`, `bodies`, `lower`, `verify`, `native`, `link`. With
 `--probe-phase` each phase prints `[phase] X: start`, then `[phase] X: pass` when it passes. A refusal
-prints `X: fail: <message>` and `reached: <last pass>` and writes no output. A refusal that exits the
-process (`refuse_port`, which the semantic passes call) prints no `reached:` line: the last `[phase] X:
-start` without a pass names the refusing phase, and the last pass is what it reached.
+prints `X: fail: <message>` and `reached: <last pass>` and writes no output.
 
-The declarations phase reads the program the way the declarations gate does (`declare_unit` in
-`lower/program.iyi`): one visitor per unit in initialiser order, the prelude first, with the loader's
-search path and the entry's project root. Each unit is keyed by the import resolver's normal path. Every
-top-level def is kept (overloads included), since `extract_declarations` keeps one def per name.
+`--keep-going` (probe only) switches the body typer to total mode before the bodies phase: a construct it
+cannot type is recorded on its node with its reason, and typing goes on. After the bodies phase the tool prints
+the refusal table below, one `table:` line per row. Lowering still stops at its first refusal, so the table
+does not yet count lowered defs.
 
-## Measured
+## What the table counts
 
-Gate: `bench/selfhost_pipeline_exercise.sh` (floor `bench/selfhost_pipeline.floor`).
+- `defs-reached`: the distinct defs the body typer started on. A call instantiates a clone of its def, and the
+  clones are counted once per def.
+- `defs-typed-clean`: the reached defs with no refusal node under them.
+- `root-refusals`: refusals on top-level code, outside any def.
+- `refusal-sites`: distinct (node, reason) pairs. A node refused once per instantiation counts once.
+- One row per refusal reason, largest count first: its count, the slice that owns it (`owner`, from
+  `typed_owner` in `lower/program.iyi`), the reason's first line, and one example with its file and line
+  and the def that holds it. `owner=unassigned` means no rule names the reason yet and the rule belongs in
+  `typed_owner`.
 
-| program | phase reached | refusal |
-|---|---|---|
-| the 60 fixtures of the four lowering gates (`lower_*`, `lowcall_*`, `lowprim_*`, `lowglob_*`), no prelude | `link` with run-equal for 49, a refusal for 11 | see below |
-| `samples/iyi/hello.iyi`, `--prelude` | declarations | bodies: `BUG: node has no type: @[Primitive(:class)]` |
-| `src/compiler/tools/parse.iyi`, `--prelude` | declarations | the same bodies refusal |
-| `src/compiler/tools/compile_native.iyi`, `--prelude` | declarations | the same bodies refusal |
+Lowering per def ("defs lowered with no refusal") waits on the lowering core's per-def probe, `lower_def_probe`
+(`agent://S2a4Core`), which needs each instance's receiver and argument types. Until it lands the table
+reports the bodies phase only.
 
-Run-equal: each fixture that reaches link is built to an executable, run, and its stdout and exit status
-equal the hosted executable for the same fixture (built with `--prelude empty`). The 11 refused fixtures
-exit 1 and write no output:
+## Gate
 
-- `bodies`: `lower_sizeof`, `lower_typeof`, `lower_pointer_of`, `lower_instance_sizeof`, `lower_tuple`,
-  `lower_named_tuple` (`BUG: node has no type`); `lower_multi_assign`, `lower_out`, `lower_underscore`
-  (`undefined local variable or method`); `lowprim_ptr` (`undefined method 'malloc' for Pointer(Int32).class`).
-- `lower`: `lowprim_checked` (`visit(FunDef)` is not ported in `lower/lower.iyi`).
+`bench/selfhost_pipeline_exercise.sh` runs the tool with `--keep-going` on the three prelude roots and the
+compiler's own tools, regenerates the block below (`SELFHOST_PIPELINE_RAISE=1`), fails when it is stale, and
+holds `defs-reached` and `defs-typed-clean` per root against `bench/selfhost_pipeline_table.floor`. Both counts
+may only rise. The phase floor is `bench/selfhost_pipeline.floor`.
 
-The gate also proves: the tool links no LLVM (`otool -L`); mutations of the refusal path (a refusal
-exits 0), of the program assembly (top-level code dropped), and of the tool's refusal exit (fallback to
-the codegen pipeline) are each caught.
+## Table
 
-## Refusals ranked, with owners
-
-1. `BUG: node has no type: @[Primitive(:class)]` in the body of `class Object` (src/iyi/primitives.iyi:36),
-   which stops every prelude root. The iyi parser keeps the annotation as a body expression; the hosted
-   parser attaches it to the following def (parser.cr:5738). Owner: bodies, S1d2Bodies, which is making
-   `visit(Expressions)` skip annotation members.
-2. `BUG: node has no type` for sizeof, typeof, pointerof, instance_sizeof, and tuple and named tuple literals
-   (6 fixtures). Owner: bodies, S1d2Bodies (tuple literals are implemented there pending a merge).
-3. `undefined local variable or method` for multi-assignment, `out` and `_` (3 fixtures). Owner: bodies, S1d2Bodies.
-4. `visit(FunDef)` (1 fixture). Owner: core, S2a3Core (the dispatch in `lower/lower.iyi`).
-5. `undefined method 'malloc' for Pointer(Int32).class` (1 fixture): a class method on the metaclass of a
-   generic instance has no lookup path. Owner: calls, S1c3Calls (diagnosed, not yet fixed).
-
-Resolved on this head: `undefined constant StringPool` (parse.iyi) and `can't make class 'Inst' inherit
-struct 'Value'` (compile_native.iyi), which the declarations path no longer raises; `lowcall_types` now runs
-equal (its two overloads are in the root).
-
-## Not yet measured
-
-- Per-def counts and a ranked refusal table across defs for the prelude roots. Continuing past the first
-  refusal needs total mode in the bodies pass (`MainVisitor#total`, `SemanticProgram#total_mode`) and the
-  table S1d2Bodies is building. The lowering stops at its first refusal per program, so the lowered count
-  is not available without lowering each def on its own.
-- The source location of a lowering refusal (`refuse_port` in the lowering carries no node location).
-- The hosted pass's own whole-program declarations gate (bench/selfhost_semantic_declarations_exercise.iyi
-  `--total`) is the reference for the declarations path; the pipeline's declarations now follow it.
-
-## Next step
-
-Re-run `bench/selfhost_pipeline_exercise.sh` once S1d2Bodies pushes the annotation skip, then raise the
-floor for the three prelude roots from declarations to whichever phase they reach. Then add total mode
-for the prelude roots and report the ranked table in place of item list above.
+<!-- table:begin: generated by bench/selfhost_pipeline_exercise.sh; do not edit by hand -->
+```text
+table: hello defs-reached=3678 defs-typed-clean=1956 root-refusals=36 refusal-sites=4267
+table: hello refusal 694 owner=bodies reason=pointerof of @@word is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:1460 in IyiSchedLock.class#word
+table: hello refusal 585 owner=macros reason=macro control expansion (macros engine) example=src/iyi/./primitives.iyi:100 in top level
+table: hello refusal 426 owner=bodies reason=undefined local variable or method 'seen' for IyiRuntimeLock.class example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: hello refusal 245 owner=declarations reason=primitive pointer_new without a declared return type example=src/iyi/primitives.iyi:155 in Pointer(UInt64).class#new
+table: hello refusal 145 owner=calls reason=undefined method '<' for Int64 example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: hello refusal 142 owner=bodies reason=undefined local variable or method '__temp_3' for IyiRuntimeLock.class example=no location in IyiRuntimeLock.class#lock
+table: hello refusal 142 owner=bodies reason=undefined local variable or method '__temp_2' for IyiRuntimeLock.class example=no location in IyiRuntimeLock.class#lock
+table: hello refusal 139 owner=calls reason=undefined method 'object_id' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:1737 in IyiScheduler.class#state_id
+table: hello refusal 139 owner=bodies reason=undefined local variable or method '__temp_1' for IyiRuntimeLock.class example=no location in IyiRuntimeLock.class#lock
+table: hello refusal 116 owner=calls reason=expected argument #2 to 'IyiAtomic.store' to be <unresolved T>, not UInt8 example=src/iyi/./concurrency.iyi:1475 in IyiSchedLock.class#unlock
+table: hello refusal 112 owner=bodies reason=undefined local variable or method 'state' for IyiChaos.class example=src/iyi/./chaos.iyi:228 in IyiChaos.class#draw
+table: hello refusal 101 owner=unassigned reason=type mismatch for return type: expected IyiSchedulerState, got (IyiSchedulerState | Nil) example=src/iyi/./concurrency.iyi:1793 in IyiScheduler.class#state
+table: hello refusal 98 owner=bodies reason=undefined local variable or method 'unit' for IyiChaos.class example=src/iyi/./chaos.iyi:265 in IyiChaos.class#unit_of
+table: hello refusal 71 owner=calls reason=undefined method '&+' for UInt64 example=src/iyi/./concurrency.iyi:2589 in IyiScheduler.class#reschedule
+table: hello refusal 58 owner=bodies reason=undefined local variable or method 'id' for IyiSchedLock.class example=src/iyi/./concurrency.iyi:1482 in IyiSchedLock.class#held_here?
+table: hello refusal 57 owner=calls reason=expected argument #1 to 'IyiFiber#state=' to be IyiFiberState, not Int32 example=src/iyi/./concurrency.iyi:756 in IyiFiber.class#main
+table: hello refusal 56 owner=declarations reason=undefined constant GOLDEN example=src/iyi/./chaos.iyi:227 in IyiChaos.class#draw
+table: hello refusal 42 owner=declarations reason=undefined constant SIMULATED example=src/iyi/./chaos.iyi:312 in IyiChaos.class#point
+table: hello refusal 42 owner=bodies reason=undefined local variable or method '__temp_1' for IyiChaos.class example=no location in IyiChaos.class#draw
+table: hello refusal 41 owner=unassigned reason=type mismatch for return type: expected IyiFiber, got (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:1829 in IyiScheduler.class#current
+table: hello refusal 41 owner=declarations reason=primitive pointer_malloc without a declared return type example=src/iyi/primitives.iyi:151 in Pointer(UInt8).class#malloc
+table: hello refusal 41 owner=calls reason=undefined method 'prev_fiber=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:1863 in IyiScheduler.class#register
+table: hello refusal 29 owner=bodies reason=undefined local variable or method '__temp_2' for IyiSchedLock.class example=no location in IyiSchedLock.class#held_here?
+table: hello refusal 29 owner=bodies reason=undefined local variable or method '__temp_1' for IyiSchedLock.class example=no location in IyiSchedLock.class#held_here?
+table: hello refusal 28 owner=calls reason=undefined method '&-' for UInt64 example=src/iyi/./chaos.iyi:353 in IyiChaos.class#step
+table: hello refusal 28 owner=bodies reason=pointerof of @@threads_seen is not ported yet: only a local variable is example=src/iyi/./chaos.iyi:232 in IyiChaos.class#draw
+table: hello refusal 28 owner=bodies reason=undefined local variable or method 'ordinal' for IyiChaos.class example=src/iyi/./chaos.iyi:233 in IyiChaos.class#draw
+table: hello refusal 24 owner=declarations reason=undefined constant DEADLOCK example=src/iyi/./concurrency.iyi:4011 in IyiScheduler.class#deadlock
+table: hello refusal 18 owner=calls reason=expected argument #1 to 'Atomic#set' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:698 in IyiFiber#on_cpu=
+table: hello refusal 18 owner=calls reason=undefined method 'object_id' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./chaos.iyi:522 in IyiChaos.class#thread_point
+table: hello refusal 16 owner=calls reason=undefined method 'next_run=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2154 in IyiScheduler.class#enqueue
+table: hello refusal 16 owner=calls reason=undefined method 'state' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3997 in IyiScheduler.class#deadlock_found
+table: hello refusal 16 owner=bodies reason=undefined local variable or method 'nonce' for IyiFiber example=src/iyi/./concurrency.iyi:749 in IyiFiber#claim_any
+table: hello refusal 16 owner=calls reason=expected argument #1 to 'IyiScheduler.enqueue' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:3998 in IyiScheduler.class#deadlock_found
+table: hello refusal 14 owner=calls reason=undefined method 'chaos_unit' for IyiFiber example=src/iyi/./chaos.iyi:264 in IyiChaos.class#unit_of
+table: hello refusal 14 owner=declarations reason=undefined constant HIGH example=src/iyi/./chaos.iyi:267 in IyiChaos.class#unit_of
+table: hello refusal 14 owner=calls reason=undefined method 'chaos_unit=' for IyiFiber example=src/iyi/./chaos.iyi:269 in IyiChaos.class#unit_of
+table: hello refusal 14 owner=declarations reason=undefined constant LOW example=src/iyi/./chaos.iyi:348 in IyiChaos.class#step
+table: hello refusal 14 owner=declarations reason=undefined constant SPIN_STEPS example=src/iyi/./chaos.iyi:350 in IyiChaos.class#step
+table: hello refusal 14 owner=calls reason=undefined method '|' for UInt64 example=src/iyi/./chaos.iyi:356 in IyiChaos.class#step
+table: hello refusal 14 owner=calls reason=undefined method 'chaos_held=' for IyiFiber example=src/iyi/./chaos.iyi:357 in IyiChaos.class#step
+table: hello refusal 14 owner=declarations reason=undefined constant THREADS example=src/iyi/./chaos.iyi:314 in IyiChaos.class#point
+table: hello refusal 14 owner=declarations reason=undefined constant IyiThread example=src/iyi/./chaos.iyi:525 in IyiChaos.class#thread_point
+table: hello refusal 14 owner=bodies reason=undefined local variable or method 'previous_def' for Atomic example=src/iyi/./chaos_points.iyi:16 in Atomic#get
+table: hello refusal 12 owner=bodies reason=undefined local variable or method 'total' for main example=src/iyi/prelude.iyi:10943 in __iyi_say
+table: hello refusal 12 owner=bodies reason=undefined local variable or method 'n' for main example=src/iyi/prelude.iyi:10945 in __iyi_say
+table: hello refusal 9 owner=bodies reason=undefined local variable or method 'now' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2761 in IyiScheduler.class#poll_now
+table: hello refusal 9 owner=calls reason=undefined method 'to_i64' for Int32 example=src/iyi/prelude.iyi:10819 in Pointer#[]
+table: hello refusal 9 owner=bodies reason=pointerof of @c is not ported yet: only a local variable is example=src/iyi/string.iyi:225 in String#to_unsafe
+table: hello refusal 8 owner=calls reason=expected argument #1 to 'Atomic(UInt64).new' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:1338 in IyiSchedulerState#initialize
+table: hello refusal 8 owner=bodies reason=undefined local variable or method '__iyi_monotonic_ns' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2760 in IyiScheduler.class#poll_now
+table: hello refusal 8 owner=bodies reason=undefined local variable or method 'task' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3987 in IyiScheduler.class#deadlock_found
+table: hello refusal 8 owner=bodies reason=undefined local variable or method 'group' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3989 in IyiScheduler.class#deadlock_found
+table: hello refusal 8 owner=calls reason=expected argument #1 to 'Atomic#add' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:748 in IyiFiber#claim_any
+table: hello refusal 7 owner=calls reason=expected argument #1 to 'Atomic#compare_and_set' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:1359 in IyiSchedulerState#take_lists
+table: hello refusal 7 owner=bodies reason=undefined local variable or method '__temp_1' for IyiSchedulerState example=no location in IyiSchedulerState#take_lists
+table: hello refusal 7 owner=calls reason=undefined method '&+' for Int32 example=src/iyi/./concurrency.iyi:4344 in IyiScheduler.class#lists_lock
+table: hello refusal 7 owner=calls reason=undefined method 'deadline' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4026 in IyiScheduler.class#wait_for_events
+table: hello refusal 7 owner=calls reason=undefined method '+' for Int64 example=src/iyi/./concurrency.iyi:4049 in IyiScheduler.class#wait_for_events
+table: hello refusal 6 owner=bodies reason=undefined local variable or method '__temp_1' for IyiFiber example=no location in IyiFiber#claim_any
+table: hello refusal 6 owner=declarations reason=undefined constant IYI_POLL_EVENT_BYTES example=src/iyi/./concurrency.iyi:4167 in IyiScheduler.class#wait_for_events
+table: hello refusal 6 owner=bodies reason=undefined local variable or method 'entry' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4168 in IyiScheduler.class#wait_for_events
+table: hello refusal 6 owner=bodies reason=undefined local variable or method 'ready' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4181 in IyiScheduler.class#wait_for_events
+table: hello refusal 6 owner=bodies reason=undefined local variable or method 'file' for main example=src/iyi/prelude.iyi:11005 in raise
+table: hello refusal 5 owner=bodies reason=undefined local variable or method 'following' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3615 in IyiScheduler.class#wake_joiners
+table: hello refusal 5 owner=bodies reason=undefined local variable or method '__temp_1' for IyiScheduler.class example=no location in IyiScheduler.class#wake_expired_sleepers
+table: hello refusal 4 owner=bodies reason=undefined local variable or method 'rest' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3611 in IyiScheduler.class#wake_joiners
+table: hello refusal 4 owner=calls reason=undefined method 'awaited' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3986 in IyiScheduler.class#deadlock_found
+table: hello refusal 4 owner=calls reason=undefined method 'joining' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3988 in IyiScheduler.class#deadlock_found
+table: hello refusal 4 owner=calls reason=undefined method 'deadlocked=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3994 in IyiScheduler.class#deadlock_found
+table: hello refusal 4 owner=calls reason=expected argument #2 to 'IyiScheduler.heap_remove' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:4661 in IyiScheduler.class#wake_expired_sleepers
+table: hello refusal 4 owner=calls reason=undefined method 'io_timed' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4662 in IyiScheduler.class#wake_expired_sleepers
+table: hello refusal 4 owner=calls reason=undefined method 'io_timed=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4664 in IyiScheduler.class#wake_expired_sleepers
+table: hello refusal 4 owner=calls reason=undefined method 'timed_out=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4665 in IyiScheduler.class#wake_expired_sleepers
+table: hello refusal 4 owner=calls reason=undefined method '>' for Int32 example=src/iyi/./concurrency.iyi:5247 in IyiWorkers.class#count
+table: hello refusal 4 owner=bodies reason=undefined local variable or method 'asked' for IyiWorkers.class example=src/iyi/./concurrency.iyi:5322 in IyiWorkers.class#resolved
+table: hello refusal 4 owner=calls reason=undefined method 'address' for Bool example=src/iyi/prelude.iyi:95 in IyiRuntimeLock.class#word
+table: hello refusal 4 owner=bodies reason=undefined local variable or method 'total' for IyiIO example=src/iyi/io.iyi:360 in IyiIO#flush
+table: hello refusal 4 owner=bodies reason=undefined local variable or method 'n' for IyiIO example=src/iyi/io.iyi:362 in IyiIO#flush
+table: hello refusal 3 owner=bodies reason=undefined local variable or method 'raise' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2587 in IyiScheduler.class#reschedule
+table: hello refusal 3 owner=bodies reason=undefined local variable or method 'head_deadline' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4047 in IyiScheduler.class#wait_for_events
+table: hello refusal 3 owner=bodies reason=undefined local variable or method 'gap' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4048 in IyiScheduler.class#wait_for_events
+table: hello refusal 3 owner=declarations reason=undefined constant EVENTS example=src/iyi/./concurrency.iyi:4982 in IyiScheduler.class#events_buffer
+table: hello refusal 3 owner=declarations reason=undefined constant IYI_POLL_DATA_OFFSET example=src/iyi/./concurrency.iyi:4168 in IyiScheduler.class#wait_for_events
+table: hello refusal 3 owner=bodies reason=undefined local variable or method 'fd' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4181 in IyiScheduler.class#wait_for_events
+table: hello refusal 3 owner=calls reason=expected argument #1 to 'IyiScheduler.switch_to' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:2595 in IyiScheduler.class#reschedule
+table: hello refusal 3 owner=calls reason=undefined method '+' for Int32 example=src/iyi/array.iyi:228 in Array#each
+table: hello refusal 3 owner=bodies reason=undefined local variable or method '__iyi_exit' for top-level example=src/iyi/prelude.iyi:10751 in top level
+table: hello refusal 2 owner=calls reason=undefined method 'next_joiner' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3609 in IyiScheduler.class#wake_joiners
+table: hello refusal 2 owner=calls reason=undefined method 'next_joiner=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3610 in IyiScheduler.class#wake_joiners
+table: hello refusal 2 owner=bodies reason=undefined local variable or method 'parks' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2590 in IyiScheduler.class#reschedule
+table: hello refusal 2 owner=bodies reason=undefined local variable or method 'waits_here' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2327 in IyiScheduler.class#take_mail
+table: hello refusal 2 owner=bodies reason=undefined local variable or method 'text' for IyiWorkers.class example=src/iyi/./concurrency.iyi:5320 in IyiWorkers.class#resolved
+table: hello refusal 2 owner=bodies reason=undefined local variable or method 'head' for IyiSchedulerState example=src/iyi/./concurrency.iyi:1436 in IyiSchedulerState#ring_size
+table: hello refusal 2 owner=bodies reason=undefined local variable or method 'tail' for IyiSchedulerState example=src/iyi/./concurrency.iyi:1436 in IyiSchedulerState#ring_size
+table: hello refusal 2 owner=calls reason=undefined method '&' for Bool example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: hello refusal 2 owner=calls reason=undefined method 'value' for Bool example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: hello refusal 2 owner=unassigned reason=type mismatch for class variable '@@stream': expected UInt64, got Bool example=src/iyi/./chaos.iyi:228 in IyiChaos.class#draw
+table: hello refusal 2 owner=calls reason=undefined method 'to_u64' for Int32 example=src/iyi/io.iyi:36 in IyiIO#initialize
+table: hello refusal 2 owner=declarations reason=undefined constant T example=src/iyi/primitives.iyi:202 in IyiAtomic.class#load
+table: hello refusal 2 owner=unassigned reason=unsupported node: MagicConstant example=src/iyi/prelude.iyi:10967 in top level
+table: hello refusal 2 owner=bodies reason=undefined local variable or method 'to_i64' for Int32 example=src/iyi/number.iyi:124 in Int32#to_s
+table: hello refusal 2 owner=bodies reason=undefined local variable or method 'raise' for IyiIO example=src/iyi/io.iyi:362 in IyiIO#flush
+table: hello refusal 1 owner=unassigned reason=instance variable '@state' of IyiFiber must be IyiFiberState, not (IyiFiberState | Int32) example=src/iyi/./concurrency.iyi:635 in IyiFiber#initialize
+table: hello refusal 1 owner=calls reason=undefined method 'on_cpu=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:1917 in IyiScheduler.class#landed
+table: hello refusal 1 owner=declarations reason=undefined constant STACK_BYTES example=src/iyi/./concurrency.iyi:926 in IyiFiber#release_stack
+table: hello refusal 1 owner=calls reason=expected argument #1 to 'IyiScheduler.unregister' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:1933 in IyiScheduler.class#reap_dying
+table: hello refusal 1 owner=unassigned reason=wrong number of arguments for 'Proc#call' (given 0, expected 1) example=src/iyi/./concurrency.iyi:2874 in IyiScheduler.class#run_spawned_fiber
+table: hello refusal 1 owner=calls reason=undefined method 'awaited=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3620 in IyiScheduler.class#wake_joiners
+table: hello refusal 1 owner=calls reason=expected argument #1 to 'IyiScheduler.ready' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:3621 in IyiScheduler.class#wake_joiners
+table: hello refusal 1 owner=declarations reason=undefined constant POLL_EVERY example=src/iyi/./concurrency.iyi:2591 in IyiScheduler.class#reschedule
+table: hello refusal 1 owner=declarations reason=undefined constant POLL_IO_NS example=src/iyi/./concurrency.iyi:2761 in IyiScheduler.class#poll_now
+table: hello refusal 1 owner=calls reason=expected argument #2 to 'IyiScheduler.drain_unit' to be IyiUnit, not (IyiUnit | Nil) example=src/iyi/./concurrency.iyi:2724 in IyiScheduler.class#release_unit
+table: hello refusal 1 owner=calls reason=undefined method 'next_run' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2309 in IyiScheduler.class#take_mail
+table: hello refusal 1 owner=calls reason=undefined method 'next_cancel' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2323 in IyiScheduler.class#take_mail
+table: hello refusal 1 owner=calls reason=undefined method 'next_cancel=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2324 in IyiScheduler.class#take_mail
+table: hello refusal 1 owner=calls reason=undefined method 'cancel_posted=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2325 in IyiScheduler.class#take_mail
+table: hello refusal 1 owner=calls reason=undefined method 'unit' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2326 in IyiScheduler.class#take_mail
+table: hello refusal 1 owner=calls reason=undefined method 'waiting_out' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2327 in IyiScheduler.class#take_mail
+table: hello refusal 1 owner=calls reason=expected argument #1 to 'IyiScheduler.cancel_wait' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:2328 in IyiScheduler.class#take_mail
+table: hello refusal 1 owner=calls reason=undefined method '<' for Int32 example=src/iyi/array.iyi:226 in Array#each
+table: hello refusal 1 owner=bodies reason=undefined local variable or method 'fd' for Array example=src/iyi/./concurrency.iyi:2335 in Array#each
+table: hello refusal 1 owner=calls reason=undefined method 'each' for Nil (compile-time type is (Array | Nil)) example=src/iyi/./concurrency.iyi:2335 in IyiScheduler.class#take_mail
+table: hello refusal 1 owner=calls reason=undefined method 'quiet' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:2500 in IyiScheduler.class#all_quiet?
+table: hello refusal 1 owner=calls reason=undefined method 'idle' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:2504 in IyiScheduler.class#all_quiet?
+table: hello refusal 1 owner=bodies reason=undefined local variable or method 'quiet' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2504 in IyiScheduler.class#all_quiet?
+table: hello refusal 1 owner=bodies reason=undefined local variable or method '__temp_2' for IyiScheduler.class example=no location in IyiScheduler.class#all_quiet?
+table: hello refusal 1 owner=calls reason=undefined method 'next_state' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:2506 in IyiScheduler.class#all_quiet?
+table: hello refusal 1 owner=calls reason=undefined method '>' for Int64 example=src/iyi/./concurrency.iyi:2508 in IyiScheduler.class#all_quiet?
+table: hello refusal 1 owner=bodies reason=pointerof of @@queued is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:5777 in IyiWorkers.class#work_waiting?
+table: hello refusal 1 owner=bodies reason=pointerof of @@preempted is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:5778 in IyiWorkers.class#work_waiting?
+table: hello refusal 1 owner=bodies reason=pointerof of @@listed_count is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:5782 in IyiWorkers.class#work_waiting?
+table: hello refusal 1 owner=calls reason=undefined method 'to_u64' for Int64 example=src/iyi/./concurrency.iyi:5591 in IyiWorkers.class#listed_at
+table: hello refusal 1 owner=calls reason=undefined method '&+' for Int64 example=src/iyi/./concurrency.iyi:5786 in IyiWorkers.class#work_waiting?
+table: hello refusal 1 owner=calls reason=expected argument #2 to 'IyiAtomic.rmw' to be Pointer, not Bool example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: hello refusal 1 owner=calls reason=expected argument #1 to 'IyiFiber#claim' to be UInt64, not Bool example=src/iyi/./concurrency.iyi:749 in IyiFiber#claim_any
+table: hello refusal 1 owner=calls reason=undefined method 'claim_any' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3998 in IyiScheduler.class#deadlock_found
+table: hello refusal 1 owner=calls reason=undefined method '&-' for Bool example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: hello refusal 1 owner=calls reason=expected argument #1 to 'IyiChaos.drop' to be IyiChaosUnit, not Bool example=src/iyi/./chaos.iyi:350 in IyiChaos.class#step
+table: hello refusal 1 owner=calls reason=expected argument #2 to 'IyiChaos.outranked?' to be IyiChaosUnit, not Bool example=src/iyi/./chaos.iyi:351 in IyiChaos.class#step
+table: hello refusal 1 owner=calls reason=expected argument #1 to 'IyiChaos.mix' to be UInt64, not Bool example=src/iyi/./chaos.iyi:229 in IyiChaos.class#draw
+table: hello refusal 1 owner=bodies reason=undefined local variable or method '__iyi_program' for top-level example=src/iyi/prelude.iyi:10726 in top level
+table: hello refusal 1 owner=calls reason=undefined method '__iyi_main' for LibIyiMain.class example=src/iyi/prelude.iyi:10741 in top level
+table: hello refusal 1 owner=unassigned reason=unsupported node: TupleLiteral example=src/iyi/prelude.iyi:10800 in IyiOnce.class#run
+table: hello refusal 1 owner=calls reason=undefined method 'address' for Pointer(Void) example=src/iyi/prelude.iyi:10800 in IyiOnce.class#run
+table: hello refusal 1 owner=bodies reason=undefined local variable or method 'cell' for IyiOnce.class example=src/iyi/prelude.iyi:10801 in IyiOnce.class#run
+table: hello refusal 1 owner=bodies reason=pointerof operand has no type example=src/iyi/prelude.iyi:10801 in IyiOnce.class#run
+table: hello refusal 1 owner=calls reason=undefined method 'value' for Pointer(Proc(Nil)) example=src/iyi/prelude.iyi:10801 in IyiOnce.class#run
+table: hello refusal 1 owner=bodies reason=undefined local variable or method '__temp_4' for main example=no location in raise
+table: hello refusal 1 owner=bodies reason=undefined local variable or method '__temp_3' for main example=no location in raise
+table: hello refusal 1 owner=bodies reason=undefined local variable or method '__temp_2' for main example=no location in raise
+table: hello refusal 1 owner=bodies reason=undefined local variable or method '__temp_1' for main example=no location in raise
+table: hello refusal 1 owner=bodies reason=undefined local variable or method 'line' for main example=src/iyi/prelude.iyi:11009 in raise
+table: hello refusal 1 owner=bodies reason=undefined local variable or method '__iyi_enter' for top-level example=src/iyi/prelude.iyi:11698 in top level
+table: hello refusal 1 owner=bodies reason=undefined local variable or method 'skipped' for IyiTestCases.class example=src/iyi/testing.iyi:251 in IyiTestCases.class#verdict
+table: hello refusal 1 owner=unassigned reason=wrong number of arguments for 'Int32#-' (given 1, expected 0) example=src/iyi/testing.iyi:251 in IyiTestCases.class#verdict
+table: parse defs-reached=3673 defs-typed-clean=1951 root-refusals=36 refusal-sites=4255
+table: parse refusal 694 owner=bodies reason=pointerof of @@word is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:1460 in IyiSchedLock.class#word
+table: parse refusal 585 owner=macros reason=macro control expansion (macros engine) example=src/iyi/./primitives.iyi:100 in top level
+table: parse refusal 426 owner=bodies reason=undefined local variable or method 'seen' for IyiRuntimeLock.class example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: parse refusal 245 owner=declarations reason=primitive pointer_new without a declared return type example=src/iyi/primitives.iyi:155 in Pointer(UInt64).class#new
+table: parse refusal 145 owner=calls reason=undefined method '<' for Int64 example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: parse refusal 142 owner=bodies reason=undefined local variable or method '__temp_3' for IyiRuntimeLock.class example=no location in IyiRuntimeLock.class#lock
+table: parse refusal 142 owner=bodies reason=undefined local variable or method '__temp_2' for IyiRuntimeLock.class example=no location in IyiRuntimeLock.class#lock
+table: parse refusal 142 owner=bodies reason=undefined local variable or method '__temp_1' for IyiRuntimeLock.class example=no location in IyiRuntimeLock.class#lock
+table: parse refusal 139 owner=calls reason=undefined method 'object_id' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:1737 in IyiScheduler.class#state_id
+table: parse refusal 116 owner=calls reason=expected argument #2 to 'IyiAtomic.store' to be <unresolved T>, not UInt8 example=src/iyi/./concurrency.iyi:1475 in IyiSchedLock.class#unlock
+table: parse refusal 112 owner=bodies reason=undefined local variable or method 'state' for IyiChaos.class example=src/iyi/./chaos.iyi:228 in IyiChaos.class#draw
+table: parse refusal 101 owner=unassigned reason=type mismatch for return type: expected IyiSchedulerState, got (IyiSchedulerState | Nil) example=src/iyi/./concurrency.iyi:1793 in IyiScheduler.class#state
+table: parse refusal 98 owner=bodies reason=undefined local variable or method 'unit' for IyiChaos.class example=src/iyi/./chaos.iyi:265 in IyiChaos.class#unit_of
+table: parse refusal 71 owner=calls reason=undefined method '&+' for UInt64 example=src/iyi/./concurrency.iyi:2589 in IyiScheduler.class#reschedule
+table: parse refusal 58 owner=bodies reason=undefined local variable or method 'id' for IyiSchedLock.class example=src/iyi/./concurrency.iyi:1482 in IyiSchedLock.class#held_here?
+table: parse refusal 57 owner=calls reason=expected argument #1 to 'IyiFiber#state=' to be IyiFiberState, not Int32 example=src/iyi/./concurrency.iyi:756 in IyiFiber.class#main
+table: parse refusal 56 owner=declarations reason=undefined constant GOLDEN example=src/iyi/./chaos.iyi:227 in IyiChaos.class#draw
+table: parse refusal 42 owner=declarations reason=undefined constant SIMULATED example=src/iyi/./chaos.iyi:312 in IyiChaos.class#point
+table: parse refusal 42 owner=bodies reason=undefined local variable or method '__temp_1' for IyiChaos.class example=no location in IyiChaos.class#draw
+table: parse refusal 41 owner=unassigned reason=type mismatch for return type: expected IyiFiber, got (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:1829 in IyiScheduler.class#current
+table: parse refusal 41 owner=declarations reason=primitive pointer_malloc without a declared return type example=src/iyi/primitives.iyi:151 in Pointer(UInt8).class#malloc
+table: parse refusal 41 owner=calls reason=undefined method 'prev_fiber=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:1863 in IyiScheduler.class#register
+table: parse refusal 29 owner=bodies reason=undefined local variable or method '__temp_2' for IyiSchedLock.class example=no location in IyiSchedLock.class#held_here?
+table: parse refusal 29 owner=bodies reason=undefined local variable or method '__temp_1' for IyiSchedLock.class example=no location in IyiSchedLock.class#held_here?
+table: parse refusal 28 owner=calls reason=undefined method '&-' for UInt64 example=src/iyi/./chaos.iyi:353 in IyiChaos.class#step
+table: parse refusal 28 owner=bodies reason=pointerof of @@threads_seen is not ported yet: only a local variable is example=src/iyi/./chaos.iyi:232 in IyiChaos.class#draw
+table: parse refusal 28 owner=bodies reason=undefined local variable or method 'ordinal' for IyiChaos.class example=src/iyi/./chaos.iyi:233 in IyiChaos.class#draw
+table: parse refusal 24 owner=declarations reason=undefined constant DEADLOCK example=src/iyi/./concurrency.iyi:4011 in IyiScheduler.class#deadlock
+table: parse refusal 18 owner=calls reason=expected argument #1 to 'Atomic#set' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:698 in IyiFiber#on_cpu=
+table: parse refusal 18 owner=calls reason=undefined method 'object_id' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./chaos.iyi:522 in IyiChaos.class#thread_point
+table: parse refusal 16 owner=calls reason=undefined method 'next_run=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2154 in IyiScheduler.class#enqueue
+table: parse refusal 16 owner=calls reason=undefined method 'state' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3997 in IyiScheduler.class#deadlock_found
+table: parse refusal 16 owner=bodies reason=undefined local variable or method 'nonce' for IyiFiber example=src/iyi/./concurrency.iyi:749 in IyiFiber#claim_any
+table: parse refusal 16 owner=calls reason=expected argument #1 to 'IyiScheduler.enqueue' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:3998 in IyiScheduler.class#deadlock_found
+table: parse refusal 14 owner=calls reason=undefined method 'chaos_unit' for IyiFiber example=src/iyi/./chaos.iyi:264 in IyiChaos.class#unit_of
+table: parse refusal 14 owner=declarations reason=undefined constant HIGH example=src/iyi/./chaos.iyi:267 in IyiChaos.class#unit_of
+table: parse refusal 14 owner=calls reason=undefined method 'chaos_unit=' for IyiFiber example=src/iyi/./chaos.iyi:269 in IyiChaos.class#unit_of
+table: parse refusal 14 owner=declarations reason=undefined constant LOW example=src/iyi/./chaos.iyi:348 in IyiChaos.class#step
+table: parse refusal 14 owner=declarations reason=undefined constant SPIN_STEPS example=src/iyi/./chaos.iyi:350 in IyiChaos.class#step
+table: parse refusal 14 owner=calls reason=undefined method '|' for UInt64 example=src/iyi/./chaos.iyi:356 in IyiChaos.class#step
+table: parse refusal 14 owner=calls reason=undefined method 'chaos_held=' for IyiFiber example=src/iyi/./chaos.iyi:357 in IyiChaos.class#step
+table: parse refusal 14 owner=declarations reason=undefined constant THREADS example=src/iyi/./chaos.iyi:314 in IyiChaos.class#point
+table: parse refusal 14 owner=declarations reason=undefined constant IyiThread example=src/iyi/./chaos.iyi:525 in IyiChaos.class#thread_point
+table: parse refusal 14 owner=bodies reason=undefined local variable or method 'previous_def' for Atomic example=src/iyi/./chaos_points.iyi:16 in Atomic#get
+table: parse refusal 12 owner=bodies reason=undefined local variable or method 'total' for main example=src/iyi/prelude.iyi:10943 in __iyi_say
+table: parse refusal 12 owner=bodies reason=undefined local variable or method 'n' for main example=src/iyi/prelude.iyi:10945 in __iyi_say
+table: parse refusal 9 owner=bodies reason=undefined local variable or method 'now' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2761 in IyiScheduler.class#poll_now
+table: parse refusal 9 owner=calls reason=undefined method 'to_i64' for Int32 example=src/iyi/prelude.iyi:10819 in Pointer#[]
+table: parse refusal 9 owner=bodies reason=pointerof of @c is not ported yet: only a local variable is example=src/iyi/string.iyi:225 in String#to_unsafe
+table: parse refusal 8 owner=calls reason=expected argument #1 to 'Atomic(UInt64).new' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:1338 in IyiSchedulerState#initialize
+table: parse refusal 8 owner=bodies reason=undefined local variable or method '__iyi_monotonic_ns' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2760 in IyiScheduler.class#poll_now
+table: parse refusal 8 owner=bodies reason=undefined local variable or method 'task' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3987 in IyiScheduler.class#deadlock_found
+table: parse refusal 8 owner=bodies reason=undefined local variable or method 'group' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3989 in IyiScheduler.class#deadlock_found
+table: parse refusal 8 owner=calls reason=expected argument #1 to 'Atomic#add' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:748 in IyiFiber#claim_any
+table: parse refusal 8 owner=bodies reason=undefined local variable or method '__temp_1' for IyiFiber example=no location in IyiFiber#claim_any
+table: parse refusal 7 owner=calls reason=expected argument #1 to 'Atomic#compare_and_set' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:1359 in IyiSchedulerState#take_lists
+table: parse refusal 7 owner=bodies reason=undefined local variable or method '__temp_1' for IyiSchedulerState example=no location in IyiSchedulerState#take_lists
+table: parse refusal 7 owner=calls reason=undefined method '&+' for Int32 example=src/iyi/./concurrency.iyi:4344 in IyiScheduler.class#lists_lock
+table: parse refusal 7 owner=calls reason=undefined method 'deadline' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4026 in IyiScheduler.class#wait_for_events
+table: parse refusal 7 owner=calls reason=undefined method '+' for Int64 example=src/iyi/./concurrency.iyi:4049 in IyiScheduler.class#wait_for_events
+table: parse refusal 6 owner=declarations reason=undefined constant IYI_POLL_EVENT_BYTES example=src/iyi/./concurrency.iyi:4167 in IyiScheduler.class#wait_for_events
+table: parse refusal 6 owner=bodies reason=undefined local variable or method 'entry' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4168 in IyiScheduler.class#wait_for_events
+table: parse refusal 6 owner=bodies reason=undefined local variable or method 'ready' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4181 in IyiScheduler.class#wait_for_events
+table: parse refusal 6 owner=bodies reason=undefined local variable or method 'file' for main example=src/iyi/prelude.iyi:11005 in raise
+table: parse refusal 5 owner=bodies reason=undefined local variable or method 'following' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3615 in IyiScheduler.class#wake_joiners
+table: parse refusal 5 owner=bodies reason=undefined local variable or method '__temp_1' for IyiScheduler.class example=no location in IyiScheduler.class#wake_expired_sleepers
+table: parse refusal 4 owner=bodies reason=undefined local variable or method 'rest' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3611 in IyiScheduler.class#wake_joiners
+table: parse refusal 4 owner=calls reason=undefined method 'awaited' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3986 in IyiScheduler.class#deadlock_found
+table: parse refusal 4 owner=calls reason=undefined method 'joining' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3988 in IyiScheduler.class#deadlock_found
+table: parse refusal 4 owner=calls reason=undefined method 'deadlocked=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3994 in IyiScheduler.class#deadlock_found
+table: parse refusal 4 owner=calls reason=expected argument #2 to 'IyiScheduler.heap_remove' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:4661 in IyiScheduler.class#wake_expired_sleepers
+table: parse refusal 4 owner=calls reason=undefined method 'io_timed' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4662 in IyiScheduler.class#wake_expired_sleepers
+table: parse refusal 4 owner=calls reason=undefined method 'io_timed=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4664 in IyiScheduler.class#wake_expired_sleepers
+table: parse refusal 4 owner=calls reason=undefined method 'timed_out=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4665 in IyiScheduler.class#wake_expired_sleepers
+table: parse refusal 4 owner=calls reason=undefined method '>' for Int32 example=src/iyi/./concurrency.iyi:5247 in IyiWorkers.class#count
+table: parse refusal 4 owner=bodies reason=undefined local variable or method 'asked' for IyiWorkers.class example=src/iyi/./concurrency.iyi:5322 in IyiWorkers.class#resolved
+table: parse refusal 4 owner=bodies reason=undefined local variable or method 'total' for IyiIO example=src/iyi/io.iyi:360 in IyiIO#flush
+table: parse refusal 4 owner=bodies reason=undefined local variable or method 'n' for IyiIO example=src/iyi/io.iyi:362 in IyiIO#flush
+table: parse refusal 3 owner=bodies reason=undefined local variable or method 'raise' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2587 in IyiScheduler.class#reschedule
+table: parse refusal 3 owner=bodies reason=undefined local variable or method 'head_deadline' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4047 in IyiScheduler.class#wait_for_events
+table: parse refusal 3 owner=bodies reason=undefined local variable or method 'gap' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4048 in IyiScheduler.class#wait_for_events
+table: parse refusal 3 owner=declarations reason=undefined constant EVENTS example=src/iyi/./concurrency.iyi:4982 in IyiScheduler.class#events_buffer
+table: parse refusal 3 owner=declarations reason=undefined constant IYI_POLL_DATA_OFFSET example=src/iyi/./concurrency.iyi:4168 in IyiScheduler.class#wait_for_events
+table: parse refusal 3 owner=bodies reason=undefined local variable or method 'fd' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4181 in IyiScheduler.class#wait_for_events
+table: parse refusal 3 owner=calls reason=expected argument #1 to 'IyiScheduler.switch_to' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:2595 in IyiScheduler.class#reschedule
+table: parse refusal 3 owner=calls reason=undefined method '+' for Int32 example=src/iyi/array.iyi:228 in Array#each
+table: parse refusal 3 owner=bodies reason=undefined local variable or method '__iyi_exit' for top-level example=src/iyi/prelude.iyi:10751 in top level
+table: parse refusal 2 owner=calls reason=undefined method 'next_joiner' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3609 in IyiScheduler.class#wake_joiners
+table: parse refusal 2 owner=calls reason=undefined method 'next_joiner=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3610 in IyiScheduler.class#wake_joiners
+table: parse refusal 2 owner=bodies reason=undefined local variable or method 'parks' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2590 in IyiScheduler.class#reschedule
+table: parse refusal 2 owner=bodies reason=undefined local variable or method 'waits_here' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2327 in IyiScheduler.class#take_mail
+table: parse refusal 2 owner=bodies reason=undefined local variable or method 'text' for IyiWorkers.class example=src/iyi/./concurrency.iyi:5320 in IyiWorkers.class#resolved
+table: parse refusal 2 owner=bodies reason=undefined local variable or method 'head' for IyiSchedulerState example=src/iyi/./concurrency.iyi:1436 in IyiSchedulerState#ring_size
+table: parse refusal 2 owner=bodies reason=undefined local variable or method 'tail' for IyiSchedulerState example=src/iyi/./concurrency.iyi:1436 in IyiSchedulerState#ring_size
+table: parse refusal 2 owner=calls reason=undefined method 'to_u64' for Int32 example=src/iyi/io.iyi:36 in IyiIO#initialize
+table: parse refusal 2 owner=declarations reason=undefined constant T example=src/iyi/primitives.iyi:202 in IyiAtomic.class#load
+table: parse refusal 2 owner=unassigned reason=unsupported node: MagicConstant example=src/iyi/prelude.iyi:10967 in top level
+table: parse refusal 2 owner=bodies reason=undefined local variable or method 'to_i64' for Int32 example=src/iyi/number.iyi:124 in Int32#to_s
+table: parse refusal 2 owner=bodies reason=undefined local variable or method 'raise' for IyiIO example=src/iyi/io.iyi:362 in IyiIO#flush
+table: parse refusal 1 owner=unassigned reason=instance variable '@state' of IyiFiber must be IyiFiberState, not (IyiFiberState | Int32) example=src/iyi/./concurrency.iyi:635 in IyiFiber#initialize
+table: parse refusal 1 owner=calls reason=undefined method 'on_cpu=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:1917 in IyiScheduler.class#landed
+table: parse refusal 1 owner=declarations reason=undefined constant STACK_BYTES example=src/iyi/./concurrency.iyi:926 in IyiFiber#release_stack
+table: parse refusal 1 owner=calls reason=expected argument #1 to 'IyiScheduler.unregister' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:1933 in IyiScheduler.class#reap_dying
+table: parse refusal 1 owner=unassigned reason=wrong number of arguments for 'Proc#call' (given 0, expected 1) example=src/iyi/./concurrency.iyi:2874 in IyiScheduler.class#run_spawned_fiber
+table: parse refusal 1 owner=calls reason=undefined method 'awaited=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3620 in IyiScheduler.class#wake_joiners
+table: parse refusal 1 owner=calls reason=expected argument #1 to 'IyiScheduler.ready' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:3621 in IyiScheduler.class#wake_joiners
+table: parse refusal 1 owner=declarations reason=undefined constant POLL_EVERY example=src/iyi/./concurrency.iyi:2591 in IyiScheduler.class#reschedule
+table: parse refusal 1 owner=declarations reason=undefined constant POLL_IO_NS example=src/iyi/./concurrency.iyi:2761 in IyiScheduler.class#poll_now
+table: parse refusal 1 owner=calls reason=expected argument #2 to 'IyiScheduler.drain_unit' to be IyiUnit, not (IyiUnit | Nil) example=src/iyi/./concurrency.iyi:2724 in IyiScheduler.class#release_unit
+table: parse refusal 1 owner=calls reason=undefined method 'next_run' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2309 in IyiScheduler.class#take_mail
+table: parse refusal 1 owner=calls reason=undefined method 'next_cancel' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2323 in IyiScheduler.class#take_mail
+table: parse refusal 1 owner=calls reason=undefined method 'next_cancel=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2324 in IyiScheduler.class#take_mail
+table: parse refusal 1 owner=calls reason=undefined method 'cancel_posted=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2325 in IyiScheduler.class#take_mail
+table: parse refusal 1 owner=calls reason=undefined method 'unit' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2326 in IyiScheduler.class#take_mail
+table: parse refusal 1 owner=calls reason=undefined method 'waiting_out' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2327 in IyiScheduler.class#take_mail
+table: parse refusal 1 owner=calls reason=expected argument #1 to 'IyiScheduler.cancel_wait' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:2328 in IyiScheduler.class#take_mail
+table: parse refusal 1 owner=calls reason=undefined method '<' for Int32 example=src/iyi/array.iyi:226 in Array#each
+table: parse refusal 1 owner=bodies reason=undefined local variable or method 'fd' for Array example=src/iyi/./concurrency.iyi:2335 in Array#each
+table: parse refusal 1 owner=calls reason=undefined method 'each' for Nil (compile-time type is (Array | Nil)) example=src/iyi/./concurrency.iyi:2335 in IyiScheduler.class#take_mail
+table: parse refusal 1 owner=calls reason=undefined method 'quiet' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:2500 in IyiScheduler.class#all_quiet?
+table: parse refusal 1 owner=calls reason=undefined method 'idle' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:2504 in IyiScheduler.class#all_quiet?
+table: parse refusal 1 owner=bodies reason=undefined local variable or method 'quiet' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2504 in IyiScheduler.class#all_quiet?
+table: parse refusal 1 owner=bodies reason=undefined local variable or method '__temp_2' for IyiScheduler.class example=no location in IyiScheduler.class#all_quiet?
+table: parse refusal 1 owner=calls reason=undefined method 'next_state' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:2506 in IyiScheduler.class#all_quiet?
+table: parse refusal 1 owner=calls reason=undefined method '>' for Int64 example=src/iyi/./concurrency.iyi:2508 in IyiScheduler.class#all_quiet?
+table: parse refusal 1 owner=bodies reason=pointerof of @@queued is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:5777 in IyiWorkers.class#work_waiting?
+table: parse refusal 1 owner=bodies reason=pointerof of @@preempted is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:5778 in IyiWorkers.class#work_waiting?
+table: parse refusal 1 owner=bodies reason=pointerof of @@listed_count is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:5782 in IyiWorkers.class#work_waiting?
+table: parse refusal 1 owner=calls reason=undefined method 'to_u64' for Int64 example=src/iyi/./concurrency.iyi:5591 in IyiWorkers.class#listed_at
+table: parse refusal 1 owner=calls reason=undefined method '&+' for Int64 example=src/iyi/./concurrency.iyi:5786 in IyiWorkers.class#work_waiting?
+table: parse refusal 1 owner=bodies reason=undefined local variable or method '__iyi_program' for top-level example=src/iyi/prelude.iyi:10726 in top level
+table: parse refusal 1 owner=calls reason=undefined method '__iyi_main' for LibIyiMain.class example=src/iyi/prelude.iyi:10741 in top level
+table: parse refusal 1 owner=unassigned reason=unsupported node: TupleLiteral example=src/iyi/prelude.iyi:10800 in IyiOnce.class#run
+table: parse refusal 1 owner=calls reason=undefined method 'address' for Pointer(Void) example=src/iyi/prelude.iyi:10800 in IyiOnce.class#run
+table: parse refusal 1 owner=bodies reason=undefined local variable or method 'cell' for IyiOnce.class example=src/iyi/prelude.iyi:10801 in IyiOnce.class#run
+table: parse refusal 1 owner=bodies reason=pointerof operand has no type example=src/iyi/prelude.iyi:10801 in IyiOnce.class#run
+table: parse refusal 1 owner=calls reason=undefined method 'value' for Pointer(Proc(Nil)) example=src/iyi/prelude.iyi:10801 in IyiOnce.class#run
+table: parse refusal 1 owner=bodies reason=undefined local variable or method '__temp_4' for main example=no location in raise
+table: parse refusal 1 owner=bodies reason=undefined local variable or method '__temp_3' for main example=no location in raise
+table: parse refusal 1 owner=bodies reason=undefined local variable or method '__temp_2' for main example=no location in raise
+table: parse refusal 1 owner=bodies reason=undefined local variable or method '__temp_1' for main example=no location in raise
+table: parse refusal 1 owner=bodies reason=undefined local variable or method 'line' for main example=src/iyi/prelude.iyi:11009 in raise
+table: parse refusal 1 owner=bodies reason=undefined local variable or method '__iyi_enter' for top-level example=src/iyi/prelude.iyi:11698 in top level
+table: parse refusal 1 owner=bodies reason=undefined local variable or method 'skipped' for IyiTestCases.class example=src/iyi/testing.iyi:251 in IyiTestCases.class#verdict
+table: parse refusal 1 owner=unassigned reason=wrong number of arguments for 'Int32#-' (given 1, expected 0) example=src/iyi/testing.iyi:251 in IyiTestCases.class#verdict
+table: compile_native defs-reached=3673 defs-typed-clean=1951 root-refusals=36 refusal-sites=4255
+table: compile_native refusal 694 owner=bodies reason=pointerof of @@word is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:1460 in IyiSchedLock.class#word
+table: compile_native refusal 585 owner=macros reason=macro control expansion (macros engine) example=src/iyi/./primitives.iyi:100 in top level
+table: compile_native refusal 426 owner=bodies reason=undefined local variable or method 'seen' for IyiRuntimeLock.class example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: compile_native refusal 245 owner=declarations reason=primitive pointer_new without a declared return type example=src/iyi/primitives.iyi:155 in Pointer(UInt64).class#new
+table: compile_native refusal 145 owner=calls reason=undefined method '<' for Int64 example=src/iyi/prelude.iyi:104 in IyiRuntimeLock.class#lock
+table: compile_native refusal 142 owner=bodies reason=undefined local variable or method '__temp_3' for IyiRuntimeLock.class example=no location in IyiRuntimeLock.class#lock
+table: compile_native refusal 142 owner=bodies reason=undefined local variable or method '__temp_2' for IyiRuntimeLock.class example=no location in IyiRuntimeLock.class#lock
+table: compile_native refusal 142 owner=bodies reason=undefined local variable or method '__temp_1' for IyiRuntimeLock.class example=no location in IyiRuntimeLock.class#lock
+table: compile_native refusal 139 owner=calls reason=undefined method 'object_id' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:1737 in IyiScheduler.class#state_id
+table: compile_native refusal 116 owner=calls reason=expected argument #2 to 'IyiAtomic.store' to be <unresolved T>, not UInt8 example=src/iyi/./concurrency.iyi:1475 in IyiSchedLock.class#unlock
+table: compile_native refusal 112 owner=bodies reason=undefined local variable or method 'state' for IyiChaos.class example=src/iyi/./chaos.iyi:228 in IyiChaos.class#draw
+table: compile_native refusal 101 owner=unassigned reason=type mismatch for return type: expected IyiSchedulerState, got (IyiSchedulerState | Nil) example=src/iyi/./concurrency.iyi:1793 in IyiScheduler.class#state
+table: compile_native refusal 98 owner=bodies reason=undefined local variable or method 'unit' for IyiChaos.class example=src/iyi/./chaos.iyi:265 in IyiChaos.class#unit_of
+table: compile_native refusal 71 owner=calls reason=undefined method '&+' for UInt64 example=src/iyi/./concurrency.iyi:2589 in IyiScheduler.class#reschedule
+table: compile_native refusal 58 owner=bodies reason=undefined local variable or method 'id' for IyiSchedLock.class example=src/iyi/./concurrency.iyi:1482 in IyiSchedLock.class#held_here?
+table: compile_native refusal 57 owner=calls reason=expected argument #1 to 'IyiFiber#state=' to be IyiFiberState, not Int32 example=src/iyi/./concurrency.iyi:756 in IyiFiber.class#main
+table: compile_native refusal 56 owner=declarations reason=undefined constant GOLDEN example=src/iyi/./chaos.iyi:227 in IyiChaos.class#draw
+table: compile_native refusal 42 owner=declarations reason=undefined constant SIMULATED example=src/iyi/./chaos.iyi:312 in IyiChaos.class#point
+table: compile_native refusal 42 owner=bodies reason=undefined local variable or method '__temp_1' for IyiChaos.class example=no location in IyiChaos.class#draw
+table: compile_native refusal 41 owner=unassigned reason=type mismatch for return type: expected IyiFiber, got (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:1829 in IyiScheduler.class#current
+table: compile_native refusal 41 owner=declarations reason=primitive pointer_malloc without a declared return type example=src/iyi/primitives.iyi:151 in Pointer(UInt8).class#malloc
+table: compile_native refusal 41 owner=calls reason=undefined method 'prev_fiber=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:1863 in IyiScheduler.class#register
+table: compile_native refusal 29 owner=bodies reason=undefined local variable or method '__temp_2' for IyiSchedLock.class example=no location in IyiSchedLock.class#held_here?
+table: compile_native refusal 29 owner=bodies reason=undefined local variable or method '__temp_1' for IyiSchedLock.class example=no location in IyiSchedLock.class#held_here?
+table: compile_native refusal 28 owner=calls reason=undefined method '&-' for UInt64 example=src/iyi/./chaos.iyi:353 in IyiChaos.class#step
+table: compile_native refusal 28 owner=bodies reason=pointerof of @@threads_seen is not ported yet: only a local variable is example=src/iyi/./chaos.iyi:232 in IyiChaos.class#draw
+table: compile_native refusal 28 owner=bodies reason=undefined local variable or method 'ordinal' for IyiChaos.class example=src/iyi/./chaos.iyi:233 in IyiChaos.class#draw
+table: compile_native refusal 24 owner=declarations reason=undefined constant DEADLOCK example=src/iyi/./concurrency.iyi:4011 in IyiScheduler.class#deadlock
+table: compile_native refusal 18 owner=calls reason=expected argument #1 to 'Atomic#set' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:698 in IyiFiber#on_cpu=
+table: compile_native refusal 18 owner=calls reason=undefined method 'object_id' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./chaos.iyi:522 in IyiChaos.class#thread_point
+table: compile_native refusal 16 owner=calls reason=undefined method 'next_run=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2154 in IyiScheduler.class#enqueue
+table: compile_native refusal 16 owner=calls reason=undefined method 'state' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3997 in IyiScheduler.class#deadlock_found
+table: compile_native refusal 16 owner=bodies reason=undefined local variable or method 'nonce' for IyiFiber example=src/iyi/./concurrency.iyi:749 in IyiFiber#claim_any
+table: compile_native refusal 16 owner=calls reason=expected argument #1 to 'IyiScheduler.enqueue' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:3998 in IyiScheduler.class#deadlock_found
+table: compile_native refusal 14 owner=calls reason=undefined method 'chaos_unit' for IyiFiber example=src/iyi/./chaos.iyi:264 in IyiChaos.class#unit_of
+table: compile_native refusal 14 owner=declarations reason=undefined constant HIGH example=src/iyi/./chaos.iyi:267 in IyiChaos.class#unit_of
+table: compile_native refusal 14 owner=calls reason=undefined method 'chaos_unit=' for IyiFiber example=src/iyi/./chaos.iyi:269 in IyiChaos.class#unit_of
+table: compile_native refusal 14 owner=declarations reason=undefined constant LOW example=src/iyi/./chaos.iyi:348 in IyiChaos.class#step
+table: compile_native refusal 14 owner=declarations reason=undefined constant SPIN_STEPS example=src/iyi/./chaos.iyi:350 in IyiChaos.class#step
+table: compile_native refusal 14 owner=calls reason=undefined method '|' for UInt64 example=src/iyi/./chaos.iyi:356 in IyiChaos.class#step
+table: compile_native refusal 14 owner=calls reason=undefined method 'chaos_held=' for IyiFiber example=src/iyi/./chaos.iyi:357 in IyiChaos.class#step
+table: compile_native refusal 14 owner=declarations reason=undefined constant THREADS example=src/iyi/./chaos.iyi:314 in IyiChaos.class#point
+table: compile_native refusal 14 owner=declarations reason=undefined constant IyiThread example=src/iyi/./chaos.iyi:525 in IyiChaos.class#thread_point
+table: compile_native refusal 14 owner=bodies reason=undefined local variable or method 'previous_def' for Atomic example=src/iyi/./chaos_points.iyi:16 in Atomic#get
+table: compile_native refusal 12 owner=bodies reason=undefined local variable or method 'total' for main example=src/iyi/prelude.iyi:10943 in __iyi_say
+table: compile_native refusal 12 owner=bodies reason=undefined local variable or method 'n' for main example=src/iyi/prelude.iyi:10945 in __iyi_say
+table: compile_native refusal 9 owner=bodies reason=undefined local variable or method 'now' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2761 in IyiScheduler.class#poll_now
+table: compile_native refusal 9 owner=calls reason=undefined method 'to_i64' for Int32 example=src/iyi/prelude.iyi:10819 in Pointer#[]
+table: compile_native refusal 9 owner=bodies reason=pointerof of @c is not ported yet: only a local variable is example=src/iyi/string.iyi:225 in String#to_unsafe
+table: compile_native refusal 8 owner=calls reason=expected argument #1 to 'Atomic(UInt64).new' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:1338 in IyiSchedulerState#initialize
+table: compile_native refusal 8 owner=bodies reason=undefined local variable or method '__iyi_monotonic_ns' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2760 in IyiScheduler.class#poll_now
+table: compile_native refusal 8 owner=bodies reason=undefined local variable or method 'task' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3987 in IyiScheduler.class#deadlock_found
+table: compile_native refusal 8 owner=bodies reason=undefined local variable or method 'group' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3989 in IyiScheduler.class#deadlock_found
+table: compile_native refusal 8 owner=calls reason=expected argument #1 to 'Atomic#add' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:748 in IyiFiber#claim_any
+table: compile_native refusal 8 owner=bodies reason=undefined local variable or method '__temp_1' for IyiFiber example=no location in IyiFiber#claim_any
+table: compile_native refusal 7 owner=calls reason=expected argument #1 to 'Atomic#compare_and_set' to be <unresolved T>, not UInt64 example=src/iyi/./concurrency.iyi:1359 in IyiSchedulerState#take_lists
+table: compile_native refusal 7 owner=bodies reason=undefined local variable or method '__temp_1' for IyiSchedulerState example=no location in IyiSchedulerState#take_lists
+table: compile_native refusal 7 owner=calls reason=undefined method '&+' for Int32 example=src/iyi/./concurrency.iyi:4344 in IyiScheduler.class#lists_lock
+table: compile_native refusal 7 owner=calls reason=undefined method 'deadline' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4026 in IyiScheduler.class#wait_for_events
+table: compile_native refusal 7 owner=unassigned reason=wrong number of arguments for 'Int64#+' (given 1, expected 0) example=src/iyi/./concurrency.iyi:4049 in IyiScheduler.class#wait_for_events
+table: compile_native refusal 6 owner=declarations reason=undefined constant IYI_POLL_EVENT_BYTES example=src/iyi/./concurrency.iyi:4167 in IyiScheduler.class#wait_for_events
+table: compile_native refusal 6 owner=bodies reason=undefined local variable or method 'entry' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4168 in IyiScheduler.class#wait_for_events
+table: compile_native refusal 6 owner=bodies reason=undefined local variable or method 'ready' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4181 in IyiScheduler.class#wait_for_events
+table: compile_native refusal 6 owner=bodies reason=undefined local variable or method 'file' for main example=src/iyi/prelude.iyi:11005 in raise
+table: compile_native refusal 5 owner=bodies reason=undefined local variable or method 'following' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3615 in IyiScheduler.class#wake_joiners
+table: compile_native refusal 5 owner=bodies reason=undefined local variable or method '__temp_1' for IyiScheduler.class example=no location in IyiScheduler.class#wake_expired_sleepers
+table: compile_native refusal 4 owner=bodies reason=undefined local variable or method 'rest' for IyiScheduler.class example=src/iyi/./concurrency.iyi:3611 in IyiScheduler.class#wake_joiners
+table: compile_native refusal 4 owner=calls reason=undefined method 'awaited' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3986 in IyiScheduler.class#deadlock_found
+table: compile_native refusal 4 owner=calls reason=undefined method 'joining' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3988 in IyiScheduler.class#deadlock_found
+table: compile_native refusal 4 owner=calls reason=undefined method 'deadlocked=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3994 in IyiScheduler.class#deadlock_found
+table: compile_native refusal 4 owner=calls reason=expected argument #2 to 'IyiScheduler.heap_remove' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:4661 in IyiScheduler.class#wake_expired_sleepers
+table: compile_native refusal 4 owner=calls reason=undefined method 'io_timed' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4662 in IyiScheduler.class#wake_expired_sleepers
+table: compile_native refusal 4 owner=calls reason=undefined method 'io_timed=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4664 in IyiScheduler.class#wake_expired_sleepers
+table: compile_native refusal 4 owner=calls reason=undefined method 'timed_out=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:4665 in IyiScheduler.class#wake_expired_sleepers
+table: compile_native refusal 4 owner=calls reason=undefined method '>' for Int32 example=src/iyi/./concurrency.iyi:5247 in IyiWorkers.class#count
+table: compile_native refusal 4 owner=bodies reason=undefined local variable or method 'asked' for IyiWorkers.class example=src/iyi/./concurrency.iyi:5322 in IyiWorkers.class#resolved
+table: compile_native refusal 4 owner=bodies reason=undefined local variable or method 'total' for IyiIO example=src/iyi/io.iyi:360 in IyiIO#flush
+table: compile_native refusal 4 owner=bodies reason=undefined local variable or method 'n' for IyiIO example=src/iyi/io.iyi:362 in IyiIO#flush
+table: compile_native refusal 3 owner=bodies reason=undefined local variable or method 'raise' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2587 in IyiScheduler.class#reschedule
+table: compile_native refusal 3 owner=bodies reason=undefined local variable or method 'head_deadline' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4047 in IyiScheduler.class#wait_for_events
+table: compile_native refusal 3 owner=bodies reason=undefined local variable or method 'gap' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4048 in IyiScheduler.class#wait_for_events
+table: compile_native refusal 3 owner=declarations reason=undefined constant EVENTS example=src/iyi/./concurrency.iyi:4982 in IyiScheduler.class#events_buffer
+table: compile_native refusal 3 owner=declarations reason=undefined constant IYI_POLL_DATA_OFFSET example=src/iyi/./concurrency.iyi:4168 in IyiScheduler.class#wait_for_events
+table: compile_native refusal 3 owner=bodies reason=undefined local variable or method 'fd' for IyiScheduler.class example=src/iyi/./concurrency.iyi:4181 in IyiScheduler.class#wait_for_events
+table: compile_native refusal 3 owner=calls reason=expected argument #1 to 'IyiScheduler.switch_to' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:2595 in IyiScheduler.class#reschedule
+table: compile_native refusal 3 owner=unassigned reason=wrong number of arguments for 'Int32#+' (given 1, expected 0) example=src/iyi/array.iyi:228 in Array#each
+table: compile_native refusal 3 owner=bodies reason=undefined local variable or method '__iyi_exit' for top-level example=src/iyi/prelude.iyi:10751 in top level
+table: compile_native refusal 2 owner=calls reason=undefined method 'next_joiner' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3609 in IyiScheduler.class#wake_joiners
+table: compile_native refusal 2 owner=calls reason=undefined method 'next_joiner=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3610 in IyiScheduler.class#wake_joiners
+table: compile_native refusal 2 owner=bodies reason=undefined local variable or method 'parks' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2590 in IyiScheduler.class#reschedule
+table: compile_native refusal 2 owner=bodies reason=undefined local variable or method 'waits_here' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2327 in IyiScheduler.class#take_mail
+table: compile_native refusal 2 owner=bodies reason=undefined local variable or method 'text' for IyiWorkers.class example=src/iyi/./concurrency.iyi:5320 in IyiWorkers.class#resolved
+table: compile_native refusal 2 owner=bodies reason=undefined local variable or method 'head' for IyiSchedulerState example=src/iyi/./concurrency.iyi:1436 in IyiSchedulerState#ring_size
+table: compile_native refusal 2 owner=bodies reason=undefined local variable or method 'tail' for IyiSchedulerState example=src/iyi/./concurrency.iyi:1436 in IyiSchedulerState#ring_size
+table: compile_native refusal 2 owner=calls reason=undefined method 'to_u64' for Int32 example=src/iyi/io.iyi:36 in IyiIO#initialize
+table: compile_native refusal 2 owner=declarations reason=undefined constant T example=src/iyi/primitives.iyi:202 in IyiAtomic.class#load
+table: compile_native refusal 2 owner=unassigned reason=unsupported node: MagicConstant example=src/iyi/prelude.iyi:10967 in top level
+table: compile_native refusal 2 owner=bodies reason=undefined local variable or method 'to_i64' for Int32 example=src/iyi/number.iyi:124 in Int32#to_s
+table: compile_native refusal 2 owner=bodies reason=undefined local variable or method 'raise' for IyiIO example=src/iyi/io.iyi:362 in IyiIO#flush
+table: compile_native refusal 1 owner=unassigned reason=instance variable '@state' of IyiFiber must be IyiFiberState, not (IyiFiberState | Int32) example=src/iyi/./concurrency.iyi:635 in IyiFiber#initialize
+table: compile_native refusal 1 owner=calls reason=undefined method 'on_cpu=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:1917 in IyiScheduler.class#landed
+table: compile_native refusal 1 owner=declarations reason=undefined constant STACK_BYTES example=src/iyi/./concurrency.iyi:926 in IyiFiber#release_stack
+table: compile_native refusal 1 owner=calls reason=expected argument #1 to 'IyiScheduler.unregister' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:1933 in IyiScheduler.class#reap_dying
+table: compile_native refusal 1 owner=unassigned reason=wrong number of arguments for 'Proc#call' (given 0, expected 1) example=src/iyi/./concurrency.iyi:2874 in IyiScheduler.class#run_spawned_fiber
+table: compile_native refusal 1 owner=calls reason=undefined method 'awaited=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:3620 in IyiScheduler.class#wake_joiners
+table: compile_native refusal 1 owner=calls reason=expected argument #1 to 'IyiScheduler.ready' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:3621 in IyiScheduler.class#wake_joiners
+table: compile_native refusal 1 owner=declarations reason=undefined constant POLL_EVERY example=src/iyi/./concurrency.iyi:2591 in IyiScheduler.class#reschedule
+table: compile_native refusal 1 owner=declarations reason=undefined constant POLL_IO_NS example=src/iyi/./concurrency.iyi:2761 in IyiScheduler.class#poll_now
+table: compile_native refusal 1 owner=calls reason=expected argument #2 to 'IyiScheduler.drain_unit' to be IyiUnit, not (IyiUnit | Nil) example=src/iyi/./concurrency.iyi:2724 in IyiScheduler.class#release_unit
+table: compile_native refusal 1 owner=calls reason=undefined method 'next_run' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2309 in IyiScheduler.class#take_mail
+table: compile_native refusal 1 owner=calls reason=undefined method 'next_cancel' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2323 in IyiScheduler.class#take_mail
+table: compile_native refusal 1 owner=calls reason=undefined method 'next_cancel=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2324 in IyiScheduler.class#take_mail
+table: compile_native refusal 1 owner=calls reason=undefined method 'cancel_posted=' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2325 in IyiScheduler.class#take_mail
+table: compile_native refusal 1 owner=calls reason=undefined method 'unit' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2326 in IyiScheduler.class#take_mail
+table: compile_native refusal 1 owner=calls reason=undefined method 'waiting_out' for Nil (compile-time type is (IyiFiber | Nil)) example=src/iyi/./concurrency.iyi:2327 in IyiScheduler.class#take_mail
+table: compile_native refusal 1 owner=calls reason=expected argument #1 to 'IyiScheduler.cancel_wait' to be IyiFiber, not (IyiFiber | Nil) example=src/iyi/./concurrency.iyi:2328 in IyiScheduler.class#take_mail
+table: compile_native refusal 1 owner=calls reason=undefined method '<' for Int32 example=src/iyi/array.iyi:226 in Array#each
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method 'fd' for Array example=src/iyi/./concurrency.iyi:2335 in Array#each
+table: compile_native refusal 1 owner=calls reason=undefined method 'each' for Nil (compile-time type is (Array | Nil)) example=src/iyi/./concurrency.iyi:2335 in IyiScheduler.class#take_mail
+table: compile_native refusal 1 owner=calls reason=undefined method 'quiet' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:2500 in IyiScheduler.class#all_quiet?
+table: compile_native refusal 1 owner=calls reason=undefined method 'idle' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:2504 in IyiScheduler.class#all_quiet?
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method 'quiet' for IyiScheduler.class example=src/iyi/./concurrency.iyi:2504 in IyiScheduler.class#all_quiet?
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method '__temp_2' for IyiScheduler.class example=no location in IyiScheduler.class#all_quiet?
+table: compile_native refusal 1 owner=calls reason=undefined method 'next_state' for Nil (compile-time type is (IyiSchedulerState | Nil)) example=src/iyi/./concurrency.iyi:2506 in IyiScheduler.class#all_quiet?
+table: compile_native refusal 1 owner=calls reason=undefined method '>' for Int64 example=src/iyi/./concurrency.iyi:2508 in IyiScheduler.class#all_quiet?
+table: compile_native refusal 1 owner=bodies reason=pointerof of @@queued is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:5777 in IyiWorkers.class#work_waiting?
+table: compile_native refusal 1 owner=bodies reason=pointerof of @@preempted is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:5778 in IyiWorkers.class#work_waiting?
+table: compile_native refusal 1 owner=bodies reason=pointerof of @@listed_count is not ported yet: only a local variable is example=src/iyi/./concurrency.iyi:5782 in IyiWorkers.class#work_waiting?
+table: compile_native refusal 1 owner=calls reason=undefined method 'to_u64' for Int64 example=src/iyi/./concurrency.iyi:5591 in IyiWorkers.class#listed_at
+table: compile_native refusal 1 owner=calls reason=undefined method '&+' for Int64 example=src/iyi/./concurrency.iyi:5786 in IyiWorkers.class#work_waiting?
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method '__iyi_program' for top-level example=src/iyi/prelude.iyi:10726 in top level
+table: compile_native refusal 1 owner=calls reason=undefined method '__iyi_main' for LibIyiMain.class example=src/iyi/prelude.iyi:10741 in top level
+table: compile_native refusal 1 owner=unassigned reason=unsupported node: TupleLiteral example=src/iyi/prelude.iyi:10800 in IyiOnce.class#run
+table: compile_native refusal 1 owner=calls reason=undefined method 'address' for Pointer(Void) example=src/iyi/prelude.iyi:10800 in IyiOnce.class#run
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method 'cell' for IyiOnce.class example=src/iyi/prelude.iyi:10801 in IyiOnce.class#run
+table: compile_native refusal 1 owner=bodies reason=pointerof operand has no type example=src/iyi/prelude.iyi:10801 in IyiOnce.class#run
+table: compile_native refusal 1 owner=calls reason=undefined method 'value' for Pointer(Proc(Nil)) example=src/iyi/prelude.iyi:10801 in IyiOnce.class#run
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method '__temp_4' for main example=no location in raise
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method '__temp_3' for main example=no location in raise
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method '__temp_2' for main example=no location in raise
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method '__temp_1' for main example=no location in raise
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method 'line' for main example=src/iyi/prelude.iyi:11009 in raise
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method '__iyi_enter' for top-level example=src/iyi/prelude.iyi:11698 in top level
+table: compile_native refusal 1 owner=bodies reason=undefined local variable or method 'skipped' for IyiTestCases.class example=src/iyi/testing.iyi:251 in IyiTestCases.class#verdict
+table: compile_native refusal 1 owner=unassigned reason=wrong number of arguments for 'Int32#-' (given 1, expected 0) example=src/iyi/testing.iyi:251 in IyiTestCases.class#verdict
+```
+<!-- table:end -->
