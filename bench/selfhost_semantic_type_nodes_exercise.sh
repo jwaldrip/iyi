@@ -140,6 +140,12 @@ prove_mutation "enum definition is not typed" "$REPO/src/compiler/semantic/main_
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "uninitialized local is recorded as Nil" "$TYPE_NODES" \
+  "visitor.vars[name] = declared" \
+  "visitor.vars[name] = visitor.program.nil_type" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
