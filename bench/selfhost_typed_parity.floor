@@ -136,6 +136,7 @@ src/compiler/tools/parse.iyi 0
 src/compiler/tools/typed_dump.iyi 0
 src/compiler/types.iyi 0
 src/compiler/types/filtering.iyi 0
+src/compiler/types/indirection.iyi 0
 src/compiler/types/merge.iyi 0
 src/compiler/types/rendering.iyi 0
 src/compiler/types/restrictions.iyi 0
