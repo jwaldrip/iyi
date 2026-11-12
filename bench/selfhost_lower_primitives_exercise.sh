@@ -47,7 +47,6 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
-    lowprim_checked) echo "the analysis types the fun with a body now, and the lowering refuses visit(FunDef) (pending.iyi): the core's FunDef lowering, NEEDS.md row 25" ;;
     lowprim_ptr) echo "the generic metaclass resolves its receiver now (S1c, 17bc4d2f8), but the bare analysis declares no Pointer primitives, so Pointer(Int32).malloc is undefined: the hosted oracle needs the prelude, and the bare dump has none (NEEDS.md row 19; the Pointer primitives are increment 2)" ;;
   esac
 }
@@ -60,6 +59,7 @@ waiting_on() {
 known_divergence() {
   case "$1" in
     lowprim_alloc_class) echo "call_types splits a constant expression argument (lower_oracle.sh, split_top pending on the calls lane)" ;;
+    lowprim_checked) echo "the port defines __crystal_raise_overflow external; the hosted fixture's is internal (core's visit(FunDef) linkage, codegen_fun; S2a4Core)" ;;
   esac
 }
 # Fixtures identical to the hosted module whose native executable waits by name: the native tool refuses the
