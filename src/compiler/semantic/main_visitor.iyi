@@ -208,15 +208,6 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
-  def lookup_under(node : ASTNode, owner : Type?) : Type
-    if receiver_instance(owner).nil?
-      return @program.lookup_type_node(node, @current_type)
-    end
-    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
-    return found.as(Type) unless found.is_a?(LookupError)
-    @program.lookup_type_node(node, @current_type)
-  end
-
   # The type a declared type names, or nil when it names none. A declared type never
   # raises here (the trunk's lookup raises on an unresolved name): the caller records
   # the refusal on its node. Generic receivers bind their type parameters as lookup_under does.
