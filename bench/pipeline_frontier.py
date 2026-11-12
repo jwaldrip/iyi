@@ -24,20 +24,20 @@ CALL = re.compile(r'(?:call|invoke)\b[^@\n]*@("(?:[^"\\]|\\.)*"|[^\s(,]+)\(')
 
 # The slice word the tool writes (typed_owner in lower/program.iyi) -> the live agent that owns it (OWNERS.md).
 SLICE_OWNER = {
-    "bodies": "agent://S1d13Bodies",
+    "bodies": "agent://S1d14Bodies",
     "declarations": "agent://S1b17Declarations",
     "calls": "agent://S1c10Calls",
     "macros": "agent://S1bInlineMacros11",
-    "lowering core": "agent://S2a12Core",
-    "lowering": "agent://S2a12Core",
+    "lowering core": "agent://S2a13Core",
+    "lowering": "agent://S2a13Core",
     "unassigned": "unassigned (no rule in typed_owner)",
 }
 STRUCTURAL = {
     "entry": "agent://S3jPipeline (program assembly)",
-    "proc": "agent://S2a12Core (closures)",
+    "proc": "agent://S2a13Core (closures)",
     "const": "agent://S2e10Globals",
-    "generic": "agent://S2a12Core (mangled_name: ^Generic(T) segment)",
-    "shim": "agent://S2a12Core (runtime shims)",
+    "generic": "agent://S2a13Core (mangled_name: ^Generic(T) segment)",
+    "shim": "agent://S2a13Core (runtime shims)",
 }
 
 
