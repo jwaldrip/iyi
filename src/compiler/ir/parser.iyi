@@ -1,7 +1,7 @@
 module compiler/ir/parser
 
-import compiler/ir/types::{IrType, TypeTable}
-import compiler/ir/values::{Value, Param, Wide128, i128_parse}
+import compiler/ir/types::{IrType, TypeTable, valid_int_bits?}
+import compiler/ir/values::{Value, Param, int_words_parse}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, Ordering, Attribute, ThreadPointerKind, DebugLoc}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel, DebugSubprogram, Visibility}
 import compiler/ir/module::{Module}
@@ -1388,7 +1388,12 @@ class IrParser
       end
       if type_word?(word)
         c.take
-        return types.int(int_word_bits(word))
+        bits = word.bytesize > 8 ? 0 : int_word_bits(word)
+        unless valid_int_bits?(bits)
+          c.fail("no integer type of #{word[1, word.bytesize - 1]} bits in the IR")
+          return types.void
+        end
+        return types.int(bits)
       end
       c.fail("expected a type but found `#{word}`")
       return types.void
@@ -1502,13 +1507,13 @@ class IrParser
       return dummy(type)
     end
     if t.kind == TokKind::Int
-      if type.int? && type.bits == 128
-        if wide = i128_parse(t.text)
-          inst = make_const(Op::ConstInt, type, wide.lo)
-          inst.aux_hi = wide.hi
+      if type.int? && type.bits > 64
+        if words = int_words_parse(t.text, type.bits)
+          inst = make_const(Op::ConstInt, type, words[0])
+          inst.wide_words = words
           return inst
         end
-        c.fail("#{t.text} does not fit an i128")
+        c.fail("#{t.text} does not fit an i#{type.bits}")
         return dummy(type)
       end
       return make_const(Op::ConstInt, type, t.num)

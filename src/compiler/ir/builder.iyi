@@ -1,7 +1,7 @@
 module compiler/ir/builder
 
 import compiler/ir/types::{IrType, TypeTable}
-import compiler/ir/values::{Value, double_bits, single_bits, u64_as_i64}
+import compiler/ir/values::{Value, double_bits, single_bits, u64_as_i64, canonical_words}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, Attribute, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, InstAux, Ordering, IntPredicate, RealPredicate, ThreadPointerKind, DebugLoc, terminator_op?}
 import compiler/ir/function::{Function, Global}
 import compiler/ir/module::{Module}
@@ -50,11 +50,18 @@ pub class Builder
 
   # ---- constants ----------------------------------------------------------------------
 
-  # An integer constant. For i128 the high half is the sign extension of `value`.
+  # An integer constant. An integer wider than 64 bits gets every word: the sign extension of `value`.
   def const_int(type : IrType, value : Int64) : Inst
     raise "a ConstInt needs an integer type, not #{type}" unless type.int?
     inst = Inst.new(Op::ConstInt, type, [] of Value, value, nil, [] of Block, [] of Int64)
-    inst.aux_hi = value < 0_i64 ? -1_i64 : 0_i64
+    if type.bits > 64
+      sign = value < 0_i64 ? -1_i64 : 0_i64
+      words = [value] of Int64
+      while words.size < (type.bits + 63) // 64
+        words << sign
+      end
+      inst.wide_words = words
+    end
     inst
   end
 
@@ -62,7 +69,18 @@ pub class Builder
   def const_wide(type : IrType, hi : Int64, lo : Int64) : Inst
     raise "a wide constant needs an i128, not #{type}" unless type.int? && type.bits == 128
     inst = Inst.new(Op::ConstInt, type, [] of Value, lo, nil, [] of Block, [] of Int64)
-    inst.aux_hi = hi
+    inst.wide_words = [lo, hi]
+    inst
+  end
+
+  # An integer constant wider than 64 bits from its 64-bit words, least significant first. The value is truncated to the
+  # type's width and sign-extended, so one value has exactly one word list.
+  def const_words(type : IrType, words : Array(Int64)) : Inst
+    raise "a wide constant needs an integer wider than 64 bits, not #{type}" unless type.int? && type.bits > 64
+    count = (type.bits + 63) // 64
+    raise "#{type} takes #{count} words, not #{words.size}" unless words.size == count
+    inst = Inst.new(Op::ConstInt, type, [] of Value, words[0], nil, [] of Block, [] of Int64)
+    inst.wide_words = canonical_words(words, type.bits)
     inst
   end
 

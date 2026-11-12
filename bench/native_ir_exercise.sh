@@ -93,6 +93,26 @@ struct_check() {
   return $status
 }
 
+# The wide-integer struct fixture for one of our triples, as `ir_core structs` prints it. Non-zero when it cannot be made.
+wide_ours() {
+  local bin="$1" our_t="$2" dl
+  dl=$("$DRV" layout "$our_t" | sed 's/^target datalayout = "//; s/"$//') || return 1
+  sed "s|@TRIPLE@|$our_t|; s|@DATALAYOUT@|$dl|" bench/fixtures/ir/layout/wide_structs.ir.in >"$WORK/wide-$our_t.ir" || return 1
+  "$bin" structs "$WORK/wide-$our_t.ir"
+}
+
+# Compares the wide-integer struct layouts with LLVM's DataLayout on every target. Non-zero when any line differs.
+wide_check() {
+  local bin="$1" pair oracle_t our_t status=0
+  for pair in "${TARGETS[@]}"; do
+    oracle_t=${pair%% *}
+    our_t=${pair#* }
+    wide_ours "$bin" "$our_t" >"$WORK/wide-ours-$our_t.txt" || return 1
+    diff -q "$WORK/wide-oracle-$oracle_t.txt" "$WORK/wide-ours-$our_t.txt" >/dev/null || status=1
+  done
+  return $status
+}
+
 # Every valid fixture must round-trip. Non-zero when any does not.
 roundtrip_check() {
   local bin="$1" f out
@@ -273,6 +293,23 @@ for pair in "${TARGETS[@]}"; do
   fi
 done
 
+# ---- 7b. wide integers against LLVM's own DataLayout -------------------------------------------
+echo "== 7b. struct layouts with i192, i65 and i33 agree with LLVM's DataLayout on all five targets"
+if ! CRYSTAL_PATH="$PWD/src" ./bin/crystal build -o "$WORK/llvm_layout" bench/fixtures/ir/layout/llvm_layout.cr >"$WORK/llvm_layout.log" 2>&1; then
+  fail "the LLVM layout probe does not build: $(tail -n 3 "$WORK/llvm_layout.log")"
+else
+  for pair in "${TARGETS[@]}"; do
+    oracle_t=${pair%% *}
+    our_t=${pair#* }
+    "$WORK/llvm_layout" "$our_t" >"$WORK/wide-oracle-$oracle_t.txt" || fail "the LLVM layout probe fails for $our_t"
+  done
+  if wide_check "$DRV"; then
+    echo "wide struct layouts ok on all five targets"
+  else
+    fail "a wide struct layout differs from LLVM's DataLayout"
+  fi
+fi
+
 # ---- 8. mutation proofs ------------------------------------------------------------------------
 echo "== 8. mutations are each caught"
 prove_mutation "layout: offset_of drops its alignment rounding" \
@@ -280,6 +317,11 @@ prove_mutation "layout: offset_of drops its alignment rounding" \
   'off = ((off + a - 1) // a) * a' \
   'off = off' \
   struct_check
+prove_mutation "layout: an integer wider than 64 bits is 8-byte aligned, not 16" \
+  src/compiler/ir/layout.iyi \
+  $'    return 8 if bits <= 64\n    16' \
+  $'    return 8 if bits <= 64\n    8' \
+  wide_check
 prove_mutation "printer: the Add and Sub mnemonics swap" \
   src/compiler/ir/printer.iyi \
   '    when Op::Add then "add"' \
@@ -294,6 +336,11 @@ prove_mutation "printer: an intrinsic operand drops its align attribute" \
   src/compiler/ir/printer.iyi \
   'attrs = k < aux.param_attrs.size ? attrs_inline(aux.param_attrs[k]) : ""' \
   'attrs = k < aux.param_attrs.size ? attrs_inline(aux.param_attrs[k].select { |a| a.name != "align" }) : ""' \
+  roundtrip_check
+prove_mutation "printer: a wide integer constant is written as its low word alone" \
+  src/compiler/ir/printer.iyi \
+  'return int_words_text(i.int_words(i.type.bits), i.type.bits) if i.type.bits > 64' \
+  'return i.aux_int.to_s if i.type.bits > 64' \
   roundtrip_check
 prove_mutation "verifier: a call no longer kills thread-local values" \
   src/compiler/ir/verifier.iyi \
