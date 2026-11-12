@@ -5,10 +5,9 @@ module bench/selfhost_lower_primitives_exercise
 # (bench/lib/lower_gate.iyi), as the calls gate's does: a lib's funs are not typed by the semantic
 # pass yet.
 #
-# The fixtures are bare programs (the hosted build is `--prelude empty`), so the typer keeps the
-# hosted object layout, where a class's type id is its first field. The shared lower and emit
-# modes of bench/lib/lower_gate.iyi build the typer with the header layout; this driver builds it
-# with the bare layout, here and nowhere else.
+# The fixtures are bare programs (the hosted build is `--prelude empty`), so the program's own layout
+# (`Analysis.iyi`, the rule every lowering gate uses) is the hosted bare one: a class's type id is its
+# first field. The typer takes the layout from the analysed program, as the hosted driver does.
 #
 #   port oracle <oracle.ll>                 the oracle module, normalised, one line each
 #   port lower <fixture.iyi> <oracle.ll>    lowers the fixture and compares it with the oracle
@@ -21,10 +20,9 @@ import compiler/ir/printer::{print}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program}
 
-# The bare layout of the typer: a bare program is not an own-prelude build, so its objects are
-# the hosted (`Program#iyi_object_layout?` is false without the prelude's IyiRuntimeLock).
-def bare_typer(m : Module) : LowerTyper
-  LowerTyper.new(m.types, m.layout, false)
+# The typer's layout is the analysed program's (hosted `Program#iyi_object_layout?`).
+def typer_for(m : Module, iyi : Bool) : LowerTyper
+  LowerTyper.new(m.types, m.layout, iyi)
 end
 
 def lower_bare(fixture : String, oracle_path : String) : Nil
@@ -37,7 +35,7 @@ def lower_bare(fixture : String, oracle_path : String) : Nil
 
   analysis = analyse(File.read(fixture), fixture, true)
   m = ir_module(triple)
-  codegen_program(analysis.root, analysis.visitor, bare_typer(m), m)
+  codegen_program(analysis.root, analysis.visitor, typer_for(m, analysis.iyi), m)
   port_text = print(m)
   port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
   identical = compare(oracle, port)
@@ -50,7 +48,7 @@ def emit_bare(fixture : String, oracle_path : String) : Nil
   triple = triple_of(File.read(oracle_path))
   analysis = analyse(File.read(fixture), fixture, true)
   m = ir_module(triple)
-  codegen_program(analysis.root, analysis.visitor, bare_typer(m), m)
+  codegen_program(analysis.root, analysis.visitor, typer_for(m, analysis.iyi), m)
   puts print(m)
 end
 
