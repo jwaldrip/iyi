@@ -94,6 +94,10 @@ end
 # The declarations phase: every unit declared in initialiser order (dependencies first, the entry last), the
 # guessed instance variables, then the root and the body visitor. The stand-ins apply when no prelude is loaded.
 pub def declare_program(classes : Array(ClassDef), libs : Array(LibDef), defs : Array(Def), funs : Array(FunDef), top_level : Array(ASTNode), links : Array(String), stand_in : Bool, prog : SemanticProgram, units : Array(ModuleInfo)) : TypedProgram
+  # Every unit's tree is registered before any unit is declared: a require that reaches a unit early reads this tree.
+  units.each do |mod_info|
+    prog.unit_trees[normalize_path(mod_info.filename)] = mod_info.ast
+  end
   units.each do |mod_info|
     declare_unit(prog, mod_info.filename, mod_info.ast)
   end

@@ -29,6 +29,8 @@
 #        the oracle cannot analyse is reported ORACLE and is not measured. A file the
 #        port rejects counts zero and is reported PORT.
 #   7. Guarded mutation proofs on the fixtures (bench/lib/mutation.sh).
+#   8. Pipeline reach: hello and the reach fixture's root through the pipeline tool with the prelude, against
+#      bench/selfhost_inline_reach.floor, with three mutation proofs on the reach fixture.
 #
 # Environment:
 #   SEMINL_RAISE=1         write the floor up to the measured counts (never lower)
@@ -339,6 +341,81 @@ prove_mutation "a site inside a lib body is parsed as an ordinary body" "$MUT_IN
   "parsed = in_lib ? parser.parse_lib_body : parser.parse" \
   "parsed = parser.parse" \
   -- check_inline_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+echo
+echo "== 8. Pipeline reach: each root through the pipeline tool with the prelude, against bench/selfhost_inline_reach.floor"
+REACH_FLOOR="$REPO/bench/selfhost_inline_reach.floor"
+MUT_PROG="$REPO/src/compiler/lower/program.iyi"
+
+# Prints "<defs-reached> <no-record rows>" for the root $1 (repo-relative), run by the pipeline tool $2, output tagged $3.
+reach_of() {
+  local root="$1" tool="$2" tag="$3" log="$WORK/reach_$3.log"
+  (cd "$REPO" && IYI_PATH="$REPO/src" "$tool" "$root" -o "$WORK/reach_exe_$tag" --pipeline typed --prelude --probe-phase --keep-going > "$log" 2>&1)
+  awk '
+    /^table: .* defs-reached=/ { sub(/.*defs-reached=/, ""); reach = $1 }
+    /no record from the declarations pass/ { missing++ }
+    END { print (reach == "" ? 0 : reach), missing + 0 }' "$log"
+}
+
+# Checks each floor row (or only the root $2) against the pipeline tool $1. A root below its floor or with a fun that has
+# no record fails. A floor below the measured count fails too, unless SEMINL_RAISE=1 writes the count up (never down).
+check_reach() {
+  local tool="$1" only="${2:-}" fail=0 root floor reach missing tag
+  while read -r root floor; do
+    case "$root" in ""|\#*) continue ;; esac
+    if [ -n "$only" ] && [ "$root" != "$only" ]; then continue; fi
+    tag=$(basename "$root" .iyi)
+    set -- $(reach_of "$root" "$tool" "$tag")
+    reach=$1
+    missing=$2
+    echo "  $root: defs-reached $reach (floor $floor), no-record rows $missing"
+    if [ "$missing" -ne 0 ] || [ "$reach" -lt "$floor" ]; then
+      echo "  BELOW FLOOR: $root. A regression: restore the declaration or lower nothing."
+      fail=1
+    elif [ "$reach" -gt "$floor" ]; then
+      if [ "$RAISE" = 1 ]; then
+        awk -v r="$root" -v n="$reach" '$1 == r { $2 = n } { print }' "$REACH_FLOOR" > "$WORK/reach.floor.tmp" && mv "$WORK/reach.floor.tmp" "$REACH_FLOOR"
+      else
+        echo "  RAISE THE FLOOR: $root reaches $reach, floor $floor (SEMINL_RAISE=1)."
+        fail=1
+      fi
+    fi
+  done < "$REACH_FLOOR"
+  return "$fail"
+}
+
+# The check the reach mutations must fail: the reach fixture's root through a pipeline tool built from the tree as it is.
+check_reach_fixture() {
+  local RAISE=0 probe="$WORK/mut_reach_tool"
+  "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_reach_build.log" 2>&1 || return 1
+  check_reach "$probe" bench/fixtures/seminl_reach/root.iyi > "$WORK/mut_reach.txt" 2>&1
+}
+
+echo "  building the pipeline tool"
+if "$IYI" build -o "$WORK/reach_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/reach_build.log" 2>&1; then
+  check_reach "$WORK/reach_tool" || status=1
+else
+  echo "FAILED to build the pipeline tool"
+  status=1
+fi
+
+prove_mutation "the fixture's required file is parsed again instead of read from the pipeline's own tree" "$MUT_SEM" \
+  "nodes = @program.unit_tree_or_parse(file)" \
+  "nodes = Parser.new(File.read(file), file).parse" \
+  -- check_reach_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "the pipeline's unit trees are registered under a key no require asks for" "$MUT_PROG" \
+  "prog.unit_trees[normalize_path(mod_info.filename)] = mod_info.ast" \
+  "prog.unit_trees[normalize_path(mod_info.filename) + \"~\"] = mod_info.ast" \
+  -- check_reach_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a require looks up the pipeline's tree under a key that is never registered" "$MUT_SEM" \
+  "if tree = @unit_trees[file]?" \
+  "if tree = @unit_trees[file + \"~\"]?" \
+  -- check_reach_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"

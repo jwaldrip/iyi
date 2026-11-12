@@ -992,9 +992,20 @@ pub class SemanticProgram < NonGenericModuleType
   # The files read so far (absolute paths), and the module each one declared.
   getter loaded_files : Set(String)
   getter loaded_units : Hash(String, ModuleType)
+  # The normalised tree the pipeline holds for each unit, by normalised path. It is registered before any unit is
+  # declared, so a require that reaches a unit before its own turn reads this tree, not a second parse of the file.
+  getter unit_trees : Hash(String, ASTNode)
 
   def object_type : ClassType
     @object_type.as(ClassType)
+  end
+
+  # The tree the pipeline holds for a unit file, or a fresh parse of the file when the pipeline holds none.
+  def unit_tree_or_parse(file : String) : ASTNode
+    if tree = @unit_trees[file]?
+      return tree
+    end
+    Parser.new(File.read(file), file).parse
   end
 
   def value_type : ClassType
@@ -1214,6 +1225,7 @@ pub class SemanticProgram < NonGenericModuleType
     @search_path = [] of String
     @loaded_files = Set(String).new
     @loaded_units = Hash(String, ModuleType).new
+    @unit_trees = Hash(String, ASTNode).new
     @object_type = nil
     @value_type = nil
     @reference_type = nil
@@ -1861,8 +1873,8 @@ pub class TopLevelVisitor < Visitor
       return @program.loaded_units[file]?
     end
     @program.loaded_files.add(file)
-    parser = Parser.new(File.read(file), file)
-    nodes = parser.parse
+    # The pipeline holds the file's normalised tree when it declared the units. Reading that tree keeps one tree per file.
+    nodes = @program.unit_tree_or_parse(file)
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
     saved_defs = @program.current_import_defs
