@@ -1139,16 +1139,43 @@ pub class CodeGenVisitor < Visitor
     t1
   end
 
-  # The class an expression's value is an instance of, when the expression alone says:
-  # a constructor call Type.new(...). Nil for everything else.
+  # The class an expression's value is an instance of, when the expression says it: a constructor call
+  # Type.new(...), or a field or method of a receiver whose class is known, so g.label and h.label.text
+  # are typed. Nil for everything else.
   def expression_class_type(node : ASTNode) : String?
     if node.is_a?(Call)
       call = node.as(Call)
       if call.name == "new" && (recv = call.obj) && recv.is_a?(Path)
         return recv.to_s
       end
+      if (recv = call.obj) && (rec_class = receiver_class_name(recv)) && (info = @custom_types[rec_class]?)
+        if call.args.empty? && info.fields.has_key?(call.name)
+          ft = info.field_types[call.name]
+          if @custom_types.has_key?(ft)
+            return ft
+          end
+        elsif (m = info.methods[call.name]?) && m.return_type
+          rt = m.return_type.to_s.lstrip(':')
+          if @custom_types.has_key?(rt)
+            return rt
+          end
+        end
+      end
     end
     nil
+  end
+
+  # The custom class a receiver is an instance of: a local whose type is a custom class, or an expression
+  # expression_class_type can type. Nil for everything else.
+  def receiver_class_name(node : ASTNode) : String?
+    if node.is_a?(Var)
+      tname = @var_type_names[node.as(Var).name]?
+      if tname && @custom_types.has_key?(tname)
+        return tname
+      end
+      return nil
+    end
+    expression_class_type(node)
   end
 
   def infer_var_type(vname : String, node : ASTNode) : String
@@ -2646,22 +2673,36 @@ pub class CodeGenVisitor < Visitor
     end
   end
 
+  # The enclosing type's name, as the hosted compiler names the scope a macro expands in.
+  def macro_scope_name : String
+    (@current_self_type || "<Program>").split("(")[0]
+  end
+
   # `{% if %}` in a body: the condition is a macro expression the macro engine
   # evaluates against the target's flags, and only the chosen branch is emitted,
   # as the oracle expands it. Walking both branches would refuse a flag the
   # target does not set.
   def visit(node : MacroIf) : Bool
-    interp = MacroInterpreter.new(nil, @macro_flags)
-    cond_val = interp.evaluate(node.cond)
+    scope = macro_scope_name
+    cond_val = MacroInterpreter.new(nil, @macro_flags, scope).evaluate(node.cond)
     branch = MacroMethods.truthy?(cond_val) ? node.then : node.else
-    branch.accept(self)
+    if chosen = branch
+      # Raw macro text in the branch is rendered, then parsed and emitted in place, as a site is.
+      renderer = MacroInterpreter.new(nil, @macro_flags, scope)
+      renderer.interpret(chosen)
+      text = renderer.to_s
+      unless text.strip.empty?
+        expanded = Normalizer.new.normalize(Parser.new(text).parse)
+        expanded.accept(self)
+      end
+    end
     false
   end
 
   # `{{ ... }}` in a body: the macro engine expands the site with the enclosing type as `@type`, as the hosted compiler
   # does. The expansion is parsed, normalised and emitted in place of the site. A site that fails to expand is refused.
   def visit(node : MacroExpression) : Bool
-    scope = (@current_self_type || "<Program>").split("(")[0]
+    scope = macro_scope_name
     report = MacroEngine.new(@macro_flags).site_report(node, scope)
     if failure = report.failure
       refuse_port("port limitation: the macro site in #{scope_name} fails to expand: #{failure.message} (no IR is written)")
@@ -3310,6 +3351,18 @@ pub class CodeGenVisitor < Visitor
       # The method is found before the receiver is evaluated, so a miss emits nothing.
       if !obj.is_a?(Var) && (rt_name = expression_class_type(obj)) && @custom_types.has_key?(rt_name)
         r_info = @custom_types[rt_name]
+        if !r_info.is_struct && r_info.generic_name.nil? && node.args.empty? && r_info.fields.has_key?(node.name)
+          obj.accept(self)
+          if recv_val = @last
+            f_st = @llvm_struct_types[r_info.name]
+            f_gep = @builder.inbounds_gep(f_st, recv_val, [@builder.const_int(@types.int32, 0), @builder.const_int(@types.int32, r_info.fields[node.name] + 1)])
+            f_inst = @builder.load(llvm_type_from_name(r_info.field_types[node.name]), f_gep)
+            set_align(f_inst, 4)
+            @last = f_inst
+            @terminated = false
+            return false
+          end
+        end
         if !r_info.is_struct && r_info.generic_name.nil? && (r_m = r_info.methods[node.name]?)
           r_expected = r_m.args.map { |a| a.restriction ? a.restriction.to_s : "Int32" }
           r_ret = r_m.return_type ? r_m.return_type.to_s.lstrip(':') : "Int32"
