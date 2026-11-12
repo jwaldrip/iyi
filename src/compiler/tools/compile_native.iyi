@@ -2,6 +2,7 @@
 #
 #   iyi-compile-native <program.iyi> -o <exe> [--backend native] [--target aarch64-apple-darwin]
 #   iyi-compile-native <program.ir>  -o <exe> [--target aarch64-apple-darwin]
+#   iyi-compile-native <program.iyi> -o <exe> --probe-phase   prints the phase each stage reached, and writes no executable on a refusal
 #
 # A .iyi program is compiled from source by the compiler pipeline with the native backend (compiler/backend/native).
 # A .ir program is IR text: it is parsed and verified, then compiled by the native backend the same way. Either way the
@@ -66,6 +67,7 @@ module CompileNative
     input = args[0]
     output = args[2]
     target = TARGET
+    probe = false
     i = 3
     while i < args.size
       if args[i] == "--target" && i + 1 < args.size
@@ -77,6 +79,9 @@ module CompileNative
           fail("this tool has only the native backend, and #{args[i + 1]} was asked for")
         end
         i = i + 2
+      elsif args[i] == "--probe-phase"
+        probe = true
+        i = i + 1
       else
         fail("unknown argument #{args[i]}")
       end
@@ -93,9 +98,9 @@ module CompileNative
       unless target == TARGET
         fail("source programs build for #{TARGET} with the native backend, and #{target} was asked for")
       end
-      config = CompilerConfig.new(output, false, nil, false, target, false, false, false)
+      config = CompilerConfig.new(output, false, nil, false, target, probe, false, false)
       Compiler.new(config, Loader.new, NativeBackend.new).compile(input)
-      print "BUILT #{output}\n"
+      print "BUILT #{output}\n" unless probe
       return nil
     end
     mod = module_of(File.read(input), input)
