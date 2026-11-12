@@ -1,5 +1,5 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Call, NamedArgument, Out, Path, Underscore, Var}
+import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, NamedArgument, Out, Path, Underscore, Var}
 import compiler/semantic/top_level::{LibType, ModuleType, SemanticProgram, TopLevelVisitor, Type, dir_of}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
@@ -105,6 +105,50 @@ module BenchSelfhostSemanticCallsExercise
       texts << arg.to_s
     end
     texts.join(", ")
+  end
+
+  # `# wrapper` line: the wrapper def the call goes to (DefaultArguments.wrapper_def), as
+  # its name, its parameter names and its body's statements, or `self` when the call
+  # needs no wrapper. Prints the text the hosted oracle prints for the same line.
+  def self.evaluate_wrapper(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
+    node = Parser.new(expr, "call").parse
+    if !node.is_a?(Call)
+      return "error: not a call"
+    end
+    call = node.as(Call)
+    found = lookup(prog, ts, call)
+    if found.is_a?(String)
+      return "error: #{found.as(String)}"
+    end
+    matches = found.as(Matches)
+    if matches.error
+      return "error: #{matches.error.to_s}"
+    end
+    if matches.matches.size != 1
+      return "error: expected one match"
+    end
+    definition = matches.matches[0].definition
+    if !DefaultArguments.supported?(definition, call.args, call.named_args)
+      return "error: default arguments not supported"
+    end
+    wrapper = DefaultArguments.wrapper_def(definition, call.args.size, call.named_args)
+    if wrapper.nil?
+      return "self"
+    end
+    names = [] of String
+    wrapper.as(Def).args.each do |arg|
+      names << arg.name
+    end
+    statements = [] of String
+    body = wrapper.as(Def).body
+    if body.is_a?(Expressions)
+      body.as(Expressions).expressions.each do |item|
+        statements << item.to_s
+      end
+    else
+      statements << body.to_s
+    end
+    "#{wrapper.as(Def).name}(#{names.join(", ")}) { #{statements.join("; ")} }"
   end
 
   def self.evaluate(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
@@ -236,6 +280,9 @@ module BenchSelfhostSemanticCallsExercise
       elsif line.starts_with?("# expand ")
         expr = line[9, line.bytesize - 9].strip
         out << "#{expr} => #{evaluate_expand(prog, ts, expr)}"
+      elsif line.starts_with?("# wrapper ")
+        expr = line[10, line.bytesize - 10].strip
+        out << "#{expr} => #{evaluate_wrapper(prog, ts, expr)}"
       end
     end
     out.join("\n") + "\n"
