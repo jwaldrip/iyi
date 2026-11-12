@@ -37,6 +37,7 @@ src/compiler/llvm/pass_manager.iyi parse
 src/compiler/llvm/target.iyi parse
 src/compiler/llvm/values.iyi parse
 src/compiler/loader.iyi parse
+src/compiler/lower/headed.iyi parse
 src/compiler/lower/layouts.iyi parse
 src/compiler/lower/type_id.iyi parse
 src/compiler/lower/typer.iyi parse
@@ -182,5 +183,6 @@ src/compiler/lower/instance_var.iyi parse
 src/compiler/lower/abi/aarch64.iyi parse
 src/compiler/lower/program.iyi parse
 src/compiler/native/const_expr.iyi parse
+src/compiler/semantic/inline_macros.iyi parse
 src/compiler/semantic/lib_call.iyi parse
 src/compiler/semantic/inline_macros.iyi parse
