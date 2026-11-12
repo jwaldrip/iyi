@@ -412,7 +412,7 @@ MEASUREMENT PENDING: the 1,000-test table after the fast path, by hand on darwin
 
 Completion requires all of:
 1. Every §12 row automated and green on every enabled platform.
-2. RG1 through RG9 each green on the integrated 140-program corpus, or claim withdrawn in SPEC.md.
+2. RG1 through RG10 each green on the integrated 140-program corpus, or claim withdrawn in SPEC.md.
 3. Census with zero runner or internal reasons, and reusable programs on every enabled platform.
 4. Consumption and audit run on master with zero disagreements since enablement.
 5. SPEC.md recording census and overhead as measured.

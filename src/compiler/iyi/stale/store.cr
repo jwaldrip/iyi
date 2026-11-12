@@ -21,8 +21,13 @@ module Iyi::Stale
     # index does not count, so this measures how often the files were read.
     getter imported_parses : Int32 = 0
 
-    # Imported snapshot files as this store last read them, by path.
+    # Imported snapshot files as this store last read them, by path. The
+    # runner checks tests at once and its fibers run on several threads, so
+    # the index has a lock of its own. A thread's lock and not a fiber's:
+    # a lookup is made inside `lock` too (`revoke`), where nothing may
+    # suspend the fiber, and what this guards only reads files.
     @imported = {} of String => ImportedFile
+    @imported_lock = Thread::Mutex.new
 
     def initialize(cache_root : String? = nil)
       @cache_root = cache_root || ENV["IYI_CACHE_DIR"]? || ENV["CRYSTAL_CACHE_DIR"]? || CacheDir.instance.dir
@@ -282,27 +287,29 @@ module Iyi::Stale
     # size and mtime as the one already read is not seen until the next change.
     # Atomic writes make that rare, not impossible.
     private def imported_files : Array(ImportedFile)
-      files = [] of ImportedFile
-      fresh = {} of String => ImportedFile
-      if Dir.exists?(@imported_dir)
-        Dir.each_child(@imported_dir) do |fname|
-          next unless fname.ends_with?(".json")
-          path = File.join(@imported_dir, fname)
-          info = File.info?(path)
-          next unless info
+      @imported_lock.synchronize do
+        files = [] of ImportedFile
+        fresh = {} of String => ImportedFile
+        if Dir.exists?(@imported_dir)
+          Dir.each_child(@imported_dir) do |fname|
+            next unless fname.ends_with?(".json")
+            path = File.join(@imported_dir, fname)
+            info = File.info?(path)
+            next unless info
 
-          stamp = {info.size, info.modification_time}
-          file = @imported[path]?
-          if file.nil? || file.stamp != stamp
-            file = ImportedFile.read(stamp, path)
-            @imported_parses += 1
+            stamp = {info.size, info.modification_time}
+            file = @imported[path]?
+            if file.nil? || file.stamp != stamp
+              file = ImportedFile.read(stamp, path)
+              @imported_parses += 1
+            end
+            fresh[path] = file
+            files << file
           end
-          fresh[path] = file
-          files << file
         end
+        @imported = fresh
+        files
       end
-      @imported = fresh
-      files
     end
 
     # Candidates: local passes newest first, then unmasked imported receipts by
@@ -462,7 +469,7 @@ module Iyi::Stale
         path = imported_path(snapshot.namespace)
         Store.atomic_write(path, snapshot.to_json)
         # The file now holds new content, so its next lookup parses it.
-        @imported.delete(path)
+        @imported_lock.synchronize { @imported.delete(path) }
         path
       end
     end
