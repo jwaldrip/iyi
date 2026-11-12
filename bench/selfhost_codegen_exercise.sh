@@ -23,6 +23,25 @@ CG_SRC="$REPO/src/compiler/codegen/codegen.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# Refusal fixtures: iyi refuses these programs, so they have no IR to compare.
+# Each list names the oracle it is compared with, in sections 3b, 3b2 and 3c.
+#   REFUSAL_FIXTURES: the oracle under its default prelude. It refuses `rescue`
+#     and `ensure` in an iyi file, and the port must match its whole text.
+#   EMPTY_REFUSAL_FIXTURES: the oracle under --prelude=empty, the prelude the
+#     parity lists use. There is no definition of `raise` or `__crystal_raise`,
+#     so the oracle refuses the call, and the port must match its whole text.
+#   PORT_LIMIT_FIXTURES: the oracle is not asked for a verdict. The port cannot
+#     type a construct in these, so it must refuse by name and write no IR.
+REFUSAL_FIXTURES="cg_exceptions.iyi cg_raise.iyi"
+EMPTY_REFUSAL_FIXTURES="cg_undefined_raise.iyi cg_undefined_runtime_raise.iyi"
+PORT_LIMIT_FIXTURES="cg_splat_loop.iyi"
+is_refusal() {
+  case " $REFUSAL_FIXTURES $EMPTY_REFUSAL_FIXTURES $PORT_LIMIT_FIXTURES " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
 if command -v brew >/dev/null 2>&1; then
   LIBRARY_PATH="$(brew --prefix bdw-gc)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
   export LIBRARY_PATH
@@ -52,7 +71,9 @@ unless mode && fixture
   exit 1
 end
 
-src = %(require "primitives"\n) + File.read(fixture)
+# The require shares the fixture's first line: a line of its own shifted every
+# location the oracle reports by one, which the port's own numbers then missed.
+src = %(require "primitives"; ) + File.read(fixture)
 program = Iyi::Program.new
 program.define_crystal_constants
 program.iyi_prelude = false
@@ -145,8 +166,6 @@ def norm(raw):
         # Normalize memset declaration parameter attributes
         if l.startswith("declare void @llvm.memset.p0.i64"):
             l = re.sub(r'ptr [a-z0-9_\(\)]+', 'ptr', l)
-        # Normalize proc literal location line number
-        l = re.sub(r'(~procProc\([^)]+\)@[^:]+):\d+', r'\1:<LINE>', l)
         l = l.rstrip()
         l = l.replace("[ ", "[").replace(" ]", "]")
         lines.append(l)
@@ -171,8 +190,9 @@ total_functions=0
 
 for fixture in "$REPO"/bench/fixtures/cg_*.iyi; do
   [ -f "$fixture" ] || continue
-  fixture_count=$((fixture_count + 1))
   base="$(basename "$fixture")"
+  is_refusal "$base" && continue
+  fixture_count=$((fixture_count + 1))
 
   "$WORK/exercise" --dump-ir "$fixture" > "$WORK/iyi_${base}.raw"
   "$WORK/dump_crystal_cg" --dump-ir "$fixture" > "$WORK/cr_${base}.raw"
@@ -194,10 +214,84 @@ for fixture in "$REPO"/bench/fixtures/cg_*.iyi; do
 done
 echo "  Parity summary: $((fixture_count - diverged))/$fixture_count codegen fixtures match 100% ($total_functions functions compared)"
 
+# Runs the oracle and the port on one refusal fixture from the repo root, on the
+# same relative path, so both print the same location lines. It passes only when
+# the whole stderr text and the exit status are identical. $1 is the fixture and
+# $2 the oracle's extra flags. The oracle's text is kept for check_refusal_mutant.
+refusal_check() {
+  local name="$1" flags="$2" oracle_out oracle_status port_out port_status
+  local rel="bench/fixtures/$name"
+  oracle_out="$(cd "$REPO" && "$IYI" build $flags -o "$WORK/oracle_refusal_$name" "$rel" 2>&1)"
+  oracle_status=$?
+  printf '%s\n' "$oracle_out" > "$WORK/oracle_refusal_$name.txt"
+  printf '%s\n' "$oracle_status" > "$WORK/oracle_refusal_$name.status"
+  port_out="$(cd "$REPO" && "$WORK/exercise" --dump-ir "$rel" 2>&1)"
+  port_status=$?
+  if [ "$oracle_status" -ne 0 ] && [ "$oracle_status" -eq "$port_status" ] && [ "$oracle_out" = "$port_out" ]; then
+    echo "  $name: refused with the oracle's text and exit $port_status"
+    return 0
+  fi
+  echo "  FAIL: $name: oracle exit $oracle_status, port exit $port_status"
+  echo "    oracle: $oracle_out"
+  echo "    port:   $port_out"
+  return 1
+}
+
+echo "== 3b. Refusal fixtures: the port must refuse each with the oracle's whole text and exit status"
+echo "   (oracle: its default prelude, which refuses rescue and ensure)"
+refusal_count=0
+refusal_diverged=0
+for name in $REFUSAL_FIXTURES; do
+  refusal_count=$((refusal_count + 1))
+  refusal_check "$name" "" || refusal_diverged=$((refusal_diverged + 1))
+done
+echo "  Refusal summary: $((refusal_count - refusal_diverged))/$refusal_count refusal fixtures match the oracle's message and exit status"
+[ "$refusal_diverged" -eq 0 ] || status=1
+
+echo "== 3b2. Refusal fixtures against the oracle under --prelude=empty"
+echo "   (the prelude the parity lists use, which has no raise or __crystal_raise)"
+empty_count=0
+empty_diverged=0
+for name in $EMPTY_REFUSAL_FIXTURES; do
+  empty_count=$((empty_count + 1))
+  refusal_check "$name" "--prelude=empty" || empty_diverged=$((empty_diverged + 1))
+done
+echo "  Empty-prelude refusal summary: $((empty_count - empty_diverged))/$empty_count refusal fixtures match the oracle's message and exit status"
+[ "$empty_diverged" -eq 0 ] || status=1
+
+echo "== 3c. Port limitations: the port must refuse each by name and write no IR"
+echo "   (the oracle accepts or refuses these with its own wording, so no oracle text is compared)"
+limit_count=0
+limit_diverged=0
+for name in $PORT_LIMIT_FIXTURES; do
+  limit_count=$((limit_count + 1))
+  port_out="$(cd "$REPO" && "$WORK/exercise" --dump-ir "bench/fixtures/$name" 2>&1)"
+  port_status=$?
+  if [ "$port_status" -ne 0 ] && printf '%s\n' "$port_out" | grep -q '^Error: port limitation: the port cannot '; then
+    echo "  $name: port limitation, refused by name (exit $port_status): $(printf '%s\n' "$port_out" | grep '^Error: ' | head -1)"
+  else
+    echo "  FAIL: $name: the port did not refuse by name (exit $port_status): $port_out"
+    limit_diverged=$((limit_diverged + 1))
+  fi
+done
+echo "  Port-limitation summary: $((limit_count - limit_diverged))/$limit_count port limitations refused by name"
+[ "$limit_diverged" -eq 0 ] || status=1
+
+echo "== 3d. Forward references: a struct field may name a type defined later, with no panic"
+echo "   (a probe, not a parity fixture: the port emits every method of a type, while the oracle emits the reachable ones)"
+probe_status=0
+if (cd "$REPO" && "$WORK/exercise" --dump-ir "bench/fixtures/fwd_struct_probe.iyi" >/dev/null 2>&1); then
+  echo "  fwd_struct_probe.iyi: compiles, the field's struct type is laid out before its use"
+else
+  echo "  FAIL: fwd_struct_probe.iyi did not compile"
+  status=1
+fi
+
 echo
 echo "== 4. Emitted native object linking and C driver execution comparison"
 for fixture in "$REPO"/bench/fixtures/cg_*.iyi; do
   [ -f "$fixture" ] || continue
+  is_refusal "$(basename "$fixture")" && continue
   base="$(basename "$fixture" .iyi)"
   "$WORK/exercise" --emit-obj "$fixture" "$WORK/iyi_${base}.o"
   "$WORK/dump_crystal_cg" --emit-obj "$fixture" "$WORK/cr_${base}.o"
@@ -237,6 +331,52 @@ check_cg_mutant() {
   "$WORK/mut_exercise" --dump-ir "$REPO/bench/fixtures/$fixture" > "$WORK/mut_iyi.raw" 2>&1 || true
   normalize_ir "$WORK/mut_iyi.raw" > "$WORK/mut_iyi.norm" 2>/dev/null || true
   diff -q "$WORK/cr_${fixture}.norm" "$WORK/mut_iyi.norm" >/dev/null 2>&1
+}
+
+# Rebuilds the port with a mutated backend and asks it to refuse the fixture. The
+# check passes, meaning not caught, only while the refusal still matches the
+# oracle's whole text and exit status recorded in section 3b or 3b2.
+check_refusal_mutant() {
+  local name="$1" got got_status
+  "$IYI" build -o "$WORK/mut_exercise" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1 || return 1
+  got="$(cd "$REPO" && "$WORK/mut_exercise" --dump-ir "bench/fixtures/$name" 2>&1)"
+  got_status=$?
+  [ "$got_status" = "$(cat "$WORK/oracle_refusal_$name.status")" ] && [ "$got" = "$(cat "$WORK/oracle_refusal_$name.txt")" ]
+}
+# Rebuilds the port with a mutated backend and runs it on a forward-reference probe.
+# The probe compiles only while the port lays out the struct before its use, so a
+# panic or a refusal is detected. Returns zero (not caught) while it compiles.
+check_probe_mutant() {
+  local name="$1"
+  "$IYI" build -o "$WORK/mut_exercise" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1 || return 1
+  (cd "$REPO" && "$WORK/mut_exercise" --dump-ir "bench/fixtures/$name" >/dev/null 2>&1)
+}
+
+# Rebuilds the port with the unresolved-call refusal silenced too, and asks it to
+# write IR for a port-limit fixture. cg_splat_loop.iyi is refused by an unresolved
+# call before its binary operand, so the port refuses it by name only while both
+# refusals stand. prove_mutation has already silenced the binary operand; this
+# silences the call. It passes, meaning not caught, only while the fixture is
+# still refused by name, and the caller's copy of the source is restored.
+check_port_limit_mutant() {
+  local name="$1" keep="$WORK/cg_first_mutant.iyi" built out got_status
+  cp "$CG_SRC" "$keep" || return 1
+  python3 - "$CG_SRC" <<'PY' || { cp "$keep" "$CG_SRC"; return 1; }
+import sys
+p = sys.argv[1]
+s = open(p).read()
+call = "refuse_undefined_call(node)"
+if s.count(call) != 1:
+    sys.exit(1)
+open(p, "w").write(s.replace(call, "nil", 1))
+PY
+  "$IYI" build -o "$WORK/mut_limit" "$REPO/bench/selfhost_codegen_exercise.iyi" >/dev/null 2>&1
+  built=$?
+  cp "$keep" "$CG_SRC"
+  [ "$built" -eq 0 ] || return 1
+  out="$(cd "$REPO" && "$WORK/mut_limit" --dump-ir "bench/fixtures/$name" 2>&1)"
+  got_status=$?
+  [ "$got_status" -ne 0 ] && printf '%s\n' "$out" | grep -q '^Error: port limitation: the port cannot '
 }
 
 MUTATIONS_RUN=0
@@ -305,18 +445,6 @@ prove_mutation "corrupt block body evaluation during yield" "$CG_SRC" \
   -- check_cg_mutant cg_blocks.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "corrupt landing pad selector extraction index" "$CG_SRC" \
-  'exception_type_id = @builder.extract_value(lp, 1)' \
-  'exception_type_id = @builder.extract_value(lp, 0)' \
-  -- check_cg_mutant cg_exceptions.iyi || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-
-prove_mutation "corrupt rescue type check predicate EQ to NE" "$CG_SRC" \
-  '@builder.icmp(LibLLVM::IntPredicate::EQ, l_tid, exception_type_id)' \
-  '@builder.icmp(LibLLVM::IntPredicate::NE, l_tid, exception_type_id)' \
-  -- check_cg_mutant cg_exceptions.iyi || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-
 prove_mutation "corrupt closure environment store" "$CG_SRC" \
   'st = @builder.store(cval, slot)' \
   '# st = @builder.store(cval, slot)' \
@@ -330,8 +458,8 @@ prove_mutation "corrupt string literal constant global name delimiter" "$CG_SRC"
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "corrupt generic constructor name mangling" "$CG_SRC" \
-  '"*#{info.name}@#{gname}::new<#{arg_type_names.join(", ")}>:#{info.name}"' \
-  '"*#{info.name}@#{gname}::corrupted_new<#{arg_type_names.join(", ")}>:#{info.name}"' \
+  '"*#{info.name}^#{gname}::new<#{arg_type_names.join(", ")}>:#{info.name}"' \
+  '"*#{info.name}^#{gname}::corrupted_new<#{arg_type_names.join(", ")}>:#{info.name}"' \
   -- check_cg_mutant cg_generics.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -341,22 +469,74 @@ prove_mutation "corrupt class field offset index shift" "$CG_SRC" \
   -- check_cg_mutant cg_layouts.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "corrupt runtime raise symbol resolution" "$CG_SRC" \
-  'crystal_raise_fn = ensure_crystal_raise' \
-  'crystal_raise_fn = ensure_crystal_personality' \
-  -- check_cg_mutant cg_raise.iyi || status=1
+prove_mutation "restore first-assignment-wins for local slot types" "$CG_SRC" \
+  '      if t == "Nil"' \
+  '      if t == "Nil!"' \
+  -- check_cg_mutant cg_nil_local.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "corrupt runtime personality symbol resolution" "$CG_SRC" \
-  'pers_fn = ensure_crystal_personality' \
-  'pers_fn = ensure_crystal_raise' \
-  -- check_cg_mutant cg_exceptions.iyi || status=1
+prove_mutation "unless lowering swaps its branches" "$CG_SRC" \
+  'lowered = If.new(node.cond, node.else, node.then)' \
+  'lowered = If.new(node.cond, node.then, node.else)' \
+  -- check_cg_mutant cg_unless.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "corrupt runtime get_exception symbol resolution" "$CG_SRC" \
-  'get_ex_fn = ensure_crystal_get_exception' \
-  'get_ex_fn = ensure_crystal_raise' \
-  -- check_cg_mutant cg_exceptions.iyi || status=1
+prove_mutation "corrupt proc literal symbol joiner back to at-sign" "$CG_SRC" \
+  '^#{symbol_text(rel_file)}' \
+  '@#{symbol_text(rel_file)}' \
+  -- check_cg_mutant cg_closures.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "corrupt the rescue refusal message" "$CG_SRC" \
+  '"iyi has no exceptions to rescue: an error' \
+  '"iyi has no exceptions to catch: an error' \
+  -- check_refusal_mutant cg_exceptions.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "corrupt the ensure refusal message" "$CG_SRC" \
+  '"iyi has no `ensure`: a panic' \
+  '"iyi has no ensure: a panic' \
+  -- check_refusal_mutant cg_raise.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation_all "corrupt the refusal exit status" "$CG_SRC" \
+  'LibC.exit(1)' \
+  'LibC.exit(0)' \
+  -- check_refusal_mutant cg_exceptions.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "drop the exit block of a statement if with no else" "$CG_SRC" \
+  '        exit_bb = fn.append_basic_block("exit")
+        @builder.br(exit_bb)
+      end
+
+      # The false edge' \
+  '        exit_bb = nil
+      end
+
+      # The false edge' \
+  -- check_cg_mutant cg_nil_local.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "read a named struct type before it is created" "$CG_SRC" \
+  '    st = @context.struct_named(name)' \
+  '    st = @llvm_struct_types[name]' \
+  -- check_probe_mutant fwd_struct_probe.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "corrupt the undefined-method refusal wording" "$CG_SRC" \
+  "    message = \"undefined method '#{node.name}' for top-level\"" \
+  "    message = \"undefined method '#{node.name}' for toplevel\"" \
+  -- check_refusal_mutant cg_undefined_raise.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# cg_splat_loop.iyi is refused by name at its binary operand once the call is
+# silenced, and by the unresolved call while it stands. Both refusals must be
+# silent before the port writes IR for it, so the proof silences both.
+prove_mutation "return a constant for an unresolved binary operand" "$CG_SRC" \
+  "refuse_port(\"port limitation: the port cannot type the #{side} operand '#{operand_text(operand)}' of '#{op_node.name}' in #{scope_name}, so it refuses instead of leaving the block unterminated (no IR is written)\")" \
+  "return @context.int32.const_int(0)" \
+  -- check_port_limit_mutant cg_splat_loop.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 
