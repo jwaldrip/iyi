@@ -25,7 +25,7 @@ module compiler/codegen/codegen
 
 import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
-import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Unless, Var, While, Yield, MacroIf, MacroLiteral, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Annotation, Arg, ArrayLiteral, Assign, BoolLiteral, Break, Call, Cast, CharLiteral, ClassDef, ClassVar, Def, ExceptionHandler, Expressions, FunDef, Generic, If, InstanceVar, IsA, LibDef, Next, NilLiteral, Nop, NumberLiteral, Path, PointerOf, ProcLiteral, Return, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Unless, Var, While, Yield, MacroIf, MacroLiteral, VisibilityModifier}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/token::{NumberKind}
@@ -1496,7 +1496,7 @@ pub class CodeGenVisitor < Visitor
     while i < node.args.size
       arg = node.args[i]
       p = fn.param(i)
-      p.name = arg.name
+      fn.name_param(p, arg.name)
       @param_values[arg.name] = p
       excluded_names.add(arg.name)
       arg_tname = if r = arg.restriction
@@ -1806,6 +1806,24 @@ pub class CodeGenVisitor < Visitor
     false
   end
 
+  # The address of an instance variable of self: the field GEP that visit(InstanceVar) loads through.
+  # nil when self has no such field, so the caller decides what that means.
+  def ivar_field_ptr(node : InstanceVar) : Value?
+    ivar_name = node.name.lstrip('@')
+    if ctype = @current_self_type
+      if info = @custom_types[ctype]?
+        if fidx = info.fields[ivar_name]?
+          idx = info.is_struct ? fidx : fidx + 1
+          st = @llvm_struct_types[info.name]
+          if cur_self = @current_self
+            return @builder.inbounds_gep(st, cur_self, [@builder.const_int(@types.int32, 0), @builder.const_int(@types.int32, idx)])
+          end
+        end
+      end
+    end
+    nil
+  end
+
   def visit(node : ClassVar) : Bool
     cvar_name = node.name
     g = if ctype = @current_self_type
@@ -1841,6 +1859,13 @@ pub class CodeGenVisitor < Visitor
           end
       if g
         @last = g
+        @terminated = false
+        return false
+      end
+    end
+    if exp.is_a?(InstanceVar)
+      if fptr = ivar_field_ptr(exp.as(InstanceVar))
+        @last = fptr
         @terminated = false
         return false
       end
@@ -1996,7 +2021,7 @@ pub class CodeGenVisitor < Visitor
       slots = [] of Value
       captured.each_with_index do |cv, idx|
         slot = @builder.inbounds_gep(c_struct, allocated_ptr, [@builder.const_int(@types.int32, 0), @builder.const_int(@types.int32, idx)])
-        slot.name = "#{cv}#{idx + 1}"
+        @builder.name_inst(slot, "#{cv}#{idx + 1}")
         slots << slot
       end
 
@@ -2073,7 +2098,7 @@ pub class CodeGenVisitor < Visitor
       ctx_p = proc_fn.param(0)
       captured.each_with_index do |cv, cidx|
         cslot = @builder.inbounds_gep(closure_ty, ctx_p, [@builder.const_int(@types.int32, 0), @builder.const_int(@types.int32, cidx)])
-        cslot.name = cv
+        @builder.name_inst(cslot, cv)
         @closure_env_slots[cv] = cslot
         @var_type_names[cv] = saved_var_type_names[cv]? || "Int32"
       end
@@ -2081,7 +2106,7 @@ pub class CodeGenVisitor < Visitor
 
     node.def.args.each_with_index do |a, aidx|
       p_val = proc_fn.param(is_closure ? aidx + 1 : aidx)
-      p_val.name = a.name
+      proc_fn.name_param(p_val, a.name)
       @param_values[a.name] = p_val
       @var_type_names[a.name] = a.restriction ? a.restriction.to_s : "Int32"
     end
@@ -2300,7 +2325,7 @@ pub class CodeGenVisitor < Visitor
     else_bb = fn.append_basic_block("else")
 
     cond_val = ensure_i1_condition(operand_value(node.cond, "condition of 'if'"))
-    @builder.cond_br(cond_val, then_bb, else_bb)
+    @builder.cond_br(cond_val, else_bb, then_bb)
 
     if node.else.nil? || node.else.is_a?(Nop)
       # then branch
@@ -2492,6 +2517,16 @@ pub class CodeGenVisitor < Visitor
   def visit(node : Cast) : Bool
     node.obj.accept(self)
     false
+  end
+
+  # The parser reads `x.nil?` as `x.is_a?(::Nil)` with nil_check set, as the oracle does. The port
+  # lowers that question as the nil? call it always lowered; other type queries keep the walk they had.
+  def visit(node : IsA) : Bool
+    if node.nil_check
+      Call.new(node.obj, "nil?").at(node).accept(self)
+      return false
+    end
+    true
   end
 
   def visit(node : Return) : Bool
@@ -4040,9 +4075,9 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       init_fn.linkage = Linkage::Internal
 
       self_param = init_fn.param(0)
-      self_param.name = "self"
+      init_fn.name_param(self_param, "self")
       init_def.args.each_with_index do |a, aidx|
-        init_fn.param(aidx + 1).name = a.name
+        init_fn.name_param(init_fn.param(aidx + 1), a.name)
       end
       cg.current_fn = init_fn
       cg.current_fn_return_type = init_ret_ty
@@ -4198,13 +4233,13 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       ctor_fn = mod.define_function(ctor_name, ctor_fn_ty)
       ctor_fn.linkage = Linkage::Internal
       if info.generic_name
-        ctor_fn.param(0).name = "self"
+        ctor_fn.name_param(ctor_fn.param(0), "self")
         init_def.args.each_with_index do |a, aidx|
-          ctor_fn.param(aidx + 1).name = a.name
+          ctor_fn.name_param(ctor_fn.param(aidx + 1), a.name)
         end
       else
         init_def.args.each_with_index do |a, aidx|
-          ctor_fn.param(aidx).name = a.name
+          ctor_fn.name_param(ctor_fn.param(aidx), a.name)
         end
       end
 
@@ -4318,9 +4353,9 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       s_entry = s_fn.append_basic_block("entry")
       builder.position_at_end(s_entry)
       self_ptr = s_fn.param(0)
-      self_ptr.name = "self"
+      s_fn.name_param(self_ptr, "self")
       val_param = s_fn.param(1)
-      val_param.name = "val"
+      s_fn.name_param(val_param, "val")
       idx = info.is_struct ? fidx : fidx + 1
       gep = builder.inbounds_gep(st, self_ptr, [cg.builder.const_int(mod.types.int32, 0), cg.builder.const_int(mod.types.int32, idx)])
       st_inst = builder.store(val_param, gep)
@@ -4415,12 +4450,12 @@ def emit_custom_types_code(cg : CodeGenVisitor) : Nil
       cg.current_fn = m_fn
       cg.current_fn_return_type = m_ret_ty
       self_param = m_fn.param(0)
-      self_param.name = "self"
+      m_fn.name_param(self_param, "self")
       cg.current_self = self_param
       cg.current_self_type = info.name
       cg.current_method_name = "#{info.name}##{mname}"
       mdef.args.each_with_index do |a, aidx|
-        m_fn.param(aidx + 1).name = a.name
+        m_fn.name_param(m_fn.param(aidx + 1), a.name)
       end
 
       # Prepare parameters and local variables

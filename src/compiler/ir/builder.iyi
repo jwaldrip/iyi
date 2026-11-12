@@ -40,6 +40,17 @@ pub class Builder
     @block
   end
 
+  # Names an instruction that is already placed. The name is claimed in the insertion block's function.
+  def name_inst(inst : Inst, name : String) : Nil
+    block = @block
+    raise "the builder has no insertion block" unless block
+    if symbols = block.symbols
+      inst.name = symbols.claim(name)
+    else
+      inst.name = name
+    end
+  end
+
   def set_debug_loc(loc : DebugLoc?) : Nil
     @loc = loc
   end
@@ -576,6 +587,9 @@ pub class Builder
   private def place(inst : Inst) : Nil
     block = @block
     raise "the builder has no insertion point" unless block
+    if symbols = block.symbols
+      inst.name = symbols.claim(inst.name)
+    end
     if before = @before
       index = block.insts.index(before)
       raise "the insertion point is not in the current block" unless index
