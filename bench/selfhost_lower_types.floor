@@ -60,6 +60,7 @@ src/compiler/native/amd64/encode.iyi 3
 src/compiler/native/amd64/regs.iyi 4
 src/compiler/native/asm/constraints.iyi 7
 src/compiler/native/asm/inventory.iyi 6
+src/compiler/native/const_expr.iyi 3
 src/compiler/native/driver.iyi 1
 src/compiler/native/emit.iyi 1
 src/compiler/native/frame.iyi 1
@@ -92,6 +93,7 @@ src/compiler/semantic/call_error.iyi 3
 src/compiler/semantic/call_nodes.iyi 3
 src/compiler/semantic/cleanup.iyi 3
 src/compiler/semantic/default_arguments.iyi 3
+src/compiler/semantic/inline_macros.iyi 3
 src/compiler/semantic/instance_vars.iyi 1
 src/compiler/semantic/literal_expander.iyi 3
 src/compiler/semantic/main_visitor.iyi 2
