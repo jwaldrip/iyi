@@ -142,6 +142,9 @@ pub class Lowerer
   property spill_slot : Value?
   # The object_id of the call node being lowered as a receiver, whose struct result is wanted only as its spill slot (0 for none).
   property receiver_node : UInt64
+  # The object_id of a receiver whose value an inlined literal body never reads (0 for none): its struct result is
+  # spilled as the hosted call spills it, and no value is read back.
+  property receiver_unused : UInt64
 
   def initialize(@module : Module, @typer : LowerTyper, @analysed : MainVisitor)
     @builder = Builder.new(@module)
@@ -163,6 +166,7 @@ pub class Lowerer
     @spill_node = 0_u64
     @spill_slot = nil
     @receiver_node = 0_u64
+    @receiver_unused = 0_u64
     @fun_defs_done = Hash(String, Bool).new
   end
 

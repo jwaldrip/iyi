@@ -134,10 +134,11 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       class_owner = recv_type.as(MetaclassType).instance_type
     else
       self_type = recv_type
-      # Hosted prepare_call_args visits the receiver before try_inline_call: an inlined literal body where no value is
-      # wanted still reads the receiver (the hosted module loads it), and only the value is skipped.
-      if literal_body?(def_node.body) && !low.needs_value
-        lower_receiver(low, node)
+      # Hosted prepare_call_args visits the receiver before try_inline_call: an inlined literal body reads the receiver
+      # (the hosted module loads it) and never uses self, so only the receiver is evaluated and no self value is made.
+      # A block call still needs self for its frame, so it takes the self path.
+      if literal_body?(def_node.body) && node.block.nil?
+        discard_receiver(low, node)
       else
         if storage = receiver_storage(low, node, self_type.as(Type))
           self_value = storage.as(Value)
@@ -244,9 +245,12 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       store_aligned(low, inst, temp)
       low.spill_node = node.object_id
       low.spill_slot = temp
-      # A receiver that is this call takes the slot as its self (receiver_self), so no value is loaded from it.
+      # A receiver that is this call takes the slot as its self (receiver_self), so no value is loaded from it. A
+      # receiver whose value an inlined literal body never reads is spilled and not loaded (hosted call.cr:707-713).
       if low.receiver_node == node.object_id && self_by_pointer?(ret)
         low.last = temp
+      elsif low.receiver_unused == node.object_id
+        low.last = llvm_nil(low)
       else
         low.last = load_aligned(low, ir, temp, "")
       end
@@ -316,13 +320,32 @@ pub def lower_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Valu
   wants = low.needs_value
   low.needs_value = true
   low.spill_node = 0_u64
+  prev_receiver = low.receiver_node
   low.receiver_node = obj.object_id
   visit_node(low, obj.as(ASTNode))
-  low.receiver_node = 0_u64
+  low.receiver_node = prev_receiver
   low.needs_value = wants
   v = low.last
   raise "BUG: the receiver of #{node.name} left no value (hosted call.cr: prepare_call_args)" if v.nil?
   v.as(Value)
+end
+
+# The receiver of a call whose body is an inlined literal: the hosted prepare_call_args visits the receiver, and the
+# literal never reads self. The receiver's call is made and its struct result is spilled, but no value is read back.
+pub def discard_receiver(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Nil
+  obj = node.obj
+  raise "BUG: discard_receiver on a call with no receiver (hosted call.cr: prepare_call_args)" if obj.nil?
+  o = obj.as(ASTNode)
+  # A variable has no effect, and the hosted receiver of an inlined literal is not read (no value is wanted).
+  return if o.is_a?(Var)
+  wants = low.needs_value
+  prev_unused = low.receiver_unused
+  low.needs_value = true
+  low.spill_node = 0_u64
+  low.receiver_unused = o.object_id
+  visit_node(low, o)
+  low.receiver_unused = prev_unused
+  low.needs_value = wants
 end
 
 # The values a call passes to its function: the receiver first, when there is one, then the arguments.
