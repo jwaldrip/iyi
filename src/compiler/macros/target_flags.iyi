@@ -28,7 +28,8 @@ pub class MacroTargetFlags
     {% elsif flag?(:aarch64) %}
       "aarch64-unknown-linux-gnu"
     {% else %}
-      "x86_64-unknown-linux-gnu"
+      # LLVM's default triple on x86-64 Linux names the vendor `pc`; on aarch64 it is `unknown`.
+      "x86_64-pc-linux-gnu"
     {% end %}
   end
 
