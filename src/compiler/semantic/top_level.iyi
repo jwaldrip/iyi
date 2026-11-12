@@ -4,9 +4,10 @@ import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
-import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
+import compiler/semantic/inline_macros::{expand_inline_macro}
 
 pub class TypeException
   getter message : String
@@ -1434,6 +1435,16 @@ pub class TopLevelVisitor < Visitor
     @pending_ivars.clear
   end
 
+  # iyi: a file that `load_file` reads hands its pending instance variables to the
+  # file that reads it, which resolves them once the whole program is declared. A
+  # restriction may name a type a later file declares (`concurrency.iyi` restricts an
+  # ivar to `IyiDeferNode`, declared in `prelude.iyi`).
+  def take_pending_ivars : Array(PendingIvar)
+    taken = @pending_ivars
+    @pending_ivars = [] of PendingIvar
+    taken
+  end
+
   def initialize(@program : SemanticProgram, @file : String? = nil)
     @current_type = @program
     @exp_nest = 0
@@ -1530,8 +1541,12 @@ pub class TopLevelVisitor < Visitor
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
     @program.current_imports = Hash(String, Type).new
+    # A required file is nested in the file that reads it: its top-level expressions
+    # do not finish its pending instance variables, because a later file may declare
+    # the type they restrict to. The reader takes them and finishes once.
+    inner.exp_nest = 1
     nodes.accept(inner)
-    inner.finish
+    inner.take_pending_ivars.each { |pi| @pending_ivars << pi }
     @program.current_imports = saved
     if unit = inner.unit
       @program.loaded_units[file] = unit
@@ -2352,6 +2367,23 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : MacroIf) : Bool
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+      expanded.accept(self)
+    end
+    false
+  end
+
+  def visit(node : MacroFor) : Bool
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+      expanded.accept(self)
+    end
+    false
+  end
+
+  def visit(node : MacroExpression) : Bool
+    if expanded = expand_inline_macro(node, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+      expanded.accept(self)
+    end
     false
   end
 
