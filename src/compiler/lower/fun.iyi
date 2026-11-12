@@ -28,7 +28,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/ir/module::{Module}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
-import compiler/semantic/top_level::{Type}
+import compiler/semantic/top_level::{NoReturnType, Type}
 
 # The hosted `Def#mangled_name` for a top-level def (codegen/ast.cr): `*` and the name,
 # then the argument types in `<>`, each by its full name, then `:` and the return type.
@@ -67,7 +67,12 @@ pub def target_def_fun(low : Lowerer, target : Def, arg_types : Array(Type), ret
   end
   ret_ir = low.typer.llvm_return_type(ret)
   fn_type = low.module.types.func(params, ret_ir)
-  codegen_fun(low, name, target, arg_types, fn_type, ret_ir)
+  fn = codegen_fun(low, name, target, arg_types, fn_type, ret_ir)
+  # Hosted codegen_fun: a def whose analysed return type is NoReturn carries `noreturn` (fun.cr).
+  if ret.is_a?(NoReturnType)
+    fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
+  end
+  fn
 end
 
 # The hosted `codegen_fun` (fun.cr:271), plain case. The function is declared first, so a
