@@ -13,9 +13,13 @@
 # and bench/selfhost_semantic_exercise.sh). They are extracted from those gates,
 # not copied, so the comparison cannot drift from the gates' own oracles.
 #
-# The gate fails only when a corpus agrees on fewer files than its committed
-# floor (the FLOOR table below). A corpus that gets better is reported so the
-# floor can be raised; it does not fail.
+# A file is agree (byte-identical output), refused (the hosted front end and line
+# B refuse it with the same normalised message and exit status, counted as
+# agreement in its own column), or differ (its first difference is printed with
+# the oracle's node kind or message). The gate fails only when a corpus agrees on
+# fewer files (agree plus refused) than its committed floor (the FLOOR table
+# below). A corpus that gets better is reported so the floor can be raised; it
+# does not fail.
 #
 #   bash bench/selfhost_linea_corpus_exercise.sh
 #
@@ -45,20 +49,20 @@ RESULTS="$WORK/results.tsv"
 floor_of() {
   case "$1:$2" in
     lexer:samples)         echo 28 ;;
-    lexer:prelude)         echo 14 ;;
-    lexer:std)             echo 119 ;;
-    lexer:self)            echo 1 ;;
+    lexer:prelude)         echo 20 ;;
+    lexer:std)             echo 126 ;;
+    lexer:self)            echo 54 ;;
     lexer:fixtures)        echo 15 ;;
-    parser:samples)        echo 0 ;;
-    parser:prelude)        echo 4 ;;
-    parser:std)            echo 0 ;;
-    parser:self)           echo 0 ;;
-    parser:fixtures)       echo 3 ;;
-    declarations:samples)  echo 0 ;;
+    parser:samples)        echo 28 ;;
+    parser:prelude)        echo 20 ;;
+    parser:std)            echo 126 ;;
+    parser:self)           echo 54 ;;
+    parser:fixtures)       echo 15 ;;
+    declarations:samples)  echo 5 ;;
     declarations:prelude)  echo 10 ;;
-    declarations:std)      echo 0 ;;
-    declarations:self)     echo 0 ;;
-    declarations:fixtures) echo 2 ;;
+    declarations:std)      echo 2 ;;
+    declarations:self)     echo 1 ;;
+    declarations:fixtures) echo 12 ;;
     *)                     echo 0 ;;
   esac
 }
@@ -108,7 +112,22 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" CRYSTAL_PATH="$R
   || { cat "$WORK/golden_decls.log"; echo "  FAILED to build the declaration golden dumper"; exit 1; }
 echo "  built: lexer, parser and declaration tools; three golden dumpers"
 
-# One file: run line B's tool and the golden dumper, record agree or differ.
+# The message a refusal ends with, normalised so that the port's diagnostic and
+# the oracle's exception read as one text. The port prints
+# `iyi: panic: Syntax error in <file>:<line>:<col>: <message>` and the oracle prints
+# the bare `<message>` or `Error: <message>`; the location, the panic prefix, the
+# error prefix and the exception class suffix are removed.
+refusal_message() {
+  awk 'NF && /[Ee]rror|xception|panic/ { print; found = 1; exit } NF && first == "" { first = $0 } END { if (!found) print first }' "$1" \
+    | sed -e 's/^.*Syntax error in [^:]*:[0-9]*:[0-9]*: //' -e 's/^.*panic: //' -e 's/^.*[Ee]rror: //' \
+          -e 's/^Unhandled exception: //' -e 's/ ([A-Za-z:_]*)[[:space:]]*$//' -e 's/[[:space:]]*$//'
+}
+
+# One file: run line B's tool and the golden dumper, then record one of
+# agree (both succeed with byte-identical output), refused (both refuse with the
+# same normalised message and the same exit status: the same refusal, counted as
+# agreement in its own column), or differ. A differing file records its first
+# difference: the oracle's line (its node kind or message) beside line B's.
 compare() {
   tool="$1"
   corpus="$2"
@@ -118,14 +137,28 @@ compare() {
     parser)       mine="$WORK/parser"; golden="$WORK/golden_parser" ;;
     declarations) mine="$WORK/decls";  golden="$WORK/golden_decls" ;;
   esac
-  if "$mine" "$rel" > "$WORK/mine.out" 2> "$WORK/mine.err" \
-     && IYI_PATH="$REPO/src" "$golden" "$rel" > "$WORK/golden.out" 2> "$WORK/golden.err" \
-     && cmp -s "$WORK/mine.out" "$WORK/golden.out"; then
+  "$mine" "$rel" > "$WORK/mine.out" 2> "$WORK/mine.err"; mine_rc=$?
+  IYI_PATH="$REPO/src" "$golden" "$rel" > "$WORK/golden.out" 2> "$WORK/golden.err"; golden_rc=$?
+  detail=""
+  if [ "$mine_rc" -eq 0 ] && [ "$golden_rc" -eq 0 ] && cmp -s "$WORK/mine.out" "$WORK/golden.out"; then
     verdict=agree
+  elif [ "$mine_rc" -ne 0 ] && [ "$golden_rc" -ne 0 ] && [ "$mine_rc" -eq "$golden_rc" ] \
+       && [ "$(refusal_message "$WORK/mine.err")" = "$(refusal_message "$WORK/golden.err")" ]; then
+    verdict=refused
   else
     verdict=differ
+    if [ "$mine_rc" -ne 0 ] || [ "$golden_rc" -ne 0 ]; then
+      detail="port exit $mine_rc: $(refusal_message "$WORK/mine.err") | oracle exit $golden_rc: $(refusal_message "$WORK/golden.err")"
+    else
+      line=$(cmp "$WORK/mine.out" "$WORK/golden.out" 2>/dev/null | sed -n 's/.*line \([0-9][0-9]*\).*/\1/p')
+      if [ -n "$line" ]; then
+        detail="line $line: oracle [$(sed -n "${line}p" "$WORK/golden.out")] | port [$(sed -n "${line}p" "$WORK/mine.out")]"
+      else
+        detail="output length differs: port $(wc -l < "$WORK/mine.out" | tr -d ' ') lines, oracle $(wc -l < "$WORK/golden.out" | tr -d ' ') lines"
+      fi
+    fi
   fi
-  printf '%s\t%s\t%s\t%s\n' "$tool" "$corpus" "$rel" "$verdict" >> "$RESULTS"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$tool" "$corpus" "$rel" "$verdict" "$detail" >> "$RESULTS"
 }
 
 echo
@@ -134,7 +167,7 @@ corpora() {
   for f in samples/iyi/*.iyi; do printf 'samples\t%s\n' "$f"; done
   for f in src/iyi/*.iyi; do printf 'prelude\t%s\n' "$f"; done
   for f in src/std/*.iyi; do printf 'std\t%s\n' "$f"; done
-  printf 'self\tsrc/compiler/syntax/parser.iyi\n'
+  find src/compiler -name '*.iyi' | sort | while IFS= read -r f; do printf 'self\t%s\n' "$f"; done
   for f in bench/fixtures/linea/parser/*.iyi bench/fixtures/linea/semantic/*.iyi; do printf 'fixtures\t%s\n' "$f"; done
 }
 corpora > "$WORK/corpora.tsv"
@@ -147,34 +180,37 @@ echo "  $(wc -l < "$RESULTS" | tr -d ' ') tool-file runs"
 
 echo
 echo "== 3. Agreement per tool and corpus, beside line A's measured figures (PR #104)"
-printf '  %-13s %-9s %6s %6s %6s %6s  %-6s  %s\n' tool corpus files agree differ floor verdict "line A (PR #104)"
+echo "  agreeing = agree + refused (the same refusal on both sides); the floor applies to agreeing"
+printf '  %-13s %-9s %6s %6s %8s %6s %6s  %-6s  %s\n' tool corpus files agree refused differ floor verdict "line A (PR #104)"
 fails=0
 for tool in lexer parser declarations; do
   for corpus in samples prelude std self fixtures; do
     total=$(awk -F'\t' -v t="$tool" -v c="$corpus" '$1 == t && $2 == c' "$RESULTS" | wc -l | tr -d ' ')
     agree=$(awk -F'\t' -v t="$tool" -v c="$corpus" '$1 == t && $2 == c && $4 == "agree"' "$RESULTS" | wc -l | tr -d ' ')
-    differ=$((total - agree))
+    refused=$(awk -F'\t' -v t="$tool" -v c="$corpus" '$1 == t && $2 == c && $4 == "refused"' "$RESULTS" | wc -l | tr -d ' ')
+    differ=$((total - agree - refused))
+    agreeing=$((agree + refused))
     floor=$(floor_of "$tool" "$corpus")
     if [ "${LINEA_FLOOR_BUMP:-0}" = 1 ]; then
       floor=$((floor + 1))
     fi
     if [ "$total" -eq 0 ]; then
       verdict="empty"
-    elif [ "$agree" -lt "$floor" ]; then
+    elif [ "$agreeing" -lt "$floor" ]; then
       verdict="BELOW"
       fails=$((fails + 1))
-    elif [ "$agree" -gt "$floor" ]; then
+    elif [ "$agreeing" -gt "$floor" ]; then
       verdict="better"
     else
       verdict="ok"
     fi
-    printf '  %-13s %-9s %6s %6s %6s %6s  %-6s  %s\n' "$tool" "$corpus" "$total" "$agree" "$differ" "$floor" "$verdict" "$(linea_figure "$tool" "$corpus")"
+    printf '  %-13s %-9s %6s %6s %8s %6s %6s  %-6s  %s\n' "$tool" "$corpus" "$total" "$agree" "$refused" "$differ" "$floor" "$verdict" "$(linea_figure "$tool" "$corpus")"
   done
 done
 
 echo
-echo "== 4. Files that differ, by tool"
-awk -F'\t' '$4 == "differ" { printf "  %-13s %-9s %s\n", $1, $2, $3 }' "$RESULTS"
+echo "== 4. Files that differ, by tool: the oracle's node kind or message at the first difference"
+awk -F'\t' '$4 == "differ" { printf "  %s %s %s\n      %s\n", $1, $2, $3, $5 }' "$RESULTS"
 
 echo
 echo "== 5. Floor check"

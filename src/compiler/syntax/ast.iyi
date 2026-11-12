@@ -2064,6 +2064,7 @@ pub class ExceptionHandler < ASTNode
   property else : ASTNode?
   property ensure : ASTNode?
   property suffix : Bool
+  property implicit : Bool = false
 
   def initialize(body : ASTNode? = nil, @rescues : Array(Rescue)? = nil, @else : ASTNode? = nil, @ensure : ASTNode? = nil, @suffix : Bool = false)
     @body = body || Nop.new
