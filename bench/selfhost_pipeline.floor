@@ -39,8 +39,8 @@ bench/fixtures/lower_isa_same.iyi run-equal
 bench/fixtures/lower_ivar_class.iyi bodies
 bench/fixtures/lower_ivar_struct.iyi bodies
 bench/fixtures/lower_ivar_struct_twice.iyi bodies
-bench/fixtures/lower_multi_assign.iyi declarations
-bench/fixtures/lower_named_tuple.iyi declarations
+bench/fixtures/lower_multi_assign.iyi bodies
+bench/fixtures/lower_named_tuple.iyi bodies
 bench/fixtures/lower_next.iyi run-equal
 bench/fixtures/lower_nil.iyi run-equal
 bench/fixtures/lower_not.iyi run-equal
@@ -53,11 +53,11 @@ bench/fixtures/lower_sizeof.iyi bodies
 bench/fixtures/lower_string.iyi run-equal
 bench/fixtures/lower_struct_unused.iyi run-equal
 bench/fixtures/lower_symbol.iyi run-equal
-bench/fixtures/lower_tuple.iyi declarations
+bench/fixtures/lower_tuple.iyi bodies
 bench/fixtures/lower_typedecl.iyi run-equal
 bench/fixtures/lower_typedecl_nil.iyi run-equal
 bench/fixtures/lower_typeof.iyi bodies
-bench/fixtures/lower_underscore.iyi declarations
+bench/fixtures/lower_underscore.iyi bodies
 bench/fixtures/lower_unless.iyi run-equal
 bench/fixtures/lower_while.iyi run-equal
 bench/fixtures/lowglob_const_arg.iyi run-equal

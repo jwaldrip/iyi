@@ -210,27 +210,31 @@ if [ "$table_ok" -eq 1 ]; then
   fi
   if [ "${SELFHOST_PIPELINE_RAISE:-0}" = "1" ]; then
     : > "$TFLOOR.new"
-    echo "# selfhost pipeline table floor: <root> <defs reached by the body typer> <defs typed with no refusal>. A count may only rise. Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh." >> "$TFLOOR.new"
+    echo "# selfhost pipeline table floor: <root> <defs reached by the body typer> <defs typed with no refusal> <defs lowered with no refusal>. A count may only rise. Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh." >> "$TFLOOR.new"
     for root in $ROOTS; do
       name="$(basename "$root" .iyi)"
       r="$(table_value "$name" defs-reached)"
       c="$(table_value "$name" defs-typed-clean)"
+      l="$(table_value "$name" defs-lowered-clean)"
       pr="$(awk -v n="$name" '$1 == n { print $2 }' "$TFLOOR" 2>/dev/null)"
       pc="$(awk -v n="$name" '$1 == n { print $3 }' "$TFLOOR" 2>/dev/null)"
+      pl="$(awk -v n="$name" '$1 == n { print $4 }' "$TFLOOR" 2>/dev/null)"
       [ "${pr:-0}" -gt "$r" ] && r="$pr"
       [ "${pc:-0}" -gt "$c" ] && c="$pc"
-      echo "$name $r $c" >> "$TFLOOR.new"
+      [ "${pl:-0}" -gt "${l:-0}" ] && l="$pl"
+      echo "$name $r $c ${l:-0}" >> "$TFLOOR.new"
     done
     mv "$TFLOOR.new" "$TFLOOR"
     echo "  table floor written"
   fi
   tbad=0
-  while read -r name fr fc; do
+  while read -r name fr fc fl; do
     case "$name" in ""|\#*) continue ;; esac
     gr="$(table_value "$name" defs-reached)"
     gc="$(table_value "$name" defs-typed-clean)"
-    if [ "${gr:-0}" -lt "$fr" ] || [ "${gc:-0}" -lt "$fc" ]; then
-      echo "  $name: table count FALLS below the floor (reached ${gr:-none} < $fr or clean ${gc:-none} < $fc)"
+    gl="$(table_value "$name" defs-lowered-clean)"
+    if [ "${gr:-0}" -lt "$fr" ] || [ "${gc:-0}" -lt "$fc" ] || [ "${gl:-0}" -lt "${fl:-0}" ]; then
+      echo "  $name: table count FALLS below the floor (reached ${gr:-none} < $fr, clean ${gc:-none} < $fc or lowered ${gl:-none} < ${fl:-0})"
       tbad=$((tbad + 1))
     fi
   done < "$TFLOOR"
