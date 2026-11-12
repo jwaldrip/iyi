@@ -83,13 +83,13 @@ entry:
 define i32 @main() {
 entry:
   %fv = fptrunc double 0x3ff8000000000000 to float
-  %o = call %Outer (i64, float, double) @mkouter(i64 7, float %fv, double 0x4004000000000000)
-  %r1 = call i64 (%Outer) @sumouter(%Outer %o)
+  %o = call iyicc %Outer (i64, float, double) @mkouter(i64 7, float %fv, double 0x4004000000000000)
+  %r1 = call iyicc i64 (%Outer) @sumouter(%Outer %o)
   %b0 = insertvalue %Big zeroinitializer, i64 10, 0
   %b1 = insertvalue %Big %b0, i64 20, 1
   %b2 = insertvalue %Big %b1, i64 30, 2
-  %r2 = call i64 (%Big, i64, i64, i64, i64, i64, i64) @sum9(%Big %b2, i64 1, i64 2, i64 3, i64 4, i64 5, i64 6)
-  %r3 = call i64 (%Big) @sum3(%Big %b2)
+  %r2 = call iyicc i64 (%Big, i64, i64, i64, i64, i64, i64) @sum9(%Big %b2, i64 1, i64 2, i64 3, i64 4, i64 5, i64 6)
+  %r3 = call iyicc i64 (%Big) @sum3(%Big %b2)
   %inn = extractvalue %Outer %o, 2
   %ii = extractvalue %Inner %inn, 0
   %r4 = sext i32 %ii to i64

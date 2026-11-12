@@ -13,19 +13,19 @@ import std/digest::{SHA256}
 import std/slice::{Slice, Bytes}
 
 class CodeSig
-  SUPER_MAGIC = 0xfade0cc0_i64
-  CD_MAGIC = 0xfade0c02_i64
-  CD_VERSION = 0x20400_i64
-  CS_ADHOC = 0x2_i64
-  CS_LINKER_SIGNED = 0x20000_i64
-  EXECSEG_MAIN_BINARY = 0x1_i64
-  PAGE = 4096_i64
-  PAGE_LOG2 = 12_i64
-  HASH_SIZE = 32_i64
-  HASH_SHA256 = 2_i64
-  SUPER_HEADER = 20_i64
-  CD_HEADER = 88_i64
-  CSSLOT_CODEDIRECTORY = 0_i64
+  SUPER_MAGIC          = 0xfade0cc0_i64
+  CD_MAGIC             = 0xfade0c02_i64
+  CD_VERSION           =    0x20400_i64
+  CS_ADHOC             =        0x2_i64
+  CS_LINKER_SIGNED     =    0x20000_i64
+  EXECSEG_MAIN_BINARY  =        0x1_i64
+  PAGE                 =       4096_i64
+  PAGE_LOG2            =         12_i64
+  HASH_SIZE            =         32_i64
+  HASH_SHA256          =          2_i64
+  SUPER_HEADER         =         20_i64
+  CD_HEADER            =         88_i64
+  CSSLOT_CODEDIRECTORY =          0_i64
 end
 
 # The number of hashed pages for a code limit.

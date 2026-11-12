@@ -303,7 +303,7 @@ platform's C library and nothing else: no libgc, no libevent, no openssl, no
 zlib ([INSTALL.md](INSTALL.md#what-a-program-depends-on) has each platform). A
 program links only what it uses, and
 iyi's own library is 28,880 lines, written to be linked that way. That
-library is 1,215 KB on disk beside the binary.
+library is 1,216 KB on disk beside the binary.
 
 <sup>Sizes and start times are a plain `iyi build` on macOS arm64 with LLVM 22,
 and move with the platform; `python3 bench/machine_probe.py` prints your

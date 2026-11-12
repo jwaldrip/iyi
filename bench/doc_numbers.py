@@ -513,11 +513,19 @@ def as_number(raw: str) -> int | None:
 # The ceiling is a decision, not a measurement, and every number beside it here
 # is a measurement. That difference is easy to lose: a pass updating drifted
 # counts rewrote the ceiling too, because the prelude's library happened to
-# measure exactly 3,734 and a blind replace of that literal moved both. A
+# measure exactly the ceiling and a blind replace of that literal moved both. A
 # raised ceiling reads as a passing gate, which is the one failure this file
-# must never have. So the figure is checked against a constant, and moving it
-# is an edit to this line with a reason written beside it.
-PRELUDE_LIBRARY_CEILING = 3734
+# must never have. So every sentence that states the ceiling is checked against
+# `CEILING` above, the one place it is decided, with its reasons beside it.
+#
+# This check once carried a constant of its own, 3,734, and a third pattern for
+# "The 3,734 lines were Crystal's *library*". Both went stale when `CEILING`
+# was raised by decision: the constant failed the sentence that states today's
+# ceiling, and that third sentence is history (what Crystal's 0.1.0 library
+# measured, where the ceiling started), which upstream's SPEC.md still states
+# beside today's figure. It is not a statement of the ceiling and is not
+# checked as one.
+PRELUDE_LIBRARY_CEILING = CEILING
 
 
 def ceiling_intact() -> list[str]:
@@ -527,7 +535,6 @@ def ceiling_intact() -> list[str]:
     patterns = (
         r"held to the ([\d,]+)[- ]line ceiling",
         r"held to the ([\d,]+) ceiling",
-        r"The\n?([\d,]+) lines were Crystal's \*library\*",
     )
     for pattern in patterns:
         for m in re.finditer(pattern, text):

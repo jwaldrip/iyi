@@ -10,7 +10,7 @@ module compiler/native/link/imports
 # Security (SPEC 2.3); any other framework is refused by name.
 
 pub class MachOLibs
-  LIBSYSTEM_PATH = "/usr/lib/libSystem.B.dylib"
+  LIBSYSTEM_PATH    = "/usr/lib/libSystem.B.dylib"
   LIBSYSTEM_ORDINAL = 1_i64
 end
 

@@ -2,6 +2,7 @@
 module compiler/backend/llvm/emit
 
 import compiler/llvm/lib_llvm::{string_from_c, string_and_dispose, to_c_str}
+import compiler/llvm/target::{Target, TargetMachine}
 
 # A file that does not read as LLVM IR, with LLVM's own message.
 pub class LlFileError
@@ -65,4 +66,11 @@ pub def function_of_line(lines : Array(String), index : Int32) : String
     i = i - 1
   end
   "<module>"
+end
+
+# The host LLVM target machine for a triple: the object writer's machine.
+pub def host_target_machine(triple : String) : TargetMachine
+  Target.init_native_target
+  Target.init_all_targets
+  Target.from_triple(triple).create_target_machine(triple, "", "", LibLLVM::CodeGenOptLevel::Default, LibLLVM::RelocMode::PIC, LibLLVM::CodeModel::Default)
 end

@@ -1,7 +1,7 @@
 module compiler/ir/function
 
 import compiler/ir/types::{IrType}
-import compiler/ir/values::{Value, Param}
+import compiler/ir/values::{Value, Param, SymbolTable}
 import compiler/ir/inst::{Attribute, Block, CallConv, Inst}
 
 pub enum Linkage
@@ -29,8 +29,8 @@ pub enum TlsModel
 end
 
 pub class DebugSubprogram
-  getter display_name : String    # what a PDB S_GPROC32 carries ("inner")
-  getter linkage_name : String    # the mangled symbol ("*Named^Named::inner<Int32>:Int32")
+  getter display_name : String # what a PDB S_GPROC32 carries ("inner")
+  getter linkage_name : String # the mangled symbol ("*Named^Named::inner<Int32>:Int32")
   getter file : Int32
   getter line : Int32
 
@@ -71,6 +71,7 @@ pub class Function < Value
     @subprogram = nil
     @params = [] of Param
     @blocks = [] of Block
+    @symbols = SymbolTable.new
   end
 
   def function_type : IrType
@@ -117,8 +118,19 @@ pub class Function < Value
     @blocks
   end
 
+  # Appends a block. Its name is claimed in this function, so a repeated name gets a fresh suffix.
   def append_basic_block(name : String) : Block
+    block = Block.new(@symbols.claim(name))
+    block.symbols = @symbols
+    @blocks << block
+    block
+  end
+
+  # The text parser's block, with the name it was written with.
+  def append_basic_block_as_written(name : String) : Block
+    @symbols.register(name)
     block = Block.new(name)
+    block.symbols = @symbols
     @blocks << block
     block
   end
@@ -132,8 +144,21 @@ pub class Function < Value
     end
   end
 
+  # Adds a parameter. Its name is claimed in this function: a repeated name gets a fresh suffix, as LLVM gives it.
   def add_param(param : Param) : Nil
+    param.name = @symbols.claim(param.name)
     @params << param
+  end
+
+  # The text parser's parameter, with the name it was written with. The verifier refuses a repeated name.
+  def add_param_as_written(param : Param) : Nil
+    @symbols.register(param.name)
+    @params << param
+  end
+
+  # Names a parameter that already exists, claiming the name in this function as add_param does.
+  def name_param(param : Param, name : String) : Nil
+    param.name = @symbols.claim(name)
   end
 end
 
