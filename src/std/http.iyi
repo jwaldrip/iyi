@@ -1294,7 +1294,7 @@ pub class Request
     @text = nil
   end
 
-  def self.new(method : String, path : String, headers : Hash(String, String)? = nil, body : String = "")
+  def self.new(method : String, path : String, headers : Hash(String, String)? = nil, body : String = "") : self
     query = nil
     actual_path = path
     if (q = path.index('?'))

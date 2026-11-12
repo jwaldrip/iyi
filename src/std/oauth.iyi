@@ -178,9 +178,9 @@ pub class RequestToken
     @token == other.token && @secret == other.secret
   end
 
-  def hash(hasher)
-    hasher = @token.hash(hasher)
-    @secret.hash(hasher)
+  def hash : Int32
+    mix = @token.hash
+    (mix &* 31) &+ @secret.hash
   end
 
   def to_s(io : IO) : Nil
@@ -289,9 +289,9 @@ pub class AccessToken
     self_extra == other_extra
   end
 
-  def hash(hasher)
-    hasher = @token.hash(hasher)
-    @secret.hash(hasher)
+  def hash : Int32
+    mix = @token.hash
+    (mix &* 31) &+ @secret.hash
   end
 
   def to_s(io : IO) : Nil

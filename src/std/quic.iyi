@@ -105,8 +105,7 @@ pub class AES128GCM
   def self.encrypt_detached(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : {Bytes, Bytes}
     cipher = AesGcm.new(key.to_a)
     sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
-    out = Bytes.new(sealed_str.bytesize)
-    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    out = Bytes.new(sealed_str.bytesize) { |k| sealed_str.byte_at(k) }
     ct_len = out.size - 16
     {out[0, ct_len], out[ct_len, 16]}
   end
@@ -114,8 +113,7 @@ pub class AES128GCM
   def self.encrypt(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : Bytes
     cipher = AesGcm.new(key.to_a)
     sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
-    out = Bytes.new(sealed_str.bytesize)
-    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    out = Bytes.new(sealed_str.bytesize) { |k| sealed_str.byte_at(k) }
     out
   end
 
@@ -124,8 +122,7 @@ pub class AES128GCM
     cipher = AesGcm.new(key.to_a)
     res = cipher.open(nonce.to_a, ciphertext_and_tag.to_a, ad.to_a)
     if res.is_a?(String)
-      out = Bytes.new(res.bytesize)
-      out.to_unsafe.copy_from(res.to_unsafe, res.bytesize)
+      out = Bytes.new(res.bytesize) { |k| res.byte_at(k) }
       out
     else
       nil
@@ -137,8 +134,7 @@ pub class AES256GCM
   def self.encrypt_detached(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : {Bytes, Bytes}
     cipher = AesGcm.new(key.to_a)
     sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
-    out = Bytes.new(sealed_str.bytesize)
-    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    out = Bytes.new(sealed_str.bytesize) { |k| sealed_str.byte_at(k) }
     ct_len = out.size - 16
     {out[0, ct_len], out[ct_len, 16]}
   end
@@ -146,8 +142,7 @@ pub class AES256GCM
   def self.encrypt(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : Bytes
     cipher = AesGcm.new(key.to_a)
     sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
-    out = Bytes.new(sealed_str.bytesize)
-    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    out = Bytes.new(sealed_str.bytesize) { |k| sealed_str.byte_at(k) }
     out
   end
 
@@ -156,8 +151,7 @@ pub class AES256GCM
     cipher = AesGcm.new(key.to_a)
     res = cipher.open(nonce.to_a, ciphertext_and_tag.to_a, ad.to_a)
     if res.is_a?(String)
-      out = Bytes.new(res.bytesize)
-      out.to_unsafe.copy_from(res.to_unsafe, res.bytesize)
+      out = Bytes.new(res.bytesize) { |k| res.byte_at(k) }
       out
     else
       nil
@@ -166,17 +160,15 @@ pub class AES256GCM
 end
 
 pub struct HKDF
-  def self.extract(algorithm : Symbol, ikm, salt) : Bytes
+  def self.extract(algorithm : Symbol, ikm : String | Array(UInt8) | Bytes, salt : String | Array(UInt8) | Bytes) : Bytes
     arr = Std::Crypto::HKDF.extract(algorithm, salt, ikm)
-    out = Bytes.new(arr.size)
-    out.to_unsafe.copy_from(arr.to_unsafe, arr.size)
+    out = Bytes.new(arr.size) { |k| arr[k] }
     out
   end
 
-  def self.expand(algorithm : Symbol, prk, info, length : Int32) : Bytes
+  def self.expand(algorithm : Symbol, prk : String | Array(UInt8) | Bytes, info : String | Array(UInt8) | Bytes, length : Int32) : Bytes
     arr = Std::Crypto::HKDF.expand(algorithm, prk, info, length)
-    out = Bytes.new(arr.size)
-    out.to_unsafe.copy_from(arr.to_unsafe, arr.size)
+    out = Bytes.new(arr.size) { |k| arr[k] }
     out
   end
 end
@@ -185,8 +177,7 @@ pub class ChaCha20Poly1305
   def self.encrypt(key : Bytes, nonce : Bytes, plaintext : Bytes, ad : Bytes = Bytes.empty) : Bytes
     cipher = Std::Aead::ChaCha20Poly1305.new(key.to_a)
     sealed_str = cipher.seal(nonce.to_a, plaintext.to_a, ad.to_a)
-    out = Bytes.new(sealed_str.bytesize)
-    out.to_unsafe.copy_from(sealed_str.to_unsafe, sealed_str.bytesize)
+    out = Bytes.new(sealed_str.bytesize) { |k| sealed_str.byte_at(k) }
     out
   end
 
@@ -195,8 +186,7 @@ pub class ChaCha20Poly1305
     cipher = Std::Aead::ChaCha20Poly1305.new(key.to_a)
     res = cipher.open(nonce.to_a, ciphertext_and_tag.to_a, ad.to_a)
     if res.is_a?(String)
-      out = Bytes.new(res.bytesize)
-      out.to_unsafe.copy_from(res.to_unsafe, res.bytesize)
+      out = Bytes.new(res.bytesize) { |k| res.byte_at(k) }
       out
     else
       nil
@@ -210,8 +200,7 @@ pub class HeaderProtection
     raise "HeaderProtection: sample must be 16 bytes" if sample.size != 16
     aes = AES.new(hp_key.to_a)
     out_str = aes.encrypt_block(sample.to_a)
-    mask = Bytes.new(5)
-    mask.to_unsafe.copy_from(out_str.to_unsafe, 5)
+    mask = Bytes.new(5) { |k| out_str.byte_at(k) }
     mask
   end
 
@@ -228,8 +217,7 @@ pub class HeaderProtection
     cipher = ChaCha20.new(hp_key.to_a, nonce.to_a, counter)
     zeroes = Array(UInt8).new(5, 0_u8)
     masked = cipher.xor(zeroes)
-    mask = Bytes.new(5)
-    mask.to_unsafe.copy_from(masked.to_unsafe, 5)
+    mask = Bytes.new(5) { |k| masked.byte_at(k) }
     mask
   end
 end
@@ -257,10 +245,8 @@ module QuicTls
     def self.generate_keypair : {Bytes, Bytes}
       priv = Random::Secure.random_bytes(32)
       pub_k = Std::Curve25519::X25519.public_key(priv)
-      out_priv = Bytes.new(32)
-      out_priv.to_unsafe.copy_from(priv.to_unsafe, 32)
-      out_pub = Bytes.new(32)
-      out_pub.to_unsafe.copy_from(pub_k.to_unsafe, 32)
+      out_priv = Bytes.new(32) { |k| priv[k] }
+      out_pub = Bytes.new(32) { |k| pub_k.byte_at(k) }
       {out_priv, out_pub}
     end
 
@@ -268,7 +254,11 @@ module QuicTls
       shared = Std::Curve25519::X25519.shared(priv.to_a, peer_pub.to_a)
       out = Bytes.new(32)
       if shared.is_a?(String)
-        out.to_unsafe.copy_from(shared.to_unsafe, 32)
+        i = 0
+        while i < 32
+          out[i] = shared.byte_at(i)
+          i = i + 1
+        end
       end
       out
     end
@@ -293,15 +283,14 @@ module QuicTls
     hkdf_label[1] = (length & 0xff).to_u8
     hkdf_label[2] = label_size.to_u8
     i = 0; while i < label_size
-      hkdf_label[3 + i] = prefixed_label.to_unsafe[i]; i = i + 1
+      hkdf_label[3 + i] = prefixed_label.byte_at(i); i = i + 1
     end
     hkdf_label[3 + label_size] = ctx_arr.size.to_u8
     j = 0; while j < ctx_arr.size
       hkdf_label[4 + label_size + j] = ctx_arr[j]; j = j + 1
     end
     res = Std::Crypto::HKDF.expand(SHA256, sec_arr, hkdf_label.to_a, length)
-    out = Bytes.new(length)
-    out.to_unsafe.copy_from(res.to_unsafe, length)
+    out = Bytes.new(length) { |k| res[k] }
     out
   end
 
@@ -567,13 +556,13 @@ pub class QuicCrypto
     idx = 3
     i = 0
     while i < prefix.bytesize
-      info[idx] = prefix.to_unsafe[i]
+      info[idx] = prefix.byte_at(i)
       idx = idx + 1
       i = i + 1
     end
     i = 0
     while i < label.bytesize
-      info[idx] = label.to_unsafe[i]
+      info[idx] = label.byte_at(i)
       idx = idx + 1
       i = i + 1
     end
@@ -1157,7 +1146,7 @@ pub class FrameCodec
     type_b = VarInt.encode(is_app ? FrameType::CONNECTION_CLOSE_APP : FrameType::CONNECTION_CLOSE_QUIC)
     code_b = VarInt.encode(error_code)
     ft_b = is_app ? Bytes.empty : VarInt.encode(frame_type)
-    reason_bytes = Bytes.new(reason.to_unsafe, reason.bytesize)
+    reason_bytes = Bytes.new(reason.bytesize) { |k| reason.byte_at(k) }
     rlen_b = VarInt.encode(reason_bytes.size.to_u64)
 
     total = type_b.size + code_b.size + ft_b.size + rlen_b.size + reason_bytes.size
@@ -1429,9 +1418,7 @@ pub class FrameCodec
         if rlen > 0_u64
           raise "CONNECTION_CLOSE truncated reason" if offset + rlen.to_i32 > payload.size
           r_bytes = payload[offset, rlen.to_i32]
-          reason_str = String.new(r_bytes.size) do |target_ptr|
-            target_ptr.copy_from(r_bytes.to_unsafe, r_bytes.size)
-          end
+          reason_str = String.new(r_bytes)
           offset = offset + rlen.to_i32
         end
         frames << DecodedFrame.new(ft, error_code: err, reason: reason_str)
@@ -2958,12 +2945,11 @@ pub class QuicTlsContext
     limit = upto < 0 ? @transcript.size : upto
     i = 0
     while i < limit
-      h.update(@transcript[i].to_unsafe, @transcript[i].size)
+      h.update(@transcript[i].to_a)
       i = i + 1
     end
     arr = h.final
-    out = Bytes.new(arr.size)
-    out.to_unsafe.copy_from(arr.to_unsafe, arr.size)
+    out = Bytes.new(arr.size) { |k| arr[k] }
     out
   end
 
