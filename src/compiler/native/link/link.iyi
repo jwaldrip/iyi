@@ -17,36 +17,36 @@ module compiler/native/link/link
 
 import compiler/native/obj/object::{ObjectFile, ObjFormat, Section, SectionKind, SymbolKind, SymbolBinding, Reloc, RelocKind}
 import compiler/native/link/imports::{MachOLibs, framework_allowed, framework_path, owner_of}
+import compiler/native/link/host_exports::{libsystem_exports?}
 import compiler/native/link/macho_exe::{MachOExe, Executable, ExeSection, ExeSymbol, ExeBind, ExeExport, ExeDataInCode, align_to}
 import std/slice::{Slice, Bytes}
-
 
 class LinkConst
   # A relocation's target code: a symbol (code >= 0), an import (code < 0), or a
   # section (code >= SECTION_BASE, plus the global section index).
-  SECTION_BASE = 1000000000000_i64
-  UNKNOWN = 2000000000000000_i64
-  ABSOLUTE = -2_i64
-  NO_OUTPUT = -1_i64
-  PAGE_MASK = 0xfff_i64
-  STUB_SIZE = 12_i64
-  GOT_SLOT = 8_i64
-  STUB_ALIGN = 4_i64
-  GOT_ALIGN = 8_i64
-  STUB_FLAGS = 0x80000400_i64
-  DEFAULT_TEXT_FLAGS = 0x80000400_i64
-  STUB_RANK = 1_i64
-  GOT_RANK = 0_i64
-  ADRP_X16 = 0x90000010_i64
-  LDR_X16_BASE = 0xf9400210_i64
-  BR_X16 = 0xd61f0200_i64
-  LDR_MASK = 0xffc00000_i64
-  LDR_BASE = 0xf9400000_i64
-  ADD_IMM_BASE = 0x91000000_i64
-  ADRP_MASK = 0x60ffffe0_i64
-  IMM12_MASK = 0x3ffc00_i64
-  IMM26_MASK = 0x3ffffff_i64
-  BRANCH_REACH = 134217728_i64
+  SECTION_BASE       =    1000000000000_i64
+  UNKNOWN            = 2000000000000000_i64
+  ABSOLUTE           =               -2_i64
+  NO_OUTPUT          =               -1_i64
+  PAGE_MASK          =            0xfff_i64
+  STUB_SIZE          =               12_i64
+  GOT_SLOT           =                8_i64
+  STUB_ALIGN         =                4_i64
+  GOT_ALIGN          =                8_i64
+  STUB_FLAGS         =       0x80000400_i64
+  DEFAULT_TEXT_FLAGS =       0x80000400_i64
+  STUB_RANK          =                1_i64
+  GOT_RANK           =                0_i64
+  ADRP_X16           =       0x90000010_i64
+  LDR_X16_BASE       =       0xf9400210_i64
+  BR_X16             =       0xd61f0200_i64
+  LDR_MASK           =       0xffc00000_i64
+  LDR_BASE           =       0xf9400000_i64
+  ADD_IMM_BASE       =       0x91000000_i64
+  ADRP_MASK          =       0x60ffffe0_i64
+  IMM12_MASK         =         0x3ffc00_i64
+  IMM26_MASK         =        0x3ffffff_i64
+  BRANCH_REACH       =        134217728_i64
 end
 
 # A link that cannot finish. The message names the symbol, section or object.
@@ -490,8 +490,12 @@ class Linker
     known = @import_index[name]?
     if known.nil?
       n = @import_names.size.to_i64
+      owner = owner_of(name, @frameworks)
+      if owner == "" && !libsystem_exports?(name)
+        fail("undefined symbol #{name}: no object defines it, and this system's libSystem does not export it")
+      end
       @import_names << name
-      @import_owner << owner_of(name, @frameworks)
+      @import_owner << owner
       @import_index[name] = n
       return 0_i64 - (n + 1_i64)
     end
@@ -870,7 +874,6 @@ class Linker
       write_num(sec.bytes, off, value, 8)
     end
   end
-
 
   # The one place a relocation's kind decides how its instruction or word is
   # patched. A branch to an import goes through the import's stub.

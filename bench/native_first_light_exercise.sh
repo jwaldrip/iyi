@@ -260,6 +260,17 @@ check_no_library() {
   return 0
 }
 
+# A C import libSystem does not export must stop the link, by name. Unmutated, the tool refuses the fixture (the
+# check passes, 0); with the question answered yes for every name, the tool builds it (caught, 1).
+check_missing_import() {
+  b="$work/mut-tool"
+  "$iyi" build -o "$b" "$TOOL_SRC" >"$work/mut-build.log" 2>&1 || return 3
+  if "$b" bench/fixtures/native_refused/no_such_import.ir -o "$work/mut-noimport" >"$work/mut-noimport.log" 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
 check_helper_parity() {
   drv="$work/native_cg"
   "$iyi" build -o "$drv" src/compiler/tools/native_cg.iyi >"$work/mut-ncg.log" 2>&1 || return 3
@@ -287,6 +298,8 @@ prove_mutation "import: libSystem resolves to no library at all" "$LINK_SRC" che
   '    if owner == ""
       return MachOLibs::LIBSYSTEM_ORDINAL' '    if owner == ""
       return 0_i64'
+prove_mutation "import: a C name libSystem does not export is bound anyway" "$LINK_SRC" check_missing_import -- \
+  '      if owner == "" && !libsystem_exports?(name)' '      if owner == "" && !libsystem_exports?(name) && false'
 prove_mutation "helper: unsigned division subtracts when the remainder reaches the divisor, not when it exceeds it" \
   "$RT_SRC" check_helper_parity -- \
   '  %ge = icmp uge i128 %r1b, %b' '  %ge = icmp ugt i128 %r1b, %b'
