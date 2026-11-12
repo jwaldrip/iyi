@@ -319,6 +319,11 @@ prove_mutation "an unbound free variable is not refused" "$MATCH_FILE" \
   '        return MatchAttempt.failed("undefined constant #{free_names[j]}") if false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic restriction with bound arguments is a class instance, not its tuple" "$RESTRICT_FILE" \
+  '          return TypeLookup.new(ts.instances).instantiate(base_type, args)' \
+  '          return ts.instantiate_generic(base_type.as(GenericClassType), args)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

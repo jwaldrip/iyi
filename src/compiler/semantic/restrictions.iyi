@@ -70,7 +70,7 @@ pub class ArgRestriction
             return arg if arg.is_a?(LookupError)
             args << arg.as(Type)
           end
-          return ts.instantiate_generic(base_type.as(GenericClassType), args)
+          return TypeLookup.new(ts.instances).instantiate(base_type, args)
         end
       end
     end
@@ -116,8 +116,7 @@ pub class ArgRestriction
           return arg if arg.is_a?(LookupError)
           args << arg.as(Type)
         end
-        return ts.pointer_of(args[0]) if base_type.name == "Pointer" && args.size == 1
-        return ts.instantiate_generic(base_type.as(GenericClassType), args)
+        return TypeLookup.new(ts.instances).instantiate(base_type, args)
       end
     end
     ArgRestriction.lookup_bound(ts, scope, node, owner)
