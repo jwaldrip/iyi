@@ -17,6 +17,7 @@ import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_n
 import compiler/types/types::{NamedArgumentType, GenericInstanceType}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/new::{define_new_methods}
 
 # One construct the body typing could not type or refused, as the pipeline's
 # refusal table reads it. `file` is nil and `line` and `column` are 0 when the
@@ -111,6 +112,9 @@ pub class MainVisitor < TypeNodeHost
   property untyped_locals : Hash(String, String)
 
   def initialize(@program : SemanticProgram)
+    # The generated `new` methods are completed before any body is typed: the
+    # declarations pass has recorded the expansions, and this consumes them (idempotent).
+    define_new_methods(@program)
     @current_type = @program
     @scope = nil
     @vars = Hash(String, Type).new
@@ -505,7 +509,24 @@ pub class MainVisitor < TypeNodeHost
         return false
       end
     end
+    if node.name == "allocate"
+      if sc = @scope
+        if sc.is_a?(MetaclassType)
+          set_type(node, sc.as(MetaclassType).instance_type)
+          return false
+        end
+      end
+    end
     untyped(node, "primitive #{node.name} without a declared return type")
+    false
+  end
+
+  # `obj.responds_to?(:name)` is typed Bool. Its value depends on the obj's type and is
+  # decided by the lowering, not here (the hosted typer sets only the type).
+  def visit(node : RespondsTo) : Bool
+    obj = node.obj
+    obj.accept(self)
+    set_type(node, @program.bool_type)
     false
   end
 
@@ -1640,24 +1661,6 @@ pub class MainVisitor < TypeNodeHost
       end
     else
       rec_type = @scope || @current_type
-    end
-
-    if node.name == "new" && rec_type.is_a?(MetaclassType)
-      inst_type = rec_type.as(MetaclassType).instance_type
-      if inst_type.is_a?(ClassType)
-        candidates = [] of Def
-        visited = Set(String).new
-        collect_candidate_defs(inst_type, "initialize", candidates, visited)
-        if candidates.size > 0 || node.args.size > 0
-          if init_def = lookup_method_matching(inst_type, "initialize", node.args, node)
-            type_method_body(init_def, inst_type, node.args, node.block, node)
-          else
-            return false
-          end
-        end
-        set_type(node, inst_type)
-        return false
-      end
     end
 
     # Multiple dispatch over a union receiver
