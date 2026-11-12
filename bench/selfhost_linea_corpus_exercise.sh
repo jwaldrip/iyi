@@ -134,7 +134,7 @@ corpora() {
   for f in samples/iyi/*.iyi; do printf 'samples\t%s\n' "$f"; done
   for f in src/iyi/*.iyi; do printf 'prelude\t%s\n' "$f"; done
   for f in src/std/*.iyi; do printf 'std\t%s\n' "$f"; done
-  printf 'self\tsrc/compiler/syntax/parser.iyi\n'
+  find src/compiler -name '*.iyi' | sort | while IFS= read -r f; do printf 'self\t%s\n' "$f"; done
   for f in bench/fixtures/linea/parser/*.iyi bench/fixtures/linea/semantic/*.iyi; do printf 'fixtures\t%s\n' "$f"; done
 }
 corpora > "$WORK/corpora.tsv"

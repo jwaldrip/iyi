@@ -553,6 +553,129 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     s
   when Iyi::MagicConstant
     "#{p}MagicConstant name=#{node.name.to_s.downcase}\n"
+  when Iyi::ModuleHeader
+    "#{p}ModuleHeader path=#{escape_s(node.path.join("/"))}\n"
+  when Iyi::ImportDecl
+    names_s = (n = node.names) ? "[#{n.join(", ")}]" : "nil"
+    "#{p}ImportDecl path=#{escape_s(node.path.join("/"))} exported=#{node.exported} glob=#{node.glob?} names=#{names_s}\n"
+  when Iyi::UsingDecl
+    names_s = (n = node.names) ? "[#{n.join(", ")}]" : "nil"
+    "#{p}UsingDecl path=#{escape_s(node.path.join("/"))} names=#{names_s}\n"
+  when Iyi::Asm
+    s = "#{p}Asm text=#{escape_s(node.text)} volatile=#{node.volatile?} alignstack=#{node.alignstack?} intel=#{node.intel?} can_throw=#{node.can_throw?}\n"
+    if outs = node.outputs
+      s += "#{p}  outputs:\n"
+      outs.each { |o| s += dump_ast(o, indent + 2) }
+    end
+    if ins = node.inputs
+      s += "#{p}  inputs:\n"
+      ins.each { |i| s += dump_ast(i, indent + 2) }
+    end
+    if cls = node.clobbers
+      s += "#{p}  clobbers=[#{cls.map { |c| escape_s(c) }.join(", ")}]\n"
+    end
+    s
+  when Iyi::AsmOperand
+    s = "#{p}AsmOperand constraint=#{escape_s(node.constraint)}\n"
+    s += dump_ast(node.exp, indent + 1)
+    s
+  when Iyi::Cast
+    s = "#{p}Cast\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+    s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
+    s
+  when Iyi::NilableCast
+    s = "#{p}NilableCast\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+    s += "#{p}  to:\n" + dump_ast(node.to, indent + 2)
+    s
+  when Iyi::IsA
+    s = "#{p}IsA nil_check=#{node.nil_check?}\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+    s += "#{p}  const:\n" + dump_ast(node.const, indent + 2)
+    s
+  when Iyi::RespondsTo
+    s = "#{p}RespondsTo name=#{escape_s(node.name)}\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+    s
+  when Iyi::ReadInstanceVar
+    s = "#{p}ReadInstanceVar name=#{escape_s(node.name)}\n"
+    s += "#{p}  obj:\n" + dump_ast(node.obj, indent + 2)
+    s
+  when Iyi::TypeOf
+    s = "#{p}TypeOf\n"
+    node.expressions.each { |e| s += dump_ast(e, indent + 1) }
+    s
+  when Iyi::PointerOf
+    "#{p}PointerOf\n" + dump_ast(node.exp, indent + 1)
+  when Iyi::SizeOf
+    "#{p}SizeOf\n" + dump_ast(node.exp, indent + 1)
+  when Iyi::InstanceSizeOf
+    "#{p}InstanceSizeOf\n" + dump_ast(node.exp, indent + 1)
+  when Iyi::AlignOf
+    "#{p}AlignOf\n" + dump_ast(node.exp, indent + 1)
+  when Iyi::InstanceAlignOf
+    "#{p}InstanceAlignOf\n" + dump_ast(node.exp, indent + 1)
+  when Iyi::Out
+    "#{p}Out\n" + dump_ast(node.exp, indent + 1)
+  when Iyi::Propagate
+    "#{p}Propagate\n" + dump_ast(node.exp, indent + 1)
+  when Iyi::Defer
+    "#{p}Defer\n" + dump_ast(node.exp, indent + 1)
+  when Iyi::Recover
+    s = "#{p}Recover\n"
+    s += "#{p}  exp:\n" + dump_ast(node.exp, indent + 2)
+    s += "#{p}  default:\n" + dump_ast(node.default, indent + 2)
+    s
+  when Iyi::OffsetOf
+    s = "#{p}OffsetOf\n"
+    s += "#{p}  offsetof_type:\n" + dump_ast(node.offsetof_type, indent + 2)
+    s += "#{p}  offset:\n" + dump_ast(node.offset, indent + 2)
+    s
+  when Iyi::Require
+    "#{p}Require string=#{escape_s(node.string)}\n"
+  when Iyi::Select
+    s = "#{p}Select\n"
+    s += "#{p}  whens:\n"
+    node.whens.each { |w| s += dump_ast(w, indent + 2) }
+    if el = node.else
+      s += "#{p}  else:\n" + dump_ast(el, indent + 2)
+    end
+    s
+  when Iyi::ExceptionHandler
+    s = "#{p}ExceptionHandler implicit=#{node.implicit} suffix=#{node.suffix}\n"
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    if rescues = node.rescues
+      s += "#{p}  rescues:\n"
+      rescues.each { |r| s += dump_ast(r, indent + 2) }
+    end
+    if el = node.else
+      s += "#{p}  else:\n" + dump_ast(el, indent + 2)
+    end
+    if en = node.ensure
+      s += "#{p}  ensure:\n" + dump_ast(en, indent + 2)
+    end
+    s
+  when Iyi::Rescue
+    s = "#{p}Rescue name=#{(n = node.name) ? escape_s(n) : "nil"}\n"
+    if types = node.types
+      s += "#{p}  types:\n"
+      types.each { |t| s += dump_ast(t, indent + 2) }
+    end
+    s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
+    s
+  when Iyi::ProcLiteral
+    "#{p}ProcLiteral\n" + dump_ast(node.def, indent + 1)
+  when Iyi::ProcPointer
+    s = "#{p}ProcPointer name=#{escape_s(node.name)} global=#{node.global?}\n"
+    if o = node.obj
+      s += "#{p}  obj:\n" + dump_ast(o, indent + 2)
+    end
+    if !node.args.empty?
+      s += "#{p}  args:\n"
+      node.args.each { |a| s += dump_ast(a, indent + 2) }
+    end
+    s
   else
     "#{p}#{node.class.name}\n"
   end
@@ -568,7 +691,9 @@ end
 
 filename = ARGV[0]
 src = File.read(filename)
-node = Iyi::Parser.new(src).parse
+parser = Iyi::Parser.new(src)
+parser.filename = filename
+node = parser.parse
 
 if ARGV.size > 1 && ARGV[1] == "--count"
   c = Counter.new
