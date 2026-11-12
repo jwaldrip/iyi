@@ -4,7 +4,7 @@ import compiler/foundation/errors::{refuse_port}
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
 import compiler/syntax/token::{NumberKind}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaTypeVar, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeParameterType, UnionType, VoidType}
 
 pub class VirtualType < Type
   property base_type : Type
@@ -146,6 +146,7 @@ pub class GenericClassInstanceType < GenericInstanceType
   property superclass : Type?
   getter subclasses : Array(Type)
   getter included_modules : Array(Type)
+  getter instance_vars : Hash(String, MetaTypeVar)
   @metaclass : GenericClassInstanceMetaclassType?
 
   def register_subclass(sub : Type) : Nil
@@ -159,6 +160,7 @@ pub class GenericClassInstanceType < GenericInstanceType
     @subclasses = [] of Type
     @included_modules = [] of Type
     @metaclass = nil
+    @instance_vars = Hash(String, MetaTypeVar).new
     if sc = @superclass
       if sc.is_a?(ClassType)
         sc.as(ClassType).subclasses << self
@@ -174,6 +176,30 @@ pub class GenericClassInstanceType < GenericInstanceType
 
   def struct? : Bool
     @generic_type.struct?
+  end
+
+  # The instance variable `var_name` of this instance. One recorded on the instance (an initialize
+  # parameter, typed with this instance's arguments) comes first. Otherwise the generic's declared
+  # instance variable is copied when its type is a bare type parameter, replaced by this instance's
+  # argument. Any other declared type is not copied, so the lookup is nil there.
+  def lookup_instance_var?(var_name : String) : MetaTypeVar?
+    if own = @instance_vars[var_name]?
+      return own
+    end
+    generic = @generic_type
+    if generic.is_a?(ModuleType)
+      if source = generic.as(ModuleType).instance_vars[var_name]?
+        source_type = source.type
+        if source_type.is_a?(TypeParameterType)
+          if replacement = @type_vars[source_type.as(TypeParameterType).name]?
+            copied = MetaTypeVar.new(var_name, replacement)
+            @instance_vars[var_name] = copied
+            return copied
+          end
+        end
+      end
+    end
+    nil
   end
 
   def type_desc : String
@@ -498,7 +524,9 @@ pub class PointerInstanceType < GenericClassInstanceType
   getter element_type : Type
 
   def initialize(program : SemanticProgram, @element_type : Type)
-    super(program, program.types["Pointer"], Hash(String, Type).new, [@element_type] of Type, program.struct_type)
+    vars = Hash(String, Type).new
+    vars["T"] = @element_type
+    super(program, program.types["Pointer"], vars, [@element_type] of Type, program.struct_type)
     @struct = true
   end
 
