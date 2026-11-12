@@ -880,6 +880,9 @@ pub class SemanticProgram < NonGenericModuleType
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
   # hosted pass keeps a scope per file; the port keeps the importing file's table here.
   property current_imports : Hash(String, Type)
+  # The lowercase names the importing file imports (`import a/b::{refuse_port}`), as
+  # the defs they name. Swapped per file like current_imports.
+  property current_import_defs : Hash(String, Array(Def))
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
   property search_path : Array(String)
@@ -1044,6 +1047,7 @@ pub class SemanticProgram < NonGenericModuleType
     @impls = [] of ImplRecord
     @global_funs = [] of LibFun
     @current_imports = Hash(String, Type).new
+    @current_import_defs = Hash(String, Array(Def)).new
     @project_root = nil
     @search_path = [] of String
     @loaded_files = Set(String).new
@@ -1539,10 +1543,17 @@ pub class TopLevelVisitor < Visitor
       end
       names.each do |name|
         found = unit.as(ModuleType).types[name]?
-        unless found
-          refuse_port("undefined constant #{name} in '#{written}'")
+        if found
+          @program.current_imports[name] = found.as(Type)
+        else
+          # A lowercase name is a def the file declares (`import a/b::{refuse_port}`):
+          # the calls slice resolves calls to it, so the pass records it here.
+          defs = unit.as(ModuleType).defs[name]?
+          unless defs
+            refuse_port("undefined constant #{name} in '#{written}'")
+          end
+          @program.current_import_defs[name] = defs.as(Array(Def))
         end
-        @program.current_imports[name] = found.as(Type)
       end
     end
     false
@@ -1580,10 +1591,13 @@ pub class TopLevelVisitor < Visitor
     nodes = parser.parse
     inner = TopLevelVisitor.new(@program, file)
     saved = @program.current_imports
+    saved_defs = @program.current_import_defs
     @program.current_imports = Hash(String, Type).new
+    @program.current_import_defs = Hash(String, Array(Def)).new
     nodes.accept(inner)
     inner.finish
     @program.current_imports = saved
+    @program.current_import_defs = saved_defs
     if unit = inner.unit
       @program.loaded_units[file] = unit
     end
