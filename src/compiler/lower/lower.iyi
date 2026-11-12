@@ -40,6 +40,11 @@ import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
 import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
+import compiler/syntax/ast::{FunDef}
+import compiler/semantic/top_level::{LibFun}
+import compiler/ir/inst::{Attribute}
+import compiler/lower/fun::{codegen_fun}
+import compiler/semantic/top_level::{NoReturnType}
 
 # The per-def probe the typed pipeline table reads (S3Pipeline): lowers one def's function into `m` the way a call
 # that reaches it does (fun.iyi target_def_fun), for the self type and argument types the caller gives. A refusal
@@ -99,6 +104,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   store_aligned(low, fn.param(0), argc_global)
   store_aligned(low, fn.param(1), argv_global)
   initialize_program_constants(low)
+  emit_well_known_funs(low, root)
   low.needs_value = true
   codegen_node(low, root)
   codegen_return(low, ret_ir)
@@ -113,6 +119,69 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
   low.builder.ret(low.builder.const_int(i32, 0))
   function_attributes(m)
+end
+
+# The hosted `visit(FunDef)` with a body (codegen.cr:842) for a fun the analysis recorded (lib_fun_of): its arguments and
+# return type are that record's. A fun is emitted once (`fun_defs_done`, hosted External#dead). It is emitted with
+# external linkage, as a hosted External is (codegen_fun does not make an External internal). A fun the program never
+# calls is refused by name: the hosted code declares it at its visit and emits its body at the end of the module. A
+# `well_known` fun is emitted on entry (see emit_well_known_funs).
+pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
+  rec_opt = low.analysed.program.lib_fun_of(node)
+  if rec_opt.nil?
+    pending_visit_node("visit(FunDef) #{node.name} with no record from the analysis (lib_fun_of)")
+    return
+  end
+  rec = rec_opt.as(LibFun)
+  name = rec.real_name
+  if low.fun_defs_done[name]?
+    return
+  end
+  if !well_known && !rec.used
+    pending_visit_node("an unused fun with a body #{name} (hosted visit(FunDef) declares it and emits its body at the end, not ported)")
+    return
+  end
+  body = node.body
+  if body.nil?
+    pending_visit_node("a fun #{name} with no body (hosted visit(FunDef) with an External that has no body)")
+    return
+  end
+  rt = rec.resolved_return
+  if rt.nil?
+    pending_visit_node("a fun #{name} with no resolved return type (lib_fun_of)")
+    return
+  end
+  low.fun_defs_done[name] = true
+  ret = rt.as(Type)
+  ret_ir = low.typer.llvm_return_type(ret)
+  params = [] of IrType
+  rec.arg_types.each do |t|
+    params << low.typer.llvm_type(t)
+  end
+  fn_type = low.module.types.func(params, ret_ir)
+  target = Def.new(node.name, node.args, body.as(ASTNode))
+  fn = codegen_fun(low, name, target, nil, rec.arg_types, fn_type, ret_ir)
+  if ret.is_a?(NoReturnType)
+    fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
+  end
+  fn.linkage = Linkage::External
+end
+
+# The well-known funs the hosted code emits on entry (codegen.cr:379, codegen_well_known_functions). Only
+# `__crystal_raise_overflow` is ported here: the checked arithmetic calls it by name, so it must be in the module
+# before the program is lowered. Other well-known names are emitted when the program reaches them (refused above).
+pub def emit_well_known_funs(low : Lowerer, root : ASTNode) : Nil
+  top = [] of ASTNode
+  if root.is_a?(Expressions)
+    top = root.as(Expressions).expressions
+  else
+    top << root
+  end
+  top.each do |n|
+    if n.is_a?(FunDef) && n.as(FunDef).name == "__crystal_raise_overflow"
+      codegen_fun_def(low, n.as(FunDef), true)
+    end
+  end
 end
 
 # The hosted `codegen` visitor's dispatch over one node. A sequence visits each of its
@@ -219,6 +288,11 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(Return)
     codegen_return_node(low, node.as(Return))
+    return
+  end
+  if node.is_a?(FunDef)
+    codegen_fun_def(low, node.as(FunDef), false)
+    low.last = llvm_nil(low)
     return
   end
   if node.is_a?(Def)
