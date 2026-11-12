@@ -113,7 +113,7 @@ src/compiler/platform/linker.iyi 16
 src/compiler/platform/target.iyi 41
 src/compiler/semantic/cleanup.iyi 10
 src/compiler/semantic/literal_expander.iyi 69
-src/compiler/semantic/main_visitor.iyi 121
+src/compiler/semantic/main_visitor.iyi 132
 src/compiler/semantic/math_interpreter.iyi 52
 src/compiler/semantic/normalizer.iyi 62
 src/compiler/semantic/recursive_struct_checker.iyi 11
@@ -328,6 +328,6 @@ src/compiler/lower/symbols.iyi 0
 src/compiler/semantic/call_nodes.iyi 6
 src/compiler/semantic/default_arguments.iyi 9
 src/compiler/semantic/instance_vars.iyi 45
-src/compiler/semantic/type_node_host.iyi 17
-src/compiler/semantic/type_nodes.iyi 29
+src/compiler/semantic/type_node_host.iyi 20
+src/compiler/semantic/type_nodes.iyi 37
 src/compiler/lower/block.iyi 0
