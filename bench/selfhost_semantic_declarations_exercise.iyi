@@ -1,8 +1,9 @@
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, dump_program_declarations, dump_type, dir_of, normalize_path}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, dump_program_declarations, dump_type, dir_of, normalize_path}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
+import compiler/types/types::{GenericClassInstanceType}
 
 # Port-side driver for bench/selfhost_semantic_declarations_exercise.sh.
 #
@@ -75,7 +76,36 @@ module BenchSelfhostSemanticDeclarationsExercise
   def self.dump_file_typed(path : String) : String
     prog, entry = load_program(path)
     type_node_system(prog)
-    dump_program_declarations(prog, entry)
+    dump_program_declarations(prog, entry) + dump_instances(prog)
+  end
+
+  # The instances of the program's own generic classes with their instance variables, in the
+  # typed mode only (the oracle prints the same with its --typed flag). Each instance is a record
+  # of its own, sorted by name, as the oracle prints them; the built-in types are left out.
+  def self.dump_instances(prog : SemanticProgram) : String
+    sb = String::Builder.new
+    initial = SemanticProgram.new.types.keys.to_set
+    prog.types.keys.sorted.each do |name|
+      next if initial.includes?(name)
+      generic = prog.types[name]
+      next unless generic.is_a?(GenericClassType)
+      insts = generic.as(GenericClassType).instantiated_types.select { |i| i.is_a?(GenericClassInstanceType) }
+      insts.sorted_by { |i| i.full_name }.each do |inst|
+        full = inst.full_name
+        sb << "Type: " << full << " (instance)\n"
+        ivars = inst.as(GenericClassInstanceType).instance_vars
+        ivars.keys.each do |ivar_name|
+          sb << "  Ivar: " << full << "#" << ivar_name << "\n"
+          sb << "    type: " << ivars[ivar_name].type.to_s << "\n"
+        end
+        unless ivars.empty?
+          names = [] of String
+          ivars.keys.each { |n| names << n }
+          sb << "  IvarOrder: [" << names.join(", ") << "]\n"
+        end
+      end
+    end
+    sb.to_s
   end
 
   # The whole-program load: the file and its import closure, with the prelude loaded
@@ -226,10 +256,17 @@ elsif Program.args[0] == "--const-facts"
   if holder = prog.types["Holder"]?
     holder.as(ModuleType).class_vars.each_value do |mv|
       if owner = mv.owner
-        print "cvar #{mv.name} owner #{owner.full_name}\n"
+        print "cvar #{mv.name} owner #{owner.full_name} thread_local=#{mv.thread_local}\n"
       else
-        print "cvar #{mv.name} owner none\n"
+        print "cvar #{mv.name} owner none thread_local=#{mv.thread_local}\n"
       end
+    end
+  end
+elsif Program.args[0] == "--link-annotations"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  if link_lib = prog.types["LibA"]?
+    link_lib.as(LibType).link_annotations.each do |rec|
+      print "link lib=#{rec.library || "-"} ldflags=#{rec.ldflags || "-"} static=#{rec.is_static} framework=#{rec.framework || "-"} pkg_config=#{rec.pkg_config || "-"} dll=#{rec.dll || "-"}\n"
     end
   end
 else
