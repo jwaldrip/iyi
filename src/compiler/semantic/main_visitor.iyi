@@ -1310,7 +1310,9 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The key of one instantiation: the receiver, the def name and the argument
-  # types (a block adds `&`). The guard in type_method_body compares keys.
+  # types, and for a block call the block's node. Two calls with different blocks
+  # are different instantiations (a block nested in another call's block is not a
+  # recursion of that call); the same call with the same block is.
   def instance_key(rec_type : Type, target_def : Def, args : Array(ASTNode), block : Block?) : String
     parts = [] of String
     args.each do |a|
@@ -1322,7 +1324,7 @@ pub class MainVisitor < TypeNodeHost
     end
     key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
     if block
-      key = key + "&"
+      key = key + "&#{block.node_id}"
     end
     key
   end
