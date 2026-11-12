@@ -15,6 +15,7 @@ set -eu
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="$REPO/bin/crystal"
+. "$REPO/bench/lib/mutation.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -294,137 +295,48 @@ done
 echo
 echo "== 5. Guarded mutation proofs (verify patch applies, exercise fails, revert passes)"
 
-# Mutation 1: Alter keyword 'pub' recognition in lexer
-echo "  [mutation 1] altering keyword 'pub' recognition in lexer"
-cp "$REPO/src/compiler/syntax/lexer.iyi" "$REPO/src/compiler/syntax/lexer.iyi.orig"
-sed -i.bak 's/check_ident_or_keyword(Keyword::PUB/check_ident_or_keyword(Keyword::DEF/' "$REPO/src/compiler/syntax/lexer.iyi" && rm -f "$REPO/src/compiler/syntax/lexer.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi" >/dev/null; then
-  echo "  ERROR: patch was not applied!"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_lexer_exercise.iyi" > "$WORK/mut1.log" 2>&1; then
-  echo "  ERROR: exercise unexpectedly passed with mutated 'pub' keyword!"
-  cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-else
-  echo "    exercise correctly failed on mutated keyword"
-fi
-cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-echo "    reverted mutation 1"
+# Each check runs the exercise on the mutated source. Non-zero (exercise failed) = caught.
+check_exercise_must_fail() {
+  "$IYI" run "$REPO/bench/selfhost_lexer_exercise.iyi"
+}
 
-# Mutation 2: Alter operator '!' recognition in lexer
-echo "  [mutation 2] altering operator '!' recognition in lexer"
-cp "$REPO/src/compiler/syntax/lexer.iyi" "$REPO/src/compiler/syntax/lexer.iyi.orig"
-sed -i.bak 's/@token.type = TokenKind::OP_BANG/@token.type = TokenKind::OP_TILDE/' "$REPO/src/compiler/syntax/lexer.iyi" && rm -f "$REPO/src/compiler/syntax/lexer.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi" >/dev/null; then
-  echo "  ERROR: patch was not applied!"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_lexer_exercise.iyi" > "$WORK/mut2.log" 2>&1; then
-  echo "  ERROR: exercise unexpectedly passed with mutated '!' operator!"
-  cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-else
-  echo "    exercise correctly failed on mutated operator"
-fi
-cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-echo "    reverted mutation 2"
+prove_mutation "altering keyword 'pub' recognition in lexer" \
+  "$REPO/src/compiler/syntax/lexer.iyi" \
+  "check_ident_or_keyword(Keyword::PUB" \
+  "check_ident_or_keyword(Keyword::DEF" \
+  -- check_exercise_must_fail || status=1
 
-# Mutation 3: Alter base 16 prefix handling in lexer
-echo "  [mutation 3] altering base 16 prefix handling"
-cp "$REPO/src/compiler/syntax/lexer.iyi" "$REPO/src/compiler/syntax/lexer.iyi.orig"
-sed -i.bak "s/when 'x' then base = 16/when 'x' then base = 10/" "$REPO/src/compiler/syntax/lexer.iyi" && rm -f "$REPO/src/compiler/syntax/lexer.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi" >/dev/null; then
-  echo "  ERROR: patch was not applied!"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_lexer_exercise.iyi" > "$WORK/mut3.log" 2>&1; then
-  echo "  ERROR: exercise unexpectedly passed with mutated base 16 prefix!"
-  cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-else
-  echo "    exercise correctly failed on mutated number base"
-fi
-cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-echo "    reverted mutation 3"
+prove_mutation "altering operator '!' recognition in lexer" \
+  "$REPO/src/compiler/syntax/lexer.iyi" \
+  "@token.type = TokenKind::OP_BANG" \
+  "@token.type = TokenKind::OP_TILDE" \
+  -- check_exercise_must_fail || status=1
 
-# Mutation 4: Alter Token#keyword? in token model
-echo "  [mutation 4] altering Token#keyword? in token model"
-cp "$REPO/src/compiler/syntax/token.iyi" "$REPO/src/compiler/syntax/token.iyi.orig"
-sed -i.bak 's/@type == TokenKind::IDENT && !@keyword.nil?/@type == TokenKind::IDENT \&\& false/' "$REPO/src/compiler/syntax/token.iyi" && rm -f "$REPO/src/compiler/syntax/token.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/token.iyi.orig" "$REPO/src/compiler/syntax/token.iyi" >/dev/null; then
-  echo "  ERROR: patch was not applied!"
-  rm -f "$REPO/src/compiler/syntax/token.iyi.orig"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_lexer_exercise.iyi" > "$WORK/mut4.log" 2>&1; then
-  echo "  ERROR: exercise unexpectedly passed with mutated Token#keyword?!"
-  cp "$REPO/src/compiler/syntax/token.iyi.orig" "$REPO/src/compiler/syntax/token.iyi"
-  rm -f "$REPO/src/compiler/syntax/token.iyi.orig"
-  exit 1
-else
-  echo "    exercise correctly failed on mutated Token#keyword?"
-fi
-cp "$REPO/src/compiler/syntax/token.iyi.orig" "$REPO/src/compiler/syntax/token.iyi"
-rm -f "$REPO/src/compiler/syntax/token.iyi.orig"
-echo "    reverted mutation 4"
+prove_mutation "altering base 16 prefix handling" \
+  "$REPO/src/compiler/syntax/lexer.iyi" \
+  "when 'x' then base = 16" \
+  "when 'x' then base = 10" \
+  -- check_exercise_must_fail || status=1
 
-# Mutation 5: Alter hex digit value calculation in lexer
-echo "  [mutation 5] altering hex digit calculation in lexer"
-cp "$REPO/src/compiler/syntax/lexer.iyi" "$REPO/src/compiler/syntax/lexer.iyi.orig"
-sed -i.bak 's/ch.ord - 65 + 10/-1/' "$REPO/src/compiler/syntax/lexer.iyi" && rm -f "$REPO/src/compiler/syntax/lexer.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi" >/dev/null; then
-  echo "  ERROR: patch was not applied!"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_lexer_exercise.iyi" > "$WORK/mut5.log" 2>&1; then
-  echo "  ERROR: exercise unexpectedly passed with mutated hex digit calculation!"
-  cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-else
-  echo "    exercise correctly failed on mutated hex digit calculation"
-fi
-cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-echo "    reverted mutation 5"
+prove_mutation "altering Token#keyword? in token model" \
+  "$REPO/src/compiler/syntax/token.iyi" \
+  "@type == TokenKind::IDENT && !@keyword.nil?" \
+  "@type == TokenKind::IDENT && false" \
+  -- check_exercise_must_fail || status=1
 
-# Mutation 6: Alter macro control delimiter start recognition in next_macro_token
-echo "  [mutation 6] altering macro control start recognition in next_macro_token"
-cp "$REPO/src/compiler/syntax/lexer.iyi" "$REPO/src/compiler/syntax/lexer.iyi.orig"
-sed -i.bak 's/next_char(TokenKind::MACRO_CONTROL_START)/next_char(TokenKind::MACRO_EXPRESSION_START)/' "$REPO/src/compiler/syntax/lexer.iyi" && rm -f "$REPO/src/compiler/syntax/lexer.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi" >/dev/null; then
-  echo "  ERROR: patch was not applied!"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_lexer_exercise.iyi" > "$WORK/mut6.log" 2>&1; then
-  echo "  ERROR: exercise unexpectedly passed with mutated macro control start!"
-  cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-  rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-  exit 1
-else
-  echo "    exercise correctly failed on mutated macro control start"
-fi
-cp "$REPO/src/compiler/syntax/lexer.iyi.orig" "$REPO/src/compiler/syntax/lexer.iyi"
-rm -f "$REPO/src/compiler/syntax/lexer.iyi.orig"
-echo "    reverted mutation 6"
+# The hex digit of an upper-case letter is computed at two sites, hex_value and
+# char_to_digit. The original sed replaced both, so every occurrence is replaced.
+prove_mutation_all "altering hex digit calculation in lexer" \
+  "$REPO/src/compiler/syntax/lexer.iyi" \
+  "ch.ord - 65 + 10" \
+  "-1" \
+  -- check_exercise_must_fail || status=1
+
+prove_mutation "altering macro control start recognition in next_macro_token" \
+  "$REPO/src/compiler/syntax/lexer.iyi" \
+  "next_char(TokenKind::MACRO_CONTROL_START)" \
+  "next_char(TokenKind::MACRO_EXPRESSION_START)" \
+  -- check_exercise_must_fail || status=1
 echo
 echo "== Verification clean state confirmed"
 "$WORK/exercise-release" >/dev/null

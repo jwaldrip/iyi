@@ -21,6 +21,7 @@ CRYSTAL="${CRYSTAL:-crystal}"
 NORM="$REPO/src/compiler/semantic/normalizer.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+. "$REPO/bench/lib/mutation.sh"
 
 echo "== 1. Building and running the normalizer exercise"
 "$IYI" build -o "$WORK/exercise" "$REPO/bench/selfhost_normalizer_exercise.iyi"
@@ -606,45 +607,17 @@ echo "  Parity summary: $((fixture_count - diverged))/$fixture_count fixtures no
 echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
-prove_mutation() {
-  label="$1"
-  old="$2"
-  new="$3"
-  echo "  [$label]"
-  cp "$NORM" "$NORM.orig"
-  python3 - "$NORM" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$NORM.orig" "$NORM" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$NORM.orig" "$NORM"; rm -f "$NORM.orig"
-    return
-  fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_normalizer_exercise.iyi" >/dev/null 2>&1; then
-    if compare_all "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the normalised trees diverged, as they must"
-    fi
-  else
-    echo "    caught: the mutated normalizer did not build"
-  fi
-  cp "$NORM.orig" "$NORM"; rm -f "$NORM.orig"
-  echo "    reverted"
+# The check for one mutation: non-zero (caught) when the mutated normalizer no
+# longer builds, or when its normalized trees stop matching the front end.
+check_normalizer_agrees() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_normalizer_exercise.iyi" >/dev/null 2>&1 || return 1
+  compare_all "$WORK/mut-exercise"
 }
 
 MUTATIONS_RUN=0
 run_proof() {
-  prove_mutation "$1" "$2" "$3"
   MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+  prove_mutation "$1" "$NORM" "$2" "$3" -- check_normalizer_agrees || status=1
 }
 
 run_proof "unless keeps its branches instead of swapping them"   "If.new(node.cond, node.else, node.then)"   "If.new(node.cond, node.then, node.else)"

@@ -13,9 +13,13 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
-export CRYSTAL_CACHE_DIR="${CRYSTAL_CACHE_DIR:-/tmp/iyi-pdr-cache}"
+. "$REPO/bench/lib/mutation.sh"
+
+if command -v brew >/dev/null 2>&1; then
+  LIBRARY_PATH="$(brew --prefix bdw-gc)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+  export LIBRARY_PATH
+fi
+export CRYSTAL_CACHE_DIR="${CRYSTAL_CACHE_DIR:-${TMPDIR:-/tmp}/iyi-pdr-cache}"
 
 echo "== 1. Building self-host compile tool"
 cd "$REPO"
@@ -129,128 +133,56 @@ echo "== 3. Guarded mutation proofs: verifying the gate goes red when a file reg
 mutations_caught=0
 mutations_run=0
 
-prove_fails() {
-  local label="$1"
-  local file="$2"
-  local script="$3"
-  local expected_floor="${4:-codegen}"
+# Non-zero (caught) when the mutated prelude file measures below its committed floor.
+check_at_or_above_floor() {
+  local target="$1" floor="$2" measured
+  measured="$(probe_one_file "$target")"
+  [ "$(phase_rank "$measured")" -ge "$(phase_rank "$floor")" ]
+}
 
+# $1 label, $2 prelude file, $3 literal text to patch, $4 its replacement, $5 committed floor.
+run_proof() {
   mutations_run=$((mutations_run + 1))
-  echo "  [$label]"
-  # Need to reference $REPO/src/iyi/. so mutation_anchors.py discovers roots
-  mkdir -p "$WORK/backup_iyi"
-  cp -R "$REPO/src/iyi/." "$WORK/backup_iyi/"
-  sed -e "$script" "$REPO/src/iyi/$file" > "$WORK/mutated_$file"
-  if cmp -s "$REPO/src/iyi/$file" "$WORK/mutated_$file"; then
-    echo "    FAIL: patch did not change file: $label"
-    status=1
-    return
-  fi
-
-  # Apply mutation to real file
-  cp "$WORK/mutated_$file" "$REPO/src/iyi/$file"
-  local mut_phase
-  mut_phase="$(probe_one_file "$REPO/src/iyi/$file")"
-  local mut_rank
-  mut_rank="$(phase_rank "$mut_phase")"
-  local floor_rank
-  floor_rank="$(phase_rank "$expected_floor")"
-
-  # Always restore immediately
-  cp "$WORK/backup_iyi/$file" "$REPO/src/iyi/$file"
-
-  if [ "$mut_rank" -lt "$floor_rank" ]; then
-    echo "    caught: mutation caused regression ($expected_floor -> $mut_phase) as expected"
+  if prove_mutation "$1" "$REPO/src/iyi/$2" "$3" "$4" -- check_at_or_above_floor "$REPO/src/iyi/$2" "$5"; then
     mutations_caught=$((mutations_caught + 1))
   else
-    echo "    FAIL: mutation did not cause regression ($mut_phase >= $expected_floor)"
     status=1
   fi
 }
 
-prove_fails "syntax corruption in set regresses below link floor" \
-  "set.iyi" \
-  's/class Set/class %%%/' \
-  "link"
+run_proof "syntax corruption in set regresses below link floor" "set.iyi" 'class Set' 'class %%%' "link"
 
-prove_fails "semantic corruption in set regresses below link floor" \
-  "set.iyi" \
-  's/@entries : Hash(T, Bool)/@entries : UndefinedType12345/' \
-  "link"
+run_proof "semantic corruption in set regresses below link floor" "set.iyi" '@entries : Hash(T, Bool)' '@entries : UndefinedType12345' "link"
 
-prove_fails "syntax corruption in hash regresses below link floor" \
-  "hash.iyi" \
-  's/class Hash/class %%%/' \
-  "link"
+run_proof "syntax corruption in hash regresses below link floor" "hash.iyi" 'class Hash' 'class %%%' "link"
 
-prove_fails "syntax corruption in range regresses below link floor" \
-  "range.iyi" \
-  's/struct Range/struct %%%/' \
-  "link"
+run_proof "syntax corruption in range regresses below link floor" "range.iyi" 'struct Range' 'struct %%%' "link"
 
-prove_fails "syntax corruption in enum regresses below link floor" \
-  "enum.iyi" \
-  's/struct Enum/struct %%%/' \
-  "link"
+run_proof "syntax corruption in enum regresses below link floor" "enum.iyi" 'struct Enum' 'struct %%%' "link"
 
-prove_fails "syntax corruption in primitives regresses below link floor" \
-  "primitives.iyi" \
-  's/struct Symbol/struct %%%/' \
-  "link"
-prove_fails "syntax corruption in atomic regresses below link floor" \
-  "atomic.iyi" \
-  's/struct Atomic/struct %%%/' \
-  "link"
+run_proof "syntax corruption in primitives regresses below link floor" "primitives.iyi" 'struct Symbol' 'struct %%%' "link"
 
-prove_fails "syntax corruption in prelude regresses below link floor" \
-  "prelude.iyi" \
-  's|require "./primitives"|require %%%|' \
-  "link"
+run_proof "syntax corruption in atomic regresses below link floor" "atomic.iyi" 'struct Atomic' 'struct %%%' "link"
 
-prove_fails "semantic corruption in prelude regresses below link floor" \
-  "prelude.iyi" \
-  's/@proc : Proc(Nil)/@proc : UndefinedType9876/' \
-  "link"
+run_proof "syntax corruption in prelude regresses below link floor" "prelude.iyi" 'require "./primitives"' 'require %%%' "link"
 
-prove_fails "syntax corruption in concurrency regresses below link floor" \
-  "concurrency.iyi" \
-  's/class IyiFiber/class %%%/' \
-  "link"
+run_proof "semantic corruption in prelude regresses below link floor" "prelude.iyi" '@proc : Proc(Nil)' '@proc : UndefinedType9876' "link"
 
-prove_fails "syntax corruption in float regresses below link floor" \
-  "float.iyi" \
-  's/struct Float64/struct %%%/' \
-  "link"
+run_proof "syntax corruption in concurrency regresses below link floor" "concurrency.iyi" 'class IyiFiber' 'class %%%' "link"
 
-prove_fails "syntax corruption in array regresses below link floor" \
-  "array.iyi" \
-  's/class Array/class %%%/' \
-  "link"
+run_proof "syntax corruption in float regresses below link floor" "float.iyi" 'struct Float64' 'struct %%%' "link"
 
-prove_fails "syntax corruption in file regresses below link floor" \
-  "file.iyi" \
-  's/class File/class %%%/' \
-  "link"
+run_proof "syntax corruption in array regresses below link floor" "array.iyi" 'class Array' 'class %%%' "link"
 
-prove_fails "syntax corruption in string regresses below link floor" \
-  "string.iyi" \
-  's/class String/class %%%/' \
-  "link"
+run_proof "syntax corruption in file regresses below link floor" "file.iyi" 'class File' 'class %%%' "link"
 
-prove_fails "syntax corruption in number regresses below link floor" \
-  "number.iyi" \
-  's/struct Int32/struct %%%/' \
-  "link"
+run_proof "syntax corruption in string regresses below link floor" "string.iyi" 'class String' 'class %%%' "link"
 
-prove_fails "syntax corruption in object regresses below link floor" \
-  "object.iyi" \
-  's/class Object/class %%%/' \
-  "link"
+run_proof "syntax corruption in number regresses below link floor" "number.iyi" 'struct Int32' 'struct %%%' "link"
 
-prove_fails "syntax corruption in io regresses below link floor" \
-  "io.iyi" \
-  's/class IyiIO/class %%%/' \
-  "link"
+run_proof "syntax corruption in object regresses below link floor" "object.iyi" 'class Object' 'class %%%' "link"
+
+run_proof "syntax corruption in io regresses below link floor" "io.iyi" 'class IyiIO' 'class %%%' "link"
 echo "  Mutation summary: $mutations_caught/$mutations_run regressions caught"
 
 echo

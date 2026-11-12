@@ -27,6 +27,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 IYIMOD="$REPO/src/compiler/artifact/iyimod.iyi"
+. "$REPO/bench/lib/mutation.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -288,45 +289,14 @@ test_gate_mutation() {
   return 0
 }
 
-prove_mutation() {
-  local label="$1"
-  local old="$2"
-  local new="$3"
-  echo "  [$label]"
-  cp "$IYIMOD" "$IYIMOD.orig"
-  python3 - "$IYIMOD" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  local rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$IYIMOD.orig" "$IYIMOD" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$IYIMOD.orig" "$IYIMOD"; rm -f "$IYIMOD.orig"
-    return
-  fi
-
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_iyimod_exercise.iyi" >/dev/null 2>&1; then
-    if test_gate_mutation "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the artifact format diverged or refused, as it must"
-    fi
-  else
-    echo "    caught: the mutated iyimod did not build"
-  fi
-  cp "$IYIMOD.orig" "$IYIMOD"; rm -f "$IYIMOD.orig"
-  echo "    reverted"
+check_iyimod_still_matches() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_iyimod_exercise.iyi" >/dev/null 2>&1 || return 1
+  test_gate_mutation "$WORK/mut-exercise"
 }
 
 MUTATIONS_RUN=0
 run_proof() {
-  prove_mutation "$1" "$2" "$3"
+  prove_mutation "$1" "$IYIMOD" "$2" "$3" -- check_iyimod_still_matches || status=1
   MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 }
 

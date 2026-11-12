@@ -13,9 +13,13 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
-export LIBRARY_PATH="/opt/homebrew/opt/bdw-gc/lib:${LIBRARY_PATH:-}"
-export CRYSTAL_CACHE_DIR="${CRYSTAL_CACHE_DIR:-/tmp/iyi-pwl-cache}"
+. "$REPO/bench/lib/mutation.sh"
+
+if command -v brew >/dev/null 2>&1; then
+  LIBRARY_PATH="$(brew --prefix bdw-gc)/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+  export LIBRARY_PATH
+fi
+export CRYSTAL_CACHE_DIR="${CRYSTAL_CACHE_DIR:-${TMPDIR:-/tmp}/iyi-pwl-cache}"
 
 echo "== 1. Building self-host compile tool"
 cd "$REPO"
@@ -99,64 +103,30 @@ echo "== 3. Guarded mutation proofs: verifying the gate goes red when whole prel
 mutations_caught=0
 mutations_run=0
 
-prove_fails() {
-  local label="$1"
-  local file="$2"
-  local script="$3"
-  local expected_floor="${4:-codegen}"
+# Non-zero (caught) when the whole prelude measures below the committed floor.
+check_whole_at_or_above_floor() {
+  local floor="$1" measured
+  measured="$(probe_whole_prelude)"
+  [ "$(phase_rank "$measured")" -ge "$(phase_rank "$floor")" ]
+}
 
+# $1 label, $2 prelude file, $3 literal text to patch, $4 its replacement, $5 committed floor.
+run_proof() {
   mutations_run=$((mutations_run + 1))
-  echo "  [$label]"
-  # Reference $REPO/src/iyi/. so mutation_anchors.py discovers roots
-  mkdir -p "$WORK/backup_iyi"
-  cp -R "$REPO/src/iyi/." "$WORK/backup_iyi/"
-  sed -e "$script" "$REPO/src/iyi/$file" > "$WORK/mutated_$file"
-  if cmp -s "$REPO/src/iyi/$file" "$WORK/mutated_$file"; then
-    echo "    FAIL: patch did not change file: $label"
-    status=1
-    return
-  fi
-
-  # Apply mutation to real file
-  cp "$WORK/mutated_$file" "$REPO/src/iyi/$file"
-  local mut_phase
-  mut_phase="$(probe_whole_prelude)"
-  local mut_rank
-  mut_rank="$(phase_rank "$mut_phase")"
-  local f_rank
-  f_rank="$(phase_rank "$expected_floor")"
-
-  # Always restore immediately
-  cp "$WORK/backup_iyi/$file" "$REPO/src/iyi/$file"
-
-  if [ "$mut_rank" -lt "$f_rank" ]; then
-    echo "    caught: mutation caused regression ($expected_floor -> $mut_phase) as expected"
+  if prove_mutation "$1" "$REPO/src/iyi/$2" "$3" "$4" -- check_whole_at_or_above_floor "$5"; then
     mutations_caught=$((mutations_caught + 1))
   else
-    echo "    FAIL: mutation did not cause regression ($mut_phase >= $expected_floor)"
     status=1
   fi
 }
 
-prove_fails "syntax corruption in prelude regresses below codegen floor" \
-  "prelude.iyi" \
-  's|require "./primitives"|require %%%|' \
-  "codegen"
+run_proof "syntax corruption in prelude regresses below codegen floor" "prelude.iyi" 'require "./primitives"' 'require %%%' "codegen"
 
-prove_fails "semantic corruption in prelude regresses below codegen floor" \
-  "prelude.iyi" \
-  's/@proc : Proc(Nil)/@proc : UndefinedType9876/' \
-  "codegen"
+run_proof "semantic corruption in prelude regresses below codegen floor" "prelude.iyi" '@proc : Proc(Nil)' '@proc : UndefinedType9876' "codegen"
 
-prove_fails "syntax corruption in concurrency regresses whole prelude below codegen floor" \
-  "concurrency.iyi" \
-  's/class IyiFiber/class %%%/' \
-  "codegen"
+run_proof "syntax corruption in concurrency regresses whole prelude below codegen floor" "concurrency.iyi" 'class IyiFiber' 'class %%%' "codegen"
 
-prove_fails "syntax corruption in primitives regresses whole prelude below codegen floor" \
-  "primitives.iyi" \
-  's/struct Symbol/struct %%%/' \
-  "codegen"
+run_proof "syntax corruption in primitives regresses whole prelude below codegen floor" "primitives.iyi" 'struct Symbol' 'struct %%%' "codegen"
 
 echo "  Mutation summary: $mutations_caught/$mutations_run regressions caught"
 

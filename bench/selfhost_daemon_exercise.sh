@@ -22,6 +22,7 @@ set -u
 status=0
 diverged=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+. "$REPO/bench/lib/mutation.sh"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 DAEMON="$REPO/src/compiler/command/daemon.iyi"
@@ -608,32 +609,10 @@ echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
 MUTATIONS_RUN=0
 
-prove_mutation() {
-  local label="$1"
-  local old="$2"
-  local new="$3"
-  echo "  [$label]"
-  cp "$DAEMON" "$DAEMON.orig"
-
-  python3 - "$DAEMON" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-content = open(path).read()
-if old not in content:
-    sys.exit(3)
-open(path, "w").write(content.replace(old, new, 1))
-PY
-  local rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$DAEMON.orig" "$DAEMON" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$DAEMON.orig" "$DAEMON"; rm -f "$DAEMON.orig"
-    return
-  fi
-
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_daemon_exercise.iyi" >/dev/null 2>&1; then
-    "$WORK/mut-exercise" "$WORK" > "$WORK/iyi_mut_raw.out" 2>&1
-    python3 - "$REPO" "$WORK" "$WORK/iyi_mut_raw.out" "$WORK/iyi_mut.out" <<'PY'
+check_daemon_mutant() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_daemon_exercise.iyi" >/dev/null 2>&1 || return 1
+  "$WORK/mut-exercise" "$WORK" > "$WORK/iyi_mut_raw.out" 2>&1
+  python3 - "$REPO" "$WORK" "$WORK/iyi_mut_raw.out" "$WORK/iyi_mut.out" <<'PY'
 import re, sys
 repo, work, src, dst = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 text = open(src).read()
@@ -644,49 +623,44 @@ text = re.sub(r'Looked in:\n\s+/[^\n]+/iyi-daemon\n\s+\.build/iyi-daemon',
               'Looked in:\n    <EXE_DIR>/iyi-daemon\n    .build/iyi-daemon', text)
 open(dst, "w").write(text)
 PY
-    if diff -q "$WORK/crystal.out" "$WORK/iyi_mut.out" >/dev/null 2>&1; then
-      echo "    VACUOUS: the mutated daemon produced identical output to the oracle"
-      status=1
-    else
-      echo "    caught: the daemon output diverged, as it must"
-      MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-    fi
-  else
-    echo "    caught: the mutated daemon did not build"
-    MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-  fi
-
-  cp "$DAEMON.orig" "$DAEMON"; rm -f "$DAEMON.orig"
-  echo "    reverted"
+  diff -q "$WORK/crystal.out" "$WORK/iyi_mut.out" >/dev/null 2>&1
 }
 
-run_proof() {
-  prove_mutation "$1" "$2" "$3"
-}
-
-run_proof "socket path limit check inverted to accept oversized paths" \
+prove_mutation "socket path limit check inverted to accept oversized paths" "$DAEMON" \
   'next unless path.bytesize > limit' \
-  'next unless path.bytesize < limit'
+  'next unless path.bytesize < limit' \
+  -- check_daemon_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "over-limit socket error message wording altered" \
+prove_mutation "over-limit socket error message wording altered" "$DAEMON" \
   'the socket path is #{path.bytesize} bytes and the kernel takes' \
-  'socket path size #{path.bytesize} exceeds maximum kernel limit'
+  'socket path size #{path.bytesize} exceeds maximum kernel limit' \
+  -- check_daemon_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "daemon override check bypasses is_file verification" \
+prove_mutation "daemon override check bypasses is_file verification" "$DAEMON" \
   'unless is_file?(override)' \
-  'if false && !is_file?(override)'
+  'if false && !is_file?(override)' \
+  -- check_daemon_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "candidate search drops adjacent executable directory" \
+prove_mutation "candidate search drops adjacent executable directory" "$DAEMON" \
   'candidates << BuildDaemon.file_join(BuildDaemon.file_dirname(exe), server_name)' \
-  '# candidates << BuildDaemon.file_join(BuildDaemon.file_dirname(exe), server_name)'
+  '# candidates << BuildDaemon.file_join(BuildDaemon.file_dirname(exe), server_name)' \
+  -- check_daemon_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "missing daemon warning wording altered in daemon_socket_from_env" \
+prove_mutation "missing daemon warning wording altered in daemon_socket_from_env" "$DAEMON" \
   'no daemon at #{socket}, building without it' \
-  'daemon socket #{socket} is missing, continuing build'
+  'daemon socket #{socket} is missing, continuing build' \
+  -- check_daemon_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-run_proof "identity calculation for unknown executable altered" \
+prove_mutation "identity calculation for unknown executable altered" "$DAEMON" \
   'return "an unknown build" if exe.nil? || exe.empty?' \
-  'return "unidentified compiler" if exe.nil? || exe.empty?'
+  'return "unidentified compiler" if exe.nil? || exe.empty?' \
+  -- check_daemon_mutant || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

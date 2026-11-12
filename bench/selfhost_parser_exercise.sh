@@ -16,8 +16,10 @@ set -eu
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="$REPO/bin/crystal"
+PARSER="$REPO/src/compiler/syntax/parser.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+. "$REPO/bench/lib/mutation.sh"
 
 status=0
 diverged=0
@@ -652,214 +654,63 @@ done
 echo
 echo "== 5. Guarded mutation proofs (verify patch applies, exercise fails, revert passes)"
 
-# Mutation 1: Break operator precedence in parse_add_or_sub
-echo "  [mutation 1] altering operator precedence in parse_add_or_sub"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/left = parse_mul_or_div/left = parse_prefix/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut1.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 1"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 1"
+# Each proof patches one parser defect and requires the exercise to fail. The
+# check is the exercise run itself: a non-zero exit means the defect was caught.
+run_proof() {
+  prove_mutation "$1" "$PARSER" "$2" "$3" -- "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" || status=1
+}
 
-# Mutation 2: Break operator right-associativity in parse_pow
-echo "  [mutation 2] altering operator right-associativity in parse_pow"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/right = parse_pow/right = parse_prefix/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut2.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 2"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 2"
+# Mutation 1: break operator precedence in parse_add_or_sub
+run_proof "mutation 1: altering operator precedence in parse_add_or_sub" \
+  'left = parse_mul_or_div' 'left = parse_prefix'
 
-# Mutation 3: Break block recognition in parse_block
-echo "  [mutation 3] altering block recognition in parse_block"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/if @token.keyword == Keyword::DO/if false \&\& @token.keyword == Keyword::DO/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut3.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 3"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 3"
+run_proof_all() {
+  prove_mutation_all "$1" "$PARSER" "$2" "$3" -- "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" || status=1
+}
 
-# Mutation 4: Break modifier form recognition
-echo "  [mutation 4] altering modifier if form recognition"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/If[.]new(exp, res, Nop[.]new)/Unless.new(exp, res, Nop.new)/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut4.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 4"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 4"
+# Mutation 2: break operator right-associativity in parse_pow. The original sed
+# replaced every `right = parse_pow`, the parse_mul_or_div site and the parse_pow
+# site alike, so every occurrence is replaced here too.
+run_proof_all "mutation 2: altering operator right-associativity in parse_pow" \
+  'right = parse_pow' 'right = parse_prefix'
 
-# Mutation 5: Break splat argument in parse_call_arg
-echo "  [mutation 5] altering splat argument parsing in parse_call_arg"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/Splat[.]new(parse_op_assign_no_control)[.]at(location)/parse_op_assign_no_control/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut5.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 5"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 5"
+# Mutation 3: break block recognition. The original sed replaced all four
+# `if @token.keyword == Keyword::DO` checks, and so does this proof.
+run_proof_all "mutation 3: altering block recognition in parse_block" \
+  'if @token.keyword == Keyword::DO' 'if false && @token.keyword == Keyword::DO'
 
-# Mutation 6: Break return type parsing in parse_def_helper
-echo "  [mutation 6] altering return type parsing in parse_def_helper"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/end_location = return_type[.]end_location/return_type = nil; end_location = nil/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut6.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 6"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 6"
+# Mutation 4: break modifier form recognition
+run_proof "mutation 4: altering modifier if form recognition" \
+  'If.new(exp, res, Nop.new)' 'Unless.new(exp, res, Nop.new)'
 
-# Mutation 7: Break superclass parsing in parse_class_def
-echo "  [mutation 7] altering superclass parsing in parse_class_def"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/superclass = parse_generic(false, @token.location, false)/superclass = nil/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut7.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 7"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 7"
+# Mutation 5: break splat argument in parse_call_arg. The original sed replaced
+# both the Splat and the DoubleSplat site, since the second contains the first.
+run_proof_all "mutation 5: altering splat argument parsing in parse_call_arg" \
+  'Splat.new(parse_op_assign_no_control).at(location)' 'parse_op_assign_no_control'
 
-# Mutation 8: Break enum member value parsing in parse_enum_body_expressions
-echo "  [mutation 8] altering enum member value parsing in parse_enum_body_expressions"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/constant_value = parse_logical_or/constant_value = nil/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut8.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 8"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 8"
+# Mutation 6: break return type parsing in parse_def_helper
+run_proof "mutation 6: altering return type parsing in parse_def_helper" \
+  'end_location = return_type.end_location' 'return_type = nil; end_location = nil'
 
-# Mutation 9: Break trait implementation target parsing in parse_impl_def
-echo "  [mutation 9] altering trait implementation target parsing in parse_impl_def"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/target = parse_path(false, @token.location)/target = parse_path(true, @token.location)/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut9.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 9"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 9"
+# Mutation 7: break superclass parsing in parse_class_def
+run_proof "mutation 7: altering superclass parsing in parse_class_def" \
+  'superclass = parse_generic(false, @token.location, false)' 'superclass = nil'
 
-# Mutation 10: Break adjacent string concatenation across backslash-newline
-echo "  [mutation 10] altering adjacent string concatenation in parse_delimiter"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/if want_skip_space && delimiter_state[.]kind == DelimiterKind::STRING/if false \&\& want_skip_space/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut10.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 10"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 10"
+# Mutation 8: break enum member value parsing in parse_enum_body_expressions
+run_proof "mutation 8: altering enum member value parsing in parse_enum_body_expressions" \
+  'constant_value = parse_logical_or' 'constant_value = nil'
 
-# Mutation 11: Break magic constant parsing in parse_param
-echo "  [mutation 11] altering magic constant default value parsing in parse_param"
-cp "$REPO/src/compiler/syntax/parser.iyi" "$REPO/src/compiler/syntax/parser.iyi.orig"
-sed -i.bak 's/if @token[.]type[.]magic[?]/if false \&\& @token.type.magic?/' "$REPO/src/compiler/syntax/parser.iyi" && rm -f "$REPO/src/compiler/syntax/parser.iyi.bak"
-if diff -u "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi" >/dev/null; then
-  echo "    patch did not apply"
-  status=1
-fi
-echo "    patch verified applied in working tree"
-if "$IYI" run "$REPO/bench/selfhost_parser_exercise.iyi" > "$WORK/mut11.log" 2>&1; then
-  echo "    FAILED: exercise still passed with mutation 11"
-  status=1
-else
-  echo "    mutation caught: exercise failed as expected"
-fi
-cp "$REPO/src/compiler/syntax/parser.iyi.orig" "$REPO/src/compiler/syntax/parser.iyi"
-rm -f "$REPO/src/compiler/syntax/parser.iyi.orig"
-echo "    reverted mutation 11"
+# Mutation 9: break trait implementation target parsing in parse_impl_def
+run_proof "mutation 9: altering trait implementation target parsing in parse_impl_def" \
+  'target = parse_path(false, @token.location)' 'target = parse_path(true, @token.location)'
+
+# Mutation 10: break adjacent string concatenation across backslash-newline
+run_proof "mutation 10: altering adjacent string concatenation in parse_delimiter" \
+  'if want_skip_space && delimiter_state.kind == DelimiterKind::STRING' 'if false && want_skip_space'
+
+# Mutation 11: break magic constant parsing in parse_param
+run_proof "mutation 11: altering magic constant default value parsing in parse_param" \
+  'if @token.type.magic?' 'if false && @token.type.magic?'
 
 echo
 echo "== Verification clean state confirmed"

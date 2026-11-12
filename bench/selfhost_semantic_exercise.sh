@@ -22,6 +22,8 @@ SEM_REC="$REPO/src/compiler/semantic/recursive_struct_checker.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+. "$REPO/bench/lib/mutation.sh"
+
 echo "== 1. Building and running the semantic visitor exercise"
 "$IYI" build -o "$WORK/exercise" "$REPO/bench/selfhost_semantic_exercise.iyi"
 "$WORK/exercise" > "$WORK/plain.out" 2>&1
@@ -382,221 +384,148 @@ for err_fixture in "$REPO"/bench/fixtures/sem_err_*.iyi; do
 done
 echo "  Parity summary: $matched_err_count/$total_err_count error fixtures rejected with identical errors"
 
-prove_decl_mutation() {
-  label="$1"
-  old="$2"
-  new="$3"
-  echo "  [$label]"
-  cp "$SEM" "$SEM.orig"
-  python3 - "$SEM" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$SEM.orig" "$SEM" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$SEM.orig" "$SEM"; rm -f "$SEM.orig"
-    return
-  fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1; then
-    if compare_all "$WORK/mut-exercise" && compare_expr_all "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the declaration outputs diverged, as they must"
-    fi
-  else
-    echo "    caught: the mutated semantic visitor did not build"
-  fi
-  cp "$SEM.orig" "$SEM"; rm -f "$SEM.orig"
-  echo "    reverted"
+# A build failure, or any divergence from the Crystal front end, is the catch.
+check_decl_outputs_diverge() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1 || return 1
+  compare_all "$WORK/mut-exercise" && compare_expr_all "$WORK/mut-exercise"
 }
 
-prove_main_mutation() {
-  label="$1"
-  old="$2"
-  new="$3"
-  echo "  [$label]"
-  cp "$SEM_MAIN" "$SEM_MAIN.orig"
-  python3 - "$SEM_MAIN" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$SEM_MAIN.orig" "$SEM_MAIN" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$SEM_MAIN.orig" "$SEM_MAIN"; rm -f "$SEM_MAIN.orig"
-    return
-  fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1; then
-    if compare_expr_all "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the typed expression outputs diverged, as they must"
-    fi
-  else
-    echo "    caught: the mutated semantic visitor did not build"
-  fi
-  cp "$SEM_MAIN.orig" "$SEM_MAIN"; rm -f "$SEM_MAIN.orig"
-  echo "    reverted"
-}
-
-prove_rec_mutation() {
-  label="$1"
-  old="$2"
-  new="$3"
-  echo "  [$label]"
-  cp "$SEM_REC" "$SEM_REC.orig"
-  python3 - "$SEM_REC" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$SEM_REC.orig" "$SEM_REC" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$SEM_REC.orig" "$SEM_REC"; rm -f "$SEM_REC.orig"
-    return
-  fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1; then
-    if compare_expr_all "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the typed expression outputs diverged, as they must"
-    fi
-  else
-    echo "    caught: the mutated semantic visitor did not build"
-  fi
-  cp "$SEM_REC.orig" "$SEM_REC"; rm -f "$SEM_REC.orig"
-  echo "    reverted"
+check_expr_outputs_diverge() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_semantic_exercise.iyi" >/dev/null 2>&1 || return 1
+  compare_expr_all "$WORK/mut-exercise"
 }
 
 MUTATIONS_RUN=0
 
-prove_decl_mutation "struct default superclass switches to Reference" \
+prove_mutation "struct default superclass switches to Reference" "$SEM" \
   "superclass = node.struct ? @program.struct_type : @program.reference_type" \
-  "superclass = @program.reference_type"
+  "superclass = @program.reference_type" \
+  -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_decl_mutation "enum members start numbering at one instead of zero" \
+prove_mutation "enum members start numbering at one instead of zero" "$SEM" \
   "counter = 0_i64" \
-  "counter = 1_i64"
+  "counter = 1_i64" \
+  -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_decl_mutation "trait supertrait self-requirement check is bypassed" \
+prove_mutation "trait supertrait self-requirement check is bypassed" "$SEM" \
   "if st == type" \
-  "if false && st == type"
+  "if false && st == type" \
+  -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_decl_mutation "alias redefinition rejection is bypassed" \
+prove_mutation "alias redefinition rejection is bypassed" "$SEM" \
   "if ex = existing" \
-  "if false && (ex = existing)"
+  "if false && (ex = existing)" \
+  -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_decl_mutation "method visibility defaults to private instead of public" \
+prove_mutation "method visibility defaults to private instead of public" "$SEM" \
   "node.visibility = Visibility::Public" \
-  "node.visibility = Visibility::Private"
+  "node.visibility = Visibility::Private" \
+  -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_decl_mutation "predefined struct Nil is marked as class instead of struct" \
+prove_mutation "predefined struct Nil is marked as class instead of struct" "$SEM" \
   "nil_t.struct = true" \
-  "nil_t.struct = false"
+  "nil_t.struct = false" \
+  -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_decl_mutation "predefined struct Symbol is marked as class instead of struct" \
+
+prove_mutation "predefined struct Symbol is marked as class instead of struct" "$SEM" \
   "sym_t.struct = true" \
-  "sym_t.struct = false"
+  "sym_t.struct = false" \
+  -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_decl_mutation "predefined Proc type registration is bypassed" \
+prove_mutation "predefined Proc type registration is bypassed" "$SEM" \
   '@types["Proc"] = proc_t' \
-  '# @types["Proc"] = proc_t'
+  '# @types["Proc"] = proc_t' \
+  -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-
-prove_decl_mutation "union type resolution in lookup_type_node is bypassed" \
+prove_mutation "union type resolution in lookup_type_node is bypassed" "$SEM" \
   "type_merge(types)" \
-  "types.first"
+  "types.first" \
+  -- check_decl_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "literal I32 kind defaults to int64" \
+prove_mutation "literal I32 kind defaults to int64" "$SEM_MAIN" \
   "when NumberKind::I32  then @program.int32_type" \
-  "when NumberKind::I32  then @program.types[\"Int64\"]"
+  "when NumberKind::I32  then @program.types[\"Int64\"]" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "variable assignment does not register in local scope" \
+prove_mutation "variable assignment does not register in local scope" "$SEM_MAIN" \
   "@vars[v.name] = val_type" \
-  "# @vars[v.name] = val_type"
+  "# @vars[v.name] = val_type" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "if branch typing bypasses else branch merge" \
+prove_mutation "if branch typing bypasses else branch merge" "$SEM_MAIN" \
   "merged = @program.type_merge(then_type, else_type)" \
-  "merged = then_type"
+  "merged = then_type" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "method call resolution returns nil instead of method return type" \
+prove_mutation "method call resolution returns nil instead of method return type" "$SEM_MAIN" \
   "ret_type = type_method_body(instantiated_def, rec_type, node.args, node.block)" \
-  "ret_type = @program.nil_type"
+  "ret_type = @program.nil_type" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "while loop condition type analysis is bypassed" \
+prove_mutation "while loop condition type analysis is bypassed" "$SEM_MAIN" \
   "node.cond.accept(self)
     node.body.accept(self)
     set_type(node, @program.nil_type)" \
   "node.body.accept(self)
-    set_type(node, @program.nil_type)"
+    set_type(node, @program.nil_type)" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "instance variable lookup returns nil instead of inferred type" \
+prove_mutation "instance variable lookup returns nil instead of inferred type" "$SEM_MAIN" \
   "if ivar = target_type.as(ModuleType).lookup_instance_var?(node.name)
         set_type(node, ivar.type)" \
   "if ivar = target_type.as(ModuleType).lookup_instance_var?(node.name)
-        set_type(node, @program.nil_type)"
+        set_type(node, @program.nil_type)" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "class variable non-nilable initializer check is bypassed" \
+prove_mutation "class variable non-nilable initializer check is bypassed" "$SEM_MAIN" \
   "if cvar.initializer.nil? && !cvar.type.nilable?" \
-  "if false && cvar.initializer.nil?"
+  "if false && cvar.initializer.nil?" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_rec_mutation "recursive struct check cycle detection is bypassed" \
+prove_mutation "recursive struct check cycle detection is bypassed" "$SEM_REC" \
   "if target.full_name == current.full_name" \
-  "if false && target.full_name == current.full_name"
+  "if false && target.full_name == current.full_name" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "overload resolution most specific filter is bypassed" \
+prove_mutation "overload resolution most specific filter is bypassed" "$SEM_MAIN" \
   "most_specific = filter_most_specific_overloads(exact_matches, args)" \
-  "most_specific = exact_matches"
+  "most_specific = exact_matches" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "union receiver multiple dispatch bypasses return type merge" \
+prove_mutation "union receiver multiple dispatch bypasses return type merge" "$SEM_MAIN" \
   "merged_ret = @program.type_merge(ret_types)" \
-  "merged_ret = ret_types.first"
+  "merged_ret = ret_types.first" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "closure variable mutation propagation into enclosing scope is bypassed" \
+prove_mutation "closure variable mutation propagation into enclosing scope is bypassed" "$SEM_MAIN" \
   "old_vars[k] = @program.type_merge(old_v, new_v)" \
-  "# old_vars[k] = @program.type_merge(old_v, new_v)"
+  "# old_vars[k] = @program.type_merge(old_v, new_v)" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_main_mutation "macro expansion in semantic traversal is bypassed" \
+prove_mutation "macro expansion in semantic traversal is bypassed" "$SEM_MAIN" \
   "if expand_macro(node)" \
-  "if false && expand_macro(node)"
+  "if false && expand_macro(node)" \
+  -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 

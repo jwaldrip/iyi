@@ -23,6 +23,8 @@ TSYS_FILE="$REPO/src/compiler/types/type_system.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+. "$REPO/bench/lib/mutation.sh"
+
 echo "== 1. Building and running the selfhost types exercise"
 "$IYI" build -o "$WORK/exercise" "$REPO/bench/selfhost_types_exercise.iyi"
 "$WORK/exercise" > "$WORK/plain.out" 2>&1
@@ -211,84 +213,54 @@ echo
 echo "== 4. Guarded mutation proofs (verify patch applies, exercise fails, revert passes)"
 MUTATIONS_RUN=0
 
-prove_types_mutation() {
-  label="$1"
-  target_file="$2"
-  old="$3"
-  new="$4"
-  echo "  [$label]"
-  cp "$target_file" "$target_file.orig"
-  python3 - "$target_file" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$target_file.orig" "$target_file" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$target_file.orig" "$target_file"; rm -f "$target_file.orig"
-    return
-  fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_types_exercise.iyi" >/dev/null 2>&1; then
-    if compare_all "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the type outputs diverged, as they must"
-    fi
-  else
-    echo "    caught: the mutated type system did not build"
-  fi
-  cp "$target_file.orig" "$target_file"; rm -f "$target_file.orig"
-  echo "    reverted"
+# A build failure, or any divergence from the Crystal front end, is the catch.
+check_type_outputs_diverge() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_types_exercise.iyi" >/dev/null 2>&1 || return 1
+  compare_all "$WORK/mut-exercise"
 }
 
-prove_types_mutation "virtual root bypass in unification" \
-  "$UNIF_FILE" \
+prove_mutation "virtual root bypass in unification" "$UNIF_FILE" \
   "if ancestor && virtual_root?(ancestor)" \
-  "if false && ancestor && virtual_root?(ancestor)"
+  "if false && ancestor && virtual_root?(ancestor)" \
+  -- check_type_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_types_mutation "NoReturn elimination bypassed in union unification" \
-  "$UNIF_FILE" \
+prove_mutation "NoReturn elimination bypassed in union unification" "$UNIF_FILE" \
   "unless t.full_name == \"NoReturn\" || (t.is_a?(NoReturnType) && t.as(NoReturnType).no_return?)" \
-  "unless false"
+  "unless false" \
+  -- check_type_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_types_mutation "NilableType classification bypassed in union_of" \
-  "$UNIF_FILE" \
+prove_mutation "NilableType classification bypassed in union_of" "$UNIF_FILE" \
   "return NilableType.new(program, not_nil_t)" \
-  "return MixedUnionType.new(program, all_sorted)"
+  "return MixedUnionType.new(program, all_sorted)" \
+  -- check_type_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_types_mutation "Nil placement at end of union bypassed in rendering" \
-  "$REND_FILE" \
+prove_mutation "Nil placement at end of union bypassed in rendering" "$REND_FILE" \
   "if has_nil
       sorted << \"Nil\"
     end" \
   "if has_nil
       # sorted << \"Nil\"
-    end"
+    end" \
+  -- check_type_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_types_mutation "union parentheses bypassed in rendering" \
-  "$REND_FILE" \
+prove_mutation "union parentheses bypassed in rendering" "$REND_FILE" \
   "if skip_union_parens
       joined
     else
       \"(#{joined})\"
     end" \
-  "joined"
+  "joined" \
+  -- check_type_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_types_mutation "generic class arity validation bypassed in lookup_generic" \
-  "$TSYS_FILE" \
+prove_mutation "generic class arity validation bypassed in lookup_generic" "$TSYS_FILE" \
   "if node.type_vars.size != gc.type_vars.size" \
-  "if false && node.type_vars.size != gc.type_vars.size"
+  "if false && node.type_vars.size != gc.type_vars.size" \
+  -- check_type_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"

@@ -16,6 +16,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 INTERP="$REPO/src/compiler/macros/interpreter.iyi"
+. "$REPO/bench/lib/mutation.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -308,68 +309,48 @@ echo "  Parity summary: $((fixture_count - diverged))/$fixture_count fixtures ex
 echo
 echo "== 3. Mutation proofs: each one must make the comparison above fail"
 
-prove_mutation() {
-  label="$1"
-  old="$2"
-  new="$3"
-  echo "  [$label]"
-  cp "$INTERP" "$INTERP.orig"
-  python3 - "$INTERP" "$old" "$new" <<'PY'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-t = open(path).read()
-if old not in t:
-    sys.exit(3)
-open(path, "w").write(t.replace(old, new, 1))
-PY
-  rc=$?
-  if [ "$rc" -eq 3 ] || diff -q "$INTERP.orig" "$INTERP" >/dev/null; then
-    echo "    PATCH CHANGED NOTHING: this proves nothing"
-    status=1
-    cp "$INTERP.orig" "$INTERP"; rm -f "$INTERP.orig"
-    return
+# Each check rebuilds the macro engine with the mutation applied and compares its expansions
+# with the shipped engine. It returns zero only when the comparison still passes.
+check_macros_still_match() {
+  "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_macros_exercise.iyi" >/dev/null 2>&1 || return 1
+  if compare_all "$WORK/mut-exercise"; then
+    return 0
   fi
-  if "$IYI" build -o "$WORK/mut-exercise" "$REPO/bench/selfhost_macros_exercise.iyi" >/dev/null 2>&1; then
-    if compare_all "$WORK/mut-exercise"; then
-      echo "    FAILED: the comparison still passed with the mutation applied"
-      status=1
-    else
-      echo "    caught: the expanded AST outputs diverged, as they must"
-    fi
-  else
-    echo "    caught: the mutated macro engine did not build"
-  fi
-  cp "$INTERP.orig" "$INTERP"; rm -f "$INTERP.orig"
-  echo "    reverted"
+  return 1
 }
 
 MUTATIONS_RUN=0
 
-prove_mutation "macro if condition truthiness inverted" \
+prove_mutation "macro if condition truthiness inverted" "$INTERP" \
   "c = evaluate(mi.cond)
       if MacroMethods.truthy?(c)" \
   "c = evaluate(mi.cond)
-      if !MacroMethods.truthy?(c)"
+      if !MacroMethods.truthy?(c)" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "splat argument gathering emits empty tuple" \
+prove_mutation "splat argument gathering emits empty tuple" "$INTERP" \
   "@vars[macro_arg.name] = TupleLiteral.new(splat_elems)" \
-  "@vars[macro_arg.name] = TupleLiteral.new([] of ASTNode)"
+  "@vars[macro_arg.name] = TupleLiteral.new([] of ASTNode)" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "macro expression output stringification suppressed" \
+prove_mutation "macro expression output stringification suppressed" "$INTERP" \
   "val.to_s(@str)" \
-  "# val.to_s(@str)"
+  "# val.to_s(@str)" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "for loop element binding corrupts loop variable" \
+prove_mutation "for loop element binding corrupts loop variable" "$INTERP" \
   "@vars[var1.name] = elems[i]" \
-  "@vars[var1.name] = NilLiteral.new"
+  "@vars[var1.name] = NilLiteral.new" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "fresh variable temp name prefix altered" \
+prove_mutation "fresh variable temp name prefix altered" "$INTERP" \
   "temp_name = new_temp_var_name(\"__temp_\")" \
-  "temp_name = new_temp_var_name(\"__mut_\")"
+  "temp_name = new_temp_var_name(\"__mut_\")" \
+  -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
