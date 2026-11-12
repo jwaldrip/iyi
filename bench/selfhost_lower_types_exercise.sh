@@ -54,12 +54,15 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" \
 # fixture. The shift is the builtins' numbering difference (NEEDS.md row 16). Prints the
 # shift, and fails when the shape differs or a value is missing.
 ids_shape() {
-  awk 'FNR == NR { if ($1 == "type_id:" || $1 == "type_range:") { for (i = 2; i <= NF; i++) o[++n] = $i } next }
+  awk 'FNR == NR { if ($1 == "type_id:" || $1 == "type_range:") { for (i = 2; i <= NF; i++) o[++n] = $i } if ($1 == "metaclass_id:") om[++mn] = $2; next }
        $1 == "type_id:" || $1 == "type_range:" { for (i = 2; i <= NF; i++) p[++m] = $i }
+       $1 == "metaclass_id:" { pm[++mp] = $2 }
        END {
          if (n == 0 || n != m) exit 1
+         if (mn == 0 || mn != mp) exit 1
          shift = p[1] - o[1]
          for (k = 1; k <= n; k++) { if (o[k] !~ /^-?[0-9]+$/ || p[k] !~ /^-?[0-9]+$/) exit 1; if (p[k] - o[k] != shift) exit 1 }
+         for (k = 1; k <= mn; k++) { if (om[k] == "-" || pm[k] == "-") { if (om[k] != pm[k]) exit 1; continue } if (om[k] !~ /^-?[0-9]+$/ || pm[k] !~ /^-?[0-9]+$/) exit 1; if (pm[k] - om[k] != shift) exit 1 }
          print shift
        }' "$1" "$2"
 }
@@ -354,6 +357,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "leaves take no id of their own" "$TYPE_ID_FILE" \
   "    if subtypes.size == 0" \
   "    if subtypes.size == 99" \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a metaclass id reuses its class's id" "$TYPE_ID_FILE" \
+  "      @id_to_metaclass[type_id(type)] = metaclass_type_id(meta)" \
+  "      @id_to_metaclass[type_id(type)] = type_id(type)" \
   -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

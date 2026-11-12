@@ -109,9 +109,12 @@ def ids_block(name : String, program : Iyi::Program, type : Iyi::Type) : String
     if mm
       io << "type_id: " << mm[1] << "\n"
       io << "type_range: " << mm[0] << " " << mm[1] << "\n"
+      meta = program.llvm_id.id_to_metaclass[mm[1]]?
+      io << "metaclass_id: " << (meta ? meta.to_s : "-") << "\n"
     else
       io << "type_id: -\n"
       io << "type_range: -\n"
+      io << "metaclass_id: -\n"
     end
   end
 end
@@ -314,13 +317,19 @@ begin
   program.top_level_semantic(node)
   typer = program.llvm_typer
   mode = ARGV[2]? || "blocks"
+  # Every line is resolved before any block is printed, so the hosted LLVMId (created at its first
+  # use) numbers the instances the fixture names, as the port driver does.
+  pending = [] of {String, Iyi::Type}
   source.each_line do |line|
     next unless line.starts_with?("# type: ")
     expr = line[8..].strip
+    pending << {expr, resolve(program, expr)}
+  end
+  pending.each do |expr, type|
     if mode == "ids"
-      puts ids_block(expr, program, resolve(program, expr))
+      puts ids_block(expr, program, type)
     else
-      puts block_text(expr, program, typer, resolve(program, expr))
+      puts block_text(expr, program, typer, type)
     end
   end
 rescue ex : Exception
