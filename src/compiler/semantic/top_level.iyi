@@ -7,7 +7,7 @@ import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
-import compiler/semantic/inline_macros::{expand_inline_macro}
+import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
 
 pub class TypeException
   getter message : String
@@ -1921,8 +1921,16 @@ pub class TopLevelVisitor < Visitor
     nil
   end
 
+  # A class, module or lib body that is one inline macro node is spliced in the body's
+  # own scope, as a body of several nodes is (see splice_body_node). The typer then
+  # reads the expansion, not the macro node.
+  def splice_body(body : ASTNode) : ASTNode
+    splice_body_node(body, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
+  end
+
   def visit(node : Expressions) : Bool
     @exp_nest = @exp_nest + 1
+    node.expressions = splice_inline_sites(node.expressions, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
     i = 0
     while i < node.expressions.size
       exp = node.expressions[i]
@@ -2234,8 +2242,9 @@ pub class TopLevelVisitor < Visitor
     end
 
     old_type = @current_type
-    @program.type_bodies << TypeBody.new(type, node.body)
     @current_type = type
+    node.body = splice_body(node.body)
+    @program.type_bodies << TypeBody.new(type, node.body)
     node.body.accept(self)
     @current_type = old_type
     false
@@ -2293,6 +2302,7 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = type
+    node.body = splice_body(node.body)
     node.body.accept(self)
     @current_type = old_type
 
@@ -2624,6 +2634,7 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = lib_type
+    node.body = splice_body(node.body)
     node.body.accept(self)
     @current_type = old_type
 

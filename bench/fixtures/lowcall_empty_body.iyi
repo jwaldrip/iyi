@@ -1,0 +1,9 @@
+def nothing
+end
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+nothing
+LibC.exit(3)

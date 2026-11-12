@@ -2,8 +2,8 @@ module compiler/semantic/match
 
 import compiler/syntax/ast::{ASTNode, Def, Yield}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{ModuleType, Type}
-import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/top_level::{ModuleType, NoReturnType, Type}
+import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/types::{NamedArgumentType}
 
@@ -38,8 +38,9 @@ pub class Match
   getter defining : ModuleType
   getter exact : Bool
   getter declared : Array(Type)
+  getter bound : Hash(String, Type)
 
-  def initialize(@definition : Def, @arg_types : Array(Type), @owner : Type, @defining : ModuleType, @exact : Bool, @named_arg_types : Array(NamedArgumentType) = [] of NamedArgumentType, @declared : Array(Type) = [] of Type)
+  def initialize(@definition : Def, @arg_types : Array(Type), @owner : Type, @defining : ModuleType, @exact : Bool, @named_arg_types : Array(NamedArgumentType) = [] of NamedArgumentType, @declared : Array(Type) = [] of Type, @bound : Hash(String, Type) = Hash(String, Type).new)
   end
 end
 
@@ -101,9 +102,11 @@ pub class CallMatch
   end
 
   def self.attempt(ts : TypeSystem, signature : CallSignature, definition : Def, owner : Type, defining : ModuleType) : MatchAttempt
+    free_names = [] of String
     if definition.free_vars
-      return MatchAttempt.failed("free variables are not ported")
+      free_names = definition.free_vars.as(Array(String))
     end
+    bound = Hash(String, Type).new
     count = definition.args.size
     splat = definition.splat_index
     if splat
@@ -122,6 +125,21 @@ pub class CallMatch
     given = signature.arg_types.size
     prefix = splat ? splat.as(Int32) : count
     return MatchAttempt.none if !splat && given > count
+    if free_names.size > 0
+      i = 0
+      while i < given && i < prefix
+        bind_node = definition.args[i].restriction
+        if !bind_node.nil?
+          return MatchAttempt.none if !FreeBindings.bind(bind_node.as(ASTNode), signature.arg_types[i], free_names, bound)
+        end
+        i += 1
+      end
+      j = 0
+      while j < free_names.size
+        return MatchAttempt.failed("free variable '#{free_names[j]}' is not bound by an argument") if bound[free_names[j]]?.nil?
+        j += 1
+      end
+    end
 
     mandatory = [] of Bool
     j = 0
@@ -139,7 +157,7 @@ pub class CallMatch
     while i < given && i < prefix
       arg = definition.args[i]
       arg_type = signature.arg_types[i]
-      restriction = ArgRestriction.of(ts, defining, arg, owner)
+      restriction = ArgRestriction.of_bound(ts, defining, arg, owner, bound)
       if restriction.error
         return MatchAttempt.failed(restriction.error.to_s)
       end
@@ -148,6 +166,7 @@ pub class CallMatch
         matched << arg_type
       else
         restricted = ts.restrict(arg_type, allowed.as(Type))
+        restricted = allowed.as(Type) if arg_type.is_a?(NoReturnType)
         return MatchAttempt.none if restricted.nil?
         matched << restricted.as(Type)
         exact = false if restricted.as(Type) != arg_type
@@ -182,7 +201,7 @@ pub class CallMatch
         return MatchAttempt.none if splat && index == splat.as(Int32)
         return MatchAttempt.none if mandatory[index]
         mandatory[index] = true
-        restriction = ArgRestriction.of(ts, defining, definition.args[index], owner)
+        restriction = ArgRestriction.of_bound(ts, defining, definition.args[index], owner, bound)
         if restriction.error
           return MatchAttempt.failed(restriction.error.to_s)
         end
@@ -190,6 +209,7 @@ pub class CallMatch
         value = named_arg.type
         if !allowed.nil?
           restricted = ts.restrict(value, allowed.as(Type))
+          restricted = allowed.as(Type) if named_arg.type.is_a?(NoReturnType)
           return MatchAttempt.none if restricted.nil?
           value = restricted.as(Type)
         end
@@ -207,7 +227,7 @@ pub class CallMatch
       k += 1
     end
 
-    MatchAttempt.matched(Match.new(definition, matched, owner, defining, exact, named_matched, declared))
+    MatchAttempt.matched(Match.new(definition, matched, owner, defining, exact, named_matched, declared, bound))
   end
 
   # The position of the def parameter a named argument refers to, or -1.
