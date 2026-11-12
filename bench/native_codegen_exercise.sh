@@ -2,7 +2,7 @@
 # The aarch64 code generation gate (SPEC 2.2, 3.3, 3.5; slice C3). Each IR fixture under
 # bench/fixtures/native_cg/ is compiled by the native backend to an object, linked with cc on this
 # machine, and run; its exit status and stdout must equal those of the equivalent .iyi program built by the
-# Crystal-hosted compiler. Also checked: the driver links only libSystem, the 64 KiB frame's MIR dump shows
+# hosted compiler. Also checked: the driver links only libSystem, the 64 KiB frame's MIR dump shows
 # page-by-page probes, the Linux variant of every fixture encodes (not executed here), and mutations of the
 # backend are each caught.
 #
@@ -28,7 +28,6 @@ fail() { echo "FAIL: $*"; failed=1; }
 
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:"$PATH"
 export LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}
-export CRYSTAL_CACHE_DIR=${CRYSTAL_CACHE_DIR:-${TMPDIR:-/tmp}/iyi-codegen-cache}
 
 FIX=bench/fixtures/native_cg
 DRV="$WORK/native_cg"
@@ -36,7 +35,7 @@ DRV="$WORK/native_cg"
 build_driver() { ./bin/iyi build -o "$1" src/compiler/tools/native_cg.iyi >"$WORK/build.$(basename "$1").log" 2>&1; }
 
 # ---- 1. the driver -----------------------------------------------------------------------------
-echo "== 1. build the driver with the Crystal-hosted compiler"
+echo "== 1. build the driver with the hosted compiler"
 if ! build_driver "$DRV"; then
   grep -v 'ld: warning' "$WORK/build.native_cg.log" | tail -20
   fail "the driver does not build"

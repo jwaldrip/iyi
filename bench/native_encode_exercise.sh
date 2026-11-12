@@ -24,9 +24,8 @@ fail() { echo "FAIL: $*"; failed=1; }
 
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:"$PATH"
 export LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}
-export CRYSTAL_CACHE_DIR=${CRYSTAL_CACHE_DIR:-${TMPDIR:-/tmp}/iyi-encode-cache}
 
-echo "== 1. build the driver with the Crystal-hosted compiler"
+echo "== 1. build the driver with the hosted compiler"
 if ! ./bin/iyi build -o "$WORK/native_cg" src/compiler/tools/native_cg.iyi >"$WORK/build.log" 2>&1; then
   grep -v 'ld: warning' "$WORK/build.log" | tail -20
   fail "the driver does not build"
