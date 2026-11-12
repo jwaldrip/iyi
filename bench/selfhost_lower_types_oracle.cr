@@ -133,9 +133,38 @@ def split_top(text : String) : Array(String)
   parts
 end
 
+# Splits at a separator character outside every parenthesis, trimmed, keeping empty parts.
+def split_outside(text : String, sep : Char) : Array(String)
+  parts = [] of String
+  depth = 0
+  current = String::Builder.new
+  text.each_char do |c|
+    if c == sep && depth == 0
+      parts << current.to_s.strip
+      current = String::Builder.new
+      next
+    end
+    depth += 1 if c == '('
+    depth -= 1 if c == ')'
+    current << c
+  end
+  parts << current.to_s.strip
+  parts
+end
+
 # The hosted type a written type names: `Int32`, `Color`, `Pointer(Int32)`, `Color.class`.
 def resolve(program : Iyi::Program, name : String) : Iyi::Type
   name = name.strip
+  # A union is its members merged, `A | B`, and a nilable type is the type merged with Nil, `A?`.
+  bars = split_outside(name, '|')
+  if bars.size > 1
+    members = bars.map { |b| resolve(program, b).as(Iyi::Type?) }
+    return program.type_merge(members).as(Iyi::Type)
+  end
+  if name.ends_with?("?") && name.size > 1
+    inner = resolve(program, name[0...-1]).as(Iyi::Type?)
+    return program.type_merge([inner, resolve(program, "Nil").as(Iyi::Type?)]).as(Iyi::Type)
+  end
   if name.ends_with?(".class")
     return resolve(program, name[0...-6]).metaclass
   end

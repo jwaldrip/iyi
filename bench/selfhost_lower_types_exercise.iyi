@@ -3,6 +3,7 @@ import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, Non
 import compiler/types/types::{TupleInstanceType, NamedTupleInstanceType, StaticArrayInstanceType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/unification::{TypeUnification}
+import compiler/types/merge::{TypeMerge}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/layout::{DataLayout, LayoutError}
@@ -42,8 +43,43 @@ module BenchSelfhostLowerTypesExercise
   end
 
   # The analysed type a written type names: `Int32`, `Color`, `Pointer(Int32)`, `Color.class`.
+  # Splits at a separator outside every parenthesis, trimmed, keeping empty parts.
+  def self.split_outside(text : String, sep : String) : Array(String)
+    parts = [] of String
+    depth = 0
+    start = 0
+    i = 0
+    while i < text.bytesize
+      c = text[i, 1]
+      if c == "("
+        depth = depth + 1
+      elsif c == ")"
+        depth = depth - 1
+      elsif c == sep && depth == 0
+        parts << text[start, i - start].strip
+        start = i + 1
+      end
+      i = i + 1
+    end
+    parts << text[start, text.bytesize - start].strip
+    parts
+  end
+
   def self.resolve(prog : SemanticProgram, ts : TypeSystem, name : String) : Type
     t = name.strip
+    # A union is its members merged, `A | B`, and a nilable type is the type merged with Nil, `A?`.
+    bars = split_outside(t, "|")
+    if bars.size > 1
+      members = [] of Type
+      bars.each do |b|
+        members << resolve(prog, ts, b)
+      end
+      return TypeMerge.merge_all(prog, members)
+    end
+    if t.ends_with?("?") && t.bytesize > 1
+      inner = resolve(prog, ts, t[0, t.bytesize - 1])
+      return TypeMerge.merge(prog, inner, resolve(prog, ts, "Nil"))
+    end
     if t.ends_with?(".class")
       inner = resolve(prog, ts, t[0, t.bytesize - 6])
       m = TypeUnification.metaclass_of(inner)

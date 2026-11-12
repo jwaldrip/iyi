@@ -17,7 +17,7 @@ module compiler/lower/typer
 
 import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/layout::{DataLayout}
-import compiler/semantic/top_level::{Type, ClassType, EnumType, LibType, MetaclassType, NilType, NonGenericClassType, NonGenericModuleType, GenericClassType, NoReturnType, VoidType, AliasType, TypeDefType, ModuleType}
+import compiler/semantic/top_level::{Type, ClassType, EnumType, LibType, MetaclassType, NilType, NonGenericClassType, NonGenericModuleType, GenericClassType, NoReturnType, VoidType, AliasType, TypeDefType, ModuleType, UnionType}
 import compiler/types/types::{PointerInstanceType, ProcInstanceType, StaticArrayInstanceType, TupleInstanceType, NamedTupleInstanceType, GenericClassInstanceType, GenericModuleInstanceType, MixedUnionType, VirtualType, VirtualMetaclassType, NilableType, ReferenceUnionType, NilableReferenceUnionType, NilableProcType}
 import compiler/types/merge::{TypeMerge}
 
@@ -271,6 +271,9 @@ pub class LowerTyper
     if type.is_a?(AliasType)
       return llvm_type(TypeMerge.remove_alias(type), wants_size)
     end
+    if type.is_a?(UnionType)
+      return mixed_union_struct(type, wants_size)
+    end
     if type.is_a?(GenericClassType) || (type.is_a?(NonGenericModuleType) && !type.is_a?(LibType))
       # This can only be reached if the module or generic class has no implementors.
       return @table.int1
@@ -371,6 +374,40 @@ pub class LowerTyper
       fields << llvm_embedded_type(var_type.as(Type), wants_size)
     end
     @table.set_body(named, fields, false)
+    named
+  end
+
+  # The hosted mixed union (`create_llvm_type(MixedUnionType)`, unions.cr): a struct of
+  # the type id word and a value area as large as the largest member, aligned to the
+  # largest member alignment and at least a pointer's. A void member takes no room.
+  def mixed_union_struct(type : Type, wants_size : Bool) : IrType
+    name = llvm_name(type, wants_size)
+    if cached = @structs[name]?
+      return cached
+    end
+    named = @table.named_struct(name)
+    @structs[name] = named
+    key = type.full_name
+    if wants_size
+      @wants_size_cache[key] = named
+    else
+      @cache[key] = named
+    end
+    max_size = 0_i64
+    max_alignment = pointer_size.to_i32
+    type.as(UnionType).union_types.each do |member|
+      next if member.is_a?(VoidType) || member.is_a?(NoReturnType)
+      raise "BUG: a module member of a union is not ported (hosted types.cr expand_union_types, NEEDS.md row 7)" if member.is_a?(NonGenericModuleType)
+      member_type = llvm_type(member, true)
+      size = size_of(member_type)
+      align = align_of(member_type)
+      max_size = size if size > max_size
+      max_alignment = align if align > max_alignment
+    end
+    value_size = (max_size + max_alignment - 1) // max_alignment
+    value_size = 1_i64 if value_size < 1
+    value_type = @table.array_of(@table.int(max_alignment * 8), value_size)
+    @table.set_body(named, [@table.int32, value_type], false)
     named
   end
 

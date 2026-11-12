@@ -139,6 +139,30 @@ prove_mutation "Nil lowered to an i8 instead of the named empty struct" "$TYPER_
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "mixed union drops its type id word" "$TYPER_FILE" \
+  "    @table.set_body(named, [@table.int32, value_type], false)" \
+  "    @table.set_body(named, [value_type], false)" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "mixed union value area ignores its largest member" "$TYPER_FILE" \
+  "      max_size = size if size > max_size" \
+  "      max_size = max_size if size > max_size" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "mixed union aligned to 4 bytes, not the largest member" "$TYPER_FILE" \
+  "    max_alignment = pointer_size.to_i32" \
+  "    max_alignment = 4" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "mixed unions not passed by value" "$TYPER_FILE" \
+  "|| type.is_a?(MixedUnionType)" \
+  "|| false" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
