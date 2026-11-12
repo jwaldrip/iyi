@@ -146,3 +146,29 @@ Measured on the B3/B4 base (`selfhost/b34-backend-seam` forked from `0de7c07fe`)
 - Shape changes: `Context` disappears (module owns `types`); `Builder.new` takes the module; `LLVMType.function` becomes `types.func` with the same arguments; `mod.target` becomes `mod.triple`; the LLVM-only type names become the IR names.
 - Not part of the codegen seam: `TargetMachine`, `TargetData`, `Target` (imported by `codegen.iyi` for layout and the emit path, not for IR construction). The IR layout is `compiler/ir/layout` (`DataLayout`).
 - Next: B4 pass order (types and constants, then straight-line instructions, then control flow and phi, then calls, globals and strings, then the rest), each pass keeping the tree building.
+
+## Status after the first B4 pass (WIP branch, not the assignment branch)
+
+Correction to the census above: it counted only `@builder.` receivers. The top-level functions of codegen (`compile_declarations_to_module`, `emit_custom_types_code`, the struct-body helpers) call the builder through a local `builder` or `cg.builder`. Those sites add `builder.and` (LLVM's `build_and`, renamed) and the `null`, `const_int` and `alignment` forms, which the table does not list one by one.
+
+Done on this branch:
+- `codegen.iyi` imports only `compiler/ir/*`, `compiler/platform/*` and the frontend. Its entries are `compile_source_to_module(src, filename, mod : Ir::Module)` and `compile_declarations_to_module(..., mod, ...)`. Every LLVM call was rewritten: a mechanical pass, then compile errors.
+- IR changes, each proven by the codegen gate:
+  - `Module#define_function(name, type, cc)`: `add_function` plus one unnamed `Param` per parameter type. Codegen uses it for definitions. The parser keeps `add_param`.
+  - `Builder#call` takes the callee's calling convention when the callee is a `Function`. Without this the verifier refuses struct returns on C-convention calls.
+- `bench/selfhost_codegen_exercise.iyi` dumps the translated module (`translate`, `print_llvm_module`, the same normalization) and emits objects from the translated reference.
+- `backend/llvm/emit.iyi` gained `host_target_machine(triple)`.
+- `compiler.iyi` builds the IR module (`Module.for_target`), runs the IR verifier before any backend, translates, and emits through the host machine. `tools/compile.iyi` builds. Not yet run end to end.
+
+Gate state (`bench/selfhost_codegen_exercise.sh`) on this branch:
+- Standalone check and refusal fixtures pass. `cg_splat_loop` is refused by name.
+- Five fixtures panic in the IR verifier: `cg_blocks`, `cg_nil_local`, `cg_nilable`, `cg_struct_methods`, `cg_virtual_dispatch`. Cause: the `duplicate-name` rule. LLVM renames a repeated local (`x` becomes `x1`) on insertion; the IR takes names as given. Four of the five were identical on the baseline, so this branch regresses until fixed.
+- `cg_strings` diverges (the `%String` layout). `cg_nilable` also lacks the `@"Nil:type_id"` global. Both diverged at the baseline `0de7c07fe`.
+- The C runner (section 4) fails for the same reasons.
+
+Next, in order:
+1. Uniquing inside the IR: a `SymbolTable` per `Function`, claimed by `append_basic_block`, `add_param`, instruction placement and by name assignment, counting collisions the way LLVM does (`LastUnique`). Then the five fixtures should match the oracle.
+2. `cg_strings` (the `String` layout) and `cg_nilable` (emit `Nil:type_id`): port defects, not seam defects.
+3. `bench/selfhost_ir_valid_exercise.sh` and `bench/selfhost_compile_exercise.sh` on this branch, then the native gates.
+4. B3: `backend/backend.iyi`, `--backend`, `--print-backend`, `--emit ir`, the native source mode, and `bench/native_source_exercise.sh`. Not started.
+5. Rename the `llvm_*` method names in codegen. Cosmetic; left so the diff stays about the seam.
