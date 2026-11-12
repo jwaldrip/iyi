@@ -25,6 +25,7 @@ CALL_FILE="$REPO/src/compiler/semantic/call.iyi"
 ERROR_FILE="$REPO/src/compiler/semantic/call_error.iyi"
 DEFAULT_FILE="$REPO/src/compiler/semantic/default_arguments.iyi"
 LIB_FILE="$REPO/src/compiler/semantic/lib_call.iyi"
+RESTRICT_FILE="$REPO/src/compiler/semantic/restrictions.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -269,6 +270,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a fixed lib fun takes extra arguments as if it were variadic" "$LIB_FILE" \
   '    if count < lib_fun.args.size || (!lib_fun.varargs? && count > lib_fun.args.size)' \
   '    if count < lib_fun.args.size || (false && count > lib_fun.args.size)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a pointer instance's T stays unbound" "$RESTRICT_FILE" \
+  '          if names[0] == "T" && owner.is_a?(PointerInstanceType)' \
+  '          if names[0] == "T" && owner.is_a?(PointerInstanceType) && false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
