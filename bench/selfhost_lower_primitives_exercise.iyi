@@ -6,7 +6,7 @@ module bench/selfhost_lower_primitives_exercise
 # pass yet.
 #
 # The fixtures are bare programs (the hosted build is `--prelude empty`), so the typer keeps the
-# Crystal object layout, where a class's type id is its first field. The shared lower and emit
+# hosted object layout, where a class's type id is its first field. The shared lower and emit
 # modes of bench/lib/lower_gate.iyi build the typer with the header layout; this driver builds it
 # with the bare layout, here and nowhere else.
 #
@@ -22,7 +22,7 @@ import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program}
 
 # The bare layout of the typer: a bare program is not an own-prelude build, so its objects are
-# Crystal's (`Program#iyi_object_layout?` is false without the prelude's IyiRuntimeLock).
+# the hosted (`Program#iyi_object_layout?` is false without the prelude's IyiRuntimeLock).
 def bare_typer(m : Module) : LowerTyper
   LowerTyper.new(m.types, m.layout, false)
 end

@@ -568,7 +568,7 @@ end
 # The malloc class allocation (codegen.cr 2778-2793 and 2800-2807) for a program with no arena. The
 # memory is the C `malloc` of the struct's size: the hosted `malloc` and `malloc_atomic` both call it
 # when the program has no `__crystal_malloc64` or `__crystal_malloc_atomic64`. Then the memset, then the
-# type id in field 0, the Crystal layout a program without the prelude's header keeps. Verified against
+# type id in field 0, the hosted layout a program without the prelude's header keeps. Verified against
 # the hosted IR of bench/fixtures/lowprim_alloc_class.iyi. Under the header layout the hosted code stores
 # the id at P-4 instead, which is not ported and refuses here.
 pub def allocate_malloc_class(low : Lowerer, t : Type) : Value
