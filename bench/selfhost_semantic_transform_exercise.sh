@@ -51,109 +51,25 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 NORM="$REPO/src/compiler/semantic/normalizer.iyi"
-ORACLE_GATE="$REPO/bench/selfhost_normalizer_exercise.sh"
-ORACLE_DRIVER="$REPO/bench/selfhost_normalizer_exercise.iyi"
+PORT_DRIVER="$REPO/bench/selfhost_semantic_transform_exercise.iyi"
+ORACLE_SRC="$REPO/bench/selfhost_semantic_transform_oracle.cr"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 . "$REPO/bench/lib/mutation.sh"
 
-# The AST printer both sides share. The hosted dump lives in the normalizer
-# gate's heredoc and the port's in its driver; both are read from there so the
-# printer cannot drift between gates. `TypeOf` is added to both: the expander
-# writes one for every untyped literal, and an unlisted class would print only
-# its name on one side.
-TYPEOF_ORACLE='  when Iyi::TypeOf
-    s = "#{p}TypeOf\n"
-    node.expressions.each { |e| s += dump_ast(e, indent + 1) }
-    s'
-TYPEOF_PORT='    when TypeOf
-      s = "#{p}TypeOf\n"
-      node.expressions.each { |e| s += dump_ast(e, indent + 1) }
-      s'
-
-# Port driver: the printer module from the normalizer driver (its module
-# header through the end of dump_ast), the TypeOf case inserted before the
-# fallback, and this slice's own main.
-gen_port_driver() {
-  INS="$TYPEOF_PORT" awk '
-    BEGIN { ins = ENVIRON["INS"] }
-    NR <= 10 { print; next }
-    NR >= 12 && NR <= 512 { buf[++n] = $0; next }
-    END {
-      for (i = 1; i <= n; i++) {
-        if (buf[i] ~ /^    else$/ && buf[i + 1] ~ /ASTNode/) print ins
-        print buf[i]
-      }
-      print "end"
-    }' "$ORACLE_DRIVER"
-  cat <<'PORT_MAIN'
-
-if Program.args.size > 1 && Program.args[1] == "--count"
-  filename = Program.args[0]
-  source = File.read(filename)
-  parser = Parser.new(source, filename)
-  node = parser.parse
-  prog = NormalizerProgram.new
-  norm = prog.normalize(node)
-  counter = NodeCounterVisitor.new
-  norm.accept(counter)
-  puts counter.count
-else
-  filename = Program.args[0]
-  source = File.read(filename)
-  parser = Parser.new(source, filename)
-  node = parser.parse
-  prog = NormalizerProgram.new
-  norm = prog.normalize(node)
-  print BenchSelfhostNormalizerExercise.dump_ast(norm)
-end
-PORT_MAIN
-}
-
-# Oracle driver: the hosted printer from the normalizer gate's heredoc (its
-# dump_ast, its escape_s and its Counter), the TypeOf case inserted before the
-# fallback, and this slice's own main. The heredoc is read from the normalizer
-# gate so the two printers cannot drift.
-gen_oracle_driver() {
-  INS="$TYPEOF_ORACLE" awk '
-    BEGIN { ins = ENVIRON["INS"] }
-    /^cat <<.[A-Z_]*_GOLDEN_SCRIPT/ { inside = 1; next }
-    inside && /^[A-Z_]*_GOLDEN_SCRIPT$/ { exit }
-    inside && /^filename = ARGV\[0\]$/ { exit }
-    inside { buf[++n] = $0; next }
-    END {
-      for (i = 1; i <= n; i++) {
-        if (buf[i] ~ /node\.class\.name/) t = i
-      }
-      for (i = 1; i <= n; i++) {
-        if (i == t - 1) print ins
-        print buf[i]
-      }
-    }' "$ORACLE_GATE"
-  cat <<'ORACLE_MAIN'
-
-filename = ARGV[0]
-src = File.read(filename)
-parser = Iyi::Parser.new(src)
-parser.filename = filename
-node = parser.parse
-node = Iyi::Program.new.normalize(node)
-
-if ARGV.size > 1 && ARGV[1] == "--count"
-  c = Counter.new
-  node.accept(c)
-  puts c.count
-else
-  print dump_ast(node)
-end
-ORACLE_MAIN
-}
+# The port and the hosted oracle each carry one AST printer, in their own
+# driver file: bench/selfhost_semantic_transform_exercise.iyi and
+# bench/selfhost_semantic_transform_oracle.cr. Both print every node kind the
+# normalizer gate prints, in the same layout, and both list TypeOf, which the
+# expander writes for every untyped literal (an unlisted class would print
+# only its name on one side). The gate reads no other gate's files, so moving
+# a line in the normalizer gate cannot break this one.
 
 echo "== 1. Building the port driver and the hosted oracle"
-gen_port_driver > "$WORK/semtx_port.iyi"
-gen_oracle_driver > "$WORK/semtx_oracle.cr"
+cp "$PORT_DRIVER" "$WORK/semtx_port.iyi"
+cp "$ORACLE_SRC" "$WORK/semtx_oracle.cr"
 if ! grep -qF "when TypeOf" "$WORK/semtx_port.iyi" || ! grep -qF "when Iyi::TypeOf" "$WORK/semtx_oracle.cr"; then
-  echo "  could not generate the shared AST printer from the normalizer gate"
+  echo "  the AST printer is missing from the driver files"
   exit 1
 fi
 "$IYI" build -o "$WORK/port_exercise" "$WORK/semtx_port.iyi" || { echo "  PORT DRIVER DOES NOT BUILD"; exit 1; }
