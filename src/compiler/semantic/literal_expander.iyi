@@ -877,7 +877,7 @@ pub class LiteralExpander < Transformer
   # `a && b`, as the hosted expand(And): a variable, an assignment to one, or a
   # test of one is tested in place; any other left side is bound to a temporary
   # first. The right side runs only when the left side is truthy.
-  def expand_and(node : And) : ASTNode
+  def and_if(node : And) : If
     left = single_expression(node.left)
     if left.is_a?(Var) || (left.is_a?(IsA) && left.as(IsA).obj.is_a?(Var))
       If.new(left, node.right, left.clone)
@@ -893,9 +893,16 @@ pub class LiteralExpander < Transformer
     end
   end
 
+  # `a && b` as the hosted expansion marks it: an `If` flagged `from_and`.
+  def expand_and(node : And) : ASTNode
+    a_if = and_if(node)
+    a_if.from_and = true
+    a_if
+  end
+
   # `a || b`, as the hosted expand(Or): the same forms as `&&`, with the left
   # side as the value when it is truthy and the right side otherwise.
-  def expand_or(node : Or) : ASTNode
+  def or_if(node : Or) : If
     left = single_expression(node.left)
     if left.is_a?(Var) || (left.is_a?(IsA) && left.as(IsA).obj.is_a?(Var))
       If.new(left, left.clone, node.right)
@@ -909,6 +916,13 @@ pub class LiteralExpander < Transformer
       temp = temp_var
       If.new(Assign.new(temp.clone, left), temp.clone, node.right)
     end
+  end
+
+  # `a || b` as the hosted expansion marks it: an `If` flagged `from_or`.
+  def expand_or(node : Or) : ASTNode
+    a_if = or_if(node)
+    a_if.from_or = true
+    a_if
   end
 
   def select_has_else?(node : Select) : Bool

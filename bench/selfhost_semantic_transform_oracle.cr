@@ -165,7 +165,7 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     node.values.each { |v| s += dump_ast(v, indent + 2) }
     s
   when Iyi::If
-    s = "#{p}If ternary=#{node.ternary?}\n"
+    s = "#{p}If ternary=#{node.ternary?} and=#{node.and?} or=#{node.or?} truthy=#{node.truthy?} falsey=#{node.falsey?}\n"
     s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
     s += "#{p}  then:\n" + dump_ast(node.then, indent + 2)
     s += "#{p}  else:\n" + dump_ast(node.else, indent + 2)

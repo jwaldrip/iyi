@@ -188,7 +188,7 @@ module BenchSemanticTransformExercise
       s += dump_ast(node.exp, indent + 1)
       s
     when If
-      s = "#{p}If ternary=#{node.ternary}\n"
+      s = "#{p}If ternary=#{node.ternary} and=#{node.from_and} or=#{node.from_or} truthy=#{node.truthy} falsey=#{node.falsey}\n"
       s += "#{p}  cond:\n" + dump_ast(node.cond, indent + 2)
       s += "#{p}  then:\n" + dump_ast(node.then, indent + 2)
       s += "#{p}  else:\n" + dump_ast(node.else, indent + 2)
