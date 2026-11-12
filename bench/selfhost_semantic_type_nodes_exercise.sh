@@ -235,6 +235,11 @@ prove_mutation "a union inside a generic owner ignores its visited type argument
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "self type node ignores scope_type and fails in top-level current_type" "$TYPE_NODES" \
+  "  the_self : Type = visitor.scope_type || visitor.current_type" \
+  "  the_self : Type = visitor.current_type" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a cast's upcast flag is not recorded" "$TYPE_NODES" \
   "  node.upcast = upcast
   result = to_type
