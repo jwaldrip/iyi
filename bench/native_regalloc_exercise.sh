@@ -69,7 +69,7 @@ echo "== 3. every fixture runs as the hosted compiler's program does, under pin 
 native_run() {
   local drv=$1 alloc=$2 ir=$3 prefix=$4
   IYI_NATIVE_REGALLOC=$alloc "$drv" obj "$ir" "$prefix.o" >"$prefix.obj.log" 2>&1 || return 1
-  cc "$prefix.o" -o "$prefix.bin" >"$prefix.link.log" 2>&1 || return 2
+  cc "$prefix.o" bench/fixtures/native_cg/rt_stub.c -o "$prefix.bin" >"$prefix.link.log" 2>&1 || return 2
   # A mis-allocated program may loop forever, so the run is bounded: its alarm ends it with status 142.
   perl -e 'alarm 20; exec @ARGV' "$prefix.bin" >"$prefix.out" 2>/dev/null
   echo $? >"$prefix.status"
