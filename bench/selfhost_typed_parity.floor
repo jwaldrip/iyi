@@ -322,3 +322,5 @@ src/compiler/lower/primitives.iyi 0
 src/compiler/lower/cast.iyi 0
 src/compiler/lower/fun.iyi 0
 src/compiler/lower/call.iyi 0
+src/compiler/lower/const.iyi 0
+src/compiler/lower/globals.iyi 0

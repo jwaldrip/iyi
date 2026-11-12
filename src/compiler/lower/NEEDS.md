@@ -111,3 +111,14 @@ Ported and measured: `visit(Return)` in a def (`codegen_return_node`, a value of
 | A variable declared twice, or a value of another type than the declaration | codegen.cr declare_var, codegen_assign upcast | refused by name | the casts slice (upcast, S2d) | none |
 
 Note on the gate: `lower_out` names a libc function (`time`), because the hosted build must link; a lib fun with no body in the libc does not link under `--prelude empty` (measured on `take`).
+
+## Lowering globals (S2e): what the constants read and the port does not yet give
+
+The gate (bench/selfhost_lower_globals_exercise.sh) compares each constant fixture with the hosted module. Increment 1 (a literal constant inlined at each read, its assignment nil) is measured. Every other constant read or assigned is refused by name, and these rows are what the next increments wait on.
+
+| # | Member or fact | Hosted line | Port today | Workaround in the port | Who fixes it | Waiting fixture |
+|---|---|---|---|---|---|---|
+| 1 | `Const#used?`: set when a read of the constant was typed, and checked when its assignment is visited | codegen.cr:1518 (`codegen_assign(Path)`: `const.used? && !const.simple?`) | Not recorded: a `Const` has no used flag, and the analysis keeps no record of the paths it resolved | None: a non-literal constant's assignment is refused by name (`codegen_path_assign`, const.iyi) | The semantic owner of `visit(Path)` (S1d2Bodies): set a `used` flag on the `Const` when `visit(Path)` resolves it | the non-literal constant assignment (increment 2) |
+| 2 | The program's constant list in declaration order (`program.const_initializers`) | codegen.cr:435 (`initialize_simple_constants`) | No list. Constants live in the `types` of their namespace (top_level.iyi 2386) | None yet: a simple constant that nothing reads has no global, so a module with one differs and is not refused | S1b5Declarations (top_level.iyi): keep the list on the program, or the lowering walks the namespaces | a simple string constant that nothing reads |
+| 3 | `Const#pointer_read?` (a `pointerof(CONST)` read) | codegen/types.cr 204 and 210 | Absent | `needs_init_flag?` is `!(initializer || no_init_flag || simple?)` with pointer_read taken as false | The codegen read path (increment 2): set when `pointerof` of a `Path` is lowered | none yet |
+| 4 | `ARGC_UNSAFE` and `ARGV_UNSAFE` as predefined constants | program.cr:1467 | `Const` objects with a `MacroLiteral` value (top_level.iyi 1189) | The core stores argc and argv into the globals directly (lower.iyi codegen_program), as the hosted initialiser's stores do | None. The hosted `Crystal::BUILD_*` predefined constants are normalised by the gate, and the entry owner (S2g) ports them | none |
