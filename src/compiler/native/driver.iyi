@@ -14,6 +14,7 @@ import compiler/native/obj/object::{ObjectFile, ObjFormat, Section, SectionKind,
 import compiler/native/obj/macho::{write_object}
 import compiler/native/mir::{MFunction, MBlock, MInst, MOp, Operand, OperandKind, RegClass}
 import compiler/native/aarch64/regs::{reg_name}
+import compiler/native/target::{op_name}
 import compiler/native/jump_table::{declare_jump_tables, place_jump_tables, jump_table_section_name}
 import compiler/native/aarch64/isel::{select_function, IselError}
 import compiler/native/aarch64/encode::{encode_function, EncodedFunction, EncodeError}
@@ -164,7 +165,7 @@ pub def dump_mfunction(mf : MFunction) : String
   mf.blocks.each do |b|
     acc = acc + "block #{b.index} #{b.name}\n"
     b.insts.each do |inst|
-      acc = acc + "  #{dump_inst(inst)}\n"
+      acc = acc + "  #{dump_inst(mf.isa, inst)}\n"
     end
   end
   mf.jump_tables.each_with_index do |t, k|
@@ -184,7 +185,7 @@ def dump_operand(op : Operand) : String
   reg_name(op.reg)
 end
 
-def dump_inst(inst : MInst) : String
+def dump_inst(isa : Int32, inst : MInst) : String
   parts = [] of String
   inst.defs.each do |d|
     parts << dump_operand(d)
@@ -192,7 +193,7 @@ def dump_inst(inst : MInst) : String
   inst.uses.each do |u|
     parts << dump_operand(u)
   end
-  text = "#{inst.opcode}/#{inst.size}"
+  text = "#{op_name(isa, inst.opcode)}/#{inst.size}"
   text = text + "f" if inst.fp
   text = text + " " + parts.join(", ") unless parts.empty?
   text = text + " #imm=#{inst.imm}" if inst.imm != 0_i64

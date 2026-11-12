@@ -54,7 +54,7 @@ def pop(reg : Int32) : Operand
 end
 
 def mop(op : MOp) : MInst
-  MInst.new(op)
+  MInst.new(op.value.to_i32)
 end
 
 # The IR's integer predicates by ordinal, in the order inst.iyi declares them:
