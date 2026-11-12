@@ -77,6 +77,10 @@
   returns through a pointer could not be typed. `out name` declares the local and is `Out(Var)`, `out @name` is
   `Out(InstanceVar)`, `out _` is `Out(Underscore)`, also as a named argument's value, as the hosted parser builds
   them.
+- **A gate can be looked at without its mutation proofs, and that look is never a pass.** `MUTATION_SKIP=1` makes
+  `bench/lib/mutation.sh` apply no mutation and answer each proof as not caught, naming it `NOT RUN`: the fixtures of
+  a gate show in the time they take, and the gate ends red by its own count. The proofs are most of a gate's time
+  (each rebuilds a tool), and a change in progress was paying for all of them on every look.
 - **The whole-program gate says why the bridge refused, and the refused-fixture text is the tool's.** `iyi-ir import`
   writes a refusal to stdout, where the IR would have gone, and the gate read stderr: on a host where the import
   refuses, every program's row read `import` with no reason. The gate reads the refusal from where it is written.
