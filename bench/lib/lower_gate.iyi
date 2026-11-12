@@ -24,6 +24,7 @@ import compiler/ir/printer::{print}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program}
+import bench/lib/primitive_stand_in::{stand_in_primitive_types}
 
 # The parsed and analysed fixture: the tree and the semantic pass that typed it.
 pub class Analysis
@@ -85,6 +86,7 @@ pub def analyse(source : String, filename : String, stand_in_libs : Bool) : Anal
   mv = MainVisitor.new(prog)
   if stand_in_libs
     stand_in_lib_types(root, prog, mv)
+    stand_in_primitive_types(root, prog, mv)
   end
   root.accept(mv)
   RecursiveStructChecker.new(prog).run
