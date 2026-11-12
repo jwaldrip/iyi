@@ -72,7 +72,7 @@ module TypedDump
     if r = root
       prog.search_path = [r] of String
     end
-    tl = TopLevelVisitor.new(prog)
+    tl = TopLevelVisitor.new(prog, filename)
     node.accept(tl)
     tl.finish
     mv = MainVisitor.new(prog)
