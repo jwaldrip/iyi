@@ -31,7 +31,7 @@ module compiler/lower/primitives
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
-import compiler/syntax/ast::{ASTNode, Call, Def, MacroLiteral}
+import compiler/syntax/ast::{ASTNode, Call, Def, MacroLiteral, Primitive}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{IntPredicate}
 import compiler/ir/intrinsics::{IntrinsicId}
@@ -62,6 +62,10 @@ end
 # The name of a primitive from its def's body (`# primitive: binary` gives `binary`), or
 # nil for a def that is not a primitive.
 pub def primitive_name(body : ASTNode) : String?
+  # The parser's `Primitive` node carries the name itself (ast.iyi); the older form is a MacroLiteral text.
+  if body.is_a?(Primitive)
+    return body.as(Primitive).name
+  end
   return nil unless body.is_a?(MacroLiteral)
   parts = body.as(MacroLiteral).value.split(": ")
   return nil unless parts.size == 2 && parts[0] == "# primitive"
