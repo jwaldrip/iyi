@@ -879,6 +879,7 @@ pub class MainVisitor < TypeNodeHost
     t = @program.lookup_type_path(node, @current_type)
     if t.const?
       c = t.as(Const)
+      c.used = true
       if c_type = type_of?(c.value)
         set_type(node, c_type)
       else
@@ -1776,7 +1777,35 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : PointerOf) : Bool
+    exp = node.exp
+    if exp.is_a?(ClassVar) || exp.is_a?(InstanceVar)
+      return pointerof_variable(node, exp)
+    end
+    if exp.is_a?(Path)
+      exp.accept(self)
+      ct = @program.lookup_type_path?(exp.as(Path), @current_type)
+      if ct
+        if ct.const?
+          ct.as(Const).pointer_read = true
+          if et = child_type(exp)
+            set_type(node, type_node_system(@program).pointer_of(et.as(Type)))
+          end
+          return false
+        end
+      end
+    end
     visit_pointer_of(self, node)
+  end
+
+  # `pointerof(@x)` and `pointerof(@@x)`: a pointer to the variable's type, as the
+  # hosted pass binds it (main_visitor.cr 3108-3114). The `iyi_written` mark is the
+  # lowering's and is not set here.
+  def pointerof_variable(node : PointerOf, exp : ASTNode) : Bool
+    exp.accept(self)
+    t = child_type(exp)
+    return false if t.nil?
+    set_type(node, type_node_system(@program).pointer_of(t.as(Type)))
+    false
   end
 
   def visit(node : TypeOf) : Bool
