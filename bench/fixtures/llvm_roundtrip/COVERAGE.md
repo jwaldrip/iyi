@@ -20,7 +20,7 @@ attribute	readonly	1	yes
 attribute	speculatable	3	yes
 attribute	willreturn	7	yes
 attribute	writeonly	2	yes
-calling convention	ccc	46	yes
+calling convention	ccc	47	yes
 gep source type	true	1	yes
 icmp predicate	32	1	yes
 icmp predicate	39	2	yes
@@ -33,7 +33,7 @@ intrinsic	llvm.sadd.with.overflow.i8	1	yes
 intrinsic	llvm.umul.with.overflow.i16	1	yes
 intrinsic	llvm.va_end.p0	1	yes
 intrinsic	llvm.va_start.p0	1	yes
-linkage	external	48	yes
+linkage	external	49	yes
 linkage	internal	2	yes
 linkage	private	1	yes
 opcode	add	16	yes
@@ -51,7 +51,7 @@ opcode	load	6	yes
 opcode	mul	4	yes
 opcode	or	1	yes
 opcode	phi	4	yes
-opcode	ret	26	yes
+opcode	ret	27	yes
 opcode	sdiv	1	yes
 opcode	select	5	yes
 opcode	store	2	yes
@@ -65,14 +65,14 @@ ordering	seq_cst	2	yes
 tail call	none	12	yes
 tail call	tail	1	yes
 tls	not_thread_local	18	yes
-triple	aarch64-apple-darwin	15	yes
+triple	aarch64-apple-darwin	16	yes
 unnamed_addr	local_unnamed_addr	1	no
 unnamed_addr	none	17	yes
-value	basic block	41	yes
-value	function	33	yes
+value	basic block	42	yes
+value	function	34	yes
 value	global variable	18	yes
 value	inline asm	1	yes
-visibility	default	46	yes
+visibility	default	47	yes
 visibility	hidden	3	no
 visibility	protected	2	no
 entries_not_in_ir	5
