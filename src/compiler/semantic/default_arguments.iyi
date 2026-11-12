@@ -1,6 +1,6 @@
 module compiler/semantic/default_arguments
 
-import compiler/syntax/ast::{ASTNode, Def, NamedArgument}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, MagicConstant, NamedArgument, Var}
 
 # The port of the argument side of the hosted Def#expand_default_arguments
 # (src/compiler/iyi/semantic/default_arguments.cr). The hosted expansion is a new
@@ -32,10 +32,15 @@ pub class DefaultArguments
   # parameters, every named argument names a parameter after them, and every
   # parameter left over has a default value.
   def self.supported?(rec_def : Def, args : Array(ASTNode), named_args : Array(NamedArgument)?) : Bool
+    DefaultArguments.supported_count?(rec_def, args.size, named_args)
+  end
+
+  # The same answer for a call with *given* positional arguments (the wrapper builder
+  # has the count, not the nodes).
+  def self.supported_count?(rec_def : Def, given : Int32, named_args : Array(NamedArgument)?) : Bool
     return false if rec_def.splat_index
     return false if rec_def.double_splat
     count = rec_def.args.size
-    given = args.size
     return false if given > count
     seen = [] of Bool
     i = 0
@@ -110,5 +115,132 @@ pub class DefaultArguments
       return named.value if named.name == name
     end
     nil
+  end
+
+  # The wrapper the hosted expansion builds for a call (Def#expand_default_arguments): a
+  # new def the call goes to instead of *rec_def*. Its parameters are the call's positional
+  # arguments, then one per named argument, named after the named argument (`first:b`).
+  # Its body assigns each default the call does not reach and calls *rec_def* with every
+  # argument. Nil when no wrapper is needed: the named arguments already cover the
+  # defaults in order, or every default left over is a magic constant (the hosted early
+  # returns), and the call targets *rec_def* itself.
+  #
+  # Two shapes are not built. A block parameter or a macro def is refused (the hosted
+  # expansion keeps the body there). A default with a restriction keeps the body too,
+  # with the defaults as assignments before it: the hosted assignment carries the
+  # restriction check (AssignWithRestriction), which this port's syntax tree does not
+  # have, so the wrapper takes a plain assignment and the check is not made here.
+  def self.wrapper_def(rec_def : Def, given : Int32, named_args : Array(NamedArgument)?) : Def?
+    if !DefaultArguments.supported_count?(rec_def, given, named_args)
+      raise "BUG: no wrapper for #{rec_def.name}: the call is not supported"
+    end
+    if rec_def.block_arg || rec_def.macro_def
+      raise "BUG: no wrapper for #{rec_def.name}: a block parameter or a macro def is not ported"
+    end
+    count = rec_def.args.size
+    if named_args
+      if given + named_args.size == count && DefaultArguments.named_in_order?(rec_def, given, named_args)
+        return nil
+      end
+    else
+      return nil if DefaultArguments.all_magic_from?(rec_def, given)
+    end
+    retain = false
+    rec_def.args.each do |arg|
+      retain = true if arg.default_value && arg.restriction
+    end
+
+    new_name = rec_def.name
+    new_args = [] of Arg
+    k = 0
+    while k < given
+      arg = rec_def.args[k].clone
+      arg.default_value = nil
+      new_args << arg
+      k += 1
+    end
+    if named_args
+      named_args.each do |named|
+        new_name = "#{new_name}:#{named.name}"
+        matching = rec_def.args[DefaultArguments.param_index(rec_def, named.name)]
+        new_args << Arg.new(matching.name, nil, nil, named.name)
+      end
+    end
+
+    body_list = [] of ASTNode
+    call_args = [] of ASTNode
+    k = 0
+    while k < given
+      call_args << Var.new(rec_def.args[k].name)
+      k += 1
+    end
+    k = given
+    while k < count
+      arg = rec_def.args[k]
+      if DefaultArguments.named_given?(named_args, arg.external_name)
+        call_args << Var.new(arg.name)
+      elsif arg.default_value.is_a?(MagicConstant)
+        new_args << arg.clone
+        call_args << Var.new(arg.name)
+      else
+        default = arg.default_value
+        raise "BUG: no default for parameter #{arg.name} of #{rec_def.name}" if default.nil?
+        body_list << Assign.new(Var.new(arg.name), default.clone)
+        call_args << Var.new(arg.name)
+      end
+      k += 1
+    end
+    if retain
+      body_list << rec_def.body.clone
+    else
+      body_list << Call.new(nil, rec_def.name, call_args)
+    end
+
+    receiver = rec_def.receiver
+    return_type = rec_def.return_type
+    wrapper = Def.new(new_name, new_args, Expressions.new(body_list), DefaultArguments.copy_node(receiver), nil, DefaultArguments.copy_node(return_type), false, false, nil, nil, nil, false)
+    wrapper.free_vars = DefaultArguments.copy_free_vars(rec_def.free_vars)
+    wrapper
+  end
+
+  # A copy of an optional node, or nil.
+  def self.copy_node(node : ASTNode?) : ASTNode?
+    return nil if node.nil?
+    node.clone
+  end
+
+  # A copy of the optional list of free variables, or nil.
+  def self.copy_free_vars(free : Array(String)?) : Array(String)?
+    return nil if free.nil?
+    free.dup
+  end
+
+  # True when a named argument of the call is *name*.
+  def self.named_given?(named_args : Array(NamedArgument)?, name : String) : Bool
+    return false if named_args.nil?
+    named_args.each do |named|
+      return true if named.name == name
+    end
+    false
+  end
+
+  # True when the named arguments are the parameters after the positional ones, in order.
+  def self.named_in_order?(rec_def : Def, given : Int32, named_args : Array(NamedArgument)) : Bool
+    i = 0
+    while i < named_args.size
+      return false if rec_def.args[given + i].external_name != named_args[i].name
+      i += 1
+    end
+    true
+  end
+
+  # True when every parameter from *given* on has a default that is a magic constant.
+  def self.all_magic_from?(rec_def : Def, given : Int32) : Bool
+    k = given
+    while k < rec_def.args.size
+      return false if !rec_def.args[k].default_value.is_a?(MagicConstant)
+      k += 1
+    end
+    true
   end
 end

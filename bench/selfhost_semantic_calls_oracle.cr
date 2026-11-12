@@ -246,6 +246,34 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+# The wrapper the hosted expansion builds for the call (Def#expand_default_arguments), as
+# its name, its parameter names and its body's statements, or `self` when the expansion
+# is the def itself. An AssignWithRestriction prints as its assignment, as the driver
+# prints a plain one.
+def wrapper_text(program : Iyi::Program, expr : String) : String
+  node = Iyi::Parser.new(expr).parse
+  raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
+  call = node.as(Iyi::Call)
+  receiver = call_scope(program, expr)
+  found, _ = dispatch_matches(receiver, signature_of(program, call))
+  raise "expected one match" unless found.size == 1
+  definition = found[0].def
+  named = call.named_args
+  named_names = named.nil? ? nil : named.map { |na| na.name }
+  expansion = definition.expand_default_arguments(program, call.args.size, named_names)
+  return "self" if expansion.object_id == definition.object_id
+  names = expansion.args.map { |arg| arg.name }
+  statements = [] of String
+  expansion.body.as(Iyi::Expressions).expressions.each do |item|
+    assign = item
+    assign = item.as(Iyi::AssignWithRestriction).assign if item.is_a?(Iyi::AssignWithRestriction)
+    statements << assign.to_s
+  end
+  "#{expansion.name}(#{names.join(", ")}) { #{statements.join("; ")} }"
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 # The first line of the error the hosted compile raises for `expr` after the prelude
 # and the fixture, or `ok` when it raises none.
 def error_text(path : String, fixture : String, expr : String) : String
@@ -269,6 +297,9 @@ begin
     elsif line.starts_with?("# expand ")
       expr = line[9..].strip
       puts "#{expr} => #{expand_text(program, expr)}"
+    elsif line.starts_with?("# wrapper ")
+      expr = line[10..].strip
+      puts "#{expr} => #{wrapper_text(program, expr)}"
     end
   end
 rescue ex : Exception
