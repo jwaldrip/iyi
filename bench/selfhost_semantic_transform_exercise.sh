@@ -138,6 +138,23 @@ LLVM_CONFIG="${LLVM_CONFIG:-$(command -v llvm-config || true)}" \
   CRYSTAL_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
     -o "$WORK/math_oracle" "$MATH_ORACLE_SRC" > "$WORK/math_oracle.log" 2>&1 || { echo "  HOSTED MATH ORACLE DOES NOT BUILD"; cat "$WORK/math_oracle.log"; exit 1; }
 "$IYI" build -o "$WORK/math_port" "$MATH_DRIVER" > "$WORK/math_port.log" 2>&1 || { echo "  MATH PORT DRIVER DOES NOT BUILD"; cat "$WORK/math_port.log"; exit 1; }
+# When the port's driver dies on a fixture (a signal leaves no message), name what it printed last and the
+# expressions that kill it alone, so the log of a host this was not written on says which fold it was.
+math_failed_alone() {
+  local fixture="$1" line n=0 rc
+  echo "    the last lines the port printed before it stopped:"
+  tail -n 3 "$WORK/math_iyi.txt" | sed 's/^/      /'
+  echo "    expressions the port's driver fails on alone:"
+  while IFS= read -r line; do
+    case "$line" in '' | '#'*) continue ;; esac
+    n=$((n + 1))
+    printf '%s\n' "$line" > "$WORK/math_one.iyi"
+    "$WORK/math_port" "$WORK/math_one.iyi" > /dev/null 2> "$WORK/math_one.err"
+    rc=$?
+    [ "$rc" -eq 0 ] || echo "      $n: $line (status $rc) $(head -n 1 "$WORK/math_one.err")"
+  done < "$fixture"
+}
+
 math_count=0
 math_diverged=0
 math_matched=0
@@ -146,7 +163,7 @@ for fixture in "$REPO"/bench/fixtures/semtx_math_*.iyi; do
   if [ "$(basename "$fixture")" = "semtx_math_refused.iyi" ]; then continue; fi
   math_count=$((math_count + 1))
   "$WORK/math_port" "$fixture" > "$WORK/math_iyi.txt" 2> "$WORK/math_iyi.err" || {
-    echo "  $name: MATH PORT FAILED"; cat "$WORK/math_iyi.err"; math_diverged=$((math_diverged + 1)); status=1; continue; }
+    echo "  $name: MATH PORT FAILED"; cat "$WORK/math_iyi.err"; math_failed_alone "$fixture"; math_diverged=$((math_diverged + 1)); status=1; continue; }
   "$WORK/math_oracle" "$fixture" > "$WORK/math_oracle.txt" 2> "$WORK/math_oracle.err" || {
     echo "  $name: HOSTED MATH ORACLE FAILED"; cat "$WORK/math_oracle.err"; math_diverged=$((math_diverged + 1)); status=1; continue; }
   if cmp -s "$WORK/math_iyi.txt" "$WORK/math_oracle.txt"; then
