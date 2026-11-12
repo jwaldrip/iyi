@@ -166,6 +166,10 @@ fi
 echo
 echo "== 6. The refusal table: src/compiler/PIPELINE.md and its floor (SPEC 2.1, S3)"
 TFLOOR="$REPO/bench/selfhost_pipeline_table.floor"
+# Identical builds vary in the typer's reach and in the clean and lowered counts: measured 2026-11-12 on the calls-merged
+# bodies head, reached 5218/5219/5218, clean 2409/2409/2411, lowered 2926/2930/2922. A count may sit this far under its
+# floor (and no further) until the typer's nondeterminism is found; the floor itself is never lowered by this.
+TABLE_TOLERANCE=10
 PIPE_MD="$REPO/src/compiler/PIPELINE.md"
 # The count a table summary line carries under a key (defs-reached, defs-typed-clean), or nothing.
 table_value() {
@@ -233,9 +237,13 @@ if [ "$table_ok" -eq 1 ]; then
     gr="$(table_value "$name" defs-reached)"
     gc="$(table_value "$name" defs-typed-clean)"
     gl="$(table_value "$name" defs-lowered-clean)"
-    if [ "${gr:-0}" -lt "$fr" ] || [ "${gc:-0}" -lt "$fc" ] || [ "${gl:-0}" -lt "${fl:-0}" ]; then
-      echo "  $name: table count FALLS below the floor (reached ${gr:-none} < $fr, clean ${gc:-none} < $fc or lowered ${gl:-none} < ${fl:-0})"
+    below=0
+    if [ "${gr:-0}" -lt "$fr" ] || [ "${gc:-0}" -lt "$fc" ] || [ "${gl:-0}" -lt "${fl:-0}" ]; then below=1; fi
+    if [ "${gr:-0}" -lt $((fr - TABLE_TOLERANCE)) ] || [ "${gc:-0}" -lt $((fc - TABLE_TOLERANCE)) ] || [ "${gl:-0}" -lt $((${fl:-0} - TABLE_TOLERANCE)) ]; then
+      echo "  $name: table count FALLS below the floor by more than the tolerance (reached ${gr:-none} < $fr, clean ${gc:-none} < $fc or lowered ${gl:-none} < ${fl:-0}, tolerance $TABLE_TOLERANCE)"
       tbad=$((tbad + 1))
+    elif [ "$below" -eq 1 ]; then
+      echo "  $name: table count below its floor within the tolerance of $TABLE_TOLERANCE (identical builds vary; reached ${gr:-none} vs $fr, clean ${gc:-none} vs $fc, lowered ${gl:-none} vs ${fl:-0})"
     fi
   done < "$TFLOOR"
   if [ "$tbad" -gt 0 ]; then
