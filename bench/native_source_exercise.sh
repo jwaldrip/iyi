@@ -35,15 +35,19 @@ status=0
 echo "== 1. build the tools from source"
 mkdir -p "$WORK/bin" "$WORK/ref" "$WORK/port" "$WORK/nat"
 tool="$WORK/bin/iyi-compile-native"
-if ! "$IYI" build -o "$tool" "$TOOL_SRC" >"$WORK/build.tool.log" 2>&1; then
-  echo "FAIL: iyi-compile-native does not build (see $WORK/build.tool.log)"
+# build_failed LABEL LOG: the log is under $WORK, which is removed on exit, so what the build said is printed here.
+build_failed() {
+  echo "FAIL: $1 does not build; the build said:"
+  grep -v '^ld: warning' "$2" | tail -n 25 | sed 's/^/    /'
   exit 1
+}
+if ! "$IYI" build -o "$tool" "$TOOL_SRC" >"$WORK/build.tool.log" 2>&1; then
+  build_failed "iyi-compile-native" "$WORK/build.tool.log"
 fi
 echo "   built iyi-compile-native (native backend) from $TOOL_SRC"
 port="$WORK/bin/iyi-compile-port-llvm"
 if ! "$IYI" build -o "$port" "$PORT_SRC" >"$WORK/build.port.log" 2>&1; then
-  echo "FAIL: the port+LLVM build does not build (see $WORK/build.port.log)"
-  exit 1
+  build_failed "the port+LLVM build" "$WORK/build.port.log"
 fi
 echo "   built iyi-compile-port-llvm (port pipeline, LLVM backend) from $PORT_SRC"
 
