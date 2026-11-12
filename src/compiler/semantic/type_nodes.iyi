@@ -1,22 +1,25 @@
 module compiler/semantic/type_nodes
 
-# The typing of the nodes a body can write as types: `Pointer(Int32)`,
-# `Int32 | String`, `Int32 -> Int32`, `Int32.class`, `self`, and a `fun` with a
-# body. The hosted pass does these in its main visitor
-# (src/compiler/iyi/semantic/main_visitor.cr: `visit(node : Generic)` 259-335,
-# `ProcNotation` 337-363, `Union` 365-374, `Metaclass` 376-380, `Self` 382-385,
+# The typing of the nodes a body can write as types, and of the casts that name
+# them: `Pointer(Int32)`, `Int32 | String`, `Int32 -> Int32`, `Int32.class`,
+# `self`, `x.as(T)`, `x.as?(T)`, and a `fun` with a body. The hosted pass does
+# these in its main visitor (src/compiler/iyi/semantic/main_visitor.cr:
+# `visit(node : Generic)` 259-335, `ProcNotation` 337-363, `Union` 365-374,
+# `Metaclass` 376-380, `Self` 382-385, `Cast | NilableCast` 2310-2331,
 # `FunDef` 2333-2365). Each function takes the visitor (a TypeNodeHost, the
 # abstract base of MainVisitor) as its first argument and is called from a
 # one-line `visit` in MainVisitor.
 #
-# A type argument is typed as the instance type, not its metaclass, so every
-# visit here brackets its children with bracket_type_args(1) and (-1) (hosted
-# `@in_type_args`).
+# Inside a type argument a node is typed as the instance type, not its metaclass,
+# so each visit here brackets its children with bracket_type_args(1) and (-1)
+# (hosted `@in_type_args`). A generic written there is `Box(Int32)`, not
+# `Box(Int32).class`.
 #
 # Not ported here: named type arguments (`Foo(x: Int32)`), which only NamedTuple
-# accepts, so the port refuses them by name.
+# accepts, so the port refuses them by name; and the `raises` mark a cast leaves
+# on its method, which the port does not track yet.
 
-import compiler/syntax/ast::{ASTNode, FunDef, Generic, Metaclass, ProcNotation, Self, Union}
+import compiler/syntax/ast::{ASTNode, Cast, FunDef, Generic, Metaclass, NilableCast, ProcNotation, Self, Union}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/top_level::{SemanticProgram, Type, TypeHook}
 import compiler/types/type_system::{TypeSystem}
@@ -51,8 +54,9 @@ pub def type_node_metaclass(type : Type) : Type?
   TypeUnification.metaclass_of(type)
 end
 
-# `Pointer(Int32)`: the node is the metaclass of the instantiated type, so a
-# call on it (`Pointer(Int32).malloc(1)`) resolves against that metaclass.
+# `Pointer(Int32)`: in an expression the node is the metaclass of the instantiated
+# type, so a call on it (`Pointer(Int32).malloc(1)`) resolves against that
+# metaclass. In a type argument it is the instance type itself.
 pub def visit_generic(visitor : TypeNodeHost, node : Generic) : Bool
   if node.named_args
     return visitor.refuse(node, "named type arguments are not typed yet")
@@ -72,6 +76,10 @@ pub def visit_generic(visitor : TypeNodeHost, node : Generic) : Bool
     return visitor.refuse(node, resolved.as(LookupError).message)
   end
   instance = resolved.as(Type)
+  if visitor.in_type_args?
+    visitor.set_type(node, instance)
+    return false
+  end
   meta = type_node_metaclass(instance)
   if meta.nil?
     return visitor.refuse(node, "#{instance.full_name} doesn't have a metaclass")
@@ -154,10 +162,42 @@ pub def visit_self(visitor : TypeNodeHost, node : Self) : Bool
   false
 end
 
+# `x.as(T)`: the target's instance type. The object and the target are visited
+# first, as the hosted pass does; the target is a type argument.
+pub def visit_cast(visitor : TypeNodeHost, node : Cast) : Bool
+  node.obj.accept(visitor)
+  visitor.bracket_type_args(1)
+  node.to.accept(visitor)
+  visitor.bracket_type_args(-1)
+
+  target = visitor.child_type(node.to)
+  if target.nil?
+    return false
+  end
+  visitor.set_type(node, target.as(Type))
+  false
+end
+
+# `x.as?(T)`: the target's instance type with Nil, the union the hosted
+# `NilableCast#update` gives it.
+pub def visit_nilable_cast(visitor : TypeNodeHost, node : NilableCast) : Bool
+  node.obj.accept(visitor)
+  visitor.bracket_type_args(1)
+  node.to.accept(visitor)
+  visitor.bracket_type_args(-1)
+
+  target = visitor.child_type(node.to)
+  if target.nil?
+    return false
+  end
+  visitor.set_type(node, visitor.program.type_merge(target.as(Type), visitor.program.nil_type))
+  false
+end
+
 # `fun name(a : Int32) : Int32 ... end` with a body: the body is typed in its own
 # visitor, with the arguments as its locals and the program as its scope, and
 # its type must fit the declared return type (hosted `visit(node : FunDef)`
-# 2333-2365). The fun itself is not typed, as the hosted pass does not type it.
+# 2333-2365). The fun node itself is typed Nil, as the hosted pass types it.
 pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
   body = node.body
   if body.nil?

@@ -23,6 +23,12 @@ pub class TypeNodeHost < Visitor
     raise("TypeNodeHost#bracket_type_args is implemented by MainVisitor")
   end
 
+  # Whether the node being visited is inside a type argument (hosted
+  # `@in_type_args > 0`).
+  def in_type_args? : Bool
+    raise("TypeNodeHost#in_type_args? is implemented by MainVisitor")
+  end
+
   def set_type(node : ASTNode, type : Type) : Type
     raise("TypeNodeHost#set_type is implemented by MainVisitor")
   end

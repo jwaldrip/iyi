@@ -491,7 +491,7 @@ pub class MetaclassType < ModuleType
   end
 
   def full_name : String
-    "#{@instance_type.full_name}.class"
+    "#{@instance_type.to_s}.class"
   end
 
   def to_s : String
@@ -599,9 +599,9 @@ pub class GenericClassType < ClassType
   getter instantiated_types : Array(Type)
   property splat_index : Int32?
 
-  # The unbound generic with its type variables, `Box(T)` (hosted GenericType
-  # `to_s_with_options`, 2204-2215).
-  def full_name : String
+  # The unbound generic with its type variables, `Box(T)`: the hosted
+  # `to_s_with_options` (2204-2215). `full_name` is the name without them.
+  def to_s : String
     "#{base_full_name}(#{@type_vars.join(", ")})"
   end
 
@@ -653,9 +653,9 @@ pub class GenericModuleType < ModuleType
   getter type_vars : Array(String)
   property splat_index : Int32?
 
-  # The unbound generic with its type variables, `Box(T)` (hosted GenericType
-  # `to_s_with_options`, 2204-2215).
-  def full_name : String
+  # The unbound generic with its type variables, `Box(T)`: the hosted
+  # `to_s_with_options` (2204-2215). `full_name` is the name without them.
+  def to_s : String
     "#{base_full_name}(#{@type_vars.join(", ")})"
   end
 
