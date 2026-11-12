@@ -47,6 +47,9 @@ pub struct CompilerConfig
   property probe_verify : Bool
   # The typed pipeline (compile_typed): declarations, bodies and typed lowering, with no LLVM. Off unless asked for.
   property typed_pipeline : Bool
+  # Keep going past a refusal where the phase allows: the body typer records each refusal on its node in total
+  # mode and the probe's table reports them. The lowering still stops at its first refusal.
+  property keep_going : Bool
 
   def initialize(
     @output_filename : String = "a.out",
@@ -58,6 +61,7 @@ pub struct CompilerConfig
     @single_file : Bool = false,
     @probe_verify : Bool = false,
     @typed_pipeline : Bool = false,
+    @keep_going : Bool = false,
   )
   end
 end
@@ -296,6 +300,11 @@ pub class Compiler
       return typed_refuse("declarations", reached, declared.message)
     end
     typed = declared
+    if @config.keep_going
+      # The probe's table: the body typer records each refusal on its node and goes on (total mode).
+      typed.visitor.total = true
+      typed.prog.total_mode = true
+    end
     reached = typed_pass("declarations")
     typed_start("bodies")
 

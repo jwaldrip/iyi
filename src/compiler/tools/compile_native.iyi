@@ -74,6 +74,7 @@ module CompileNative
     print_backend = false
     asked_llvm = false
     typed = false
+    keep_going = false
     i = 3
     while i < args.size
       if args[i] == "--target" && i + 1 < args.size
@@ -88,6 +89,9 @@ module CompileNative
           fail("this tool has only the native backend, and #{args[i + 1]} was asked for")
         end
         i = i + 2
+      elsif args[i] == "--keep-going"
+        keep_going = true
+        i = i + 1
       elsif args[i] == "--probe-phase"
         probe = true
         i = i + 1
@@ -134,6 +138,7 @@ module CompileNative
         fail("source programs build for #{TARGET} with the native backend, and #{target} was asked for")
       end
       config = CompilerConfig.new(output, false, nil, false, target, probe, false, false, typed)
+      config.keep_going = keep_going
       loader = Loader.new
       loader.load_prelude = prelude
       compiler = Compiler.new(config, loader, NativeBackend.new)
