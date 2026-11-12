@@ -175,10 +175,15 @@ pub def compile_module(mod : Module, darwin : Bool) : ObjectFile | String
     w = SectionWriter.new
     message = write_initializer(layout, w, syms, g.value_type, g.initializer, 0_i64)
     return "#{g.name}: #{message}" if message
-    target_writer = g.constant ? rodata : data
+    # A constant that holds an address (a table of names, a vtable) needs the loader to slide each entry, and no
+    # format lets it write into read-only text or .rodata. It goes with the writable data. LLVM gives such a
+    # constant its own section (__DATA,__const, .data.rel.ro) that is protected after loading; this places it in
+    # .data, which is correct and unprotected.
+    read_only = g.constant && w.relocs.size == 0
+    target_writer = read_only ? rodata : data
     target_writer.pad_to(align)
     base = target_writer.append(w.bytes, w.relocs)
-    obj.symbols[index].section = g.constant ? 1 : 2
+    obj.symbols[index].section = read_only ? 1 : 2
     obj.symbols[index].value = base
     obj.symbols[index].size = layout.store_size(g.value_type)
   end
