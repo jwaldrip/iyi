@@ -44,8 +44,8 @@ import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, MetaTypeVar, Type}
-import compiler/types/types::{VirtualType}
-import compiler/lower/helpers::{store_aligned}
+import compiler/types/types::{PointerInstanceType, VirtualType}
+import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/lower/headed::{headed?}
 import compiler/lower/layouts::{has_inner_pointers?}
@@ -81,6 +81,10 @@ end
 pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
   name = primitive_name_of(target)
   raise "BUG: lower_primitive_call on a def that is not a primitive (hosted call.cr)" if name.nil?
+  if name == "pointer_malloc" || name == "pointer_new" || name == "pointer_realloc" || name == "pointer_diff" || name == "pointer_get" || name == "pointer_set" || name == "pointer_add" || name == "pointer_address"
+    lower_pointer_primitive(low, node, name.as(String))
+    return
+  end
   obj = node.obj
   raise "BUG: a primitive call has no receiver (hosted call.cr: codegen_primitive)" if obj.nil?
   wants = low.needs_value
@@ -115,6 +119,86 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     return
   end
   pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
+end
+
+# The hosted `codegen_primitive` for the `pointer_*` primitives (primitives.cr 905-965). The receiver
+# of an instance primitive (`add`, `address`, `value`, `value=`) is a value, lowered first as the hosted
+# prepare_call_args does. `pointer_new` is a class method: its call's receiver (the metaclass) is not
+# lowered, and its argument is the address. Ported: `pointer_address` (ptr2int to Int64), `pointer_add` (a
+# gep of the element type, the hosted non-inbounds gep), `pointer_new` (int2ptr to the node's pointer type),
+# and `pointer_get` and `pointer_set` of an integer, Char or Float element (a load and a store aligned to
+# the element). Refused by name: `pointer_malloc`, `pointer_realloc` and `pointer_diff` (the array_malloc,
+# realloc and diff helpers of codegen.cr), and `pointer_get`/`pointer_set` of a Bool, a pointer or a struct
+# element (the hosted to_lhs and assign of those).
+pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
+  if name == "pointer_malloc" || name == "pointer_realloc" || name == "pointer_diff"
+    pending_visit_node("primitive #{name} (hosted codegen_primitive_#{name}, primitives.cr 905-965: its helper is not ported)")
+    return
+  end
+  wants = low.needs_value
+  low.needs_value = true
+  values = [] of Value
+  pt : Type? = nil
+  if name == "pointer_new"
+    pt = low.analysed.type_of?(node)
+  else
+    obj = node.obj
+    raise "BUG: a pointer primitive has no receiver (hosted call.cr: codegen_primitive)" if obj.nil?
+    visit_node(low, obj.as(ASTNode))
+    recv = low.last
+    raise "BUG: the receiver of a pointer primitive left no value (hosted call.cr: prepare_call_args)" if recv.nil?
+    values << recv.as(Value)
+    pt = receiver_type(low, obj.as(ASTNode))
+  end
+  node.args.each do |arg_node|
+    visit_node(low, arg_node)
+    value = low.last
+    raise "BUG: a pointer primitive argument left no value (hosted call.cr: prepare_call_args)" if value.nil?
+    values << value.as(Value)
+  end
+  low.needs_value = wants
+  raise "BUG: the analysed program has no type for a pointer primitive (hosted call.cr: codegen_primitive)" if pt.nil?
+  ptr_type = pt.as(Type)
+  if name == "pointer_new"
+    low.last = low.builder.int_to_ptr(values[0], low.typer.llvm_type(ptr_type))
+    return
+  end
+  elem = pointer_element_of(ptr_type)
+  if name == "pointer_address"
+    low.last = low.builder.ptr_to_int(values[0], low.module.types.int64)
+    return
+  end
+  elem_kind = primitive_kind(elem)
+  if name == "pointer_add"
+    low.last = low.builder.gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)
+    return
+  end
+  if name == "pointer_get"
+    if elem_kind == "int" || elem_kind == "char" || elem_kind == "float"
+      low.last = load_aligned(low, low.typer.llvm_type(elem), values[0])
+      return
+    end
+    pending_visit_node("pointer_get of #{elem.full_name} (hosted to_lhs, primitives.cr 938)")
+    return
+  end
+  if name == "pointer_set"
+    if elem_kind == "int" || elem_kind == "char" || elem_kind == "float"
+      store_aligned(low, values[1], values[0])
+      low.last = values[1]
+      return
+    end
+    pending_visit_node("pointer_set of #{elem.full_name} (hosted assign, primitives.cr 927)")
+    return
+  end
+  pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
+end
+
+# The element type of a pointer's analysed type (`Pointer(T)` gives `T`).
+pub def pointer_element_of(t : Type) : Type
+  if t.is_a?(PointerInstanceType)
+    return t.as(PointerInstanceType).element_type
+  end
+  raise "BUG: a pointer primitive on #{t.full_name}, which is not a Pointer (hosted codegen_primitive_pointer_*)"
 end
 
 # The analysed type of a receiver. A primitive's owner is the type its receiver has (the
