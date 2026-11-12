@@ -8,10 +8,10 @@ module compiler/native/asm/constraints
 
 # How an operand is allowed into a register.
 pub enum ConstraintClass
-  Gpr        # r: any general register
-  Vector     # x: an SSE or FP/SIMD register
-  Specific   # {reg}: the named register
-  Tied       # N: the same register as output N
+  Gpr      # r: any general register
+  Vector   # x: an SSE or FP/SIMD register
+  Specific # {reg}: the named register
+  Tied     # N: the same register as output N
 end
 
 # One operand constraint, as written in the source.

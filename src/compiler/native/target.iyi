@@ -18,13 +18,13 @@ pub class TargetDesc
   getter darwin : Bool
   getter object_format : ObjFormat
   getter pointer_bits : Int32
-  getter stack_align : Int64            # bytes; the stack pointer is kept aligned to this at every call
-  getter integer_args : Array(Int32)    # physical registers that carry integer and pointer arguments, in order
-  getter fp_args : Array(Int32)         # physical registers that carry floating-point arguments, in order
-  getter indirect_result : Int32        # the register that carries an sret pointer
-  getter aggregate_reg_bytes : Int64    # an aggregate up to this many bytes may be passed in registers
-  getter fp_aggregate_max : Int32       # a homogeneous floating-point aggregate up to this many elements is in fp registers
-  getter variadic_on_stack : Bool       # every variadic argument goes on the stack (darwin)
+  getter stack_align : Int64         # bytes; the stack pointer is kept aligned to this at every call
+  getter integer_args : Array(Int32) # physical registers that carry integer and pointer arguments, in order
+  getter fp_args : Array(Int32)      # physical registers that carry floating-point arguments, in order
+  getter indirect_result : Int32     # the register that carries an sret pointer
+  getter aggregate_reg_bytes : Int64 # an aggregate up to this many bytes may be passed in registers
+  getter fp_aggregate_max : Int32    # a homogeneous floating-point aggregate up to this many elements is in fp registers
+  getter variadic_on_stack : Bool    # every variadic argument goes on the stack (darwin)
   getter callee_saved : Array(Int32)
   getter caller_saved : Array(Int32)
   getter scratch_gprs : Array(Int32)

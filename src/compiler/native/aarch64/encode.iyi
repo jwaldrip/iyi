@@ -31,8 +31,8 @@ end
 
 pub class EncodedFunction
   getter bytes : Array(UInt8)
-  getter relocs : Array(Reloc)            # offsets are from the function's first byte
-  getter block_offsets : Array(Int64)     # byte offset of each block in the function
+  getter relocs : Array(Reloc)        # offsets are from the function's first byte
+  getter block_offsets : Array(Int64) # byte offset of each block in the function
 
   def initialize(@bytes : Array(UInt8), @relocs : Array(Reloc), @block_offsets : Array(Int64))
   end
@@ -42,7 +42,7 @@ end
 class BranchFixup
   getter word_at : Int64
   getter target : Int32
-  getter wide : Bool        # true: imm26 (B); false: imm19 (B.cond)
+  getter wide : Bool # true: imm26 (B); false: imm19 (B.cond)
 
   def initialize(@word_at : Int64, @target : Int32, @wide : Bool)
   end
@@ -53,7 +53,7 @@ pub class Encoder
   getter relocs : Array(Reloc)
   getter fixups : Array(BranchFixup)
   property frame : FrameInfo
-  property table_syms : Array(Int32)   # the symbol of each jump table of the function, by table index
+  property table_syms : Array(Int32) # the symbol of each jump table of the function, by table index
   property failure : String?
 
   def initialize(@frame : FrameInfo)

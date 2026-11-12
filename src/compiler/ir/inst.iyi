@@ -14,7 +14,7 @@ pub enum Op
   ConstZero
   ConstAggregate
   ConstBytes
-  ConstExpr          # Gep / PtrToInt / IntToPtr / BitCast / Add / Sub over constants
+  ConstExpr # Gep / PtrToInt / IntToPtr / BitCast / Add / Sub over constants
   GlobalAddr
   FunctionAddr
   # memory
@@ -92,8 +92,8 @@ pub enum Op
 end
 
 pub enum CallConv
-  C      # platform C ABI; the signature is already ABI-lowered by its producer
-  Iyi    # internal; the native backend chooses, the LLVM translator emits C
+  C   # platform C ABI; the signature is already ABI-lowered by its producer
+  Iyi # internal; the native backend chooses, the LLVM translator emits C
 end
 
 pub enum Ordering
@@ -112,10 +112,10 @@ pub enum AsmDialect
 end
 
 pub enum ThreadPointerKind
-  Fs          # x86_64 Linux
-  Gs          # x86_64 Windows
-  TpidrEl0    # aarch64 Linux
-  TpidrroEl0  # aarch64 darwin
+  Fs         # x86_64 Linux
+  Gs         # x86_64 Windows
+  TpidrEl0   # aarch64 Linux
+  TpidrroEl0 # aarch64 darwin
 end
 
 pub enum IntPredicate
@@ -161,7 +161,7 @@ pub def terminator_op?(op : Op) : Bool
 end
 
 pub struct Attribute
-  getter name : String          # LLVM's name: "noinline", "naked", "byval", "sret", "zeroext", "frame-pointer" ...
+  getter name : String # LLVM's name: "noinline", "naked", "byval", "sret", "zeroext", "frame-pointer" ...
   getter int_value : UInt64
   getter string_value : String?
   getter type_value : IrType?
@@ -171,7 +171,7 @@ pub struct Attribute
 end
 
 pub struct DebugLoc
-  getter file : Int32           # index into Module#files
+  getter file : Int32 # index into Module#files
   getter line : Int32
   getter column : Int32
 
@@ -180,20 +180,20 @@ pub struct DebugLoc
 end
 
 pub struct GepAux
-  getter source_type : IrType   # Gep: the indexed type. Alloca: the allocated type.
+  getter source_type : IrType # Gep: the indexed type. Alloca: the allocated type.
   getter inbounds : Bool
 
   def initialize(@source_type : IrType, @inbounds : Bool = false)
   end
 end
 
-pub struct MemAux               # Load, Store, CmpXchg, AtomicRmw, Fence
+pub struct MemAux # Load, Store, CmpXchg, AtomicRmw, Fence
   getter align : Int32
   getter volatile : Bool
   getter ordering : Ordering
   getter failure_ordering : Ordering
   getter single_thread : Bool
-  getter rmw_op : String        # LLVM's atomicrmw operation name
+  getter rmw_op : String # LLVM's atomicrmw operation name
   getter weak : Bool
 
   def initialize(@align : Int32 = 0, @volatile : Bool = false, @ordering : Ordering = Ordering::NotAtomic, @failure_ordering : Ordering = Ordering::NotAtomic, @single_thread : Bool = false, @rmw_op : String = "", @weak : Bool = false)
@@ -212,22 +212,22 @@ pub struct CallAux
   end
 end
 
-pub struct AsmAux               # the callee of a Call that is inline asm
+pub struct AsmAux # the callee of a Call that is inline asm
   getter template : String
   getter constraints : String
   getter side_effects : Bool
   getter align_stack : Bool
   getter dialect : AsmDialect
-  getter unwind : Bool            # LLVM's `unwind`: the asm may throw, so its call may unwind
+  getter unwind : Bool # LLVM's `unwind`: the asm may throw, so its call may unwind
 
   def initialize(@template : String, @constraints : String, @side_effects : Bool = false, @align_stack : Bool = false, @dialect : AsmDialect = AsmDialect::Att, @unwind : Bool = false)
   end
 end
 
 pub struct IntrinsicAux
-  getter id : IntrinsicId         # closed enum in compiler/ir/intrinsics.iyi
+  getter id : IntrinsicId # closed enum in compiler/ir/intrinsics.iyi
   getter overload : Array(IrType)
-  getter param_attrs : Array(Array(Attribute))   # operand k's attributes, written as an ordinary call's are
+  getter param_attrs : Array(Array(Attribute)) # operand k's attributes, written as an ordinary call's are
 
   def initialize(@id : IntrinsicId, @overload : Array(IrType), @param_attrs : Array(Array(Attribute)) = [] of Array(Attribute))
   end

@@ -74,17 +74,17 @@ end
 # A canonical IR type. TypeTable interns every type, so equal types are the same object.
 pub class IrType
   getter kind : TypeKind
-  getter bits : Int32                # Int: 1, 8, 16, 32, 64, 128. Float: 32, 64.
-  getter address_space : Int32       # Ptr: 0; 256 (%gs) and 257 (%fs) on x86_64.
-  getter fields : Array(IrType)      # Struct
-  getter packed : Bool               # Struct
-  getter name : String?              # Struct, named
-  getter element : IrType?           # Array
-  getter count : Int64               # Array
-  getter params : Array(IrType)      # Func
-  getter ret : IrType?               # Func
-  getter varargs : Bool              # Func
-  getter key : String                # the interning key; not printed
+  getter bits : Int32           # Int: 1, 8, 16, 32, 64, 128. Float: 32, 64.
+  getter address_space : Int32  # Ptr: 0; 256 (%gs) and 257 (%fs) on x86_64.
+  getter fields : Array(IrType) # Struct
+  getter packed : Bool          # Struct
+  getter name : String?         # Struct, named
+  getter element : IrType?      # Array
+  getter count : Int64          # Array
+  getter params : Array(IrType) # Func
+  getter ret : IrType?          # Func
+  getter varargs : Bool         # Func
+  getter key : String           # the interning key; not printed
 
   def initialize(@kind : TypeKind, @bits : Int32, @address_space : Int32, @fields : Array(IrType), @packed : Bool, @name : String?, @element : IrType?, @count : Int64, @params : Array(IrType), @ret : IrType?, @varargs : Bool, @key : String, @opaque : Bool)
   end

@@ -332,8 +332,8 @@ prove_mutation "layout: an integer wider than 64 bits is 8-byte aligned, not 16"
   wide_check
 prove_mutation "printer: the Add and Sub mnemonics swap" \
   src/compiler/ir/printer.iyi \
-  '    when Op::Add then "add"' \
-  '    when Op::Add then "sub"' \
+  '    when Op::Add  then "add"' \
+  '    when Op::Add  then "sub"' \
   roundtrip_check
 prove_mutation "printer: hidden visibility is written as nothing" \
   src/compiler/ir/printer.iyi \

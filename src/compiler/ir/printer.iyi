@@ -531,24 +531,24 @@ class IrPrinter
 
   def binop_word(op : Op) : String
     case op
-    when Op::Add then "add"
-    when Op::Sub then "sub"
-    when Op::Mul then "mul"
+    when Op::Add  then "add"
+    when Op::Sub  then "sub"
+    when Op::Mul  then "mul"
     when Op::SDiv then "sdiv"
     when Op::UDiv then "udiv"
     when Op::SRem then "srem"
     when Op::URem then "urem"
-    when Op::Shl then "shl"
+    when Op::Shl  then "shl"
     when Op::LShr then "lshr"
     when Op::AShr then "ashr"
-    when Op::And then "and"
-    when Op::Or then "or"
-    when Op::Xor then "xor"
+    when Op::And  then "and"
+    when Op::Or   then "or"
+    when Op::Xor  then "xor"
     when Op::FAdd then "fadd"
     when Op::FSub then "fsub"
     when Op::FMul then "fmul"
     when Op::FDiv then "fdiv"
-    else "frem"
+    else               "frem"
     end
   end
 
