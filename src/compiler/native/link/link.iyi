@@ -19,6 +19,7 @@ import compiler/native/obj/object::{ObjectFile, ObjFormat, Section, SectionKind,
 import compiler/native/link/imports::{MachOLibs, framework_allowed, framework_path, owner_of}
 import compiler/native/link/macho_exe::{MachOExe, Executable, ExeSection, ExeSymbol, ExeBind, ExeExport, ExeDataInCode, align_to}
 import std/slice::{Slice, Bytes}
+import compiler/native/link/elf_exe::{link_elf}
 
 
 class LinkConst
@@ -1079,5 +1080,12 @@ end
 # Links the objects into an arm64 Mach-O executable. Deterministic: the same
 # objects and options give the same bytes.
 pub def link(objects : Array(ObjectFile), options : LinkOptions) : LinkedImage | LinkError
+  if objects.size > 0 && objects[0].format == ObjFormat::Elf
+    linked = link_elf(objects, options.entry)
+    if linked.is_a?(String)
+      return LinkError.new(linked.as(String))
+    end
+    return LinkedImage.new(linked.as(Bytes), Hash(String, Bytes).new)
+  end
   Linker.new(objects, options).run
 end
