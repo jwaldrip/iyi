@@ -665,6 +665,17 @@ prove_mutation "lib fun drops its varargs flag" "$MUT_SEM" \
   "record = LibFun.new(node.name, real, arg_names, false, node.return_type)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "guessed instance variables lose their defining file's imports" "$MUT_IVARS" \
+  '    program.current_imports = body.imports' \
+  '    program.current_imports = saved_imports' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "two argument pointer malloc does not infer its element type" "$MUT_IVARS" \
+  '    if obj.is_a?(Path) && obj.as(Path).names == ["Pointer"] && node.name == "malloc" && node.args.size == 2' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "lib struct takes Reference as its superclass" "$MUT_SEM" \
   "NonGenericClassType.new(@program, @current_type, node.name, @program.struct_type)" \
@@ -704,11 +715,20 @@ prove_mutation "a file's own directory is never searched for an import" "$MUT_SE
   "      roots << \"/nonexistent-root\"" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_SEM" \
-  '@pending_ivars.each do |pi|
-      next if !pi.explicit' \
-  '@pending_ivars.reversed.each do |pi|
-      next if !pi.explicit' \
+prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_IVARS" \
+  "        program.pending_ivars.each do |pi|" \
+  "        program.pending_ivars.reversed.each do |pi|" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "guessed variables are recorded before explicit variables" "$MUT_IVARS" \
+  '      [true, false].each do |explicit_pass|' \
+  '      declare_guessed(program, owners, og)
+      [true, false].each do |explicit_pass|' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "subclass declarations are processed before superclass guesses" "$MUT_IVARS" \
+  '      next unless class_depth(og.owner) == depth' \
+  '      next unless class_depth(og.owner) == max_depth - depth' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
@@ -720,12 +740,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # record (finish) and the guessed-ivar fallback (instance_vars.iyi, skipped when the ivar already exists)
 # each declare that ivar, and the pending one wins. Dropping either alone is not observable (probes: same
 # output), so the drop is not expressible on one file. This mutation is the pending path's type claim.
-prove_mutation "a typed argument's instance variable takes its restriction type" "$MUT_SEM" \
+prove_mutation "a typed argument's instance variable takes its restriction type" "$MUT_IVARS" \
   "mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)" \
-  "mv = MetaTypeVar.new(pi.name, @program.nil_type, pi.initializer)" \
+  "mv = MetaTypeVar.new(pi.name, program.nil_type, pi.initializer)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
+prove_mutation_all "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
   "return hook.virtual_of(resolved)" \
   "return resolved" \
   -- check_decl_fixtures_diverge || status=1
@@ -740,9 +760,19 @@ prove_mutation "pointer malloc and null calls do not infer instance variable typ
   '    if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "constructor guesses omit classes with subclasses" "$MUT_IVARS" \
+  '      if found && found.is_a?(NonGenericClassType)' \
+  '      if found && found.is_a?(NonGenericClassType) && found.as(NonGenericClassType).subclasses.empty?' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "typed array literals do not infer instance variable types" "$MUT_IVARS" \
   '    if node.is_a?(ArrayLiteral)' \
   '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "array literal elements do not infer instance variable types" "$MUT_IVARS" \
+  '      if literal.name.nil? && literal.of.nil?' \
+  '      if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "generic new calls do not infer instance variable types" "$MUT_IVARS" \
@@ -775,8 +805,8 @@ prove_mutation "a declared instance variable is not re-resolved once the type sy
   "nil" \
   -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "an explicit instance variable is not recorded for re-resolution" "$MUT_SEM" \
-  "@program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)" \
+prove_mutation "an explicit instance variable is not recorded for re-resolution" "$MUT_IVARS" \
+  "program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, program.current_imports)" \
   "nil" \
   -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -878,9 +908,9 @@ prove_mutation "a generic instance copies no instance variable the first time" "
   -- check_decl_fixtures_diverge || status=1
 
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a declared instance variable keeps its alias: the hook path takes the alias itself" "$MUT_SEM" \
-  "      resolved = remove_alias(lookup_type_node(restriction, owner))" \
-  "      resolved = lookup_type_node(restriction, owner)" \
+prove_mutation "a declared instance variable keeps its alias: the optional path takes the alias itself" "$MUT_SEM" \
+  "    resolved = remove_alias(found)" \
+  "    resolved = found" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance's declared variable keeps its parameter type" "$MUT_TYPES" \
