@@ -2551,7 +2551,7 @@ pub class MainVisitor < TypeNodeHost
       body_receiver = owner if owner.iyi_unit
     end
     enter_owner_scope(body_receiver)
-    result = type_method_body_in_file(target_def, body_receiver, args, block, site, cache_key)
+    result = type_method_body_in_file(target_def, body_receiver, args, block, site, cache_key, old_current_type)
     @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
@@ -2595,7 +2595,7 @@ pub class MainVisitor < TypeNodeHost
     result
   end
 
-  def type_method_body_in_file(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode?, cache_key : String?) : Type?
+  def type_method_body_in_file(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode?, cache_key : String?, writer_type : ModuleType) : Type?
     # Hosted call.cr binds the match's free variables from the call arguments,
     # including for primitive and recursive definitions with no body to visit.
     call_arg_types = [] of Type
@@ -2607,6 +2607,56 @@ pub class MainVisitor < TypeNodeHost
     if call_arg_types.size == args.size
       if free_types = FreeBindings.of_def(target_def, call_arg_types, type_node_system(@program))
         @def_free_types[target_def] = free_types unless free_types.empty?
+      end
+    end
+    # A captured block is typed in its writer before the callee body. Its output
+    # binds the match context used by the callee's body and return annotation
+    # (hosted call.cr 1259-1293, 1336-1432).
+    captured_block_type : Type? = nil
+    if target_def.uses_block_arg?
+      if blk = block
+        if ba = target_def.block_arg
+          if restriction = ba.restriction
+            if restriction.is_a?(ProcNotation)
+              notation = restriction.as(ProcNotation)
+              input_types = [] of Type
+              if inputs = notation.inputs
+                inputs.each { |input| input_types << lookup_def_return(input, rec_type, target_def) }
+              end
+              saved_vars = @vars
+              saved_type = @current_type
+              saved_imports = @program.current_imports
+              saved_import_defs = @program.current_import_defs
+              @vars = @vars.dup
+              blk.args.each_with_index do |arg, index|
+                if index < input_types.size
+                  @vars[arg.name] = input_types[index]
+                  set_type(arg, input_types[index])
+                end
+              end
+              @current_type = writer_type
+              enter_file_scope(blk)
+              blk.body.accept(self)
+              block_type = child_type(blk.body)
+              @vars = saved_vars
+              @current_type = saved_type
+              @program.current_imports = saved_imports
+              @program.current_import_defs = saved_import_defs
+              if bt = block_type
+                set_type(blk, bt)
+                if output = notation.output
+                  if free_names = target_def.free_vars
+                    bound = @def_free_types[target_def]? || Hash(String, Type).new
+                    if FreeBindings.bind(output, bt, free_names, bound)
+                      @def_free_types[target_def] = bound unless bound.empty?
+                    end
+                  end
+                end
+                captured_block_type = ProcInstanceType.new(@program, input_types, bt)
+              end
+            end
+          end
+        end
       end
     end
     body = target_def.body
@@ -2728,6 +2778,12 @@ pub class MainVisitor < TypeNodeHost
         params_typed = false
       end
       i = i + 1
+    end
+    if bt = captured_block_type
+      if ba = target_def.block_arg
+        new_vars[ba.name] = bt
+        set_type(ba, bt)
+      end
     end
     @vars = new_vars
     @scope = rec_type
