@@ -36,7 +36,7 @@ module compiler/lower/primitives
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, Generic, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, Generic, MacroLiteral, Primitive, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering}
 import compiler/lower/cast::{type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
@@ -281,7 +281,7 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   tuple_ir = low.typer.llvm_type(typ)
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   first = primitive.tuple_index
-  if node.args.size == 1 && node.args[0].is_a?(RangeLiteral)
+  if primitive.tuple_range
     result_type = low.analysed.type_of?(node)
     raise "BUG: tuple range has no result type" if result_type.nil?
     result_ir = low.typer.llvm_type(result_type.as(Type))
