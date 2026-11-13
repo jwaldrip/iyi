@@ -128,7 +128,11 @@ if [ "${splice_count:-}" != 1 ]; then
   status=1
 fi
 proc_scope_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
-echo "  sem_bodies_proc_scope.iyi typed instances: ${proc_scope_count:-none}"
+echo "  sem_bodies_proc_scope.iyi typed instances: ${proc_scope_count:-none} (expected 6)"
+if [ "${proc_scope_count:-}" != 6 ]; then
+  echo "  PROC SCOPE: expected both helper calls to be typed"
+  status=1
+fi
 
 echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
@@ -155,6 +159,8 @@ bodies_at_floor() {
   [ "${count:-}" = 3 ] || return 1
   fsc=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${fsc:-}" = 1 ] || return 1
+  proc_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
+  [ "${proc_count:-}" = 6 ] || return 1
   refused_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/bodies_refused_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${refused_count:-}" = 1 ] || return 1
   return 0
