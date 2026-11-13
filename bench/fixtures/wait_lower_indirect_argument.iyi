@@ -55,5 +55,5 @@ def consume(value : Large) : Int32
   value.value == 0_i64 ? 7 : 1
 end
 
-storage = LibC.calloc(1_u64, sizeof(Large).to_u64).as(Pointer(Large))
+storage = LibC.calloc(1_u64, 4096_u64).as(Pointer(Large))
 LibC.exit(consume(storage.value))
