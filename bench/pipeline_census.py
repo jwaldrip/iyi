@@ -694,33 +694,35 @@ def cmd_report(args: argparse.Namespace) -> int:
     naming_pairs: list[tuple[str, str, str]] = []
     silent_funcs: list[str] = []
     refused_count = 0
-    by_fn_rows: list[str] = ["hosted_name\tstatus\tfirst_shape"]
+    by_fn_rows: list[str] = ["hosted_name\tstatus\tfirst_shape\tall_shapes"]
 
     shape_funcs: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
     shape_examples: dict[tuple[str, str], list[str]] = collections.defaultdict(list)
     shape_verbatim: dict[tuple[str, str], str] = {}
     func_shapes: dict[str, set[tuple[str, str]]] = {}
+    refused_functions: set[str] = set()
 
     superset_collisions = 0
     for h in asked:
         if h in clean_asked:
             if h in census_failures:
                 superset_collisions += 1
-            by_fn_rows.append(f"{h}\tclean\t")
+            by_fn_rows.append(f"{h}\tclean\t\t")
             continue
         if h in census_failures:
             reason = census_failures[h]
             scaffold_failed.append((h, reason))
-            by_fn_rows.append(f"{h}\tscaffold\t{normalize_reason(reason)}")
+            by_fn_rows.append(f"{h}\tscaffold\t{normalize_reason(reason)}\t")
             continue
         if h in prerequisites:
             owner, reason = prerequisites[h]
-            by_fn_rows.append(f"{h}\tprerequisite\t{reason}")
+            by_fn_rows.append(f"{h}\tprerequisite\t{reason}\t")
             continue
 
         rows = refusals_by_instance.get(h, [])
         if rows:
             refused_count += 1
+            refused_functions.add(h)
             fshapes: set[tuple[str, str]] = set()
             first_shape = ""
             for _phase, owner, raw_reason in rows:
@@ -734,7 +736,8 @@ def cmd_report(args: argparse.Namespace) -> int:
                     shape_examples[sk].append(h)
                 shape_verbatim.setdefault(sk, raw_reason)
             func_shapes[h] = fshapes
-            by_fn_rows.append(f"{h}\trefused\t{first_shape}")
+            all_shapes = "|".join(f"{owner}: {shape}".replace("|", "\\|") for shape, owner in sorted(fshapes))
+            by_fn_rows.append(f"{h}\trefused\t{first_shape}\t{all_shapes}")
         elif h in instance_clean:
             pn = instance_clean[h]
             if pn != h:
@@ -747,7 +750,7 @@ def cmd_report(args: argparse.Namespace) -> int:
                 if len(shape_examples[sk]) < 3:
                     shape_examples[sk].append(h)
                 shape_verbatim.setdefault(sk, f"{h} -> {pn}")
-                by_fn_rows.append(f"{h}\tnaming\t{diff_cls}: {pn}")
+                by_fn_rows.append(f"{h}\tnaming\t{diff_cls}: {pn}\t")
             else:
                 raise RuntimeError(f"unclassified exact direct result: {h}")
         else:
@@ -759,7 +762,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             if len(shape_examples[sk]) < 3:
                 shape_examples[sk].append(h)
             shape_verbatim.setdefault(sk, instance_silent.get(h, "no direct instance result"))
-            by_fn_rows.append(f"{h}\tsilent\t{shp}")
+            by_fn_rows.append(f"{h}\tsilent\t{shp}\t")
 
     only_counts: collections.Counter[tuple[str, str]] = collections.Counter()
     for _h, sks in func_shapes.items():
@@ -786,6 +789,25 @@ def cmd_report(args: argparse.Namespace) -> int:
     if scaffold_failed:
         lines.append("")
         lines.append("== Scaffold failures by reason ==")
+        categories: collections.Counter[str] = collections.Counter()
+        for h, reason in scaffold_failed:
+            if reason.startswith("expected type, got "):
+                category = "restriction type resolution (including nested sibling types)"
+            elif "undefined method" in reason and "+" in reason:
+                category = "virtual receiver method lookup"
+            elif "expected argument" in reason or "no overload matches" in reason:
+                category = "overload argument or type match (including virtual types)"
+            elif "wrong number of arguments" in reason:
+                category = "arity or method-name parsing"
+            elif "undefined constant" in reason:
+                category = "type or declaration not found"
+            elif "metaclass" in reason:
+                category = "metaclass resolution"
+            else:
+                category = "other"
+            categories[category] += 1
+        for category, count in categories.most_common():
+            lines.append(f"  category={category} count={count}")
         sc_groups: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
         for h, r in scaffold_failed:
             sc_groups[normalize_reason(r)].append((h, r))
@@ -821,6 +843,14 @@ def cmd_report(args: argparse.Namespace) -> int:
         for ex in exs:
             lines.append(f"         e.g. {ex}")
         lines.append(f"         verbatim: {verb}")
+    lines.append("")
+    lines.append("== cumulative ==")
+    lines.append("Upper bound per row set: fixing a row can uncover another refusal in the same function.")
+    fixed: set[tuple[str, str]] = set()
+    for index, sk in enumerate(ranked_shapes[:25], start=1):
+        fixed.add(sk)
+        freed = sum(1 for h in refused_functions if func_shapes[h].issubset(fixed))
+        lines.append(f"  k={index} clean_upper_bound={len(clean_asked) + freed}")
 
     if naming_pairs:
         lines.append("")
