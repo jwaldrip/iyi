@@ -1,0 +1,9 @@
+struct AliasBuffer(T)
+  @data : Pointer(T)
+end
+
+alias AliasBytes = AliasBuffer(UInt8)
+
+class AliasHolder
+  @bytes : AliasBytes
+end
