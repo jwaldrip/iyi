@@ -14,6 +14,7 @@ bench/fixtures/semclos_literal_mutable.iyi 3
 bench/fixtures/semclos_literal_order.iyi 5
 bench/fixtures/semclos_literal_self.iyi 5
 bench/fixtures/semclos_local.iyi 3
+bench/fixtures/semclos_nullable.iyi 3
 bench/fixtures/semclos_out.iyi 3
 bench/fixtures/semclos_receiver.iyi 4
 bench/fixtures/semclos_self.iyi 6

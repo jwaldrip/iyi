@@ -1,0 +1,12 @@
+def consume(p : Proc(Int32 | Nil)) : Nil
+  nil
+end
+
+def outer(flag : Bool) : Nil
+  if flag
+    value = 7
+  end
+  consume(-> { value })
+end
+
+outer(true)

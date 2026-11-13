@@ -229,6 +229,13 @@ pub class ClosureWalk < Visitor
     if node.name == "self"
       capture_self
     else
+      if binding = @frame.resolve?(node.name)
+        if type = @visitor.type_of?(node)
+          if type.nilable? && !binding.variable.type.nilable?
+            binding.variable.type = TypeUnification.union_of(@visitor.program, [binding.variable.type, @visitor.program.nil_type] of Type)
+          end
+        end
+      end
       capture(node.name, false)
     end
     false
