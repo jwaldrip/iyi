@@ -3,12 +3,8 @@ lib LibC
   fun getpid : Int32
 end
 
-def pick_named_member(tuple) : Int32
-  tuple[:second]
-end
-
 if LibC.getpid == -1
   tuple = {first: 1_i64, second: 2}
-  LibC.exit(pick_named_member(tuple))
+  tuple
 end
 LibC.exit(0)
