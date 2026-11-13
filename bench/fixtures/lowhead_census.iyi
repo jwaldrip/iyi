@@ -1,52 +1,43 @@
-# The `headed` census (gc_layouts.cr 204-223):
-# - a plain class is headless (0)
-# - a class whose virtual type was made (`@b : Base` with a subclass) and its subclass are headed (1)
-# - members of a ReferenceUnionType (`Alpha | Beta`) and their subclasses are headed (1)
-# - a leaf class in a NilableType (`Leaf?`) is headless (0)
-# - members of a NilableReferenceUnionType (`Gamma | Delta | Nil`) are headed (1)
-class Plain
+# The `headed` mode for the whole-program census (NEEDS.md rows 26 and 27):
+#   - Rule 3a (virtual_type_made?): a candidate class whose virtual type was made, and its subclasses.
+#   - Rule 3b (program.unions): members of reference unions (through aliases too) and their subclasses.
+#   - Negative controls: an unrelated class, and a leaf class in a NilableType (Leaf?).
+class VirtBase
 end
 
-class Base
-end
-
-class Sub < Base
+class VirtSub < VirtBase
 end
 
 class Holder
-  @b : Base
+  @v : VirtBase
 
-  def initialize(@b : Base)
+  def initialize(@v : VirtBase)
   end
 end
 
-class Alpha
+class UnionBase
 end
 
-class AlphaSub < Alpha
+class UnionSub < UnionBase
 end
 
-class Beta
+class Other
 end
+
+alias OtherAlias = Other
 
 class Leaf
 end
 
-class Gamma
+class Plain
 end
 
-class Delta
-end
-
-# type: Alpha | Beta
+# type: UnionBase | OtherAlias
 # type: Leaf?
-# type: Gamma | Delta | Nil
-# type: Plain
-# type: Base
-# type: Sub
-# type: Alpha
-# type: AlphaSub
-# type: Beta
+# type: VirtBase
+# type: VirtSub
+# type: UnionBase
+# type: UnionSub
+# type: Other
 # type: Leaf
-# type: Gamma
-# type: Delta
+# type: Plain

@@ -88,6 +88,9 @@ pub class TypeInstances
     if cached = @generic_cache[key]?
       return cached.as(ProcInstanceType)
     end
+    # iyi: hosted ProcInstanceType makes the Tuple of its argument types first (types.cr 2759), so a
+    # Tuple instance is numbered by the id walk even when no written type names it.
+    tuple_of(arg_types)
     inst = ProcInstanceType.new(@program, arg_types, ret)
     @generic_cache[key] = inst
     @program.types["Proc"].as(GenericClassType).instantiated_types << inst
