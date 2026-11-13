@@ -60,12 +60,12 @@ pub class TypeRenderer
 
     if type.is_a?(PointerInstanceType)
       ptr = type.as(PointerInstanceType)
-      return "Pointer(#{render(ptr.element_type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)})"
+      return "Pointer(#{render(shown(ptr.element_type, codegen), skip_union_parens: true, generic_args: generic_args, codegen: codegen)})"
     end
 
     if type.is_a?(StaticArrayInstanceType)
       sary = type.as(StaticArrayInstanceType)
-      return "StaticArray(#{render(sary.element_type, skip_union_parens: false, generic_args: generic_args, codegen: codegen)}, #{sary.size_int})"
+      return "StaticArray(#{render(shown(sary.element_type, codegen), skip_union_parens: true, generic_args: generic_args, codegen: codegen)}, #{sary.size_int})"
     end
 
     if type.is_a?(GenericInstanceType)
