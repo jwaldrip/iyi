@@ -324,6 +324,16 @@ prove_mutation "a generic restriction with bound arguments is a class instance, 
   '          return ts.instantiate_generic(base_type.as(GenericClassType), args)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "restore the early return" "$LOOKUP_FILE" \
+  '        first_error = err if first_error.nil?' \
+  '        return Matches.new(matches_array, false, err)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a splat free variable is not bound to the splat tuple" "$MATCH_FILE" \
+  '        return MatchAttempt.none if !FreeBindings.bind(splat_restriction.as(Splat).exp, splat_tuple, free_names, bound)' \
+  '        return MatchAttempt.none if false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

@@ -1,10 +1,10 @@
 module compiler/semantic/restrictions
 
-import compiler/syntax/ast::{ASTNode, Arg, Generic, Path, Self}
-import compiler/semantic/top_level::{GenericClassType, ModuleType, Type}
+import compiler/syntax/ast::{ASTNode, Arg, Generic, Path, Self, Splat}
+import compiler/semantic/top_level::{GenericClassType, ModuleType, Type, TypeParameterType}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericInstanceType}
+import compiler/types/types::{GenericInstanceType, TypeSplat}
 
 # The answer to "what does this argument's restriction name": a type, nil when
 # the argument has no restriction, or an error message when the written type does
@@ -48,6 +48,15 @@ pub class ArgRestriction
   # MatchContext of a generic instance resolves them. Anything else is the scope's
   # own lookup.
   def self.lookup_bound(ts : TypeSystem, scope : ModuleType, node : ASTNode, owner : Type?) : Type | LookupError
+    if node.is_a?(Splat)
+      inner = ArgRestriction.lookup_bound(ts, scope, node.as(Splat).exp, owner)
+      return inner if inner.is_a?(LookupError)
+      inner_type = inner.as(Type)
+      if inner_type.is_a?(TypeParameterType)
+        return TypeSplat.new(ts.program, inner_type.as(TypeParameterType))
+      end
+      return LookupError.new("can only splat tuple type, not #{inner_type.full_name}")
+    end
     if owner.is_a?(GenericInstanceType)
       instance = owner.as(GenericInstanceType)
       return instance if node.is_a?(Self)

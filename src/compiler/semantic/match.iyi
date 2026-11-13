@@ -5,6 +5,7 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ModuleType, NoReturnType, Type}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/types/type_system::{TypeSystem}
+import compiler/types/lookup::{LookupError}
 import compiler/types/types::{NamedArgumentType}
 
 # The name, argument types, named arguments and block of a call: the hosted
@@ -129,6 +130,14 @@ pub class CallMatch
     given = signature.arg_types.size
     prefix = splat ? splat.as(Int32) : count
     return MatchAttempt.none if !splat && given > count
+    splat_types = [] of Type
+    if splat
+      si = prefix
+      while si < given
+        splat_types << signature.arg_types[si]
+        si += 1
+      end
+    end
     if free_names.size > 0
       i = 0
       while i < given && i < prefix
@@ -137,6 +146,10 @@ pub class CallMatch
           return MatchAttempt.none if !FreeBindings.bind(bind_node.as(ASTNode), signature.arg_types[i], free_names, bound)
         end
         i += 1
+      end
+      if splat && splat_restriction && splat_restriction.is_a?(Splat)
+        splat_tuple = ts.tuple_of(splat_types)
+        return MatchAttempt.none if !FreeBindings.bind(splat_restriction.as(Splat).exp, splat_tuple, free_names, bound)
       end
       j = 0
       while j < free_names.size
@@ -185,9 +198,16 @@ pub class CallMatch
     end
 
     if splat && splat_restriction
-      return MatchAttempt.failed("a restricted splat parameter is not ported")
+      splat_tuple = ts.tuple_of(splat_types)
+      found = ArgRestriction.lookup_free(ts, defining, splat_restriction.as(Splat).exp, owner, bound)
+      if found.is_a?(LookupError)
+        return MatchAttempt.failed(found.as(LookupError).message)
+      end
+      allowed = found.as(Type)
+      restricted = ts.restrict(splat_tuple, allowed)
+      return MatchAttempt.none if restricted.nil?
+      exact = false if restricted.as(Type) != splat_tuple
     end
-    # The arguments past the prefix are the splat's elements, each unrestricted.
     if splat
       while i < given
         matched << signature.arg_types[i]
