@@ -2351,6 +2351,17 @@ pub class MainVisitor < TypeNodeHost
       old_imports = @program.current_imports
       old_import_defs = @program.current_import_defs
       enter_file_scope(d)
+      # PROBE (Main, not for merge): and in the def's own type (or, for a receiver-less def of a module file, the
+      # namespace it was declared in): a restriction names what the def's file declares, whoever calls it.
+      probe_rs_type = @current_type
+      enter_owner_scope(rec_type)
+      if rec_type.is_a?(SemanticProgram)
+        if probe_rs_loc = d.location
+          if probe_rs_home = @program.probe_file_namespace["#{probe_rs_loc.filename}:#{probe_rs_loc.line_number}:#{probe_rs_loc.column_number}"]?
+            @current_type = probe_rs_home unless probe_rs_home.is_a?(SemanticProgram)
+          end
+        end
+      end
       all_args_match = true
       # PROBE (Main, not for merge): a restriction that writes one of the def's own free variables is bound
       # against the argument (FreeBindings), never looked up in the caller's scope, where a type parameter of
@@ -2383,6 +2394,7 @@ pub class MainVisitor < TypeNodeHost
         end
         i = i + 1
       end
+      @current_type = probe_rs_type
       @program.current_imports = old_imports
       @program.current_import_defs = old_import_defs
       if all_args_match
