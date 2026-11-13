@@ -518,9 +518,9 @@ prove_mutation "a module's own metaclass counted as an implementor" "$TYPER_FILE
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a builtin is a headed candidate (the primitive exclusion dropped)" "$HEADED_FILE" \
+prove_mutation "a builtin is a headed candidate (the primitive exclusion flips to true)" "$HEADED_FILE" \
   '  return false unless primitive_kind(type) == ""' \
-  '  return false if false' \
+  '  return true unless primitive_kind(type) == ""' \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -539,6 +539,18 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an unheaded candidate answers headed" "$HEADED_FILE" \
   '  return false unless headed_candidate?(type)' \
   '  return true unless headed_candidate?(type)' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "virtual-type headed census dropped" "$HEADED_FILE" \
+  '  if headed_candidate?(type) && TypeQueries.virtual_type_made?(type)' \
+  '  if false' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "reference-union headed census dropped" "$HEADED_FILE" \
+  '    next unless union.is_a?(ReferenceUnionType) || union.is_a?(NilableReferenceUnionType)' \
+  '    next' \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
