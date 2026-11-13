@@ -19,6 +19,7 @@ module compiler/lower/lower
 import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Cast, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NilableCast, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
 import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, StringInterpolation}
 import compiler/syntax/ast::{NamedTupleLiteral}
+import compiler/syntax/ast::{ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
 import compiler/syntax/ast::{TupleLiteral, Splat}
 import compiler/syntax/ast::{Case}
@@ -577,6 +578,23 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     wants = low.needs_value
     low.needs_value = false
     codegen_node(low, node.as(ModuleDef).body)
+    low.needs_value = wants
+    low.last = llvm_nil(low)
+    return
+  end
+  # Hosted codegen.cr:1228-1234 visits the bodies, not declaration paths.
+  if node.is_a?(TraitDef)
+    wants = low.needs_value
+    low.needs_value = false
+    codegen_node(low, node.as(TraitDef).body)
+    low.needs_value = wants
+    low.last = llvm_nil(low)
+    return
+  end
+  if node.is_a?(ImplDef)
+    wants = low.needs_value
+    low.needs_value = false
+    codegen_node(low, node.as(ImplDef).body)
     low.needs_value = wants
     low.last = llvm_nil(low)
     return

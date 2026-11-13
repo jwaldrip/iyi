@@ -211,9 +211,8 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union"
-# The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
-# module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union lower_trait"
+# The mutation check rebuilds the driver and compares each fixture with the hosted module.
 lower_core_check() {
   "$IYI" build -o "$WORK/port-m" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/m.build.log" 2>&1 || return 1
   "$WORK/port-m" context > "$WORK/m.ctx" 2>&1 || return 1
@@ -224,6 +223,16 @@ lower_core_check() {
   done
   return 0
 }
+if "$WORK/port" lower "$REPO/bench/fixtures/lower_trait.iyi" "$WORK/lower_trait.oracle.ll" > "$WORK/trait.out" 2>&1 &&
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/trait.out"; then
+  prove_mutation "trait declaration is not visited" "$REPO/src/compiler/lower/lower.iyi" \
+    'if node.is_a?(TraitDef)' 'if false && node.is_a?(TraitDef)' -- lower_core_check || status=1
+  prove_mutation "impl declaration is not visited" "$REPO/src/compiler/lower/lower.iyi" \
+    'if node.is_a?(ImplDef)' 'if false && node.is_a?(ImplDef)' -- lower_core_check || status=1
+else
+  echo "FAIL: trait fixture does not match the hosted module"
+  status=1
+fi
 # The long-string name: a string constant longer than 18 bytes is named by its first 19 bytes and `...` (hosted
 # codegen.cr:3463). The fixture's module differs only in the String type id (NEEDS.md row 16), so the gate
 # compares the name in the port's own module text rather than the whole module.
