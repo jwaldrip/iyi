@@ -4,7 +4,7 @@ lib LibC
 end
 
 struct Range(B, E)
-  def initialize(beginning, ending, exclusive)
+  def initialize(beginning : B, ending : E, exclusive : Bool)
   end
 end
 
