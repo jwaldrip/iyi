@@ -2915,20 +2915,22 @@ pub class MainVisitor < TypeNodeHost
 
     target_def = lookup_method_matching(rec_type, node.name, node.args, node)
     return false if target_def.nil?
-    # A positional call that leaves parameters to their defaults gets them as
-    # cloned argument nodes, one per parameter (hosted expansion; the calls slice's
-    # DefaultArguments). The new nodes are visited here; the rest were visited above.
-    if node.named_args.nil? && DefaultArguments.supported?(target_def, node.args, nil)
-      original_count = node.args.size
-      node.args = DefaultArguments.expand(target_def, node.args, nil)
-      i = original_count
-      while i < node.args.size
-        node.args[i].accept(self)
-        i = i + 1
+    # Hosted call.cr:1679-1695 instantiates the default expansion, not the
+    # default expression in the caller's scope. Cache against the original
+    # definition and the arguments supplied by the caller.
+    dkey = def_instance_key(target_def, rec_type, node)
+    if node.named_args.nil? && node.args.size < target_def.args.size && DefaultArguments.supported?(target_def, node.args, nil)
+      expanded = DefaultArguments.expand_for_call(target_def, node.args.size, nil)
+      if expanded.is_a?(String)
+        refuse_call(node, expanded)
+        return false
       end
+      expanded.at(target_def)
+      @program.copy_def_owner(target_def, expanded)
+      target_def = expanded
     end
     instantiated_def = target_def.clone
-    dkey = def_instance_key(target_def, rec_type, node)
+    @program.copy_def_owner(target_def, instantiated_def)
     body_ret : Type? = nil
     if hit = cached_instance(dkey)
       # A cached instance: the call records its clone and takes its return type. Its block breaks

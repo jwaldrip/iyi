@@ -1,0 +1,25 @@
+module bodies_default_scope_helper
+
+class DefaultToken
+  def value
+    7
+  end
+end
+
+pub class DefaultScopeReader
+  def token : DefaultToken
+    DefaultToken.new
+  end
+
+  def imported(value = DefaultToken.new)
+    value.value
+  end
+
+  def earlier(first : Int32, second = first)
+    second
+  end
+
+  def own(value = token)
+    value.value
+  end
+end

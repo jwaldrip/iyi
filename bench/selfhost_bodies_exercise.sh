@@ -295,6 +295,26 @@ prove_mutation "a proc literal inherits its enclosing scope" "$MAIN_VISITOR" \
   "    inner.scope = @scope" \
   "    inner.scope = @program" -- bodies_at_floor || status=1
 
+# A failed mutant build is not evidence that this fixture caught the mutation.
+defaults_scope_at_floor() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/default_mut_build.log" 2>&1; then
+    echo "  mutant did not build"
+    return 0
+  fi
+  local fixture="$REPO/bench/fixtures/sem_bodies_default_scope.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/default_o.txt" || return 0
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/default_p.txt" || return 0
+  local matched floor
+  matched=$(comm -12 "$WORK/default_o.txt" "$WORK/default_p.txt" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_default_scope.iyi" { print $2 }' "$FLOOR_FILE")
+  [ "$matched" -ge "${floor:-0}" ]
+}
+prove_mutation "default is cloned into the caller's arguments" "$MAIN_VISITOR" \
+  "      expanded = DefaultArguments.expand_for_call(target_def, node.args.size, nil)" \
+  "      node.args = DefaultArguments.expand(target_def, node.args, nil)
+      node.args.each { |arg| arg.accept(self) }
+      expanded = target_def" -- defaults_scope_at_floor || status=1
+
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
 leak_typed=$("$TYPED" "$REPO/bench/fixtures/bodies_scope_leak_b.iyi" "$REPO/src" 2>/dev/null | awk '$1 ~ /^5:/' | wc -l | tr -d ' ')

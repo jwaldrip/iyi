@@ -1,0 +1,6 @@
+import bodies_default_scope_helper::{DefaultScopeReader}
+
+reader = DefaultScopeReader.new
+imported = reader.imported
+earlier = reader.earlier(12)
+owner = reader.own
