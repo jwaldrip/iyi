@@ -17,7 +17,7 @@ module compiler/lower/lower
 # `next` in the same sequence is refused by name.
 
 import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Cast, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NilableCast, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
-import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, StringInterpolation}
+import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, HashLiteral, RangeLiteral, MultiAssign, Select, StringInterpolation}
 import compiler/syntax/ast::{NamedTupleLiteral}
 import compiler/syntax/ast::{ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
@@ -444,9 +444,9 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
       return
     end
   end
-  if node.is_a?(ArrayLiteral)
-    # The hosted expander lowers [] of T to Array(T).new and populated arrays
-    # to unsafe_build and indexed stores (literal_expander.cr:43-108).
+  if node.is_a?(ArrayLiteral) || node.is_a?(HashLiteral) || node.is_a?(RangeLiteral) || node.is_a?(MultiAssign) || node.is_a?(Select)
+    # Lower the expansion body typing already visited, retaining its temporaries,
+    # node identities and evaluation order.
     if expanded = low.analysed.expansions[node]?
       codegen_node(low, expanded)
       return
