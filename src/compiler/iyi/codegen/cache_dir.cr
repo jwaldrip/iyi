@@ -91,6 +91,14 @@ module Iyi
         rescue File::NotFoundError
           # Removed between the making and the opening.
           next
+        rescue ex : File::Error
+          # Or being removed right now: darwin answers "Invalid argument"
+          # for a file made in a directory that is already unlinked and not
+          # yet gone. 1,000 tests under a load average of 700 met it once,
+          # `compiler.lock: Invalid argument`, with only the case above
+          # handled. Any other error is the caller's to see.
+          raise ex unless ex.os_error == Errno::EINVAL
+          next
         end
         begin
           file.flock_exclusive
