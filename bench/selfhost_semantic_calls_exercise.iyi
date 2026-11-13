@@ -384,7 +384,7 @@ module BenchSelfhostSemanticCallsExercise
     body = indexed.as(Def).body
     return "nil" if body.is_a?(NilLiteral)
     primitive = body.as(Primitive)
-    "index=#{primitive.tuple_index},#{primitive.tuple_last}"
+    "index=#{primitive.tuple_index},#{primitive.tuple_last},range=#{primitive.tuple_range}"
   end
 
   def self.run(src : String, filename : String) : String
