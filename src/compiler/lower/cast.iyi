@@ -126,6 +126,13 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
       return
     end
   end
+  # Hosted cast.cr 279-282: a proc with another result can be assigned to a
+  # proc returning Nil without changing its function or context fields.
+  if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)
+    stored = value.type.pointer? ? to_rhs(low, value, target) : value
+    store_aligned(low, stored, pointer)
+    return
+  end
   if target.is_a?(MixedUnionType) && value_type.is_a?(MixedUnionType)
     assign_union_in_union(low, pointer, target, value_type, value)
     return
