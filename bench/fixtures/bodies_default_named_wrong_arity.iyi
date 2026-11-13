@@ -1,0 +1,5 @@
+def named_arity(value : Int32)
+  value
+end
+
+named_arity(value: 1, other: 2)

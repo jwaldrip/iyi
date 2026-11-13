@@ -334,6 +334,19 @@ else
   status=1
 fi
 
+for name in bodies_default_named_wrong_type bodies_default_named_wrong_arity; do
+  fixture="$REPO/bench/fixtures/$name.iyi"
+  if "$ORACLE" "$fixture" >"$WORK/reject_oracle.txt" 2>&1; then
+    echo "  FAIL: hosted accepted $name"
+    status=1
+  elif ! "$TYPED" "$fixture" "$REPO/src" >"$WORK/reject_port.txt" 2>&1 || ! grep -q '^untyped:' "$WORK/reject_port.txt"; then
+    echo "  FAIL: port did not report rejection for $name"
+    status=1
+  else
+    echo "  rejected by hosted and port: $name"
+  fi
+done
+
 echo
 echo "== 4c. A macro site in a def body sees the receiver's type parameters and the def's free variables"
 # Rebuilds the typed dump from the patched source and checks the macro-bindings fixture alone.

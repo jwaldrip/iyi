@@ -1,0 +1,5 @@
+def named_type(value : Int32 = 1)
+  value
+end
+
+named_type(value: "wrong")
