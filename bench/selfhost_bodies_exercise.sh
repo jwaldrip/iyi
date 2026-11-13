@@ -253,11 +253,36 @@ prove_mutation "written class types are virtualized" "$MAIN_VISITOR" \
 prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" \
   "    rec_type : Type
     if obj = node.obj
-      obj.accept(self)" \
-  "    node.args.each { |arg| arg.accept(self) }
+      obj.accept(self)
+      if ot = child_type(obj)
+        rec_type = ot
+      else
+        @needs_type_filters = saved_call_ntf
+        @type_filters = nil
+        return false
+      end
+    else
+      rec_type = @scope || @current_type
+    end
+    node.args.each do |arg|
+      arg.accept(self)
+    end" \
+  "    node.args.each do |arg|
+      arg.accept(self)
+    end
     rec_type : Type
     if obj = node.obj
-      obj.accept(self)" -- bodies_at_floor || status=1
+      obj.accept(self)
+      if ot = child_type(obj)
+        rec_type = ot
+      else
+        @needs_type_filters = saved_call_ntf
+        @type_filters = nil
+        return false
+      end
+    else
+      rec_type = @scope || @current_type
+    end" -- bodies_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
