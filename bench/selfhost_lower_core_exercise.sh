@@ -570,6 +570,20 @@ else
   awk 'NR<=8' "$WORK/interpolation.err" "$WORK/interpolation.out" "$WORK/interpolation.build.log"
   status=1
 fi
+interpolation_constant_check() {
+  "$IYI" build -o "$WORK/port-interpolation-constant" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/interpolation-constant.build.log" 2>&1 || return 1
+  "$WORK/port-interpolation-constant" lower "$REPO/bench/fixtures/lower_interpolation_constant.iyi" "$WORK/lower_interpolation_constant.oracle.ll" > "$WORK/interpolation-constant.out" 2> "$WORK/interpolation-constant.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/interpolation-constant.out"
+}
+if interpolation_constant_check; then
+  prove_mutation "a constant interpolation is not folded" "$REPO/src/compiler/lower/lower.iyi" \
+    '    if constant = interpolation_constant(low, node.as(StringInterpolation))' \
+    '    if constant = (false ? interpolation_constant(low, node.as(StringInterpolation)) : nil)' -- interpolation_constant_check || status=1
+else
+  echo "FAIL: constant interpolation fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/interpolation-constant.err" "$WORK/interpolation-constant.out" "$WORK/interpolation-constant.build.log"
+  status=1
+fi
 
 
 
