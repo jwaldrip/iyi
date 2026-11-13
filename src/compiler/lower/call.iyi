@@ -148,10 +148,23 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
   end
   if node.obj.nil? && !low.current_context.type.nil?
-    owner = implicit_owner(low, node)
-    self_type = owner
-    unless owner.nil?
-      self_value = implicit_self_value(low)
+    ct = low.current_context.type.as(Type)
+    if low.current_context.vars["self"]?.nil?
+      # A non-generic class method has no self argument. An unqualified call to
+      # another method on its own metaclass uses the same class owner.
+      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""
+        if ct.as(ModuleType).metaclass.defs[node.name]?
+          class_owner = ct
+        elsif !low.analysed.program.defs[node.name]?
+          pending_visit_node("a class method #{node.name} inherited from a superclass of #{ct.full_name} (hosted call.cr: target_def.owner is the defining type)")
+        end
+      else
+        pending_visit_node("a call to #{node.name} with no receiver inside a generic or builtin class method (hosted call.cr: prepare_call_args, the metaclass owner)")
+      end
+    else
+      owner = implicit_owner(low, node)
+      self_type = owner
+      self_value = implicit_self_value(low) unless owner.nil?
     end
   end
 
@@ -269,9 +282,8 @@ end
 
 # The owner of an implicit-self call: a call with no receiver inside an instance method (hosted call.cr:
 # prepare_call_args, `owner` is the target def's owner). The current type when it defines the method, whose self
-# the call passes; nil for a top-level def, which takes no self; a refusal otherwise. A class method's implicit
-# call is refused (its self is the class, a metaclass owner), and so is an inherited method (the hosted owner is
-# the superclass, which the port does not record).
+# the call passes; nil for a top-level def, which takes no self. An inherited method is refused
+# because the hosted owner is the superclass, which the port does not record.
 pub def implicit_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type?
   ct = low.current_context.type.as(Type)
   if low.current_context.vars["self"]?.nil?

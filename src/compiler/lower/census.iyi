@@ -687,7 +687,7 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
         reason = census_first_line(lowered.as(String))
         refused << "instance-lowering\t#{line}\t#{typed_owner(reason)}\t#{reason}"
       elsif body_t = visitor.type_of?(direct_target.body)
-        actual = mangled_name(direct_target.name, inst.self_type, inst.arg_types, body_t)
+        actual = mangled_name(direct_target.name, inst.self_type, inst.arg_types, visitor.type_of?(direct_target) || body_t)
         if fn = mod.get_function?(actual)
           if fn.declaration?
             refused << "instance-silent\t#{line}\t-\tlowering emitted declaration only"

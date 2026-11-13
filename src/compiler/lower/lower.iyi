@@ -43,7 +43,7 @@ import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
 import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
-import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
+import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
 import compiler/syntax/ast::{FunDef}
 import compiler/syntax/ast::{Annotation}
 import compiler/syntax/ast::{Asm}
@@ -58,8 +58,8 @@ import compiler/types/intersect::{TypeIntersect}
 
 # The per-def probe the typed pipeline table reads (S3Pipeline): lowers one def's function into `m` the way a call
 # that reaches it does (fun.iyi target_def_fun), for the self type and argument types the caller gives. A refusal
-# raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The return type
-# is the analysed type of the def's body, the value the body leaves; a def whose body has no analysed type raises.
+# raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The
+# instantiated def's type is its result, which can differ from the body's type.
 pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module) : String?
   low = Lowerer.new(m, typer, analysed)
   low.body_visitor = CoreBody.new
@@ -70,11 +70,12 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
   low.string_type_id = ids.type_id(program.string_type)
   body_t = analysed.type_of?(target.body)
   raise "BUG: the analysed program has no type for the body of #{target.name} (hosted codegen_fun: return type)" if body_t.nil?
+  result_t = analysed.type_of?(target) || body_t
   built : Function? = nil
   if self_type.is_a?(MetaclassType)
-    built = target_def_fun(low, target, nil, arg_types, body_t.as(Type), self_type.as(MetaclassType).instance_type)
+    built = target_def_fun(low, target, nil, arg_types, result_t.as(Type), self_type.as(MetaclassType).instance_type)
   else
-    built = target_def_fun(low, target, self_type, arg_types, body_t.as(Type))
+    built = target_def_fun(low, target, self_type, arg_types, result_t.as(Type))
   end
   fn = built.as(Function)
   errs = verify_function(m, fn)
@@ -480,13 +481,17 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(PointerOf)
-    # The hosted `visit(PointerOf)` for a local (codegen.cr:1003): the variable's own pointer, not a load. A class
-    # variable is the address of its global (class_var.iyi). Instance variables and constants are refused by name.
+    # The hosted `visit(PointerOf)` (codegen.cr:1001-1038): a local's pointer, an instance
+    # field address, or an initialized class variable's global address.
     exp = node.as(PointerOf).exp
     if exp.is_a?(Var)
       var = low.current_context.vars[exp.as(Var).name]?
       raise "BUG: variable #{exp.as(Var).name} is read before it is assigned (hosted codegen.cr: visit(PointerOf))" if var.nil?
       low.last = var.as(LowerVar).pointer
+      return
+    end
+    if exp.is_a?(InstanceVar)
+      codegen_pointerof_instance_var(low, exp.as(InstanceVar))
       return
     end
     if exp.is_a?(ClassVar)
