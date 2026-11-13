@@ -196,7 +196,7 @@ prove_mutation "a virtual receiver answers covered when it has matches" "$METHOD
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a splat parameter takes none of the arguments past its prefix" "$MATCH_FILE" \
-  "        matched << signature.arg_types[i]" \
+  "        matched << element" \
   "        i = i" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -345,8 +345,23 @@ prove_mutation "a number literal is not matched when its value fits" "$MATCH_FIL
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an inherited method's target forgets the type it was found on" "$CALL_FILE" \
-  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, single.defining)' \
-  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, nil, single.arg_types, nil)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "instantiated argument types are the written restrictions" "$CALL_FILE" \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.declared, nil)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "declared return is mistaken for the inferred body return" "$CALL_FILE" \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, instantiated)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a named splat is counted as a required positional argument" "$ERROR_FILE" \
+  '      minimum = splat if splat < minimum' \
+  '      minimum = d.args.size' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -354,6 +369,18 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic restriction does not bind free vars from the instance type arguments" "$RESTRICT_FILE" \
   '    return RestrictResult.no_match if base_type.full_name != inst.generic_type.full_name' \
   '    return RestrictResult.no_match if true' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic owner's type parameter is not bound in a pointer restriction" "$RESTRICT_FILE" \
+  '          bound = instance.type_vars[names[0]]?' \
+  '          bound = nil' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a Proc does not bind its argument tuple as T" "$REPO/src/compiler/types/types.iyi" \
+  '    vars["T"] = TupleInstanceType.new(program, @arg_types)' \
+  '    vars["T"] = TupleInstanceType.new(program, [] of Type)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

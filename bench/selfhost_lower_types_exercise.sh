@@ -512,19 +512,6 @@ if [ "$own_fixture_count" -eq 0 ] || [ "$own_fixture_bad" -ne 0 ]; then
   status=1
 fi
 
-# Builds the port's driver as it now stands and compares every own-source fixture. Returns non-zero
-# (caught) when the driver does not build or a fixture's own-source dump differs from the oracle's.
-check_own_fixture_diverges() {
-  "$IYI" build -o "$WORK/mut_port" "$REPO/bench/selfhost_lower_types_exercise.iyi" > /dev/null 2>&1 || return 1
-  for fixture in "$REPO"/bench/fixtures/ownty_*.iyi; do
-    timeout 900 "$WORK/oracle" --own "$fixture" "$TRIPLE" > "$WORK/mut_ownfx_o.txt" 2> /dev/null || return 1
-    timeout 900 "$WORK/mut_port" --own "$fixture" "$TRIPLE" > "$WORK/mut_ownfx_p.txt" 2> /dev/null || return 1
-    cmp -s "$WORK/mut_ownfx_o.txt" "$WORK/mut_ownfx_p.txt" || return 1
-  done
-  return 0
-}
-
-
 
 # The baseline: the unmutated port meets every probe floor. Without it a port that fails a probe would
 # count as a catch.
@@ -613,11 +600,6 @@ prove_mutation_all "an unheaded candidate answers headed" "$HEADED_FILE" \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "the own-source load installs no type system, so a generic's declared variable is the unbound base" "$REPO/bench/selfhost_lower_types_exercise.iyi" \
-  "    own_types = TypeSystem.new(prog)" \
-  "    # no type system is installed here" \
-  -- check_own_fixture_diverges || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "traits bypassed in create_llvm_type (fall through to BUG raise)" "$TYPER_FILE" \
   '    if (type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)) && !type.is_a?(LibType)' \

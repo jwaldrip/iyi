@@ -308,6 +308,17 @@ elsif Program.args[0] == "--lib-types"
       end
     end
   end
+elsif Program.args[0] == "--classvar-generic"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
+  type_node_system(prog)
+  holder = prog.types["ClassVarGeneric"].as(ModuleType)
+  resolver = holder.class_vars["@@resolver"].type.full_name
+  pointer = holder.class_vars["@@pointer"].type.full_name
+  maybe = holder.class_vars["@@maybe"].type.full_name
+  raise "resolver lost generic arguments: #{resolver}" unless resolver.includes?("Proc(") && resolver.includes?("Pointer(") && resolver.includes?("Int32")
+  raise "pointer lost its argument: #{pointer}" unless pointer == "Pointer(Int32)"
+  raise "nilable pointer lost its argument: #{maybe}" unless maybe.includes?("Pointer(Int32)") && maybe.includes?("Nil")
+  print "class variable generic arguments retained\n"
 elsif Program.args[0] == "--primitive-annotations"
   prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
   arithmetic = prog.types["Arithmetic"].as(ModuleType)
