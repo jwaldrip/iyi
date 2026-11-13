@@ -5,5 +5,6 @@ class MacroConstant
     VALUE
   end
 end
+
 MacroConstant.value
 nil
