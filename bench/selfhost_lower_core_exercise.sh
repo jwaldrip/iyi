@@ -94,7 +94,7 @@ for fixture in "$REPO"/bench/fixtures/lower_*.iyi; do
   name="$(basename "$fixture" .iyi)"
   # lower_headed_late is proved in section 2c against the arena prelude. The empty-prelude
   # loop names its proc Proc(Base, Base); the port, having made the virtual type, names Base+.
-  if [ "$name" = "lower_headed_late" ]; then
+  if [ "$name" = "lower_headed_late" ] || [ "$name" = "lower_probe_reuse" ]; then
     continue
   fi
   if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
@@ -435,6 +435,24 @@ fi
 prove_mutation "the headed byte is a constant chosen at the allocation" "$REPO/src/compiler/lower/primitives.iyi" \
   'load_aligned(low, low.module.types.int8, headed_global(low, t))' \
   'low.builder.const_int(low.module.types.int8, 0_i64)' -- headed_late_check || status=1
+
+probe_reuse_check() {
+  "$IYI" build -o "$WORK/port-p" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/probe.build.log" 2>&1 || return 1
+  "$WORK/port-p" probe-reuse "$REPO/bench/fixtures/lower_probe_reuse.iyi" > "$WORK/probe.out" 2>"$WORK/probe.err" || return 1
+  awk '/^callee-clean=0$/ { ok = 1 } END { exit !ok }' "$WORK/probe.out"
+}
+echo
+echo "== 2d. A failed probe does not leave a callee a later call records clean"
+if probe_reuse_check; then
+  echo "  lower_probe_reuse: the callee is not clean"
+else
+  echo "  lower_probe_reuse: the callee was recorded clean"
+  awk 'NR<=8' "$WORK/probe.err" "$WORK/probe.out" "$WORK/probe.build.log"
+  status=1
+fi
+prove_mutation "the completed-emission check dropped" "$REPO/src/compiler/lower/fun.iyi" \
+  'return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?' \
+  'return existing.as(Function)' -- probe_reuse_check || status=1
 
 echo
 echo

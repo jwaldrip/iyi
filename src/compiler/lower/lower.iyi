@@ -21,7 +21,7 @@ import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
 import compiler/ir/module::{Module}
-import compiler/ir/function::{Linkage}
+import compiler/ir/function::{Function, Linkage}
 import compiler/ir/inst::{Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -34,7 +34,8 @@ import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node, codegen_responds_to, responds_to_value}
 import compiler/lower/block::{branch_to_phi, lower_yield}
-import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun}
+import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, clear_fun_emission_done}
+import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{define_headed_bytes}
 import compiler/lower/proc::{lower_proc_literal}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, union_temp, upcast}
@@ -67,10 +68,19 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
   low.string_type_id = ids.type_id(program.string_type)
   body_t = analysed.type_of?(target.body)
   raise "BUG: the analysed program has no type for the body of #{target.name} (hosted codegen_fun: return type)" if body_t.nil?
+  built : Function? = nil
   if self_type.is_a?(MetaclassType)
-    target_def_fun(low, target, nil, arg_types, body_t.as(Type), self_type.as(MetaclassType).instance_type)
+    built = target_def_fun(low, target, nil, arg_types, body_t.as(Type), self_type.as(MetaclassType).instance_type)
   else
-    target_def_fun(low, target, self_type, arg_types, body_t.as(Type))
+    built = target_def_fun(low, target, self_type, arg_types, body_t.as(Type))
+  end
+  fn = built.as(Function)
+  errs = verify_function(m, fn)
+  unless errs.empty?
+    err = errs[0]
+    clear_fun_emission_done(m, fn.name)
+    m.remove_function(fn)
+    raise "error[#{err.kind}]: #{err.message}"
   end
   nil
 end

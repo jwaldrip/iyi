@@ -36,7 +36,7 @@ import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program, lower_def_probe}
 import compiler/lower/primitives::{primitive_name}
-import compiler/lower/fun::{mangled_name}
+import compiler/lower/fun::{mangled_name, discard_probe_functions}
 import compiler/native/driver::{compile_module}
 import compiler/native/obj/object::{ObjectFile}
 import compiler/native/link/link::{link, LinkOptions, LinkedImage, LinkError}
@@ -364,6 +364,8 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(d.body).nil?
+    before = [] of String
+    m.functions.each { |fn| before << fn.name }
     outcome = group do |g|
       task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m) }
       task.value
@@ -400,6 +402,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
       end
     end
     if failed
+      discard_probe_functions(m, before)
       bad[d.node_id] = true
       reason = first_line(message)
       key = "#{d.node_id}|#{reason}"

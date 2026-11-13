@@ -68,13 +68,59 @@ pub def visit_node(low : Lowerer, node : ASTNode) : Nil
   visitor.as(BodyVisit).visit_body(low, node)
 end
 
+# Bodies this process finished emitting, per module. A probe that dies does not mark its
+# function, so a later probe must not reuse the leftover.
+FUN_EMISSION_DONE = Hash(UInt64, Hash(String, Bool)).new
+
+pub def fun_emission_done?(m : Module, name : String) : Bool
+  per = FUN_EMISSION_DONE[m.object_id]?
+  return false if per.nil?
+  !per.as(Hash(String, Bool))[name]?.nil?
+end
+
+pub def mark_fun_emission_done(m : Module, name : String) : Nil
+  per = FUN_EMISSION_DONE[m.object_id]?
+  if per.nil?
+    made = Hash(String, Bool).new
+    FUN_EMISSION_DONE[m.object_id] = made
+    per = made
+  end
+  per.as(Hash(String, Bool))[name] = true
+end
+
+pub def clear_fun_emission_done(m : Module, name : String) : Nil
+  per = FUN_EMISSION_DONE[m.object_id]?
+  return if per.nil?
+  per.as(Hash(String, Bool)).delete(name)
+end
+
+# Drops every function a probe added. A failed probe leaves nothing a later probe can reuse.
+pub def discard_probe_functions(m : Module, before : Array(String)) : Nil
+  added = [] of Function
+  m.functions.each do |fn|
+    seen = false
+    i = 0
+    while i < before.size
+      seen = true if before[i] == fn.name
+      i += 1
+    end
+    added << fn unless seen
+  end
+  added.each do |fn|
+    clear_fun_emission_done(m, fn.name)
+    m.remove_function(fn)
+  end
+end
+
 # The hosted `target_def_fun` for a def at these self and argument types, and its return type: the
 # function already in the module when there is one, otherwise a new one, emitted now. A method's
 # self is the first parameter, of the owner's type (hosted `codegen_fun_signature_non_external`).
 pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : Function
   name = mangled_name(target.name, self_type, arg_types, ret, class_owner)
   if existing = low.module.get_function?(name)
-    return existing.as(Function)
+    return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?
+    low.module.remove_function(existing.as(Function))
+    clear_fun_emission_done(low.module, name)
   end
   params = [] of IrType
   if st = self_type
@@ -127,6 +173,7 @@ end
 # back afterwards (hosted `old_position`, `old_alloca_block`, `old_needs_value`).
 pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, class_owner : Type? = nil) : Function
   fn = declared_or_defined_fun(low, name, fn_type)
+  low.emitting[name] = true
   fn.call_convention = def_convention(name)
   fn.linkage = Linkage::Internal
   add_body_attributes(fn, low.module.triple)
@@ -167,6 +214,8 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   codegen_fun_return(low, ret_ir)
   low.finish_main_function
   low.leave_main(saved)
+  low.emitting.delete(name)
+  mark_fun_emission_done(low.module, name)
   fn
 end
 
