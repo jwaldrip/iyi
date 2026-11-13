@@ -271,7 +271,8 @@ module BenchSelfhostNormalizerExercise
       receiver_s = node.receiver ? " receiver" : ""
       abstract_s = node.abstract ? " abstract=true" : ""
       splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
-      s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}\n"
+      defer_s = node.iyi_defer? ? " iyi_defer=true" : ""
+      s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}#{defer_s}\n"
       if r = node.receiver
         s += "#{p}  receiver:\n" + dump_ast(r, indent + 2)
       end
@@ -467,7 +468,8 @@ module BenchSelfhostNormalizerExercise
       s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
       s
     when ExceptionHandler
-      s = "#{p}ExceptionHandler\n"
+      defer_s = node.iyi_defer? ? " iyi_defer=true" : ""
+      s = "#{p}ExceptionHandler#{defer_s}\n"
       s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
       if rescues = node.rescues
         rescues.each do |r|
