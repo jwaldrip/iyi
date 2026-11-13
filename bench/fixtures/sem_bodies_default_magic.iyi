@@ -1,0 +1,4 @@
+import bodies_default_magic_helper::{DefaultMagicReader}
+
+reader = DefaultMagicReader.new
+result = reader.check("message")

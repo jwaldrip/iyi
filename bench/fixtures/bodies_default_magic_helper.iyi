@@ -1,0 +1,7 @@
+module bodies_default_magic_helper
+
+pub class DefaultMagicReader
+  def check(message : String, file : String = __FILE__, line : Int32 = __LINE__, dir : String = __DIR__, ending : Int32 = __END_LINE__)
+    line
+  end
+end

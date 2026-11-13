@@ -2821,6 +2821,37 @@ pub class MainVisitor < TypeNodeHost
     refuse(node, "undefined instance variable '#{node.name}' for #{owner.full_name}")
   end
 
+  # Hosted codegen/call.cr:190-204 takes magic defaults from the call site.
+  # Keep them as ordinary typed arguments for the native lowering contract.
+  def defaults_magic_arguments(node : Call, target_def : Def) : Bool
+    i = node.args.size
+    while i < target_def.args.size
+      value = target_def.args[i].default_value
+      return false unless value.is_a?(MagicConstant)
+      magic = value.as(MagicConstant)
+      loc = magic.name == TokenKind::MAGIC_END_LINE ? node.end_location : node.location
+      literal : ASTNode
+      if magic.name == TokenKind::MAGIC_LINE || magic.name == TokenKind::MAGIC_END_LINE
+        line = loc ? loc.line_number : 0
+        literal = NumberLiteral.new(line.to_s, NumberKind::I32)
+      else
+        filename = loc ? loc.filename : "?"
+        if magic.name == TokenKind::MAGIC_DIR && loc
+          parts = filename.split("/")
+          parts.pop unless parts.empty?
+          filename = parts.join("/")
+          filename = loc.filename.starts_with?("/") ? "/" : "." if filename.empty?
+        end
+        literal = StringLiteral.new(filename)
+      end
+      literal.at(node)
+      literal.accept(self)
+      node.args << literal
+      i += 1
+    end
+    true
+  end
+
   def visit(node : Call) : Bool
     if expand_macro(node)
       return false
@@ -2928,6 +2959,12 @@ pub class MainVisitor < TypeNodeHost
       expanded.at(target_def)
       @program.copy_def_owner(target_def, expanded)
       target_def = expanded
+    end
+    if node.args.size < target_def.args.size
+      unless defaults_magic_arguments(node, target_def)
+        refuse_call(node, "not ported: omitted non-magic argument")
+        return false
+      end
     end
     instantiated_def = target_def.clone
     @program.copy_def_owner(target_def, instantiated_def)
