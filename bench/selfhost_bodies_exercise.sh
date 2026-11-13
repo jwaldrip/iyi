@@ -310,6 +310,19 @@ macro_annotations_at_floor() {
 prove_mutation "enum annotations are not supplied to macro sites" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
   "facts.annotations_known = true" \
   "facts.annotations_known = false" -- macro_annotations_at_floor || status=1
+macro_value_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_value.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  [ "$matched" -ge 9 ]
+}
+prove_mutation "a value-position macro expansion is not typed" "$MAIN_VISITOR" \
+  "    expanded.accept(self)
+    if et = child_type(expanded)" \
+  "    nil
+    if et = child_type(expanded)" -- macro_value_at_floor || status=1
 free_types_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   fixture="$REPO/bench/fixtures/sem_bodies_free_types.iyi"
