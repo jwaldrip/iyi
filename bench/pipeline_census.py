@@ -23,6 +23,7 @@ import argparse
 import collections
 import os
 import re
+import statistics
 import subprocess
 import sys
 import time
@@ -481,10 +482,13 @@ def cmd_run(args: argparse.Namespace) -> int:
             "\n".join(in_scope + out_scope) + "\n", encoding="utf-8"
         )
 
-    chunk_size = args.chunk
-    chunks = [names[i : i + chunk_size] for i in range(0, len(names), chunk_size)]
+    if args.chunk < 1:
+        raise ValueError("--chunk must be positive")
+    chunks = collections.deque(
+        names[i : i + args.chunk] for i in range(0, len(names), args.chunk)
+    )
     if not chunks:
-        chunks = [[]]
+        chunks.append([])
 
     repo_root = str(Path(__file__).resolve().parent.parent)
     env = os.environ.copy()
@@ -494,15 +498,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     merged_refusals: list[str] = []
     seen_refusals: set[str] = set()
     stats_lines = ["chunk\tcount\twall_s\tmax_rss_mb\trc"]
+    durations: list[float] = []
+    idx = 0
+    runaway_rows: list[str] = []
+    watchdog_limit_kib = 6 * 1024 * 1024
+    # A conservative initial bound until a successful chunk supplies a median.
+    initial_timeout = 3600.0
+    (outdir / "merged.names").unlink(missing_ok=True)
+    (outdir / "merged.refusals").unlink(missing_ok=True)
 
-    for idx, chunk in enumerate(chunks):
+    while chunks:
+        chunk = chunks.popleft()
         prefix = outdir / f"chunk_{idx:04d}"
         chunk_file = outdir / f"chunk_{idx:04d}.in"
         chunk_file.write_text("\n".join(chunk) + ("\n" if chunk else ""), encoding="utf-8")
         out_bin = str(prefix)
         cmd = [
-            "/usr/bin/time",
-            "-l",
             args.tool,
             args.root,
             "-o",
@@ -515,14 +526,72 @@ def cmd_run(args: argparse.Namespace) -> int:
             "--census",
             str(chunk_file),
         ]
+        names_sidecar = Path(out_bin + ".names")
+        refusals_sidecar = Path(out_bin + ".refusals")
+        names_sidecar.unlink(missing_ok=True)
+        refusals_sidecar.unlink(missing_ok=True)
         t0 = time.monotonic()
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+        deadline = 10 * statistics.median(durations) if durations else initial_timeout
+        peak_kib = 0
+        stopped = ""
+        probe_path = outdir / f"chunk_{idx:04d}.probe"
+        err_path = outdir / f"chunk_{idx:04d}.err"
+        sampler: subprocess.Popen | None = None
+        sample_path = outdir / f"chunk_{idx:04d}.sample"
+        with probe_path.open("w", encoding="utf-8") as probe, err_path.open("w", encoding="utf-8") as err:
+            proc = subprocess.Popen(cmd, env=env, stdout=probe, stderr=err)
+            while proc.poll() is None:
+                try:
+                    rss = subprocess.run(
+                        ["ps", "-o", "rss=", "-p", str(proc.pid)],
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    value = rss.stdout.strip()
+                    if value:
+                        peak_kib = max(peak_kib, int(value))
+                    if peak_kib >= 4 * 1024 * 1024 and sampler is None:
+                        with sample_path.open("w", encoding="utf-8") as sample_log:
+                            sampler = subprocess.Popen(
+                                ["sample", str(proc.pid), "5"],
+                                stdout=sample_log, stderr=subprocess.STDOUT,
+                            )
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    stopped = "watchdog: cannot measure rss"
+                if peak_kib > watchdog_limit_kib:
+                    stopped = "runaway: rss > 6 GiB"
+                elif time.monotonic() - t0 > deadline:
+                    stopped = "timeout"
+                if stopped:
+                    proc.kill()
+                    break
+                time.sleep(2)
+            proc.wait()
+        if sampler is not None:
+            try:
+                sampler.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                sampler.kill()
+                sampler.wait()
         dt = time.monotonic() - t0
-        rss_bytes = parse_max_rss_bytes(proc.stderr)
-        rss_mb = rss_bytes / (1024.0 * 1024.0)
-
-        (outdir / f"chunk_{idx:04d}.probe").write_text(proc.stdout, encoding="utf-8")
-        (outdir / f"chunk_{idx:04d}.err").write_text(proc.stderr, encoding="utf-8")
+        rss_mb = peak_kib / 1024.0
+        stats_lines.append(f"{idx}\t{len(chunk)}\t{dt:.2f}\t{rss_mb:.1f}\t{proc.returncode}\t{stopped}")
+        print(f"chunk {idx}: count={len(chunk)} wall={dt:.2f}s max_sampled_rss={rss_mb:.1f}MB rc={proc.returncode} {stopped}", flush=True)
+        idx += 1
+        if stopped:
+            if stopped.startswith("watchdog:"):
+                print(stopped, file=sys.stderr)
+                return 1
+            if len(chunk) > 1:
+                mid = len(chunk) // 2
+                chunks.appendleft(chunk[mid:])
+                chunks.appendleft(chunk[:mid])
+            elif chunk:
+                runaway_rows.append(f"census\t{chunk[0]}\tcensus\t{stopped}")
+            else:
+                print(f"Root alone exceeded watchdog: {stopped}", file=sys.stderr)
+                return 1
+            continue
+        durations.append(dt)
 
         names_sidecar = Path(out_bin + ".names")
         refusals_sidecar = Path(out_bin + ".refusals")
@@ -546,12 +615,9 @@ def cmd_run(args: argparse.Namespace) -> int:
                 if s not in seen_refusals:
                     seen_refusals.add(s)
                     merged_refusals.append(s)
-
-        stats_lines.append(f"{idx}\t{len(chunk)}\t{dt:.2f}\t{rss_mb:.1f}\t{proc.returncode}")
-        print(
-            f"chunk {idx + 1}/{len(chunks)}: count={len(chunk)} wall={dt:.2f}s max_rss={rss_mb:.1f}MB rc={proc.returncode}",
-            flush=True,
-        )
+    for row in runaway_rows:
+        if row not in seen_refusals:
+            merged_refusals.append(row)
 
     (outdir / "merged.names").write_text(
         "\n".join(sorted(merged_names)) + ("\n" if merged_names else ""),
