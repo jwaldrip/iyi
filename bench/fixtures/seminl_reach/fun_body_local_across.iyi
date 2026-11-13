@@ -1,8 +1,15 @@
-# A top-level fun with a body whose statements declare a local, then read it through a macro site.
-# The fun body is spliced in place (type_nodes.iyi visit_fun_def), and the site's expansion is parsed
-# knowing `callstack`, which the earlier statement declares (inline_macros.iyi). Without either, the
-# site is refused: `pointerof` of a name the parser reads as a call. This is the shape type nodes
-# reported as mac1.iyi.
+# A name declared before a macro block, then read through the block.
+# The site's expansion is parsed knowing that name (inline_macros.iyi, the parser's var scope).
+# A plain read of the name still types when the scope is dropped: a zero-argument call finds the
+# local the earlier assignment recorded. pointerof does not. It refuses an operand that is not
+# a local, and at the top level that refusal belongs to no def, so the gate's root-refusal count
+# rises. The fun below is the same shape inside a fun body (type_nodes.iyi visit_fun_def).
+seminl_prior = 1
+{% if true %}
+  seminl_prior_ptr = pointerof(seminl_prior)
+{% end %}
+seminl_prior_ptr
+
 @[Unsafe("a C function is not checked by the compiler")]
 fun probe_locals(argc : Int32) : Int32
   x = 1
