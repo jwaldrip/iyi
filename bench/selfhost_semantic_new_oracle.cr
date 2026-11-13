@@ -165,6 +165,12 @@ begin
       target_text = "target none"
     end
     buffer << "call #{loc.line_number}:#{loc.column_number} #{recv_text}.new(#{arg_types}) -> #{type_text(call.type?)} #{target_text}\n"
+    if result_type = call.type?
+      if result_type.is_a?(Iyi::GenericClassInstanceType) && result_type.type_vars.has_key?("T")
+        resolved = result_type.lookup_type(Iyi::Path.new(["T"]))
+        buffer << "lookup T on #{type_text(result_type)} -> #{type_text(resolved.as?(Iyi::Type))}\n"
+      end
+    end
   end
 rescue ex : Exception
   STDERR.puts "ERROR: #{ex.message.to_s.lines.first? || ""}"

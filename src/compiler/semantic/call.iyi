@@ -1,14 +1,15 @@
 module compiler/semantic/call
 
 import compiler/semantic/restrictions::{ArgRestriction}
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Def, NamedArgument, NilLiteral, NumberLiteral, Path, StringLiteral, Visibility}
+import compiler/syntax/ast::{ASTNode, Arg, BoolLiteral, Def, NamedArgument, NilLiteral, Nop, NumberLiteral, Path, Primitive, RangeLiteral, StringLiteral, SymbolLiteral, Visibility}
+import compiler/syntax/token::{NumberKind}
 import compiler/semantic/call_nodes::{CallNodes}
 import compiler/semantic/call_error::{CallFailure}
-import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
+import compiler/semantic/top_level::{Const, ModuleType, SemanticProgram, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
-import compiler/types/types::{GenericClassInstanceType, NamedArgumentType}
-import compiler/semantic/method_lookup::{MethodLookup}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, NamedArgumentType, NamedTupleInstanceType, TupleInstanceType}
+import compiler/semantic/method_lookup::{Matches, MethodLookup}
 import compiler/semantic/match::{CallSignature, Match}
 
 # The receiver and the argument types of a call: the seed of the port of
@@ -162,6 +163,132 @@ end
 # is a dispatch, answered as not ported until the bodies slice instantiates
 # several targets. Arguments are typed as CallReceiver types them.
 pub class CallRecalculation
+  # Hosted call.cr:303-307, 881-1010 and types.cr:2841-2860, 2969-2985.
+  # Nil means an ordinary lookup, a String is the hosted error, and a Def is
+  # the cached synthetic indexer. Resolve a constant in the supplied lexical scope.
+  def self.check_tuple_indexer(owner : Type, name : String, args : Array(ASTNode), ts : TypeSystem, scope : ModuleType) : Def | String | Nil
+    return nil if args.size != 1 || (name != "[]" && name != "[]?")
+    instance = owner
+    meta = false
+    if owner.is_a?(GenericClassInstanceMetaclassType)
+      instance = owner.as(GenericClassInstanceMetaclassType).instance_type
+      meta = true
+    end
+    return nil unless instance.is_a?(TupleInstanceType) || instance.is_a?(NamedTupleInstanceType)
+    arg = args[0]
+    while arg.is_a?(Path)
+      found = TypeLookup.new(ts.instances).find_path(scope, arg.as(Path), false)
+      break unless found.is_a?(Const)
+      next_arg = found.as(Const).value
+      break if next_arg == arg
+      arg = next_arg
+    end
+    first = 0
+    last = 0
+    if instance.is_a?(TupleInstanceType)
+      size = instance.as(TupleInstanceType).size
+      if arg.is_a?(NumberLiteral) && arg.as(NumberLiteral).kind == NumberKind::I32
+        first = arg.as(NumberLiteral).value.to_i
+        first += size if first < 0
+        if first < 0 || first >= size
+          if name == "[]"
+            return "index '#{arg}' out of bounds for empty tuple" if size == 0
+            return "index out of bounds for #{owner} (#{arg} not in #{-size}..#{size - 1})"
+          end
+          first = -1
+        end
+        last = first
+      elsif arg.is_a?(RangeLiteral)
+        range = arg.as(RangeLiteral)
+        from = range.from
+        if from.is_a?(NumberLiteral) && from.as(NumberLiteral).kind == NumberKind::I32
+          first = from.as(NumberLiteral).value.to_i
+          first += size if first < 0
+          if first < 0 || first > size
+            return "begin index out of bounds for #{owner} (#{from} not in #{-size}..#{size})" if name == "[]"
+            first = -1
+          end
+        elsif from.is_a?(Nop)
+          first = 0
+        else
+          return nil
+        end
+        to = range.to
+        if to.is_a?(NumberLiteral) && to.as(NumberLiteral).kind == NumberKind::I32
+          last = to.as(NumberLiteral).value.to_i
+          last += size if last < 0
+          last -= 1 if range.exclusive
+          last = -1 if last < -1
+          last = size - 1 if last >= size
+        elsif to.is_a?(Nop)
+          last = size - 1
+        else
+          return nil
+        end
+        if first >= 0 && first > last
+          first = 0
+          last = -1
+        elsif first == -1
+          last = -1
+        end
+      else
+        return nil
+      end
+    else
+      tuple = instance.as(NamedTupleInstanceType)
+      key = if arg.is_a?(StringLiteral)
+              arg.as(StringLiteral).value
+            elsif arg.is_a?(SymbolLiteral)
+              arg.as(SymbolLiteral).value
+            else
+              return nil
+            end
+      first = -1
+      tuple.entries.each_with_index do |entry, index|
+        first = index if entry.name == key
+      end
+      return "missing key '#{key}' for named tuple #{owner}" if first == -1 && name == "[]"
+      last = first
+    end
+    cache_key = "#{meta}:#{first}:#{last}"
+    cache = if instance.is_a?(TupleInstanceType)
+              instance.as(TupleInstanceType).tuple_indexers
+            else
+              instance.as(NamedTupleInstanceType).tuple_indexers
+            end
+    if existing = cache[cache_key]?
+      return existing
+    end
+    body : ASTNode = first == -1 ? NilLiteral.new : Primitive.tuple_indexer(first, last)
+    definition = Def.new("[]", [Arg.new("index")], body)
+    cache[cache_key] = definition
+    definition
+  end
+
+  # Convert every match of a dispatch into its own target. The body visitor
+  # instantiates each definition and fills return_type with its inferred type.
+  def self.targets_for_matches(matches : Matches, ts : TypeSystem, explicit : Bool) : Array(CallTarget)
+    targets = [] of CallTarget
+    matches.matches.each do |match|
+      if explicit && match.definition.visibility == Visibility::Private
+        targets << CallTarget.failed("private method '#{match.definition.name}' called for #{match.owner.to_s}")
+        next
+      end
+      ret = match.definition.return_type
+      if ret.nil?
+        targets << CallTarget.new(match.definition, match.owner, nil, true, nil, match.defining, match.arg_types, nil)
+        next
+      end
+      found = ArgRestriction.lookup_free(ts, match.defining, ret.as(ASTNode), match.owner, match.bound)
+      if found.is_a?(LookupError)
+        targets << CallTarget.failed(found.as(LookupError).message)
+      else
+        targets << CallTarget.new(match.definition, match.owner, found.as(Type), false, nil, match.defining, match.arg_types, nil)
+      end
+    end
+    targets
+  end
+
   def self.recalculate(rec_type : Type, ts : TypeSystem, prog : SemanticProgram, name : String, args : Array(ASTNode), named_args : Array(NamedArgument)?, block : Bool, explicit : Bool = false) : CallTarget
     arg_types = [] of Type
     args.each do |arg|
@@ -186,6 +313,13 @@ pub class CallRecalculation
   def self.recalculate_signature(rec_type : Type, ts : TypeSystem, signature : CallSignature, explicit : Bool, arg_nodes : Array(ASTNode)? = nil) : CallTarget
     name = signature.name
     arg_types = signature.arg_types
+    if nodes = arg_nodes
+      indexed = check_tuple_indexer(rec_type, name, nodes, ts, ts.program)
+      return CallTarget.failed(indexed) if indexed.is_a?(String)
+      if indexed.is_a?(Def)
+        return CallTarget.new(indexed.as(Def), rec_type, nil, true, nil, nil, arg_types, nil)
+      end
+    end
     matches = MethodLookup.lookup_with_autocast(rec_type, ts, signature, arg_nodes)
     return CallTarget.failed(matches.error.to_s) if matches.error
     if matches.matches.size > 1

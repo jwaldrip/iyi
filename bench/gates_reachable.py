@@ -94,6 +94,29 @@ TOOLS = {
     # in. It takes minutes per file and has no floor; the gate beside it,
     # `selfhost_semantic_calls_exercise.sh`, is what a job runs.
     "selfhost_semantic_calls_census.sh",
+    # `bash bench/selfhost_semantic_new_census.sh` asks the port for every
+    # `new` call the hosted pass typed in the compiler's own source and the
+    # prelude, holds each file's identical count against
+    # bench/selfhost_semantic_new.floor, and ranks the misses by reason: the
+    # order `new` is filled in. It builds an oracle and analyses every file
+    # of the compiler and the prelude, one process each; the gate beside it,
+    # `selfhost_semantic_new_exercise.sh`, is what a job runs.
+    "selfhost_semantic_new_census.sh",
+    # The judge of the typed pipeline. `bash bench/pipeline_judge.sh` builds
+    # the hosted IR and the port's tool from one commit and prints, for
+    # samples/iyi/hello.iyi and the compiler's own root, how many functions
+    # the hosted compiler defines that the port lowers clean under the same
+    # name; the three scripts under it print that line
+    # (`pipeline_coverage.py`), the refusals ranked by the hosted functions
+    # hidden behind each (`pipeline_frontier.py`) and the missing names by
+    # owner (`pipeline_breakdown.py`). It is a measurement that orders the
+    # work, read in src/compiler/PIPELINE.md, not a pass or a fail, and the
+    # compiler's root takes the port's tool minutes and gigabytes; the gate
+    # beside it, `selfhost_pipeline_exercise.sh`, is what a job runs.
+    "pipeline_judge.sh",
+    "pipeline_coverage.py",
+    "pipeline_frontier.py",
+    "pipeline_breakdown.py",
     # The instruments: each measures seconds or megabytes with a release
     # compiler, and most against Go or the compatibility binary beside it,
     # which a shared runner can neither build nor time - the same binary

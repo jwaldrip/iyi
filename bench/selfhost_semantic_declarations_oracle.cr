@@ -291,6 +291,32 @@ if ARGV[0]? == "--link-annotations"
   exit 0
 end
 
+if ARGV[0]? == "--lib-starstar"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  Iyi::TypeDeclarationProcessor.new(program).process(node)
+  library = program.types["LibBytes"].as(Iyi::LibType)
+  ["raw", "wrapped"].each do |name|
+    external = library.defs.not_nil![name].first.def
+    puts "lib LibBytes.#{name}: #{external.args.map(&.type).join(", ")} -> #{external.type}"
+  end
+  exit 0
+end
+
+if ARGV[0]? == "--enum-annotations"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  ["MarkedEnum", "PlainEnum"].each do |name|
+    enum_type = program.types[name].as(Iyi::EnumType)
+    puts "#{name} Flags=#{!enum_type.annotation(program.flags_annotation).nil?}"
+  end
+  exit 0
+end
+
 if ARGV[0]? == "--enum-primitives"
   path = File.expand_path(ARGV[1])
   compiler = Iyi::Compiler.new

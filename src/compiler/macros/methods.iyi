@@ -2,8 +2,9 @@ module compiler/macros/methods
 
 import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Underscore, Unless, Until, Var, While, StringBuilder}
 import compiler/syntax/token::{NumberKind}
+import compiler/syntax/parser::{Parser}
 import compiler/platform/flags::{PlatformFlags}
-import compiler/macros/ast::{MacroId, TypeNode}
+import compiler/macros/ast::{MacroId, MetaMacroVar, TypeNode}
 import compiler/macros/answers::{MacroAnswers}
 
 pub class MacroMethods
@@ -127,6 +128,7 @@ pub class MacroMethods
 
   # The hosted compiler's name for a node's class, as `class_desc` gives it.
   def self.node_class_name(node : ASTNode) : String
+    return "MetaMacroVar" if node.is_a?(MetaMacroVar)
     MacroAnswers.class_name_of(node)
   end
 
@@ -354,9 +356,49 @@ pub class MacroMethods
         return BoolLiteral.new(true)
       end
     end
+    # Hosted MetaMacroVar#interpret, methods.cr:1640-1655.
+    if rec.is_a?(MetaMacroVar) && args.empty?
+      variable = rec.as(MetaMacroVar)
+      return MacroId.new(variable.name) if method == "name"
+      if method == "type"
+        if name = variable.type_name
+          return TypeNode.new(name)
+        end
+        return NilLiteral.new
+      end
+    end
 
     if rec.is_a?(TypeNode)
       tn = rec.as(TypeNode)
+      # Hosted methods.cr:2301-2311, 2618-2640: names are identifiers and
+      # `constant` returns the constant's syntax, not its string value.
+      if facts = tn.facts
+        if facts.annotations_known && method == "annotation" && args.size == 1 && args[0].is_a?(TypeNode)
+          annotation_name = args[0].as(TypeNode).name
+          return facts.annotations[annotation_name]? || NilLiteral.new
+        end
+        if facts.constants_known && method == "constants" && args.empty?
+          names = [] of ASTNode
+          facts.constants.each_key { |name| names << MacroId.new(name) }
+          return ArrayLiteral.new(names)
+        end
+        if facts.constants_known && method == "has_constant?" && args.size == 1
+          return BoolLiteral.new(facts.constants.has_key?(to_macro_id(args[0])))
+        end
+        if facts.constants_known && method == "constant" && args.size == 1
+          if value = facts.constants[to_macro_id(args[0])]?
+            return Parser.new(value).parse
+          end
+          return NilLiteral.new
+        end
+        if facts.instance_vars_known && method == "instance_vars" && args.empty?
+          variables = [] of ASTNode
+          facts.instance_vars.each do |variable|
+            variables << MetaMacroVar.new(variable.name, variable.type_name)
+          end
+          return ArrayLiteral.new(variables)
+        end
+      end
       # `name(generic_args:)` changes only a generic type's name. The scan never
       # answers a generic type from its name (MacroSiteRef.generic), so the name
       # is the same with or without the argument.
