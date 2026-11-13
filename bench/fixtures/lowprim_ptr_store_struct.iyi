@@ -1,4 +1,4 @@
-# A pointer stores a by-value struct and returns the assigned value.
+# A pointer stores a by-value struct.
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
@@ -12,8 +12,9 @@ struct Pair
   end
 end
 
-def poke(p : Pointer(Pair), v : Pair) : Pair
+def poke(p : Pointer(Pair), v : Pair) : Nil
   p.value = v
+  nil
 end
 
 def go : Int32
