@@ -138,6 +138,19 @@ else
     status=1
   fi
 fi
+echo "== Enum member semantic type: E::B has type E"
+enum_type_expected="$WORK/enum_type_expected"
+printf '%s\n' 'E::B E' > "$enum_type_expected"
+if ! "$PORT" --enum-member-type "$REPO/bench/fixtures/semdecl_enum_member_type.iyi" > "$WORK/enum_type_actual" 2>&1 ||
+   ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected"; then
+  echo "  enum member type DIFFERS"; status=1
+fi
+printf 'first binary\nsecond binary\nthird binary\n' > "$WORK/primitive_expected"
+if ! "$PORT" --primitive-annotations "$REPO/bench/fixtures/semdecl_primitive_annotations.iyi" > "$WORK/primitive_actual" 2>&1 ||
+   ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected"; then
+  echo "  primitive annotations DIFFER"; status=1
+fi
+
 
 echo "== 2b'. Constant facts once the program is declared: constants in declaration order, the predefined constants, a class variable's owner"
 echo "  (a port-side pin: the oracle has no dump of these, so the expected lines are written by hand)"
@@ -452,6 +465,19 @@ check_lib_types_diverge() {
   cmp -s "$WORK/mut_lt.txt" "$lib_types_expected" || return 1
   return 0
 }
+check_enum_member_type_diverge() {
+  local probe="$WORK/mut_enum_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --enum-member-type "$REPO/bench/fixtures/semdecl_enum_member_type.iyi" > "$WORK/mut_enum_type" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_enum_type" "$enum_type_expected"
+}
+check_primitive_annotations_diverge() {
+  local probe="$WORK/mut_primitive_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --primitive-annotations "$REPO/bench/fixtures/semdecl_primitive_annotations.iyi" > "$WORK/mut_primitive" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_primitive" "$WORK/primitive_expected"
+}
+
 
 check_const_facts_diverge() {
   # Builds the driver as it now stands and compares the constant-facts pin. Returns non-zero (caught)
@@ -502,7 +528,7 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected" || ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected" || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
@@ -759,6 +785,16 @@ prove_mutation "an external variable's setter is not added" "$MUT_SEM" \
   "    lib_type.funs << setter_fun" \
   "    setter_fun.external_var = false" \
   -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an enum member loses its enum type" "$MUT_SEM" \
+  "    c.enum_value_type = self" \
+  "    c.enum_value_type = nil" \
+  -- check_enum_member_type_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "only the last annotation is read for a primitive" "$MUT_SEM" \
+  "    @pending_annotations.each do |ann|" \
+  "    if ann = @pending_annotations.last?" \
+  -- check_primitive_annotations_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
