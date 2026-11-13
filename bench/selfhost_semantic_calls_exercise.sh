@@ -369,6 +369,11 @@ prove_mutation "a virtual dispatch target loses its defining owner" "$CALL_FILE"
   'targets << CallTarget.new(match.definition, match.owner, found.as(Type), false, nil, nil, match.arg_types, nil)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a tuple literal index uses the wrong member" "$CALL_FILE" \
+  '    body : ASTNode = first == -1 ? NilLiteral.new : Primitive.tuple_indexer(first, last)' \
+  '    body : ASTNode = first == -1 ? NilLiteral.new : Primitive.tuple_indexer(0, 0)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # matching lane (match.iyi, restrictions.iyi)
 prove_mutation "a generic restriction does not bind free vars from the instance type arguments" "$RESTRICT_FILE" \

@@ -407,6 +407,25 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+def tuple_text(path : String, fixture : String, expr : String) : String
+  node = new_compiler.typed_node(Iyi::Compiler::Source.new(path, fixture + "\n" + expr + "\n"))
+  while node.is_a?(Iyi::Expressions)
+    node = node.expressions.last
+  end
+  body = node.as(Iyi::Call).target_def.body
+  return "nil" if body.is_a?(Iyi::NilLiteral)
+  return "normal" unless body.is_a?(Iyi::TupleIndexer)
+  index = body.index
+  if index.is_a?(Range)
+    last = index.end - (index.excludes_end? ? 1 : 0)
+    "index=#{index.begin},#{last}"
+  else
+    "index=#{index},#{index}"
+  end
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 begin
   path = ARGV[0]? || abort("usage: selfhost_semantic_calls_oracle <fixture.iyi>")
   source = File.read(path)
@@ -427,6 +446,9 @@ begin
     elsif line.starts_with?("# instance ")
       expr = line[11..].strip
       puts "#{expr} => #{instance_text(path, source, expr)}"
+    elsif line.starts_with?("# tuple ")
+      expr = line[8..].strip
+      puts "#{expr} => #{tuple_text(path, source, expr)}"
     elsif line.starts_with?("# expand ")
       expr = line[9..].strip
       puts "#{expr} => #{expand_text(program, expr)}"

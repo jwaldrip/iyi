@@ -1,10 +1,11 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, NamedArgument, Out, Path, Underscore, Var}
+import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, NamedArgument, NamedTupleLiteral, NilLiteral, Out, Path, Primitive, TupleLiteral, Underscore, Var}
 import compiler/semantic/top_level::{LibType, ModuleType, SemanticProgram, TopLevelVisitor, Type, dir_of}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/semantic/method_lookup::{MethodLookup, Matches}
 import compiler/semantic/match::{CallSignature, Match}
+import compiler/types/types::{NamedArgumentType, NamedTupleInstanceType, TupleInstanceType}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/call::{CallReceiver, CallRecalculation, CallTarget}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument}
@@ -368,6 +369,24 @@ module BenchSelfhostSemanticCallsExercise
     parts.join(",")
   end
 
+  def self.evaluate_tuple(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
+    node = Parser.new(expr, "call").parse
+    return "error: not a call" unless node.is_a?(Call)
+    call = node.as(Call)
+    owner : Type = if call.obj.is_a?(NamedTupleLiteral)
+      NamedTupleInstanceType.new(prog, [NamedArgumentType.new("a", prog.types["Int32"]), NamedArgumentType.new("b", prog.types["String"])])
+    else
+      TupleInstanceType.new(prog, [prog.types["Int32"], prog.types["String"]])
+    end
+    indexed = CallRecalculation.check_tuple_indexer(owner, call.name, call.args, ts, prog)
+    return "normal" if indexed.nil?
+    return "error: #{indexed}" if indexed.is_a?(String)
+    body = indexed.as(Def).body
+    return "nil" if body.is_a?(NilLiteral)
+    primitive = body.as(Primitive)
+    "index=#{primitive.tuple_index},#{primitive.tuple_last}"
+  end
+
   def self.run(src : String, filename : String) : String
     prog = SemanticProgram.new
     prog.search_path = search_path
@@ -397,6 +416,9 @@ module BenchSelfhostSemanticCallsExercise
       elsif line.starts_with?("# instance ")
         expr = line[11, line.bytesize - 11].strip
         out << "#{expr} => #{evaluate_instance(prog, ts, expr)}"
+      elsif line.starts_with?("# tuple ")
+        expr = line[8, line.bytesize - 8].strip
+        out << "#{expr} => #{evaluate_tuple(prog, ts, expr)}"
       elsif line.starts_with?("# expand ")
         expr = line[9, line.bytesize - 9].strip
         out << "#{expr} => #{evaluate_expand(prog, ts, expr)}"
