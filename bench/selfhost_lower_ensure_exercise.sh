@@ -95,19 +95,16 @@ fi
 
 echo '== 2. Hosted and port function bodies and native executions'
 passed=0
-failed_names=""
-for name in fallthrough value return break next block_break block_next boundary nested_loops around_yield nested nested_return invoke; do
+for name in fallthrough value return handler_return break next block_break block_next boundary nested_loops around_yield nested nested_return invoke; do
   if ! IYI_PATH="$WORK/prelude" "$IYI" build --prelude prelude --emit llvm-ir --no-debug -o "$WORK/${name}.host" "$REPO/bench/fixtures/lowens_${name}.iyi" > "$WORK/${name}.host.log" 2>&1; then
     echo "  FAIL: $name hosted compilation"
     awk 'NR <= 8 { print }' "$WORK/${name}.host.log"
-    failed_names="$failed_names $name"
     status=1
     continue
   fi
   if ! "$WORK/bridge" drop-unwind "$WORK/${name}.ll" > "$WORK/${name}.host.ir" 2> "$WORK/${name}.bridge.log"; then
     echo "  FAIL: $name unwind legalization"
     awk 'NR <= 8 { print }' "$WORK/${name}.bridge.log"
-    failed_names="$failed_names $name"
     status=1
     continue
   fi
@@ -119,7 +116,6 @@ for name in fallthrough value return break next block_break block_next boundary 
     for log in "$WORK/${name}.port.err" "$WORK/${name}.native.log"; do
       [ ! -f "$log" ] || awk 'NR <= 5 { print }' "$log"
     done
-    failed_names="$failed_names $name"
     status=1
   fi
 done
@@ -133,13 +129,14 @@ else
 fi
 
 echo '== 4. Mutation proofs'
-if [ "$passed" -eq 13 ] || { [ "$passed" -eq 12 ] && [ "$failed_names" = " invoke" ]; }; then
+if [ "$passed" -eq 14 ]; then
   file="$REPO/src/compiler/lower/ensure.iyi"
   prove_mutation 'fallthrough cleanup' "$file" 'visit_node(low, cleanup.as(ASTNode))' 'low.last = value' -- mutation_check fallthrough || status=1
   prove_mutation 'fallthrough cleanup runs twice' "$file" '    visit_node(low, cleanup.as(ASTNode))' '    visit_node(low, cleanup.as(ASTNode)); visit_node(low, cleanup.as(ASTNode))' -- mutation_check fallthrough || status=1
   prove_mutation 'exit phi preserves body value' "$file" '  phi.add(low, low.last, false)' '  phi.add(low, llvm_nil(low), false)' -- mutation_check value || status=1
   prove_mutation 'body value survives cleanup' "$file" '    low.last = value' '    low.last = low.last' -- mutation_check value || status=1
   prove_mutation 'return cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check return || status=1
+  prove_mutation 'explicit handler return cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check handler_return || status=1
   prove_mutation 'break cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check break || status=1
   prove_mutation 'next cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check next || status=1
   prove_mutation 'block break cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check block_break || status=1
