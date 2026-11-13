@@ -7,6 +7,21 @@ import compiler/macros/ast::{MacroId, TypeNode}
 import compiler/macros/answers::{MacroAnswers}
 
 pub class MacroMethods
+  # A hosted method refusal (`undefined method 'size' ...`), read once by the
+  # interpreter. Nil when the method is simply not ported.
+  @@method_error : String? = nil
+
+  def self.refuse(message : String) : Nil
+    @@method_error = message
+    nil
+  end
+
+  def self.take_error : String?
+    err = @@method_error
+    @@method_error = nil
+    err
+  end
+
   def self.truthy?(node : ASTNode) : Bool
     if node.is_a?(NilLiteral) || node.is_a?(Nop)
       false
@@ -306,6 +321,7 @@ pub class MacroMethods
     named_args : Hash(String, ASTNode)? = nil,
     block : Block? = nil,
   ) : ASTNode?
+    @@method_error = nil
     if receiver.nil?
       return nil
     end
@@ -340,11 +356,44 @@ pub class MacroMethods
     end
 
     if rec.is_a?(TypeNode)
+      tn = rec.as(TypeNode)
       # `name(generic_args:)` changes only a generic type's name. The scan never
       # answers a generic type from its name (MacroSiteRef.generic), so the name
       # is the same with or without the argument.
       if method == "name"
         return MacroId.new(rec.as(TypeNode).name)
+      end
+      # Hosted `TypeNode#size`: the type argument count of a tuple or named
+      # tuple instance. Any other type, a union included, is refused.
+      if method == "size"
+        if tn.sized
+          return NumberLiteral.new(tn.type_args.size.to_s, NumberKind::I32)
+        end
+        shown = StringBuilder.new
+        tn.to_s(shown)
+        refuse("undefined method 'size' for TypeNode of type #{shown.to_s} (must be a tuple or named tuple type)")
+        return nil
+      end
+      # Hosted TypeNode#[]: a tuple type argument by index. Out of range is nil.
+      # Any other type is refused, as size is.
+      if method == "[]"
+        if !tn.sized
+          shown = StringBuilder.new
+          tn.to_s(shown)
+          refuse("undefined method '[]' for TypeNode of type #{shown.to_s} (must be a tuple or named tuple type)")
+          return nil
+        end
+        if args.size == 1 && args[0].is_a?(NumberLiteral)
+          idx = eval_int(args[0]).to_i32
+          if idx < 0
+            idx = tn.type_args.size + idx
+          end
+          if idx >= 0 && idx < tn.type_args.size
+            return TypeNode.new(tn.type_args[idx])
+          end
+          return NilLiteral.new
+        end
+        return NilLiteral.new
       end
       return nil
     end
@@ -450,6 +499,17 @@ pub class MacroMethods
           keys << entry.key
         end
         return ArrayLiteral.new(keys)
+      when "[]"
+        if args.size == 1
+          i = 0
+          while i < hash.entries.size
+            if ast_equal?(hash.entries[i].key, args[0])
+              return hash.entries[i].value
+            end
+            i = i + 1
+          end
+          return NilLiteral.new
+        end
       end
       return nil
     end
