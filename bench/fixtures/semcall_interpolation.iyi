@@ -14,12 +14,12 @@ end
 # error String.interpolation("a", 1, "b", true, 2)
 # call ProbeErr.pick("a")
 
-def later(x : Int32) : T forall T
+def boom(x : Int32, *ys, z : Int32) : Int32
   x
 end
 
-def later(x : Int32) : Int32
+def boom(x : Int32) : Int32
   x
 end
 
-# call later(1)
+# call boom(1)
