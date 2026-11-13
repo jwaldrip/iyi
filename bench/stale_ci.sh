@@ -37,6 +37,13 @@ if [ ! -x "$IYI" ]; then
   fi
 fi
 
+# The commands below assert receipt hits, misses and fresh checks: compiler-path
+# outcomes. A cheap test would skip that check, so the effort rule is off.
+# A fresh runner holds no costs; this pins the meaning. It is not a credential,
+# so assert-export-env still passes.
+export IYI_STALE_EFFORT=off
+
+
 # 1. assert-export-env: verifies the export step environment holds no secrets or token
 assert_export_env() {
   echo "== Asserting export environment is clean (no secrets or tokens) =="

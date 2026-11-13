@@ -24,6 +24,9 @@ export IYI_CACHE_DIR="$CACHE"
 # RG10: every fast serve these rows make is also checked against the compiler's
 # own answer. The rows that measure the unaudited fast path unset it themselves.
 export IYI_STALE_FAST_AUDIT=1
+# Rows 1 to 59 prove the compiler check. A cheap test would skip that check, so
+# the effort rule is off here. Rows 60 to 68 unset it and prove that rule.
+export IYI_STALE_EFFORT=off
 
 if [ ! -x "$IYI" ]; then
   echo "iyi compiler not found at $IYI" >&2
@@ -46,7 +49,14 @@ tests = [test for test in json.load(sys.stdin)["tests"] if os.path.basename(test
 if len(tests) != 1:
     sys.exit("stale_tests: %s appears %d times in the document" % (name, len(tests)))
 value = tests[0].get(field)
-print("" if value is None else value)
+if value is None:
+    print("")
+elif value is True:
+    print("true")
+elif value is False:
+    print("false")
+else:
+    print(value)
 ' "$1" "$2"; }
 
 # A same-size edit that puts the file's mtime back. The size and mtime stamps
@@ -64,6 +74,124 @@ with open(path, "w") as handle:
     handle.write(text.replace(old, new))
 os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
 ' "$@"
+}
+
+# The basic fixture: a reached definition, an unreached one, and a test which
+# does not load the module. Later rows rewrite $WORK/basic, so each effort row
+# gets its own copy.
+write_basic() {
+  mkdir -p "$1/lib"
+  cat > "$1/lib/util.iyi" <<'IYI'
+module lib/util
+pub def used(x : Int32) : Int32
+  x + 1
+end
+pub def unused(x : Int32) : Int32
+  x * 100
+end
+IYI
+  cat > "$1/reached_test.iyi" <<'IYI'
+import lib/util::{used}
+assert used(1) == 2
+IYI
+  cat > "$1/other_test.iyi" <<'IYI'
+assert 1 + 1 == 2
+IYI
+}
+
+# The record under DIR/KIND whose test.path is TEST, or nothing. Two matches
+# is a broken store, not a choice.
+store_match() {
+  python3 -c '
+import json, os, sys
+root, kind, test = sys.argv[1:4]
+folder = os.path.join(root, kind)
+found = []
+if os.path.isdir(folder):
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            doc = json.load(open(path))
+        except ValueError:
+            continue
+        recorded = doc.get("test") or {}
+        if recorded.get("path") == test:
+            found.append(path)
+if len(found) > 1:
+    sys.exit("stale_tests: %d %s records for %s" % (len(found), kind, test))
+print(found[0] if found else "")
+' "$@"
+}
+
+# Rewrites that effort record's costs to BUILD, RUN and CHECK seconds. A
+# recording run writes the record; this only replaces the costs the decision
+# reads. Cheap is 0 0 10. Dear is 0 5 0.001. No matching record is a failure:
+# a row that seeds costs must not pass on an absent record.
+seed_costs() {
+  python3 -c '
+import json, os, sys
+root, test, build, run, check = sys.argv[1:6]
+folder = os.path.join(root, "effort")
+found = []
+if os.path.isdir(folder):
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            doc = json.load(open(path))
+        except ValueError:
+            continue
+        recorded = doc.get("test") or {}
+        if recorded.get("path") == test:
+            found.append((path, doc))
+if len(found) != 1:
+    sys.exit("stale_tests: seed_costs found %d effort records for %s" % (len(found), test))
+path, doc = found[0]
+costs = doc.get("costs")
+if not isinstance(costs, dict):
+    doc["costs"] = {}
+    costs = doc["costs"]
+costs["build"] = float(build)
+costs["run"] = float(run)
+costs["check"] = float(check)
+with open(path, "w") as handle:
+    json.dump(doc, handle)
+    handle.write("\n")
+' "$@"
+}
+
+# sha256 of every file under a records directory, one "relpath digest" line.
+# A run that writes or rewrites a receipt changes this.
+records_digest() {
+  python3 -c '
+import hashlib, os, sys
+root = sys.argv[1]
+rows = []
+if os.path.isdir(root):
+    for dirpath, _, names in os.walk(root):
+        for name in names:
+            path = os.path.join(dirpath, name)
+            if not os.path.isfile(path):
+                continue
+            digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+            rows.append("%s %s" % (os.path.relpath(path, root), digest))
+print("\n".join(sorted(rows)))
+' "$1"
+}
+
+# --cached --json with the effort rule on. The first argument "off" also
+# unsets the audit: under it every served test is compiled, so check "run",
+# check "inputs" and builds counts are not the unaudited path.
+effort_json() {
+  if [ "${1:-}" = "off" ]; then
+    shift
+    (unset IYI_STALE_EFFORT IYI_STALE_FAST_AUDIT; run_json "$@")
+  else
+    (unset IYI_STALE_EFFORT; run_json "$@")
+  fi
 }
 
 
@@ -1552,4 +1680,244 @@ expect_eq "$(printf '%s' "$row59_contradicted" | json_cached)" 0 "a contradicted
 expect_eq "$(printf '%s' "$row59_contradicted" | json_test read_test.iyi check)" compiler "a contradicted receipt is checked by the compiler"
 expect_contains "$(printf '%s' "$row59_contradicted" | json_test read_test.iyi check_reason)" "a contradicted receipt validates" "the check names the contradiction"
 
-echo "stale_tests PASSED: rows 1-59 are covered; rows 23-24 are CI-only"
+# Row 60 mutation proof: a run without a check that writes or restamps a fast
+# record, or records a receipt, leaves the fast record in place or changes
+# records/. Unaudited: this row counts compiler processes.
+step 60 "a cheap reached edit runs without a check and writes nothing servable"
+write_basic "$WORK/r60"
+rm -rf "$CACHE/tests-v1"
+effort_json off "$WORK/r60" . >/dev/null
+seed_costs "$CACHE/tests-v1" reached_test.iyi 0 0 10
+[ -n "$(store_match "$CACHE/tests-v1" fast reached_test.iyi)" ] || fail "the recording run wrote no fast record"
+row60_receipts="$(records_digest "$CACHE/tests-v1/records")"
+[ -n "$row60_receipts" ] || fail "the recording run wrote no receipts"
+printf '%s\n' "$(cat "$WORK/r60/lib/util.iyi")" | sed 's/x + 1/x + 2 - 1/' > "$WORK/r60/lib/util.next"
+mv "$WORK/r60/lib/util.next" "$WORK/r60/lib/util.iyi"
+row60="$(effort_json off "$WORK/r60" .)"
+expect_eq "$(printf '%s' "$row60" | json_test reached_test.iyi check)" run "the cheap reached edit runs without a check"
+expect_eq "$(printf '%s' "$row60" | json_test reached_test.iyi effort)" cheap "the decision read the seeded costs as cheap"
+expect_eq "$(printf '%s' "$row60" | json_test reached_test.iyi status)" pass "the run without a check passes"
+expect_eq "$(printf '%s' "$row60" | json_failed)" 0 "both tests pass"
+expect_eq "$(printf '%s' "$row60" | json_field builds)" 1 "the build without a check is the only compiler process"
+[ -z "$(store_match "$CACHE/tests-v1" fast reached_test.iyi)" ] || fail "the run without a check left a fast record"
+expect_eq "$(records_digest "$CACHE/tests-v1/records")" "$row60_receipts" "the run without a check writes no receipt"
+
+# Row 61 mutation proof: if the run without a check never writes owed, the next
+# unchanged run is run again. Unaudited except the last command, which is the
+# audit of the serve the owed check restored.
+step 61 "the next unchanged run pays the owed check, then serves"
+write_basic "$WORK/r61"
+rm -rf "$CACHE/tests-v1"
+effort_json off "$WORK/r61" . >/dev/null
+seed_costs "$CACHE/tests-v1" reached_test.iyi 0 0 10
+printf '%s\n' "$(cat "$WORK/r61/lib/util.iyi")" | sed 's/x + 1/x + 2 - 1/' > "$WORK/r61/lib/util.next"
+mv "$WORK/r61/lib/util.next" "$WORK/r61/lib/util.iyi"
+effort_json off "$WORK/r61" . >/dev/null
+row61_explain="$WORK/r61/explain.txt"
+effort_json off "$WORK/r61" --explain . > "$row61_explain"
+expect_eq "$(explained "$row61_explain" json | json_test reached_test.iyi check)" compiler "the settled run pays the owed check"
+expect_eq "$(explained "$row61_explain" json | json_test reached_test.iyi effort)" owed "the settled run is the owed check"
+expect_contains "$(explained "$row61_explain" lines)" "miss" "the owed check is a miss"
+expect_contains "$(explained "$row61_explain" lines)" "lib/util.iyi" "the owed check names the edited module"
+expect_contains "$(explained "$row61_explain" lines)" "owed since it ran without a check" "the owed check says why it ran"
+row61_after="$(effort_json off "$WORK/r61" .)"
+expect_eq "$(printf '%s' "$row61_after" | json_field builds)" 0 "the run after the owed check starts no compiler"
+expect_eq "$(printf '%s' "$row61_after" | json_cached)" 2 "the run after the owed check serves both tests"
+set +e
+row61_audit="$( (cd "$WORK/r61" && unset IYI_STALE_EFFORT && IYI_STALE_FAST_AUDIT=1 "$IYI" test --cached --json . >/dev/null) )"
+row61_audit_status=$?
+set -e
+expect_eq "$row61_audit_status" 0 "an audited serve agrees with the compiler"
+
+# Row 62 mutation proof: if settled ignores seen, the second changed run is a
+# compiler check. Unaudited, because check "run" is the unaudited path.
+step 62 "a cheap test keeps running without a check while its inputs keep changing"
+write_basic "$WORK/r62"
+rm -rf "$CACHE/tests-v1"
+effort_json off "$WORK/r62" . >/dev/null
+seed_costs "$CACHE/tests-v1" reached_test.iyi 0 0 10
+printf '%s\n' "$(cat "$WORK/r62/lib/util.iyi")" | sed 's/x + 1/x + 2 - 1/' > "$WORK/r62/lib/util.next"
+mv "$WORK/r62/lib/util.next" "$WORK/r62/lib/util.iyi"
+row62a="$(effort_json off "$WORK/r62" .)"
+expect_eq "$(printf '%s' "$row62a" | json_test reached_test.iyi check)" run "the first changed run builds without a check"
+printf '%s\n' "$(cat "$WORK/r62/lib/util.iyi")" | sed 's/x + 2 - 1/x + 3 - 2/' > "$WORK/r62/lib/util.next"
+mv "$WORK/r62/lib/util.next" "$WORK/r62/lib/util.iyi"
+row62b="$(effort_json off "$WORK/r62" .)"
+expect_eq "$(printf '%s' "$row62b" | json_test reached_test.iyi check)" run "a still-changing run is not settled"
+row62c="$(effort_json off "$WORK/r62" .)"
+expect_eq "$(printf '%s' "$row62c" | json_test reached_test.iyi check)" compiler "the settled run pays the owed check"
+expect_eq "$(printf '%s' "$row62c" | json_test reached_test.iyi effort)" owed "the settled run is owed"
+row62_checks="$(python3 -c '
+import json, sys
+count = 0
+for raw in sys.argv[1:]:
+    for test in json.loads(raw)["tests"]:
+        if test.get("check") == "compiler":
+            count += 1
+print(count)
+' "$row62a" "$row62b" "$row62c")"
+expect_eq "$row62_checks" 1 "one compiler check over the three runs"
+
+# Row 63 mutation proof: an inverted comparison, or dear treated as cheap,
+# runs without a check and does not hit the receipt.
+step 63 "a dear unreached edit is still a compiler check and a receipt hit"
+write_basic "$WORK/r63"
+rm -rf "$CACHE/tests-v1"
+effort_json "$WORK/r63" . >/dev/null
+seed_costs "$CACHE/tests-v1" reached_test.iyi 0 5 0.001
+printf '%s\n' "$(cat "$WORK/r63/lib/util.iyi")" | sed 's/x \* 100/x * 200/' > "$WORK/r63/lib/util.next"
+mv "$WORK/r63/lib/util.next" "$WORK/r63/lib/util.iyi"
+row63="$(effort_json "$WORK/r63" .)"
+expect_eq "$(printf '%s' "$row63" | json_test reached_test.iyi check)" compiler "a dear test is checked by the compiler"
+expect_eq "$(printf '%s' "$row63" | json_test reached_test.iyi cached)" true "the unreached edit still hits its receipt"
+expect_eq "$(printf '%s' "$row63" | json_test reached_test.iyi effort)" dear "the decision read the seeded costs as dear"
+
+# Row 64 mutation proof: unknown treated as cheap runs without a check and
+# leaves no measured check.
+step 64 "a test with no effort record is checked, and the check is recorded"
+write_basic "$WORK/r64"
+rm -rf "$CACHE/tests-v1"
+effort_json "$WORK/r64" . >/dev/null
+rm -rf "$CACHE/tests-v1/effort"
+printf '%s\n' "$(cat "$WORK/r64/lib/util.iyi")" | sed 's/x + 1/x + 2 - 1/' > "$WORK/r64/lib/util.next"
+mv "$WORK/r64/lib/util.next" "$WORK/r64/lib/util.iyi"
+row64="$(effort_json "$WORK/r64" .)"
+expect_eq "$(printf '%s' "$row64" | json_test reached_test.iyi check)" compiler "no timing known is a compiler check"
+expect_eq "$(printf '%s' "$row64" | json_test reached_test.iyi effort)" unknown "a missing record is unknown"
+row64_effort="$(store_match "$CACHE/tests-v1" effort reached_test.iyi)"
+[ -n "$row64_effort" ] || fail "the compiler check wrote no effort record"
+python3 -c '
+import json, sys
+check = (json.load(open(sys.argv[1])).get("costs") or {}).get("check")
+if not isinstance(check, (int, float)) or not check > 0:
+    sys.exit("stale_tests: recorded check is %r, not > 0" % (check,))
+' "$row64_effort"
+
+# Row 65 mutation proof: a failed run that skips revocation leaves a receipt
+# the reverted edit can hit, so the next run is not a contradicted check.
+# Unaudited: check "run" is the unaudited path.
+step 65 "a failed run without a check revokes the receipt that still validates"
+write_basic "$WORK/r65"
+rm -rf "$CACHE/tests-v1"
+effort_json off "$WORK/r65" . >/dev/null
+seed_costs "$CACHE/tests-v1" reached_test.iyi 0 0 10
+printf '%s\n' "$(cat "$WORK/r65/lib/util.iyi")" | sed 's/x + 1/x + 3/' > "$WORK/r65/lib/util.next"
+mv "$WORK/r65/lib/util.next" "$WORK/r65/lib/util.iyi"
+set +e
+row65_fail="$(effort_json off "$WORK/r65" .)"
+row65_fail_status=$?
+set -e
+expect_eq "$row65_fail_status" 1 "the broken assert fails the run"
+expect_eq "$(printf '%s' "$row65_fail" | json_test reached_test.iyi check)" run "the cheap failure runs without a check"
+expect_eq "$(printf '%s' "$row65_fail" | json_test reached_test.iyi effort)" cheap "the failure was the cheap path"
+expect_eq "$(printf '%s' "$row65_fail" | json_test reached_test.iyi status)" fail "the test failed"
+expect_eq "$(printf '%s' "$row65_fail" | json_failed)" 1 "one test failed"
+printf '%s\n' "$(cat "$WORK/r65/lib/util.iyi")" | sed 's/x + 3/x + 1/' > "$WORK/r65/lib/util.next"
+mv "$WORK/r65/lib/util.next" "$WORK/r65/lib/util.iyi"
+row65_back="$(effort_json off "$WORK/r65" .)"
+expect_eq "$(printf '%s' "$row65_back" | json_test reached_test.iyi check)" compiler "the reverted edit is checked, not served"
+expect_contains "$(printf '%s' "$row65_back" | json_test reached_test.iyi check_reason)" "a contradicted receipt validates" "the check names the revoked receipt"
+
+# Row 66 mutation proof: no fallback leaves check "run". Unaudited: builds
+# counts the failed build and the compiler check, and a serve would be compiled
+# under the audit.
+step 66 "a cheap build that fails falls back to the compiler and revokes nothing"
+write_basic "$WORK/r66"
+rm -rf "$CACHE/tests-v1"
+effort_json off "$WORK/r66" . >/dev/null
+seed_costs "$CACHE/tests-v1" reached_test.iyi 0 0 10
+cat > "$WORK/r66/reached_test.iyi" <<'IYI'
+import lib/util::{used}
+assert used(1) == "two"
+IYI
+set +e
+row66="$(effort_json off "$WORK/r66" .)"
+set -e
+expect_eq "$(printf '%s' "$row66" | json_test reached_test.iyi check)" compiler "a failed build without a check falls back"
+expect_eq "$(printf '%s' "$row66" | json_test reached_test.iyi effort)" unbuilt "the fallback is unbuilt"
+expect_eq "$(printf '%s' "$row66" | json_test reached_test.iyi status)" "does not build" "the type error does not build"
+expect_eq "$(printf '%s' "$row66" | json_field builds)" 2 "the failed build and the compiler check both count"
+cat > "$WORK/r66/reached_test.iyi" <<'IYI'
+import lib/util::{used}
+assert used(1) == 2
+IYI
+row66_fixed="$(effort_json off "$WORK/r66" .)"
+expect_eq "$(printf '%s' "$row66_fixed" | json_test reached_test.iyi cached)" true "the receipt still hits once the type error is gone"
+case "$(printf '%s' "$row66_fixed" | json_test reached_test.iyi check_reason)" in
+  *contradicted*) fail "the type-error fallback contradicted a receipt" ;;
+esac
+
+# Row 67 mutation proof: owing unconditionally makes the second unchanged run
+# a compiler check. The clock accessor is row 10's fixture: the run passes and
+# is not reusable, so a compiler run can leave a fast record and no receipt.
+# Unaudited: check "run" is the unaudited path.
+step 67 "a cheap unservable test owes a check only after its inputs change"
+mkdir -p "$WORK/r67"
+cat > "$WORK/r67/clock_test.iyi" <<'IYI'
+import std/time::{Time}
+assert Time.monotonic.total_nanoseconds >= 0
+IYI
+rm -rf "$CACHE/tests-v1"
+row67_record="$(effort_json off "$WORK/r67" clock_test.iyi)"
+expect_eq "$(printf '%s' "$row67_record" | json_cached)" 0 "the clock fixture is not served"
+expect_contains "$row67_record" "clock" "the clock accessor is the reason it is not reusable"
+seed_costs "$CACHE/tests-v1" clock_test.iyi 0 0 10
+row67a="$(effort_json off "$WORK/r67" clock_test.iyi)"
+expect_eq "$(printf '%s' "$row67a" | json_test clock_test.iyi check)" run "the first cheap run builds without a check"
+row67b="$(effort_json off "$WORK/r67" clock_test.iyi)"
+expect_eq "$(printf '%s' "$row67b" | json_test clock_test.iyi check)" run "a matched unservable pass runs without a check again"
+row67_effort="$(store_match "$CACHE/tests-v1" effort clock_test.iyi)"
+[ -n "$row67_effort" ] || fail "the runs wrote no effort record"
+python3 -c '
+import json, sys
+owed = json.load(open(sys.argv[1])).get("owed", "missing")
+if owed is not None:
+    sys.exit("stale_tests: a matched unservable pass wrote owed")
+' "$row67_effort"
+cat > "$WORK/r67/clock_test.iyi" <<'IYI'
+import std/time::{Time}
+assert Time.monotonic.total_nanoseconds > -1
+IYI
+row67_edit="$(effort_json off "$WORK/r67" clock_test.iyi)"
+expect_eq "$(printf '%s' "$row67_edit" | json_test clock_test.iyi check)" run "the edited clock fixture still runs without a check"
+row67_owed="$(effort_json off "$WORK/r67" clock_test.iyi)"
+expect_eq "$(printf '%s' "$row67_owed" | json_test clock_test.iyi check)" compiler "the settled run after the edit pays the owed check"
+expect_eq "$(printf '%s' "$row67_owed" | json_test clock_test.iyi effort)" owed "the settled run after the edit is owed"
+
+# Row 68 mutation proof: an ignored variable still runs without a check, a
+# bogus value exits 0, or the snapshot carries costs or effort.
+step 68 "the effort switch is off, refused when bogus, and not exported"
+write_basic "$WORK/r68"
+rm -rf "$CACHE/tests-v1"
+effort_json "$WORK/r68" . >/dev/null
+seed_costs "$CACHE/tests-v1" reached_test.iyi 0 0 10
+printf '%s\n' "$(cat "$WORK/r68/lib/util.iyi")" | sed 's/x + 1/x + 2 - 1/' > "$WORK/r68/lib/util.next"
+mv "$WORK/r68/lib/util.next" "$WORK/r68/lib/util.iyi"
+row68="$( (cd "$WORK/r68" && IYI_STALE_EFFORT=off "$IYI" test --cached --json .) )"
+expect_eq "$(printf '%s' "$row68" | json_test reached_test.iyi check)" compiler "off restores the compiler check"
+expect_eq "$(printf '%s' "$row68" | json_test reached_test.iyi effort)" "" "off reports no effort label"
+set +e
+row68_bogus="$( (cd "$WORK/r68" && IYI_STALE_EFFORT=bogus "$IYI" test --cached --json . 2>&1) )"
+row68_bogus_status=$?
+set -e
+expect_eq "$row68_bogus_status" 1 "IYI_STALE_EFFORT=bogus is refused"
+expect_contains "$row68_bogus" "IYI_STALE_EFFORT" "the refusal names the variable"
+(cd "$WORK/r68" && IYI_CI_PRODUCER=1 "$IYI" test --fresh --json --export-index "audit:row68=$WORK/r68/snapshot.json" . >/dev/null)
+python3 -c '
+import json, sys
+def walk(value, found):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in ("costs", "effort"):
+                found.append(key)
+            walk(child, found)
+    elif isinstance(value, list):
+        for child in value:
+            walk(child, found)
+found = []
+walk(json.load(open(sys.argv[1])), found)
+if found:
+    sys.exit("stale_tests: snapshot holds " + ", ".join(sorted(set(found))))
+' "$WORK/r68/snapshot.json"
+
+echo "stale_tests PASSED: rows 1-68 are covered; rows 23-24 are CI-only"

@@ -199,7 +199,11 @@ def run_single_program(item):
     env = dict(os.environ,
                IYI_CACHE_DIR=p_cache,
                CRYSTAL_CACHE_DIR=p_cache,
-               IYI_PATH=f"{repo}/src:{repo}/samples/iyi:{p_scratch}")
+               IYI_PATH=f"{repo}/src:{repo}/samples/iyi:{p_scratch}",
+               # The census measures the compiler check. A recorded cost would
+               # otherwise let a cheap test skip it. A fresh runner holds no
+               # costs, so this pins the meaning.
+               IYI_STALE_EFFORT='off')
 
     # 1. Fresh test run
     t0 = time.time()

@@ -308,6 +308,9 @@ jobs:
       - name: Export fresh run receipts
         env:
           IYI_CI_PRODUCER: "1"
+          # Fresh export is the compiler path. A recorded cost must not change
+          # what this step writes. A fresh runner holds no costs; this pins it.
+          IYI_STALE_EFFORT: "off"
         shell: bash
         run: |
           bash bench/stale_ci.sh assert-export-env
@@ -477,6 +480,10 @@ jobs:
 
       - name: All producer receipts hit on a fresh runner
         shell: bash
+        env:
+          # These hits are compiler-path receipt hits. Off pins that, even on a
+          # runner that holds no recorded costs.
+          IYI_STALE_EFFORT: "off"
         run: |
           mapfile -t tests < <(find samples/iyi -maxdepth 1 -type f -name '*.iyi' -print | sort)
           .build/iyi test --cached --json \
@@ -492,6 +499,8 @@ jobs:
         id: shadow_audit
         env:
           IYI_CI_PRODUCER: "1"
+          # The fresh execution this step compares is the compiler path.
+          IYI_STALE_EFFORT: "off"
         shell: bash
         run: |
           bash bench/stale_ci.sh assert-export-env

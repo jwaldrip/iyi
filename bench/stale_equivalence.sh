@@ -55,6 +55,11 @@ if [ -n "${IYI_PROOF_EVIDENCE_DIR:-}" ]; then
     exit 1
   fi
 fi
+# The RG5 cached audit asserts receipt hits and misses, which are compiler-path
+# outcomes. A cheap test would skip that check, so the effort rule is off.
+# A fresh runner holds no costs; this pins the meaning.
+export IYI_STALE_EFFORT=off
+
 run_rg2() {
   echo "== Running RG2: equivalence under observation (-Diyi_observe with IYI_OBSERVE) =="
   "$PY" -c "

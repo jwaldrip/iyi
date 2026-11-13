@@ -15,6 +15,8 @@ is made of:
   module      one library module edited, which some tests import
   unreached   a shared file edited in a def no test reaches
   reached     a shared file edited in a def every test reaches
+  settle      nothing edited since reached
+  rest        nothing edited since settle
 
 For each it prints the wall time of `iyi test` and of `iyi test --cached`,
 how many tests the cached run served from receipts, and how many it should
@@ -34,13 +36,16 @@ test would have: the input to deciding which tests are worth checking at
 all.
 
 A tool, not a gate: it prints seconds, and a shared runner's seconds are
-weather. Exits non-zero if a run failed or served a wrong number of tests.
-`--audit` sets IYI_STALE_FAST_AUDIT=1 on the cached runs, so every fast serve
-is also checked against the compiler's own answer. `--expect-faster` also
-requires the unchanged cached run to start no compiler and to be quicker than
-plain. The `builds` column counts the compiler processes a cached run started,
-and `reasons` counts the tests whose check gave a reason; a dash means the
-compiler does not report it yet.
+weather. Exits non-zero if a run failed, served a wrong number of tests, or
+broke an effort-path count below. It sets no IYI_STALE_EFFORT: it measures
+the default. `--audit` sets IYI_STALE_FAST_AUDIT=1 on the cached runs, so
+every fast serve is also checked against the compiler's own answer.
+`--expect-faster` also requires the unchanged cached run to start no compiler
+and to be quicker than plain, and the unreached and reached cached runs to
+take under 1.5 times plain with `ran` above 0. The `builds` column counts the
+compiler processes a cached run started, `checks` counts tests whose check was
+the compiler, and `ran` is the report's count of tests run without a check. A
+dash means the compiler does not report that column yet.
 """
 import argparse
 import json
@@ -52,7 +57,7 @@ import tempfile
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SCENARIOS = ["record", "unchanged", "leaf", "module", "unreached", "reached"]
+SCENARIOS = ["record", "unchanged", "leaf", "module", "unreached", "reached", "settle", "rest"]
 MODULUS = 1000003
 
 
@@ -178,6 +183,14 @@ def suite_run(compiler, mode, cwd, env):
         # The compiler processes this run started, from the JSON's `builds`.
         # None from a compiler that does not report it yet, which the table shows as a dash.
         "builds": data.get("builds"),
+        # Tests whose check was the compiler. None when the report has no `check`
+        # field yet, which the table shows as a dash rather than a false zero.
+        "checks": (sum(1 for test in tests if test.get("check") == "compiler")
+                   if any("check" in test for test in tests) else None),
+        # Tests run without a check, from the report's `ran`. None when that
+        # field is absent: the table shows a dash, and does not invent the count.
+        "ran": data.get("ran") if "ran" in data else None,
+        "unbuilt": sum(1 for test in tests if test.get("effort") == "unbuilt"),
         # Tests whose check gave a reason. A check served from the recorded inputs
         # gives none, so this counts the checks that ran the compiler.
         "check_reasons": sum(1 for test in tests if test.get("check_reason")),
@@ -221,7 +234,7 @@ def main():
     parser.add_argument("--audit", action="store_true",
                         help="set IYI_STALE_FAST_AUDIT=1 on cached runs: each fast serve must agree with the compiler check")
     parser.add_argument("--expect-faster", action="store_true",
-                        help="exit 1 unless the unchanged cached run starts no compiler and is quicker than plain")
+                        help="exit 1 unless unchanged starts no compiler and is quicker than plain, and unreached and reached stay under 1.5 times plain with ran above 0")
     args = parser.parse_args()
 
     wanted = [name for name in args.scenarios.split(",") if name]
@@ -260,11 +273,13 @@ def main():
     recorded = False
     # --audit checks each fast serve against the compiler's own answer (RG10); plain runs never set it.
     cached_env = dict(env, IYI_STALE_FAST_AUDIT="1") if args.audit else env
-    header = f"{'scenario':10s} {'plain':>9s} {'--cached':>9s} {'ratio':>7s} {'served':>7s} {'should':>7s} {'builds':>7s} {'reasons':>8s}  note"
+    header = f"{'scenario':10s} {'plain':>9s} {'--cached':>9s} {'ratio':>7s} {'served':>7s} {'should':>7s} {'builds':>7s} {'checks':>7s} {'ran':>7s} {'reasons':>8s}  note"
     print(header)
 
     def edit(name):
         """Applies the scenario's edit and returns how many tests it should rerun."""
+        if name in ("settle", "rest"):
+            return 0
         if name == "leaf":
             suite.seeds[0] += 1
             suite.write_test(0)
@@ -307,7 +322,7 @@ def main():
                 notes.append(f"{label}: {result['passed']} passed, {result['failed']} failed")
                 wrong.append(f"{name}: {label} run passed {result['passed']} of {args.tests}: {result['not_passing']}")
         served = cached.get("served", 0)
-        if "error" not in cached and name != "record":
+        if "error" not in cached and name != "record" and name != "settle":
             if served > should_serve:
                 notes.append("served a test it should have rerun")
                 wrong.append(f"{name}: served {served}, at most {should_serve} are unchanged")
@@ -317,9 +332,13 @@ def main():
         mode = "--fresh" if name == "record" else "--cached"
         builds = cached.get("builds")
         builds_text = "-" if builds is None else str(builds)
+        checks = cached.get("checks")
+        checks_text = "-" if checks is None else str(checks)
+        ran = cached.get("ran")
+        ran_text = "-" if ran is None else str(ran)
         reasons_text = str(cached["check_reasons"]) if "check_reasons" in cached else "-"
         print(f"{name:10s} {plain['wall']:8.1f}s {cached['wall']:8.1f}s {ratio:6.1f}x {served:7d} {should_serve:7d} "
-              f"{builds_text:>7s} {reasons_text:>8s}  " + (f"({mode}) " if name == "record" else "") + "; ".join(notes), flush=True)
+              f"{builds_text:>7s} {checks_text:>7s} {ran_text:>7s} {reasons_text:>8s}  " + (f"({mode}) " if name == "record" else "") + "; ".join(notes), flush=True)
         report["scenarios"][name] = {"plain": plain, "cached": cached, "should_serve": should_serve, "mode": mode}
         if args.json:
             with open(args.json, "w", encoding="utf-8") as handle:
@@ -342,6 +361,60 @@ def main():
         report["per_test_note"] = "plain seconds are measured with several tests running at once, cached checks one at a time"
         print("  (plain tests run several at once and cached checks one at a time, so the two columns are not the same load)")
 
+
+    def expected_builds(cached):
+        # A test that is not served starts one compiler. An unbuilt one started
+        # a build without a check and then the compiler check, so it counts again.
+        # Under the audit every serve is also compiled (runner.cr fast_verdict
+        # returns early only when the audit is off), which the unaudited formula
+        # does not include.
+        served = cached.get("served", 0)
+        expected = (args.tests - served) + cached.get("unbuilt", 0)
+        if args.audit:
+            expected += served
+        return expected
+
+    for name, scenario in report["scenarios"].items():
+        if name == "record":
+            continue
+        cached = scenario.get("cached") or {}
+        if "error" in cached or cached.get("builds") is None:
+            continue
+        expected = expected_builds(cached)
+        if cached.get("builds") != expected:
+            wrong.append(
+                f"{name}: builds {cached.get('builds')}, expected {expected} "
+                "(non-served tests plus the unbuilt ones"
+                + (", plus one compiler per audited serve" if args.audit else "")
+                + ")"
+            )
+
+    if "settle" in report["scenarios"]:
+        settle = report["scenarios"]["settle"].get("cached") or {}
+        reached = report["scenarios"].get("reached", {}).get("cached") or {}
+        if "error" not in settle:
+            reached_checks = reached.get("checks")
+            if "reached" not in report["scenarios"] or reached_checks is None:
+                wrong.append("settle: reached did not report how many tests it checked")
+            elif settle.get("served", 0) > reached_checks:
+                wrong.append(
+                    f"settle: served {settle.get('served', 0)}, more than the {reached_checks} tests reached checked"
+                )
+
+    if "rest" in report["scenarios"]:
+        rest = report["scenarios"]["rest"].get("cached") or {}
+        if "error" not in rest:
+            if rest.get("served") != args.tests:
+                wrong.append(f"rest: served {rest.get('served')}, not every test")
+            # Unaudited, rest starts no compiler. Under the audit each serve is compiled.
+            if not args.audit:
+                if rest.get("builds") != 0:
+                    wrong.append(f"rest: started {rest.get('builds')!r} compiler processes, not 0")
+            elif rest.get("builds") != args.tests:
+                wrong.append(
+                    f"rest under audit started {rest.get('builds')!r} compilers, not one per served test"
+                )
+
     if args.expect_faster:
         unchanged = report["scenarios"].get("unchanged")
         if unchanged is None:
@@ -350,8 +423,28 @@ def main():
             plain_wall, cached_wall = unchanged["plain"]["wall"], unchanged["cached"]["wall"]
             if not cached_wall < plain_wall:
                 wrong.append(f"--expect-faster: unchanged cached run took {cached_wall:.1f}s, plain took {plain_wall:.1f}s")
-            if unchanged["cached"].get("builds") != 0:
-                wrong.append(f"--expect-faster: unchanged cached run started {unchanged['cached'].get('builds')!r} compiler processes, not 0")
+            # Unaudited, an unchanged serve starts no compiler. Under the audit
+            # each of those serves is compiled, so the count is the suite.
+            unchanged_builds = unchanged["cached"].get("builds")
+            expected_unchanged = args.tests if args.audit else 0
+            if unchanged_builds != expected_unchanged:
+                wrong.append(
+                    f"--expect-faster: unchanged cached run started {unchanged_builds!r} compiler processes, not {expected_unchanged}"
+                )
+            for name in ("unreached", "reached"):
+                scenario = report["scenarios"].get(name)
+                if scenario is None:
+                    wrong.append(f"--expect-faster: the {name} scenario did not run")
+                    continue
+                plain_wall = scenario["plain"]["wall"]
+                cached_wall = scenario["cached"]["wall"]
+                if not cached_wall < 1.5 * plain_wall:
+                    wrong.append(
+                        f"--expect-faster: {name} cached run took {cached_wall:.1f}s, plain took {plain_wall:.1f}s"
+                    )
+                ran = scenario["cached"].get("ran")
+                if not isinstance(ran, int) or ran <= 0:
+                    wrong.append(f"--expect-faster: {name} ran is {ran!r}, not above 0")
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as handle:
