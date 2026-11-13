@@ -86,7 +86,7 @@ if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/uninstantiat
   if "$WORK/port" lower "$generic_fixture" "$WORK/uninstantiated.oracle.ll" > "$WORK/uninstantiated.out" 2> "$WORK/uninstantiated.err"; then
     echo "  uninstantiated generic: unexpectedly lowered"
     status=1
-  elif awk 'index($0, "the receiver of new is the uninstantiated generic Range(B, E).class: typing has not instantiated the owner") { found = 1 } END { exit !found }' "$WORK/uninstantiated.err"; then
+  elif awk 'index($0, "the receiver of probe is the uninstantiated generic Range(B, E).class: typing has not instantiated the owner") { found = 1 } END { exit !found }' "$WORK/uninstantiated.err"; then
     echo "  uninstantiated generic: typing gap identified"
   else
     echo "  uninstantiated generic: unexpected refusal: $(awk 'NR==1' "$WORK/uninstantiated.err")"

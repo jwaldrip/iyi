@@ -1,5 +1,6 @@
 struct Range(B, E)
-  def initialize(@begin : B, @end : E, @exclusive : Bool)
+  def self.probe(value : Int32) : Int32
+    value
   end
 end
 
@@ -7,5 +8,4 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-range = Range.new(0, 1, false)
-LibC.exit(0)
+LibC.exit(Range.probe(7))
