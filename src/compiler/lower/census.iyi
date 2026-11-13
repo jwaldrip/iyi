@@ -528,6 +528,19 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
     visitor.in_type_args = 0
     prog.current_imports = Hash(String, Type).new
     prog.current_import_defs = Hash(String, Array(Def)).new
+    # Lookup restrictions in the declaration's file and owner scope, rather than
+    # the synthetic caller's empty imports. The resolved target still goes through
+    # the visitor's ordinary overload matching and body typing.
+    lookup_owner : Type = prog
+    if receiver_type = synth_vars["__census_r"]?
+      lookup_owner = receiver_type
+    end
+    candidates = [] of Def
+    visitor.collect_candidate_defs(lookup_owner, spec.method_name, candidates, Set(String).new)
+    unless candidates.empty?
+      visitor.enter_file_scope(candidates[0])
+      visitor.enter_owner_scope(lookup_owner)
+    end
 
     refusals_before = visitor.refusals.size
     stack_before = visitor.typing_stack.size
