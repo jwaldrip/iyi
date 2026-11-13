@@ -4,7 +4,7 @@ import compiler/foundation/location::{Location}
 import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
-import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, ExternalVar, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
@@ -45,6 +45,12 @@ pub abstract class Type
   # a type argument, so a union loses its outer parentheses.
   def arg_full_name : String
     full_name
+  end
+
+  # The type with a virtual wrapper removed. The hosted printer calls this unless
+  # it is printing an IR name. A type that is not virtual is itself.
+  def devirtualize : Type
+    self
   end
 
   # Records a place this type is declared, as the hosted pass does (`attach_doc`).
@@ -384,8 +390,12 @@ pub abstract class ModuleType < NamedType
       i = 0
       while i < l.size
         if same_def_signature?(l[i], a_def)
+          old = l[i]
+          a_def.previous = old
+          old.next = a_def
           l[i] = a_def
           replaced = true
+          break
         end
         i = i + 1
       end
@@ -394,14 +404,16 @@ pub abstract class ModuleType < NamedType
   end
 
   def same_def_signature?(a : Def, b : Def) : Bool
+    # A splat is a different overload: `push(value)` does not replace `push(*values)`.
+    # Hosted compare_strictness keeps both. Text of the restriction is not enough.
+    return false unless a.splat_index == b.splat_index
+    a_double = a.double_splat
+    b_double = b.double_splat
+    return false if a_double.nil? != b_double.nil?
     return false unless a.args.size == b.args.size
     i = 0
     while i < a.args.size
-      ra = a.args[i].restriction
-      rb = b.args[i].restriction
-      ta = ra ? ra.to_s : ""
-      tb = rb ? rb.to_s : ""
-      return false unless ta == tb
+      return false unless restrictions_match?(a.args[i].restriction, b.args[i].restriction)
       i = i + 1
     end
     # A block parameter is part of the signature: `fetch(key)` and `fetch(key, &block)` are two overloads.
@@ -410,11 +422,40 @@ pub abstract class ModuleType < NamedType
     if ab.nil? || bb.nil?
       return ab.nil? && bb.nil?
     end
-    ba_r = ab.restriction
-    bb_r = bb.restriction
-    ba_t = ba_r ? ba_r.to_s : ""
-    bb_t = bb_r ? bb_r.to_s : ""
-    ba_t == bb_t
+    restrictions_match?(ab.restriction, bb.restriction)
+  end
+
+  # Hosted compare_strictness (restrictions.cr old_restriction_of?) keeps two defs
+  # unless restriction_of? holds both ways. A single-name path that is a type
+  # variable of this generic does not resolve (path_lookup.cr GenericType
+  # #lookup_path_item returns nil), so `T` does not replace another `T`. A
+  # concrete path still matches by text.
+  def restrictions_match?(ra : ASTNode?, rb : ASTNode?) : Bool
+    if ra.nil? || rb.nil?
+      return ra.nil? && rb.nil?
+    end
+    if unbound_owner_type_var?(ra) || unbound_owner_type_var?(rb)
+      return false
+    end
+    ra.to_s == rb.to_s
+  end
+
+  def unbound_owner_type_var?(node : ASTNode) : Bool
+    return false unless node.is_a?(Path)
+    path = node.as(Path)
+    return false unless path.names.size == 1
+    return false if path.global
+    if vars = generic_type_vars
+      return vars.includes?(path.names[0])
+    end
+    false
+  end
+
+  # Type variables of the generic this def is added to. Nil on a non-generic.
+  # A metaclass answers its instance type's variables, because `self.new` is
+  # added there (hosted add_def of the expanded new).
+  def generic_type_vars : Array(String)?
+    nil
   end
 
   def add_macro(a_macro : Macro) : Nil
@@ -549,6 +590,14 @@ pub class MetaclassType < ClassType
     @instance_type.is_a?(ClassType) && !@struct
   end
 
+  def generic_type_vars : Array(String)?
+    inst = @instance_type
+    if inst.is_a?(ModuleType)
+      return inst.as(ModuleType).generic_type_vars
+    end
+    nil
+  end
+
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @instance_type : Type)
     super(program, namespace, name)
     # The hosted rule: a class's metaclass inherits from its superclass's metaclass, an
@@ -662,6 +711,10 @@ pub class GenericClassType < ClassType
     end
     super(name)
   end
+
+  def generic_type_vars : Array(String)?
+    @type_vars
+  end
 end
 
 pub class NonGenericModuleType < ModuleType
@@ -687,6 +740,12 @@ pub class LibFun
   # same names (`resolve_declared_types`).
   property owner : ModuleType? = nil
   property imports : Hash(String, Type)? = nil
+  # iyi: an external variable's getter or setter (hosted External#external_var?).
+  # The primitive name is external_var_get or external_var_set. The dump does not
+  # print these; body typing and primitives lowering read them.
+  property external_var : Bool = false
+  property thread_local : Bool = false
+  property primitive : String? = nil
 
   def varargs? : Bool
     @varargs
@@ -826,6 +885,10 @@ pub class GenericModuleType < ModuleType
     end
     super(name)
   end
+
+  def generic_type_vars : Array(String)?
+    @type_vars
+  end
 end
 
 pub class TraitType < ModuleType
@@ -853,12 +916,18 @@ pub class GenericTraitType < TraitType
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String))
     super(program, namespace, name)
   end
+
+  def generic_type_vars : Array(String)?
+    @type_vars
+  end
 end
 
 pub class Const < NamedType
   property value : ASTNode
   property declared_type : ASTNode?
   property value_source : String?
+  # Enum member constants have the enum's type, not their integer storage type.
+  property enum_value_type : Type? = nil
   # iyi: whether a read of this constant was typed, and whether a pointerof of it was lowered (hosted
   # Const#used and pointer_read). The analysis and the lowering set them.
   property used : Bool = false
@@ -905,6 +974,7 @@ pub class EnumType < ModuleType
 
   def add_member(name : String, val_node : ASTNode) : Const
     c = Const.new(@program, self, name, val_node)
+    c.enum_value_type = self
     @types[name] = c
     @members[name] = c
     c
@@ -1644,7 +1714,22 @@ pub class SemanticProgram < NonGenericModuleType
       lookup_type_path?(node.as(Path), current_type)
     elsif node.is_a?(Generic)
       g = node.as(Generic)
-      lookup_type_node?(g.name, current_type)
+      base_type = lookup_type_node?(g.name, current_type)
+      return nil unless base_type
+      if hook = @merge_hook
+        if base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
+          if plain_generic?(g, base_type)
+            type_args = [] of Type
+            g.type_vars.each do |t|
+              arg = lookup_type_node?(t, current_type)
+              return nil unless arg
+              type_args << arg
+            end
+            return hook.instantiate_type(base_type, type_args)
+          end
+        end
+      end
+      base_type
     elsif node.is_a?(Union)
       u = node.as(Union)
       resolved = [] of Type
@@ -1870,11 +1955,14 @@ pub class PendingIvar
   property name : String
   property restriction : ASTNode
   property initializer : ASTNode?
-  # An explicit `@x : T` is typed by T's virtual type (hosted declare_instance_var).
+  # An explicit `@x : T` or initialize-arg `@x` is typed by T's virtual type (hosted
+  # declare_instance_var / type_guess_visitor check_can_be_stored).
   property virtual : Bool
+  # Only an explicit `@x : T` declaration overrides an initialize-argument guess for the same ivar.
+  property explicit : Bool
   property imports : Hash(String, Type)? = nil
 
-  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false)
+  def initialize(@owner : ModuleType, @name : String, @restriction : ASTNode, @initializer : ASTNode? = nil, @virtual : Bool = false, @explicit : Bool = false)
   end
 end
 
@@ -1930,10 +2018,10 @@ pub class TopLevelVisitor < Visitor
     # variable that exists.
     explicit = [] of String
     @pending_ivars.each do |found|
-      explicit << "#{found.owner.full_name} #{found.name}" if found.virtual
+      explicit << "#{found.owner.full_name} #{found.name}" if found.explicit
     end
     @pending_ivars.each do |pi|
-      next if !pi.virtual && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
+      next if !pi.explicit && explicit.includes?("#{pi.owner.full_name} #{pi.name}")
       if imports = pi.imports
         @program.current_imports = imports
       else
@@ -1999,12 +2087,6 @@ pub class TopLevelVisitor < Visitor
     i = 0
     while i < node.expressions.size
       exp = node.expressions[i]
-      if exp.is_a?(Def) && i > 0 && node.expressions[i - 1].is_a?(Annotation)
-        ann = node.expressions[i - 1].as(Annotation)
-        if ann.path.names.last == "Primitive"
-          primitive_body(exp.as(Def), ann)
-        end
-      end
       exp.accept(self)
       i = i + 1
     end
@@ -2557,6 +2639,19 @@ pub class TopLevelVisitor < Visitor
         none_def = Def.new("none?", return_type: Path.new("Bool"))
         none_def.location = node.location
         enum_type.add_def(none_def)
+      elsif user_none = enum_type.defs["none?"]?
+        # Hosted generates none? first. The user's def then replaces it and
+        # add_def keeps the generated def as previous. The body was visited
+        # first here, so link that generated def onto the one already recorded.
+        generated_none = Def.new("none?", return_type: Path.new("Bool"))
+        generated_none.location = node.location
+        i = 0
+        while i < user_none.size
+          user = user_none[i]
+          user.previous = generated_none
+          generated_none.next = user
+          i = i + 1
+        end
       end
       if enum_type.members["All"]?.nil?
         all_value = 0_i64
@@ -2573,6 +2668,18 @@ pub class TopLevelVisitor < Visitor
         predicate = Def.new(pname, return_type: Path.new("Bool"))
         predicate.location = node.location
         enum_type.add_def(predicate)
+      else
+        if user_preds = enum_type.defs[pname]?
+          generated = Def.new(pname, return_type: Path.new("Bool"))
+          generated.location = node.location
+          i = 0
+          while i < user_preds.size
+            user = user_preds[i]
+            user.previous = generated
+            generated.next = user
+            i = i + 1
+          end
+        end
       end
     end
 
@@ -2834,9 +2941,52 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
+  # A lib external variable `$v : T` (hosted type_declaration_visitor.cr:95-120).
+  # The lib type gains a getter `v` and a setter `v=`, both External defs there.
+  # Recorded as LibFun so the declaration dump prints them the way the oracle
+  # prints an External (real_name, varargs, no body). Not ported: check_allowed_in_lib
+  # and the Void refusal, the same skip as a C struct field.
+  def visit(node : ExternalVar) : Bool
+    unless @current_type.is_a?(LibType)
+      raise("can only declare an external variable inside a lib")
+    end
+    lib_type = @current_type.as(LibType)
+    annotations = @pending_annotations
+    @pending_annotations = [] of Annotation
+    thread_local = false
+    annotations.each do |ann|
+      thread_local = true if ann.path.names.last == "ThreadLocal"
+    end
+    real = node.real_name || node.name
+    var_type = @program.lookup_type_node(node.type_spec, lib_type)
+
+    getter_fun = LibFun.new(node.name, real, [] of String, false, nil)
+    getter_fun.location = node.location
+    getter_fun.owner = lib_type
+    getter_fun.imports = @program.current_imports
+    getter_fun.external_var = true
+    getter_fun.thread_local = thread_local
+    getter_fun.primitive = "external_var_get"
+    getter_fun.resolved_return = var_type
+
+    setter_fun = LibFun.new("#{node.name}=", real, ["value"], false, nil)
+    setter_fun.location = node.location
+    setter_fun.owner = lib_type
+    setter_fun.imports = @program.current_imports
+    setter_fun.external_var = true
+    setter_fun.thread_local = thread_local
+    setter_fun.primitive = "external_var_set"
+    setter_fun.resolved_return = var_type
+    setter_fun.arg_types << var_type
+
+    lib_type.funs << getter_fun
+    lib_type.funs << setter_fun
+    false
+  end
+
   # Only the typedefs of a lib are registered here. Its funs and C structs are
-  # recorded by visit(FunDef) and visit(CStructOrUnionDef); external variables
-  # fall through to the default visit.
+  # recorded by visit(FunDef) and visit(CStructOrUnionDef); an external variable
+  # by visit(ExternalVar).
   def visit(node : TypeDef) : Bool
     if @current_type.types[node.name]?
       raise("#{node.name} is already defined")
@@ -2852,6 +3002,9 @@ pub class TopLevelVisitor < Visitor
 
   def visit(node : Def) : Bool
     # iyi: an annotation before a def belongs to the def, not to a later class variable.
+    @pending_annotations.each do |ann|
+      primitive_body(node, ann) if ann.path.names.last == "Primitive"
+    end
     @pending_annotations = [] of Annotation
     target_type : ModuleType
 
@@ -2882,7 +3035,7 @@ pub class TopLevelVisitor < Visitor
       node.args.each do |arg|
         if arg.name.starts_with?("@")
           if r = arg.restriction
-            @pending_ivars << PendingIvar.new(@current_type, arg.name, r)
+            @pending_ivars << PendingIvar.new(@current_type, arg.name, r, nil, true)
           end
         end
       end
@@ -2904,7 +3057,7 @@ pub class TopLevelVisitor < Visitor
             node.args.each do |arg|
               if arg.name == vname
                 if r = arg.restriction
-                  @pending_ivars << PendingIvar.new(@current_type, ivar_name, r)
+                  @pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, true)
                 end
               end
             end
@@ -2978,7 +3131,7 @@ pub class TopLevelVisitor < Visitor
         raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
       end
       ivar_name = node.var.as(InstanceVar).name
-      @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value, true)
+      @pending_ivars << PendingIvar.new(@current_type, ivar_name, node.declared_type, node.value, true, true)
     elsif node.var.is_a?(ClassVar)
       if @current_type.is_a?(SemanticProgram)
         raise("can't use class variables at the top level")
@@ -3205,6 +3358,9 @@ pub def dump_def(d : Def, io : String::Builder, indent : String) : Nil
               "nil"
             end
   io << indent << "  return_type: " << ret_str << "\n"
+  if prev = d.previous
+    io << indent << "  previous: " << prev.name << "\n"
+  end
 end
 
 pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil
