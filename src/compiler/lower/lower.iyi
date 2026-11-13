@@ -46,7 +46,7 @@ import compiler/lower/ensure::{lower_exception_handler, execute_ensures_until, s
 import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, clear_fun_emission_done}
 import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{iyi_gc_arena?}
-import compiler/lower/gc_layouts::{define_gc_layouts}
+import compiler/lower/gc_table::{define_gc_layouts}
 import compiler/lower/proc::{lower_proc_literal}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}

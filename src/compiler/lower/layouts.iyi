@@ -101,7 +101,10 @@ pub class GcLayouts
     sorted.each do |offset|
       raise "gc layout pointer offset exceeds UInt32" if offset > 4294967295_i64
     end
-    GcLayoutRow.new(@typer.size_of(struct_type), gc_scan_cap(type, struct_type), sorted)
+    size = @typer.size_of(struct_type)
+    cap = gc_scan_cap(type, struct_type)
+    raise "gc layout size exceeds UInt32" if size > 4294967295_i64 || cap > 4294967295_i64
+    GcLayoutRow.new(size, cap, sorted)
   end
 
   # The pointer words of one class's own fields, at *base* within the object.

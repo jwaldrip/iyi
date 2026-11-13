@@ -1,4 +1,4 @@
-module compiler/lower/gc_layouts
+module compiler/lower/gc_table
 
 # The collector's program-local type-id table (hosted codegen/gc_layouts.cr).
 import compiler/ir/function::{Global, Linkage}
