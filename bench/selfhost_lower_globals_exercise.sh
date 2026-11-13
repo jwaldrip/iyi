@@ -254,6 +254,9 @@ prove_mutation "lazy initializer ignores the once flag" "$REPO/bench/fixtures/lo
   "  if !flag.value" "  if true" -- hosted_once_check || status=1
 prove_mutation "an unresolved generic class variable is silently lowered" "$REPO/src/compiler/lower/class_var.iyi" \
   "  if cvar.type.is_a?(GenericClassType)" "  if false" -- lowglob_check || status=1
+prove_mutation "a floating constant global is initialized to zero" "$REPO/src/compiler/lower/const.iyi" \
+  "    global.initializer = low.builder.const_float(ir, const.value.as(NumberLiteral).value.to_f)" \
+  "    global.initializer = low.builder.const_float(ir, 0.0)" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1
