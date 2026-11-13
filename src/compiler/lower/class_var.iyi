@@ -17,7 +17,7 @@ module compiler/lower/class_var
 # Refused by name, with the hosted function each stands for, until ported:
 #   - a read before the declaration when `__iyi_once` is not declared (hosted `run_once`, once.cr:22);
 #   - a class variable declared without an initialiser, unless it is a nilable reference (its global starts as null);
-#   - a class variable whose owner is generic or is not a class (its hosted `llvm_name`);
+#   - a class variable whose owner is generic (its hosted `llvm_name`);
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
 # Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
 # class_var.cr:27-34), the model every non-Windows target uses, and `declare_cvar_global` sets it from the variable's
@@ -134,17 +134,15 @@ pub def class_var_declarer(scope : ModuleType, name : String) : ModuleType?
   nil
 end
 
-# The owner of a class variable named `name` from the scope it is looked up in. Namespaced
-# classes use their full name; generic instances and non-class owners still refuse by name.
+# The owner of a class variable named `name` from the scope it is looked up in.
+# Hosted names the global from `owner.llvm_name` (class_var.cr:433-435), which
+# for a non-generic module is its full name. Generic owners still refuse by name.
 pub def cvar_owner(low : Lowerer, name : String) : ModuleType
   declarer = class_var_declarer(class_var_scope(low), name)
   if declarer.nil?
     raise "BUG: no class declares class variable #{name} from this scope (hosted class_var.cr: class_var_global_name)"
   end
   o = declarer.as(ModuleType)
-  if !o.is_a?(ClassType)
-    refuse_port("lower: class variable #{name} is declared in #{o.full_name}, which is not a class: its owner is not ported yet (hosted class_var.cr: class_var_global_name)")
-  end
   if o.full_name.includes?("(")
     refuse_port("lower: class variable #{name} is declared in #{o.full_name}, which is generic: its hosted llvm_name is not ported yet (hosted class_var.cr: class_var_global_name)")
   end
