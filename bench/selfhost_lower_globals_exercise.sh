@@ -216,6 +216,9 @@ prove_mutation "a UInt64 literal above Int64 max loses its sign bit" "$REPO/src/
   ".to_i64 &- 9223372036854775807_i64 &- 1_i64" ".to_i64" -- lowglob_check || status=1
 prove_mutation "a namespaced constant is named by its bare name, not its full name" "$REPO/src/compiler/lower/const.iyi" \
   "  return const.full_name" "  return const.name" -- lowglob_check || status=1
+prove_mutation "a required file's class variable literal ignores its declared type" "$REPO/src/compiler/lower/class_var.iyi" \
+  "    value = literal_of_type(low, node, declared)" \
+  "    value = nil" -- lowglob_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

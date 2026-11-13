@@ -38,7 +38,7 @@ import compiler/lower/context::{BodyVisit, Lowerer}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ClassVarState}
-import compiler/lower/const::{const_scope, literal_node_value}
+import compiler/lower/const::{const_scope, literal_node_value, literal_of_type}
 import compiler/lower/cast::{assign, nilable_reference_type?}
 import compiler/semantic/top_level::{ClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type}
 
@@ -218,12 +218,19 @@ pub def declare_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir
 end
 
 # The global of a class variable with a literal initialiser: its value is the literal, stored at the declaration
-# (hosted `create_initialize_class_var_function` with `simple_initializer`, the `discard` branch).
+# (hosted `create_initialize_class_var_function` with `simple_initializer`, the `discard` branch). A required
+# file's declaration is not body-typed, so the node has no analysed type; the declared type is used then.
 pub def simple_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir : IrType, node : ASTNode, st : ClassVarState) : Global
   if g = st.global
     return g.as(Global)
   end
-  value = literal_node_value(low, node)
+  value = nil
+  if declared = cvar.type?
+    value = literal_of_type(low, node, declared)
+  end
+  if value.nil?
+    value = literal_node_value(low, node)
+  end
   if value.nil?
     refuse_port("lower: class variable #{cvar.name} has a literal initialiser that is not an integer, Bool or Char (hosted class_var.cr: initialize_class_var)")
   end

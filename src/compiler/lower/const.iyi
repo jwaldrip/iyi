@@ -82,7 +82,13 @@ pub def literal_node_value(low : Lowerer, value : ASTNode) : Value?
   if t.nil?
     return nil
   end
-  typ = t.as(Type)
+  literal_of_type(low, value, t.as(Type))
+end
+
+# The same value as an IR constant of `typ`, without looking the node up. A class variable declared in a required
+# file is recorded by the declarations pass and its initialiser node is never body-typed, so `type_of?` is nil there;
+# the declaration's type is `typ` (hosted `llvm_type(class_var.type)` of a simple literal).
+pub def literal_of_type(low : Lowerer, value : ASTNode, typ : Type) : Value?
   if value.is_a?(BoolLiteral)
     if value.as(BoolLiteral).value
       return int1(low, 1_i64)
