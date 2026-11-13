@@ -150,9 +150,9 @@ prove_mutation "type arguments are not bracketed as type arguments" "$TYPE_NODES
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "union type arguments print with their outer parentheses" "$TYPES_FILE" \
-  "@type_args.map(&.arg_full_name)" \
-  "@type_args.map(&.full_name)" \
+prove_mutation "union type arguments print with their outer parentheses" "$REPO/src/compiler/types/rendering.iyi" \
+  "parts << render(shown(arg, codegen), skip_union_parens: true, generic_args: true, codegen: codegen)" \
+  "parts << render(shown(arg, codegen), skip_union_parens: false, generic_args: true, codegen: codegen)" \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
