@@ -199,6 +199,16 @@ asm_unwind_check() {
   echo "$out" | grep -q 'error\[asm-unwind\]'
 }
 
+# The unwind fixture with its unwind edges dropped must be its expected text, byte for byte, and a pad that a normal
+# edge reaches must be refused by name. Non-zero when either is not so.
+unwind_check() {
+  local bin="$1" out
+  "$bin" drop-unwind bench/fixtures/ir/unwind/ensure.ir >"$WORK/unwind.out" 2>&1 || return 1
+  cmp -s "$WORK/unwind.out" bench/fixtures/ir/unwind/ensure.expected || return 1
+  out=$("$bin" drop-unwind bench/fixtures/ir/unwind/pad_reachable.ir 2>&1) && return 1
+  [ "$out" = "refused: function f: block pad still holds a landingpad after its unwind edges were dropped" ]
+}
+
 # Rebuilds the driver from a mutated source and runs one check on it.
 mutant_check() {
   local check="$1"
@@ -321,6 +331,15 @@ if diff bench/fixtures/ir/intrinsic-names.txt "$WORK/intrinsic-names.txt" >"$WOR
   echo "accepts $(wc -l <"$WORK/intrinsic-names.txt" | tr -d ' ') intrinsic names"
 else
   fail "the accepted intrinsic names changed: $(cat "$WORK/diff.txt")"
+fi
+
+# ---- 5d. unwind edges --------------------------------------------------------------------------
+echo "== 5d. a module with its unwind edges dropped is the normal path as it was written"
+out=$("$DRV" roundtrip bench/fixtures/ir/unwind/ensure.ir 2>&1) || fail "unwind/ensure.ir does not round-trip: $out"
+if unwind_check "$DRV"; then
+  echo "unwind edges dropped: an invoke is a call and a branch, the pads and what only they named are gone, a phi keeps its live pairs"
+else
+  fail "unwind/ensure.ir without its unwind edges is not unwind/ensure.expected, or a reachable pad was accepted: $("$DRV" drop-unwind bench/fixtures/ir/unwind/ensure.ir 2>&1 | diff - bench/fixtures/ir/unwind/ensure.expected | head -n 12)"
 fi
 
 # ---- 6. DataLayout against the oracle ----------------------------------------------------------
@@ -456,6 +475,41 @@ prove_mutation "values: the float read from a double loses its sign" \
   'return (sign << 31) | ((power + 127_i64) << 23) | top' \
   'return ((power + 127_i64) << 23) | top' \
   llvm_float_check
+prove_mutation "unwind: an invoke is left an invoke" \
+  src/compiler/ir/inst.iyi \
+  '    @op = Op::Call' \
+  '    @op = Op::Invoke' \
+  unwind_check
+prove_mutation "unwind: the branch goes to the unwind successor" \
+  src/compiler/ir/function.iyi \
+  '      normal = t.targets[0]' \
+  '      normal = t.targets[1]' \
+  unwind_check
+prove_mutation "unwind: a block only an unwind edge reached is kept" \
+  src/compiler/ir/function.iyi \
+  '      kept << @blocks[k] if seen[k]' \
+  '      kept << @blocks[k]' \
+  unwind_check
+prove_mutation "unwind: a phi keeps the pair of a removed block" \
+  src/compiler/ir/function.iyi \
+  'inst.keep_incoming(block.preds) if inst.op == Op::Phi' \
+  'inst.keep_incoming(block.preds) if inst.op == Op::Phi && false' \
+  unwind_check
+prove_mutation "unwind: the personality stays on the function" \
+  src/compiler/ir/function.iyi \
+  $'    relink\n    @personality = nil' \
+  $'    relink\n    @personality = @personality' \
+  unwind_check
+prove_mutation "unwind: a declaration only the unwind path named stays" \
+  src/compiler/ir/module.iyi \
+  'next if f.declaration? && before.has_key?(f) && !after.has_key?(f)' \
+  'next if f.declaration? && before.has_key?(f) && after.has_key?(f)' \
+  unwind_check
+prove_mutation "unwind: an unwinding instruction that is still reachable is accepted" \
+  src/compiler/ir/function.iyi \
+  'if word = unwind_only_op(inst.op)' \
+  'if word = unwind_only_op(Op::Br)' \
+  unwind_check
 
 echo
 if [ "$failed" -eq 0 ]; then
