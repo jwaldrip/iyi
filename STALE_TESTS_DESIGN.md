@@ -1,10 +1,10 @@
 # iyi Stale Test Design
 
-Status: Approved for implementation by Jason Waldrip; implementation in progress on this branch. Grounded at iyilang/iyi `9045a508` (master, 2026-10-24); every `path:line` is at that commit.
+Status: Approved for implementation by Jason Waldrip; implementation in progress on this branch. D3 is amended and D20 and D21 are added on Jason Waldrip's decision of 2026-11-12. Grounded at iyilang/iyi `9045a508` (master, 2026-10-24); every `path:line` is at that commit.
 
 ## 1. Review
 
-`iyi test --cached` reports a test as passing without generating code for it or running it, when the code the compiler would emit is the code a passing receipt was built from and everything its run was observed reading still gives the same answer. Every check parses and type-checks the test. The compiler then hashes the typed call path: every function, initializer and type layout codegen reaches from the program's entry, after macros have expanded, with program-wide numbering left out. An observation build watches the run. Master CI publishes receipts that other runs import.
+`iyi test --cached` reports a test as passing without generating code for it or running it, when the code the compiler would emit is the code a passing receipt was built from and everything its run was observed reading still gives the same answer. Every check that starts a compiler parses and type-checks the test; a check whose recorded inputs are unchanged starts none (D20). The compiler then hashes the typed call path: every function, initializer and type layout codegen reaches from the program's entry, after macros have expanded, with program-wide numbering left out. An observation build watches the run. Master CI publishes receipts that other runs import.
 
 ### Requirements set by Jason Waldrip before planning
 
@@ -20,12 +20,13 @@ Status: Approved for implementation by Jason Waldrip; implementation in progress
 * The source-side identity is the SHA of a distinct call path: the function bodies and code actually used, not files.
 * It is derived from what the compiler already instantiates and emits, not from a separate dependency analysis.
 * The call-path signature is the only source-side key. Every check type-checks first.
+* 2026-11-12, Jason Waldrip: a check that finds nothing a test was built from changed starts no compiler; checks run at once; RG10 proves the fast path never less safe.
 
 ### Decisions this plan makes
 
 * **D1:** The unit of reuse is one `*_test.iyi` program: one build, one process (§2, §3).
 * **D2:** A receipt is valid when its build key equals the current one and every recorded run observation answers the same now. The source side of the build key is the call-path signature. Never file contents, `.iyimod` module hashes, interface hashes or run-time coverage (§3, §4, §6).
-* **D3:** The compiler computes the build key itself, after semantic analysis and before codegen. Every `--cached` check type-checks; a hit stops there, before codegen, LLVM, linking and running. Compiler file reads are not recorded, replayed or keyed, and stale builds do not use `UpToDate` (§4).
+* **D3:** The compiler computes the build key itself, after semantic analysis and before codegen. Every `--cached` check that starts a compiler type-checks; a hit stops there, before codegen, LLVM, linking and running, and a fast serve (D20) starts none. Compiler file reads are not replayed or keyed; a stale build records them only for the fast path (D20), and stale builds do not use `UpToDate` (§4).
 * **D4:** The run side is an observation build with compiler-injected observers and a static closure check over the reached set of §4. Anything outside the closure is opaque (§5).
 * **D5:** Clock, entropy, timers, network, subprocesses, signal handlers, runtime timing values and writes outside the run scratch directory make a run not reusable. The test still runs and reports (§5).
 * **D6:** Values the runtime makes up for uniqueness or layout, and the numbering the compiler assigns, are unspecified, not inputs. Accessors that hand machine or timing values to programs are annotated not reusable (§3, §5).
@@ -42,6 +43,8 @@ Status: Approved for implementation by Jason Waldrip; implementation in progress
 * **D17:** Program-wide numbering is never hashed. Elements are named canonically, sets are sorted by name, compiler-made names are numbered by first occurrence inside their element, and literals are hashed by value. A key shared by two elements with different content abstains (§4, §6).
 * **D18:** Source positions enter the signature through three sources: literals from location macros, expanded call-site location arguments codegen emits for magic-constant defaults (`src/compiler/iyi/codegen/call.cr:173-191`), and failable cast locations (`src/compiler/iyi/codegen/codegen.cr:1954-1980`). Debug line information is left out; a runtime def that returns code locations or debug information to program code is `code_location`, not reusable (§4, §5).
 * **D19:** What reaches the executable from outside the typed program is keyed beside the signature: object units linked from `.iyimod` artifacts by content, the linker flags the compiler would pass with `CHILD_ENV`, and the compiler's own environment reads (§4).
+* **D20:** A check whose recorded inputs are unchanged starts no compiler. The stale build child records what it read: each file with a stat taken before the read, directory listings, environment values and `pkg-config` answers. Under `--cached`, a test whose local receipt is valid is served with no compiler when every recorded input still answers the same, and reports `check: "inputs"`. Any other cause runs the compiler check, and `check_reason` names the first. Imported receipts still take the compiler path. The argument that a fast serve gives the compiler check's answer, and its limits, are in §6 and §14. RG10 proves that no fast serve is one the compiler check would refuse (§10).
+* **D21:** `-p N` runs tests at once under `--cached`, `--fresh`, `--explain`, `--shard`, `--import-index` and `--export-index`, by default half the cores as plain `iyi test`. Each test's decision reads the store and disk as its fiber finds them, so a parallel run's verdicts are those of some order of the tests. Output is in file order. The store is per test, so a check reads its own test's receipts and not every receipt in the store (§7), and an interrupt ends every running build and test (§9).
 
 ### Approval gate
 
@@ -74,7 +77,7 @@ Implementation starts only after Jason Waldrip approves this pull request. Appro
 
 ## 4. The build: the call-path signature
 
-The compiler computes the build key once `semantic_after_top_level` returns, in both compile paths (`src/compiler/iyi/compiler.cr:437-444`, `623-627`), before `prepare_iyimods` (`compiler.cr:446`, `629`). The program is typed and cleaned (`src/compiler/iyi/semantic.cr:59-74`) and nothing is numbered yet (`src/compiler/iyi/codegen/codegen.cr:164-166`, `339-352`, `1071-1098`). Hashing after codegen would put IR construction on every hit and would have to undo numbering rather than skip it; codegen output is RG8's oracle instead. Every check type-checks, so a macro `read_file`, `env`, `run` and `system` reach the signature through their expansion, and no compile-time read is replayed.
+The compiler computes the build key once `semantic_after_top_level` returns, in both compile paths (`src/compiler/iyi/compiler.cr:437-444`, `623-627`), before `prepare_iyimods` (`compiler.cr:446`, `629`). The program is typed and cleaned (`src/compiler/iyi/semantic.cr:59-74`) and nothing is numbered yet (`src/compiler/iyi/codegen/codegen.cr:164-166`, `339-352`, `1071-1098`). Hashing after codegen would put IR construction on every hit and would have to undo numbering rather than skip it; codegen output is RG8's oracle instead. Every check that starts a compiler type-checks, so a macro `read_file`, `env`, `run` and `system` reach the signature through their expansion, and no compile-time read is replayed. A fast serve (D20) reaches none of this: it compares the stamps and observed environment values its child recorded instead (§6).
 
 **Reach.** A walk visits the cleaned typed program the way `CodeGenVisitor` does:
 * Roots: well-known funs, predefined constants a program reads, ARGC_UNSAFE and ARGV_UNSAFE always, and artifact class variables (`codegen.cr:373-383`, `679-713`),
@@ -95,7 +98,7 @@ The compiler computes the build key once `semantic_after_top_level` returns, in 
 
 **Artifacts.** A def read from a `.iyimod` has a `Nop` body (`src/compiler/iyi/semantic/call.cr:636-695`); its code is one of the object units the build links whole (`program.cr:414-424`; `compiler.cr:3802-3803`, `3870-3880`). Each linked unit is an `object_unit` element keyed by module and unit and digested by its bytes. Travelling bodies are typed by the consumer and reached like source. Module hashes (`src/compiler/iyi/iyimod.cr:401-406`, `487-500`, `533-538`) are not used.
 
-**Link and environment.** `LinkFp` covers the flags `Program#lib_flags` returns, `pkg-config` answers included (`src/compiler/iyi/codegen/link.cr:123-181`, `325-343`), `link_flags` (`compiler.cr:3517-3526`, `3709-3765`), the static flag and the `CHILD_ENV` values (`src/compiler/iyi/build_inputs.cr:41-47`). Stale builds always link through the compiler's linker driver (`@iyi_link_driver_only = true`), avoiding direct-`ld` templates (`compiler.cr:3563-3583`). Stale reuse links without a shell (passing an argument vector directly to the linker driver rather than invoking `sh -c`, `src/compiler/iyi/compiler.cr:3533`, `4115`), preventing glob, tilde, and subcommand expansion. Stale reuse is refused when any ldflags or link flag contains a backtick, `$`, `*`, `?`, `[` or `~` (`compiler.cr:3775-3799`). The compiler evaluates `lib_flags` and `link_flags` once during the check and passes that exact vector to the linker. `CompilerEnvFp` covers the compiler's own environment reads during the check, recorded by the `ENV` hooks (`build_inputs.cr:579-591`). Reads inside macro methods run under `BuildInputs.paused` (`build_inputs.cr:61-63`), because their values reach the signature as expanded code. Reads are classified `value`, `locator` (left out: what it located is in the signature) or `display` (left out); unlisted variables are `value`. Stale builds take no file or directory stamps and neither read nor write `UpToDate` records.
+**Link and environment.** `LinkFp` covers the flags `Program#lib_flags` returns, `pkg-config` answers included (`src/compiler/iyi/codegen/link.cr:123-181`, `325-343`), `link_flags` (`compiler.cr:3517-3526`, `3709-3765`), the static flag and the `CHILD_ENV` values (`src/compiler/iyi/build_inputs.cr:41-47`). Stale builds always link through the compiler's linker driver (`@iyi_link_driver_only = true`), avoiding direct-`ld` templates (`compiler.cr:3563-3583`). Stale reuse links without a shell (passing an argument vector directly to the linker driver rather than invoking `sh -c`, `src/compiler/iyi/compiler.cr:3533`, `4115`), preventing glob, tilde, and subcommand expansion. Stale reuse is refused when any ldflags or link flag contains a backtick, `$`, `*`, `?`, `[` or `~` (`compiler.cr:3775-3799`). The compiler evaluates `lib_flags` and `link_flags` once during the check and passes that exact vector to the linker. `CompilerEnvFp` covers the compiler's own environment reads during the check, recorded by the `ENV` hooks (`build_inputs.cr:579-591`). Reads inside macro methods run under `BuildInputs.paused` (`build_inputs.cr:61-63`), because their values reach the signature as expanded code. Reads are classified `value`, `locator` (left out: what it located is in the signature) or `display` (left out); unlisted variables are `value`. Stale builds neither read nor write `UpToDate` records. The child takes file stamps only when `--stale-inputs` is set, for the fast path (D20); they are not part of the Build.
 
 **Cross-check (D16).** A recording build continues to codegen and checks that every def, proc literal, constant and class variable that `codegen_fun` (`fun.cr:265`) and the initializer functions receive was reached. One that was not refuses the receipt with `reach mismatch`.
 
@@ -182,7 +185,12 @@ TestId is (root `src`, path from `Compiler.entry_root_of`, `src/compiler/iyi/com
 Lookup and execution:
 
 ```
-for test in selected tests, in fresh run order:
+for test in selected tests, each on its own fiber (D21):
+  fast = the fast record of test (absent when missing, corrupt or another version)
+  if --cached, fast names a build B, a valid local pass has build B (not
+     contradicted, profile equal, replay clean), no contradicted receipt or
+     mask of test validates, and fast.unchanged_reason(env) is nil:
+    serve: cached, source local, check "inputs"; no compiler starts; next test
   accept = {}
   block  = {}
   unless --fresh:
@@ -210,7 +218,7 @@ run(test, accept, block):
   pass, complete, untainted, run inputs unchanged during run: write receipt
 ```
 
-Why sound: An equal build key means the compiler emits the same reached code (A1, RG8), so a rebuild runs the code the receipt ran. A deterministic program whose recorded answers all still hold makes the same reads and reaches the same verdict. Replay in order stops at the first mismatch (`run: fixtures/a.txt changed`). A changed condition reruns the test and records a second receipt, while the first stays valid for its own inputs. Validating tests in execution order preserves sequential equivalence.
+Why sound: An equal build key means the compiler emits the same reached code (A1, RG8), so a rebuild runs the code the receipt ran. A deterministic program whose recorded answers all still hold makes the same reads and reaches the same verdict. Replay in order stops at the first mismatch (`run: fixtures/a.txt changed`). A changed condition reruns the test and records a second receipt, while the first stays valid for its own inputs. A fast serve (D20) is the compiler check's answer when every input the Build reads still has the stamp its record holds. A content change writes the file, which sets mtime and ctime from the clock; user space cannot set ctime (`cp -p`, `touch -r` and `rsync -t` set mtime only); a replacement by rename changes the inode; and a write inside the record's clock tick is caught by the racy digest. The check would then compute `local_build`, the Build of a valid local receipt, unblocked, and hit (`check.cr:211-214`). Each test's decision reads the store and disk as its fiber finds them, so a parallel run's verdicts are those of some order of the tests, as plain `-p` already is.
 Revocation: Local receipts mark `contradicted` (sticky). Imported receipts receive a local mask storing the masked receipt's build components, profile and trace. Before serving any receipt, the runner checks whether any contradicted receipt or mask of that test validates under current state (matching by state, not signature, because build components and environment observations use HMAC locally and plain SHA-256 in portable records). A new pass matching a contradicted signature keeps the contradicted flag (read-modify-write under the lock). Under the lock, a corrupt or unreadable record is replaced with a persistent contradiction marker for its test; a later `--fresh` executed pass with a complete trace clears it. Local masks and contradictions persist in the local store; cross-machine revocation occurs through the master shadow audit.
 
 ## 7. Local state
@@ -221,7 +229,8 @@ Revocation: Local receipts mark `contradicted` (sticky). Imported receipts recei
   seq                                attempt counter, advanced under lock
   lock                               held while writing receipts, masks, snapshots
   toolchain/<digest>.json            compiler and linker driver metadata memo
-  records/<ab>/<signature>.json
+  records/<hex D(test)>/<signature>.json   per test; older records/<ab> directories are ignored
+  fast/<hex D(test)>.json                  fast-path record of the inputs the newest check read (D20)
   masks/<signature>                  local revocations storing build, profile, trace
   imported/<namespace digest>.json   one snapshot per namespace
 ```
@@ -257,18 +266,19 @@ Snapshot format:
 ## 9. `iyi test` behavior
 
 ```
-iyi test [--json] [--timeout S] [--affected FILE]... [--cached | --fresh] [--explain]
+iyi test [--json] [--timeout S] [--affected FILE]... [--cached | --fresh] [--explain] [-p N]
          [--shard K/N] [--import-index NS=FILE]... [--export-index NS=FILE]...
          [--chaos[=SEED]] [--chaos-runs N] [paths]
 ```
 
 * **Default mode:** Unchanged. Normal builds, no recording, no new JSON fields.
-* **JSON fields under `--cached`/`--fresh`:** Per-test `cached` (bool), `source` (`local` or namespace), `reuse` (`hit`, `miss`, `not reusable`), `reason` (mismatch or taint with `FILE:LINE`), canonical `test` (`root`, `path`), current `portable_build` and `profile` fingerprints, filesystem `roots`, and `blocked` state for the audit. Top-level `cached` count and `audit` list. Audit consumers join by canonical test identity rather than invocation filename.
+* **JSON fields under `--cached`/`--fresh`:** Per-test `cached` (bool), `source` (`local` or namespace), `reuse` (`hit`, `miss`, `not reusable`), `reason` (mismatch or taint with `FILE:LINE`), canonical `test` (`root`, `path`), current `portable_build` and `profile` fingerprints, filesystem `roots`, and `blocked` state for the audit. Top-level `cached` count and `audit` list. Per-test `check` (`inputs` when no compiler started, else `compiler`) and `check_reason` (the first cause, when `compiler`); top-level `builds` (compiler processes started). Audit consumers join by canonical test identity rather than invocation filename.
 * **Text summary:** `7 passed (5 from receipts), 0 failed`. Exit status unchanged.
-* **`--explain`:** Prints one decision line per test. A miss names the first component that differs from the test's newest receipt, in the order toolchain, behavior, compiler environment, link, call path (with the files whose `explain` entries differ), profile, run.
+* **`--explain`:** Prints one decision line per test. A miss names the first component that differs from the test's newest receipt, in the order toolchain, behavior, compiler environment, link, call path (with the files whose `explain` entries differ), profile, run. A fast serve prints `FILE: hit from local (inputs unchanged)`. Under `-p` the lines print after the run, in file order.
 * **`--affected`:** Selects candidates as today (`src/compiler/iyi/command/test.cr:120-163`): falls back to a full run when a manifest changed (`test.cr:129-131`), when a changed file cannot be in any closure (`test.cr:138-140`, `243-257`), or when a named file is missing (`test.cr:153`). A test whose own source does not parse is selected on its own (`test.cr:158`, `261-262`), and an import that does not parse stays in the closure by path (`test.cr:263-266`). Reuse evaluates inside selection. Unselected tests are never reported as passed and never touched in store.
 * **Failures/timeouts/signals:** Every non-pass exit (fail, signal death, timeout kill, reserved status) revokes every receipt of that test that validates now, regardless of trace state. A build that fails before its signature exists revokes nothing: no receipt validates without one.
-* **Interrupt:** Sent to `iyi test` itself: child tree killed (via a new process group on POSIX, job object on Windows, `src/compiler/iyi/command/test.cr:377-380`, `416`), no receipt written for active test, existing receipts left intact, nothing revoked, exits 130.
+* **Interrupt:** Sent to `iyi test` itself: child tree killed (via a new process group on POSIX, job object on Windows, `src/compiler/iyi/command/test.cr:377-380`, `416`), no receipt written for active test, existing receipts left intact, nothing revoked, exits 130. Under `-p N` every running build and test is killed the same way, and SIGTERM and SIGHUP do too, exiting 128 plus the signal.
+* **`-p N`:** Runs N tests at once under the stale-runner options (`--cached`, `--fresh`, `--explain`, `--shard`, `--import-index`, `--export-index`). The default is half the cores, as plain `iyi test`. Verdicts are those of some order of the tests (D21); output is in file order.
 * **`--shard K/N`:** Deals tests round-robin; snapshots unioned only across shards of the same producer run; duplicate test across shards refused.
 * **`--export-index NS=FILE`:** May be specified multiple times to export to multiple namespaces in a single run.
 * **MCP:** `test` tool gains optional `cached` parameter (`src/compiler/iyi/command/mcp.cr:179`, `221`).
@@ -289,6 +299,7 @@ iyi test [--json] [--timeout S] [--affected FILE]... [--cached | --fresh] [--exp
 | RG7 | Different `--threads` produce identical executables | Leaving `n_threads` out of behavior key | `n_threads` stays in key |
 | RG8 | Over C2, C3 and single-site mutations generated from the walk's own elements (body, callee, overload capture, instance variable and its initializer, constant, class variable initializer, annotation, macro input, position change above a reached call or failable cast): every mutation changing normalized reached IR changes `CallPathFp`; link annotation mutations change the link command line and `LinkFp`; artifact object unit mutations change linked bytes and `Build`; mutations outside the reached set (unreached def body, unrelated type, unused constant, comment above code holding no location literal) change neither; codegen emits no function the walk did not reach | Shipping `--cached` | Shipping waits |
 | RG9 | Every C2 and C3 program (integrated 140-program corpus) checked in two processes with address randomization, with and without a preanalysed prelude (`compiler.cr:605-617`), and on the `stale-fresh` runner gets one `CallPathFp` | Shipping `--cached` | Shipping waits |
+| RG10 | A fast serve is one the compiler check agrees with: under `IYI_STALE_FAST_AUDIT=1` every test the fast-path rule serves also runs the compiler path and must hit with the record's `local.build`; the audit runs in `bench/stale_tests.sh`, `bench/stale_census.sh` and `bench/stale_suite_speed.py --audit` | Shipping the fast path | Shipping waits |
 
 Normalized reached IR is the unoptimized IR printed under `DUMP=1` (`codegen.cr:755-779`), with debug metadata stripped, type-id constants replaced by the names they denote and range checks by the sorted names in range, symbol indices by symbol strings, proc and temporary names by first-occurrence ordinals, union cases sorted by type name, and module-level tables (simple constants, type-id globals, GC layouts, symbol table) restricted to entries the emitted functions reference.
 
@@ -307,10 +318,16 @@ RG2 equivalence under observation compares exit status, stdout and stderr. The r
 | S8 (P3) | `src/compiler/iyi/stale/snapshot.cr` | Portable snapshot export and import, repeatable export flags, CI attestation check | Cross-repo sharing | Snapshot validation passes |
 | S9 (P4) | `.github/workflows/iyi.yml`, `bench/stale_ci.sh`, `bench/stale_census.sh` | Master index publishing, `stale-fresh` job, shadow audit, git-diff self-check of run observations | Third-party CI | CI steps green |
 | S10 (P5) | `SPEC.md`, `CHANGELOG.md`, `README.md` | SPEC test row, census and overhead documentation | Unmeasured claims | `bench/doc_numbers.py` passes |
+| S11-A (fast path, child) | `src/compiler/iyi/build_inputs.cr`, `command.cr`, `compiler.cr`, `stale/check.cr`, new `stale/inputs_file.cr`, `macros/macros.cr` if needed, `spec/compiler/stale/compiler_env_spec.cr`, `check_spec.cr`, `bench/stale_callpath.sh` (rg9) | Stale mode records files, listings, environment values, pkg-config answers and reasons; `--stale-inputs FILE`; `Stale::FileStamp` | Serving from the record | An inputs file lists the test's source and `src/iyi/prelude.iyi` with nonzero ctime and ino; a test with `{{ run }}` writes none; rg9 gives equal `local.build` for 140 of 140 programs with and without the flag |
+| S11-F (fast path, store) | `stale/store.cr`, `spec/compiler/stale/store_spec.cr`, `snapshot_spec.cr` if it calls `record_path` | Per-test `records/<hex D(test)>/` layout; `Store#candidates(test, target, imported:)`; old `records/<ab>` directories ignored and pruned | Changing receipt bytes or `FORMAT_VERSION` | Specs green; `bench/stale_store_concurrency.sh` prints its PASSED line for 2000 records |
+| S11-C (parallel runner) | `stale/runner.cr`, `command/test.cr`, `stale/profile.cr` | `TestPool.run` shared with plain runs; per-test `check_one`; ordered output; `-p` for the stale-runner options; build children in process groups; interrupt ends them | Runner-owned threads or worker processes | Rows 57 and 58 pass; rows 1-50 green at the default `-p` |
+| S11-B (fast path) | new `stale/fast_record.cr`, `stale/runner.cr`, `stale/store.cr`, `stale/toolchain.cr`, `spec/compiler/stale/fast_record_spec.cr` | Fast-path record in `fast/`; serve rule; `check` and `check_reason`; explain suffix; `IYI_STALE_FAST_AUDIT` and `IYI_STALE_FAST_DROP` | Serving imported receipts; memoized hashes | Rows 51-56 and 59 pass; on the basic fixture a second `--cached --json` prints `"builds": 0` |
+| S11-D (gates) | `bench/stale_tests.sh`, `bench/stale_suite_speed.py`, `bench/stale_census.sh`, `.github/workflows/iyi.yml` | Rows 51-59; `--audit` and `--expect-faster`; census audit of the cached pass; CI audit step in `stale-callpath` | Timing claims beyond `--expect-faster` | Written from the contracts; run after S11-B |
+| S11-E (documents) | `STALE_TESTS_DESIGN.md`, `SPEC.md`, `README.md`, `CHANGELOG.md` | This revision: D3 amended, D20 and D21 added, the fast path and parallel runner in §§6-14 | New numbers not measured | Each MEASUREMENT PENDING line filled by the integrator; no other number added |
 
 S7 is removed: a macro `run` program output reaches the signature as expanded code.
 
-Out of scope overall: per-case (`test "name"`) reuse, classifying Crystal library, caching failures, non-host targets, remote cache service, migrating bench drivers to `iyi test`, changing up-to-date check behavior, default-on reuse, adversarial tests, LSP, skipping the type check on a hit, reuse of one test's receipts by another, hashing libraries the linker finds by search path.
+Out of scope overall: per-case (`test "name"`) reuse, classifying Crystal library, caching failures, non-host targets, remote cache service, migrating bench drivers to `iyi test`, changing up-to-date check behavior, default-on reuse, adversarial tests, LSP, skipping the type check when a recorded input changed, reuse of one test's receipts by another, hashing libraries the linker finds by search path.
 
 ## 12. Acceptance and falsification
 
@@ -365,6 +382,17 @@ Automated in `bench/stale_tests.sh` unless marked CI:
 48. Linked library or link flag using a backtick, `$`, `*`, `?`, `[` or `~` is refused with a not-reusable reason; link command uses exact flags vector computed during check.
 49. A test that writes and reads back a file in its own scratch directory (`TMPDIR`) hits on its second run; editing the input it copied there reruns. (Added in the build: the runtime had lost the scratch path before the program ran.)
 50. A reached macro `run` helper built with cold and warm compiler caches gives the same build key; unchanged input hits after either build.
+51. Unchanged after a recording run, audit off: `builds` is 0 and both tests report `check: "inputs"`, with the top-level `cached` count at 2. Mutation: delete `tests-v1/fast`: `builds` is 2 and `check_reason` is "no record of the inputs"; the next run's `builds` is 0 again.
+52. A reached `used()` edited to the same length with its mtime restored (`os.utime(ns=...)`): `reached_test` reports `check: "compiler"` with `check_reason` naming `lib/util.iyi`, and reruns; `other_test` hits. Mutation: `IYI_STALE_FAST_DROP=ctime` exits 1 and stdout holds "fast path served".
+53. A reached def holds `{{ env("STALE_FAST_X") }}`: changing the value gives `check: "compiler"` and a rerun. Mutation: `IYI_STALE_FAST_DROP=env` exits 1.
+54. Compiler swap: `cp -p` the native compiler, as row 28 does, and run the copy: `check: "compiler"`, with the reason naming the compiler; the copy's next run is `inputs`. Mutation: `IYI_STALE_FAST_DROP=compiler`: the copy's first run is `inputs`, which shows the assertion is load-bearing; the audit agrees because the bytes are equal. A byte-different compiler is covered by `prune_outdated_toolchains`, which drops its receipts.
+55. Row 50's fixture on its second run, with a macro `run` in the reached set: `check: "compiler"` and `check_reason` "a macro ran a program". Rows 26 and 35 pass unchanged.
+56. Refresh with audit off: after a leaf edit's rerun, the next unchanged run has `builds` 0.
+57. Parallel equivalence: `--cached --json` with `-p 1` and `-p 4` over the basic, row 4 and row 5 fixtures give equal JSON after dropping `seconds`; `--fresh --export-index` with `IYI_CI_PRODUCER=1` at `-p 1` and `-p 4` gives equal snapshots after sorting `records`.
+58. Parallel interrupt: four tests that sleep, `--fresh -p 4`, then `kill -INT` the runner: exit 130, no process of the fixture survives (`pgrep -f` on a marker path), and finished tests keep their receipts.
+59. A contradicted receipt that validates (row 14's fixture): `check: "compiler"`, `check_reason` "a contradicted receipt validates".
+
+Rows 51 to 59 use the basic fixture unless named.
 
 ## 13. Measurements and completion
 
@@ -378,10 +406,41 @@ Overhead reported as measured with no thresholds and no promised speedup:
 * Trace and receipt bytes per program.
 * Per-hit check time against a default-mode build and run of the same test, split as the progress tracker reports it: parse, top level, main semantic (macro `run` programs included), walk and hashing. Measured with and without a preanalysed prelude (`compiler.cr:605-617`; `iyimod.cr:7-9` reports the top-level pass at 0.99 s cold and 0.004 s preanalysed).
 * Reached elements and encoded bytes per program, and the reruns RG8 attributes to over-approximation.
+* Fast-path serves: `builds` (compiler processes started) and wall time of an unchanged suite, against plain `iyi test` and `--fresh` on the same suite.
+
+Measured by hand on darwin arm64 with an unoptimized compiler, over 1,000 generated tests (`python3 bench/stale_suite_speed.py --tests 1000`), on a machine other work was loading: the load average ran between 120 and 700 across these runs, so the seconds are weather and the ratios are the finding.
+
+| Case | Plain `iyi test` | `iyi test --cached` | Served | Compilers started |
+|---|---|---|---|---|
+| first run (`--fresh`) | 243.0 s | 639.8 s | 0 | 1,000 |
+| nothing changed | 234.0 s | 3.0 s | 1,000 | 0 |
+| one test edited | 242.0 s | 8.9 s | 999 | 1 |
+| one module edited (20 tests import it) | 276.4 s | 20.6 s | 980 | 20 |
+| a shared def no test reaches, edited | 242.2 s | 437.5 s | 1,000 | 1,000 |
+| a shared def every test reaches, edited | 153.5 s | 381.8 s | 0 | 1,000 |
+
+The cached run served exactly the tests it should in every case. Before the fast path and the parallel runner, the same suite took 117.0 s plain and 1,254.8 s under `--fresh` (load average 36 to 180), and on a second run 176.7 s and 3,526.7 s (load 70 to 400). Its cached run with nothing changed never finished: one attempt was still running after 90 minutes, and another was killed after 42 minutes, when the runner process had grown to 64 GB. A lookup then parsed every receipt of every test; what grew was not profiled. With the store per test, a runner taking all 1,000 tests through the compiler check ended in 270 s and no process of the run passed 0.9 GB.
+
+Every number above is from an unoptimized compiler (`make iyi`), which is what CI builds and not what an installed `iyi` is. On a release compiler (`make iyi release=1`), the same machine, the same 1,000 generated tests that end at once (load average 16 when it started, 360 during the run):
+
+| Case | Plain `iyi test` | `iyi test --cached` | Served | Compilers started |
+|---|---|---|---|---|
+| first run (`--fresh`) | 118.3 s | 178.1 s | 0 | 1,000 |
+| nothing changed | 87.5 s | 1.6 s | 1,000 | 0 |
+| one test edited | 85.3 s | 2.4 s | 999 | 1 |
+| one module edited (20 tests import it) | 88.5 s | 4.8 s | 980 | 20 |
+| a shared def no test reaches, edited | 81.8 s | 77.6 s | 1,000 | 1,000 |
+| a shared def every test reaches, edited | 83.4 s | 136.5 s | 0 | 1,000 |
+
+Every test passed in all twelve runs.
+
+One small test alone, warm, on a quiet machine (medians of five): a plain build and run takes 0.42 s unoptimized and 0.23 s release; a compiler check that hits takes about 0.97 s and 0.31 s. Of the release check, analysing the observed program is 0.13 s (0.06 s in a plain build), walking what the test reaches 0.006 s, and hashing it 0.09 s (0.48 s unoptimized, more than half of it the SHA-256 arithmetic itself).
+
+A cached run is faster than plain when most tests are untouched. It is slower when a file every test reads changed and the change reaches the tests, because no record can vouch for any test, each takes the compiler check, and a check costs more than building and running a small test; and on the first run. When the change reaches no test the tests are served, at 1.8 times a plain run unoptimized and level with it on a release compiler (77.6 s against 81.8 s). When it reaches every test: 2.5 times unoptimized, 1.6 times release. The first run: 2.6 and 1.5 times.
 
 Completion requires all of:
 1. Every §12 row automated and green on every enabled platform.
-2. RG1 through RG9 each green on the integrated 140-program corpus, or claim withdrawn in SPEC.md.
+2. RG1 through RG10 each green on the integrated 140-program corpus, or claim withdrawn in SPEC.md.
 3. Census with zero runner or internal reasons, and reusable programs on every enabled platform.
 4. Consumption and audit run on master with zero disagreements since enablement.
 5. SPEC.md recording census and overhead as measured.
@@ -392,12 +451,15 @@ If the census shows almost all real tests always running, work is not marked com
 
 * Flaky tests: bounded by contradiction detection and shadow audit.
 * Deliberately adversarial test code.
-* Every hit type-checks: parse, semantic analysis and macro execution, `run` programs included, happen on every check.
+* A fast serve starts no compiler and type-checks nothing. Any other check parses, runs semantic analysis and runs macros, `run` programs included, as before, so a test whose recorded input changed takes that path.
+* Imported receipts take the compiler path: a fast serve uses only local receipts, so a CI runner that imports master's snapshot still starts a compiler for each test.
 * A verdict that depends on compiler numbering can change after an unrelated edit and stays hidden until a `--fresh` run or the audit (A2).
 * Modules read from `.iyimod` artifacts are keyed per linked object unit, not per function.
 * Libraries the linker finds by search path are identified by flags, `CHILD_ENV` and the toolchain, not by content.
 * Where codegen stops after a `NoReturn`, edits behind it rerun.
-* File writers that preserve size and mtime (`cp -p`, `tar`, `rsync -t`): A3's stat comparison cannot observe content modifications when size and mtime are preserved.
+* Build side: a fast serve also compares ctime, dev and inode, which user-space tools cannot set, so writers that preserve size and mtime (`cp -p`, `tar`, `rsync -t`) cannot hide a content change from it.
+* Run side: A3's stat comparison still cannot observe content modifications when size and mtime are preserved.
+* Stamp argument: it assumes the clock moves forward and that the file system keeps ctime. A file system that reports no change time at all gets no fast-path record, so its tests take the compiler path. A clock set backwards, or a file system that reports a change time it does not keep, can leave a changed file with the stamp its record holds, so a fast serve can miss a change the compiler check would see.
 * Process limits or loader settings outside recorded profile properties.
 * Per-case reuse within a test file.
 * Non-host targets.
@@ -407,6 +469,6 @@ If the census shows almost all real tests always running, work is not marked com
 * Cross-machine hits are expected only between runners configured alike (matching kernel release, rlimits, cgroup memory limit, and loader variables).
 * Hits across commits wait on RG1.
 * Environment mutations (`ENV.[]=`, `ENV.delete`, `__iyi_set_environ`) over-approximate by recording `env_all`, so any change to the runner's environment reruns a test that sets a variable. `ENV.[]=` and `ENV.delete` also name the variable (`__iyi_observe_env_write`), and a later read of it is the test's own value, not an input (row 6).
-* No speedup is promised.
+* No speedup is promised for every change. A cached run is faster than plain when most tests are untouched, and slower when a file every test reads changed or on the first run (§13).
 * Chaos mode: chaos options cannot be combined with stale-runner options; chaos runs execute without receipt reuse.
-* Windows: no platform arm is classified, so no Windows test is reusable (RG3 holds on macOS arm64 and Linux x86_64 and aarch64 only).
+* Windows: no platform arm is classified, so no Windows test is reusable (RG3 holds on macOS arm64 and Linux x86_64 and aarch64 only). Windows writes no fast-path records, so no fast serve happens there.

@@ -34,7 +34,11 @@ module Iyi
     # anything beside an input is written. `digest` is the content's MD5, and
     # it is taken only for a file whose time cannot vouch for it — see
     # `racy?`.
-    record Stamp, kind : Kind, size : Int64, mtime : Int64, digest : String? = nil
+    # `ctime`, `dev` and `ino` are set only by the stale recorder, from
+    # `Stale::FileStamp`. A `cp -p` or `touch -r` sets the modification time
+    # back and not the change time, and a file replaced by rename changes its
+    # inode, so an edit that kept size and time is still seen.
+    record Stamp, kind : Kind, size : Int64, mtime : Int64, digest : String? = nil, ctime : Int64 = 0_i64, dev : UInt64 = 0_u64, ino : UInt64 = 0_u64
 
     ABSENT = Stamp.new(Kind::Absent, 0_i64, 0_i64)
 
@@ -80,18 +84,47 @@ module Iyi
       end
     end
 
-    # Runs the block with no recorder if the current recorder is env-only.
-    # When no recorder is active or when the recorder is UpToDate, runs normally.
+    # Runs the block as the env-only recorder reads. With no recorder, or an
+    # UpToDate one, it runs normally. An env-only recorder pauses it: nothing
+    # in it is an input. A stale recorder keeps its environment reads out of
+    # `env`, as a pause would, but records the files the block reads, which is
+    # why `read_file` and `file_exists?` are still recorded under it.
     def self.pause_if_env_only(&)
-      if current.try &.env_only?
+      inputs = current
+      if inputs && inputs.stale?
+        inputs.env_quiet { yield }
+      elsif inputs && inputs.env_only?
         paused { yield }
       else
         yield
       end
     end
 
+    # Runs the block with its environment reads kept out of `env`, and its file
+    # reads recorded (see `pause_if_env_only`).
+    def env_quiet(&)
+      @mutex.synchronize { @quiet += 1 }
+      begin
+        yield
+      ensure
+        @mutex.synchronize { @quiet -= 1 }
+      end
+    end
+
     getter? env_only : Bool = false
+    # A stale recorder is an env-only one that also records files, listings,
+    # pkg-config answers and reasons, for `Stale::InputsFile`.
+    getter? stale : Bool = false
     getter? env_enumerated : Bool = false
+    # Every environment read, quiet ones included. Kept apart from `env`, which
+    # CompilerEnvFp reads and which a stale build must not change.
+    getter observed_env = {} of String => String?
+    getter? observed_enumerated : Bool = false
+
+    # Whether this recorder records nothing about files.
+    private def off? : Bool
+      @env_only && !@stale
+    end
 
     getter files = {} of String => Stamp
     getter written = Set(String).new
@@ -107,13 +140,20 @@ module Iyi
 
     @mutex = Mutex.new
 
+    # How many quiet blocks are open (`env_quiet`). Only a stale recorder opens
+    # one.
+    @quiet = 0
+
     # *cache_root* may be unknown when recording starts — `iyi build` starts
     # before its options are read, and the cache directory is one of them —
     # and is then set with `cache_root=`, which drops what it excludes.
     @cache_root : String? = nil
     @packages : String? = nil
 
-    def initialize(cache_root : String?, @env_only : Bool = false)
+    def initialize(cache_root : String?, env_only : Bool = false, stale : Bool = false)
+      @stale = stale
+      # A stale recorder reads the environment as an env-only one does.
+      @env_only = env_only || stale
       @ignored = Set(String).new
       unless @env_only
         CHILD_ENV.each { |name| @env[name] = Crystal::System::Env.get(name) }
@@ -211,10 +251,11 @@ module Iyi
     # A path the build asked about or opened, with the answer it got when it
     # asked with symlinks followed, or `nil` to work the answer out here.
     def looked_at(path : String, info : ::File::Info? = nil, answered : Bool = false) : Nil
-      return if @env_only
+      return if off?
       path = key(path)
       return if excluded?(path)
       return if @mutex.synchronize { @files.has_key?(path) || @written.includes?(path) }
+      return looked_at_stale(path) if @stale
 
       stamp = answered ? BuildInputs.stamp_of(info) : BuildInputs.stamp(path)
       first = @mutex.synchronize do
@@ -242,8 +283,41 @@ module Iyi
       end
     end
 
+    # Stale only: what *path* was when the build looked at it, stamped before
+    # the compiler reads it. The digest is the content's MD5 where the times
+    # cannot vouch for it. A racy file whose content cannot be read is not
+    # vouched for, and the build says so.
+    private def looked_at_stale(path : String) : Nil
+      stamp = Iyi::Stale::FileStamp.of(path)
+      first = @mutex.synchronize do
+        next false if @files.has_key?(path)
+        @files[path] = stamp
+        true
+      end
+      return unless first
+      if stamp.kind.file? && stamp.ctime <= 0
+        # Without a change time an edit that kept the size and the modification
+        # time (`cp -p`, `touch -r`) is not seen, so no record can vouch for it.
+        cannot("#{path} has no change time on this file system, so an edit that kept its size and time could not be seen")
+      end
+      if stamp.kind.file? && stamp.digest.nil? && BuildInputs.racy?(Math.max(stamp.mtime, stamp.ctime), BuildInputs.now)
+        cannot("#{path} could not be read to fingerprint it")
+      end
+    end
+
+    # Stale only: looks at *path* before the compiler's own read of it, so the
+    # stamp kept is no newer than what the compiler saw.
+    def stat_before_read(path : String) : Nil
+      looked_at(path) if @stale
+    end
+
+    # Stale only: lists *dir* before the compiler lists it (see `listed`).
+    def listed_before(dir : String) : Nil
+      listed(dir) if @stale
+    end
+
     def opening(path : String, mode : String) : Nil
-      return if @env_only
+      return if off?
       if mode.includes?('w') || mode.includes?('a') || mode.includes?('+')
         wrote(path)
       else
@@ -254,7 +328,7 @@ module Iyi
     # A path this build created or replaced. It is an output rather than an
     # input, and what is recorded for it is what it is once the build is done.
     def wrote(path : String) : Nil
-      return if @env_only
+      return if off?
       path = key(path)
       return if excluded?(path)
       @mutex.synchronize { @written << path }
@@ -262,7 +336,7 @@ module Iyi
 
     # A path this build removed, which it made itself or does not depend on.
     def deleted(path : String) : Nil
-      return if @env_only
+      return if off?
       path = key(path)
       return if excluded?(path)
       @mutex.synchronize do
@@ -272,7 +346,7 @@ module Iyi
     end
 
     def renamed(from : String, to : String) : Nil
-      return if @env_only
+      return if off?
       deleted(from)
       wrote(to)
     end
@@ -280,7 +354,7 @@ module Iyi
     # A directory whose entries the build read. What is kept is the names, so
     # a file added or removed there — a `require "./x/*"`, a glob — is seen.
     def listed(dir : String) : Nil
-      return if @env_only
+      return if off?
       dir = key(dir)
       return if excluded?(dir)
       first = @mutex.synchronize do
@@ -294,11 +368,22 @@ module Iyi
     end
 
     def env_read(name : String, value : String?) : Nil
-      @mutex.synchronize { @env[name] = value unless @env.has_key?(name) }
+      @mutex.synchronize do
+        @observed_env[name] = value if @stale && !@observed_env.has_key?(name)
+        @env[name] = value unless @env.has_key?(name) || @quiet > 0
+      end
     end
 
     def env_enumerated : Nil
       @mutex.synchronize do
+        if @stale
+          @observed_enumerated = true
+          Crystal::System::Env.each do |key, value|
+            @observed_env[key] = value unless @observed_env.has_key?(key)
+          end
+        end
+        # A quiet enumeration is kept out of `env`, as a paused one is.
+        next if @quiet > 0
         @env_enumerated = true
         Crystal::System::Env.each do |key, value|
           @env[key] = value unless @env.has_key?(key)
@@ -307,7 +392,7 @@ module Iyi
     end
 
     def pkg_config_read(mod : String, static : Bool, flags : String?) : Nil
-      return if @env_only
+      return if off?
       @mutex.synchronize { @pkg_config << {mod, static, flags} }
     end
 
@@ -315,7 +400,7 @@ module Iyi
     # skipped build could not do again. Any one of them and nothing is
     # recorded, so the next build compiles.
     def cannot(reason : String) : Nil
-      return if @env_only
+      return if off?
       @mutex.synchronize { @reasons << reason unless @reasons.includes?(reason) }
     end
 
@@ -324,7 +409,18 @@ module Iyi
     def merge(other : BuildInputs) : Nil
       @env_enumerated ||= other.env_enumerated?
       other.env.each { |name, value| @env[name] = value unless @env.has_key?(name) }
-      return if @env_only
+      if @stale
+        # The other recorder's reads are this build's, and they are observed.
+        @observed_enumerated ||= other.env_enumerated?
+        other.env.each { |name, value| @observed_env[name] = value unless @observed_env.has_key?(name) }
+        other.observed_env.each { |name, value| @observed_env[name] = value unless @observed_env.has_key?(name) }
+      end
+      return if off?
+      # A file the other recorder read was not stamped with its inode or change
+      # time unless that recorder was stale, and the record needs both.
+      if @stale && other.files.any? { |_, stamp| stamp.kind.file? && stamp.ctime == 0_i64 }
+        cannot("the prelude was analysed before this build, and its files were not stamped with their inodes or change times")
+      end
       other.files.each { |path, stamp| @files[path] = stamp unless @files.has_key?(path) }
       other.listings.each { |dir, names| @listings[dir] = names unless @listings.has_key?(dir) }
       @pkg_config.concat(other.pkg_config)
@@ -335,8 +431,14 @@ module Iyi
     # when it said nothing — a program that has read what it pleased, as far
     # as anything here can tell.
     def run_declared(program : String, declared : Array(String)?, started : Int64) : Nil
-      return if @env_only
+      return if off?
       program = Iyi.relative_filename(program)
+      if @stale
+        # A stale check refuses every macro `run`. The program's reads are not
+        # listed here, and a declared list names only what the program chose to.
+        cannot("a macro ran a program, `run(\"#{program}\")`, and what it read cannot be listed")
+        return
+      end
       unless declared
         cannot("`run(\"#{program}\")` did not say which files it read (a program `run` at compile time names them, " \
                "one a line, in the file $#{Program::RUN_INPUTS} names)")
@@ -361,7 +463,7 @@ module Iyi
     # paths in it, and the library each `-lname` names, found the way the
     # linker finds it. The objects are this build's own and in its cache.
     def linked(command : String, args : Array(String)?) : Nil
-      return if @env_only
+      return if off?
       tokens = {% if flag?(:win32) %} Process.parse_arguments_windows(command) {% else %} Process.parse_arguments_posix(command) {% end %}
       args.try { |extra| tokens.concat(extra) }
       tokens = tokens.flat_map { |token| response_file(token) || [token] }
@@ -558,6 +660,7 @@ end
 # recorder sees the path only when a build holds one.
 class File
   def self.info?(path : Path | String, follow_symlinks = true) : Info?
+    Iyi::BuildInputs.current.try &.stat_before_read(path.to_s)
     info = previous_def
     if inputs = Iyi::BuildInputs.current
       follow_symlinks ? inputs.looked_at(path.to_s, info, answered: true) : inputs.looked_at(path.to_s)
@@ -566,6 +669,7 @@ class File
   end
 
   def self.info(path : Path | String, follow_symlinks = true) : Info
+    Iyi::BuildInputs.current.try &.stat_before_read(path.to_s)
     info = previous_def
     if inputs = Iyi::BuildInputs.current
       follow_symlinks ? inputs.looked_at(path.to_s, info, answered: true) : inputs.looked_at(path.to_s)
@@ -577,6 +681,7 @@ class File
   end
 
   def self.exists?(path : Path | String) : Bool
+    Iyi::BuildInputs.current.try &.stat_before_read(path.to_s)
     answer = previous_def
     Iyi::BuildInputs.current.try &.looked_at(path.to_s)
     answer
@@ -606,6 +711,7 @@ end
 
 class Dir
   def initialize(path : Path | String)
+    Iyi::BuildInputs.current.try &.listed_before(path.to_s)
     previous_def
     Iyi::BuildInputs.current.try &.listed(@path)
   end
@@ -636,3 +742,5 @@ module ENV
     end
   end
 end
+
+require "./stale/inputs_file"

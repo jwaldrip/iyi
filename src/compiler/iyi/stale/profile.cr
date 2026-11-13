@@ -42,25 +42,43 @@ module Iyi::Stale::Profile
   DAEMON_VARS  = {"IYI_DAEMON_SOCKET", "CRYSTAL_DAEMON_SOCKET"}
   SCRATCH_VARS = {"TMPDIR", "TEMP", "TMP"}
 
+  # What the machine gives every test's profile, read once per run: the umask,
+  # rlimits, cgroup memory, kernel, target and os. A test's profile is then
+  # made from values already in hand, with no syscalls. The umask is read by
+  # setting it to 0 and back, which is why only `host` reads it: a second
+  # caller would race that flip.
+  record HostState,
+    umask : Int32,
+    rlimits : Hash(String, Int64),
+    cgroup_mem : Int64?,
+    kernel : String,
+    target : String,
+    os : String
+
+  def self.host(target : String? = nil) : HostState
+    HostState.new(
+      umask: current_umask,
+      rlimits: current_rlimits,
+      cgroup_mem: current_cgroup_mem,
+      kernel: current_kernel,
+      target: target || Iyi::Config.host_target.to_s,
+      os: {{ flag?(:darwin) ? "darwin" : (flag?(:linux) ? "linux" : (flag?(:win32) ? "windows" : "unknown")) }}
+    )
+  end
+
+  # One test's profile: its argv and cwd and the run's timeout, with the
+  # machine's host state. The fingerprint is the one a receipt has always
+  # been keyed by; its inputs have not changed.
   def self.current(
-    timeout : Float64 = 60.0,
-    cwd_test_id : RootPath | TestId? = nil,
-    target : String? = nil,
+    host : HostState,
     argv : Array(String) = [] of String,
-    cwd : RootPath | TestId? = nil,
+    cwd : RootPath | TestId = TestId.new("src", "."),
+    timeout : Float64 = 60.0,
   ) : ReceiptProfile
     stdin = "null"
     stdio = "piped"
-    resolved_cwd = cwd || cwd_test_id || TestId.new("src", ".")
-    cwd_id = resolved_cwd.is_a?(TestId) ? resolved_cwd : TestId.new(resolved_cwd.root, resolved_cwd.path)
-    target_str = target || Iyi::Config.host_target.to_s
-    os = {{ flag?(:darwin) ? "darwin" : (flag?(:linux) ? "linux" : (flag?(:win32) ? "windows" : "unknown")) }}
-
-    umask = current_umask
-    rlimits = current_rlimits
-    cgroup_mem = current_cgroup_mem
+    cwd_id = cwd.is_a?(TestId) ? cwd : TestId.new(cwd.root, cwd.path)
     loader_vars = "cleared"
-    kernel = current_kernel
 
     fp_digest = ReceiptProfile.compute_fp(
       argv: argv,
@@ -68,13 +86,13 @@ module Iyi::Stale::Profile
       stdio: stdio,
       cwd: cwd_id,
       timeout: timeout,
-      umask: umask,
-      rlimits: rlimits,
-      cgroup_mem: cgroup_mem,
+      umask: host.umask,
+      rlimits: host.rlimits,
+      cgroup_mem: host.cgroup_mem,
       loader_vars: loader_vars,
-      target: target_str,
-      os: os,
-      kernel: kernel
+      target: host.target,
+      os: host.os,
+      kernel: host.kernel
     )
 
     ReceiptProfile.new(
@@ -84,13 +102,13 @@ module Iyi::Stale::Profile
       stdio: stdio,
       cwd: cwd_id,
       timeout: timeout,
-      umask: umask,
-      rlimits: rlimits,
-      cgroup_mem: cgroup_mem,
+      umask: host.umask,
+      rlimits: host.rlimits,
+      cgroup_mem: host.cgroup_mem,
       loader_vars: loader_vars,
-      target: target_str,
-      os: os,
-      kernel: kernel
+      target: host.target,
+      os: host.os,
+      kernel: host.kernel
     )
   end
 

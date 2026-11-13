@@ -21,6 +21,9 @@ cleanup() {
 }
 trap cleanup EXIT
 export IYI_CACHE_DIR="$CACHE"
+# RG10: every fast serve these rows make is also checked against the compiler's
+# own answer. The rows that measure the unaudited fast path unset it themselves.
+export IYI_STALE_FAST_AUDIT=1
 
 if [ ! -x "$IYI" ]; then
   echo "iyi compiler not found at $IYI" >&2
@@ -35,6 +38,34 @@ json_cached() { json_field cached; }
 json_failed() { json_field failed; }
 expect_eq() { [ "$1" = "$2" ] || fail "expected $2, got $1${3:+: $3}"; }
 expect_contains() { case "$1" in *"$2"*) ;; *) fail "missing $2${3:+: $3}";; esac; }
+# One test's field from a `--json` document read on stdin: `json_test NAME FIELD`.
+json_test() { python3 -c '
+import json, os, sys
+name, field = sys.argv[1], sys.argv[2]
+tests = [test for test in json.load(sys.stdin)["tests"] if os.path.basename(test["file"]) == name]
+if len(tests) != 1:
+    sys.exit("stale_tests: %s appears %d times in the document" % (name, len(tests)))
+value = tests[0].get(field)
+print("" if value is None else value)
+' "$1" "$2"; }
+
+# A same-size edit that puts the file's mtime back. The size and mtime stamps
+# then match the recorded ones, so only ctime and the inode-level stamps can
+# show the edit, and user space cannot set ctime.
+same_size_edit() {
+  python3 -c '
+import os, sys
+path, old, new = sys.argv[1:4]
+before = os.stat(path)
+text = open(path).read()
+if len(old) != len(new) or text.count(old) != 1:
+    sys.exit("stale_tests: same-size edit does not apply to " + path)
+with open(path, "w") as handle:
+    handle.write(text.replace(old, new))
+os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+' "$@"
+}
+
 
 # One `--json --explain` run prints a decision line per test as it finishes,
 # then the JSON document, all on stdout and with no text summary
@@ -1173,4 +1204,363 @@ run_json "$WORK/macro-run" run_test.iyi >/dev/null
 row50_hit="$(run_json "$WORK/macro-run" run_test.iyi)"
 expect_eq "$(printf '%s' "$row50_hit" | json_cached)" 1 "cold macro run helper hits"
 
-echo "stale_tests PASSED: rows 1-50 are covered; rows 23-24 are CI-only"
+# Row 51 mutation proof: delete the fast records under tests-v1/fast. The next
+# run starts one compiler check per test and names the missing record, and the
+# run after it starts none again. Unaudited: this row measures the fast path.
+step 51 "unchanged tests start no compiler, and a deleted fast record costs one check per test"
+mkdir -p "$WORK/r51/lib"
+cat > "$WORK/r51/lib/util.iyi" <<'IYI'
+module lib/util
+pub def used(x : Int32) : Int32
+  x + 1
+end
+pub def unused(x : Int32) : Int32
+  x * 100
+end
+IYI
+cat > "$WORK/r51/reached_test.iyi" <<'IYI'
+import lib/util::{used}
+assert used(1) == 2
+IYI
+cat > "$WORK/r51/other_test.iyi" <<'IYI'
+assert 1 + 1 == 2
+IYI
+rm -rf "$CACHE/tests-v1"
+(unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r51" . >/dev/null)
+row51="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r51" .) )"
+expect_eq "$(printf '%s' "$row51" | json_cached)" 2 "unchanged run serves both tests"
+expect_eq "$(printf '%s' "$row51" | json_field builds)" 0 "unchanged run starts no compiler"
+expect_eq "$(printf '%s' "$row51" | json_test reached_test.iyi check)" inputs "reached test is checked against its recorded inputs"
+expect_eq "$(printf '%s' "$row51" | json_test other_test.iyi check)" inputs "unreached test is checked against its recorded inputs"
+rm -rf "$CACHE/tests-v1/fast"
+row51_lost="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r51" .) )"
+expect_eq "$(printf '%s' "$row51_lost" | json_cached)" 2 "receipts still hit without fast records"
+expect_eq "$(printf '%s' "$row51_lost" | json_field builds)" 2 "a missing fast record costs one compiler per test"
+expect_contains "$(printf '%s' "$row51_lost" | json_test reached_test.iyi check_reason)" "no record of the inputs" "the missing record is named"
+row51_back="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r51" .) )"
+expect_eq "$(printf '%s' "$row51_back" | json_field builds)" 0 "the run after the records are rebuilt starts no compiler"
+
+# Row 52 mutation proof: a same-size edit with its mtime restored changes only
+# ctime and the inode-level stamps. The edited module's test must rerun through
+# the compiler and name the module, while the other test stays a fast serve.
+# The negative control edits again and runs under IYI_STALE_FAST_DROP=ctime,
+# which must fail the audit: that fast path serves a build that changed.
+step 52 "a same-size edit with its mtime restored reruns the reached test"
+mkdir -p "$WORK/r52/lib"
+cat > "$WORK/r52/lib/r52util.iyi" <<'IYI'
+module lib/r52util
+pub def used(x : Int32) : Int32
+  x + 1
+end
+pub def unused(x : Int32) : Int32
+  x * 100
+end
+IYI
+cat > "$WORK/r52/reached_test.iyi" <<'IYI'
+import lib/r52util::{used}
+assert used(1) > 0
+IYI
+cat > "$WORK/r52/other_test.iyi" <<'IYI'
+assert 1 + 1 == 2
+IYI
+rm -rf "$CACHE/tests-v1"
+run_json "$WORK/r52" . >/dev/null
+row52_hit="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r52" .) )"
+expect_eq "$(printf '%s' "$row52_hit" | json_cached)" 2 "unchanged before the edit"
+same_size_edit "$WORK/r52/lib/r52util.iyi" "x + 1" "x + 2"
+row52="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r52" .) )"
+expect_eq "$(printf '%s' "$row52" | json_cached)" 1 "the same-size edit reruns only the reached test"
+expect_eq "$(printf '%s' "$row52" | json_test reached_test.iyi check)" compiler "the reached test is checked by the compiler"
+expect_contains "$(printf '%s' "$row52" | json_test reached_test.iyi check_reason)" "r52util.iyi" "the check names the edited module"
+expect_eq "$(printf '%s' "$row52" | json_test other_test.iyi check)" inputs "the unreached test is still served from its inputs"
+same_size_edit "$WORK/r52/lib/r52util.iyi" "x + 2" "x + 3"
+set +e
+row52_drop="$( (cd "$WORK/r52" && IYI_STALE_FAST_AUDIT=1 IYI_STALE_FAST_DROP=ctime "$IYI" test --cached --json .) )"
+row52_drop_status=$?
+set -e
+expect_eq "$row52_drop_status" 1 "a fast path blind to ctime fails the audit"
+expect_contains "$row52_drop" "fast path served" "the audit names the served change"
+
+# Row 53 mutation proof: a macro env read in a reached def. Changing its value
+# must rerun the test through the compiler. IYI_STALE_FAST_DROP=env makes the
+# fast path ignore the value, and the audit must fail the run.
+step 53 "a changed macro env read reruns the test"
+mkdir -p "$WORK/r53"
+cat > "$WORK/r53/env_test.iyi" <<'IYI'
+def fast_env : String
+  {{ env("STALE_FAST_X") || "unset" }}
+end
+assert fast_env == "one" || fast_env == "two"
+IYI
+rm -rf "$CACHE/tests-v1"
+(export STALE_FAST_X=one; run_json "$WORK/r53" env_test.iyi >/dev/null)
+row53_hit="$( (export STALE_FAST_X=one; run_json "$WORK/r53" env_test.iyi) )"
+expect_eq "$(printf '%s' "$row53_hit" | json_cached)" 1 "the unchanged macro env hits"
+row53="$( (export STALE_FAST_X=two; run_json "$WORK/r53" env_test.iyi) )"
+expect_eq "$(printf '%s' "$row53" | json_cached)" 0 "the changed macro env reruns"
+expect_eq "$(printf '%s' "$row53" | json_test env_test.iyi check)" compiler "the changed macro env is checked by the compiler"
+set +e
+row53_drop="$( (cd "$WORK/r53" && export STALE_FAST_X=one && IYI_STALE_FAST_DROP=env IYI_STALE_FAST_AUDIT=1 "$IYI" test --cached --json env_test.iyi) )"
+row53_drop_status=$?
+set -e
+expect_eq "$row53_drop_status" 1 "an env-blind fast path fails the audit"
+expect_contains "$row53_drop" "fast path served" "the audit names the served env change"
+
+# Row 54: a copy of the same compiler at another path has another compiler
+# stamp, so its first run is a compiler check that names the compiler, and its
+# second run is served. The first run is measured with the audit off: under the
+# audit every served test is compiled too, and `check` would read `compiler`
+# whether or not the stamps were compared. A runner that did not compare them
+# serves the copy's first run from the original's record, and this row fails.
+# IYI_STALE_FAST_DROP=compiler then ignores the stamps under the audit: the
+# copy's bytes are equal, so its Build is equal and the audit agrees. This row
+# does not cover a compiler that builds differently.
+step 54 "a copy of the compiler starts a check that names it, and its second run is served"
+mkdir -p "$WORK/r54"
+cat > "$WORK/r54/t_test.iyi" <<'IYI'
+assert 1 + 1 == 2
+IYI
+cp -p "$r28_iyi" "$WORK/r54/iyi-copy"
+r54_copy() { (cd "$WORK/r54" && IYI_PATH="$REPO/src" "$WORK/r54/iyi-copy" test "$@"); }
+rm -rf "$CACHE/tests-v1"
+run_json "$WORK/r54" t_test.iyi >/dev/null
+row54_hit="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r54" t_test.iyi) )"
+expect_eq "$(printf '%s' "$row54_hit" | json_test t_test.iyi check)" inputs "the original compiler's unchanged run is served"
+row54_copy="$( (unset IYI_STALE_FAST_AUDIT; r54_copy --cached --json t_test.iyi) )"
+expect_eq "$(printf '%s' "$row54_copy" | json_test t_test.iyi check)" compiler "the copy's first run is checked by the compiler"
+expect_contains "$(printf '%s' "$row54_copy" | json_test t_test.iyi check_reason)" "compiler" "the check names the compiler"
+row54_copy_again="$( (unset IYI_STALE_FAST_AUDIT; r54_copy --cached --json t_test.iyi) )"
+expect_eq "$(printf '%s' "$row54_copy_again" | json_test t_test.iyi check)" inputs "the copy's second run is served"
+run_json "$WORK/r54" t_test.iyi >/dev/null
+set +e
+row54_mutant="$( (cd "$WORK/r54" && IYI_PATH="$REPO/src" IYI_STALE_FAST_DROP=compiler IYI_STALE_FAST_AUDIT=1 "$WORK/r54/iyi-copy" test --cached --json t_test.iyi) )"
+row54_mutant_status=$?
+set -e
+expect_eq "$row54_mutant_status" 0 "a byte-equal copy agrees with its served verdict, so the audit passes"
+expect_eq "$(printf '%s' "$row54_mutant" | json_test t_test.iyi check)" compiler "under the audit the copy is compiled, not served"
+
+# Row 55 mutation proof: a macro run helper makes every check a compiler check,
+# because the helper's reads are invisible to the recorder. Dropping that reason
+# lets the second run be served from its inputs, and this row then fails.
+step 55 "a macro run helper is always checked by the compiler, and still hits"
+mkdir -p "$WORK/r55"
+cat > "$WORK/r55/helper.iyi" <<'IYI'
+puts "41 + 1"
+IYI
+cat > "$WORK/r55/run_test.iyi" <<'IYI'
+raise "macro run lost" unless ({{ run("./helper") }}) == 42
+IYI
+rm -rf "$CACHE/tests-v1"
+run_json "$WORK/r55" run_test.iyi >/dev/null
+row55="$(run_json "$WORK/r55" run_test.iyi)"
+expect_eq "$(printf '%s' "$row55" | json_cached)" 1 "the macro run test still hits"
+expect_eq "$(printf '%s' "$row55" | json_test run_test.iyi check)" compiler "the macro run is checked by the compiler"
+expect_contains "$(printf '%s' "$row55" | json_test run_test.iyi check_reason)" "a macro ran a program" "the reason names the macro run"
+
+# Row 56 mutation proof: a rerun that is not written back to the fast record
+# leaves the next unchanged run one compiler check short. Unaudited.
+step 56 "after a leaf edit's rerun, the next unchanged run starts no compiler"
+mkdir -p "$WORK/r56"
+cat > "$WORK/r56/leaf_test.iyi" <<'IYI'
+assert 1 + 1 == 2
+IYI
+cat > "$WORK/r56/keep_test.iyi" <<'IYI'
+assert 3 + 1 == 4
+IYI
+rm -rf "$CACHE/tests-v1"
+(unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r56" . >/dev/null)
+cat > "$WORK/r56/leaf_test.iyi" <<'IYI'
+assert 2 + 2 == 4
+IYI
+row56_edit="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r56" .) )"
+expect_eq "$(printf '%s' "$row56_edit" | json_cached)" 1 "the edited leaf reruns and the other test hits"
+expect_eq "$(printf '%s' "$row56_edit" | json_field builds)" 1 "the edited leaf starts one compiler"
+row56_next="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r56" .) )"
+expect_eq "$(printf '%s' "$row56_next" | json_field builds)" 0 "the next unchanged run starts no compiler"
+expect_eq "$(printf '%s' "$row56_next" | json_cached)" 2 "the next unchanged run serves both tests"
+
+# Row 57 mutation proof: -p 4 must change nothing a serial run reports. Serial
+# and parallel cached runs start from an empty store and must agree on every
+# field but `seconds`, and the parallel export must hold the same records. A
+# runner that orders output by finish time, or shares a receipt slot, fails here.
+step 57 "a parallel run gives the serial run's answers and the same export"
+for dir in "$WORK/basic" "$WORK/dir_test" "$WORK/env"; do
+  rm -rf "$CACHE/tests-v1"
+  row57_serial="$(cd "$dir" && "$IYI" test --cached --json -p 1 .)"
+  rm -rf "$CACHE/tests-v1"
+  row57_parallel="$(cd "$dir" && "$IYI" test --cached --json -p 4 .)"
+  python3 -c "
+import json, sys
+def answers(text):
+    doc = json.loads(text)
+    doc.pop('seconds', None)
+    for test in doc['tests']:
+        test.pop('seconds', None)
+    return doc
+if answers(sys.argv[1]) != answers(sys.argv[2]):
+    sys.exit('stale_tests: -p 1 and -p 4 disagree in ' + sys.argv[3])
+" "$row57_serial" "$row57_parallel" "$dir"
+  rm -rf "$CACHE/tests-v1"
+  (cd "$dir" && IYI_CI_PRODUCER=1 "$IYI" test --fresh --json -p 1 --export-index "audit:row57=$WORK/row57-serial.json" . > /dev/null)
+  rm -rf "$CACHE/tests-v1"
+  (cd "$dir" && IYI_CI_PRODUCER=1 "$IYI" test --fresh --json -p 4 --export-index "audit:row57=$WORK/row57-parallel.json" . > /dev/null)
+  python3 -c "
+import json, sys
+def snapshot(path):
+    doc = json.load(open(path))
+    records = []
+    for record in doc['records']:
+        record.pop('signature', None)
+        trace = record.get('trace')
+        if trace and 'observations' in trace:
+            for obs in trace['observations']:
+                obs.pop('task', None)
+            trace.pop('fp', None)
+        records.append(json.dumps(record, sort_keys=True))
+    return sorted(records), {key: value for key, value in doc.items() if key != 'records'}
+serial, parallel = snapshot(sys.argv[1]), snapshot(sys.argv[2])
+if not serial[0]:
+    sys.exit('stale_tests: the export for ' + sys.argv[3] + ' holds no records')
+if serial != parallel:
+    sys.exit('stale_tests: -p 1 and -p 4 export different records for ' + sys.argv[3])
+" "$WORK/row57-serial.json" "$WORK/row57-parallel.json" "$dir"
+done
+
+# Row 58 mutation proof: interrupt four tests run four at a time. The two slow
+# ones wait for a release that never comes, so the interrupt must kill them,
+# which their recorded pids show. The two quick ones keep their receipts, so a
+# rerun after the release hits exactly those. A runner that leaves a test group
+# alive, or drops finished receipts, fails here.
+step 58 "an interrupt during a parallel run kills every test and keeps finished receipts"
+r58="$WORK/r58"
+r58_ctl="$r58/ctl"
+mkdir -p "$r58_ctl"
+for name in quick_a quick_b; do
+  printf 'assert 1 + 1 == 2\n' > "$r58/${name}_test.iyi"
+done
+for name in slow_a slow_b; do
+  cat > "$r58/${name}_test.iyi" <<IYI
+import std/file::{File}
+import std/process::{Process}
+
+ctl = Program.env("R58_CTL") || ""
+raise "no R58_CTL" if ctl.empty?
+File.write(File.join(ctl, "pid-$name"), "#{Process.pid}")
+File.write(File.join(ctl, "started-$name"), "1")
+waited = 0
+while !File.exists?(File.join(ctl, "release"))
+  raise "never released" if waited >= 300
+  sleep(1)
+  waited += 1
+end
+IYI
+done
+rm -rf "$CACHE/tests-v1"
+(cd "$r58" && R58_CTL="$r58_ctl" exec "$IYI" test --fresh --json -p 4 .) > "$r58/interrupted.json" 2> "$r58/interrupted.err" &
+r58_pid=$!
+r58_ready=0
+for i in $(seq 1 1800); do
+  r58_receipts="$(find "$CACHE/tests-v1" -path '*/records/*' -name '*.json' 2>/dev/null | wc -l)" || r58_receipts=0
+  if [ "$r58_receipts" -ge 2 ] && [ -f "$r58_ctl/started-slow_a" ] && [ -f "$r58_ctl/started-slow_b" ]; then
+    r58_ready=1
+    break
+  fi
+  if ! kill -0 "$r58_pid" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+if [ "$r58_ready" -ne 1 ]; then
+  cat "$r58/interrupted.json" "$r58/interrupted.err" >&2
+  fail "the parallel run never had both quick receipts and both slow tests started"
+fi
+kill -INT "$r58_pid"
+set +e
+wait "$r58_pid"
+r58_status=$?
+set -e
+expect_eq "$r58_status" 130 "an interrupted parallel runner exits 130"
+# A killed test whose parent has exited is a zombie until something reaps it.
+# An init does at once; the first process of a container may never, and
+# `kill -0` answers for a zombie as it does for a running test. On the Linux
+# runner this row found a killed test's pid still answering five seconds
+# after the runner had exited 130, where it passes on darwin. So a pid whose
+# state in /proc is Z is gone, and a pid that is neither gone nor a zombie
+# prints its state, so the next failure says which it was.
+r58_state() { sed -e 's/^.*) //' -e 's/ .*//' "/proc/$1/stat" 2>/dev/null || true; }
+for name in slow_a slow_b; do
+  pid="$(cat "$r58_ctl/pid-$name")"
+  gone=0
+  for i in $(seq 1 50); do
+    if ! kill -0 "$pid" 2>/dev/null || [ "$(r58_state "$pid")" = Z ]; then
+      gone=1
+      break
+    fi
+    sleep 0.1
+  done
+  expect_eq "$gone" 1 "test $name (pid $pid) is gone after the interrupt (state in /proc: '$(r58_state "$pid")')"
+done
+touch "$r58_ctl/release"
+set +e
+r58_after="$(cd "$r58" && R58_CTL="$r58_ctl" "$IYI" test --cached --json -p 4 .)"
+r58_after_status=$?
+set -e
+if [ "$r58_after_status" -ne 0 ]; then
+  printf '%s\n' "$r58_after" >&2
+  fail "the rerun after the interrupt exited $r58_after_status"
+fi
+expect_eq "$(printf '%s' "$r58_after" | json_cached)" 2 "the two finished tests keep their receipts"
+expect_eq "$(printf '%s' "$r58_after" | json_failed)" 0 "the released tests pass on rerun"
+
+# Row 59 mutation proof: row 14's contradiction, built from RG5's patched
+# file_read observer. The observer drops the read, so the receipt survives an
+# input change and the test hits. A fresh run then contradicts it, and the
+# receipt still validates. A fast path that ignores that contradiction serves
+# it, and this row fails.
+step 59 "a contradicted receipt that validates is not served by the fast path"
+r59="$WORK/r59"
+mkdir -p "$r59/runtime"
+cp -R "$REPO/src" "$r59/runtime/src"
+python3 - "$r59/runtime/src/std/observe.iyi" <<'PY'
+import sys
+path = sys.argv[1]
+source = open(path).read()
+method = "pub def __iyi_observe_file_read"
+start = source.find(method)
+finish = source.find("\nend", start)
+signature_end = source.find("\n", start)
+if start < 0 or finish < 0:
+    sys.exit("stale_tests: could not patch the file_read observer")
+with open(path, "w") as handle:
+    handle.write(source[:signature_end + 1] + "  return\n" + source[finish + 1:])
+PY
+printf 'before' > "$r59/input.txt"
+cat > "$r59/read_test.iyi" <<'IYI'
+import std/file::{File}
+import std/env::{ENV}
+value = File.read(ENV["R59_INPUT"])
+assert value == "before"
+IYI
+r59_run() { (cd "$r59" && R59_INPUT="$r59/input.txt" IYI_PATH="$r59/runtime/src" "$IYI" test "$@"); }
+rm -rf "$CACHE/tests-v1"
+row59_first="$(r59_run --cached --json read_test.iyi)"
+expect_eq "$(printf '%s' "$row59_first" | json_cached)" 0 "the recording run misses"
+row59_second="$(r59_run --cached --json read_test.iyi)"
+expect_eq "$(printf '%s' "$row59_second" | json_cached)" 1 "the unchanged run hits"
+printf 'after' > "$r59/input.txt"
+row59_false="$(r59_run --cached --json read_test.iyi)"
+expect_eq "$(printf '%s' "$row59_false" | json_cached)" 1 "the dropped observer hits after the input changed"
+set +e
+row59_fresh="$(r59_run --fresh --json read_test.iyi)"
+row59_fresh_status=$?
+set -e
+expect_eq "$row59_fresh_status" 1 "the fresh run contradicts the receipt"
+expect_eq "$(printf '%s' "$row59_fresh" | json_failed)" 1 "the fresh run fails the assertion"
+set +e
+row59_contradicted="$(r59_run --cached --json read_test.iyi)"
+set -e
+expect_eq "$(printf '%s' "$row59_contradicted" | json_cached)" 0 "a contradicted receipt is not served"
+expect_eq "$(printf '%s' "$row59_contradicted" | json_test read_test.iyi check)" compiler "a contradicted receipt is checked by the compiler"
+expect_contains "$(printf '%s' "$row59_contradicted" | json_test read_test.iyi check_reason)" "a contradicted receipt validates" "the check names the contradiction"
+
+echo "stale_tests PASSED: rows 1-59 are covered; rows 23-24 are CI-only"

@@ -424,3 +424,184 @@ describe "Iyi::Stale S3g: Check, MachineKey, KeyFile, Accept/Block" do
     end
   end
 end
+
+describe "Iyi::Stale inputs record (--stale-inputs)" do
+  it "FileStamp takes size, times, device and inode from one stat, and digests a racy file" do
+    with_tempfile("stamp.txt") do |path|
+      File.write(path, "hello")
+      stamp = Iyi::Stale::FileStamp.of(path)
+      stamp.kind.file?.should be_true
+      stamp.size.should eq(5)
+      stamp.mtime.should be > 0
+      {% if flag?(:unix) %}
+        stamp.ctime.should be > 0
+        stamp.ino.should be > 0
+        stamp.dev.should be > 0
+        # Written just now, so its times cannot vouch for it: the digest does.
+        stamp.digest.should eq(Crystal::Digest::MD5.hexdigest("hello"))
+      {% end %}
+    end
+  end
+
+  it "a missing path is an absent stamp" do
+    Iyi::Stale::FileStamp.of("/nonexistent/iyi-spec/stamp").kind.absent?.should be_true
+  end
+
+  it "a rewrite of the same size changes the change time" do
+    with_tempfile("rewrite.txt") do |path|
+      File.write(path, "aaaa")
+      before = Iyi::Stale::FileStamp.of(path)
+      sleep 50.milliseconds
+      File.write(path, "bbbb")
+      after = Iyi::Stale::FileStamp.of(path)
+      after.size.should eq(before.size)
+      {% if flag?(:unix) %}
+        after.ctime.should_not eq(before.ctime)
+      {% end %}
+    end
+  end
+
+  it "a file replaced by rename is seen under its new inode" do
+    with_tempfile("inode.txt", "inode-new.txt") do |path, fresh|
+      File.write(path, "one")
+      before = Iyi::Stale::FileStamp.of(path)
+      File.write(fresh, "two")
+      File.rename(fresh, path)
+      after = Iyi::Stale::FileStamp.of(path)
+      {% if flag?(:unix) %}
+        after.ino.should_not eq(before.ino)
+      {% end %}
+    end
+  end
+
+  it "the recorder stamps a file it looked at with its change time and inode" do
+    with_tempfile("looked.txt") do |path|
+      File.write(path, "x")
+      inputs = Iyi::BuildInputs.new(nil, stale: true)
+      inputs.looked_at(path)
+      stamp = inputs.files[Iyi::BuildInputs.key(path)]
+      stamp.kind.file?.should be_true
+      {% if flag?(:unix) %}
+        stamp.ctime.should be > 0
+        stamp.ino.should be > 0
+      {% end %}
+    end
+  end
+
+  it "writes the inputs record in the contract's shape, with the forced environment names" do
+    with_tempfile("shape.txt", "shape.json") do |source_path, record_path|
+      File.write(source_path, "x")
+      dir = File.dirname(source_path)
+      inputs = Iyi::BuildInputs.new(nil, stale: true)
+      inputs.looked_at(source_path)
+      inputs.listed(dir)
+      inputs.pkg_config_read("zlib", false, "-lz")
+      Iyi::Stale::InputsFile.write(record_path, inputs, "a" * 64, "b" * 64)
+
+      File.file?(record_path).should be_true
+      data = JSON.parse(File.read(record_path))
+      data["format"].as_s.should eq("iyi-stale-inputs")
+      data["version"].as_i.should eq(1)
+      data["local_build"].as_s.should eq("a" * 64)
+      data["portable_build"].as_s.should eq("b" * 64)
+      data["env_enumerated"].as_bool.should be_false
+      data["observed_env"].as_h.has_key?("PATH").should be_true
+      data["listings"].as_h.has_key?(Iyi::BuildInputs.key(dir)).should be_true
+      data["pkg_config"].as_a[0].as_a[0].as_s.should eq("zlib")
+      entry = data["files"].as_a.find { |file| file.as_a[0].as_s == Iyi::BuildInputs.key(source_path) }.not_nil!
+      entry.as_a.size.should eq(8)
+      entry[1].as_s.should eq("file")
+      entry[2].as_i64.should eq(1)
+      {% if flag?(:unix) %}
+        entry[4].as_i64.should be > 0
+        entry[6].as_i64.should be > 0
+      {% end %}
+    end
+  end
+
+  it "records an inputs file only when the build is reusable and its recorder heard no reason" do
+    stale = Iyi::BuildInputs.new(nil, stale: true)
+    no_reasons = [] of Iyi::Stale::KeyFile::NotReusable
+    refused = [Iyi::Stale::KeyFile::NotReusable.new("refused build mode", "x", nil)]
+
+    Iyi::Stale::Check.records_inputs?(no_reasons, stale).should be_true
+    Iyi::Stale::Check.records_inputs?(refused, stale).should be_false
+    Iyi::Stale::Check.records_inputs?(no_reasons, Iyi::BuildInputs.new(nil)).should be_false
+    Iyi::Stale::Check.records_inputs?(no_reasons, nil).should be_false
+
+    stale.cannot("a macro ran a program")
+    Iyi::Stale::Check.records_inputs?(no_reasons, stale).should be_false
+  end
+
+  it "stale inputs leave the Build unchanged, and write the record of a reusable build everywhere but Windows" do
+    program = Iyi::Program.new
+    program.color = false
+    parser = program.new_parser("def foo(x); x; end; a = foo(41)")
+    node = program.semantic(program.normalize(parser.parse))
+    source = Iyi::Compiler::Source.new("test_bare.iyi", "def foo(x); x; end; a = foo(41)")
+
+    with_tempfile("plain-build.key") do |plain_key|
+      with_tempfile("recorded-build.key") do |recorded_key|
+        with_tempfile("recorded-build.inputs.json") do |inputs_path|
+          plain_inputs = Iyi::BuildInputs.new(nil, stale: true)
+          Iyi::BuildInputs.current = plain_inputs
+          begin
+            plain_compiler = create_spec_compiler
+            plain_compiler.stale_key = plain_key
+            plain = Iyi::Stale::Check.run(plain_compiler, program, node, source)
+          ensure
+            Iyi::BuildInputs.current = nil
+          end
+
+          recorded_inputs = Iyi::BuildInputs.new(nil, stale: true)
+          Iyi::BuildInputs.current = recorded_inputs
+          begin
+            recorded_compiler = create_spec_compiler
+            recorded_compiler.stale_key = recorded_key
+            recorded_compiler.stale_inputs = inputs_path
+            recorded = Iyi::Stale::Check.run(recorded_compiler, program, node, source)
+          ensure
+            Iyi::BuildInputs.current = nil
+          end
+
+          recorded.not_reusable.should be_empty
+          recorded.local_build_hex.should eq(plain.local_build_hex)
+          recorded.portable_build_hex.should eq(plain.portable_build_hex)
+          {% if flag?(:win32) %}
+            # No change time there, so `Check.run` writes no record at all.
+            File.file?(inputs_path).should be_false
+          {% else %}
+            File.file?(inputs_path).should be_true
+            JSON.parse(File.read(inputs_path))["local_build"].as_s.should eq(recorded.local_build_hex)
+          {% end %}
+        end
+      end
+    end
+  end
+
+  it "writes no inputs record for a build that is not reusable" do
+    program = Iyi::Program.new
+    program.color = false
+    parser = program.new_parser("def foo(x); x; end; a = foo(41)")
+    node = program.semantic(program.normalize(parser.parse))
+    source = Iyi::Compiler::Source.new("test_bare.iyi", "def foo(x); x; end; a = foo(41)")
+
+    with_tempfile("refused-build.key") do |refused_key|
+      with_tempfile("refused-build.inputs.json") do |inputs_path|
+        Iyi::BuildInputs.current = Iyi::BuildInputs.new(nil, stale: true)
+        begin
+          compiler = create_spec_compiler
+          compiler.stale_key = refused_key
+          compiler.stale_inputs = inputs_path
+          compiler.crystal_library = true
+          res = Iyi::Stale::Check.run(compiler, program, node, source)
+        ensure
+          Iyi::BuildInputs.current = nil
+        end
+
+        res.not_reusable.should_not be_empty
+        File.file?(inputs_path).should be_false
+      end
+    end
+  end
+end

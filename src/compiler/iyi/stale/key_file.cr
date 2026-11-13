@@ -65,13 +65,15 @@ module Iyi::Stale
       getter not_reusable : Array(NotReusable)?
       getter hit : Hit?
       getter blocked : Bool?
+      getter inputs_refusal : String?
       getter reach : Hash(String, JSON::Any)?
       getter rg3 : Array(JSON::Any)?
     end
 
     def self.read_rules(path : String?) : Array(StaleRule)
-      return [] of StaleRule unless path && File.file?(path)
+      return [] of StaleRule unless path
       BuildInputs.paused do
+        return [] of StaleRule unless File.file?(path)
         content = File.read(path)
         Array(StaleRule).from_json(content)
       rescue
@@ -95,6 +97,7 @@ module Iyi::Stale
       blocked : Bool,
       reach : Reach,
       rg3 : Array(Effects::RG3Site)? = nil,
+      inputs_refusal : String? = nil,
     ) : Nil
       json = String.build do |io|
         JSON.build(io, indent: 2) do |j|
@@ -176,6 +179,7 @@ module Iyi::Stale
                 j.null
               end
             end
+            j.field "inputs_refusal", inputs_refusal
             j.field "blocked", blocked
             j.field "reach" do
               j.object do

@@ -119,6 +119,7 @@ describe "Iyi::Stale S6a: Store and Receipts" do
       Dir.exists?(store.masks_dir).should be_true
       Dir.exists?(store.markers_dir).should be_true
       Dir.exists?(store.imported_dir).should be_true
+      Dir.exists?(store.fast_dir).should be_true
 
       # Verify layout paths match §2.8
       store.root_dir.should eq(File.join(cache_root, "tests-v1"))
@@ -126,6 +127,7 @@ describe "Iyi::Stale S6a: Store and Receipts" do
       store.masks_dir.should eq(File.join(cache_root, "tests-v1", "masks"))
       store.markers_dir.should eq(File.join(cache_root, "tests-v1", "markers"))
       store.imported_dir.should eq(File.join(cache_root, "tests-v1", "imported"))
+      store.fast_dir.should eq(File.join(cache_root, "tests-v1", "fast"))
       store.lock_path.should eq(File.join(cache_root, "tests-v1", "lock"))
       store.seq_path.should eq(File.join(cache_root, "tests-v1", "seq"))
     end
@@ -163,7 +165,36 @@ describe "Iyi::Stale S6a: Store and Receipts" do
     end
   end
 
-  it "records a receipt and stores it under records/<ab>/<signature>.json" do
+  it "keeps each test's receipts in its own directory and reads them back" do
+    with_tempfile("store_per_test") do |cache_root|
+      store = Iyi::Stale::Store.new(cache_root)
+      store.ensure_directories!
+      target = "x86_64-linux-gnu"
+
+      test_a = make_test_id("per_a_test.iyi")
+      test_b = make_test_id("per_b_test.iyi")
+      rec_a = make_receipt(test_a, callpath: "1" * 64, target: target)
+      rec_b = make_receipt(test_b, callpath: "2" * 64, target: target)
+      store.record(rec_a)
+      store.record(rec_b)
+
+      store.test_dir(test_a).should eq(File.join(store.records_dir, Iyi::Stale.hex(Iyi::Stale::Store.d_test_id(test_a))))
+      path_a = store.record_path(test_a, rec_a.signature)
+      File.file?(path_a).should be_true
+      File.file?(store.record_path(test_b, rec_b.signature)).should be_true
+      File.file?(store.record_path(test_b, rec_a.signature)).should be_false
+
+      loaded = Iyi::Stale::Receipt.from_json(File.read(path_a))
+      loaded.to_json.should eq(File.read(path_a))
+      loaded.seq.should eq(rec_a.seq)
+      loaded.signature.should eq(rec_a.signature)
+
+      store.candidates(test_a, target, imported: false).map(&.signature).should eq([rec_a.signature])
+      store.candidates(test_b, target, imported: false).map(&.signature).should eq([rec_b.signature])
+    end
+  end
+
+  it "records a receipt under records/<hex D(test)>/<signature>.json" do
     with_tempfile("store_record") do |cache_root|
       store = Iyi::Stale::Store.new(cache_root)
       store.ensure_directories!
@@ -175,8 +206,9 @@ describe "Iyi::Stale S6a: Store and Receipts" do
       rec.seq.should eq(1_u64)
       rec.signature.size.should eq(64)
 
-      prefix = rec.signature[0..1]
-      expected_path = File.join(store.records_dir, prefix, "#{rec.signature}.json")
+      digest_dir = Iyi::Stale.hex(Iyi::Stale::Store.d_test_id(test))
+      expected_path = File.join(store.records_dir, digest_dir, "#{rec.signature}.json")
+      expected_path.should eq(store.record_path(test, rec.signature))
       File.file?(expected_path).should be_true
 
       loaded = Iyi::Stale::Receipt.from_json(File.read(expected_path))
@@ -198,7 +230,7 @@ describe "Iyi::Stale S6a: Store and Receipts" do
       store.record(rec)
 
       # Mark contradicted in store
-      path = store.record_path(rec.signature)
+      path = store.record_path(test, rec.signature)
       loaded = Iyi::Stale::Receipt.from_json(File.read(path))
       loaded.contradicted = true
       Iyi::Stale::Store.atomic_write(path, loaded.to_json)
@@ -446,7 +478,7 @@ describe "Iyi::Stale S6a: Store and Receipts" do
       imported_revoked.should eq(1)
 
       # Verify local receipt is marked contradicted
-      reloaded_local = Iyi::Stale::Receipt.from_json(File.read(store.record_path(local_receipt.signature)))
+      reloaded_local = Iyi::Stale::Receipt.from_json(File.read(store.record_path(test, local_receipt.signature)))
       reloaded_local.contradicted.should be_true
 
       # Verify mask was written for portable receipt
@@ -516,7 +548,7 @@ describe "Iyi::Stale S6a: Store and Receipts" do
       rec = make_receipt(test, target: target)
       store.record(rec)
 
-      path = store.record_path(rec.signature)
+      path = store.record_path(test, rec.signature)
       File.file?(path).should be_true
 
       # Corrupt the file with truncated JSON that still carries the path
@@ -566,8 +598,8 @@ describe "Iyi::Stale S6a: Store and Receipts" do
       Iyi::Stale::Store.atomic_write(store.mask_path(rec_old.signature), mask.to_json)
       store.write_marker(test_old)
 
-      File.file?(store.record_path(rec_current.signature)).should be_true
-      File.file?(store.record_path(rec_old.signature)).should be_true
+      File.file?(store.record_path(test_current, rec_current.signature)).should be_true
+      File.file?(store.record_path(test_old, rec_old.signature)).should be_true
       File.file?(store.mask_path(rec_old.signature)).should be_true
       File.file?(store.marker_path(test_old)).should be_true
 
@@ -576,14 +608,123 @@ describe "Iyi::Stale S6a: Store and Receipts" do
       pruned.should eq(1)
 
       # Current toolchain record is kept
-      File.file?(store.record_path(rec_current.signature)).should be_true
+      File.file?(store.record_path(test_current, rec_current.signature)).should be_true
 
       # Old toolchain record is deleted
-      File.file?(store.record_path(rec_old.signature)).should be_false
+      File.file?(store.record_path(test_old, rec_old.signature)).should be_false
 
       # Masks and markers are NEVER deleted by toolchain pruning
       File.file?(store.mask_path(rec_old.signature)).should be_true
       File.file?(store.marker_path(test_old)).should be_true
+    end
+  end
+
+  it "a lookup for one test never reads another test's directory" do
+    with_tempfile("store_isolated_dir") do |cache_root|
+      store = Iyi::Stale::Store.new(cache_root)
+      store.ensure_directories!
+      target = "x86_64-linux-gnu"
+      test_x = make_test_id("isolated_x_test.iyi")
+      test_y = make_test_id("isolated_y_test.iyi")
+
+      rec_x = make_receipt(test_x, callpath: "1" * 64, target: target)
+      store.record(rec_x)
+      rec_y = make_receipt(test_y, callpath: "2" * 64, target: target)
+      store.record(rec_y)
+
+      # Corrupt Y's only receipt. Looking up X would have found and replaced it
+      # when lookups read every directory.
+      y_path = store.record_path(test_y, rec_y.signature)
+      corrupt = "{\"version\": 1, \"test\": {\"root\": \"src\", \"path\": \"isolated_y_test.iyi\"}, \"corrupt\": true"
+      File.write(y_path, corrupt)
+
+      store.candidates(test_x, target).map(&.signature).should eq([rec_x.signature])
+      store.blockers(test_x).size.should eq(0)
+      store.has_marker?(test_x).should be_false
+      File.read(y_path).should eq(corrupt)
+
+      store.revoke(test_x) { |_| true }.should eq({1, 0})
+      File.read(y_path).should eq(corrupt)
+
+      # Y's own lookup still meets its corrupt record and marks Y
+      store.candidates(test_y, target).size.should eq(0)
+      store.has_marker?(test_y).should be_true
+    end
+  end
+
+  it "ignores old two-character record directories and prunes them" do
+    with_tempfile("store_old_layout") do |cache_root|
+      store = Iyi::Stale::Store.new(cache_root)
+      store.ensure_directories!
+      target = "x86_64-linux-gnu"
+      test = make_test_id("old_layout_test.iyi")
+      tc = "1" * 64
+
+      # A receipt written in the old layout, under records/<first two hex of its signature>/
+      old_rec = make_receipt(test, toolchain: tc, callpath: "7" * 64, target: target)
+      old_dir = File.join(store.records_dir, old_rec.signature[0..1])
+      Dir.mkdir_p(old_dir)
+      old_file = File.join(old_dir, "#{old_rec.signature}.json")
+      File.write(old_file, old_rec.to_json)
+
+      store.candidates(test, target).size.should eq(0)
+      File.file?(old_file).should be_true
+
+      new_rec = make_receipt(test, toolchain: tc, callpath: "8" * 64, target: target)
+      store.record(new_rec)
+      store.candidates(test, target, imported: false).map(&.signature).should eq([new_rec.signature])
+
+      store.prune_outdated_toolchains(current_toolchain: tc).should eq(1)
+      Dir.exists?(old_dir).should be_false
+      File.file?(store.record_path(test, new_rec.signature)).should be_true
+    end
+  end
+
+  it "candidates with imported: false returns local passes and reads no snapshot" do
+    with_tempfile("store_local_only") do |cache_root|
+      store = Iyi::Stale::Store.new(cache_root)
+      store.ensure_directories!
+      target = "x86_64-linux-gnu"
+      test = make_test_id("local_only_test.iyi")
+
+      local = make_receipt(test, callpath: "1" * 64, target: target)
+      store.record(local)
+      imported = make_receipt(test, callpath: "a" * 64, target: target, mode: "portable")
+      store.import_snapshot(Iyi::Stale::Snapshot.new(namespace: "alpha", target: target, records: [imported]))
+
+      store.candidates(test, target, imported: false).map(&.signature).should eq([local.signature])
+      store.imported_parses.should eq(0)
+
+      store.candidates(test, target).size.should eq(2)
+      store.imported_parses.should eq(1)
+    end
+  end
+
+  it "parses each imported snapshot once per store and re-reads it when its file changes" do
+    with_tempfile("store_imported_index") do |cache_root|
+      store = Iyi::Stale::Store.new(cache_root)
+      store.ensure_directories!
+      target = "x86_64-linux-gnu"
+      test = make_test_id("indexed_test.iyi")
+      other = make_test_id("indexed_other.iyi")
+
+      first = make_receipt(test, callpath: "a" * 64, target: target, mode: "portable")
+      store.import_snapshot(Iyi::Stale::Snapshot.new(namespace: "alpha", target: target, records: [first]))
+
+      3.times { store.candidates(other, target).size.should eq(0) }
+      3.times { store.candidates(test, target).map(&.signature).should eq([first.signature]) }
+      store.imported_parses.should eq(1)
+
+      # Another process replaces the file. Its size and mtime change, so the next
+      # lookup parses the new content once and serves it from the index after that.
+      second = make_receipt(test, callpath: "b" * 64, target: target, mode: "portable")
+      extra = make_receipt(other, callpath: "c" * 64, target: target, mode: "portable")
+      replaced = Iyi::Stale::Snapshot.new(namespace: "alpha", target: target, records: [second, extra])
+      Iyi::Stale::Store.atomic_write(store.imported_path("alpha"), replaced.to_json)
+
+      store.candidates(test, target).map(&.signature).should eq([second.signature])
+      store.candidates(test, target).map(&.signature).should eq([second.signature])
+      store.imported_parses.should eq(2)
     end
   end
 

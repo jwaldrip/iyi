@@ -264,6 +264,7 @@ module Iyi
     property stale_accept : String? = nil
     property stale_block : String? = nil
     property stale_dump_elements : String? = nil
+    property stale_inputs : String? = nil
 
     def stale_build? : Bool
       !@stale_key.nil?
@@ -609,7 +610,7 @@ module Iyi
       emit_bind emit_targets frame_pointers iyi_direct_link iyi_keep
       iyi_link_driver_only link_flags mattr mcmodel mcpu n_threads no_cleanup
       program progress_tracker single_module stale_drop stderr target_machine verbose
-      stale_accept stale_block stale_dump_elements stale_key
+      stale_accept stale_block stale_dump_elements stale_inputs stale_key
     )
 
     # Everything that changes what the prelude analyses *to*. Macros branch on
@@ -651,7 +652,7 @@ module Iyi
 
     DISPLAY_ONLY = %w(
       color dependency_printer progress_tracker show_error_trace stale_accept
-      stale_block stale_drop stale_dump_elements stale_key stderr stdout verbose warnings
+      stale_block stale_drop stale_dump_elements stale_inputs stale_key stderr stdout verbose warnings
     )
 
     def behavior_key : Stale::Digest
@@ -3683,42 +3684,46 @@ module Iyi
         modules
       end
 
-      output_dir = CacheDir.instance.directory_for(sources)
+      # iyi: everything written into the cache directory is written under
+      # its lock, `bc_flags` included, which used to be written before the
+      # lock was taken (`CacheDir#claim`).
+      built = CacheDir.instance.claim(sources.first.filename) do |output_dir|
+        bc_flags_changed = bc_flags_changed? output_dir
+        target_triple = target_machine.triple
 
-      bc_flags_changed = bc_flags_changed? output_dir
-      target_triple = target_machine.triple
-
-      units = llvm_modules.map do |type_name, info|
-        llvm_mod = info.mod
-        llvm_mod.target = target_triple
-        CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, verify: !single_module)
-      end
-
-      # iyi: one optimised module is cut into partitions that are optimised
-      # on as many cores (`ReleasePartition`). Not for a cross-compile or an
-      # `--emit`, which each answer with the one module's file, and not
-      # where the partitions would need LLVM's legacy pass manager.
-      {% unless LibLLVM::IS_LT_130 %}
-        if single_module && !@cross_compile && @emit_targets.none? && !@optimization_mode.o0? && units.size == 1
-          @progress_tracker.stage("Codegen (partition)") do
-            units.first.partition(release_partitions, release_import, release_inline)
-          end
+        units = llvm_modules.map do |type_name, info|
+          llvm_mod = info.mod
+          llvm_mod.target = target_triple
+          CompilationUnit.new(self, program, type_name, llvm_mod, output_dir, bc_flags_changed, verify: !single_module)
         end
-      {% end %}
 
-      {% if LibLLVM::IS_LT_170 %}
-        # initialize the legacy pass manager once in the main thread/process
-        # before we start codegen in threads (MT) or processes (fork)
-        init_llvm_legacy_pass_manager unless optimization_mode.o0?
-      {% end %}
+        # iyi: one optimised module is cut into partitions that are optimised
+        # on as many cores (`ReleasePartition`). Not for a cross-compile or an
+        # `--emit`, which each answer with the one module's file, and not
+        # where the partitions would need LLVM's legacy pass manager.
+        {% unless LibLLVM::IS_LT_130 %}
+          if single_module && !@cross_compile && @emit_targets.none? && !@optimization_mode.o0? && units.size == 1
+            @progress_tracker.stage("Codegen (partition)") do
+              units.first.partition(release_partitions, release_import, release_inline)
+            end
+          end
+        {% end %}
 
-      if @cross_compile
-        cross_compile program, units, output_filename
-      else
-        units = with_file_lock(output_dir) do
+        {% if LibLLVM::IS_LT_170 %}
+          # initialize the legacy pass manager once in the main thread/process
+          # before we start codegen in threads (MT) or processes (fork)
+          init_llvm_legacy_pass_manager unless optimization_mode.o0?
+        {% end %}
+
+        if @cross_compile
+          cross_compile program, units, output_filename
+          units
+        else
           codegen program, units, output_filename, output_dir
         end
+      end
 
+      unless @cross_compile
         {% if flag?(:darwin) %}
           run_dsymutil(output_filename) unless debug.none?
         {% end %}
@@ -3730,15 +3735,7 @@ module Iyi
 
       CacheDir.instance.cleanup if @cleanup
 
-      units
-    end
-
-    private def with_file_lock(output_dir, &)
-      File.open(File.join(output_dir, "compiler.lock"), "w") do |file|
-        file.flock_exclusive do
-          yield
-        end
-      end
+      built
     end
 
     private def run_dsymutil(filename)
@@ -4836,7 +4833,8 @@ module Iyi
           hit: result.hit,
           blocked: result.blocked?,
           reach: reach,
-          rg3: result.rg3
+          rg3: result.rg3,
+          inputs_refusal: Stale::Check.inputs_refusal
         )
       elsif key_file = @stale_key
         primary_source = source_or_sources.is_a?(Array) ? source_or_sources.first : source_or_sources

@@ -7,6 +7,7 @@ require "./call_path"
 require "./toolchain"
 require "./link"
 require "./compiler_env"
+require "./inputs_file"
 require "../compiler"
 require "../program"
 require "../semantic/effects"
@@ -56,6 +57,23 @@ module Iyi::Stale
   end
 
   module Check
+    # Whether the inputs record is written for this build: only for a reusable
+    # build whose stale recorder heard every input. Anything else leaves no
+    # record, and the next check compiles.
+    def self.records_inputs?(not_reusable : Array(KeyFile::NotReusable), inputs : BuildInputs?) : Bool
+      return false unless inputs
+      not_reusable.empty? && inputs.stale? && inputs.reasons.empty?
+    end
+
+    # The first reason the recorder kept this build's inputs from its record,
+    # for the key file: the fast path reads it to say why a test compiles. Nil
+    # when the recorder heard everything, or when it is not a stale recorder.
+    def self.inputs_refusal : String?
+      inputs = BuildInputs.current
+      return nil unless inputs && inputs.stale?
+      inputs.reasons.first?
+    end
+
     def self.closure_check(program : Program, reach : Reach) : Effects::ClosureResult
       Effects.closure_check(program, reach)
     end
@@ -201,6 +219,19 @@ module Iyi::Stale
       local_build_hex = Stale.hex(local_build)
       portable_build_hex = Stale.hex(portable_build)
 
+      # The inputs this build read, for the fast path: written only for a
+      # reusable build whose recorder heard every input (`records_inputs?`).
+      # Anything else leaves no record, and the next check compiles.
+      {% unless flag?(:win32) %}
+        if (inputs_path = compiler.stale_inputs) && (inputs = BuildInputs.current) && Check.records_inputs?(not_reusable, inputs)
+          begin
+            InputsFile.write(inputs_path, inputs, local_build_hex, portable_build_hex)
+          rescue IO::Error
+            # Without the record the next check compiles, which it does anyway.
+          end
+        end
+      {% end %}
+
       blocked = block_rules.any? do |rule|
         (rule.mode == "local" && rule.build.compare(local_build_hex, case_insensitive: true) == 0) ||
           (rule.mode == "portable" && rule.build.compare(portable_build_hex, case_insensitive: true) == 0)
@@ -232,7 +263,8 @@ module Iyi::Stale
           hit: hit,
           blocked: blocked,
           reach: reach,
-          rg3: closure.rg3_sites
+          rg3: closure.rg3_sites,
+          inputs_refusal: Check.inputs_refusal
         )
       end
 

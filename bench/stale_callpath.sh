@@ -634,6 +634,8 @@ run_rg8() {
 run_rg9() {
   echo "== Running RG9: CallPathFp process and warm-prelude determinism =="
   "$PY" "$REPO/bench/stale_rg9.py" --repo "$REPO" --compiler "$IYI" --work "$WORK/rg9"
+  echo "== Running RG9 inputs: local.build is the same with --stale-inputs =="
+  "$PY" "$REPO/bench/stale_rg9.py" --repo "$REPO" --compiler "$IYI" --work "$WORK/rg9-inputs" --inputs-check
 }
 
 case "$MODE" in

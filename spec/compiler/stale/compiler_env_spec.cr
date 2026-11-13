@@ -286,6 +286,72 @@ describe "Iyi::Stale S3c: env-only recorder, CompilerEnvFp" do
       env_only_inputs.files.should be_empty
       env_only_inputs.reasons.should be_empty
     end
+
+    it "a stale recorder fingerprints the environment as an env-only one does, macro env included" do
+      ENV["__IYI_SPEC_STALE_ENV__"] = "stale_val"
+      begin
+        env_only_inputs = Iyi::BuildInputs.new(nil, env_only: true)
+        Iyi::BuildInputs.current = env_only_inputs
+        begin
+          assert_macro %({{env("__IYI_SPEC_STALE_ENV__")}}), %("stale_val")
+          ENV.has_key?("HOME")
+        ensure
+          Iyi::BuildInputs.current = nil
+        end
+
+        stale_inputs = Iyi::BuildInputs.new(nil, env_only: true, stale: true)
+        Iyi::BuildInputs.current = stale_inputs
+        begin
+          assert_macro %({{env("__IYI_SPEC_STALE_ENV__")}}), %("stale_val")
+          ENV.has_key?("HOME")
+        ensure
+          Iyi::BuildInputs.current = nil
+        end
+
+        # The same `env` and the same fingerprint, so the Build is the same.
+        stale_inputs.env.should eq(env_only_inputs.env)
+        Iyi::Stale::CompilerEnv.fp(stale_inputs).should eq(Iyi::Stale::CompilerEnv.fp(env_only_inputs))
+        Iyi::BuildInputs::CHILD_ENV.each { |name| stale_inputs.env.has_key?(name).should be_false }
+        # The read is still observed for the record.
+        stale_inputs.observed_env["__IYI_SPEC_STALE_ENV__"].should eq("stale_val")
+        env_only_inputs.observed_env.should be_empty
+      ensure
+        ENV.delete("__IYI_SPEC_STALE_ENV__")
+      end
+    end
+
+    it "a stale recorder records a macro's file reads as files, and no reason where files have a change time" do
+      stale = Iyi::BuildInputs.new(nil, stale: true)
+      Iyi::BuildInputs.current = stale
+      begin
+        assert_macro %({{file_exists?("src/compiler/iyi.cr")}}), %(true)
+        assert_macro %({{read_file?("nonexistent_spec_file.txt")}}), %(nil)
+      ensure
+        Iyi::BuildInputs.current = nil
+      end
+
+      stale.files[Iyi::BuildInputs.key("src/compiler/iyi.cr")].kind.file?.should be_true
+      stale.files[Iyi::BuildInputs.key("nonexistent_spec_file.txt")].kind.absent?.should be_true
+      if Iyi::Stale::FileStamp.of("src/compiler/iyi.cr").ctime > 0
+        stale.reasons.should be_empty
+      else
+        # Windows reports no change time, so the file that exists cannot be
+        # vouched for and the recorder says so. The absent one needs none.
+        stale.reasons.size.should eq(1)
+        stale.reasons.first.should contain("iyi.cr has no change time")
+      end
+    end
+
+    it "a stale recorder gives a macro run a reason, whether or not it declared its inputs" do
+      declared = Iyi::BuildInputs.new(nil, stale: true)
+      declared.run_declared("spec/helper.iyi", ["src/compiler/iyi.cr"], Iyi::BuildInputs.now)
+      declared.reasons.size.should eq(1)
+      declared.reasons.first.should contain("ran a program")
+
+      undeclared = Iyi::BuildInputs.new(nil, stale: true)
+      undeclared.run_declared("spec/helper.iyi", nil, Iyi::BuildInputs.now)
+      undeclared.reasons.size.should eq(1)
+    end
   end
 
   describe "build verb wiring in command.cr" do

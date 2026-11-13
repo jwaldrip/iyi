@@ -66,11 +66,70 @@ def build(compiler: str, repo: str, work: str, source: str, number: int, dump: b
                 try: os.remove(p)
                 except OSError: pass
 
+def inputs_leg(compiler: str, repo: str, work: str, source: str, number: int, with_inputs: bool) -> tuple[str, dict | None]:
+    base = os.path.basename(source)
+    unique = f"{base}-inputs{number}-{os.getpid()}-{time.time_ns()}"
+    key = os.path.join(work, f"{unique}.key")
+    out = os.path.join(work, f"{unique}.bin")
+    record = os.path.join(work, f"{unique}.inputs.json") if with_inputs else None
+    cmd = [compiler, "build", "--stale-key", key]
+    if record:
+        cmd += ["--stale-inputs", record]
+    cmd += ["-o", out, source]
+    cache = os.path.join(work, f"cache-{base}")
+    try:
+        proc = subprocess.run(cmd, cwd=repo, env=env_for(repo, cache, False), capture_output=True, text=True)
+        if proc.returncode:
+            raise GateFailure(f"{os.path.relpath(source, repo)} inputs leg {number}: build exited {proc.returncode}: {proc.stderr.strip()[-500:]}")
+        with open(key, encoding="utf-8") as f:
+            local = json.load(f)["local"]["build"]
+        data = None
+        if record and os.path.exists(record):
+            with open(record, encoding="utf-8") as f:
+                data = json.load(f)
+        return local, data
+    finally:
+        for p in (key, out, record):
+            if p and os.path.exists(p):
+                try: os.remove(p)
+                except OSError: pass
+
+def run_inputs_check(compiler: str, repo: str, work: str, programs: list[str]) -> None:
+    def check(source: str) -> tuple[str, dict | None, str | None]:
+        name = os.path.relpath(source, repo)
+        try:
+            plain, _ = inputs_leg(compiler, repo, work, source, 1, False)
+            with_inputs, data = inputs_leg(compiler, repo, work, source, 2, True)
+        except GateFailure as ex:
+            return name, None, str(ex)
+        if plain != with_inputs:
+            return name, None, f"{name}: local.build differs with --stale-inputs ({plain}, {with_inputs})"
+        if data is not None and data.get("format") != "iyi-stale-inputs":
+            return name, None, f"{name}: --stale-inputs wrote a record of another format"
+        return name, data, None
+
+    workers = min(8, os.cpu_count() or 4)
+    failures = []
+    recorded = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for name, data, failure in pool.map(check, programs):
+            if failure:
+                failures.append(failure)
+                print(f"  RG9 inputs FAIL: {failure}")
+            elif data is None:
+                print(f"  RG9 inputs: {name}: no record (its build has a reason the record cannot hold)")
+            else:
+                recorded += 1
+    if failures:
+        raise GateFailure("; ".join(failures))
+    print(f"RG9 inputs PASSED: {len(programs)} programs, local.build equal with and without --stale-inputs, {recorded} wrote a record")
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="RG9 determinism proof gate")
     parser.add_argument("--repo", required=True)
     parser.add_argument("--compiler", required=True)
     parser.add_argument("--work", required=True)
+    parser.add_argument("--inputs-check", action="store_true", help="check that --stale-inputs keeps local.build")
     args = parser.parse_args()
     os.makedirs(args.work, exist_ok=True)
     repo = os.path.abspath(args.repo)
@@ -85,6 +144,10 @@ def main() -> None:
     print(f"RG9 corpus: C2={len(c2)} programs, deterministic C3 sample={len(c3_sample)}/{len(c3)}")
     if not programs:
         raise GateFailure("RG9 corpus is empty")
+
+    if args.inputs_check:
+        run_inputs_check(compiler, repo, args.work, programs)
+        return
 
     def check(source: str) -> tuple[str, int, int, str, str | None]:
         name = os.path.relpath(source, repo)
