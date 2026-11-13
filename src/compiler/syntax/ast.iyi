@@ -3353,6 +3353,10 @@ pub class Def < ASTNode
   property double_splat : Arg?
   property free_vars : Array(String)?
   property uses_block_arg : Bool = false
+  # The def this one replaced, and the def that replaced this one.
+  # Hosted `Def#previous` is a DefWithMetadata; the port keeps the def itself.
+  property previous : Def? = nil
+  property next : Def? = nil
 
   def uses_block_arg? : Bool
     @uses_block_arg
@@ -3399,6 +3403,8 @@ pub class Def < ASTNode
       clone_opt_strings(@free_vars),
     )
     d.uses_block_arg = @uses_block_arg
+    # Hosted syntax Def#clone_without_location does not copy previous or next.
+    # The semantic reopening copies previous only; iyi cannot reopen that class.
     d
   end
 

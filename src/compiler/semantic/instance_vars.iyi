@@ -1,10 +1,11 @@
 module compiler/semantic/instance_vars
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Arg, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
+import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
+import compiler/semantic/type_nodes::{type_node_system}
 
 # Instance variables typed only by assignment, as the hosted front end declares
 # them in its type declaration processor (`type_guess_visitor.cr` guesses each
@@ -18,10 +19,9 @@ import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, M
 # root of the class hierarchy down, so a superclass's variables are known first.
 #
 # Skipped, and so not declared here: guesses whose value needs a type this pass
-# cannot compute (a call with arguments, an array or hash literal, a block), a
-# `Foo.new` where Foo has subclasses (hosted gives its virtual type), variables of
-# generic classes and of modules (hosted also transfers a module's variables to
-# its includers), and the `macro def` and `.iyimod` exemptions.
+# cannot compute (a call with arguments, an untyped or named array literal, a
+# hash literal, a block), module variables and the `macro def` and `.iyimod`
+# exemptions.
 
 pub class GuessedIvar
   property type : Type
@@ -206,6 +206,22 @@ class GuessVisitor < Visitor
     if node.is_a?(SymbolLiteral)
       return @program.symbol_type
     end
+    # Hosted type_guess_visitor.cr:465-469: a typed array literal has Array of
+    # its written element type, with both types virtualized where needed.
+    if node.is_a?(ArrayLiteral)
+      literal = node.as(ArrayLiteral)
+      if literal.name.nil?
+        if element_node = literal.of
+          if hook = @program.merge_hook
+            if element = @program.lookup_type_node?(element_node, @og.owner)
+              array = hook.instantiate_type(@program.types["Array"], [hook.virtual_of(element)] of Type)
+              return hook.virtual_of(array)
+            end
+          end
+        end
+      end
+      return nil
+    end
     if node.is_a?(Not) || node.is_a?(IsA)
       return @program.bool_type
     end
@@ -217,9 +233,21 @@ class GuessVisitor < Visitor
     end
     if node.is_a?(Var)
       name = node.as(Var).name
-      return @og.owner if name == "self"
+      if name == "self"
+        if hook = @program.merge_hook
+          return hook.virtual_of(@og.owner)
+        end
+        return @og.owner
+      end
       if restriction = @args[name]?
-        return @program.lookup_type_node?(restriction, @og.owner)
+        if t = @program.lookup_type_node?(restriction, @og.owner)
+          resolved = @program.remove_alias(t)
+          if hook = @program.merge_hook
+            return hook.virtual_of(resolved)
+          end
+          return resolved
+        end
+        return nil
       end
       return nil
     end
@@ -259,6 +287,24 @@ class GuessVisitor < Visitor
       found = @program.lookup_type_node?(obj, @og.owner)
       if found && found.is_a?(NonGenericClassType) && found.as(NonGenericClassType).subclasses.empty?
         return found
+      end
+    end
+    # A constructed generic with resolved arguments, such as Hash(String, Bool).new.
+    if node.name == "new" && obj.is_a?(Generic)
+      if hook = @program.merge_hook
+        if found = @program.lookup_type_node?(obj, @og.owner)
+          return hook.virtual_of(found)
+        end
+      end
+    end
+    # Pointer(T).malloc and Pointer(T).null have the pointer instance type.
+    if obj.is_a?(Generic) && (node.name == "malloc" || node.name == "null")
+      generic = obj.as(Generic)
+      name = generic.name
+      if name.is_a?(Path) && name.as(Path).names == ["Pointer"] && generic.type_vars.size == 1
+        if @program.merge_hook
+          return @program.lookup_type_node?(generic, @og.owner)
+        end
       end
     end
     nil
@@ -418,11 +464,27 @@ def declare_guessed(program : SemanticProgram, owners : Array(OwnerGuesses), og 
   nil
 end
 
+# The hosted pass declares instance variables with a type system already
+# installed. This pass records a generic as its unbound form until one is
+# installed (`resolve_declared_types`). Installing it here, after the visit,
+# is what turns `@resolved_modules : Array(ModuleInfo)` into `Array(ModuleInfo)`
+# instead of the unbound `Array(T)`.
+def re_resolve_explicit_ivars(program : SemanticProgram) : Nil
+  type_node_system(program)
+end
+
 # Guesses and declares the instance variables of every class body the program's
 # top-level pass recorded, in hierarchy order. Explicit declarations must already
 # be in place: the pass runs after the top-level visit and its pending
 # declarations are resolved.
 pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
+  # The hosted pass declares instance variables with a type system already
+  # installed, so `@resolved_modules : Array(ModuleInfo)` is `Array(ModuleInfo)`.
+  # This pass records the unbound generic until one is installed
+  # (`resolve_declared_types`). Callers that dump after this function, including
+  # the lowered-types own-source load, get that re-resolution here. Installing
+  # the type system before the visit takes hook paths that are not ported.
+  re_resolve_explicit_ivars(program)
   owners = [] of OwnerGuesses
   program.type_bodies.each do |body|
     owner = owner_guesses_for(owners, body.type)
