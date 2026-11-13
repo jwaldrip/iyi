@@ -1,5 +1,3 @@
-module holder
-
 import item::{Item}
 
 pub class Holder
