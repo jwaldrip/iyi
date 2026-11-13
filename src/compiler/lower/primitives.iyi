@@ -39,7 +39,7 @@ module compiler/lower/primitives
 import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallConv, Ordering}
-import compiler/lower/cast::{type_id_value, to_lhs}
+import compiler/lower/cast::{type_id_value, type_id_of_value, to_lhs}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -158,6 +158,15 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
   if name == "object_id"
     # Hosted codegen_primitive_object_id (primitives.cr 1055-1057).
     low.last = low.builder.ptr_to_int(values[0], low.module.types.int64)
+    return
+  end
+  if name == "object_crystal_type_id"
+    # The hosted type-id primitive returns the static metaclass id or the value's runtime id.
+    if t1.is_a?(MetaclassType)
+      low.last = type_id_value(low, t1)
+    else
+      low.last = type_id_of_value(low, obj || node, values[0], t1)
+    end
     return
   end
   if name == "binary"
