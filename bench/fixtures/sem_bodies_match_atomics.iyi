@@ -1,3 +1,5 @@
+@[Unsafe("fixture: pointerof and pointer reads exercise generic atomic restrictions")]
+
 struct MatchAtomicOps
   def self.load(pointer : Pointer(T)) : T forall T
     pointer.value
