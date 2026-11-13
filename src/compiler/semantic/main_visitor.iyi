@@ -80,8 +80,9 @@ pub class BlockOwner
   getter context_vars : Hash(String, Type)?
   getter yield_nodes : Array(Yield)?
   getter scope : Type?
+  getter writer_type : ModuleType?
 
-  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil)
+  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil)
   end
 end
 
@@ -1871,6 +1872,7 @@ pub class MainVisitor < TypeNodeHost
       callee_block = @current_call_block
       callee_context_vars = @current_block_context_vars
       callee_yield_nodes = @current_yield_nodes
+      callee_type = @current_type
       if owner = @block_owners[blk]?
         @current_def = owner.def_node
         @return_types = owner.return_types
@@ -1879,6 +1881,9 @@ pub class MainVisitor < TypeNodeHost
         @current_yield_nodes = owner.yield_nodes
         if writer_scope = owner.scope
           @scope = writer_scope
+        end
+        if writer_type = owner.writer_type
+          @current_type = writer_type
         end
       else
         @return_types = nil
@@ -1897,6 +1902,7 @@ pub class MainVisitor < TypeNodeHost
       @unreachable = false
       enter_file_scope(blk)
       blk.body.accept(self)
+      @current_type = callee_type
       @type_filters = old_yield_type_filters
       @needs_type_filters = old_yield_needs_filters
       @unreachable = old_yield_unreachable
@@ -2717,7 +2723,7 @@ pub class MainVisitor < TypeNodeHost
       @current_block_context_vars = @vars.dup
       @current_yield_nodes = [] of Yield
       if blk = block
-        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope)
+        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, writer_type)
       end
     end
 
