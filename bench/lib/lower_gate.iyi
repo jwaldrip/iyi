@@ -80,10 +80,23 @@ pub def triple_of(text : String) : String
   raise "the oracle module names no target triple"
 end
 
+# The `import "name"` a declaration carries (contract 6b: the port's IR printer writes it from import_library). The
+# hosted module of the same fixture declares the fun with no such text, so it is dropped on both sides here; the
+# gate that lowers a lib fun checks the import on the port's own text.
+pub def strip_import(line : String) : String
+  idx = line.index(" import \"")
+  return line if idx.nil?
+  start = idx.as(Int32)
+  close = line.index("\"", start + 9)
+  return line if close.nil?
+  line[0, start] + line[close.as(Int32) + 1, line.size - close.as(Int32) - 1]
+end
+
 # The IR text of a module, normalised the way the gates compare it.
 pub def normalised_lines(text : String, builds : Array(String)) : Array(String)
   out = [] of String
-  text.split("\n").each do |line|
+  text.split("\n").each do |raw|
+    line = strip_import(raw)
     stripped = line.strip
     next if stripped.empty?
     next if stripped.starts_with?(";")

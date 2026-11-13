@@ -44,6 +44,8 @@ import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_cl
 import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
 import compiler/syntax/ast::{FunDef}
 import compiler/syntax/ast::{Annotation}
+import compiler/syntax/ast::{Asm}
+import compiler/lower/asm::{codegen_asm}
 import compiler/semantic/top_level::{LibFun}
 import compiler/ir/inst::{Attribute}
 import compiler/syntax/token::{NumberKind}
@@ -459,6 +461,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     # own site (primitives.iyi). A def with this body that the probe lowers alone is refused here by name, where
     # `node_class_name` has no name for the class and would answer the generic `ASTNode`.
     pending_visit_node("Primitive (a def body; hosted codegen_call lowers it at the call site)")
+  end
+  # --- asm ---
+  if node.is_a?(Asm)
+    codegen_asm(low, node.as(Asm)); return
   end
   pending_visit_node(node_class_name(node))
 end

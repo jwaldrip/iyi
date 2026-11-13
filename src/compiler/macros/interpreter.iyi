@@ -19,6 +19,25 @@ pub class MacroFailure
   end
 end
 
+# One type parameter of the instantiated owner or def, bound while a macro
+# site in that def expands. `printed` is how a plain binding prints
+# (`Int32`, `Tuple(Int32, Bool)`). `kind` is `type`, `tuple`, `named_tuple`,
+# or `union`. `members` are the printed arguments (type names, or `name:Type`
+# for a named tuple). `splat` is true when this name is the owner's splat
+# type variable. A splat tuple, named tuple, or union is a literal of type
+# nodes, as the hosted interpreter does (interpreter.cr:571-599). A plain
+# binding is a TypeNode. Body typing passes these at a def's instantiation.
+pub class MacroFreeBinding
+  property name : String
+  property printed : String
+  property kind : String
+  property members : Array(String)
+  property splat : Bool
+
+  def initialize(@name : String, @printed : String, @kind : String, @members : Array(String), @splat : Bool)
+  end
+end
+
 pub class MacroInterpreter
   property vars : Hash(String, ASTNode)
   property str : StringBuilder
@@ -30,6 +49,7 @@ pub class MacroInterpreter
   property scope_name : String
   property failure : MacroFailure?
   property skipped : Bool
+  property free_bindings : Hash(String, MacroFreeBinding)
 
   # `flags` is the flag set `flag?` answers from. Left out, it is the host's,
   # as the hosted interpreter's default is. `scope_name` is what `@type` and
@@ -48,6 +68,90 @@ pub class MacroInterpreter
     else
       @flags = MacroTargetFlags.host([] of String)
     end
+    @free_bindings = Hash(String, MacroFreeBinding).new
+  end
+
+  # Binds the type parameters of the instantiated owner and def. A later path
+  # of that name resolves to the binding, not to an undefined constant.
+  def bind_free_vars(bindings : Array(MacroFreeBinding)) : Nil
+    i = 0
+    while i < bindings.size
+      b = bindings[i]
+      @free_bindings[b.name] = b
+      i = i + 1
+    end
+  end
+
+  # A splat type variable is the literal the hosted interpreter builds
+  # (interpreter.cr:589-599). Anything else is the type node of the binding.
+  def resolve_free_binding(binding : MacroFreeBinding) : ASTNode
+    if binding.splat && (binding.kind == "tuple" || binding.kind == "union")
+      elems = [] of ASTNode
+      i = 0
+      while i < binding.members.size
+        elems << TypeNode.new(binding.members[i])
+        i = i + 1
+      end
+      return TupleLiteral.new(elems)
+    end
+    if binding.splat && binding.kind == "named_tuple"
+      entries = [] of NamedTupleLiteral::Entry
+      i = 0
+      while i < binding.members.size
+        member = binding.members[i]
+        if colon = member.index(':')
+          key = member[0, colon]
+          typ = member[colon + 1, member.bytesize - (colon + 1)]
+          entries << NamedTupleLiteral::Entry.new(key, TypeNode.new(typ))
+        end
+        i = i + 1
+      end
+      return NamedTupleLiteral.new(entries)
+    end
+    sized = binding.kind == "tuple" || binding.kind == "named_tuple"
+    TypeNode.new(binding.printed, binding.members, sized)
+  end
+
+  # ArrayLiteral#find, hosted methods.cr:3357-3369. The block runs here because
+  # the method table cannot call back into the interpreter.
+  def find_in_array(arr : ArrayLiteral, block : Block) : ASTNode
+    arg_name = ""
+    if block.args.size > 0
+      arg_name = block.args[0].name
+    end
+    i = 0
+    while i < arr.elements.size
+      elem = arr.elements[i]
+      if arg_name != ""
+        @vars[arg_name] = elem
+      end
+      val = eval_block_body(block.body)
+      if MacroMethods.truthy?(val)
+        if arg_name != ""
+          @vars.delete(arg_name)
+        end
+        return elem
+      end
+      i = i + 1
+    end
+    if arg_name != ""
+      @vars.delete(arg_name)
+    end
+    NilLiteral.new
+  end
+
+  def eval_block_body(body : ASTNode) : ASTNode
+    if body.is_a?(Expressions)
+      exps = body.as(Expressions).expressions
+      last = Nop.new.as(ASTNode)
+      i = 0
+      while i < exps.size
+        last = evaluate(exps[i])
+        i = i + 1
+      end
+      return last
+    end
+    evaluate(body)
   end
 
   def to_s : String
@@ -350,11 +454,19 @@ pub class MacroInterpreter
     end
     if node.is_a?(Path)
       path = node.as(Path)
+      if path.names.size == 1
+        if bound = @free_bindings[path.names[0]]?
+          return resolve_free_binding(bound)
+        end
+      end
       if path.names.size == 1 && MacroAnswers.builtin_type?(path.names[0])
         return TypeNode.new(path.names[0])
       end
       fail_at(path, "undefined constant #{path.names.join("::")}")
       return Nop.new
+    end
+    if node.is_a?(Generic)
+      return evaluate_generic_type(node.as(Generic))
     end
 
     if node.is_a?(IsA)
@@ -456,9 +568,16 @@ pub class MacroInterpreter
         fail_at(cl, "undefined macro method '#{class_name}##{cl.name}'")
         return Nop.new
       end
+      if cl.name == "find" && receiver.is_a?(ArrayLiteral) && cl.block
+        return find_in_array(receiver.as(ArrayLiteral), cl.block.as(Block))
+      end
       eval_args = cl.args.map { |a| evaluate(a) }
       if value = MacroMethods.interpret_method(@flags, receiver, cl.name, eval_args, nil, cl.block)
         return value
+      end
+      if err = MacroMethods.take_error
+        fail_at(cl, err)
+        return Nop.new
       end
       fail_at(cl, "macro method '#{class_name}##{cl.name}' is not ported")
       return Nop.new
@@ -547,6 +666,72 @@ pub class MacroInterpreter
     end
 
     node
+  end
+
+  # A generic built-in type (`Tuple(Int32, Bool)`, `NamedTuple(a: Int32)`,
+  # `Union(Int32, Bool)`) becomes the TypeNode the hosted interpreter would
+  # resolve. Tuple and named tuple instances keep their arguments so `size`
+  # can count them. A union prints with its members sorted, and `size` is
+  # refused on it, as the hosted interpreter refuses it.
+  def evaluate_generic_type(g : Generic) : ASTNode
+    base = generic_base_name(g.name)
+    if base.nil? || !MacroAnswers.builtin_type?(base)
+      shown = base || "type"
+      fail_at(g, "undefined constant #{shown}")
+      return Nop.new
+    end
+    args = [] of String
+    if na = g.named_args
+      na.each do |a|
+        args << "#{a.name}: #{type_arg_text(a.value)}"
+      end
+    end
+    g.type_vars.each do |tv|
+      args << type_arg_text(tv)
+    end
+    if base == "Union"
+      members = args.sorted
+      text = StringBuilder.new
+      text << "("
+      i = 0
+      while i < members.size
+        if i > 0
+          text << " | "
+        end
+        text << members[i]
+        i = i + 1
+      end
+      text << ")"
+      return TypeNode.new(text.to_s)
+    end
+    sized = base == "Tuple" || base == "NamedTuple"
+    printed = StringBuilder.new
+    printed << base
+    printed << "("
+    i = 0
+    while i < args.size
+      if i > 0
+        printed << ", "
+      end
+      printed << args[i]
+      i = i + 1
+    end
+    printed << ")"
+    TypeNode.new(printed.to_s, args, sized)
+  end
+
+  def generic_base_name(node : ASTNode) : String?
+    return nil unless node.is_a?(Path)
+    path = node.as(Path)
+    return nil unless path.names.size == 1
+    path.names[0]
+  end
+
+  def type_arg_text(node : ASTNode) : String
+    resolved = evaluate(node)
+    sb = StringBuilder.new
+    resolved.to_s(sb)
+    sb.to_s
   end
 
   # Runs a `for` body once per element. `firsts`, `seconds` and `thirds` hold
