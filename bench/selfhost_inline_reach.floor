@@ -5,7 +5,7 @@
 # 0f676ab57). The call-site-clone counts this file held before are not comparable. Measured twice on the head
 # that adds the constant splice (945b916ba). Merge 44c0d18d3 mistakenly retained
 # call-site-clone counts for three rows; these restore the distinct-instance unit.
-samples/iyi/hello.iyi 987
+samples/iyi/hello.iyi 990
 bench/fixtures/seminl_reach/root.iyi 947
 bench/fixtures/seminl_reach/def_body_if.iyi 950
 bench/fixtures/seminl_reach/def_body_seq.iyi 950

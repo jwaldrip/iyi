@@ -19,11 +19,11 @@ module compiler/semantic/type_nodes
 # accepts, so the port refuses them by name; and the `raises` mark a cast leaves
 # on its method, which the port does not track yet.
 
-import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, PointerOf, ProcNotation, Self, SizeOf, TypeOf, Union, UninitializedVar, Var}
+import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, NumberLiteral, PointerOf, ProcNotation, Self, SizeOf, Splat, TypeOf, Union, UninitializedVar, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, SemanticProgram, Type, TypeHook}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, SemanticProgram, Type, TypeHook, TypeParameterType}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TypeQueries}
+import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TupleInstanceType, TypeQueries, TypeSplat}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/lookup::{LookupError, TypeLookup}
 
@@ -86,12 +86,8 @@ pub def visit_generic(visitor : TypeNodeHost, node : Generic) : Bool
   end
   visitor.bracket_type_args(-1)
 
-  resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)
-  if resolved.is_a?(LookupError)
-    rebuilt = generic_of_typed_args(visitor, node)
-    return visitor.refuse(node, resolved.as(LookupError).message) if rebuilt.nil?
-    resolved = rebuilt
-  end
+  resolved = generic_of_typed_args(visitor, node)
+  return false if resolved.nil?
   instance = resolved.as(Type)
   if visitor.in_type_args?
     visitor.set_type(node, instance)
@@ -105,34 +101,123 @@ pub def visit_generic(visitor : TypeNodeHost, node : Generic) : Bool
   false
 end
 
-# A generic whose name does not resolve in the current scope, because its arguments name a type
-# parameter that the scope binds (`T` in a generic instance's metaclass), is instantiated from
-# the arguments the visitor has typed. nil when the base or an argument is not typed.
+# Instantiates a generic node from its base name and the arguments the visitor
+# has already typed (`T` bound in a generic instance's method or metaclass).
+# Using the visited children rather than re-looking up the AST node ensures
+# owner type variables resolve to the instance's concrete arguments even when
+# `current_type` is the generic class itself.
 pub def generic_of_typed_args(visitor : TypeNodeHost, node : Generic) : Type?
   ts = type_node_system(visitor.program)
-  # The name was already visited in its file's lexical scope, including imports
-  # (hosted path_lookup.cr 118-192). TypeLookup alone cannot see those imports.
+  lookup = TypeLookup.new(ts.instances)
+  # Prefer the name resolved in its file's lexical scope, including imports.
   base_type : Type
   if typed_base = visitor.child_type(node.name)
     base_type = visitor.program.remove_alias(TypeQueries.instance_type(typed_base))
   else
-    base = TypeLookup.new(ts.instances).lookup(visitor.current_type, node.name)
-    return nil if base.is_a?(LookupError)
+    base = lookup.lookup(visitor.current_type, node.name)
+    if base.is_a?(LookupError)
+      visitor.refuse(node, base.as(LookupError).message)
+      return nil
+    end
     base_type = base.as(Type)
   end
-  return nil unless base_type.is_a?(GenericClassType)
-  args = [] of Type
-  node.type_vars.each do |arg|
-    t = visitor.child_type(arg)
-    return nil if t.nil?
-    args << t.as(Type)
+  unless base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
+    visitor.refuse(node, "#{base_type.full_name} is not a generic type, it's a #{base_type.type_desc}")
+    return nil
   end
-  return ts.pointer_of(args[0]) if base_type.name == "Pointer" && args.size == 1
-  ts.instantiate_generic(base_type.as(GenericClassType), args)
+  if base_type.is_a?(GenericClassType) && base_type.full_name == "NamedTuple"
+    visitor.refuse(node, "can only instantiate NamedTuple with named arguments")
+    return nil
+  end
+
+  if base_type.is_a?(GenericClassType) && base_type.full_name == "StaticArray"
+    if node.type_vars.size != 2
+      visitor.refuse(node, "wrong number of type vars for #{lookup.generic_text(base_type)} (given #{node.type_vars.size}, expected 2)")
+      return nil
+    end
+    elem_node = node.type_vars[0]
+    elem_t = visitor.child_type(elem_node)
+    if elem_t.nil?
+      err = lookup.lookup(visitor.current_type, elem_node)
+      visitor.refuse(node, err.as(LookupError).message) if err.is_a?(LookupError)
+      return nil
+    end
+    size_node = node.type_vars[1]
+    unless size_node.is_a?(NumberLiteral)
+      visitor.refuse(node, "a constant size of StaticArray is not ported yet")
+      return nil
+    end
+    elem_type = elem_t.as(Type)
+    unless lookup.can_be_stored?(elem_type)
+      visitor.refuse(node, "can't use #{lookup.shown(elem_type)} as a generic type argument yet, use a more specific type")
+      return nil
+    end
+    return ts.static_array_of(TypeQueries.virtual_type(elem_type), size_node.as(NumberLiteral).value.to_i64)
+  end
+
+  args = [] of Type
+  i = 0
+  while i < node.type_vars.size
+    arg = node.type_vars[i]
+    if arg.is_a?(NumberLiteral)
+      visitor.refuse(node, "argument to #{node.name.to_s} must be a type, not #{arg.to_s}")
+      return nil
+    end
+    if arg.is_a?(Splat)
+      exp = arg.as(Splat).exp
+      spliced = visitor.child_type(exp)
+      if spliced.nil?
+        err = lookup.lookup(visitor.current_type, exp)
+        visitor.refuse(node, err.as(LookupError).message) if err.is_a?(LookupError)
+        return nil
+      end
+      spliced_type = spliced.as(Type)
+      if spliced_type.is_a?(TupleInstanceType)
+        spliced_type.as(TupleInstanceType).tuple_types.each do |tt|
+          args << tt
+        end
+      elsif spliced_type.is_a?(TypeParameterType)
+        args << TypeSplat.new(visitor.program, spliced_type)
+      else
+        visitor.refuse(node, "can only splat tuple type, not #{spliced_type.full_name}")
+        return nil
+      end
+    else
+      t = visitor.child_type(arg)
+      if t.nil?
+        err = lookup.lookup(visitor.current_type, arg)
+        visitor.refuse(node, err.as(LookupError).message) if err.is_a?(LookupError)
+        return nil
+      end
+      arg_type = t.as(Type)
+      unless lookup.can_be_stored?(arg_type)
+        visitor.refuse(node, "can't use #{lookup.shown(arg_type)} as a generic type argument yet, use a more specific type")
+        return nil
+      end
+      args << TypeQueries.virtual_type(arg_type)
+    end
+    i = i + 1
+  end
+
+  type_vars = lookup.generic_type_vars(base_type)
+  given = args.size
+  if lookup.splat_index?(base_type)
+    min_needed = type_vars.size - 1
+    if given < min_needed
+      visitor.refuse(node, "wrong number of type vars for #{lookup.generic_text(base_type)} (given #{given}, expected #{min_needed}+)")
+      return nil
+    end
+  elsif given != type_vars.size
+    visitor.refuse(node, "wrong number of type vars for #{lookup.generic_text(base_type)} (given #{given}, expected #{type_vars.size})")
+    return nil
+  end
+
+  lookup.instantiate(base_type, args)
 end
 
-# `Int32 | String`: typed as the merged union type, the type a union written in
-# a body denotes (hosted `visit(node : Union)` 365-374 and `lookup_union`).
+# `Int32 | String`: typed as the merged union of its visited members (hosted
+# `visit(node : Union)` 365-374 and `Union#update`), so owner type parameters
+# resolve to the instance's arguments.
 pub def visit_union(visitor : TypeNodeHost, node : Union) : Bool
   visitor.bracket_type_args(1)
   i = 0
@@ -142,17 +227,31 @@ pub def visit_union(visitor : TypeNodeHost, node : Union) : Bool
   end
   visitor.bracket_type_args(-1)
 
-  resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)
-  if resolved.is_a?(LookupError)
-    return visitor.refuse(node, resolved.as(LookupError).message)
+  lookup = type_node_lookup(visitor)
+  types = [] of Type
+  i = 0
+  while i < node.types.size
+    member_node = node.types[i]
+    t = visitor.child_type(member_node)
+    if t.nil?
+      err = lookup.lookup(visitor.current_type, member_node)
+      return visitor.refuse(node, err.as(LookupError).message) if err.is_a?(LookupError)
+      return false
+    end
+    stored = t.as(Type)
+    unless lookup.can_be_stored?(stored)
+      return visitor.refuse(node, "can't use #{lookup.shown(stored)} in unions yet, use a more specific type")
+    end
+    types << TypeQueries.virtual_type(stored)
+    i = i + 1
   end
-  visitor.set_type(node, resolved.as(Type))
+  visitor.set_type(node, visitor.program.type_merge(types))
   false
 end
 
-# `Int32 -> String`: the proc type of its inputs and output (hosted
-# `visit(node : ProcNotation)` 337-363). A missing output is Void, as the hosted
-# pass gives it.
+# `Int32 -> String`: the proc type of its visited inputs and output (hosted
+# `visit(node : ProcNotation)` 337-363). A missing output is Nil, matching
+# `TypeInstances#proc_of` for Void.
 pub def visit_proc_notation(visitor : TypeNodeHost, node : ProcNotation) : Bool
   visitor.bracket_type_args(1)
   if ins = node.inputs
@@ -167,11 +266,60 @@ pub def visit_proc_notation(visitor : TypeNodeHost, node : ProcNotation) : Bool
   end
   visitor.bracket_type_args(-1)
 
-  resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)
-  if resolved.is_a?(LookupError)
-    return visitor.refuse(node, resolved.as(LookupError).message)
+  ts = type_node_system(visitor.program)
+  lookup = TypeLookup.new(ts.instances)
+  inputs = [] of Type
+  if ins = node.inputs
+    i = 0
+    while i < ins.size
+      input = ins[i]
+      if input.is_a?(Splat)
+        exp = input.as(Splat).exp
+        spliced = visitor.child_type(exp)
+        if spliced.nil?
+          err = lookup.lookup(visitor.current_type, exp)
+          return visitor.refuse(node, err.as(LookupError).message) if err.is_a?(LookupError)
+          return false
+        end
+        spliced_type = spliced.as(Type)
+        unless spliced_type.is_a?(TupleInstanceType)
+          return visitor.refuse(node, "can only splat tuple type, not #{spliced_type.full_name}")
+        end
+        spliced_type.as(TupleInstanceType).tuple_types.each do |tt|
+          inputs << tt
+        end
+      else
+        arg = visitor.child_type(input)
+        if arg.nil?
+          err = lookup.lookup(visitor.current_type, input)
+          return visitor.refuse(node, err.as(LookupError).message) if err.is_a?(LookupError)
+          return false
+        end
+        arg_type = arg.as(Type)
+        unless lookup.can_be_stored?(arg_type)
+          return visitor.refuse(node, "can't use #{lookup.shown(arg_type)} as proc argument yet, use a more specific type")
+        end
+        inputs << TypeQueries.virtual_type(arg_type)
+      end
+      i = i + 1
+    end
   end
-  visitor.set_type(node, resolved.as(Type))
+
+  ret : Type = visitor.program.nil_type
+  if output_node = node.output
+    result = visitor.child_type(output_node)
+    if result.nil?
+      err = lookup.lookup(visitor.current_type, output_node)
+      return visitor.refuse(node, err.as(LookupError).message) if err.is_a?(LookupError)
+      return false
+    end
+    ret_type = result.as(Type)
+    unless lookup.can_be_stored?(ret_type)
+      return visitor.refuse(node, "can't use #{lookup.shown(ret_type)} as proc return type yet, use a more specific type")
+    end
+    ret = TypeQueries.virtual_type(ret_type)
+  end
+  visitor.set_type(node, ts.proc_of(inputs, ret))
   false
 end
 

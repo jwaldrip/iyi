@@ -30,6 +30,11 @@ pub def verify(m : Module) : Array(IrError)
   Verifier.new(m).run
 end
 
+# The rules one function breaks: what `verify` reports for that function alone.
+pub def verify_function(m : Module, f : Function) : Array(IrError)
+  Verifier.new(m).run_function(f)
+end
+
 class Verifier
   def initialize(@module : Module)
     @errors = [] of IrError
@@ -49,6 +54,12 @@ class Verifier
       check_visibility(f.name, f.linkage, f.visibility, f)
       check_function(f) unless f.declaration?
     end
+    @errors
+  end
+
+  def run_function(f : Function) : Array(IrError)
+    check_visibility(f.name, f.linkage, f.visibility, f)
+    check_function(f) unless f.declaration?
     @errors
   end
 

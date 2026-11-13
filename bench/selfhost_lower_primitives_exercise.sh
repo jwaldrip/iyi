@@ -47,14 +47,15 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
-    lowprim_ptr) echo "the generic metaclass resolves its receiver now (S1c, 17bc4d2f8), but the bare analysis declares no Pointer primitives, so Pointer(Int32).malloc is undefined: the hosted oracle needs the prelude, and the bare dump has none (NEEDS.md row 19; the Pointer primitives are increment 2)" ;;
+    lowprim_enum) echo "enum members type as Int32 until the bodies lane's enum Path fix lands" ;;
   esac
 }
 
 # Fixtures that lower with a known divergence, named, not yet fixed. The gate fails if one starts to match,
-# so the list stays honest. None now.
+# so the list stays honest.
 known_divergence() {
   case "$1" in
+    lowprim_ptr) echo "generic instance metaclass type_id (@\"Pointer(Int32).class:type_id\", NEEDS.md row 17)" ;;
   esac
 }
 # Fixtures identical to the hosted module whose native executable waits by name. None now: defs are emitted Iyi
@@ -65,7 +66,13 @@ e2e_waiting_on() {
 }
 for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
   name="$(basename "$fixture" .iyi)"
-  if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
+  oracle_options=()
+  if [ "$name" = "lowprim_atomic_rmw" ]; then
+    # Otherwise the hosted module is printed after LLVM has expanded atomicrmw to a cmpxchg loop.
+    oracle_options=(--mattr +lse)
+    echo "  $name: oracle uses --mattr +lse to preserve atomicrmw in the emitted module"
+  fi
+  if ! "$IYI" build --prelude empty "${oracle_options[@]}" --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
     diverged=$((diverged + 1))
     continue
@@ -157,6 +164,21 @@ if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
 fi
 
 echo
+binary_union_check() {
+  for side in left right; do
+    if "$1" binary_union "$REPO/bench/fixtures/prim_refuse_union.iyi" "$side" > "$WORK/union.out" 2> "$WORK/union.err"; then
+      return 1
+    fi
+    awk '/lower: visit\(binary <= with operand IR types .* inconsistent with Int64 and Int64 \(hosted codegen_binary_op\)\)/ { found = 1 } END { exit !found }' "$WORK/union.err" || return 1
+  done
+}
+if binary_union_check "$WORK/port"; then
+  echo "  union comparison: both operand positions refused by name"
+else
+  echo "  union comparison: missing named refusal"
+  status=1
+fi
+
 echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every primitive fixture
 # to match the hosted module exactly. It returns 0 only on the unmutated behaviour.
@@ -170,20 +192,107 @@ lower_primitives_check() {
     "$WORK/mut" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/mut.out" 2>/dev/null || return 1
     awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); if (a[2] != b[2] || b[2] == 0) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
   done
+  "$WORK/mut" generic_pointerful > "$WORK/mut.pointerful" 2>"$WORK/mut.pointerful.err" || return 1
+  awk '/^generic_pointerful=1$/ { found = 1 } END { exit !found }' "$WORK/mut.pointerful" || return 1
+  binary_union_check "$WORK/mut" || return 1
   return 0
 }
 # The baseline: the unmutated port must pass the check, or every mutation below is caught for the wrong reason.
 lower_primitives_check || { echo "  baseline: the unmutated primitives do not pass the check"; status=1; }
+prove_mutation "binary union operand is not refused" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    if p1.type.key != low.typer.llvm_type(t1).key || p2.type.key != low.typer.llvm_type(t2).key' '    if false' -- lower_primitives_check || status=1
 prove_mutation "the wrapping add is a subtraction" "$REPO/src/compiler/lower/primitives.iyi" \
   "    return low.builder.add(p1, p2)" "    return low.builder.sub(p1, p2)" -- lower_primitives_check || status=1
 prove_mutation "the signed less-than is unsigned" "$REPO/src/compiler/lower/primitives.iyi" \
-  "signed_pred(signed, IntPredicate::SLT, IntPredicate::ULT)" "signed_pred(signed, IntPredicate::ULT, IntPredicate::ULT)" -- lower_primitives_check || status=1
+  "signed_pred(t1.signed, IntPredicate::SLT, IntPredicate::ULT)" "signed_pred(t1.signed, IntPredicate::ULT, IntPredicate::ULT)" -- lower_primitives_check || status=1
+prove_mutation "the wrong side is extended" "$REPO/src/compiler/lower/primitives.iyi" \
+  "    return ExtendedInts.new(t2, extend_int(low, t1, t2, p1), p2)" "    return ExtendedInts.new(t2, extend_int(low, t2, t1, p1), p2)" -- lower_primitives_check || status=1
+prove_mutation "a sign extension is a zero extension" "$REPO/src/compiler/lower/primitives.iyi" \
+  "    return low.builder.sext(value, to.ir)" "    return low.builder.zext(value, to.ir)" -- lower_primitives_check || status=1
+prove_mutation "a mixed-sign less-than uses the unsigned predicate" "$REPO/src/compiler/lower/primitives.iyi" \
+  "      widened = low.builder.icmp(IntPredicate::SLT, p1, extend_int(low, t2, t1, p2))" "      widened = low.builder.icmp(IntPredicate::ULT, p1, extend_int(low, t2, t1, p2))" -- lower_primitives_check || status=1
+prove_mutation "a by-value pointer_get loads" "$REPO/src/compiler/lower/primitives.iyi" \
+  "      low.last = values[0]" "      low.last = load_aligned(low, low.typer.llvm_embedded_type(elem), values[0])" -- lower_primitives_check || status=1
+prove_mutation "a Bool pointer_set stores zero" "$REPO/src/compiler/lower/primitives.iyi" \
+  "      bool_stored = values[1]" "      bool_stored = int1(low, 0_i64)" -- lower_primitives_check || status=1
+prove_mutation "a generic instance ignores its class variables" "$REPO/src/compiler/lower/primitives.iyi" \
+  "    return t.as(GenericClassInstanceType).all_instance_vars" "    return Hash(String, MetaTypeVar).new" -- lower_primitives_check || status=1
+prove_mutation "a nilable reference union reads the nil id from the object" "$REPO/src/compiler/lower/cast.iyi" \
+  "    phi.add(low, object_type_id(low, value), true)" "    phi.add(low, type_id_value(low, low.analysed.program.nil_type), true)" -- lower_primitives_check || status=1
+prove_mutation "an implicit-self primitive uses a constant instead of self" "$REPO/src/compiler/lower/primitives.iyi" \
+  "    recv = sv.as(LowerVar).pointer" "    recv = int1(low, 0_i64)" -- lower_primitives_check || status=1
+prove_mutation "a reference pointer_set stores the pointer slot" "$REPO/src/compiler/lower/primitives.iyi" \
+  "      ref_stored = values[1]" "      ref_stored = values[0]" -- lower_primitives_check || status=1
+prove_mutation "a by-value pointer_set copies the destination" "$REPO/src/compiler/lower/primitives.iyi" \
+  "    store_aligned(low, stored, dest)" "    store_aligned(low, load_aligned(low, ir, dest), dest)" -- lower_primitives_check || status=1
+prove_mutation "checked addition returns its overflow bit" "$REPO/src/compiler/lower/primitives.iyi" \
+  "  pair[0]" "  pair[1]" -- lower_primitives_check || status=1
+prove_mutation "an acquire atomic load is sequentially consistent" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  when "acquire"                 then Ordering::Acquire' '  when "acquire"                 then Ordering::SeqCst' -- lower_primitives_check || status=1
+prove_mutation "a release atomic store is sequentially consistent" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  when "release"                 then Ordering::Release' '  when "release"                 then Ordering::SeqCst' -- lower_primitives_check || status=1
+prove_mutation "an atomic read-modify-write always exchanges" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  inst = low.builder.atomicrmw(op, ptr.as(Value), value, ordering, flag.as(BoolLiteral).value)' '  inst = low.builder.atomicrmw("xchg", ptr.as(Value), value, ordering, flag.as(BoolLiteral).value)' -- lower_primitives_check || status=1
+prove_mutation "an atomic read-modify-write ignores its ordering" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  ordering = atomic_ordering(node.args[3])' '  ordering = Ordering::Monotonic' -- lower_primitives_check || status=1
+prove_mutation "compare-exchange ignores its failure ordering" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, failure)' '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, success)' -- lower_primitives_check || status=1
+if [ -n "$(waiting_on lowprim_enum)" ]; then
+  echo "  NOT RUN: enum mutation waits for enum member typing"
+else
+  prove_mutation "an enum value is not lowered" "$REPO/src/compiler/lower/primitives.iyi" \
+    '  if name == "enum_value"' '  if name == "wrong_enum_value"' -- lower_primitives_check || status=1
+fi
+prove_mutation "checked conversion omits its lower bound" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  low.builder.build_or(below, above)' '  above' -- lower_primitives_check || status=1
+prove_mutation "checked conversion omits its upper bound" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  low.builder.build_or(below, above)' '  below' -- lower_primitives_check || status=1
+prove_mutation "a tuple index selects the first member" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  first = primitive.tuple_index' '  first = 0' -- lower_primitives_check || status=1
+prove_mutation "object_id returns zero instead of the receiver address" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = low.builder.ptr_to_int(values[0], low.module.types.int64)' '    low.last = low.builder.const_int(low.module.types.int64, 0_i64)' -- lower_primitives_check || status=1
+prove_mutation "runtime type id returns Nil's id" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      low.last = type_id_of_value(low, obj || node, values[0], t1)' '      low.last = type_id_value(low, low.analysed.program.nil_type)' -- lower_primitives_check || status=1
+prove_mutation "proc call omits the closure context" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  closure_args = [ctx.as(Value)] of Value' '  closure_args = [] of Value' -- lower_primitives_check || status=1
+prove_mutation "tuple metaclass indexing returns Nil's type id" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = type_id_value(low, result.as(Type))' '    low.last = type_id_value(low, low.analysed.program.nil_type)' -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"==\"" "    if op == \"!=\"" -- lower_primitives_check || status=1
 prove_mutation "the class type id is stored one struct over" "$REPO/src/compiler/lower/primitives.iyi" \
   "  zero = low.builder.const_int(low.module.types.int32, 0_i64)" "  zero = low.builder.const_int(low.module.types.int32, 1_i64)" -- lower_primitives_check || status=1
+
+echo
+echo "== 5. Checked arithmetic in an isolated def from a required runtime"
+required="$REPO/bench/fixtures/lower_overflow_required"
+if IYI_PATH="$required/prelude" "$IYI" build --emit llvm-ir --no-debug -o "$WORK/required-oracle" "$required/main.iyi" > "$WORK/required-oracle.log" 2>&1; then
+  awk "$CALL_TYPES" "$WORK/required-oracle.ll" > "$WORK/required-oracle.normal.ll"
+  "$WORK/port" oracle "$WORK/required-oracle.normal.ll" > "$WORK/required-host.txt" 2> "$WORK/required-host.err" || status=1
+  awk '/^define .*checked_sum/{p=1; n++} p{print} p && /^}/{p=0} END {if (n != 1) exit 1}' "$WORK/required-host.txt" > "$WORK/required-host.fn" || status=1
+else
+  echo "  required-unit oracle failed:"
+  awk 'NR<=15' "$WORK/required-oracle.log"
+  status=1
+fi
+required_overflow_check() {
+  "$IYI" build -o "$WORK/required-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/required-build.log" 2>&1 || return 1
+  (cd "$required" && "$WORK/required-port" probe-required runtime.iyi main.iyi "$WORK/required-oracle.normal.ll") > "$WORK/required.ir" 2> "$WORK/required.err" || return 1
+  awk '/^declare external void @__iyi_raise_overflow/ {found=1} END {exit !found}' "$WORK/required.ir" || return 1
+  "$WORK/port" oracle "$WORK/required.ir" > "$WORK/required-port.txt" 2> "$WORK/required-port.err" || return 1
+  awk '/^define .*checked_sum/{p=1; n++} p{print} p && /^}/{p=0} END {if (n != 1) exit 1}' "$WORK/required-port.txt" > "$WORK/required-port.fn" || return 1
+  cmp -s "$WORK/required-host.fn" "$WORK/required-port.fn"
+}
+if required_overflow_check; then
+  echo "  required-unit overflow: function identical to the hosted module"
+else
+  echo "  required-unit overflow: refused or differs from the hosted module"
+  awk 'NR<=12' "$WORK/required.err" "$WORK/required-build.log"
+  status=1
+fi
+prove_mutation "the required overflow function has the wrong name" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    fn = low.module.add_function(name, fn_type, CallConv::C)' '    fn = low.module.add_function(name + "_wrong", fn_type, CallConv::C)' -- required_overflow_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

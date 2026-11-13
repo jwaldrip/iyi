@@ -310,11 +310,6 @@ prove_mutation "mixed union aligned to 4 bytes, not the largest member" "$TYPER_
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "mixed unions not passed by value" "$TYPER_FILE" \
-  "  if type.is_a?(MixedUnionType)" \
-  "  if false" \
-  -- check_lowering_diverges || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "indirect threshold above a 136-byte value" "$TYPER_FILE" \
   "    size_of(llvm_type(type)) > 128" \
@@ -357,6 +352,12 @@ check_headed_diverges() {
 prove_mutation "class instance variables stored as one i8 each" "$TYPER_FILE" \
   "      fields << llvm_embedded_type(var_type.as(Type), wants_size)" \
   "      fields << @table.int8" \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic instance's fields are its generic's own, not its arguments'" "$TYPER_FILE" \
+  "type.as(GenericClassInstanceType).all_instance_vars" \
+  "type.as(GenericClassInstanceType).generic_type.as(ModuleType).all_instance_vars" \
   -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -415,9 +416,15 @@ prove_mutation "leaves take no id of their own" "$TYPE_ID_FILE" \
   -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a metaclass id reuses its class's id" "$TYPE_ID_FILE" \
-  "      @id_to_metaclass[type_id(type)] = metaclass_type_id(meta)" \
-  "      @id_to_metaclass[type_id(type)] = type_id(type)" \
+prove_mutation_all "a metaclass id reuses its class's id" "$TYPE_ID_FILE" \
+  "      @id_to_metaclass[hosted_type_id(type)] = metaclass_type_id(meta)" \
+  "      @id_to_metaclass[hosted_type_id(type)] = hosted_type_id(type)" \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic instance's metaclass is not numbered" "$TYPE_ID_FILE" \
+  "    if type.is_a?(GenericClassInstanceType)" \
+  "    if type.is_a?(GenericClassInstanceType) && false" \
   -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -460,7 +467,7 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # The own-source probes: files whose floors a mutation of the namespace or struct rules must
 # lower below. A probe fails the check when the mutated port's identical count drops below its
 # floor, when the mutated driver does not build, or when the port fails the file.
-OWN_PROBES="src/compiler/foundation/location.iyi src/compiler/platform/target.iyi src/compiler/syntax/ast.iyi"
+OWN_PROBES="src/compiler/foundation/location.iyi src/compiler/platform/target.iyi src/compiler/syntax/ast.iyi src/compiler/lower/type_id.iyi"
 check_own_diverges() {
   "$IYI" build -o "$WORK/mut_port" "$REPO/bench/selfhost_lower_types_exercise.iyi" > /dev/null 2>&1 || return 1
   for probe in $OWN_PROBES; do
@@ -475,6 +482,37 @@ check_own_diverges() {
   return 0
 }
 
+# The own-source fixtures (bench/fixtures/ownty_*.iyi): each file's own-source dump, the hosted oracle
+# against the port, with the prelude loaded. A declared generic argument keeps its arguments (NEEDS.md row 22).
+own_fixture_bad=0
+own_fixture_count=0
+for fixture in "$REPO"/bench/fixtures/ownty_*.iyi; do
+  own_fixture_count=$((own_fixture_count + 1))
+  name="$(basename "$fixture" .iyi)"
+  if ! timeout 900 "$WORK/oracle" --own "$fixture" "$TRIPLE" > "$WORK/$name.own_o" 2> "$WORK/$name.own_oe"; then
+    echo "  $name: oracle failed: $(head -n 1 "$WORK/$name.own_oe")"
+    own_fixture_bad=$((own_fixture_bad + 1))
+    continue
+  fi
+  if ! timeout 900 "$WORK/port" --own "$fixture" "$TRIPLE" > "$WORK/$name.own_p" 2> "$WORK/$name.own_pe"; then
+    echo "  $name: port failed: $(head -n 1 "$WORK/$name.own_pe")"
+    own_fixture_bad=$((own_fixture_bad + 1))
+    continue
+  fi
+  if cmp -s "$WORK/$name.own_o" "$WORK/$name.own_p"; then
+    echo "  $name: own-source dump identical to the hosted oracle"
+  else
+    echo "  $name: DIVERGES from the hosted oracle:"
+    diff "$WORK/$name.own_o" "$WORK/$name.own_p" | head -n 20
+    own_fixture_bad=$((own_fixture_bad + 1))
+  fi
+done
+echo "  Own-source fixtures: $((own_fixture_count - own_fixture_bad))/$own_fixture_count identical"
+if [ "$own_fixture_count" -eq 0 ] || [ "$own_fixture_bad" -ne 0 ]; then
+  status=1
+fi
+
+
 # The baseline: the unmutated port meets every probe floor. Without it a port that fails a probe would
 # count as a catch.
 if ! check_own_diverges; then
@@ -483,7 +521,7 @@ if ! check_own_diverges; then
 fi
 
 prove_mutation "a namespace module's branch bypassed (namespaces fall through to the raise)" "$TYPER_FILE" \
-  "    if type.is_a?(NonGenericModuleType) && !type.is_a?(LibType)" \
+  "    if (type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)) && !type.is_a?(LibType)" \
   "    if false" \
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -494,10 +532,12 @@ prove_mutation "a struct's by-value answer removed (passed_by_value? of a class)
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a reference union lowered as a mixed union, not a pointer" "$TYPER_FILE" \
-  "      return @table.ptr if reference_union?(type.as(UnionType))" \
-  "      return @table.ptr if false" \
-  -- check_own_diverges || status=1
+prove_mutation "a reference union lowered as an integer, not a pointer" "$TYPER_FILE" \
+  "    if type.is_a?(ReferenceUnionType) || type.is_a?(NilableReferenceUnionType)
+      return @table.ptr" \
+  "    if type.is_a?(ReferenceUnionType) || type.is_a?(NilableReferenceUnionType)
+      return @table.int64" \
+  -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "the file's own module answers i1, not i32" "$TYPER_FILE" \
@@ -518,9 +558,27 @@ prove_mutation "a module's own metaclass counted as an implementor" "$TYPER_FILE
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a builtin is a headed candidate (the primitive exclusion dropped)" "$HEADED_FILE" \
-  '  return false unless primitive_kind(type) == ""' \
-  '  return false if false' \
+prove_mutation "headed census drops virtual_type_made? classes" "$HEADED_FILE" \
+  '    next unless headed_candidate?(type) && TypeQueries.virtual_type_made?(type)' \
+  '    next unless headed_candidate?(type) && false' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "headed census drops reference unions from program.unions" "$HEADED_FILE" \
+  '    next unless union.is_a?(ReferenceUnionType) || union.is_a?(NilableReferenceUnionType)' \
+  '    next unless false' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "headed census drops subclasses of virtual-type classes" "$HEADED_FILE" \
+  '    TypeQueries.all_subclasses(type).each do |sub|' \
+  '    ([] of Type).each do |sub|' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "headed census drops subclasses of union members" "$HEADED_FILE" \
+  '      TypeQueries.all_subclasses(resolved).each do |sub|' \
+  '      ([] of Type).each do |sub|' \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -530,16 +588,45 @@ prove_mutation "the sixteen-bit slot is zero bits wide" "$HEADED_FILE" \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "String is not headed by rule" "$HEADED_FILE" \
+prove_mutation_all "String is not headed by rule" "$HEADED_FILE" \
   '  return true if type.full_name == "String"' \
   '  return false if type.full_name == "String"' \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "an unheaded candidate answers headed" "$HEADED_FILE" \
+prove_mutation_all "an unheaded candidate answers headed" "$HEADED_FILE" \
   '  return false unless headed_candidate?(type)' \
   '  return true unless headed_candidate?(type)' \
   -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+
+prove_mutation "traits bypassed in create_llvm_type (fall through to BUG raise)" "$TYPER_FILE" \
+  '    if (type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)) && !type.is_a?(LibType)' \
+  '    if type.is_a?(NonGenericModuleType) && !type.is_a?(LibType)' \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "untyped union in passed_by_value? answered false instead of checking members" "$TYPER_FILE" \
+  '  if type.is_a?(UnionType)
+    return !reference_union?(type.as(UnionType))
+  end' \
+  '  if type.is_a?(UnionType)
+    return false
+  end' \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "generic type arguments retain virtual marker outside codegen" "$REPO/src/compiler/types/rendering.iyi" \
+  '    if codegen
+      return type
+    end
+    type.devirtualize' \
+  '    if codegen
+      return type
+    end
+    type' \
+  -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
