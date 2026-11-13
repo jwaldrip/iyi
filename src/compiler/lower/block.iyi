@@ -33,6 +33,7 @@ import compiler/lower/fun::{block_ended?, visit_node}
 import compiler/lower/helpers::{llvm_nil, store_aligned}
 import compiler/lower/pending::{pending_visit_node, refuse_port}
 import compiler/lower/phi::{LowerPhi}
+import compiler/lower/closure::{closure_var_barrier_begin, closure_var_barrier_end}
 import compiler/lower/ensure::{execute_ensures_until, set_ensure_exception_handler}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{NilType, NoReturnType, Type, VoidType}
@@ -113,11 +114,13 @@ end
 # The hosted `assign` of a value into a variable (codegen.cr codegen_assign): stored as it is when the
 # variable has the value's type, through the casts slice when it does not. A nil value writes nothing.
 pub def store_local(low : Lowerer, var : LowerVar, value_type : Type, value : Value) : Nil
+  active = closure_var_barrier_begin(low, var)
   if var.type.full_name != value_type.full_name
     assign(low, var.pointer, var.type, value_type, value)
   elsif !value_type.is_a?(NilType)
     store_aligned(low, value, var.pointer)
   end
+  closure_var_barrier_end(low, active, var)
 end
 
 # The hosted `visit(Yield)`. The block's arguments take the values of the yield's expressions; the

@@ -52,8 +52,9 @@ pub class LowerVar
   getter pointer : Value
   getter type : Type
   property already_loaded : Bool
+  property closure_slot : Bool
 
-  def initialize(@pointer : Value, @type : Type, @already_loaded : Bool = false)
+  def initialize(@pointer : Value, @type : Type, @already_loaded : Bool = false, @closure_slot : Bool = false)
   end
 end
 

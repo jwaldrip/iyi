@@ -45,6 +45,7 @@ import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, c
 import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{define_headed_bytes}
 import compiler/lower/proc::{lower_proc_literal}
+import compiler/lower/closure::{closure_var_barrier_begin, closure_var_barrier_end}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
@@ -264,12 +265,13 @@ pub def emit_unused_fun_defs(low : Lowerer) : Nil
   end
 end
 
-# The hosted codegen emits the runtime overflow function before lowering checked arithmetic.
-# The declaration may come from any unit, not just the entry root.
+# The hosted codegen emits the allocator, barrier and overflow functions before
+# lowering code that implicitly calls them.
 pub def emit_well_known_funs(low : Lowerer) : Nil
-  name = raise_overflow_name(low)
+  prefix = low.analysed.program.lookup_type("IyiRuntimeLock").nil? ? "__crystal_" : "__iyi_"
+  names = [raise_overflow_name(low), prefix + "malloc64", prefix + "malloc_atomic64", "__iyi_write_barrier_begin", "__iyi_write_barrier"]
   low.analysed.program.global_funs.each do |record|
-    if record.name == name
+    if names.includes?(record.name)
       if node = record.node
         codegen_fun_def(low, node, true)
       end
@@ -842,12 +844,14 @@ pub def codegen_assign(low : Lowerer, node : Assign) : Nil
   end
   var = low.current_context.vars[target.name]?
   v_var = var.as(LowerVar)
+  active = closure_var_barrier_begin(low, v_var)
   if v_var.type.full_name != vt.full_name
     # A value of another type than the variable goes through the casts slice (the hosted upcast into a union).
     assign(low, v_var.pointer, v_var.type, vt, v)
   elsif !vt.is_a?(NilType)
     store_aligned(low, v, v_var.pointer)
   end
+  closure_var_barrier_end(low, active, v_var)
   low.last = v
 end
 

@@ -30,7 +30,7 @@ import compiler/ir/values::{Value}
 import compiler/ir/module::{Module}
 import compiler/lower/cast::{assign, to_rhs, upcast}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
-import compiler/lower/closure::{malloc_closure, setup_closure_vars}
+import compiler/lower/closure::{malloc_closure, setup_closure_vars, closure_var_barrier_begin, closure_var_barrier_end}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/instance_var::{self_by_pointer?}
 import compiler/lower/typer::{passed_by_value?}
@@ -496,11 +496,13 @@ pub def create_local_copy_of_arg(low : Lowerer, name : String, arg_type : Type, 
   return if var_type.is_a?(VoidType)
   if existing = low.current_context.vars[name]?
     unless existing.already_loaded
+      active = closure_var_barrier_begin(low, existing)
       if var_type.full_name == arg_type.full_name
         store_aligned(low, param, existing.pointer) unless arg_type.is_a?(NilType)
       else
         assign(low, existing.pointer, var_type, arg_type, param)
       end
+      closure_var_barrier_end(low, active, existing)
       return
     end
   end

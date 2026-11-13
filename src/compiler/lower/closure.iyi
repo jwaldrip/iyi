@@ -2,7 +2,7 @@ module compiler/lower/closure
 
 # Closure frame layout and access, corresponding to llvm_typer.cr:565-594,
 # codegen.cr:2628-2675, and fun.cr:858-910.
-import compiler/ir/inst::{CallConv, Op}
+import compiler/ir/inst::{CallConv, IntPredicate, Op}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
@@ -38,19 +38,19 @@ private def closure_field(low : Lowerer, type : IrType, pointer : Value, index :
 end
 
 private def closure_malloc(low : Lowerer, type : IrType, pointerful : Bool) : Value
-  unless low.analysed.program.types["IyiHeap"]?.nil?
-    raise "lower: closure allocation through the iyi arena is not ported"
-  end
-  # Runtime allocators and their barriers must not silently fall back to C malloc.
-  ["__iyi_malloc64", "__crystal_malloc64", "__iyi_malloc_atomic64", "__crystal_malloc_atomic64"].each do |name|
-    unless low.module.get_function?(name).nil?
-      raise "lower: closure allocation through program allocator is not ported"
-    end
-  end
-  fn = low.module.get_function?("malloc")
+  arena = !low.analysed.program.types["IyiHeap"]?.nil?
+  prefix = low.analysed.program.lookup_type("IyiRuntimeLock").nil? ? "__crystal_" : "__iyi_"
+  name = prefix + (pointerful ? "malloc64" : "malloc_atomic64")
+  fn = low.module.get_function?(name)
   if fn.nil?
-    signature = low.module.types.func([low.module.types.int64] of IrType, low.module.types.ptr(0))
-    fn = low.module.add_function("malloc", signature, CallConv::C)
+    if arena
+      raise "lower: closure allocator #{name} has not been emitted"
+    end
+    fn = low.module.get_function?("malloc")
+    if fn.nil?
+      signature = low.module.types.func([low.module.types.int64] of IrType, low.module.types.ptr(0))
+      fn = low.module.add_function("malloc", signature, CallConv::C)
+    end
   end
   null_ptr = low.builder.const_null_pointer
   one = low.builder.const_int(low.module.types.int32, 1_i64)
@@ -58,6 +58,53 @@ private def closure_malloc(low : Lowerer, type : IrType, pointerful : Bool) : Va
   size = low.builder.const_cast(Op::PtrToInt, element, low.typer.size_t)
   low.builder.call(fn.fn_type, fn, [size] of Value)
 end
+
+# The hosted barrier brackets writes into heap closure slots. Its functions are
+# emitted from the program's real declarations, never synthesized here.
+pub def closure_barrier_begin(low : Lowerer, pointerful : Bool) : Value?
+  return nil unless pointerful && !low.analysed.program.types["IyiHeap"]?.nil?
+  begin_fun = low.module.get_function?("__iyi_write_barrier_begin")
+  barrier_fun = low.module.get_function?("__iyi_write_barrier")
+  return nil if begin_fun.nil? || barrier_fun.nil?
+  flag = low.module.get_global?("__iyi_marking")
+  flag = low.module.add_global("__iyi_marking", low.module.types.int8) if flag.nil?
+  marking = load_aligned(low, low.module.types.int8, flag.as(Value))
+  active = low.builder.icmp(IntPredicate::NE, marking, low.builder.const_int(low.module.types.int8, 0_i64))
+  blocks = low.new_blocks(["barrier_begin", "barrier_plain", "barrier_join"])
+  low.builder.cond_br(active, blocks[0], blocks[1])
+  low.builder.position_at_end(blocks[0])
+  low.builder.call(begin_fun.fn_type, begin_fun, [] of Value)
+  low.builder.br(blocks[2])
+  low.builder.position_at_end(blocks[1])
+  low.builder.br(blocks[2])
+  low.builder.position_at_end(blocks[2])
+  active
+end
+
+pub def closure_barrier_end(low : Lowerer, active : Value?, slot : Value, bytes : Int64) : Nil
+  return if active.nil?
+  barrier_fun = low.module.get_function?("__iyi_write_barrier")
+  raise "BUG: closure write barrier disappeared" if barrier_fun.nil?
+  words = (bytes + 7_i64) // 8_i64
+  words = 1_i64 if words < 1_i64
+  blocks = low.new_blocks(["barrier_shade", "barrier_done"])
+  low.builder.cond_br(active.as(Value), blocks[0], blocks[1])
+  low.builder.position_at_end(blocks[0])
+  count = low.builder.const_int(low.typer.size_t, words)
+  low.builder.call(barrier_fun.fn_type, barrier_fun, [slot, count] of Value)
+  low.builder.br(blocks[1])
+  low.builder.position_at_end(blocks[1])
+end
+pub def closure_var_barrier_begin(low : Lowerer, var : LowerVar) : Value?
+  closure_barrier_begin(low, var.closure_slot && has_inner_pointers?(var.type))
+end
+
+pub def closure_var_barrier_end(low : Lowerer, active : Value?, var : LowerVar) : Nil
+  if active
+    closure_barrier_end(low, active, var.pointer, low.typer.size_of(low.typer.llvm_type(var.type)))
+  end
+end
+
 
 pub def malloc_closure(low : Lowerer, ctx : LowerContext, vars : Array(ClosureVar)?, parent : LowerContext?, self_closured : Bool) : Nil
   parent_type = parent.nil? ? nil : parent.as(LowerContext).closure_type
@@ -67,20 +114,26 @@ pub def malloc_closure(low : Lowerer, ctx : LowerContext, vars : Array(ClosureVa
     type, pointerful = closure_struct(low, captured, parent_type, self_type)
     ptr = closure_malloc(low, type, pointerful)
     captured.each_with_index do |var, i|
-      ctx.vars[var.name] = LowerVar.new(closure_field(low, type, ptr, i, var.name), var.type)
+      ctx.vars[var.name] = LowerVar.new(closure_field(low, type, ptr, i, var.name), var.type, false, true)
     end
     if outer = parent
       if parent_type
         parent_ptr = outer.closure_ptr
         raise "BUG: closure parent has no pointer" if parent_ptr.nil?
-        store_aligned(low, parent_ptr.as(Value), closure_field(low, type, ptr, captured.size, "parent"))
+        slot = closure_field(low, type, ptr, captured.size, "parent")
+        active = closure_barrier_begin(low, true)
+        store_aligned(low, parent_ptr.as(Value), slot)
+        closure_barrier_end(low, active, slot, low.typer.size_of(low.module.types.ptr(0)))
       end
     end
     if self_closured
       self_var = ctx.vars["self"]?
       raise "BUG: captured self is unavailable" if self_var.nil?
       index = captured.size + (parent_type.nil? ? 0 : 1)
-      store_aligned(low, self_var.pointer, closure_field(low, type, ptr, index, "self"))
+      slot = closure_field(low, type, ptr, index, "self")
+      active = closure_barrier_begin(low, has_inner_pointers?(self_type.as(Type)))
+      store_aligned(low, self_var.pointer, slot)
+      closure_barrier_end(low, active, slot, low.typer.size_of(low.typer.llvm_type(self_type.as(Type))))
       ctx.closure_self = self_type
     end
     ctx.closure_vars = captured
@@ -109,7 +162,7 @@ pub def setup_closure_vars(low : Lowerer, proc_def : Def, vars : Array(ClosureVa
   vars.each_with_index do |var, i|
     next unless low.closure_facts.visible_closured?(proc_def, var.name)
     next if low.current_context.vars.has_key?(var.name)
-    low.current_context.vars[var.name] = LowerVar.new(closure_field(low, closure_type, closure_ptr, i, var.name), var.type)
+    low.current_context.vars[var.name] = LowerVar.new(closure_field(low, closure_type, closure_ptr, i, var.name), var.type, false, true)
   end
   if parent = ctx.closure_parent_context
     if parent_vars = parent.closure_vars
