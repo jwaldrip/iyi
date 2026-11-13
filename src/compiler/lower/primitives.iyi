@@ -94,6 +94,10 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     lower_atomic_store(low, node)
     return
   end
+  if name == "atomicrmw"
+    lower_atomic_rmw(low, node)
+    return
+  end
   if name == "pointer_malloc" || name == "pointer_new" || name == "pointer_realloc" || name == "pointer_diff" || name == "pointer_get" || name == "pointer_set" || name == "pointer_add" || name == "pointer_address"
     lower_pointer_primitive(low, node, name.as(String))
     return
@@ -189,6 +193,37 @@ pub def lower_atomic_store(low : Lowerer, node : Call) : Nil
   inst = low.builder.atomic_store(value, ptr.as(Value), ordering, flag.as(BoolLiteral).value)
   inst.alignment = is_bool ? 1 : low.typer.align_of(value.type)
   low.last = llvm_nil(low)
+end
+
+# Hosted codegen_primitive_atomicrmw: the operation and ordering are literal symbols.
+pub def lower_atomic_rmw(low : Lowerer, node : Call) : Nil
+  raise "BUG: atomicrmw needs five arguments" unless node.args.size == 5
+  op_node = node.args[0]
+  raise "BUG: atomicrmw operation must be a symbol literal" unless op_node.is_a?(SymbolLiteral)
+  op = op_node.as(SymbolLiteral).value
+  unless ["xchg", "add", "sub", "and", "nand", "or", "xor", "max", "min", "umax", "umin", "fadd", "fsub"].includes?(op)
+    raise "BUG: unknown atomicrmw operation #{op}"
+  end
+  ordering = atomic_ordering(node.args[3])
+  flag = node.args[4]
+  raise "BUG: atomic singlethread must be a Bool literal" unless flag.is_a?(BoolLiteral)
+  pointer_type = low.analysed.type_of?(node.args[1])
+  raise "BUG: atomic pointer has no analysed type" if pointer_type.nil?
+  elem = pointer_element_of(pointer_type.as(Type))
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, node.args[1])
+  ptr = low.last
+  raise "BUG: atomic pointer has no value" if ptr.nil?
+  visit_node(low, node.args[2])
+  raw = low.last
+  raise "BUG: atomicrmw has no value" if raw.nil?
+  low.needs_value = wants
+  is_bool = primitive_kind(elem) == "bool"
+  value = is_bool ? low.builder.zext(raw.as(Value), low.module.types.int8) : raw.as(Value)
+  inst = low.builder.atomicrmw(op, ptr.as(Value), value, ordering, flag.as(BoolLiteral).value)
+  inst.alignment = is_bool ? 1 : low.typer.align_of(value.type)
+  low.last = is_bool ? low.builder.trunc(inst, low.module.types.int1) : inst
 end
 
 pub def atomic_ordering(node : ASTNode) : Ordering
