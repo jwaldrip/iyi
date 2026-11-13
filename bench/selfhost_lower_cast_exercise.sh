@@ -47,6 +47,7 @@ fi
 waiting_on() {
   case "$1" in
     lowcast_proc_result) echo "typing expected type Proc(Nil), got Proc(Int32) (S1d24Bodies)" ;;
+    lowcast_struct_union) echo "call result still loaded before union store (S2c20Calls 715837683)" ;;
   esac
 }
 
