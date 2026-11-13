@@ -793,12 +793,36 @@ pub def codegen_char(low : Lowerer, node : CharLiteral) : Nil
   low.last = low.builder.const_int(low.typer.llvm_type(t.as(Type)), node.value.ord.to_i64)
 end
 
-# The hosted `visit(Var)`: a load of the variable, read at the type it was declared with.
+# The hosted visit(Var) treats an untyped read and a NoReturn slot as unreachable.
 pub def codegen_var(low : Lowerer, node : Var) : Nil
-  var = low.current_context.vars[node.name]?
-  raise "BUG: variable #{node.name} is read before it is assigned (hosted codegen.cr: visit(Var))" if var.nil?
-  v = var.as(LowerVar)
   read_type = low.analysed.type_of?(node)
+  if read_type.nil?
+    low.builder.unreachable
+    low.last = nil
+    return
+  end
+  var = low.current_context.vars[node.name]?
+  if var.nil?
+    if node.name == "self"
+      rt = read_type.as(Type)
+      if TypeQueries.metaclass?(rt)
+        low.last = type_id_value(low, rt)
+      else
+        owner = low.current_context.type
+        raise "BUG: self has no enclosing type (hosted llvm_self_ptr)" if owner.nil?
+        self_ptr = type_id_value(low, owner.as(Type))
+        low.last = downcast(low, self_ptr, rt, owner.as(Type), true)
+      end
+      return
+    end
+    raise "BUG: variable #{node.name} is read before it is assigned (hosted codegen.cr: visit(Var))"
+  end
+  v = var.as(LowerVar)
+  if v.type.is_a?(NoReturnType)
+    low.builder.unreachable
+    low.last = nil
+    return
+  end
   if read_type && v.type.is_a?(MixedUnionType) && read_type.as(Type).full_name != v.type.full_name
     low.last = downcast(low, v.pointer, read_type.as(Type), v.type, v.already_loaded)
     return
