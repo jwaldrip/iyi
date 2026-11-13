@@ -356,6 +356,9 @@ pub class MacroInterpreter
       fail_at(path, "undefined constant #{path.names.join("::")}")
       return Nop.new
     end
+    if node.is_a?(Generic)
+      return evaluate_generic_type(node.as(Generic))
+    end
 
     if node.is_a?(IsA)
       isa = node.as(IsA)
@@ -460,6 +463,10 @@ pub class MacroInterpreter
       if value = MacroMethods.interpret_method(@flags, receiver, cl.name, eval_args, nil, cl.block)
         return value
       end
+      if err = MacroMethods.take_error
+        fail_at(cl, err)
+        return Nop.new
+      end
       fail_at(cl, "macro method '#{class_name}##{cl.name}' is not ported")
       return Nop.new
     end
@@ -547,6 +554,72 @@ pub class MacroInterpreter
     end
 
     node
+  end
+
+  # A generic built-in type (`Tuple(Int32, Bool)`, `NamedTuple(a: Int32)`,
+  # `Union(Int32, Bool)`) becomes the TypeNode the hosted interpreter would
+  # resolve. Tuple and named tuple instances keep their arguments so `size`
+  # can count them. A union prints with its members sorted, and `size` is
+  # refused on it, as the hosted interpreter refuses it.
+  def evaluate_generic_type(g : Generic) : ASTNode
+    base = generic_base_name(g.name)
+    if base.nil? || !MacroAnswers.builtin_type?(base)
+      shown = base || "type"
+      fail_at(g, "undefined constant #{shown}")
+      return Nop.new
+    end
+    args = [] of String
+    if na = g.named_args
+      na.each do |a|
+        args << "#{a.name}: #{type_arg_text(a.value)}"
+      end
+    end
+    g.type_vars.each do |tv|
+      args << type_arg_text(tv)
+    end
+    if base == "Union"
+      members = args.sorted
+      text = StringBuilder.new
+      text << "("
+      i = 0
+      while i < members.size
+        if i > 0
+          text << " | "
+        end
+        text << members[i]
+        i = i + 1
+      end
+      text << ")"
+      return TypeNode.new(text.to_s)
+    end
+    sized = base == "Tuple" || base == "NamedTuple"
+    printed = StringBuilder.new
+    printed << base
+    printed << "("
+    i = 0
+    while i < args.size
+      if i > 0
+        printed << ", "
+      end
+      printed << args[i]
+      i = i + 1
+    end
+    printed << ")"
+    TypeNode.new(printed.to_s, args, sized)
+  end
+
+  def generic_base_name(node : ASTNode) : String?
+    return nil unless node.is_a?(Path)
+    path = node.as(Path)
+    return nil unless path.names.size == 1
+    path.names[0]
+  end
+
+  def type_arg_text(node : ASTNode) : String
+    resolved = evaluate(node)
+    sb = StringBuilder.new
+    resolved.to_s(sb)
+    sb.to_s
   end
 
   # Runs a `for` body once per element. `firsts`, `seconds` and `thirds` hold

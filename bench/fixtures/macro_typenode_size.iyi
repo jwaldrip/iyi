@@ -1,0 +1,7 @@
+# TypeNode#size is the type argument count of a tuple or named tuple instance.
+{% if Tuple(Int32, Bool).size == 2 %}
+  TWO = 1
+{% end %}
+{% if NamedTuple(a: Int32, b: Bool, c: Char).size == 3 %}
+  THREE = 1
+{% end %}

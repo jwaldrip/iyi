@@ -7,6 +7,21 @@ import compiler/macros/ast::{MacroId, TypeNode}
 import compiler/macros/answers::{MacroAnswers}
 
 pub class MacroMethods
+  # A hosted method refusal (`undefined method 'size' ...`), read once by the
+  # interpreter. Nil when the method is simply not ported.
+  @@method_error : String? = nil
+
+  def self.refuse(message : String) : Nil
+    @@method_error = message
+    nil
+  end
+
+  def self.take_error : String?
+    err = @@method_error
+    @@method_error = nil
+    err
+  end
+
   def self.truthy?(node : ASTNode) : Bool
     if node.is_a?(NilLiteral) || node.is_a?(Nop)
       false
@@ -306,6 +321,7 @@ pub class MacroMethods
     named_args : Hash(String, ASTNode)? = nil,
     block : Block? = nil,
   ) : ASTNode?
+    @@method_error = nil
     if receiver.nil?
       return nil
     end
@@ -340,11 +356,23 @@ pub class MacroMethods
     end
 
     if rec.is_a?(TypeNode)
+      tn = rec.as(TypeNode)
       # `name(generic_args:)` changes only a generic type's name. The scan never
       # answers a generic type from its name (MacroSiteRef.generic), so the name
       # is the same with or without the argument.
       if method == "name"
-        return MacroId.new(rec.as(TypeNode).name)
+        return MacroId.new(tn.name)
+      end
+      # Hosted `TypeNode#size`: the type argument count of a tuple or named
+      # tuple instance. Any other type, a union included, is refused.
+      if method == "size"
+        if tn.sized
+          return NumberLiteral.new(tn.type_args.size.to_s, NumberKind::I32)
+        end
+        shown = StringBuilder.new
+        tn.to_s(shown)
+        refuse("undefined method 'size' for TypeNode of type #{shown.to_s} (must be a tuple or named tuple type)")
+        return nil
       end
       return nil
     end
