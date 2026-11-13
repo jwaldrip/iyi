@@ -418,7 +418,7 @@ pub abstract class ModuleType < NamedType
     return false unless a.args.size == b.args.size
     i = 0
     while i < a.args.size
-      return false unless restrictions_match?(a.args[i].restriction, b.args[i].restriction)
+      return false unless restrictions_match?(a.args[i].restriction, b.args[i].restriction, a.free_vars, b.free_vars)
       i = i + 1
     end
     # A block parameter is part of the signature: `fetch(key)` and `fetch(key, &block)` are two overloads.
@@ -427,20 +427,20 @@ pub abstract class ModuleType < NamedType
     if ab.nil? || bb.nil?
       return ab.nil? && bb.nil?
     end
-    restrictions_match?(ab.restriction, bb.restriction)
+    restrictions_match?(ab.restriction, bb.restriction, a.free_vars, b.free_vars)
   end
 
-  # Hosted compare_strictness (restrictions.cr old_restriction_of?) keeps two defs
-  # unless restriction_of? holds both ways. A single-name path that is a type
-  # variable of this generic does not resolve (path_lookup.cr GenericType
-  # #lookup_path_item returns nil), so `T` does not replace another `T`. A
-  # concrete path still matches by text.
-  def restrictions_match?(ra : ASTNode?, rb : ASTNode?) : Bool
+  # Hosted Path#restriction_of? first compares whether each path is a free
+  # variable, including the distinction between no free-variable list and a
+  # present list. Equal paths with equal free-variable status replace each other.
+  def restrictions_match?(ra : ASTNode?, rb : ASTNode?, a_vars : Array(String)?, b_vars : Array(String)?) : Bool
     if ra.nil? || rb.nil?
       return ra.nil? && rb.nil?
     end
     if unbound_owner_type_var?(ra) || unbound_owner_type_var?(rb)
-      return false
+      a_free = a_vars ? a_vars.includes?(ra.to_s) : nil
+      b_free = b_vars ? b_vars.includes?(rb.to_s) : nil
+      return false unless a_free == b_free
     end
     ra.to_s == rb.to_s
   end
@@ -751,6 +751,7 @@ pub class LibFun
   property external_var : Bool = false
   property thread_local : Bool = false
   property primitive : String? = nil
+  property previous : LibFun? = nil
 
   def varargs? : Bool
     @varargs
@@ -2913,7 +2914,20 @@ pub class TopLevelVisitor < Visitor
       end
       @program.record_lib_fun(node, record)
       if @current_type.is_a?(LibType)
-        @current_type.as(LibType).funs << record
+        funs = @current_type.as(LibType).funs
+        replaced = false
+        i = 0
+        while i < funs.size
+          old = funs[i]
+          if old.name == record.name && old.args.size == record.args.size && old.varargs == record.varargs
+            record.previous = old
+            funs[i] = record
+            replaced = true
+            break
+          end
+          i = i + 1
+        end
+        funs << record unless replaced
       else
         @program.global_funs << record
       end
@@ -3439,6 +3453,9 @@ pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil
               "nil"
             end
   io << indent << "  return_type: " << ret_str << "\n"
+  if previous = f.previous
+    io << indent << "  previous: " << previous.name << "\n"
+  end
 end
 
 pub def dump_type(t : Type, io : String::Builder, indent : String, entry : String? = nil) : Nil
