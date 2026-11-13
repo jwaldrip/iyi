@@ -5,7 +5,8 @@ end
 
 struct Range(B, E)
   def self.new(beginning : Int32, ending : Int32, exclusive : Bool) : Range(Int32, Int32)
-    uninitialized Range(Int32, Int32)
+    result = uninitialized Range(Int32, Int32)
+    result
   end
 end
 
