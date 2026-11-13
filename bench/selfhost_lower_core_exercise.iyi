@@ -391,6 +391,10 @@ def run : Nil
     run_emit(args[1], args[2])
   elsif mode == "context"
     check_context
+  elsif mode == "jump-mismatch"
+    node = Break.new
+    node.target = Nop.new
+    jump_target(node, Nop.new)
   elsif mode == "probe-reuse"
     run_probe_reuse(args[1])
   elsif mode == "probe-required"
