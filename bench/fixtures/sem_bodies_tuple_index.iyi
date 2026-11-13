@@ -1,0 +1,26 @@
+class TupleIndexProbe
+  def scalar : Int32
+    t = {1, "s", 3_u8}
+    x = t[0]
+    x + 1
+  end
+
+  def text_size : Int32
+    t = {1, "s"}
+    t[1].bytesize
+  end
+
+  def pair_size : Int32
+    pairs = [{1, "a"}, {2, "b"}]
+    n = 0
+    pairs.each do |pair|
+      n = n + pair[0] + pair[1].bytesize
+    end
+    n
+  end
+end
+
+probe = TupleIndexProbe.new
+scalar = probe.scalar
+text_size = probe.text_size
+pair_size = probe.pair_size
