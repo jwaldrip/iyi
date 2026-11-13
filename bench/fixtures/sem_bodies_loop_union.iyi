@@ -1,14 +1,18 @@
 class Box
 end
 
-def take(first : Box?) : Box?
+def pairs(first : Box?, partner : Box?) : Box?
   found = nil
   cursor = first
   while cursor.is_a?(Box)
-    found = cursor
+    unless partner.is_a?(Box)
+      found = cursor
+      break
+    end
+    found = partner
     cursor = nil
   end
   found
 end
 
-take(nil)
+pairs(nil, nil)
