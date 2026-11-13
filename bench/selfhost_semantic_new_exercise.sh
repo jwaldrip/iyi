@@ -119,6 +119,11 @@ prove_mutation "a generic receiver does not bind its type parameters in a restri
   "    if false" \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic class inherits its default new instead of owning one" "$NEW_FILE" \
+  '      define_default_generic_new(program, sub.as(GenericClassType))' \
+  '      nil' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 
