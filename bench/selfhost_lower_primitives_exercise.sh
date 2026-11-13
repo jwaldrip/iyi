@@ -188,6 +188,8 @@ prove_mutation "a mixed-sign less-than uses the unsigned predicate" "$REPO/src/c
   "      widened = low.builder.icmp(IntPredicate::SLT, p1, extend_int(low, t2, t1, p2))" "      widened = low.builder.icmp(IntPredicate::ULT, p1, extend_int(low, t2, t1, p2))" -- lower_primitives_check || status=1
 prove_mutation "a by-value pointer_get loads" "$REPO/src/compiler/lower/primitives.iyi" \
   "      low.last = values[0]" "      low.last = load_aligned(low, low.typer.llvm_embedded_type(elem), values[0])" -- lower_primitives_check || status=1
+prove_mutation "a Bool pointer_set stores zero" "$REPO/src/compiler/lower/primitives.iyi" \
+  "      bool_stored = values[1]" "      bool_stored = int1(low, 0_i64)" -- lower_primitives_check || status=1
 prove_mutation "a generic instance ignores its class variables" "$REPO/src/compiler/lower/primitives.iyi" \
   "        merged[k] = v" "        merged[k] = v if false" -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
