@@ -339,3 +339,4 @@ src/compiler/lower/symbols.iyi 22
 src/compiler/semantic/default_arguments.iyi 9
 src/compiler/semantic/lib_call.iyi 34
 src/compiler/semantic/new.iyi 18
+src/compiler/lower/asm.iyi 0

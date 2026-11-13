@@ -318,10 +318,12 @@ pub class Compiler
     reached = typed_pass("bodies")
     if @config.keep_going
       root_name = Compiler.module_name_from_path(root_filename)
-      refusal_table(typed, root_name).each { |line| puts line }
+      refused = [] of String
+      refusal_table(typed, root_name, refused).each { |line| puts line }
       names = [] of String
-      lowering_table(typed, triple, root_name, names).each { |line| puts line }
+      lowering_table(typed, triple, root_name, names, refused).each { |line| puts line }
       File.write(@config.output_filename + ".names", names.join("\n") + "\n")
+      File.write(@config.output_filename + ".refusals", refused.join("\n") + "\n")
       STDOUT.flush
     end
 
