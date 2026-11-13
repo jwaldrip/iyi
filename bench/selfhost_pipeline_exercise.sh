@@ -26,6 +26,9 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 . "$REPO/bench/lib/mutation.sh"
 WORK="$(mktemp -d /tmp/iyi-pipeline.XXXXXX)"
+ARTIFACT_DIR="${PIPELINE_ARTIFACT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/iyi-pipeline-artifacts.XXXXXX")}"
+mkdir -p "$ARTIFACT_DIR"
+echo "  table sidecars: $ARTIFACT_DIR"
 trap 'rm -rf "$WORK"' EXIT
 FLOOR="$REPO/bench/selfhost_pipeline.floor"
 TOOL_SRC="$REPO/src/compiler/tools/compile_native.iyi"
@@ -74,6 +77,7 @@ total=0
 fixtures=""
 for g in lower_ lowcall_ lowprim_ lowglob_; do
   for f in "$REPO"/bench/fixtures/${g}*.iyi; do
+    [ "$(basename "$f")" = "lowglob_cvar_lazy_ir.iyi" ] && continue # Structural IR fixture, not a standalone program.
     [ -f "$f" ] && fixtures="$fixtures $f"
   done
 done
@@ -178,6 +182,7 @@ table_ok=1
 for root in $ROOTS; do
   name="$(basename "$root" .iyi)"
   IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/$root" -o "$WORK/$name.table" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/$name.table.probe" 2> /dev/null
+  for sidecar in names refusals; do [ ! -f "$WORK/$name.table.$sidecar" ] || cp "$WORK/$name.table.$sidecar" "$ARTIFACT_DIR/"; done
   awk '/^table:/' "$WORK/$name.table.probe" | sed "s#$REPO/##g" >> "$WORK/table.lines"
   if [ -z "$(table_value "$name" defs-reached)" ]; then
     echo "  $root: no table summary line (see $WORK/$name.table.probe)"
