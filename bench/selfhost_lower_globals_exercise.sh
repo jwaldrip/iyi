@@ -42,6 +42,10 @@ WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy"
 # The lazy fixture's indirect Proc call waits on body typing's splat binding.
 #
 # The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
+# The hosted module cannot yet be imported: its indirect return ABI is not
+# represented by the port. Keep this fixture outside the lowglob_* glob.
+echo "  wait_lowglob_const_large_struct: WAITING, a value above 128 bytes travels through memory (hosted fun.cr 635-693): not ported"
+
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
