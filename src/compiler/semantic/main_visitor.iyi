@@ -80,8 +80,9 @@ pub class BlockOwner
   getter context_vars : Hash(String, Type)?
   getter yield_nodes : Array(Yield)?
   getter scope : Type?
+  getter writer_type : ModuleType?
 
-  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil)
+  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil, @writer_type : ModuleType? = nil)
   end
 end
 
@@ -1879,6 +1880,7 @@ pub class MainVisitor < TypeNodeHost
       callee_block = @current_call_block
       callee_context_vars = @current_block_context_vars
       callee_yield_nodes = @current_yield_nodes
+      callee_type = @current_type
       if owner = @block_owners[blk]?
         @current_def = owner.def_node
         @return_types = owner.return_types
@@ -1887,6 +1889,9 @@ pub class MainVisitor < TypeNodeHost
         @current_yield_nodes = owner.yield_nodes
         if writer_scope = owner.scope
           @scope = writer_scope
+        end
+        if writer_type = owner.writer_type
+          @current_type = writer_type
         end
       else
         @return_types = nil
@@ -1905,6 +1910,7 @@ pub class MainVisitor < TypeNodeHost
       @unreachable = false
       enter_file_scope(blk)
       blk.body.accept(self)
+      @current_type = callee_type
       @type_filters = old_yield_type_filters
       @needs_type_filters = old_yield_needs_filters
       @unreachable = old_yield_unreachable
@@ -2546,7 +2552,7 @@ pub class MainVisitor < TypeNodeHost
   # the body or an argument cannot be typed. `site` is the node that reports a
   # return-type mismatch.
   # `cache_key` (see def_instance_key) caches the finished instance; nil caches nothing.
-  def type_method_body(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode? = nil, cache_key : String? = nil) : Type?
+  def type_method_body(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode? = nil, cache_key : String? = nil, call_node : Call? = nil) : Type?
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(target_def)
@@ -2556,7 +2562,7 @@ pub class MainVisitor < TypeNodeHost
       body_receiver = owner if owner.iyi_unit
     end
     enter_owner_scope(body_receiver)
-    result = type_method_body_in_file(target_def, body_receiver, args, block, site, cache_key, old_current_type)
+    result = type_method_body_in_file(target_def, body_receiver, args, block, site, cache_key, old_current_type, call_node)
     @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
@@ -2600,7 +2606,7 @@ pub class MainVisitor < TypeNodeHost
     result
   end
 
-  def type_method_body_in_file(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode?, cache_key : String?, writer_type : ModuleType) : Type?
+  def type_method_body_in_file(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode?, cache_key : String?, writer_type : ModuleType, call_node : Call?) : Type?
     # Hosted call.cr binds the match's free variables from the call arguments,
     # including for primitive and recursive definitions with no body to visit.
     call_arg_types = [] of Type
@@ -2618,7 +2624,7 @@ pub class MainVisitor < TypeNodeHost
     # binds the match context used by the callee's body and return annotation
     # (hosted call.cr 1259-1293, 1336-1432).
     captured_block_type : Type? = nil
-    if target_def.block_arg && !target_def.block_arg.as(Arg).name.empty?
+    if target_def.uses_block_arg?
       if blk = block
         if ba = target_def.block_arg
           if restriction = ba.restriction
@@ -2628,38 +2634,73 @@ pub class MainVisitor < TypeNodeHost
               if inputs = notation.inputs
                 inputs.each { |input| input_types << lookup_def_return(input, rec_type, target_def) }
               end
-              saved_vars = @vars
-              saved_type = @current_type
-              saved_imports = @program.current_imports
-              saved_import_defs = @program.current_import_defs
-              @vars = @vars.dup
-              blk.args.each_with_index do |arg, index|
-                if index < input_types.size
-                  @vars[arg.name] = input_types[index]
-                  set_type(arg, input_types[index])
-                end
-              end
-              @current_type = writer_type
-              enter_file_scope(blk)
-              blk.body.accept(self)
-              block_type = child_type(blk.body)
-              @vars = saved_vars
-              @current_type = saved_type
-              @program.current_imports = saved_imports
-              @program.current_import_defs = saved_import_defs
-              if bt = block_type
-                # The captured proc carries the result; its Block node is not
-                # bound to that result (hosted call.cr 1336-1445).
-                set_type(blk, @program.no_return_type)
-                if output = notation.output
-                  if free_names = target_def.free_vars
-                    bound = @def_free_types[target_def]? || Hash(String, Type).new
-                    if FreeBindings.bind(output, bt, free_names, bound)
-                      @def_free_types[target_def] = bound unless bound.empty?
-                    end
+              if existing = blk.fun_literal
+                captured_block_type = child_type(existing)
+              else
+                saved_vars = @vars
+                saved_type = @current_type
+                saved_imports = @program.current_imports
+                saved_import_defs = @program.current_import_defs
+                @vars = @vars.dup
+                blk.args.each_with_index do |arg, index|
+                  if index < input_types.size
+                    @vars[arg.name] = input_types[index]
+                    set_type(arg, input_types[index])
                   end
                 end
-                captured_block_type = ProcInstanceType.new(@program, input_types, bt)
+                @current_type = writer_type
+                enter_file_scope(blk)
+                blk.body.accept(self)
+                block_type = child_type(blk.body)
+                @vars = saved_vars
+                @current_type = saved_type
+                @program.current_imports = saved_imports
+                @program.current_import_defs = saved_import_defs
+                if bt = block_type
+                  resolved_output : Type? = nil
+                  if output = notation.output
+                    free_output = false
+                    if output.is_a?(Path)
+                      if free_names = target_def.free_vars
+                        names = output.as(Path).names
+                        free_output = names.size == 1 && free_names.includes?(names[0])
+                      end
+                    end
+                    if free_output
+                      # Hosted call.cr 1442-1446 leaves this Block unbound;
+                      # fix_missing_types.cr 66-75 later makes it NoReturn.
+                      # The result is the literal's Proc return type, not the Block type.
+                      set_type(blk, @program.no_return_type)
+                    else
+                      resolved_output = lookup_def_return(output, rec_type, target_def)
+                      set_type(blk, resolved_output.as(Type))
+                    end
+                    if free_names = target_def.free_vars
+                      bound = @def_free_types[target_def]? || Hash(String, Type).new
+                      if FreeBindings.bind(output, bt, free_names, bound)
+                        @def_free_types[target_def] = bound unless bound.empty?
+                      end
+                    end
+                  end
+                  result_type = resolved_output || bt
+                  literal_args = [] of Arg
+                  input_types.each_with_index do |input_type, index|
+                    name = index < blk.args.size ? blk.args[index].name : "__arg#{index}"
+                    literal_arg = Arg.new(name)
+                    set_type(literal_arg, input_type)
+                    literal_args << literal_arg
+                  end
+                  literal_def = Def.new("->", literal_args, blk.body).at(blk)
+                  literal_def.captured_block = true
+                  literal = ProcLiteral.new(literal_def)
+                  if call = call_node
+                    literal.at(call)
+                  end
+                  captured_block_type = ProcInstanceType.new(@program, input_types, result_type)
+                  set_type(literal_def, result_type)
+                  set_type(literal, captured_block_type.as(Type))
+                  blk.fun_literal = literal
+                end
               end
             end
           end
@@ -2722,7 +2763,7 @@ pub class MainVisitor < TypeNodeHost
       @current_block_context_vars = @vars.dup
       @current_yield_nodes = [] of Yield
       if blk = block
-        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope)
+        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope, writer_type)
       end
     end
 
@@ -3096,7 +3137,7 @@ pub class MainVisitor < TypeNodeHost
           instantiated_def = hit.definition
           ret_t = hit.return_type
         else
-          ret_t = type_method_body(instantiated_def, ut, node.args, node.block, node, dkey)
+          ret_t = type_method_body(instantiated_def, ut, node.args, node.block, node, dkey, node)
         end
         return false if ret_t.nil?
         if first_target_def.nil?
@@ -3158,7 +3199,7 @@ pub class MainVisitor < TypeNodeHost
       if blk = node.block
         @block_breaks[blk] = [] of Type?
       end
-      body_ret = type_method_body(instantiated_def, rec_type, node.args, node.block, nil, dkey)
+      body_ret = type_method_body(instantiated_def, rec_type, node.args, node.block, nil, dkey, node)
     end
     ret_type = call_result(node, body_ret)
     if ret_type
