@@ -232,6 +232,8 @@ prove_mutation "an instantiated generic parameter is resolved in program scope" 
   '    param_type = low.analysed.type_of?(def_node.args[i])' '    param_type = def_node.args[i].restriction ? low.analysed.program.lookup_type_node(def_node.args[i].restriction.as(ASTNode), low.analysed.program) : low.analysed.type_of?(def_node.args[i])' -- lower_calls_check || status=1
 prove_mutation "generic allocation skips preparing its metaclass receiver" "$REPO/src/compiler/lower/call.iyi" \
   '      type_id_value(low, inst) if inst.is_a?(GenericClassInstanceMetaclassType)' '      type_id_value(low, inst) if false' -- lower_calls_check || status=1
+prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compiler/lower/call.iyi" \
+  '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
