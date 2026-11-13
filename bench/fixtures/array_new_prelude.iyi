@@ -1,7 +1,7 @@
 # Real-prelude reduction of the hello stop: Array.new(size, value) calls
-+# Array(T).new(size) { |index| value }. The one-arg new without a block is
-+# initialize's generated new. The one-arg new with a block is the yielding
-+# overload. Compile with the real prelude, not a stub.
+# Array(T).new(size) { |index| value }. The one-arg new without a block is
+# initialize's generated new. The one-arg new with a block is the yielding
+# overload. Compile with the real prelude, not a stub.
 def filled : Array(Int32)
   Array(Int32).new(1, 0)
 end
