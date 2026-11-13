@@ -6,6 +6,8 @@ import compiler/syntax/token::{NumberKind, TokenKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
+import compiler/macros/interpreter::{MacroFreeBinding}
+import compiler/types/types::{TupleInstanceType, NamedTupleInstanceType}
 import compiler/semantic/inline_macros::{splice_body_node, splice_fun_body, splice_inline_sites}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
@@ -1326,15 +1328,64 @@ pub class MainVisitor < TypeNodeHost
     names
   end
 
+  # PROBE (Main, not for merge): one type parameter as the macro engine names it (hosted interpreter.cr
+  # resolve?(Path) 555-610): a tuple, named tuple or union keeps its members, anything else is its printed name.
+  def probe_macro_binding(name : String, t : Type, splat : Bool) : MacroFreeBinding
+    if t.is_a?(NamedTupleInstanceType)
+      members = [] of String
+      t.as(NamedTupleInstanceType).entries.each { |e| members << "#{e.name}:#{e.type.to_s}" }
+      return MacroFreeBinding.new(name, t.to_s, "named_tuple", members, splat)
+    end
+    if t.is_a?(TupleInstanceType)
+      members = [] of String
+      t.as(TupleInstanceType).tuple_types.each { |e| members << e.to_s }
+      return MacroFreeBinding.new(name, t.to_s, "tuple", members, splat)
+    end
+    if t.is_a?(UnionType)
+      members = [] of String
+      t.as(UnionType).union_types.each { |e| members << e.to_s }
+      return MacroFreeBinding.new(name, t.to_s, "union", members, splat)
+    end
+    MacroFreeBinding.new(name, t.to_s, "type", [] of String, splat)
+  end
+
+  # PROBE (Main, not for merge): the type parameters a macro site in the def being typed sees: the receiver's
+  # (a tuple's, named tuple's or union's `T` is the splat one, hosted produce_tuple) and the def's own free
+  # variables as its arguments bound them.
+  def def_inline_bindings : Array(MacroFreeBinding)
+    out = [] of MacroFreeBinding
+    if scope = @scope
+      owner : Type = scope
+      if owner.is_a?(MetaclassType)
+        owner = owner.as(MetaclassType).instance_type
+      end
+      if owner.is_a?(TupleInstanceType) || owner.is_a?(NamedTupleInstanceType) || owner.is_a?(UnionType)
+        out << probe_macro_binding("T", owner, true)
+      elsif owner.is_a?(GenericInstanceType)
+        inst = owner.as(GenericInstanceType)
+        splat = TypeQueries.splat_index(inst.generic_type)
+        idx = 0
+        inst.type_vars.each do |name, t|
+          out << probe_macro_binding(name, t, !splat.nil? && splat.as(Int32) == idx)
+          idx = idx + 1
+        end
+      end
+    end
+    @probe_free_bound.each do |name, t|
+      out << probe_macro_binding(name, t, false)
+    end
+    out
+  end
+
   def splice_def_inline_sites(node : Expressions) : Nil
     return nil if @current_def.nil?
-    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals)
+    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings)
     nil
   end
 
   def splice_def_body(node : ASTNode) : ASTNode
     return node if @current_def.nil?
-    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals)
+    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings)
   end
 
   # An inline macro site that is the whole value of a constant (`CHANNEL_WAIT = {% if ... %}512{% else %}2048{% end %}`)
@@ -2113,12 +2164,14 @@ pub class MainVisitor < TypeNodeHost
     while i < args.size
       p1 = d1.args[i]
       p2 = d2.args[i]
-      t1 = if r1 = p1.restriction
+      # PROBE (Main, not for merge): a splat restriction (`*T`) or one that writes the def's own free variable
+      # is not a type the caller's scope can look up: it ranks as an unrestricted parameter.
+      t1 = if (r1 = p1.restriction) && !r1.is_a?(Splat) && !probe_free_restriction?(d1, r1)
              lookup_under(r1, owner)
            else
              @program.object_type
            end
-      t2 = if r2 = p2.restriction
+      t2 = if (r2 = p2.restriction) && !r2.is_a?(Splat) && !probe_free_restriction?(d2, r2)
              lookup_under(r2, owner)
            else
              @program.object_type
@@ -2133,6 +2186,13 @@ pub class MainVisitor < TypeNodeHost
       i = i + 1
     end
     has_strict
+  end
+
+  def probe_free_restriction?(d : Def, r : ASTNode) : Bool
+    if free = d.free_vars
+      return FreeBindings.mentions?(r, free)
+    end
+    false
   end
 
   def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode), owner : Type) : Array(Def)
