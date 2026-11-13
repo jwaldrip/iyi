@@ -10,6 +10,7 @@ import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/call::{CallReceiver, CallRecalculation, CallTarget}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument}
 import compiler/semantic/default_arguments::{DefaultArguments}
+import compiler/semantic/new::{define_new_methods}
 
 # Call-lookup driver for bench/selfhost_semantic_calls_exercise.sh.
 #
@@ -396,6 +397,7 @@ module BenchSelfhostSemanticCallsExercise
     visitor = TopLevelVisitor.new(prog, filename)
     node.accept(visitor)
     visitor.finish
+    define_new_methods(prog)
     # The type system is installed after the declarations, as the declarations gate does.
     ts = TypeSystem.new(prog)
     out = [] of String
