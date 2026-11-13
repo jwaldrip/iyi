@@ -36,6 +36,7 @@ extract_work() {
 check_fixture() {
   local name="$1" expected_code actual_code
   "$WORK/port" emit "$REPO/bench/fixtures/lowens_${name}.iyi" "$WORK/${name}.ll" > "$WORK/${name}.port.ir" 2> "$WORK/${name}.port.err" || return 1
+  awk '/^define / && index($0, "*work") { found = 1; if (index($0, "personality")) exit 1 } END { if (!found) exit 1 }' "$WORK/${name}.port.ir" || return 1
   extract_work "$WORK/${name}.host.ir" "$WORK/${name}.host.work" || return 1
   extract_work "$WORK/${name}.port.ir" "$WORK/${name}.port.work" || return 1
   if ! cmp -s "$WORK/${name}.host.work" "$WORK/${name}.port.work"; then
@@ -43,11 +44,11 @@ check_fixture() {
     return 1
   fi
   "$WORK/native" "$WORK/${name}.port.ir" -o "$WORK/${name}.native" > "$WORK/${name}.native.log" 2>&1 || return 1
-  "$WORK/${name}.host" > "$WORK/${name}.host.out" 2>&1
+  timeout 30 "$WORK/${name}.host" > "$WORK/${name}.host.out" 2>&1
   expected_code=$?
-  "$WORK/${name}.native" > "$WORK/${name}.native.out" 2>&1
+  timeout 30 "$WORK/${name}.native" > "$WORK/${name}.native.out" 2>&1
   actual_code=$?
-  [ "$expected_code" -eq "$actual_code" ] && cmp -s "$WORK/${name}.host.out" "$WORK/${name}.native.out"
+  [ "$expected_code" -ne 124 ] && [ "$actual_code" -ne 124 ] && [ "$expected_code" -eq "$actual_code" ] && cmp -s "$WORK/${name}.host.out" "$WORK/${name}.native.out"
 }
 
 mutation_check() {

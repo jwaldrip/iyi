@@ -36,8 +36,11 @@ end
 # Hosted execute_ensures_until: inner handlers first, stopping at the target's
 # boundary. Temporarily remove each handler while its cleanup is emitted so a
 # return in that cleanup cannot run it recursively.
-pub def execute_ensures_until(low : Lowerer, target : ASTNode, value_type : Type?) : Nil
-  stop = low.ensure_boundaries[target.object_id]? || 0
+pub def execute_ensures_until(low : Lowerer, target : ASTNode?, value_type : Type?) : Nil
+  stop = 0
+  if target
+    stop = low.ensure_boundaries[target.object_id]? || 0
+  end
   saved_nodes = [] of ExceptionHandler
   saved_contexts = [] of LowerContext
   saved_context = low.context
