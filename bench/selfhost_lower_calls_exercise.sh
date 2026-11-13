@@ -78,6 +78,25 @@ if [ "$diverged" -gt 0 ] || [ "$passed" -eq 0 ]; then
   status=1
 fi
 
+# An uninstantiated generic receiver is a typing gap, not an owner that lowering
+# may guess. The hosted compiler still accepts the source and emits its module.
+generic_fixture="$REPO/bench/fixtures/lowcallwait_uninstantiated_generic.iyi"
+if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/uninstantiated" "$generic_fixture" > "$WORK/uninstantiated.oracle.log" 2>&1; then
+  awk "$CALL_TYPES" "$WORK/uninstantiated.ll" > "$WORK/uninstantiated.oracle.ll"
+  if "$WORK/port" lower "$generic_fixture" "$WORK/uninstantiated.oracle.ll" > "$WORK/uninstantiated.out" 2> "$WORK/uninstantiated.err"; then
+    echo "  uninstantiated generic: unexpectedly lowered"
+    status=1
+  elif awk 'index($0, "the receiver of new is the uninstantiated generic Range(B, E).class: typing has not instantiated the owner") { found = 1 } END { exit !found }' "$WORK/uninstantiated.err"; then
+    echo "  uninstantiated generic: typing gap identified"
+  else
+    echo "  uninstantiated generic: unexpected refusal: $(awk 'NR==1' "$WORK/uninstantiated.err")"
+    status=1
+  fi
+else
+  echo "  uninstantiated generic: hosted compiler refused the fixture"
+  status=1
+fi
+
 echo
 echo "== 3. End to end: each fixture the port lowers identically, built natively and run"
 e2e_pass=0
@@ -247,6 +266,8 @@ prove_mutation "a builtin metaclass receiver is refused" "$REPO/src/compiler/low
   '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)' '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""' -- lower_calls_check || status=1
 prove_mutation "an implicit builtin class call is refused" "$REPO/src/compiler/lower/call.iyi" \
   '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)' '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""' -- lower_calls_check || status=1
+prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compiler/lower/call.iyi" \
+  '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
