@@ -47,6 +47,7 @@ bench/fixtures/sem_bodies_recursive.iyi 3
 bench/fixtures/sem_bodies_self_return.iyi 9
 bench/fixtures/sem_bodies_splat_restriction.iyi 10
 bench/fixtures/sem_bodies_trait_def.iyi 6
+bench/fixtures/sem_bodies_tuple_index.iyi 20
 bench/fixtures/sem_bodies_union.iyi 15
 bench/fixtures/sem_bodies_union_generic.iyi 12
 bench/fixtures/sem_bodies_union_restriction.iyi 8
