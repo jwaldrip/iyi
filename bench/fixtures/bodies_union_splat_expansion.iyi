@@ -1,0 +1,18 @@
+class UnionSplatLeft
+  def count(*values)
+    values.size
+  end
+end
+
+class UnionSplatRight
+  def count(*values)
+    values.size + 1
+  end
+end
+
+def union_splat(receiver : UnionSplatLeft | UnionSplatRight)
+  receiver.count(1, 2)
+end
+
+union_splat(UnionSplatLeft.new)
+union_splat(UnionSplatRight.new)

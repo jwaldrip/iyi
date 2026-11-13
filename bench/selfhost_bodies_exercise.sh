@@ -316,10 +316,10 @@ prove_mutation "splat arguments bind a tuple" "$REPO/src/compiler/semantic/defau
   "      body << Assign.new(Var.new(splat.name), TupleLiteral.new(elements))" \
   "      body << Assign.new(Var.new(splat.name), TupleLiteral.new([] of ASTNode))" -- defaults_at_floor sem_bodies_pack_splat || status=1
 prove_mutation "default is cloned into the caller's arguments" "$MAIN_VISITOR" \
-  "      expanded = DefaultArguments.expand_for_call(target_def, node.args.size, nil, splat_names)" \
-  "      node.args = DefaultArguments.expand(target_def, node.args, nil)
+  "      expanded = DefaultArguments.expand_for_call(target, node.args.size, nil, splat_names)" \
+  "      node.args = DefaultArguments.expand(target, node.args, nil)
       node.args.each { |arg| arg.accept(self) }
-      expanded = target_def" -- defaults_at_floor sem_bodies_default_scope || status=1
+      expanded = target" -- defaults_at_floor sem_bodies_default_scope || status=1
 prove_mutation "magic line defaults use Int32" "$MAIN_VISITOR" \
   "        literal = NumberLiteral.new(line.to_s, NumberKind::I32)" \
   "        literal = NumberLiteral.new(line.to_s, NumberKind::I64)" -- defaults_at_floor sem_bodies_default_magic || status=1
