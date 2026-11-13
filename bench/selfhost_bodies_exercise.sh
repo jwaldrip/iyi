@@ -176,6 +176,24 @@ if [ "${proc_scope_count:-}" != 6 ]; then
 fi
 
 echo
+echo "== 2d. A nilable property setter is the type of the value it is given"
+setter_fx="$REPO/bench/fixtures/sem_bodies_setter_value.iyi"
+"$ORACLE" "$setter_fx" > "$WORK/setter.hosted" 2> "$WORK/setter.hosted.err" || {
+  echo "  ORACLE setter: $(head -n 1 "$WORK/setter.hosted.err")"
+  status=1
+}
+if ! "$TYPED" "$setter_fx" "$REPO/src" > "$WORK/setter.port" 2> "$WORK/setter.port.err"; then
+  echo "  PORT setter failed"
+  status=1
+elif ! diff -q "$WORK/setter.hosted" "$WORK/setter.port" >/dev/null; then
+  echo "  setter value dump differs from hosted"
+  diff -u "$WORK/setter.hosted" "$WORK/setter.port" | head -n 40
+  status=1
+else
+  echo "  sem_bodies_setter_value.iyi matches hosted node by node"
+fi
+
+echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
 . "$REPO/bench/lib/mutation.sh"
 MUT_TD="$WORK/mut_typed_dump"
@@ -198,7 +216,7 @@ bodies_at_floor() {
     body_build_failed "$WORK/mut_build.log"
     return $?
   fi
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_proc_scope sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup sem_bodies_receiver_order sem_bodies_unit_scope sem_bodies_unit_scope_inferred sem_bodies_proc_splat sem_bodies_pack_splat sem_bodies_imported_restriction; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_proc_scope sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup sem_bodies_receiver_order sem_bodies_unit_scope sem_bodies_unit_scope_inferred sem_bodies_proc_splat sem_bodies_pack_splat sem_bodies_imported_restriction sem_bodies_setter_value; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     if [ "$name" = "sem_bodies_pointer_set" ]; then
@@ -227,6 +245,19 @@ bodies_at_floor() {
   refused_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/bodies_refused_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${refused_count:-}" = 1 ] || return 1
   return 0
+}
+# A nilable property setter is typed as the assigned value (hosted type_assign
+# binds the Assign to the value, main_visitor.cr 1037-1038). Returns 0 only
+# when that fixture's typed dump is identical to the hosted oracle.
+setter_typed_as_value() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/setter_mut_build.log" 2>&1; then
+    body_build_failed "$WORK/setter_mut_build.log"
+    return $?
+  fi
+  fx="$REPO/bench/fixtures/sem_bodies_setter_value.iyi"
+  "$ORACLE" "$fx" > "$WORK/setter_mut.hosted" 2>/dev/null || return 1
+  "$MUT_TD" "$fx" "$REPO/src" > "$WORK/setter_mut.port" 2>/dev/null || return 1
+  diff -q "$WORK/setter_mut.hosted" "$WORK/setter_mut.port" >/dev/null
 }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
 owner_mutant_at_expected() {
@@ -389,6 +420,11 @@ prove_mutation "splat arguments bind a tuple" "$MAIN_VISITOR" \
 prove_mutation "imported restrictions use the defining unit" "$MAIN_VISITOR" \
   "        @current_type = owner if owner.iyi_unit" \
   "        nil" -- bodies_at_floor || status=1
+prove_mutation "Assign typed as its target" "$MAIN_VISITOR" \
+  "        set_type(node, val_type)
+      elsif target_type.is_a?(GenericClassInstanceType)" \
+  "        set_type(node, ivar.type)
+      elsif target_type.is_a?(GenericClassInstanceType)" -- setter_typed_as_value || status=1
 
 # Assignment conditions carry the value's filters onto the assigned local.
 flow_assign_at_floor() {

@@ -1,0 +1,14 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+class Box
+  @proc : Proc(Nil)?
+
+  def initialize
+    @proc = nil
+  end
+end
+
+Box.new
+LibC.exit(7)

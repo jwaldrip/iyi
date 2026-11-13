@@ -9,7 +9,7 @@ import compiler/macros/engine::{MacroEngine}
 import compiler/macros/interpreter::{MacroFreeBinding}
 import compiler/semantic/inline_macros::{InlineMacroLedger, expand_inline_macro, splice_body_node, splice_inline_sites}
 import compiler/semantic/macro_bindings::{MacroBindings}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, Type, UnionType, UnresolvedType}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
 import compiler/semantic/top_level::{VoidType}
@@ -1136,8 +1136,8 @@ pub class MainVisitor < TypeNodeHost
       type_class_var_initializer(node.value)
     else
       node.value.accept(self)
-      value_type_filters = @type_filters
     end
+    value_type_filters = @type_filters
     @type_filters = nil
     vt = child_type(node.value)
     if vt.nil?
@@ -1267,7 +1267,8 @@ pub class MainVisitor < TypeNodeHost
       val_type = vt.as(Type)
       proc_compatible = val_type.is_a?(ProcInstanceType) && decl_type.is_a?(ProcInstanceType) &&
                         TypeIntersect.compatible_proc?(val_type.as(ProcInstanceType), decl_type.as(ProcInstanceType))
-      class_var_union = node.var.is_a?(ClassVar) && decl_type.is_a?(UnionType) && TypeRestrictions.matches_restriction?(@program, val_type, decl_type)
+      class_var_union = node.var.is_a?(ClassVar) && decl_type.is_a?(UnionType) &&
+                        TypeRestrictions.matches_restriction?(@program, val_type, decl_type)
       unless val_type.subtype_of?(decl_type) || proc_compatible || class_var_union
         if node.var.is_a?(InstanceVar)
           target_scope = @scope || @current_type
@@ -1401,22 +1402,8 @@ pub class MainVisitor < TypeNodeHost
       elsif c_type = type_of?(c.value)
         set_type(node, c_type)
       else
-        # A constant's initializer resolves in its declaring file and namespace, not the reader's.
-        saved_type = @current_type
-        saved_scope = @scope
-        saved_imports = @program.current_imports
-        saved_import_defs = @program.current_import_defs
-        if owner = c.namespace
-          @current_type = owner
-          @scope = owner
-        end
-        enter_file_scope(c.value)
         splice_const_value(c)
         c.value.accept(self)
-        @current_type = saved_type
-        @scope = saved_scope
-        @program.current_imports = saved_imports
-        @program.current_import_defs = saved_import_defs
         if c_type = child_type(c.value)
           set_type(node, c_type)
         end
@@ -2037,9 +2024,9 @@ pub class MainVisitor < TypeNodeHost
   # A trait's body is typed in the trait's own type (hosted semantic_visitor.cr 1849-1856).
   def visit(node : TraitDef) : Bool
     t = @program.lookup_type_path?(node.name, @current_type)
-    if t && t.is_a?(ModuleType) && t.trait?
+    if t && t.is_a?(TraitType)
       old_type = @current_type
-      @current_type = t.as(ModuleType)
+      @current_type = t.as(TraitType)
       node.body.accept(self)
       @current_type = old_type
     end
