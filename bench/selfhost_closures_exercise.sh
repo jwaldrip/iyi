@@ -93,6 +93,8 @@ prove_mutation 'a proc that captures a variable has no closure context' "$REPO/s
             part.closure = true if part.kind == FrameKind::Proc' \
   'break if part.node.node_id == owner_context.node.node_id
             part.closure = false if part.kind == FrameKind::Proc' -- mutation_check || status=1
+prove_mutation 'program frame omits captured thread block' "$REPO/src/compiler/semantic/closures.iyi" \
+  'roots << {frame, "top"} if frame.kind == FrameKind::Program' 'roots << {frame, "top"} if false && frame.kind == FrameKind::Program' -- mutation_check || status=1
 if [ "$status" -ne 0 ]; then
   printf '%s\n' '== SOME CLOSURE CHECKS FAILED'
   exit 1
