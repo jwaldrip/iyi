@@ -200,6 +200,8 @@ prove_mutation "a reference pointer_set stores the pointer slot" "$REPO/src/comp
   "      ref_stored = values[1]" "      ref_stored = values[0]" -- lower_primitives_check || status=1
 prove_mutation "a by-value pointer_set copies the destination" "$REPO/src/compiler/lower/primitives.iyi" \
   "    store_aligned(low, stored, dest)" "    store_aligned(low, load_aligned(low, ir, dest), dest)" -- lower_primitives_check || status=1
+prove_mutation "checked addition returns its overflow bit" "$REPO/src/compiler/lower/primitives.iyi" \
+  "  pair[0]" "  pair[1]" -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
