@@ -174,6 +174,18 @@ prove_mutation "generic type stands for itself bypassed in virtual_type" "$TYPES
   -- check_type_queries_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "virtual type not kept on its class (virtual_type_made? and identity lost)" "$TYPES_FILE" \
+  "      cls.virtual_type_cache = fresh" \
+  "      cls.virtual_type_cache = nil" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "program union cache bypassed (same members make two unions)" "$REPO/src/compiler/types/unification.iyi" \
+  "      return cached" \
+  "      return build_union_of(program, unique)" \
+  -- check_type_queries_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "union members printed by full name, not devirtualized" "$TOP_LEVEL_FILE" \
   "        non_nil_names << t.member_name" \
   "        non_nil_names << t.full_name" \
