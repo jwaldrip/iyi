@@ -13,3 +13,4 @@ class ReceiverOrder
 end
 
 result = ReceiverOrder.new.check
+number = (h = 7) + h
