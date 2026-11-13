@@ -15,7 +15,7 @@ module compiler/lower/class_var
 #   - a read before the declaration's initialisation: the lazy path through `run_once` and `__iyi_once`
 #     (hosted `create_read_class_var_function`, `lazy_initialize_class_var`), which the prelude-empty oracle does
 #     not define;
-#   - a class variable declared without an initialiser (its global has no initial value);
+#   - a class variable declared without an initialiser, unless it is a nilable reference (its global starts as null);
 #   - a class variable whose owner is in a namespace, is generic, or is not a class (its hosted `llvm_name`);
 #   - a string, symbol, nil or float initialiser, whose global is initialised by `initialize_simple_constants`;
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
@@ -33,6 +33,7 @@ import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ClassVarState}
 import compiler/lower/const::{const_scope, literal_node_value}
+import compiler/lower/cast::{assign, nilable_reference_type?}
 import compiler/semantic/top_level::{ClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type}
 
 # The scope a class variable name is looked up in: the type of the function being lowered, or else the class
@@ -148,9 +149,13 @@ end
 
 # The IR type of the variable (hosted `llvm_type(class_var.type)`), refused unless it is an integer or a float.
 pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
+  # A nilable reference is one pointer (hosted llvm_type); the typer would declare the class's struct for it, which the hosted module does not print.
+  if nilable_reference_type?(cvar.type)
+    return low.module.types.ptr
+  end
   ir = low.typer.llvm_type(cvar.type)
   if !(ir.int? || ir.float?)
-    refuse_port("lower: class variable #{cvar.name} is not an integer or a float: the struct, pointer and nil initialisers are not ported yet (hosted class_var.cr: initialize_class_var)")
+    refuse_port("lower: class variable #{cvar.name} is not an integer, a float or a nilable reference: the struct and the non-nilable pointer initialisers are not ported yet (hosted class_var.cr: initialize_class_var)")
   end
   ir
 end
@@ -262,6 +267,24 @@ pub def initialize_class_var(low : Lowerer, cvar : MetaTypeVar) : Nil
   low.builder.call(ft, fn.as(Function), [] of Value, "")
 end
 
+# The hosted `read_class_var_ptr` for a class variable declared without an initialiser (class_var.cr:227-231): its global is
+# read or stored straight off, with no initialiser function and no flag. The hosted `declare_class_var` makes the global of
+# a nilable reference start as null; a variable of any other type has no initial value in this port, which is not ported yet.
+pub def uninitialised_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, st : ClassVarState) : Global
+  if !nilable_reference_type?(cvar.type)
+    refuse_port("lower: class variable #{cvar.name} is declared without an initialiser and is not a nilable reference: its hosted global has no initial value, not ported yet (hosted class_var.cr: declare_class_var)")
+  end
+  ir = cvar_ir_type(low, cvar)
+  g = declare_cvar_global(low, name, ir, st)
+  # The hosted global of a nilable reference is not made internal (it prints as the default, external, linkage).
+  g.linkage = Linkage::External
+  if g.initializer.nil?
+    g.initializer = low.builder.const_null(ir)
+  end
+  st.no_init_flag = true
+  g
+end
+
 # The hosted `read_class_var_ptr` for a class variable of a plain class (class_var.cr:210-245): the global the value of
 # the variable lives in, which a read loads and an assignment stores to. It marks the variable read. A literal is stored
 # in the global at its declaration; any other is set by its declaration's call, so a pointer taken before that needs the
@@ -273,7 +296,7 @@ pub def class_var_pointer(low : Lowerer, cvar : MetaTypeVar) : Global
   st.read = true
   init = cvar.initializer
   if init.nil?
-    refuse_port("lower: class variable #{cvar.name} is declared without an initialiser: its hosted global has no initial value (hosted class_var.cr: read_class_var_ptr), not ported yet")
+    return uninitialised_cvar_global(low, cvar, name, st)
   end
   ir = cvar_ir_type(low, cvar)
   node_init = init.as(ASTNode)
@@ -295,16 +318,21 @@ pub def codegen_class_var_read(low : Lowerer, node : Compiler::Syntax::Ast::Clas
   low.last = load_aligned(low, ir, class_var_pointer(low, cvar))
 end
 
-# The hosted `codegen_assign` for a class variable target with a type (codegen.cr:1555-1556), once the value is evaluated:
-# the value is stored in the variable's global. A value of another type is refused by name: the hosted assign into a
+# The hosted `codegen_assign` for a class variable target with a type (codegen.cr:1543-1556), once the value is evaluated:
+# the value is stored in the variable's global. A nilable reference variable takes a reference value as it is and nil
+# as the null pointer (cast.iyi `assign`). Any other value of another type is refused by name: the hosted assign into a
 # union is not ported yet (hosted cast.cr).
-pub def store_class_var(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar, value : Value, value_type : Type) : Inst
+pub def store_class_var(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar, value : Value, value_type : Type) : Nil
   cvar = class_var_of(low, node)
   ptr = class_var_pointer(low, cvar)
-  if cvar.type.full_name != value_type.full_name
+  if cvar.type.full_name == value_type.full_name
+    store_aligned(low, value, ptr)
+    return
+  end
+  if !nilable_reference_type?(cvar.type)
     refuse_port("lower: class variable #{cvar.name} is assigned a #{value_type.full_name}, not its type #{cvar.type.full_name}: the assign into a union is not ported yet (hosted codegen.cr: codegen_assign)")
   end
-  store_aligned(low, value, ptr)
+  assign(low, ptr, cvar.type, value_type, value)
 end
 
 # The hosted `visit(TypeDeclaration)` for a class variable (codegen.cr:1814-1816): the declaration initialises the

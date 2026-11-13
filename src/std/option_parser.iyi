@@ -217,7 +217,8 @@ pub class OptionParser
 
   def parse(args : Array(String)) : Array(String)
     rest = [] of String
-    double_dash_index = nil.as(Int32?)
+    # How many operands were collected when `--` was met, or -1 without one.
+    before_dash_count = -1
     i = 0
     n = args.size
     while i < n
@@ -234,7 +235,7 @@ pub class OptionParser
         cb.call(a)
       end
       if a == "--"
-        double_dash_index = i
+        before_dash_count = rest.size
         i = i + 1
         while i < n
           rest << args[i]
@@ -308,16 +309,18 @@ pub class OptionParser
       i = i + 1
     end
     if callback = @unknown_args
-      if dd = double_dash_index
+      if before_dash_count >= 0
+        # Split by position, not by value: `x -- x` has one operand on each side.
         before_dash = [] of String
         after_dash = [] of String
-        rest.each do |arg|
-          orig_idx = args.index(arg)
-          if orig_idx && orig_idx < dd
-            before_dash << arg
+        j = 0
+        while j < rest.size
+          if j < before_dash_count
+            before_dash << rest[j]
           else
-            after_dash << arg
+            after_dash << rest[j]
           end
+          j = j + 1
         end
         callback.call(before_dash, after_dash)
       else
