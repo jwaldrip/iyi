@@ -1,4 +1,4 @@
-def owner_probe(value : T) : T forall T
+def owner_probe(value)
   value
 end
 
