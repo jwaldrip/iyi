@@ -622,6 +622,16 @@ prove_mutation "an initialize argument instance variable keeps its bare type: th
   "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, false)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "pointer malloc and null calls do not infer instance variable types" "$MUT_IVARS" \
+  '    if obj.is_a?(Generic) && (node.name == "malloc" || node.name == "null")' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "generic new calls do not infer instance variable types" "$MUT_IVARS" \
+  '    if node.name == "new" && obj.is_a?(Generic)' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \
   "if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)" \
   "if owner.owner.is_a?(NonGenericClassType)" \
