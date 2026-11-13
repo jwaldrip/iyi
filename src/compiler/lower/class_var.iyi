@@ -17,7 +17,7 @@ module compiler/lower/class_var
 #     not define;
 #   - a class variable declared without an initialiser, unless it is a nilable reference (its global starts as null);
 #   - a class variable whose owner is in a namespace, is generic, or is not a class (its hosted `llvm_name`);
-#   - a string, symbol or nil initialiser, whose global is initialised by an init function or by `initialize_simple_constants`;
+#   - a symbol or nil initialiser, whose global is initialised by an init function or by `initialize_simple_constants`;
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
 # Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
 # class_var.cr:27-34), the model every non-Windows target uses, and `declare_cvar_global` sets it from the variable's
@@ -166,10 +166,13 @@ pub def cvar_key(owner : ModuleType, name : String) : String
   owner.full_name + "::" + name
 end
 
-# The IR type of the variable (hosted `llvm_type(class_var.type)`), refused unless it is an integer or a float.
+# The IR type of the variable (hosted `llvm_type(class_var.type)`). A nilable reference and a String are one
+# pointer; calling `llvm_type` on them would also declare the class struct, which the hosted global does not print.
 pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
-  # A nilable reference is one pointer (hosted llvm_type); the typer would declare the class's struct for it, which the hosted module does not print.
   if nilable_reference_type?(cvar.type)
+    return low.module.types.ptr
+  end
+  if cvar.type.full_name == "String"
     return low.module.types.ptr
   end
   ir = low.typer.llvm_type(cvar.type)
