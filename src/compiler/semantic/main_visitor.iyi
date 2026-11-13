@@ -2838,10 +2838,6 @@ pub class MainVisitor < TypeNodeHost
 
     saved_call_ntf = @needs_type_filters
     @needs_type_filters = 0
-    node.args.each do |arg|
-      arg.accept(self)
-    end
-
     rec_type : Type
     if obj = node.obj
       obj.accept(self)
@@ -2854,6 +2850,9 @@ pub class MainVisitor < TypeNodeHost
       end
     else
       rec_type = @scope || @current_type
+    end
+    node.args.each do |arg|
+      arg.accept(self)
     end
     @needs_type_filters = saved_call_ntf
     if rec_type.is_a?(LibType)
