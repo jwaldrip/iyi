@@ -6,5 +6,5 @@ fun __crystal_raise_overflow : NoReturn
   LibC.exit(99)
 end
 
-f = ->(a : Int32) { a + 1 }
+f = ->(a : Int32) { a }
 LibC.exit(0)

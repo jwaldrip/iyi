@@ -8,6 +8,11 @@
 # hosted pass (bench/selfhost_typed_oracle.cr, --bare) and by the port's typed
 # dump (src/compiler/tools/typed_dump.iyi). The two dumps must be byte-identical.
 #
+# The cast upcast flag (Cast#upcast, NilableCast#upcast) is compared by its own
+# driver pair, bench/selfhost_cast_upcast_oracle.cr and bench/selfhost_cast_upcast_dump.iyi,
+# over bench/fixtures/typenodes_cast_*.iyi: the typed dump prints types only, and the
+# typed parity gate's oracle must not change.
+#
 # The mutation proofs follow the rule the other selfhost gates use: each patch
 # is applied to one file, the comparison must then diverge, and a patch that
 # matched nothing is reported as proving nothing.
@@ -30,6 +35,9 @@ export IYI_CACHE_DIR="$WORK/cache"
 
 ORACLE="$WORK/oracle"
 DUMP="$WORK/typed_dump"
+CAST_ORACLE="$WORK/cast_oracle"
+CAST_DUMP="$WORK/cast_dump"
+CAST_DUMP_SRC="$REPO/bench/selfhost_cast_upcast_dump.iyi"
 
 echo "== 1. Building the hosted oracle and the port's typed dump"
 CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
@@ -37,6 +45,11 @@ CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src" "$CRYSTAL" build -Di_know_w
   || { cat "$WORK/oracle_build.log"; echo "FAILED to build the hosted oracle"; exit 1; }
 "$IYI" build -o "$DUMP" "$DUMP_SRC" > "$WORK/dump_build.log" 2>&1 \
   || { cat "$WORK/dump_build.log"; echo "FAILED to build src/compiler/tools/typed_dump.iyi"; exit 1; }
+CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src" "$CRYSTAL" build -Di_know_what_im_doing \
+  -o "$CAST_ORACLE" "$REPO/bench/selfhost_cast_upcast_oracle.cr" > "$WORK/cast_oracle_build.log" 2>&1 \
+  || { cat "$WORK/cast_oracle_build.log"; echo "FAILED to build the hosted cast oracle"; exit 1; }
+"$IYI" build -o "$CAST_DUMP" "$CAST_DUMP_SRC" > "$WORK/cast_dump_build.log" 2>&1 \
+  || { cat "$WORK/cast_dump_build.log"; echo "FAILED to build the port's cast dump"; exit 1; }
 echo "  built: oracle, typed_dump"
 
 echo
@@ -69,6 +82,33 @@ if [ "$fixture_count" -eq 0 ] || [ "$diverged" -ne 0 ]; then
   status=1
 fi
 
+echo
+echo "== 2b. Each cast fixture: the port's upcast flags against the hosted cast oracle"
+cast_count=0
+cast_diverged=0
+for fixture in "$REPO"/bench/fixtures/typenodes_cast_*.iyi; do
+  base="$(basename "$fixture" .iyi)"
+  cast_count=$((cast_count + 1))
+  "$CAST_ORACLE" "$fixture" --bare > "$WORK/$base.cast_oracle" 2> "$WORK/$base.cast_oracle.err"
+  if [ $? -ne 0 ]; then
+    echo "  FAIL: the hosted cast oracle refused $base: $(head -n 1 "$WORK/$base.cast_oracle.err")"
+    cast_diverged=$((cast_diverged + 1))
+    continue
+  fi
+  "$CAST_DUMP" "$fixture" > "$WORK/$base.cast_port" 2>&1
+  if cmp -s "$WORK/$base.cast_oracle" "$WORK/$base.cast_port"; then
+    echo "  ok: $base ($(wc -l < "$WORK/$base.cast_oracle" | tr -d ' ') cast nodes identical)"
+  else
+    echo "  FAIL: $base diverges from the hosted cast oracle:"
+    diff "$WORK/$base.cast_oracle" "$WORK/$base.cast_port" | head -n 12
+    cast_diverged=$((cast_diverged + 1))
+  fi
+done
+echo "  Cast upcast summary: $((cast_count - cast_diverged))/$cast_count cast fixtures match 100%"
+if [ "$cast_count" -eq 0 ] || [ "$cast_diverged" -ne 0 ]; then
+  status=1
+fi
+
 # Rebuilds the port's typed dump from the (possibly mutated) source and compares
 # it with the oracle outputs saved above. Returns non-zero on any divergence, or
 # when the port does not build: both count as the mutation being caught.
@@ -78,6 +118,18 @@ check_outputs_match() {
     base="$(basename "$fixture" .iyi)"
     "$WORK/mut_dump" "$fixture" > "$WORK/$base.mut" 2>&1
     cmp -s "$WORK/$base.oracle" "$WORK/$base.mut" || return 1
+  done
+  return 0
+}
+
+# The cast upcast check: rebuilds the port's cast dump from the (possibly mutated)
+# source and compares it with the hosted cast oracle's lines for the cast fixtures.
+check_cast_outputs_match() {
+  "$IYI" build -o "$WORK/mut_cast" "$CAST_DUMP_SRC" > "$WORK/mut_cast_build.log" 2>&1 || return 1
+  for fixture in "$REPO"/bench/fixtures/typenodes_cast_*.iyi; do
+    base="$(basename "$fixture" .iyi)"
+    "$WORK/mut_cast" "$fixture" > "$WORK/$base.cast_mut" 2>&1
+    cmp -s "$WORK/$base.cast_oracle" "$WORK/$base.cast_mut" || return 1
   done
   return 0
 }
@@ -111,8 +163,8 @@ prove_mutation "unbound generic name drops its type variables" "$TOP_LEVEL" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "nilable cast is typed as its target without Nil" "$TYPE_NODES" \
-  "visitor.program.type_merge(target.as(Type), visitor.program.nil_type)" \
-  "target.as(Type)" \
+  "visitor.program.type_merge(TypeQueries.virtual_type(result), visitor.program.nil_type)" \
+  "TypeQueries.virtual_type(result)" \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -163,6 +215,38 @@ prove_mutation "a fun's declared types are read before the type system resolves 
   fun_record = visitor.program.lib_fun_of(node)" \
   "  fun_record = visitor.program.lib_fun_of(node)" \
   -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a pointerof of a local is refused, in a fun body or anywhere" "$TYPE_NODES" \
+  "  if exp.is_a?(Var)" \
+  "  if false" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic whose name fails in scope is not rebuilt from its typed arguments" "$TYPE_NODES" \
+  "    rebuilt = generic_of_typed_args(visitor, node)" \
+  "    rebuilt = nil" \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a cast's upcast flag is not recorded" "$TYPE_NODES" \
+  "  node.upcast = upcast
+  result = to_type
+  if !upcast
+    if f = filtered
+      result = f.as(Type)
+    end
+  end
+  visitor.set_type(node, TypeQueries.virtual_type(result))" \
+  "  node.upcast = false
+  result = to_type
+  if !upcast
+    if f = filtered
+      result = f.as(Type)
+    end
+  end
+  visitor.set_type(node, TypeQueries.virtual_type(result))" \
+  -- check_cast_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"

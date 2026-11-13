@@ -127,17 +127,19 @@ end
 # The target of a call on a receiver type: the hosted Call#recalculate's result.
 # *definition* is the one def the call resolves to, *declared_return* its declared
 # return type, and *untyped* says the def declares none, so its type waits on the
-# body (the bodies slice). *owner* is the receiver it was found on. *error* is the
-# first line of the message the hosted call pass raises, or a marked refusal for a
-# shape this port does not answer.
+# body (the bodies slice). *owner* is the receiver it was found on. *defining* is
+# the type the def was found on, which is not the receiver when the method is
+# inherited. *error* is the first line of the message the hosted call pass raises,
+# or a marked refusal for a shape this port does not answer.
 pub class CallTarget
   getter definition : Def?
   getter owner : Type?
+  getter defining : ModuleType?
   getter declared_return : Type?
   getter untyped : Bool
   getter error : String?
 
-  def initialize(@definition : Def?, @owner : Type?, @declared_return : Type?, @untyped : Bool, @error : String?)
+  def initialize(@definition : Def?, @owner : Type?, @declared_return : Type?, @untyped : Bool, @error : String?, @defining : ModuleType? = nil)
   end
 
   def self.failed(message : String) : CallTarget
@@ -164,19 +166,21 @@ pub class CallRecalculation
     typed_named = CallReceiver.named_argument_types(prog, named_args)
     return CallTarget.failed("argument is not a literal") if typed_named.nil?
     signature = CallSignature.new(name, arg_types, typed_named, block)
-    CallRecalculation.recalculate_signature(rec_type, ts, signature, explicit)
+    CallRecalculation.recalculate_signature(rec_type, ts, signature, explicit, args)
   end
 
   # The port of the hosted Call#recalculate for a call whose arguments are already
   # typed: the receiver's lookup_matches of *signature* (the hosted lookup with
-  # analyze_all off), the one target's declared return type, and the first line of
-  # the error the hosted pass raises when it finds no target. `recalculate` types
-  # literal arguments and calls this; the bodies slice calls this directly with the
-  # argument types its own pass has typed.
-  def self.recalculate_signature(rec_type : Type, ts : TypeSystem, signature : CallSignature, explicit : Bool) : CallTarget
+  # analyze_all off), then the numeric autocast retry when *arg_nodes* are given,
+  # the one target's declared return type, and the first line of the error the
+  # hosted pass raises when it finds no target. `recalculate` types literal
+  # arguments and calls this; the bodies slice calls this directly with the
+  # argument types its own pass has typed, and passes the argument nodes so a
+  # number literal can match a wider integer.
+  def self.recalculate_signature(rec_type : Type, ts : TypeSystem, signature : CallSignature, explicit : Bool, arg_nodes : Array(ASTNode)? = nil) : CallTarget
     name = signature.name
     arg_types = signature.arg_types
-    matches = MethodLookup.lookup_receiver(rec_type, ts, signature)
+    matches = MethodLookup.lookup_with_autocast(rec_type, ts, signature, arg_nodes)
     return CallTarget.failed(matches.error.to_s) if matches.error
     if matches.matches.size > 1
       return CallTarget.failed("not ported: several matches")
@@ -188,11 +192,11 @@ pub class CallRecalculation
       end
       ret = single.definition.return_type
       if ret.nil?
-        return CallTarget.new(single.definition, rec_type, nil, true, nil)
+        return CallTarget.new(single.definition, rec_type, nil, true, nil, single.defining)
       end
       found = ArgRestriction.lookup_free(ts, single.defining, ret.as(ASTNode), rec_type, single.bound)
       return CallTarget.failed(found.as(LookupError).message) if found.is_a?(LookupError)
-      return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil)
+      return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, single.defining)
     end
     named = signature.named_args
     if named

@@ -143,8 +143,6 @@ src/iyi/set.iyi semantic
 src/iyi/string.iyi parse
 src/iyi/testing.iyi semantic
 src/iyi/thread.iyi semantic
-src/compiler/semantic/default_arguments.iyi parse
-src/compiler/semantic/lib_call.iyi parse
 src/compiler/semantic/type_node_host.iyi parse
 src/compiler/semantic/type_nodes.iyi parse
 src/compiler/native/const_expr.iyi parse
@@ -152,6 +150,7 @@ src/compiler/lower/layouts.iyi parse
 src/compiler/lower/type_id.iyi parse
 src/compiler/lower/typer.iyi parse
 src/compiler/lower/unions.iyi semantic
+src/compiler/lower/asm.iyi parse
 src/compiler/lower/block.iyi parse
 src/compiler/lower/call.iyi parse
 src/compiler/lower/cond.iyi parse
@@ -169,6 +168,7 @@ src/compiler/lower/globals.iyi parse
 src/compiler/semantic/call.iyi parse
 src/compiler/semantic/call_error.iyi parse
 src/compiler/semantic/call_nodes.iyi parse
+src/compiler/semantic/default_arguments.iyi parse
 src/compiler/semantic/instance_vars.iyi parse
 src/compiler/semantic/match.iyi parse
 src/compiler/semantic/method_lookup.iyi parse
@@ -184,6 +184,7 @@ src/compiler/types/to_restriction.iyi parse
 src/compiler/lower/instance_var.iyi parse
 src/compiler/lower/abi/aarch64.iyi parse
 src/compiler/lower/program.iyi parse
+src/compiler/semantic/lib_call.iyi parse
 src/compiler/lower/class_var.iyi parse
 src/compiler/lower/headed.iyi parse
 src/compiler/lower/proc.iyi parse

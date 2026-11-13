@@ -236,6 +236,7 @@ begin
   end
 
   program = Iyi::Program.new
+  program.filename = filename
   initial_types = program.types.keys.to_set
   visitor = Iyi::TopLevelVisitor.new(program)
   node.accept(visitor)
@@ -511,8 +512,10 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "while loop condition type analysis is bypassed" "$SEM_MAIN" \
   "node.cond.accept(self)
-    # A " \
-  "# A " \
+      @needs_type_filters = @needs_type_filters - 1
+      cond_type_filters = @type_filters" \
+  "@needs_type_filters = @needs_type_filters - 1
+      cond_type_filters = @type_filters" \
   -- check_expr_outputs_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

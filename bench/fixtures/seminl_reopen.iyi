@@ -1,8 +1,9 @@
-# A macro loop reopens a prelude type and gives it a class method, as the prelude's
-# number table does for the five number types.
+# A macro loop reopens a prelude type and adds a class method the prelude does
+# not already define. `zero` is the prelude's (number.iyi:34); replacing it is
+# refused once the analysis runs. `seminl_mark` is an addition.
 {% for t in ["Int32", "Int64"] %}
   struct {{ t.id }}
-    def self.zero : self
+    def self.seminl_mark : self
       0
     end
   end
