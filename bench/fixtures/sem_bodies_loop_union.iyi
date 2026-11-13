@@ -1,0 +1,14 @@
+class Box
+end
+
+def take(first : Box?) : Box?
+  found = nil
+  cursor = first
+  while cursor.is_a?(Box)
+    found = cursor
+    cursor = nil
+  end
+  found
+end
+
+take(nil)
