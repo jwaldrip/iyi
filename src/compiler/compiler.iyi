@@ -26,6 +26,7 @@ import compiler/macros/interpreter::{MacroInterpreter}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
 import compiler/lower/program::{TypedProgram, declare_program, assemble_root, type_bodies, lower_program, native_objects, link_program, link_names, refusal_table, lowering_table}
+import compiler/lower/census::{run_census}
 
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
@@ -51,6 +52,7 @@ pub struct CompilerConfig
   # Keep going past a refusal where the phase allows: the body typer records each refusal on its node in total
   # mode and the probe's table reports them. The lowering still stops at its first refusal.
   property keep_going : Bool
+  property census_file : String?
 
   def initialize(
     @output_filename : String = "a.out",
@@ -63,6 +65,7 @@ pub struct CompilerConfig
     @probe_verify : Bool = false,
     @typed_pipeline : Bool = false,
     @keep_going : Bool = false,
+    @census_file : String? = nil,
   )
   end
 end
@@ -321,6 +324,9 @@ pub class Compiler
     if @config.keep_going
       root_name = Compiler.module_name_from_path(root_filename)
       refused = [] of String
+      if cf = @config.census_file
+        run_census(typed, cf, refused, triple)
+      end
       refusal_table(typed, root_name, refused).each { |line| puts line }
       names = [] of String
       lowering_table(typed, triple, root_name, names, refused).each { |line| puts line }

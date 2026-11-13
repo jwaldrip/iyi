@@ -154,7 +154,6 @@ src/compiler/lower/layouts.iyi parse
 src/compiler/lower/type_id.iyi parse
 src/compiler/lower/typer.iyi parse
 src/compiler/lower/unions.iyi semantic
-src/compiler/lower/asm.iyi parse
 src/compiler/lower/block.iyi parse
 src/compiler/lower/call.iyi parse
 src/compiler/lower/cond.iyi parse
@@ -188,6 +187,8 @@ src/compiler/types/to_restriction.iyi parse
 src/compiler/lower/instance_var.iyi parse
 src/compiler/lower/abi/aarch64.iyi parse
 src/compiler/lower/program.iyi parse
+src/compiler/lower/census.iyi parse
 src/compiler/lower/class_var.iyi parse
 src/compiler/lower/headed.iyi parse
 src/compiler/lower/proc.iyi parse
+src/compiler/lower/asm.iyi parse
