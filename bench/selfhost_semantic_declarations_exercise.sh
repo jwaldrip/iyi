@@ -934,9 +934,9 @@ prove_mutation "a generic instance's declared variable keeps its parameter type"
   "            mv = MetaTypeVar.new(name, source_type)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a nilable pointer prints without its element type" "$REPO/src/compiler/types/rendering.iyi" \
-  '      return "Pointer(#{render(shown(ptr.element_type, codegen), skip_union_parens: true, generic_args: generic_args, codegen: codegen)})"' \
-  '      return "Pointer"' \
+prove_mutation "a nilable pointer prints without its element type" "$MUT_TYPES" \
+  '"Pointer(#{@element_type.devirtualize.arg_full_name})"' \
+  '"Pointer"' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a replaced def is not reachable from the def that replaced it" "$MUT_SEM" \
