@@ -517,8 +517,8 @@ atomic_return_check() {
 }
 if atomic_return_check; then
   prove_mutation "a by-value return skips loading the aggregate" "$REPO/src/compiler/lower/fun.iyi" \
-    '  low.builder.ret(to_rhs(low, converted, return_type.as(Type)))' \
-    '  low.builder.ret(converted)' -- atomic_return_check || status=1
+    '  converted = to_rhs(low, converted, return_type.as(Type)) if converted.type.pointer?' \
+    '  converted = converted' -- atomic_return_check || status=1
 else
   echo "FAIL: atomic aggregate return does not match the hosted module"
   awk 'NR<=8' "$WORK/atomic-return.err" "$WORK/atomic-return.out" "$WORK/atomic-return.build.log"

@@ -332,7 +332,9 @@ pub def codegen_fun_return(low : Lowerer, ret_ir : IrType, body : ASTNode) : Nil
   return_type = low.current_context.return_type
   raise "BUG: the function has no analysed return type (hosted codegen_return)" if return_type.nil?
   converted = upcast(low, value.as(Value), body_type.as(Type), return_type.as(Type))
-  low.builder.ret(to_rhs(low, converted, return_type.as(Type)))
+  # The port's upcast may already return an SSA aggregate rather than its storage.
+  converted = to_rhs(low, converted, return_type.as(Type)) if converted.type.pointer?
+  low.builder.ret(converted)
 end
 
 # The unwind table kind of a function with a body (hosted fun.cr:437-441): sync on aarch64,
