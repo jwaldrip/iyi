@@ -295,6 +295,40 @@ module BenchSelfhostSemanticCallsExercise
     owner.as(Type).to_s
   end
 
+  # args=<instantiated> ret=<instantiated> for the one target, or the error line.
+  # The argument types are CallTarget.arg_types, after a free variable is bound
+  # and a number is cast, not the written restriction.
+  def self.evaluate_instance(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
+    node = Parser.new(expr, "call").parse
+    if !node.is_a?(Call)
+      return "error: not a call"
+    end
+    call = node.as(Call)
+    scope = CallReceiver.scope(prog, ts, call.obj)
+    if scope.nil?
+      return "error: receiver is not resolvable"
+    end
+    target = CallRecalculation.recalculate(scope.as(Type), ts, prog, call.name, call.args, call.named_args, call.block != nil, call.obj != nil)
+    if target.error
+      return "error: #{target.error.to_s}"
+    end
+    "args=#{args_text(target)} ret=#{return_text(target)}"
+  end
+
+  def self.args_text(target : CallTarget) : String
+    parts = [] of String
+    target.arg_types.each do |t|
+      parts << t.to_s
+    end
+    parts.join(",")
+  end
+
+  def self.return_text(target : CallTarget) : String
+    ret = target.return_type
+    return "needs body typing" if ret.nil?
+    ret.as(Type).to_s
+  end
+
   def self.run(src : String, filename : String) : String
     prog = SemanticProgram.new
     prog.search_path = search_path
@@ -318,6 +352,9 @@ module BenchSelfhostSemanticCallsExercise
       elsif line.starts_with?("# defining ")
         expr = line[11, line.bytesize - 11].strip
         out << "#{expr} => #{evaluate_defining(prog, ts, expr)}"
+      elsif line.starts_with?("# instance ")
+        expr = line[11, line.bytesize - 11].strip
+        out << "#{expr} => #{evaluate_instance(prog, ts, expr)}"
       elsif line.starts_with?("# expand ")
         expr = line[9, line.bytesize - 9].strip
         out << "#{expr} => #{evaluate_expand(prog, ts, expr)}"

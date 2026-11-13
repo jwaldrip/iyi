@@ -1,9 +1,9 @@
 module compiler/semantic/call_error
 
-import compiler/syntax/ast::{Def}
+import compiler/syntax/ast::{ASTNode, Def, Path}
 import compiler/semantic/top_level::{MetaclassType, ModuleType, SemanticProgram, Type}
 import compiler/types/type_system::{TypeSystem}
-import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 
 # The messages the hosted call pass raises when a call has no match, first line
 # only (the oracle compares first lines).
@@ -104,20 +104,24 @@ pub class CallError
       if !arity_mismatch(d, arg_types.size)
         before = flat_def.size
         i = 0
-        while i < arg_types.size
-          restriction = ArgRestriction.of(ts, owner, d.args[i])
-          return nil if restriction.error
-          allowed = restriction.type
-          if allowed
-            restricted = ts.restrict(arg_types[i], allowed.as(Type))
-            if restricted.nil?
-              flat_def << di
-              flat_index << i
-              flat_expected << allowed.as(Type)
-              flat_actual << arg_types[i]
+        if d.free_vars
+          CallError.record_free(ts, owner, d, arg_types, di, flat_def, flat_index, flat_expected, flat_actual)
+        else
+          while i < arg_types.size
+            restriction = ArgRestriction.of(ts, owner, d.args[i])
+            return nil if restriction.error
+            allowed = restriction.type
+            if allowed
+              restricted = ts.restrict(arg_types[i], allowed.as(Type))
+              if restricted.nil?
+                flat_def << di
+                flat_index << i
+                flat_expected << allowed.as(Type)
+                flat_actual << arg_types[i]
+              end
             end
+            i += 1
           end
-          i += 1
         end
         selected << di if flat_def.size > before
       end
@@ -148,6 +152,54 @@ pub class CallError
       return mismatch_text(owner, name, chosen, flat_def, flat_index, flat_expected, flat_actual, selected)
     end
     no_overload_text(owner, name, arg_types)
+  end
+
+  # A `forall` def that does not match: bind each argument in order, and record
+  # the first later argument that disagrees with a name already bound. The
+  # expected type is that bound type, not the written name.
+  def self.record_free(ts : TypeSystem, owner : ModuleType, d : Def, arg_types : Array(Type), di : Int32, flat_def : Array(Int32), flat_index : Array(Int32), flat_expected : Array(Type), flat_actual : Array(Type)) : Nil
+    free = d.free_vars.as(Array(String))
+    bound = Hash(String, Type).new
+    i = 0
+    limit = arg_types.size
+    limit = d.args.size if d.args.size < limit
+    while i < limit
+      node = d.args[i].restriction
+      if node
+        if !FreeBindings.bind(node, arg_types[i], free, bound)
+          expected = CallError.bound_name(node, bound)
+          if expected
+            flat_def << di
+            flat_index << i
+            flat_expected << expected.as(Type)
+            flat_actual << arg_types[i]
+          end
+        else
+          restriction = ArgRestriction.of_bound(ts, owner, d.args[i], nil, bound)
+          allowed = restriction.type
+          if allowed
+            restricted = ts.restrict(arg_types[i], allowed.as(Type))
+            if restricted.nil?
+              flat_def << di
+              flat_index << i
+              flat_expected << allowed.as(Type)
+              flat_actual << arg_types[i]
+            end
+          end
+        end
+      end
+      i += 1
+    end
+    nil
+  end
+
+  def self.bound_name(node : ASTNode, bound : Hash(String, Type)) : Type?
+    return nil if !node.is_a?(Path)
+    names = node.as(Path).names
+    return nil if names.size != 1
+    found = bound[names[0]]?
+    return nil if found.nil?
+    found.as(Type)
   end
 
   # "expected argument #N to '<name>' to be T or U, not A": the expected types of
