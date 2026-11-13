@@ -19,9 +19,10 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
   ret = substr(rest, 1, at - 1)
   after = substr(rest, at + 1)
   if (substr(after, 1, 1) != "@") return line
-  op = index(after, "(")
-  cl = index(after, ")")
-  if (op == 0 || cl < op) return line
+  op = name_end(after) + 1
+  if (op == 1 || substr(after, op, 1) != "(") return line
+  cl = close_paren(after, op)
+  if (cl == 0) return line
   name = substr(after, 1, op - 1)
   args = substr(after, op + 1, cl - op - 1)
   tail = substr(after, cl + 1)
@@ -35,15 +36,34 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
   if (name ~ /^@"[*~]/) ret = "iyicc " ret
   return head ret " (" types ") " name "(" args ")" tail
 }
+# The last character of the callee name that starts `s` (`@name` or `@"quoted name"`), or 0. A quoted
+# name holds parentheses of its own (`@"*Box(Int32)^Box(T)::new<Int32>:Box(Int32)"`), which are not the call.
+function name_end(s,   i) {
+  if (substr(s, 2, 1) != "\"") return index(s, "(") - 1
+  for (i = 3; i <= length(s); i++) if (substr(s, i, 1) == "\"") return i
+  return 0
+}
+# The parenthesis that closes the one at `op`, outside quoted names, or 0.
+function close_paren(s, op,   i, c, depth, quoted) {
+  depth = 0; quoted = 0
+  for (i = op; i <= length(s); i++) {
+    c = substr(s, i, 1)
+    if (c == "\"") quoted = !quoted
+    else if (!quoted && c == "(") depth++
+    else if (!quoted && c == ")") { depth--; if (depth == 0) return i }
+  }
+  return 0
+}
 # Splits the argument list of a call at its top-level commas, so a constant expression with commas
-# (`getelementptr (T, ptr null, i32 1)`) stays whole.
-function split_top(s, out,   i, c, depth, cur, n) {
-  n = 0; depth = 0; cur = ""
+# (`getelementptr (T, ptr null, i32 1)`) stays whole, and a quoted name (`%"Pair(Int32, Bool)"`) too.
+function split_top(s, out,   i, c, depth, cur, n, quoted) {
+  n = 0; depth = 0; cur = ""; quoted = 0
   for (i = 1; i <= length(s); i++) {
     c = substr(s, i, 1)
-    if (c == "(") depth++
-    else if (c == ")") depth--
-    if (c == "," && depth == 0) { out[++n] = cur; cur = ""; if (substr(s, i + 1, 1) == " ") i++; continue }
+    if (c == "\"") quoted = !quoted
+    else if (!quoted && c == "(") depth++
+    else if (!quoted && c == ")") depth--
+    if (c == "," && depth == 0 && !quoted) { out[++n] = cur; cur = ""; if (substr(s, i + 1, 1) == " ") i++; continue }
     cur = cur c
   }
   out[++n] = cur
