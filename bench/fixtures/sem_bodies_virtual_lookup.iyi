@@ -7,12 +7,19 @@ class Leaf < Node
   end
 end
 
+class Other < Node
+end
+
 class Single
 end
 
 class Walker
-  def base : Node
-    Leaf.new
+  def base(flag : Bool) : Node
+    if flag
+      Leaf.new
+    else
+      Other.new
+    end
   end
 
   def single : Single
@@ -20,7 +27,7 @@ class Walker
   end
 
   def check : Int32
-    item = base
+    item = base(true)
     if item.is_a?(Leaf)
       item.value
     else
@@ -32,4 +39,4 @@ end
 walker = Walker.new
 a = walker.check
 b = walker.single
-c = walker.base
+c = walker.base(true)
