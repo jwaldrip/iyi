@@ -1613,6 +1613,23 @@ pub class Expressions < ASTNode
   def initialize(@expressions : Array(ASTNode) = [] of ASTNode, @keyword : Keyword = Keyword::None)
   end
 
+  # Hosted syntax/ast.cr 236-241: an unlocated sequence uses its boundary expressions.
+  def location : Location?
+    if loc = @location
+      return loc
+    end
+    return nil if @expressions.empty?
+    @expressions[0].location
+  end
+
+  def end_location : Location?
+    if loc = @end_location
+      return loc
+    end
+    return nil if @expressions.empty?
+    @expressions.last.end_location
+  end
+
   def self.from(nodes : Array(ASTNode)) : ASTNode
     if nodes.size == 0
       Nop.new
