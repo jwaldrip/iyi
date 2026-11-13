@@ -1,0 +1,164 @@
+category	name	count	in_iyi_ir
+	ldr $0, [$0, ${1:c}@TLVPPAGEOFF]	11193	yes
+atomicrmw operation	0	157	yes
+atomicrmw operation	1	312	yes
+atomicrmw operation	10	2	yes
+atomicrmw operation	2	307	yes
+atomicrmw operation	3	4	yes
+atomicrmw operation	4	4	yes
+atomicrmw operation	5	144	yes
+atomicrmw operation	6	4	yes
+atomicrmw operation	7	2	yes
+atomicrmw operation	8	2	yes
+atomicrmw operation	9	2	yes
+attribute	alwaysinline	1122	yes
+attribute	captures	242	yes
+attribute	cold	22	yes
+attribute	frame-pointer	181697	yes
+attribute	immarg	191	yes
+attribute	kind#0	140	no
+attribute	kind#31	1882	no
+attribute	memory	37865	yes
+attribute	naked	280	yes
+attribute	noalias	1130	yes
+attribute	nocallback	1882	yes
+attribute	nocreateundeforpoison	1551	yes
+attribute	noinline	39613	yes
+attribute	noreturn	1873	yes
+attribute	nosync	1691	yes
+attribute	nounwind	37865	yes
+attribute	probe-stack	186263	yes
+attribute	readonly	51	yes
+attribute	speculatable	1551	yes
+attribute	target-cpu	1	yes
+attribute	target-features	1	yes
+attribute	uwtable	181697	yes
+attribute	willreturn	37865	yes
+attribute	writeonly	191	yes
+calling convention	ccc	2190052	yes
+gep source type	true	632276	yes
+icmp predicate	32	166617	yes
+icmp predicate	33	104159	yes
+icmp predicate	34	27847	yes
+icmp predicate	35	7541	yes
+icmp predicate	36	30278	yes
+icmp predicate	37	5844	yes
+icmp predicate	38	30324	yes
+icmp predicate	39	32721	yes
+icmp predicate	40	88868	yes
+icmp predicate	41	11808	yes
+inline asm template	isb	140	yes
+inline asm template	mov $0, sp	280	yes
+inline asm template	mrs $0, tpidrro_el0	24790	yes
+inline asm template	str xzr, [$0]	140	yes
+inline asm template	strb wzr, [$0]	140	yes
+inline asm template	yield	700	yes
+intrinsic	llvm.ceil.f64	20	yes
+intrinsic	llvm.copysign.f32	1	yes
+intrinsic	llvm.copysign.f64	23	yes
+intrinsic	llvm.expect.i1	283453	yes
+intrinsic	llvm.floor.f64	9	yes
+intrinsic	llvm.fma.f32	1	yes
+intrinsic	llvm.fma.f64	2	yes
+intrinsic	llvm.fptosi.sat.i16.f64	1	no
+intrinsic	llvm.fptosi.sat.i32.f64	15	no
+intrinsic	llvm.fptosi.sat.i64.f64	12	no
+intrinsic	llvm.fptosi.sat.i8.f64	2	no
+intrinsic	llvm.fptoui.sat.i16.f64	2	no
+intrinsic	llvm.fptoui.sat.i32.f64	4	no
+intrinsic	llvm.fptoui.sat.i64.f64	3	no
+intrinsic	llvm.fptoui.sat.i8.f64	2	no
+intrinsic	llvm.memcpy.p0.p0.i64	4231	yes
+intrinsic	llvm.memmove.p0.p0.i64	1825	yes
+intrinsic	llvm.memset.p0.i64	2633	yes
+intrinsic	llvm.sadd.with.overflow.i128	16	yes
+intrinsic	llvm.sadd.with.overflow.i32	77005	yes
+intrinsic	llvm.sadd.with.overflow.i64	7322	yes
+intrinsic	llvm.sadd.with.overflow.i8	3	yes
+intrinsic	llvm.smul.with.overflow.i32	10933	yes
+intrinsic	llvm.smul.with.overflow.i64	2173	yes
+intrinsic	llvm.sqrt.f64	3	yes
+intrinsic	llvm.ssub.with.overflow.i128	7	yes
+intrinsic	llvm.ssub.with.overflow.i32	29139	yes
+intrinsic	llvm.ssub.with.overflow.i64	3912	yes
+intrinsic	llvm.ssub.with.overflow.i8	4	yes
+intrinsic	llvm.uadd.with.overflow.i128	20	yes
+intrinsic	llvm.uadd.with.overflow.i16	3	yes
+intrinsic	llvm.uadd.with.overflow.i32	41	yes
+intrinsic	llvm.uadd.with.overflow.i64	89892	yes
+intrinsic	llvm.uadd.with.overflow.i8	168	yes
+intrinsic	llvm.umul.with.overflow.i64	11665	yes
+intrinsic	llvm.umul.with.overflow.i8	1	yes
+intrinsic	llvm.usub.with.overflow.i32	19	yes
+intrinsic	llvm.usub.with.overflow.i64	20992	yes
+intrinsic	llvm.usub.with.overflow.i8	747	yes
+linkage	external	10323	yes
+linkage	internal	263386	yes
+linkage	private	81104	yes
+module flag	Debug Info Version	140	no
+opcode	add	62789	yes
+opcode	alloca	605847	yes
+opcode	and	105067	yes
+opcode	ashr	852	yes
+opcode	atomicrmw	940	yes
+opcode	br	1654696	yes
+opcode	call	1994633	yes
+opcode	cmpxchg	591	yes
+opcode	extractvalue	541506	yes
+opcode	fadd	1047	yes
+opcode	fcmp	1082	yes
+opcode	fdiv	220	yes
+opcode	fence	8	yes
+opcode	fmul	1485	yes
+opcode	fpext	52	yes
+opcode	fptosi	37	yes
+opcode	fptoui	2	yes
+opcode	fptrunc	15	yes
+opcode	fsub	480	yes
+opcode	getelementptr	632276	yes
+opcode	icmp	506007	yes
+opcode	insertvalue	22386	yes
+opcode	inttoptr	65046	yes
+opcode	invoke	3002	yes
+opcode	landingpad	481	yes
+opcode	load	2097096	yes
+opcode	lshr	15805	yes
+opcode	mul	17036	yes
+opcode	or	82608	yes
+opcode	phi	127351	yes
+opcode	ptrtoint	34367	yes
+opcode	ret	291613	yes
+opcode	sdiv	576	yes
+opcode	select	24551	yes
+opcode	sext	51428	yes
+opcode	shl	6362	yes
+opcode	sitofp	167	yes
+opcode	srem	424	yes
+opcode	store	947388	yes
+opcode	sub	17989	yes
+opcode	switch	26	yes
+opcode	trunc	17310	yes
+opcode	udiv	4030	yes
+opcode	uitofp	39	yes
+opcode	unreachable	309836	yes
+opcode	urem	802	yes
+opcode	xor	31962	yes
+opcode	zext	37098	yes
+ordering	acq_rel	449	yes
+ordering	acquire	446	yes
+ordering	monotonic	54	yes
+ordering	notatomic	3043004	yes
+ordering	release	438	yes
+ordering	seq_cst	1632	yes
+personality	present	386	yes
+tail call	none	1997635	yes
+tls	localexec	700	yes
+tls	not_thread_local	161696	yes
+triple	aarch64-apple-darwin	140	yes
+unnamed_addr	none	162396	yes
+value	basic block	2259173	yes
+value	function	192417	yes
+value	global variable	162396	yes
+value	inline asm	38223	yes
+visibility	default	354393	yes
+visibility	hidden	420	yes
