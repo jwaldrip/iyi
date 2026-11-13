@@ -1,0 +1,11 @@
+struct Range(B, E)
+  def initialize(@begin : B, @end : E, @exclusive : Bool)
+  end
+end
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+range = Range.new(0, 1, false)
+LibC.exit(0)
