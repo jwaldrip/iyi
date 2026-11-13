@@ -196,6 +196,21 @@ lower_primitives_check() {
   binary_union_check "$WORK/mut" || return 1
   return 0
 }
+pointer_check() {
+  "$IYI" build -o "$WORK/pointer_mut" "$REPO/bench/selfhost_lower_primitives_exercise.iyi" > "$WORK/pointer_mut.build.log" 2>&1 || return 1
+  : > "$WORK/pointer_mut_built"
+  "$WORK/pointer_mut" lower "$REPO/bench/fixtures/lowprim_ptr.iyi" "$WORK/lowprim_ptr.oracle.ll" > "$WORK/pointer_mut.out" 2> "$WORK/pointer_mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/pointer_mut.out"
+}
+pointer_check || { echo "  baseline: pointer fixture differs"; status=1; }
+rm -f "$WORK/pointer_mut_built"
+prove_mutation "a generic pointer metaclass receiver is not evaluated" "$REPO/src/compiler/lower/primitives.iyi" \
+  '        type_id_value(low, receiver_type(low, receiver))' '        llvm_nil(low)' -- pointer_check || status=1
+if [ ! -f "$WORK/pointer_mut_built" ]; then echo "  NOT PROVEN: pointer metaclass mutant failed to build"; status=1; fi
+rm -f "$WORK/pointer_mut_built"
+prove_mutation "pointer addition loses inbounds" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = low.builder.inbounds_gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' '    low.last = low.builder.gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' -- pointer_check || status=1
+if [ ! -f "$WORK/pointer_mut_built" ]; then echo "  NOT PROVEN: pointer addition mutant failed to build"; status=1; fi
 # The baseline: the unmutated port must pass the check, or every mutation below is caught for the wrong reason.
 lower_primitives_check || { echo "  baseline: the unmutated primitives do not pass the check"; status=1; }
 prove_mutation "binary union operand is not refused" "$REPO/src/compiler/lower/primitives.iyi" \
@@ -212,10 +227,6 @@ prove_mutation "a mixed-sign less-than uses the unsigned predicate" "$REPO/src/c
   "      widened = low.builder.icmp(IntPredicate::SLT, p1, extend_int(low, t2, t1, p2))" "      widened = low.builder.icmp(IntPredicate::ULT, p1, extend_int(low, t2, t1, p2))" -- lower_primitives_check || status=1
 prove_mutation "a by-value pointer_get loads" "$REPO/src/compiler/lower/primitives.iyi" \
   "      low.last = values[0]" "      low.last = load_aligned(low, low.typer.llvm_embedded_type(elem), values[0])" -- lower_primitives_check || status=1
-prove_mutation "a generic pointer metaclass receiver is not evaluated" "$REPO/src/compiler/lower/primitives.iyi" \
-  '        type_id_value(low, receiver_type(low, receiver))' '        llvm_nil(low)' -- lower_primitives_check || status=1
-prove_mutation "pointer addition loses inbounds" "$REPO/src/compiler/lower/primitives.iyi" \
-  '    low.last = low.builder.inbounds_gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' '    low.last = low.builder.gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' -- lower_primitives_check || status=1
 prove_mutation "a Bool pointer_set stores zero" "$REPO/src/compiler/lower/primitives.iyi" \
   "      bool_stored = values[1]" "      bool_stored = int1(low, 0_i64)" -- lower_primitives_check || status=1
 prove_mutation "a generic instance ignores its class variables" "$REPO/src/compiler/lower/primitives.iyi" \
