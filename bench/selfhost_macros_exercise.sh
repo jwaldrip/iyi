@@ -384,6 +384,17 @@ src.each_line do |line|
     path_lookup = typ.as(Iyi::Type)
   end
 end
+# Facts name a real enum in the hosted interpreter, not a fabricated answer.
+if src.each_line.any? { |line| line.starts_with?("# fact: ") }
+  fact_scope = Iyi::EnumType.new(program, program, "MacroFactScope", program.int32)
+  src.each_line do |line|
+    next unless line.starts_with?("# fact: ")
+    parts = line[8..].split(' ')
+    fact_scope.add_constant(parts[0], parts[1].to_i64)
+  end
+  path_lookup = fact_scope
+end
+
 
 # The same interpreter `Program#expand_macro` builds, driven one top-level
 # site at a time so each site's text can be read back. Free vars are the
@@ -704,6 +715,13 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 
 
+
+# The enum scope fixture checks both declaration order and member values.
+prove_mutation "type constants lose their declared names" "$METHODS" \
+  "facts.constants.each_key { |name| names << MacroId.new(name) }" \
+  "facts.constants.each_key { |name| names << MacroId.new(\"wrong\") }" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "sites expanded in the program scope, not their class" "$REPO/bench/selfhost_macros_exercise.iyi" \
   "scope = ref.type_name.empty? ? \"<Program>\" : ref.type_name" \

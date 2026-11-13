@@ -275,6 +275,19 @@ prove_mutation "a macro site in a def body does not see the receiver's type para
 prove_mutation "a macro site in a def body does not see the def's free variables" "$MAIN_VISITOR" \
   "        @def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- macro_bindings_at_floor || status=1
+echo
+echo "== 4d. A macro site in an enum method sees its constants"
+macro_enum_facts_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_enum_facts.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  [ "$matched" -ge 6 ]
+}
+prove_mutation_all "enum macro facts are not passed to the body splice" "$MAIN_VISITOR" \
+  "def_inline_bindings, MacroBindings.facts(@scope))" \
+  "def_inline_bindings, nil)" -- macro_enum_facts_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"
