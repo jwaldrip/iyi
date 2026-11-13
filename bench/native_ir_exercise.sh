@@ -498,7 +498,7 @@ prove_mutation "unwind: a phi keeps the pair of a removed block" \
 prove_mutation "unwind: the personality stays on the function" \
   src/compiler/ir/function.iyi \
   $'    relink\n    @personality = nil' \
-  $'    relink\n    @personality = @personality' \
+  $'    relink\n    relink' \
   unwind_check
 prove_mutation "unwind: a declaration only the unwind path named stays" \
   src/compiler/ir/module.iyi \
