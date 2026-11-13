@@ -28,6 +28,7 @@ fixture="$REPO/bench/fixtures/bodies_union_magic_mismatch.iyi"
 "$IYI" build -o "$WORK/typed" "$REPO/src/compiler/tools/typed_dump.iyi"
 if "$WORK/typed" "$fixture" "$REPO/src" > "$WORK/union-typed.log" 2>&1; then
   echo "union magic defaults now type: remove this named waiting case"
+  cat "$WORK/union-typed.log"
   exit 1
 fi
 if ! grep -F 'not ported: differing union call-site defaults' "$WORK/union-typed.log"; then

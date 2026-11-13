@@ -3339,7 +3339,7 @@ pub class MainVisitor < TypeNodeHost
         return false if expanded.nil?
         target_def = expanded
         if previous_args = expanded_args
-          if previous_args != node.args
+          if previous_args.map(&.to_s) != node.args.map(&.to_s)
             refuse_call(node, "not ported: differing union call-site defaults")
             return false
           end

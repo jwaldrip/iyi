@@ -10,9 +10,6 @@ class UnionMagicFile
   end
 end
 
-def union_magic(receiver : UnionMagicLine | UnionMagicFile)
-  receiver.read
-end
-
-union_magic(UnionMagicLine.new)
-union_magic(UnionMagicFile.new)
+flag = true
+receiver = flag ? UnionMagicLine.new : UnionMagicFile.new
+receiver.read
