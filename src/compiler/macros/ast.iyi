@@ -1,6 +1,7 @@
 module compiler/macros/ast
 
 import compiler/syntax/ast::{ASTNode, StringBuilder, StringLiteral, SymbolLiteral, Var}
+import compiler/macros/type_facts::{MacroTypeFacts}
 
 pub class MacroId < ASTNode
   property value : String
@@ -52,6 +53,7 @@ pub class TypeNode < ASTNode
   # Empty when `size` is not defined for this type.
   property type_args : Array(String)
   property sized : Bool
+  property facts : MacroTypeFacts? = nil
 
   def initialize(@name : String, @type_args : Array(String) = [] of String, @sized : Bool = false)
   end
@@ -65,7 +67,9 @@ pub class TypeNode < ASTNode
   end
 
   def clone_without_location : self
-    TypeNode.new(@name, @type_args.dup, @sized)
+    copy = TypeNode.new(@name, @type_args.dup, @sized)
+    copy.facts = @facts
+    copy
   end
 
   # Two type nodes are the same type when they print the same, which is how

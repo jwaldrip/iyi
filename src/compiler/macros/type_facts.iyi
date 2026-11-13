@@ -1,0 +1,12 @@
+module compiler/macros/type_facts
+
+# Declaration facts supplied by semantic analysis to an inline macro site.
+pub class MacroTypeFacts
+  getter constants : Hash(String, String)
+  getter annotations : Array(String)
+
+  def initialize
+    @constants = Hash(String, String).new
+    @annotations = [] of String
+  end
+end

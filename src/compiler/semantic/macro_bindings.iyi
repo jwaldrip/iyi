@@ -1,6 +1,8 @@
 module compiler/semantic/macro_bindings
 
 import compiler/macros/interpreter::{MacroFreeBinding}
+import compiler/macros/type_facts::{MacroTypeFacts}
+import compiler/semantic/top_level::{EnumType}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, MetaclassType, Type, UnionType}
 import compiler/types/types::{GenericInstanceType, NamedTupleInstanceType, TupleInstanceType, TypeQueries}
 
@@ -13,6 +15,21 @@ import compiler/types/types::{GenericInstanceType, NamedTupleInstanceType, Tuple
 # tuple or a union (hosted produce_tuple, 571-601); every other binding is the
 # type's node.
 pub class MacroBindings
+  # Hosted methods.cr:2618-2640: enum constants keep declaration order and values.
+  def self.facts(scope : Type?) : MacroTypeFacts?
+    return nil if scope.nil?
+    owner = scope.as(Type)
+    if owner.is_a?(MetaclassType)
+      owner = owner.as(MetaclassType).instance_type
+    end
+    return nil unless owner.is_a?(EnumType)
+    facts = MacroTypeFacts.new
+    owner.as(EnumType).members.each do |name, member|
+      facts.constants[name] = member.value.to_s
+    end
+    facts
+  end
+
   # `scope` is the receiver of the def being typed (nil at the top level) and
   # `free` the def's free variables as the call's arguments bound them. A free
   # variable hides an owner's parameter of the same name, as hosted looks the

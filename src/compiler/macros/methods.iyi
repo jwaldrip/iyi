@@ -2,6 +2,7 @@ module compiler/macros/methods
 
 import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, TypeDeclaration, Underscore, Unless, Until, Var, While, StringBuilder}
 import compiler/syntax/token::{NumberKind}
+import compiler/syntax/parser::{Parser}
 import compiler/platform/flags::{PlatformFlags}
 import compiler/macros/ast::{MacroId, TypeNode}
 import compiler/macros/answers::{MacroAnswers}
@@ -357,6 +358,24 @@ pub class MacroMethods
 
     if rec.is_a?(TypeNode)
       tn = rec.as(TypeNode)
+      # Hosted methods.cr:2301-2311, 2618-2640: names are identifiers and
+      # `constant` returns the constant's syntax, not its string value.
+      if facts = tn.facts
+        if method == "constants" && args.empty?
+          names = [] of ASTNode
+          facts.constants.each_key { |name| names << MacroId.new(name) }
+          return ArrayLiteral.new(names)
+        end
+        if method == "has_constant?" && args.size == 1
+          return BoolLiteral.new(facts.constants.has_key?(to_macro_id(args[0])))
+        end
+        if method == "constant" && args.size == 1
+          if value = facts.constants[to_macro_id(args[0])]?
+            return Parser.new(value).parse
+          end
+          return NilLiteral.new
+        end
+      end
       # `name(generic_args:)` changes only a generic type's name. The scan never
       # answers a generic type from its name (MacroSiteRef.generic), so the name
       # is the same with or without the argument.
