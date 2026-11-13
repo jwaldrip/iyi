@@ -2464,9 +2464,10 @@ pub class MainVisitor < TypeNodeHost
 
   # A splat restriction (`*T`) is not a type node, so the candidate check refuses
   # it. The calls lane binds that splat from the argument types. One match is the
-  # def; several matches are not collapsed to the first (the calls lane answers
-  # that as not ported). Nil leaves the refusal in place.
-  def match_splat_with_calls(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
+  # def; a resolved restriction error is returned as text; a type mismatch is nil
+  # so the caller can report the hosted no-overload line. Several matches are not
+  # collapsed to the first.
+  def match_splat_with_calls(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def | String | Nil
     arg_types = [] of Type
     i = 0
     while i < args.size
@@ -2481,8 +2482,27 @@ pub class MainVisitor < TypeNodeHost
     end
     signature = CallSignature.new(name, arg_types, nil, block_present)
     target = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args)
-    return nil if target.error
+    if err = target.error
+      return nil if err.starts_with?("not ported")
+      return err
+    end
     target.definition
+  end
+
+  # Hosted call.cr reports a splat restriction mismatch as no overload, not as
+  # "expected type, got *T". The matcher already accepted a matching tuple.
+  def splat_mismatch_message(rec_type : Type, name : String, args : Array(ASTNode), candidates : Array(Def)) : String
+    names = [] of String
+    args.each do |arg|
+      names << type_of(arg).full_name
+    end
+    plural = args.size > 1 ? "s" : ""
+    method_disp = format_method_display_name(rec_type, name)
+    lines = [] of String
+    candidates.each do |d|
+      lines << " - #{format_overload_signature(rec_type, d)}"
+    end
+    "no overload matches '#{method_disp}' with type#{plural} #{names.join(", ")}\n\nOverloads are:\n#{lines.join("\n")}"
   end
 
   # The overload a call resolves to, or nil when it cannot: strict mode raises
@@ -2522,8 +2542,11 @@ pub class MainVisitor < TypeNodeHost
     # The calls matcher binds splat restrictions as tuples, including an empty
     # argument list; the ordinary positional overload loop cannot resolve *T.
     if candidates.any? { |d| !d.splat_index.nil? }
-      if splat_match = match_splat_with_calls(rec_type, name, args, call_node)
-        return splat_match
+      splat_found = match_splat_with_calls(rec_type, name, args, call_node)
+      return splat_found.as(Def) if splat_found.is_a?(Def)
+      return refuse_call(call_node, splat_found.as(String)) if splat_found.is_a?(String)
+      if args.size > 0
+        return refuse_call(call_node, splat_mismatch_message(rec_type, name, args, candidates))
       end
     end
 
@@ -2538,9 +2561,9 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if count_matches.empty?
-      if rescued = match_splat_with_calls(rec_type, name, args, call_node)
-        return rescued
-      end
+      rescued = match_splat_with_calls(rec_type, name, args, call_node)
+      return rescued.as(Def) if rescued.is_a?(Def)
+      return refuse_call(call_node, rescued.as(String)) if rescued.is_a?(String)
       overload_lines = candidates.map { |d| " - #{format_overload_signature(rec_type, d)}" }
       overloads_str = "Overloads are:\n#{overload_lines.join("\n")}"
       method_disp = format_method_display_name(rec_type, name)
