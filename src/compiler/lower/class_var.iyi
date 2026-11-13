@@ -58,6 +58,7 @@ pub def class_var_scope(low : Lowerer) : ModuleType
   if ct.is_a?(ModuleType) && !ct.is_a?(SemanticProgram)
     return ct.as(ModuleType)
   end
+  scopes = low.globals.body_scopes
   if scopes.size > 0
     return scopes[scopes.size - 1]
   end
