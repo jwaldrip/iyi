@@ -86,7 +86,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   raise "BUG: the call to #{node.name} has no target def (hosted call.cr: visit(Call))" if target.nil?
   def_node = target.as(Def)
 
-  if node.args.size != def_node.args.size || def_node.splat_index != nil
+  if (node.args.size != def_node.args.size || def_node.splat_index != nil) && primitive_name_of(def_node) != "proc_call"
     pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
   end
 
