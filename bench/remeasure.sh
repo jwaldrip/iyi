@@ -132,7 +132,12 @@ fi
 
 python3 bench/pipeline_census.py names "${hosted_ll}" -o "${WORK}/hello.names"
 # One port-tool process. The driver stops it above 3 GiB.
-python3 bench/pipeline_census.py run "${WORK}/tool" samples/iyi/hello.iyi "${WORK}/hello.names" "${WORK}/run" --chunk 10000 --hosted "${hosted_ll}"
+if ! python3 bench/pipeline_census.py run "${WORK}/tool" samples/iyi/hello.iyi "${WORK}/hello.names" "${WORK}/run" --chunk 10000 --hosted "${hosted_ll}"; then
+  kept="${WORK}"
+  WORK=""
+  echo "census failure logs kept at ${kept}/run" >&2
+  exit 1
+fi
 
 out_dir="${TABLES}/${sha}-hello"
 before_shapes=""
