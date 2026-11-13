@@ -98,7 +98,30 @@ class Iyi::Command
   # why Crystal refuses `fork` in such a build at compile time. So the server
   # half lives in its own binary. The client half does not fork and runs
   # anywhere, which is why only `start` is redirected.
+  # The path is checked here, before the exec, and without consuming the
+  # option: `start` hands `--socket` to the server it execs, so the server
+  # needs it, and the guard below runs too late to be the thing the user
+  # reads. Crystal's `UNIXAddress` raises about a file the author never
+  # opened, which is the message this exists to replace.
+  private def check_socket_path_length : Nil
+    options.each_with_index do |opt, i|
+      next unless opt == "--socket"
+      path = options[i + 1]?
+      next unless path
+      limit = Socket::UNIXAddress::MAX_PATH_SIZE
+      next unless path.bytesize > limit
+      abort! "the socket path is #{path.bytesize} bytes and the kernel takes " \
+             "#{limit}: #{path}. A unix socket's path is a fixed field in " \
+             "`sockaddr_un`, so this is the machine's limit rather than " \
+             "this compiler's. Pass a shorter `--socket`, or set TMPDIR to " \
+             "a shorter directory and let the default sit under it",
+        :FAILURE
+    end
+  end
+
   private def daemon_exec_server : NoReturn
+    check_socket_path_length
+
     # An explicit override is authoritative. Falling back to some other binary
     # because the named one is missing would run a build against a compiler the
     # user did not ask for, and say nothing about it.
@@ -772,7 +795,7 @@ class Iyi::Command
 
     begin
       client = UNIXSocket.new(path)
-    rescue ex : Socket::Error | File::Error
+    rescue ex : Socket::Error | File::Error | ArgumentError
       if fallback
         STDERR.puts "#{Command.program_name}: daemon at #{path} did not answer, building without it"
         return

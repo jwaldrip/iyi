@@ -338,6 +338,7 @@ class Iyi::Command
     report_warnings
     abort! filesystem_sentence(ex), :FAILURE
   rescue ex
+    raise ex if ex.class.name.ends_with?("ExitException")
     report_warnings
 
     ex.inspect_with_backtrace STDERR
@@ -351,6 +352,7 @@ class Iyi::Command
   end
 
   private def tool
+    selfhost = options.delete("--selfhost") != nil
     tool = options.first?
     case
     when !tool
@@ -361,6 +363,7 @@ class Iyi::Command
       context
     when "format".starts_with?(tool)
       options.shift
+      options.unshift("--selfhost") if selfhost
       format
     when "flags" == tool
       options.shift
