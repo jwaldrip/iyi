@@ -6,7 +6,7 @@ import compiler/syntax/token::{NumberKind, TokenKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
-import compiler/semantic/inline_macros::{splice_body_node, splice_inline_sites}
+import compiler/semantic/inline_macros::{splice_body_node, splice_fun_body, splice_inline_sites}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
@@ -3006,13 +3006,12 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : FunDef) : Bool
     # hosted: a fun body is spliced like a def body, in the program's scope and the fun's file.
+    # splice_fun_body binds the fun's arguments as the names declared before the first statement.
     file = ""
     if loc = node.location
       file = loc.filename
     end
-    if body = node.body
-      node.body = splice_body_node(body, @program.full_name, file, false)
-    end
+    splice_fun_body(node, @program.full_name)
     saved = @fun_inline_file
     @fun_inline_file = file
     typed = visit_fun_def(self, node)
