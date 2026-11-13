@@ -391,6 +391,7 @@ end
 
 pub class TupleInstanceType < GenericClassInstanceType
   getter tuple_types : Array(Type)
+  getter tuple_indexers : Hash(String, Def) = Hash(String, Def).new
 
   def initialize(program : SemanticProgram, @tuple_types : Array(Type))
     super(program, program.types["Tuple"], Hash(String, Type).new, @tuple_types, program.struct_type)
@@ -452,6 +453,7 @@ end
 
 pub class NamedTupleInstanceType < GenericClassInstanceType
   getter entries : Array(NamedArgumentType)
+  getter tuple_indexers : Hash(String, Def) = Hash(String, Def).new
 
   def initialize(program : SemanticProgram, @entries : Array(NamedArgumentType))
     args = @entries.map(&.type)
