@@ -1,0 +1,21 @@
+# The read-modify-write operations used by the prelude.
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+struct IyiAtomic
+  @[Primitive(:atomicrmw)]
+  def self.rmw(op : Symbol, pointer : Pointer(UInt64), value : UInt64, ordering : Symbol, singlethread : Bool) : UInt64
+  end
+end
+
+def operate(p : Pointer(UInt64), value : UInt64) : UInt64
+  IyiAtomic.rmw(:add, p, value, :sequentially_consistent, false)
+  IyiAtomic.rmw(:sub, p, value, :sequentially_consistent, false)
+  IyiAtomic.rmw(:or, p, value, :sequentially_consistent, false)
+  IyiAtomic.rmw(:xchg, p, value, :sequentially_consistent, false)
+end
+
+x = 0_u64
+operate(pointerof(x), 7_u64)
+LibC.exit(7)
