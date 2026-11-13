@@ -252,6 +252,13 @@ pub class MainVisitor < TypeNodeHost
   # Assignment types visible from each enclosing handler's ensure.
   property handler_vars : Array(Hash(String, Type)) = [] of Hash(String, Type)
   property handler_writes : Array(Set(String)) = [] of Set(String)
+  property handler_inside_ensure : Bool = false
+  property handler_inside_defer : Bool = false
+  property handler_direct_exit : Bool = false
+
+  def handler_defer_exit(node : ASTNode, keyword : String) : Bool
+    refuse(node, "`#{keyword}` can't leave a `defer`\n\nA `defer` runs while its scope is already being left, by a return, by `!`, or by a panic, so its cleanup has no answer of its own to give and nowhere to jump to. Let it run to its end, and answer from the scope. See SPEC.md III.1.4.")
+  end
 
   def handler_assign(name : String, type : Type) : Nil
     @handler_writes.each { |writes| writes.add(name) }
@@ -738,6 +745,10 @@ pub class MainVisitor < TypeNodeHost
   # first (the hosted pass binds it): a `break` to the call whose block is being typed, a `next`
   # to the block (see visit(Yield) and call_result).
   def visit(node : Break) : Bool
+    if @handler_direct_exit
+      return handler_defer_exit(node, "break") if @handler_inside_defer
+      return refuse(node, "can't use break inside ensure")
+    end
     value_t : Type? = @program.nil_type
     if e = node.exp
       e.accept(self)
@@ -754,6 +765,10 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Next) : Bool
+    if @handler_direct_exit
+      return handler_defer_exit(node, "next") if @handler_inside_defer
+      return refuse(node, "can't use next inside ensure")
+    end
     value_t : Type? = @program.nil_type
     if e = node.exp
       e.accept(self)
@@ -1411,6 +1426,13 @@ pub class MainVisitor < TypeNodeHost
     if node.rescues || node.else
       return refuse(node, "iyi has no exceptions to rescue: an error is a value the caller handles (SPEC.md III.1), and a panic is caught at a task boundary (III.1.4), never here - this `rescue` would not run. Return the error, or read the task's `value`")
     end
+    if @program.iyi_prelude? && !node.iyi_defer?
+      if loc = node.location
+        if loc.filename.ends_with?(".iyi") && node.ensure
+          return refuse(node, "iyi has no `ensure`: a panic unwinds by registry and skips it (SPEC.md III.1.4). Write `defer`, which runs on return, on `!` and on a panic")
+        end
+      end
+    end
 
     before_body = @vars.dup
     handler_vars = @vars.dup
@@ -1440,7 +1462,16 @@ pub class MainVisitor < TypeNodeHost
       writes = Set(String).new
       @handler_writes << writes
       @unreachable = false
+      old_handler_inside_ensure = @handler_inside_ensure
+      old_handler_inside_defer = @handler_inside_defer
+      old_handler_direct_exit = @handler_direct_exit
+      @handler_inside_ensure = true
+      @handler_inside_defer = @handler_inside_defer || node.iyi_defer?
+      @handler_direct_exit = true
       cleanup.accept(self)
+      @handler_inside_ensure = old_handler_inside_ensure
+      @handler_inside_defer = old_handler_inside_defer
+      @handler_direct_exit = old_handler_direct_exit
       cleanup_unreachable = @unreachable
       @handler_writes.pop
       after_cleanup = @vars
@@ -1703,7 +1734,10 @@ pub class MainVisitor < TypeNodeHost
       @type_filters = nil
       @unreachable = false
       @while_break_vars.push([] of Hash(String, Type))
+      old_handler_direct_exit = @handler_direct_exit
+      @handler_direct_exit = false
       node.body.accept(self)
+      @handler_direct_exit = old_handler_direct_exit
       body_vars = @vars
       break_vars_list = @while_break_vars.pop
 
@@ -1764,6 +1798,10 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Return) : Bool
+    if @handler_inside_defer || (@current_def && @current_def.as(Def).iyi_defer?)
+      return handler_defer_exit(node, node.from_propagate ? "!" : "return")
+    end
+    return refuse(node, "can't return from ensure") if @handler_inside_ensure
     value_t : Type? = @program.nil_type
     if exp = node.exp
       exp.accept(self)
@@ -1922,7 +1960,10 @@ pub class MainVisitor < TypeNodeHost
       @needs_type_filters = 0
       @unreachable = false
       enter_file_scope(blk)
+      old_handler_direct_exit = @handler_direct_exit
+      @handler_direct_exit = false
       blk.body.accept(self)
+      @handler_direct_exit = old_handler_direct_exit
       @type_filters = old_yield_type_filters
       @needs_type_filters = old_yield_needs_filters
       @unreachable = old_yield_unreachable
@@ -2583,6 +2624,12 @@ pub class MainVisitor < TypeNodeHost
     old_handler_writes = @handler_writes
     @handler_vars = [] of Hash(String, Type)
     @handler_writes = [] of Set(String)
+    old_handler_inside_ensure = @handler_inside_ensure
+    old_handler_inside_defer = @handler_inside_defer
+    old_handler_direct_exit = @handler_direct_exit
+    @handler_inside_ensure = false
+    @handler_inside_defer = false
+    @handler_direct_exit = false
     old_scope = @scope
     old_def = @current_def
     old_block_call = @current_call_block
@@ -2700,6 +2747,9 @@ pub class MainVisitor < TypeNodeHost
     @vars = old_vars
     @handler_vars = old_handler_vars
     @handler_writes = old_handler_writes
+    @handler_inside_ensure = old_handler_inside_ensure
+    @handler_inside_defer = old_handler_inside_defer
+    @handler_direct_exit = old_handler_direct_exit
     @scope = old_scope
     @current_def = old_def
     @current_call_block = old_block_call
