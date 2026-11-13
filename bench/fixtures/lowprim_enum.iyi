@@ -5,12 +5,20 @@ end
 enum Color
   Red
   Green
+
+  def ==(other : Color) : Bool
+    value == other.value
+  end
 end
 
 @[Flags]
 enum Access
   Read
   Write
+
+  def includes?(other : Access) : Bool
+    (value & other.value) == other.value
+  end
 
   def |(other : Access) : Access
     Access.new(value | other.value)

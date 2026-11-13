@@ -16,7 +16,7 @@ module bench/lib/primitive_stand_in
 # own body.
 
 import compiler/syntax/ast::{ASTNode, Arg, Def, Path, Primitive, Self}
-import compiler/semantic/top_level::{EnumType, GenericClassType, NonGenericClassType, SemanticProgram}
+import compiler/semantic/top_level::{GenericClassType, NonGenericClassType, SemanticProgram}
 import compiler/semantic/main_visitor::{MainVisitor}
 pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : MainVisitor) : Nil
   int_names = ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Int128", "UInt128"]
@@ -49,14 +49,6 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
     char.add_def(binary_def(op, "Char", "Bool"))
   end
   declare_pointer_primitives(prog)
-  # Until semantic declarations install these defs, model the enum's own primitives.
-  prog.types.each_value do |type|
-    next unless type.is_a?(EnumType)
-    enum_type = type.as(EnumType)
-    base = Path.new(enum_type.base_type.full_name)
-    enum_type.add_def(primitive_def("value", [] of Arg, base, "enum_value"))
-    enum_type.metaclass.add_def(primitive_def("new", [Arg.new("value", nil, base)] of Arg, Path.new(enum_type.full_name), "enum_new"))
-  end
 end
 
 # A builtin's binary operator: one argument of the operand's type, the result type, a Nop
