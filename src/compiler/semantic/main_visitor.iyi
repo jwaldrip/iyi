@@ -780,6 +780,17 @@ pub class MainVisitor < TypeNodeHost
         end
         if instance.is_a?(TupleInstanceType)
           members = instance.as(TupleInstanceType).tuple_types
+          if node.tuple_range
+            selected = [] of Type
+            i = node.tuple_index
+            while i <= node.tuple_last && i < members.size
+              selected << members[i]
+              i += 1
+            end
+            result = tuple_type_of(@program, selected)
+            set_type(node, meta ? type_node_metaclass(result).as(Type) : result)
+            return false
+          end
           if node.tuple_index >= 0 && node.tuple_index < members.size
             result = members[node.tuple_index]
             set_type(node, meta ? type_node_metaclass(result).as(Type) : result)

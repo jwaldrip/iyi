@@ -19,6 +19,8 @@ class TupleIndexProbe
     n
   end
 end
+RANGE = 0..1
+
 
 members = {1, "s"}
 single = members[0]
@@ -26,6 +28,12 @@ singleton = members[0..0]
 empty = members[1...1]
 last = members[-1]
 absent = members[4]?
+tail_empty = members[2..]
+constant_range = members[RANGE]
+tuple_type = typeof(members)
+meta_single = tuple_type[0]
+meta_range = tuple_type[0..0]
+meta_empty = tuple_type[1...1]
 named = {a: 1, b: "s"}
 named_value = named[:a]
 
