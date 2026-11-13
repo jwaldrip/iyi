@@ -452,6 +452,28 @@ else
   status=1
 fi
 
+# A prelude-free program is Crystal's layout: the class id is field 0, and a string literal
+# is the four-field struct. Forcing iyi layout (the old hard-coded true) fails this check.
+layout_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/layout_tool"; then return 1; fi
+  "$WORK/layout_tool" "$REPO/bench/fixtures/lowprim_alloc_class.iyi" -o "$WORK/layout_box.ll" --pipeline typed --emit ir > /dev/null 2>&1 || return 1
+  "$WORK/layout_tool" "$REPO/bench/fixtures/lower_string_fields.iyi" -o "$WORK/layout_str.ll" --pipeline typed --emit ir > /dev/null 2>&1 || return 1
+  awk '/i64 -4/ { bad = 1 } END { exit bad }' "$WORK/layout_box.ll" || return 1
+  awk '/Box = type/ { if ($0 !~ /i32/) bad = 1 } END { exit bad }' "$WORK/layout_box.ll" || return 1
+  awk '/private constant \{ i32,/ { crystal = 1 } /private constant \{ i64,/ { iyi = 1 } END { exit !(crystal && !iyi) }' "$WORK/layout_str.ll"
+}
+echo "  the layout check passes on the unmutated code:"
+if layout_check; then
+  echo "    unmutated: pass"
+  prove_mutation "a prelude-free program uses iyi's object layout" "$PROGRAM_SRC" \
+    'iyi_object_layout?(typed.prog)' \
+    'true' -- layout_check || status=1
+else
+  echo "    unmutated: FAIL (the layout check cannot prove anything)"
+  awk 'NR<=8' "$WORK/layout_box.ll" "$WORK/layout_str.ll"
+  status=1
+fi
+
 # A top-level `{% if flag?(:no_such_flag) %}` require takes the else branch. The driver's
 # output names loader_if_b and not loader_if_a. The mutation makes the loader read every
 # `{% if %}`'s first branch, so the same output names a and the check fails.

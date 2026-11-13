@@ -573,6 +573,51 @@ prove_mutation "the headed byte is a constant chosen at the allocation" "$REPO/s
   'load_aligned(low, low.module.types.int8, headed_global(low, t))' \
   'low.builder.const_int(low.module.types.int8, 0_i64)' -- headed_late_check || status=1
 
+string_fields_ir() {
+  local portbin="$1"
+  local pre="$REPO/bench/fixtures/lower_headed_prelude"
+  local fix="$REPO/bench/fixtures/lower_string_fields.iyi"
+  IYI_PATH="$pre" "$IYI" build --emit llvm-ir --no-debug -o "$WORK/sfields" "$fix" > "$WORK/sfields.hosted.log" 2>&1 || return 1
+  [ -s "$WORK/sfields.ll" ] || return 1
+  awk '1' "$pre/iyi/prelude.iyi" "$fix" > "$WORK/sfields.combined.iyi"
+  "$portbin" emit "$WORK/sfields.combined.iyi" "$WORK/sfields.ll" > "$WORK/sfields.port.ll" 2> "$WORK/sfields.port.err" || return 1
+  python3 - "$WORK/sfields.ll" "$WORK/sfields.port.ll" << 'PY' || return 1
+import sys
+def lines(text):
+    out = []
+    for line in text.splitlines():
+        if "@\"'hi'\"" in line or "getelementptr inbounds" in line and "'hi'" in line:
+            out.append(line.strip())
+    return out
+host = lines(open(sys.argv[1]).read())
+port = lines(open(sys.argv[2]).read())
+if host != port or not host:
+    sys.stderr.write("string literal lines differ\n")
+    sys.exit(1)
+PY
+}
+string_fields_check() {
+  "$IYI" build -o "$WORK/port-sf" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/sfields.build.log" 2>&1 || return 1
+  string_fields_ir "$WORK/port-sf" || return 1
+  "$IYI" build -o "$WORK/sfields.tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/sfields.tool.log" 2>&1 || return 1
+  "$WORK/sfields.tool" "$WORK/sfields.port.ll" -o "$WORK/sfields.native" > "$WORK/sfields.native.log" 2>&1 || return 1
+  timeout 30 "$WORK/sfields.native" > "$WORK/sfields.native.out" 2>&1; ns=$?
+  timeout 30 "$WORK/sfields" > "$WORK/sfields.hosted.out" 2>&1; hs=$?
+  [ "$ns" = "$hs" ] && cmp -s "$WORK/sfields.native.out" "$WORK/sfields.hosted.out"
+}
+echo
+echo "== 2c4. An iyi string literal is the object past the header word"
+if string_fields_check; then
+  echo "  lower_string_fields: literal lines identical to hosted, native status matches"
+  prove_mutation "an iyi string literal is the global, not the object" "$REPO/src/compiler/lower/helpers.iyi" \
+    '  if low.typer.iyi_layout' \
+    '  if false' -- string_fields_check || status=1
+else
+  echo "  lower_string_fields: DIVERGED"
+  awk 'NR<=12' "$WORK/sfields.port.err" "$WORK/sfields.hosted.log" "$WORK/sfields.native.log"
+  status=1
+fi
+
 probe_reuse_check() {
   "$IYI" build -o "$WORK/port-p" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/probe.build.log" 2>&1 || return 1
   "$WORK/port-p" probe-reuse "$REPO/bench/fixtures/lower_probe_reuse.iyi" > "$WORK/probe.out" 2>"$WORK/probe.err" || return 1

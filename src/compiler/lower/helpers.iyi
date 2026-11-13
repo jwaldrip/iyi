@@ -95,14 +95,12 @@ pub def unique_global_name(low : Lowerer, name : String) : String
   candidate
 end
 
-# The hosted `build_string_constant(str)` (codegen.cr:3462) under Crystal's object layout: a private
-# constant global of the literal struct `{ i32 type_id, i32 bytesize, i32 length, [bytesize+1 x i8] }`,
-# with the string's bytes and a trailing zero. The global is named after the text (`@` written as `.`),
-# in quotes: a text longer than 18 bytes is cut to its first 19 characters and `...` is added (codegen.cr:3463).
-# A name already taken is renamed the way LLVM renames it (unique_global_name). The program's pointer to the
-# string is the global itself (a pointer cast is free in opaque pointers). Equal texts share one global, as the
-# hosted `@strings` does.
-pub def build_string_constant(low : Lowerer, str : String) : Global
+# The hosted `build_string_constant` (codegen.cr:3462-3498, llvm_typer.cr:75-103).
+# Under iyi's layout the global is `{ i64 (String id << 32), { i32 bytesize, i32 chars, [N+1 x i8] } }`
+# and the program's pointer is `getelementptr inbounds` of that global at 0, 1, eight bytes past the
+# header. Otherwise the global is Crystal's `{ i32 type_id, i32 bytesize, i32 length, [N+1 x i8] }`
+# and the pointer is the global itself. Equal texts share one pointer.
+pub def build_string_constant(low : Lowerer, str : String) : Value
   if found = low.strings[str]?
     return found
   end
@@ -114,17 +112,37 @@ pub def build_string_constant(low : Lowerer, str : String) : Global
   types = low.module.types
   i32 = types.int32
   bytes = types.array_of(types.int(8), str.bytesize.to_i64 + 1_i64)
-  ty = types.struct_of([i32, i32, i32, bytes] of IrType, false)
-  g = low.module.add_global(name, ty)
-  g.linkage = Linkage::Private
-  g.global_constant = true
   b = low.builder
-  g.initializer = b.const_struct([
-    b.const_int(i32, low.string_type_id.to_i64),
-    b.const_int(i32, str.bytesize.to_i64),
-    b.const_int(i32, str.size.to_i64),
-    b.const_string(str),
-  ] of Value, false)
-  low.strings[str] = g
-  g
+  pointer : Value
+  if low.typer.iyi_layout
+    header = types.int64
+    body = types.struct_of([i32, i32, bytes] of IrType, false)
+    ty = types.struct_of([header, body] of IrType, false)
+    g = low.module.add_global(name, ty)
+    g.linkage = Linkage::Private
+    g.global_constant = true
+    g.initializer = b.const_struct([
+      b.const_int(header, low.string_type_id.to_i64 << 32),
+      b.const_struct([
+        b.const_int(i32, str.bytesize.to_i64),
+        b.const_int(i32, str.size.to_i64),
+        b.const_string(str),
+      ] of Value, false),
+    ] of Value, false)
+    pointer = b.const_gep(ty, g, [b.const_int(i32, 0_i64), b.const_int(i32, 1_i64)] of Value, true)
+  else
+    ty = types.struct_of([i32, i32, i32, bytes] of IrType, false)
+    g = low.module.add_global(name, ty)
+    g.linkage = Linkage::Private
+    g.global_constant = true
+    g.initializer = b.const_struct([
+      b.const_int(i32, low.string_type_id.to_i64),
+      b.const_int(i32, str.bytesize.to_i64),
+      b.const_int(i32, str.size.to_i64),
+      b.const_string(str),
+    ] of Value, false)
+    pointer = g
+  end
+  low.strings[str] = pointer
+  pointer
 end

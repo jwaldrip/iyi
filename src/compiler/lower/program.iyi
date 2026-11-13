@@ -119,13 +119,19 @@ pub def type_bodies(typed : TypedProgram) : Nil
   typed.root.accept(typed.visitor)
   RecursiveStructChecker.new(typed.prog).run
 end
+# The hosted `iyi_object_layout?` (gc_layouts.cr:40-44) is `iyi_prelude? && types["IyiRuntimeLock"]?`.
+# The port has no named-prelude flag, so a program that declares IyiRuntimeLock uses iyi's layout,
+# matching the lowering gates. A `--prelude empty` program does not, and is laid out as Crystal.
+private def iyi_object_layout?(prog : SemanticProgram) : Bool
+  !prog.types["IyiRuntimeLock"]?.nil?
+end
 
 # The lowering phase: the program's IR module for the target, with its entry and the rest of the program.
 pub def lower_program(typed : TypedProgram, triple : String, name : String) : Module
   made = Module.for_target(name, Target.new(triple))
   raise made.as(LayoutError).to_s if made.is_a?(LayoutError)
   m = made.as(Module)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, iyi_object_layout?(typed.prog))
   codegen_program(typed.root, typed.visitor, typer, m)
   m
 end
@@ -488,7 +494,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     return ["table: #{root} defs-lowered-clean=not-measured (#{made.as(LayoutError).to_s})"]
   end
   m = made.as(Module)
-  typer = LowerTyper.new(m.types, m.layout, true)
+  typer = LowerTyper.new(m.types, m.layout, iyi_object_layout?(typed.prog))
   bad = Hash(UInt64, Bool).new
   sites = Hash(String, Bool).new
   reasons = [] of String

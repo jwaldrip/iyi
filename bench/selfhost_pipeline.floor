@@ -98,6 +98,7 @@ bench/fixtures/lower_sizeof.iyi bodies
 bench/fixtures/lower_string.iyi run-equal
 bench/fixtures/lower_string_collide.iyi run-equal
 bench/fixtures/lower_string_long.iyi run-equal
+bench/fixtures/lower_string_fields.iyi run-equal
 bench/fixtures/lower_string_nonascii.iyi run-equal
 bench/fixtures/lower_struct_class_var.iyi run-equal
 bench/fixtures/lower_struct_unused.iyi run-equal
