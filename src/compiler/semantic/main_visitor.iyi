@@ -2455,7 +2455,7 @@ pub class MainVisitor < TypeNodeHost
     enter_file_scope(target_def)
     old_current_type = @current_type
     body_receiver = rec_type
-    if owner = @program.def_owners[target_def]?
+    if owner = @program.def_owner(target_def)
       body_receiver = owner if owner.iyi_unit
     end
     enter_owner_scope(body_receiver)
@@ -2894,9 +2894,7 @@ pub class MainVisitor < TypeNodeHost
         target_def = lookup_method_matching(ut, node.name, node.args, node)
         return false if target_def.nil?
         instantiated_def = target_def.clone
-        if owner = @program.def_owners[target_def]?
-          @program.def_owners[instantiated_def] = owner
-        end
+        @program.copy_def_owner(target_def, instantiated_def)
         dkey = def_instance_key(target_def, ut, node)
         ret_t : Type? = nil
         if hit = cached_instance(dkey)
@@ -2951,9 +2949,7 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     instantiated_def = target_def.clone
-    if owner = @program.def_owners[target_def]?
-      @program.def_owners[instantiated_def] = owner
-    end
+    @program.copy_def_owner(target_def, instantiated_def)
     dkey = def_instance_key(target_def, rec_type, node)
     body_ret : Type? = nil
     if hit = cached_instance(dkey)

@@ -195,7 +195,7 @@ prove_mutation "a proc literal is typed as a Proc" "$MAIN_VISITOR" \
   "def visit(node : ProcLiteral) : Bool" \
   "def visit_proc_literal_off(node : ProcLiteral) : Bool" -- bodies_at_floor || status=1
 prove_mutation "a call body is not typed in the scope of its owner" "$MAIN_VISITOR" \
-  "    enter_owner_scope(rec_type)" \
+  "    enter_owner_scope(body_receiver)" \
   "    nil" -- bodies_at_floor || status=1
 prove_mutation "a block whose declared output is _ is checked against a type" "$MAIN_VISITOR" \
   "unless out_node.is_a?(Underscore)" \
