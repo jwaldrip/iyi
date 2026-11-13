@@ -15,6 +15,10 @@ cannot type is recorded on its node with its reason, and typing goes on. After t
 the refusal table below: the body refusals, then the lowering column, one `table:` line per row. Lowering of the
 whole program still stops at its first refusal; the lowering column lowers each reached def alone.
 
+The integration merge changes the hello root-driven floor from 810 reached, 737 typed clean, and 328 lowered clean
+to 814, 742, and 243. The lowering count falls because a probe now counts as clean only when its own body finishes
+and its function verifies. This one floor reduction is authorized for the integration merge. These are not census counts.
+
 ## What the table counts
 
 - `defs-reached`: distinct instantiations the body typer started. The label is the receiver, the name and

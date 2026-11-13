@@ -413,11 +413,7 @@ pub abstract class ModuleType < NamedType
     return false unless a.args.size == b.args.size
     i = 0
     while i < a.args.size
-      ra = a.args[i].restriction
-      rb = b.args[i].restriction
-      ta = ra ? ra.to_s : ""
-      tb = rb ? rb.to_s : ""
-      return false unless ta == tb
+      return false unless restrictions_match?(a.args[i].restriction, b.args[i].restriction)
       i = i + 1
     end
     # A block parameter is part of the signature: `fetch(key)` and `fetch(key, &block)` are two overloads.
@@ -426,11 +422,40 @@ pub abstract class ModuleType < NamedType
     if ab.nil? || bb.nil?
       return ab.nil? && bb.nil?
     end
-    ba_r = ab.restriction
-    bb_r = bb.restriction
-    ba_t = ba_r ? ba_r.to_s : ""
-    bb_t = bb_r ? bb_r.to_s : ""
-    ba_t == bb_t
+    restrictions_match?(ab.restriction, bb.restriction)
+  end
+
+  # Hosted compare_strictness (restrictions.cr old_restriction_of?) keeps two defs
+  # unless restriction_of? holds both ways. A single-name path that is a type
+  # variable of this generic does not resolve (path_lookup.cr GenericType
+  # #lookup_path_item returns nil), so `T` does not replace another `T`. A
+  # concrete path still matches by text.
+  def restrictions_match?(ra : ASTNode?, rb : ASTNode?) : Bool
+    if ra.nil? || rb.nil?
+      return ra.nil? && rb.nil?
+    end
+    if unbound_owner_type_var?(ra) || unbound_owner_type_var?(rb)
+      return false
+    end
+    ra.to_s == rb.to_s
+  end
+
+  def unbound_owner_type_var?(node : ASTNode) : Bool
+    return false unless node.is_a?(Path)
+    path = node.as(Path)
+    return false unless path.names.size == 1
+    return false if path.global
+    if vars = generic_type_vars
+      return vars.includes?(path.names[0])
+    end
+    false
+  end
+
+  # Type variables of the generic this def is added to. Nil on a non-generic.
+  # A metaclass answers its instance type's variables, because `self.new` is
+  # added there (hosted add_def of the expanded new).
+  def generic_type_vars : Array(String)?
+    nil
   end
 
   def add_macro(a_macro : Macro) : Nil
@@ -565,6 +590,14 @@ pub class MetaclassType < ClassType
     @instance_type.is_a?(ClassType) && !@struct
   end
 
+  def generic_type_vars : Array(String)?
+    inst = @instance_type
+    if inst.is_a?(ModuleType)
+      return inst.as(ModuleType).generic_type_vars
+    end
+    nil
+  end
+
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @instance_type : Type)
     super(program, namespace, name)
     # The hosted rule: a class's metaclass inherits from its superclass's metaclass, an
@@ -677,6 +710,10 @@ pub class GenericClassType < ClassType
       return TypeParameterType.new(@program, name)
     end
     super(name)
+  end
+
+  def generic_type_vars : Array(String)?
+    @type_vars
   end
 end
 
@@ -842,6 +879,10 @@ pub class GenericModuleType < ModuleType
     end
     super(name)
   end
+
+  def generic_type_vars : Array(String)?
+    @type_vars
+  end
 end
 
 pub class TraitType < ModuleType
@@ -868,6 +909,10 @@ pub class GenericTraitType < TraitType
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String))
     super(program, namespace, name)
+  end
+
+  def generic_type_vars : Array(String)?
+    @type_vars
   end
 end
 

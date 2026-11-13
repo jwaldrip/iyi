@@ -224,8 +224,14 @@ prove_mutation "a pointerof of a local is refused, in a fun body or anywhere" "$
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a generic whose name fails in scope is not rebuilt from its typed arguments" "$TYPE_NODES" \
-  "    rebuilt = generic_of_typed_args(visitor, node)" \
-  "    rebuilt = nil" \
+  "  resolved = generic_of_typed_args(visitor, node)" \
+  $'  resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)\n  resolved = nil if resolved.is_a?(LookupError)' \
+  -- check_outputs_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a union inside a generic owner ignores its visited type arguments" "$TYPE_NODES" \
+  "  visitor.set_type(node, visitor.program.type_merge(types))" \
+  $'  resolved_u = type_node_lookup(visitor).lookup(visitor.current_type, node)\n  return false if resolved_u.is_a?(LookupError)\n  visitor.set_type(node, resolved_u.as(Type))' \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

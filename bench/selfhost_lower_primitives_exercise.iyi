@@ -19,6 +19,9 @@ import compiler/ir/parser::{parse, IrParseError}
 import compiler/ir/printer::{print}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program}
+import compiler/lower/primitives::{class_pointerful?}
+import compiler/semantic/top_level::{GenericClassType, Type}
+import compiler/types/types::{GenericClassInstanceType}
 
 # The typer's layout is the analysed program's (hosted `Program#iyi_object_layout?`).
 def typer_for(m : Module, iyi : Bool) : LowerTyper
@@ -52,6 +55,30 @@ def emit_bare(fixture : String, oracle_path : String) : Nil
   puts print(m)
 end
 
+# A generic class instance is not a ClassType. class_pointerful? used to cast it and the
+# port tool raised (census root row 17). This check analyses a generic class whose instance
+# variable is a pointer, finds the instantiation, and requires the pointerful answer without
+# that cast. A mutation that drops the generic class's variables answers false.
+def check_generic_pointerful : Nil
+  source = "class Hold(T)\n  @buf : Pointer(Int32)\nend\n"
+  analysis = analyse(source, "generic_pointerful.iyi", false)
+  prog = analysis.visitor.program
+  found = prog.lookup_type("Hold")
+  raise "generic class Hold was not declared" if found.nil?
+  generic = found.as(GenericClassType)
+  int32 = prog.lookup_type("Int32")
+  raise "Int32 was not declared" if int32.nil?
+  tv = Hash(String, Type).new
+  tv["T"] = int32.as(Type)
+  args = [int32.as(Type)] of Type
+  inst = GenericClassInstanceType.new(prog, generic, tv, args, generic.superclass)
+  answer = class_pointerful?(inst)
+  unless answer
+    raise "Hold(Int32) is not pointerful"
+  end
+  puts "generic_pointerful=1"
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -67,6 +94,8 @@ def run : Nil
     lower_bare(args[1], args[2])
   elsif mode == "emit"
     emit_bare(args[1], args[2])
+  elsif mode == "generic_pointerful"
+    check_generic_pointerful
   else
     raise "unknown mode #{mode}"
   end
