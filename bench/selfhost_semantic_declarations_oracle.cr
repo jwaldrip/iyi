@@ -64,6 +64,9 @@ def dump_def(d : Iyi::Def, io : IO, indent : String)
   ret_str = d.return_type ? d.return_type.to_s : "nil"
   ret_str = ret_str.sub(/^::/, "")
   io << indent << "  return_type: " << ret_str << "\n"
+  if prev = d.previous
+    io << indent << "  previous: " << prev.def.name << "\n"
+  end
 end
 
 def dump_type(t : Iyi::Type, io : IO, indent : String, entry : String?)

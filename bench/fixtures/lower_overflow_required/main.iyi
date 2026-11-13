@@ -1,0 +1,7 @@
+require "./runtime"
+
+def checked_sum(a : Int32, b : Int32) : Int32
+  a + b
+end
+
+LibC.exit(checked_sum(2, 3))

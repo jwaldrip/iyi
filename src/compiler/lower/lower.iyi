@@ -28,7 +28,7 @@ import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper, passed_by_value?}
 import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType, TypeQueries, VirtualType}
 import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
-import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?}
+import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
@@ -42,10 +42,12 @@ import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, 
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
-import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_type_declaration_class_var, in_class_body?, store_class_var}
-import compiler/lower/instance_var::{codegen_instance_var_read, store_instance_var}
+import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
+import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
 import compiler/syntax/ast::{FunDef}
 import compiler/syntax/ast::{Annotation}
+import compiler/syntax/ast::{Asm}
+import compiler/lower/asm::{codegen_asm}
 import compiler/semantic/top_level::{LibFun}
 import compiler/ir/inst::{Attribute}
 import compiler/syntax/token::{NumberKind}
@@ -139,7 +141,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   store_aligned(low, fn.param(0), argc_global)
   store_aligned(low, fn.param(1), argv_global)
   initialize_program_constants(low)
-  emit_well_known_funs(low, root)
+  emit_well_known_funs(low)
   low.needs_value = true
   codegen_node(low, root)
   codegen_return(low, ret_ir)
@@ -253,19 +255,15 @@ pub def emit_unused_fun_defs(low : Lowerer) : Nil
   end
 end
 
-# The well-known funs the hosted code emits on entry (codegen.cr:379, codegen_well_known_functions). Only
-# `__crystal_raise_overflow` is ported here: the checked arithmetic calls it by name, so it must be in the module
-# before the program is lowered. Other well-known names are emitted when the program reaches them (refused above).
-pub def emit_well_known_funs(low : Lowerer, root : ASTNode) : Nil
-  top = [] of ASTNode
-  if root.is_a?(Expressions)
-    top = root.as(Expressions).expressions
-  else
-    top << root
-  end
-  top.each do |n|
-    if n.is_a?(FunDef) && n.as(FunDef).name == "__crystal_raise_overflow"
-      codegen_fun_def(low, n.as(FunDef), true)
+# The hosted codegen emits the runtime overflow function before lowering checked arithmetic.
+# The declaration may come from any unit, not just the entry root.
+pub def emit_well_known_funs(low : Lowerer) : Nil
+  name = raise_overflow_name(low)
+  low.analysed.program.global_funs.each do |record|
+    if record.name == name
+      if node = record.node
+        codegen_fun_def(low, node, true)
+      end
     end
   end
 end
@@ -448,6 +446,14 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if node.is_a?(Annotation) && node.as(Annotation).path.names.last == "ThreadLocal"
+    # A `@[ThreadLocal]` annotation is lowered just before the class variable it marks, which takes the mark
+    # (class_var.iyi take_thread_local_annotation). The local-exec global (hosted class_var.cr declare_thread_local)
+    # exists only when the analysis flagged that variable, so an untyped declaration is refused there, by name.
+    low.globals.thread_local_pending = true
+    low.last = llvm_nil(low)
+    return
+  end
   if node.is_a?(Alias) || node.is_a?(Macro) || node.is_a?(Annotation)
     # The hosted `visit(Alias)` and `visit(Macro)`: nothing is emitted and the value is nil. The hosted
     # `visit(Annotation)` (codegen.cr:838) emits nothing and returns without setting `@last`; the value is
@@ -470,13 +476,21 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(PointerOf)
-    # The hosted `visit(PointerOf)` for a local (codegen.cr:1003): the variable's own pointer, not a load. The other
-    # operands (instance, class and constant variables, a call's extern variable) are not ported and are refused by name.
+    # The hosted `visit(PointerOf)` (codegen.cr:1001-1038): a local's pointer, an instance
+    # field address, or an initialized class variable's global address.
     exp = node.as(PointerOf).exp
     if exp.is_a?(Var)
       var = low.current_context.vars[exp.as(Var).name]?
       raise "BUG: variable #{exp.as(Var).name} is read before it is assigned (hosted codegen.cr: visit(PointerOf))" if var.nil?
       low.last = var.as(LowerVar).pointer
+      return
+    end
+    if exp.is_a?(InstanceVar)
+      codegen_pointerof_instance_var(low, exp.as(InstanceVar))
+      return
+    end
+    if exp.is_a?(ClassVar)
+      codegen_pointerof_class_var(low, exp.as(ClassVar))
       return
     end
     pending_visit_node("pointerof of a #{node_class_name(exp)} (hosted codegen.cr: visit(PointerOf), only a local variable is ported)")
@@ -486,6 +500,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     # own site (primitives.iyi). A def with this body that the probe lowers alone is refused here by name, where
     # `node_class_name` has no name for the class and would answer the generic `ASTNode`.
     pending_visit_node("Primitive (a def body; hosted codegen_call lowers it at the call site)")
+  end
+  # --- asm ---
+  if node.is_a?(Asm)
+    codegen_asm(low, node.as(Asm)); return
   end
   pending_visit_node(node_class_name(node))
 end

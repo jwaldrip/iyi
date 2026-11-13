@@ -461,6 +461,35 @@ generic_ivar_check() {
 prove_mutation "a generic class instance has no instance variables" "$REPO/src/compiler/lower/instance_var.iyi" \
   "  if owner.is_a?(GenericClassInstanceType)" \
   "  if false" -- generic_ivar_check || status=1
+pointerof_ivar_check() {
+  "$IYI" build -o "$WORK/port-pivar" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/pivar.build.log" 2>&1 || return 1
+  "$WORK/port-pivar" lower "$REPO/bench/fixtures/lower_pointerof_ivar.iyi" "$WORK/lower_pointerof_ivar.oracle.ll" > "$WORK/pivar.out" 2> "$WORK/pivar.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/pivar.out"
+}
+prove_mutation "pointerof of an instance variable returns self" "$REPO/src/compiler/lower/instance_var.iyi" \
+  "  low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)" \
+  "  low.last = self_var.as(LowerVar).pointer" -- pointerof_ivar_check || status=1
+
+# naming lane (mangled_name)
+# The program-level lower of lower_name_owner waits: call.iyi refuses a call inherited
+# from a superclass. The name itself is the hosted symbol, probed on the def alone.
+name_owner_check() {
+  "$IYI" build -o "$WORK/name-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name.build.log" 2>&1 || return 1
+  "$WORK/name-port" "$REPO/bench/fixtures/lower_name_owner.iyi" "$WORK/lower_name_owner.oracle.ll" > "$WORK/name.out" 2> "$WORK/name.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name.out"
+}
+echo
+echo "== naming lane (mangled_name)"
+if name_owner_check; then
+  echo "  lower_name_owner: *Child^Base#flag<Int32>:Int32"
+else
+  echo "  lower_name_owner: the defining-owner segment differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name.err" "$WORK/name.out" "$WORK/name.build.log"
+  status=1
+fi
+prove_mutation "an inherited method drops its defining owner" "$REPO/src/compiler/lower/fun.iyi" \
+  'shown + "^" + defined_spell' \
+  'shown' -- name_owner_check || status=1
 
 echo
 echo

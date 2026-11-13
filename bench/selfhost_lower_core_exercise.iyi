@@ -36,12 +36,14 @@ import bench/lib/lower_gate::{attach_attrs, oracle_attr_map, printed_attr_map}
 import bench/lib/primitive_stand_in::{stand_in_primitive_types}
 import compiler/types/type_system::{TypeSystem}
 
-# The parsed and analysed fixture: the tree and the semantic pass that typed it.
+# The parsed and analysed fixture: the tree, the semantic pass that typed it, and the object
+# layout the program itself chooses (hosted `Program#iyi_object_layout?`: the prelude's IyiRuntimeLock).
 pub class Analysis
   getter root : ASTNode
   getter visitor : MainVisitor
+  getter iyi : Bool
 
-  def initialize(@root : ASTNode, @visitor : MainVisitor)
+  def initialize(@root : ASTNode, @visitor : MainVisitor, @iyi : Bool)
   end
 end
 
@@ -62,7 +64,7 @@ def analyse(source : String, filename : String) : Analysis
   stand_in_primitive_types(root, prog, mv)
   root.accept(mv)
   RecursiveStructChecker.new(prog).run
-  Analysis.new(root, mv)
+  Analysis.new(root, mv, !prog.types["IyiRuntimeLock"]?.nil?)
 end
 
 def ir_module(triple : String) : Module
@@ -213,8 +215,7 @@ def run_lower(fixture : String, oracle_path : String) : Nil
 
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
-  # The fixtures are built with --prelude empty, which has no iyi header word: the typer lays out Crystal's types.
-  typer = LowerTyper.new(m.types, m.layout, false)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   port_text = print(m)
   port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
@@ -229,7 +230,7 @@ end
 def check_context : Nil
   analysis = analyse("nil\n", "context_check.iyi")
   m = ir_module("aarch64-apple-darwin27.0.0")
-  typer = LowerTyper.new(m.types, m.layout, false)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
   low = Lowerer.new(m, typer, analysis.visitor)
   void_fn_type = m.types.func([] of IrType, m.types.void)
 
@@ -255,7 +256,7 @@ def run_emit(fixture : String, oracle_path : String) : Nil
   triple = triple_of(File.read(oracle_path))
   analysis = analyse(File.read(fixture), fixture)
   m = ir_module(triple)
-  typer = LowerTyper.new(m.types, m.layout, false)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
   codegen_program(analysis.root, analysis.visitor, typer, m)
   puts print(m)
 end
@@ -337,6 +338,32 @@ def run_probe_reuse(fixture : String) : Nil
   puts "callee-clean=0"
 end
 
+# Analyse the required unit separately from the entry, then lower the checked def
+# alone into a fresh module, as the per-function census does.
+def run_probe_required(runtime : String, entry : String, oracle : String) : Nil
+  normalizer = NormalizerProgram.new
+  normalizer.iyi_prelude = false
+  required_root = normalizer.normalize(Parser.new(File.read(runtime), runtime).parse)
+  entry_root = normalizer.normalize(Parser.new(File.read(entry), entry).parse)
+  prog = SemanticProgram.new
+  ts = TypeSystem.new(prog)
+  tl = TopLevelVisitor.new(prog)
+  required_root.accept(tl)
+  entry_root.accept(tl)
+  tl.finish
+  mv = MainVisitor.new(prog)
+  stand_in_primitive_types(entry_root, prog, mv)
+  required_root.accept(mv)
+  entry_root.accept(mv)
+  RecursiveStructChecker.new(prog).run
+  analysis = Analysis.new(entry_root, mv, true)
+  m = ir_module(triple_of(File.read(oracle)))
+  typer = LowerTyper.new(m.types, m.layout, true)
+  error = probe_message(analysis, typer, m, "checked_sum")
+  raise error.as(String) unless error.nil?
+  puts print(m)
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -354,6 +381,8 @@ def run : Nil
     check_context
   elsif mode == "probe-reuse"
     run_probe_reuse(args[1])
+  elsif mode == "probe-required"
+    run_probe_required(args[1], args[2], args[3])
   else
     raise "unknown mode #{mode}"
   end
