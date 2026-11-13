@@ -47,7 +47,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/block::{LocalCollector, NoReturnPhi, alloca_local, copy_vars}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
-import compiler/lower/cast::{type_id_value, upcast}
+import compiler/lower/cast::{to_rhs, type_id_value, upcast}
 import compiler/lower/ensure::{set_ensure_exception_handler}
 import compiler/lower/fun::{block_ended?, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
@@ -616,7 +616,9 @@ pub def copy_args(low : Lowerer, def_node : Def, arg_types : Array(Type), values
     ir = low.typer.llvm_type(t)
     if passed_by_value?(t)
       temp = low.alloca(ir, "")
-      store_aligned(low, values[i], temp)
+      value = values[i]
+      stored = value.type.pointer? ? to_rhs(low, value, t) : value
+      store_aligned(low, stored, temp)
       loaded = load_aligned(low, ir, temp, "")
       store_aligned(low, loaded, v.pointer)
     else
@@ -809,7 +811,11 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
     # Hosted prepare_call_args_non_external: a nil argument is the nil value, the zero constant of the nil type
     # (zeroinitializer); the helper `llvm_nil` is an undef constant in this port, so it is not used here.
     passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)
-    values << upcast(low, passed, at, target_type)
+    converted = upcast(low, passed, at, target_type)
+    if passed_by_value?(target_type) && converted.type.pointer?
+      converted = to_rhs(low, converted, target_type)
+    end
+    values << converted
     arg_types << target_type
     i += 1
   end
