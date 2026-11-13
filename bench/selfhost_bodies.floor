@@ -29,6 +29,7 @@ bench/fixtures/sem_bodies_owner_typeof.iyi 16
 bench/fixtures/sem_bodies_pointer_set.iyi 25
 bench/fixtures/sem_bodies_primitive_add.iyi 4
 bench/fixtures/sem_bodies_proc_literal.iyi 8
+bench/fixtures/sem_bodies_proc_scope.iyi 8
 bench/fixtures/sem_bodies_receiver_order.iyi 14
 bench/fixtures/sem_bodies_recursive.iyi 3
 bench/fixtures/sem_bodies_self_return.iyi 9

@@ -127,6 +127,8 @@ if [ "${splice_count:-}" != 1 ]; then
   echo "  FUN SPLICE: expected 1 typed instance, got ${splice_count:-none}"
   status=1
 fi
+proc_scope_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  sem_bodies_proc_scope.iyi typed instances: ${proc_scope_count:-none}"
 
 echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
