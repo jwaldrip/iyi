@@ -2583,9 +2583,8 @@ pub class MainVisitor < TypeNodeHost
       declare_out(out_node, target.out_type[i])
       i += 1
     end
-    rt = target.result_type.as(Type)
-    set_type(node, rt)
-    @unreachable = true if rt.is_a?(NoReturnType)
+    set_type(node, target.result_type.as(Type))
+    @unreachable = true if target.result_type.as(Type).is_a?(NoReturnType)
     @type_filters = nil
     false
   end
