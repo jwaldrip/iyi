@@ -14,9 +14,9 @@ Subcommands:
 
   report <outdir> [--hosted <hosted.ll>] [--write-dir <dir>]
       Print the census summary, scaffold failures, the ranked refusal
-      table, and the un-normalised method and restriction pairs.
-      Optionally write census.txt, shapes.tsv, by_function.tsv, and
-      verbatim.tsv to --write-dir.
+      table, the cause grouping, and the un-normalised method and restriction pairs.
+      Optionally write census.txt, shapes.tsv, by_function.tsv,
+      verbatim.tsv, and causes.tsv to --write-dir.
 """
 from __future__ import annotations
 
@@ -505,6 +505,98 @@ def filter_miss_owner(owner: str, reason: str) -> str:
     if reason.startswith("undefined method ") and "(compile-time type is " in reason:
         return "bodies"
     return owner
+
+# First match wins. Counts are hosted functions whose verbatim reason matches.
+# The same column was grouped by hand in ASSIGNMENTS.md from verbatim.tsv.
+# A cause stays in this table at count 0 so a later run can show it fell.
+CAUSES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
+    (
+        "virtual-receiver lookup",
+        "calls",
+        re.compile(
+            r"^undefined method '[^']*' for (?!Nil\b).+\+(?:\.class)?(?: \(compile-time type is .+\))?$"
+        ),
+    ),
+    (
+        "super",
+        "calls",
+        re.compile(r"^undefined local variable or method 'super' for .+$"),
+    ),
+    (
+        "subclass-vs-superclass restriction",
+        "matching",
+        re.compile(r"^expected argument #\d+ to '[^']*' to be [^,|]+\+, not [^,|+]+$"),
+    ),
+    (
+        "integer-literal autocast",
+        "matching",
+        re.compile(r"^expected argument #\d+ to '[^']*' to be Int64, not Int32$"),
+    ),
+    (
+        "enum member typed Int32",
+        "bodies",
+        re.compile(r"to be (?!(?:U?Int(?:8|16|32|64|128))\b)[A-Z][A-Za-z0-9_:]*, not Int32$"),
+    ),
+    (
+        "nilable flow filter",
+        "bodies",
+        re.compile(r"^undefined method '[^']*' for Nil \(compile-time type is \(.+\| Nil\)\)$"),
+    ),
+    (
+        "the value of loc cannot be typed",
+        "bodies",
+        re.compile(r"^the value of 'loc' cannot be typed$"),
+    ),
+    (
+        "forall-T load",
+        "matching",
+        re.compile(
+            r"^BUG: the analysed program has no type for the call to load \(hosted call\.cr: visit\(Call\)\)$"
+        ),
+    ),
+    (
+        "pointer_set return type",
+        "bodies",
+        re.compile(
+            r"^BUG: the analysed program has no type for the call to write64 \(hosted call\.cr: visit\(Call\)\)$"
+        ),
+    ),
+)
+
+
+def classify_causes(pairs: list[tuple[str, str]]) -> list[tuple[str, str, int, str, str]]:
+    """Group verbatim reasons. Returns cause, owner, count, example function, example reason."""
+    buckets: list[list[tuple[str, str]]] = [[] for _ in CAUSES]
+    for hosted_name, reason in pairs:
+        if not reason:
+            continue
+        for index, (_name, _owner, pattern) in enumerate(CAUSES):
+            if pattern.search(reason):
+                buckets[index].append((hosted_name, reason))
+                break
+    grouped: list[tuple[str, str, int, str, str]] = []
+    for (name, owner, _pattern), hits in zip(CAUSES, buckets):
+        example_fn = hits[0][0] if hits else ""
+        example_reason = hits[0][1] if hits else ""
+        grouped.append((name, owner, len(hits), example_fn, example_reason))
+    return grouped
+
+
+def format_causes(pairs: list[tuple[str, str]]) -> tuple[list[str], list[str]]:
+    """Census lines and causes.tsv rows for the verbatim reasons."""
+    lines = [
+        "",
+        "== Causes ==",
+        "Regexes over the verbatim reason, in CAUSES. First match wins. Owner is the lane.",
+    ]
+    tsv = ["cause\towner\tcount\texample_function\texample_reason"]
+    for name, owner, count, example_fn, example_reason in classify_causes(pairs):
+        lines.append(f"  count={count:5d} owner={owner} cause={name}")
+        if example_fn:
+            lines.append(f"         e.g. {example_fn}")
+            lines.append(f"         verbatim: {example_reason}")
+        tsv.append(f"{name}\t{owner}\t{count}\t{example_fn}\t{example_reason}")
+    return lines, tsv
 
 
 def parse_undefined(reason: str) -> tuple[str, str] | None:
@@ -1121,6 +1213,14 @@ def cmd_report(args: argparse.Namespace) -> int:
         for ex in extra_clean[:5]:
             lines.append(f"  {ex}")
 
+    cause_pairs: list[tuple[str, str]] = []
+    for row in verbatim_rows[1:]:
+        parts = row.split("\t", 3)
+        if len(parts) >= 3:
+            cause_pairs.append((parts[0], parts[2]))
+    cause_lines, cause_tsv = format_causes(cause_pairs)
+    lines.extend(cause_lines)
+
     report_text = "\n".join(lines) + "\n"
     print(report_text, end="")
 
@@ -1131,7 +1231,8 @@ def cmd_report(args: argparse.Namespace) -> int:
         (wdir / "shapes.tsv").write_text("\n".join(shape_tsv) + "\n", encoding="utf-8")
         (wdir / "by_function.tsv").write_text("\n".join(by_fn_rows) + "\n", encoding="utf-8")
         (wdir / "verbatim.tsv").write_text("\n".join(verbatim_rows) + "\n", encoding="utf-8")
-        print(f"wrote {wdir}/census.txt, shapes.tsv, by_function.tsv, verbatim.tsv", file=sys.stderr)
+        (wdir / "causes.tsv").write_text("\n".join(cause_tsv) + "\n", encoding="utf-8")
+        print(f"wrote {wdir}/census.txt, shapes.tsv, by_function.tsv, verbatim.tsv, causes.tsv", file=sys.stderr)
     return 0
 
 
