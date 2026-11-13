@@ -31,6 +31,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_aligned}
+import compiler/lower/proc::{make_fun}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{primitive_kind, passed_by_value?}
@@ -148,6 +149,17 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
     store_aligned(low, to_rhs(low, value, target), pointer)
     return
   end
+  # Hosted assign_distinct(NilableProcType, NilType) (cast.cr:237-240): nil is a null function and a null context.
+  if target.is_a?(NilableProcType) && value_type.nil_type?
+    null_ptr = low.builder.const_null(low.module.types.ptr(0)).as(Value)
+    store_aligned(low, make_fun(low, target.as(NilableProcType).proc_type, null_ptr, null_ptr), pointer)
+    return
+  end
+  # Hosted assign_distinct(NilableProcType, ProcInstanceType) (cast.cr:242-244).
+  if target.is_a?(NilableProcType) && value_type.is_a?(ProcInstanceType)
+    store_aligned(low, value, pointer)
+    return
+  end
   pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (hosted assign_distinct, not ported)")
 end
 
@@ -262,6 +274,8 @@ end
 # temporary. Structurally this is not the hosted `if` join (which keeps the temporary's
 # pointer); the core's join uses `union_temp` for identity with the hosted module.
 pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
+  # Hosted upcast (cast.cr:540): an ended block has no value to convert.
+  return llvm_nil(low) if at_terminator?(low)
   f = TypeIndirection.remove_indirection(from)
   t = TypeIndirection.remove_indirection(to)
   return value if f.full_name == t.full_name

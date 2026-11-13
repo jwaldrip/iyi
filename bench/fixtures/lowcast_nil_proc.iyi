@@ -1,0 +1,11 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def store_nil_proc : Nil
+  p : Proc(Nil)? = nil
+  nil
+end
+
+store_nil_proc
+LibC.exit(7)
