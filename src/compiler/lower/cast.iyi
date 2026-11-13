@@ -126,7 +126,7 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
   # Hosted cast.cr 279-282: a proc with another result can be assigned to a
   # proc returning Nil without changing its function or context fields.
   if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)
-    stored = value.type.pointer? ? load_aligned(low, low.typer.llvm_type(target), value) : value
+    stored = value.type.pointer? ? to_rhs(low, value, target) : value
     store_aligned(low, stored, pointer)
     return
   end
