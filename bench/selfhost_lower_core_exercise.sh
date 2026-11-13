@@ -81,12 +81,11 @@ fi
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
-# Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed. The port numbers
-# String 31 and the hosted module 1 for lower_string and lower_string_nonascii (the typer slice's LowerTypeIds
-# numbering, NEEDS.md row 16). They wait by name; the gate fails if one starts to match, so this list is kept honest.
+# Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed.
+# lower_string_nonascii still differs in its type id; the gate fails if a waiting fixture starts to match.
 # The pointer-union fixture's allocator also differs in its metaclass type-id load;
 # its hosted symbol and the naming mutation are checked independently below.
-KNOWN_DIVERGED="lower_string lower_string_nonascii lower_pointer_malloc lower_name_pointer_union"
+KNOWN_DIVERGED="lower_string_nonascii lower_pointer_malloc lower_name_pointer_union"
 e2e=""
 module_same=0
 module_differ=0
