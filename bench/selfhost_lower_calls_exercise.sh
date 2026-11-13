@@ -236,6 +236,8 @@ prove_mutation "a nil argument is passed as the visit left it, not as the nil va
   'values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))' 'values << value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
   '          class_owner = ct' '          class_owner = nil' -- lower_calls_check || status=1
+prove_mutation "a generic metaclass call passes no self type id" "$REPO/src/compiler/lower/call.iyi" \
+  '      self_value = type_id_value(low, recv_type)' '      self_value = nil' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
