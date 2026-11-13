@@ -81,10 +81,11 @@ fi
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
-# Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed. The port numbers
-# String 31 and the hosted module 1 for lower_string and lower_string_nonascii (the typer slice's LowerTypeIds
-# numbering, NEEDS.md row 16). They wait by name; the gate fails if one starts to match, so this list is kept honest.
-KNOWN_DIVERGED="lower_string lower_string_nonascii lower_pointer_malloc"
+# Fixtures whose modules differ from the hosted one for reasons named in NEEDS.md
+# wait by name; the gate fails if one starts to match.
+# The pointer-union fixture's allocator also differs in its metaclass type-id load;
+# its hosted symbol and the naming mutation are checked independently below.
+KNOWN_DIVERGED="lower_string_nonascii lower_pointer_malloc lower_name_pointer_union"
 e2e=""
 module_same=0
 module_differ=0
@@ -210,7 +211,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -461,6 +462,145 @@ generic_ivar_check() {
 prove_mutation "a generic class instance has no instance variables" "$REPO/src/compiler/lower/instance_var.iyi" \
   "  if owner.is_a?(GenericClassInstanceType)" \
   "  if false" -- generic_ivar_check || status=1
+pointerof_ivar_check() {
+  "$IYI" build -o "$WORK/port-pivar" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/pivar.build.log" 2>&1 || return 1
+  "$WORK/port-pivar" lower "$REPO/bench/fixtures/lower_pointerof_ivar.iyi" "$WORK/lower_pointerof_ivar.oracle.ll" > "$WORK/pivar.out" 2> "$WORK/pivar.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/pivar.out"
+}
+prove_mutation "pointerof of an instance variable returns self" "$REPO/src/compiler/lower/instance_var.iyi" \
+  "  low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)" \
+  "  low.last = self_var.as(LowerVar).pointer" -- pointerof_ivar_check || status=1
+struct_class_var_check() {
+  "$IYI" build -o "$WORK/port-struct-cvar" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/struct-cvar.build.log" 2>&1 || return 1
+  "$WORK/port-struct-cvar" lower "$REPO/bench/fixtures/lower_struct_class_var.iyi" "$WORK/lower_struct_class_var.oracle.ll" > "$WORK/struct-cvar.out" 2> "$WORK/struct-cvar.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/struct-cvar.out"
+}
+if struct_class_var_check; then
+  prove_mutation "an address-valued struct receiver is spilled again" "$REPO/src/compiler/lower/instance_var.iyi" \
+    '  return value if value.type.pointer?' \
+    '  return value if false' -- struct_class_var_check || status=1
+  prove_mutation "a global first-field address is not folded" "$REPO/src/compiler/lower/instance_var.iyi" \
+    '  return pointer if index == 0 && pointer.is_a?(Global)' \
+    '  return pointer if false' -- struct_class_var_check || status=1
+else
+  echo "FAIL: struct class-variable receiver does not match the hosted module"
+  awk 'NR<=8' "$WORK/struct-cvar.err" "$WORK/struct-cvar.out" "$WORK/struct-cvar.build.log"
+  status=1
+fi
+bare_return_check() {
+  "$IYI" build -o "$WORK/port-return" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/return.build.log" 2>&1 || return 1
+  "$WORK/port-return" lower "$REPO/bench/fixtures/lower_return_bare.iyi" "$WORK/lower_return_bare.oracle.ll" > "$WORK/return.out" 2> "$WORK/return.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/return.out"
+}
+if bare_return_check; then
+  prove_mutation "a bare return skips the Nil upcast" "$REPO/src/compiler/lower/lower.iyi" \
+    "    returned = upcast(low, llvm_nil(low), nil_type, ret_type.as(Type))" \
+    "    returned = llvm_nil(low)" -- bare_return_check || status=1
+else
+  echo "FAIL: unmutated bare return does not match the hosted module"
+  status=1
+fi
+visibility_check() {
+  "$IYI" build -o "$WORK/port-vis" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/vis.build.log" 2>&1 || return 1
+  "$WORK/port-vis" lower "$REPO/bench/fixtures/lower_visibility.iyi" "$WORK/lower_visibility.oracle.ll" > "$WORK/vis.out" 2> "$WORK/vis.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/vis.out"
+}
+if visibility_check; then
+  prove_mutation "visibility wrappers do not visit their expression" "$REPO/src/compiler/lower/lower.iyi" \
+    '    codegen_node(low, node.as(VisibilityModifier).exp)' \
+    '    pending_visit_node("visibility wrapper")' -- visibility_check || status=1
+else
+  echo "FAIL: visibility wrapper fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/vis.err" "$WORK/vis.out" "$WORK/vis.build.log"
+  status=1
+fi
+visibility_macro_check() {
+  "$IYI" build -o "$WORK/port-vis-macro" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/vis-macro.build.log" 2>&1 || return 1
+  "$WORK/port-vis-macro" lower "$REPO/bench/fixtures/lower_visibility_macro.iyi" "$WORK/lower_visibility_macro.oracle.ll" > "$WORK/vis-macro.out" 2> "$WORK/vis-macro.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/vis-macro.out"
+}
+if visibility_macro_check; then
+  prove_mutation "an expanded declaration macro is lowered as a call" "$REPO/src/compiler/lower/lower.iyi" \
+    '      codegen_node(low, expanded)' \
+    '      codegen_call_node(low, node.as(Call))' -- visibility_macro_check || status=1
+else
+  echo "FAIL: wrapped macro fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/vis-macro.err" "$WORK/vis-macro.out" "$WORK/vis-macro.build.log"
+  status=1
+fi
+atomic_return_check() {
+  "$IYI" build -o "$WORK/port-atomic-return" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/atomic-return.build.log" 2>&1 || return 1
+  "$WORK/port-atomic-return" lower "$REPO/bench/fixtures/lower_atomic_return.iyi" "$WORK/lower_atomic_return.oracle.ll" > "$WORK/atomic-return.out" 2> "$WORK/atomic-return.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/atomic-return.out"
+}
+if atomic_return_check; then
+  prove_mutation "a by-value return skips loading the aggregate" "$REPO/src/compiler/lower/fun.iyi" \
+    '  converted = to_rhs(low, converted, return_type.as(Type)) if converted.type.pointer?' \
+    '  converted = converted' -- atomic_return_check || status=1
+else
+  echo "FAIL: atomic aggregate return does not match the hosted module"
+  awk 'NR<=8' "$WORK/atomic-return.err" "$WORK/atomic-return.out" "$WORK/atomic-return.build.log"
+  status=1
+fi
+array_expansion_check() {
+  "$IYI" build -o "$WORK/port-array" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/array.build.log" 2>&1 || return 1
+  "$WORK/port-array" lower "$REPO/bench/fixtures/lower_expanded_array.iyi" "$WORK/lower_expanded_array.oracle.ll" > "$WORK/array.out" 2> "$WORK/array.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/array.out"
+}
+if array_expansion_check; then
+  prove_mutation "an array literal ignores its typed expansion" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(ArrayLiteral)' \
+    '  if false' -- array_expansion_check || status=1
+else
+  echo "FAIL: array expansion fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/array.err" "$WORK/array.out" "$WORK/array.build.log"
+  status=1
+fi
+interpolation_check() {
+  "$IYI" build -o "$WORK/port-interpolation" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/interpolation.build.log" 2>&1 || return 1
+  "$WORK/port-interpolation" lower "$REPO/bench/fixtures/lower_interpolation.iyi" "$WORK/lower_interpolation.oracle.ll" > "$WORK/interpolation.out" 2> "$WORK/interpolation.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/interpolation.out"
+}
+if interpolation_check; then
+  prove_mutation "an interpolation ignores its typed expansion" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(StringInterpolation)' \
+    '  if false' -- interpolation_check || status=1
+else
+  echo "FAIL: interpolation fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/interpolation.err" "$WORK/interpolation.out" "$WORK/interpolation.build.log"
+  status=1
+fi
+interpolation_constant_check() {
+  "$IYI" build -o "$WORK/port-interpolation-constant" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/interpolation-constant.build.log" 2>&1 || return 1
+  "$WORK/port-interpolation-constant" lower "$REPO/bench/fixtures/lower_interpolation_constant.iyi" "$WORK/lower_interpolation_constant.oracle.ll" > "$WORK/interpolation-constant.out" 2> "$WORK/interpolation-constant.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/interpolation-constant.out"
+}
+if interpolation_constant_check; then
+  prove_mutation "a constant interpolation is not folded" "$REPO/src/compiler/lower/lower.iyi" \
+    '    if constant = interpolation_constant(low, node.as(StringInterpolation))' \
+    '    if constant = (false ? interpolation_constant(low, node.as(StringInterpolation)) : nil)' -- interpolation_constant_check || status=1
+else
+  echo "FAIL: constant interpolation fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/interpolation-constant.err" "$WORK/interpolation-constant.out" "$WORK/interpolation-constant.build.log"
+  status=1
+fi
+named_tuple_check() {
+  "$IYI" build -o "$WORK/port-named-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/named-tuple.build.log" 2>&1 || return 1
+  "$WORK/port-named-tuple" lower "$REPO/bench/fixtures/lower_named_tuple.iyi" "$WORK/lower_named_tuple.oracle.ll" > "$WORK/named-tuple.out" 2> "$WORK/named-tuple.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/named-tuple.out"
+}
+if named_tuple_check; then
+  prove_mutation "named tuple literal reverses entry evaluation" "$REPO/src/compiler/lower/lower.iyi" \
+    '  node.entries.each do |entry|' \
+    '  node.entries.reverse_each do |entry|' -- named_tuple_check || status=1
+else
+  echo "FAIL: named tuple fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/named-tuple.err" "$WORK/named-tuple.out" "$WORK/named-tuple.build.log"
+  status=1
+fi
+
+
+
 
 # naming lane (mangled_name)
 # The program-level lower of lower_name_owner waits: call.iyi refuses a call inherited
@@ -482,6 +622,70 @@ fi
 prove_mutation "an inherited method drops its defining owner" "$REPO/src/compiler/lower/fun.iyi" \
   'shown + "^" + defined_spell' \
   'shown' -- name_owner_check || status=1
+
+name_metaclass_check() {
+  "$IYI" build -o "$WORK/name-meta-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-meta.build.log" 2>&1 || return 1
+  "$WORK/name-meta-port" "$REPO/bench/fixtures/lower_name_metaclass.iyi" "$WORK/lower_name_metaclass.oracle.ll" metaclass > "$WORK/name-meta.out" 2> "$WORK/name-meta.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-meta.out"
+}
+if name_metaclass_check; then
+  echo "  lower_name_metaclass: *NameOwner::class_flag<Int32>:Int32"
+else
+  echo "  lower_name_metaclass: metaclass name differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-meta.err" "$WORK/name-meta.out" "$WORK/name-meta.build.log"
+  status=1
+fi
+prove_mutation "a metaclass is named as an instance" "$REPO/src/compiler/lower/fun.iyi" \
+  '      if st.is_a?(MetaclassType)' \
+  '      if false' -- name_metaclass_check || status=1
+
+name_return_check() {
+  "$IYI" build -o "$WORK/name-return-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-return.build.log" 2>&1 || return 1
+  "$WORK/name-return-port" "$REPO/bench/fixtures/lower_name_return.iyi" "$WORK/lower_name_return.oracle.ll" return > "$WORK/name-return.out" 2> "$WORK/name-return.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-return.out"
+}
+if name_return_check; then
+  echo "  lower_name_return: *NameReturn::write<UInt64>:Nil"
+else
+  echo "  lower_name_return: declared return differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-return.err" "$WORK/name-return.out" "$WORK/name-return.build.log"
+  status=1
+fi
+prove_mutation "the probe names the body type instead of the def type" "$REPO/src/compiler/lower/lower.iyi" \
+  '  result_t = analysed.type_of?(target) || body_t' \
+  '  result_t = body_t' -- name_return_check || status=1
+
+name_generic_check() {
+  "$IYI" build -o "$WORK/name-generic-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-generic.build.log" 2>&1 || return 1
+  "$WORK/name-generic-port" "$REPO/bench/fixtures/lower_name_generic.iyi" "$WORK/lower_name_generic.oracle.ll" generic > "$WORK/name-generic.out" 2> "$WORK/name-generic.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-generic.out"
+}
+if name_generic_check; then
+  echo "  lower_name_generic: *Box(Int32)^Box(T)#get<Int32>:Int32"
+else
+  echo "  lower_name_generic: generic defining owner differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-generic.err" "$WORK/name-generic.out" "$WORK/name-generic.build.log"
+  status=1
+fi
+prove_mutation "a generic instance drops its defining generic owner" "$REPO/src/compiler/lower/fun.iyi" \
+  '  if receiver.is_a?(GenericInstanceType)' \
+  '  if false' -- name_generic_check || status=1
+
+name_pointer_check() {
+  "$IYI" build -o "$WORK/name-pointer-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-pointer.build.log" 2>&1 || return 1
+  "$WORK/name-pointer-port" "$REPO/bench/fixtures/lower_name_pointer_union.iyi" "$WORK/lower_name_pointer_union.oracle.ll" pointer > "$WORK/name-pointer.out" 2> "$WORK/name-pointer.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-pointer.out"
+}
+if name_pointer_check; then
+  echo "  lower_name_pointer_union: *pass_pointer<Pointer(Int32 | Nil)>:Pointer(Int32 | Nil)"
+else
+  echo "  lower_name_pointer_union: pointer union name differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-pointer.err" "$WORK/name-pointer.out" "$WORK/name-pointer.build.log"
+  status=1
+fi
+prove_mutation "a pointer union gains extra parentheses" "$REPO/src/compiler/lower/fun.iyi" \
+  'skip_union_parens: true, codegen: true' \
+  'skip_union_parens: false, codegen: true' -- name_pointer_check || status=1
 
 echo
 echo

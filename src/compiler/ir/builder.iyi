@@ -273,6 +273,18 @@ pub class Builder
     emit(Op::Store, types.void, [value, pointer] of Value, 0_i64, MemAux.new, [] of Block, [] of Int64, "")
   end
 
+  # A load with an atomic ordering (`load atomic seq_cst`), volatile when asked. The alignment is the
+  # caller's to set, as for a plain load.
+  def atomic_load(type : IrType, pointer : Value, ordering : Ordering, volatile : Bool = false, name : String = "") : Inst
+    aux = MemAux.new(0, volatile, ordering, Ordering::NotAtomic, false, "", false)
+    emit(Op::Load, type, [pointer] of Value, 0_i64, aux, [] of Block, [] of Int64, name)
+  end
+
+  def atomic_store(value : Value, pointer : Value, ordering : Ordering, volatile : Bool = false) : Inst
+    aux = MemAux.new(0, volatile, ordering, Ordering::NotAtomic, false, "", false)
+    emit(Op::Store, types.void, [value, pointer] of Value, 0_i64, aux, [] of Block, [] of Int64, "")
+  end
+
   def gep(type : IrType, pointer : Value, indices : Array(Value), name : String = "") : Inst
     gep_with(type, pointer, indices, false, name)
   end

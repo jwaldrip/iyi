@@ -398,9 +398,9 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
       message = outcome.as(String)
     end
     unless failed
-      # The function a clean instance defines, by the name lower_def_probe gives it (target_def_fun: the body's type is
-      # the return type). A name a failed probe created first is still found here, once a clean probe completes it.
+      # Find the same instantiated return type the probe passes to target_def_fun.
       if body_t = typed.visitor.type_of?(d.body)
+        result_t = typed.visitor.type_of?(d) || body_t
         # The call lowering names a metaclass receiver's method by its class (call.iyi class_owner, no self): `*Point::new`.
         self_for = inst.self_type
         class_owner : Type? = nil
@@ -410,7 +410,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
             self_for = nil
           end
         end
-        name = mangled_name(d.name, self_for, inst.arg_types, body_t.as(Type), class_owner)
+        name = mangled_name(d.name, self_for, inst.arg_types, result_t.as(Type), class_owner)
         # A body that is one instance variable is read where the call stands (hosted try_inline_call, call.cr 614; the
         # port's call.iyi 207): the lowering defines its function here only to lower it alone, and no call emits it.
         # Counted as lowered clean above, but not as a function the program defines.
