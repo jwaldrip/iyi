@@ -40,3 +40,38 @@ join:
   ret i32 %2
 }
 
+define internal iyicc i32 @shared(i1 %c) personality @personality {
+entry:
+  br i1 %c, label %a, label %next
+a:
+  %0 = invoke i32 (i32) @putchar(i32 98) to label %next unwind label %pad
+pad:
+  %1 = landingpad { ptr, i32 } personality ptr @personality cleanup
+  unreachable
+next:
+  ret i32 1
+}
+
+define internal iyicc i32 @twice() personality @personality {
+entry:
+  %0 = invoke i32 (i32) @putchar(i32 99) to label %invoke_out unwind label %rescue
+invoke_out:
+  %1 = invoke i32 (i32) @putchar(i32 100) to label %invoke_out1 unwind label %rescue
+invoke_out1:
+  ret i32 %1
+rescue:
+  %2 = landingpad { ptr, i32 } personality ptr @personality cleanup
+  unreachable
+}
+
+define internal iyicc i32 @phi_first() personality @personality {
+entry:
+  %0 = invoke i32 (i32) @putchar(i32 102) to label %after unwind label %pad
+after:
+  %1 = phi i32 [ %0, label %entry ]
+  ret i32 %1
+pad:
+  %2 = landingpad { ptr, i32 } personality ptr @personality cleanup
+  unreachable
+}
+
