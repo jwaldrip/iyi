@@ -22,7 +22,7 @@ class Iyi::Compiler
   def declarations_program(source : Iyi::Compiler::Source) : {Program, ASTNode}
     self.prelude = "iyi/prelude"
     program = new_program([source])
-    {program, parse(program, source)}
+    {program, parse(program, [source])}
   end
 end
 
@@ -73,6 +73,9 @@ def dump_def(d : Iyi::Def, io : IO, indent : String)
   ret_str = d.return_type ? d.return_type.to_s : "nil"
   ret_str = ret_str.sub(/^::/, "")
   io << indent << "  return_type: " << ret_str << "\n"
+  if prev = d.previous
+    io << indent << "  previous: " << prev.def.name << "\n"
+  end
 end
 
 # Every def a module type holds, its own and its metaclass's (`allocate` aside), that
@@ -153,9 +156,13 @@ def dump_type_header(t : Iyi::Type, full_name : String, io : IO, indent : String
   end
 
   if t.is_a?(Iyi::InstanceVarContainer)
-    t.instance_vars.keys.sort.each do |ivar_name|
+    # Instance variables in declaration order, then their order, as the declarations oracle prints them.
+    t.instance_vars.keys.each do |ivar_name|
       io << indent << "  Ivar: " << full_name << "#" << ivar_name << "\n"
       io << indent << "    type: " << t.instance_vars[ivar_name].type.to_s << "\n"
+    end
+    if t.is_a?(Iyi::ClassType) && !t.instance_vars.empty?
+      io << indent << "  IvarOrder: [" << t.instance_vars.keys.join(", ") << "]\n"
     end
   end
 
@@ -201,10 +208,7 @@ end
 
 def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entry : String?)
   initial_types = Iyi::Program.new.types.keys.to_set
-  visitor = Iyi::TopLevelVisitor.new(program)
-  node.accept(visitor)
-  # The hosted type declaration pass: explicit and guessed instance variables.
-  Iyi::TypeDeclarationProcessor.new(program).process(node)
+  program.top_level_semantic(node)
 
   if pdefs = program.defs
     top_defs = [] of Iyi::Def

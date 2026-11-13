@@ -108,15 +108,15 @@ prove_mutation "explicit initialize is left public" "$NEW_FILE" \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a generic receiver does not bind its type parameters in a restriction" "$MAIN_VISITOR_FILE" \
-  "    if owner.is_a?(GenericInstanceType) && restriction.is_a?(Path)" \
-  "    if false" \
-  -- check_new_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-
 prove_mutation "a generic receiver does not bind its type parameters in a lookup" "$MAIN_VISITOR_FILE" \
   "if bound = inst.type_vars[path.names.first]?" \
   "if bound = inst.type_vars[\"no-such-param\"]?" \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic receiver does not bind its type parameters in a restriction" "$MAIN_VISITOR_FILE" \
+  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
+  "found = LookupError.new(\"unbound\")" \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

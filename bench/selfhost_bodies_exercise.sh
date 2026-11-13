@@ -42,7 +42,14 @@ echo
 echo "== 2. Each body fixture: the port's typed nodes against the oracle's"
 for fixture in "$REPO"/bench/fixtures/sem_bodies_*.iyi; do
   rel="bench/fixtures/$(basename "$fixture")"
-  if ! "$ORACLE" "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"; then
+  # pointer_set defines Pointer#value= in the file. The prelude already has that
+  # method, so this fixture is analysed alone.
+  if [ "$(basename "$fixture")" = "sem_bodies_pointer_set.iyi" ]; then
+    "$ORACLE" --bare "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
+  else
+    "$ORACLE" "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
+  fi
+  if [ $? -ne 0 ]; then
     printf '%s\t%s\t%s\n' "$rel" 0 "ORACLE: $(head -n 1 "$WORK/o.err")" >> "$RESULTS"
     continue
   fi
@@ -105,6 +112,27 @@ if [ "${cache_count:-}" != 3 ]; then
   echo "  CACHE: expected 3 typed instances, got ${cache_count:-none}"
   status=1
 fi
+refused_cache_count=$("$TYPED" --instances "$REPO/bench/fixtures/bodies_refused_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  bodies_refused_cache.iyi typed instances: ${refused_cache_count:-none} (expected 1)"
+if [ "${refused_cache_count:-}" != 1 ]; then
+  echo "  CACHE: refused declared-return body was instantiated more than once"
+  status=1
+fi
+
+echo
+echo "== 2c. A call in a fun body's macro branch is typed only when the fun body is spliced"
+splice_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  sem_bodies_fun_splice.iyi typed instances: ${splice_count:-none} (expected 1)"
+if [ "${splice_count:-}" != 1 ]; then
+  echo "  FUN SPLICE: expected 1 typed instance, got ${splice_count:-none}"
+  status=1
+fi
+proc_scope_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  sem_bodies_proc_scope.iyi typed instances: ${proc_scope_count:-none} (expected 6)"
+if [ "${proc_scope_count:-}" != 6 ]; then
+  echo "  PROC SCOPE: expected both helper calls to be typed"
+  status=1
+fi
 
 echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
@@ -114,10 +142,14 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_proc_scope sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup sem_bodies_receiver_order; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
-    "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+    if [ "$name" = "sem_bodies_pointer_set" ]; then
+      "$ORACLE" --bare "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+    else
+      "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+    fi
     "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
     matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
     floor=$(awk -v r="$rel" '$1 == r { print $2 }' "$FLOOR_FILE" 2>/dev/null)
@@ -125,6 +157,12 @@ bodies_at_floor() {
   done
   count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_instance_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${count:-}" = 3 ] || return 1
+  fsc=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
+  [ "${fsc:-}" = 1 ] || return 1
+  proc_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
+  [ "${proc_count:-}" = 6 ] || return 1
+  refused_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/bodies_refused_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
+  [ "${refused_count:-}" = 1 ] || return 1
   return 0
 }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
@@ -139,7 +177,7 @@ prove_mutation "return value joins the def type" "$MAIN_VISITOR" \
   "body_type = child_type(body.as(ASTNode))" -- bodies_at_floor || status=1
 prove_mutation "self in a declared type names the receiver" "$MAIN_VISITOR" \
   "return o.as(Type) unless o.is_a?(SemanticProgram)" \
-  "return @program.lookup_type_node(node, @current_type) unless o.is_a?(SemanticProgram)" -- bodies_at_floor || status=1
+  "return @program unless o.is_a?(SemanticProgram)" -- bodies_at_floor || status=1
 prove_mutation "a call hits the def-instance cache" "$MAIN_VISITOR" \
   "      return @def_instances[k]?" \
   "      return nil" -- bodies_at_floor || status=1
@@ -155,12 +193,107 @@ prove_mutation "a block body is typed in the scope of the call that owns it" "$M
 prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR" \
   "return visit_global_fun_call(node, global_fun) if own.empty?" \
   "return false if own.empty?" -- bodies_at_floor || status=1
+prove_mutation "a fun body is not spliced at its top level" "$MAIN_VISITOR" \
+  "splice_fun_body(node, @program.full_name)" \
+  "nil" -- bodies_at_floor || status=1
+prove_mutation "a trait definition is typed in its own type" "$MAIN_VISITOR" \
+  "def visit(node : TraitDef) : Bool" \
+  "def visit_trait_def_off(node : TraitDef) : Bool" -- bodies_at_floor || status=1
+prove_mutation "a proc literal is typed as a Proc" "$MAIN_VISITOR" \
+  "def visit(node : ProcLiteral) : Bool" \
+  "def visit_proc_literal_off(node : ProcLiteral) : Bool" -- bodies_at_floor || status=1
+prove_mutation "a call body is not typed in the scope of its owner" "$MAIN_VISITOR" \
+  "    enter_owner_scope(rec_type)" \
+  "    nil" -- bodies_at_floor || status=1
 prove_mutation "a block whose declared output is _ is checked against a type" "$MAIN_VISITOR" \
   "unless out_node.is_a?(Underscore)" \
   "unless false" -- bodies_at_floor || status=1
 prove_mutation "__LINE__ is typed as a String" "$MAIN_VISITOR" \
   "if node.name == TokenKind::MAGIC_LINE || node.name == TokenKind::MAGIC_END_LINE" \
   "if false" -- bodies_at_floor || status=1
+prove_mutation "if x narrows a truthy variable in its then branch" "$MAIN_VISITOR" \
+  "    filter_vars(cond_type_filters)" \
+  "    nil" -- bodies_at_floor || status=1
+prove_mutation "if x.nil?, unless x and !x narrow the else branch" "$MAIN_VISITOR" \
+  "    filter_vars(TypeFilters.invert(cond_type_filters))" \
+  "    nil" -- bodies_at_floor || status=1
+prove_mutation "while cond narrows its variable in the loop body" "$MAIN_VISITOR" \
+  "      filter_vars(cond_type_filters)" \
+  "      nil" -- bodies_at_floor || status=1
+prove_mutation "early exit in then branch narrows the rest of the body" "$MAIN_VISITOR" \
+  "        elsif then_unreachable" \
+  "        elsif false" -- bodies_at_floor || status=1
+prove_mutation "a refused body with declared return is cached" "$MAIN_VISITOR" \
+  "        remember_def_instance(cache_key, target_def, declared_ret)" \
+  "        nil" -- bodies_at_floor || status=1
+prove_mutation "a generic pointer restriction is not bound from the receiver" "$MAIN_VISITOR" \
+  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
+  "found = LookupError.new(\"unbound\")" -- bodies_at_floor || status=1
+prove_mutation "a splat call is not resolved by the calls lookup" "$MAIN_VISITOR" \
+  "    return nil if target.error
+    target.definition" \
+  "    return nil if target.error
+    nil" -- bodies_at_floor || status=1
+prove_mutation "a union restriction is not instantiated from its members" "$MAIN_VISITOR" \
+  "      return union_restriction_type(restriction.as(Union), rec_type)" \
+  "      return nil" -- bodies_at_floor || status=1
+prove_mutation "pointer_set types the assigned value" "$MAIN_VISITOR" \
+  "set_type(node, pst)" \
+  "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
+prove_mutation "a Nil return annotation discards the body value" "$MAIN_VISITOR" \
+  "unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)" \
+  "unless bt.subtype_of?(declared_ret)" -- bodies_at_floor || status=1
+prove_mutation "metaclass owner binds its instance parameters" "$MAIN_VISITOR" \
+  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)" \
+  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)" -- bodies_at_floor || status=1
+prove_mutation "typeof inside type arguments yields the instance type" "$REPO/src/compiler/semantic/type_nodes.iyi" \
+  "  if depth > 0" \
+  "  if false" -- bodies_at_floor || status=1
+prove_mutation "enum members have the enum type" "$MAIN_VISITOR" \
+  "        set_type(node, enum_type)" \
+  "        set_type(node, @program.int32_type)" -- bodies_at_floor || status=1
+prove_mutation "a generic union member retains its arguments" "$MAIN_VISITOR" \
+  "    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
+  "    found = @program.lookup_type_node?(restriction, @current_type) || LookupError.new(\"not found\")" -- bodies_at_floor || status=1
+prove_mutation "written class types are virtualized" "$MAIN_VISITOR" \
+  "      return TypeQueries.virtual_type(quiet)" \
+  "      return quiet" -- bodies_at_floor || status=1
+prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" \
+  "    rec_type : Type
+    if obj = node.obj
+      obj.accept(self)
+      if ot = child_type(obj)
+        rec_type = ot
+      else
+        @needs_type_filters = saved_call_ntf
+        @type_filters = nil
+        return false
+      end
+    else
+      rec_type = @scope || @current_type
+    end
+    node.args.each do |arg|
+      arg.accept(self)
+    end" \
+  "    node.args.each do |arg|
+      arg.accept(self)
+    end
+    rec_type : Type
+    if obj = node.obj
+      obj.accept(self)
+      if ot = child_type(obj)
+        rec_type = ot
+      else
+        @needs_type_filters = saved_call_ntf
+        @type_filters = nil
+        return false
+      end
+    else
+      rec_type = @scope || @current_type
+    end" -- bodies_at_floor || status=1
+prove_mutation "a proc literal inherits its enclosing scope" "$MAIN_VISITOR" \
+  "    inner.scope = @scope" \
+  "    inner.scope = @program" -- bodies_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
