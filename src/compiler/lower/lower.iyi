@@ -478,12 +478,8 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_unless(low, node.as(Unless))
     return
   end
-  if node.is_a?(And)
-    codegen_and(low, node.as(And))
-    return
-  end
-  if node.is_a?(Or)
-    codegen_or(low, node.as(Or))
+  if node.is_a?(And) || node.is_a?(Or)
+    lower_expanded_bool(low, node)
     return
   end
   if node.is_a?(Not)
@@ -985,6 +981,22 @@ end
 pub def codegen_unless(low : Lowerer, node : Unless) : Nil
   codegen_branch(low, node, node.cond, node.else, node.then)
 end
+
+# Hosted cleanup replaces every And and Or with the typed expansion before codegen
+# (cleanup_transformer.cr:436-442). The body typer records that expansion
+# (literal_expander.iyi expand_and / expand_or): an If flagged from_and or from_or,
+# with a temp when the left side is not a plain variable. An inner And or Or is
+# replaced inside the outer expansion and has no type of its own, so lowering the
+# original operands asks for a type that was never set.
+pub def lower_expanded_bool(low : Lowerer, node : ASTNode) : Nil
+  recorded = low.analysed.expansions[node]?
+  if expanded = recorded
+    codegen_node(low, expanded)
+    return
+  end
+  refuse_port("lower: a typed && or || has no recorded expansion (hosted cleanup_transformer.cr: transform(ExpandableNode))")
+end
+
 
 # The hosted `visit(And)` and `visit(Or)`: the normaliser's `If`. `a && b` is `if a then b else a`,
 # and `a || b` is `if a then a else b`; the left operand is lowered again in the branch that

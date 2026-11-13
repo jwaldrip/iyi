@@ -251,6 +251,23 @@ else
   status=1
 fi
 
+and_effect_check() {
+  "$IYI" build -o "$WORK/port-and-effect" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/and-effect.build.log" 2>&1 || return 1
+  "$WORK/port-and-effect" lower "$REPO/bench/fixtures/lower_and_effect.iyi" "$WORK/lower_and_effect.oracle.ll" > "$WORK/and-effect.out" 2> "$WORK/and-effect.err" || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/and-effect.out"
+}
+echo "== 2c2. Nested && and || lower the typed expansion"
+if and_effect_check; then
+  echo "  lower_and_effect: IR identical to hosted"
+  prove_mutation "an and ignores its typed expansion" "$REPO/src/compiler/lower/lower.iyi" \
+    '  recorded = low.analysed.expansions[node]?' \
+    '  recorded = nil' -- and_effect_check || status=1
+else
+  echo "FAIL: and effect fixture differs from hosted"
+  awk 'NR<=12' "$WORK/and-effect.err" "$WORK/and-effect.out" "$WORK/and-effect.build.log"
+  status=1
+fi
+
 module_floor_file="$REPO/bench/selfhost_lower_core_module.floor"
 module_floor="$(awk 'NR==1 { print $1 }' "$module_floor_file" 2>/dev/null)"
 module_floor="${module_floor:-0}"

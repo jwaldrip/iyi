@@ -39,7 +39,7 @@ module compiler/lower/primitives
 import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering}
-import compiler/lower/cast::{type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
+import compiler/lower/cast::{assign, type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -49,6 +49,7 @@ import compiler/lower/helpers::{int1, llvm_nil, raise_overflow_name}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
+import compiler/types/indirection::{TypeIndirection}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
@@ -501,6 +502,15 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
     return
   end
   if name == "pointer_set"
+    argument_type = low.analysed.type_of?(node.args[0])
+    raise "BUG: pointer assignment argument has no analysed type" if argument_type.nil?
+    actual = argument_type.as(Type)
+    target = TypeIndirection.remove_indirection(elem)
+    if target.full_name != TypeIndirection.remove_indirection(actual).full_name
+      assign(low, values[0], target, actual, values[1])
+      low.last = values[1]
+      return
+    end
     if elem_kind == "int" || elem_kind == "char" || elem_kind == "float"
       store_aligned(low, values[1], values[0])
       low.last = values[1]
