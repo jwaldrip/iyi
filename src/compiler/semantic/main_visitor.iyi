@@ -21,6 +21,7 @@ import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_not
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system, type_node_metaclass}
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
+import compiler/types/intersect::{TypeIntersect}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature}
@@ -796,6 +797,10 @@ pub class MainVisitor < TypeNodeHost
       return refuse(node, "unsupported TupleIndexer scope")
     end
     if cd = @current_def
+      if primitive_type = @program.primitive_return_type(cd)
+        set_type(node, primitive_type)
+        return false
+      end
       if rt = cd.return_type
         set_type(node, lookup_under(rt, @scope))
         return false
@@ -1153,6 +1158,9 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : TypeDeclaration) : Bool
+    # Declarations must resolve generic arguments even before any expression
+    # has caused the lazy type system to be installed.
+    type_node_system(@program)
     decl_found = lookup_declared?(node.declared_type, @scope)
     if decl_found.nil?
       return refuse(node, "undefined constant #{declared_base_name(node.declared_type)}")
@@ -1163,7 +1171,9 @@ pub class MainVisitor < TypeNodeHost
       vt = child_type(val)
       return false if vt.nil?
       val_type = vt.as(Type)
-      unless val_type.subtype_of?(decl_type)
+      proc_compatible = val_type.is_a?(ProcInstanceType) && decl_type.is_a?(ProcInstanceType) &&
+                        TypeIntersect.compatible_proc?(val_type.as(ProcInstanceType), decl_type.as(ProcInstanceType))
+      unless val_type.subtype_of?(decl_type) || proc_compatible
         if node.var.is_a?(InstanceVar)
           target_scope = @scope || @current_type
           target_type = if target_scope.is_a?(MetaclassType)
@@ -1212,7 +1222,7 @@ pub class MainVisitor < TypeNodeHost
           set_type(cvar_node, decl_type)
         end
       end
-      set_type(node, decl_type)
+      set_type(node, val_type)
     else
       if node.var.is_a?(Var)
         v = node.var.as(Var)
@@ -2382,6 +2392,14 @@ pub class MainVisitor < TypeNodeHost
       return most_specific.first
     end
 
+    # A resolved restriction can still contain a free variable, as in
+    # Pointer(T). Let the calls matcher bind it before reporting a mismatch.
+    if count_matches.any? { |d| !d.free_vars.nil? }
+      if matched = match_splat_with_calls(rec_type, name, args, call_node)
+        return matched
+      end
+    end
+
     if ur = unresolved_restriction
       if rescued = match_splat_with_calls(rec_type, name, args, call_node)
         return rescued
@@ -3414,6 +3432,27 @@ pub class MainVisitor < TypeNodeHost
     exp = node.exp
     if exp.is_a?(ClassVar) || exp.is_a?(InstanceVar)
       return pointerof_variable(node, exp)
+    end
+    if exp.is_a?(Call)
+      call = exp.as(Call)
+      if call.args.empty? && call.named_args.nil? && call.block.nil? && call.block_arg.nil?
+        if obj = call.obj
+          obj.accept(self)
+          if owner = child_type(obj)
+            if owner.is_a?(LibType)
+              if external = owner.as(LibType).lookup_fun(call.name)
+                if external.external_var && external.primitive == "external_var_get"
+                  if var_type = external.resolved_return
+                    set_type(call, var_type)
+                    set_type(node, type_node_system(@program).pointer_of(var_type))
+                    return false
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
     end
     if exp.is_a?(Path)
       exp.accept(self)
