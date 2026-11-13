@@ -34,6 +34,7 @@ import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
+import compiler/lower/context::{Lowerer}
 import compiler/lower/lower::{codegen_program, lower_def_probe}
 import compiler/lower/primitives::{primitive_name}
 import compiler/lower/fun::{mangled_name, discard_probe_functions}
@@ -376,6 +377,10 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   reasons = [] of String
   counts = [] of Int32
   examples = [] of String
+  origin_reasons = [] of String
+  origin_counts = [] of Int32
+  origin_examples = [] of String
+  origin_probes = Hash(String, Bool).new
   typed.visitor.typed_instances.each do |inst|
     d = inst.definition
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
@@ -384,8 +389,9 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     refused << "reached\t#{lowering_example(d, inst.self_type)}\t-\t-"
     before = [] of String
     m.functions.each { |fn| before << fn.name }
+    probe_lowerer = Lowerer.new(m, typer, typed.visitor)
     outcome = group do |g|
-      task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m) }
+      task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m, probe_lowerer) }
       task.value
     end
     failed = false
@@ -423,10 +429,27 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
       discard_probe_functions(m, before)
       bad[d.node_id] = true
       reason = first_line(message)
+      origin = lowering_example(d, inst.self_type)
+      if ctx = probe_lowerer.context
+        origin = ctx.fun.name
+      end
+      pair = "#{origin} | #{reason}"
+      probe_key = "#{pair}|#{instance_label(d, inst.self_type, inst.arg_types)}"
+      unless origin_probes.has_key?(probe_key)
+        origin_probes[probe_key] = true
+        index = reason_index(origin_reasons, pair)
+        if index < 0
+          origin_reasons << pair
+          origin_counts << 1
+          origin_examples << lowering_example(d, inst.self_type)
+        else
+          origin_counts[index] = origin_counts[index] + 1
+        end
+      end
       key = "#{d.node_id}|#{reason}"
       unless sites.has_key?(key)
         sites[key] = true
-        refused << "lowering\t#{lowering_example(d, inst.self_type)}\t#{typed_owner(reason)}\t#{reason}"
+        refused << "lowering\t#{lowering_example(d, inst.self_type)}\t#{typed_owner(reason)}\t#{reason}\t#{origin}"
         i = reason_index(reasons, reason)
         if i < 0
           reasons << reason
@@ -459,6 +482,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   lines = [] of String
   lines << "table: #{root} defs-lowered-clean=#{clean} lowering-refusal-sites=#{sites.size}"
   ranked_rows(root, "lowering", reasons, counts, examples).each { |line| lines << line }
+  ranked_rows(root, "origin", origin_reasons, origin_counts, origin_examples).each { |line| lines << line }
   lines
 end
 

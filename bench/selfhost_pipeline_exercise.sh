@@ -121,10 +121,31 @@ for root in $ROOTS; do
   rel="$root"
   name="$(basename "$root" .iyi)"
   IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/$root" -o "$WORK/$name.root" --pipeline typed --prelude --probe-phase > "$WORK/$name.root.probe" 2> "$WORK/$name.root.err"
+  root_status=$?
   rphase="$(probe_phase "$WORK/$name.root.probe")"
-  [ -e "$WORK/$name.root" ] && rphase="$rphase (output written: unexpected)"
-  echo "  $root: reached ${rphase:-none}"
-  measured[$rel]="${rphase%% *}"
+  refusal="$(awk '/: fail: / { print; exit }' "$WORK/$name.root.probe")"
+  [ -n "$refusal" ] || refusal="$(awk 'NR==1 { print; exit }' "$WORK/$name.root.err")"
+  echo "  $name strict: reached ${rphase:-none}: ${refusal:-no refusal}"
+  if [ "$root_status" -eq 0 ] && [ "$rphase" = "link" ] && [ -e "$WORK/$name.root" ]; then
+    if ! IYI_PATH="$REPO/src" "$IYI" build -o "$WORK/$name.root.hosted" "$REPO/$root" > "$WORK/$name.root.hosted.log" 2>&1; then
+      echo "  $root: FAILED, the hosted compiler does not build the root"
+      failed=$((failed + 1))
+    else
+      timeout 30 "$WORK/$name.root" > "$WORK/$name.root.typed.out" 2>&1; tstat=$?
+      timeout 30 "$WORK/$name.root.hosted" > "$WORK/$name.root.hosted.out" 2>&1; hstat=$?
+      if [ "$tstat" = "$hstat" ] && cmp -s "$WORK/$name.root.typed.out" "$WORK/$name.root.hosted.out"; then
+        rphase="run-equal"
+        echo "  $root: run-equal (status $hstat, stdout identical)"
+      else
+        echo "  $root: FAILED, typed status $tstat, hosted status $hstat, or stdout differs"
+        failed=$((failed + 1))
+      fi
+    fi
+  elif [ "$root_status" -eq 0 ] || [ "$rphase" = "link" ] || [ -e "$WORK/$name.root" ]; then
+    echo "  $root: FAILED, exit $root_status, reached ${rphase:-none}, or unexpected output"
+    failed=$((failed + 1))
+  fi
+  measured[$rel]="${rphase:-none}"
 done
 
 echo
@@ -183,6 +204,18 @@ for root in $ROOTS; do
   name="$(basename "$root" .iyi)"
   IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/$root" -o "$WORK/$name.table" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/$name.table.probe" 2> /dev/null
   for sidecar in names refusals; do [ ! -f "$WORK/$name.table.$sidecar" ] || cp "$WORK/$name.table.$sidecar" "$ARTIFACT_DIR/"; done
+  if [ -f "$WORK/$name.table.refusals" ]; then
+    awk -F '\t' -v name="$name" '
+      ($1 == "body" || $1 == "lowering") {
+        rows++
+        if ($2 == "top level") { root++; owners[$3]++ } else { defs[$2] = 1 }
+      }
+      END {
+        for (d in defs) ndefs++
+        printf "  %s keep-going: %d rows in %d defs, %d root sites\n", name, rows, ndefs, root
+        for (owner in owners) printf "    root owner=%s sites=%d\n", owner, owners[owner]
+      }' "$WORK/$name.table.refusals"
+  fi
   awk '/^table:/' "$WORK/$name.table.probe" | sed "s#$REPO/##g" >> "$WORK/table.lines"
   if [ -z "$(table_value "$name" defs-reached)" ]; then
     echo "  $root: no table summary line (see $WORK/$name.table.probe)"

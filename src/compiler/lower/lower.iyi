@@ -65,8 +65,8 @@ import compiler/types/intersect::{TypeIntersect}
 # that reaches it does (fun.iyi target_def_fun), for the self type and argument types the caller gives. A refusal
 # raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The
 # instantiated def's type is its result, which can differ from the body's type.
-pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module) : String?
-  low = Lowerer.new(m, typer, analysed)
+pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module, probe_lowerer : Lowerer? = nil) : String?
+  low = probe_lowerer || Lowerer.new(m, typer, analysed)
   low.body_visitor = CoreBody.new
   program = analysed.program
   ids = LowerTypeIds.new
