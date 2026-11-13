@@ -31,7 +31,8 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
   n = split_top(args, parts)
   types = ""
   for (i = 1; i <= n; i++) {
-
+    split(parts[i], w, " ")
+    if (indirect && ((w[1] != "" && index("[<{", substr(w[1], 1, 1)) > 0) || w[2] ~ /^addrspace\(/ || (w[1] ~ /^%"/ && w[1] !~ /"$/))) return line
     types = types (i > 1 ? ", " : "") arg_type(parts[i])
   }
   if (indirect || name ~ /^@"[*~]/) ret = "iyicc " ret
