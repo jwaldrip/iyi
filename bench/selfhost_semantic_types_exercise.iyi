@@ -1,5 +1,6 @@
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{AliasType, GenericClassType, ModuleType, SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/types/types::{TypeQueries}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/intersect::{TypeIntersect}
@@ -357,7 +358,10 @@ module BenchSelfhostSemanticTypesExercise
     # The type system is installed before the visitor runs, so that the class
     # declarations resolve generic superclasses through it.
     ts = TypeSystem.new(prog)
-    node.accept(TopLevelVisitor.new(prog))
+    visitor = TopLevelVisitor.new(prog)
+    node.accept(visitor)
+    visitor.finish
+    declare_guessed_instance_vars(prog)
     out = [] of String
     src.split("\n").each do |line|
       if line.starts_with?("# op ")

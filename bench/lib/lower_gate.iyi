@@ -14,6 +14,7 @@ module bench/lib/lower_gate
 import compiler/syntax/ast::{ASTNode, Def, Expressions, FunDef, LibDef}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{LibType, SemanticProgram, TopLevelVisitor}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/normalizer::{NormalizerProgram}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
@@ -55,6 +56,7 @@ pub def analyse(source : String, filename : String, stand_in_libs : Bool) : Anal
   tl = TopLevelVisitor.new(prog)
   root.accept(tl)
   tl.finish
+  declare_guessed_instance_vars(prog)
   mv = MainVisitor.new(prog)
   if stand_in_libs
     stand_in_primitive_types(root, prog, mv)

@@ -1,6 +1,7 @@
 import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{AliasType, ClassType, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor
 import compiler/types
 
@@ -89,6 +90,8 @@ module BenchSelfhostTypesExercise
     ts = TypeSystem.new(prog)
     visitor = TopLevelVisitor.new(prog)
     node.accept(visitor)
+    visitor.finish
+    declare_guessed_instance_vars(prog)
 
     dump_types(prog, ts)
   end
@@ -139,6 +142,8 @@ module BenchSelfhostTypesExercise
     prog = SemanticProgram.new
     visitor = TopLevelVisitor.new(prog)
     node.accept(visitor)
+    visitor.finish
+    declare_guessed_instance_vars(prog)
 
     count = 0
     prog.types.keys.each do |k|

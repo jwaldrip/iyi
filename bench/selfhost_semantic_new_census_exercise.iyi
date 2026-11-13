@@ -2,6 +2,7 @@ import compiler/syntax/parser::{Parser}
 import compiler/syntax/ast::{ASTNode, Call, Path}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, dir_of, normalize_path}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 
@@ -73,12 +74,14 @@ module BenchSelfhostSemanticNewCensusExercise
       prelude_file = prelude_visitor.import_file("iyi/prelude")
       if prelude_file
         prelude_visitor.load_file(prelude_file.as(String))
+        prelude_visitor.finish
       end
     end
     prog.entry_dir = dir_of(entry)
     tl = TopLevelVisitor.new(prog, entry)
     node.accept(tl)
     tl.finish
+    declare_guessed_instance_vars(prog)
     mv = MainVisitor.new(prog)
     mv.total = true
     node.accept(mv)

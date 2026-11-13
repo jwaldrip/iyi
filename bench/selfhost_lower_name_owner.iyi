@@ -6,6 +6,7 @@ module bench/selfhost_lower_name_owner
 
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor, TypedInstance}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/semantic/normalizer::{NormalizerProgram}
@@ -29,6 +30,7 @@ def analyse(source : String, filename : String) : MainVisitor
   tl = TopLevelVisitor.new(prog)
   root.accept(tl)
   tl.finish
+  declare_guessed_instance_vars(prog)
   mv = MainVisitor.new(prog)
   stand_in_primitive_types(root, prog, mv)
   root.accept(mv)

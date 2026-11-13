@@ -39,6 +39,7 @@ module BenchSelfhostSemanticExercise
     visitor = TopLevelVisitor.new(prog)
     node.accept(visitor)
     visitor.finish
+    declare_guessed_instance_vars(prog)
     count = 0
     prog.types.keys.each do |k|
       unless prog.initial_type_names.includes?(k)
@@ -57,6 +58,8 @@ module BenchSelfhostSemanticExercise
     prog = SemanticProgram.new
     tl = TopLevelVisitor.new(prog)
     node.accept(tl)
+    tl.finish
+    declare_guessed_instance_vars(prog)
     mv = MainVisitor.new(prog)
     node.accept(mv)
     mv.node_types.size
