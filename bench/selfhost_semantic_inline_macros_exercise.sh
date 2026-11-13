@@ -292,11 +292,16 @@ else
 fi
 
 check_inline_fixtures_diverge() {
-  # Builds the port's driver as it now stands and compares every fixture. Returns
-  # non-zero (caught) when the driver fails to build, or a fixture's dump differs
-  # from the oracle's or a site is refused.
+  # A failed build is an invalid mutation, not evidence the fixture caught it.
   local probe="$WORK/mut_port"
-  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_inline_macros_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_inline_macros_exercise.iyi" > "$WORK/mut_build.log" 2>&1; then
+    local saved
+    saved=$(mktemp "${SEMINL_ARTIFACT_DIR:-$WORK}/invalid-inline-build.XXXXXX")
+    cp "$WORK/mut_build.log" "$saved"
+    echo "INVALID MUTATION: driver build failed; compiler output: $saved"
+    cat "$WORK/mut_build.log"
+    return 0
+  fi
   for fixture in "$REPO"/bench/fixtures/seminl_*.iyi; do
     rel="bench/fixtures/$(basename "$fixture")"
     "$ORACLE" "$REPO/$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
@@ -396,7 +401,14 @@ check_reach() {
 # The check the reach mutations must fail: the reach fixture's root through a pipeline tool built from the tree as it is.
 check_reach_fixture() {
   local RAISE=0 probe="$WORK/mut_reach_tool"
-  "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_reach_build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_reach_build.log" 2>&1; then
+    local saved
+    saved=$(mktemp "${SEMINL_ARTIFACT_DIR:-$WORK}/invalid-reach-build.XXXXXX")
+    cp "$WORK/mut_reach_build.log" "$saved"
+    echo "INVALID MUTATION: reach tool build failed; compiler output: $saved"
+    cat "$WORK/mut_reach_build.log"
+    return 0
+  fi
   check_reach "$probe" bench/fixtures/seminl_reach/root.iyi > "$WORK/mut_reach.txt" 2>&1
 }
 
@@ -465,7 +477,14 @@ check_refusals() {
 # The check the single-node mutations must fail: the refusal ceilings through a pipeline tool built from the tree as it is.
 check_body_fixture() {
   local RAISE=0 probe="$WORK/mut_body_tool"
-  "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_body_build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_body_build.log" 2>&1; then
+    local saved
+    saved=$(mktemp "${SEMINL_ARTIFACT_DIR:-$WORK}/invalid-body-build.XXXXXX")
+    cp "$WORK/mut_body_build.log" "$saved"
+    echo "INVALID MUTATION: body tool build failed; compiler output: $saved"
+    cat "$WORK/mut_body_build.log"
+    return 0
+  fi
   check_refusals "$probe" > "$WORK/mut_body.txt" 2>&1
 }
 
