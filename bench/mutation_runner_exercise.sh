@@ -13,6 +13,10 @@
 # 6. Job control is on for the check alone: the runner's own commands around it run in the
 #    caller's process group. (With it on for them too, each got a group of its own, and a
 #    lost race for one printed `child setpgid ... Operation not permitted` beside a proof.)
+# 7. The backup and the restore are the file's contents, written and compared: no `cp` is run.
+#    (On an overlay checkout darwin's cp exits 1 after copying every byte, for the extended
+#    attributes it cannot read, and its complaint sat beside each proof.)
+# 8. A file that cannot be restored stops the run with status 2, and what it held is kept.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 REPO=$PWD
@@ -103,6 +107,31 @@ out=$( . "$REPO/bench/lib/mutation.sh"; export RM_GROUPS="$WORK/rm_groups"; PATH
 [ -s "$WORK/rm_groups" ] || fail "the runner removed nothing through the recording rm"
 strays=$(awk -v own="$own_group" '$1 != own' "$WORK/rm_groups" 2>/dev/null | wc -l | tr -d ' ')
 [ "$strays" = "0" ] || fail "$strays of the runner's own commands ran in a process group of their own"
+
+echo "== 7. the backup and the restore are the file's contents, compared: no cp is run"
+fresh
+# A `cp` that only complains: the runner must never reach it.
+printf '#!/bin/sh\necho "cp was called: $*" >&2\nexit 1\n' > "$WORK/bin/cp"
+chmod +x "$WORK/bin/cp"
+out=$( . "$REPO/bench/lib/mutation.sh"; export RM_GROUPS="$WORK/rm_groups_7"; PATH="$WORK/bin:$PATH"; prove_mutation "alpha becomes gamma" "$WORK/target" alpha gamma -- holds_alpha 2>&1 ) ; rc=$?
+[ "$rc" -eq 0 ] || fail "the mutation of step 7 answered $rc: $out"
+if echo "$out" | grep -q 'cp was called'; then fail "the runner ran cp: $out"; fi
+holds_alpha || fail "the file was not restored without cp"
+
+echo "== 8. a file that cannot be restored stops the run, and what it held is kept"
+fresh
+# The check puts a directory where the file was, so nothing can be written back (true for root too).
+blocks_restore() { /bin/rm -f "$WORK/target"; mkdir "$WORK/target"; return 1; }
+out=$( . "$REPO/bench/lib/mutation.sh"; prove_mutation "alpha becomes gamma" "$WORK/target" alpha gamma -- blocks_restore 2>&1 ) ; rc=$?
+[ "$rc" -eq 2 ] || fail "a restore that could not be made answered $rc, not 2: $out"
+echo "$out" | grep -q 'WAS NOT RESTORED' || fail "the runner did not say the file was not restored: $out"
+kept=$(echo "$out" | sed -n 's/.*before the mutation is in \(.*\)$/\1/p' | head -n 1)
+if [ -n "$kept" ] && grep -q '^alpha$' "$kept" 2>/dev/null; then
+  /bin/rm -f "$kept"
+else
+  fail "what the file held was not kept: $out"
+fi
+rmdir "$WORK/target" 2>/dev/null
 
 rm -rf "$WORK"
 echo

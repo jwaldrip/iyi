@@ -42,6 +42,7 @@ _PM_MONITOR=0
 _PM_SAVED_EXIT=""
 _PM_SAVED_INT=""
 _PM_SAVED_TERM=""
+_PM_RESTORE_FAILED=0
 
 _prove_mutation_restore() {
   if [ -n "$_PM_CHILD" ]; then
@@ -54,8 +55,15 @@ _prove_mutation_restore() {
     _PM_CHILD=""
   fi
   if [ -n "$_PM_BACKUP" ] && [ -f "$_PM_BACKUP" ]; then
-    cp "$_PM_BACKUP" "$_PM_FILE"
-    rm -f "$_PM_BACKUP"
+    # Contents only, and compared: see the backup below. A file that is not what it was before the
+    # mutation keeps its backup, and the runner says where it is.
+    cat "$_PM_BACKUP" > "$_PM_FILE"
+    if cmp -s "$_PM_BACKUP" "$_PM_FILE"; then
+      rm -f "$_PM_BACKUP"
+    else
+      echo "prove_mutation: $_PM_FILE WAS NOT RESTORED: what it held before the mutation is in $_PM_BACKUP" >&2
+      _PM_RESTORE_FAILED=1
+    fi
   fi
   _PM_BACKUP=""
 }
@@ -144,8 +152,19 @@ _prove_mutation_run() {
     exit 3
   fi
 
+  # The backup is the file's contents, written with cat and compared, not a `cp`. A checkout on an
+  # overlay file system answers the extended-attribute calls with ENOENT for a file it has not
+  # copied up, and darwin's cp then prints `could not copy extended attributes ... No such file or
+  # directory` and exits 1 after copying every byte (measured 2026-11-13). The runner did not read
+  # that status, so the line sat beside each `caught` in a gate's log as if the proof were unsound.
+  # A backup that is not the file stops the proof before the file is touched.
   backup="$(mktemp)"
-  cp "$file" "$backup"
+  cat "$file" > "$backup"
+  if ! cmp -s "$file" "$backup"; then
+    rm -f "$patched" "$backup"
+    echo "prove_mutation: the backup of $file is not the file ($label): nothing was patched" >&2
+    exit 2
+  fi
   log="$(mktemp)"
 
   _prove_mutation_arm "$file" "$backup"
@@ -163,6 +182,11 @@ _prove_mutation_run() {
   _PM_MONITOR=0
 
   _prove_mutation_disarm
+  if [ "$_PM_RESTORE_FAILED" -eq 1 ]; then
+    rm -f "$log"
+    echo "prove_mutation: stopping: a source file is still mutated ($label)" >&2
+    exit 2
+  fi
 
   if [ "$rc" -ne 0 ]; then
     rm -f "$log"
