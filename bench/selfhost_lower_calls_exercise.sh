@@ -243,6 +243,8 @@ prove_mutation "an implicit generic metaclass call loses its self" "$REPO/src/co
     return ct' '  if defines_method?(ct, node.name)
     return nil if ct.is_a?(GenericClassInstanceMetaclassType)
     return ct' -- lower_calls_check || status=1
+prove_mutation "a builtin metaclass receiver is refused" "$REPO/src/compiler/lower/call.iyi" \
+  '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)' '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
