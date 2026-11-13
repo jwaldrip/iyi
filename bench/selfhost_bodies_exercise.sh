@@ -243,21 +243,27 @@ setter_typed_as_value() {
   diff -q "$WORK/setter_mut.hosted" "$WORK/setter_mut.port" >/dev/null
 }
 
-# A call on NoReturn, or with a NoReturn argument, is not resolved (hosted
-# call.cr 77-80 and 94-114). Returns non-zero when that skip is gone and the
-# port refuses the call.
-noreturn_call_is_refused() {
-  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/nr_mut_build.log" 2>&1; then
-    body_build_failed "$WORK/nr_mut_build.log"
-    return $?
-  fi
-  fx="$REPO/bench/fixtures/sem_bodies_noreturn_call.iyi"
-  "$MUT_TD" --refusals "$fx" "$REPO/src" > "$WORK/nr_mut.refusals" 2>/dev/null || return 1
-  if grep -q "undefined method" "$WORK/nr_mut.refusals"; then
-    return 1
-  fi
-  return 0
-}
+ # A call on NoReturn, or with a NoReturn argument, is not resolved (hosted
+ # call.cr 77-80 and 94-114). Returns non-zero when that skip is gone: either
+ # the port refuses the call, or it types a call the hosted oracle leaves untyped
+ # (NoReturn subtypes Int32, so lookup succeeds and does not refuse).
+ noreturn_call_is_refused() {
+   if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/nr_mut_build.log" 2>&1; then
+     body_build_failed "$WORK/nr_mut_build.log"
+     return $?
+   fi
+   fx="$REPO/bench/fixtures/sem_bodies_noreturn_call.iyi"
+   "$ORACLE" "$fx" 2>/dev/null | sort > "$WORK/nr_mut.hosted" || return 1
+   "$MUT_TD" "$fx" "$REPO/src" 2>/dev/null | sort > "$WORK/nr_mut.port" || return 1
+   "$MUT_TD" --refusals "$fx" "$REPO/src" > "$WORK/nr_mut.refusals" 2>/dev/null || return 1
+   if grep -q "undefined method" "$WORK/nr_mut.refusals"; then
+     return 1
+   fi
+   if [ -n "$(comm -13 "$WORK/nr_mut.hosted" "$WORK/nr_mut.port")" ]; then
+     return 1
+   fi
+   return 0
+ }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
 prove_mutation "lib call result type" "$MAIN_VISITOR" \
   "set_type(node, target.result_type.as(Type))" \
