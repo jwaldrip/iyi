@@ -1,0 +1,10 @@
+class MatchAnimal
+end
+
+class MatchHolder(T)
+  @value : T
+end
+
+class MatchOwner
+  @holder : MatchHolder(MatchAnimal)
+end

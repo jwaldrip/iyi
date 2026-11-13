@@ -740,6 +740,11 @@ prove_mutation "a printed type argument keeps its virtual wrapper" "$MUT_TYPES" 
   "    return self" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic instance displays a virtual argument without devirtualizing it" "$MUT_TYPES" \
+  '    args_strs = @type_args.map { |a| a.devirtualize.arg_full_name }' \
+  '    args_strs = @type_args.map { |a| a.arg_full_name }' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance's instance variable keeps its type parameter" "$MUT_TYPES" \
   "if replacement = tv_map[type.name]?" \
   "if replacement = tv_map[\"no such parameter\"]?" \
