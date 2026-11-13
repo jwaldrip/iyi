@@ -47,6 +47,10 @@ pub class ClassVarState
   property global : Global?
   # The initialiser function (`~Owner::name:init`), made once per class variable.
   property init_fn : Function?
+  # The initialised flag (`Owner::name:init`), declared with the value global (hosted declare_class_var_initialized_flag).
+  property flag : Global?
+  # The read function (`~Owner::name:read`), made by the first read before the declaration (hosted create_read_class_var_function).
+  property read_fn : Function?
 
   def initialize
     @read = false
@@ -54,6 +58,8 @@ pub class ClassVarState
     @simple = false
     @global = nil
     @init_fn = nil
+    @flag = nil
+    @read_fn = nil
   end
 end
 

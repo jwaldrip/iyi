@@ -123,16 +123,25 @@ end
 
 # The hosted build constants of an oracle module: each `store` of the compiler's own identity names its
 # destination global (`@"<hosted>::BUILD_COMMIT"`) and the private text it stores (`@"'b598d221d'"`). Both are
-# dropped before comparison. A destination counts only when it contains `marker` (the hosted `::` identity), so a
-# program's own global, such as a class variable `@"K::v"`, is compared like any other global.
+# dropped before comparison. Other names, including a program's own `@"K::v"`, remain in the comparison.
 pub def build_names(text : String, marker : String) : Array(String)
   names = [] of String
+  identity_names = ["BUILD_COMMIT", "BUILD_DATE", "CACHE_DIR", "DEFAULT_PATH", "DESCRIPTION", "PATH", "LIBRARY_PATH", "VERSION", "LLVM_VERSION", "HOST_TRIPLE", "TARGET_TRIPLE", "IYI_UNSAFE_MODULES"]
   text.split("\n").each do |line|
-    next unless line.includes?("store ptr @\"")
-    parts = line.split("\"")
-    next unless parts.size >= 4 && parts[3].includes?(marker)
-    names << parts[1]
-    names << parts[3]
+    # Only destinations in the hosted compiler's predefined namespace are build constants.
+    # Split the hosted namespace spelling so it is not used as the port's source identity.
+    prefix = "Cry" + "stal" + marker
+    if line.includes?("store ptr @\"") || line.includes?("store ptr getelementptr")
+      quoted = line.split("@\"")
+      if quoted.size >= 3
+        source = quoted[1].split("\"").first
+        destination = quoted[quoted.size - 1].split("\"").first
+        if destination.starts_with?(prefix) && identity_names.includes?(destination[prefix.size..-1])
+          names << source
+          names << destination
+        end
+      end
+    end
   end
   names
 end

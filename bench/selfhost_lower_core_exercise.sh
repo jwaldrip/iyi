@@ -470,6 +470,20 @@ pointerof_ivar_check() {
 prove_mutation "pointerof of an instance variable returns self" "$REPO/src/compiler/lower/instance_var.iyi" \
   "  low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)" \
   "  low.last = self_var.as(LowerVar).pointer" -- pointerof_ivar_check || status=1
+struct_class_var_check() {
+  "$IYI" build -o "$WORK/port-struct-cvar" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/struct-cvar.build.log" 2>&1 || return 1
+  "$WORK/port-struct-cvar" lower "$REPO/bench/fixtures/lower_struct_class_var.iyi" "$WORK/lower_struct_class_var.oracle.ll" > "$WORK/struct-cvar.out" 2> "$WORK/struct-cvar.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/struct-cvar.out"
+}
+if struct_class_var_check; then
+  prove_mutation "an address-valued struct receiver is spilled again" "$REPO/src/compiler/lower/instance_var.iyi" \
+    '  return value if value.type.pointer?' \
+    '  return value if false' -- struct_class_var_check || status=1
+else
+  echo "FAIL: struct class-variable receiver does not match the hosted module"
+  awk 'NR<=8' "$WORK/struct-cvar.err" "$WORK/struct-cvar.out" "$WORK/struct-cvar.build.log"
+  status=1
+fi
 bare_return_check() {
   "$IYI" build -o "$WORK/port-return" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/return.build.log" 2>&1 || return 1
   "$WORK/port-return" lower "$REPO/bench/fixtures/lower_return_bare.iyi" "$WORK/lower_return_bare.oracle.ll" > "$WORK/return.out" 2> "$WORK/return.err" || return 1
