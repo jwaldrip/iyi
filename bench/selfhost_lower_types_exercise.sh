@@ -576,9 +576,27 @@ prove_mutation "a module's own metaclass counted as an implementor" "$TYPER_FILE
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a builtin is a headed candidate (the primitive exclusion dropped)" "$HEADED_FILE" \
-  '  return false unless primitive_kind(type) == ""' \
-  '  return false if false' \
+prove_mutation "headed census drops virtual_type_made? classes" "$HEADED_FILE" \
+  '    next unless headed_candidate?(type) && TypeQueries.virtual_type_made?(type)' \
+  '    next unless headed_candidate?(type) && false' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "headed census drops reference unions from program.unions" "$HEADED_FILE" \
+  '    next unless union.is_a?(ReferenceUnionType) || union.is_a?(NilableReferenceUnionType)' \
+  '    next unless false' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "headed census drops subclasses of virtual-type classes" "$HEADED_FILE" \
+  '    TypeQueries.all_subclasses(type).each do |sub|' \
+  '    ([] of Type).each do |sub|' \
+  -- check_headed_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "headed census stops resolving aliases inside reference unions" "$HEADED_FILE" \
+  '      resolved = program.remove_alias(member)' \
+  '      resolved = member' \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -604,6 +622,22 @@ prove_mutation "the own-source load installs no type system, so a generic's decl
   "    own_types = TypeSystem.new(prog)" \
   "    # no type system is installed here" \
   -- check_own_fixture_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "traits bypassed in create_llvm_type (fall through to BUG raise)" "$TYPER_FILE" \
+  '    if (type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)) && !type.is_a?(LibType)' \
+  '    if type.is_a?(NonGenericModuleType) && !type.is_a?(LibType)' \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "untyped union in passed_by_value? answered false instead of checking members" "$TYPER_FILE" \
+  '  if type.is_a?(UnionType)
+    return !reference_union?(type.as(UnionType))
+  end' \
+  '  if type.is_a?(UnionType)
+    return false
+  end' \
+  -- check_lowering_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"

@@ -214,10 +214,9 @@ module BenchSelfhostLowerTypesExercise
     out
   end
 
-  # The `headed` mode's block: the `:headed` byte of headed.iyi, `-` where the census would decide it.
-  def self.headed_block(expr : String, ids : LowerTypeIds, t : Type) : String
-    h = headed?(t, ids)
-    word = h.nil? ? "-" : (h.as(Bool) ? "1" : "0")
+  # The `headed` mode's block: the `:headed` byte of headed.iyi.
+  def self.headed_block(expr : String, prog : SemanticProgram, ids : LowerTypeIds, t : Type) : String
+    word = headed?(t, prog, ids) ? "1" : "0"
     "== #{expr}\nheaded: #{word}\n"
   end
 
@@ -280,7 +279,7 @@ module BenchSelfhostLowerTypesExercise
       if mode == "ids"
         out = out + ids_block(exprs[i], ids, types[i])
       elsif mode == "headed"
-        out = out + headed_block(exprs[i], ids, types[i])
+        out = out + headed_block(exprs[i], prog, ids, types[i])
       else
         out = out + block_text(exprs[i], typer, types[i])
       end
