@@ -574,13 +574,38 @@ pub def copy_args(low : Lowerer, def_node : Def, arg_types : Array(Type), values
   end
 end
 
+# Contract 6b (hosted `import_library`): the library a fun of this lib is imported from. It is the framework
+# the lib's first `@[Link]` names, else its library, else nil for a lib with no `@[Link]`. A lib with several
+# annotations takes the first that names one. Its `ldflags:`, `pkg_config:`, `dll:` and `static:` arguments
+# are refused by name: the hosted link line is not ported.
+pub def lib_import_library(low : Lowerer, node : Compiler::Syntax::Ast::Call) : String?
+  recv = node.obj
+  # No receiver: the lib call record names a top-level fun with a body (`__iyi_main` and the like, the hosted External
+  # def), which belongs to no lib, so there is nothing to import.
+  return nil if recv.nil?
+  t = low.analysed.type_of?(recv.as(ASTNode))
+  raise "BUG: the analysed program has no type for the lib of #{node.name} (hosted call.cr: codegen_extern_call)" if t.nil?
+  owner_lib = t.as(Type)
+  raise "BUG: the receiver of #{node.name} is not a lib (hosted call.cr: codegen_extern_call)" unless owner_lib.is_a?(LibType)
+  name : String? = nil
+  owner_lib.as(LibType).link_annotations.each do |ann|
+    if !ann.ldflags.nil? || !ann.pkg_config.nil? || !ann.dll.nil? || ann.is_static
+      pending_visit_node("a lib with a link argument ldflags, pkg_config, dll or static (hosted lib.cr, the link line)")
+    end
+    if name.nil?
+      name = ann.framework || ann.library
+    end
+  end
+  name
+end
+
 # The hosted `codegen_extern_call` for a call on a fun of a lib, through the lib call record the analysis
 # made for the call (`MainVisitor#lib_call_target`, the port of Call#recalculate_lib_call). The fun's C
 # name is `real_name`, its parameters have their declared types, and the arguments are in the order the C
 # fun takes them: named arguments are already at their parameter's place. A number literal takes the type
 # the record gives it, an `out` argument passes the address of its variable (declared here when the body
 # has none), and nil passed to a pointer passes its null (hosted prepare_call_args_external). The fun is
-# declared in the module with the C calling convention. A NoReturn fun ends the block with `unreachable`,
+# declared in the module with the C calling convention and imported from the library its lib's `@[Link]` names. A NoReturn fun ends the block with `unreachable`,
 # and its value is nil. An argument that never returns ends the block, and the call is not made. Refused by
 # name: an argument converted by its to_unsafe method, nil to a proc or a variadic argument, an `out`
 # argument that is not a variable, and a number argument that is not a literal.
@@ -670,9 +695,12 @@ pub def codegen_lib_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, ret 
   check_lib_aggregate(ret, "result")
   real = lib_fun.real_name
   fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)
+  import_from = lib_import_library(low, node)
   func = low.module.get_function?(real)
   if func.nil?
-    func = low.module.add_function(real, fn_type, CallConv::C)
+    made = low.module.add_function(real, fn_type, CallConv::C)
+    made.import_library = import_from
+    func = made
   end
   inst = low.builder.call(fn_type, func.as(Function), values, "")
   if ret.is_a?(NoReturnType)
@@ -721,16 +749,21 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
     raise "BUG: the analysed program has no type for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)" if at_type.nil?
     at = at_type.as(Type)
     if restriction = def_node.args[i].restriction
+      # Hosted restrict: a restriction the argument implements leaves the argument's own type as the parameter's
+      # (a Nil argument into `Fiber | Nil` is a Nil parameter, and the callee is named by it). Only an argument
+      # that does not implement the restriction would convert, and that is refused by name.
       restricted = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program)
-      if restricted.full_name != at.full_name
-        pending_visit_node("a restriction that converts argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
+      unless at.implements?(restricted.as(Type))
+        pending_visit_node("a restriction that does not hold for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
       end
     end
     low.needs_value = true
     visit_node(low, arg_node)
     value = low.last
     raise "BUG: argument #{i} of #{node.name} left no value (hosted call.cr: prepare_call_args)" if value.nil?
-    values << value.as(Value)
+    # Hosted prepare_call_args_non_external: a nil argument is the nil value, the zero constant of the nil type
+    # (zeroinitializer); the helper `llvm_nil` is an undef constant in this port, so it is not used here.
+    values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))
     arg_types << at
     i += 1
   end

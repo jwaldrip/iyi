@@ -6,7 +6,7 @@ import compiler/syntax/token::{NumberKind, TokenKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
-import compiler/semantic/inline_macros::{splice_body_node, splice_inline_sites}
+import compiler/semantic/inline_macros::{splice_body_node, splice_fun_body, splice_inline_sites}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
@@ -21,6 +21,8 @@ import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericCla
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/match::{CallSignature}
+import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
@@ -239,6 +241,10 @@ pub class MainVisitor < TypeNodeHost
   # The record of each call on a lib (see visit_lib_call): the fun, the result type and the
   # arguments the lowering passes.
   property lib_call_targets : NodeMap(LibCallTarget) = NodeMap(LibCallTarget).new
+  # The expanded tree of each literal the hosted pass keeps (node.expanded).
+  # Lowering reads this map the same way it reads lib_call_targets. The typed
+  # dump prints nothing from it.
+  property expansions : NodeMap(ASTNode) = NodeMap(ASTNode).new
   property type_filters : TypeFilters? = nil
   property needs_type_filters : Int32 = 0
   property unreachable : Bool = false
@@ -438,25 +444,21 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The type a type node names under `owner`. A generic instance binds its type
-  # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), as the
-  # hosted lookup does for an instantiated def; anything else is the lexical lookup
-  # from the current type.
+  # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), and a
+  # generic written with those names (`Pointer(T)`) is instantiated, as the hosted
+  # MatchContext does. Anything else is the lexical lookup from the current type.
   def lookup_under(node : ASTNode, owner : Type?) : Type
-    if inst = receiver_instance(owner)
-      if node.is_a?(Path)
-        path = node.as(Path)
-        if !path.global && path.names.size == 1
-          if bound = inst.type_vars[path.names.first]?
-            return bound
-          end
-        end
-      end
+    if receiver_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
+      return found.as(Type) unless found.is_a?(LookupError)
     end
-    # `self` in a declared type is the receiver (hosted: the def's self type), not the lexical scope.
     if node.is_a?(Self)
       if o = owner
         return o.as(Type) unless o.is_a?(SemanticProgram)
       end
+    end
+    if quiet = @program.lookup_type_node?(node, @current_type)
+      return quiet
     end
     @program.lookup_type_node(node, @current_type)
   end
@@ -603,6 +605,7 @@ pub class MainVisitor < TypeNodeHost
     expander = LiteralExpander.new(NormalizerProgram.new)
     expanded = node.transform(expander)
     expanded.accept(self)
+    @expansions[node] = expanded
     if et = child_type(expanded)
       set_type(node, et)
     end
@@ -1880,24 +1883,49 @@ pub class MainVisitor < TypeNodeHost
   end
 
   # The type a parameter's restriction names for a call on *rec_type*. A generic instance
-  # (or its metaclass) binds its type parameters, so `v : T` on Box(Int32) is Int32, as the
-  # hosted MatchContext binds them. Anything else is the scope's own lookup. Nil when the
-  # restriction is not a type node (a splat `*T`): lookup_type_node would raise
-  # "expected type, got *T", and total mode must record a refusal instead of aborting.
+  # (or its metaclass) binds its type parameters, so `v : T` on Box(Int32) is Int32 and
+  # `Pointer(T)` is that pointer, as the hosted MatchContext binds them.
+  # A splat restriction (`*T`) is not a type node: lookup_type_node would raise
+  # "expected type, got *T". Nil here, so total mode records a refusal instead of aborting.
   def restriction_type(restriction : ASTNode, rec_type : Type) : Type?
+    if restriction.is_a?(Splat)
+      return nil
+    end
+    # A union restriction (`String | Path`, `T | Nil`) is each member, bound
+    # the way a single name is, then merged. lookup_bound did not instantiate a
+    # union node, so a call whose argument is one member was refused
+    # "expected type, got String | Path".
+    if restriction.is_a?(Union)
+      return union_restriction_type(restriction.as(Union), rec_type)
+    end
     owner = rec_type
     if owner.is_a?(MetaclassType)
       owner = owner.as(MetaclassType).instance_type
     end
-    if owner.is_a?(GenericInstanceType) && restriction.is_a?(Path)
-      names = restriction.as(Path).names
-      if names.size == 1
-        if bound = owner.as(GenericInstanceType).type_vars[names[0]]?
-          return bound
-        end
-      end
+    if receiver_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)
+      return found.as(Type) unless found.is_a?(LookupError)
+      return nil
     end
     @program.lookup_type_node?(restriction, @current_type)
+  end
+
+  # Each member of a union restriction, bound under the receiver, merged. A
+  # member the quiet lookup misses is a total-mode placeholder, so a call still
+  # matches the member it does have. Strict mode leaves the refusal.
+  def union_restriction_type(node : Union, rec_type : Type) : Type?
+    members = [] of Type
+    i = 0
+    while i < node.types.size
+      member = restriction_type(node.types[i], rec_type)
+      if member.nil? && @program.total_mode
+        member = @program.lookup_type_node(node.types[i], @current_type)
+      end
+      return nil if member.nil?
+      members << member.as(Type)
+      i = i + 1
+    end
+    @program.type_merge(members)
   end
 
   def collect_candidate_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
@@ -2055,6 +2083,29 @@ pub class MainVisitor < TypeNodeHost
     end
   end
 
+  # A splat restriction (`*T`) is not a type node, so the candidate check refuses
+  # it. The calls lane binds that splat from the argument types. One match is the
+  # def; several matches are not collapsed to the first (the calls lane answers
+  # that as not ported). Nil leaves the refusal in place.
+  def match_splat_with_calls(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
+    arg_types = [] of Type
+    i = 0
+    while i < args.size
+      t = child_type(args[i])
+      return nil if t.nil?
+      arg_types << t.as(Type)
+      i = i + 1
+    end
+    block_present = false
+    if call_node.block
+      block_present = true
+    end
+    signature = CallSignature.new(name, arg_types, nil, block_present)
+    target = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args)
+    return nil if target.error
+    target.definition
+  end
+
   # The overload a call resolves to, or nil when it cannot: strict mode raises
   # the error, total mode records it on the call and returns nil.
   def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
@@ -2098,6 +2149,9 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if count_matches.empty?
+      if rescued = match_splat_with_calls(rec_type, name, args, call_node)
+        return rescued
+      end
       overload_lines = candidates.map { |d| " - #{format_overload_signature(rec_type, d)}" }
       overloads_str = "Overloads are:\n#{overload_lines.join("\n")}"
       method_disp = format_method_display_name(rec_type, name)
@@ -2119,6 +2173,11 @@ pub class MainVisitor < TypeNodeHost
     exact_matches = [] of Def
     unresolved_restriction : String? = nil
     count_matches.each do |d|
+      # The restriction is written in the def's file, not the caller's: `Path`
+      # in `File.chmod(path : String | Path)` is that file's import.
+      old_imports = @program.current_imports
+      old_import_defs = @program.current_import_defs
+      enter_file_scope(d)
       all_args_match = true
       i = 0
       while i < args.size
@@ -2138,6 +2197,8 @@ pub class MainVisitor < TypeNodeHost
         end
         i = i + 1
       end
+      @program.current_imports = old_imports
+      @program.current_import_defs = old_import_defs
       if all_args_match
         exact_matches << d
       end
@@ -2149,6 +2210,9 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if ur = unresolved_restriction
+      if rescued = match_splat_with_calls(rec_type, name, args, call_node)
+        return rescued
+      end
       return refuse_call(call_node, ur)
     end
 
@@ -2888,6 +2952,41 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
+  # --- asm: begin ---
+  # Hosted visit(node : Asm) (main_visitor.cr 3605-3620). Each output is typed
+  # through `pointerof` of its expression, each input expression is typed, and
+  # the node is Void. The hosted compiler's other-language mode, the removed
+  # interpreter, and exception typing beyond refusing `rescue` are not branches of this method.
+  def visit(node : Asm) : Bool
+    if outputs = node.outputs
+      outputs.each do |output|
+        ptrof = PointerOf.new(output.exp).at(output.exp)
+        ptrof.accept(self)
+      end
+    end
+    if inputs = node.inputs
+      inputs.each do |input|
+        input.exp.accept(self)
+      end
+    end
+    if vt = @program.types["Void"]?
+      set_type(node, vt)
+    end
+    false
+  end
+
+  # visit(Asm) returns false, as the hosted visit does, so an operand is not
+  # walked from there. A walk that reaches the operand types its expression.
+  def visit(node : AsmOperand) : Bool
+    node.exp.accept(self)
+    if et = child_type(node.exp)
+      set_type(node, et)
+    end
+    false
+  end
+
+  # --- asm: end ---
+
   # --- type nodes: begin ---
   # The type-argument bracket the type-node functions use (hosted `@in_type_args`).
   def bracket_type_args(delta : Int32) : Nil
@@ -2912,13 +3011,12 @@ pub class MainVisitor < TypeNodeHost
 
   def visit(node : FunDef) : Bool
     # hosted: a fun body is spliced like a def body, in the program's scope and the fun's file.
+    # splice_fun_body binds the fun's arguments as the names declared before the first statement.
     file = ""
     if loc = node.location
       file = loc.filename
     end
-    if body = node.body
-      node.body = splice_body_node(body, @program.full_name, file, false)
-    end
+    splice_fun_body(node, @program.full_name)
     saved = @fun_inline_file
     @fun_inline_file = file
     typed = visit_fun_def(self, node)
@@ -3060,6 +3158,7 @@ pub class MainVisitor < TypeNodeHost
     inner.untyped_reasons = @untyped_reasons
     inner.call_target_defs = @call_target_defs
     inner.lib_call_targets = @lib_call_targets
+    inner.expansions = @expansions
     inner.total = @total
     inner.typing_stack = @typing_stack
     inner.refusals = @refusals

@@ -188,3 +188,4 @@ src/compiler/lower/census.iyi parse
 src/compiler/lower/class_var.iyi parse
 src/compiler/lower/headed.iyi parse
 src/compiler/lower/proc.iyi parse
+src/compiler/lower/asm.iyi parse

@@ -343,9 +343,52 @@ unless target.empty?
 end
 defines.each { |d| program.flags << d }
 
+# A fixture may bind type parameters with `# free: NAME KIND MEMBERS [splat]`
+# lines (KIND is type or tuple; MEMBERS is comma-separated, no spaces). A
+# splat tuple is the expansion scope, so that name becomes a tuple literal of
+# type nodes, as the hosted interpreter does. A plain name is a type node.
+def free_type(program, name)
+  case name
+  when "Int32" then program.int32
+  when "Int64" then program.int64
+  when "Bool" then program.bool
+  when "UInt8" then program.uint8
+  when "UInt64" then program.uint64
+  when "Char" then program.char
+  when "Float64" then program.float64
+  when "Float32" then program.float32
+  else raise "free-var fixture names an unknown type #{name}"
+  end
+end
+
+free = {} of String => Iyi::TypeVar
+path_lookup : Iyi::Type = program
+src.each_line do |line|
+  next unless line.starts_with?("# free: ")
+  parts = line[8..].split(' ')
+  name = parts[0]
+  kind = parts[1]
+  members = parts[2].split(',')
+  splat = parts.size > 3 && parts[3] == "splat"
+  typ = case kind
+        when "type"
+          free_type(program, members[0])
+        when "tuple"
+          program.tuple_of(members.map { |m| free_type(program, m) })
+        else
+          raise "free-var kind #{kind} is not in this driver"
+        end
+  free[name] = typ
+  if splat && kind == "tuple"
+    path_lookup = typ.as(Iyi::Type)
+  end
+end
+
 # The same interpreter `Program#expand_macro` builds, driven one top-level
-# site at a time so each site's text can be read back.
-interp = Iyi::MacroInterpreter.new(program, program, program, the_macro.not_nil!, the_call.not_nil!, nil, in_macro: true)
+# site at a time so each site's text can be read back. Free vars are the
+# instantiated owner's type parameters (semantic_visitor.cr:2214-2215).
+interp = Iyi::MacroInterpreter.new(program, path_lookup, path_lookup, the_macro.not_nil!, the_call.not_nil!, nil, in_macro: true)
+interp.free_vars = free unless free.empty?
 body = the_macro.not_nil!.body
 nodes = [] of Iyi::ASTNode
 if body.is_a?(Iyi::Expressions)
@@ -623,6 +666,42 @@ prove_mutation "flag? answers the opposite of the target's set" "$REPO/src/compi
   "return BoolLiteral.new(!MacroMethods.has_flag?(@flags, flag_name_of(node)))" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# A free type parameter resolves to its binding (macro_free_vars.iyi). Dropping
+# the lookup leaves T undefined, so the expansion is an error instead of the
+# tuple literal the hosted interpreter prints.
+prove_mutation "a free type parameter is not bound" "$INTERP" \
+  "return resolve_free_binding(bound)" \
+  "return TypeNode.new(\"unbound\")" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# ArrayLiteral#find returns the element whose block is truthy (macro_array_find.iyi).
+# Always-false makes the expansion nil instead of 2.
+prove_mutation "ArrayLiteral#find never matches" "$INTERP" \
+  "if MacroMethods.truthy?(val)" \
+  "if false && MacroMethods.truthy?(val)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# HashLiteral#[] returns the value of the matching key (macro_hash_index.iyi).
+# Always nil makes the expansion nil instead of the limit string.
+prove_mutation "HashLiteral#[] ignores the key" "$METHODS" \
+  "return hash.entries[i].value" \
+  "return NilLiteral.new" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# TypeNode#[] returns the type argument at that index (macro_typenode_index.iyi).
+# Always nil makes U[0] nil instead of Int32.
+prove_mutation "TypeNode#[] ignores the index" "$METHODS" \
+  "return TypeNode.new(tn.type_args[idx])" \
+  "return NilLiteral.new" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+
+
 
 
 prove_mutation "sites expanded in the program scope, not their class" "$REPO/bench/selfhost_macros_exercise.iyi" \

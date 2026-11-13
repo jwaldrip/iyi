@@ -374,6 +374,27 @@ pub class MacroMethods
         refuse("undefined method 'size' for TypeNode of type #{shown.to_s} (must be a tuple or named tuple type)")
         return nil
       end
+      # Hosted TypeNode#[]: a tuple type argument by index. Out of range is nil.
+      # Any other type is refused, as size is.
+      if method == "[]"
+        if !tn.sized
+          shown = StringBuilder.new
+          tn.to_s(shown)
+          refuse("undefined method '[]' for TypeNode of type #{shown.to_s} (must be a tuple or named tuple type)")
+          return nil
+        end
+        if args.size == 1 && args[0].is_a?(NumberLiteral)
+          idx = eval_int(args[0]).to_i32
+          if idx < 0
+            idx = tn.type_args.size + idx
+          end
+          if idx >= 0 && idx < tn.type_args.size
+            return TypeNode.new(tn.type_args[idx])
+          end
+          return NilLiteral.new
+        end
+        return NilLiteral.new
+      end
       return nil
     end
 
@@ -478,6 +499,17 @@ pub class MacroMethods
           keys << entry.key
         end
         return ArrayLiteral.new(keys)
+      when "[]"
+        if args.size == 1
+          i = 0
+          while i < hash.entries.size
+            if ast_equal?(hash.entries[i].key, args[0])
+              return hash.entries[i].value
+            end
+            i = i + 1
+          end
+          return NilLiteral.new
+        end
       end
       return nil
     end

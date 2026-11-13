@@ -15,10 +15,9 @@ module bench/lib/primitive_stand_in
 # and the marker reads in primitives.iyi, when the semantic pass gives primitive defs their
 # own body.
 
-import compiler/syntax/ast::{ASTNode, Arg, Def, Path}
-import compiler/semantic/top_level::{NonGenericClassType, GenericClassType, SemanticProgram}
+import compiler/syntax/ast::{ASTNode, Arg, Def, Path, Primitive, Self}
+import compiler/semantic/top_level::{GenericClassType, NonGenericClassType, SemanticProgram}
 import compiler/semantic/main_visitor::{MainVisitor}
-
 pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : MainVisitor) : Nil
   int_names = ["Int8", "UInt8", "Int16", "UInt16", "Int32", "UInt32", "Int64", "UInt64", "Int128", "UInt128"]
   int_names.each do |tn|
@@ -41,10 +40,6 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
       end
     end
   end
-  pointer = prog.lookup_type_node(Path.new("Pointer"), prog).as(GenericClassType)
-  value = Def.new("value", [] of Arg, nil, nil, nil, Path.new("T"))
-  value.free_vars = ["# primitive: pointer_get"] of String
-  pointer.add_def(value)
   bool = prog.lookup_type_node(Path.new("Bool"), prog).as(NonGenericClassType)
   ["==", "!="].each do |op|
     bool.add_def(binary_def(op, "Bool", "Bool"))
@@ -53,6 +48,7 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
   ["==", "!=", "<", "<=", ">", ">="].each do |op|
     char.add_def(binary_def(op, "Char", "Bool"))
   end
+  declare_pointer_primitives(prog)
 end
 
 # A builtin's binary operator: one argument of the operand's type, the result type, a Nop
@@ -61,4 +57,23 @@ pub def binary_def(op : String, operand : String, result : String) : Def
   d = Def.new(op, [Arg.new("other", nil, Path.new(operand))] of Arg, nil, nil, nil, Path.new(result))
   d.free_vars = ["# primitive: binary"] of String
   d
+end
+
+def primitive_def(op : String, args : Array(Arg), result : ASTNode?, prim : String) : Def
+  Def.new(op, args, Primitive.new(prim), nil, nil, result)
+end
+
+# Hosted src/primitives.cr 259-379 (and src/iyi/primitives.iyi 149-187): Pointer(T) primitives
+# declared for bare fixtures so Pointer(T).malloc, new, value, value=, address, realloc, +, - type.
+def declare_pointer_primitives(prog : SemanticProgram) : Nil
+  ptr = prog.lookup_type_node(Path.new("Pointer"), prog).as(GenericClassType)
+  meta = ptr.metaclass
+  meta.add_def(primitive_def("malloc", [Arg.new("size", nil, Path.new("UInt64"))] of Arg, nil, "pointer_malloc"))
+  meta.add_def(primitive_def("new", [Arg.new("address", nil, Path.new("UInt64"))] of Arg, nil, "pointer_new"))
+  ptr.add_def(primitive_def("value", [] of Arg, Path.new("T"), "pointer_get"))
+  ptr.add_def(primitive_def("value=", [Arg.new("value", nil, Path.new("T"))] of Arg, nil, "pointer_set"))
+  ptr.add_def(primitive_def("address", [] of Arg, Path.new("UInt64"), "pointer_address"))
+  ptr.add_def(primitive_def("realloc", [Arg.new("size", nil, Path.new("UInt64"))] of Arg, Self.new, "pointer_realloc"))
+  ptr.add_def(primitive_def("+", [Arg.new("offset", nil, Path.new("Int64"))] of Arg, Self.new, "pointer_add"))
+  ptr.add_def(primitive_def("-", [Arg.new("other", nil, Self.new)] of Arg, Path.new("Int64"), "pointer_diff"))
 end

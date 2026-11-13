@@ -129,7 +129,7 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -175,8 +175,8 @@ prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR
   "return visit_global_fun_call(node, global_fun) if own.empty?" \
   "return false if own.empty?" -- bodies_at_floor || status=1
 prove_mutation "a fun body is not spliced at its top level" "$MAIN_VISITOR" \
-  "node.body = splice_body_node(body, @program.full_name, file, false)" \
-  "node.body = body" -- bodies_at_floor || status=1
+  "splice_fun_body(node, @program.full_name)" \
+  "nil" -- bodies_at_floor || status=1
 prove_mutation "a trait definition is typed in its own type" "$MAIN_VISITOR" \
   "def visit(node : TraitDef) : Bool" \
   "def visit_trait_def_off(node : TraitDef) : Bool" -- bodies_at_floor || status=1
@@ -207,9 +207,17 @@ prove_mutation "early exit in then branch narrows the rest of the body" "$MAIN_V
 prove_mutation "a refused body with declared return is cached" "$MAIN_VISITOR" \
   "        remember_def_instance(cache_key, target_def, declared_ret)" \
   "        nil" -- bodies_at_floor || status=1
-prove_mutation "a splat restriction is refused instead of raising" "$MAIN_VISITOR" \
-  "return refuse_call(call_node, ur)" \
-  "raise(ur)" -- bodies_at_floor || status=1
+prove_mutation "a generic pointer restriction is not bound from the receiver" "$MAIN_VISITOR" \
+  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
+  "found = LookupError.new(\"unbound\")" -- bodies_at_floor || status=1
+prove_mutation "a splat call is not resolved by the calls lookup" "$MAIN_VISITOR" \
+  "    return nil if target.error
+    target.definition" \
+  "    return nil if target.error
+    nil" -- bodies_at_floor || status=1
+prove_mutation "a union restriction is not instantiated from its members" "$MAIN_VISITOR" \
+  "      return union_restriction_type(restriction.as(Union), rec_type)" \
+  "      return nil" -- bodies_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"

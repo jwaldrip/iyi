@@ -45,7 +45,7 @@ src/compiler/lower/class_var.iyi 1
 src/compiler/lower/cond.iyi 1
 src/compiler/lower/const.iyi 1
 src/compiler/lower/context.iyi 7
-src/compiler/lower/fun.iyi 1
+src/compiler/lower/fun.iyi 2
 src/compiler/lower/globals.iyi 5
 src/compiler/lower/headed.iyi 1
 src/compiler/lower/helpers.iyi 1

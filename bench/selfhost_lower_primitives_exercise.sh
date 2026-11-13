@@ -47,14 +47,14 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
-    lowprim_ptr) echo "the generic metaclass resolves its receiver now (S1c, 17bc4d2f8), but the bare analysis declares no Pointer primitives, so Pointer(Int32).malloc is undefined: the hosted oracle needs the prelude, and the bare dump has none (NEEDS.md row 19; the Pointer primitives are increment 2)" ;;
   esac
 }
 
 # Fixtures that lower with a known divergence, named, not yet fixed. The gate fails if one starts to match,
-# so the list stays honest. None now.
+# so the list stays honest.
 known_divergence() {
   case "$1" in
+    lowprim_ptr) echo "generic instance metaclass type_id (@\"Pointer(Int32).class:type_id\", NEEDS.md row 17)" ;;
   esac
 }
 # Fixtures identical to the hosted module whose native executable waits by name. None now: defs are emitted Iyi
@@ -170,6 +170,8 @@ lower_primitives_check() {
     "$WORK/mut" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/mut.out" 2>/dev/null || return 1
     awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); if (a[2] != b[2] || b[2] == 0) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/mut.out" || return 1
   done
+  "$WORK/mut" generic_pointerful > "$WORK/mut.pointerful" 2>"$WORK/mut.pointerful.err" || return 1
+  awk '/^generic_pointerful=1$/ { found = 1 } END { exit !found }' "$WORK/mut.pointerful" || return 1
   return 0
 }
 # The baseline: the unmutated port must pass the check, or every mutation below is caught for the wrong reason.
@@ -186,6 +188,16 @@ prove_mutation "a mixed-sign less-than uses the unsigned predicate" "$REPO/src/c
   "      widened = low.builder.icmp(IntPredicate::SLT, p1, extend_int(low, t2, t1, p2))" "      widened = low.builder.icmp(IntPredicate::ULT, p1, extend_int(low, t2, t1, p2))" -- lower_primitives_check || status=1
 prove_mutation "a by-value pointer_get loads" "$REPO/src/compiler/lower/primitives.iyi" \
   "      low.last = values[0]" "      low.last = load_aligned(low, low.typer.llvm_embedded_type(elem), values[0])" -- lower_primitives_check || status=1
+prove_mutation "a Bool pointer_set stores zero" "$REPO/src/compiler/lower/primitives.iyi" \
+  "      bool_stored = values[1]" "      bool_stored = int1(low, 0_i64)" -- lower_primitives_check || status=1
+prove_mutation "a generic instance ignores its class variables" "$REPO/src/compiler/lower/primitives.iyi" \
+  "    return t.as(GenericClassInstanceType).all_instance_vars" "    return Hash(String, MetaTypeVar).new" -- lower_primitives_check || status=1
+prove_mutation "a nilable reference union reads the nil id from the object" "$REPO/src/compiler/lower/cast.iyi" \
+  "    phi.add(low, object_type_id(low, value), true)" "    phi.add(low, type_id_value(low, low.analysed.program.nil_type), true)" -- lower_primitives_check || status=1
+prove_mutation "an implicit-self primitive uses a constant instead of self" "$REPO/src/compiler/lower/primitives.iyi" \
+  "    recv = sv.as(LowerVar).pointer" "    recv = int1(low, 0_i64)" -- lower_primitives_check || status=1
+prove_mutation "a reference pointer_set stores the pointer slot" "$REPO/src/compiler/lower/primitives.iyi" \
+  "      ref_stored = values[1]" "      ref_stored = values[0]" -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
