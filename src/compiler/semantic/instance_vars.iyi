@@ -580,7 +580,9 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
             program.current_imports = saved_imports
           end
           arg_type = program.declared_ivar_type?(pi.restriction, pi.owner, pi.virtual)
-          unless arg_type
+          # Quiet lookup can retain an unbound splat generic where strict lookup
+          # instantiated it. Keep the already resolved type in that case.
+          if !arg_type || (arg_type.is_a?(GenericClassType) && pi.restriction.is_a?(Generic))
             if old = previous["#{pi.owner.full_name} #{pi.name}"]?
               arg_type = old.type
             else
