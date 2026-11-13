@@ -582,6 +582,12 @@ prove_mutation "a location-less builtin keeps its name over an import of that na
   "if false" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+MUT_DRIVER="$REPO/bench/selfhost_semantic_declarations_exercise.iyi"
+prove_mutation "an instance is printed when its generic is declared outside the entry file" "$MUT_DRIVER" \
+  "      next unless declared_in?(generic.locations, entry)" \
+  "      nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a file's own directory is never searched for an import" "$MUT_SEM" \
   "      roots << dir" \
   "      roots << \"/nonexistent-root\"" \
@@ -593,8 +599,8 @@ prove_mutation "explicit instance variables are recorded in reverse declaration 
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
-  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r)" \
-  "@pending_ivars.unshift(PendingIvar.new(@current_type, ivar_name, r))" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, true)" \
+  "@pending_ivars.unshift(PendingIvar.new(@current_type, ivar_name, r, nil, true))" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # Re-claimed from "an instance variable assigned from a typed argument is dropped". Measured: the pending
@@ -609,6 +615,21 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
   "return hook.virtual_of(resolved)" \
   "return resolved" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an initialize argument instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, true)" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, false)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "pointer malloc and null calls do not infer instance variable types" "$MUT_IVARS" \
+  '    if obj.is_a?(Generic) && (node.name == "malloc" || node.name == "null")' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "generic new calls do not infer instance variable types" "$MUT_IVARS" \
+  '    if node.name == "new" && obj.is_a?(Generic)' \
+  '    if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \
@@ -688,6 +709,11 @@ prove_mutation "a metaclass scope does not look names up in its instance type" "
   -- check_pins_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TYPES="$REPO/src/compiler/types/types.iyi"
+prove_mutation "a printed type argument keeps its virtual wrapper" "$MUT_TYPES" \
+  "    return @base_type" \
+  "    return self" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance's instance variable keeps its type parameter" "$MUT_TYPES" \
   "if replacement = tv_map[type.name]?" \
   "if replacement = tv_map[\"no such parameter\"]?" \
