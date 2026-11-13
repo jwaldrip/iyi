@@ -82,6 +82,8 @@ prove_mutation 'changing captured variable is not refused' "$REPO/src/compiler/s
   'if binding.assigned_types.size > 1' 'if false && binding.assigned_types.size > 1' -- mutation_check || status=1
 prove_mutation 'shadowed parameters lose outer insertion order' "$REPO/src/compiler/semantic/closures.iyi" \
   'parent.visible_names' '[] of String' -- mutation_check || status=1
+prove_mutation 'loop assignment is not mutable' "$REPO/src/compiler/semantic/closures.iyi" \
+  'binding.variable.mutably = true if @inside_while' 'binding.variable.mutably = false if @inside_while' -- mutation_check || status=1
 if [ "$status" -ne 0 ]; then
   printf '%s\n' '== SOME CLOSURE CHECKS FAILED'
   exit 1

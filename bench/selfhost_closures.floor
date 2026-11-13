@@ -3,6 +3,7 @@
 bench/fixtures/semclos_literal.iyi 3
 bench/fixtures/semclos_literal_block.iyi 5
 bench/fixtures/semclos_literal_changing.iyi 3
+bench/fixtures/semclos_literal_loop.iyi 3
 bench/fixtures/semclos_literal_mutable.iyi 3
 bench/fixtures/semclos_literal_order.iyi 5
 bench/fixtures/semclos_literal_self.iyi 5
