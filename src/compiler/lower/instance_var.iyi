@@ -74,6 +74,9 @@ end
 # a primitive and an expression that is not a stored variable keep their value as the callee's self.
 pub def self_argument(low : Lowerer, obj : ASTNode, value : Value, st : Type) : Value
   return value unless self_by_pointer?(st)
+  # By-value aggregate expressions may already be represented by their address,
+  # as a class-variable read is after the hosted to_lhs conversion.
+  return value if value.type.pointer?
   if obj.is_a?(Var)
     var = low.current_context.vars[obj.as(Var).name]?
     if !var.nil?
