@@ -778,9 +778,9 @@ atomic_free_at_floor() {
    fi
    return 1
  }
- prove_mutation "a block call matches only a yielding new" "$MAIN_VISITOR" \
-  "      if CallMatch.yields?(d) == wants_block" \
-   "      if true" -- array_new_yields || status=1
+prove_mutation "a block call matches only a yielding new" "$MAIN_VISITOR" \
+  "      keep = CallMatch.yields?(candidates[read_at]) == wants_block" \
+  "      keep = true" -- array_new_yields || status=1
 if ! atomic_free_at_floor; then
   echo "  ATOMIC: one of the instantiated atomic bodies was refused or not reached"
   status=1
