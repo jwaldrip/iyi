@@ -129,6 +129,10 @@ Ported and measured: `visit(Return)` in a def (`codegen_return_node`, a value of
 
 Note on the gate: `lower_out` names a libc function (`time`), because the hosted build must link; a lib fun with no body in the libc does not link under `--prelude empty` (measured on `take`).
 
+Non-aarch64 target: LLVM prints the async unwind-table kind as `uwtable`, while the port prints `uwtable(async)`; the hosted and port target choices are both sync for aarch64 and async otherwise. Reconcile the text when enabling another target (hosted fun.cr:437-440; lower/fun.iyi `uwtable_kind`).
+
+The hosted emitter retains frame pointers for Solaris as well as Darwin (fun.cr:445-448); `lower/fun.iyi` currently recognizes Darwin only.
+
 ## Lowering globals (S2e): what the constants read and the port does not yet give
 
 The gate (bench/selfhost_lower_globals_exercise.sh) compares each constant fixture with the hosted module. Increment 1 (a literal constant inlined at each read, its assignment nil) is measured. Every other constant read or assigned is refused by name, and these rows are what the next increments wait on.

@@ -142,6 +142,18 @@ function cc_define(line,   at, head, p, rest, sp, kw) {
 # LLVM writes `load atomic T, ptr %p acquire, align N`; the IR text puts
 # `atomic acquire` after the alignment. Volatile precedes the operation.
 function atomic_memory(line,   p, suffix, prefix, words) {
+  if (index(line, "atomicrmw ") && match(line, / (monotonic|acquire|release|acq_rel|seq_cst), align [0-9]+$/)) {
+    suffix = substr(line, RSTART + 1)
+    prefix = substr(line, 1, RSTART - 1)
+    split(suffix, words, /[ ,]+/)
+    return prefix ", align " words[3] " " words[1]
+  }
+  if (index(line, "cmpxchg ") && match(line, / (monotonic|acquire|release|acq_rel|seq_cst) (monotonic|acquire|seq_cst), align [0-9]+$/)) {
+    suffix = substr(line, RSTART + 1)
+    prefix = substr(line, 1, RSTART - 1)
+    split(suffix, words, /[ ,]+/)
+    return prefix ", align " words[4] " " words[1] " " words[2]
+  }
   if (!(index(line, "load atomic ") || index(line, "store atomic "))) return line
   if (!match(line, / (unordered|monotonic|acquire|release|acq_rel|seq_cst), align [0-9]+$/)) return line
   suffix = substr(line, RSTART + 1)

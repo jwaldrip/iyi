@@ -22,6 +22,7 @@ module compiler/lower/instance_var
 # under Crystal's layout).
 
 import compiler/ir/values::{Value}
+import compiler/ir/function::{Global}
 import compiler/ir/types::{IrType}
 import compiler/semantic/top_level::{ClassType, NilType, Type, MetaTypeVar}
 import compiler/types/types::{GenericClassInstanceType}
@@ -74,6 +75,9 @@ end
 # a primitive and an expression that is not a stored variable keep their value as the callee's self.
 pub def self_argument(low : Lowerer, obj : ASTNode, value : Value, st : Type) : Value
   return value unless self_by_pointer?(st)
+  # By-value aggregate expressions may already be represented by their address,
+  # as a class-variable read is after the hosted to_lhs conversion.
+  return value if value.type.pointer?
   if obj.is_a?(Var)
     var = low.current_context.vars[obj.as(Var).name]?
     if !var.nil?
@@ -126,6 +130,8 @@ pub def instance_var_pointer(low : Lowerer, owner : Type, name : String, pointer
   # Hosted `instance_var_ptr`: under Crystal's layout a class's type id is an i32 in front of its fields.
   index += 1 if !owner_struct?(owner) && !low.typer.iyi_layout
   struct_t = low.typer.llvm_struct_type(owner)
+  # LLVM folds a constant GEP to a global's first field to the global address.
+  return pointer if index == 0 && pointer.is_a?(Global)
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   field = low.builder.const_int(low.module.types.int32, index.to_i64)
   low.builder.inbounds_gep(struct_t, pointer, [zero, field] of Value)

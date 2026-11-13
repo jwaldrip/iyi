@@ -17,6 +17,7 @@ module compiler/lower/lower
 # `next` in the same sequence is refused by name.
 
 import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Cast, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NilableCast, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
+import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, StringInterpolation}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -28,7 +29,7 @@ import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper, passed_by_value?}
 import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType, TypeQueries, VirtualType}
 import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
-import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?}
+import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
@@ -41,7 +42,7 @@ import compiler/lower/proc::{lower_proc_literal}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
-import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
+import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants, path_const}
 import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
 import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
 import compiler/syntax/ast::{FunDef}
@@ -142,7 +143,7 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   store_aligned(low, fn.param(0), argc_global)
   store_aligned(low, fn.param(1), argv_global)
   initialize_program_constants(low)
-  emit_well_known_funs(low, root)
+  emit_well_known_funs(low)
   low.needs_value = true
   codegen_node(low, root)
   codegen_return(low, ret_ir)
@@ -221,7 +222,7 @@ pub def emit_fun_def(low : Lowerer, node : FunDef, rec : LibFun, ret : Type) : N
   body = node.body
   raise "BUG: fun #{name} has no body (hosted visit(FunDef))" if body.nil?
   target = Def.new(node.name, node.args, body.as(ASTNode))
-  fn = codegen_fun(low, name, target, nil, rec.arg_types, fun_def_type(low, rec, ret), low.typer.llvm_return_type(ret))
+  fn = codegen_fun(low, name, target, nil, rec.arg_types, fun_def_type(low, rec, ret), low.typer.llvm_return_type(ret), ret)
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end
@@ -256,19 +257,43 @@ pub def emit_unused_fun_defs(low : Lowerer) : Nil
   end
 end
 
-# The well-known funs the hosted code emits on entry (codegen.cr:379, codegen_well_known_functions). Only
-# `__crystal_raise_overflow` is ported here: the checked arithmetic calls it by name, so it must be in the module
-# before the program is lowered. Other well-known names are emitted when the program reaches them (refused above).
-pub def emit_well_known_funs(low : Lowerer, root : ASTNode) : Nil
-  top = [] of ASTNode
-  if root.is_a?(Expressions)
-    top = root.as(Expressions).expressions
-  else
-    top << root
+# The hosted codegen emits the runtime overflow function before lowering checked arithmetic.
+# The declaration may come from any unit, not just the entry root.
+pub def emit_well_known_funs(low : Lowerer) : Nil
+  name = raise_overflow_name(low)
+  low.analysed.program.global_funs.each do |record|
+    if record.name == name
+      if node = record.node
+        codegen_fun_def(low, node, true)
+      end
+    end
   end
-  top.each do |n|
-    if n.is_a?(FunDef) && n.as(FunDef).name == "__crystal_raise_overflow"
-      codegen_fun_def(low, n.as(FunDef), true)
+end
+
+# The hosted cleanup follows expansions and constant values before folding an interpolation
+# (cleanup_transformer.cr:389-401, 418-434). Return nil for a runtime piece.
+def interpolation_literal(low : Lowerer, piece : ASTNode) : String?
+  if expanded = low.analysed.expansions[piece]?
+    return interpolation_literal(low, expanded)
+  end
+  if piece.is_a?(Path)
+    if constant = path_const(low, piece.as(Path))
+      return interpolation_literal(low, constant.value)
+    end
+  elsif piece.is_a?(StringLiteral)
+    return piece.as(StringLiteral).value
+  end
+  nil
+end
+
+def interpolation_constant(low : Lowerer, node : StringInterpolation) : String?
+  pieces = node.expressions
+  pieces.each do |piece|
+    return nil if interpolation_literal(low, piece).nil?
+  end
+  String.build do |str|
+    pieces.each do |piece|
+      str << interpolation_literal(low, piece).as(String)
     end
   end
 end
@@ -276,6 +301,30 @@ end
 # The hosted `codegen` visitor's dispatch over one node. A sequence visits each of its
 # expressions in order; the value of the last one is `low.last`.
 pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
+  if node.is_a?(ArrayLiteral)
+    # The hosted expander lowers [] of T to Array(T).new and populated arrays
+    # to unsafe_build and indexed stores (literal_expander.cr:43-108).
+    if expanded = low.analysed.expansions[node]?
+      codegen_node(low, expanded)
+      return
+    end
+  end
+  if node.is_a?(StringInterpolation)
+    if constant = interpolation_constant(low, node.as(StringInterpolation))
+      low.last = build_string_constant(low, constant)
+      return
+    end
+    # The literal expander's typed result is the node the hosted cleanup lowers.
+    if expanded = low.analysed.expansions[node]?
+      codegen_node(low, expanded)
+      return
+    end
+  end
+  if node.is_a?(VisibilityModifier)
+    # The hosted fallback visits children (codegen.cr:3530-3531); the only child is exp (ast.cr:1931-1933).
+    codegen_node(low, node.as(VisibilityModifier).exp)
+    return
+  end
   if node.is_a?(Expressions)
     exprs = node.as(Expressions).expressions
     wants = low.needs_value
@@ -415,7 +464,13 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(Call)
-    codegen_call_node(low, node.as(Call))
+    # The hosted cleanup replaces expanded calls before codegen (call.cr:4-7).
+    # Declaration macros remain on their Call nodes in the port.
+    if expanded = node.as(Call).expanded
+      codegen_node(low, expanded)
+    else
+      codegen_call_node(low, node.as(Call))
+    end
     return
   end
   if node.is_a?(Yield)
@@ -1015,10 +1070,9 @@ pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
   low.builder.ret(value.as(Value))
 end
 
-# The hosted `visit(Return)` (codegen.cr:1170) for a return in a def, with no ensure and no return phi: the value is
-# evaluated and returned by the function being lowered (hosted codegen_return, codegen.cr:1192). A bare return is a
-# `ret void` in a void function. A value of another type than the function returns is refused by name: the hosted code
-# upcasts it, which the casts slice ports. A return at the top level has no def to leave, so it is refused by name.
+# The hosted `visit(Return)` (codegen.cr:1170-1209) evaluates the control expression
+# and upcasts it to the current function's semantic return type before returning.
+# A return at the top level has no def to leave, so it is refused by name.
 pub def codegen_return_node(low : Lowerer, node : Return) : Nil
   if low.current_context.top_level
     pending_visit_node("return at the top level (hosted codegen.cr: visit(Return), node.target is not a Def)")
@@ -1034,7 +1088,12 @@ pub def codegen_return_node(low : Lowerer, node : Return) : Nil
       low.builder.ret_void
       return
     end
-    refuse_port("lower: a bare return from a function that returns a value (hosted codegen_return, the nil upcast)")
+    ret_type = low.current_context.return_type
+    raise "BUG: the function has no analysed return type (hosted codegen_return)" if ret_type.nil?
+    nil_type = low.analysed.program.nil_type
+    returned = upcast(low, llvm_nil(low), nil_type, ret_type.as(Type))
+    low.builder.ret(returned)
+    return
   end
   wants = low.needs_value
   low.needs_value = true
@@ -1049,10 +1108,9 @@ pub def codegen_return_node(low : Lowerer, node : Return) : Nil
   raise "BUG: the return's expression left no value (hosted codegen.cr: visit(Return))" if value.nil?
   exp_t = low.analysed.type_of?(exp.as(ASTNode))
   raise "BUG: the analysed program has no type for a return's value (hosted codegen.cr: visit(Return))" if exp_t.nil?
-  if low.typer.llvm_type(exp_t.as(Type)).to_s != ret_ir.to_s
-    refuse_port("lower: return of #{exp_t.as(Type).full_name} from a function returning another type (hosted upcast, the casts slice)")
-  end
-  returned = value.as(Value)
+  ret_type = low.current_context.return_type
+  raise "BUG: the function has no analysed return type (hosted codegen_return)" if ret_type.nil?
+  returned = upcast(low, value.as(Value), exp_t.as(Type), ret_type.as(Type))
   low.builder.ret(returned)
 end
 

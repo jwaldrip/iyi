@@ -42,6 +42,7 @@ import compiler/lower/const::{const_scope, literal_node_value, literal_of_type, 
 import compiler/lower/fun::{block_ended?}
 import compiler/lower/cast::{assign, nilable_reference_type?, to_lhs}
 import compiler/lower/symbols::{symbol_index}
+import compiler/lower/typer::{passed_by_value?}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type, UnionType}
 import compiler/types/types::{MixedUnionType, NilableProcType}
 
@@ -181,6 +182,12 @@ pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
     return low.typer.llvm_type(cvar.type)
   end
   if nilable_aggregate_initializer?(cvar)
+    return low.typer.llvm_type(cvar.type)
+  end
+  if cvar.type.is_a?(ClassType) && cvar.type.struct?
+    if low.typer.passed_indirectly?(cvar.type)
+      refuse_port("lower: class variable #{cvar.name} has an indirectly passed struct initializer: hosted copy_value is not ported yet")
+    end
     return low.typer.llvm_type(cvar.type)
   end
   ir = low.typer.llvm_type(cvar.type)
@@ -356,8 +363,17 @@ pub def make_cvar_init_function(low : Lowerer, cvar : MetaTypeVar, init_name : S
   if val.is_a?(Inst) && (val.as(Inst).op == Op::ConstInt || val.as(Inst).op == Op::ConstFloat)
     global.initializer = val
   else
-    global.initializer = low.builder.const_null(ir)
-    store_aligned(low, val, global)
+    if passed_by_value?(cvar.type)
+      global.initializer = low.builder.const_zero(ir)
+      if val.type.pointer?
+        store_aligned(low, load_aligned(low, ir, val), global)
+      else
+        store_aligned(low, val, global)
+      end
+    else
+      global.initializer = low.builder.const_null(ir)
+      store_aligned(low, val, global)
+    end
   end
   low.builder.ret_void
   low.finish_main_function
