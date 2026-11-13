@@ -1,6 +1,6 @@
 module bench/selfhost_ensure_targets
 
-import compiler/syntax/ast::{ASTNode, Block, Break, Call, Def, Next, Return, While}
+import compiler/syntax/ast::{ASTNode, Block, Break, Call, Def, Next, ProcLiteral, Return, While}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
@@ -35,6 +35,7 @@ end
 
 class LoopTargets < Visitor
   getter lines : Array(String) = [] of String
+  getter last_next_target : ASTNode? = nil
 
   def describe(node : ASTNode, target : ASTNode?) : String
     line = if loc = node.location
@@ -49,6 +50,8 @@ class LoopTargets < Visitor
                "Block"
              elsif target.is_a?(Call)
                "Call"
+             elsif target.is_a?(Def)
+               "Def"
              else
                "other"
              end
@@ -69,6 +72,7 @@ class LoopTargets < Visitor
   end
 
   def visit(node : Next) : Bool
+    @last_next_target = node.target
     @lines << "Next #{describe(node, node.target)}"
     true
   end
@@ -109,3 +113,14 @@ node.accept(walk)
 expected = ["Next 5 While 4", "Break 8 While 7", "Next 11 Block 10", "Break 14 Call 13"]
 raise "jump targets: #{walk.lines}" unless walk.lines == expected
 walk.lines.each { |line| puts line }
+
+captured = Parser.new("-> { next }\n", "captured.iyi").parse.as(ProcLiteral)
+captured.def.captured_block = true
+visitor = MainVisitor.new(SemanticProgram.new)
+visitor.total = true
+captured.accept(visitor)
+walk = LoopTargets.new
+captured.def.body.accept(walk)
+raise "captured block target: #{walk.lines}" unless walk.lines == ["Next 1 Def 1"]
+raise "captured next targets another def" unless walk.last_next_target.as(Def).node_id == captured.def.node_id
+puts walk.lines.first

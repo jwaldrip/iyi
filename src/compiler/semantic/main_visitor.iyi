@@ -3255,6 +3255,7 @@ pub class MainVisitor < TypeNodeHost
     # Unlike a fun body, the literal's body inherits its enclosing scope
     # (hosted main_visitor.cr 1416-1423).
     inner.scope = @scope
+    inner.current_def = def_node if def_node.captured_block?
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(node)
