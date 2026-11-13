@@ -234,6 +234,23 @@ else
   status=1
 fi
 
+class_self_check() {
+  "$IYI" build -o "$WORK/port-class-self" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/class-self.build.log" 2>&1 || return 1
+  "$WORK/port-class-self" lower "$REPO/bench/fixtures/lower_class_self.iyi" "$WORK/lower_class_self.oracle.ll" > "$WORK/class-self.out" 2> "$WORK/class-self.err" || return 1
+  awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/class-self.out"
+}
+echo "== 2c. Class self is the metaclass type id, identical to hosted"
+if class_self_check; then
+  echo "  lower_class_self: IR identical to hosted"
+  prove_mutation "class self uses its metaclass id" "$REPO/src/compiler/lower/call.iyi" \
+    '        low.last = type_id_value(low, meta)' \
+    '        low.last = low.builder.const_int(low.module.types.int32, 0_i64)' -- class_self_check || status=1
+else
+  echo "FAIL: class self fixture differs from hosted"
+  awk 'NR<=12' "$WORK/class-self.err" "$WORK/class-self.out" "$WORK/class-self.build.log"
+  status=1
+fi
+
 module_floor_file="$REPO/bench/selfhost_lower_core_module.floor"
 module_floor="$(awk 'NR==1 { print $1 }' "$module_floor_file" 2>/dev/null)"
 module_floor="${module_floor:-0}"
