@@ -653,20 +653,64 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
-  # iyi: `x.is_a?(T)` is Bool (hosted type filter). Visit the receiver and the
-  # constant, then type the node.
+  # Returns the local variable name if `exp` is a local variable read or
+  # assignment to one (hosted MainVisitor#get_expression_var).
+  def expression_var_name(exp : ASTNode) : String?
+    if exp.is_a?(Var)
+      return exp.as(Var).name
+    elsif exp.is_a?(Assign)
+      t = exp.as(Assign).target
+      return t.as(Var).name if t.is_a?(Var)
+    elsif exp.is_a?(Expressions)
+      exps = exp.as(Expressions).expressions
+      return expression_var_name(exps[0]) if exps.size == 1
+    elsif exp.is_a?(Call)
+      c = exp.as(Call)
+      if c.obj.nil? && c.args.empty? && c.block.nil? && @vars.has_key?(c.name)
+        return c.name
+      end
+    end
+    nil
+  end
+
+  # iyi: `x.is_a?(T)` and `x.nil?` are Bool and record a SimpleTypeFilter
+  # when the enclosing condition requests type filters (hosted main_visitor.cr 2251-2284).
   def visit(node : IsA) : Bool
     node.obj.accept(self)
+    @in_type_args = @in_type_args + 1
+    saved_ntf = @needs_type_filters
+    @needs_type_filters = 0
     node.const.accept(self)
+    @needs_type_filters = saved_ntf
+    @in_type_args = @in_type_args - 1
     set_type(node, @program.bool_type)
+    @type_filters = nil
+    if needs_type_filters?
+      is_const = false
+      if node.const.is_a?(Path)
+        if pt = @program.lookup_type_path?(node.const.as(Path), @current_type)
+          is_const = true if pt.const?
+        end
+      end
+      unless is_const
+        if vname = expression_var_name(node.obj)
+          if target = child_type(node.const)
+            @type_filters = TypeFilters.single(vname, TypeFilterSpec.new("is_a", target))
+          end
+        end
+      end
+    end
     false
   end
 
-  # iyi: `!x` is Bool whatever its operand (hosted main_visitor.cr 3757). The
-  # operand is visited so its own nodes are typed.
+  # iyi: `!x` is Bool and inverts its operand's type filters (hosted main_visitor.cr 3757).
   def visit(node : Not) : Bool
+    @type_filters = nil
     node.exp.accept(self)
     set_type(node, @program.bool_type)
+    if needs_type_filters?
+      @type_filters = TypeFilters.invert(@type_filters)
+    end
     false
   end
 
