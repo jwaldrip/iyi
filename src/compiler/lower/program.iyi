@@ -23,7 +23,7 @@ module compiler/lower/program
 #   - the funs of each `lib`, registered in the lib as bodiless defs, so a call through a lib types the way
 #     the hosted analysis does (NEEDS.md, lowering calls row 31). Same as bench/lib/lower_gate.iyi.
 
-import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral, InstanceVar, Assign, Call, ClassVar, If, Var}
+import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral, InstanceVar, And, Assign, Call, Case, ClassVar, If, Not, Or, Unless, Var, While}
 import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance, node_class_name}
 import compiler/semantic/match::{YieldFinder}
@@ -234,18 +234,43 @@ pub class NodeIds < Visitor
   end
 end
 
-# The expressions under a def body that the body typer left without a type, of the kinds a lowering asks a type
-# for first: a call, a variable read, an assignment, a conditional.
+# The same, following each node into the tree the body typer expanded it to (`a && b`, a case, a literal:
+# MainVisitor#expand_literal): the typer types that tree, and the node takes its type.
+pub class DeepNodeIds < Visitor
+  getter ids : Hash(UInt64, Bool)
+
+  def initialize(@types : MainVisitor)
+    @ids = Hash(UInt64, Bool).new
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    return false if @ids.has_key?(node.node_id)
+    @ids[node.node_id] = true
+    if expanded = @types.expansions[node]?
+      expanded.accept(self)
+    end
+    true
+  end
+end
+
+# The expressions under a def body, expansions included, that the body typer left without a type, of the kinds a
+# lowering asks a type for first: a call, a variable read, an assignment, a conditional.
 pub class UntypedNodes < Visitor
   getter nodes : Array(ASTNode)
 
   def initialize(@types : MainVisitor)
     @nodes = [] of ASTNode
+    @seen = Hash(UInt64, Bool).new
   end
 
   def visit_any(node : ASTNode) : Bool
-    if node.is_a?(Call) || node.is_a?(ClassVar) || node.is_a?(InstanceVar) || node.is_a?(Var) || node.is_a?(Assign) || node.is_a?(If)
+    return false if @seen.has_key?(node.node_id)
+    @seen[node.node_id] = true
+    if node.is_a?(Call) || node.is_a?(ClassVar) || node.is_a?(InstanceVar) || node.is_a?(Var) || node.is_a?(Assign) || node.is_a?(If) || node.is_a?(Unless) || node.is_a?(And) || node.is_a?(Or) || node.is_a?(Not) || node.is_a?(While) || node.is_a?(Case)
       @nodes << node if @types.type_of?(node).nil?
+    end
+    if expanded = @types.expansions[node]?
+      expanded.accept(self)
     end
     true
   end
@@ -258,6 +283,12 @@ def silent_name(node : ASTNode) : String
   return node.as(InstanceVar).name if node.is_a?(InstanceVar)
   return node.as(Var).name if node.is_a?(Var)
   return "=" if node.is_a?(Assign)
+  return "&&" if node.is_a?(And)
+  return "||" if node.is_a?(Or)
+  return "!" if node.is_a?(Not)
+  return "unless" if node.is_a?(Unless)
+  return "while" if node.is_a?(While)
+  return "case" if node.is_a?(Case)
   "if"
 end
 
@@ -275,16 +306,16 @@ def silent_rows(typed : TypedProgram, refused : Array(String)) : Nil
     finder = UntypedNodes.new(visitor)
     d.body.accept(finder)
     next if finder.nodes.empty?
-    all = NodeIds.new
+    all = DeepNodeIds.new(visitor)
     d.body.accept(all)
     # Every node under a refused node of this def: the refusal already names that gap.
-    covered = NodeIds.new
+    covered = DeepNodeIds.new(visitor)
     refusals.each do |r|
       r.node.accept(covered) if all.ids.has_key?(r.node.node_id)
     end
     finder.nodes.each do |node|
       next if covered.ids.has_key?(node.node_id)
-      under = NodeIds.new
+      under = DeepNodeIds.new(visitor)
       node.accept(under)
       innermost = true
       finder.nodes.each do |other|
