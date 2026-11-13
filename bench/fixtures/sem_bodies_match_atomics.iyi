@@ -1,3 +1,4 @@
+@[Unsafe("the fixture exercises pointer-based atomic operation signatures")]
 struct MatchAtomicOps
   def self.load(pointer : Pointer(T)) : T forall T
     pointer.value
