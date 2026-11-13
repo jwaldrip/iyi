@@ -45,7 +45,7 @@ import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun, c
 import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{define_headed_bytes}
 import compiler/lower/proc::{lower_proc_literal}
-import compiler/lower/closure::{closure_var_barrier_begin, closure_var_barrier_end}
+import compiler/lower/closure::{malloc_closure, closure_var_barrier_begin, closure_var_barrier_end}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, to_rhs, type_id_of_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
@@ -152,6 +152,8 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
   store_aligned(low, fn.param(1), argv_global)
   initialize_program_constants(low)
   emit_well_known_funs(low)
+  program_frame = low.closure_facts.analyse_program(root)
+  malloc_closure(low, low.current_context, program_frame.closured, nil, false)
   low.needs_value = true
   codegen_node(low, root)
   codegen_return(low, ret_ir)

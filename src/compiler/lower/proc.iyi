@@ -17,6 +17,7 @@ module compiler/lower/proc
 
 import compiler/foundation/location::{Location}
 import compiler/ir/types::{IrType}
+import compiler/ir/inst::{Attribute}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/fun::{codegen_fun}
@@ -151,9 +152,6 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
     refuse_port("a proc literal typed #{proc_type.full_name} (hosted visit(ProcLiteral), not a Proc)")
   end
   proc = proc_type.as(ProcInstanceType)
-  if proc.return_type.is_a?(NoReturnType)
-    refuse_port("a proc literal that returns NoReturn (hosted codegen_fun, the noreturn attribute on a literal)")
-  end
 
   frame = low.closure_facts.frame?(node.def)
   if frame.nil?
@@ -190,6 +188,9 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   fn_type = low.module.types.func(params, ret_ir)
   outer : LowerContext? = is_closure ? low.current_context : nil
   fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type, nil, outer)
+  if proc.return_type.is_a?(NoReturnType)
+    fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
+  end
   ctx = if outer
           ptr = outer.closure_ptr
           raise "BUG: closure frame has no pointer" if ptr.nil?
