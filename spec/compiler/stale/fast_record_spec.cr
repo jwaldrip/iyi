@@ -2,10 +2,22 @@ require "../../spec_helper"
 require "../spec_helper"
 require "compiler/iyi/compiler"
 require "compiler/iyi/stale/fast_record"
+require "file_utils"
+
+# The directories the examples below made, removed once each has ended. They
+# were left behind: 28 of them stood in the temporary directory after a few
+# runs of this file.
+FAST_SPEC_DIRS = [] of String
+
+Spec.after_each do
+  FAST_SPEC_DIRS.each { |dir| FileUtils.rm_rf(dir) }
+  FAST_SPEC_DIRS.clear
+end
 
 private def fast_dir : String
   dir = File.tempname("iyi-fast")
   Dir.mkdir_p(dir)
+  FAST_SPEC_DIRS << dir
   dir
 end
 
