@@ -408,9 +408,9 @@ prove_mutation "a nilable restriction drops Nil" "$RESTRICT_FILE" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "an alias in a generic restriction is not unwrapped" "$RESTRICT_FILE" \
-  '    while current.is_a?(AliasType) && seen < 8' \
-  '    while false && current.is_a?(AliasType) && seen < 8' \
+prove_mutation "a type lookup leaves aliases unexpanded" "$REPO/src/compiler/types/lookup.iyi" \
+  '      return expand(target.as(Type))' \
+  '      return type' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
