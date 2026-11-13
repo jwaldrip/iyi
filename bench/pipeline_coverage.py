@@ -4,8 +4,8 @@
 #   python3 bench/pipeline_coverage.py <hosted.ll> <port.names> <root>
 #
 # <hosted.ll> is the hosted compiler's output for the root (`./bin/iyi build --no-debug --emit llvm-ir -o <dir>/hosted
-# <root>`): its `define` names. <port.names> is what the typed pipeline lowered clean, one name per line (the tool writes
-# it as `<output>.names` under --keep-going; a name repeats once per clean instance, and the comparison is on sets).
+# <root>`): its `define` names. <port.names> is what the typed pipeline lowered clean, one distinct name per line (the
+# tool writes it as `<output>.names` under --keep-going; the comparison is on sets).
 # Prints one summary line and the first 20 missing names:
 #
 #   table: <root> hosted-functions=N lowered-clean-and-in-hosted=M missing=K extra=E

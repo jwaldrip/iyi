@@ -32,6 +32,7 @@ TOOL_SRC="$REPO/src/compiler/tools/compile_native.iyi"
 PROGRAM_SRC="$REPO/src/compiler/lower/program.iyi"
 LOWER_SRC="$REPO/src/compiler/lower/lower.iyi"
 COMPILER_SRC="$REPO/src/compiler/compiler.iyi"
+LOADER_SRC="$REPO/src/compiler/loader.iyi"
 ROOTS="samples/iyi/hello.iyi src/compiler/tools/parse.iyi src/compiler/tools/compile_native.iyi"
 
 rank() {
@@ -330,6 +331,26 @@ else
   echo "    unmutated: FAIL (the entry check cannot prove anything)"
   status=1
 fi
+
+# A top-level `{% if flag?(:no_such_flag) %}` require takes the else branch. The driver's
+# output names loader_if_b and not loader_if_a. The mutation makes the loader read every
+# `{% if %}`'s first branch, so the same output names a and the check fails.
+loader_if_check() {
+  if ! "$IYI" build -o "$WORK/loader_if_drv" "$REPO/bench/selfhost_loader_if_exercise.iyi" > "$WORK/loader_if_drv.build" 2>&1; then
+    return 1
+  fi
+  "$WORK/loader_if_drv" "$REPO/bench/fixtures/loader_if_entry.iyi" > "$WORK/loader_if.out" 2> "$WORK/loader_if.err" || return 1
+  awk '/loader_if_b/ { b = 1 } /loader_if_a/ { a = 1 } END { exit !(b && !a) }' "$WORK/loader_if.out"
+}
+echo "  the loader if-require check passes on the unmutated code:"
+if loader_if_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL (the loader if-require check cannot prove anything)"
+  status=1
+fi
+prove_mutation "the loader reads the first branch of every {% if %}" "$LOADER_SRC" \
+  'if report.failure.nil? && !report.skipped' 'if false' -- loader_if_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

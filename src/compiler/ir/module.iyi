@@ -76,6 +76,17 @@ pub class Module
     fn
   end
 
+  # Undoes `add_function`: the name table and the emission-order list. A failed probe
+  # drops the function it left, so a later probe cannot reuse a half-built one.
+  def remove_function(f : Function) : Nil
+    @function_index.delete(f.name)
+    kept = [] of Function
+    @functions.each do |fn|
+      kept << fn unless fn.object_id == f.object_id
+    end
+    @functions = kept
+  end
+
   # A function with a body: `add_function`, then one unnamed parameter per parameter type of `type`, the way
   # the parser gives a `define` its parameters. A declaration keeps `add_function`, with no parameters.
   def define_function(name : String, type : IrType, cc : CallConv = CallConv::Iyi) : Function
