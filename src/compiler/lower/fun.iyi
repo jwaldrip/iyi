@@ -303,12 +303,16 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   ctx_type = self_type
   if ctx_type.nil?
     ctx_type = class_owner
+    if ct = ctx_type
+      if ct.is_a?(MetaclassType)
+        ctx_type = ct.as(MetaclassType).instance_type
+      end
+    end
   end
   low.context = LowerContext.new(fn, fn_type, ctx_type, Hash(String, LowerVar).new)
   if scope = class_owner
     low.current_context.class_var_scope = scope
   end
-  low.current_context.return_type = ret
   low.current_context.var_unions = low.analysed.def_var_unions[target]?
   low.alloca_block = nil
   low.entry_block = nil

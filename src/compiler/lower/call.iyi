@@ -142,7 +142,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
         return if block_ended?(low)
       end
     elsif recv_type.is_a?(MetaclassType)
-      class_owner = recv_type.as(MetaclassType).instance_type
+      class_owner = recv_type
       # A computed metaclass receiver is evaluated even when its value is not
       # passed as self (hosted prepare_call_args, call.cr:69-82).
       unless node.obj.as(ASTNode).is_a?(Path)
