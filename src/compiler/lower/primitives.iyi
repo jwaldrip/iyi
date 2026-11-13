@@ -155,6 +155,11 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     low.last = values[0]
     return
   end
+  if name == "object_id"
+    # Hosted codegen_primitive_object_id (primitives.cr 1055-1057).
+    low.last = low.builder.ptr_to_int(values[0], low.module.types.int64)
+    return
+  end
   if name == "binary"
     if values.size != 2
       pending_visit_node("binary primitive with #{values.size - 1} arguments (hosted codegen_primitive_binary)")

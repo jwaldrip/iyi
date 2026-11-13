@@ -52,6 +52,8 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
   ["==", "!=", "<", "<=", ">", ">="].each do |op|
     char.add_def(binary_def(op, "Char", "Bool"))
   end
+  reference = prog.lookup_type_node(Path.new("Reference"), prog).as(NonGenericClassType)
+  reference.add_def(primitive_def("object_id", [] of Arg, Path.new("UInt64"), "object_id"))
   declare_pointer_primitives(prog)
   # The literal-index fixture alone installs its concrete tuple primitive.
   if root.is_a?(Expressions)
