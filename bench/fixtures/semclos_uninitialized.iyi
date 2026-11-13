@@ -1,0 +1,11 @@
+@[Unsafe("checks uninitialized local capture")]
+def consume(p : Proc(Int32)) : Int32
+  0
+end
+
+def outer : Int32
+  value = uninitialized Int32
+  consume(-> { value })
+end
+
+outer
