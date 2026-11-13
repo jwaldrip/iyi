@@ -394,6 +394,16 @@ if src.each_line.any? { |line| line.starts_with?("# fact: ") }
   end
   path_lookup = fact_scope
 end
+if src.each_line.any? { |line| line.starts_with?("# ivar: ") }
+  fact_scope = Iyi::NonGenericClassType.new(program, program, "MacroFactScope", nil)
+  src.each_line do |line|
+    next unless line.starts_with?("# ivar: ")
+    parts = line[8..].split(' ')
+    fact_scope.declare_instance_var("@#{parts[0]}", free_type(program, parts[1]))
+  end
+  program.top_level_semantic_complete = true
+  path_lookup = fact_scope
+end
 
 
 # The same interpreter `Program#expand_macro` builds, driven one top-level
@@ -722,6 +732,12 @@ prove_mutation "type constants lose their declared names" "$METHODS" \
   "facts.constants.each_key { |name| names << MacroId.new(\"wrong\") }" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "instance variables lose their names" "$METHODS" \
+  "MetaMacroVar.new(variable.name, variable.type_name)" \
+  "MetaMacroVar.new(\"wrong\", variable.type_name)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 
 prove_mutation "sites expanded in the program scope, not their class" "$REPO/bench/selfhost_macros_exercise.iyi" \
   "scope = ref.type_name.empty? ? \"<Program>\" : ref.type_name" \

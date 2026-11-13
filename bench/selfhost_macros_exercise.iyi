@@ -3,7 +3,7 @@ import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 import compiler/macros/ast::{MacroId}
 import compiler/macros/methods::{MacroMethods}
 import compiler/macros/interpreter::{MacroInterpreter, MacroFreeBinding}
-import compiler/macros/type_facts::{MacroTypeFacts}
+import compiler/macros/type_facts::{MacroInstanceVarFact, MacroTypeFacts}
 import compiler/macros/macro_parser::{MacroParser}
 import compiler/macros/engine::{MacroEngine, MacroReport, MacroSite}
 import compiler/macros/target_flags::{MacroTargetFlags}
@@ -170,6 +170,11 @@ module BenchSelfhostMacrosExercise
         facts ||= MacroTypeFacts.new
         facts.as(MacroTypeFacts).constants_known = true
         facts.as(MacroTypeFacts).constants[parts[0]] = parts[1]
+      elsif line.starts_with?("# ivar: ")
+        parts = line[8, line.bytesize - 8].split(" ")
+        facts ||= MacroTypeFacts.new
+        facts.as(MacroTypeFacts).instance_vars_known = true
+        facts.as(MacroTypeFacts).instance_vars << MacroInstanceVarFact.new(parts[0], parts[1])
       end
     end
     facts
