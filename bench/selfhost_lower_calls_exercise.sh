@@ -359,6 +359,35 @@ prove_mutation "a recursive call targets a fresh clone" "$REPO/src/compiler/sema
   "remember_def_instance(cache_key, target_def, provisional)" \
   "nil" -- recursion_owner_check || status=1
 
+# A generic class method compiled without a runtime self (the typed probe drops
+# it) must still lower a receiverless new. Hosted fun.cr:289 keeps the metaclass
+# as context; call.cr:95 passes that type id as self.
+generic_frame_check() {
+  if ! "$IYI" build -o "$WORK/frame_native" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/frame_native.build.log" 2>&1; then
+    echo "INVALID: generic frame probe did not build" >&2
+    awk '!/^ld: warning/ && NR<=20' "$WORK/frame_native.build.log" >&2
+    return 1
+  fi
+  IYI_PATH="$REPO/src" "$WORK/frame_native" "$REPO/bench/fixtures/lowcall_generic_self_new.iyi" -o "$WORK/frame.probe.exe" --pipeline typed --probe-phase --keep-going > "$WORK/frame.probe" 2>&1 || true
+  if grep -E 'no receiver inside a generic or builtin class method|no receiver inside a class method' "$WORK/frame.probe"; then
+    echo "  generic frame: receiverless new was refused" >&2
+    return 1
+  fi
+  awk '/^table: .* defs-lowered-clean=/ { found = 1 } END { exit !found }' "$WORK/frame.probe"
+}
+if ! generic_frame_check; then
+  echo "  baseline: generic class-method context did not lower a receiverless new"
+  exit 1
+fi
+echo "  generic class-method context lowers a receiverless new"
+prove_mutation "a generic class method drops its metaclass context" "$REPO/src/compiler/lower/fun.iyi" \
+  '        ctx_type = co.as(GenericClassInstanceType).metaclass' \
+  '        ctx_type = co' -- generic_frame_check || status=1
+prove_mutation "a receiverless call in a generic class method is treated as builtin" "$REPO/src/compiler/lower/call.iyi" \
+  '      elsif class_meta = receiverless_class_metaclass(ct)' \
+  '      elsif class_meta = nil' -- generic_frame_check || status=1
+
+
 echo
 if [ "$status" -eq 0 ]; then
   echo "lowering of calls and functions: all checks hold"

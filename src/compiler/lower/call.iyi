@@ -182,6 +182,16 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
         if class_owner.nil? && !low.analysed.program.defs[node.name]?
           pending_visit_node("a class method #{node.name} inherited from a superclass of #{ct.full_name} (hosted call.cr: target_def.owner is the defining type)")
         end
+      elsif class_meta = receiverless_class_metaclass(ct)
+        # Hosted call.cr:85-95: a generic metaclass is passed as self. The frame
+        # has no runtime self, so llvm_self synthesizes the type id of the
+        # metaclass context (codegen.cr:2491-2496, fun.cr:289).
+        if defines_method?(class_meta, node.name) || receiverless_class_target?(low, node)
+          self_type = class_meta
+          self_value = type_id_value(low, class_meta)
+        elsif !low.analysed.program.defs[node.name]?
+          pending_visit_node("a class method #{node.name} inherited from a superclass of #{class_meta.full_name} (hosted call.cr: target_def.owner is the defining type)")
+        end
       else
         pending_visit_node("a call to #{node.name} with no receiver inside a generic or builtin class method (hosted call.cr: prepare_call_args, the metaclass owner)")
       end
@@ -333,6 +343,26 @@ pub def emit_def_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, func : 
   end
 end
 
+# Hosted fun.cr:289 keeps a class method's context as the metaclass. A generic
+# metaclass is passed as self (types.cr passed_as_self?); a frame with no runtime
+# self still calls through that owner (codegen.cr:2496). A non-generic class
+# method keeps the instance context the existing fixtures lower.
+def receiverless_class_metaclass(ct : Type) : Type?
+  if ct.is_a?(GenericClassInstanceMetaclassType)
+    return ct
+  end
+  nil
+end
+
+# The analysed target's defining owner, when the metaclass's own defs do not
+# name the method (hosted target_def.owner is the defining type).
+def receiverless_class_target?(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Bool
+  if target = low.analysed.target_def?(node)
+    return !low.analysed.program.def_owner(target).nil?
+  end
+  false
+end
+ 
 # An implicit method uses the caller's self even when the def was inherited.
 # A program-level def takes no self. The analysed target's defining scope
 # distinguishes them without guessing from methods sharing the same name.

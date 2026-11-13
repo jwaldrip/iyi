@@ -298,11 +298,22 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   add_body_attributes(fn, low.module.triple)
 
   saved = low.save_function_state
-  # A class method's context names its instance type (hosted: the metaclass's instance, which `allocate` reads),
-  # since it has no self. The implicit-self refusal then covers the calls inside it that are not primitives.
+  # Hosted fun.cr:289 sets context.type to the metaclass. A non-generic class
+  # method has no runtime self (types.cr passed_as_self?) and keeps the instance
+  # here, which allocate and the implicit-call path already read. A generic class
+  # method is passed as self; a caller that drops that parameter (lower.iyi
+  # lower_def_probe) still passes the instance as class_owner. Keep the metaclass
+  # so a receiverless new sees the owner llvm_self would synthesize
+  # (codegen.cr:2491-2496).
   ctx_type = self_type
   if ctx_type.nil?
-    ctx_type = class_owner
+    if co = class_owner
+      if co.is_a?(GenericClassInstanceType)
+        ctx_type = co.as(GenericClassInstanceType).metaclass
+      else
+        ctx_type = co
+      end
+    end
   end
   low.context = LowerContext.new(fn, fn_type, ctx_type, Hash(String, LowerVar).new)
   low.current_context.return_type = ret
