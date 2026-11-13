@@ -196,19 +196,28 @@ step "a flag is a flag, and a directory is not a changed file"
   { echo "a directory was accepted as a changed file:"; cat dir.txt; exit 1; }
 
 step "a run that answers from receipts takes no option that would run a test another way"
-# `--cached` and what goes with it build and run each test one way: one at
-# a time, every named case, under the runner's own build. Taken with `--run`
-# a receipt would stand for a test of which only some cases ran, and with
-# `--release` for a build it was not made from, so each is refused by name.
+# `--cached` and what goes with it build and run each test one way: every
+# named case, under the runner's own build. Taken with `--run` a receipt
+# would stand for a test of which only some cases ran, and with `--release`
+# for a build it was not made from, so each is refused by name.
 for receipts in --cached --fresh --explain "--shard 1/2"; do
-  for other in "--run adds" "-p 2" "-v" "--release" "-D probe"; do
+  for other in "--run adds" "-v" "--release" "-D probe"; do
     # shellcheck disable=SC2086
     "$IYI" test $receipts $other . > both.txt 2>&1
     [ $? -eq 1 ] && grep -q "cannot pass both ${other%% *}.* and ${receipts%% *}" both.txt ||
       { echo "$other was taken with $receipts:"; cat both.txt; exit 1; }
   done
 done
-# And without a receipt option they are taken: the refusal is of the pair.
+# `-p` is not one of them: how many tests are checked at once changes no
+# test's build or run, so a receipt run takes it. It was refused while the
+# receipt runner checked one test at a time.
+for receipts in --cached --fresh; do
+  # shellcheck disable=SC2086
+  "$IYI" test $receipts -p 2 . > paired.txt 2>&1
+  [ $? -eq 0 ] && ! grep -q 'cannot pass both' paired.txt ||
+    { echo "-p 2 was refused with $receipts:"; cat paired.txt; exit 1; }
+done
+# And without a receipt option the others are taken: the refusal is of the pair.
 "$IYI" test -p 2 -v . > alone.txt 2>&1
 grep -q 'cannot pass both' alone.txt &&
   { echo "-p and -v were refused without a receipt option:"; cat alone.txt; exit 1; }

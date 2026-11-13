@@ -1480,17 +1480,25 @@ wait "$r58_pid"
 r58_status=$?
 set -e
 expect_eq "$r58_status" 130 "an interrupted parallel runner exits 130"
+# A killed test whose parent has exited is a zombie until something reaps it.
+# An init does at once; the first process of a container may never, and
+# `kill -0` answers for a zombie as it does for a running test. On the Linux
+# runner this row found a killed test's pid still answering five seconds
+# after the runner had exited 130, where it passes on darwin. So a pid whose
+# state in /proc is Z is gone, and a pid that is neither gone nor a zombie
+# prints its state, so the next failure says which it was.
+r58_state() { sed -e 's/^.*) //' -e 's/ .*//' "/proc/$1/stat" 2>/dev/null || true; }
 for name in slow_a slow_b; do
   pid="$(cat "$r58_ctl/pid-$name")"
   gone=0
   for i in $(seq 1 50); do
-    if ! kill -0 "$pid" 2>/dev/null; then
+    if ! kill -0 "$pid" 2>/dev/null || [ "$(r58_state "$pid")" = Z ]; then
       gone=1
       break
     fi
     sleep 0.1
   done
-  expect_eq "$gone" 1 "test $name (pid $pid) is gone after the interrupt"
+  expect_eq "$gone" 1 "test $name (pid $pid) is gone after the interrupt (state in /proc: '$(r58_state "$pid")')"
 done
 touch "$r58_ctl/release"
 set +e

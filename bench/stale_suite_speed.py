@@ -339,8 +339,8 @@ def main():
                          if unchanged["cached"]["seconds"].get(name, 0.0) > unchanged["plain"]["seconds"].get(name, 0.0))
             print(f"  {label:13s} {len(names):5d} tests: plain median {plain_s[len(plain_s) // 2]:.2f}, "
                   f"check median {check_s[len(check_s) // 2]:.2f}; the check cost more than the run for {dearer}")
-        report["per_test_note"] = "plain seconds are measured with several tests running at once, cached checks one at a time"
-        print("  (plain tests run several at once and cached checks one at a time, so the two columns are not the same load)")
+        report["per_test_note"] = "both columns are measured with several tests in flight, as many as each run's -p default"
+        print("  (both runs keep several tests in flight, so a test's seconds include waiting on the others)")
 
     if args.expect_faster:
         unchanged = report["scenarios"].get("unchanged")
