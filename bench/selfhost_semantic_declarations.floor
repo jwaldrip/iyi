@@ -70,11 +70,13 @@ src/compiler/lower/abi/aarch64.iyi 0
 src/compiler/lower/block.iyi 0
 src/compiler/lower/call.iyi 0
 src/compiler/lower/cast.iyi 0
+src/compiler/lower/class_var.iyi 0
 src/compiler/lower/cond.iyi 0
 src/compiler/lower/const.iyi 0
 src/compiler/lower/context.iyi 0
 src/compiler/lower/fun.iyi 0
 src/compiler/lower/globals.iyi 0
+src/compiler/lower/headed.iyi 0
 src/compiler/lower/helpers.iyi 0
 src/compiler/lower/instance_var.iyi 0
 src/compiler/lower/layouts.iyi 0
@@ -82,6 +84,7 @@ src/compiler/lower/lower.iyi 0
 src/compiler/lower/pending.iyi 5
 src/compiler/lower/phi.iyi 0
 src/compiler/lower/primitives.iyi 0
+src/compiler/lower/proc.iyi 0
 src/compiler/lower/program.iyi 0
 src/compiler/lower/symbols.iyi 0
 src/compiler/lower/type_id.iyi 0
