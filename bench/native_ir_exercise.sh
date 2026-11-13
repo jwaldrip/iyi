@@ -138,6 +138,25 @@ decimal_check() {
   return 0
 }
 
+# LLVM's form of a float constant, the double of the same value, must be read as the float's own bits, and a
+# double must keep its sixteen digits. Non-zero when any is not.
+llvm_float_check() {
+  local bin="$1" out want
+  out=$("$bin" print bench/fixtures/ir/accept/llvm_float.ir 2>&1) || return 1
+  for want in \
+    '@lowest = internal global float 0xff7fffff' \
+    '@one_and_a_half = internal global float 0x3fc00000' \
+    '@infinite = internal global float 0x7f800000' \
+    '@not_a_number = internal global float 0x7fc00000' \
+    '@smallest = internal global float 0x00000001' \
+    '@own_form = internal global float 0x3fc00000' \
+    '@double_kept = internal global double 0xc7efffffe0000000' \
+    '  %sum = fadd float 0x3fc00000, 0x40200000'; do
+    echo "$out" | grep -qxF -- "$want" || return 1
+  done
+  return 0
+}
+
 # The tls-fresh fixture must be refused under its rule. Non-zero when it is accepted or refused another way.
 tls_check() {
   local bin="$1" out
@@ -258,6 +277,7 @@ echo "== 5b. the ModuleID header is ignored and the module is named by source_fi
 out=$("$DRV" print bench/fixtures/ir/accept/moduleid.ir 2>&1) || fail "moduleid.ir: $out"
 echo "$out" | grep -q '^source_filename = "moduleid.iyi"$' || fail "moduleid.ir does not keep source_filename as its module identifier: $out"
 decimal_check "$DRV" || fail "decimal_float.ir: a decimal floating-point constant is not read as its bit pattern: $("$DRV" print bench/fixtures/ir/accept/decimal_float.ir 2>&1)"
+llvm_float_check "$DRV" || fail "llvm_float.ir: a float constant in LLVM's double form is not read as the float's bits: $("$DRV" print bench/fixtures/ir/accept/llvm_float.ir 2>&1)"
 count=0
 for f in bench/fixtures/ir/reject/*.ir; do
   count=$((count + 1))
@@ -391,6 +411,16 @@ prove_mutation "parser: a decimal constant of type float keeps the double's bit 
   'type.float32? ? single_bits(value) : double_bits(value)' \
   'type.float32? ? double_bits(value) : double_bits(value)' \
   decimal_check
+prove_mutation "parser: a float constant in LLVM's double form keeps the double's low bits" \
+  src/compiler/ir/parser.iyi \
+  'if type.float32? && t.text.bytesize > 8' \
+  'if type.float32? && t.text.bytesize > 16' \
+  llvm_float_check
+prove_mutation "values: the float read from a double loses its sign" \
+  src/compiler/ir/values.iyi \
+  'return (sign << 31) | ((power + 127_i64) << 23) | top' \
+  'return ((power + 127_i64) << 23) | top' \
+  llvm_float_check
 
 echo
 if [ "$failed" -eq 0 ]; then
