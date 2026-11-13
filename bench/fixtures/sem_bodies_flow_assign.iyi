@@ -32,6 +32,10 @@ def flow_take(item : FlowItem) : Int32
   item.score
 end
 
+def flow_take_nil(item : Nil) : Int32
+  0
+end
+
 def flow_step(item : FlowItem | Nil) : FlowItem | Nil
   item
 end
@@ -47,7 +51,7 @@ def flow_assign(item : FlowItem | Nil, holder : FlowHolder) : Int32
   elsif other = holder.item
     other.score
   else
-    0
+    flow_take_nil(other)
   end
 end
 
@@ -68,7 +72,7 @@ end
 
 def flow_unless(item : FlowItem | Nil) : Int32
   unless found = item
-    0
+    flow_take_nil(found)
   else
     found.score
   end
