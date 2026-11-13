@@ -39,6 +39,11 @@ struct MatchAtomic(T)
   end
 end
 
+unsigned_word = 1_u64
+signed_word = 1_i64
+unsigned_read = MatchAtomicOps.load(pointerof(unsigned_word))
+signed_read = MatchAtomicOps.load(pointerof(signed_word))
+
 # Both instantiated owners bind the callee's forall T independently.
 u = MatchAtomic(UInt64).new(1_u64)
 u_read = u.get
