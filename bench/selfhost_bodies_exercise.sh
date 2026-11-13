@@ -144,17 +144,21 @@ MUT_TD="$WORK/mut_typed_dump"
 # The mutation runner captures check output and only displays its tail. Keep the
 # compiler's complete diagnostics in the gate log when a mutant cannot build.
 exec 9>&1
+body_build_failed() {
+  cat "$1" >&9
+  if [ "${_PM_ARMED:-0}" -eq 1 ]; then
+    echo "INVALID MUTANT: compiler build failed; this is not a behavioral catch"
+    return 0
+  fi
+  echo "BASELINE FAILURE: compiler build failed"
+  return 1
+}
 # Rebuilds the typed dump from the patched source and checks the lib-call and jump fixtures
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1; then
-    cat "$WORK/mut_build.log" >&9
-    if [ "${_PM_ARMED:-0}" -eq 1 ]; then
-      echo "INVALID MUTANT: typed_dump did not build; this is not a behavioral catch"
-      return 0
-    fi
-    echo "BASELINE FAILURE: typed_dump did not build"
-    return 1
+    body_build_failed "$WORK/mut_build.log"
+    return $?
   fi
   for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_proc_scope sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup sem_bodies_receiver_order sem_bodies_unit_scope sem_bodies_unit_scope_inferred sem_bodies_proc_splat sem_bodies_pack_splat sem_bodies_imported_restriction; do
     fixture="$REPO/bench/fixtures/$name.iyi"
@@ -314,8 +318,8 @@ prove_mutation "imported restrictions use the defining unit" "$MAIN_VISITOR" \
 # A failed mutant build is not evidence that this fixture caught the mutation.
 defaults_at_floor() {
   if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/default_mut_build.log" 2>&1; then
-    echo "  mutant did not build"
-    return 0
+    body_build_failed "$WORK/default_mut_build.log"
+    return $?
   fi
   local fixture="$REPO/bench/fixtures/$1.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/default_o.txt" || return 0
@@ -386,7 +390,7 @@ echo
 echo "== 4c. A macro site in a def body sees the receiver's type parameters and the def's free variables"
 # Rebuilds the typed dump from the patched source and checks the macro-bindings fixture alone.
 macro_bindings_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { echo "  mutant did not build"; return 0; }
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_macro_bindings.iyi"
   rel="bench/fixtures/sem_bodies_macro_bindings.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -405,7 +409,7 @@ prove_mutation_all "a macro site in a def body does not see the def's free varia
 echo
 echo "== 4d. A macro site in an enum method sees its constants"
 macro_enum_facts_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_macro_enum_facts.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
@@ -416,7 +420,7 @@ prove_mutation_all "enum macro facts are not passed to the body splice" "$MAIN_V
   "def_inline_bindings, MacroBindings.facts(@scope))" \
   "def_inline_bindings, nil)" -- macro_enum_facts_at_floor || status=1
 macro_ivars_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_macro_ivars.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
@@ -427,7 +431,7 @@ prove_mutation "instance variable facts are not passed to the body splice" "$REP
   "facts.instance_vars_known = true" \
   "facts.instance_vars_known = false" -- macro_ivars_at_floor || status=1
 macro_annotations_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_macro_annotations.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
@@ -438,7 +442,7 @@ prove_mutation "enum annotations are not supplied to macro sites" "$REPO/src/com
   "facts.annotations_known = true" \
   "facts.annotations_known = false" -- macro_annotations_at_floor || status=1
 macro_value_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_macro_value.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
@@ -451,7 +455,7 @@ prove_mutation "a value-position macro expansion is not typed" "$MAIN_VISITOR" \
   "    nil
     if et = child_type(expanded)" -- macro_value_at_floor || status=1
 macro_uninitialized_at_floor() {
-  "$IYI" build -o "$WORK/macro_uninitialized" "$REPO/bench/selfhost_macro_uninitialized_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/macro_uninitialized" "$REPO/bench/selfhost_macro_uninitialized_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   "$WORK/macro_uninitialized" "$REPO/bench/fixtures/sem_bodies_macro_uninitialized.iyi"
 }
 macro_uninitialized_at_floor || status=1
