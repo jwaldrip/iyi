@@ -60,6 +60,11 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
       tuple = prog.lookup_type_node(Path.new("Tuple"), prog).as(GenericClassType)
       tuple.add_def(Def.new("[]", [Arg.new("index", nil, Path.new("Int32"))] of Arg, Primitive.tuple_indexer(1, 1), nil, nil, Path.new("Int32")))
     end
+    root.as(Expressions).expressions.each do |item|
+      next unless item.is_a?(Def) && item.as(Def).name == "pick_named_member"
+      tuple = prog.lookup_type_node(Path.new("NamedTuple"), prog).as(GenericClassType)
+      tuple.add_def(Def.new("[]", [Arg.new("index", nil, Path.new("Symbol"))] of Arg, Primitive.tuple_indexer(1, 1), nil, nil, Path.new("Int32")))
+    end
   end
 end
 
