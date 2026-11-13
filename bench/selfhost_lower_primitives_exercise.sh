@@ -65,7 +65,13 @@ e2e_waiting_on() {
 }
 for fixture in "$REPO"/bench/fixtures/lowprim_*.iyi; do
   name="$(basename "$fixture" .iyi)"
-  if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
+  oracle_options=()
+  if [ "$name" = "lowprim_atomic_rmw" ]; then
+    # Otherwise the hosted module is printed after LLVM has expanded atomicrmw to a cmpxchg loop.
+    oracle_options=(--mattr +lse)
+    echo "  $name: oracle uses --mattr +lse to preserve atomicrmw in the emitted module"
+  fi
+  if ! "$IYI" build --prelude empty "${oracle_options[@]}" --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
     diverged=$((diverged + 1))
     continue
@@ -202,6 +208,16 @@ prove_mutation "a by-value pointer_set copies the destination" "$REPO/src/compil
   "    store_aligned(low, stored, dest)" "    store_aligned(low, load_aligned(low, ir, dest), dest)" -- lower_primitives_check || status=1
 prove_mutation "checked addition returns its overflow bit" "$REPO/src/compiler/lower/primitives.iyi" \
   "  pair[0]" "  pair[1]" -- lower_primitives_check || status=1
+prove_mutation "an acquire atomic load is sequentially consistent" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  when "acquire"                 then Ordering::Acquire' '  when "acquire"                 then Ordering::SeqCst' -- lower_primitives_check || status=1
+prove_mutation "a release atomic store is sequentially consistent" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  when "release"                 then Ordering::Release' '  when "release"                 then Ordering::SeqCst' -- lower_primitives_check || status=1
+prove_mutation "an atomic read-modify-write always exchanges" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  inst = low.builder.atomicrmw(op, ptr.as(Value), value, ordering, flag.as(BoolLiteral).value)' '  inst = low.builder.atomicrmw("xchg", ptr.as(Value), value, ordering, flag.as(BoolLiteral).value)' -- lower_primitives_check || status=1
+prove_mutation "an atomic read-modify-write ignores its ordering" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  ordering = atomic_ordering(node.args[3])' '  ordering = Ordering::Monotonic' -- lower_primitives_check || status=1
+prove_mutation "compare-exchange ignores its failure ordering" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, failure)' '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, success)' -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
