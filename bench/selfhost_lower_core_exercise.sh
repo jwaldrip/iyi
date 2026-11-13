@@ -312,6 +312,8 @@ prove_mutation "the then and else branches are swapped" "$REPO/src/compiler/lowe
   "low.builder.cond_br(cond_value, then_block, else_block)" "low.builder.cond_br(cond_value, else_block, then_block)" -- lower_core_check || status=1
 prove_mutation "the while body is the condition" "$REPO/src/compiler/lower/lower.iyi" \
   "codegen_node(low, node.body)" "codegen_node(low, node.cond)" -- lower_core_check || status=1
+prove_mutation "a typed break target is ignored" "$REPO/src/compiler/lower/lower.iyi" \
+  "when Break  then node.target" "when Break  then nil" -- lower_core_check || status=1
 prove_mutation "a char is its code point plus one" "$REPO/src/compiler/lower/lower.iyi" \
   "node.value.ord.to_i64)" "node.value.ord.to_i64 + 1_i64)" -- lower_core_check || status=1
 prove_mutation "an empty alloca block is kept" "$REPO/src/compiler/lower/context.iyi" \
