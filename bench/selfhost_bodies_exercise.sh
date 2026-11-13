@@ -247,7 +247,8 @@ recursion_fresh_clone() {
     if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
     return 1
   fi
-  grep -q '^cycle_a target=.* untyped-params' "$WORK/recursion_mutant.txt"
+  if grep -q '^cycle_a target=.* untyped-params' "$WORK/recursion_mutant.txt"; then return 1; fi
+  return 0
 }
 prove_mutation "a recursive call targets a fresh clone" "$MAIN_VISITOR" \
   "remember_def_instance(cache_key, target_def, provisional)" \
