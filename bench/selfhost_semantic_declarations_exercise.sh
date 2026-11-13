@@ -710,6 +710,21 @@ prove_mutation "a generic class's guessed instance variables are not declared on
   "if owner.owner.is_a?(NonGenericClassType)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an explicit generic instance variable keeps the unbound generic" "$MUT_IVARS" \
+  "  type_node_system(program)" \
+  "  nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "optional type lookup skips enclosing namespaces" "$MUT_SEM" \
+  "        match = ns.lookup_type(first_name)" \
+  "        match = nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "optional proc notation lookup loses its arguments" "$MUT_SEM" \
+  "        return hook.instantiate_type(proc_type, args)" \
+  "        return proc_type" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
   "di.owner.instance_vars[di.name] = mv" \
   "nil" \
@@ -721,7 +736,7 @@ prove_mutation "an explicit instance variable is not recorded for re-resolution"
   -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TS="$REPO/src/compiler/types/type_system.iyi"
-prove_mutation "a generic type node resolves to its base once the type system is installed" "$MUT_SEM" \
+prove_mutation_all "a generic type node resolves to its base once the type system is installed" "$MUT_SEM" \
   "          return hook.instantiate_type(base_type, type_args)" \
   "          return base_type" \
   -- check_lib_types_diverge || status=1
@@ -732,8 +747,8 @@ prove_mutation "installing the type system leaves the lib fun records unresolved
   -- check_lib_types_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a lib fun's return type is dropped once the type system is installed" "$MUT_SEM" \
-  "              f.resolved_return = lookup_type_node(rt, owner)" \
-  "              f.resolved_return = nil" \
+  "                  f.resolved_return = found" \
+  "                  f.resolved_return = nil" \
   -- check_lib_types_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a constant is never added to the program's constant list" "$MUT_SEM" \

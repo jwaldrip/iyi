@@ -1422,27 +1422,42 @@ pub class SemanticProgram < NonGenericModuleType
         if node = f.node
           if imports = f.imports
             @current_imports = imports
-            f.arg_types.clear
+            # A name the bare program cannot see (Set, with no prelude loaded) keeps the
+            # type finish already stored. Raising here turns a measured file into a refusal.
+            resolved_args = [] of Type
+            failed = false
             node.args.each do |arg|
               if restriction = arg.restriction
-                f.arg_types << lookup_type_node(restriction, owner)
+                if found = lookup_type_node?(restriction, owner)
+                  resolved_args << found
+                else
+                  failed = true
+                end
               end
             end
-            if rt = node.return_type
-              f.resolved_return = lookup_type_node(rt, owner)
+            unless failed
+              f.arg_types.clear
+              resolved_args.each { |arg_type| f.arg_types << arg_type }
+              if rt = node.return_type
+                if found = lookup_type_node?(rt, owner)
+                  f.resolved_return = found
+                end
+              end
             end
           end
         end
       end
     end
     # The explicit instance variables are typed again through the type system: a generic type
-    # keeps its arguments, and a class with subclasses is typed by its virtual type.
+    # keeps its arguments, and a class with subclasses is typed by its virtual type. A name
+    # this program cannot see keeps the type already recorded.
     @declared_ivars.each do |di|
       @current_imports = di.imports
-      t = declared_ivar_type(di.restriction, di.owner, di.virtual)
-      mv = MetaTypeVar.new(di.name, t, di.initializer)
-      mv.owner = di.owner
-      di.owner.instance_vars[di.name] = mv
+      if t = declared_ivar_type?(di.restriction, di.owner, di.virtual)
+        mv = MetaTypeVar.new(di.name, t, di.initializer)
+        mv.owner = di.owner
+        di.owner.instance_vars[di.name] = mv
+      end
     end
     @current_imports = saved
     nil
@@ -1460,6 +1475,20 @@ pub class SemanticProgram < NonGenericModuleType
       return resolved
     end
     remove_alias(lookup_type_node(restriction, owner))
+  end
+
+  # The same lookup, or nil when a name is not in this program. Re-resolution uses it so a bare
+  # file that names a prelude type keeps the type it already recorded instead of refusing.
+  def declared_ivar_type?(restriction : ASTNode, owner : ModuleType, virtual : Bool) : Type?
+    found = lookup_type_node?(restriction, owner)
+    return nil unless found
+    resolved = remove_alias(found)
+    if virtual
+      if hook = @merge_hook
+        return hook.virtual_of(resolved)
+      end
+    end
+    resolved
   end
 
   # The type an alias names, through any chain of aliases (hosted Type#remove_alias): a declared
@@ -1748,7 +1777,7 @@ pub class SemanticProgram < NonGenericModuleType
       # lookup_type_node, which sees this file's imports; the hook's own lookup does not, so a
       # Tuple(String, IrType, Bool) named in an imported file stays unresolved there (codegen.iyi 651).
       if !gc.splat_index.nil?
-        return gc.full_name == "Tuple" && g.type_vars.all? { |t| type_node?(t) }
+        return (gc.full_name == "Tuple" || (gc.full_name == "Proc" && !g.type_vars.empty?)) && g.type_vars.all? { |t| type_node?(t) }
       end
       return gc.type_vars.size == g.type_vars.size && g.type_vars.all? { |t| type_node?(t) }
     end
@@ -1813,6 +1842,25 @@ pub class SemanticProgram < NonGenericModuleType
     elsif node.is_a?(Self)
       current_type
     elsif node.is_a?(ProcNotation)
+      if hook = @merge_hook
+        notation = node.as(ProcNotation)
+        args = [] of Type
+        if inputs = notation.inputs
+          inputs.each do |input|
+            found = lookup_type_node?(input, current_type)
+            return nil unless found
+            args << found
+          end
+        end
+        result : Type = nil_type
+        if output = notation.output
+          found = lookup_type_node?(output, current_type)
+          return nil unless found
+          result = found
+        end
+        args << result
+        return hook.instantiate_type(proc_type, args)
+      end
       proc_type
     else
       nil
@@ -1832,6 +1880,13 @@ pub class SemanticProgram < NonGenericModuleType
   end
 
   def lookup_type_path?(path : Path, current_type : ModuleType) : Type?
+    # A metaclass resolves names in its instance type's scope.
+    if current_type.is_a?(MetaclassType)
+      instance = current_type.as(MetaclassType).instance_type
+      if instance.is_a?(ModuleType)
+        return lookup_type_path?(path, instance.as(ModuleType))
+      end
+    end
     if path.global
       return lookup_path_names(path.names, self)
     end
@@ -1860,6 +1915,18 @@ pub class SemanticProgram < NonGenericModuleType
     end
     if t.nil?
       t = @current_imports[first_name]?
+    end
+    if t.nil?
+      ns = current_type.namespace
+      while ns
+        break if ns.is_a?(SemanticProgram)
+        match = ns.lookup_type(first_name)
+        if match
+          t = match
+          break
+        end
+        ns = ns.namespace
+      end
     end
     if t.nil?
       t = lookup_type(first_name)
