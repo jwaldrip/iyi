@@ -383,6 +383,12 @@ pub def make_cvar_init_function(low : Lowerer, cvar : MetaTypeVar, init_name : S
       else
         store_aligned(low, val, global)
       end
+    elsif ir.int?
+      global.initializer = low.builder.const_int(ir, 0_i64)
+      store_aligned(low, val, global)
+    elsif ir.float?
+      global.initializer = low.builder.const_float(ir, 0.0)
+      store_aligned(low, val, global)
     else
       global.initializer = low.builder.const_null(ir)
       store_aligned(low, val, global)

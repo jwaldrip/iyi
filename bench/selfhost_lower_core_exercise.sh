@@ -586,6 +586,7 @@ import sys
 def lines(text):
     globals = []
     pointers = []
+    contexts = set()
     for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("@\"'hi'\" ="):
@@ -600,11 +601,17 @@ def lines(text):
             piece = stripped[at:end + 1] if end >= 0 else stripped[at:]
             if "\"'hi'\"" in piece and "i32 0, i32 1" in piece:
                 pointers.append(piece)
+                if stripped.startswith('@GREETING ='):
+                    contexts.add("constant")
+                elif stripped.startswith('@":symbol_table" ='):
+                    contexts.add("symbol")
+                elif ' call ' in stripped:
+                    contexts.add("call")
             start = at + len(needle)
-    return globals, pointers
-host_g, host_p = lines(open(sys.argv[1]).read())
-port_g, port_p = lines(open(sys.argv[2]).read())
-if host_g != port_g or host_p != port_p or not host_g or not host_p:
+    return globals, pointers, contexts
+host_g, host_p, host_c = lines(open(sys.argv[1]).read())
+port_g, port_p, port_c = lines(open(sys.argv[2]).read())
+if host_g != port_g or host_p != port_p or len(host_g) != 1 or len(host_p) < 4 or host_c != {"constant", "symbol", "call"} or port_c != host_c:
     sys.stderr.write("string literal lines differ\n")
     sys.exit(1)
 PY
