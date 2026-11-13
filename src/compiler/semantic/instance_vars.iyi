@@ -222,18 +222,18 @@ class GuessVisitor < Visitor
       end
       if literal.name.nil? && literal.of.nil?
         if hook = @program.merge_hook
-          element : Type? = nil
+          merged_element : Type? = nil
           literal.elements.each do |item|
             return nil if item.is_a?(Splat)
             if guessed = guess_type(item)
-              if previous = element
-                element = @program.type_merge(previous, guessed)
+              if previous = merged_element
+                merged_element = @program.type_merge(previous, guessed)
               else
-                element = guessed
+                merged_element = guessed
               end
             end
           end
-          if found = element
+          if found = merged_element
             array = hook.instantiate_type(@program.types["Array"], [found] of Type)
             return hook.virtual_of(array)
           end
