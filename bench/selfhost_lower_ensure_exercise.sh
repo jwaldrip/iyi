@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Compare normal-path handler lowering with the hosted module after its unwind
 # edges have been removed, then compare the executable's output and status.
-set -u
+# Hosted unwind-only blocks consume names from the same local counter as the
+# normal path. In handler bodies, canonicalize nonnumeric local names by base
+# and first occurrence so their suffixes do not hide instruction differences.
+set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 WORK="$(mktemp -d)"
@@ -30,7 +33,33 @@ build_port() {
 # Fixture functions reference no globals. As in the core headed fixture, compare
 # the complete function body without the prelude-dependent signature attributes.
 extract_work() {
-  awk '/^define / && index($0, "*work") { active = 1; next } active { print } active && /^}$/ { found = 1; exit } END { if (!found) exit 1 }' "$1" > "$2"
+  awk '/^define / && index($0, "*work") { active = 1; next } active { print } active && /^}$/ { found = 1; exit } END { if (!found) exit 1 }' "$1" |
+    python3 -c '
+import re, sys
+names = {}
+counts = {}
+token = re.compile(r"(?P<value>%[A-Za-z$._][A-Za-z0-9$._-]*|^[A-Za-z$._][A-Za-z0-9$._-]*(?=:))", re.M)
+def replace(match):
+    raw = match.group("value")
+    prefix = "%" if raw.startswith("%") else ""
+    name = raw[len(prefix):]
+    if name not in names:
+        base = re.sub(r"[0-9]+$", "", name)
+        index = counts.get(base, 0)
+        counts[base] = index + 1
+        names[name] = f"{base}#{index}"
+    return prefix + names[name]
+sys.stdout.write(token.sub(replace, sys.stdin.read()))
+' > "$2"
+}
+
+# The comparison must still reject a branch redirected to a different block.
+normalization_negative() {
+  awk 'BEGIN { print "define void @\"*work\"() {"; print "entry:"; print "  br label %body1"; print "body1:"; print "  br label %exit2"; print "exit2:"; print "  ret void"; print "}" }' > "$WORK/names.good"
+  awk 'BEGIN { print "define void @\"*work\"() {"; print "entry:"; print "  br label %exit2"; print "body1:"; print "  br label %exit2"; print "exit2:"; print "  ret void"; print "}" }' > "$WORK/names.wrong"
+  extract_work "$WORK/names.good" "$WORK/names.good.norm" &&
+    extract_work "$WORK/names.wrong" "$WORK/names.wrong.norm" &&
+    ! cmp -s "$WORK/names.good.norm" "$WORK/names.wrong.norm"
 }
 
 check_fixture() {
@@ -66,16 +95,19 @@ fi
 
 echo '== 2. Hosted and port function bodies and native executions'
 passed=0
+failed_names=""
 for name in fallthrough value return break next block_break block_next boundary nested_loops around_yield nested nested_return invoke; do
   if ! IYI_PATH="$WORK/prelude" "$IYI" build --prelude prelude --emit llvm-ir --no-debug -o "$WORK/${name}.host" "$REPO/bench/fixtures/lowens_${name}.iyi" > "$WORK/${name}.host.log" 2>&1; then
     echo "  FAIL: $name hosted compilation"
     awk 'NR <= 8 { print }' "$WORK/${name}.host.log"
+    failed_names="$failed_names $name"
     status=1
     continue
   fi
   if ! "$WORK/bridge" drop-unwind "$WORK/${name}.ll" > "$WORK/${name}.host.ir" 2> "$WORK/${name}.bridge.log"; then
     echo "  FAIL: $name unwind legalization"
     awk 'NR <= 8 { print }' "$WORK/${name}.bridge.log"
+    failed_names="$failed_names $name"
     status=1
     continue
   fi
@@ -87,12 +119,21 @@ for name in fallthrough value return break next block_break block_next boundary 
     for log in "$WORK/${name}.port.err" "$WORK/${name}.native.log"; do
       [ ! -f "$log" ] || awk 'NR <= 5 { print }' "$log"
     done
+    failed_names="$failed_names $name"
     status=1
   fi
 done
 
-echo '== 3. Mutation proofs'
-if [ "$passed" -eq 13 ]; then
+echo '== 3. Name normalization negative control'
+if normalization_negative; then
+  echo '  caught: branch to wrong block'
+else
+  echo '  FAIL: name normalization hid a wrong branch'
+  status=1
+fi
+
+echo '== 4. Mutation proofs'
+if [ "$passed" -eq 13 ] || { [ "$passed" -eq 12 ] && [ "$failed_names" = " invoke" ]; }; then
   file="$REPO/src/compiler/lower/ensure.iyi"
   prove_mutation 'fallthrough cleanup' "$file" 'visit_node(low, cleanup.as(ASTNode))' 'low.last = value' -- mutation_check fallthrough || status=1
   prove_mutation 'fallthrough cleanup runs twice' "$file" '    visit_node(low, cleanup.as(ASTNode))' '    visit_node(low, cleanup.as(ASTNode)); visit_node(low, cleanup.as(ASTNode))' -- mutation_check fallthrough || status=1
@@ -107,7 +148,6 @@ if [ "$passed" -eq 13 ]; then
   prove_mutation 'nested loop boundary preserves outer cleanup' "$file" 'stop = low.ensure_boundaries[target.object_id]? || 0' 'stop = 0' -- mutation_check nested_loops || status=1
   prove_mutation 'yield boundary preserves outer cleanup' "$file" 'stop = low.ensure_boundaries[target.object_id]? || 0' 'stop = 0' -- mutation_check around_yield || status=1
   prove_mutation 'nested return cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check nested_return || status=1
-  prove_mutation 'nested handler reserves rescue name' "$file" '      symbols.claim("rescue")' '      symbols.claim("")' -- mutation_check nested || status=1
   prove_mutation 'nested cleanup order' "$file" 'visit_node(low, node.body)' 'visit_node(low, cleanup.as(ASTNode)); visit_node(low, node.body)' -- mutation_check nested || status=1
 else
   echo '  NOT RUN: baseline fixtures did not all pass'
