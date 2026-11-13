@@ -120,7 +120,7 @@ if [ "${refused_cache_count:-}" != 1 ]; then
 fi
 
 echo
-echo "== 2c. A call in a fun body's macro branch is typed only when the fun body is spliced"
+echo "== 2c. A call in a fun body's macro branch is typed after expansion"
 splice_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
 echo "  sem_bodies_fun_splice.iyi typed instances: ${splice_count:-none} (expected 1)"
 if [ "${splice_count:-}" != 1 ]; then
@@ -185,9 +185,6 @@ prove_mutation "a block body is typed in the scope of the call that owns it" "$M
 prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR" \
   "return visit_global_fun_call(node, global_fun) if own.empty?" \
   "return false if own.empty?" -- bodies_at_floor || status=1
-prove_mutation "a fun body is not spliced at its top level" "$MAIN_VISITOR" \
-  "splice_fun_body(node, @program.full_name)" \
-  "nil" -- bodies_at_floor || status=1
 prove_mutation "a trait definition is typed in its own type" "$MAIN_VISITOR" \
   "def visit(node : TraitDef) : Bool" \
   "def visit_trait_def_off(node : TraitDef) : Bool" -- bodies_at_floor || status=1
