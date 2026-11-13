@@ -1,0 +1,152 @@
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{ASTNode, Call, Path}
+import compiler/syntax/visitor::{Visitor}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, dir_of, normalize_path}
+import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
+
+# Port-side driver for bench/selfhost_semantic_new_census.sh.
+#
+#   selfhost_semantic_new_census_exercise <file.iyi>
+#
+# Analyses the file the way the hosted oracle does (bench/selfhost_semantic_new_census_oracle.cr):
+# the prelude first, then the file and its imports (IYI_PATH is the search path), in total
+# mode, through the top-level pass and the main pass. Then prints one line per `new` call
+# written in the file, in tree order, with the same keys the oracle prints:
+#
+#   site <line>:<col> call <receiver>.new(<arg types>) -> <result type> target <name>(<arg names>) targets <n>
+#   site <line>:<col> untyped: <reason>
+#
+# The second form is a call the port could not type or give a target; the census ranks
+# those reasons. A `new` call the hosted pass did not type is not printed by the oracle, so
+# it never counts. The port records one target per call; a call with several targets in the
+# hosted pass therefore prints a different line and is ranked as a miss.
+#
+# With no arguments it runs a self-check on an inline program without the prelude and
+# exits 0.
+module BenchSelfhostSemanticNewCensusExercise
+  def self.search_path : Array(String)
+    text = ENV["IYI_PATH"]? || ""
+    text.split(":").select { |entry| !entry.empty? }
+  end
+
+  def self.type_text(t : Type?) : String
+    return "nil" if t.nil?
+    t.full_name
+  end
+
+  def self.receiver_text(obj : ASTNode?) : String
+    return "self" if obj.nil?
+    if obj.is_a?(Path)
+      return obj.as(Path).names.join("::")
+    end
+    "expr"
+  end
+
+  # The first line of a reason, so one reason is always one output line.
+  def self.first_line(reason : String) : String
+    reason.split("\n").first
+  end
+
+  # Why the port typed no `new` call and recorded no reason: its receiver (with the
+  # receiver's own reason) or the absence of a `new` target on the receiver's type.
+  def self.untyped_reason_of(c : Call, mv : MainVisitor) : String
+    if obj = c.obj
+      if rt = mv.type_of?(obj)
+        return "no target for new on #{rt.full_name}"
+      end
+      return "receiver untyped: #{first_line(mv.untyped_reason?(obj) || "no reason")}"
+    end
+    "no target for new on self"
+  end
+
+  # Analyses one file. `prelude` loads iyi/prelude first, as a compile does.
+  def self.analyse(source : String, entry : String, prelude : Bool) : {SemanticProgram, MainVisitor, ASTNode}
+    parser = Parser.new(source, entry)
+    node = Normalizer.new(NormalizerProgram.new(false)).normalize(parser.parse)
+    prog = SemanticProgram.new
+    prog.loaded_files.add(entry)
+    prog.search_path = search_path
+    prog.total_mode = true
+    if prelude
+      prelude_visitor = TopLevelVisitor.new(prog)
+      prelude_file = prelude_visitor.import_file("iyi/prelude")
+      if prelude_file
+        prelude_visitor.load_file(prelude_file.as(String))
+      end
+    end
+    prog.entry_dir = dir_of(entry)
+    tl = TopLevelVisitor.new(prog, entry)
+    node.accept(tl)
+    tl.finish
+    mv = MainVisitor.new(prog)
+    mv.total = true
+    node.accept(mv)
+    {prog, mv, node}
+  end
+
+  # Collects the `new` calls written in the file, in tree order.
+  class NewCensusWalk < Visitor
+    getter calls : Array(Call)
+
+    def initialize(@file : String)
+      @calls = [] of Call
+    end
+
+    def visit_any(node : ASTNode) : Bool
+      if node.is_a?(Call)
+        c = node.as(Call)
+        if c.name == "new"
+          if loc = c.location
+            if loc.filename == @file
+              @calls << c
+            end
+          end
+        end
+      end
+      true
+    end
+  end
+
+  def self.run(source : String, entry : String, prelude : Bool) : String
+    _prog, mv, node = analyse(source, entry, prelude)
+    walk = NewCensusWalk.new(entry)
+    node.accept(walk)
+    out = String::Builder.new
+    walk.calls.each do |c|
+      line = 0
+      column = 0
+      if loc = c.location
+        line = loc.line_number
+        column = loc.column_number
+      end
+      if t = mv.type_of?(c)
+        arg_types = c.args.map { |a| type_text(mv.type_of?(a)) }.join(", ")
+        target_text = "target none"
+        if td = mv.target_def?(c)
+          target_text = "target #{td.name}(#{td.args.map { |a| a.name }.join(", ")}) targets 1"
+        end
+        out << "site #{line}:#{column} call #{receiver_text(c.obj)}.new(#{arg_types}) -> #{t.full_name} #{target_text}\n"
+      else
+        reason = mv.untyped_reason?(c) || untyped_reason_of(c, mv)
+        out << "site #{line}:#{column} untyped: #{first_line(reason)}\n"
+      end
+    end
+    out.to_s
+  end
+end
+
+if Program.args.empty?
+  # A self-check for `iyi run` with no arguments: a class with an initialize gets one
+  # generated `new` the call targets, analysed without the prelude.
+  out = BenchSelfhostSemanticNewCensusExercise.run("class Box; def initialize(v : Int32); end; end; b = Box.new(3)", "selfcheck.iyi", false)
+  unless out.includes?("target new(v) targets 1")
+    raise "new census self-check failed: #{out}"
+  end
+else
+  path = Program.args[0]
+  cwd = ENV["PWD"]? || "."
+  absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+  entry = normalize_path(absolute)
+  print BenchSelfhostSemanticNewCensusExercise.run(File.read(entry), entry, true)
+end

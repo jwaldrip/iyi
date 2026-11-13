@@ -1,0 +1,306 @@
+module bench/selfhost_lower_core_exercise
+
+# The port's side of the lowering-core gate (bench/selfhost_lower_core_exercise.sh).
+#
+#   port oracle <oracle.ll>                 the oracle module, normalised, one line each
+#   port lower <fixture.iyi> <oracle.ll>    lowers the fixture and compares it with the oracle
+#   port context                            the state and the alloca rule of lower/context.iyi
+#
+# `lower` prints one line per function and module-level item, then a SUMMARY line. A
+# fixture the semantic port cannot analyse, or a construct the lowering refuses by name
+# (lower/pending.iyi), raises: the process exits non-zero with the reason on stderr, and
+# the gate counts the fixture as waiting.
+#
+# Normalisation, the same on both sides. Lines the oracle and the port both drop: the
+# compiler's own build constants (every global named ::BUILD_*, the private constants
+# holding their text, and the stores into them), the `declare` of printf that the hosted
+# constant printing emits, the attribute groups, comments and the source header.
+
+import compiler/syntax/ast::{ASTNode}
+import compiler/syntax/parser::{Parser}
+import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor}
+import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
+import compiler/semantic/normalizer::{NormalizerProgram}
+import compiler/ir/module::{Module}
+import compiler/ir/layout::{LayoutError}
+import compiler/ir/parser::{parse, IrParseError}
+import compiler/ir/printer::{print}
+import compiler/ir/types::{IrType}
+import compiler/platform/target::{Target}
+import compiler/lower/typer::{LowerTyper}
+import compiler/lower/lower::{codegen_program}
+import compiler/lower/context::{Lowerer}
+import bench/lib/lower_gate::{attach_attrs, oracle_attr_map, printed_attr_map}
+
+# The parsed and analysed fixture: the tree, the semantic pass that typed it, and the object
+# layout the program itself chooses (hosted `Program#iyi_object_layout?`: the prelude's IyiRuntimeLock).
+pub class Analysis
+  getter root : ASTNode
+  getter visitor : MainVisitor
+  getter iyi : Bool
+
+  def initialize(@root : ASTNode, @visitor : MainVisitor, @iyi : Bool)
+  end
+end
+
+# The semantic passes the typed-dump tool runs, in the same order: a fixture analysed
+# alone, with no prelude.
+def analyse(source : String, filename : String) : Analysis
+  parser = Parser.new(source, filename)
+  root = parser.parse
+  normalizer = NormalizerProgram.new
+  normalizer.iyi_prelude = false
+  root = normalizer.normalize(root)
+  prog = SemanticProgram.new
+  tl = TopLevelVisitor.new(prog)
+  root.accept(tl)
+  tl.finish
+  mv = MainVisitor.new(prog)
+  root.accept(mv)
+  RecursiveStructChecker.new(prog).run
+  Analysis.new(root, mv, !prog.types["IyiRuntimeLock"]?.nil?)
+end
+
+def ir_module(triple : String) : Module
+  made = Module.for_target("main_module", Target.new(triple))
+  raise made.as(LayoutError).to_s if made.is_a?(LayoutError)
+  made.as(Module)
+end
+
+# The triple an oracle module was built for, from its `target triple` line.
+def triple_of(text : String) : String
+  text.split("\n").each do |line|
+    if line.starts_with?("target triple")
+      return line.split("\"")[1]
+    end
+  end
+  raise "the oracle module names no target triple"
+end
+
+# The IR text of a module, normalised the way the gate compares it.
+def normalised_lines(text : String, builds : Array(String)) : Array(String)
+  out = [] of String
+  text.split("\n").each do |line|
+    stripped = line.strip
+    next if stripped.empty?
+    next if stripped.starts_with?(";")
+    next if stripped.starts_with?("source_filename")
+    next if stripped.starts_with?("attributes #")
+    next if stripped.starts_with?("declare") && stripped.includes?("@printf(")
+    next if stripped.starts_with?("@") && stripped.includes?("::") || stripped.starts_with?("%Nil = type")
+    next if stripped.starts_with?("store ") && stripped.includes?("::") || build_constant?(stripped, builds)
+    if pidx = line.index(" ; preds")
+      out << line[0, pidx]
+      next
+    end
+    if idx = line.index(" #")
+      out << line[0, idx] + " {"
+    elsif line.starts_with?("define ") && (bracket = line.index(") ["))
+      out << line[0, bracket.as(Int32) + 1] + " {"
+    else
+      out << line
+    end
+  end
+  out
+end
+
+# The name of a `define`d function: the text between its @ and its parameter list.
+def function_name(define_line : String) : String
+  name = define_line.split("@")[1]
+  if name.starts_with?("\"")
+    name.split("\"")[1]
+  else
+    name.split("(")[0]
+  end
+end
+
+# Splits normalised lines into the module-level items (globals, declares, headers)
+# and the functions, by name, in the order they are printed.
+def split_module(lines : Array(String)) : {Array(String), Hash(String, Array(String)), Array(String)}
+  items = [] of String
+  fns = Hash(String, Array(String)).new
+  order = [] of String
+  current : Array(String)? = nil
+  current_name = ""
+  lines.each do |line|
+    if cur = current
+      cur << line
+      if line == "}"
+        fns[current_name] = cur
+        current = nil
+      end
+    elsif line.starts_with?("define ")
+      current_name = function_name(line)
+      order << current_name
+      current = [line] of String
+    else
+      items << line
+    end
+  end
+  {items, fns, order}
+end
+
+# Compares the oracle's lines with the port's, function by function, and prints each
+# verdict. Returns how many of the oracle's functions the port reproduced exactly.
+def compare(oracle : Array(String), port : Array(String)) : Int32
+  o_items, o_fns, o_order = split_module(oracle)
+  p_items, p_fns, p_order = split_module(port)
+  identical = o_items == p_items ? 1 : 0
+  total = o_order.size + 1
+  if o_items == p_items
+    puts "  module-level: identical (#{o_items.size} lines)"
+  else
+    type_ids = 0
+    others = 0
+    o_items.each do |item|
+      next if p_items.includes?(item)
+      if item.includes?(":type_id")
+        type_ids += 1
+      else
+        others += 1
+      end
+    end
+    puts "  module-level: differs (#{type_ids} type-id constant(s), #{others} other item(s) differ)"
+    puts "    oracle: #{o_items.join(" | ")}"
+    puts "    port:   #{p_items.join(" | ")}"
+  end
+  o_order.each do |name|
+    want = o_fns[name]
+    got = p_fns[name]?
+    if got.nil?
+      puts "  @#{name}: MISSING from the port"
+      next
+    end
+    if got == want
+      identical += 1
+      puts "  @#{name}: identical (#{want.size} lines)"
+    else
+      at = 0
+      while at < want.size && at < got.size && want[at] == got[at]
+        at += 1
+      end
+      puts "  @#{name}: differs at line #{at + 1}"
+      puts "    oracle: #{want[at]?}"
+      puts "    port:   #{got[at]?}"
+    end
+  end
+  p_order.each do |name|
+    puts "  @#{name}: EXTRA in the port" unless o_fns.has_key?(name)
+  end
+  identical
+end
+
+def run_oracle(path : String) : Nil
+  text = File.read(path)
+  parsed = parse(text)
+  if parsed.is_a?(IrParseError)
+    raise parsed.as(IrParseError).to_s
+  end
+  normalised_lines(print(parsed.as(Module)), build_names(text)).each { |line| puts line }
+end
+
+def run_lower(fixture : String, oracle_path : String) : Nil
+  oracle_text = File.read(oracle_path)
+  parsed = parse(oracle_text)
+  raise parsed.as(IrParseError).to_s if parsed.is_a?(IrParseError)
+  builds = build_names(oracle_text)
+  oracle = attach_attrs(normalised_lines(print(parsed.as(Module)), builds), oracle_attr_map(oracle_text))
+  triple = triple_of(oracle_text)
+
+  analysis = analyse(File.read(fixture), fixture)
+  m = ir_module(triple)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
+  codegen_program(analysis.root, analysis.visitor, typer, m)
+  port_text = print(m)
+  port = attach_attrs(normalised_lines(port_text, builds), printed_attr_map(port_text))
+  identical = compare(oracle, port)
+  total = split_module(oracle)[2].size + 1
+  module_ok = split_module(oracle)[0] == split_module(port)[0]
+  puts "SUMMARY identical=#{identical} total=#{total} module=#{module_ok ? 1 : 0}"
+end
+
+# The state and the alloca rule of lower/context.iyi: a function with an alloca that
+# is kept, one with no alloca whose alloca block is removed, and the block order.
+def check_context : Nil
+  analysis = analyse("nil\n", "context_check.iyi")
+  m = ir_module("aarch64-apple-darwin27.0.0")
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
+  low = Lowerer.new(m, typer, analysis.visitor)
+  void_fn_type = m.types.func([] of IrType, m.types.void)
+
+  fn = low.begin_main_function("kept", void_fn_type, true)
+  names = fn.blocks.map { |b| b.name }
+  raise "CONTEXT FAILED: a function starts with blocks #{names.join(",")}, not alloca,entry" unless names == ["alloca", "entry"]
+  low.alloca(m.types.int32, "x")
+  raise "CONTEXT FAILED: the alloca is not in the alloca block" unless low.current_alloca_block.insts.size == 1
+  raise "CONTEXT FAILED: the alloca block is not the first block" unless low.current_alloca_block.name == "alloca"
+  low.builder.ret_void
+  low.finish_main_function
+  raise "CONTEXT FAILED: an alloca block with allocas was removed" unless fn.blocks.size == 2
+  raise "CONTEXT FAILED: the alloca block does not branch to the entry block" unless low.current_alloca_block.insts.size == 2
+
+  empty = low.begin_main_function("empty", void_fn_type, true)
+  low.builder.ret_void
+  low.finish_main_function
+  raise "CONTEXT FAILED: an empty alloca block was kept (#{empty.blocks.size} blocks)" unless empty.blocks.size == 1
+  puts "CONTEXT OK"
+end
+
+def run_emit(fixture : String, oracle_path : String) : Nil
+  triple = triple_of(File.read(oracle_path))
+  analysis = analyse(File.read(fixture), fixture)
+  m = ir_module(triple)
+  typer = LowerTyper.new(m.types, m.layout, analysis.iyi)
+  codegen_program(analysis.root, analysis.visitor, typer, m)
+  puts print(m)
+end
+
+# The hosted build constants: the text of each global the compiler stores into its own `::`
+# identity on entry. The oracle names them in its `store` lines; both sides drop the same names, so a
+# program's own string constant with other text is still compared.
+def build_names(text : String) : Array(String)
+  names = [] of String
+  lines = text.split("\n")
+  i = 0
+  while i < lines.size
+    line = lines[i]
+    if line.includes?("store ptr @\"") && line.includes?("::")
+      parts = line.split("\"")
+      names << parts[1] if parts.size >= 4 && parts[3].includes?("::")
+    end
+    i += 1
+  end
+  names
+end
+
+def build_constant?(stripped : String, builds : Array(String)) : Bool
+  i = 0
+  while i < builds.size
+    return true if stripped.includes?("@\"#{builds[i]}\"")
+    i += 1
+  end
+  false
+end
+
+def run : Nil
+  args = Program.args
+  if args.empty?
+    check_context
+    return
+  end
+  mode = args[0]
+  if mode == "oracle"
+    run_oracle(args[1])
+  elsif mode == "lower"
+    run_lower(args[1], args[2])
+  elsif mode == "emit"
+    run_emit(args[1], args[2])
+  elsif mode == "context"
+    check_context
+  else
+    raise "unknown mode #{mode}"
+  end
+end
+
+run

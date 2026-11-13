@@ -1,38 +1,193 @@
 module compiler/semantic/main_visitor
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Arg, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, Macro, ModuleDef, NilLiteral, NodeMap, Nop, NumberLiteral, Path, ProcNotation, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Var, While, Yield}
-import compiler/syntax/token::{NumberKind}
+import compiler/syntax/ast::{ASTNode, Primitive, NodeMap, Alias, AlignOf, And, Annotation, AnnotationDef, Arg, ArrayLiteral, Asm, AsmOperand, Assign, AssocTypeDecl, Block, BoolLiteral, Break, CStructOrUnionDef, Call, Case, Cast, CharLiteral, ClassDef, ClassVar, Def, Defer, DoubleSplat, EnumDef, ExceptionHandler, Expressions, Extend, ExternalVar, FunDef, Generic, Global, HashLiteral, If, ImplDef, ImplicitObj, ImportDecl, Include, InstanceAlignOf, InstanceSizeOf, InstanceVar, IsA, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant, Metaclass, ModuleDef, ModuleHeader, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, NilableCast, Nop, Not, NumberLiteral, OffsetOf, OpAssign, Or, Out, Path, PointerOf, ProcLiteral, ProcNotation, ProcPointer, Propagate, RangeLiteral, ReadInstanceVar, Recover, RegexLiteral, Require, Rescue, RespondsTo, Return, Select, Self, SizeOf, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TraitDef, TupleLiteral, TypeDeclaration, TypeDef, TypeOf, Underscore, UninitializedVar, Union, Unless, Until, UsingDecl, Var, VisibilityModifier, When, While, Yield}
+import compiler/syntax/token::{NumberKind, TokenKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType}
+import compiler/semantic/inline_macros::{splice_body_node, splice_inline_sites}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
+import compiler/semantic/top_level::{NoReturnType}
+import compiler/semantic/top_level::{LibFun, LibType}
+import compiler/semantic/top_level::{VoidType}
+import compiler/semantic/normalizer::{NormalizerProgram}
+import compiler/semantic/literal_expander::{LiteralExpander}
+import compiler/semantic/default_arguments::{DefaultArguments}
+import compiler/semantic/type_node_host::{TypeNodeHost}
+import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
+import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
+import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
+import compiler/types/lookup::{LookupError}
+import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/new::{define_new_methods}
+import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
-pub class MainVisitor < Visitor
+# One construct the body typing could not type or refused, as the pipeline's
+# refusal table reads it. `file` is nil and `line` and `column` are 0 when the
+# node has no location. `def_name` is the def whose body was being typed, named
+# `Owner#name` inside a type and `name` at top level; nil outside any def.
+pub class Refusal
+  getter reason : String
+  getter file : String?
+  getter line : Int32
+  getter column : Int32
+  getter def_name : String?
+  getter node : ASTNode
+
+  def initialize(@reason : String, @file : String?, @line : Int32, @column : Int32, @def_name : String?, @node : ASTNode)
+  end
+end
+
+# One instantiation whose body typing started with every parameter typed: the
+# instantiated clone of the def (`definition`, the value `call_target_defs` holds),
+# the receiver (`self_type`, nil at top level) and one argument type per parameter,
+# in declaration order. `definition` is the name because `def` is a keyword.
+pub class TypedInstance
+  getter definition : Def
+  getter self_type : Type?
+  getter arg_types : Array(Type)
+
+  def initialize(@definition : Def, @self_type : Type?, @arg_types : Array(Type))
+  end
+end
+
+# One cached instantiation (hosted DefInstance, Call#instantiate): the typed clone of a def
+# whose body typing finished, and the type that body evaluates to. A call with the same key takes
+# both, so the body is not typed again and the call site records the clone the lowering reads.
+pub class DefInstance
+  getter definition : Def
+  getter return_type : Type
+
+  def initialize(@definition : Def, @return_type : Type)
+  end
+end
+
+# The def a block is written in, and the return values of its body (hosted: a `return` in a
+# block leaves the def the block is written in).
+pub class BlockOwner
+  getter def_node : Def?
+  getter return_types : Array(Type?)?
+  # iyi: what a `yield` written in the block's body runs: the block of the def the block is
+  # written in, with that def's block context and self. Without them the body's own `yield`
+  # found the block it sits in and the typing never ended.
+  getter call_block : Block?
+  getter context_vars : Hash(String, Type)?
+  getter yield_nodes : Array(Yield)?
+  getter scope : Type?
+
+  def initialize(@def_node : Def?, @return_types : Array(Type?)?, @call_block : Block? = nil, @context_vars : Hash(String, Type)? = nil, @yield_nodes : Array(Yield)? = nil, @scope : Type? = nil)
+  end
+end
+
+# iyi: two modes. Strict (the default) raises on the first construct it cannot
+# type, as the port always did, and every existing gate relies on that. Total
+# (`total = true`, the typed dump's mode) records the reason on the node that
+# cannot be typed and goes on, so one unsupported construct costs its own nodes
+# and not the file. A node with no type is never printed as typed, so it never
+# counts as matched.
+pub class MainVisitor < TypeNodeHost
   property program : SemanticProgram
   property current_type : ModuleType
   property scope : Type?
   property vars : Hash(String, Type)
   property node_types : NodeMap(Type)
+  property untyped_reasons : NodeMap(String)
   property call_target_defs : NodeMap(Def)
   property current_def : Def?
   property current_call_block : Block?
   property current_block_context_vars : Hash(String, Type)?
   property current_yield_nodes : Array(Yield)?
+  property total : Bool = false
+  property in_type_args : Int32 = 0
+  # The instantiations whose body typing is in progress, by key (receiver, def
+  # name, argument types). A key typed again is a recursive call: it takes the
+  # declared return type, or is refused. Shared with a fun body's visitor.
+  property typing_stack : Array(String)
+  # Every refusal recorded, in order (see Refusal). Shared with a fun body's visitor.
+  property refusals : Array(Refusal)
+  # Every instantiation whose body typing started with all its parameters typed,
+  # in order (see TypedInstance). Shared with a fun body's visitor.
+  property typed_instances : Array(TypedInstance)
+  # Every finished instantiation by its key (see def_instance_key). Shared with a fun body's visitor.
+  property def_instances : Hash(String, DefInstance)
+
+  # The values the body being typed returns (`return`), and the values a `break` (of the call
+  # whose block it is) and a `next` (of that block) carry while they are collected. nil where
+  # none is collected; a nil entry is a value with no type.
+  property return_types : Array(Type?)? = nil
+  property break_types : Array(Type?)? = nil
+  property next_types : Array(Type?)? = nil
+  # The break values of each block's call, and the def and return list each block is written in.
+  property block_breaks : NodeMap(Array(Type?)) = NodeMap(Array(Type?)).new
+  property block_owners : NodeMap(BlockOwner) = NodeMap(BlockOwner).new
+  # The record of each call on a lib (see visit_lib_call): the fun, the result type and the
+  # arguments the lowering passes.
+  property lib_call_targets : NodeMap(LibCallTarget) = NodeMap(LibCallTarget).new
+
+  def type_args_depth : Int32
+    @in_type_args
+  end
+
+  # The analysed signature of each fun, keyed by its FunDef node: argument types
+  # in declared order and the declared return type. The lowering reads them.
+  property fun_arg_types_by_node : NodeMap(Array(Type)) = NodeMap(Array(Type)).new
+  property fun_return_types_by_node : NodeMap(Type) = NodeMap(Type).new
+
+  def record_fun_signature(node : FunDef, arg_types : Array(Type), return_type : Type?) : Nil
+    @fun_arg_types_by_node[node] = arg_types
+    if rt = return_type
+      @fun_return_types_by_node[node] = rt
+    end
+    nil
+  end
+
+  def fun_arg_types(node : FunDef) : Array(Type)?
+    @fun_arg_types_by_node[node]?
+  end
+
+  def fun_return_type(node : FunDef) : Type?
+    @fun_return_types_by_node[node]?
+  end
+
+  # The union of the types each variable of the body being typed is assigned, keyed
+  # by name; `def_var_unions` keeps it per instantiated def (the lowering's storage type).
+  property var_unions : Hash(String, Type)
+  property def_var_unions : NodeMap(Hash(String, Type))
+  # The locals of the body being typed whose value has no type, by name, with the
+  # reason their reads are reported with. Saved and restored per body.
+  property untyped_locals : Hash(String, String)
+  property fun_inline_file : String?
 
   def initialize(@program : SemanticProgram)
+    # The generated `new` methods are completed before any body is typed: the
+    # declarations pass has recorded the expansions, and this consumes them (idempotent).
+    define_new_methods(@program)
     @current_type = @program
     @scope = nil
     @vars = Hash(String, Type).new
     @node_types = NodeMap(Type).new
+    @untyped_reasons = NodeMap(String).new
     @call_target_defs = NodeMap(Def).new
+    @var_unions = Hash(String, Type).new
+    @def_var_unions = NodeMap(Hash(String, Type)).new
+    @untyped_locals = Hash(String, String).new
     @current_def = nil
+    @fun_inline_file = nil
     @current_call_block = nil
     @current_block_context_vars = nil
     @current_yield_nodes = nil
+    @typing_stack = [] of String
+    @refusals = [] of Refusal
+    @typed_instances = [] of TypedInstance
+    @def_instances = Hash(String, DefInstance).new
   end
 
   def set_type(node : ASTNode, type : Type) : Type
+    if type.is_a?(UnresolvedType)
+      untyped(node, "undefined constant #{type.name}")
+      return type
+    end
     @node_types[node] = type
     type
   end
@@ -49,8 +204,143 @@ pub class MainVisitor < Visitor
     end
   end
 
+  # The type of a node a visit has already visited. Strict mode raises when it
+  # has none: the reason the node was refused when there is one, else a BUG. Total
+  # mode returns nil and the caller leaves its own node untyped.
+  def child_type(node : ASTNode) : Type?
+    if t = @node_types[node]?
+      return t
+    end
+    unless @total
+      if reason = @untyped_reasons[node]?
+        raise(reason)
+      end
+      raise("BUG: node has no type: #{node.to_s}")
+    end
+    nil
+  end
+
+  # The reason a node could not be typed. Total mode records it and returns
+  # false, so a visit can end with `return untyped(node, "...")`.
+  def untyped(node : ASTNode, reason : String) : Bool
+    @untyped_reasons[node] = reason
+    record_refusal(node, reason)
+    false
+  end
+
+  # A construct the port refuses. Strict mode raises the message (the program's
+  # error, as before); total mode records it on the node.
+  def refuse(node : ASTNode, message : String) : Bool
+    record_refusal(node, message)
+    raise(message) unless @total
+    @untyped_reasons[node] = message
+    false
+  end
+
+  # Appends one Refusal for `node`: the reason, the node's file, line and column
+  # (0 when it has no location), and the def whose body was being typed, named
+  # `Owner#name` inside a type and `name` at top level.
+  def record_refusal(node : ASTNode, reason : String) : Nil
+    file : String? = nil
+    line = 0
+    column = 0
+    if loc = node.location
+      file = loc.filename
+      line = loc.line_number
+      column = loc.column_number
+    end
+    def_name : String? = nil
+    if cd = @current_def
+      def_name = cd.name
+      if owner = @scope
+        unless owner.is_a?(SemanticProgram)
+          def_name = "#{owner.full_name}##{cd.name}"
+        end
+      end
+    end
+    @refusals << Refusal.new(reason, file, line, column, def_name, node)
+    nil
+  end
+
+  # The type a declared type names, or nil when it names none. A declared type never
+  # raises here (the trunk's lookup raises on an unresolved name): the caller records
+  # the refusal on its node. Generic receivers bind their type parameters as lookup_under does.
+  def lookup_declared?(node : ASTNode, owner : Type?) : Type?
+    if receiver_instance(owner).nil?
+      return @program.lookup_type_node?(node, @current_type)
+    end
+    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
+    return found.as(Type) unless found.is_a?(LookupError)
+    nil
+  end
+
+  # The name a declared type is refused by: the base of a generic.
+  def declared_base_name(node : ASTNode) : String
+    if node.is_a?(Generic)
+      return node.as(Generic).name.to_s
+    end
+    node.to_s
+  end
+
+  def untyped_reason?(node : ASTNode) : String?
+    @untyped_reasons[node]?
+  end
+
   def target_def?(call : Call) : Def?
     @call_target_defs[call]?
+  end
+
+  # The lib call record of a call on a lib (see visit_lib_call), keyed by the call node: the fun,
+  # the argument nodes, and the literal and out information the lowering needs. Nil for any other call.
+  def lib_call_target?(call : Call) : LibCallTarget?
+    @lib_call_targets[call]?
+  end
+
+  # The generic instance a body or signature is typed under: the receiver, or the
+  # instance a metaclass stands for (`Pointer(UInt64).new` binds `T` to UInt64).
+  def receiver_instance(owner : Type?) : GenericInstanceType?
+    o : Type? = owner
+    if o.is_a?(MetaclassType)
+      o = o.as(MetaclassType).instance_type
+    end
+    if o.is_a?(GenericInstanceType)
+      return o.as(GenericInstanceType)
+    end
+    nil
+  end
+
+  # The type a type node names under `owner`. A generic instance binds its type
+  # parameter names to its type arguments (`T` is UInt64 in Pointer(UInt64)), as the
+  # hosted lookup does for an instantiated def; anything else is the lexical lookup
+  # from the current type.
+  def lookup_under(node : ASTNode, owner : Type?) : Type
+    if inst = receiver_instance(owner)
+      if node.is_a?(Path)
+        path = node.as(Path)
+        if !path.global && path.names.size == 1
+          if bound = inst.type_vars[path.names.first]?
+            return bound
+          end
+        end
+      end
+    end
+    # `self` in a declared type is the receiver (hosted: the def's self type), not the lexical scope.
+    if node.is_a?(Self)
+      if o = owner
+        return o.as(Type) unless o.is_a?(SemanticProgram)
+      end
+    end
+    @program.lookup_type_node(node, @current_type)
+  end
+
+  # iyi: a class variable that is replaced keeps the @[ThreadLocal] flag of the one it replaces
+  # (hosted types.cr 1265: var.thread_local = class_var.thread_local?).
+  def replace_class_var(mod_type : ModuleType, name : String, mv : MetaTypeVar) : Nil
+    if old = mod_type.class_vars[name]?
+      mv.thread_local = old.thread_local
+    end
+    mod_type.class_vars[name] = mv
+    nil
   end
 
   def type_from_literal_kind(kind : NumberKind) : Type
@@ -82,10 +372,276 @@ pub class MainVisitor < Visitor
     false
   end
 
+  # iyi: the `module` header the parser leaves as the file's first statement. The
+  # hosted tree has no such node (its parser makes the ModuleDef alone, parser.cr
+  # 349-402), so the header is typed nothing, recorded nothing, and not walked.
+  def visit(node : ModuleHeader) : Bool
+    false
+  end
+
+  # iyi: an argument of a def, block or enum member. The hosted pass skips it
+  # (semantic_visitor.cr: "Arg nodes are also used for Enum constants"): it is
+  # neither typed nor walked.
+  def visit(node : Arg) : Bool
+    false
+  end
+
+  # iyi: declarations the hosted base visitor types as nil without walking them
+  # (semantic_visitor.cr 1861-1911).
+  def visit(node : ImportDecl) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : UsingDecl) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : Extend) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : Include) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : Alias) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : AnnotationDef) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : LibDef) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : AssocTypeDecl) : Bool
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  # iyi: the visibility modifier types what it modifies and is nil itself. A call
+  # with no expansion is refused, as the hosted pass refuses it.
+  def visit(node : VisibilityModifier) : Bool
+    exp = node.exp
+    exp.accept(self)
+    if exp.is_a?(Call) && exp.expanded.nil?
+      return refuse(node, "can't apply visibility modifier")
+    end
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  # iyi: macro control inside a body. The hosted pass hands a MacroIf, MacroFor
+  # or MacroExpression to its macro engine (semantic_visitor.cr 1943-1956) and
+  # does not walk it; MacroLiteral text exists only inside those, and the hosted
+  # pass never reaches it. Expansion waits for the macro engine (macros slice).
+  def visit(node : MacroIf) : Bool
+    untyped(node, "macro control expansion (macros engine)")
+    false
+  end
+
+  def visit(node : MacroFor) : Bool
+    untyped(node, "macro control expansion (macros engine)")
+    false
+  end
+
+  def visit(node : MacroExpression) : Bool
+    untyped(node, "macro control expansion (macros engine)")
+    false
+  end
+
+  def visit(node : MacroVerbatim) : Bool
+    untyped(node, "macro control expansion (macros engine)")
+    false
+  end
+
+  def visit(node : MacroLiteral) : Bool
+    false
+  end
+
+  # iyi: a literal the hosted pass expands before it types it (main_visitor.cr
+  # 3664-3700, expand(node)). The literal expander builds the tree the hosted
+  # pass types; the literal takes that tree's type, and the tree is walked.
+  def expand_literal(node : ASTNode) : Bool
+    expander = LiteralExpander.new(NormalizerProgram.new)
+    expanded = node.transform(expander)
+    expanded.accept(self)
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
+    false
+  end
+
+  def visit(node : ArrayLiteral) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : HashLiteral) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : RangeLiteral) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : StringInterpolation) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : And) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : Or) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : Case) : Bool
+    expand_literal(node)
+  end
+
+  def visit(node : Select) : Bool
+    expand_literal(node)
+  end
+
+  # A multiple assignment is expanded before it is typed, as the hosted pass does
+  # (main_visitor.cr 3736): its targets are assigned from temporaries.
+  def visit(node : MultiAssign) : Bool
+    expand_literal(node)
+  end
+
+  # iyi: an annotation is a sibling of the def it annotates, not an expression.
+  # The hosted pass does not type or walk it, so neither does the port; the
+  # primitive name is read from the Annotation by the lowering (S2d owns that).
+  def visit(node : Annotation) : Bool
+    false
+  end
+
+  # iyi: `x.is_a?(T)` is Bool (hosted type filter). Visit the receiver and the
+  # constant, then type the node.
+  def visit(node : IsA) : Bool
+    node.obj.accept(self)
+    node.const.accept(self)
+    set_type(node, @program.bool_type)
+    false
+  end
+
+  # iyi: `!x` is Bool whatever its operand (hosted main_visitor.cr 3757). The
+  # operand is visited so its own nodes are typed.
+  def visit(node : Not) : Bool
+    node.exp.accept(self)
+    set_type(node, @program.bool_type)
+    false
+  end
+
+  # iyi: `break` and `next` never complete, so they are NoReturn. The value they carry is typed
+  # first (the hosted pass binds it): a `break` to the call whose block is being typed, a `next`
+  # to the block (see visit(Yield) and call_result).
+  def visit(node : Break) : Bool
+    value_t : Type? = @program.nil_type
+    if e = node.exp
+      e.accept(self)
+      value_t = child_type(e)
+    end
+    if bts = @break_types
+      bts << value_t
+    end
+    set_type(node, @program.no_return_type)
+    false
+  end
+
+  def visit(node : Next) : Bool
+    value_t : Type? = @program.nil_type
+    if e = node.exp
+      e.accept(self)
+      value_t = child_type(e)
+    end
+    if nts = @next_types
+      nts << value_t
+    end
+    set_type(node, @program.no_return_type)
+    false
+  end
+
+  # iyi: the body of a `@[Primitive(:name)]` def (hosted main_visitor.cr
+  # 2842-2851). It has the def's declared return type. `pre_initialize` and the
+  # by-name cases are not ported here; a primitive with no return type is
+  # recorded untyped with its name.
+  def visit(node : Primitive) : Bool
+    if cd = @current_def
+      if rt = cd.return_type
+        set_type(node, lookup_under(rt, @scope))
+        return false
+      end
+    end
+    if node.name == "allocate" || node.name == "pointer_malloc" || node.name == "pointer_new"
+      if sc = @scope
+        if sc.is_a?(MetaclassType)
+          instance = sc.as(MetaclassType).instance_type
+          if node.name == "pointer_malloc" && instance.is_a?(GenericClassType)
+            return refuse(node, "can't malloc pointer without type, use Pointer(Type).malloc(size)")
+          end
+          if node.name == "pointer_new" && instance.is_a?(GenericClassType)
+            return refuse(node, "can't create pointer without type, use Pointer(Type).new(address)")
+          end
+          set_type(node, instance)
+          return false
+        end
+      end
+    end
+    if node.name == "pointer_set"
+      if sc = @scope
+        if sc.is_a?(PointerInstanceType)
+          if vt = @vars["value"]?
+            set_type(node, vt)
+            return false
+          end
+        end
+      end
+    end
+    if node.name == "class"
+      if sc = @scope
+        if sc.is_a?(ModuleType)
+          set_type(node, sc.as(ModuleType).metaclass)
+          return false
+        end
+      end
+    end
+    untyped(node, "primitive #{node.name} without a declared return type")
+    false
+  end
+
+  # `obj.responds_to?(:name)` is typed Bool. Its value depends on the obj's type and is
+  # decided by the lowering, not here (the hosted typer sets only the type).
+  def visit(node : RespondsTo) : Bool
+    obj = node.obj
+    obj.accept(self)
+    set_type(node, @program.bool_type)
+    false
+  end
+
+  # iyi: a node of a kind this visitor does not type yet. The walk goes on into
+  # its children, so the children are typed; the node itself is recorded.
+  def visit(node : ASTNode) : Bool
+    untyped(node, "unsupported node: #{node_class_name(node)}")
+    true
+  end
+
   def expand_macro(node : Call) : Bool
     if exp = node.expanded
       exp.accept(self)
-      set_type(node, type_of(exp))
+      if et = child_type(exp)
+        set_type(node, et)
+      end
       return true
     end
 
@@ -96,7 +652,9 @@ pub class MainVisitor < Visitor
         expanded_ast = engine.expand(a_macro, node)
         node.expanded = expanded_ast
         expanded_ast.accept(self)
-        set_type(node, type_of(expanded_ast))
+        if et = child_type(expanded_ast)
+          set_type(node, et)
+        end
         return true
       end
     end
@@ -116,6 +674,17 @@ pub class MainVisitor < Visitor
 
   def visit(node : StringLiteral) : Bool
     set_type(node, @program.string_type)
+    false
+  end
+
+  # `__FILE__` and `__DIR__` are Strings, `__LINE__` and `__END_LINE__` Int32 (hosted: the call site
+  # rewrites them to literals; a default argument types as the literal it will be).
+  def visit(node : MagicConstant) : Bool
+    if node.name == TokenKind::MAGIC_LINE || node.name == TokenKind::MAGIC_END_LINE
+      set_type(node, @program.int32_type)
+    else
+      set_type(node, @program.string_type)
+    end
     false
   end
 
@@ -139,13 +708,16 @@ pub class MainVisitor < Visitor
       set_type(node, t)
       return false
     end
+    if reason = @untyped_locals[node.name]?
+      return untyped(node, reason)
+    end
 
     if node.name == "self"
       if sc = @scope
         set_type(node, sc)
         return false
       else
-        raise("there's no self in this scope")
+        return refuse(node, "there's no self in this scope")
       end
     end
 
@@ -157,8 +729,9 @@ pub class MainVisitor < Visitor
     if zero_arg
       call = Call.new(nil, node.name).at(node)
       @call_target_defs[call] = zero_arg
-      ret_type = type_method_body(zero_arg, rec_type, [] of ASTNode, nil)
-      set_type(node, ret_type)
+      if ret_type = type_method_body(zero_arg, rec_type, [] of ASTNode, nil, node)
+        set_type(node, ret_type)
+      end
       return false
     end
 
@@ -167,12 +740,12 @@ pub class MainVisitor < Visitor
                  else
                    "top-level"
                  end
-    raise("undefined local variable or method '#{node.name}' for #{scope_name}")
+    refuse(node, "undefined local variable or method '#{node.name}' for #{scope_name}")
   end
 
   def visit(node : InstanceVar) : Bool
     if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-      raise("can't use instance variables at the top level")
+      return refuse(node, "can't use instance variables at the top level")
     end
     target_scope = @scope || @current_type
     target_type = if target_scope.is_a?(MetaclassType)
@@ -186,12 +759,18 @@ pub class MainVisitor < Visitor
         return false
       end
     end
-    raise("can't infer the type of instance variable '#{node.name}' of #{target_type.full_name}")
+    if target_type.is_a?(GenericClassInstanceType)
+      if ivar = target_type.as(GenericClassInstanceType).lookup_instance_var?(node.name)
+        set_type(node, ivar.type)
+        return false
+      end
+    end
+    refuse(node, "can't infer the type of instance variable '#{node.name}' of #{target_type.full_name}")
   end
 
   def visit(node : ClassVar) : Bool
     if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-      raise("can't use class variables at the top level")
+      return refuse(node, "can't use class variables at the top level")
     end
     target_scope = @scope || @current_type
     target_type = if target_scope.is_a?(MetaclassType)
@@ -205,22 +784,43 @@ pub class MainVisitor < Visitor
         return false
       end
     end
-    raise("undefined class variable '#{node.name}' for #{target_type.full_name}")
+    refuse(node, "undefined class variable '#{node.name}' for #{target_type.full_name}")
   end
 
   def visit(node : Assign) : Bool
     node.value.accept(self)
-    val_type = type_of(node.value)
+    vt = child_type(node.value)
+    if vt.nil?
+      # The local is declared; its reads report why its value has no type.
+      if node.target.is_a?(Var)
+        name = node.target.as(Var).name
+        @untyped_locals[name] = "the value of '#{name}' cannot be typed"
+      end
+      return false
+    end
+    val_type = vt.as(Type)
+    if node.target.is_a?(Var)
+      @untyped_locals.delete(node.target.as(Var).name)
+    end
 
     if node.target.is_a?(Var)
       v = node.target.as(Var)
+      # The target and the later reads take the type of this assignment: the
+      # oracle prints flow types (bench/fixtures/sem_bodies_union.iyi). The
+      # variable's storage type is the union over the body's assignments, kept
+      # apart in `def_var_unions` for the lowering.
       @vars[v.name] = val_type
       set_type(v, val_type)
       set_type(node, val_type)
+      if old_u = @var_unions[v.name]?
+        @var_unions[v.name] = @program.type_merge(old_u, val_type)
+      else
+        @var_unions[v.name] = val_type
+      end
     elsif node.target.is_a?(InstanceVar)
       ivar_node = node.target.as(InstanceVar)
       if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-        raise("can't use instance variables at the top level")
+        return refuse(node, "can't use instance variables at the top level")
       end
       target_scope = @scope || @current_type
       target_type = if target_scope.is_a?(MetaclassType)
@@ -232,7 +832,7 @@ pub class MainVisitor < Visitor
         mod_type = target_type.as(ModuleType)
         if ivar = mod_type.lookup_instance_var?(ivar_node.name)
           unless val_type.subtype_of?(ivar.type)
-            raise("instance variable '#{ivar_node.name}' of #{mod_type.full_name} must be #{ivar.type.full_name}, not (#{ivar.type.full_name} | #{val_type.full_name})")
+            return refuse(node, "instance variable '#{ivar_node.name}' of #{mod_type.full_name} must be #{ivar.type.full_name}, not (#{ivar.type.full_name} | #{val_type.full_name})")
           end
           set_type(ivar_node, ivar.type)
         else
@@ -241,13 +841,25 @@ pub class MainVisitor < Visitor
           set_type(ivar_node, val_type)
         end
         set_type(node, val_type)
+      elsif target_type.is_a?(GenericClassInstanceType)
+        gen_type = target_type.as(GenericClassInstanceType)
+        if ivar = gen_type.lookup_instance_var?(ivar_node.name)
+          unless val_type.subtype_of?(ivar.type)
+            return refuse(node, "instance variable '#{ivar_node.name}' of #{gen_type.full_name} must be #{ivar.type.full_name}, not (#{ivar.type.full_name} | #{val_type.full_name})")
+          end
+          set_type(ivar_node, ivar.type)
+        else
+          gen_type.instance_vars[ivar_node.name] = MetaTypeVar.new(ivar_node.name, val_type, node.value)
+          set_type(ivar_node, val_type)
+        end
+        set_type(node, val_type)
       else
-        raise("can't use instance variables in #{target_type.full_name}")
+        return refuse(node, "can't use instance variables in #{target_type.full_name}")
       end
     elsif node.target.is_a?(ClassVar)
       cvar_node = node.target.as(ClassVar)
       if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-        raise("can't use class variables at the top level")
+        return refuse(node, "can't use class variables at the top level")
       end
       target_scope = @scope || @current_type
       target_type = if target_scope.is_a?(MetaclassType)
@@ -259,17 +871,17 @@ pub class MainVisitor < Visitor
         mod_type = target_type.as(ModuleType)
         if cvar = mod_type.lookup_class_var?(cvar_node.name)
           unless val_type.subtype_of?(cvar.type)
-            raise("type mismatch for class variable '#{cvar_node.name}': expected #{cvar.type.full_name}, got #{val_type.full_name}")
+            return refuse(node, "type mismatch for class variable '#{cvar_node.name}': expected #{cvar.type.full_name}, got #{val_type.full_name}")
           end
           set_type(cvar_node, cvar.type)
         else
           cvar = MetaTypeVar.new(cvar_node.name, val_type, node.value)
-          mod_type.class_vars[cvar_node.name] = cvar
+          replace_class_var(mod_type, cvar_node.name, cvar)
           set_type(cvar_node, val_type)
         end
         set_type(node, val_type)
       else
-        raise("can't use class variables in #{target_type.full_name}")
+        return refuse(node, "can't use class variables in #{target_type.full_name}")
       end
     elsif node.target.is_a?(Path)
       p = node.target.as(Path)
@@ -282,10 +894,16 @@ pub class MainVisitor < Visitor
   end
 
   def visit(node : TypeDeclaration) : Bool
-    decl_type = @program.lookup_type_node(node.declared_type, @current_type)
+    decl_found = lookup_declared?(node.declared_type, @scope)
+    if decl_found.nil?
+      return refuse(node, "undefined constant #{declared_base_name(node.declared_type)}")
+    end
+    decl_type = decl_found.as(Type)
     if val = node.value
       val.accept(self)
-      val_type = type_of(val)
+      vt = child_type(val)
+      return false if vt.nil?
+      val_type = vt.as(Type)
       unless val_type.subtype_of?(decl_type)
         if node.var.is_a?(InstanceVar)
           target_scope = @scope || @current_type
@@ -294,9 +912,9 @@ pub class MainVisitor < Visitor
                         else
                           target_scope
                         end
-          raise("instance variable '#{node.var.as(InstanceVar).name}' of #{target_type.full_name} must be #{decl_type.full_name}, not (#{decl_type.full_name} | #{val_type.full_name})")
+          return refuse(node, "instance variable '#{node.var.as(InstanceVar).name}' of #{target_type.full_name} must be #{decl_type.full_name}, not (#{decl_type.full_name} | #{val_type.full_name})")
         end
-        raise("expected type #{decl_type.full_name}, got #{val_type.full_name}")
+        return refuse(node, "expected type #{decl_type.full_name}, got #{val_type.full_name}")
       end
       if node.var.is_a?(Var)
         v = node.var.as(Var)
@@ -305,7 +923,7 @@ pub class MainVisitor < Visitor
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-          raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
+          return refuse(node, "can only declare instance variables of a non-generic class, not a main (<Program>)")
         end
         target_scope = @scope || @current_type
         target_type = if target_scope.is_a?(MetaclassType)
@@ -321,7 +939,7 @@ pub class MainVisitor < Visitor
       elsif node.var.is_a?(ClassVar)
         cvar_node = node.var.as(ClassVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-          raise("can't use class variables at the top level")
+          return refuse(node, "can't use class variables at the top level")
         end
         target_scope = @scope || @current_type
         target_type = if target_scope.is_a?(MetaclassType)
@@ -331,7 +949,7 @@ pub class MainVisitor < Visitor
                       end
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
-          mod_type.class_vars[cvar_node.name] = MetaTypeVar.new(cvar_node.name, decl_type, val)
+          replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, val))
           set_type(cvar_node, decl_type)
         end
       end
@@ -344,7 +962,7 @@ pub class MainVisitor < Visitor
       elsif node.var.is_a?(InstanceVar)
         ivar_node = node.var.as(InstanceVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-          raise("can only declare instance variables of a non-generic class, not a main (<Program>)")
+          return refuse(node, "can only declare instance variables of a non-generic class, not a main (<Program>)")
         end
         target_scope = @scope || @current_type
         target_type = if target_scope.is_a?(MetaclassType)
@@ -360,7 +978,7 @@ pub class MainVisitor < Visitor
       elsif node.var.is_a?(ClassVar)
         cvar_node = node.var.as(ClassVar)
         if @scope.nil? && (@current_type.is_a?(SemanticProgram) || @current_type.nil?)
-          raise("can't use class variables at the top level")
+          return refuse(node, "can't use class variables at the top level")
         end
         target_scope = @scope || @current_type
         target_type = if target_scope.is_a?(MetaclassType)
@@ -370,7 +988,7 @@ pub class MainVisitor < Visitor
                       end
         if target_type.is_a?(ModuleType)
           mod_type = target_type.as(ModuleType)
-          mod_type.class_vars[cvar_node.name] = MetaTypeVar.new(cvar_node.name, decl_type, nil)
+          replace_class_var(mod_type, cvar_node.name, MetaTypeVar.new(cvar_node.name, decl_type, nil))
           set_type(cvar_node, decl_type)
         end
       end
@@ -380,17 +998,34 @@ pub class MainVisitor < Visitor
   end
 
   def visit(node : Path) : Bool
+    if inst = receiver_instance(@scope)
+      path = node
+      if !path.global && path.names.size == 1
+        if bound = inst.type_vars[path.names.first]?
+          # A type parameter in an expression names the bound type's metaclass, as a
+          # type name does (`T.new`), except inside a type argument.
+          if @in_type_args == 0 && bound.is_a?(ModuleType)
+            set_type(node, bound.as(ModuleType).metaclass)
+          else
+            set_type(node, bound)
+          end
+          return false
+        end
+      end
+    end
     t = @program.lookup_type_path(node, @current_type)
     if t.const?
       c = t.as(Const)
+      c.used = true
       if c_type = type_of?(c.value)
         set_type(node, c_type)
       else
         c.value.accept(self)
-        c_type = type_of(c.value)
-        set_type(node, c_type)
+        if c_type = child_type(c.value)
+          set_type(node, c_type)
+        end
       end
-    elsif t.is_a?(ModuleType)
+    elsif t.is_a?(ModuleType) && @in_type_args == 0 && !t.is_a?(LibType)
       set_type(node, t.as(ModuleType).metaclass)
     else
       set_type(node, t)
@@ -398,60 +1033,152 @@ pub class MainVisitor < Visitor
     false
   end
 
+  # An inline macro site (`{% if %}`, `{% for %}`, `{{ }}`) written in the body of the def being typed
+  # is expanded in place, as the declarations pass expands one at the top level and in a type body
+  # (inline_macros.iyi). The scope is the receiver's type and the file is the one the def is written in.
+  # Outside a def (top level, a fun body) nothing is spliced here.
+  def def_inline_scope_name : String
+    if scope = @scope
+      return scope.full_name
+    end
+    ""
+  end
+
+  def def_inline_file : String
+    if cd = @current_def
+      if loc = cd.location
+        return loc.filename
+      end
+    end
+    @fun_inline_file || ""
+  end
+
+  # Whether a body is spliced here: a def being typed, or a fun body (see visit(FunDef)).
+  def in_inline_body? : Bool
+    !@current_def.nil? || !@fun_inline_file.nil?
+  end
+
+  def splice_def_inline_sites(node : Expressions) : Nil
+    return nil unless in_inline_body?
+    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false)
+    nil
+  end
+
+  def splice_def_body(node : ASTNode) : ASTNode
+    return node unless in_inline_body?
+    splice_body_node(node, def_inline_scope_name, def_inline_file, false)
+  end
+
   def visit(node : Expressions) : Bool
+    splice_def_inline_sites(node)
     if node.expressions.empty?
       set_type(node, @program.nil_type)
     else
-      last_type = @program.nil_type
-      node.expressions.each do |exp|
-        exp.accept(self)
-        last_type = type_of(exp)
+      # The type of an expression list is the type of its last expression. An
+      # expression the port cannot type leaves the list untyped too.
+      last_type : Type? = nil
+      i = 0
+      while i < node.expressions.size
+        exp = node.expressions[i]
+        # iyi: an annotation sits beside the def it annotates and is neither typed
+        # nor walked (the hosted pass does not), so it does not end the list's type.
+        unless exp.is_a?(Annotation)
+          exp.accept(self)
+          last_type = child_type(exp)
+        end
+        i = i + 1
       end
-      set_type(node, last_type)
+      if lt = last_type
+        set_type(node, lt)
+      end
     end
     false
   end
 
+  # The type where two branches meet. A branch that never completes (NoReturn) adds
+  # nothing, as the hosted merge drops it; the other branch's type is the result.
+  def merge_flow(a : Type, b : Type) : Type
+    return b if a.is_a?(NoReturnType)
+    return a if b.is_a?(NoReturnType)
+    @program.type_merge(a, b)
+  end
+
   def visit(node : If) : Bool
     node.cond.accept(self)
+    node.then = splice_def_body(node.then)
     node.then.accept(self)
-    then_type = type_of(node.then)
-
+    node.else = splice_def_body(node.else)
     node.else.accept(self)
-    else_type = type_of(node.else)
-
-    merged = @program.type_merge(then_type, else_type)
-    set_type(node, merged)
+    then_type = child_type(node.then)
+    else_type = child_type(node.else)
+    if then_type
+      if else_type
+        merged = merge_flow(then_type, else_type)
+        set_type(node, merged)
+      end
+    end
     false
   end
 
   def visit(node : While) : Bool
     node.cond.accept(self)
+    # A `break` or `next` in the loop leaves the loop, so its values are not the block's.
+    old_break_types = @break_types
+    old_next_types = @next_types
+    @break_types = nil
+    @next_types = nil
+    node.body = splice_def_body(node.body)
     node.body.accept(self)
+    @break_types = old_break_types
+    @next_types = old_next_types
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  def visit(node : Until) : Bool
+    node.cond.accept(self)
+    # As in a while: a `break` or `next` in the loop is not the block's.
+    old_break_types = @break_types
+    old_next_types = @next_types
+    @break_types = nil
+    @next_types = nil
+    node.body.accept(self)
+    @break_types = old_break_types
+    @next_types = old_next_types
     set_type(node, @program.nil_type)
     false
   end
 
   def visit(node : Return) : Bool
+    value_t : Type? = @program.nil_type
     if exp = node.exp
       exp.accept(self)
-      exp_type = type_of(exp)
+      value_t = child_type(exp)
+      if value_t.nil?
+        # An untyped value makes the def's type untyped (see type_method_body).
+        if rts = @return_types
+          rts << nil
+        end
+        return false
+      end
       if cd = @current_def
         if rt = cd.return_type
-          expected_ret = @program.lookup_type_node(rt, @current_type)
-          unless exp_type.subtype_of?(expected_ret)
-            raise("type mismatch for return type: expected #{expected_ret.full_name}, got #{exp_type.full_name}")
+          expected_ret = lookup_under(rt, @scope)
+          unless value_t.as(Type).subtype_of?(expected_ret)
+            return refuse(node, "type mismatch for return type: expected #{expected_ret.full_name}, got #{value_t.as(Type).full_name}")
           end
         end
       end
+    end
+    if rts = @return_types
+      rts << value_t
     end
     set_type(node, @program.no_return_type)
     false
   end
 
   def visit(node : ClassDef) : Bool
-    name = node.name.names.last
-    t = @current_type.lookup_type(name)
+    t = @program.lookup_type_path?(node.name, @current_type)
     if t && t.is_a?(ClassType)
       old_type = @current_type
       @current_type = t.as(ClassType)
@@ -461,7 +1188,7 @@ pub class MainVisitor < Visitor
       cls = t.as(ClassType)
       cls.class_vars.each_value do |cvar|
         if cvar.initializer.nil? && !cvar.type.nilable?
-          raise("class variable '#{cvar.name}' of #{cls.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")
+          return refuse(node, "class variable '#{cvar.name}' of #{cls.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")
         end
       end
     end
@@ -470,8 +1197,7 @@ pub class MainVisitor < Visitor
   end
 
   def visit(node : ModuleDef) : Bool
-    name = node.name.names.last
-    t = @current_type.lookup_type(name)
+    t = @program.lookup_type_path?(node.name, @current_type)
     if t && t.is_a?(ModuleType)
       old_type = @current_type
       @current_type = t.as(ModuleType)
@@ -481,9 +1207,22 @@ pub class MainVisitor < Visitor
       mod = t.as(ModuleType)
       mod.class_vars.each_value do |cvar|
         if cvar.initializer.nil? && !cvar.type.nilable?
-          raise("class variable '#{cvar.name}' of #{mod.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")
+          return refuse(node, "class variable '#{cvar.name}' of #{mod.full_name} is not nilable (it's #{cvar.type.full_name}) so it must have an initializer")
         end
       end
+    end
+    set_type(node, @program.nil_type)
+    false
+  end
+
+  # A trait's body is typed in the trait's own type (hosted semantic_visitor.cr 1849-1856).
+  def visit(node : TraitDef) : Bool
+    t = @program.lookup_type_path?(node.name, @current_type)
+    if t && t.is_a?(TraitType)
+      old_type = @current_type
+      @current_type = t.as(TraitType)
+      node.body.accept(self)
+      @current_type = old_type
     end
     set_type(node, @program.nil_type)
     false
@@ -515,24 +1254,63 @@ pub class MainVisitor < Visitor
       while i < blk.args.size
         b_arg = blk.args[i]
         if i < node.exps.size
-          arg_t = type_of(node.exps[i])
-          current_arg_t = type_of?(b_arg)
-          new_arg_t = if cat = current_arg_t
-                        @program.type_merge(cat, arg_t)
-                      else
-                        arg_t
-                      end
-          blk_vars[b_arg.name] = new_arg_t
-          set_type(b_arg, new_arg_t)
+          if arg_t = child_type(node.exps[i])
+            current_arg_t = type_of?(b_arg)
+            new_arg_t = if cat = current_arg_t
+                          @program.type_merge(cat, arg_t)
+                        else
+                          arg_t
+                        end
+            blk_vars[b_arg.name] = new_arg_t
+            set_type(b_arg, new_arg_t)
+          end
         end
         i = i + 1
       end
       @vars = blk_vars
 
+      # The block's `break`s bind to the call that owns it, its `next`s to the block, and a `return`
+      # leaves the def the block is written in (hosted Break, Next, Return).
+      old_break_types = @break_types
+      old_next_types = @next_types
+      old_return_types = @return_types
+      old_def_node = @current_def
+      @break_types = @block_breaks[blk]?
+      @next_types = [] of Type?
+      callee_block = @current_call_block
+      callee_context_vars = @current_block_context_vars
+      callee_yield_nodes = @current_yield_nodes
+      if owner = @block_owners[blk]?
+        @current_def = owner.def_node
+        @return_types = owner.return_types
+        @current_call_block = owner.call_block
+        @current_block_context_vars = owner.context_vars
+        @current_yield_nodes = owner.yield_nodes
+        if writer_scope = owner.scope
+          @scope = writer_scope
+        end
+      else
+        @return_types = nil
+        @current_call_block = nil
+        @current_block_context_vars = nil
+        @current_yield_nodes = nil
+      end
+
+      callee_imports = @program.current_imports
+      callee_import_defs = @program.current_import_defs
+      enter_file_scope(blk)
       blk.body.accept(self)
-      blk_type = type_of(blk.body)
-      set_type(blk, blk_type)
-      set_type(node, blk_type)
+      @program.current_imports = callee_imports
+      @program.current_import_defs = callee_import_defs
+      @current_call_block = callee_block
+      @current_block_context_vars = callee_context_vars
+      @current_yield_nodes = callee_yield_nodes
+      @scope = old_scope
+      blk_type = merge_jump_values(child_type(blk.body), @next_types)
+      if bt = blk_type
+        set_type(blk, bt)
+        set_type(node, bt)
+      end
 
       if ctx = @current_block_context_vars
         ctx.keys.each do |k|
@@ -542,24 +1320,34 @@ pub class MainVisitor < Visitor
         end
       end
 
-      if cd = @current_def
-        if ba = cd.block_arg
-          if r = ba.restriction
-            if r.is_a?(ProcNotation)
-              pn = r.as(ProcNotation)
-              if out_node = pn.output
-                expected_ret = @program.lookup_type_node(out_node, @current_type)
-                unless blk_type.subtype_of?(expected_ret)
-                  raise("expected block to return #{expected_ret.full_name}, not #{blk_type.full_name}")
+      @break_types = old_break_types
+      @next_types = old_next_types
+      @return_types = old_return_types
+      @current_def = old_def_node
+      @vars = old_vars
+      @scope = old_scope
+
+      if bt = blk_type
+        if cd = @current_def
+          if ba = cd.block_arg
+            if r = ba.restriction
+              if r.is_a?(ProcNotation)
+                pn = r.as(ProcNotation)
+                if out_node = pn.output
+                  # `& : T -> _` leaves the block's result free (hosted: an Underscore output matches any type).
+                  unless out_node.is_a?(Underscore)
+                    expected_ret = lookup_under(out_node, @scope)
+                    # hosted call.cr 1433 and void_return_type?: a declared Nil or void output accepts any block value.
+                    unless expected_ret.nil_type? || expected_ret.is_a?(VoidType) || bt.subtype_of?(expected_ret)
+                      return refuse(node, "expected block to return #{expected_ret.full_name}, not #{bt.full_name}")
+                    end
+                  end
                 end
               end
             end
           end
         end
       end
-
-      @vars = old_vars
-      @scope = old_scope
     else
       set_type(node, @program.nil_type)
     end
@@ -568,8 +1356,29 @@ pub class MainVisitor < Visitor
 
   def visit(node : Block) : Bool
     node.body.accept(self)
-    set_type(node, type_of(node.body))
+    if bt = child_type(node.body)
+      set_type(node, bt)
+    end
     false
+  end
+
+  # The type a parameter's restriction names for a call on *rec_type*. A generic instance
+  # (or its metaclass) binds its type parameters, so `v : T` on Box(Int32) is Int32, as the
+  # hosted MatchContext binds them. Anything else is the scope's own lookup.
+  def restriction_type(restriction : ASTNode, rec_type : Type) : Type
+    owner = rec_type
+    if owner.is_a?(MetaclassType)
+      owner = owner.as(MetaclassType).instance_type
+    end
+    if owner.is_a?(GenericInstanceType) && restriction.is_a?(Path)
+      names = restriction.as(Path).names
+      if names.size == 1
+        if bound = owner.as(GenericInstanceType).type_vars[names[0]]?
+          return bound
+        end
+      end
+    end
+    @program.lookup_type_node(restriction, @current_type)
   end
 
   def collect_candidate_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
@@ -584,7 +1393,23 @@ pub class MainVisitor < Visitor
       mod.parents.each do |p|
         collect_candidate_defs(p, name, result, visited)
       end
+    elsif rec_type.is_a?(GenericInstanceType)
+      # A generic instance's defs are its generic type's (Box(Int32) has Box(T)'s initialize).
+      collect_candidate_defs(rec_type.as(GenericInstanceType).generic_type, name, result, visited)
     end
+  end
+
+  # iyi: what a call with no receiver finds when the type it is written in has no such def: the
+  # defs its file imported by name (`import a/b::{parse}`), then the program's own (hosted
+  # Call#lookup_matches: `lookup_matches_in_type(program)` after the scope).
+  def collect_scope_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
+    if imported = @program.current_import_defs[name]?
+      imported.each { |d| result << d }
+    end
+    if result.empty? && !rec_type.is_a?(SemanticProgram)
+      collect_candidate_defs(@program, name, result, visited)
+    end
+    nil
   end
 
   def format_method_display_name(rec_type : Type, name : String) : String
@@ -622,19 +1447,19 @@ pub class MainVisitor < Visitor
     count
   end
 
-  def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode)) : Bool
+  def def_more_specific?(d1 : Def, d2 : Def, args : Array(ASTNode), owner : Type) : Bool
     has_strict = false
     i = 0
     while i < args.size
       p1 = d1.args[i]
       p2 = d2.args[i]
       t1 = if r1 = p1.restriction
-             @program.lookup_type_node(r1, @current_type)
+             lookup_under(r1, owner)
            else
              @program.object_type
            end
       t2 = if r2 = p2.restriction
-             @program.lookup_type_node(r2, @current_type)
+             lookup_under(r2, owner)
            else
              @program.object_type
            end
@@ -650,7 +1475,7 @@ pub class MainVisitor < Visitor
     has_strict
   end
 
-  def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode)) : Array(Def)
+  def filter_most_specific_overloads(candidates : Array(Def), args : Array(ASTNode), owner : Type) : Array(Def)
     if candidates.size <= 1
       return candidates
     end
@@ -659,7 +1484,7 @@ pub class MainVisitor < Visitor
     candidates.each do |cand|
       subsumed = false
       candidates.each do |other|
-        if cand != other && def_more_specific?(other, cand, args)
+        if cand != other && def_more_specific?(other, cand, args, owner)
           subsumed = true
           break
         end
@@ -711,18 +1536,27 @@ pub class MainVisitor < Visitor
     end
   end
 
-  def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def
+  # The overload a call resolves to, or nil when it cannot: strict mode raises
+  # the error, total mode records it on the call and returns nil.
+  def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
+    i = 0
+    while i < args.size
+      return nil if child_type(args[i]).nil?
+      i = i + 1
+    end
+
     candidates = [] of Def
     visited = Set(String).new
     collect_candidate_defs(rec_type, name, candidates, visited)
+    collect_scope_defs(rec_type, name, candidates, visited) if candidates.empty? && call_node.obj.nil?
 
     if candidates.empty?
       if obj_node = call_node.obj
         obj_t = type_of(obj_node)
         if obj_t.is_a?(UnionType)
-          raise("undefined method '#{name}' for #{rec_type.full_name} (compile-time type is #{obj_t.full_name})")
+          return refuse_call(call_node, "undefined method '#{name}' for #{rec_type.full_name} (compile-time type is #{obj_t.full_name})")
         else
-          raise("undefined method '#{name}' for #{rec_type.full_name}")
+          return refuse_call(call_node, "undefined method '#{name}' for #{rec_type.full_name}")
         end
       else
         scope_name = if rec_type.is_a?(SemanticProgram)
@@ -730,7 +1564,7 @@ pub class MainVisitor < Visitor
                      else
                        rec_type.full_name
                      end
-        raise("undefined local variable or method '#{name}' for #{scope_name}")
+        return refuse_call(call_node, "undefined local variable or method '#{name}' for #{scope_name}")
       end
     end
 
@@ -755,7 +1589,7 @@ pub class MainVisitor < Visitor
                        max_all = candidates.map { |d| d.args.size }.max
                        min_all == max_all ? min_all.to_s : "#{min_all}..#{max_all}"
                      end
-      raise("wrong number of arguments for '#{method_disp}' (given #{args.size}, expected #{expected_str})\n#{overloads_str}")
+      return refuse_call(call_node, "wrong number of arguments for '#{method_disp}' (given #{args.size}, expected #{expected_str})\n#{overloads_str}")
     end
 
     # 2. Check exact / subtype argument matches
@@ -767,7 +1601,7 @@ pub class MainVisitor < Visitor
         arg_type = type_of(args[i])
         param = d.args[i]
         if r = param.restriction
-          expected_type = @program.lookup_type_node(r, @current_type)
+          expected_type = restriction_type(r, rec_type)
           unless arg_type.subtype_of?(expected_type)
             all_args_match = false
             break
@@ -781,7 +1615,7 @@ pub class MainVisitor < Visitor
     end
 
     if exact_matches.size > 0
-      most_specific = filter_most_specific_overloads(exact_matches, args)
+      most_specific = filter_most_specific_overloads(exact_matches, args, rec_type)
       return most_specific.first
     end
 
@@ -799,7 +1633,7 @@ pub class MainVisitor < Visitor
           arg_t = type_of(arg)
           param = d.args[i]
           if r = param.restriction
-            expected_t = @program.lookup_type_node(r, @current_type)
+            expected_t = lookup_under(r, rec_type)
             if arg_t.subtype_of?(expected_t)
               # exact subtype match
             elsif arg.is_a?(NumberLiteral) && number_literal_matches_type?(arg.as(NumberLiteral), expected_t)
@@ -831,7 +1665,7 @@ pub class MainVisitor < Visitor
             uniq_types << tn
           end
         end
-        raise("ambiguous call, implicit cast of #{lit_val} matches all of #{uniq_types.join(", ")}")
+        return refuse_call(call_node, "ambiguous call, implicit cast of #{lit_val} matches all of #{uniq_types.join(", ")}")
       elsif autocast_matches.size == 1
         return autocast_matches.first
       end
@@ -847,7 +1681,7 @@ pub class MainVisitor < Visitor
         arg_t = type_of(args[i])
         param = d.args[i]
         if r = param.restriction
-          exp_t = @program.lookup_type_node(r, @current_type)
+          exp_t = lookup_under(r, rec_type)
           unless arg_t.subtype_of?(exp_t)
             first_mismatch = i
             break
@@ -871,7 +1705,7 @@ pub class MainVisitor < Visitor
       count_matches.each do |d|
         param = d.args[mismatch_idx]
         if r = param.restriction
-          exp_t = @program.lookup_type_node(r, @current_type)
+          exp_t = lookup_under(r, rec_type)
           expected_types_list << exp_t.full_name
         end
       end
@@ -881,22 +1715,143 @@ pub class MainVisitor < Visitor
       end
       expected_types_str = uniq_exp.join(" or ")
       actual_type_str = type_of(args[mismatch_idx]).full_name
-      raise("expected argument ##{mismatch_idx + 1} to '#{method_disp}' to be #{expected_types_str}, not #{actual_type_str}\n\n#{overloads_str}")
+      refuse_call(call_node, "expected argument ##{mismatch_idx + 1} to '#{method_disp}' to be #{expected_types_str}, not #{actual_type_str}\n\n#{overloads_str}")
     else
       arg_types_strs = args.map { |a| type_of(a).full_name }
       plural = (args.size > 1) ? "s" : ""
-      raise("no overload matches '#{method_disp}' with type#{plural} #{arg_types_strs.join(", ")}\n\n#{overloads_str}")
+      refuse_call(call_node, "no overload matches '#{method_disp}' with type#{plural} #{arg_types_strs.join(", ")}\n\n#{overloads_str}")
     end
   end
 
-  def type_method_body(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?) : Type
+  # A call the port cannot resolve: strict mode raises, total mode records the
+  # reason on the call and answers nil.
+  def refuse_call(call_node : Call, message : String) : Nil
+    refuse(call_node, message)
+    nil
+  end
+
+  # The key of one instantiation: the receiver, the def name and the argument
+  # types, and for a block call the block's node. Two calls with different blocks
+  # are different instantiations (a block nested in another call's block is not a
+  # recursion of that call); the same call with the same block is.
+  def instance_key(rec_type : Type, target_def : Def, args : Array(ASTNode), block : Block?) : String
+    parts = [] of String
+    args.each do |a|
+      if at = child_type(a)
+        parts << at.full_name
+      else
+        parts << "?"
+      end
+    end
+    key = "#{rec_type.full_name}##{target_def.name}(#{parts.join(",")})"
+    if block
+      key = key + "&#{block.node_id}"
+    end
+    key
+  end
+
+  # The key of a cached instantiation (hosted Call#instantiate, def_instance_key). It names the
+  # def by its original's identity (the clone is what is typed), the receiver, and the argument
+  # types. Nil when the call cannot share an instance: an argument has no type yet, the call has
+  # named arguments, or it passes a block to a def that does not take one (hosted
+  # `use_cache = !block || match.def.block_arg`).
+  def def_instance_key(origin : Def, rec_type : Type, call_node : Call) : String?
+    return nil if call_node.named_args
+    block = call_node.block
+    return nil if block && origin.block_arg.nil?
+    parts = [] of String
+    i = 0
+    while i < call_node.args.size
+      at = child_type(call_node.args[i])
+      return nil if at.nil?
+      parts << at.full_name
+      i = i + 1
+    end
+    key = "#{origin.node_id}|#{rec_type.full_name}(#{parts.join(",")})"
+    if blk = block
+      key = key + "&#{blk.node_id}"
+    end
+    key
+  end
+
+  # The cached instance for a key, or nil when there is none.
+  def cached_instance(key : String?) : DefInstance?
+    if k = key
+      return @def_instances[k]?
+    end
+    nil
+  end
+
+  # Caches a finished instance under its key. Called only where the body was typed, never for a
+  # recursive call (its body is still being typed) or a refused body.
+  def remember_def_instance(key : String?, definition : Def, return_type : Type) : Nil
+    if k = key
+      @def_instances[k] = DefInstance.new(definition, return_type)
+    end
+    nil
+  end
+
+  # A recursive call or an over-deep instantiation is refused at the call site, or
+  # at the def's body when there is no site.
+  def refuse_recursion(site : ASTNode?, target_def : Def, message : String) : Type?
+    anchor : ASTNode = target_def.body.as(ASTNode)
+    if s = site
+      anchor = s
+    end
+    refuse(anchor, message)
+    nil
+  end
+
+  # The type a body evaluates to with `args` bound to its parameters, or nil when
+  # the body or an argument cannot be typed. `site` is the node that reports a
+  # return-type mismatch.
+  # `cache_key` (see def_instance_key) caches the finished instance; nil caches nothing.
+  def type_method_body(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode? = nil, cache_key : String? = nil) : Type?
+    old_imports = @program.current_imports
+    old_import_defs = @program.current_import_defs
+    enter_file_scope(target_def)
+    result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
+    @program.current_imports = old_imports
+    @program.current_import_defs = old_import_defs
+    result
+  end
+
+  # iyi: the names a node's file imported become the names in scope (SPEC.md R-2b). A node with
+  # no location (a generated def) keeps the scope it is typed from.
+  def enter_file_scope(node : ASTNode) : Nil
+    if loc = node.location
+      @program.current_imports = @program.file_imports[loc.filename]? || Hash(String, Type).new
+      @program.current_import_defs = @program.file_import_defs[loc.filename]? || Hash(String, Array(Def)).new
+    end
+    nil
+  end
+
+  def type_method_body_in_file(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode?, cache_key : String?) : Type?
     body = target_def.body
-    if body.nil? || body.is_a?(Nop)
+    if body.nil? || body.is_a?(Nop) || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
-        return @program.lookup_type_node(rt, @current_type)
+        return lookup_under(rt, rec_type)
       else
         return @program.nil_type
       end
+    end
+
+    # A def typed again while its body is being typed is a recursive call: it takes
+    # the declared return type, or the call is refused. The depth bounds a chain of
+    # instantiations whose argument types keep growing.
+    key = instance_key(rec_type, target_def, args, block)
+    if @typing_stack.includes?(key)
+      if rt = target_def.return_type
+        return lookup_under(rt, rec_type)
+      end
+      # No declared return type: until the body's own type is known the recursive
+      # call contributes nothing to a merge, so it is NoReturn (the bottom of the
+      # merge). The hosted pass gets the same answer from the non-recursive returns
+      # (bench/fixtures/sem_bodies_recursive.iyi: count(true) is Int32).
+      return @program.no_return_type
+    end
+    if @typing_stack.size >= 256
+      return refuse_recursion(site, target_def, "instantiation depth exceeded at '#{target_def.name}'")
     end
 
     old_vars = @vars
@@ -905,10 +1860,23 @@ pub class MainVisitor < Visitor
     old_block_call = @current_call_block
     old_block_context_vars = @current_block_context_vars
     old_yield_nodes = @current_yield_nodes
+    old_var_unions = @var_unions
+    old_untyped_locals = @untyped_locals
+    @untyped_locals = Hash(String, String).new
+    @var_unions = Hash(String, Type).new
+    old_break_types = @break_types
+    old_next_types = @next_types
+    old_return_types = @return_types
+    @break_types = nil
+    @next_types = nil
+    @return_types = [] of Type?
 
     if block
       @current_block_context_vars = @vars.dup
       @current_yield_nodes = [] of Yield
+      if blk = block
+        @block_owners[blk] = BlockOwner.new(@current_def, old_return_types, old_block_call, old_block_context_vars, old_yield_nodes, old_scope)
+      end
     end
 
     new_vars = Hash(String, Type).new
@@ -920,24 +1888,35 @@ pub class MainVisitor < Visitor
       new_vars["self"] = rec_type
     end
 
+    inst_args = [] of Type
+    params_typed = true
     i = 0
     while i < target_def.args.size
       param = target_def.args[i]
-      param_type = if i < args.size
-                     type_of(args[i])
-                   elsif dv = param.default_value
-                     dv.accept(self)
-                     type_of(dv)
-                   elsif r = param.restriction
-                     @program.lookup_type_node(r, @current_type)
-                   else
-                     @program.nil_type
-                   end
-      new_vars[param.name] = param_type
-      if param.name.starts_with?("@") && !param.name.starts_with?("@@")
-        if rec_type.is_a?(ModuleType)
-          rec_type.as(ModuleType).instance_vars[param.name] = MetaTypeVar.new(param.name, param_type)
+      param_type : Type? = nil
+      if i < args.size
+        param_type = child_type(args[i])
+      elsif dv = param.default_value
+        dv.accept(self)
+        param_type = child_type(dv)
+      elsif r = param.restriction
+        param_type = lookup_under(r, rec_type)
+      else
+        param_type = @program.nil_type
+      end
+      if pt = param_type
+        new_vars[param.name] = pt
+        inst_args << pt
+        # iyi: the instantiated clone's parameter carries its type, so the lowering
+        # reads the argument types from the def (hosted codegen/ast.cr 48).
+        set_type(param, pt)
+        if param.name.starts_with?("@") && !param.name.starts_with?("@@")
+          if rec_type.is_a?(ModuleType)
+            rec_type.as(ModuleType).instance_vars[param.name] = MetaTypeVar.new(param.name, pt)
+          end
         end
+      else
+        params_typed = false
       end
       i = i + 1
     end
@@ -946,8 +1925,18 @@ pub class MainVisitor < Visitor
     @current_def = target_def
     @current_call_block = block
 
+    @typing_stack << key
+    if params_typed
+      self_t : Type? = nil
+      unless rec_type.is_a?(SemanticProgram)
+        self_t = rec_type
+      end
+      @typed_instances << TypedInstance.new(target_def, self_t, inst_args)
+    end
+    body = splice_def_body(body.as(ASTNode))
+    target_def.body = body.as(ASTNode)
     body.as(ASTNode).accept(self)
-    body_type = type_of(body.as(ASTNode))
+    body_type = merge_jump_values(child_type(body.as(ASTNode)), @return_types)
 
     if block && (ctx_vars = @current_block_context_vars)
       ctx_vars.each do |k, new_v|
@@ -960,32 +1949,204 @@ pub class MainVisitor < Visitor
     end
 
     if block
-      final_blk_t = type_of(block)
-      if y_nodes = @current_yield_nodes
-        y_nodes.each do |ynode|
-          set_type(ynode, final_blk_t)
+      if final_blk_t = child_type(block)
+        if y_nodes = @current_yield_nodes
+          y_nodes.each do |ynode|
+            set_type(ynode, final_blk_t)
+          end
         end
       end
     end
 
+    @break_types = old_break_types
+    @next_types = old_next_types
+    @return_types = old_return_types
     @vars = old_vars
     @scope = old_scope
     @current_def = old_def
     @current_call_block = old_block_call
     @current_block_context_vars = old_block_context_vars
     @current_yield_nodes = old_yield_nodes
+    @def_var_unions[target_def] = @var_unions
+    @var_unions = old_var_unions
+    @untyped_locals = old_untyped_locals
+    @typing_stack.pop
+
+    return nil unless params_typed
+    bt = body_type
+    # A body that cannot be typed (its refusal is recorded on the body's own nodes)
+    # still leaves a call its declared return type, as the oracle types it
+    # (bench/fixtures/sem_bodies_primitive_add.iyi).
+    if bt.nil?
+      if rt = target_def.return_type
+        set_type(target_def, lookup_under(rt, rec_type))
+        return lookup_under(rt, rec_type)
+      end
+      return nil
+    end
 
     if rt = target_def.return_type
-      declared_ret = @program.lookup_type_node(rt, @current_type)
-      unless body_type.subtype_of?(declared_ret)
-        raise("type mismatch for return type: expected #{declared_ret.full_name}, got #{body_type.full_name}")
+      declared_ret = lookup_under(rt, rec_type)
+      unless bt.subtype_of?(declared_ret)
+        mismatch = "type mismatch for return type: expected #{declared_ret.full_name}, got #{bt.full_name}"
+        if s = site
+          refuse(s, mismatch)
+        else
+          raise(mismatch) unless @total
+        end
+        return nil
       end
       set_type(target_def, declared_ret)
+      remember_def_instance(cache_key, target_def, declared_ret)
       declared_ret
     else
-      set_type(target_def, body_type)
-      body_type
+      set_type(target_def, bt)
+      remember_def_instance(cache_key, target_def, bt)
+      bt
     end
+  end
+
+  # iyi: `out x` in a lib call declares `x` as the parameter's pointee (see declare_out). Visited
+  # alone it declares nothing: the call does. An instance variable is visited for its own type;
+  # `out _` has no type.
+  def visit(node : Out) : Bool
+    if exp = node.exp
+      if exp.is_a?(InstanceVar)
+        exp.accept(self)
+      end
+    end
+    false
+  end
+
+  # A call on a lib (`LibC.name(args)`), the port of Call#recalculate_lib_call. The arguments are
+  # typed by the walk in visit(Call); the lib call checks them (semantic/lib_call.iyi), answers the
+  # result type, and marks the lib and the fun used. Its record is kept for the lowering.
+  def visit_lib_call(node : Call, lib_type : LibType) : Bool
+    args = [] of LibCallArgument
+    node.args.each do |arg|
+      args << LibCallArgument.new(arg, type_of?(arg), nil)
+    end
+    if named = node.named_args
+      named.each do |na|
+        na.value.accept(self)
+        args << LibCallArgument.new(na.value, type_of?(na.value), na.name)
+      end
+    end
+    target = LibCall.recalculate(lib_type, @program, type_node_system(@program), node.name, args)
+    record_lib_call(node, target)
+  end
+
+  # A call with no receiver that names a `fun` the program declares at its top level
+  # (`__iyi_enter(argc, argv)`). The hosted pass adds such a fun to the program as an External
+  # def and the call finds it by ordinary lookup; the port keeps it in `global_funs` and records
+  # the call as a lib call, which is what the lowering emits for an External: a C call.
+  def visit_global_fun_call(node : Call, lib_fun : LibFun) : Bool
+    args = [] of LibCallArgument
+    node.args.each do |arg|
+      args << LibCallArgument.new(arg, type_of?(arg), nil)
+    end
+    if named = node.named_args
+      named.each do |na|
+        na.value.accept(self)
+        args << LibCallArgument.new(na.value, type_of?(na.value), na.name)
+      end
+    end
+    target = LibCall.recalculate_fun(lib_fun, node.name, @program, type_node_system(@program), args)
+    record_lib_call(node, target)
+  end
+
+  # The fun the program declares at its top level under *name*, or nil.
+  def global_fun_named(name : String) : LibFun?
+    funs = @program.global_funs
+    i = 0
+    while i < funs.size
+      return funs[i] if funs[i].name == name
+      i += 1
+    end
+    nil
+  end
+
+  def record_lib_call(node : Call, target : LibCallTarget) : Bool
+    if msg = target.error
+      return refuse(node, msg)
+    end
+    @lib_call_targets[node] = target
+    i = 0
+    while i < target.out_index.size
+      out_node = target.arg_nodes[target.out_index[i]].as(Out)
+      declare_out(out_node, target.out_type[i])
+      i += 1
+    end
+    set_type(node, target.result_type.as(Type))
+    false
+  end
+
+  # The variable an `out` argument names takes the parameter's pointee type. As the hosted pass
+  # does, a name the body already has is refused: `out` defines a variable.
+  def declare_out(out_node : Out, pointee : Type) : Nil
+    exp = out_node.exp
+    return nil unless exp.is_a?(Var)
+    name = exp.as(Var).name
+    if @vars[name]?
+      refuse(out_node, "variable '#{name}' is already defined, `out` must be used to define a variable, use another name")
+      return nil
+    end
+    @vars[name] = pointee
+    if old_u = @var_unions[name]?
+      @var_unions[name] = @program.type_merge(old_u, pointee)
+    else
+      @var_unions[name] = pointee
+    end
+    set_type(exp, pointee)
+    set_type(out_node, pointee)
+    nil
+  end
+
+  # The lib call record of a call on a lib (see visit_lib_call), or nil.
+  def lib_call_target(node : Call) : LibCallTarget?
+    @lib_call_targets[node]?
+  end
+
+  # The type of a body, block or call with the values its jumps carry merged in (hosted: `return`
+  # binds to the def, `next` to the block). An untyped value makes the whole untyped.
+  def merge_jump_values(base : Type?, values : Array(Type?)?) : Type?
+    vs = values
+    return base if vs.nil?
+    return base if vs.empty?
+    b = base
+    return nil if b.nil?
+    result : Type = b.as(Type)
+    i = 0
+    while i < vs.size
+      v = vs[i]
+      return nil if v.nil?
+      result = merge_flow(result, v.as(Type))
+      i += 1
+    end
+    result
+  end
+
+  # The type of a call: its method's result, with the values its block's `break`s carry merged in.
+  def call_result(node : Call, ret : Type?) : Type?
+    if blk = node.block
+      return merge_jump_values(ret, @block_breaks[blk]?)
+    end
+    ret
+  end
+
+  # `obj.@name`: the instance variable of obj's type (hosted visit_read_instance_var).
+  def visit(node : ReadInstanceVar) : Bool
+    node.obj.accept(self)
+    ot = child_type(node.obj)
+    return false if ot.nil?
+    owner : Type = ot.as(Type)
+    if owner.is_a?(ModuleType)
+      if ivar = owner.as(ModuleType).lookup_instance_var?(node.name)
+        set_type(node, ivar.type)
+        return false
+      end
+    end
+    refuse(node, "undefined instance variable '#{node.name}' for #{owner.full_name}")
   end
 
   def visit(node : Call) : Bool
@@ -1007,24 +2168,16 @@ pub class MainVisitor < Visitor
     rec_type : Type
     if obj = node.obj
       obj.accept(self)
-      rec_type = type_of(obj)
+      if ot = child_type(obj)
+        rec_type = ot
+      else
+        return false
+      end
     else
       rec_type = @scope || @current_type
     end
-
-    if node.name == "new" && rec_type.is_a?(MetaclassType)
-      inst_type = rec_type.as(MetaclassType).instance_type
-      if inst_type.is_a?(ClassType)
-        candidates = [] of Def
-        visited = Set(String).new
-        collect_candidate_defs(inst_type, "initialize", candidates, visited)
-        if candidates.size > 0 || node.args.size > 0
-          init_def = lookup_method_matching(inst_type, "initialize", node.args, node)
-          type_method_body(init_def, inst_type, node.args, node.block)
-        end
-        set_type(node, inst_type)
-        return false
-      end
+    if rec_type.is_a?(LibType)
+      return visit_lib_call(node, rec_type.as(LibType))
     end
 
     # Multiple dispatch over a union receiver
@@ -1033,14 +2186,29 @@ pub class MainVisitor < Visitor
       ret_types = [] of Type
       first_target_def : Def? = nil
 
-      union_t.union_types.each do |ut|
+      if blk = node.block
+        @block_breaks[blk] = [] of Type?
+      end
+      i = 0
+      while i < union_t.union_types.size
+        ut = union_t.union_types[i]
         target_def = lookup_method_matching(ut, node.name, node.args, node)
+        return false if target_def.nil?
         instantiated_def = target_def.clone
-        ret_t = type_method_body(instantiated_def, ut, node.args, node.block)
+        dkey = def_instance_key(target_def, ut, node)
+        ret_t : Type? = nil
+        if hit = cached_instance(dkey)
+          instantiated_def = hit.definition
+          ret_t = hit.return_type
+        else
+          ret_t = type_method_body(instantiated_def, ut, node.args, node.block, node, dkey)
+        end
+        return false if ret_t.nil?
         if first_target_def.nil?
           first_target_def = instantiated_def
         end
         ret_types << ret_t
+        i = i + 1
       end
 
       if td = first_target_def
@@ -1048,67 +2216,502 @@ pub class MainVisitor < Visitor
       end
 
       merged_ret = @program.type_merge(ret_types)
-      set_type(node, merged_ret)
+      if merged_call_t = call_result(node, merged_ret)
+        set_type(node, merged_call_t)
+      end
       return false
     end
 
-    target_def = lookup_method_matching(rec_type, node.name, node.args, node)
-    instantiated_def = target_def.clone
-    @call_target_defs[node] = instantiated_def
+    if node.obj.nil?
+      if global_fun = global_fun_named(node.name)
+        own = [] of Def
+        seen = Set(String).new
+        collect_candidate_defs(rec_type, node.name, own, seen)
+        collect_scope_defs(rec_type, node.name, own, seen) if own.empty?
+        return visit_global_fun_call(node, global_fun) if own.empty?
+      end
+    end
 
-    ret_type = type_method_body(instantiated_def, rec_type, node.args, node.block)
-    set_type(node, ret_type)
+    target_def = lookup_method_matching(rec_type, node.name, node.args, node)
+    return false if target_def.nil?
+    # A positional call that leaves parameters to their defaults gets them as
+    # cloned argument nodes, one per parameter (hosted expansion; the calls slice's
+    # DefaultArguments). The new nodes are visited here; the rest were visited above.
+    if node.named_args.nil? && DefaultArguments.supported?(target_def, node.args, nil)
+      original_count = node.args.size
+      node.args = DefaultArguments.expand(target_def, node.args, nil)
+      i = original_count
+      while i < node.args.size
+        node.args[i].accept(self)
+        i = i + 1
+      end
+    end
+    instantiated_def = target_def.clone
+    dkey = def_instance_key(target_def, rec_type, node)
+    body_ret : Type? = nil
+    if hit = cached_instance(dkey)
+      # A cached instance: the call records its clone and takes its return type. Its block breaks
+      # are the ones the block already collected, so they are kept.
+      instantiated_def = hit.definition
+      @call_target_defs[node] = instantiated_def
+      body_ret = hit.return_type
+    else
+      @call_target_defs[node] = instantiated_def
+      if blk = node.block
+        @block_breaks[blk] = [] of Type?
+      end
+      body_ret = type_method_body(instantiated_def, rec_type, node.args, node.block, nil, dkey)
+    end
+    ret_type = call_result(node, body_ret)
+    if ret_type
+      set_type(node, ret_type)
+    end
     false
   end
+
+  # A tuple literal is the tuple of its elements' types (hosted visit(TupleLiteral)).
+  def visit(node : TupleLiteral) : Bool
+    types = [] of Type
+    i = 0
+    while i < node.elements.size
+      e = node.elements[i]
+      e.accept(self)
+      if et = child_type(e)
+        types << et
+      else
+        return false
+      end
+      i = i + 1
+    end
+    set_type(node, tuple_type_of(@program, types))
+    false
+  end
+
+  # A named tuple literal is the named tuple of its entries' types (hosted
+  # visit(NamedTupleLiteral)).
+  def visit(node : NamedTupleLiteral) : Bool
+    entries = [] of NamedArgumentType
+    i = 0
+    while i < node.entries.size
+      entry = node.entries[i]
+      entry.value.accept(self)
+      if et = child_type(entry.value)
+        entries << NamedArgumentType.new(entry.key, et)
+      else
+        return false
+      end
+      i = i + 1
+    end
+    set_type(node, named_tuple_type_of(@program, entries))
+    false
+  end
+
+  # --- type nodes: begin ---
+  # The type-argument bracket the type-node functions use (hosted `@in_type_args`).
+  def bracket_type_args(delta : Int32) : Nil
+    @in_type_args = @in_type_args + delta
+  end
+
+  def visit(node : Generic) : Bool
+    visit_generic(self, node)
+  end
+
+  def visit(node : Union) : Bool
+    visit_union(self, node)
+  end
+
+  def visit(node : ProcNotation) : Bool
+    visit_proc_notation(self, node)
+  end
+
+  def visit(node : Metaclass) : Bool
+    visit_metaclass(self, node)
+  end
+
+  def visit(node : FunDef) : Bool
+    # hosted: a fun body is spliced like a def body, in the program's scope and the fun's file.
+    file = ""
+    if loc = node.location
+      file = loc.filename
+    end
+    if body = node.body
+      node.body = splice_body_node(body, @program.full_name, file, false)
+    end
+    saved = @fun_inline_file
+    @fun_inline_file = file
+    typed = visit_fun_def(self, node)
+    @fun_inline_file = saved
+    typed
+  end
+
+  # `->(x : T) { body }` is typed `Proc(T, R)`, as the hosted pass types a ProcLiteral (main_visitor.cr
+  # 1373-1433 and ProcLiteral#update, bindings.cr 604-619). Its parameters are locals of its body; R is the
+  # declared return type, or else the body's type. Not ported: the closure analysis, the Proc argument
+  # check, force_nil, and the body's scope (the body is typed in the program's scope, not the literal's).
+  def visit(node : ProcLiteral) : Bool
+    return false if type_of?(node)
+    def_node = node.def
+    fun_vars = @vars.dup
+    arg_types = [] of Type
+    i = 0
+    while i < def_node.args.size
+      arg = def_node.args[i]
+      restriction = arg.restriction
+      if restriction.nil?
+        return refuse(node, "parameter '#{arg.name}' of Proc literal must have a type")
+      end
+      t = TypeQueries.virtual_type(lookup_under(restriction.as(ASTNode), @scope))
+      set_type(restriction.as(ASTNode), t)
+      set_type(arg, t)
+      arg_types << t
+      fun_vars[arg.name] = t
+      i = i + 1
+    end
+    declared = proc_literal_return(def_node)
+    body = def_node.body
+    inner = sub_visitor(fun_vars)
+    old_imports = @program.current_imports
+    old_import_defs = @program.current_import_defs
+    enter_file_scope(node)
+    body.accept(inner)
+    @program.current_imports = old_imports
+    @program.current_import_defs = old_import_defs
+    ret = declared
+    if bt = inner.child_type(body)
+      if rt = declared
+        merged = @program.type_merge(bt, rt)
+        if merged != rt
+          return refuse(node, "expected Proc to return #{rt.full_name} but it returned #{merged.full_name}")
+        end
+      else
+        ret = TypeQueries.virtual_type(bt)
+      end
+    end
+    if final = ret
+      set_type(def_node, final)
+      set_type(node, ProcInstanceType.new(@program, arg_types, final))
+    else
+      return refuse(node, "the body of the Proc literal was not typed")
+    end
+    false
+  end
+
+  # The declared return type of a Proc literal's def, or nil.
+  def proc_literal_return(def_node : Def) : Type?
+    if rt_node = def_node.return_type
+      return TypeQueries.virtual_type(lookup_under(rt_node, @scope))
+    end
+    nil
+  end
+
+  def visit(node : Self) : Bool
+    visit_self(self, node)
+  end
+
+  def visit(node : PointerOf) : Bool
+    exp = node.exp
+    if exp.is_a?(ClassVar) || exp.is_a?(InstanceVar)
+      return pointerof_variable(node, exp)
+    end
+    if exp.is_a?(Path)
+      exp.accept(self)
+      ct = @program.lookup_type_path?(exp.as(Path), @current_type)
+      if ct
+        if ct.const?
+          ct.as(Const).pointer_read = true
+          if et = child_type(exp)
+            set_type(node, type_node_system(@program).pointer_of(et.as(Type)))
+          end
+          return false
+        end
+      end
+    end
+    visit_pointer_of(self, node)
+  end
+
+  # `pointerof(@x)` and `pointerof(@@x)`: a pointer to the variable's type, as the
+  # hosted pass binds it (main_visitor.cr 3108-3114). The `iyi_written` mark is the
+  # lowering's and is not set here.
+  def pointerof_variable(node : PointerOf, exp : ASTNode) : Bool
+    exp.accept(self)
+    t = child_type(exp)
+    return false if t.nil?
+    set_type(node, type_node_system(@program).pointer_of(t.as(Type)))
+    false
+  end
+
+  def visit(node : TypeOf) : Bool
+    visit_type_of(self, node)
+  end
+
+  def visit(node : SizeOf) : Bool
+    visit_size_of(self, node)
+  end
+
+  def visit(node : AlignOf) : Bool
+    visit_align_of(self, node)
+  end
+
+  def visit(node : InstanceSizeOf) : Bool
+    visit_instance_size_of(self, node)
+  end
+
+  def visit(node : InstanceAlignOf) : Bool
+    visit_instance_align_of(self, node)
+  end
+
+  def visit(node : EnumDef) : Bool
+    visit_enum_def(self, node)
+  end
+
+  def visit(node : UninitializedVar) : Bool
+    visit_uninitialized_var(self, node)
+  end
+
+  # The visitor of a fun body: the same node types and errors, its own locals.
+  def sub_visitor(vars : Hash(String, Type)) : TypeNodeHost
+    inner = MainVisitor.new(@program)
+    inner.vars = vars
+    inner.scope = @program
+    inner.current_type = @current_type
+    inner.node_types = @node_types
+    inner.untyped_reasons = @untyped_reasons
+    inner.call_target_defs = @call_target_defs
+    inner.lib_call_targets = @lib_call_targets
+    inner.total = @total
+    inner.typing_stack = @typing_stack
+    inner.refusals = @refusals
+    inner.typed_instances = @typed_instances
+    inner.def_instances = @def_instances
+    inner.untyped_locals = Hash(String, String).new
+    inner.fun_inline_file = @fun_inline_file
+    inner
+  end
+
+  def visit(node : Cast) : Bool
+    visit_cast(self, node)
+  end
+
+  def visit(node : NilableCast) : Bool
+    visit_nilable_cast(self, node)
+  end
+
+  # Whether the node being visited is inside a type argument.
+  def in_type_args? : Bool
+    @in_type_args > 0
+  end
+  # --- type nodes: end ---
 end
 
 pub def node_class_name(node : ASTNode) : String
-  if node.is_a?(Expressions)
-    "Expressions"
+  if node.is_a?(Alias)
+    "Alias"
+  elsif node.is_a?(AlignOf)
+    "AlignOf"
+  elsif node.is_a?(And)
+    "And"
+  elsif node.is_a?(Annotation)
+    "Annotation"
+  elsif node.is_a?(AnnotationDef)
+    "AnnotationDef"
+  elsif node.is_a?(Arg)
+    "Arg"
+  elsif node.is_a?(ArrayLiteral)
+    "ArrayLiteral"
+  elsif node.is_a?(Asm)
+    "Asm"
+  elsif node.is_a?(AsmOperand)
+    "AsmOperand"
   elsif node.is_a?(Assign)
     "Assign"
-  elsif node.is_a?(Var)
-    "Var"
-  elsif node.is_a?(InstanceVar)
-    "InstanceVar"
-  elsif node.is_a?(ClassVar)
-    "ClassVar"
-  elsif node.is_a?(Path)
-    "Path"
-  elsif node.is_a?(NilLiteral)
-    "NilLiteral"
+  elsif node.is_a?(AssocTypeDecl)
+    "AssocTypeDecl"
+  elsif node.is_a?(Block)
+    "Block"
   elsif node.is_a?(BoolLiteral)
     "BoolLiteral"
+  elsif node.is_a?(Break)
+    "Break"
+  elsif node.is_a?(CStructOrUnionDef)
+    "CStructOrUnionDef"
+  elsif node.is_a?(Call)
+    "Call"
+  elsif node.is_a?(Case)
+    "Case"
+  elsif node.is_a?(Cast)
+    "Cast"
   elsif node.is_a?(CharLiteral)
     "CharLiteral"
+  elsif node.is_a?(ClassDef)
+    "ClassDef"
+  elsif node.is_a?(ClassVar)
+    "ClassVar"
+  elsif node.is_a?(Def)
+    "Def"
+  elsif node.is_a?(Defer)
+    "Defer"
+  elsif node.is_a?(DoubleSplat)
+    "DoubleSplat"
+  elsif node.is_a?(EnumDef)
+    "EnumDef"
+  elsif node.is_a?(ExceptionHandler)
+    "ExceptionHandler"
+  elsif node.is_a?(Expressions)
+    "Expressions"
+  elsif node.is_a?(Extend)
+    "Extend"
+  elsif node.is_a?(ExternalVar)
+    "ExternalVar"
+  elsif node.is_a?(FunDef)
+    "FunDef"
+  elsif node.is_a?(Generic)
+    "Generic"
+  elsif node.is_a?(Global)
+    "Global"
+  elsif node.is_a?(HashLiteral)
+    "HashLiteral"
+  elsif node.is_a?(If)
+    "If"
+  elsif node.is_a?(ImplDef)
+    "ImplDef"
+  elsif node.is_a?(ImplicitObj)
+    "ImplicitObj"
+  elsif node.is_a?(ImportDecl)
+    "ImportDecl"
+  elsif node.is_a?(Include)
+    "Include"
+  elsif node.is_a?(InstanceAlignOf)
+    "InstanceAlignOf"
+  elsif node.is_a?(InstanceSizeOf)
+    "InstanceSizeOf"
+  elsif node.is_a?(InstanceVar)
+    "InstanceVar"
+  elsif node.is_a?(IsA)
+    "IsA"
+  elsif node.is_a?(LibDef)
+    "LibDef"
+  elsif node.is_a?(Macro)
+    "Macro"
+  elsif node.is_a?(MacroExpression)
+    "MacroExpression"
+  elsif node.is_a?(MacroFor)
+    "MacroFor"
+  elsif node.is_a?(MacroIf)
+    "MacroIf"
+  elsif node.is_a?(MacroLiteral)
+    "MacroLiteral"
+  elsif node.is_a?(MacroVar)
+    "MacroVar"
+  elsif node.is_a?(MacroVerbatim)
+    "MacroVerbatim"
+  elsif node.is_a?(MagicConstant)
+    "MagicConstant"
+  elsif node.is_a?(Metaclass)
+    "Metaclass"
+  elsif node.is_a?(ModuleDef)
+    "ModuleDef"
+  elsif node.is_a?(ModuleHeader)
+    "ModuleHeader"
+  elsif node.is_a?(MultiAssign)
+    "MultiAssign"
+  elsif node.is_a?(NamedArgument)
+    "NamedArgument"
+  elsif node.is_a?(NamedTupleLiteral)
+    "NamedTupleLiteral"
+  elsif node.is_a?(Next)
+    "Next"
+  elsif node.is_a?(NilLiteral)
+    "NilLiteral"
+  elsif node.is_a?(NilableCast)
+    "NilableCast"
+  elsif node.is_a?(Nop)
+    "Nop"
+  elsif node.is_a?(Not)
+    "Not"
   elsif node.is_a?(NumberLiteral)
     "NumberLiteral"
+  elsif node.is_a?(OffsetOf)
+    "OffsetOf"
+  elsif node.is_a?(OpAssign)
+    "OpAssign"
+  elsif node.is_a?(Or)
+    "Or"
+  elsif node.is_a?(Out)
+    "Out"
+  elsif node.is_a?(Path)
+    "Path"
+  elsif node.is_a?(PointerOf)
+    "PointerOf"
+  elsif node.is_a?(ProcLiteral)
+    "ProcLiteral"
+  elsif node.is_a?(ProcNotation)
+    "ProcNotation"
+  elsif node.is_a?(ProcPointer)
+    "ProcPointer"
+  elsif node.is_a?(Propagate)
+    "Propagate"
+  elsif node.is_a?(RangeLiteral)
+    "RangeLiteral"
+  elsif node.is_a?(ReadInstanceVar)
+    "ReadInstanceVar"
+  elsif node.is_a?(Recover)
+    "Recover"
+  elsif node.is_a?(RegexLiteral)
+    "RegexLiteral"
+  elsif node.is_a?(Require)
+    "Require"
+  elsif node.is_a?(Rescue)
+    "Rescue"
+  elsif node.is_a?(RespondsTo)
+    "RespondsTo"
+  elsif node.is_a?(Return)
+    "Return"
+  elsif node.is_a?(Select)
+    "Select"
+  elsif node.is_a?(Self)
+    "Self"
+  elsif node.is_a?(SizeOf)
+    "SizeOf"
+  elsif node.is_a?(Splat)
+    "Splat"
+  elsif node.is_a?(StringInterpolation)
+    "StringInterpolation"
   elsif node.is_a?(StringLiteral)
     "StringLiteral"
   elsif node.is_a?(SymbolLiteral)
     "SymbolLiteral"
-  elsif node.is_a?(If)
-    "If"
+  elsif node.is_a?(TraitDef)
+    "TraitDef"
+  elsif node.is_a?(TupleLiteral)
+    "TupleLiteral"
+  elsif node.is_a?(TypeDeclaration)
+    "TypeDeclaration"
+  elsif node.is_a?(TypeDef)
+    "TypeDef"
+  elsif node.is_a?(TypeOf)
+    "TypeOf"
+  elsif node.is_a?(Underscore)
+    "Underscore"
+  elsif node.is_a?(UninitializedVar)
+    "UninitializedVar"
+  elsif node.is_a?(Union)
+    "Union"
+  elsif node.is_a?(Unless)
+    "Unless"
+  elsif node.is_a?(Until)
+    "Until"
+  elsif node.is_a?(UsingDecl)
+    "UsingDecl"
+  elsif node.is_a?(Var)
+    "Var"
+  elsif node.is_a?(VisibilityModifier)
+    "VisibilityModifier"
+  elsif node.is_a?(When)
+    "When"
   elsif node.is_a?(While)
     "While"
   elsif node.is_a?(Yield)
     "Yield"
-  elsif node.is_a?(Return)
-    "Return"
-  elsif node.is_a?(Call)
-    "Call"
-  elsif node.is_a?(Block)
-    "Block"
-  elsif node.is_a?(Def)
-    "Def"
-  elsif node.is_a?(ClassDef)
-    "ClassDef"
-  elsif node.is_a?(TypeDeclaration)
-    "TypeDeclaration"
-  elsif node.is_a?(Nop)
-    "Nop"
-  elsif node.is_a?(Macro)
-    "Macro"
   else
     "ASTNode"
   end

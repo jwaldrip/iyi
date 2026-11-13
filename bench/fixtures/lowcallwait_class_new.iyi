@@ -1,0 +1,17 @@
+class Box
+  @v : Int32
+
+  def initialize(v : Int32)
+    @v = v
+  end
+
+  def value : Int32
+    @v
+  end
+end
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(Box.new(7).value)
