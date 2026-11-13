@@ -514,6 +514,17 @@ check_lib_types_diverge() {
   cmp -s "$WORK/mut_lt.txt" "$lib_types_expected" || return 1
   return 0
 }
+check_bare_generic_corpus() {
+  # The pre-hook record is what lets a bare file keep Array(Set(String)).
+  # Disabling it must still build, then refuse that file by the missing argument.
+  local probe="$WORK/mut_bare_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_bare_build.log" 2>&1 || return 0
+  if "$probe" "$REPO/src/compiler/macros/macro_parser.iyi" > "$WORK/mut_bare.txt" 2> "$WORK/mut_bare.err"; then
+    return 0
+  fi
+  grep -q "undefined constant Set" "$WORK/mut_bare.err" || return 0
+  return 1
+}
 check_enum_primitives_diverge() {
   local probe="$WORK/mut_enum_primitives_port"
   "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
@@ -618,6 +629,11 @@ if [ "$fixture_bad" -ne 0 ] || ! grep -qx 'class variable generic arguments reta
   status=1
 else
 
+prove_mutation "a bare generic declaration is not recorded before the type system is installed" "$MUT_IVARS" \
+  '      if pi.restriction.is_a?(Generic) && !pi.owner.instance_vars[pi.name]?' \
+  '      if false' \
+  -- check_bare_generic_corpus || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation_all "struct default superclass switches to Reference" "$MUT_SEM" \
   "superclass = node.struct ? @program.struct_type : @program.reference_type" \
   "superclass = @program.reference_type" \
