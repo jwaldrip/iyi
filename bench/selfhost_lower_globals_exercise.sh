@@ -37,10 +37,10 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_pointer lowglob_cvar_nilable_pointer lowglob_cvar_struct"
+WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_pointer lowglob_cvar_struct"
 # The body pass does not flag an untyped @[ThreadLocal] declaration.
 # The lazy fixture's indirect Proc call waits on body typing's splat binding.
-# Pointer and nilable struct declarations now resolve, but their aggregate globals
+# Nilable pointer and struct declarations resolve, but their aggregate globals
 # and initializer values are not yet lowered.
 #
 # The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
@@ -248,6 +248,8 @@ prove_mutation "lazy initializer ignores the once flag" "$REPO/bench/fixtures/lo
   "  if !flag.value" "  if true" -- hosted_once_check || status=1
 prove_mutation "a nilable Proc initializer is not discarded" "$REPO/src/compiler/lower/class_var.iyi" \
   "  node.is_a?(NilLiteral) && cvar.type.is_a?(NilableProcType)" "  false" -- lowglob_check || status=1
+prove_mutation "a pointer class variable is refused" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if !(ir.int? || ir.float? || ir.pointer?)" "  if !(ir.int? || ir.float?)" -- lowglob_check || status=1
 prove_mutation "a floating constant global is initialized to zero" "$REPO/src/compiler/lower/const.iyi" \
   "    global.initializer = low.builder.const_float(ir, const.value.as(NumberLiteral).value.to_f)" \
   "    global.initializer = low.builder.const_float(ir, 0.0)" -- lowglob_check || status=1
