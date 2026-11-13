@@ -144,6 +144,12 @@ if ! "$ORACLE" --virtual-subtype "$REPO/bench/fixtures/semdecl_virtual_subtype.i
    ! cmp -s "$WORK/virtual_oracle" "$WORK/virtual_port"; then
   echo "  virtual subtype DIFFERS"; diff "$WORK/virtual_oracle" "$WORK/virtual_port"; status=1
 fi
+echo "== Definition owner and cloned owner"
+if ! "$ORACLE" --def-owner "$REPO/bench/fixtures/semdecl_def_owner.iyi" > "$WORK/owner_oracle" 2>&1 ||
+   ! "$PORT" --def-owner "$REPO/bench/fixtures/semdecl_def_owner.iyi" > "$WORK/owner_port" 2>&1 ||
+   ! cmp -s "$WORK/owner_oracle" "$WORK/owner_port"; then
+  echo "  definition owner DIFFERS"; diff "$WORK/owner_oracle" "$WORK/owner_port"; status=1
+fi
 echo "== Enum member semantic type: E::B has type E"
 enum_type_expected="$WORK/enum_type_expected"
 printf '%s\n' 'E::B E' > "$enum_type_expected"
@@ -489,6 +495,12 @@ check_virtual_subtype_diverge() {
   "$probe" --virtual-subtype "$REPO/bench/fixtures/semdecl_virtual_subtype.iyi" > "$WORK/mut_virtual" 2>/dev/null || return 1
   cmp -s "$WORK/mut_virtual" "$WORK/virtual_oracle"
 }
+check_def_owner_diverge() {
+  local probe="$WORK/mut_owner_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --def-owner "$REPO/bench/fixtures/semdecl_def_owner.iyi" > "$WORK/mut_owner" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_owner" "$WORK/owner_oracle"
+}
 
 
 check_const_facts_diverge() {
@@ -540,7 +552,7 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/virtual_oracle" "$WORK/virtual_port" || ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected" || ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected" || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/owner_oracle" "$WORK/owner_port" || ! cmp -s "$WORK/virtual_oracle" "$WORK/virtual_port" || ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected" || ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected" || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
@@ -756,6 +768,11 @@ prove_mutation "a virtual restriction does not accept its base or subclasses" "$
   '    return subtype_of?(target) unless target == other' \
   '    return false unless target == other' \
   -- check_virtual_subtype_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a registered definition loses its defining owner" "$MUT_SEM" \
+  '    @program.record_def_owner(a_def, self)' \
+  '    nil' \
+  -- check_def_owner_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance displays a virtual argument without devirtualizing it" "$MUT_TYPES" \
   '    args_strs = @type_args.map { |a| a.devirtualize.arg_full_name }' \

@@ -383,6 +383,7 @@ pub abstract class ModuleType < NamedType
   # the hosted pass does (a user's `def begin_array?` replaces the enum's generated one).
   # Overloads that differ in a restriction are kept side by side.
   def add_def(a_def : Def) : Nil
+    @program.record_def_owner(a_def, self)
     list = @defs[a_def.name]?
     if list.nil?
       list = [] of Def
@@ -1156,6 +1157,8 @@ pub class SemanticProgram < NonGenericModuleType
   @const_initializers : Array(Const)
   # The records of the funs the pass declared, by the node's id (`lib_fun_of`).
   @lib_funs_by_node : Hash(UInt64, LibFun)
+  # Defining scope, kept outside syntax nodes to avoid a semantic dependency in the AST.
+  @def_owners : Hash(UInt64, ModuleType)
   # All unions the program made, keyed by the sorted object ids of their members (hosted program.unions).
   getter unions : Hash(Array(UInt64), Type)
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
@@ -1368,6 +1371,24 @@ pub class SemanticProgram < NonGenericModuleType
     @lib_funs_by_node[node.node_id] = record
   end
 
+  # The scope which registered a definition (hosted Def#owner).
+  def def_owner(definition : Def) : ModuleType?
+    @def_owners[definition.node_id]?
+  end
+
+  def record_def_owner(definition : Def, owner : ModuleType) : Nil
+    @def_owners[definition.node_id] = owner
+    nil
+  end
+
+  # A typed clone gets a new node id; copy the original's defining scope explicitly.
+  def copy_def_owner(original : Def, clone : Def) : Nil
+    if owner = def_owner(original)
+      record_def_owner(clone, owner)
+    end
+    nil
+  end
+
   # iyi: the declaration pass resolves a generic type node to its base only, since no type system is
   # installed while the program is declared. Installing one (TypeSystem.new) calls this to resolve the
   # lib funs again through it, in the scope and imports of the file that declared each one, so
@@ -1442,6 +1463,7 @@ pub class SemanticProgram < NonGenericModuleType
     @global_funs = [] of LibFun
     @const_initializers = [] of Const
     @lib_funs_by_node = Hash(UInt64, LibFun).new
+    @def_owners = Hash(UInt64, ModuleType).new
     @unions = Hash(Array(UInt64), Type).new
     @declared_ivars = [] of DeclaredIvar
     @current_imports = Hash(String, Type).new

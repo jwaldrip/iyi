@@ -291,6 +291,19 @@ if ARGV[0]? == "--link-annotations"
   exit 0
 end
 
+if ARGV[0]? == "--def-owner"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  base = program.types["OwnerBase"].as(Iyi::ModuleType)
+  instance_def = base.defs.not_nil!["inherited"].first.def
+  class_def = base.metaclass.as(Iyi::ModuleType).defs.not_nil!["class_method"].first.def
+  puts "instance #{instance_def.owner}"
+  puts "class #{class_def.owner}"
+  exit 0
+end
+
 if ARGV[0]? == "--virtual-subtype"
   path = File.expand_path(ARGV[1])
   compiler = Iyi::Compiler.new
