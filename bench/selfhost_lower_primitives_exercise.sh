@@ -198,12 +198,46 @@ prove_mutation "an implicit-self primitive uses a constant instead of self" "$RE
   "    recv = sv.as(LowerVar).pointer" "    recv = int1(low, 0_i64)" -- lower_primitives_check || status=1
 prove_mutation "a reference pointer_set stores the pointer slot" "$REPO/src/compiler/lower/primitives.iyi" \
   "      ref_stored = values[1]" "      ref_stored = values[0]" -- lower_primitives_check || status=1
+prove_mutation "a by-value pointer_set copies the destination" "$REPO/src/compiler/lower/primitives.iyi" \
+  "    store_aligned(low, stored, dest)" "    store_aligned(low, load_aligned(low, ir, dest), dest)" -- lower_primitives_check || status=1
+prove_mutation "checked addition returns its overflow bit" "$REPO/src/compiler/lower/primitives.iyi" \
+  "  pair[0]" "  pair[1]" -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"==\"" "    if op == \"!=\"" -- lower_primitives_check || status=1
 prove_mutation "the class type id is stored one struct over" "$REPO/src/compiler/lower/primitives.iyi" \
   "  zero = low.builder.const_int(low.module.types.int32, 0_i64)" "  zero = low.builder.const_int(low.module.types.int32, 1_i64)" -- lower_primitives_check || status=1
+
+echo
+echo "== 5. Checked arithmetic in an isolated def from a required runtime"
+required="$REPO/bench/fixtures/lower_overflow_required"
+if IYI_PATH="$required/prelude" "$IYI" build --emit llvm-ir --no-debug -o "$WORK/required-oracle" "$required/main.iyi" > "$WORK/required-oracle.log" 2>&1; then
+  awk "$CALL_TYPES" "$WORK/required-oracle.ll" > "$WORK/required-oracle.normal.ll"
+  "$WORK/port" oracle "$WORK/required-oracle.normal.ll" > "$WORK/required-host.txt" 2> "$WORK/required-host.err" || status=1
+  awk '/^define .*checked_sum/{p=1; n++} p{print} p && /^}/{p=0} END {if (n != 1) exit 1}' "$WORK/required-host.txt" > "$WORK/required-host.fn" || status=1
+else
+  echo "  required-unit oracle failed:"
+  awk 'NR<=15' "$WORK/required-oracle.log"
+  status=1
+fi
+required_overflow_check() {
+  "$IYI" build -o "$WORK/required-port" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/required-build.log" 2>&1 || return 1
+  (cd "$required" && "$WORK/required-port" probe-required runtime.iyi main.iyi "$WORK/required-oracle.normal.ll") > "$WORK/required.ir" 2> "$WORK/required.err" || return 1
+  awk '/^declare external void @__iyi_raise_overflow/ {found=1} END {exit !found}' "$WORK/required.ir" || return 1
+  "$WORK/port" oracle "$WORK/required.ir" > "$WORK/required-port.txt" 2> "$WORK/required-port.err" || return 1
+  awk '/^define .*checked_sum/{p=1; n++} p{print} p && /^}/{p=0} END {if (n != 1) exit 1}' "$WORK/required-port.txt" > "$WORK/required-port.fn" || return 1
+  cmp -s "$WORK/required-host.fn" "$WORK/required-port.fn"
+}
+if required_overflow_check; then
+  echo "  required-unit overflow: function identical to the hosted module"
+else
+  echo "  required-unit overflow: refused or differs from the hosted module"
+  awk 'NR<=12' "$WORK/required.err" "$WORK/required-build.log"
+  status=1
+fi
+prove_mutation "the required overflow function has the wrong name" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    fn = low.module.add_function(name, fn_type, CallConv::C)' '    fn = low.module.add_function(name + "_wrong", fn_type, CallConv::C)' -- required_overflow_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
