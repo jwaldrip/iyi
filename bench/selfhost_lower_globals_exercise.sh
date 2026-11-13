@@ -247,6 +247,9 @@ prove_mutation "a nil aggregate initializer is refused" "$REPO/src/compiler/lowe
 prove_mutation "an aggregate class variable is loaded instead of read by address" "$REPO/src/compiler/lower/class_var.iyi" \
   "  low.last = to_lhs(low, class_var_pointer(low, cvar), cvar.type)" \
   "  low.last = load_aligned(low, cvar_ir_type(low, cvar), class_var_pointer(low, cvar))" -- lowglob_check || status=1
+prove_mutation "a by-value constant is loaded instead of read by address" "$REPO/src/compiler/lower/const.iyi" \
+  "      low.last = to_lhs(low, g.as(Global), low.analysed.type_of?(c.value).as(Type))" \
+  "      low.last = load_aligned(low, ir, g.as(Global))" -- lowglob_check || status=1
 prove_mutation "a type path returns zero instead of its type id" "$REPO/src/compiler/lower/const.iyi" \
   "    low.last = type_id_value(low, typ.as(Type))" \
   "    low.last = low.builder.const_int(low.module.types.int32, 0_i64)" -- lowglob_check || status=1
