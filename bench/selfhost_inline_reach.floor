@@ -5,12 +5,12 @@
 # 0f676ab57). The call-site-clone counts this file held before are not comparable. Measured twice on the head
 # that adds the constant splice (945b916ba). Merge 44c0d18d3 mistakenly retained
 # call-site-clone counts for three rows; these restore the distinct-instance unit.
-samples/iyi/hello.iyi 887
-bench/fixtures/seminl_reach/root.iyi 857
-bench/fixtures/seminl_reach/def_body_if.iyi 860
-bench/fixtures/seminl_reach/def_body_seq.iyi 860
-bench/fixtures/seminl_reach/def_if_branch.iyi 860
-bench/fixtures/seminl_reach/def_while_body.iyi 860
-bench/fixtures/seminl_reach/top_if_class.iyi 856
-bench/fixtures/seminl_reach/const_value_if.iyi 856
-bench/fixtures/seminl_reach/fun_body_local_across.iyi 855
+samples/iyi/hello.iyi 990
+bench/fixtures/seminl_reach/root.iyi 947
+bench/fixtures/seminl_reach/def_body_if.iyi 950
+bench/fixtures/seminl_reach/def_body_seq.iyi 950
+bench/fixtures/seminl_reach/def_if_branch.iyi 950
+bench/fixtures/seminl_reach/def_while_body.iyi 950
+bench/fixtures/seminl_reach/top_if_class.iyi 946
+bench/fixtures/seminl_reach/const_value_if.iyi 946
+bench/fixtures/seminl_reach/fun_body_local_across.iyi 945
