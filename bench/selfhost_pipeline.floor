@@ -97,10 +97,14 @@ bench/fixtures/lowglob_const_uint64.iyi run-equal
 bench/fixtures/lowglob_cvar_assign.iyi run-equal
 bench/fixtures/lowglob_cvar_call.iyi run-equal
 bench/fixtures/lowglob_cvar_decl.iyi run-equal
+bench/fixtures/lowglob_cvar_float.iyi run-equal
 bench/fixtures/lowglob_cvar_literal.iyi run-equal
 bench/fixtures/lowglob_cvar_nilable.iyi run-equal
+bench/fixtures/lowglob_cvar_pointerof.iyi run-equal
+bench/fixtures/lowglob_cvar_string.iyi run-equal
 bench/fixtures/lowglob_cvar_tls.iyi bodies
 bench/fixtures/lowglob_cvar_tls_typed.iyi run-equal
+bench/fixtures/lowglob_cvar_tls_uint64.iyi run-equal
 bench/fixtures/lowprim_add.iyi run-equal
 bench/fixtures/lowprim_alloc_class.iyi run-equal
 bench/fixtures/lowprim_alloc_struct.iyi run-equal
