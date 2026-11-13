@@ -740,6 +740,11 @@ prove_mutation "a generic instance's declared variable keeps its parameter type"
   "            mv = MetaTypeVar.new(name, source_type)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a nilable pointer prints without its element type" "$MUT_TYPES" \
+  'Pointer(#{@element_type.full_name})' \
+  'Pointer' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
 
