@@ -1,0 +1,34 @@
+trait Coded
+end
+class Alpha
+end
+class Beta
+end
+impl Coded for Alpha
+end
+impl Coded for Beta
+end
+
+struct Fault
+end
+impl Error for Fault
+  def message : String
+    "fault"
+  end
+end
+
+def first : Coded
+  Alpha.new
+end
+
+def discarded : Nil
+  3
+end
+
+def result : Int32 | Fault
+  7
+end
+
+first_value = first
+nothing = discarded
+outcome = result

@@ -22,9 +22,10 @@ import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_n
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
 import compiler/types/types::{NamedTupleInstanceType, TupleInstanceType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
+import compiler/types/intersect::{TypeIntersect}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
-import compiler/semantic/match::{CallSignature}
+import compiler/semantic/match::{CallSignature, NumericAutocast}
 import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
@@ -1179,7 +1180,9 @@ pub class MainVisitor < TypeNodeHost
       vt = child_type(val)
       return false if vt.nil?
       val_type = vt.as(Type)
-      unless val_type.subtype_of?(decl_type)
+      proc_compatible = val_type.is_a?(ProcInstanceType) && decl_type.is_a?(ProcInstanceType) &&
+                        TypeIntersect.compatible_proc?(val_type.as(ProcInstanceType), decl_type.as(ProcInstanceType))
+      unless val_type.subtype_of?(decl_type) || proc_compatible
         if node.var.is_a?(InstanceVar)
           target_scope = @scope || @current_type
           target_type = if target_scope.is_a?(MetaclassType)
@@ -2413,6 +2416,15 @@ pub class MainVisitor < TypeNodeHost
       end
       return refuse_call(call_node, ur)
     end
+    # The matcher also accepts typed numeric expressions whose whole range fits.
+    arg_types = [] of Type
+    args.each { |arg| arg_types << type_of(arg) }
+    if NumericAutocast.any?(args, arg_types)
+      if matched = match_splat_with_calls(rec_type, name, args, call_node)
+        return matched
+      end
+    end
+
 
     # 3. Check autocast matches for literals
     has_literal_arg = args.any? { |a| a.is_a?(NumberLiteral) }

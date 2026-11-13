@@ -1,0 +1,8 @@
+def wider(value : Int64) : Int64
+  value
+end
+
+small = 1_i32
+wide = wider(small)
+p : Proc(Nil) = -> { 7 }
+p.call

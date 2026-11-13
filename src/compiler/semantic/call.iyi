@@ -291,6 +291,7 @@ pub class CallRecalculation
       return "missing key '#{key}' for named tuple #{owner}" if first == -1 && name == "[]"
       last = first
     end
+    is_range = false if first == -1
     cache_key = "#{meta}:#{first}:#{last}:#{is_range}"
     cache = if instance.is_a?(TupleInstanceType)
               instance.as(TupleInstanceType).tuple_indexers
