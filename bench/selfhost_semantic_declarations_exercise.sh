@@ -577,6 +577,17 @@ prove_mutation_all "a file's imports are never consulted when a name is looked u
   "      t = nil" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a location-less builtin keeps its name over an import of that name" "$MUT_SEM" \
+  "if found.locations.nil?" \
+  "if false" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+MUT_DRIVER="$REPO/bench/selfhost_semantic_declarations_exercise.iyi"
+prove_mutation "an instance is printed when its generic is declared outside the entry file" "$MUT_DRIVER" \
+  "      next unless declared_in?(generic.locations, entry)" \
+  "      nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a file's own directory is never searched for an import" "$MUT_SEM" \
   "      roots << dir" \
   "      roots << \"/nonexistent-root\"" \

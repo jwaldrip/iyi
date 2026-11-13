@@ -1689,6 +1689,18 @@ pub class SemanticProgram < NonGenericModuleType
     end
   end
 
+  # A type the compiler declared and no source has written (no locations) is a name, not a
+  # definition. An import of that name wins (hosted path_lookup.cr: `import x::{Array}` beats
+  # the empty Array). A type a file has reopened keeps its locations and is not replaced.
+  def imported_over_shell(found : Type, name : String) : Type
+    if found.locations.nil?
+      if imported = @current_imports[name]?
+        return imported
+      end
+    end
+    found
+  end
+
   def lookup_type_path?(path : Path, current_type : ModuleType) : Type?
     if path.global
       return lookup_path_names(path.names, self)
@@ -1696,6 +1708,9 @@ pub class SemanticProgram < NonGenericModuleType
 
     first_name = path.names.first
     t = current_type.lookup_type(first_name)
+    if t
+      t = imported_over_shell(t, first_name)
+    end
     if t.nil? && current_type.name == first_name
       t = current_type
     end
@@ -1756,6 +1771,9 @@ pub class SemanticProgram < NonGenericModuleType
 
     # 1. Search in current_type
     t = current_type.lookup_type(first_name)
+    if t
+      t = imported_over_shell(t, first_name)
+    end
 
     # 2. Check if current_type has this name
     if t.nil? && current_type.name == first_name
