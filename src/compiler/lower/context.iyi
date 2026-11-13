@@ -75,6 +75,10 @@ pub class LowerContext
   property next_phi : BranchPhi?
   property block_node : ASTNode?
   property block_context : LowerContext?
+  # AST identities mark the ensure boundary for the corresponding control exit.
+  property return_target : ASTNode?
+  property break_target : ASTNode?
+  property next_target : ASTNode?
 
   def initialize(@fun : Function, @fun_type : IrType, @type : Type?, @vars : Hash(String, LowerVar))
     @return_type = nil
@@ -85,6 +89,9 @@ pub class LowerContext
     @next_phi = nil
     @block_node = nil
     @block_context = nil
+    @return_target = nil
+    @break_target = nil
+    @next_target = nil
   end
 end
 
@@ -127,6 +134,7 @@ pub class Lowerer
   # The hosted `break_phi`/`next` targets of the innermost while: the block `next` branches to, and the exit block `break` branches to (made at the first break).
   property loop_next : Block?
   property loop_break : Block?
+  property loop_target : ASTNode?
   # The hosted `@strings`: the string constants of the module, by text.
   property strings : Hash(String, Global)
   # The hosted `@symbols_by_index`: the program's symbol names in index order (a symbol literal is its index).
@@ -177,6 +185,7 @@ pub class Lowerer
     @body_visitor = nil
     @loop_next = nil
     @loop_break = nil
+    @loop_target = nil
     @strings = Hash(String, Global).new
     @symbol_names = [] of String
     @string_type_id = 0
