@@ -32,6 +32,15 @@ if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_cast_exercise.iyi"
   exit 1
 fi
 echo "  driver built"
+if "$WORK/port" wrong_union_member > "$WORK/wrong_union.out" 2> "$WORK/wrong_union.err"; then
+  echo "  FAIL: mixed union accepted a non-member"
+  status=1
+elif grep -Fq 'Char to (Bool | Int32): not a member' "$WORK/wrong_union.err"; then
+  echo "  non-member mixed union store refused"
+else
+  echo "  FAIL: non-member store did not reach the membership refusal"
+  status=1
+fi
 
 # Fixtures waiting on another slice, by name (none now: the three cast fixtures are identical).
 waiting_on() {
