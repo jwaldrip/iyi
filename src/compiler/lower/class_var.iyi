@@ -74,7 +74,7 @@ end
 # The hosted `visit(ClassDef)` enters the class: its body is lowered with the class as the scope. Answers whether
 # a scope was entered, which `class_body_leave` needs.
 pub def class_body_enter(low : Lowerer, node : ClassDef) : Bool
-  t = low.analysed.program.lookup_type_path(node.name, const_scope(low))
+  t = low.analysed.program.lookup_type_path(node.name, class_var_scope(low))
   if t.is_a?(ModuleType)
     low.globals.enter_class_body(t.as(ModuleType))
     return true
@@ -84,7 +84,7 @@ end
 
 # The hosted `visit(ModuleDef)` enters the module exactly as a class body.
 pub def module_body_enter(low : Lowerer, node : ModuleDef) : Bool
-  t = low.analysed.program.lookup_type_path(node.name, const_scope(low))
+  t = low.analysed.program.lookup_type_path(node.name, class_var_scope(low))
   if t.is_a?(ModuleType)
     low.globals.enter_class_body(t.as(ModuleType))
     return true
