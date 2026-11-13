@@ -152,7 +152,7 @@ pub class TypeSystem < TypeHook
     if m = TypeUnification.metaclass_of(type)
       m
     else
-      @program.types["Class"].as(ModuleType)
+      @program.types["Class"].as(ClassType)
     end
   end
 
