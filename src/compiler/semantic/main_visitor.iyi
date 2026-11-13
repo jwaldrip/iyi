@@ -2204,6 +2204,13 @@ pub class MainVisitor < TypeNodeHost
         return refuse_call(call_node, "undefined local variable or method '#{name}' for #{scope_name}")
       end
     end
+    # The calls matcher binds splat restrictions as tuples, including an empty
+    # argument list; the ordinary positional overload loop cannot resolve *T.
+    if candidates.any? { |d| !d.splat_index.nil? }
+      if splat_match = match_splat_with_calls(rec_type, name, args, call_node)
+        return splat_match
+      end
+    end
 
     # 1. Filter by argument count
     count_matches = [] of Def
