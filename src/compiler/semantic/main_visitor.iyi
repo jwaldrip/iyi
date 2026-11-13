@@ -1837,8 +1837,10 @@ pub class MainVisitor < TypeNodeHost
 
   # The type a parameter's restriction names for a call on *rec_type*. A generic instance
   # (or its metaclass) binds its type parameters, so `v : T` on Box(Int32) is Int32, as the
-  # hosted MatchContext binds them. Anything else is the scope's own lookup.
-  def restriction_type(restriction : ASTNode, rec_type : Type) : Type
+  # hosted MatchContext binds them. Anything else is the scope's own lookup. Nil when the
+  # restriction is not a type node (a splat `*T`): lookup_type_node would raise
+  # "expected type, got *T", and total mode must record a refusal instead of aborting.
+  def restriction_type(restriction : ASTNode, rec_type : Type) : Type?
     owner = rec_type
     if owner.is_a?(MetaclassType)
       owner = owner.as(MetaclassType).instance_type
@@ -1851,7 +1853,7 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
-    @program.lookup_type_node(restriction, @current_type)
+    @program.lookup_type_node?(restriction, @current_type)
   end
 
   def collect_candidate_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
@@ -2065,8 +2067,13 @@ pub class MainVisitor < TypeNodeHost
       return refuse_call(call_node, "wrong number of arguments for '#{method_disp}' (given #{args.size}, expected #{expected_str})\n#{overloads_str}")
     end
 
-    # 2. Check exact / subtype argument matches
+    # 2. Check exact / subtype argument matches. A restriction that is not a type
+    # node (a splat `*T`) does not match this candidate. If no candidate matches,
+    # that failure is a refusal naming the restriction, not a raise: total mode
+    # records it and goes on. The calls integration binds the splat; this only
+    # stops the abort.
     exact_matches = [] of Def
+    unresolved_restriction : String? = nil
     count_matches.each do |d|
       all_args_match = true
       i = 0
@@ -2074,8 +2081,13 @@ pub class MainVisitor < TypeNodeHost
         arg_type = type_of(args[i])
         param = d.args[i]
         if r = param.restriction
-          expected_type = restriction_type(r, rec_type)
-          unless arg_type.subtype_of?(expected_type)
+          expected = restriction_type(r, rec_type)
+          if expected.nil?
+            all_args_match = false
+            unresolved_restriction = "expected type, got #{r.to_s}"
+            break
+          end
+          unless arg_type.subtype_of?(expected.as(Type))
             all_args_match = false
             break
           end
@@ -2090,6 +2102,10 @@ pub class MainVisitor < TypeNodeHost
     if exact_matches.size > 0
       most_specific = filter_most_specific_overloads(exact_matches, args, rec_type)
       return most_specific.first
+    end
+
+    if ur = unresolved_restriction
+      return refuse_call(call_node, ur)
     end
 
     # 3. Check autocast matches for literals
