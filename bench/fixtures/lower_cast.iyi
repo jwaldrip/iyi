@@ -27,3 +27,4 @@ upcast_mixed(1)
 nilcast_up(2)
 nilcast_miss(3)
 nilcast_down(true)
+nil

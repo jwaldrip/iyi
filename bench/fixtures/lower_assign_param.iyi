@@ -20,3 +20,4 @@ end
 bump(5)
 reassign_if(3, true)
 assign_union(1.as(Int32 | Bool))
+nil

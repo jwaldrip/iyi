@@ -66,7 +66,11 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
   low.string_type_id = ids.type_id(program.string_type)
   body_t = analysed.type_of?(target.body)
   raise "BUG: the analysed program has no type for the body of #{target.name} (hosted codegen_fun: return type)" if body_t.nil?
-  target_def_fun(low, target, self_type, arg_types, body_t.as(Type))
+  if self_type.is_a?(MetaclassType)
+    target_def_fun(low, target, nil, arg_types, body_t.as(Type), self_type.as(MetaclassType).instance_type)
+  else
+    target_def_fun(low, target, self_type, arg_types, body_t.as(Type))
+  end
   nil
 end
 
