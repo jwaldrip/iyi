@@ -287,14 +287,19 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   end
 end
 
-# The owner of an implicit-self call: a call with no receiver inside an instance method (hosted call.cr:
-# prepare_call_args, `owner` is the target def's owner). The current type when it defines the method, whose self
-# the call passes; nil for a top-level def, which takes no self. An inherited method is refused
-# because the hosted owner is the superclass, which the port does not record.
+# An implicit method uses the caller's self even when the def was inherited.
+# A program-level def takes no self. The analysed target's defining scope
+# distinguishes them without guessing from methods sharing the same name.
 pub def implicit_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type?
   ct = low.current_context.type.as(Type)
   if low.current_context.vars["self"]?.nil?
     pending_visit_node("a call to #{node.name} with no receiver inside a class method (hosted call.cr: prepare_call_args, the metaclass owner)")
+  end
+  if target = low.analysed.target_def?(node)
+    if defining = low.analysed.program.def_owner(target)
+      return ct unless defining.object_id == low.analysed.program.object_id
+      return nil
+    end
   end
   if defines_method?(ct, node.name)
     return ct
@@ -357,6 +362,9 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
   end
   if owner.is_a?(ModuleType)
     if owner.as(ModuleType).defs[node.name]?.nil?
+      if target = low.analysed.target_def?(node)
+        return owner if low.analysed.program.def_owner(target)
+      end
       pending_visit_node("a call to #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")
     end
   end
