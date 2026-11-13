@@ -15,6 +15,7 @@ module compiler/compiler
 import compiler/syntax/ast::{ASTNode, Annotation, Nop, Expressions, ClassDef, ModuleDef, FunDef, Def, LibDef, Arg, EnumDef, Assign, Path, NumberLiteral, ImportDecl, Require, Call, VisibilityModifier, MacroIf, MacroFor, MacroExpression, Alias, ImplDef}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, dir_of}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/backend/backend::{Backend, BuildRequest}
 import compiler/codegen/codegen::{append_entry_point, compile_declarations_to_module, refuse_exception_handlers, register_primitive_operators}
@@ -183,6 +184,7 @@ pub class Compiler
           cd.accept(tl)
         end
         tl.finish
+        declare_guessed_instance_vars(prog)
 
         mv = MainVisitor.new(prog)
         funs.each do |fd|
