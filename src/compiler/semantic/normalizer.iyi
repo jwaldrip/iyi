@@ -171,6 +171,7 @@ pub class Normalizer < Transformer
       armed = If.new(flag.clone, deferred.exp.clone).at(deferred)
       cleanup_body = Expressions.new([armed, NilLiteral.new.at(deferred)] of ASTNode).at(deferred)
       cleanup = Def.new("->", [] of Arg, cleanup_body)
+      cleanup.at(deferred)
       cleanup.iyi_defer = true
       proc_literal = ProcLiteral.new(cleanup).at(deferred)
       push = Call.new(nil, "__iyi_defer_push", [proc_literal] of ASTNode, nil, nil, nil, false, nil, true).at(deferred)

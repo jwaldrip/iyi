@@ -1484,6 +1484,9 @@ end
 
 pub class Return < ControlExpression
   property from_propagate : Bool = false
+  # The def this returns from. Typing sets it (hosted semantic/ast.cr 697-699, main_visitor.cr 2096) and lowering
+  # runs the pending `defer` cleanups up to it (codegen.cr 1179). A clone does not carry it.
+  property target : Def? = nil
 
   def initialize(exp : ASTNode? = nil)
     super(exp)
@@ -1506,6 +1509,11 @@ pub class Return < ControlExpression
 end
 
 pub class Break < ControlExpression
+  # What this leaves: the Call whose block it is in, or the While. Typing sets it (hosted semantic/ast.cr 689-691,
+  # main_visitor.cr 2764, 2770) and lowering runs the pending `defer` cleanups up to it (codegen.cr 1446-1456).
+  # A clone does not carry it.
+  property target : ASTNode? = nil
+
   def initialize(exp : ASTNode? = nil)
     super(exp)
   end
@@ -1524,6 +1532,11 @@ pub class Break < ControlExpression
 end
 
 pub class Next < ControlExpression
+  # What this continues: the Block, the While, or the def of a captured block. Typing sets it (hosted
+  # semantic/ast.cr 693-695, main_visitor.cr 2796, 2803, 2810) and lowering runs the pending `defer` cleanups up
+  # to it (codegen.cr 1470-1480). A clone does not carry it.
+  property target : ASTNode? = nil
+
   def initialize(exp : ASTNode? = nil)
     super(exp)
   end
