@@ -8089,16 +8089,18 @@ A `--cached` check took 3.6 to 4.8 s there, against 1.2 to 2.1 s to build and ru
 
 The cached run served exactly the tests it should in every case. Before the fast path and the parallel runner, the same suite took 117.0 s plain and 1,254.8 s under `--fresh` (load average 36 to 180), and on a second run 176.7 s and 3,526.7 s (load 70 to 400). Its cached run with nothing changed never finished: one attempt was still running after 90 minutes, and another was killed after 42 minutes, when the runner process had grown to 64 GB. A lookup then parsed every receipt of every test; what grew was not profiled. With the store per test, a runner taking all 1,000 tests through the compiler check ended in 270 s and no process of the run passed 0.9 GB. Linux was not measured.
 
-Every number above is from an unoptimized compiler (`make iyi`), which is what CI builds and not what an installed `iyi` is. On a release compiler (`make iyi release=1`), the same machine, 100 generated tests that end at once (load average 16 when it started, rising during the run):
+Every number above is from an unoptimized compiler (`make iyi`), which is what CI builds and not what an installed `iyi` is. On a release compiler (`make iyi release=1`), the same machine, the same 1,000 generated tests that end at once (load average 16 when it started, 360 during the run):
 
 | Case | Plain `iyi test` | `iyi test --cached` | Served | Compilers started |
 |---|---|---|---|---|
-| first run (`--fresh`) | 11.9 s | 25.2 s | 0 | 100 |
-| nothing changed | 13.7 s | 0.2 s | 100 | 0 |
-| one test edited | 9.9 s | 0.8 s | 99 | 1 |
-| one module edited (20 tests import it) | 9.3 s | 5.3 s | 80 | 20 |
-| a shared def no test reaches, edited | 8.9 s | 10.4 s | 100 | 100 |
-| a shared def every test reaches, edited | 8.3 s | 19.4 s | 0 | 100 |
+| first run (`--fresh`) | 118.3 s | 178.1 s | 0 | 1,000 |
+| nothing changed | 87.5 s | 1.6 s | 1,000 | 0 |
+| one test edited | 85.3 s | 2.4 s | 999 | 1 |
+| one module edited (20 tests import it) | 88.5 s | 4.8 s | 980 | 20 |
+| a shared def no test reaches, edited | 81.8 s | 77.6 s | 1,000 | 1,000 |
+| a shared def every test reaches, edited | 83.4 s | 136.5 s | 0 | 1,000 |
+
+Every test passed in all twelve runs.
 
 One small test alone, warm, on a quiet machine (medians of five): a plain build and run takes 0.42 s unoptimized and 0.23 s release; a compiler check that hits takes about 0.97 s and 0.31 s. Of the release check, analysing the observed program is 0.13 s (0.06 s in a plain build), walking what the test reaches 0.006 s, and hashing it 0.09 s (0.48 s unoptimized, more than half of it the SHA-256 arithmetic itself).
 
