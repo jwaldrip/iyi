@@ -64,6 +64,11 @@ def run : Nil
   expected = metaclass ? "*NameOwner::class_flag<Int32>:Int32" : "*Child^Base#flag<Int32>:Int32"
   method_name = metaclass ? "class_flag" : "flag"
   owner_name = metaclass ? "NameOwner.class" : "Child"
+  if args.size > 2 && args[2] == "return"
+    expected = "*NameReturn::write<UInt64>:Nil"
+    method_name = "write"
+    owner_name = "NameReturn.class"
+  end
   hosted = hosted_flag(oracle_text, expected)
   raise "the hosted module has no #{expected}" if hosted.nil?
   visitor = analyse(File.read(fixture), fixture)
@@ -88,7 +93,8 @@ def run : Nil
   raise "Child#flag has no body type" if body.nil?
   refused = lower_def_probe(inst.definition, inst.self_type, inst.arg_types, visitor, typer, m)
   raise refused.as(String) unless refused.nil?
-  name = mangled_name(inst.definition.name, inst.self_type, inst.arg_types, body.as(Type))
+  result_type = visitor.type_of?(inst.definition) || body
+  name = mangled_name(inst.definition.name, inst.self_type, inst.arg_types, result_type.as(Type))
   puts "port #{name}"
   raise "name differs: port #{name}, hosted #{hosted}" unless name == hosted.as(String)
   raise "the module has no #{name}" if m.get_function?(name).nil?

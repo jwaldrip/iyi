@@ -499,6 +499,22 @@ prove_mutation "a metaclass is named as an instance" "$REPO/src/compiler/lower/f
   '      if st.is_a?(MetaclassType)' \
   '      if false' -- name_metaclass_check || status=1
 
+name_return_check() {
+  "$IYI" build -o "$WORK/name-return-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-return.build.log" 2>&1 || return 1
+  "$WORK/name-return-port" "$REPO/bench/fixtures/lower_name_return.iyi" "$WORK/lower_name_return.oracle.ll" return > "$WORK/name-return.out" 2> "$WORK/name-return.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-return.out"
+}
+if name_return_check; then
+  echo "  lower_name_return: *NameReturn::write<UInt64>:Nil"
+else
+  echo "  lower_name_return: declared return differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-return.err" "$WORK/name-return.out" "$WORK/name-return.build.log"
+  status=1
+fi
+prove_mutation "the probe names the body type instead of the def type" "$REPO/src/compiler/lower/lower.iyi" \
+  '  result_t = analysed.type_of?(target) || body_t' \
+  '  result_t = body_t' -- name_return_check || status=1
+
 echo
 echo
 if [ "$status" -eq 0 ]; then
