@@ -190,7 +190,7 @@ else
   status=1
 fi
 prove_mutation "a program global is incorrectly stripped as a build constant" "$REPO/bench/lib/lower_gate.iyi" \
-  "        if destination.starts_with?(prefix)" "        if destination.includes?(marker)" -- lowglob_check || status=1
+  "        if destination.starts_with?(prefix) && identity_names.includes?(destination[prefix.size..-1])" "        if destination.includes?(marker)" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1
