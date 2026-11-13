@@ -40,6 +40,7 @@ bench/fixtures/sem_bodies_macro_ivars.iyi 10
 bench/fixtures/sem_bodies_magic_constant.iyi 4
 bench/fixtures/sem_bodies_match_atomics.iyi 81
 bench/fixtures/sem_bodies_match_import.iyi 6
+bench/fixtures/sem_bodies_numeric_autocast.iyi 8
 bench/fixtures/sem_bodies_nil_return.iyi 14
 bench/fixtures/sem_bodies_owner_typeof.iyi 16
 bench/fixtures/sem_bodies_pack_splat.iyi 4
