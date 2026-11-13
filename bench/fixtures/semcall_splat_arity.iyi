@@ -3,5 +3,10 @@ def collect(first : Int32, *rest : Int32) : Int32
   first
 end
 
+def gather(first : Int32, *rest) : Int32
+  first
+end
+
 # error collect()
 # error collect(1, 2, 3)
+# error gather()
