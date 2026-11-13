@@ -11,10 +11,10 @@ module compiler/lower/census
 # Any name that cannot be split, parsed, resolved, or matched to a target def is recorded as a `census` row in
 # `refused` (never mixed with the port's `body` or `lowering` refusals).
 
-import compiler/syntax/ast::{ASTNode, Call, Def, Generic, Metaclass, NumberLiteral, Path, ProcNotation, Self, Union, Var}
+import compiler/syntax/ast::{ASTNode, Call, Def, Generic, Metaclass, NumberLiteral, Path, ProcNotation, Union, Var}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{TokenKind}
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, ModuleType, SemanticProgram, Type}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
 import compiler/semantic/type_nodes::{type_node_metaclass, type_node_system}
 import compiler/types/types::{NamedArgumentType, TypeQueries, VirtualType}
@@ -25,7 +25,6 @@ import compiler/lower/lower::{lower_def_probe}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/primitives::{primitive_name}
 import compiler/lower/fun::{mangled_name}
-import compiler/semantic/top_level::{MetaclassType}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
@@ -376,16 +375,6 @@ def census_first_line(text : String) : String
     i += 1
   end
   text
-end
-
-# Formats a def label for a panicked body visit, matching MainVisitor#record_refusal.
-def panic_def_label(d : Def, scope : Type?) : String
-  if owner = scope
-    unless owner.is_a?(SemanticProgram)
-      return "#{owner.full_name}##{d.name}"
-    end
-  end
-  d.name
 end
 
 # Removes any refusal recorded directly against `call_node` (a lookup/scaffold failure) and returns its reason.
