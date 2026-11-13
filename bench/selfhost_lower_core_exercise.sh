@@ -496,6 +496,21 @@ else
   awk 'NR<=8' "$WORK/vis.err" "$WORK/vis.out" "$WORK/vis.build.log"
   status=1
 fi
+visibility_macro_check() {
+  "$IYI" build -o "$WORK/port-vis-macro" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/vis-macro.build.log" 2>&1 || return 1
+  "$WORK/port-vis-macro" lower "$REPO/bench/fixtures/lower_visibility_macro.iyi" "$WORK/lower_visibility_macro.oracle.ll" > "$WORK/vis-macro.out" 2> "$WORK/vis-macro.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/vis-macro.out"
+}
+if visibility_macro_check; then
+  prove_mutation "an expanded declaration macro is lowered as a call" "$REPO/src/compiler/lower/lower.iyi" \
+    '      codegen_node(low, expanded)' \
+    '      codegen_call_node(low, node.as(Call))' -- visibility_macro_check || status=1
+else
+  echo "FAIL: wrapped macro fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/vis-macro.err" "$WORK/vis-macro.out" "$WORK/vis-macro.build.log"
+  status=1
+fi
+
 
 
 # naming lane (mangled_name)
