@@ -463,7 +463,9 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     pending_visit_node("Primitive (a def body; hosted codegen_call lowers it at the call site)")
   end
   # --- asm ---
-  if node.is_a?(Asm); codegen_asm(low, node.as(Asm)); return; end
+  if node.is_a?(Asm)
+    codegen_asm(low, node.as(Asm)); return
+  end
   pending_visit_node(node_class_name(node))
 end
 

@@ -2338,6 +2338,7 @@ pub class MainVisitor < TypeNodeHost
     end
     false
   end
+
   # --- asm: end ---
 
   # --- type nodes: begin ---

@@ -21,7 +21,6 @@ module compiler/lower/asm
 
 import compiler/syntax/ast::{ASTNode, AsmOperand, PointerOf}
 
-
 import compiler/ir/inst::{AsmDialect}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -32,7 +31,6 @@ import compiler/semantic/top_level::{Type}
 # The AST node is `Compiler::Syntax::Ast::Asm` because this module is itself
 # `compiler/lower/asm`, and inside it the name `Asm` means this module.
 alias SyntaxAsm = Compiler::Syntax::Ast::Asm
-
 
 # The hosted `visit(node : Asm)` (codegen/asm.cr 4-75).
 pub def codegen_asm(low : Lowerer, node : SyntaxAsm) : Nil
