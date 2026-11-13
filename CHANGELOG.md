@@ -32,6 +32,15 @@
   before and names its first cause in `check_reason`. `-p N` now applies to
   `--cached`, `--fresh`, `--explain`, `--shard`, `--import-index` and
   `--export-index` too, with the report in file order.
+- **`iyi test --cached` builds and runs a cheap test with no check.** A test
+  the fast path cannot serve, whose last known build and run cost at most
+  half its last known check, is built and run with no compiler. The check it
+  skipped is owed and paid on the first later run in which nothing it read
+  has changed, and an unchanged run after that is served as before. Nothing
+  new is served: that run writes no receipt and no fast-path record, and
+  forgets a fast record that no longer matches. `--json` marks it
+  `check: "run"` and counts it in `ran`; `--explain` says it ran without a
+  check. `IYI_STALE_EFFORT=off` restores the check; any other value is refused.
 
 ### Changed
 

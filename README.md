@@ -329,7 +329,7 @@ another module's directory. `test "name" do ... end` is a named case: `--json`
 reports each one's verdict, `--run TEXT` runs only those whose name holds
 TEXT, and `skip: "why"` leaves one out. `--release` and `-D FLAG` build every
 test that way, and `-v` shows a passing test's output. Opt-in `iyi test --cached`
-reuses passing test receipts. A test whose recorded inputs are unchanged starts no compiler; the rest need an equal build key and replayed observations
+reuses passing test receipts. A test whose recorded inputs are unchanged starts no compiler; a cheap one the fast path cannot serve is built and run and owes the check it skipped; the rest need an equal build key and replayed observations
 (SPEC.md III.14). `iyi test --chaos` runs each test under 100 seeded schedules,
 so a test that passes only because its tasks happened to run in one order fails
 on some seed. `--chaos=SEED` runs that failing schedule again (SPEC.md III.4.17).
