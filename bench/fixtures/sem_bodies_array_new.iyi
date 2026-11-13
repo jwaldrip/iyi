@@ -1,0 +1,19 @@
+class Box
+  @n : Int32
+
+  def initialize(n : Int32)
+    @n = n
+  end
+
+  # The generated `new(n)` from initialize, and this yielding overload, both
+  # take one positional argument. A call with a block must select this one.
+  def self.new(n : Int32, & : Int32 -> Int32) : Box
+    Box.new(yield n)
+  end
+
+  def self.new(n : Int32, value : Int32) : Box
+    Box.new(n) { |index| value }
+  end
+end
+
+Box.new(1, 2)

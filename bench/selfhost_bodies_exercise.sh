@@ -192,6 +192,24 @@ elif ! diff -q "$WORK/setter.hosted" "$WORK/setter.port" >/dev/null; then
 else
   echo "  sem_bodies_setter_value.iyi matches hosted node by node"
 fi
+ 
+ echo
+ echo "== 2e. A one-arg new with a block is the yielding overload, not initialize"
+ array_fx="$REPO/bench/fixtures/sem_bodies_array_new.iyi"
+ "$ORACLE" "$array_fx" > "$WORK/array.hosted" 2> "$WORK/array.hosted.err" || {
+   echo "  ORACLE array new: $(head -n 1 "$WORK/array.hosted.err")"
+   status=1
+ }
+ if ! "$TYPED" "$array_fx" "$REPO/src" > "$WORK/array.port" 2> "$WORK/array.port.err"; then
+   echo "  PORT array new failed"
+   status=1
+ elif ! diff -q "$WORK/array.hosted" "$WORK/array.port" >/dev/null; then
+   echo "  array new dump differs from hosted"
+   diff -u "$WORK/array.hosted" "$WORK/array.port" | head -n 40
+   status=1
+ else
+   echo "  sem_bodies_array_new.iyi matches hosted node by node"
+ fi
 
 echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
@@ -745,6 +763,24 @@ atomic_free_at_floor() {
     END { for (name in seen) count++; exit bad || count != 8 }
   ' "$WORK/atomic.refusals"
 }
+ # A block call must not match the generated initialize new. Returns non-zero
+ # when that filter is gone and the fixture no longer matches the hosted dump.
+ array_new_yields() {
+   if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/array_mut_build.log" 2>&1; then
+     body_build_failed "$WORK/array_mut_build.log"
+     return $?
+   fi
+   fx="$REPO/bench/fixtures/sem_bodies_array_new.iyi"
+   "$ORACLE" "$fx" 2>/dev/null | sort > "$WORK/array_mut.hosted" || return 1
+   "$MUT_TD" "$fx" "$REPO/src" 2>/dev/null | sort > "$WORK/array_mut.port" || return 1
+   if diff -q "$WORK/array_mut.hosted" "$WORK/array_mut.port" >/dev/null; then
+     return 0
+   fi
+   return 1
+ }
+ prove_mutation "a block call matches only a yielding new" "$MAIN_VISITOR" \
+  "      if CallMatch.yields?(d) == wants_block" \
+   "      if true" -- array_new_yields || status=1
 if ! atomic_free_at_floor; then
   echo "  ATOMIC: one of the instantiated atomic bodies was refused or not reached"
   status=1

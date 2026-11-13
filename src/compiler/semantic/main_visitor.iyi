@@ -25,7 +25,7 @@ import compiler/types/intersect::{TypeIntersect}
 import compiler/types/restrictions::{TypeRestrictions}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
-import compiler/semantic/match::{CallSignature}
+import compiler/semantic/match::{CallSignature, CallMatch}
 import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
@@ -2501,6 +2501,18 @@ pub class MainVisitor < TypeNodeHost
     visited = Set(String).new
     collect_candidate_defs(rec_type, name, candidates, visited)
     collect_scope_defs(rec_type, name, candidates, visited) if candidates.empty? && call_node.obj.nil?
+    # Hosted method_lookup.cr:253-256: a call with a block matches only a def
+    # that yields, and a call without one matches only a def that does not.
+    # Array(T).new(size) is the generated initialize new; Array(T).new(size) { }
+    # is the yielding overload. Matching the other leaves the receiver untyped.
+    wants_block = !call_node.block.nil?
+    yield_matched = [] of Def
+    candidates.each do |d|
+      if CallMatch.yields?(d) == wants_block
+        yield_matched << d
+      end
+    end
+    candidates = yield_matched
 
     if candidates.empty?
       if obj_node = call_node.obj
