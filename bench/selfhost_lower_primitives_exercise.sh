@@ -191,7 +191,7 @@ prove_mutation "a by-value pointer_get loads" "$REPO/src/compiler/lower/primitiv
 prove_mutation "a Bool pointer_set stores zero" "$REPO/src/compiler/lower/primitives.iyi" \
   "      bool_stored = values[1]" "      bool_stored = int1(low, 0_i64)" -- lower_primitives_check || status=1
 prove_mutation "a generic instance ignores its class variables" "$REPO/src/compiler/lower/primitives.iyi" \
-  "        merged[k] = v" "        merged[k] = v if false" -- lower_primitives_check || status=1
+  "    return t.as(GenericClassInstanceType).all_instance_vars" "    return Hash(String, MetaTypeVar).new" -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \

@@ -48,7 +48,7 @@ import compiler/lower/fun::{visit_node}
 import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
-import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, Type}
+import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, PointerInstanceType, TypeQueries, VirtualType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
@@ -975,27 +975,16 @@ pub def class_pointerful?(t : Type) : Bool
   false
 end
 
-# Instance variables the pointerful check reads. A ClassType has all_instance_vars. A generic
-# instance merges the generic class's variables with any recorded on the instance.
+# Instance variables the pointerful check reads. A class and a generic instance both answer
+# through all_instance_vars: the instance's read copies the generic class's variables
+# (types.iyi instance_vars), so a cast to ClassType is not required.
 pub def class_instance_vars(t : Type) : Hash(String, MetaTypeVar)
   if t.is_a?(ClassType)
     return t.as(ClassType).all_instance_vars
   end
   if t.is_a?(GenericClassInstanceType)
-    inst = t.as(GenericClassInstanceType)
-    merged = Hash(String, MetaTypeVar).new
-    generic = inst.generic_type
-    if generic.is_a?(ModuleType)
-      generic.as(ModuleType).all_instance_vars.each do |k, v|
-        merged[k] = v
-      end
-    end
-    inst.instance_vars.each do |k, v|
-      merged[k] = v
-    end
-    return merged
+    return t.as(GenericClassInstanceType).all_instance_vars
   end
-
   Hash(String, MetaTypeVar).new
 end
 
