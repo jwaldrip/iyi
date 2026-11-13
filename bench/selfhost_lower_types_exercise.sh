@@ -383,6 +383,31 @@ prove_mutation "a range's min is its last subtype, not the first" "$TYPE_ID_FILE
   "      if sub_id != 0" \
   -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a Tuple instance is not recorded in Tuple's instantiated types" "$REPO/src/compiler/types/instances.iyi" \
+  '    @program.types["Tuple"].as(GenericClassType).instantiated_types << inst' \
+  '    @program.types["Tuple"].as(GenericClassType).instantiated_types.size' \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "Nil created after Bool, not before it" "$REPO/src/compiler/semantic/top_level.iyi" \
+  '    nil_t = NilType.new(self, self, "Nil", val)
+    @types["Nil"] = nil_t
+    bool_t = NonGenericClassType.new(self, self, "Bool", val)
+    bool_t.struct = true
+    @types["Bool"] = bool_t' \
+  '    bool_t = NonGenericClassType.new(self, self, "Bool", val)
+    bool_t.struct = true
+    @types["Bool"] = bool_t
+    nil_t = NilType.new(self, self, "Nil", val)
+    @types["Nil"] = nil_t' \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "ARGV_UNSAFE's Pointer(Pointer(UInt8)) not made, so Pointer(UInt8) alone" "$REPO/src/compiler/types/type_system.iyi" \
+  "    @instances.pointer_of(@instances.pointer_of(uint8))" \
+  "    @instances.pointer_of(uint8)" \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "leaves take no id of their own" "$TYPE_ID_FILE" \
   "    if subtypes.size == 0" \
