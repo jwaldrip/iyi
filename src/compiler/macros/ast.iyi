@@ -43,13 +43,17 @@ pub class MacroId < ASTNode
   end
 end
 
-# A type the macro language names: a path that resolves to one of the hosted
-# program's built-in types. It prints as the type's name, as the hosted
-# `TypeNode` does.
+# A type the macro language names. A path that resolves to a built-in type
+# prints as that type's name. A tuple or named tuple instance also keeps its
+# type arguments, so `size` can count them the way the hosted interpreter does.
 pub class TypeNode < ASTNode
   property name : String
+  # Printed type arguments of a tuple or named tuple instance (`Int32`, `a: Int32`).
+  # Empty when `size` is not defined for this type.
+  property type_args : Array(String)
+  property sized : Bool
 
-  def initialize(@name : String)
+  def initialize(@name : String, @type_args : Array(String) = [] of String, @sized : Bool = false)
   end
 
   def to_macro_id : String
@@ -61,6 +65,26 @@ pub class TypeNode < ASTNode
   end
 
   def clone_without_location : self
-    TypeNode.new(@name)
+    TypeNode.new(@name, @type_args.dup, @sized)
+  end
+
+  # Two type nodes are the same type when they print the same, which is how
+  # `Int32 == Int32` and `Tuple(Int32, Bool) == Tuple(Int32, Bool)` answer.
+  def ==(other : ASTNode) : Bool
+    if other.is_a?(TypeNode)
+      tn = other.as(TypeNode)
+      return @name == tn.name && @sized == tn.sized && same_args?(tn.type_args)
+    end
+    false
+  end
+
+  def same_args?(other : Array(String)) : Bool
+    return false unless @type_args.size == other.size
+    i = 0
+    while i < @type_args.size
+      return false unless @type_args[i] == other[i]
+      i = i + 1
+    end
+    true
   end
 end

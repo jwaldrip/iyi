@@ -1,10 +1,10 @@
 module compiler/semantic/method_lookup
 
-import compiler/syntax/ast::{Def, Nop}
+import compiler/syntax/ast::{ASTNode, Def, Nop, NumberLiteral}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaclassType, ModuleType, TraitType, Type, UnionType}
 import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, VirtualType}
 import compiler/types/type_system::{TypeSystem}
-import compiler/semantic/match::{CallMatch, CallSignature, Match}
+import compiler/semantic/match::{CallMatch, CallSignature, Match, NumericAutocast}
 
 # The matches of a lookup, in the hosted order. *cover_all* says the first match
 # accepts every argument combination (an exact match, which ends the lookup
@@ -155,15 +155,20 @@ pub class MethodLookup
     return Matches.new(matches_array, false) if defs.nil?
 
     found = [] of Match
+    first_error : String? = nil
     defs.as(Array(Def)).each do |item|
       next if item.abstract
       attempt = CallMatch.attempt(ts, signature, item, owner, path_lookup)
-      if attempt.error
-        return Matches.new(matches_array, false, attempt.error)
+      if err = attempt.error
+        first_error = err if first_error.nil?
+        next
       end
       match = attempt.match
       next if match.nil?
       found << match.as(Match)
+    end
+    if found.empty? && first_error && matches_array.empty?
+      return Matches.new(matches_array, false, first_error)
     end
     best = MethodLookup.most_specific(found)
     if best
@@ -199,6 +204,8 @@ pub class MethodLookup
   # True when *a*'s declared restrictions are each a subtype of *b*'s, position by
   # position over the parameters they both have.
   def self.at_least_as_specific(a : Match, b : Match) : Bool
+    return false if a.definition.splat_index && !b.definition.splat_index
+    return true if !a.definition.splat_index && b.definition.splat_index
     k = 0
     while k < a.declared.size && k < b.declared.size
       return false if !a.declared[k].subtype_of?(b.declared[k])
@@ -387,5 +394,40 @@ pub class MethodLookup
       return lookup_matches(module_type, ts, signature, module_type, module_type, [] of Match)
     end
     Matches.new([] of Match, false)
+  end
+
+  # The hosted Call#lookup_matches: the receiver's lookup, then, when nothing
+  # matched and an argument supports numeric autocast, the same lookup with the
+  # argument nodes so a literal can match a wider integer and a typed integer
+  # can match when its range fits. Two partial matches are the hosted ambiguity.
+  # A refusal is an empty Matches (no def matched) or Matches#error (a restriction
+  # did not resolve, or the autocast is ambiguous).
+  def self.lookup_with_autocast(receiver : Type, ts : TypeSystem, signature : CallSignature, arg_nodes : Array(ASTNode)?) : Matches
+    first = lookup_receiver(receiver, ts, signature)
+    return first if first.error || !first.empty?
+    return first if arg_nodes.nil?
+    nodes = arg_nodes.as(Array(ASTNode))
+    return first if !NumericAutocast.any?(nodes, signature.arg_types)
+    signature.autocast_nodes = nodes
+    second = lookup_receiver(receiver, ts, signature)
+    signature.autocast_nodes = nil
+    return second if second.error || second.matches.size <= 1
+    value = "0"
+    i = 0
+    while i < nodes.size
+      if nodes[i].is_a?(NumberLiteral)
+        value = nodes[i].as(NumberLiteral).value
+        break
+      end
+      i += 1
+    end
+    names = [] of String
+    second.matches.each do |m|
+      if m.declared.size > 0
+        text = m.declared[0].to_s
+        names << text if !names.includes?(text)
+      end
+    end
+    Matches.new([] of Match, false, NumericAutocast.ambiguity(value, names))
   end
 end

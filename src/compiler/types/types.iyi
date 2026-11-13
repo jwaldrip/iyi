@@ -4,7 +4,7 @@ import compiler/foundation/errors::{refuse_port}
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Def, Generic, Path, Visibility}
 import compiler/syntax/token::{NumberKind}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaclassType, MetaTypeVar, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeParameterType, UnionType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, ImplRecord, MetaTypeVar, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeParameterType, UnionType, VoidType}
 
 pub class VirtualType < Type
   property base_type : Type

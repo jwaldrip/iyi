@@ -18,6 +18,7 @@ bench/fixtures/lowcall_clib_scalars.iyi run-equal
 bench/fixtures/lowcall_empty_body.iyi run-equal
 bench/fixtures/lowcall_exit_pick.iyi run-equal
 bench/fixtures/lowcall_fun_body.iyi run-equal
+bench/fixtures/lowcall_link_framework.iyi native
 bench/fixtures/lowcall_meta_args.iyi run-equal
 bench/fixtures/lowcall_meta_class.iyi run-equal
 bench/fixtures/lowcall_name_mark.iyi run-equal
@@ -28,6 +29,7 @@ bench/fixtures/lowcall_pick.iyi run-equal
 bench/fixtures/lowcall_recv_arg.iyi run-equal
 bench/fixtures/lowcall_recv_block.iyi run-equal
 bench/fixtures/lowcall_recv_self.iyi run-equal
+bench/fixtures/lowcall_setter_nilable.iyi run-equal
 bench/fixtures/lowcall_struct_new.iyi run-equal
 bench/fixtures/lowcall_struct_self.iyi run-equal
 bench/fixtures/lowcall_struct_value.iyi run-equal
@@ -65,7 +67,7 @@ bench/fixtures/lower_not.iyi run-equal
 bench/fixtures/lower_or.iyi run-equal
 bench/fixtures/lower_out.iyi run-equal
 bench/fixtures/lower_pointer_of.iyi run-equal
-bench/fixtures/lower_proc_literal.iyi declarations
+bench/fixtures/lower_proc_literal.iyi run-equal
 bench/fixtures/lower_return.iyi run-equal
 bench/fixtures/lower_return_last.iyi run-equal
 bench/fixtures/lower_sizeof.iyi bodies
@@ -79,6 +81,7 @@ bench/fixtures/lower_tuple.iyi bodies
 bench/fixtures/lower_typedecl.iyi run-equal
 bench/fixtures/lower_typedecl_nil.iyi run-equal
 bench/fixtures/lower_typeof.iyi bodies
+bench/fixtures/lower_uint64_big.iyi run-equal
 bench/fixtures/lower_underscore.iyi bodies
 bench/fixtures/lower_unless.iyi run-equal
 bench/fixtures/lower_while.iyi run-equal
@@ -87,13 +90,17 @@ bench/fixtures/lowglob_const_bool.iyi run-equal
 bench/fixtures/lowglob_const_call.iyi run-equal
 bench/fixtures/lowglob_const_literal.iyi run-equal
 bench/fixtures/lowglob_const_namespace.iyi bodies
+bench/fixtures/lowglob_const_namespace_read.iyi bodies
 bench/fixtures/lowglob_const_string.iyi run-equal
 bench/fixtures/lowglob_const_two.iyi run-equal
+bench/fixtures/lowglob_const_uint64.iyi run-equal
 bench/fixtures/lowglob_cvar_assign.iyi run-equal
 bench/fixtures/lowglob_cvar_call.iyi run-equal
 bench/fixtures/lowglob_cvar_decl.iyi run-equal
 bench/fixtures/lowglob_cvar_literal.iyi run-equal
 bench/fixtures/lowglob_cvar_nilable.iyi run-equal
+bench/fixtures/lowglob_cvar_tls.iyi bodies
+bench/fixtures/lowglob_cvar_tls_typed.iyi run-equal
 bench/fixtures/lowprim_add.iyi run-equal
 bench/fixtures/lowprim_alloc_class.iyi run-equal
 bench/fixtures/lowprim_alloc_struct.iyi run-equal

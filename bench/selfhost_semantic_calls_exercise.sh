@@ -256,8 +256,8 @@ prove_mutation "a given positional argument is replaced by its default" "$DEFAUL
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a lib fun's owner is written with a dot, not a hash" "$LIB_FILE" \
-  '    owner = "#{target_lib.full_name}##{name}"' \
-  '    owner = "#{target_lib.full_name}.#{name}"' \
+  '    target = LibCall.recalculate_fun(found.as(LibFun), "#{target_lib.full_name}##{name}", prog, ts, args)' \
+  '    target = LibCall.recalculate_fun(found.as(LibFun), "#{target_lib.full_name}.#{name}", prog, ts, args)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -270,12 +270,6 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a fixed lib fun takes extra arguments as if it were variadic" "$LIB_FILE" \
   '    if count < lib_fun.args.size || (!lib_fun.varargs? && count > lib_fun.args.size)' \
   '    if count < lib_fun.args.size || (false && count > lib_fun.args.size)' \
-  -- check_calls_diverge || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-
-prove_mutation "a pointer instance's T stays unbound" "$RESTRICT_FILE" \
-  '          if names[0] == "T" && owner.is_a?(PointerInstanceType)' \
-  '          if names[0] == "T" && owner.is_a?(PointerInstanceType) && false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -320,6 +314,55 @@ prove_mutation "a return type is resolved without the bound free variables" "$CA
   'ret.as(ASTNode), rec_type, Hash(String, Type).new)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an unbound free variable is not refused" "$MATCH_FILE" \
+  '        return MatchAttempt.failed("undefined constant #{free_names[j]}") if bound[free_names[j]]?.nil?' \
+  '        return MatchAttempt.failed("undefined constant #{free_names[j]}") if false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic restriction with bound arguments is a class instance, not instantiated through TypeLookup" "$RESTRICT_FILE" \
+  '          return TypeLookup.new(ts.instances).instantiate(base_type, args)' \
+  '          return ts.instantiate_generic(base_type.as(GenericClassType), args)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "restore the early return" "$LOOKUP_FILE" \
+  '        first_error = err if first_error.nil?' \
+  '        return Matches.new(matches_array, false, err)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a splat free variable is not bound to the splat tuple" "$RESTRICT_FILE" \
+  '        return nil if !FreeBindings.bind(splat_restriction.as(Splat).exp, splat_tuple, free, bound)' \
+  '        return nil if false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a typed integer is not matched when its range fits a wider integer" "$MATCH_FILE" \
+  '      return NumericAutocast.range_subset?(type, target)' \
+  '      return false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a number literal is not matched when its value fits" "$MATCH_FILE" \
+  '      return NumericAutocast.value_fits?(node.as(NumberLiteral), target)' \
+  '      return false' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an inherited method's target forgets the type it was found on" "$CALL_FILE" \
+  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, single.defining)' \
+  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, nil)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# matching lane (match.iyi, restrictions.iyi)
+prove_mutation "a generic restriction does not bind free vars from the instance type arguments" "$RESTRICT_FILE" \
+  '    return RestrictResult.no_match if base_type.full_name != inst.generic_type.full_name' \
+  '    return RestrictResult.no_match if true' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic owner's type parameter is not bound in a pointer restriction" "$RESTRICT_FILE" \
+  '          bound = instance.type_vars[names[0]]?' \
+  '          bound = nil' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

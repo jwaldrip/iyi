@@ -8,8 +8,8 @@
 #
 #   # call <expr>   =>  <expr> => <matches> | none | error: <first line of the message>
 #   # error <expr>  =>  <expr> => ok | error: <first line of the message>
+#   # defining <expr> => <expr> => defining=<found-on> owner=<receiver>
 #   # expand <call>  =>  <call> => <argument list> (the one match's arguments after default expansion)
-#
 # A call is `name(args)` (the program's own defs and the prelude's), `Type.name(args)`
 # (the metaclass of a type: its class methods and the ones it inherits), or
 # `<receiver call>.name(args)` (an instance: the receiver call must have exactly
@@ -40,8 +40,9 @@
 # The port's driver (bench/selfhost_semantic_calls_exercise.iyi) prints the same
 # lines for the same fixtures, and the gate requires them byte-identical.
 #
-# Not covered here: autocast of literals, and free variables. Their hosted
-# behaviour is a later increment of slice S1c.
+# Numeric autocast is the hosted second lookup pass: a number literal matches
+# when its value fits, and a typed integer matches when its whole range fits.
+# Symbol autocast is not covered here.
 require "compiler/requires"
 
 RECEIVER_ERROR = "receiver is not resolvable"
@@ -81,11 +82,10 @@ def literal_type(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
   if node.is_a?(Iyi::NilLiteral)
     return program.types["Nil"].as(Iyi::Type)
   end
-  if node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance"
+  if node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance" && node.as(Iyi::Call).obj.nil?
     call = node.as(Iyi::Call)
-    if call.args.size == 1 && call.args[0].is_a?(Iyi::Path)
-      found = program.lookup_path(call.args[0].as(Iyi::Path))
-      return found.as(Iyi::Type) if found.is_a?(Iyi::Type)
+    if call.args.size == 1
+      return program.lookup_type(call.args[0])
     end
   end
   raise "argument is not a literal"
@@ -102,12 +102,14 @@ end
 
 # The matches of a signature on a receiver, and whether they cover every argument
 # combination. A union receiver is one lookup per member, in member order.
-def dispatch_matches(receiver : Iyi::Type, signature : Iyi::CallSignature) : {Array(Iyi::Match), Bool}
+# *analyze_all* is the hosted second pass: every overload is tried so a numeric
+# autocast can report an ambiguity.
+def dispatch_matches(receiver : Iyi::Type, signature : Iyi::CallSignature, analyze_all = false) : {Array(Iyi::Match), Bool}
   if receiver.is_a?(Iyi::UnionType)
     all = [] of Iyi::Match
     cover = true
     receiver.as(Iyi::UnionType).union_types.each do |member|
-      found, member_cover = dispatch_matches(member, signature)
+      found, member_cover = dispatch_matches(member, signature, analyze_all)
       all.concat(found)
       cover = false unless member_cover
     end
@@ -119,10 +121,54 @@ def dispatch_matches(receiver : Iyi::Type, signature : Iyi::CallSignature) : {Ar
   if receiver.is_a?(Iyi::TraitType)
     including = receiver.as(Iyi::TraitType).including_types
     return {[] of Iyi::Match, false} if including.nil?
-    return dispatch_matches(including.as(Iyi::Type), signature)
+    return dispatch_matches(including.as(Iyi::Type), signature, analyze_all)
   end
-  matches = receiver.lookup_matches(signature)
+  matches = receiver.lookup_matches(signature, analyze_all: analyze_all)
   {matches.matches || [] of Iyi::Match, matches.cover_all? == true}
+end
+
+# True when *node* is a number literal, or a harness `instance(T)` of an integer
+# whose kind is at most 64 bits (or Float32): the hosted supports_autocast?
+# (semantic/ast.cr:19-35) for the arguments this driver can type. Symbol autocast
+# is not this increment.
+def numeric_autocast?(program : Iyi::Program, node : Iyi::ASTNode) : Bool
+  return true if node.is_a?(Iyi::NumberLiteral)
+  return false unless node.is_a?(Iyi::Call) && node.as(Iyi::Call).name == "instance" && node.as(Iyi::Call).obj.nil?
+  t = literal_type(program, node)
+  if t.is_a?(Iyi::IntegerType)
+    return t.kind.bytesize <= 64
+  end
+  t.is_a?(Iyi::FloatType) && t.kind.f32?
+end
+
+# The argument type the hosted second pass uses: a NumberAutocastType around the
+# literal, or around a node typed as the harness type for `instance(T)`.
+def autocast_type_of(program : Iyi::Program, node : Iyi::ASTNode) : Iyi::Type
+  base = literal_type(program, node)
+  if node.is_a?(Iyi::NumberLiteral)
+    node.set_type(base)
+    return Iyi::NumberAutocastType.new(program, node)
+  end
+  if numeric_autocast?(program, node) && (base.is_a?(Iyi::IntegerType) || base.is_a?(Iyi::FloatType))
+    holder = Iyi::Nop.new
+    holder.set_type(base)
+    return Iyi::NumberAutocastType.new(program, holder)
+  end
+  base
+end
+
+def signature_autocast(program : Iyi::Program, call : Iyi::Call) : Iyi::CallSignature
+  arg_types = call.args.map { |arg| autocast_type_of(program, arg) }
+  named = call.named_args
+  named_types = named.nil? ? nil : named.map { |na| Iyi::NamedArgumentType.new(na.name, autocast_type_of(program, na.value)) }
+  Iyi::CallSignature.new(call.name, arg_types, call.block, named_types)
+end
+
+def wants_numeric_autocast?(program : Iyi::Program, call : Iyi::Call) : Bool
+  return true if call.args.any? { |arg| numeric_autocast?(program, arg) }
+  named = call.named_args
+  return false if named.nil?
+  named.any? { |na| numeric_autocast?(program, na.value) }
 end
 
 # The type named by a receiver written as a path, such as `Foo` or `Outer::Foo`.
@@ -144,13 +190,17 @@ def last_dot(expr : String) : Int32?
   found
 end
 
-# The type a receiver text names: `virtual(T)` is T's virtual form; a path names its
-# metaclass; a call names the type of its single declared return.
+# The type a receiver text names: `virtual(T)` is T's virtual form; a path or a
+# generic (`Pointer(UInt8)`) names its metaclass; a call names the type of its
+# single declared return.
 def receiver_type(program : Iyi::Program, text : String) : Iyi::Type
   if text.starts_with?("virtual(") && text.ends_with?(")")
     return receiver_scope(program, text[8...-1]).virtual_type
   end
   node = Iyi::Parser.new(text).parse
+  if node.is_a?(Iyi::Path) || node.is_a?(Iyi::Generic)
+    return program.lookup_type(node).metaclass
+  end
   unless node.is_a?(Iyi::Call)
     return receiver_scope(program, text).metaclass
   end
@@ -184,12 +234,38 @@ def match_text(m : Iyi::Match) : String
   "#{m.context.instantiated_type.to_s}::#{m.def.name}(#{restrictions.join(", ")}) -> #{ret_text}"
 end
 
+# The type the one match was found on, and the receiver it was invoked on.
+# They differ when the method is inherited (match.cr: defining_type vs instantiated_type).
+def defining_text(program : Iyi::Program, expr : String) : String
+  node = Iyi::Parser.new(expr).parse
+  raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
+  call = node.as(Iyi::Call)
+  receiver = call_scope(program, expr)
+  found, _ = dispatch_matches(receiver, signature_of(program, call))
+  if found.empty? && wants_numeric_autocast?(program, call)
+    found, _ = dispatch_matches(receiver, signature_autocast(program, call), true)
+  end
+  raise "expected one match" unless found.size == 1
+  m = found[0]
+  "defining=#{m.context.defining_type} owner=#{m.context.instantiated_type}"
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 def evaluate(program : Iyi::Program, expr : String) : String
   node = Iyi::Parser.new(expr).parse
   raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
   call = node.as(Iyi::Call)
   receiver = call_scope(program, expr)
   found, cover = dispatch_matches(receiver, signature_of(program, call))
+  # The hosted call pass retries with numeric autocast when the first lookup
+  # finds nothing and an argument supports it (call.cr lookup_matches).
+  if found.empty? && wants_numeric_autocast?(program, call)
+    sig = signature_autocast(program, call)
+    found, cover = dispatch_matches(receiver, sig, true)
+    sig.arg_types.each &.check_restriction_exception
+    sig.named_args.try &.each &.type.check_restriction_exception
+  end
   return "none" if found.empty?
   parts = found.map { |m| match_text(m) }
   text = parts.join("; ")
@@ -283,6 +359,25 @@ rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"
 end
 
+# The free variables the one match bound, `B=Int32,E=Nil`, or `matched` when the
+# call matches and binds none, or `none`. A `# bound` line is how a generic
+# restriction with free variables is compared: the match text cannot print a
+# restriction until those names are bound.
+def bound_text(program : Iyi::Program, expr : String) : String
+  node = Iyi::Parser.new(expr).parse
+  raise "not a call: #{expr}" unless node.is_a?(Iyi::Call)
+  call = node.as(Iyi::Call)
+  receiver = call_scope(program, expr)
+  found, _ = dispatch_matches(receiver, signature_of(program, call))
+  return "none" if found.empty?
+  vars = found[0].context.bound_free_vars
+  return "matched" if vars.nil? || vars.empty?
+  parts = vars.keys.sort.map { |name| "#{name}=#{vars[name]}" }
+  parts.join(",")
+rescue ex : Exception
+  "error: #{ex.message.to_s.lines.first? || ""}"
+end
+
 begin
   path = ARGV[0]? || abort("usage: selfhost_semantic_calls_oracle <fixture.iyi>")
   source = File.read(path)
@@ -291,9 +386,15 @@ begin
     if line.starts_with?("# call ")
       expr = line[7..].strip
       puts "#{expr} => #{evaluate(program, expr)}"
+    elsif line.starts_with?("# bound ")
+      expr = line[8..].strip
+      puts "#{expr} => #{bound_text(program, expr)}"
     elsif line.starts_with?("# error ")
       expr = line[8..].strip
       puts "#{expr} => #{error_text(path, source, expr)}"
+    elsif line.starts_with?("# defining ")
+      expr = line[11..].strip
+      puts "#{expr} => #{defining_text(program, expr)}"
     elsif line.starts_with?("# expand ")
       expr = line[9..].strip
       puts "#{expr} => #{expand_text(program, expr)}"
