@@ -38,12 +38,13 @@ import compiler/lower/unions::{mixed_union_value_area}
 import compiler/semantic/top_level::{MetaclassType, NilType, Type, UnionType, VoidType}
 import compiler/syntax/ast::{ASTNode, Var}
 import compiler/types/indirection::{TypeIndirection}
+import compiler/types/rendering::{TypeRenderer}
 import compiler/types/types::{MixedUnionType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, TypeQueries, VirtualMetaclassType, VirtualType}
 
-# The type id of a type as a loaded value: the hosted `type_id(type)` loads it from the
-# global `@"<full name>:type_id"`, an internal constant, created on first use.
+# Hosted type_id.cr 168-169 names the global using the codegen spelling of
+# the type, including virtual and generic arguments.
 pub def type_id_value(low : Lowerer, t : Type) : Value
-  name = "#{t.full_name}:type_id"
+  name = "#{TypeRenderer.render(t, codegen: true)}:type_id"
   global = low.module.get_global?(name)
   if global.nil?
     made = low.module.add_global(name, low.module.types.int32)
