@@ -751,8 +751,8 @@ end
 
 # The hosted `declare_var` and the value of the declaration (codegen.cr:1800, codegen_assign): the variable's alloca is
 # made in the alloca block with the type the declaration gives; a value is then assigned to it, and the declaration's
-# value is the value assigned. Without a value the declaration leaves nil. A variable declared twice, and a value of
-# another type than the declaration (the hosted upcast into a union, not ported yet), are refused by name.
+# value is the value assigned. Without a value the declaration leaves nil. A variable declared twice is refused by
+# name. A value of another type goes through assign (hosted codegen_assign after declare_var, codegen.cr:1808-1809).
 pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
   var_node = node.var.as(Var)
   decl = low.analysed.type_of?(var_node)
@@ -775,9 +775,8 @@ pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
   vt = low.analysed.type_of?(value.as(ASTNode))
   raise "BUG: the analysed program has no type for the declared value (hosted codegen.cr: codegen_assign)" if vt.nil?
   if vt.as(Type).full_name != dt.full_name
-    refuse_port("lower: #{var_node.name} is declared #{dt.full_name} and assigned #{vt.as(Type).full_name}: the hosted upcast is not ported yet")
-  end
-  if !dt.is_a?(NilType)
+    assign(low, pointer, dt, vt.as(Type), v.as(Value))
+  elsif !dt.is_a?(NilType)
     store_aligned(low, v.as(Value), pointer)
   end
   low.last = v
