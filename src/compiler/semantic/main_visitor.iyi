@@ -20,7 +20,7 @@ import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_n
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/lookup::{LookupError}
-import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature}
 import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
@@ -238,6 +238,9 @@ pub class MainVisitor < TypeNodeHost
   # The break values of each block's call, and the def and return list each block is written in.
   property block_breaks : NodeMap(Array(Type?)) = NodeMap(Array(Type?)).new
   property block_owners : NodeMap(BlockOwner) = NodeMap(BlockOwner).new
+  # PROBE (Main, not for merge): the type a block is written in, and its writer's free-variable bindings.
+  property probe_block_types : NodeMap(ModuleType) = NodeMap(ModuleType).new
+  property probe_block_free : NodeMap(Hash(String, Type)) = NodeMap(Hash(String, Type)).new
   # The record of each call on a lib (see visit_lib_call): the fun, the result type and the
   # arguments the lowering passes.
   property lib_call_targets : NodeMap(LibCallTarget) = NodeMap(LibCallTarget).new
@@ -307,6 +310,8 @@ pub class MainVisitor < TypeNodeHost
     @def_var_unions = NodeMap(Hash(String, Type)).new
     @untyped_locals = Hash(String, String).new
     @current_def = nil
+    @probe_free_bound = Hash(String, Type).new
+    @probe_def_ns = nil.as(ModuleType?)
     @fun_inline_file = nil
     @current_call_block = nil
     @current_block_context_vars = nil
@@ -448,8 +453,19 @@ pub class MainVisitor < TypeNodeHost
   # generic written with those names (`Pointer(T)`) is instantiated, as the hosted
   # MatchContext does. Anything else is the lexical lookup from the current type.
   def lookup_under(node : ASTNode, owner : Type?) : Type
-    if receiver_instance(owner)
-      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
+    # PROBE (Main, not for merge): the free variables the def being typed bound from its arguments.
+    if @probe_free_bound.size > 0
+      probe_owner : Type? = owner
+      if probe_inst2 = receiver_instance(owner)
+        probe_owner = probe_inst2
+      end
+      probe_found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, probe_owner, @probe_free_bound)
+      return probe_found.as(Type) unless probe_found.is_a?(LookupError)
+    end
+    # PROBE (Main, not for merge): a class method's owner is the metaclass; its type parameters are the
+    # instance's, so the bound lookup takes the instance (lookup_bound tests `owner.is_a?(GenericInstanceType)`).
+    if probe_inst = receiver_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, probe_inst)
       return found.as(Type) unless found.is_a?(LookupError)
     end
     if node.is_a?(Self)
@@ -457,10 +473,12 @@ pub class MainVisitor < TypeNodeHost
         return o.as(Type) unless o.is_a?(SemanticProgram)
       end
     end
+    # PROBE (Main, not for merge): a written type names the virtual type of a class with subclasses (hosted:
+    # every use site of lookup_type takes `.virtual_type`: def return types, declared variables, is_a?).
     if quiet = @program.lookup_type_node?(node, @current_type)
-      return quiet
+      return TypeQueries.virtual_type(quiet)
     end
-    @program.lookup_type_node(node, @current_type)
+    TypeQueries.virtual_type(@program.lookup_type_node(node, @current_type))
   end
 
   # iyi: a class variable that is replaced keeps the @[ThreadLocal] flag of the one it replaces
@@ -938,6 +956,9 @@ pub class MainVisitor < TypeNodeHost
     all_defs = [] of Def
     visited = Set(String).new
     collect_candidate_defs(rec_type, node.name, all_defs, visited)
+    # PROBE (Main, not for merge): a bare name with no arguments is a call too (hosted: Var with no local
+    # becomes a Call), so it finds the file's own and imported defs.
+    collect_scope_defs(rec_type, node.name, all_defs, visited) if all_defs.empty?
     zero_arg = all_defs.find { |d| d.args.empty? || (d.args.first.default_value != nil) }
     if zero_arg
       call = Call.new(nil, node.name).at(node)
@@ -1217,6 +1238,17 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Path) : Bool
+    # PROBE (Main, not for merge): a free variable of the def being typed names its bound type.
+    if !node.global && node.names.size == 1
+      if probe_fb = @probe_free_bound[node.names.first]?
+        if @in_type_args == 0 && probe_fb.is_a?(ModuleType)
+          set_type(node, probe_fb.as(ModuleType).metaclass)
+        else
+          set_type(node, probe_fb)
+        end
+        return false
+      end
+    end
     if inst = receiver_instance(@scope)
       path = node
       if !path.global && path.names.size == 1
@@ -1236,7 +1268,11 @@ pub class MainVisitor < TypeNodeHost
     if t.const?
       c = t.as(Const)
       c.used = true
-      if c_type = type_of?(c.value)
+      # PROBE (Main, not for merge): an enum member's value has the enum's type (hosted top_level_visitor
+      # visit(EnumDef): const_value.type = enum_type), not its integer storage type.
+      if probe_evt = c.enum_value_type
+        set_type(node, probe_evt)
+      elsif c_type = type_of?(c.value)
         set_type(node, c_type)
       else
         splice_const_value(c)
@@ -1847,7 +1883,19 @@ pub class MainVisitor < TypeNodeHost
       @needs_type_filters = 0
       @unreachable = false
       enter_file_scope(blk)
+      # PROBE (Main, not for merge): a block body is typed where it is written: the writer's current type
+      # (constants), free-variable bindings and module-def namespace, not the yielding def's.
+      probe_callee_type = @current_type
+      probe_callee_free = @probe_free_bound
+      if probe_wt = @probe_block_types[blk]?
+        @current_type = probe_wt
+      end
+      if probe_wf = @probe_block_free[blk]?
+        @probe_free_bound = probe_wf
+      end
       blk.body.accept(self)
+      @current_type = probe_callee_type
+      @probe_free_bound = probe_callee_free
       @type_filters = old_yield_type_filters
       @needs_type_filters = old_yield_needs_filters
       @unreachable = old_yield_unreachable
@@ -1983,6 +2031,40 @@ pub class MainVisitor < TypeNodeHost
   def collect_scope_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
     if imported = @program.current_import_defs[name]?
       imported.each { |d| result << d }
+    end
+    # PROBE (Main, not for merge): the defs of the namespaces the type is written in (a module file's own
+    # top-level defs live on the module's namespace type, not on the program).
+    if result.empty?
+      if probe_dn = @probe_def_ns
+        probe_walk : Type? = probe_dn
+        probe_d2 = 0
+        while result.empty? && !probe_walk.nil? && probe_d2 < 32
+          probe_w = probe_walk.as(Type)
+          break unless probe_w.is_a?(ModuleType)
+          collect_candidate_defs(probe_w, name, result, Set(String).new)
+          probe_walk = probe_w.as(ModuleType).namespace
+          probe_d2 = probe_d2 + 1
+        end
+      end
+    end
+    if result.empty?
+      probe_ns : Type? = rec_type
+      if probe_ns.is_a?(MetaclassType)
+        probe_ns = probe_ns.as(MetaclassType).instance_type
+      end
+      if probe_ns.is_a?(GenericInstanceType)
+        probe_ns = probe_ns.as(GenericInstanceType).generic_type
+      end
+      probe_depth = 0
+      while result.empty? && !probe_ns.nil? && probe_depth < 32
+        probe_cur = probe_ns.as(Type)
+        break unless probe_cur.is_a?(ModuleType)
+        probe_parent = probe_cur.as(ModuleType).namespace
+        break if probe_parent.nil?
+        collect_candidate_defs(probe_parent.as(Type), name, result, Set(String).new)
+        probe_ns = probe_parent
+        probe_depth = probe_depth + 1
+      end
     end
     if result.empty? && !rec_type.is_a?(SemanticProgram)
       collect_candidate_defs(@program, name, result, visited)
@@ -2210,11 +2292,24 @@ pub class MainVisitor < TypeNodeHost
       old_import_defs = @program.current_import_defs
       enter_file_scope(d)
       all_args_match = true
+      # PROBE (Main, not for merge): a restriction that writes one of the def's own free variables is bound
+      # against the argument (FreeBindings), never looked up in the caller's scope, where a type parameter of
+      # the same name would shadow it.
+      probe_free = d.free_vars
+      probe_bound = Hash(String, Type).new
       i = 0
       while i < args.size
         arg_type = type_of(args[i])
         param = d.args[i]
         if r = param.restriction
+          if !probe_free.nil? && FreeBindings.mentions?(r, probe_free.as(Array(String)))
+            unless FreeBindings.bind(r, arg_type, probe_free.as(Array(String)), probe_bound)
+              all_args_match = false
+              break
+            end
+            i = i + 1
+            next
+          end
           expected = restriction_type(r, rec_type)
           if expected.nil?
             all_args_match = false
@@ -2438,9 +2533,25 @@ pub class MainVisitor < TypeNodeHost
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(target_def)
+    if probe_blk = block
+      @probe_block_types[probe_blk] = @current_type
+      @probe_block_free[probe_blk] = @probe_free_bound
+    end
     old_current_type = @current_type
     enter_owner_scope(rec_type)
+    # PROBE (Main, not for merge): a receiver-less def of a module file is typed in the namespace it was
+    # declared in: its constants and its sibling defs are that namespace's, not the caller's.
+    old_probe_def_ns = @probe_def_ns
+    if rec_type.is_a?(SemanticProgram)
+      if probe_tl = target_def.location
+        if probe_home = @program.probe_file_namespace["#{probe_tl.filename}:#{probe_tl.line_number}:#{probe_tl.column_number}"]?
+          @probe_def_ns = probe_home
+          @current_type = probe_home unless probe_home.is_a?(SemanticProgram)
+        end
+      end
+    end
     result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
+    @probe_def_ns = old_probe_def_ns
     @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
@@ -2479,7 +2590,27 @@ pub class MainVisitor < TypeNodeHost
     body = target_def.body
     if body.nil? || body.is_a?(Nop) || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
-        return lookup_under(rt, rec_type)
+        # PROBE (Main, not for merge): a body-less (primitive) def's declared return type under its own
+        # free-variable bindings (`def self.load(pointer : Pointer(T), ...) : T forall T`).
+        probe_arg_types = [] of Type
+        probe_all = true
+        args.each do |probe_a|
+          if probe_at = child_type(probe_a)
+            probe_arg_types << probe_at
+          else
+            probe_all = false
+          end
+        end
+        probe_saved = @probe_free_bound
+        if probe_all
+          probe_b = FreeBindings.of_def(target_def, probe_arg_types, type_node_system(@program))
+          @probe_free_bound = probe_b.nil? ? Hash(String, Type).new : probe_b.as(Hash(String, Type))
+        else
+          @probe_free_bound = Hash(String, Type).new
+        end
+        probe_rt = lookup_under(rt, rec_type)
+        @probe_free_bound = probe_saved
+        return probe_rt
       else
         return @program.nil_type
       end
@@ -2577,6 +2708,10 @@ pub class MainVisitor < TypeNodeHost
       end
       i = i + 1
     end
+    # PROBE (Main, not for merge): bind the def's free variables from the argument types for its body.
+    old_probe_free_bound = @probe_free_bound
+    probe_fb_new = FreeBindings.of_def(target_def, inst_args, type_node_system(@program))
+    @probe_free_bound = probe_fb_new.nil? ? Hash(String, Type).new : probe_fb_new.as(Hash(String, Type))
     @vars = new_vars
     @scope = rec_type
     @current_def = target_def
@@ -2619,6 +2754,8 @@ pub class MainVisitor < TypeNodeHost
     @next_types = old_next_types
     @return_types = old_return_types
     @vars = old_vars
+    probe_callee_bound = @probe_free_bound
+    @probe_free_bound = old_probe_free_bound
     @scope = old_scope
     @current_def = old_def
     @current_call_block = old_block_call
@@ -2640,7 +2777,9 @@ pub class MainVisitor < TypeNodeHost
     # (bench/fixtures/sem_bodies_primitive_add.iyi).
     if bt.nil?
       if rt = target_def.return_type
+        @probe_free_bound = probe_callee_bound
         declared_ret = lookup_under(rt, rec_type)
+        @probe_free_bound = old_probe_free_bound
         set_type(target_def, declared_ret)
         remember_def_instance(cache_key, target_def, declared_ret)
         return declared_ret
@@ -2649,8 +2788,12 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if rt = target_def.return_type
+      @probe_free_bound = probe_callee_bound
       declared_ret = lookup_under(rt, rec_type)
-      unless bt.subtype_of?(declared_ret)
+      @probe_free_bound = old_probe_free_bound
+      # PROBE (Main, not for merge): hosted call.cr:844 + bindings.cr:373: a declared Nil is the def's type
+      # whatever the body answers.
+      unless bt.subtype_of?(declared_ret) || declared_ret.full_name == "Nil"
         mismatch = "type mismatch for return type: expected #{declared_ret.full_name}, got #{bt.full_name}"
         if s = site
           refuse(s, mismatch)
@@ -2909,6 +3052,14 @@ pub class MainVisitor < TypeNodeHost
 
     target_def = lookup_method_matching(rec_type, node.name, node.args, node)
     return false if target_def.nil?
+    # PROBE (Main, not for merge): hosted Call#lookup_matches: a call with no receiver that the scope does not
+    # define is looked up in the program, and the match's owner is the program (no self, one instance for
+    # every caller type).
+    if node.obj.nil? && !rec_type.is_a?(SemanticProgram)
+      probe_own = [] of Def
+      collect_candidate_defs(rec_type, node.name, probe_own, Set(String).new)
+      rec_type = @program if probe_own.empty?
+    end
     # A positional call that leaves parameters to their defaults gets them as
     # cloned argument nodes, one per parameter (hosted expansion; the calls slice's
     # DefaultArguments). The new nodes are visited here; the rest were visited above.

@@ -726,7 +726,15 @@ end
 # The function is the program's own (a `fun` with a body, in the prelude or the program); it
 # must already be in the module, as the hosted `crystal_raise_overflow_fun` requires.
 pub def raise_overflow(low : Lowerer) : Nil
-  fn = low.module.get_function?("__crystal_raise_overflow")
+  # PROBE (Main, not for merge): the hosted name is program.raise_overflow_name = abi_prefix + "raise_overflow",
+  # `__iyi_raise_overflow` under the iyi prelude; a function the module does not hold yet is declared.
+  fn = low.module.get_function?("__iyi_raise_overflow")
+  if fn.nil?
+    fn = low.module.get_function?("__crystal_raise_overflow")
+  end
+  if fn.nil? && !low.analysed.program.lookup_type("IyiRuntimeLock").nil?
+    fn = low.module.add_function("__iyi_raise_overflow", low.module.types.func([] of IrType, low.module.types.void))
+  end
   if fn.nil?
     pending_visit_node("a checked operation with no __crystal_raise_overflow in the module (hosted crystal_raise_overflow_fun)")
     return

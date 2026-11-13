@@ -114,7 +114,13 @@ pub class MacroEngine
 
   def expand(a_macro : Macro, call : Call) : ASTNode
     expanded_source = expand_to_s(a_macro, call)
-    parser = Parser.new(expanded_source)
+    # PROBE (Main): the expansion's nodes are in the file of the call that expands them, so the names that
+    # file imports are in scope for them (a `getter x : T` whose T the file imports).
+    probe_file = ""
+    if probe_loc = call.location
+      probe_file = probe_loc.filename
+    end
+    parser = Parser.new(expanded_source, probe_file)
     node = parser.parse
     Normalizer.new.normalize(node)
   end

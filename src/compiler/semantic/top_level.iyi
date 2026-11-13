@@ -170,6 +170,14 @@ pub abstract class Type
 
   def subtype_of?(other : Type) : Bool
     return true if self == other
+    # PROBE (Main, not for merge): a virtual type is its base type's hierarchy (hosted types.cr
+    # Type#implements?: `when VirtualType then implements?(other_type.base_type)`; VirtualType#implements?
+    # is base_type.implements?).
+    probe_sd = self.devirtualize
+    probe_od = other.devirtualize
+    if !(probe_sd == self) || !(probe_od == other)
+      return probe_sd.subtype_of?(probe_od)
+    end
     if other.is_a?(UnionType)
       ut = other.as(UnionType)
       i = 0
@@ -1166,6 +1174,8 @@ pub class SemanticProgram < NonGenericModuleType
   # names it may write are its own file's (the hosted pass keeps a scope per file).
   getter file_imports : Hash(String, Hash(String, Type)) = Hash(String, Hash(String, Type)).new
   getter file_import_defs : Hash(String, Hash(String, Array(Def))) = Hash(String, Hash(String, Array(Def))).new
+  # PROBE (Main, not for merge): the namespace a file's own top-level defs were declared in, by file name.
+  getter probe_file_namespace : Hash(String, ModuleType) = Hash(String, ModuleType).new
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
   # iyi: the directory of the entry file: the first root an import is resolved from, as
@@ -1650,7 +1660,8 @@ pub class SemanticProgram < NonGenericModuleType
         # this file's imports, and would raise on a name the total pass has already recorded.
         if base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
           if plain_generic?(g, base_type)
-            type_args = g.type_vars.map { |t| lookup_type_node(t, current_type) }
+            # PROBE (Main, not for merge): hosted type_lookup.cr virtualizes every generic type argument.
+            type_args = g.type_vars.map { |t| hook.virtual_of(lookup_type_node(t, current_type)) }
             return hook.instantiate_type(base_type, type_args)
           end
           return hook.resolve_node(node, current_type)
@@ -1723,7 +1734,7 @@ pub class SemanticProgram < NonGenericModuleType
             g.type_vars.each do |t|
               arg = lookup_type_node?(t, current_type)
               return nil unless arg
-              type_args << arg
+              type_args << hook.virtual_of(arg)
             end
             return hook.instantiate_type(base_type, type_args)
           end
@@ -1772,6 +1783,14 @@ pub class SemanticProgram < NonGenericModuleType
   end
 
   def lookup_type_path?(path : Path, current_type : ModuleType) : Type?
+    # PROBE (Main, not for merge): the quiet lookup resolves as the strict one does: a metaclass names its
+    # instance type, and the enclosing namespaces are searched after the file's imports.
+    if current_type.is_a?(MetaclassType)
+      probe_qi = current_type.as(MetaclassType).instance_type
+      if probe_qi.is_a?(ModuleType)
+        return lookup_type_path?(path, probe_qi.as(ModuleType))
+      end
+    end
     if path.global
       return lookup_path_names(path.names, self)
     end
@@ -1800,6 +1819,18 @@ pub class SemanticProgram < NonGenericModuleType
     end
     if t.nil?
       t = @current_imports[first_name]?
+    end
+    if t.nil?
+      probe_qns = current_type.namespace
+      while probe_qns
+        break if probe_qns.is_a?(SemanticProgram)
+        probe_qm = probe_qns.lookup_type(first_name)
+        if probe_qm
+          t = probe_qm
+          break
+        end
+        probe_qns = probe_qns.namespace
+      end
     end
     if t.nil?
       t = lookup_type(first_name)
@@ -3017,6 +3048,12 @@ pub class TopLevelVisitor < Visitor
       end
     else
       target_type = @current_type
+    end
+    # PROBE (Main, not for merge): the namespace a receiver-less def is declared in, by its own location.
+    if node.receiver.nil?
+      if probe_loc = node.location
+        @program.probe_file_namespace["#{probe_loc.filename}:#{probe_loc.line_number}:#{probe_loc.column_number}"] = @current_type
+      end
     end
 
     if node.abstract

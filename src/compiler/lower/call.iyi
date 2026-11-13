@@ -772,8 +772,20 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
       # Hosted restrict: a restriction the argument implements leaves the argument's own type as the parameter's
       # (a Nil argument into `Fiber | Nil` is a Nil parameter, and the callee is named by it). Only an argument
       # that does not implement the restriction would convert, and that is refused by name.
-      restricted = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program)
-      unless at.implements?(restricted.as(Type))
+      # PROBE (Main, not for merge): the restriction is looked up under the receiver's type, so an owner's
+      # type parameter (`Atomic(T)#add(value : T)`) is the instance's argument.
+      probe_scope : ModuleType = low.analysed.program
+      if probe_obj = node.obj
+        if probe_ot = low.analysed.type_of?(probe_obj.as(ASTNode))
+          if probe_ot.is_a?(ModuleType)
+            probe_scope = probe_ot.as(ModuleType)
+          end
+        end
+      end
+      restricted = low.analysed.program.lookup_type_node(restriction.as(ASTNode), probe_scope)
+      probe_param = low.analysed.type_of?(def_node.args[i])
+      probe_same = !probe_param.nil? && probe_param.as(Type).full_name == at.full_name
+      unless probe_same || at.implements?(restricted.as(Type))
         pending_visit_node("a restriction that does not hold for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
       end
     end
