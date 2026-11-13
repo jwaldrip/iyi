@@ -362,7 +362,7 @@ def receiverless_class_target?(low : Lowerer, node : Compiler::Syntax::Ast::Call
   end
   false
 end
- 
+
 # An implicit method uses the caller's self even when the def was inherited.
 # A program-level def takes no self. The analysed target's defining scope
 # distinguishes them without guessing from methods sharing the same name.
