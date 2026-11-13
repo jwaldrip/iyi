@@ -642,8 +642,8 @@ prove_mutation "raise message altered" "$INTERP" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "@type names the wrong class" "$INTERP" \
-  "return TypeNode.new(@scope_name)" \
-  "return TypeNode.new(\"Wrong\")" \
+  "type_node = TypeNode.new(@scope_name)" \
+  "type_node = TypeNode.new(\"Wrong\")" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
