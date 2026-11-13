@@ -722,10 +722,11 @@ pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
   vt = low.analysed.type_of?(value.as(ASTNode))
   raise "BUG: the analysed program has no type for the declared value (hosted codegen.cr: codegen_assign)" if vt.nil?
   if vt.as(Type).full_name != dt.full_name
-    refuse_port("lower: #{var_node.name} is declared #{dt.full_name} and assigned #{vt.as(Type).full_name}: the hosted upcast is not ported yet")
-  end
-  if !dt.is_a?(NilType)
-    store_aligned(low, v.as(Value), pointer)
+    assign(low, pointer, dt, vt.as(Type), v.as(Value))
+  elsif !dt.is_a?(NilType)
+    stored = v.as(Value)
+    stored = to_rhs(low, stored, dt) if stored.type.pointer?
+    store_aligned(low, stored, pointer)
   end
   low.last = v
 end
