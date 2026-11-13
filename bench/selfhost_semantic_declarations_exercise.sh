@@ -138,6 +138,12 @@ else
     status=1
   fi
 fi
+echo "== Virtual subtype and metaclass compatibility"
+if ! "$ORACLE" --virtual-subtype "$REPO/bench/fixtures/semdecl_virtual_subtype.iyi" > "$WORK/virtual_oracle" 2>&1 ||
+   ! "$PORT" --virtual-subtype "$REPO/bench/fixtures/semdecl_virtual_subtype.iyi" > "$WORK/virtual_port" 2>&1 ||
+   ! cmp -s "$WORK/virtual_oracle" "$WORK/virtual_port"; then
+  echo "  virtual subtype DIFFERS"; diff "$WORK/virtual_oracle" "$WORK/virtual_port"; status=1
+fi
 echo "== Enum member semantic type: E::B has type E"
 enum_type_expected="$WORK/enum_type_expected"
 printf '%s\n' 'E::B E' > "$enum_type_expected"
@@ -477,6 +483,12 @@ check_primitive_annotations_diverge() {
   "$probe" --primitive-annotations "$REPO/bench/fixtures/semdecl_primitive_annotations.iyi" > "$WORK/mut_primitive" 2>/dev/null || return 1
   cmp -s "$WORK/mut_primitive" "$WORK/primitive_expected"
 }
+check_virtual_subtype_diverge() {
+  local probe="$WORK/mut_virtual_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --virtual-subtype "$REPO/bench/fixtures/semdecl_virtual_subtype.iyi" > "$WORK/mut_virtual" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_virtual" "$WORK/virtual_oracle"
+}
 
 
 check_const_facts_diverge() {
@@ -528,7 +540,7 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected" || ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected" || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/virtual_oracle" "$WORK/virtual_port" || ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected" || ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected" || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
@@ -738,6 +750,16 @@ MUT_TYPES="$REPO/src/compiler/types/types.iyi"
 prove_mutation "a printed type argument keeps its virtual wrapper" "$MUT_TYPES" \
   "    return @base_type" \
   "    return self" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a virtual restriction does not accept its base or subclasses" "$MUT_SEM" \
+  '    return subtype_of?(target) unless target == other' \
+  '    return false unless target == other' \
+  -- check_virtual_subtype_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic instance displays a virtual argument without devirtualizing it" "$MUT_TYPES" \
+  '    args_strs = @type_args.map { |a| a.devirtualize.arg_full_name }' \
+  '    args_strs = @type_args.map { |a| a.arg_full_name }' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance's instance variable keeps its type parameter" "$MUT_TYPES" \
