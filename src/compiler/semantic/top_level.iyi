@@ -5,6 +5,7 @@ import compiler/foundation/errors::{refuse_port}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
+import compiler/syntax/ast::{NodeMap}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
@@ -1096,6 +1097,7 @@ pub class SemanticProgram < NonGenericModuleType
   # names it may write are its own file's (the hosted pass keeps a scope per file).
   getter file_imports : Hash(String, Hash(String, Type)) = Hash(String, Hash(String, Type)).new
   getter file_import_defs : Hash(String, Hash(String, Array(Def))) = Hash(String, Hash(String, Array(Def))).new
+  getter def_owners : NodeMap(ModuleType) = NodeMap(ModuleType).new
   # Where an import is looked for: the project root, then IYI_PATH's entries.
   property project_root : String?
   # iyi: the directory of the entry file: the first root an import is resolved from, as
@@ -2914,6 +2916,7 @@ pub class TopLevelVisitor < Visitor
     end
 
     target_type.add_def(node)
+    @program.def_owners[node] = target_type
 
     # An instance `initialize` makes a `self.new` with the same arguments, added now
     # so a later `def self.new` finds it through `previous_def`. Its body is filled

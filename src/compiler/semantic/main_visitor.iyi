@@ -938,6 +938,7 @@ pub class MainVisitor < TypeNodeHost
     all_defs = [] of Def
     visited = Set(String).new
     collect_candidate_defs(rec_type, node.name, all_defs, visited)
+    collect_scope_defs(rec_type, node.name, all_defs, visited) if all_defs.empty?
     zero_arg = all_defs.find { |d| d.args.empty? || (d.args.first.default_value != nil) }
     if zero_arg
       call = Call.new(nil, node.name).at(node)
@@ -1981,6 +1982,20 @@ pub class MainVisitor < TypeNodeHost
   # defs its file imported by name (`import a/b::{parse}`), then the program's own (hosted
   # Call#lookup_matches: `lookup_matches_in_type(program)` after the scope).
   def collect_scope_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
+    # The hosted call lookup walks lexical unit owners before imported and top-level defs.
+    lexical : Type? = @current_type
+    while lexical
+      current = lexical.as(Type)
+      break unless current.is_a?(ModuleType)
+      mod = current.as(ModuleType)
+      if mod.iyi_unit
+        collect_candidate_defs(mod, name, result, Set(String).new)
+        break unless result.empty?
+      end
+      break if mod.is_a?(SemanticProgram)
+      lexical = mod.namespace
+    end
+    return nil unless result.empty?
     if imported = @program.current_import_defs[name]?
       imported.each { |d| result << d }
     end
@@ -2440,6 +2455,9 @@ pub class MainVisitor < TypeNodeHost
     enter_file_scope(target_def)
     old_current_type = @current_type
     enter_owner_scope(rec_type)
+    if owner = @program.def_owners[target_def]?
+      @current_type = owner if owner.iyi_unit
+    end
     result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
     @current_type = old_current_type
     @program.current_imports = old_imports
@@ -2875,6 +2893,9 @@ pub class MainVisitor < TypeNodeHost
         target_def = lookup_method_matching(ut, node.name, node.args, node)
         return false if target_def.nil?
         instantiated_def = target_def.clone
+        if owner = @program.def_owners[target_def]?
+          @program.def_owners[instantiated_def] = owner
+        end
         dkey = def_instance_key(target_def, ut, node)
         ret_t : Type? = nil
         if hit = cached_instance(dkey)
@@ -2929,6 +2950,9 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     instantiated_def = target_def.clone
+    if owner = @program.def_owners[target_def]?
+      @program.def_owners[instantiated_def] = owner
+    end
     dkey = def_instance_key(target_def, rec_type, node)
     body_ret : Type? = nil
     if hit = cached_instance(dkey)
