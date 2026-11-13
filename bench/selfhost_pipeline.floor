@@ -102,7 +102,8 @@ bench/fixtures/lower_string_nonascii.iyi run-equal
 bench/fixtures/lower_struct_class_var.iyi run-equal
 bench/fixtures/lower_struct_unused.iyi run-equal
 bench/fixtures/lower_symbol.iyi run-equal
-bench/fixtures/lower_tuple.iyi bodies
+bench/fixtures/lower_tuple.iyi run-equal
+bench/fixtures/lower_tuple_literal.iyi run-equal
 bench/fixtures/lower_typedecl.iyi run-equal
 bench/fixtures/lower_typedecl_nil.iyi run-equal
 bench/fixtures/lower_typeof.iyi bodies
@@ -122,6 +123,7 @@ bench/fixtures/lowglob_const_literal.iyi run-equal
 bench/fixtures/lowglob_const_namespace.iyi bodies
 bench/fixtures/lowglob_const_namespace_read.iyi bodies
 bench/fixtures/lowglob_const_string.iyi run-equal
+bench/fixtures/lowglob_const_struct.iyi run-equal
 bench/fixtures/lowglob_const_symbol.iyi run-equal
 bench/fixtures/lowglob_const_two.iyi run-equal
 bench/fixtures/lowglob_const_uint64.iyi run-equal
