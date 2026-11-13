@@ -99,7 +99,12 @@ pub class LowerContext
     @return_target = nil
     @break_target = nil
     @next_target = nil
-    reset_closure
+    @closure_vars = nil
+    @closure_type = nil
+    @closure_ptr = nil
+    @closure_skip_parent = false
+    @closure_parent_context = nil
+    @closure_self = nil
   end
 
   def reset_closure : Nil
