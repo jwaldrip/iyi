@@ -141,11 +141,14 @@ echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
 . "$REPO/bench/lib/mutation.sh"
 MUT_TD="$WORK/mut_typed_dump"
+# The mutation runner captures check output and only displays its tail. Keep the
+# compiler's complete diagnostics in the gate log when a mutant cannot build.
+exec 9>&1
 # Rebuilds the typed dump from the patched source and checks the lib-call and jump fixtures
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1; then
-    cat "$WORK/mut_build.log"
+    cat "$WORK/mut_build.log" >&9
     if [ "${_PM_ARMED:-0}" -eq 1 ]; then
       echo "INVALID MUTANT: typed_dump did not build; this is not a behavioral catch"
       return 0
