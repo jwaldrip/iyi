@@ -132,12 +132,6 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
         *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
       esac
     fi
-    if [ "$name" = lowglob_cvar_pointer ]; then
-      case "$reason" in
-        *"class variable @@ptr is not an integer"*) ;;
-        *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
-      esac
-    fi
     if [ "$name" = lowglob_cvar_struct ]; then
       case "$reason" in
         *"class variable @@value is not an integer"*) ;;

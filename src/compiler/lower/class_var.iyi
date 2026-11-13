@@ -184,8 +184,8 @@ pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
     return low.typer.llvm_type(cvar.type)
   end
   ir = low.typer.llvm_type(cvar.type)
-  if !(ir.int? || ir.float?)
-    refuse_port("lower: class variable #{cvar.name} is not an integer, a float or a nilable reference: the struct and the non-nilable pointer initialisers are not ported yet (hosted class_var.cr: initialize_class_var)")
+  if !(ir.int? || ir.float? || ir.pointer?)
+    refuse_port("lower: class variable #{cvar.name} is not an integer, a float or a pointer: aggregate initialisers are not ported yet (hosted class_var.cr: initialize_class_var)")
   end
   ir
 end
