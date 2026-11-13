@@ -2919,9 +2919,14 @@ pub class MainVisitor < TypeNodeHost
 
     if rt = target_def.return_type
       declared_ret = lookup_def_return(rt, rec_type, target_def)
-      # A Nil annotation discards the body's value; a body that never returns
-      # still gives the def NoReturn (hosted bindings.cr Def#map_type).
-      if declared_ret.nil_type? && bt.is_a?(NoReturnType)
+      # Hosted bindings.cr Def#map_type 368-384: a declared return is a freeze.
+      # Nil keeps Nil unless the body is NoReturn (370-374: NoReturn wins).
+      # Any other annotation whose body never returns is the body type, not the
+      # annotation (else, 383). call.cr check_return_type 840-844 sets the freeze
+      # and assigns the type only when the annotation itself is NoReturn or Nil.
+      # Def#mangled_name (codegen/ast.cr 58-60) reads @type, so
+      # `def show : String; die; end` is `*show:NoReturn`.
+      if bt.is_a?(NoReturnType)
         set_type(target_def, bt)
         remember_def_instance(cache_key, target_def, bt)
         return bt

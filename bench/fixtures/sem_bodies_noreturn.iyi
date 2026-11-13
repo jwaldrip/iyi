@@ -1,0 +1,10 @@
+@[Unsafe("the fixture calls a NoReturn fun to type a declared return")]
+lib LibShow
+  fun die(status : Int32) : NoReturn
+end
+
+def show : String
+  LibShow.die(1)
+end
+
+show
