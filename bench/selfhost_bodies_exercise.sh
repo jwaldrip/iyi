@@ -141,7 +141,10 @@ MUT_TD="$WORK/mut_typed_dump"
 # Rebuilds the typed dump from the patched source and checks the lib-call and jump fixtures
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || {
+    cp "$WORK/mut_build.log" "$WORK/mutation_build_failed"
+    return 1
+  }
   for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_proc_scope sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup sem_bodies_receiver_order; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
@@ -307,6 +310,11 @@ prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" 
 prove_mutation "a proc literal inherits its enclosing scope" "$MAIN_VISITOR" \
   "    inner.scope = @scope" \
   "    inner.scope = @program" -- bodies_at_floor || status=1
+if [ -f "$WORK/mutation_build_failed" ]; then
+  echo "  MUTATION BUILD FAILED: a failed build is not a behavioral proof"
+  cat "$WORK/mutation_build_failed"
+  status=1
+fi
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
