@@ -36,7 +36,7 @@ module compiler/lower/primitives
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallConv, Ordering}
 import compiler/lower/cast::{type_id_value, to_lhs}
@@ -195,12 +195,21 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   else
     raise "BUG: unsupported tuple indexer on #{typ.full_name}"
   end
-  wants = low.needs_value
-  low.needs_value = true
-  visit_node(low, receiver)
-  value = low.last
+  value = nil.as(Value?)
+  if receiver.is_a?(Var)
+    variable = low.current_context.vars[receiver.as(Var).name]?
+    if variable && !variable.already_loaded
+      value = variable.pointer
+    end
+  end
+  if value.nil?
+    wants = low.needs_value
+    low.needs_value = true
+    visit_node(low, receiver)
+    value = low.last
+    low.needs_value = wants
+  end
   raise "BUG: tuple indexer receiver left no value" if value.nil?
-  low.needs_value = wants
   tuple_ir = low.typer.llvm_type(typ)
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   first = primitive.tuple_index
