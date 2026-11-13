@@ -23,7 +23,7 @@ src/compiler/ir/layout.iyi 3
 src/compiler/ir/module.iyi 2
 src/compiler/ir/parser.iyi 7
 src/compiler/ir/printer.iyi 2
-src/compiler/ir/types.iyi 5
+src/compiler/ir/types.iyi 6
 src/compiler/ir/values.iyi 5
 src/compiler/ir/verifier.iyi 2
 src/compiler/llvm.iyi 1
@@ -71,7 +71,7 @@ src/compiler/macros/methods.iyi 2
 src/compiler/macros/site_scan.iyi 5
 src/compiler/macros/target_flags.iyi 3
 src/compiler/native/aarch64/abi.iyi 1
-src/compiler/native/aarch64/asm.iyi 5
+src/compiler/native/aarch64/asm.iyi 6
 src/compiler/native/aarch64/encode.iyi 5
 src/compiler/native/aarch64/isel.iyi 3
 src/compiler/native/aarch64/opcodes.iyi 2
@@ -80,7 +80,7 @@ src/compiler/native/amd64/abi.iyi 2
 src/compiler/native/amd64/encode.iyi 5
 src/compiler/native/amd64/regs.iyi 4
 src/compiler/native/asm/constraints.iyi 7
-src/compiler/native/asm/inventory.iyi 7
+src/compiler/native/asm/inventory.iyi 9
 src/compiler/native/const_expr.iyi 3
 src/compiler/native/driver.iyi 1
 src/compiler/native/emit.iyi 2
@@ -105,7 +105,7 @@ src/compiler/native/target.iyi 3
 src/compiler/native/thread_locals.iyi 1
 src/compiler/native/wasm/codegen.iyi 3
 src/compiler/native/wasm/leb.iyi 5
-src/compiler/native/wasm/module.iyi 6
+src/compiler/native/wasm/module.iyi 7
 src/compiler/platform/flags.iyi 2
 src/compiler/platform/linker.iyi 4
 src/compiler/platform/target.iyi 5
@@ -126,14 +126,14 @@ src/compiler/semantic/new.iyi 1
 src/compiler/semantic/normalizer.iyi 6
 src/compiler/semantic/recursive_struct_checker.iyi 2
 src/compiler/semantic/restrictions.iyi 4
-src/compiler/semantic/top_level.iyi 35
+src/compiler/semantic/top_level.iyi 36
 src/compiler/semantic/type_node_host.iyi 2
 src/compiler/semantic/type_nodes.iyi 1
 src/compiler/semantic/typed.iyi 4
 src/compiler/stage1.iyi 2
 src/compiler/syntax/ast.iyi 118
 src/compiler/syntax/lexer.iyi 2
-src/compiler/syntax/parser.iyi 6
+src/compiler/syntax/parser.iyi 7
 src/compiler/syntax/token.iyi 10
 src/compiler/syntax/transformer.iyi 2
 src/compiler/syntax/visitor.iyi 4
