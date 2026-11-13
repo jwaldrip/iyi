@@ -19,6 +19,21 @@ The integration merge changes the hello root-driven floor from 810 reached, 737 
 to 814, 742, and 243. The lowering count falls because a probe now counts as clean only when its own body finishes
 and its function verifies. This one floor reduction is authorized for the integration merge. These are not census counts.
 
+## Strict bootstrap checks
+
+At `c9c585223`, the hosted compiler builds `compile_native.iyi`, and that stage1
+passes parsing, declarations and body typing for hello with the real prelude.
+Lowering stops at `Extend`; no hello executable is produced. Parser compilation,
+self-compilation and a stage2/stage3 fixed point remain unproven.
+
+The omitted-fun-return, inline-macro-expansion and nested-body-scope regressions
+compile, link and run natively. Their results match hosted execution: status 0,
+`ABCDE\n` with status 0, and status 7 respectively. Each failed in the preceding
+stage1. At `0e2157406`, stage1's only linked dylib is `libSystem.B.dylib`.
+The census table below is an earlier diagnostic snapshot, separate from these
+strict whole-program checks.
+
+
 ## What the table counts
 
 - `defs-reached`: distinct instantiations the body typer started. The label is the receiver, the name and
