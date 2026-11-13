@@ -15,7 +15,7 @@ import compiler/syntax/ast::{ASTNode, Call, Def, Generic, Metaclass, NumberLiter
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/token::{TokenKind}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, ModuleType, SemanticProgram, Type}
-import compiler/semantic/main_visitor::{MainVisitor, Refusal}
+import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
 import compiler/semantic/type_nodes::{type_node_metaclass, type_node_system}
 import compiler/types/types::{NamedArgumentType, TypeQueries, VirtualType}
 import compiler/types/lookup::{LookupError, TypeLookup}
@@ -550,12 +550,21 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
     if outcome.is_a?(Panicked)
       pmsg = outcome.as(Panicked).message
       pdef = visitor.current_def
-      pscope = visitor.scope
       while visitor.typing_stack.size > stack_before
         visitor.typing_stack.pop
       end
+      target = visitor.target_def?(call_node)
       if pd = pdef
-        visitor.refusals << Refusal.new(pmsg, nil, 0, 0, panic_def_label(pd, pscope), call_node)
+        if td = target
+          if pd.object_id == td.object_id
+            reason = census_first_line(pmsg)
+            refused << "instance-body\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+          else
+            refused << "instance-silent\t#{line}\t-\tcallee panicked before direct body completed"
+          end
+        else
+          refused << "instance-silent\t#{line}\t-\tbody panicked without resolved target"
+        end
       else
         refused << "census\t#{line}\tcensus\tpanic in call lookup: #{census_first_line(pmsg)}"
       end
@@ -579,7 +588,7 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
         refused << "instance-silent\t#{line}\t-\tno typed instance for resolved target"
         next
       end
-      inst = direct.as(Compiler::Semantic::MainVisitor::TypedInstance)
+      inst = direct.as(TypedInstance)
       ids = NodeIds.new
       target.accept(ids)
       visitor.refusals.each do |r|

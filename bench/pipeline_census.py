@@ -644,10 +644,13 @@ def cmd_report(args: argparse.Namespace) -> int:
     if args.hosted:
         in_scope, out_scope = extract_hosted_defines(args.hosted)
         hosted_total = len(in_scope) + len(out_scope)
+        hosted_set = set(in_scope) | set(out_scope)
     elif (outdir / "hosted_count.txt").exists():
         hosted_total = int((outdir / "hosted_count.txt").read_text(encoding="utf-8").split()[0])
+        hosted_set = set((outdir / "hosted.names").read_text(encoding="utf-8").splitlines())
     else:
         hosted_total = len(asked)
+        hosted_set = asked_set
 
     port_clean_all = {
         line.strip()
@@ -676,7 +679,7 @@ def cmd_report(args: argparse.Namespace) -> int:
             refusals_by_instance[label].append((phase, owner, reason))
     clean_asked = {h for h, actual in instance_clean.items()
                    if actual == h and h not in refusals_by_instance and h not in census_failures}
-    extra_clean = sorted(port_clean_all - asked_set)
+    extra_clean = sorted(port_clean_all - hosted_set)
 
     scaffold_failed: list[tuple[str, str]] = []
     naming_pairs: list[tuple[str, str, str]] = []
@@ -805,10 +808,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             by_cls[diff_cls].append((h, pn))
         for diff_cls, pairs in sorted(by_cls.items(), key=lambda kv: (-len(kv[1]), kv[0])):
             lines.append(f"  class={diff_cls} count={len(pairs)}")
-            for h, pn in pairs[:20]:
+            for h, pn in pairs:
                 lines.append(f"    {h} -> {pn}")
-            if len(pairs) > 20:
-                lines.append(f"    ... ({len(pairs) - 20} more)")
 
     if silent_funcs:
         lines.append("")
@@ -820,8 +821,8 @@ def cmd_report(args: argparse.Namespace) -> int:
 
     if extra_clean:
         lines.append("")
-        lines.append(f"== Clean port names not in asked hosted names ({len(extra_clean)}) ==")
-        for ex in extra_clean[:10]:
+        lines.append(f"== Clean port names not in hosted names ({len(extra_clean)}) ==")
+        for ex in extra_clean[:5]:
             lines.append(f"  {ex}")
 
     report_text = "\n".join(lines) + "\n"
