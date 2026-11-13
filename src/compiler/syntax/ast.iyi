@@ -1073,6 +1073,44 @@ pub class MagicConstant < ASTNode
     MagicConstant.new(@name)
   end
 
+  # Defaults use the call's coordinates, never the declaration's location.
+  # Location currently represents source or generated-text lines, without the
+  # hosted VirtualFile's macro-expansion provenance.
+  def expand_node(location : Location?, end_location : Location?) : ASTNode
+    case @name
+    when TokenKind::MAGIC_LINE
+      NumberLiteral.new((location ? location.line_number : 0).to_s, NumberKind::I32)
+    when TokenKind::MAGIC_END_LINE
+      NumberLiteral.new((end_location ? end_location.line_number : 0).to_s, NumberKind::I32)
+    when TokenKind::MAGIC_FILE
+      StringLiteral.new(location ? location.filename : "?")
+    when TokenKind::MAGIC_DIR
+      StringLiteral.new(MagicConstant.expand_dir(location))
+    else
+      raise "BUG: unknown magic constant: #{@name}"
+    end
+  end
+
+  # Match the hosted File.dirname behavior, including repeated/trailing slashes.
+  def self.expand_dir(location : Location?) : String
+    return "?" unless location
+    name = location.filename
+    stop = name.bytesize
+    while stop > 0 && name.byte_at(stop - 1) == 47_u8
+      stop -= 1
+    end
+    return name.bytesize > 0 ? "/" : "." if stop == 0
+    cut = stop
+    while cut > 0 && name.byte_at(cut - 1) != 47_u8
+      cut -= 1
+    end
+    return "." if cut == 0
+    while cut > 0 && name.byte_at(cut - 1) == 47_u8
+      cut -= 1
+    end
+    cut == 0 ? "/" : name[0, cut]
+  end
+
   def ==(other : self) : Bool
     (@name == other.name)
   end

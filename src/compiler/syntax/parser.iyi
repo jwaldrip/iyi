@@ -1131,7 +1131,7 @@ pub class Parser < Lexer
       node_and_next_token(StringLiteral.new(loc.filename).at(loc))
     when TokenKind::MAGIC_DIR
       loc = @token.location
-      node_and_next_token(StringLiteral.new(magic_dirname(loc.filename)).at(loc))
+      node_and_next_token(StringLiteral.new(MagicConstant.expand_dir(loc)).at(loc))
     when TokenKind::OP_AT_LSQUARE
       parse_annotation
     when TokenKind::INSTANCE_VAR
@@ -2597,25 +2597,6 @@ pub class Parser < Lexer
     if @token.type == TokenKind::OP_BANG
       syntax_error("'!' is a pseudo-method and can't be redefined", @token.location)
     end
-  end
-
-  # The directory of a file name as the hosted compiler's `__DIR__` gives it (`File.dirname`): "." for a name with
-  # no directory, the empty name included; "/" for a name directly under the root; trailing slashes dropped.
-  def magic_dirname(name : String) : String
-    stop = name.bytesize
-    while stop > 0 && name.byte_at(stop - 1) == 47_u8
-      stop -= 1
-    end
-    return name.bytesize > 0 ? "/" : "." if stop == 0
-    cut = stop
-    while cut > 0 && name.byte_at(cut - 1) != 47_u8
-      cut -= 1
-    end
-    return "." if cut == 0
-    while cut > 0 && name.byte_at(cut - 1) == 47_u8
-      cut -= 1
-    end
-    cut == 0 ? "/" : name[0, cut]
   end
 
   def check_iyi_def_bang : Nil
