@@ -25,6 +25,8 @@ import compiler/lower/lower::{lower_def_probe}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/primitives::{primitive_name}
 import compiler/lower/fun::{mangled_name}
+import compiler/lower/type_id::{LowerTypeIds}
+import compiler/ir/verifier::{verify}
 import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
@@ -597,6 +599,20 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
       end
       mod = made.as(Module)
       typer = LowerTyper.new(mod.types, mod.layout, true)
+      preflight = group do |g|
+        task = g.spawn do
+          type_ids = LowerTypeIds.new
+          type_ids.assign_all(visitor.program.object_type)
+          type_ids.type_id(visitor.program.string_type)
+          true
+        end
+        task.value
+      end
+      if preflight.is_a?(Panicked)
+        reason = census_first_line(preflight.as(Panicked).message)
+        refused << "prerequisite\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+        next
+      end
       lowered = group do |g|
         task = g.spawn { lower_def_probe(direct_target, inst.self_type, inst.arg_types, visitor, typer, mod) }
         task.value
@@ -613,7 +629,13 @@ pub def run_census(typed : TypedProgram, census_path : String, refused : Array(S
           if fn.declaration?
             refused << "instance-silent\t#{line}\t-\tlowering emitted declaration only"
           else
-            refused << "instance-clean\t#{line}\t-\t#{actual}"
+            errors = verify(mod)
+            if errors.empty?
+              refused << "instance-clean\t#{line}\t-\t#{actual}"
+            else
+              reason = "IR verifier: #{errors[0].to_s}"
+              refused << "instance-lowering\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+            end
           end
         else
           refused << "instance-silent\t#{line}\t-\tlowered name absent from module"

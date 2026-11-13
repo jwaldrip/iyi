@@ -663,6 +663,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     instance_clean: dict[str, str] = {}
     instance_silent: dict[str, str] = {}
     refusals_by_instance: dict[str, list[tuple[str, str, str]]] = collections.defaultdict(list)
+    prerequisites: dict[str, tuple[str, str]] = {}
 
     for line in (outdir / "merged.refusals").read_text(encoding="utf-8", errors="replace").splitlines():
         parts = line.split("\t")
@@ -672,13 +673,15 @@ def cmd_report(args: argparse.Namespace) -> int:
         if phase == "census":
             if label not in census_failures:
                 census_failures[label] = reason
+        elif phase == "prerequisite":
+            prerequisites[label] = (owner, reason)
         elif phase == "instance-clean":
             instance_clean[label] = reason
         elif phase == "instance-silent":
             instance_silent[label] = reason
         elif phase in ("instance-body", "instance-lowering"):
             refusals_by_instance[label].append((phase, owner, reason))
-    accounted = set(census_failures) | set(instance_clean) | set(instance_silent) | set(refusals_by_instance)
+    accounted = set(census_failures) | set(instance_clean) | set(instance_silent) | set(refusals_by_instance) | set(prerequisites)
     missing_records = asked_set - accounted
     if missing_records:
         print(f"ERROR: {len(missing_records)} asked names lack direct instance records; report is incomplete", file=sys.stderr)
@@ -709,6 +712,10 @@ def cmd_report(args: argparse.Namespace) -> int:
             reason = census_failures[h]
             scaffold_failed.append((h, reason))
             by_fn_rows.append(f"{h}\tscaffold\t{normalize_reason(reason)}")
+            continue
+        if h in prerequisites:
+            owner, reason = prerequisites[h]
+            by_fn_rows.append(f"{h}\tprerequisite\t{reason}")
             continue
 
         rows = refusals_by_instance.get(h, [])
@@ -772,7 +779,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     )
     lines.append(summary)
     lines.append(
-        f"refused={refused_count} naming={len(naming_pairs)} silent={len(silent_funcs)} "
+        f"refused={refused_count} prerequisite={len(prerequisites)} naming={len(naming_pairs)} silent={len(silent_funcs)} "
         f"extra-port-names={len(extra_clean)} superset-collisions={superset_collisions}"
     )
 
@@ -787,6 +794,15 @@ def cmd_report(args: argparse.Namespace) -> int:
             lines.append(f"  {len(items):5d}  shape={rshape}")
             lines.append(f"         e.g. {ex_h}")
             lines.append(f"         raw: {ex_raw}")
+    lines.append("")
+    lines.append("== Program-wide prerequisites (distinct raw causes) ==")
+    prereq_groups: dict[tuple[str, str], list[str]] = collections.defaultdict(list)
+    for h, (owner, reason) in prerequisites.items():
+        prereq_groups[(owner, reason)].append(h)
+    for (owner, reason), functions in sorted(prereq_groups.items(), key=lambda item: -len(item[1])):
+        lines.append(f"  stopped={len(functions)} owner={owner} reason={reason}")
+        for h in functions[:3]:
+            lines.append(f"    e.g. {h}")
 
     lines.append("")
     lines.append("== Refusal shapes ranked by hosted functions stopped ==")
