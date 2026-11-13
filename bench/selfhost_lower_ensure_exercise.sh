@@ -65,7 +65,7 @@ fi
 
 echo '== 2. Hosted and port function bodies and native executions'
 passed=0
-for name in fallthrough value return break next boundary nested nested_return invoke; do
+for name in fallthrough value return break next block_break block_next boundary nested nested_return invoke; do
   if ! IYI_PATH="$WORK/prelude" "$IYI" build --prelude prelude --emit llvm-ir --no-debug -o "$WORK/${name}.host" "$REPO/bench/fixtures/lowens_${name}.iyi" > "$WORK/${name}.host.log" 2>&1; then
     echo "  FAIL: $name hosted compilation"
     awk 'NR <= 8 { print }' "$WORK/${name}.host.log"
@@ -92,13 +92,15 @@ for name in fallthrough value return break next boundary nested nested_return in
 done
 
 echo '== 3. Mutation proofs'
-if [ "$passed" -eq 9 ]; then
+if [ "$passed" -eq 11 ]; then
   file="$REPO/src/compiler/lower/ensure.iyi"
   prove_mutation 'fallthrough cleanup' "$file" 'visit_node(low, cleanup.as(ASTNode))' 'low.last = value' -- mutation_check fallthrough || status=1
   prove_mutation 'body value survives cleanup' "$file" '    low.last = value' '    low.last = low.last' -- mutation_check value || status=1
   prove_mutation 'return cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check return || status=1
   prove_mutation 'break cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check break || status=1
   prove_mutation 'next cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check next || status=1
+  prove_mutation 'block break cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check block_break || status=1
+  prove_mutation 'block next cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check block_next || status=1
   prove_mutation 'loop boundary preserves outer cleanup' "$file" 'stop = low.ensure_boundaries[target.object_id]? || 0' 'stop = 0' -- mutation_check boundary || status=1
   prove_mutation 'nested return cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check nested_return || status=1
   prove_mutation 'nested cleanup order' "$file" 'visit_node(low, node.body)' 'visit_node(low, cleanup.as(ASTNode)); visit_node(low, node.body)' -- mutation_check nested || status=1
