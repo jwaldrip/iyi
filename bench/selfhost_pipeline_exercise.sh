@@ -25,6 +25,7 @@ status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 . "$REPO/bench/lib/mutation.sh"
+. "$REPO/bench/lib/pipeline_report.sh"
 WORK="$(mktemp -d /tmp/iyi-pipeline.XXXXXX)"
 ARTIFACT_DIR="${PIPELINE_ARTIFACT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/iyi-pipeline-artifacts.XXXXXX")}"
 mkdir -p "$ARTIFACT_DIR"
@@ -123,7 +124,7 @@ for root in $ROOTS; do
   IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/$root" -o "$WORK/$name.root" --pipeline typed --prelude --probe-phase > "$WORK/$name.root.probe" 2> "$WORK/$name.root.err"
   root_status=$?
   rphase="$(probe_phase "$WORK/$name.root.probe")"
-  refusal="$(awk '/: fail: / { print; exit }' "$WORK/$name.root.probe")"
+  refusal="$(pipeline_first_refusal "$WORK/$name.root.probe")"
   [ -n "$refusal" ] || refusal="$(awk 'NR==1 { print; exit }' "$WORK/$name.root.err")"
   echo "  $name strict: reached ${rphase:-none}: ${refusal:-no refusal}"
   if [ "$root_status" -eq 0 ] && [ "$rphase" = "link" ] && [ -e "$WORK/$name.root" ]; then
@@ -133,7 +134,7 @@ for root in $ROOTS; do
     else
       timeout 30 "$WORK/$name.root" > "$WORK/$name.root.typed.out" 2>&1; tstat=$?
       timeout 30 "$WORK/$name.root.hosted" > "$WORK/$name.root.hosted.out" 2>&1; hstat=$?
-      if [ "$tstat" = "$hstat" ] && cmp -s "$WORK/$name.root.typed.out" "$WORK/$name.root.hosted.out"; then
+      if pipeline_outputs_equal "$tstat" "$hstat" "$WORK/$name.root.typed.out" "$WORK/$name.root.hosted.out"; then
         rphase="run-equal"
         echo "  $root: run-equal (status $hstat, stdout identical)"
       else
@@ -356,6 +357,47 @@ else
 fi
 prove_mutation "a refusal is attributed to the probe instead of the emitted function" "$PROGRAM_SRC" \
   'origin = ctx.fun.name' 'origin = lowering_example(d, inst.self_type)' -- origin_table_check || status=1
+
+# Promote the prelude-free exit fixture to a root and compare the two actual
+# executables through the same helper the root loop uses.
+root_comparison_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/root_tool"; then return 1; fi
+  local fixture="$REPO/bench/fixtures/lower_exit.iyi"
+  "$WORK/root_tool" "$fixture" -o "$WORK/root_test" --pipeline typed --probe-phase > "$WORK/root_test.log" 2>&1 || return 1
+  [ "$(probe_phase "$WORK/root_test.log")" = "link" ] || return 1
+  "$IYI" build --prelude empty -o "$WORK/root_hosted" "$fixture" > "$WORK/root_hosted.log" 2>&1 || return 1
+  "$WORK/root_test" > "$WORK/root_test.out" 2>&1; local ts=$?
+  "$WORK/root_hosted" > "$WORK/root_hosted.out" 2>&1; local hs=$?
+  bash -c '. "$1"; pipeline_outputs_equal "$2" "$3" "$4" "$5"' _ "$REPO/bench/lib/pipeline_report.sh" "$ts" "$hs" "$WORK/root_test.out" "$WORK/root_hosted.out" || return 1
+  ! bash -c '. "$1"; pipeline_outputs_equal "$2" 43 "$3" "$4"' _ "$REPO/bench/lib/pipeline_report.sh" "$ts" "$WORK/root_test.out" "$WORK/root_hosted.out"
+}
+echo "  the linked-root comparison passes on the unmutated code:"
+if root_comparison_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "the linked-root comparison rejects equal statuses" "$REPO/bench/lib/pipeline_report.sh" \
+  '[ "$typed_status" = "$hosted_status" ]' '[ "$typed_status" != "$hosted_status" ]' -- root_comparison_check || status=1
+
+# The headline must carry the first real refusal, not a phase pass or a later line.
+headline_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/headline_tool"; then return 1; fi
+  "$WORK/headline_tool" "$REPO/bench/fixtures/lower_instance_sizeof.iyi" -o "$WORK/headline_test" --pipeline typed --probe-phase > "$WORK/headline_test.log" 2>&1
+  local line
+  line="$(bash -c '. "$1"; pipeline_first_refusal "$2"' _ "$REPO/bench/lib/pipeline_report.sh" "$WORK/headline_test.log")"
+  case "$line" in *"lower: fail:"*"InstanceSizeOf"*) return 0 ;; *) return 1 ;; esac
+}
+echo "  the refusal headline check passes on the unmutated code:"
+if headline_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "the headline reports a pass instead of a refusal" "$REPO/bench/lib/pipeline_report.sh" \
+  '/: fail: /' '/: pass: /' -- headline_check || status=1
 
 # The entry: a prelude-free program's top-level code is `__crystal_main` (lower.iyi main_function_name), and the C `main` is
 # emitted once, by the pipeline only when the program has no `fun main` of its own. Checked on IR text from --emit ir, on two
