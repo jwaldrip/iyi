@@ -14,6 +14,7 @@ bench/fixtures/sem_bodies_ivar_read.iyi 11
 bench/fixtures/sem_bodies_jumps.iyi 20
 bench/fixtures/sem_bodies_libcall.iyi 15
 bench/fixtures/sem_bodies_magic_constant.iyi 4
+bench/fixtures/sem_bodies_match_import.iyi 4
 bench/fixtures/sem_bodies_primitive_add.iyi 4
 bench/fixtures/sem_bodies_recursive.iyi 3
 bench/fixtures/sem_bodies_self_return.iyi 9
