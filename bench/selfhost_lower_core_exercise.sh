@@ -646,6 +646,20 @@ else
   awk 'NR<=8' "$WORK/case.err" "$WORK/case.out" "$WORK/case.build.log"
   status=1
 fi
+union_read_check() {
+  "$IYI" build -o "$WORK/port-union-read" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/union-read.build.log" 2>&1 || return 1
+  "$WORK/port-union-read" lower "$REPO/bench/fixtures/lower_union_read.iyi" "$WORK/lower_union_read.oracle.ll" > "$WORK/union-read.out" 2> "$WORK/union-read.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/union-read.out"
+}
+if union_read_check; then
+  prove_mutation "narrowed union read is not downcast" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if read_type && v.type.is_a?(MixedUnionType)' \
+    '  if false && read_type && v.type.is_a?(MixedUnionType)' -- union_read_check || status=1
+else
+  echo "FAIL: union read fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/union-read.err" "$WORK/union-read.out" "$WORK/union-read.build.log"
+  status=1
+fi
 tuple_literal_check() {
   "$IYI" build -o "$WORK/port-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple.build.log" 2>&1 || return 1
   "$WORK/port-tuple" lower "$REPO/bench/fixtures/lower_tuple_literal.iyi" "$WORK/lower_tuple_literal.oracle.ll" > "$WORK/tuple.out" 2> "$WORK/tuple.err" || return 1
