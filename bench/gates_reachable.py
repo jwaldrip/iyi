@@ -87,6 +87,36 @@ TOOLS = {
     # the order the macro port is filled in, recorded in
     # src/compiler/macros/PORT_STATUS.md, which says to regenerate from it.
     "macro_method_usage.py",
+    # `bash bench/selfhost_semantic_calls_census.sh` asks the port's call
+    # lookup every call site the hosted pass typed in the compiler's own
+    # source and the prelude, and prints how many answers are identical and
+    # the ranked reasons for the rest: the order the call lookup is filled
+    # in. It takes minutes per file and has no floor; the gate beside it,
+    # `selfhost_semantic_calls_exercise.sh`, is what a job runs.
+    "selfhost_semantic_calls_census.sh",
+    # `bash bench/selfhost_semantic_new_census.sh` asks the port for every
+    # `new` call the hosted pass typed in the compiler's own source and the
+    # prelude, holds each file's identical count against
+    # bench/selfhost_semantic_new.floor, and ranks the misses by reason: the
+    # order `new` is filled in. It builds an oracle and analyses every file
+    # of the compiler and the prelude, one process each; the gate beside it,
+    # `selfhost_semantic_new_exercise.sh`, is what a job runs.
+    "selfhost_semantic_new_census.sh",
+    # The judge of the typed pipeline. `bash bench/pipeline_judge.sh` builds
+    # the hosted IR and the port's tool from one commit and prints, for
+    # samples/iyi/hello.iyi and the compiler's own root, how many functions
+    # the hosted compiler defines that the port lowers clean under the same
+    # name; the three scripts under it print that line
+    # (`pipeline_coverage.py`), the refusals ranked by the hosted functions
+    # hidden behind each (`pipeline_frontier.py`) and the missing names by
+    # owner (`pipeline_breakdown.py`). It is a measurement that orders the
+    # work, read in src/compiler/PIPELINE.md, not a pass or a fail, and the
+    # compiler's root takes the port's tool minutes and gigabytes; the gate
+    # beside it, `selfhost_pipeline_exercise.sh`, is what a job runs.
+    "pipeline_judge.sh",
+    "pipeline_coverage.py",
+    "pipeline_frontier.py",
+    "pipeline_breakdown.py",
     # The instruments: each measures seconds or megabytes with a release
     # compiler, and most against Go or the compatibility binary beside it,
     # which a shared runner can neither build nor time - the same binary
@@ -268,11 +298,13 @@ def main():
     every = {name for name in bench if name.endswith((".sh", ".py", ".iyi"))}
     run = reached(bench) & every
     unreached = sorted(every - run)
-    unexplained = [name for name in unreached if name not in TOOLS]
+    # A gate named `*.wip.sh` does not pass yet: the slice that owns it renames it
+    # to `*_exercise.sh` when it does, and a job's glob runs it from then on.
+    unexplained = [name for name in unreached if name not in TOOLS and ".wip." not in name]
 
     print(f"{len(every)} scripts and programs under bench/, {len(run)} of them run")
     for name in unreached:
-        why = "a tool, not a gate" if name in TOOLS else "RUN BY NOTHING"
+        why = "a tool, not a gate" if name in TOOLS else ("a gate that does not pass yet" if ".wip." in name else "RUN BY NOTHING")
         print(f"  {name:34s} {why}")
 
     missing_tools = sorted(TOOLS - every)

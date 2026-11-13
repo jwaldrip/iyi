@@ -1664,13 +1664,26 @@ jobs:
       # and a cache path should not depend on how a symlink is archived.
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      # Saved as soon as it is built, not in a post step: the cache action's
+      # post step saves only when the job succeeds, so a job whose gate failed
+      # or that was cancelled at its limit paid the build again on every
+      # attempt (run 43328998691: `selfhost-darwin` built LLVM for 41
+      # minutes, was cancelled at 120 and saved nothing). When two jobs of
+      # one run build it at once the second save finds the key taken and
+      # warns; it does not fail.
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
       # `iyi-tarball` builds `iyi` and its daemon in release mode, refuses an
       # unoptimised binary (`check_iyi_is_release`), and packages them — one
@@ -1979,13 +1992,19 @@ jobs:
           echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
       - name: Build `iyi`
         run: make iyi LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
       # Python 3.14, as on Linux: the oracles' modules answer as 3.14's do.
@@ -2025,14 +2044,16 @@ jobs:
   # a job of their own (bench/std_platforms.sh): 54 to 75 minutes in the
   # last ten green runs (1,785 s of job 128265739304's 3,841 in it), and a
   # seventh macOS job would wait for a runner - in run 42327393858 shard 2
-  # above started at 02:40:54, three seconds after shard 1 ended.
+  # above started at 02:40:54, three seconds after shard 1 ended. A hundred
+  # and fifty since job 131485060135 (run 43303875393), which found the
+  # static LLVM in the cache and still ran 99 minutes, green.
   darwin-std:
     needs: plan
     if: ${{ contains(fromJSON(needs.plan.outputs.jobs), 'darwin-std') }}
     runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.4"
-    timeout-minutes: 120
+    timeout-minutes: 150
     name: "The native standard library's foundation, on darwin"
     steps:
       - uses: actions/checkout@v7
@@ -2044,13 +2065,19 @@ jobs:
           echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
       - name: Build `iyi`
         run: make iyi LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
       - name: The native standard library's foundation
@@ -3758,14 +3785,23 @@ jobs:
           gh release create "$tag" --title "iyi ${tag#v}" --notes-file notes.md \
             dist/*.tar.gz dist/*.zip dist/SHA256SUMS
 
+  # In four shards (`SELFHOST_GATE_SHARD`, bench/selfhost_gates.sh): the gates
+  # share a checkout and never run in parallel inside one, so each shard is a
+  # runner of its own. One job ran them all until 41 gates in a row were
+  # still running when 90 minutes cancelled it (run 43352148795); 23 gates
+  # had taken 50 (run 43328998691).
   selfhost:
     needs: [plan, build]
     if: ${{ contains(fromJSON(needs.plan.outputs.jobs), 'selfhost') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     container:
       image: crystallang/crystal:1.21.0-build
-    name: "The self-host gates, on Linux"
+    name: "The self-host gates, on Linux, shard ${{ matrix.shard }} of 4"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -3795,9 +3831,11 @@ jobs:
       - name: Build `iyi` and its daemon
         run: make -o .build/crystal iyi iyi-daemon
 
-      # One driver runs all 23 selfhost gates in order, each with its own log,
-      # and exits non-zero when any of them fails.
+      # One driver runs this shard's selfhost gates in order, each with its own
+      # log, and exits non-zero when any of them fails.
       - name: The self-host gates
+        env:
+          SELFHOST_GATE_SHARD: ${{ matrix.shard }}/4
         run: bash bench/selfhost_gates.sh
 
   selfhost-darwin:
@@ -3807,8 +3845,17 @@ jobs:
     runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.4"
-    timeout-minutes: 120
-    name: "The self-host gates, on darwin arm64"
+    # 180, measured: on a cache miss the static LLVM is 41 minutes and the
+    # build 19, and the gates were still running 59 minutes later when 120
+    # cancelled the job (run 43328998691); with the cache the build is 12
+    # and 23 gates 56 (run 43303875393), and each lane adds gates. In two
+    # shards, as the Linux job is in four: macOS runners are the scarce ones.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    name: "The self-host gates, on darwin arm64, shard ${{ matrix.shard }} of 2"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -3824,13 +3871,19 @@ jobs:
 
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
       - name: Build `iyi`, its daemon, and the tarball
         run: make iyi-tarball LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
@@ -3838,6 +3891,8 @@ jobs:
       # The same driver as the Linux job. The gates read LLVM_CONFIG from the
       # environment before they look for llvm-config on the PATH.
       - name: The self-host gates
+        env:
+          SELFHOST_GATE_SHARD: ${{ matrix.shard }}/2
         run: LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config" bash bench/selfhost_gates.sh
 
   # The compiler's own back end: the IR, the aarch64 code generator, the
@@ -3949,13 +4004,19 @@ jobs:
 
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
       # The gates read objects back with llvm-objdump and assemble their
       # x86_64 oracle with llvm-mc. The static LLVM installs both; Xcode's

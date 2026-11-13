@@ -4,6 +4,13 @@
 # and rebuild the compiler), so they never run in parallel.
 #
 #   bash bench/selfhost_gates.sh
+#   SELFHOST_GATE_SHARD=2/4 bash bench/selfhost_gates.sh
+#
+# SELFHOST_GATE_SHARD=i/n runs every n-th gate, starting at the i-th of the
+# sorted list: n runners, each with its own checkout, cover every gate exactly
+# once between them. Without it every gate runs here. Forty-one gates in a row
+# were still running when CI's 90 minutes cancelled the Linux job (run
+# 43352148795), and every lane adds more.
 #
 # Each gate's full output goes to a log under $SELFHOST_GATE_LOGS (default: a
 # fresh temporary directory). A failing gate's last lines are printed: twelve
@@ -27,15 +34,46 @@ if [ "${#gates[@]}" -eq 0 ]; then
   exit 1
 fi
 
-echo "== 1. Running ${#gates[@]} selfhost gates in order (logs: $LOGDIR)"
+total="${#gates[@]}"
+shard="${SELFHOST_GATE_SHARD:-}"
+if [ -n "$shard" ]; then
+  index="${shard%%/*}"
+  count="${shard##*/}"
+  case "$index$count" in
+    ''|*[!0-9]*) echo "== 0. SELFHOST_GATE_SHARD is i/n, two numbers, and '$shard' was given"; echo "SOME SELFHOST GATES FAILED"; exit 1 ;;
+  esac
+  if [ "$shard" != "$index/$count" ] || [ "$count" -lt 1 ] || [ "$index" -lt 1 ] || [ "$index" -gt "$count" ]; then
+    echo "== 0. SELFHOST_GATE_SHARD is i/n with 1 <= i <= n, and '$shard' was given"
+    echo "SOME SELFHOST GATES FAILED"
+    exit 1
+  fi
+  kept=()
+  position=0
+  for candidate in "${gates[@]}"; do
+    if [ $(( position % count )) -eq $(( index - 1 )) ]; then
+      kept+=("$candidate")
+    fi
+    position=$(( position + 1 ))
+  done
+  if [ "${#kept[@]}" -eq 0 ]; then
+    echo "== 0. shard $shard holds none of the $total gates: fewer gates than shards"
+    echo "SOME SELFHOST GATES FAILED"
+    exit 1
+  fi
+  gates=("${kept[@]}")
+  echo "== 1. Running shard $shard: ${#gates[@]} of $total selfhost gates in order (logs: $LOGDIR)"
+else
+  echo "== 1. Running ${#gates[@]} selfhost gates in order (logs: $LOGDIR)"
+fi
 status=0
 failed=()
 for gate in "${gates[@]}"; do
   name="$(basename "$gate" .sh)"
   log="$LOGDIR/$name.log"
+  started=$(date +%s)
   bash "$gate" > "$log" 2>&1
   rc=$?
-  printf '%-44s exit=%s\n' "$name" "$rc"
+  printf '%-44s exit=%s seconds=%s\n' "$name" "$rc" "$(( $(date +%s) - started ))"
   if [ "$rc" -ne 0 ]; then
     status=1
     failed+=("$name")

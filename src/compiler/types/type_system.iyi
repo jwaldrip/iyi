@@ -3,20 +3,48 @@ module compiler/types/type_system
 import compiler/foundation/location::{Location}
 import compiler/syntax/ast::{ASTNode, Call, Generic, Metaclass, NamedArgument, NumberLiteral, Path, ProcNotation, Union}
 import compiler/syntax/token
-import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NonGenericClassType, SemanticProgram, TraitType, Type, TypeException, UnionType}
-import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilType, NilableProcType, NilableReferenceUnionType, NilableType, NoReturnType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeSplat, VirtualMetaclassType, VirtualType, VoidType}
+import compiler/semantic/top_level::{AliasType, ClassType, GenericClassType, GenericModuleType, GenericTraitType, MetaclassType, ModuleType, NamedType, NilType, NonGenericClassType, NoReturnType, SemanticProgram, TraitType, Type, TypeException, TypeHook, UnionType, UnresolvedType, VoidType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceMetaclassType, GenericModuleInstanceType, GenericTraitInstanceType, MixedUnionType, NamedArgumentType, NamedTupleInstanceType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, StaticArrayInstanceType, TupleInstanceType, TypeParameter, TypeQueries, TypeSplat, VirtualMetaclassType, VirtualType}
+import compiler/types/merge::{TypeMerge}
 import compiler/types/unification::{TypeUnification}
 import compiler/types/filtering::{TypeFiltering}
+import compiler/types/intersect::{TypeIntersect}
 import compiler/types/restrictions::{TypeRestrictions}
 import compiler/types/rendering::{TypeRenderer}
+import compiler/types/instances::{TypeInstances}
+import compiler/types/lookup::{LookupError, TypeLookup}
 
-pub class TypeSystem
+pub class TypeSystem < TypeHook
   property program : SemanticProgram
-  @generic_cache : Hash(String, GenericInstanceType)
+  getter instances : TypeInstances
+  @instances : TypeInstances
 
   def initialize(@program : SemanticProgram = SemanticProgram.new)
-    @generic_cache = Hash(String, GenericInstanceType).new
+    @instances = TypeInstances.new(@program)
     register_builtin_types
+    @program.merge_hook = self
+    @program.resolve_declared_types
+  end
+
+  def merge_members(types : Array(Type)) : Type
+    TypeMerge.merge_all(@program, types)
+  end
+
+  def virtual_of(type : Type) : Type
+    TypeQueries.virtual_type(type)
+  end
+
+  # iyi: an unresolvable written type is refused in strict mode, as before. Total mode answers
+  # an UnresolvedType, as `refuse_constant` does, so the caller records the node untyped and the
+  # pass goes on: one name the program cannot resolve no longer loses the whole file.
+  def resolve_node(node : ASTNode, current_type : ModuleType) : Type
+    found = TypeLookup.new(@instances).lookup(current_type, node)
+    if found.is_a?(LookupError)
+      message = found.as(LookupError).message
+      raise(message) unless @program.total_mode
+      return UnresolvedType.new(@program, node.to_s)
+    end
+    found.as(Type)
   end
 
   private def register_builtin_types : Nil
@@ -75,349 +103,49 @@ pub class TypeSystem
         pt.struct = true
       end
     end
-  end
-
-  def lookup_type_node(node : ASTNode, current_type : ModuleType = @program) : Type
-    if node.is_a?(Path)
-      return lookup_path(node.as(Path), current_type)
-    end
-
-    if node.is_a?(Generic)
-      return lookup_generic(node.as(Generic), current_type)
-    end
-
-    if node.is_a?(Call)
-      call = node.as(Call)
-      if call.name == "|"
-        if obj = call.obj
-          t1 = lookup_type_node(obj, current_type)
-          t2 = lookup_type_node(call.args.first, current_type)
-          return type_merge(t1, t2)
-        end
-      elsif call.name == "?"
-        if obj = call.obj
-          t = lookup_type_node(obj, current_type)
-          return type_merge(t, @program.nil_type)
-        end
-      elsif call.name == "+"
-        if obj = call.obj
-          t = lookup_type_node(obj, current_type)
-          return virtual_type_of(t)
-        end
-      end
-    end
-
-    if node.is_a?(Union)
-      u = node.as(Union)
-      types = [] of Type
-      i = 0
-      while i < u.types.size
-        types << lookup_type_node(u.types[i], current_type)
-        i = i + 1
-      end
-      return type_merge(types)
-    end
-
-    if node.is_a?(Metaclass)
-      mc = node.as(Metaclass)
-      base = lookup_type_node(mc.name, current_type)
-      return metaclass_of(base)
-    end
-
-    if node.is_a?(ProcNotation)
-      pn = node.as(ProcNotation)
-      args = [] of Type
-      if inps = pn.inputs
-        i = 0
-        while i < inps.size
-          args << lookup_type_node(inps[i], current_type)
-          i = i + 1
-        end
-      end
-      ret = if out_node = pn.output
-              lookup_type_node(out_node, current_type)
-            else
-              @program.nil_type
-            end
-      return proc_of(args, ret)
-    end
-
-    raise("expected type, got #{node.to_s}")
-  end
-
-  def lookup_path(path : Path, current_type : ModuleType = @program) : Type
-    if path.global
-      t = @program.lookup_path_names(path.names, @program)
-      if t
-        return t
-      end
-      raise("undefined constant #{path.to_s}")
-    end
-
-    first_name = path.names.first
-
-    # 1. Search in current_type
-    t = current_type.lookup_type(first_name)
-
-    # 2. Check if current_type has this name
-    if t.nil? && current_type.name == first_name
-      t = current_type
-    end
-
-    # 3. Search in parents of current_type
-    if t.nil?
-      p_idx = 0
-      while p_idx < current_type.parents.size
-        p = current_type.parents[p_idx]
-        if p.is_a?(NamedType)
-          match = p.as(NamedType).lookup_type(first_name)
-          if match
-            t = match
-            break
-          end
-        end
-        p_idx = p_idx + 1
-      end
-    end
-
-    # 4. Search enclosing namespaces
-    if t.nil?
-      ns = current_type.namespace
-      while ns
-        match = ns.lookup_type(first_name)
-        if match
-          t = match
-          break
-        end
-        if ns == @program
-          break
-        end
-        ns = ns.namespace
-      end
-    end
-
-    # 5. Search in program root
-    if t.nil?
-      t = @program.lookup_type(first_name)
-    end
-
-    if t.nil?
-      raise("undefined constant #{path.to_s}")
-    end
-
-    if path.names.size == 1
-      return t
-    end
-
-    # Follow remaining segments
-    curr : Type? = t
-    i = 1
-    while i < path.names.size
-      seg = path.names[i]
-      if curr && curr.is_a?(NamedType)
-        curr = curr.as(NamedType).lookup_type(seg)
-      else
-        curr = nil
-      end
-      if curr.nil?
-        raise("undefined constant #{path.to_s}")
-      end
-      i = i + 1
-    end
-    if c = curr
-      c
-    else
-      raise("undefined constant #{path.to_s}")
-    end
-  end
-
-  private def lookup_generic(node : Generic, current_type : ModuleType) : Type
-    base_type = lookup_type_node(node.name, current_type)
-
-    if base_type.name == "NamedTuple"
-      unless node.type_vars.empty?
-        raise("can only instantiate NamedTuple with named arguments")
-      end
-      entries = [] of NamedArgumentType
-      if named = node.named_args
-        i = 0
-        while i < named.size
-          na = named[i]
-          if na.value.is_a?(NumberLiteral)
-            raise("can't use number as type for NamedTuple")
-          end
-          arg_t = lookup_type_node(na.value, current_type)
-          entries << NamedArgumentType.new(na.name, arg_t)
-          i = i + 1
-        end
-      end
-      return named_tuple_of(entries)
-    end
-
-    if base_type.name == "Tuple"
-      args = [] of Type
-      i = 0
-      while i < node.type_vars.size
-        tv = node.type_vars[i]
-        if tv.is_a?(NumberLiteral)
-          raise("argument to Tuple must be a type, not #{tv.to_s}")
-        end
-        args << lookup_type_node(tv, current_type)
-        i = i + 1
-      end
-      return tuple_of(args)
-    end
-
-    if base_type.name == "Union"
-      args = [] of Type
-      i = 0
-      while i < node.type_vars.size
-        tv = node.type_vars[i]
-        if tv.is_a?(NumberLiteral)
-          raise("argument to Union must be a type, not #{tv.to_s}")
-        end
-        args << lookup_type_node(tv, current_type)
-        i = i + 1
-      end
-      return type_merge(args)
-    end
-
-    if base_type.name == "Proc"
-      args = [] of Type
-      i = 0
-      while i < node.type_vars.size
-        tv = node.type_vars[i]
-        if tv.is_a?(NumberLiteral)
-          raise("argument to Proc must be a type, not #{tv.to_s}")
-        end
-        args << lookup_type_node(tv, current_type)
-        i = i + 1
-      end
-      if args.empty?
-        raise("argument to Proc must have at least return type")
-      end
-      ret_t = args.last
-      arg_ts = [] of Type
-      if args.size > 1
-        ai = 0
-        while ai < args.size - 1
-          arg_ts << args[ai]
-          ai = ai + 1
-        end
-      end
-      return proc_of(arg_ts, ret_t)
-    end
-
-    if base_type.name == "Pointer"
-      if node.type_vars.size != 1
-        raise("wrong number of type vars for Pointer(T) (given #{node.type_vars.size}, expected 1)")
-      end
-      elem_t = lookup_type_node(node.type_vars[0], current_type)
-      return pointer_of(elem_t)
-    end
-
-    if base_type.name == "StaticArray"
-      if node.type_vars.size != 2
-        raise("wrong number of type vars for StaticArray(T, N) (given #{node.type_vars.size}, expected 2)")
-      end
-      elem_t = lookup_type_node(node.type_vars[0], current_type)
-      size_node = node.type_vars[1]
-      sz = 0_i64
-      if size_node.is_a?(NumberLiteral)
-        sz = size_node.as(NumberLiteral).value.to_i64
-      end
-      return static_array_of(elem_t, sz)
-    end
-
-    if base_type.is_a?(GenericClassType)
-      gc = base_type.as(GenericClassType)
-      if node.type_vars.size != gc.type_vars.size
-        type_vars_str = gc.type_vars.join(", ")
-        raise("wrong number of type vars for #{gc.full_name}(#{type_vars_str}) (given #{node.type_vars.size}, expected #{gc.type_vars.size})")
-      end
-      args = [] of Type
-      i = 0
-      while i < node.type_vars.size
-        args << lookup_type_node(node.type_vars[i], current_type)
-        i = i + 1
-      end
-      return instantiate_generic(gc, args)
-    end
-
-    if base_type.is_a?(GenericModuleType)
-      gm = base_type.as(GenericModuleType)
-      if node.type_vars.size != gm.type_vars.size
-        type_vars_str = gm.type_vars.join(", ")
-        raise("wrong number of type vars for #{gm.full_name}(#{type_vars_str}) (given #{node.type_vars.size}, expected #{gm.type_vars.size})")
-      end
-      args = [] of Type
-      i = 0
-      while i < node.type_vars.size
-        args << lookup_type_node(node.type_vars[i], current_type)
-        i = i + 1
-      end
-      return instantiate_generic_module(gm, args)
-    end
-
-    raise("#{base_type.full_name} is not a generic type, it's a #{base_type.type_desc}")
+    # iyi: the hosted program makes ARGV_UNSAFE's type, Pointer(Pointer(UInt8)), and with it Pointer(UInt8),
+    # when the program is made, before any file is read (program.cr 1462). They are made through the type
+    # system's own instances, so a later lookup of either finds the same instance and the id walk numbers them.
+    uint8 : Type = @program.types["UInt8"]
+    @instances.pointer_of(@instances.pointer_of(uint8))
   end
 
   def instantiate_generic(generic_type : GenericClassType, type_args : Array(Type)) : GenericClassInstanceType
-    key = "#{generic_type.full_name}(#{type_args.map(&.full_name).join(", ")})"
-    if cached = @generic_cache[key]?
-      return cached.as(GenericClassInstanceType)
-    end
+    @instances.instantiate_generic(generic_type, type_args)
+  end
 
-    tv_map = Hash(String, Type).new
-    i = 0
-    while i < type_args.size
-      name = i < generic_type.type_vars.size ? generic_type.type_vars[i] : "T#{i}"
-      tv_map[name] = type_args[i]
-      i = i + 1
+  # The instance of a generic whose type arguments are resolved: each argument is made virtual, as
+  # lookup_type_args makes it, and the lookup instantiates the base.
+  def instantiate_type(base : Type, type_args : Array(Type)) : Type
+    stored = [] of Type
+    type_args.each do |t|
+      stored << TypeQueries.virtual_type(t)
     end
-
-    inst = GenericClassInstanceType.new(@program, generic_type, tv_map, type_args, generic_type.superclass)
-    @generic_cache[key] = inst
-    inst
+    TypeLookup.new(@instances).instantiate(base, stored)
   end
 
   def instantiate_generic_module(generic_type : GenericModuleType, type_args : Array(Type)) : GenericModuleInstanceType
-    key = "#{generic_type.full_name}(#{type_args.map(&.full_name).join(", ")})"
-    if cached = @generic_cache[key]?
-      return cached.as(GenericModuleInstanceType)
-    end
-
-    tv_map = Hash(String, Type).new
-    i = 0
-    while i < type_args.size
-      name = i < generic_type.type_vars.size ? generic_type.type_vars[i] : "T#{i}"
-      tv_map[name] = type_args[i]
-      i = i + 1
-    end
-
-    inst = GenericModuleInstanceType.new(@program, generic_type, tv_map, type_args)
-    @generic_cache[key] = inst
-    inst
+    @instances.instantiate_generic_module(generic_type, type_args)
   end
 
   def tuple_of(elements : Array(Type)) : TupleInstanceType
-    TupleInstanceType.new(@program, elements)
+    @instances.tuple_of(elements)
   end
 
   def named_tuple_of(entries : Array(NamedArgumentType)) : NamedTupleInstanceType
-    NamedTupleInstanceType.new(@program, entries)
+    @instances.named_tuple_of(entries)
   end
 
   def proc_of(arg_types : Array(Type), return_type : Type) : ProcInstanceType
-    ProcInstanceType.new(@program, arg_types, return_type)
+    @instances.proc_of(arg_types, return_type)
   end
 
   def pointer_of(element_type : Type) : PointerInstanceType
-    PointerInstanceType.new(@program, element_type)
+    @instances.pointer_of(element_type)
   end
 
   def static_array_of(element_type : Type, size : Int64) : StaticArrayInstanceType
-    StaticArrayInstanceType.new(@program, element_type, size)
+    @instances.static_array_of(element_type, size)
   end
 
   def metaclass_of(type : Type) : Type
@@ -433,15 +161,15 @@ pub class TypeSystem
   end
 
   def type_merge(types : Array(Type)) : Type
-    TypeUnification.type_merge(@program, types)
+    TypeMerge.merge_all(@program, types)
   end
 
   def type_merge(t1 : Type, t2 : Type) : Type
-    TypeUnification.type_merge(@program, t1, t2)
+    TypeMerge.merge(@program, t1, t2)
   end
 
   def filter_by(type : Type, target : Type) : Type?
-    TypeFiltering.filter_by(@program, type, target)
+    TypeIntersect.common_descendent(@program, type, target)
   end
 
   def filter_by_responds_to(type : Type, name : String) : Type?

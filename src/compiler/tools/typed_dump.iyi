@@ -1,28 +1,50 @@
 # The typed-node dump the typed parity gate compares with
 # `bench/selfhost_typed_oracle.cr` (bench/selfhost_typed_parity_exercise.sh).
 #
-#   typed_dump <file.iyi>
+#   typed_dump [--instances] <file.iyi> [root ...]
 #
 # Prints one line per expression node of the file that the iyi semantic port
-# typed, as "<line>:<col> <Kind> <type>", in tree order. The program is the file
-# alone: the port has no prelude yet. The root block of the program is not
-# counted, and neither is a prelude require (the oracle's dump skips the same
-# nodes). A file the port cannot analyse raises, which exits non-zero with the
-# message on stderr; the gate records that file as zero matched.
+# typed, as "<line>:<col> <Kind> <type>", in tree order. A node the port cannot
+# type prints "untyped: <reason>" in its place and never counts as matched; the
+# gate totals those reasons, which is the work list for the semantic port. The
+# program is the file alone: the port has no prelude yet. The root block of the
+# program is not counted, and neither is a prelude require (the oracle's dump
+# skips the same nodes). A file the port cannot analyse at all raises, which
+# exits non-zero with the message on stderr; the gate records that file as zero
+# matched.
+#
+# With --instances the dump is followed by one line, "typed instances: N": the
+# number of instantiations the body typer recorded (one per def instance, see
+# MainVisitor#def_instances). The oracle has no such count, so the gate reads it
+# on its own and the node dump stays comparable.
+#
+# The dump runs the port in total mode (SemanticProgram#total_mode and
+# MainVisitor#total): a name it cannot resolve or a construct it does not type
+# costs those nodes, not the file.
 
 module compiler/tools/typed_dump
 
 import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/top_level::{NamedType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
+import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
 
 # The type label one typed node is printed with. The gate's mutation proof
 # replaces this body to print a wrong type for one node kind.
 def typed_label(node : ASTNode, t : Type) : String
-  t.full_name
+  if t.is_a?(NamedType)
+    t.full_name
+  else
+    t.to_s
+  end
+end
+
+# The first line of a reason, so one reason is always one output line.
+def first_line(reason : String) : String
+  reason.split("\n").first
 end
 
 pub class TypedNodeWalk < Visitor
@@ -38,6 +60,8 @@ pub class TypedNodeWalk < Visitor
       if loc.filename == @file
         if t = @visitor.type_of?(node)
           @lines << "#{loc.line_number}:#{loc.column_number} #{node_class_name(node)} #{typed_label(node, t)}"
+        elsif reason = @visitor.untyped_reason?(node)
+          @lines << "untyped: #{first_line(reason)}"
         end
       end
     end
@@ -45,32 +69,78 @@ pub class TypedNodeWalk < Visitor
   end
 end
 
+# One analysis of a file: its node dump lines and the number of typed instances.
+pub class TypedDumpResult
+  getter lines : Array(String)
+  getter instances : Int32
+
+  def initialize(@lines : Array(String), @instances : Int32)
+  end
+end
+
 module TypedDump
-  def self.dump(source : String, filename : String) : Array(String)
+  # The directory a file's path names: where its imports are looked for first (the entry
+  # directory of Program#iyi_import_root).
+  def self.directory_of(filename : String) : String
+    parts = filename.split('/')
+    dir = ""
+    i = 0
+    while i < parts.size - 1
+      dir = "#{dir}#{parts[i]}/"
+      i = i + 1
+    end
+    dir
+  end
+
+  def self.analyse(source : String, filename : String, roots : Array(String)) : TypedDumpResult
     parser = Parser.new(source, filename)
-    node = parser.parse
+    node = Normalizer.new(NormalizerProgram.new(false)).normalize(parser.parse)
     prog = SemanticProgram.new
-    tl = TopLevelVisitor.new(prog)
+    prog.total_mode = true
+    prog.search_path = roots
+    prog.entry_dir = TypedDump.directory_of(filename)
+    tl = TopLevelVisitor.new(prog, filename)
     node.accept(tl)
     tl.finish
     mv = MainVisitor.new(prog)
+    mv.total = true
     node.accept(mv)
     RecursiveStructChecker.new(prog).run
     walk = TypedNodeWalk.new(mv, filename, node)
     node.accept(walk)
-    walk.lines
+    TypedDumpResult.new(walk.lines, mv.typed_instances.size)
+  end
+
+  def self.dump(source : String, filename : String, roots : Array(String)) : Array(String)
+    analyse(source, filename, roots).lines
   end
 end
 
 module TypedDumpTool
   def self.run : Nil
     args = Program.args
-    if args.empty?
-      raise "usage: typed_dump <file.iyi>"
+    first = 0
+    instances = false
+    if !args.empty? && args[0] == "--instances"
+      instances = true
+      first = 1
     end
-    path = args[0]
+    if args.size <= first
+      raise "usage: typed_dump [--instances] <file.iyi> [root ...]"
+    end
+    path = args[first]
+    roots = [] of String
+    i = first + 1
+    while i < args.size
+      roots << args[i]
+      i = i + 1
+    end
     source = File.read(path)
-    TypedDump.dump(source, path).each { |line| puts line }
+    result = TypedDump.analyse(source, path, roots)
+    result.lines.each { |line| puts line }
+    if instances
+      puts "typed instances: #{result.instances}"
+    end
   end
 end
 

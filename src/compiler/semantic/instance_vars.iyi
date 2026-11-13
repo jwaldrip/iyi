@@ -1,0 +1,482 @@
+module compiler/semantic/instance_vars
+
+import compiler/foundation/location::{Location}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
+import compiler/syntax/token::{NumberKind}
+import compiler/syntax/visitor::{Visitor}
+import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
+
+# Instance variables typed only by assignment, as the hosted front end declares
+# them in its type declaration processor (`type_guess_visitor.cr` guesses each
+# variable's type from its assignments; `type_declaration_processor.cr` gives
+# the guess to the owner, with Nil merged in unless the variable is initialized
+# in every `initialize` or in the class body).
+#
+# Explicit declarations (`@x : Int32`) are declared first, by TopLevelVisitor,
+# and always win: a guess for a name the owner already declares is dropped, and
+# so is a guess for a name a superclass declares. Owners are processed from the
+# root of the class hierarchy down, so a superclass's variables are known first.
+#
+# Skipped, and so not declared here: guesses whose value needs a type this pass
+# cannot compute (a call with arguments, an array or hash literal, a block), a
+# `Foo.new` where Foo has subclasses (hosted gives its virtual type), variables of
+# generic classes and of modules (hosted also transfers a module's variables to
+# its includers), and the `macro def` and `.iyimod` exemptions.
+
+pub class GuessedIvar
+  property type : Type
+  property outside_def : Bool
+  property location : Location?
+
+  def initialize(@type : Type, @outside_def : Bool, @location : Location?)
+  end
+end
+
+# The variables one `initialize` assigns (in any branch of its body).
+pub class InitializeInfo
+  getter ivars : Array(String)
+
+  def initialize
+    @ivars = [] of String
+  end
+end
+
+# Everything one class's bodies say about its instance variables.
+pub class OwnerGuesses
+  getter owner : ModuleType
+  getter guesses : Hash(String, GuessedIvar)
+  getter order : Array(String)
+  getter init_infos : Array(InitializeInfo)
+  getter outside : Array(String)
+  property nonnil : Array(String)?
+
+  def initialize(@owner : ModuleType)
+    @guesses = Hash(String, GuessedIvar).new
+    @order = [] of String
+    @init_infos = [] of InitializeInfo
+    @outside = [] of String
+    @nonnil = nil
+  end
+end
+
+class GuessVisitor < Visitor
+  @program : SemanticProgram
+  @og : OwnerGuesses
+  @outside_def : Bool
+  @initialize_info : InitializeInfo?
+  @args : Hash(String, ASTNode?)
+
+  def initialize(@program : SemanticProgram, @og : OwnerGuesses)
+    @outside_def = true
+    @initialize_info = nil
+    @args = Hash(String, ASTNode?).new
+  end
+
+  # A nested class or module has a body of its own, which the pass visits as its
+  # owner's. A macro definition is not code until it is expanded.
+  def visit(node : ClassDef) : Bool
+    false
+  end
+
+  def visit(node : ModuleDef) : Bool
+    false
+  end
+
+  def visit(node : Macro) : Bool
+    false
+  end
+
+  def visit(node : MacroIf) : Bool
+    false
+  end
+
+  def visit(node : MacroFor) : Bool
+    false
+  end
+
+  def visit(node : MacroExpression) : Bool
+    false
+  end
+
+  def visit(node : FunDef) : Bool
+    false
+  end
+
+  # A call a macro expanded into is code of this body; the call itself is not.
+  def visit(node : Call) : Bool
+    if expanded = node.expanded
+      expanded.accept(self)
+      return false
+    end
+    true
+  end
+
+  def visit(node : Def) : Bool
+    # `def self.x` assigns the class's own state, not instance variables.
+    return false if node.receiver
+
+    saved_info = @initialize_info
+    saved_args = @args
+    @outside_def = false
+    @args = Hash(String, ASTNode?).new
+    node.args.each do |arg|
+      @args[arg.name] = arg.restriction
+    end
+
+    @initialize_info = nil
+    if node.name == "initialize"
+      info = InitializeInfo.new
+      @og.init_infos << info
+      @initialize_info = info
+    end
+
+    node.body.accept(self)
+
+    @initialize_info = saved_info
+    @args = saved_args
+    @outside_def = true
+    false
+  end
+
+  def visit(node : Assign) : Bool
+    target = node.target
+    if target.is_a?(Var)
+      @args.delete(target.as(Var).name)
+    end
+    if target.is_a?(InstanceVar)
+      assign_instance_var(target.as(InstanceVar), node.value)
+    end
+    # The value may assign too: `@x = @y = 1`.
+    true
+  end
+
+  # `@x : Int32 = 1` in a body is an assignment as well as a declaration.
+  def visit(node : TypeDeclaration) : Bool
+    var = node.var
+    if var.is_a?(InstanceVar)
+      if value = node.value
+        assign_instance_var(var.as(InstanceVar), value)
+      end
+    end
+    false
+  end
+
+  def assign_instance_var(target : InstanceVar, value : ASTNode) : Nil
+    name = target.name
+    if @outside_def && !@og.outside.includes?(name)
+      @og.outside << name
+    end
+    if info = @initialize_info
+      info.ivars << name unless info.ivars.includes?(name)
+    end
+
+    # An explicit declaration of the owner wins over any guess.
+    return nil if @og.owner.instance_vars[name]?
+
+    if type = guess_type(value)
+      if existing = @og.guesses[name]?
+        existing.type = @program.type_merge(existing.type, type)
+        existing.outside_def = true if @outside_def
+      else
+        @og.guesses[name] = GuessedIvar.new(type, @outside_def, target.location)
+        @og.order << name
+      end
+    end
+    nil
+  end
+
+  # The type of an assigned value, when it can be known without the main pass.
+  # Nil when it cannot; such an assignment adds nothing to the guess.
+  def guess_type(node : ASTNode) : Type?
+    if node.is_a?(NumberLiteral)
+      return type_from_literal_kind(node.as(NumberLiteral).kind)
+    end
+    if node.is_a?(CharLiteral)
+      return @program.char_type
+    end
+    if node.is_a?(BoolLiteral)
+      return @program.bool_type
+    end
+    if node.is_a?(NilLiteral)
+      return @program.nil_type
+    end
+    if node.is_a?(StringLiteral) || node.is_a?(StringInterpolation)
+      return @program.string_type
+    end
+    if node.is_a?(SymbolLiteral)
+      return @program.symbol_type
+    end
+    if node.is_a?(Not) || node.is_a?(IsA)
+      return @program.bool_type
+    end
+    if node.is_a?(Nop)
+      return @program.nil_type
+    end
+    if node.is_a?(Cast)
+      return @program.lookup_type_node?(node.as(Cast).to, @og.owner)
+    end
+    if node.is_a?(Var)
+      name = node.as(Var).name
+      if name == "self"
+        if hook = @program.merge_hook
+          return hook.virtual_of(@og.owner)
+        end
+        return @og.owner
+      end
+      if restriction = @args[name]?
+        if t = @program.lookup_type_node?(restriction, @og.owner)
+          resolved = @program.remove_alias(t)
+          if hook = @program.merge_hook
+            return hook.virtual_of(resolved)
+          end
+          return resolved
+        end
+        return nil
+      end
+      return nil
+    end
+    if node.is_a?(InstanceVar)
+      if declared = @og.owner.instance_vars[node.as(InstanceVar).name]?
+        return declared.var_type
+      end
+      return nil
+    end
+    if node.is_a?(Call)
+      return guess_call(node.as(Call))
+    end
+    if node.is_a?(If)
+      branches = node.as(If)
+      return merge_guesses(guess_type(branches.then), guess_type(branches.else))
+    end
+    if node.is_a?(Unless)
+      branches = node.as(Unless)
+      return merge_guesses(guess_type(branches.then), guess_type(branches.else))
+    end
+    if node.is_a?(Expressions)
+      exps = node.as(Expressions).expressions
+      return nil if exps.size == 0
+      return guess_type(exps[exps.size - 1])
+    end
+    nil
+  end
+
+  # `Foo.new` is Foo. A class with subclasses has a virtual type, which this pass
+  # does not compute, so its guess is left out.
+  def guess_call(node : Call) : Type?
+    if expanded = node.expanded
+      return guess_type(expanded)
+    end
+    obj = node.obj
+    if node.name == "new" && obj && obj.is_a?(Path)
+      found = @program.lookup_type_node?(obj, @og.owner)
+      if found && found.is_a?(NonGenericClassType) && found.as(NonGenericClassType).subclasses.empty?
+        return found
+      end
+    end
+    # A constructed generic with resolved arguments, such as Hash(String, Bool).new.
+    if node.name == "new" && obj.is_a?(Generic)
+      if hook = @program.merge_hook
+        if found = @program.lookup_type_node?(obj, @og.owner)
+          return hook.virtual_of(found)
+        end
+      end
+    end
+    # Pointer(T).malloc and Pointer(T).null have the pointer instance type.
+    if obj.is_a?(Generic) && (node.name == "malloc" || node.name == "null")
+      generic = obj.as(Generic)
+      name = generic.name
+      if name.is_a?(Path) && name.as(Path).names == ["Pointer"] && generic.type_vars.size == 1
+        if @program.merge_hook
+          return @program.lookup_type_node?(generic, @og.owner)
+        end
+      end
+    end
+    nil
+  end
+
+  def merge_guesses(first : Type?, second : Type?) : Type?
+    if a = first
+      if b = second
+        return @program.type_merge(a, b)
+      end
+    end
+    nil
+  end
+
+  def type_from_literal_kind(kind : NumberKind) : Type
+    case kind
+    when NumberKind::I8   then @program.types["Int8"]
+    when NumberKind::I16  then @program.types["Int16"]
+    when NumberKind::I32  then @program.int32_type
+    when NumberKind::I64  then @program.types["Int64"]
+    when NumberKind::I128 then @program.types["Int128"]
+    when NumberKind::U8   then @program.types["UInt8"]
+    when NumberKind::U16  then @program.types["UInt16"]
+    when NumberKind::U32  then @program.types["UInt32"]
+    when NumberKind::U64  then @program.types["UInt64"]
+    when NumberKind::U128 then @program.types["UInt128"]
+    when NumberKind::F32  then @program.types["Float32"]
+    when NumberKind::F64  then @program.types["Float64"]
+    else
+      @program.int32_type
+    end
+  end
+end
+
+# The record for `owner`, created on first sight, in `owners`.
+def owner_guesses_for(owners : Array(OwnerGuesses), owner : ModuleType) : OwnerGuesses
+  if found = owner_for(owners, owner)
+    return found
+  end
+  created = OwnerGuesses.new(owner)
+  owners << created
+  created
+end
+
+def owner_for(owners : Array(OwnerGuesses), owner : Type) : OwnerGuesses?
+  i = 0
+  while i < owners.size
+    if owners[i].owner.full_name == owner.full_name
+      return owners[i]
+    end
+    i = i + 1
+  end
+  nil
+end
+
+# Superclasses between `t` and the root, not counting `t`.
+def class_depth(t : Type) : Int32
+  if t.is_a?(ClassType)
+    if sc = t.as(ClassType).superclass
+      return 1 + class_depth(sc)
+    end
+  end
+  0
+end
+
+# The initialize infos `t` uses: its own, or the nearest superclass's.
+def initialize_infos_for(owners : Array(OwnerGuesses), t : Type) : Array(InitializeInfo)?
+  if found = owner_for(owners, t)
+    return found.init_infos unless found.init_infos.empty?
+  end
+  if t.is_a?(ClassType)
+    if sc = t.as(ClassType).superclass
+      return initialize_infos_for(owners, sc)
+    end
+  end
+  nil
+end
+
+# The names assigned outside any def in `t` and in every superclass.
+def outside_names(owners : Array(OwnerGuesses), t : Type) : Array(String)
+  names = [] of String
+  if found = owner_for(owners, t)
+    found.outside.each do |name|
+      names << name unless names.includes?(name)
+    end
+  end
+  if t.is_a?(ClassType)
+    if sc = t.as(ClassType).superclass
+      outside_names(owners, sc).each do |name|
+        names << name unless names.includes?(name)
+      end
+    end
+  end
+  names
+end
+
+# The non-nilable variables of an owner: those its initializers assign (and any
+# its superclass has), and those assigned in the class body.
+def compute_nonnil(owners : Array(OwnerGuesses), og : OwnerGuesses) : Nil
+  names = [] of String
+  outside = outside_names(owners, og.owner)
+  infos = initialize_infos_for(owners, og.owner)
+  if infos
+    og.owner.instance_vars.keys.each do |name|
+      names << name unless names.includes?(name)
+    end
+    infos.each do |info|
+      info.ivars.each do |name|
+        names << name unless names.includes?(name)
+      end
+    end
+    if og.owner.is_a?(ClassType)
+      if sc = og.owner.as(ClassType).superclass
+        if ancestor = owner_for(owners, sc)
+          if inherited = ancestor.nonnil
+            inherited.each do |name|
+              names << name unless names.includes?(name)
+            end
+          end
+        end
+      end
+    end
+  end
+  outside.each do |name|
+    names << name unless names.includes?(name)
+  end
+  if infos || !outside.empty?
+    og.nonnil = names
+  else
+    og.nonnil = nil
+  end
+  nil
+end
+
+def nonnil_includes?(og : OwnerGuesses, name : String) : Bool
+  if names = og.nonnil
+    return names.includes?(name)
+  end
+  false
+end
+
+# Declares the guessed variables of one class, after its superclasses.
+def declare_guessed(program : SemanticProgram, owners : Array(OwnerGuesses), og : OwnerGuesses) : Nil
+  og.order.each do |name|
+    guess = og.guesses[name]
+    next if og.owner.instance_vars[name]?
+    next if og.owner.lookup_instance_var?(name)
+
+    type = guess.type
+    unless nonnil_includes?(og, name)
+      type = program.nilable_type(type)
+    end
+    next if type.nil_type?
+
+    og.owner.instance_vars[name] = MetaTypeVar.new(name, type, nil, guess.location)
+  end
+  nil
+end
+
+# Guesses and declares the instance variables of every class body the program's
+# top-level pass recorded, in hierarchy order. Explicit declarations must already
+# be in place: the pass runs after the top-level visit and its pending
+# declarations are resolved.
+pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
+  owners = [] of OwnerGuesses
+  program.type_bodies.each do |body|
+    owner = owner_guesses_for(owners, body.type)
+    if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)
+      visitor = GuessVisitor.new(program, owner)
+      body.body.accept(visitor)
+    end
+  end
+
+  max_depth = 0
+  owners.each do |og|
+    depth = class_depth(og.owner)
+    max_depth = depth if depth > max_depth
+  end
+
+  depth = 0
+  while depth <= max_depth
+    owners.each do |og|
+      next unless og.owner.is_a?(NonGenericClassType) || og.owner.is_a?(GenericClassType)
+      next unless class_depth(og.owner) == depth
+      compute_nonnil(owners, og)
+      declare_guessed(program, owners, og)
+    end
+    depth = depth + 1
+  end
+  nil
+end

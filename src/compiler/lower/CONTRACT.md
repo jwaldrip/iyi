@@ -20,7 +20,7 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 ## Counts
 
 - Members: **193**
-- Provided by line B's port today: **yes 33**, **partly 35**, **no 125**
+- Provided by the port today (regenerated in increment 9 from the gates): **yes 52**, **partly 34**, **no 107**
 
 ## Members
 
@@ -28,7 +28,7 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 |---|---|---|---|---|---|---|---|
 | 1 | `accept` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:40` | 7 | `src/compiler/iyi/syntax/visitor.cr:19` | partly (`src/compiler/syntax/ast.iyi`) |
 | 2 | `all_instance_vars` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2765` | 8 | `src/compiler/iyi/types.cr:722` | partly (`src/compiler/semantic/top_level.iyi`) |
-| 3 | `all_subclasses` | Program and Type |  | `src/compiler/iyi/codegen/class_var.cr:394` | 3 | `src/compiler/iyi/types.cr:273` | no |
+| 3 | `all_subclasses` | Program and Type |  | `src/compiler/iyi/codegen/class_var.cr:394` | 3 | `src/compiler/iyi/types.cr:273` | yes (`src/compiler/types/types.iyi`) |
 | 4 | `base_type` | Program and Type |  | `src/compiler/iyi/codegen/class_var.cr:220` | 18 | `src/compiler/iyi/types.cr:3229` | yes (`src/compiler/syntax/ast.iyi`) |
 | 5 | `belongs_to?` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2578` | 2 | `src/compiler/iyi/semantic/ast.cr:514` | no |
 | 6 | `bytes` | Program and Type |  | `src/compiler/iyi/codegen/llvm_typer.cr:136` | 32 | `src/compiler/iyi/types.cr:1612` | partly (`src/compiler/types/types.iyi`) |
@@ -62,27 +62,27 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 | 34 | `namespace` | Program and Type |  | `src/compiler/iyi/codegen/const.cr:130` | 2 | `src/compiler/iyi/types.cr:99` | partly (`src/compiler/semantic/top_level.iyi`) |
 | 35 | `new_temp_var_name` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2088` | 1 | `src/compiler/iyi/program.cr:1979` | partly (`src/compiler/semantic/normalizer.iyi`) |
 | 36 | `nil_type` | Program and Type |  | `src/compiler/iyi/codegen/class_var.cr:44` | 2 | `src/compiler/iyi/program.cr:1886` | partly (`src/compiler/semantic/top_level.iyi`) |
-| 37 | `nil_type?` | Program and Type |  | `src/compiler/iyi/codegen/ast.cr:170` | 9 | `src/compiler/iyi/types.cr:326` | no |
+| 37 | `nil_type?` | Program and Type |  | `src/compiler/iyi/codegen/ast.cr:170` | 9 | `src/compiler/iyi/types.cr:326` | yes (`src/compiler/semantic/top_level.iyi`) |
 | 38 | `node` | Program and Type |  | `src/compiler/iyi/codegen/class_var.cr:124` | 8 | `src/compiler/iyi/semantic/ast.cr:829` | no |
 | 39 | `normalize` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2002` | 1 | `src/compiler/iyi/semantic/normalizer.cr:6` | partly (`src/compiler/semantic/normalizer.iyi`) |
 | 40 | `not_nil_type` | Program and Type |  | `src/compiler/iyi/codegen/debug.cr:253` | 3 | `src/compiler/iyi/types.cr:3663` | partly (`src/compiler/types/types.iyi`) |
 | 41 | `optimization_mode` | Program and Type |  | `src/compiler/iyi/codegen/fun.cr:847` | 1 | `src/compiler/iyi/program.cr:1354` | no |
-| 42 | `packed?` | Program and Type |  | `src/compiler/iyi/codegen/llvm_typer.cr:314` | 1 | `src/compiler/iyi/types.cr:153` | no |
+| 42 | `packed?` | Program and Type |  | `src/compiler/iyi/codegen/llvm_typer.cr:314` | 1 | `src/compiler/iyi/types.cr:153` | yes (`src/compiler/types/types.iyi`) |
 | 43 | `params` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:321` | 4 | `src/compiler/iyi/semantic/reach_proof.cr:164` | no |
 | 44 | `parent` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2744` | 1 | `src/compiler/iyi/semantic/main_visitor.cr:54` | no |
-| 45 | `pointer?` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:1953` | 6 | `src/compiler/iyi/types.cr:322` | no |
+| 45 | `pointer?` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:1953` | 6 | `src/compiler/iyi/types.cr:322` | yes (`src/compiler/types/types.iyi`) |
 | 46 | `pointer_of` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2648` | 2 | `src/compiler/iyi/program.cr:1831` | partly (`src/compiler/types/type_system.iyi`) |
-| 47 | `proc?` | Program and Type |  | `src/compiler/iyi/codegen/fun.cr:584` | 4 | `src/compiler/iyi/types.cr:350` | no |
+| 47 | `proc?` | Program and Type |  | `src/compiler/iyi/codegen/fun.cr:584` | 4 | `src/compiler/iyi/types.cr:350` | yes (`src/compiler/types/types.iyi`) |
 | 48 | `proc_type` | Program and Type |  | `src/compiler/iyi/codegen/debug.cr:368` | 3 | `src/compiler/iyi/types.cr:3685` | partly (`src/compiler/types/types.iyi`) |
 | 49 | `raise_cast_failed_name` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:709` | 1 | `src/compiler/iyi/program.cr:536` | no |
 | 50 | `raise_name` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:707` | 1 | `src/compiler/iyi/program.cr:528` | no |
 | 51 | `raise_overflow_name` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:708` | 1 | `src/compiler/iyi/program.cr:532` | no |
 | 52 | `realloc_name` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:707` | 1 | `src/compiler/iyi/program.cr:548` | no |
-| 53 | `reference_like?` | Program and Type |  | `src/compiler/iyi/codegen/type_layouts.cr:113` | 1 | `src/compiler/iyi/types.cr:215` | no |
+| 53 | `reference_like?` | Program and Type |  | `src/compiler/iyi/codegen/type_layouts.cr:113` | 1 | `src/compiler/iyi/types.cr:215` | yes (`src/compiler/types/types.iyi`) |
 | 54 | `reference_type` | Program and Type |  | `src/compiler/iyi/codegen/llvm_typer.cr:270` | 2 | `src/compiler/iyi/types.cr:3065` | yes (`src/compiler/semantic/top_level.iyi`) |
-| 55 | `remove_indirection` | Program and Type |  | `src/compiler/iyi/codegen/call.cr:465` | 20 | `src/compiler/iyi/types.cr:838` | no |
+| 55 | `remove_indirection` | Program and Type |  | `src/compiler/iyi/codegen/call.cr:465` | 20 | `src/compiler/iyi/types.cr:838` | yes (`src/compiler/types/indirection.iyi`) |
 | 56 | `special_var?` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:1612` | 6 | `src/compiler/iyi/syntax/ast.cr:845` | no |
-| 57 | `struct?` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2503` | 19 | `src/compiler/iyi/types.cr:137` | no |
+| 57 | `struct?` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2503` | 19 | `src/compiler/iyi/types.cr:137` | yes (`src/compiler/types/types.iyi`) |
 | 58 | `subclasses` | Program and Type |  | `src/compiler/iyi/codegen/llvm_id.cr:104` | 5 | `src/compiler/iyi/types.cr:267` | yes (`src/compiler/types/types.iyi`) |
 | 59 | `super?` | Program and Type |  | `src/compiler/iyi/codegen/call.cr:30` | 2 | `src/compiler/iyi/semantic/call.cr:1808` | no |
 | 60 | `superclass` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2823` | 2 | `src/compiler/iyi/types.cr:543` | yes (`src/compiler/syntax/ast.iyi`) |
@@ -96,13 +96,13 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 | 68 | `type_merge` | Program and Type |  | `src/compiler/iyi/codegen/call.cr:515` | 1 | `src/compiler/iyi/semantic/type_merge.cr:5` | partly (`src/compiler/types/unification.iyi`) |
 | 69 | `types` | Program and Type |  | `src/compiler/iyi/codegen/cast.cr:525` | 5 | `src/compiler/iyi/types.cr:513` | yes (`src/compiler/syntax/ast.iyi`) |
 | 70 | `types?` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:598` | 2 | `src/compiler/iyi/types.cr:517` | no |
-| 71 | `unbound?` | Program and Type |  | `src/compiler/iyi/codegen/llvm_id.cr:154` | 1 | `src/compiler/iyi/types.cr:862` | no |
+| 71 | `unbound?` | Program and Type |  | `src/compiler/iyi/codegen/llvm_id.cr:154` | 1 | `src/compiler/iyi/types.cr:862` | yes (`src/compiler/types/types.iyi`) |
 | 72 | `union_types` | Program and Type |  | `src/compiler/iyi/codegen/cast.cr:128` | 21 | `src/compiler/iyi/types.cr:3487` | partly (`src/compiler/semantic/top_level.iyi`) |
 | 73 | `unions` | Program and Type |  | `src/compiler/iyi/codegen/gc_layouts.cr:213` | 1 | `src/compiler/iyi/program.cr:1268` | no |
 | 74 | `upcast` | Program and Type |  | `src/compiler/iyi/codegen/phi.cr:64` | 1 | `src/compiler/iyi/semantic/bindings.cr:479` | no |
 | 75 | `var` | Program and Type |  | `src/compiler/iyi/codegen/class_var.cr:101` | 9 | `src/compiler/iyi/types.cr:2658` | yes (`src/compiler/syntax/ast.iyi`) |
 | 76 | `visit_main` | Program and Type |  | `src/compiler/iyi/codegen/codegen.cr:2007` | 2 | `src/compiler/iyi/semantic/main_visitor.cr:5` | no |
-| 77 | `void?` | Program and Type |  | `src/compiler/iyi/codegen/ast.cr:170` | 14 | `src/compiler/iyi/types.cr:354` | no |
+| 77 | `void?` | Program and Type |  | `src/compiler/iyi/codegen/ast.cr:170` | 14 | `src/compiler/iyi/types.cr:354` | yes (`src/compiler/types/types.iyi`) |
 | 78 | `arg_types` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:298` | 10 | `src/compiler/iyi/types.cr:2755` | partly (`src/compiler/types/types.iyi`) |
 | 79 | `args` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:105` | 50 | `src/compiler/iyi/macros.cr:1265` | yes (`src/compiler/syntax/ast.iyi`) |
 | 80 | `block` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:38` | 3 | `src/compiler/iyi/macros.cr:1329` | yes (`src/compiler/syntax/ast.iyi`) |
@@ -117,22 +117,22 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 | 89 | `expanded` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:5` | 2 | `src/compiler/iyi/semantic/ast.cr:706` | yes (`src/compiler/syntax/ast.iyi`) |
 | 90 | `fun_literal` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:40` | 1 | `src/compiler/iyi/semantic/ast.cr:674` | no |
 | 91 | `has_inner_pointers?` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/codegen.cr:2765` | 9 | `src/compiler/iyi/macros.cr:3043` | no |
-| 92 | `instance_type` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/ast.cr:19` | 14 | `src/compiler/iyi/types.cr:372` | partly (`src/compiler/types/types.iyi`) |
+| 92 | `instance_type` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/ast.cr:19` | 14 | `src/compiler/iyi/types.cr:372` | yes (`src/compiler/types/types.iyi`) |
 | 93 | `location` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:6` | 25 | `src/compiler/iyi/semantic/type_declaration_processor.cr:60` | yes (`src/compiler/syntax/ast.iyi`) |
 | 94 | `mangled_name` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/fun.cr:22` | 1 | `src/compiler/iyi/semantic/ast.cr:776` | no |
 | 95 | `meta_vars` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/class_var.cr:163` | 2 | `src/compiler/iyi/types.cr:1316` | no |
 | 96 | `metaclass` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/class_var.cr:397` | 12 | `src/compiler/iyi/program.cr:2015` | yes (`src/compiler/types/types.iyi`) |
-| 97 | `metaclass?` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/ast.cr:18` | 6 | `src/compiler/iyi/types.cr:311` | no |
+| 97 | `metaclass?` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/ast.cr:18` | 6 | `src/compiler/iyi/types.cr:311` | yes (`src/compiler/types/types.iyi`) |
 | 98 | `name` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/ast.cr:35` | 97 | `src/compiler/iyi/types.cr:935` | yes (`src/compiler/syntax/ast.iyi`) |
 | 99 | `name_location` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:459` | 2 | `src/compiler/iyi/syntax/ast.cr:99` | yes (`src/compiler/syntax/ast.iyi`) |
-| 100 | `no_return?` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:678` | 4 | `src/compiler/iyi/types.cr:338` | no |
+| 100 | `no_return?` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:678` | 4 | `src/compiler/iyi/types.cr:338` | yes (`src/compiler/types/types.iyi`) |
 | 101 | `obj` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:67` | 14 | `src/compiler/iyi/macros.cr:1398` | yes (`src/compiler/syntax/ast.iyi`) |
 | 102 | `owner` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:90` | 18 | `src/compiler/iyi/types.cr:2096` | partly (`src/compiler/semantic/top_level.iyi`) |
 | 103 | `return_type` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:244` | 15 | `src/compiler/iyi/types.cr:2756` | partly (`src/compiler/syntax/ast.iyi`) |
 | 104 | `scope` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:30` | 5 | `src/compiler/iyi/macros.cr:2385` | yes (`src/compiler/syntax/ast.iyi`) |
 | 105 | `set_type` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:512` | 3 | `src/compiler/iyi/semantic/bindings.cr:111` | partly (`src/compiler/semantic/main_visitor.iyi`) |
 | 106 | `special_vars` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:186` | 2 | `src/compiler/iyi/semantic/ast.cr:145` | no |
-| 107 | `splat_index` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/codegen.cr:2233` | 1 | `src/compiler/iyi/types.cr:854` | partly (`src/compiler/syntax/ast.iyi`) |
+| 107 | `splat_index` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/codegen.cr:2233` | 1 | `src/compiler/iyi/types.cr:854` | yes (`src/compiler/types/types.iyi`) |
 | 108 | `supports_autocast?` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:490` | 1 | `src/compiler/iyi/semantic/ast.cr:20` | no |
 | 109 | `target_const` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:75` | 5 | `src/compiler/iyi/semantic/ast.cr:650` | no |
 | 110 | `target_def` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:25` | 7 | `src/compiler/iyi/semantic/call.cr:24` | yes (`src/compiler/semantic/main_visitor.iyi`) |
@@ -145,11 +145,11 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 | 117 | `vars` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:371` | 12 | `src/compiler/iyi/program.cr:70` | yes (`src/compiler/syntax/ast.iyi`) |
 | 118 | `with_scope` | Def, ASTNode and Call |  | `src/compiler/iyi/codegen/call.cr:93` | 3 | `src/compiler/iyi/semantic/call.cr:7` | no |
 | 119 | `type_id` | type ids |  | `src/compiler/iyi/codegen/gc_layouts.cr:98` | 3 | `src/compiler/iyi/object_header.cr:115` | no |
-| 120 | `virtual_type` | type ids |  | `src/compiler/iyi/codegen/ast.cr:110` | 5 | `src/compiler/iyi/types.cr:358` | no |
+| 120 | `virtual_type` | type ids |  | `src/compiler/iyi/codegen/ast.cr:110` | 5 | `src/compiler/iyi/types.cr:358` | yes (`src/compiler/types/types.iyi`) |
 | 121 | `virtual_type!` | type ids | `virtual_type_bang` | `src/compiler/iyi/codegen/codegen.cr:517` | 1 | `src/compiler/iyi/types.cr:368` | no |
 | 122 | `virtual_type_made?` | type ids |  | `src/compiler/iyi/codegen/gc_layouts.cr:207` | 1 | `src/compiler/iyi/types.cr:364` | no |
 | 123 | `size_bit_width` | layouts and sizes |  | `src/compiler/iyi/codegen/codegen.cr:3282` | 10 | `src/compiler/iyi/semantic/flags.cr:63` | no |
-| 124 | `sizeof_type` | layouts and sizes |  | `src/compiler/iyi/codegen/codegen.cr:1292` | 4 | `src/compiler/iyi/types.cr:879` | no |
+| 124 | `sizeof_type` | layouts and sizes |  | `src/compiler/iyi/codegen/codegen.cr:1292` | 4 | `src/compiler/iyi/types.cr:879` | partly (`src/compiler/types/types.iyi`, refused by name) |
 | 125 | `alignstack?` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/asm.cr:56` | 1 | `src/compiler/iyi/macros.cr:2654` | no |
 | 126 | `allowed_in_lib?` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/ast.cr:170` | 2 | `src/compiler/iyi/semantic/lib.cr:281` | no |
 | 127 | `annotation` | lib funs, asm and linking | `annotation_member` | `src/compiler/iyi/codegen/call.cr:385` | 2 | `src/compiler/iyi/macros.cr:1233` | no |
@@ -157,8 +157,8 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 | 129 | `clobbers` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/asm.cr:42` | 1 | `src/compiler/iyi/macros.cr:2645` | partly (`src/compiler/syntax/ast.iyi`) |
 | 130 | `constraint` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/asm.cr:13` | 2 | `src/compiler/iyi/macros.cr:2676` | partly (`src/compiler/syntax/ast.iyi`) |
 | 131 | `element_type` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/abi.cr:74` | 23 | `src/compiler/iyi/types.cr:2662` | partly (`src/compiler/types/types.iyi`) |
-| 132 | `extern?` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/ast.cr:168` | 9 | `src/compiler/iyi/types.cr:142` | no |
-| 133 | `extern_union?` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/codegen.cr:206` | 9 | `src/compiler/iyi/types.cr:147` | no |
+| 132 | `extern?` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/ast.cr:168` | 9 | `src/compiler/iyi/types.cr:142` | yes (`src/compiler/types/types.iyi`) |
+| 133 | `extern_union?` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/codegen.cr:206` | 9 | `src/compiler/iyi/types.cr:147` | yes (`src/compiler/types/types.iyi`) |
 | 134 | `file_module` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/codegen.cr:874` | 1 | `src/compiler/iyi/program.cr:2047` | no |
 | 135 | `file_modules` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/codegen.cr:486` | 1 | `src/compiler/iyi/program.cr:59` | no |
 | 136 | `inputs` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/asm.cr:30` | 1 | `src/compiler/iyi/macros.cr:1480` | partly (`src/compiler/syntax/ast.iyi`) |
@@ -167,8 +167,8 @@ Matching is by name, not by receiver type. Each row therefore needs one look at 
 | 139 | `output_ptrofs` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/asm.cr:8` | 2 | `src/compiler/iyi/semantic/ast.cr:824` | no |
 | 140 | `outputs` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/asm.cr:7` | 1 | `src/compiler/iyi/macros.cr:2637` | partly (`src/compiler/syntax/ast.iyi`) |
 | 141 | `real_name` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/ast.cr:135` | 8 | `src/compiler/iyi/macros.cr:2092` | partly (`src/compiler/syntax/ast.iyi`) |
-| 142 | `remove_alias` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/ast.cr:167` | 3 | `src/compiler/iyi/types.cr:830` | no |
-| 143 | `remove_typedef` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/codegen.cr:1931` | 6 | `src/compiler/iyi/types.cr:384` | no |
+| 142 | `remove_alias` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/ast.cr:167` | 3 | `src/compiler/iyi/types.cr:830` | yes (`src/compiler/types/merge.iyi`) |
+| 143 | `remove_typedef` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/codegen.cr:1931` | 6 | `src/compiler/iyi/types.cr:384` | yes (`src/compiler/semantic/top_level.iyi`) |
 | 144 | `typedef` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/cast.cr:247` | 10 | `src/compiler/iyi/types.cr:3113` | no |
 | 145 | `volatile?` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/asm.cr:56` | 1 | `src/compiler/iyi/macros.cr:2650` | no |
 | 146 | `wasm_import_module` | lib funs, asm and linking |  | `src/compiler/iyi/codegen/fun.cr:565` | 1 | `src/compiler/iyi/types.cr:3104` | no |
