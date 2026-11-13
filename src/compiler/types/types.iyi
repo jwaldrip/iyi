@@ -150,7 +150,6 @@ pub class GenericClassInstanceType < GenericInstanceType
   property superclass : Type?
   getter subclasses : Array(Type)
   getter included_modules : Array(Type)
-  getter instance_vars : Hash(String, MetaTypeVar)
   @metaclass : GenericClassInstanceMetaclassType?
   property virtual_type_cache : Type? = nil
 

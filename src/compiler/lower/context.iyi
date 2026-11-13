@@ -151,6 +151,9 @@ pub class Lowerer
   # The number the last renamed global took (LLVM's `ValueSymbolTable::LastUnique`, per module): a global whose name is
   # taken gets a dot and the next number (unique_global_name, helpers.iyi).
   property last_unique : Int64
+  # The hosted `@proc_counts`: the literals of each name the module has lowered, so a second literal of one name is
+  # `~proc2...` (proc.iyi, proc_literal_name).
+  property proc_counts : Hash(String, Int32)
 
   def initialize(@module : Module, @typer : LowerTyper, @analysed : MainVisitor)
     @builder = Builder.new(@module)
@@ -176,6 +179,7 @@ pub class Lowerer
     @last_unique = 0_i64
     @fun_defs_done = Hash(String, Bool).new
     @unused_fun_defs = [] of FunDef
+    @proc_counts = Hash(String, Int32).new
   end
 
   # The function being lowered (the hosted `context`). Raises when none is.

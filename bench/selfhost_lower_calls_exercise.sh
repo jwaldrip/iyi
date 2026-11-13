@@ -207,6 +207,12 @@ prove_mutation "a struct call receiver loads its spill slot though the slot is i
   'if low.receiver_node == node.object_id && self_by_pointer?(ret)' 'if false' -- lower_calls_check || status=1
 prove_mutation "a module-level build constant is kept in the module (the module check catches it)" "$REPO/bench/lib/lower_gate.iyi" \
   'next if stripped.starts_with?("@") && build_constant?(stripped, builds) || stripped.starts_with?("%Nil = type")' 'next if stripped.starts_with?("%Nil = type")' -- lower_calls_check || status=1
+prove_mutation "a block body typed NoReturn is refused (no hosted upcast applies to a body that never returns)" "$REPO/src/compiler/lower/call.iyi" \
+  'body_no_return = body_t.as(Type).is_a?(NoReturnType)' 'body_no_return = false' -- lower_calls_check || status=1
+prove_mutation "a top-level fun with a body is emitted with the iyi calling convention" "$REPO/src/compiler/lower/fun.iyi" \
+  "  CallConv::C
+end" "  CallConv::Iyi
+end" -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

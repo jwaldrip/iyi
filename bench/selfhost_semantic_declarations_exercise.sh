@@ -599,8 +599,8 @@ prove_mutation "explicit instance variables are recorded in reverse declaration 
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
-  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r)" \
-  "@pending_ivars.unshift(PendingIvar.new(@current_type, ivar_name, r))" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, true)" \
+  "@pending_ivars.unshift(PendingIvar.new(@current_type, ivar_name, r, nil, true))" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # Re-claimed from "an instance variable assigned from a typed argument is dropped". Measured: the pending
@@ -615,6 +615,21 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
   "return hook.virtual_of(resolved)" \
   "return resolved" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an initialize argument instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, true)" \
+  "@pending_ivars << PendingIvar.new(@current_type, ivar_name, r, nil, false)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "pointer malloc and null calls do not infer instance variable types" "$MUT_IVARS" \
+  '    if obj.is_a?(Generic) && (node.name == "malloc" || node.name == "null")' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "generic new calls do not infer instance variable types" "$MUT_IVARS" \
+  '    if node.name == "new" && obj.is_a?(Generic)' \
+  '    if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \

@@ -1,7 +1,7 @@
 module compiler/semantic/instance_vars
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Arg, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
@@ -217,9 +217,21 @@ class GuessVisitor < Visitor
     end
     if node.is_a?(Var)
       name = node.as(Var).name
-      return @og.owner if name == "self"
+      if name == "self"
+        if hook = @program.merge_hook
+          return hook.virtual_of(@og.owner)
+        end
+        return @og.owner
+      end
       if restriction = @args[name]?
-        return @program.lookup_type_node?(restriction, @og.owner)
+        if t = @program.lookup_type_node?(restriction, @og.owner)
+          resolved = @program.remove_alias(t)
+          if hook = @program.merge_hook
+            return hook.virtual_of(resolved)
+          end
+          return resolved
+        end
+        return nil
       end
       return nil
     end
@@ -259,6 +271,24 @@ class GuessVisitor < Visitor
       found = @program.lookup_type_node?(obj, @og.owner)
       if found && found.is_a?(NonGenericClassType) && found.as(NonGenericClassType).subclasses.empty?
         return found
+      end
+    end
+    # A constructed generic with resolved arguments, such as Hash(String, Bool).new.
+    if node.name == "new" && obj.is_a?(Generic)
+      if hook = @program.merge_hook
+        if found = @program.lookup_type_node?(obj, @og.owner)
+          return hook.virtual_of(found)
+        end
+      end
+    end
+    # Pointer(T).malloc and Pointer(T).null have the pointer instance type.
+    if obj.is_a?(Generic) && (node.name == "malloc" || node.name == "null")
+      generic = obj.as(Generic)
+      name = generic.name
+      if name.is_a?(Path) && name.as(Path).names == ["Pointer"] && generic.type_vars.size == 1
+        if @program.merge_hook
+          return @program.lookup_type_node?(generic, @og.owner)
+        end
       end
     end
     nil

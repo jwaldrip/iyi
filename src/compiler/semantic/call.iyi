@@ -78,7 +78,7 @@ pub class CallReceiver
     single = matches.matches[0]
     ret = single.definition.return_type
     return nil if ret.nil?
-    found = ArgRestriction.lookup_bound(ts, single.defining, ret.as(ASTNode), owner)
+    found = ArgRestriction.lookup_free(ts, single.defining, ret.as(ASTNode), owner, single.bound)
     return nil if found.is_a?(LookupError)
     found.as(Type)
   end
@@ -190,7 +190,7 @@ pub class CallRecalculation
       if ret.nil?
         return CallTarget.new(single.definition, rec_type, nil, true, nil)
       end
-      found = ArgRestriction.lookup_bound(ts, single.defining, ret.as(ASTNode), rec_type)
+      found = ArgRestriction.lookup_free(ts, single.defining, ret.as(ASTNode), rec_type, single.bound)
       return CallTarget.failed(found.as(LookupError).message) if found.is_a?(LookupError)
       return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil)
     end
