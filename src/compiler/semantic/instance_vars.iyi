@@ -517,13 +517,16 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   # the type system before the visit takes hook paths that are not ported.
   re_resolve_explicit_ivars(program)
   owners = [] of OwnerGuesses
+  saved_imports = program.current_imports
   program.type_bodies.each do |body|
+    program.current_imports = body.imports
     owner = owner_guesses_for(owners, body.type)
     if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)
       visitor = GuessVisitor.new(program, owner)
       body.body.accept(visitor)
     end
   end
+  program.current_imports = saved_imports
 
   max_depth = 0
   owners.each do |og|

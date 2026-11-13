@@ -1986,8 +1986,9 @@ end
 pub class TypeBody
   getter type : ModuleType
   getter body : ASTNode
+  getter imports : Hash(String, Type)
 
-  def initialize(@type : ModuleType, @body : ASTNode)
+  def initialize(@type : ModuleType, @body : ASTNode, @imports : Hash(String, Type))
   end
 end
 
@@ -2340,7 +2341,7 @@ pub class TopLevelVisitor < Visitor
           meta.add_location(loc)
         end
         old_meta_scope = @current_type
-        @program.type_bodies << TypeBody.new(meta, node.body)
+        @program.type_bodies << TypeBody.new(meta, node.body, @program.current_imports)
         @current_type = meta
         node.body.accept(self)
         @current_type = old_meta_scope
@@ -2450,7 +2451,7 @@ pub class TopLevelVisitor < Visitor
     old_type = @current_type
     @current_type = type
     node.body = splice_body(node.body)
-    @program.type_bodies << TypeBody.new(type, node.body)
+    @program.type_bodies << TypeBody.new(type, node.body, @program.current_imports)
     node.body.accept(self)
     @current_type = old_type
     false
