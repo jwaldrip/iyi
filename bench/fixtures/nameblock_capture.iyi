@@ -10,4 +10,5 @@ def apply(n : Int32, &block : Int32 -> Int32) : Int32
   block.call(n)
 end
 
-LibC.exit(run { 3 } + apply(4) { |n| n })
+run { 3 }
+LibC.exit(apply(7) { |n| n })

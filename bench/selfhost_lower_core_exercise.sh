@@ -566,7 +566,9 @@ if name_block_check; then
   echo "  nameblock_capture: captured block names match the hosted symbols"
 else
   echo "  nameblock_capture: captured block names differ from the hosted symbols"
-  awk 'NR<=8' "$WORK/name-block.err" "$WORK/name-block.out" "$WORK/name-block.build.log" "$WORK/name-block.oracle.log"
+  for log in "$WORK/name-block.err" "$WORK/name-block.out" "$WORK/name-block.build.log" "$WORK/name-block.oracle.log"; do
+    [ ! -f "$log" ] || awk 'NR<=8' "$log"
+  done
   status=1
 fi
 prove_mutation "a captured block loses its ampersand" "$REPO/src/compiler/lower/fun.iyi" \
