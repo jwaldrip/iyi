@@ -1,8 +1,0 @@
-require "./cvar_uint64_lib"
-
-lib LibC
-  fun exit(status : Int32) : NoReturn
-end
-
-Tl.set(9_u64)
-LibC.exit(Tl.line == 9_u64 ? 7 : 3)

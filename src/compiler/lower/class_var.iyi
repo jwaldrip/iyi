@@ -218,8 +218,9 @@ pub def declare_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir
 end
 
 # The global of a class variable with a literal initialiser: its value is the literal, stored at the declaration
-# (hosted `create_initialize_class_var_function` with `simple_initializer`, the `discard` branch). A required
-# file's declaration is not body-typed, so the node has no analysed type; the declared type is used then.
+# (hosted `create_initialize_class_var_function` with `simple_initializer`, the `discard` branch). The constant is
+# built from the variable's declared type, not the initialiser node's analysed type: a required file is declaration-
+# visited only, so that node has no type (the census refusal on `@@cache : UInt64 = 0_u64`).
 pub def simple_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir : IrType, node : ASTNode, st : ClassVarState) : Global
   if g = st.global
     return g.as(Global)
@@ -227,9 +228,6 @@ pub def simple_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir 
   value = nil
   if declared = cvar.type?
     value = literal_of_type(low, node, declared)
-  end
-  if value.nil?
-    value = literal_node_value(low, node)
   end
   if value.nil?
     refuse_port("lower: class variable #{cvar.name} has a literal initialiser that is not an integer, Bool or Char (hosted class_var.cr: initialize_class_var)")
