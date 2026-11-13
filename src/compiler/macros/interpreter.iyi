@@ -461,6 +461,11 @@ pub class MacroInterpreter
           return resolve_free_binding(bound)
         end
       end
+      if facts = @type_facts
+        if annotation_name = facts.annotation_types[path.names.join("::")]?
+          return TypeNode.new(annotation_name)
+        end
+      end
       if path.names.size == 1 && MacroAnswers.builtin_type?(path.names[0])
         return TypeNode.new(path.names[0])
       end

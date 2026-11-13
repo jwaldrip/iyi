@@ -2,7 +2,7 @@ module compiler/semantic/macro_bindings
 
 import compiler/macros/interpreter::{MacroFreeBinding}
 import compiler/macros/type_facts::{MacroInstanceVarFact, MacroTypeFacts}
-import compiler/semantic/top_level::{EnumType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, Type, UnionType}
+import compiler/semantic/top_level::{AnnotationType, EnumType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, Type, UnionType}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, TupleInstanceType, TypeQueries}
 
 # The type parameters an inline macro site sees in the def being typed, as the
@@ -26,6 +26,20 @@ pub class MacroBindings
     facts = MacroTypeFacts.new
     if owner.is_a?(EnumType)
       facts.constants_known = true
+      facts.annotations_known = true
+      if annotations = owner.annotations
+        annotations.each do |annotation_type, values|
+          if ann = values.last?
+            facts.annotations[annotation_type.full_name] = ann
+            facts.annotation_types[annotation_type.full_name] = annotation_type.full_name
+          end
+        end
+      end
+      owner.program.types.each do |name, type|
+        if type.is_a?(AnnotationType)
+          facts.annotation_types[name] = type.full_name
+        end
+      end
       owner.as(EnumType).members.each do |name, member|
         facts.constants[name] = member.value.to_s
       end

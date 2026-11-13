@@ -373,6 +373,10 @@ pub class MacroMethods
       # Hosted methods.cr:2301-2311, 2618-2640: names are identifiers and
       # `constant` returns the constant's syntax, not its string value.
       if facts = tn.facts
+        if facts.annotations_known && method == "annotation" && args.size == 1 && args[0].is_a?(TypeNode)
+          annotation_name = args[0].as(TypeNode).name
+          return facts.annotations[annotation_name]? || NilLiteral.new
+        end
         if facts.constants_known && method == "constants" && args.empty?
           names = [] of ASTNode
           facts.constants.each_key { |name| names << MacroId.new(name) }
