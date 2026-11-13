@@ -192,7 +192,22 @@ for test in selected tests, each on its own fiber (D21):
   if --cached, fast names a build B, a valid local pass has build B (not
      contradicted, profile equal, replay clean), no contradicted receipt or
      mask of test validates, and fast.unchanged_reason(env) is nil:
-    serve: cached, source local, check "inputs"; no compiler starts; next test
+    serve: cached, source local, check "inputs"; no compiler starts; the effort record is not read; next test
+  if --cached, not --fresh, the id is not ambiguous, no contradicted
+     receipt validates, and IYI_STALE_EFFORT is not off:
+    effort = the effort record of test (absent when missing, corrupt,
+             another format or another version)
+    cheap = effort has check and run, and (build or 0) + run <= check / 2,
+            from the record as it stood before this run
+    settled = owed is present, and owed.seen is null or nothing it
+              stamped has changed
+    if cheap and not settled:
+      run without a check (below); check "run", effort "cheap"; next test
+    else:
+      compiler path below; effort "owed" when cheap and settled, "unknown"
+      when check or run is not known, otherwise "dear"
+  else:
+    compiler path below; effort null
   accept = {}
   block  = {}
   unless --fresh:
@@ -202,6 +217,25 @@ for test in selected tests, each on its own fiber (D21):
     block  = builds of contradicted receipts and masks of test passing the same checks
     accept = valid minus block
   run(test, accept, block)
+
+run without a check (D22), one pool slot, under the test's scratch lock,
+scratch emptied before and removed after as the compiler path does:
+  seen = fast restamped, when present and not refused, else owed.seen,
+         else null; taken before the build, so an edit during it reads
+         as a change
+  forget a fast record that does not match (refused included); a matching
+  record stays: it still describes the inputs
+  build: iyi build FILE -o BINARY; no -Diyi_observe, no --stale-* flags
+  build failed: leave the lock; compiler path in this slot (effort
+                "unbuilt"); builds counts both; the verdict is then today's
+  else run under the receipt profile, no IYI_OBSERVE; the verdict equals
+       the observed run's by RG2
+  non-pass: revoke every receipt of test that validates now; owed null
+  pass: no receipt, no fast record; owed = {cause: check_reason, seen},
+        except when a fast record that is not refused matched and
+        unservable is true: owed null, because a check would repeat a
+        pass that left nothing to serve
+  write the effort record: build, run, owed; check and unservable unchanged
 
 run(test, accept, block):
   build with -Diyi_observe --stale-key OUT --stale-accept accept --stale-block block:
@@ -218,6 +252,7 @@ run(test, accept, block):
     revoke every receipt of test that validates now (whatever trace state)
   pass with trace incomplete: write nothing
   pass, complete, untainted, run inputs unchanged during run: write receipt
+  a compiler run writes check, run and unservable, and clears owed; an ambiguous id records nothing (D22)
 ```
 
 Why sound: An equal build key means the compiler emits the same reached code (A1, RG8), so a rebuild runs the code the receipt ran. A deterministic program whose recorded answers all still hold makes the same reads and reaches the same verdict. Replay in order stops at the first mismatch (`run: fixtures/a.txt changed`). A changed condition reruns the test and records a second receipt, while the first stays valid for its own inputs. A fast serve (D20) is the compiler check's answer when every input the Build reads still has the stamp its record holds. A content change writes the file, which sets mtime and ctime from the clock; user space cannot set ctime (`cp -p`, `touch -r` and `rsync -t` set mtime only); a replacement by rename changes the inode; and a write inside the record's clock tick is caught by the racy digest. The check would then compute `local_build`, the Build of a valid local receipt, unblocked, and hit (`check.cr:211-214`). Each test's decision reads the store and disk as its fiber finds them, so a parallel run's verdicts are those of some order of the tests, as plain `-p` already is.
