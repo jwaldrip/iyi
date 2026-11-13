@@ -501,7 +501,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     durations: list[float] = []
     idx = 0
     runaway_rows: list[str] = []
-    watchdog_limit_kib = 6 * 1024 * 1024
+    # Leave headroom for allocations between RSS samples.
+    watchdog_limit_kib = 3 * 1024 * 1024
     # A conservative initial bound until a successful chunk supplies a median.
     initial_timeout = 3600.0
     (outdir / "merged.names").unlink(missing_ok=True)
@@ -549,7 +550,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                     value = rss.stdout.strip()
                     if value:
                         peak_kib = max(peak_kib, int(value))
-                    if peak_kib >= 4 * 1024 * 1024 and sampler is None:
+                    if peak_kib >= 1 * 1024 * 1024 and sampler is None:
                         with sample_path.open("w", encoding="utf-8") as sample_log:
                             sampler = subprocess.Popen(
                                 ["sample", str(proc.pid), "5"],
@@ -558,13 +559,13 @@ def cmd_run(args: argparse.Namespace) -> int:
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     stopped = "watchdog: cannot measure rss"
                 if peak_kib > watchdog_limit_kib:
-                    stopped = "runaway: rss > 6 GiB"
+                    stopped = "runaway: rss > 3 GiB safety threshold"
                 elif time.monotonic() - t0 > deadline:
                     stopped = "timeout"
                 if stopped:
                     proc.kill()
                     break
-                time.sleep(2)
+                time.sleep(0.25)
             proc.wait()
         if sampler is not None:
             try:
