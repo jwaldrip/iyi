@@ -5,12 +5,10 @@ class Box(T)
   end
 end
 
-def take(klass : Box(Int32).class) : Int32
-  klass.value(7)
-end
+klass = Box(Int32)
 
 lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-LibC.exit(take(Box(Int32)))
+LibC.exit(klass.value(7))
