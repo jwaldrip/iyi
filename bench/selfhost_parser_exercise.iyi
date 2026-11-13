@@ -125,6 +125,13 @@ module BenchSelfhostParserExercise
       s
     when Call
       s = "#{p}Call name=#{escape_s(node.name)}\n"
+      if Program.args.size > 0 && Program.args[0].ends_with?("syntax_call_spans.iyi")
+        if loc = node.end_location
+          s += "#{p}  end=#{loc.line_number}:#{loc.column_number}\n"
+        else
+          s += "#{p}  end=nil\n"
+        end
+      end
       if obj = node.obj
         s += "#{p}  obj:\n" + dump_ast(obj, indent + 2)
       end

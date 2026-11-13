@@ -201,6 +201,13 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     s
   when Iyi::Call
     s = "#{p}Call name=#{escape_s(node.name)}\n"
+    if ARGV[0]?.try(&.ends_with?("syntax_call_spans.iyi"))
+      if loc = node.end_location
+        s += "#{p}  end=#{loc.line_number}:#{loc.column_number}\n"
+      else
+        s += "#{p}  end=nil\n"
+      end
+    end
     if obj = node.obj
       s += "#{p}  obj:\n" + dump_ast(obj, indent + 2)
     end
@@ -754,6 +761,7 @@ for fixture in \
   "$REPO"/bench/fixtures/syntax_control_keyword_names.iyi \
   "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi \
   "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi \
+  "$REPO"/bench/fixtures/syntax_call_spans.iyi \
   "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi; do
   fixture_name="${fixture#"$REPO/"}"
   "$WORK/exercise-plain" "$fixture" > "$WORK/iyi.ast"
@@ -885,6 +893,7 @@ new_fixtures_match() {
     "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi \
     "$REPO"/bench/fixtures/syntax_control_keyword_names.iyi \
     "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi \
+    "$REPO"/bench/fixtures/syntax_call_spans.iyi \
     "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi; do
     "$WORK/mut-exercise" "$fixture" > "$WORK/mut.ast" 2>/dev/null || return 1
     "$WORK/dump_crystal" "$fixture" > "$WORK/mut_cr.ast" 2>/dev/null || return 1
@@ -932,6 +941,9 @@ run_proof_in "mutation 27: a comma does not continue a call across the line brea
 run_proof_in "mutation 28: a control keyword before a colon is refused as a void value" "$PARSER" \
   'syntax_error("void value expression", @token.location) unless next_comes_colon_space?' \
   'syntax_error("void value expression", @token.location)'
+run_proof_in "mutation 29: discard the closing call delimiter location" "$PARSER" \
+  'CallArgs.new(args, block, block_arg, named_args, false, end_location, true)' \
+  'CallArgs.new(args, block, block_arg, named_args, false, nil, true)'
 
 echo
 echo "== Verification clean state confirmed"
