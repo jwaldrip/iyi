@@ -107,6 +107,7 @@ if [ "$passed" -eq 13 ]; then
   prove_mutation 'nested loop boundary preserves outer cleanup' "$file" 'stop = low.ensure_boundaries[target.object_id]? || 0' 'stop = 0' -- mutation_check nested_loops || status=1
   prove_mutation 'yield boundary preserves outer cleanup' "$file" 'stop = low.ensure_boundaries[target.object_id]? || 0' 'stop = 0' -- mutation_check around_yield || status=1
   prove_mutation 'nested return cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check nested_return || status=1
+  prove_mutation 'nested handler reserves rescue name' "$file" '      symbols.claim("rescue")' '      symbols.claim("")' -- mutation_check nested || status=1
   prove_mutation 'nested cleanup order' "$file" 'visit_node(low, node.body)' 'visit_node(low, cleanup.as(ASTNode)); visit_node(low, node.body)' -- mutation_check nested || status=1
 else
   echo '  NOT RUN: baseline fixtures did not all pass'

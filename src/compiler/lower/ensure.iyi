@@ -78,6 +78,13 @@ pub def lower_exception_handler(low : Lowerer, node : ExceptionHandler) : Nil
   if cleanup.nil?
     refuse_port("exception handler without defer cleanup")
   end
+  # Hosted creates the rescue block before the body. The unwind pass removes
+  # it, but LLVM's shared name counter has already reserved its name.
+  if block = low.builder.insert_block
+    if symbols = block.symbols
+      symbols.claim("rescue")
+    end
+  end
   t = low.analysed.type_of?(node.as(ASTNode))
   wants = low.needs_value
   merge = nil
