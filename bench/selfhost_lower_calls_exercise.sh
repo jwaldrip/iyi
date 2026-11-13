@@ -238,6 +238,8 @@ prove_mutation "a generic type-parameter restriction is not bound from the recei
   'if bound = io.as(GenericInstanceType).type_vars[pname]?' 'if false' -- lower_calls_check || status=1
 prove_mutation "a class's allocate result is discarded for nil instead of returning the object pointer" "$REPO/src/compiler/lower/call.iyi" \
   '        low.last = ptr' '        low.last = llvm_nil(low)' -- lower_calls_check || status=1
+prove_mutation "a reference union argument is replaced with null before the call" "$REPO/src/compiler/lower/call.iyi" \
+  'values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))' 'values << (at.is_a?(UnionType) ? low.builder.const_null(low.module.types.ptr).as(Value) : (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)))' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
