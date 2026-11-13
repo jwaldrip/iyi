@@ -141,7 +141,9 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
 
   fn = low.begin_main_function(main_function_name(analysed), entry_type, true)
   fn.linkage = Linkage::Internal
-  fn.call_convention = CallConv::C
+  # The bare entry is internal and called only by the generated main. The
+  # prelude entry is called through a C fun declaration instead.
+  fn.call_convention = main_function_name(analysed) == "__crystal_main" ? CallConv::Iyi : CallConv::C
   fn.name_param(fn.param(0), "argc")
   fn.name_param(fn.param(1), "argv")
   store_aligned(low, fn.param(0), argc_global)

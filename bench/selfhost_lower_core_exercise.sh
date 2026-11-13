@@ -612,6 +612,23 @@ else
   awk 'NR<=8' "$WORK/tuple.err" "$WORK/tuple.out" "$WORK/tuple.build.log"
   status=1
 fi
+tuple_entry_check() {
+  "$IYI" build -o "$WORK/port-tuple-entry" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple-entry.build.log" 2>&1 || return 1
+  "$WORK/port-tuple-entry" emit "$REPO/bench/fixtures/lower_tuple.iyi" "$WORK/lower_tuple.oracle.ll" > "$WORK/tuple-entry.ir" 2> "$WORK/tuple-entry.err" || return 1
+  "$WORK/compile_native" "$WORK/tuple-entry.ir" -o "$WORK/tuple-entry.native" > "$WORK/tuple-entry.native.log" 2>&1 || return 1
+  timeout 30 "$WORK/tuple-entry.native" > "$WORK/tuple-entry.native.out" 2>&1; local ns=$?
+  timeout 30 "$WORK/lower_tuple" > "$WORK/tuple-entry.hosted.out" 2>&1; local hs=$?
+  [ "$ns" = "$hs" ] && cmp -s "$WORK/tuple-entry.native.out" "$WORK/tuple-entry.hosted.out"
+}
+if tuple_entry_check; then
+  prove_mutation "a bare aggregate entry uses the C convention" "$REPO/src/compiler/lower/lower.iyi" \
+    '  fn.call_convention = main_function_name(analysed) == "__crystal_main" ? CallConv::Iyi : CallConv::C' \
+    '  fn.call_convention = CallConv::C' -- tuple_entry_check || status=1
+else
+  echo "FAIL: tuple entry does not run to the hosted result"
+  awk 'NR<=8' "$WORK/tuple-entry.err" "$WORK/tuple-entry.build.log" "$WORK/tuple-entry.native.log"
+  status=1
+fi
 
 
 
