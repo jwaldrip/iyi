@@ -148,6 +148,14 @@ no_return_check() {
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_noreturn_union.iyi" "$WORK/lowcast_noreturn_union.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
 }
+proc_result_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_proc_result.iyi" "$WORK/lowcast_proc_result.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
+}
+proc_result_check || { echo "  baseline: proc result assignment fixture differs"; status=1; }
+prove_mutation "a proc result assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)' '  if false' -- proc_result_check || status=1
 no_return_check || { echo "  baseline: no-return union fixture differs"; status=1; }
 prove_mutation "a no-return union assignment stores a value" "$REPO/src/compiler/lower/cast.iyi" \
   '  return if at_terminator?(low) || TypeQueries.no_return?(value_type)' '  return if false' -- no_return_check || status=1
