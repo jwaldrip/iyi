@@ -295,22 +295,17 @@ pub def emit_def_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, func : 
   elsif ret.is_a?(NilType)
     low.last = llvm_nil(low)
   elsif passed_by_value?(ret)
-    # Hosted codegen_call (call.cr:707-713): a struct result of a call is spilled to a fresh alloca and read back
-    # when it is wanted, and is nil when it is not.
+    # Hosted codegen_call (call.cr:707-713): a wanted by-value result is the address of its spill.
     if low.needs_value
       ir = low.typer.llvm_type(ret)
       temp = low.alloca(ir, "")
       store_aligned(low, inst, temp)
       low.spill_node = node.object_id
       low.spill_slot = temp
-      # A receiver that is this call takes the slot as its self (receiver_self), so no value is loaded from it. A
-      # receiver whose value an inlined literal body never reads is spilled and not loaded (hosted call.cr:707-713).
-      if low.receiver_node == node.object_id && self_by_pointer?(ret)
-        low.last = temp
-      elsif low.receiver_unused == node.object_id
+      if low.receiver_unused == node.object_id
         low.last = llvm_nil(low)
       else
-        low.last = load_aligned(low, ir, temp, "")
+        low.last = temp
       end
     else
       low.last = llvm_nil(low)
