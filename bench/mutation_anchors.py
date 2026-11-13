@@ -327,6 +327,247 @@ def patches(path, kind, script):
     return result.stdout != original
 
 
+# ---- proofs run by bench/lib/mutation.sh ------------------------------------
+#
+# `prove_mutation <label> <file> <old> <new> -- <check>` replaces literal text.
+# Its arguments are shell words: quoted, continued over lines, built from the
+# driver's own variables, sometimes passed through a wrapper function. They are
+# read as words and expanded by bash itself, with only the driver's plain
+# assignments in scope, so nothing of the driver runs.
+
+RUNNER = "lib/mutation.sh"
+RUNNER_CALL = re.compile(r"^[ \t]*(?:if[ \t]+!?[ \t]*|![ \t]*)?(prove_mutation(?:_all)?)[ \t]", re.M)
+OWN_RUNNER = re.compile(r"^[ \t]*(?:function[ \t]+)?prove_mutation(?:_all)?[ \t]*\(\)", re.M)
+ASSIGN_LINE = re.compile(r"^[ \t]*(?:(local|export|readonly)[ \t]+)?(?=[A-Za-z_][A-Za-z0-9_]*=)", re.M)
+NAME_EQ = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
+SHELL_FUNCTION = re.compile(
+    r"^([ \t]*)(?:function[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(\)[ \t]*\{[ \t]*(?:#[^\n]*)?\n", re.M
+)
+# Where a driver's scratch directory is pointed while its words are expanded: a
+# proof whose file lands here patches something the driver makes as it runs.
+SCRATCH = "/tmp/mutation-anchors-scratch"
+
+
+def skip_parens(text, pos):
+    """`pos` is at an opening parenthesis; the index after the one that closes it."""
+    depth = 0
+    while pos < len(text):
+        c = text[pos]
+        if c == "\\":
+            pos += 2
+            continue
+        if c == "'":
+            end = text.find("'", pos + 1)
+            pos = end + 1 if end >= 0 else len(text)
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return pos + 1
+        pos += 1
+    return len(text)
+
+
+def shell_word(text, pos):
+    """The source of one shell word starting at `pos`, and where it ends."""
+    start = pos
+    n = len(text)
+    while pos < n:
+        c = text[pos]
+        if c in " \t\n;|&)":
+            break
+        if c == "\\":
+            pos += 2
+        elif c == "'":
+            end = text.find("'", pos + 1)
+            if end < 0:
+                return None, start
+            pos = end + 1
+        elif c == "$" and text[pos + 1 : pos + 2] == "'":
+            pos += 2
+            while pos < n and text[pos] != "'":
+                pos += 2 if text[pos] == "\\" else 1
+            pos += 1
+        elif c == '"':
+            pos += 1
+            while pos < n and text[pos] != '"':
+                if text[pos] == "\\":
+                    pos += 2
+                elif text[pos] == "$" and text[pos + 1 : pos + 2] == "(":
+                    pos = skip_parens(text, pos + 1)
+                else:
+                    pos += 1
+            pos += 1
+        elif c == "$" and text[pos + 1 : pos + 2] == "(":
+            pos = skip_parens(text, pos + 1)
+        elif c == "$" and text[pos + 1 : pos + 2] == "{":
+            end = text.find("}", pos)
+            if end < 0:
+                return None, start
+            pos = end + 1
+        else:
+            pos += 1
+    if pos == start:
+        return None, start
+    return text[start:pos], pos
+
+
+def shell_words(text, pos, limit):
+    """Up to `limit` words of one command, continuation lines included."""
+    words = []
+    while len(words) < limit:
+        while pos < len(text):
+            if text[pos] in " \t":
+                pos += 1
+            elif text.startswith("\\\n", pos):
+                pos += 2
+            else:
+                break
+        word, pos = shell_word(text, pos)
+        if word is None:
+            break
+        words.append(word)
+    return words
+
+
+def plain_assignments(text):
+    """(`NAME=word` statements bash can expand without running a command, names that need one)."""
+    plain, computed = [], set()
+    for found in ASSIGN_LINE.finditer(text):
+        pos = found.end()
+        while True:
+            name = NAME_EQ.match(text, pos)
+            if not name:
+                break
+            word, end = shell_word(text, name.end())
+            word = word or ""
+            if "$(" in word or "`" in word or word.startswith("("):
+                computed.add(name.group(1))
+            else:
+                plain.append(f"{name.group(1)}={word}")
+            pos = end
+            while pos < len(text) and text[pos] in " \t":
+                pos += 1
+            if found.group(1) is None:
+                break
+    return plain, computed
+
+
+def shell_functions(text):
+    """name -> (start, end) of the body of each function closed at its own indent."""
+    table = {}
+    for found in SHELL_FUNCTION.finditer(text):
+        close = re.compile(r"^" + re.escape(found.group(1)) + r"\}", re.M).search(text, found.end())
+        if close:
+            table[found.group(2)] = (found.end(), close.start())
+    return table
+
+
+def expand(prelude, local, positional, words):
+    """The values bash gives `words`, or the reason it gives none."""
+    quote = shlex.quote
+    script = [
+        "set +e",
+        f"REPO={quote(REPO)}",
+        f"ROOT={quote(REPO)}",
+        f"HERE={quote(os.path.join(REPO, 'bench'))}",
+        f"BENCH={quote(os.path.join(REPO, 'bench'))}",
+        f"WORK={SCRATCH}",
+        f"TMP={SCRATCH}",
+        f"TMPDIR={SCRATCH}",
+    ]
+    script += [f"eval {quote(a)} 2>/dev/null" for a in prelude]
+    if positional is not None:
+        script.append("set -- " + " ".join(positional))
+    script += [f"eval {quote(a)} 2>/dev/null" for a in local]
+    script += ["set -u", "printf '%s\\0' " + " ".join(words)]
+    done = subprocess.run(
+        ["bash", "--norc", "--noprofile", "-c", "\n".join(script)], capture_output=True, cwd=REPO
+    )
+    if done.returncode != 0:
+        lines = done.stderr.decode(errors="replace").strip().splitlines()
+        return None, (lines[-1] if lines else "bash gave no reason")
+    return done.stdout.split(b"\0")[:-1], None
+
+
+def runner_proofs():
+    """Every proof the shared runner is asked for: (driver, line, label, path, old, new, problem).
+
+    `problem` is None for a proof that was read, "runtime" for one whose file or
+    text the driver computes as it runs (nothing to read until then), and a
+    sentence for a call this could not read. A call inside a wrapper function is
+    read once for each call of the wrapper.
+    """
+    for driver in sorted(glob.glob(os.path.join(REPO, "bench", "*.sh"))):
+        text = open(driver, errors="ignore").read()
+        if RUNNER not in text or "prove_mutation" not in text or OWN_RUNNER.search(text):
+            continue
+        prelude, computed = [], set()
+        for found in re.finditer(r"^[ \t]*(?:\.|source)[ \t]+\"?\$\{?REPO\}?/([^\"\s]+)\"?", text, re.M):
+            path = os.path.join(REPO, found.group(1))
+            if os.path.isfile(path) and not path.endswith(RUNNER):
+                plain, needs = plain_assignments(open(path, errors="ignore").read())
+                prelude += plain
+                computed |= needs
+        plain, needs = plain_assignments(text)
+        prelude += plain
+        computed |= needs
+        table = shell_functions(text)
+        name = os.path.relpath(driver, REPO)
+        for found in RUNNER_CALL.finditer(text):
+            at = found.start(1)
+            line = text.count("\n", 0, at) + 1
+            words = shell_words(text, found.end(1), 5)
+            if "--" in words:
+                words = words[: words.index("--")]
+            inside = next((f for f, (a, b) in table.items() if a <= at < b), None)
+            contexts = [(line, None, [])]
+            if inside is not None:
+                local, needs = plain_assignments(text[table[inside][0] : at])
+                wrapper = re.compile(
+                    r"^[ \t]*(?:if[ \t]+!?[ \t]*|![ \t]*)?" + re.escape(inside) + r"[ \t]", re.M
+                )
+                start, end = table[inside]
+                called = []
+                for call in wrapper.finditer(text):
+                    if start <= call.start() < end:
+                        continue
+                    after = text.index(inside, call.start()) + len(inside)
+                    site = shell_words(text, after, 12)
+                    if "--" in site:
+                        site = site[: site.index("--")]
+                    called.append((text.count("\n", 0, call.start()) + 1, site, local))
+                contexts = called or [(line, None, local)]
+                computed = computed | needs
+            for where, positional, local in contexts:
+                raw = " ".join(words + (positional or []))
+                values, why = expand(prelude, local, positional, words)
+                if values is None or len(values) < 4:
+                    uses = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", raw))
+                    if "$(" in raw or uses & computed:
+                        yield name, where, words[0] if words else "", None, None, None, "runtime"
+                    else:
+                        yield name, where, "", None, None, None, why or "fewer than four arguments"
+                    continue
+                label, path, old, new = values[:4]
+                path = path.decode(errors="replace")
+                if not os.path.isabs(path):
+                    path = os.path.join(REPO, path)
+                problem = "runtime" if path.startswith(SCRATCH) else None
+                yield name, where, label.decode(errors="replace"), path, old, new, problem
+
+
+def own_runners():
+    """Drivers that define a prove_mutation of their own, with their own arguments."""
+    return [
+        os.path.relpath(driver, REPO)
+        for driver in sorted(glob.glob(os.path.join(REPO, "bench", "*.sh")))
+        if OWN_RUNNER.search(open(driver, errors="ignore").read())
+    ]
+
+
 def main():
     listing = "--list" in sys.argv
     checked = failures = 0
@@ -379,12 +620,51 @@ def main():
             )
             failures += 1
 
+    read = runtime = 0
+    for driver, line, label, path, old, new, problem in runner_proofs():
+        if problem == "runtime":
+            runtime += 1
+            if listing:
+                print(f"{driver}:{line}  {label}  (file or text made as the driver runs)")
+            continue
+        if problem is not None:
+            print(f"UNREADABLE  {driver}:{line}")
+            print(f"  prove_mutation here could not be read: {problem}")
+            failures += 1
+            continue
+        read += 1
+        target = os.path.relpath(path, REPO)
+        if listing:
+            print(f"{driver}:{line}  {target}  runner  {label}")
+        if not os.path.isfile(path):
+            print(f"MISSING     {driver}:{line}: {label}: no file {target}")
+            failures += 1
+        elif old == new or not old:
+            print(f"CHANGES NOTHING  {driver}:{line}: {label}")
+            print("  The text and its replacement are the same, so the proof breaks nothing.")
+            failures += 1
+        elif old not in open(path, "rb").read():
+            print(f"MATCHES NOTHING  {driver}:{line}: {label}")
+            print(f"  {old.decode(errors='replace').splitlines()[0]}")
+            print(f"  against {target}")
+            print(
+                "  The text this proof replaces is gone, so the gate ends PATCH "
+                "CHANGED NOTHING after its whole run. Point it at the code that "
+                "answers this question now."
+            )
+            failures += 1
+
     if failures:
         print()
         print(f"{failures} mutation anchors do not patch what they name.")
         return 1
 
     print(f"all {checked} mutation anchors still patch the code they name")
+    print(
+        f"all {read} proofs run by bench/{RUNNER} still find their text "
+        f"({runtime} more patch a file or a line the driver makes as it runs; "
+        f"{len(own_runners())} drivers define a prove_mutation of their own and are not read here)"
+    )
     return 0
 
 
