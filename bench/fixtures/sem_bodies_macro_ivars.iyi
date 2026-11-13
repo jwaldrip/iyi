@@ -6,7 +6,11 @@ class MacroFactsPair
     {% for ivar in @type.instance_vars %}
       {{ ivar.name.id }} = @{{ ivar.name.id }}
     {% end %}
-    1
+    {% if @type.instance_vars.size == 2 %}
+      1
+    {% else %}
+      "wrong"
+    {% end %}
   end
 end
 
