@@ -37,11 +37,9 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy lowglob_cvar_nilable_pointer lowglob_cvar_struct"
+WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy"
 # The body pass does not flag an untyped @[ThreadLocal] declaration.
 # The lazy fixture's indirect Proc call waits on body typing's splat binding.
-# Nilable pointer and struct declarations resolve, but their aggregate globals
-# and initializer values are not yet lowered.
 #
 # The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
 
@@ -129,12 +127,6 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     if [ "$name" = lowglob_cvar_lazy ]; then
       case "$reason" in
         *"expected type, got *T"*) ;;
-        *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
-      esac
-    fi
-    if [ "$name" = lowglob_cvar_struct ]; then
-      case "$reason" in
-        *"class variable @@value is not an integer"*) ;;
         *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
       esac
     fi
@@ -250,6 +242,11 @@ prove_mutation "a nilable Proc initializer is not discarded" "$REPO/src/compiler
   "  node.is_a?(NilLiteral) && cvar.type.is_a?(NilableProcType)" "  false" -- lowglob_check || status=1
 prove_mutation "a pointer class variable is refused" "$REPO/src/compiler/lower/class_var.iyi" \
   "  if !(ir.int? || ir.float? || ir.pointer?)" "  if !(ir.int? || ir.float?)" -- lowglob_check || status=1
+prove_mutation "a nil aggregate initializer is refused" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if nilable_aggregate_initializer?(cvar)" "  if false" -- lowglob_check || status=1
+prove_mutation "an aggregate class variable is loaded instead of read by address" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  low.last = to_lhs(low, class_var_pointer(low, cvar), cvar.type)" \
+  "  low.last = load_aligned(low, cvar_ir_type(low, cvar), class_var_pointer(low, cvar))" -- lowglob_check || status=1
 prove_mutation "a floating constant global is initialized to zero" "$REPO/src/compiler/lower/const.iyi" \
   "    global.initializer = low.builder.const_float(ir, const.value.as(NumberLiteral).value.to_f)" \
   "    global.initializer = low.builder.const_float(ir, 0.0)" -- lowglob_check || status=1
