@@ -1,5 +1,6 @@
 # body-typing fixture floors: <repo-relative fixture> <matched oracle nodes>.
 # A count may only rise. Raise with: BODIES_RAISE=1 bash bench/selfhost_bodies_exercise.sh
+bench/fixtures/sem_bodies_array_new.iyi 8
 bench/fixtures/sem_bodies_block_context.iyi 14
 bench/fixtures/sem_bodies_block_free_output.iyi 11
 bench/fixtures/sem_bodies_block_nil_output.iyi 9
