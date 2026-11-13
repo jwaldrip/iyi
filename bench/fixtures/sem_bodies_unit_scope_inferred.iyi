@@ -10,7 +10,7 @@ end
 
 class Writer
   def write
-    sibling(data_base)
+    data_base
   end
 end
 
