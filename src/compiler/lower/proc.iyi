@@ -183,7 +183,7 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   proc.arg_types.each do |at|
     params << low.typer.llvm_type(at)
   end
-  ret_ir = low.typer.llvm_return_type(proc.return_type)
+  ret_ir = low.typer.llvm_type(proc.return_type)
   fn_type = low.module.types.func(params, ret_ir)
   fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type)
   if proc.return_type.is_a?(NoReturnType)
