@@ -38,7 +38,7 @@ module compiler/lower/primitives
 
 import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, SymbolLiteral}
 import compiler/ir/function::{Function, Global, Linkage}
-import compiler/ir/inst::{IntPredicate, Attribute, Op, CallConv, Ordering}
+import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallConv, Ordering}
 import compiler/lower/cast::{type_id_value}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
@@ -666,6 +666,20 @@ pub def extend_int(low : Lowerer, from : IntShape, to : IntShape, value : Value)
   if from.bytes == to.bytes
     return value
   end
+  # LLVM folds extensions of constants before emitting IR.
+  if value.is_a?(Inst) && value.as(Inst).op == Op::ConstInt && from.bytes < 8
+    bits = from.bytes * 8
+    mask = unsigned_max_value(from.bytes)
+    n = value.as(Inst).aux_int & mask
+    if from.signed && (n & 1_i64.unsafe_shl((bits - 1).to_i64)) != 0_i64
+      n = n | (mask ^ -1_i64)
+    end
+    return low.builder.const_int(to.ir, n)
+  end
+  if value.is_a?(Inst) && value.as(Inst).op == Op::ConstInt && from.bytes == 8 && to.bytes == 16
+    n = value.as(Inst).aux_int
+    return low.builder.const_wide(to.ir, from.signed && n < 0_i64 ? -1_i64 : 0_i64, n)
+  end
   if from.signed
     return low.builder.sext(value, to.ir)
   end
@@ -1087,7 +1101,7 @@ pub def integer_bound(low : Lowerer, shape : IntShape, maximum : Bool) : Value
     minimum = sign_bit_value(shape.bytes)
     return int_const(low, maximum ? (minimum ^ -1_i64) : minimum, shape)
   end
-  int_const(low, maximum ? unsigned_max_value(shape.bytes) : 0_i64, shape)
+  int_const(low, maximum ? -1_i64 : 0_i64, shape)
 end
 
 # The primitive name of a def: from its body when the semantic pass gives it a primitive body
