@@ -407,14 +407,21 @@ prove_mutation "captured block parameters use restriction inputs" "$MAIN_VISITOR
   "                    @vars[arg.name] = input_types[index]" \
   "                    @vars[arg.name] = @program.nil_type" -- captured_input_at_floor || status=1
 atomic_free_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  fixture="$REPO/bench/fixtures/sem_bodies_match_atomics.iyi"
-  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
-  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
-  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
-  floor=$(awk '$1 == "bench/fixtures/sem_bodies_match_atomics.iyi" { print $2 }' "$FLOOR_FILE")
-  [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
+  "$IYI" build -o "$WORK/atomic_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  rm -f "$WORK/atomic.refusals"
+  "$WORK/atomic_tool" "$REPO/bench/fixtures/sem_bodies_match_atomics.iyi" \
+    -o "$WORK/atomic" --pipeline typed --probe-phase --keep-going > "$WORK/atomic.log" 2>&1 || true
+  [ -f "$WORK/atomic.refusals" ] || return 1
+  awk -F '\t' '
+    $1 == "body" && $2 ~ /^MatchAtomic\((UInt64|Int64)\)#(get|set|add|compare_and_set)$/ { bad = 1 }
+    $1 == "reached" && $2 ~ /^MatchAtomic\((UInt64|Int64)\)#(get|set|add|compare_and_set)$/ { seen[$2] = 1 }
+    END { for (name in seen) count++; exit bad || count != 8 }
+  ' "$WORK/atomic.refusals"
 }
+if ! atomic_free_at_floor; then
+  echo "  ATOMIC: one of the instantiated atomic bodies was refused or not reached"
+  status=1
+fi
 prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
   "    if count_matches.any? { |d| !d.free_vars.nil? }" \
   "    if false" -- atomic_free_at_floor || status=1
