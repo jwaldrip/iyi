@@ -664,6 +664,36 @@ else
   awk 'NR<=8' "$WORK/union-read.err" "$WORK/union-read.out" "$WORK/union-read.build.log"
   status=1
 fi
+# This is a native behavioral check: a broken driver or invalid mutant must not
+# be counted as a caught mutation.
+aggregate_store_check() {
+  if ! "$IYI" build -o "$WORK/port-aggregate-store" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/aggregate-store.build.log" 2>&1; then
+    touch "$WORK/aggregate-store.invalid"
+    return 1
+  fi
+  "$WORK/port-aggregate-store" emit "$REPO/bench/fixtures/lowcast_struct_union.iyi" "$WORK/aggregate-store.ll" > "$WORK/aggregate-store.ir" 2> "$WORK/aggregate-store.err" || { touch "$WORK/aggregate-store.invalid"; return 1; }
+  "$WORK/compile_native" "$WORK/aggregate-store.ir" -o "$WORK/aggregate-store.native" > "$WORK/aggregate-store.native.log" 2>&1 || { touch "$WORK/aggregate-store.invalid"; return 1; }
+  timeout 30 "$WORK/aggregate-store.native" > "$WORK/aggregate-store.native.out" 2>&1; local ns=$?
+  timeout 30 "$WORK/aggregate-store.hosted" > "$WORK/aggregate-store.hosted.out" 2>&1; local hs=$?
+  if [ "$hs" -ne 7 ] || { [ "$ns" -ne 7 ] && [ "$ns" -ne 200 ]; }; then
+    touch "$WORK/aggregate-store.invalid"
+    return 1
+  fi
+  [ "$ns" = "$hs" ] && cmp -s "$WORK/aggregate-store.native.out" "$WORK/aggregate-store.hosted.out"
+}
+if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/aggregate-store.hosted" "$REPO/bench/fixtures/lowcast_struct_union.iyi" > "$WORK/aggregate-store.hosted.log" 2>&1 &&
+   cp "$WORK/aggregate-store.hosted.ll" "$WORK/aggregate-store.ll" && aggregate_store_check; then
+  prove_mutation "aggregate store preserves the loaded value" "$REPO/src/compiler/lower/lower.iyi" \
+    '      stored = load_aligned(low, low.typer.llvm_type(vt), v)' \
+    '      stored = low.builder.const_zero(low.typer.llvm_type(vt))' -- aggregate_store_check || status=1
+  if [ -e "$WORK/aggregate-store.invalid" ]; then
+    echo "FAIL: aggregate store mutant did not compile or exit meaningfully"
+    status=1
+  fi
+else
+  echo "FAIL: aggregate store baseline differs from hosted"
+  status=1
+fi
 tuple_literal_check() {
   "$IYI" build -o "$WORK/port-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple.build.log" 2>&1 || return 1
   "$WORK/port-tuple" lower "$REPO/bench/fixtures/lower_tuple_literal.iyi" "$WORK/lower_tuple_literal.oracle.ll" > "$WORK/tuple.out" 2> "$WORK/tuple.err" || return 1
