@@ -307,7 +307,7 @@ pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
   declared = record.resolved_return
   visitor.record_fun_signature(node, arg_types, declared)
 
-  body = splice_fun_body(node, visitor.program.full_name)
+  body = node.body
   if body.nil?
     return false
   end

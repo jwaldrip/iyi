@@ -175,8 +175,8 @@ prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR
   "return visit_global_fun_call(node, global_fun) if own.empty?" \
   "return false if own.empty?" -- bodies_at_floor || status=1
 prove_mutation "a fun body is not spliced at its top level" "$MAIN_VISITOR" \
-  "node.body = splice_body_node(body, @program.full_name, file, false)" \
-  "node.body = body" -- bodies_at_floor || status=1
+  "splice_fun_body(node, @program.full_name)" \
+  "nil" -- bodies_at_floor || status=1
 prove_mutation "a trait definition is typed in its own type" "$MAIN_VISITOR" \
   "def visit(node : TraitDef) : Bool" \
   "def visit_trait_def_off(node : TraitDef) : Bool" -- bodies_at_floor || status=1
