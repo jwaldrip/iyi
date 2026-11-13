@@ -45,7 +45,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/fun::{visit_node}
-import compiler/lower/helpers::{int1}
+import compiler/lower/helpers::{int1, raise_overflow_name}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
@@ -743,14 +743,22 @@ pub def raise_overflow_cond(low : Lowerer, overflow : Value) : Nil
   low.builder.position_at_end(op_normal)
 end
 
-# The hosted `codegen_raise_overflow`: a call to `__crystal_raise_overflow`, then unreachable.
-# The function is the program's own (a `fun` with a body, in the prelude or the program); it
-# must already be in the module, as the hosted `crystal_raise_overflow_fun` requires.
+# The hosted `codegen_raise_overflow`: look up the ABI's overflow function in the main module.
+# A def probe has its own module, so declare the program's function there when it exists.
 pub def raise_overflow(low : Lowerer) : Nil
-  fn = low.module.get_function?("__crystal_raise_overflow")
+  name = raise_overflow_name(low)
+  fn = low.module.get_function?(name)
   if fn.nil?
-    pending_visit_node("a checked operation with no __crystal_raise_overflow in the module (hosted crystal_raise_overflow_fun)")
-    return
+    found = false
+    low.analysed.program.global_funs.each do |record|
+      found = true if record.real_name == name
+    end
+    unless found
+      pending_visit_node("a checked operation with no #{name} in the program (hosted crystal_raise_overflow_fun)")
+      return
+    end
+    fn_type = low.module.types.func([] of IrType, low.module.types.void)
+    fn = low.module.add_function(name, fn_type, CallConv::C)
   end
   raise_fn = fn.as(Function)
   low.builder.call(raise_fn.fn_type, raise_fn, [] of Value, "")
