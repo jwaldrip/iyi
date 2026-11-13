@@ -6,3 +6,4 @@ def pick_bare(flag : Bool) : Int32 | Nil
 end
 
 pick_bare(true)
+nil
