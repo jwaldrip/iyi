@@ -242,8 +242,8 @@ prove_mutation "typeof inside type arguments yields the instance type" "$REPO/sr
   "  if depth > 0" \
   "  if false" -- bodies_at_floor || status=1
 prove_mutation "enum members have the enum type" "$MAIN_VISITOR" \
-  "if enum_type = c.enum_value_type" \
-  "if enum_type = nil" -- bodies_at_floor || status=1
+  "        set_type(node, enum_type)" \
+  "        set_type(node, @program.int32_type)" -- bodies_at_floor || status=1
 prove_mutation "a generic union member retains its arguments" "$MAIN_VISITOR" \
   "    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
   "    found = @program.lookup_type_node?(restriction, @current_type) || LookupError.new(\"not found\")" -- bodies_at_floor || status=1
