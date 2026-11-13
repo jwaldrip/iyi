@@ -42,6 +42,10 @@ WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy"
 # The lazy fixture's indirect Proc call waits on body typing's splat binding.
 #
 # The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
+# The hosted module cannot yet be imported: its indirect return ABI is not
+# represented by the port. Keep this fixture outside the lowglob_* glob.
+echo "  wait_lowglob_const_large_struct: WAITING, a value above 128 bytes travels through memory (hosted fun.cr 635-693): not ported"
+
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
@@ -247,6 +251,12 @@ prove_mutation "a nil aggregate initializer is refused" "$REPO/src/compiler/lowe
 prove_mutation "an aggregate class variable is loaded instead of read by address" "$REPO/src/compiler/lower/class_var.iyi" \
   "  low.last = to_lhs(low, class_var_pointer(low, cvar), cvar.type)" \
   "  low.last = load_aligned(low, cvar_ir_type(low, cvar), class_var_pointer(low, cvar))" -- lowglob_check || status=1
+prove_mutation "a by-value constant is loaded instead of read by address" "$REPO/src/compiler/lower/const.iyi" \
+  "      low.last = to_lhs(low, g.as(Global), low.analysed.type_of?(c.value).as(Type))" \
+  "      low.last = load_aligned(low, ir, g.as(Global))" -- lowglob_check || status=1
+prove_mutation "a type path returns zero instead of its type id" "$REPO/src/compiler/lower/const.iyi" \
+  "    low.last = type_id_value(low, typ.as(Type))" \
+  "    low.last = low.builder.const_int(low.module.types.int32, 0_i64)" -- lowglob_check || status=1
 prove_mutation "a floating constant global is initialized to zero" "$REPO/src/compiler/lower/const.iyi" \
   "    global.initializer = low.builder.const_float(ir, const.value.as(NumberLiteral).value.to_f)" \
   "    global.initializer = low.builder.const_float(ir, 0.0)" -- lowglob_check || status=1

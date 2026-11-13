@@ -111,7 +111,7 @@ jobs:
     outputs:
       jobs: ${{ steps.plan.outputs.jobs }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -130,7 +130,7 @@ jobs:
     timeout-minutes: 10
     name: "The name, and the numbers the docs state"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -176,7 +176,7 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "Build the compiler"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -190,7 +190,7 @@ jobs:
       # setup-go@v5 — so it is upstream's manifest and not this file's
       # version pins. Measured by bumping all twenty-one uses and reading
       # the next run: the warning came back naming v5.
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: crystal
           path: .build/crystal
@@ -205,10 +205,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "The rules, the artifact and the import path"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -239,6 +239,15 @@ jobs:
       # check, and it needs no compiler, which is why it is here.
       - name: Every gate is reached by something that runs it
         run: python3 bench/gates_reachable.py
+
+      # The runner of the self-host gates decides which of them a host runs,
+      # and a gate it skips is a gate nothing checks on that host. So the
+      # choice is exercised: the typed-lowering gates run on Darwin arm64
+      # and are named as skipped elsewhere, a gate outside that list fails
+      # a run on any host, and two shards cover every gate once. Stand-in
+      # gates and a stand-in `uname`; no compiler.
+      - name: The self-host gate runner names what a host skips
+        run: bash bench/gates_runner_exercise.sh
 
       # Which language a source is in is the one thing the lexer cannot read
       # out of its text, and a parse built without a name reads by the other
@@ -275,10 +284,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "Crystal's compiler specs"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -298,10 +307,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "Crystal's standard library specs"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -366,10 +375,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "Every cursor question, everywhere in the library, shard ${{ matrix.shard }} of 4"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -402,10 +411,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "Samples, from source and from artifacts"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -1097,6 +1106,13 @@ jobs:
       - name: Every failure proof still patches the code it names
         run: python3 bench/mutation_anchors.py
 
+      # And the runner those proofs go through (bench/lib/mutation.sh) is
+      # proved on a scratch file: a failing check is caught and a passing one
+      # is not, the file comes back either way and on TERM, a patch that
+      # changes nothing is refused, and job control is on for the check alone.
+      - name: The mutation runner catches, restores and refuses
+        run: bash bench/mutation_runner_exercise.sh
+
       # And the numbers the docs quote from an instrument rather than from the
       # tree. A shared runner cannot re-measure a second or a megabyte — the
       # scripts that produce them refuse an unoptimised compiler, and the same
@@ -1122,10 +1138,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "The native standard library and its module exercises"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -1160,10 +1176,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "Every std exercise from its artifacts, for the platforms this runner is not"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -1204,10 +1220,10 @@ jobs:
         shard: [1, 2, 3, 4]
     name: "The standard library's module exercises, shard ${{ matrix.shard }} of 4"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -1238,7 +1254,7 @@ jobs:
       # Pebble, which it builds with `go install` - and skips, saying so,
       # where there is no Go, as there was none in this container. No
       # `go.sum` here to key a cache on, so none is asked for.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: stable
           cache: false
@@ -1260,10 +1276,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "The platforms the library still carries"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -1353,10 +1369,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "Objects for other targets"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -1482,7 +1498,7 @@ jobs:
               ../bench/tls_probe.iyi > tls_probe.link )
           cat cross/tls_probe.link
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: cross-objects
           path: cross/
@@ -1494,7 +1510,7 @@ jobs:
     timeout-minutes: 30
     name: "An iyi program, run on musl and on aarch64"
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: cross-objects
           path: cross
@@ -1502,7 +1518,7 @@ jobs:
       # aarch64 runs under emulation; musl runs natively and only the libc
       # differs. Both link the object with the target's own `cc` and `libgc`,
       # which is the command `--cross-compile` printed.
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: musl, natively
         run: |
@@ -1627,7 +1643,7 @@ jobs:
     timeout-minutes: 120
     name: "An iyi program, run on darwin arm64"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1636,6 +1652,10 @@ jobs:
       # beside Crystal's compiler). brew's llvm is not asked for: the
       # compiler this job ships links the static one built below, and
       # the Crystal bootstrap brings whatever LLVM it needs for itself.
+      # brew installs the bottle its own formula names, at whatever version
+      # the tap carries that day: there is no version or hash to write here,
+      # so these three packages are trusted as far as Homebrew's formulae
+      # and bottle checksums are.
       # What the runner is, in every log: the jobs' times and the gates'
       # numbers are this machine's.
       - name: Install the bootstrap toolchain
@@ -1664,13 +1684,26 @@ jobs:
       # and a cache path should not depend on how a symlink is archived.
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      # Saved as soon as it is built, not in a post step: the cache action's
+      # post step saves only when the job succeeds, so a job whose gate failed
+      # or that was cancelled at its limit paid the build again on every
+      # attempt (run 43328998691: `selfhost-darwin` built LLVM for 41
+      # minutes, was cancelled at 120 and saved nothing). When two jobs of
+      # one run build it at once the second save finds the key taken and
+      # warns; it does not fail.
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
       # `iyi-tarball` builds `iyi` and its daemon in release mode, refuses an
       # unoptimised binary (`check_iyi_is_release`), and packages them — one
@@ -1772,7 +1805,7 @@ jobs:
       # collector, Boehm and Go on this runner, so darwin's numbers are in
       # every log the way Linux's are in GC_DESIGN.md. A shared runner is
       # not a machine to gate on, and this step asserts nothing.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: stable
           # Nothing here is a Go project, so there is no `go.sum` to key a
@@ -1944,7 +1977,7 @@ jobs:
       - name: Stage the tarball for the release job
         run: mkdir -p dist && cp .build/iyi-*-darwin-*.tar.gz dist/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: iyi-darwin-arm64
           path: dist/
@@ -1970,7 +2003,7 @@ jobs:
         shard: [1, 2, 3, 4]
     name: "The standard library's module exercises on darwin, shard ${{ matrix.shard }} of 4"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install the bootstrap toolchain
@@ -1979,17 +2012,23 @@ jobs:
           echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
       - name: Build `iyi`
         run: make iyi LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
       # Python 3.14, as on Linux: the oracles' modules answer as 3.14's do.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.14"
       - name: Python's cryptography and Pillow, for the oracles
@@ -2025,17 +2064,19 @@ jobs:
   # a job of their own (bench/std_platforms.sh): 54 to 75 minutes in the
   # last ten green runs (1,785 s of job 128265739304's 3,841 in it), and a
   # seventh macOS job would wait for a runner - in run 42327393858 shard 2
-  # above started at 02:40:54, three seconds after shard 1 ended.
+  # above started at 02:40:54, three seconds after shard 1 ended. A hundred
+  # and fifty since job 131485060135 (run 43303875393), which found the
+  # static LLVM in the cache and still ran 99 minutes, green.
   darwin-std:
     needs: plan
     if: ${{ contains(fromJSON(needs.plan.outputs.jobs), 'darwin-std') }}
     runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.4"
-    timeout-minutes: 120
+    timeout-minutes: 150
     name: "The native standard library's foundation, on darwin"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install the bootstrap toolchain
@@ -2044,13 +2085,19 @@ jobs:
           echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
       - name: Build `iyi`
         run: make iyi LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
       - name: The native standard library's foundation
@@ -2077,12 +2124,12 @@ jobs:
     timeout-minutes: 30
     name: "What a Windows binary does, twenty times"
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: cross-objects
           path: cross
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: What the object asks Windows for
         shell: cmd
@@ -2141,12 +2188,12 @@ jobs:
     timeout-minutes: 30
     name: "The collector on Windows x86_64"
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: cross-objects
           path: cross
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: What the collector object asks Windows for
         shell: cmd
@@ -2184,12 +2231,12 @@ jobs:
     timeout-minutes: 30
     name: "The concurrency runtime on Windows x86_64"
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: cross-objects
           path: cross
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: What the runtime object asks Windows for
         shell: cmd
@@ -2260,13 +2307,16 @@ jobs:
     timeout-minutes: 150
     name: "iyi, built and run on Windows"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - uses: crystal-lang/install-crystal@v1
+      # The action is pinned to a commit; the Crystal package it downloads
+      # for 1.21.0 is not checked against a hash written here, because the
+      # action takes none.
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
         with:
           crystal: 1.21.0
 
@@ -2274,11 +2324,27 @@ jobs:
       # not promise it. The LLVM version is read rather than pinned: it is
       # whatever the Crystal package was built against, and both make's
       # readiness check and `src/llvm/lib_llvm.cr` want that number.
+      #
+      # When the image has no `make`, Chocolatey's is pinned to a version
+      # and the `make.exe` it unpacked is checked against a hash, here and
+      # in every Windows job that builds: package 4.4.1 carries the binary
+      # inside itself and runs no install script, so `choco install
+      # --checksum` has no download to check, and the file is checked
+      # after the unpack and before anything runs it. The SHA-256 is of
+      # `tools/install/bin/make.exe` in the 407,912-byte `make.4.4.1.nupkg`
+      # community.chocolatey.org served, whose own SHA-256 is
+      # 8b2dec73ed4c84163c4a4f9bfe658553b1e3d1fdfa8930d2aa438e030ff21f9d.
       - name: What this machine has
         shell: pwsh
         run: |
           if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
-            choco install make --no-progress -y
+            choco install make --version 4.4.1 --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
+            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
+            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
+            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
+              throw "Chocolatey's make.exe is not the one pinned here: $hash"
+            }
           }
           $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
           if (-not (Test-Path "$lib\llvm_VERSION")) {
@@ -2574,7 +2640,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item .build\iyi-*-windows-x86_64.zip -Destination dist
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: iyi-windows-x86_64
           path: dist/
@@ -2591,13 +2657,13 @@ jobs:
     timeout-minutes: 75
     name: "The runtime's exercises and the gates that carry Windows code, on Windows"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - uses: crystal-lang/install-crystal@v1
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
         with:
           crystal: 1.21.0
 
@@ -2605,7 +2671,13 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
-            choco install make --no-progress -y
+            choco install make --version 4.4.1 --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
+            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
+            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
+            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
+              throw "Chocolatey's make.exe is not the one pinned here: $hash"
+            }
           }
           $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
           if (-not (Test-Path "$lib\llvm_VERSION")) {
@@ -2756,13 +2828,13 @@ jobs:
     timeout-minutes: 75
     name: "The editor and agent surfaces, on Windows"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - uses: crystal-lang/install-crystal@v1
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
         with:
           crystal: 1.21.0
 
@@ -2770,7 +2842,13 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
-            choco install make --no-progress -y
+            choco install make --version 4.4.1 --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
+            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
+            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
+            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
+              throw "Chocolatey's make.exe is not the one pinned here: $hash"
+            }
           }
           $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
           if (-not (Test-Path "$lib\llvm_VERSION")) {
@@ -2824,13 +2902,13 @@ jobs:
     timeout-minutes: 150
     name: "The standard library foundation, gated on Windows"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - uses: crystal-lang/install-crystal@v1
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
         with:
           crystal: 1.21.0
 
@@ -2838,7 +2916,13 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
-            choco install make --no-progress -y
+            choco install make --version 4.4.1 --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
+            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
+            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
+            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
+              throw "Chocolatey's make.exe is not the one pinned here: $hash"
+            }
           }
           $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
           $llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()
@@ -2875,13 +2959,13 @@ jobs:
     timeout-minutes: 90
     name: "Every std exercise from its artifacts, for the platforms this runner is not, on Windows"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - uses: crystal-lang/install-crystal@v1
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
         with:
           crystal: 1.21.0
 
@@ -2889,7 +2973,13 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
-            choco install make --no-progress -y
+            choco install make --version 4.4.1 --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
+            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
+            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
+            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
+              throw "Chocolatey's make.exe is not the one pinned here: $hash"
+            }
           }
           $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
           $llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()
@@ -2956,13 +3046,13 @@ jobs:
         shard: [1, 2, 3, 4]
     name: "The standard library's module exercises on Windows, shard ${{ matrix.shard }} of 4"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - uses: crystal-lang/install-crystal@v1
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
         with:
           crystal: 1.21.0
 
@@ -2970,7 +3060,13 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
-            choco install make --no-progress -y
+            choco install make --version 4.4.1 --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
+            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
+            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
+            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
+              throw "Chocolatey's make.exe is not the one pinned here: $hash"
+            }
           }
           $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
           $llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()
@@ -2985,7 +3081,7 @@ jobs:
 
       # Python 3.14, as on Linux: a gate asks for `python3` first, which
       # setup-python's Windows build has beside `python`.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.14"
       - name: Python's cryptography and Pillow, for the oracles
@@ -3020,13 +3116,13 @@ jobs:
     timeout-minutes: 90
     name: "The language and collector gates, on Windows"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - uses: crystal-lang/install-crystal@v1
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
         with:
           crystal: 1.21.0
 
@@ -3034,7 +3130,13 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
-            choco install make --no-progress -y
+            choco install make --version 4.4.1 --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
+            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
+            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
+            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
+              throw "Chocolatey's make.exe is not the one pinned here: $hash"
+            }
           }
           $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
           $llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()
@@ -3130,7 +3232,7 @@ jobs:
       # programs under iyi's collector, Boehm and Go on this runner. It
       # asserts no number, and refuses a row whose three arms answer
       # differently, which is a question Windows had never been asked.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: stable
           cache: false
@@ -3238,13 +3340,13 @@ jobs:
     timeout-minutes: 180
     name: "Crystal's compiler specs, on Windows"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - uses: crystal-lang/install-crystal@v1
+      - uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1.9.5
         with:
           crystal: 1.21.0
 
@@ -3252,7 +3354,13 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Get-Command make -ErrorAction SilentlyContinue)) {
-            choco install make --no-progress -y
+            choco install make --version 4.4.1 --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "choco could not install make 4.4.1" }
+            $make = Join-Path $env:ChocolateyInstall 'lib\make\tools\install\bin\make.exe'
+            $hash = (Get-FileHash -Algorithm SHA256 $make).Hash.ToLower()
+            if ($hash -ne 'cc6dc291113dcbcc7735835acbfc23c52ed037e4e124ff2d7a0aeae6df563a9f') {
+              throw "Chocolatey's make.exe is not the one pinned here: $hash"
+            }
           }
           $lib = (crystal env CRYSTAL_LIBRARY_PATH).Trim()
           $llvm = (Get-Content "$lib\llvm_VERSION")[0].Trim()
@@ -3282,14 +3390,14 @@ jobs:
       # before it is an artifact deleted by it. The checkout and the
       # tarball are here so the two drivers below run as drivers rather
       # than as steps that copy what they do.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: cross-objects
           path: cross
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: iyi-linux-x86_64
           path: dist/
@@ -3305,7 +3413,7 @@ jobs:
       # key being the script that pins them.
       - name: Restore the wasm toolchain
         id: wasm-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/wasm-toolchain
           key: wasm-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-wasm-toolchain.sh') }}
@@ -3382,10 +3490,10 @@ jobs:
     steps:
       # Checkout first: it clears the workspace, so an artifact downloaded
       # before it is an artifact deleted by it.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: iyi-linux-x86_64
           path: dist/
@@ -3393,7 +3501,7 @@ jobs:
       # The same toolchain the wasi-run job restores, for the same reason.
       - name: Restore the wasm toolchain
         id: wasm-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/wasm-toolchain
           key: wasm-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-wasm-toolchain.sh') }}
@@ -3453,17 +3561,23 @@ jobs:
       # did: GNU ld drops the `-lstdc++` Crystal names before LLVM's
       # archives (`--as-needed`, nothing needs it yet) and then cannot
       # resolve `operator new` for them. `pkg-config` and `libyaml-dev` are
-      # for the `--crystal` sample's `require "yaml"`.
+      # for the `--crystal` sample's `require "yaml"`. Crystal's tarball
+      # is saved and checked against the SHA-256 written beside its URL
+      # before it is unpacked over `/usr`: the compiler it holds builds the
+      # one the tarball ships.
       - name: The floor's toolchain and Crystal's bootstrap
         run: |
           apt-get update -qq
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             build-essential lld git curl ca-certificates xz-utils \
             pkg-config libyaml-dev > /dev/null
-          curl -fsSL https://github.com/crystal-lang/crystal/releases/download/1.21.0/crystal-1.21.0-1-linux-x86_64.tar.gz \
-            | tar -xz -C /usr --strip-components=1
+          curl -fsSL -o /tmp/bootstrap.tar.gz \
+            https://github.com/crystal-lang/crystal/releases/download/1.21.0/crystal-1.21.0-1-linux-x86_64.tar.gz
+          echo "744561ee3cee1b06d106cf9ae99b8064b4e017518ac414d6dd23cfafe36560c9  /tmp/bootstrap.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/bootstrap.tar.gz -C /usr --strip-components=1
+          rm /tmp/bootstrap.tar.gz
           crystal --version
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -3488,20 +3602,24 @@ jobs:
       # roughly-an-hour build is paid once per recipe change, not per push.
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: /tmp/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-ubuntu20.04-${{ hashFiles('scripts/build-static-llvm.sh') }}
       # 20.04's cmake is 3.16 and LLVM 20 asks for 3.20: Kitware's own
       # build, which runs on any glibc this old, and only on a miss. LLVM's
-      # cmake also wants python3, which the bare image does not have.
+      # cmake also wants python3, which the bare image does not have. The
+      # SHA-256 is the one Kitware's `cmake-3.31.9-SHA-256.txt` lists.
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: |
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 > /dev/null
           mkdir -p /opt/cmake
-          curl -fsSL https://github.com/Kitware/CMake/releases/download/v3.31.9/cmake-3.31.9-linux-x86_64.tar.gz \
-            | tar -xz -C /opt/cmake --strip-components=1
+          curl -fsSL -o /tmp/cmake.tar.gz \
+            https://github.com/Kitware/CMake/releases/download/v3.31.9/cmake-3.31.9-linux-x86_64.tar.gz
+          echo "312d78e0b7c5c9b4a97a87a46c3e525aa84895fe8135c238c4616bba73dc9518  /tmp/cmake.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/cmake.tar.gz -C /opt/cmake --strip-components=1
+          rm /tmp/cmake.tar.gz
           PATH="/opt/cmake/bin:$PATH" bash scripts/build-static-llvm.sh /tmp/llvm-static
 
       - name: Build the compiler on the floor
@@ -3600,7 +3718,7 @@ jobs:
       - name: Stage the tarball for the release job
         run: mkdir -p dist && cp .build/iyi-*-linux-*.tar.gz dist/
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: iyi-linux-x86_64
           path: dist/
@@ -3630,8 +3748,8 @@ jobs:
     steps:
       # Checkout first: it clears the workspace, so an artifact
       # downloaded before it is an artifact deleted by it.
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: iyi-linux-x86_64
           path: dist/
@@ -3723,15 +3841,19 @@ jobs:
             wasm32-collector, docs]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # `contents` to create the release; `id-token` and `attestations` for
+    # the provenance attestation below, which this job alone writes.
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: iyi-linux-x86_64
           path: dist/
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: iyi-darwin-arm64
           path: dist/
@@ -3739,7 +3861,7 @@ jobs:
       # installed by `install.ps1` in the same run. Without this line the
       # installer has nothing to download: it asks a release for
       # `iyi-<version>-windows-x86_64.zip` by name.
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: iyi-windows-x86_64
           path: dist/
@@ -3747,6 +3869,22 @@ jobs:
       # install.ps1 both refuse one that does not match them: what comes out
       # of an archive reaches the linker. One SHA256SUMS for every platform's
       # file, which is the file both installers read a line out of.
+      - name: Write SHA256SUMS for the proven archives
+        run: (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS && cat SHA256SUMS)
+      # SHA256SUMS is written by this job and published from the same place
+      # as the archives, so by itself it says an archive arrived whole, not
+      # who built it. The attestation does: it is signed with this run's
+      # OIDC identity and kept by GitHub, and `gh attestation verify` checks
+      # a downloaded file against it (INSTALL.md, "Where an archive was
+      # built"). It comes before the release is created, so an archive that
+      # could not be attested is not published.
+      - name: Attest where the archives and SHA256SUMS were built
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
       - name: Create the release from the proven archives
         env:
           GH_TOKEN: ${{ github.token }}
@@ -3754,23 +3892,31 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           git tag -l --format='%(contents)' "$tag" > notes.md
           [ -s notes.md ] || echo "See CHANGELOG.md for ${tag#v}." > notes.md
-          (cd dist && sha256sum *.tar.gz *.zip > SHA256SUMS && cat SHA256SUMS)
           gh release create "$tag" --title "iyi ${tag#v}" --notes-file notes.md \
             dist/*.tar.gz dist/*.zip dist/SHA256SUMS
 
+  # In four shards (`SELFHOST_GATE_SHARD`, bench/selfhost_gates.sh): the gates
+  # share a checkout and never run in parallel inside one, so each shard is a
+  # runner of its own. One job ran them all until 41 gates in a row were
+  # still running when 90 minutes cancelled it (run 43352148795); 23 gates
+  # had taken 50 (run 43328998691).
   selfhost:
     needs: [plan, build]
     if: ${{ contains(fromJSON(needs.plan.outputs.jobs), 'selfhost') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     container:
       image: crystallang/crystal:1.21.0-build
-    name: "The self-host gates, on Linux"
+    name: "The self-host gates, on Linux, shard ${{ matrix.shard }} of 4"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -3795,9 +3941,11 @@ jobs:
       - name: Build `iyi` and its daemon
         run: make -o .build/crystal iyi iyi-daemon
 
-      # One driver runs all 23 selfhost gates in order, each with its own log,
-      # and exits non-zero when any of them fails.
+      # One driver runs this shard's selfhost gates in order, each with its own
+      # log, and exits non-zero when any of them fails.
       - name: The self-host gates
+        env:
+          SELFHOST_GATE_SHARD: ${{ matrix.shard }}/4
         run: bash bench/selfhost_gates.sh
 
   selfhost-darwin:
@@ -3807,10 +3955,19 @@ jobs:
     runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.4"
-    timeout-minutes: 120
-    name: "The self-host gates, on darwin arm64"
+    # 180, measured: on a cache miss the static LLVM is 41 minutes and the
+    # build 19, and the gates were still running 59 minutes later when 120
+    # cancelled the job (run 43328998691); with the cache the build is 12
+    # and 23 gates 56 (run 43303875393), and each lane adds gates. In two
+    # shards, as the Linux job is in four: macOS runners are the scarce ones.
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    name: "The self-host gates, on darwin arm64, shard ${{ matrix.shard }} of 2"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -3824,13 +3981,19 @@ jobs:
 
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
       - name: Build `iyi`, its daemon, and the tarball
         run: make iyi-tarball LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config"
@@ -3838,6 +4001,8 @@ jobs:
       # The same driver as the Linux job. The gates read LLVM_CONFIG from the
       # environment before they look for llvm-config on the PATH.
       - name: The self-host gates
+        env:
+          SELFHOST_GATE_SHARD: ${{ matrix.shard }}/2
         run: LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config" bash bench/selfhost_gates.sh
 
   # The compiler's own back end: the IR, the aarch64 code generator, the
@@ -3855,10 +4020,10 @@ jobs:
       image: crystallang/crystal:1.21.0-build
     name: "The native back end's gates, on Linux"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
           name: crystal
           path: .build
@@ -3896,7 +4061,7 @@ jobs:
       # reports its run steps as skipped, never as passed.
       - name: Restore the wasm toolchain
         id: wasm-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/wasm-toolchain
           key: wasm-toolchain-container-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-wasm-toolchain.sh') }}
@@ -3935,7 +4100,7 @@ jobs:
     timeout-minutes: 90
     name: "The native back end's gates, on darwin arm64"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -3949,13 +4114,19 @@ jobs:
 
       - name: Restore the static LLVM
         id: llvm-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/llvm-static
           key: llvm-static-${{ runner.os }}-${{ runner.arch }}-macos-15-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('scripts/build-static-llvm.sh') }}
       - name: Build the static LLVM (cache miss)
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         run: bash scripts/build-static-llvm.sh "$HOME/llvm-static"
+      - name: Save the static LLVM
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/llvm-static
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
 
       # The gates read objects back with llvm-objdump and assemble their
       # x86_64 oracle with llvm-mc. The static LLVM installs both; Xcode's
@@ -3995,26 +4166,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     name: "The VS Code client packages, and a tag publishes it"
-    # A step's `if` cannot read the `secrets` context, and the job's `env`
-    # can: that is what lets a registry whose token is not set yet be
-    # skipped instead of failing the tag that publishes to the other one.
-    env:
-      VSCE_PAT: ${{ secrets.VSCE_PAT }}
-      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    # The two registry tokens are in no `env` the whole job reads: each is
+    # given to the one step that publishes with it, and that step runs only
+    # on an `editor-v*` tag. Packaging runs on every pull request, and what
+    # it runs is code from the npm registry. `vsce` and `ovsx` are
+    # devDependencies at exact versions, so `package-lock.json` names every
+    # byte of them, `npm ci --ignore-scripts` installs that and runs no
+    # package's install script, and `npx --no-install` runs what was
+    # installed or nothing.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 24
 
       - name: Package the extension
         working-directory: editors/vscode
         run: |
-          npm ci
-          npx --yes @vscode/vsce package
+          npm ci --ignore-scripts
+          npx --no-install vsce package
 
       # A tag that disagrees with the manifest publishes the wrong version
       # under the right name, and the Marketplace keeps what it is given.
@@ -4030,23 +4203,39 @@ jobs:
           }
 
       # `--packagePath` publishes the file the step above built and CI
-      # already looked at, rather than packaging a second time.
+      # already looked at, rather than packaging a second time. A step's
+      # `if` cannot read the `secrets` context, so the step asks its own
+      # environment: a registry whose token is not set yet is skipped
+      # instead of failing the tag that publishes to the other one.
       - name: Publish to the Visual Studio Marketplace
-        if: startsWith(github.ref, 'refs/tags/editor-v') && env.VSCE_PAT != ''
+        if: startsWith(github.ref, 'refs/tags/editor-v')
         working-directory: editors/vscode
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
-          npx --yes @vscode/vsce publish \
+          if [ -z "$VSCE_PAT" ]; then
+            echo "VSCE_PAT is not set: nothing is published to the Marketplace"
+            exit 0
+          fi
+          npx --no-install vsce publish \
             --packagePath "iyi-${GITHUB_REF_NAME#editor-v}.vsix"
 
       # The same file, to the registry every VS Code fork reads. `ovsx`
       # takes the token from OVSX_PAT, and the namespace must exist first:
       # `npx ovsx create-namespace iyilang`, once.
       - name: Publish to Open VSX
-        if: startsWith(github.ref, 'refs/tags/editor-v') && env.OVSX_PAT != ''
+        if: startsWith(github.ref, 'refs/tags/editor-v')
         working-directory: editors/vscode
-        run: npx --yes ovsx publish "iyi-${GITHUB_REF_NAME#editor-v}.vsix"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -z "$OVSX_PAT" ]; then
+            echo "OVSX_PAT is not set: nothing is published to Open VSX"
+            exit 0
+          fi
+          npx --no-install ovsx publish "iyi-${GITHUB_REF_NAME#editor-v}.vsix"
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: iyi-vscode
           path: editors/vscode/*.vsix

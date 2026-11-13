@@ -1,7 +1,7 @@
 module compiler/semantic/instance_vars
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
+import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
@@ -19,8 +19,8 @@ import compiler/semantic/type_nodes::{type_node_system}
 # root of the class hierarchy down, so a superclass's variables are known first.
 #
 # Skipped, and so not declared here: guesses whose value needs a type this pass
-# cannot compute (a call with arguments, an untyped or named array literal, a
-# hash literal, a block), module variables and the `macro def` and `.iyimod`
+# cannot compute (a call with arguments, a named array literal, a hash literal,
+# a block), module variables and the `macro def` and `.iyimod`
 # exemptions.
 
 pub class GuessedIvar
@@ -220,6 +220,25 @@ class GuessVisitor < Visitor
           end
         end
       end
+      if literal.name.nil? && literal.of.nil?
+        if hook = @program.merge_hook
+          merged_element : Type? = nil
+          literal.elements.each do |item|
+            return nil if item.is_a?(Splat)
+            if guessed = guess_type(item)
+              if previous = merged_element
+                merged_element = @program.type_merge(previous, guessed)
+              else
+                merged_element = guessed
+              end
+            end
+          end
+          if found = merged_element
+            array = hook.instantiate_type(@program.types["Array"], [found] of Type)
+            return hook.virtual_of(array)
+          end
+        end
+      end
       return nil
     end
     if node.is_a?(Not) || node.is_a?(IsA)
@@ -276,8 +295,8 @@ class GuessVisitor < Visitor
     nil
   end
 
-  # `Foo.new` is Foo. A class with subclasses has a virtual type, which this pass
-  # does not compute, so its guess is left out.
+  # A constructor's class is the default guess (hosted type_guess_visitor.cr:640-651).
+  # The constructor's explicit return annotation is not yet resolved here.
   def guess_call(node : Call) : Type?
     if expanded = node.expanded
       return guess_type(expanded)
@@ -285,7 +304,11 @@ class GuessVisitor < Visitor
     obj = node.obj
     if node.name == "new" && obj && obj.is_a?(Path)
       found = @program.lookup_type_node?(obj, @og.owner)
-      if found && found.is_a?(NonGenericClassType) && found.as(NonGenericClassType).subclasses.empty?
+      if found && found.is_a?(NonGenericClassType)
+        if hook = @program.merge_hook
+          return hook.virtual_of(found)
+        end
+        return nil unless found.as(NonGenericClassType).subclasses.empty?
         return found
       end
     end
@@ -304,6 +327,14 @@ class GuessVisitor < Visitor
       if name.is_a?(Path) && name.as(Path).names == ["Pointer"] && generic.type_vars.size == 1
         if @program.merge_hook
           return @program.lookup_type_node?(generic, @og.owner)
+        end
+      end
+    end
+    # Pointer.malloc(size, value) takes the inferred type of its second argument.
+    if obj.is_a?(Path) && obj.as(Path).names == ["Pointer"] && node.name == "malloc" && node.args.size == 2
+      if element_type = guess_type(node.args[1])
+        if hook = @program.merge_hook
+          return hook.instantiate_type(@program.types["Pointer"], [element_type] of Type)
         end
       end
     end

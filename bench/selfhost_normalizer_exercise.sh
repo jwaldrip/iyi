@@ -293,7 +293,13 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     receiver_s = node.receiver ? " receiver" : ""
     abstract_s = node.abstract? ? " abstract=true" : ""
     splat_s = node.splat_index ? " splat=#{node.splat_index}" : ""
-    s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}\n"
+    defer_s = ""
+    if node.iyi_defer?
+      loc = node.location
+      at_s = loc ? "#{loc.line_number}:#{loc.column_number}" : "none"
+      defer_s = " iyi_defer=true at=#{at_s}"
+    end
+    s = "#{p}Def name=#{escape_s(node.name)}#{receiver_s}#{abstract_s}#{splat_s}#{defer_s}\n"
     if r = node.receiver
       s += "#{p}  receiver:\n" + dump_ast(r, indent + 2)
     end
@@ -489,7 +495,8 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     s += "#{p}  name:\n" + dump_ast(node.name, indent + 2)
     s
   when Iyi::ExceptionHandler
-    s = "#{p}ExceptionHandler\n"
+    defer_s = node.iyi_defer? ? " iyi_defer=true" : ""
+    s = "#{p}ExceptionHandler#{defer_s}\n"
     s += "#{p}  body:\n" + dump_ast(node.body, indent + 2)
     if rescues = node.rescues
       rescues.each do |r|
@@ -624,7 +631,13 @@ run_proof "unless keeps its branches instead of swapping them"   "If.new(node.co
 
 run_proof "until loops on its condition instead of its negation"   "not_exp = Not.new(node.cond).at(node.cond)"   "not_exp = node.cond"
 
-run_proof "defer stops becoming an exception handler"   "ExceptionHandler.new(Nop.new, nil, nil, node.exp.transform(self)).at(node)"   "node.exp.transform(self)"
+run_proof "defer stops becoming an exception handler"   "defer_handler(Nop.new, node.exp.transform(self), node)"   "node.exp.transform(self)"
+
+run_proof "the handler a defer becomes is not marked as defer's"   "handler.iyi_defer = true"   "handler.iyi_defer = false"
+
+run_proof "the proc a defer registers is not marked as defer's"   "cleanup.iyi_defer = true"   "cleanup.iyi_defer = false"
+
+run_proof "the proc a defer registers has no location"   "cleanup.at(deferred)"   "cleanup.at(Nop.new)"
 
 run_proof "a chained comparison stops joining with and"   "and_node = And.new(left, right).at(left)"   "and_node = right"
 

@@ -3,7 +3,7 @@ module compiler/lower/const
 # The port of `src/compiler/iyi/codegen/const.cr` (the hosted `CodeGenVisitor`'s constants), in file
 # order. Ported: a literal constant (Bool, Char, an integer of at most 64 bits) is inlined at every read,
 # and its assignment emits nothing (hosted `read_const`, `codegen_assign(Path)`); a non-literal constant
-# of an integer, float or reference type gets a value global, its initialised flag, an initialiser function
+# of an integer, float, reference or small by-value aggregate type gets a value global, its initialised flag, an initialiser function
 # `~NAME:const_init` that stores the value, and either a call to it at the assignment (a constant nothing read
 # before it, hosted `initialize_const` on the no-init-flag path) or `run_once` through the prelude's `__iyi_once`
 # (a constant read first). A read after the assignment is a load of its global; a read before it calls
@@ -15,7 +15,7 @@ module compiler/lower/const
 #   - a value that may be a compile-time value: a path to another constant, or an operator call (hosted
 #     `compile_time_value` runs the MathInterpreter, which inlines it at each read instead of storing it);
 #   - a nil literal (hosted `initialize_simple_constants`): its global is not ported yet;
-#   - a constant of an IR type that is not an integer, a float or a reference (a struct, nil, an enum).
+#   - an indirectly passed aggregate, which needs the hosted copy_value path.
 # String, symbol and float constants get constant globals at program start; assignments emit nothing and reads load.
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
@@ -29,6 +29,9 @@ import compiler/lower/helpers::{build_string_constant, int1, llvm_nil, load_alig
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ConstState}
 import compiler/lower/symbols::{symbol_index}
+import compiler/lower/cast::{to_lhs, type_id_value}
+import compiler/lower/typer::{passed_by_value?}
+import compiler/types/types::{TupleInstanceType}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 
 # The module a path is resolved in: the type of `self` in the function being lowered, or the program at
@@ -148,11 +151,15 @@ pub def const_ir_type(low : Lowerer, const : Compiler::Semantic::TopLevel::Const
   low.typer.llvm_type(t.as(Type))
 end
 
-# Refuses a constant whose value is of an IR type the port does not initialise yet (hosted `passed_indirectly?`
-# and the nil and struct cases of `initialize_const`). A reference is one pointer, stored as it is.
-pub def check_scalar_type(const : Compiler::Semantic::TopLevel::Const, ir : IrType) : Nil
-  if !(ir.int? || ir.float? || ir.pointer?)
-    refuse_port("lower: constant #{const.full_name} is not an integer, a float or a reference: the struct and nil constant initialisers are not ported yet (hosted const.cr: initialize_const)")
+# Small by-value aggregates are stored by loading their value from the address
+# produced by the expression. Larger aggregates require the hosted copy_value.
+pub def check_const_type(low : Lowerer, const : Compiler::Semantic::TopLevel::Const, ir : IrType) : Nil
+  if ir.int? || ir.float? || ir.pointer?
+    return
+  end
+  t = low.analysed.type_of?(const.value).as(Type)
+  if !passed_by_value?(t) || low.typer.passed_indirectly?(t)
+    refuse_port("lower: constant #{const.full_name} requires an unsupported aggregate initializer (hosted const.cr: create_initialize_const_function)")
   end
 end
 
@@ -306,8 +313,14 @@ pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopL
     global.global_constant = true
     st.initializer = val
   else
-    global.initializer = low.builder.const_null(ir)
-    store_aligned(low, val, global)
+    t = low.analysed.type_of?(const.value).as(Type)
+    if passed_by_value?(t)
+      global.initializer = low.builder.const_zero(ir)
+      store_aligned(low, val.type.pointer? ? load_aligned(low, ir, val) : val, global)
+    else
+      global.initializer = low.builder.const_null(ir)
+      store_aligned(low, val, global)
+    end
   end
   low.builder.ret_void
   low.finish_main_function
@@ -342,7 +355,7 @@ pub def initialize_const(low : Lowerer, const : Compiler::Semantic::TopLevel::Co
   st = low.globals.const_state(name)
   st.no_init_flag = !st.read
   ir = const_ir_type(low, const)
-  check_scalar_type(const, ir)
+  check_const_type(low, const, ir)
   check_not_compile_time(const)
   global = declare_const_global(low, name, ir, st)
   flag = declare_const_flag(low, name, st)
@@ -394,7 +407,15 @@ end
 pub def codegen_path(low : Lowerer, node : Path) : Nil
   const = path_const(low, node)
   if const.nil?
-    refuse_port("lower: a path that names a type or a module, read as a value (hosted codegen.cr: visit(Path)), is not ported yet")
+    typ = low.analysed.type_of?(node)
+    if typ.nil?
+      refuse_port("lower: a type path has no analysed type (hosted codegen.cr: visit(Path))")
+    end
+    if typ.is_a?(TupleInstanceType)
+      refuse_port("lower: a type tuple path requires allocating the tuple of type ids (hosted codegen.cr: visit(Path))")
+    end
+    low.last = type_id_value(low, typ.as(Type))
+    return
   end
   c = const.as(Compiler::Semantic::TopLevel::Const)
   v = literal_value(low, c)
@@ -407,20 +428,28 @@ pub def codegen_path(low : Lowerer, node : Path) : Nil
   st.read = true
   ir = const_value_ir(low, c)
   if !string_const?(c)
-    check_scalar_type(c, ir)
+    check_const_type(low, c, ir)
   end
   if st.no_init_flag
     g = st.global
     if g.nil?
       refuse_port("lower: read of constant #{name} with no value global (hosted read_const_pointer): not ported")
     end
-    low.last = load_aligned(low, ir, g.as(Global))
+    if ir.int? || ir.float? || ir.pointer?
+      low.last = load_aligned(low, ir, g.as(Global))
+    else
+      low.last = to_lhs(low, g.as(Global), low.analysed.type_of?(c.value).as(Type))
+    end
     return
   end
   fn = const_read_function(low, c, name, st)
   ft = low.module.types.func([] of IrType, low.module.types.ptr(0))
   addr = low.builder.call(ft, fn.as(Function), [] of Value, "")
-  low.last = load_aligned(low, ir, addr)
+  if ir.int? || ir.float? || ir.pointer?
+    low.last = load_aligned(low, ir, addr)
+  else
+    low.last = to_lhs(low, addr, low.analysed.type_of?(c.value).as(Type))
+  end
 end
 
 # The hosted `codegen_assign(Path)` (codegen.cr:1516): a literal constant is initialised where it is read, so

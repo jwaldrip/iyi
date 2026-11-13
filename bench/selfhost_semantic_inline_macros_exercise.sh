@@ -292,11 +292,16 @@ else
 fi
 
 check_inline_fixtures_diverge() {
-  # Builds the port's driver as it now stands and compares every fixture. Returns
-  # non-zero (caught) when the driver fails to build, or a fixture's dump differs
-  # from the oracle's or a site is refused.
+  # A failed build is an invalid mutation, not evidence the fixture caught it.
   local probe="$WORK/mut_port"
-  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_inline_macros_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_inline_macros_exercise.iyi" > "$WORK/mut_build.log" 2>&1; then
+    local saved
+    saved=$(mktemp "${SEMINL_ARTIFACT_DIR:-$WORK}/invalid-inline-build.XXXXXX")
+    cp "$WORK/mut_build.log" "$saved"
+    echo "INVALID MUTATION: driver build failed; compiler output: $saved"
+    cat "$WORK/mut_build.log"
+    return 0
+  fi
   for fixture in "$REPO"/bench/fixtures/seminl_*.iyi; do
     rel="bench/fixtures/$(basename "$fixture")"
     "$ORACLE" "$REPO/$rel" > "$WORK/mut_o.txt" 2>/dev/null || return 1
@@ -326,7 +331,7 @@ prove_mutation "the expansion is parsed with no file, so its declarations are no
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation_all "no spliced inline macro expansion is ever declared (top-level and type-body sites)" "$MUT_INL" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts))" \
   "out.concat([] of ASTNode)" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -347,6 +352,13 @@ echo
 echo "== 8. Pipeline reach: each root through the pipeline tool with the prelude, against bench/selfhost_inline_reach.floor"
 REACH_FLOOR="$REPO/bench/selfhost_inline_reach.floor"
 MUT_PROG="$REPO/src/compiler/lower/program.iyi"
+PLATFORM="$(uname -s -m)"
+COMPARE_REACH=0
+if [ "$PLATFORM" = "Darwin arm64" ]; then
+  COMPARE_REACH=1
+else
+  echo "  reach floors are measured on Darwin arm64: not compared on $PLATFORM"
+fi
 
 # Prints "<defs-reached> <no-record rows>" for the root $1 (repo-relative), run by the pipeline tool $2, output tagged $3.
 reach_of() {
@@ -370,6 +382,7 @@ check_reach() {
     reach=$1
     missing=$2
     echo "  $root: defs-reached $reach (floor $floor), no-record rows $missing"
+    if [ "$COMPARE_REACH" -eq 0 ]; then continue; fi
     if [ "$missing" -ne 0 ] || [ "$reach" -lt "$floor" ]; then
       echo "  BELOW FLOOR: $root. A regression: restore the declaration or lower nothing."
       fail=1
@@ -388,7 +401,14 @@ check_reach() {
 # The check the reach mutations must fail: the reach fixture's root through a pipeline tool built from the tree as it is.
 check_reach_fixture() {
   local RAISE=0 probe="$WORK/mut_reach_tool"
-  "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_reach_build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_reach_build.log" 2>&1; then
+    local saved
+    saved=$(mktemp "${SEMINL_ARTIFACT_DIR:-$WORK}/invalid-reach-build.XXXXXX")
+    cp "$WORK/mut_reach_build.log" "$saved"
+    echo "INVALID MUTATION: reach tool build failed; compiler output: $saved"
+    cat "$WORK/mut_reach_build.log"
+    return 0
+  fi
   check_reach "$probe" bench/fixtures/seminl_reach/root.iyi > "$WORK/mut_reach.txt" 2>&1
 }
 
@@ -400,6 +420,7 @@ else
   status=1
 fi
 
+if [ "$COMPARE_REACH" -eq 1 ]; then
 prove_mutation "the fixture's required file is parsed again instead of read from the pipeline's own tree" "$MUT_SEM" \
   "nodes = @program.unit_tree_or_parse(file)" \
   "nodes = Parser.new(File.read(file), file).parse" \
@@ -417,6 +438,7 @@ prove_mutation "a require looks up the pipeline's tree under a key that is never
   "if tree = @unit_trees[file + \"~\"]?" \
   -- check_reach_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+fi
 
 # 9. Single-macro-node bodies: a class, module or lib body that is one macro node is spliced, so the typer never refuses its
 # macro node. Each fixture's top-level refusal count (root-refusals) stays at or below its ceiling in
@@ -436,6 +458,7 @@ check_refusals() {
     (cd "$REPO" && IYI_PATH="$REPO/src" "$tool" "$root" -o "$WORK/refusals_exe_$tag" --pipeline typed --prelude --probe-phase --keep-going > "$log" 2>&1)
     refusals=$(awk '/^table: .* root-refusals=/ { sub(/.*root-refusals=/, ""); print $1 }' "$log")
     echo "  $root: root-refusals ${refusals:-none} (ceiling $ceiling)"
+    if [ "$COMPARE_REACH" -eq 0 ]; then continue; fi
     if [ -z "$refusals" ] || [ "$refusals" -gt "$ceiling" ]; then
       echo "  ABOVE CEILING: $root. A single macro node body is refused again: restore its splice."
       fail=1
@@ -454,7 +477,14 @@ check_refusals() {
 # The check the single-node mutations must fail: the refusal ceilings through a pipeline tool built from the tree as it is.
 check_body_fixture() {
   local RAISE=0 probe="$WORK/mut_body_tool"
-  "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_body_build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$probe" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_body_build.log" 2>&1; then
+    local saved
+    saved=$(mktemp "${SEMINL_ARTIFACT_DIR:-$WORK}/invalid-body-build.XXXXXX")
+    cp "$WORK/mut_body_build.log" "$saved"
+    echo "INVALID MUTATION: body tool build failed; compiler output: $saved"
+    cat "$WORK/mut_body_build.log"
+    return 0
+  fi
   check_refusals "$probe" > "$WORK/mut_body.txt" 2>&1
 }
 
@@ -464,6 +494,7 @@ else
   status=1
 fi
 
+if [ "$COMPARE_REACH" -eq 1 ]; then
 prove_mutation "a single macro node body is returned unchanged, so the typer refuses its macro node" "$MUT_INL" \
   "return body unless body.is_a?(MacroIf) || body.is_a?(MacroFor) || body.is_a?(MacroExpression)" \
   "return body" -- check_body_fixture || status=1
@@ -471,7 +502,7 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # Not "wrapped but not spliced": visit(Expressions) splices the wrapper again, so that mutant is equivalent.
 prove_mutation "a single macro node body loses its expansion: the wrapper is empty" "$MUT_INL" \
-  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals))" \
+  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals, bindings, facts))" \
   "Expressions.new([] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -486,10 +517,10 @@ prove_mutation "a constant whose value is one macro node is typed unexpanded, so
   "spliced = Expressions.new([value] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-# A fun body is spliced in place (type_nodes.iyi visit_fun_def): its macro sites are expanded, not refused by the typer.
-prove_mutation "a fun body's macro sites are not spliced, so the typer refuses them" "$MUT_TYPE" \
-  "body = splice_fun_body(node, visitor.program.full_name)" \
-  "body = node.body" -- check_body_fixture || status=1
+# A fun body's macro sites are spliced by the body visitor before type-node visitation.
+prove_mutation "a fun body's macro sites are not spliced, so the typer refuses them" "$MUT_MAIN" \
+  "splice_fun_body(node, @program.full_name)" \
+  "nil" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # A site's expansion is parsed knowing the names the body declared before it (inline_macros.iyi, the parser's var scope).
@@ -503,9 +534,10 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # keeps the expansion and drops that write-back, so later_block_local.iyi pointerof
 # refuses the name and root-refusals rise above 5.
 prove_mutation "a recursive splice drops names an earlier expansion declared, so a later block's pointerof refuses them" "$MUT_INL" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals))" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals.dup))" -- check_body_fixture || status=1
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals, bindings, facts))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals.dup, bindings, facts))" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+fi
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

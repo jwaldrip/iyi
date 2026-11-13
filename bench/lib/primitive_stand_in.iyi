@@ -15,7 +15,7 @@ module bench/lib/primitive_stand_in
 # and the marker reads in primitives.iyi, when the semantic pass gives primitive defs their
 # own body.
 
-import compiler/syntax/ast::{ASTNode, Arg, Def, Path, Primitive, Self}
+import compiler/syntax/ast::{ASTNode, Arg, Def, Expressions, Metaclass, Path, Primitive, Self}
 import compiler/semantic/top_level::{GenericClassType, NonGenericClassType, SemanticProgram}
 import compiler/semantic/main_visitor::{MainVisitor}
 pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : MainVisitor) : Nil
@@ -25,6 +25,10 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
     ["&+", "&-", "&*", "+", "-", "*", "|", "&", "^", "unsafe_shl", "unsafe_shr", "unsafe_div", "unsafe_mod"].each do |op|
       owner.add_def(binary_def(op, tn, tn))
     end
+    # Checked integer conversion declarations used by the primitive lowering gate.
+    owner.add_def(primitive_def("to_i32", [] of Arg, Path.new("Int32"), "convert"))
+    owner.add_def(primitive_def("to_u32", [] of Arg, Path.new("UInt32"), "convert"))
+    owner.add_def(primitive_def("to_u64", [] of Arg, Path.new("UInt64"), "convert"))
     ["==", "!=", "<", "<=", ">", ">="].each do |op|
       owner.add_def(binary_def(op, tn, "Bool"))
     end
@@ -48,7 +52,28 @@ pub def stand_in_primitive_types(root : ASTNode, prog : SemanticProgram, mv : Ma
   ["==", "!=", "<", "<=", ">", ">="].each do |op|
     char.add_def(binary_def(op, "Char", "Bool"))
   end
+  reference = prog.lookup_type_node(Path.new("Reference"), prog).as(NonGenericClassType)
+  reference.add_def(primitive_def("object_id", [] of Arg, Path.new("UInt64"), "object_id"))
+  object = prog.lookup_type_node(Path.new("Object"), prog).as(NonGenericClassType)
+  object.add_def(primitive_def("crystal_type_id", [] of Arg, Path.new("Int32"), "object_crystal_type_id"))
   declare_pointer_primitives(prog)
+  # The literal-index fixture alone installs its concrete tuple primitive.
+  if root.is_a?(Expressions)
+    root.as(Expressions).expressions.each do |item|
+      if item.is_a?(Def) && item.as(Def).name == "apply"
+        proc_owner = prog.lookup_type_node(Path.new("Proc"), prog).as(GenericClassType)
+        proc_owner.add_def(primitive_def("call", [Arg.new("arg", nil, Path.new("Int32"))] of Arg, Path.new("Int32"), "proc_call"))
+      end
+      next unless item.is_a?(Def) && item.as(Def).name == "pick_tuple_member"
+      tuple = prog.lookup_type_node(Path.new("Tuple"), prog).as(GenericClassType)
+      tuple.add_def(Def.new("[]", [Arg.new("index", nil, Path.new("Int32"))] of Arg, Primitive.tuple_indexer(1, 1), nil, nil, Path.new("Int32")))
+    end
+    root.as(Expressions).expressions.each do |item|
+      next unless item.is_a?(Def) && item.as(Def).name == "pick_tuple_type"
+      tuple = prog.lookup_type_node(Path.new("Tuple"), prog).as(GenericClassType)
+      tuple.metaclass.add_def(Def.new("[]", [Arg.new("index", nil, Path.new("Int32"))] of Arg, Primitive.tuple_indexer(1, 1), nil, nil, Metaclass.new(Path.new("Int32"))))
+    end
+  end
 end
 
 # A builtin's binary operator: one argument of the operand's type, the result type, a Nop

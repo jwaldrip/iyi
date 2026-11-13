@@ -19,7 +19,10 @@ import compiler/ir/parser::{parse, IrParseError}
 import compiler/ir/printer::{print}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program}
-import compiler/lower/primitives::{class_pointerful?}
+import compiler/lower/primitives::{class_pointerful?, codegen_primitive_binary}
+import compiler/lower/context::{Lowerer}
+import compiler/ir/values::{Value}
+import compiler/ir/types::{IrType}
 import compiler/semantic/top_level::{GenericClassType, Type}
 import compiler/types/types::{GenericClassInstanceType}
 
@@ -79,6 +82,22 @@ def check_generic_pointerful : Nil
   puts "generic_pointerful=1"
 end
 
+# Reproduce the typed-flow mismatch at the primitive seam, before the verifier.
+# Both semantic operands are Int64, while one emitted value is the union local.
+def check_binary_union(fixture : String, side : String) : Nil
+  analysis = analyse(File.read(fixture), fixture, true)
+  m = ir_module("arm64-apple-macosx")
+  low = Lowerer.new(m, typer_for(m, analysis.iyi), analysis.visitor)
+  typ = analysis.visitor.program.lookup_type("Int64")
+  raise "Int64 was not declared" if typ.nil?
+  int = Value.new(m.types.int64)
+  union = Value.new(m.types.struct([m.types.int64, m.types.int64] of IrType))
+  left = side == "left" ? union : int
+  right = side == "right" ? union : int
+  codegen_primitive_binary(low, "<=", typ.as(Type), typ.as(Type), left, right)
+  raise "binary union operand was not refused"
+end
+
 def run : Nil
   args = Program.args
   if args.empty?
@@ -96,6 +115,8 @@ def run : Nil
     emit_bare(args[1], args[2])
   elsif mode == "generic_pointerful"
     check_generic_pointerful
+  elsif mode == "binary_union"
+    check_binary_union(args[1], args[2])
   else
     raise "unknown mode #{mode}"
   end
