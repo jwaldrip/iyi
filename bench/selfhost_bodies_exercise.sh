@@ -42,7 +42,14 @@ echo
 echo "== 2. Each body fixture: the port's typed nodes against the oracle's"
 for fixture in "$REPO"/bench/fixtures/sem_bodies_*.iyi; do
   rel="bench/fixtures/$(basename "$fixture")"
-  if ! "$ORACLE" "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"; then
+  # pointer_set defines Pointer#value= in the file. The prelude already has that
+  # method, so this fixture is analysed alone.
+  if [ "$(basename "$fixture")" = "sem_bodies_pointer_set.iyi" ]; then
+    "$ORACLE" --bare "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
+  else
+    "$ORACLE" "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
+  fi
+  if [ $? -ne 0 ]; then
     printf '%s\t%s\t%s\n' "$rel" 0 "ORACLE: $(head -n 1 "$WORK/o.err")" >> "$RESULTS"
     continue
   fi
@@ -129,10 +136,14 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
-    "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+    if [ "$name" = "sem_bodies_pointer_set" ]; then
+      "$ORACLE" --bare "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+    else
+      "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+    fi
     "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
     matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
     floor=$(awk -v r="$rel" '$1 == r { print $2 }' "$FLOOR_FILE" 2>/dev/null)
@@ -218,6 +229,12 @@ prove_mutation "a splat call is not resolved by the calls lookup" "$MAIN_VISITOR
 prove_mutation "a union restriction is not instantiated from its members" "$MAIN_VISITOR" \
   "      return union_restriction_type(restriction.as(Union), rec_type)" \
   "      return nil" -- bodies_at_floor || status=1
+prove_mutation "pointer_set types the assigned value" "$MAIN_VISITOR" \
+  "set_type(node, pst)" \
+  "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
+prove_mutation "a Nil return annotation discards the body value" "$MAIN_VISITOR" \
+  "unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)" \
+  "unless bt.subtype_of?(declared_ret)" -- bodies_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"

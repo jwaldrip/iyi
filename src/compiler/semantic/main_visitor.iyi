@@ -778,15 +778,12 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     if node.name == "pointer_set"
-      if sc = @scope
-        if sc.is_a?(PointerInstanceType)
-          if vt = @vars["value"]?
-            set_type(node, vt)
-            return false
-          end
-        end
+      if pst = pointer_set_type
+        set_type(node, pst)
+        return false
       end
     end
+
     if node.name == "class"
       if sc = @scope
         if sc.is_a?(ModuleType)
@@ -797,6 +794,40 @@ pub class MainVisitor < TypeNodeHost
     end
     untyped(node, "primitive #{node.name} without a declared return type")
     false
+  end
+
+  # Hosted visit_pointer_set (main_visitor.cr 3023-3035): a Void element types
+  # the primitive as Nil; otherwise the type is the def's `value` argument.
+  # A Pointer instance that is not a PointerInstanceType still has that argument.
+  def pointer_set_type : Type?
+    element = pointer_element(@scope)
+    if element && element.is_a?(VoidType)
+      return @program.nil_type
+    end
+    if vt = @vars["value"]?
+      return vt
+    end
+    element
+  end
+
+  def pointer_element(scope : Type?) : Type?
+    return nil if scope.nil?
+    sc : Type = scope.as(Type)
+    if sc.is_a?(MetaclassType)
+      sc = sc.as(MetaclassType).instance_type
+    end
+    if sc.is_a?(PointerInstanceType)
+      return sc.as(PointerInstanceType).element_type
+    end
+    if sc.is_a?(GenericClassInstanceType)
+      inst = sc.as(GenericClassInstanceType)
+      base = inst.generic_type
+      if base.is_a?(GenericClassType) && base.as(GenericClassType).name == "Pointer"
+        args = inst.type_args
+        return args[0] if args.size == 1
+      end
+    end
+    nil
   end
 
   # `obj.responds_to?(:name)` is typed Bool. Its value depends on the obj's type and is
@@ -2619,12 +2650,19 @@ pub class MainVisitor < TypeNodeHost
 
     if rt = target_def.return_type
       declared_ret = lookup_under(rt, rec_type)
-      unless bt.subtype_of?(declared_ret)
+      # A Nil annotation discards the body's value; a body that never returns
+      # still gives the def NoReturn (hosted bindings.cr Def#map_type).
+      if declared_ret.nil_type? && bt.is_a?(NoReturnType)
+        set_type(target_def, bt)
+        remember_def_instance(cache_key, target_def, bt)
+        return bt
+      end
+      unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)
         mismatch = "type mismatch for return type: expected #{declared_ret.full_name}, got #{bt.full_name}"
         if s = site
           refuse(s, mismatch)
         else
-          raise(mismatch) unless @total
+          refuse(body.as(ASTNode), mismatch)
         end
         return nil
       end
