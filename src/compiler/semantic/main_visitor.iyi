@@ -743,6 +743,7 @@ pub class MainVisitor < TypeNodeHost
     if nts = @next_types
       nts << value_t
     end
+    @unreachable = true
     set_type(node, @program.no_return_type)
     false
   end
@@ -1619,12 +1620,14 @@ pub class MainVisitor < TypeNodeHost
         if rts = @return_types
           rts << nil
         end
+        @unreachable = true
         return false
       end
       if cd = @current_def
         if rt = cd.return_type
           expected_ret = lookup_under(rt, @scope)
           unless value_t.as(Type).subtype_of?(expected_ret)
+            @unreachable = true
             return refuse(node, "type mismatch for return type: expected #{expected_ret.full_name}, got #{value_t.as(Type).full_name}")
           end
         end
@@ -1633,6 +1636,7 @@ pub class MainVisitor < TypeNodeHost
     if rts = @return_types
       rts << value_t
     end
+    @unreachable = true
     set_type(node, @program.no_return_type)
     false
   end
@@ -2579,7 +2583,10 @@ pub class MainVisitor < TypeNodeHost
       declare_out(out_node, target.out_type[i])
       i += 1
     end
-    set_type(node, target.result_type.as(Type))
+    rt = target.result_type.as(Type)
+    set_type(node, rt)
+    @unreachable = true if rt.is_a?(NoReturnType)
+    @type_filters = nil
     false
   end
 
@@ -2728,7 +2735,9 @@ pub class MainVisitor < TypeNodeHost
       merged_ret = @program.type_merge(ret_types)
       if merged_call_t = call_result(node, merged_ret)
         set_type(node, merged_call_t)
+        @unreachable = true if merged_call_t.is_a?(NoReturnType)
       end
+      @type_filters = nil
       return false
     end
 
@@ -2775,6 +2784,7 @@ pub class MainVisitor < TypeNodeHost
     ret_type = call_result(node, body_ret)
     if ret_type
       set_type(node, ret_type)
+      @unreachable = true if ret_type.is_a?(NoReturnType)
     end
     @type_filters = nil
     false
