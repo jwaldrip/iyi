@@ -3785,14 +3785,23 @@ jobs:
           gh release create "$tag" --title "iyi ${tag#v}" --notes-file notes.md \
             dist/*.tar.gz dist/*.zip dist/SHA256SUMS
 
+  # In four shards (`SELFHOST_GATE_SHARD`, bench/selfhost_gates.sh): the gates
+  # share a checkout and never run in parallel inside one, so each shard is a
+  # runner of its own. One job ran them all until 41 gates in a row were
+  # still running when 90 minutes cancelled it (run 43352148795); 23 gates
+  # had taken 50 (run 43328998691).
   selfhost:
     needs: [plan, build]
     if: ${{ contains(fromJSON(needs.plan.outputs.jobs), 'selfhost') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     container:
       image: crystallang/crystal:1.21.0-build
-    name: "The self-host gates, on Linux"
+    name: "The self-host gates, on Linux, shard ${{ matrix.shard }} of 4"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -3822,9 +3831,11 @@ jobs:
       - name: Build `iyi` and its daemon
         run: make -o .build/crystal iyi iyi-daemon
 
-      # One driver runs all 23 selfhost gates in order, each with its own log,
-      # and exits non-zero when any of them fails.
+      # One driver runs this shard's selfhost gates in order, each with its own
+      # log, and exits non-zero when any of them fails.
       - name: The self-host gates
+        env:
+          SELFHOST_GATE_SHARD: ${{ matrix.shard }}/4
         run: bash bench/selfhost_gates.sh
 
   selfhost-darwin:
@@ -3837,9 +3848,14 @@ jobs:
     # 180, measured: on a cache miss the static LLVM is 41 minutes and the
     # build 19, and the gates were still running 59 minutes later when 120
     # cancelled the job (run 43328998691); with the cache the build is 12
-    # and the gates 56 (run 43303875393), and each lane adds gates.
+    # and 23 gates 56 (run 43303875393), and each lane adds gates. In two
+    # shards, as the Linux job is in four: macOS runners are the scarce ones.
     timeout-minutes: 180
-    name: "The self-host gates, on darwin arm64"
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    name: "The self-host gates, on darwin arm64, shard ${{ matrix.shard }} of 2"
     steps:
       - uses: actions/checkout@v7
         with:
@@ -3875,6 +3891,8 @@ jobs:
       # The same driver as the Linux job. The gates read LLVM_CONFIG from the
       # environment before they look for llvm-config on the PATH.
       - name: The self-host gates
+        env:
+          SELFHOST_GATE_SHARD: ${{ matrix.shard }}/2
         run: LLVM_CONFIG="$HOME/llvm-static/bin/llvm-config" bash bench/selfhost_gates.sh
 
   # The compiler's own back end: the IR, the aarch64 code generator, the
