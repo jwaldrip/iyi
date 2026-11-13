@@ -1,0 +1,28 @@
+@[Unsafe("the fixture calls a NoReturn fun so a later call is not resolved")]
+lib LibDie
+  fun die(status : Int32) : NoReturn
+end
+
+def show : String
+  LibDie.die(1)
+end
+
+def takes(n : Int32) : Int32
+  n
+end
+
+def receiver_eq : Bool
+  show == "x"
+end
+
+def arg_call : Int32
+  takes(LibDie.die(1))
+end
+
+def named_call : Int32
+  takes(n: LibDie.die(1))
+end
+
+receiver_eq
+arg_call
+named_call

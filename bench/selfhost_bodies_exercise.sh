@@ -155,6 +155,35 @@ else
 fi
 
 echo
+echo "== 2e. A call on NoReturn, or with a NoReturn argument, is not resolved"
+nr_fx="$REPO/bench/fixtures/sem_bodies_noreturn_call.iyi"
+"$ORACLE" "$nr_fx" > "$WORK/nr.hosted" 2> "$WORK/nr.hosted.err" || {
+  echo "  ORACLE noreturn call failed"
+  cat "$WORK/nr.hosted.err"
+  status=1
+}
+if ! "$TYPED" "$nr_fx" "$REPO/src" > "$WORK/nr.port" 2> "$WORK/nr.port.err"; then
+  echo "  PORT noreturn call failed"
+  status=1
+elif ! diff -q "$WORK/nr.hosted" "$WORK/nr.port" >/dev/null; then
+  echo "  noreturn call dump differs from hosted"
+  diff -u "$WORK/nr.hosted" "$WORK/nr.port" | head -n 40
+  status=1
+else
+  echo "  sem_bodies_noreturn_call.iyi matches hosted node by node"
+fi
+if ! "$TYPED" --refusals "$nr_fx" "$REPO/src" > "$WORK/nr.refusals" 2> "$WORK/nr.refusals.err"; then
+  echo "  PORT noreturn refusals failed"
+  status=1
+elif grep -q "undefined method" "$WORK/nr.refusals"; then
+  echo "  noreturn call was resolved and refused:"
+  cat "$WORK/nr.refusals"
+  status=1
+else
+  echo "  sem_bodies_noreturn_call.iyi has no undefined-method refusal"
+fi
+
+echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
 . "$REPO/bench/lib/mutation.sh"
 MUT_TD="$WORK/mut_typed_dump"
@@ -177,7 +206,7 @@ bodies_at_floor() {
     body_build_failed "$WORK/mut_build.log"
     return $?
   fi
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_proc_scope sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup sem_bodies_receiver_order sem_bodies_unit_scope sem_bodies_unit_scope_inferred sem_bodies_proc_splat sem_bodies_pack_splat sem_bodies_imported_restriction sem_bodies_setter_value sem_bodies_noreturn; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_proc_scope sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup sem_bodies_receiver_order sem_bodies_unit_scope sem_bodies_unit_scope_inferred sem_bodies_proc_splat sem_bodies_pack_splat sem_bodies_imported_restriction sem_bodies_setter_value sem_bodies_noreturn sem_bodies_noreturn_call; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     if [ "$name" = "sem_bodies_pointer_set" ]; then
@@ -212,6 +241,22 @@ setter_typed_as_value() {
   "$ORACLE" "$fx" > "$WORK/setter_mut.hosted" 2>/dev/null || return 1
   "$MUT_TD" "$fx" "$REPO/src" > "$WORK/setter_mut.port" 2>/dev/null || return 1
   diff -q "$WORK/setter_mut.hosted" "$WORK/setter_mut.port" >/dev/null
+}
+
+# A call on NoReturn, or with a NoReturn argument, is not resolved (hosted
+# call.cr 77-80 and 94-114). Returns non-zero when that skip is gone and the
+# port refuses the call.
+noreturn_call_is_refused() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/nr_mut_build.log" 2>&1; then
+    body_build_failed "$WORK/nr_mut_build.log"
+    return $?
+  fi
+  fx="$REPO/bench/fixtures/sem_bodies_noreturn_call.iyi"
+  "$MUT_TD" --refusals "$fx" "$REPO/src" > "$WORK/nr_mut.refusals" 2>/dev/null || return 1
+  if grep -q "undefined method" "$WORK/nr_mut.refusals"; then
+    return 1
+  fi
+  return 0
 }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
 prove_mutation "lib call result type" "$MAIN_VISITOR" \
@@ -294,6 +339,12 @@ prove_mutation "a Nil return annotation discards the body value" "$MAIN_VISITOR"
 prove_mutation "a declared return whose body never returns is NoReturn" "$MAIN_VISITOR" \
   "      if bt.is_a?(NoReturnType)" \
   "      if declared_ret.nil_type? && bt.is_a?(NoReturnType)" -- bodies_at_floor || status=1
+prove_mutation "a call on NoReturn is not resolved" "$MAIN_VISITOR" \
+  "    if rec_type.is_a?(NoReturnType)" \
+  "    if false" -- noreturn_call_is_refused || status=1
+prove_mutation "a NoReturn argument is not resolved" "$MAIN_VISITOR" \
+  "    if call_arg_never_returns?(node)" \
+  "    if false" -- noreturn_call_is_refused || status=1
 prove_mutation "metaclass owner binds its instance parameters" "$MAIN_VISITOR" \
   "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)" \
   "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)" -- bodies_at_floor || status=1

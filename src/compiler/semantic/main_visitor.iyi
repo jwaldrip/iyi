@@ -3128,9 +3128,29 @@ pub class MainVisitor < TypeNodeHost
     node.args.each do |arg|
       arg.accept(self)
     end
+    if named = node.named_args
+      named.each do |na|
+        na.value.accept(self)
+      end
+    end
     @needs_type_filters = saved_call_ntf
+    # Hosted call.cr 77-80: a call on NoReturn is not resolved. bindings.cr has
+    # no Call#update, and recalculate returns before `bind_to matches` (call.cr
+    # 138), so the call stays untyped. Not#update (bindings.cr 861-866) sets
+    # NoReturn for `!`; a call does not. Inventing a type here would not match.
+    if rec_type.is_a?(NoReturnType)
+      @type_filters = nil
+      return false
+    end
     if rec_type.is_a?(LibType)
       return visit_lib_call(node, rec_type.as(LibType))
+    end
+    # Hosted call.cr 94-114: a NoReturn positional or named argument skips
+    # resolution. Same untyped call: the lookup that would say "undefined
+    # method '==' for NoReturn" does not run.
+    if call_arg_never_returns?(node)
+      @type_filters = nil
+      return false
     end
 
     # Multiple dispatch over a union receiver
@@ -3225,6 +3245,24 @@ pub class MainVisitor < TypeNodeHost
       @unreachable = true if ret_type.is_a?(NoReturnType)
     end
     @type_filters = nil
+    false
+  end
+
+  # Hosted call.cr 113-114: any positional or named argument whose type is
+  # NoReturn means the call is not resolved.
+  def call_arg_never_returns?(node : Call) : Bool
+    node.args.each do |arg|
+      if t = child_type(arg)
+        return true if t.is_a?(NoReturnType)
+      end
+    end
+    if named = node.named_args
+      named.each do |na|
+        if t = child_type(na.value)
+          return true if t.is_a?(NoReturnType)
+        end
+      end
+    end
     false
   end
 

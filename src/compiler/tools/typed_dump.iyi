@@ -79,12 +79,14 @@ pub class TypedNodeWalk < Visitor
   end
 end
 
-# One analysis of a file: its node dump lines and the number of typed instances.
+# One analysis of a file: its node dump lines, the number of typed instances,
+# and the refusal reasons total mode recorded.
 pub class TypedDumpResult
   getter lines : Array(String)
   getter instances : Int32
+  getter refusals : Array(String)
 
-  def initialize(@lines : Array(String), @instances : Int32)
+  def initialize(@lines : Array(String), @instances : Int32, @refusals : Array(String))
   end
 end
 
@@ -118,7 +120,11 @@ module TypedDump
     RecursiveStructChecker.new(prog).run
     walk = TypedNodeWalk.new(mv, filename, node)
     node.accept(walk)
-    TypedDumpResult.new(walk.lines, mv.typed_instances.size)
+     reasons = [] of String
+     mv.refusals.each do |refusal|
+       reasons << refusal.reason
+     end
+     TypedDumpResult.new(walk.lines, mv.typed_instances.size, reasons)
   end
 
   def self.dump(source : String, filename : String, roots : Array(String)) : Array(String)
@@ -127,31 +133,40 @@ module TypedDump
 end
 
 module TypedDumpTool
-  def self.run : Nil
-    args = Program.args
-    first = 0
-    instances = false
-    if !args.empty? && args[0] == "--instances"
-      instances = true
-      first = 1
-    end
-    if args.size <= first
-      raise "usage: typed_dump [--instances] <file.iyi> [root ...]"
-    end
-    path = args[first]
-    roots = [] of String
-    i = first + 1
-    while i < args.size
-      roots << args[i]
-      i = i + 1
-    end
-    source = File.read(path)
-    result = TypedDump.analyse(source, path, roots)
-    result.lines.each { |line| puts line }
-    if instances
-      puts "typed instances: #{result.instances}"
-    end
-  end
+   def self.run : Nil
+     args = Program.args
+     first = 0
+     instances = false
+     refusals = false
+     if !args.empty? && args[0] == "--instances"
+       instances = true
+       first = 1
+     end
+     if !args.empty? && args[0] == "--refusals"
+       refusals = true
+       first = 1
+     end
+     if args.size <= first
+       raise "usage: typed_dump [--instances | --refusals] <file.iyi> [root ...]"
+     end
+     path = args[first]
+     roots = [] of String
+     i = first + 1
+     while i < args.size
+       roots << args[i]
+       i = i + 1
+     end
+     source = File.read(path)
+     result = TypedDump.analyse(source, path, roots)
+     if refusals
+       result.refusals.each { |reason| puts reason }
+       return
+     end
+     result.lines.each { |line| puts line }
+     if instances
+       puts "typed instances: #{result.instances}"
+     end
+   end
 end
 
 TypedDumpTool.run
