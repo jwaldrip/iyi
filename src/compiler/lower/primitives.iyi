@@ -45,7 +45,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/fun::{visit_node}
-import compiler/lower/helpers::{int1, llvm_nil, raise_overflow_name}
+import compiler/lower/helpers::{abi_name, int1, llvm_nil, raise_overflow_name}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
@@ -476,7 +476,7 @@ end
 # prepare_call_args does. `pointer_new` is a class method: its call's receiver (the metaclass) is not
 # lowered, and its argument is the address. `pointer_malloc` is a class method too: its argument is the count. Ported: `pointer_address` (ptr2int to Int64), `pointer_add` (a
 # gep of the element type, `pointer_new`, `pointer_get`, and `pointer_set`.
-# `pointer_realloc`, `pointer_diff`, and a program's own malloc remain refused.
+# `pointer_realloc` and `pointer_diff` remain refused.
 pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   if name == "pointer_realloc" || name == "pointer_diff"
     pending_visit_node("primitive #{name} (hosted codegen_primitive_#{name}, primitives.cr 905-965: its helper is not ported)")
@@ -612,12 +612,13 @@ pub def pointer_element_of(t : Type) : Type
   raise "BUG: a pointer primitive on #{t.full_name}, which is not a Pointer (hosted codegen_primitive_pointer_*)"
 end
 
-# The hosted `codegen_primitive_pointer_malloc` (primitives.cr 905-925) with the C allocator a program without its
-# own malloc gets: `generic_array_malloc` (codegen.cr 2884-2906) takes the element's size times the count, calls the
-# C `malloc` (`c_malloc_fun`), and zeroes the block, since no program malloc clears it. The atomic and the pointerful
-# entries are the same here. The count is the UInt64 argument, which is the size type; any other width is refused.
+# The hosted `codegen_primitive_pointer_malloc` (primitives.cr 905-925) and `generic_array_malloc`
+# (codegen.cr 2884-2906): takes the element's size times the count, selects the program's
+# `malloc64` when `has_inner_pointers?(elem)` or `malloc_atomic64` otherwise (falling back to C
+# `malloc` when that entry does not exist), and zeroes the block unless a program allocator was
+# used under `iyi_gc_arena?`. The count is the UInt64 argument, which is the size type; any other
+# width is refused.
 pub def pointer_malloc_value(low : Lowerer, elem : Type, count : Value) : Value
-  refuse_program_malloc(low, elem)
   if count.type != low.typer.size_t
     pending_visit_node("Pointer#malloc with a count that is not the size type (hosted generic_array_malloc: builder.mul of the size and the count)")
     return low.builder.const_null_pointer
@@ -630,9 +631,13 @@ pub def pointer_malloc_value(low : Lowerer, elem : Type, count : Value) : Value
   elsif !(count.is_a?(Inst) && count.as(Inst).op == Op::ConstInt && count.as(Inst).aux_int == 1_i64)
     size = low.builder.mul(bytes, count)
   end
-  c_malloc = c_malloc_function(low)
-  ptr = low.builder.call(c_malloc.fn_type, c_malloc, [size] of Value, "")
-  memset_size(low, ptr, size)
+  suffix = has_inner_pointers?(elem) ? "malloc64" : "malloc_atomic64"
+  prog_alloc = program_allocator(low, suffix)
+  callee = prog_alloc.nil? ? c_malloc_function(low) : prog_alloc.as(Function)
+  ptr = low.builder.call(callee.fn_type, callee, [size] of Value, "")
+  unless !prog_alloc.nil? && iyi_gc_arena?(low)
+    memset_size(low, ptr, size)
+  end
   ptr
 end
 
@@ -1370,17 +1375,16 @@ pub def allocate_arena_class(low : Lowerer, t : Type) : Value
   ptr
 end
 
-# The malloc class allocation (codegen.cr 2778-2793 and 2800-2807) for a program with no arena. The
-# memory is the C `malloc` of the struct's size: the hosted `malloc` and `malloc_atomic` both call it
-# when the program has no `__crystal_malloc64` or `__crystal_malloc_atomic64`. Then the memset, then the
-# type id in field 0, the hosted layout a program without the prelude's header keeps. Verified against
-# the hosted IR of bench/fixtures/lowprim_alloc_class.iyi. Under the header layout the hosted code stores
-# the id at P-4 instead, which is not ported and refuses here.
+# The malloc class allocation (codegen.cr 2778-2793 and 2800-2807) for a program with no arena:
+# chooses `malloc64` when `class_pointerful?(t)` or `malloc_atomic64` otherwise, falling back to C
+# `malloc` when that entry does not exist. Then the memset, then the type id (at P-4 under the
+# header layout, or in field 0 otherwise).
 pub def allocate_malloc_class(low : Lowerer, t : Type) : Value
-  refuse_program_malloc(low, t)
+  suffix = class_pointerful?(t) ? "malloc64" : "malloc_atomic64"
+  prog_alloc = program_allocator(low, suffix)
+  callee = prog_alloc.nil? ? c_malloc_function(low) : prog_alloc.as(Function)
   struct_ir = low.typer.llvm_struct_type(t)
-  c_malloc = c_malloc_function(low)
-  ptr = low.builder.call(c_malloc.fn_type, c_malloc, [sizeof_expr(low, struct_ir)] of Value, "")
+  ptr = low.builder.call(callee.fn_type, callee, [sizeof_expr(low, struct_ir)] of Value, "")
   if low.typer.iyi_layout
     # The header layout (hosted codegen.cr 2790-2793, 2797-2807 with iyi_object_layout?): the memset, then the
     # type id a u32 at P-4 (the high half of the header word at P-8), and no store at field 0.
@@ -1437,14 +1441,21 @@ pub def class_instance_vars(t : Type) : Hash(String, MetaTypeVar)
   Hash(String, MetaTypeVar).new
 end
 
-# A program that defines its own malloc is allocated through it by the hosted crystal_malloc_fun, which
-# is not ported; refuse by name rather than emit the C malloc beside it.
-pub def refuse_program_malloc(low : Lowerer, t : Type) : Nil
-  ["__iyi_malloc64", "__crystal_malloc64", "__iyi_malloc_atomic64", "__crystal_malloc_atomic64"].each do |name|
-    if !low.module.get_function?(name).nil?
-      pending_visit_node("allocate of class #{t.full_name} through the program's #{name} (hosted crystal_malloc_fun, not ported)")
+# The hosted `crystal_malloc_fun` / `crystal_malloc_atomic_fun` (codegen.cr 2908-2924): looks up
+# `abi_name(low, suffix)` in the module, where `emit_well_known_funs` declares any program
+# allocator ahead of lowering. If absent from the module yet present in `global_funs`, refuse
+# premature allocation by name rather than silently calling C `malloc`.
+pub def program_allocator(low : Lowerer, suffix : String) : Function?
+  name = abi_name(low, suffix)
+  existing = low.module.get_function?(name)
+  return existing.as(Function) unless existing.nil?
+  low.analysed.program.global_funs.each do |record|
+    if record.real_name == name
+      pending_visit_node("premature allocation through #{name} before emit_well_known_funs declared it (hosted crystal_malloc_fun)")
+      return nil
     end
   end
+  nil
 end
 
 # The C `malloc` the hosted `c_malloc_fun` declares (`declare ptr @malloc(i64)`), added to the module when

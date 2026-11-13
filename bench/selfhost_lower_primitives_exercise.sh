@@ -211,6 +211,28 @@ rm -f "$WORK/pointer_mut_built"
 prove_mutation "pointer addition loses inbounds" "$REPO/src/compiler/lower/primitives.iyi" \
   '    low.last = low.builder.inbounds_gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' '    low.last = low.builder.gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' -- pointer_check || status=1
 if [ ! -f "$WORK/pointer_mut_built" ]; then echo "  NOT PROVEN: pointer addition mutant failed to build"; status=1; fi
+program_allocator_check() {
+  "$IYI" build -o "$WORK/alloc_mut" "$REPO/bench/selfhost_lower_primitives_exercise.iyi" > "$WORK/alloc_mut.build.log" 2>&1 || return 1
+  : > "$WORK/alloc_mut_built"
+  for name in lowprim_malloc_program_atomic lowprim_malloc_program_full lowprim_alloc_program_atomic lowprim_malloc_program_fallback; do
+    "$WORK/alloc_mut" lower "$REPO/bench/fixtures/$name.iyi" "$WORK/$name.oracle.ll" > "$WORK/alloc_mut.out" 2> "$WORK/alloc_mut.err" || return 1
+    awk '/^SUMMARY identical=[0-9]+ total=[0-9]+ module=[01]$/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); if (a[2] != b[2] || b[2] == 0 || c[2] != 1) bad = 1; n++ } END { exit (bad || n == 0) }' "$WORK/alloc_mut.out" || return 1
+  done
+  return 0
+}
+program_allocator_check || { echo "  baseline: program allocator fixtures differ"; status=1; }
+rm -f "$WORK/alloc_mut_built"
+prove_mutation "Pointer#malloc selects the wrong program allocator kind" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  suffix = has_inner_pointers?(elem) ? "malloc64" : "malloc_atomic64"' '  suffix = has_inner_pointers?(elem) ? "malloc_atomic64" : "malloc64"' -- program_allocator_check || status=1
+if [ ! -f "$WORK/alloc_mut_built" ]; then echo "  NOT PROVEN: pointer allocator kind mutant failed to build"; status=1; fi
+rm -f "$WORK/alloc_mut_built"
+prove_mutation "allocate_malloc_class selects the wrong program allocator kind" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  suffix = class_pointerful?(t) ? "malloc64" : "malloc_atomic64"' '  suffix = class_pointerful?(t) ? "malloc_atomic64" : "malloc64"' -- program_allocator_check || status=1
+if [ ! -f "$WORK/alloc_mut_built" ]; then echo "  NOT PROVEN: class allocator kind mutant failed to build"; status=1; fi
+rm -f "$WORK/alloc_mut_built"
+prove_mutation "Pointer#malloc falls back to the other program allocator kind when its own is absent" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  callee = prog_alloc.nil? ? c_malloc_function(low) : prog_alloc.as(Function)' '  callee = prog_alloc.nil? ? (program_allocator(low, "malloc64") || c_malloc_function(low)) : prog_alloc.as(Function)' -- program_allocator_check || status=1
+if [ ! -f "$WORK/alloc_mut_built" ]; then echo "  NOT PROVEN: fallback-to-other-kind mutant failed to build"; status=1; fi
 # The baseline: the unmutated port must pass the check, or every mutation below is caught for the wrong reason.
 lower_primitives_check || { echo "  baseline: the unmutated primitives do not pass the check"; status=1; }
 prove_mutation "binary union operand is not refused" "$REPO/src/compiler/lower/primitives.iyi" \
