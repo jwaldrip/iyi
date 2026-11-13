@@ -3126,19 +3126,19 @@ pub class MainVisitor < TypeNodeHost
         return false if target_def.nil?
         instantiated_def = target_def.clone
         @program.copy_def_owner(target_def, instantiated_def)
-        instance_owner : Type = ut
+        union_instance_owner : Type = ut
         if node.obj.nil?
           if declared_owner = @program.def_owner(target_def)
-            instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
+            union_instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
           end
         end
-        dkey = def_instance_key(target_def, instance_owner, node)
+        dkey = def_instance_key(target_def, union_instance_owner, node)
         ret_t : Type? = nil
         if hit = cached_instance(dkey)
           instantiated_def = hit.definition
           ret_t = hit.return_type
         else
-          ret_t = type_method_body(instantiated_def, instance_owner, node.args, node.block, node, dkey, node)
+          ret_t = type_method_body(instantiated_def, union_instance_owner, node.args, node.block, node, dkey, node)
         end
         return false if ret_t.nil?
         if first_target_def.nil?
