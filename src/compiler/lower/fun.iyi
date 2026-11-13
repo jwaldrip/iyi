@@ -28,7 +28,7 @@ import compiler/ir/inst::{Attribute, Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/ir/module::{Module}
-import compiler/lower/cast::{assign}
+import compiler/lower/cast::{assign, upcast}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/instance_var::{self_by_pointer?}
@@ -300,7 +300,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
 
   low.needs_value = true
   visit_node(low, target.body)
-  codegen_fun_return(low, ret_ir)
+  codegen_fun_return(low, ret_ir, target.body)
   low.finish_main_function
   low.leave_main(saved)
   low.emitting.delete(name)
@@ -317,9 +317,9 @@ pub def block_ended?(low : Lowerer) : Bool
   block.as(Block).terminated?
 end
 
-# The hosted `codegen_return(type)` (codegen.cr:1192) for the value of the body: a void
-# result returns nothing, any other returns the value the body left.
-pub def codegen_fun_return(low : Lowerer, ret_ir : IrType) : Nil
+# The hosted `codegen_return(target_def.body.type?)` converts the body value to the
+# function's semantic result before returning it (fun.cr:579-604, codegen.cr:1192-1209).
+pub def codegen_fun_return(low : Lowerer, ret_ir : IrType, body : ASTNode) : Nil
   return if block_ended?(low)
   if ret_ir.void?
     low.builder.ret_void
@@ -327,7 +327,11 @@ pub def codegen_fun_return(low : Lowerer, ret_ir : IrType) : Nil
   end
   value = low.last
   raise "BUG: a function returns a value but its body left none (hosted codegen.cr: codegen_return)" if value.nil?
-  low.builder.ret(value.as(Value))
+  body_type = low.analysed.type_of?(body)
+  raise "BUG: the function body has no analysed type (hosted codegen_return)" if body_type.nil?
+  return_type = low.current_context.return_type
+  raise "BUG: the function has no analysed return type (hosted codegen_return)" if return_type.nil?
+  low.builder.ret(upcast(low, value.as(Value), body_type.as(Type), return_type.as(Type)))
 end
 
 # The unwind table kind of a function with a body (hosted fun.cr:437-441): sync on aarch64,
