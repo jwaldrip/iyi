@@ -73,7 +73,42 @@ module BenchSelfhostSemanticDeclarationsExercise
   # The declarations pass with the type system installed (`type_node_system`, as the lib-types
   # mode does): an explicit instance variable keeps its generic arguments and a class with
   # subclasses its virtual type, as the hosted declaration pass gives them.
+  # Loads a file and its closure with the type system and prelude installed, in strict mode
+  # (type_node_system before the prelude, matching the hosted prelude-first declaration pass).
+  def self.load_typed_program(path : String) : {SemanticProgram, String}
+    cwd = ENV["PWD"]? || "."
+    absolute = path.starts_with?("/") ? path : "#{cwd}/#{path}"
+    entry = normalize_path(absolute)
+    src = File.read(entry)
+    parser = Parser.new(src, entry)
+    node = parser.parse
+    prog = SemanticProgram.new
+    prog.loaded_files.add(entry)
+    prog.search_path = search_path
+    prog.project_root = project_root(node, entry)
+    type_node_system(prog)
+    prelude = TopLevelVisitor.new(prog)
+    prelude_file = prelude.import_file("iyi/prelude")
+    if prelude_file
+      prelude.load_file(prelude_file.as(String))
+    end
+    prog.entry_dir = dir_of(entry)
+    visitor = TopLevelVisitor.new(prog, entry)
+    node.accept(visitor)
+    visitor.finish
+    {prog, entry}
+  end
+
   def self.dump_file_typed(path : String) : String
+    prog, entry = load_typed_program(path)
+    type_node_system(prog)
+    declare_guessed_instance_vars(prog)
+    dump_program_declarations(prog, entry) + dump_instances(prog)
+  end
+
+  # The post-declaration re-resolution path: load bare without the type system, then install it
+  # so `resolve_declared_types` re-resolves explicit instance variables.
+  def self.dump_file_reresolved(path : String) : String
     prog, entry = load_program(path)
     type_node_system(prog)
     dump_program_declarations(prog, entry) + dump_instances(prog)
@@ -224,6 +259,8 @@ elsif Program.args[0] == "--scope-lookup"
   print "#{found.full_name}\n"
 elsif Program.args[0] == "--typed"
   print BenchSelfhostSemanticDeclarationsExercise.dump_file_typed(Program.args[1])
+elsif Program.args[0] == "--typed-reresolve"
+  print BenchSelfhostSemanticDeclarationsExercise.dump_file_reresolved(Program.args[1])
 elsif Program.args[0] == "--lib-types"
   prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
   type_node_system(prog)

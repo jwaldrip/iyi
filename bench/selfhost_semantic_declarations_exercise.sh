@@ -197,6 +197,18 @@ else
   diff "$scope_expected" "$WORK/sl_p.txt" | head -n 20
   status=1
 fi
+echo "== 2f. Post-declaration re-resolution: explicit instance variables re-resolved when type system installs after declarations"
+if ! "$ORACLE" --typed "$REPO/bench/fixtures/semdecl_ivar_typed_generic.iyi" > "$WORK/rr_o.txt" 2> "$WORK/rr_oe.txt"; then
+  echo "  ORACLE REJECTS: $(head -n 1 "$WORK/rr_oe.txt")"; status=1
+elif ! "$PORT" --typed-reresolve "$REPO/bench/fixtures/semdecl_ivar_typed_generic.iyi" > "$WORK/rr_p.txt" 2> "$WORK/rr_pe.txt"; then
+  echo "  PORT REJECTS: $(head -n 1 "$WORK/rr_pe.txt")"; status=1
+elif cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
+  echo "  semdecl_ivar_typed_generic.iyi: re-resolution identical to oracle"
+else
+  echo "  semdecl_ivar_typed_generic.iyi: RE-RESOLUTION DIFFERS"
+  diff "$WORK/rr_o.txt" "$WORK/rr_p.txt" | head -n 20
+  status=1
+fi
 
 echo "== 2c. Prelude parent chains: Nil, Object, Reference, Value, Int32, String and a user class, identical to the oracle"
 if ! "$ORACLE" --chain "$REPO/bench/fixtures/semdecl_prelude_chain.iyi" > "$WORK/chain_o.txt" 2> "$WORK/chain_oe.txt"; then
@@ -473,6 +485,14 @@ check_link_annotations_diverge() {
   cmp -s "$WORK/mut_la.txt" "$link_annotations_expected" || return 1
   return 0
 }
+check_reresolve_diverge() {
+  local probe="$WORK/mut_reresolve_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$ORACLE" --typed "$REPO/bench/fixtures/semdecl_ivar_typed_generic.iyi" > "$WORK/mut_rro.txt" 2>/dev/null || return 1
+  "$probe" --typed-reresolve "$REPO/bench/fixtures/semdecl_ivar_typed_generic.iyi" > "$WORK/mut_rrp.txt" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_rro.txt" "$WORK/mut_rrp.txt" || return 1
+  return 0
+}
 
 echo
 echo "== 7. Mutation proofs: patches to the port's declaration pass the fixtures must catch"
@@ -482,7 +502,7 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
@@ -547,7 +567,7 @@ prove_mutation "a class reopened without a superclass takes the reference superc
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a metaclass takes Class as its parent even when its superclass has a metaclass" "$MUT_SEM" \
-  "        @parents << sc.as(ModuleType).metaclass" \
+  "        @parents << meta_sc" \
   "        @parents << program.types[\"Class\"]" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -599,12 +619,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
   "di.owner.instance_vars[di.name] = mv" \
   "nil" \
-  -- check_decl_fixtures_diverge || status=1
+  -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an explicit instance variable is not recorded for re-resolution" "$MUT_SEM" \
   "@program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, @program.current_imports)" \
   "nil" \
-  -- check_decl_fixtures_diverge || status=1
+  -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TS="$REPO/src/compiler/types/type_system.iyi"
 prove_mutation "a generic type node resolves to its base once the type system is installed" "$MUT_SEM" \
