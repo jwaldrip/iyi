@@ -235,8 +235,10 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
     return
   end
-  # Hosted `try_inline_call`: a body that is `self` is the receiver, when its type is the call's.
-  if body.is_a?(Var) && body.as(Var).name == "self" && !self_type.nil?
+  # Hosted try_inline_call (call.cr:608): a body that is `self` is the receiver when
+  # the owner is passed as self, and the metaclass type id when it is not. No function
+  # is emitted.
+  if body.is_a?(Var) && body.as(Var).name == "self" && (!self_type.nil? || !class_owner.nil?)
     lower_args(low, node, def_node)
     if block_ended?(low)
       low.last = llvm_nil(low)
@@ -246,10 +248,21 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       if ret.full_name != st.full_name
         pending_visit_node("a call to #{node.name} whose body is self and whose type is #{ret.full_name} (hosted upcast of self)")
       end
-    end
-    if low.needs_value
-      if sv = self_value
-        low.last = self_as_value(low, sv.as(Value), self_type.as(Type))
+      if low.needs_value
+        if sv = self_value
+          low.last = self_as_value(low, sv.as(Value), st)
+        end
+      end
+    elsif co = class_owner
+      unless co.is_a?(ModuleType)
+        pending_visit_node("a class method #{node.name} whose body is self on #{co.full_name} (hosted type_id of the metaclass)")
+      end
+      meta = co.as(ModuleType).metaclass
+      if ret.full_name != meta.full_name
+        pending_visit_node("a call to #{node.name} whose body is self and whose type is #{ret.full_name} (hosted type_id of the metaclass)")
+      end
+      if low.needs_value
+        low.last = type_id_value(low, meta)
       end
     end
     return

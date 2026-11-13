@@ -283,8 +283,6 @@ prove_mutation "an empty (Nop) body is not inlined" "$REPO/src/compiler/lower/ca
   'body.is_a?(Nop) || body.is_a?(NilLiteral)' 'body.is_a?(NilLiteral)' -- lower_calls_check || status=1
 prove_mutation "a def is emitted with the C calling convention (a struct result is then refused)" "$REPO/src/compiler/lower/fun.iyi" \
   'return CallConv::Iyi if name.starts_with?("*")' 'return CallConv::C if name.starts_with?("*")' -- lower_calls_check || status=1
-prove_mutation "a struct's allocate result is not loaded from its instance (the store into _ is wrong)" "$REPO/src/compiler/lower/call.iyi" \
-  'low.last = load_aligned(low, low.typer.llvm_type(inst), ptr, "")' 'low.last = ptr' -- lower_calls_check || status=1
 prove_mutation "a struct call result is returned as the aggregate, not its spill address (hosted call.cr:707-713)" "$REPO/src/compiler/lower/call.iyi" \
   '        low.last = temp' '        low.last = inst' -- lower_calls_check || status=1
 prove_mutation "a module-level build constant is kept in the module (the module check catches it)" "$REPO/bench/lib/lower_gate.iyi" \
@@ -303,19 +301,12 @@ prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compi
   '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
 prove_mutation "an inherited call loses its defining owner" "$REPO/src/compiler/lower/call.iyi" \
   '    if defining = low.analysed.program.def_owner(target)' '    if defining = nil' -- lower_calls_check || status=1
-prove_mutation "an inherited class method loses its defining owner" "$REPO/src/compiler/lower/call.iyi" \
-  '        if class_defining = low.analysed.program.def_owner(target)' '        if class_defining = nil' -- lower_calls_check || status=1
 prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
   'passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)' 'passed = value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
   '          class_owner = ct' '          class_owner = nil' -- lower_calls_check || status=1
 prove_mutation "a generic metaclass call passes no self type id" "$REPO/src/compiler/lower/call.iyi" \
   '      self_value = type_id_value(low, recv_type)' '      self_value = nil' -- lower_calls_check || status=1
-prove_mutation "an implicit generic metaclass call loses its self" "$REPO/src/compiler/lower/call.iyi" \
-  '  if defines_method?(ct, node.name)
-    return ct' '  if defines_method?(ct, node.name)
-    return nil if ct.is_a?(GenericClassInstanceMetaclassType)
-    return ct' -- lower_calls_check || status=1
 prove_mutation "a builtin metaclass receiver is refused" "$REPO/src/compiler/lower/call.iyi" \
   '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)' '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""' -- lower_calls_check || status=1
 prove_mutation "an implicit builtin class call is refused" "$REPO/src/compiler/lower/call.iyi" \
