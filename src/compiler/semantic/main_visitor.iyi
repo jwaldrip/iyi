@@ -1936,6 +1936,17 @@ pub class MainVisitor < TypeNodeHost
                 if out_node = pn.output
                   # `& : T -> _` leaves the block's result free (hosted: an Underscore output matches any type).
                   unless out_node.is_a?(Underscore)
+                    # Hosted call.cr 1489-1493 restricts the block's result in
+                    # the callee's match context, binding an output free variable.
+                    if free_names = cd.free_vars
+                      if FreeBindings.mentions?(out_node, free_names)
+                        bound = @def_free_types[cd]? || Hash(String, Type).new
+                        unless FreeBindings.bind(out_node, bt, free_names, bound)
+                          return refuse(node, "expected block to return #{out_node}, not #{bt.full_name}")
+                        end
+                        @def_free_types[cd] = bound
+                      end
+                    end
                     expected_ret = lookup_under(out_node, @scope)
                     # hosted call.cr 1433 and void_return_type?: a declared Nil or void output accepts any block value.
                     unless expected_ret.nil_type? || expected_ret.is_a?(VoidType) || bt.subtype_of?(expected_ret)
