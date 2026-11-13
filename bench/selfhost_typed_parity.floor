@@ -98,6 +98,7 @@ src/compiler/macros/macro_parser.iyi 28
 src/compiler/macros/methods.iyi 32
 src/compiler/macros/site_scan.iyi 30
 src/compiler/macros/target_flags.iyi 12
+src/compiler/macros/type_facts.iyi 0
 src/compiler/native/aarch64/abi.iyi 9
 src/compiler/native/aarch64/asm.iyi 55
 src/compiler/native/aarch64/encode.iyi 41

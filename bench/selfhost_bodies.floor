@@ -21,7 +21,7 @@ bench/fixtures/sem_bodies_flow_is_a.iyi 69
 bench/fixtures/sem_bodies_flow_nil.iyi 48
 bench/fixtures/sem_bodies_flow_truthy.iyi 23
 bench/fixtures/sem_bodies_free_types.iyi 9
-bench/fixtures/sem_bodies_fun_splice.iyi 4
+bench/fixtures/sem_bodies_fun_splice.iyi 5
 bench/fixtures/sem_bodies_generic_ivar.iyi 25
 bench/fixtures/sem_bodies_generic_pointer_restriction.iyi 9
 bench/fixtures/sem_bodies_global_fun.iyi 4
@@ -35,7 +35,12 @@ bench/fixtures/sem_bodies_interpolation.iyi 10
 bench/fixtures/sem_bodies_ivar_read.iyi 11
 bench/fixtures/sem_bodies_jumps.iyi 20
 bench/fixtures/sem_bodies_libcall.iyi 15
+bench/fixtures/sem_bodies_macro_annotations.iyi 12
 bench/fixtures/sem_bodies_macro_bindings.iyi 43
+bench/fixtures/sem_bodies_macro_enum_facts.iyi 6
+bench/fixtures/sem_bodies_macro_ivars.iyi 10
+bench/fixtures/sem_bodies_macro_uninitialized.iyi 5
+bench/fixtures/sem_bodies_macro_value.iyi 9
 bench/fixtures/sem_bodies_magic_constant.iyi 4
 bench/fixtures/sem_bodies_match_atomics.iyi 79
 bench/fixtures/sem_bodies_match_import.iyi 6

@@ -1,8 +1,9 @@
 module compiler/semantic/macro_bindings
 
 import compiler/macros/interpreter::{MacroFreeBinding}
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, MetaclassType, Type, UnionType}
-import compiler/types/types::{GenericInstanceType, NamedTupleInstanceType, TupleInstanceType, TypeQueries}
+import compiler/macros/type_facts::{MacroInstanceVarFact, MacroTypeFacts}
+import compiler/semantic/top_level::{AnnotationType, EnumType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, Type, UnionType}
+import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, TupleInstanceType, TypeQueries}
 
 # The type parameters an inline macro site sees in the def being typed, as the
 # macro engine names them (interpreter.iyi MacroFreeBinding). Hosted
@@ -13,6 +14,52 @@ import compiler/types/types::{GenericInstanceType, NamedTupleInstanceType, Tuple
 # tuple or a union (hosted produce_tuple, 571-601); every other binding is the
 # type's node.
 pub class MacroBindings
+  # Hosted methods.cr:2508-2526 and 2618-2640: instance variables and
+  # enum constants keep the order in which the owning type records them.
+  def self.facts(scope : Type?) : MacroTypeFacts?
+    return nil if scope.nil?
+    owner = scope.as(Type)
+    if owner.is_a?(MetaclassType)
+      owner = owner.as(MetaclassType).instance_type
+    end
+    owner = owner.devirtualize
+    facts = MacroTypeFacts.new
+    if owner.is_a?(EnumType)
+      facts.constants_known = true
+      facts.annotations_known = true
+      if annotations = owner.annotations
+        annotations.each do |annotation_type, values|
+          if ann = values.last?
+            facts.annotations[annotation_type.full_name] = ann
+            facts.annotation_types[annotation_type.full_name] = annotation_type.full_name
+          end
+        end
+      end
+      owner.program.types.each do |name, type|
+        if type.is_a?(AnnotationType)
+          facts.annotation_types[name] = type.full_name
+        end
+      end
+      owner.as(EnumType).members.each do |name, member|
+        facts.constants[name] = member.value.to_s
+      end
+    end
+    if owner.is_a?(ModuleType)
+      facts.instance_vars_known = true
+      owner.as(ModuleType).all_instance_vars.each do |name, var|
+        var_type = var.type?
+        facts.instance_vars << MacroInstanceVarFact.new(name[1, name.bytesize - 1], var_type ? var_type.to_s : nil)
+      end
+    elsif owner.is_a?(GenericClassInstanceType)
+      facts.instance_vars_known = true
+      owner.as(GenericClassInstanceType).all_instance_vars.each do |name, var|
+        var_type = var.type?
+        facts.instance_vars << MacroInstanceVarFact.new(name[1, name.bytesize - 1], var_type ? var_type.to_s : nil)
+      end
+    end
+    facts
+  end
+
   # `scope` is the receiver of the def being typed (nil at the top level) and
   # `free` the def's free variables as the call's arguments bound them. A free
   # variable hides an owner's parameter of the same name, as hosted looks the

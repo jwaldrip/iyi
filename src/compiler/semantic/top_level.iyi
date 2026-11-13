@@ -2189,13 +2189,6 @@ pub class TopLevelVisitor < Visitor
     nil
   end
 
-  # A class, module or lib body that is one inline macro node is spliced in the body's
-  # own scope, as a body of several nodes is (see splice_body_node). The typer then
-  # reads the expansion, not the macro node.
-  def splice_body(body : ASTNode) : ASTNode
-    splice_body_node(body, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
-  end
-
   def visit(node : Expressions) : Bool
     @exp_nest = @exp_nest + 1
     node.expressions = splice_inline_sites(node.expressions, @current_type.full_name, @file || "", @current_type.is_a?(LibType))
@@ -2519,7 +2512,6 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = type
-    node.body = splice_body(node.body)
     @program.type_bodies << TypeBody.new(type, node.body, @program.current_imports)
     node.body.accept(self)
     @current_type = old_type
@@ -2578,7 +2570,6 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = type
-    node.body = splice_body(node.body)
     node.body.accept(self)
     @current_type = old_type
 
@@ -2943,7 +2934,6 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = lib_type
-    node.body = splice_body(node.body)
     node.body.accept(self)
     @current_type = old_type
 

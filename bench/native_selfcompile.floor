@@ -45,6 +45,7 @@ src/compiler/macros/macro_parser.iyi parse
 src/compiler/macros/methods.iyi parse
 src/compiler/macros/site_scan.iyi parse
 src/compiler/macros/target_flags.iyi semantic
+src/compiler/macros/type_facts.iyi parse
 src/compiler/native/aarch64/abi.iyi parse
 src/compiler/native/aarch64/asm.iyi parse
 src/compiler/native/aarch64/encode.iyi parse

@@ -1,0 +1,9 @@
+class MacroConstant
+  VALUE = {% if @type.name == "MacroConstant" %} 42 {% else %} "wrong" {% end %}
+
+  def self.value : Int32
+    VALUE
+  end
+end
+MacroConstant.value
+nil
