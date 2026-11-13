@@ -5,11 +5,13 @@
 # text form requires: call signatures, phi labels, and atomic memory operation
 # ordering. Indirect calls with multiword argument types remain unchanged.
 CALL_TYPES='
-function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w, types, i, head, name, at, indirect) {
+function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w, types, i, head, name, at, indirect, len) {
   p = index(line, " call ")
+  len = 6
+  if (p == 0) { p = index(line, " invoke "); len = 8 }
   if (p == 0) return line
-  head = substr(line, 1, p + 5)
-  rest = substr(line, p + 6)
+  head = substr(line, 1, p + len - 1)
+  rest = substr(line, p + len)
   at = index(rest, " @")
   indirect = 0
   if (match(rest, / %([a-zA-Z0-9$._-]+|"[^"]+")\(/) && (at == 0 || RSTART < at)) {
@@ -27,7 +29,10 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
   name = substr(after, 1, op - 1)
   args = substr(after, op + 1, cl - op - 1)
   tail = substr(after, cl + 1)
-  if (substr(tail, 1, 2) == " #") tail = ""
+  if (substr(tail, 1, 2) == " #") {
+    if (len == 8) sub(/^ #[0-9]+/, "", tail)
+    else tail = ""
+  }
   n = split_top(args, parts)
   types = ""
   for (i = 1; i <= n; i++) {
@@ -35,7 +40,7 @@ function call_types(line,   p, rest, ret, after, op, cl, args, tail, n, parts, w
     if (indirect && ((w[1] != "" && index("[<{", substr(w[1], 1, 1)) > 0) || w[2] ~ /^addrspace\(/ || (w[1] ~ /^%"/ && w[1] !~ /"$/))) return line
     types = types (i > 1 ? ", " : "") arg_type(parts[i])
   }
-  if (indirect || name ~ /^@"[*~]/) ret = "iyicc " ret
+  if (indirect || name ~ /^@"[*~]/ || name ~ /^@(__crystal_main|__iyi_main)$/) ret = "iyicc " ret
   return head ret " (" types ") " name "(" args ")" tail
 }
 function arg_type(s,   i, c, depth, open_c, close_c, w) {
@@ -122,10 +127,9 @@ function intrinsic_line(line,   p, lhs, rest, ret, after, op, k, cl, name, args,
   if (lhs ~ /=$/) return lhs " intrinsic " name "(" out ")"
   return lhs "intrinsic " name "(" out ")"
 }
-# A def is `Iyi` (import.iyi convention_of: a name starting with `*` or `~`). The hosted text writes every
-# function `ccc`, so the defs of the oracle get the `iyicc` word of the port here, before the return type.
+# Hosted writes ccc; compiler-generated functions and both program entries use Iyi.
 function cc_define(line,   at, head, p, rest, sp, kw) {
-  at = index(line, " @\"")
+  at = index(line, " @")
   head = substr(line, 1, at - 1)
   p = index(head, " ")
   if (p == 0) return line
@@ -169,10 +173,10 @@ function atomic_memory(line,   p, suffix, prefix, words) {
 }
 {
   $0 = atomic_memory($0)
-  if ($0 ~ /^define .* @"[*~]/) $0 = cc_define($0)
+  if ($0 ~ /^define .* @"[*~]/ || $0 ~ /^define .* @(__crystal_main|__iyi_main)\(/) $0 = cc_define($0)
   if ($0 ~ /^declare .*@llvm\./) next
   if (index($0, " phi ") > 0) gsub(/, %/, ", label %")
   if (index($0, "@llvm.") > 0 && index($0, " call ") > 0) { print intrinsic_line($0); next }
-  if (index($0, " call ") > 0) print call_types($0); else print
+  if (index($0, " call ") > 0 || index($0, " invoke ") > 0) print call_types($0); else print
 }
 '
