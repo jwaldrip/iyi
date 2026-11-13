@@ -479,6 +479,9 @@ if struct_class_var_check; then
   prove_mutation "an address-valued struct receiver is spilled again" "$REPO/src/compiler/lower/instance_var.iyi" \
     '  return value if value.type.pointer?' \
     '  return value if false' -- struct_class_var_check || status=1
+  prove_mutation "a global first-field address is not folded" "$REPO/src/compiler/lower/instance_var.iyi" \
+    '  return pointer if index == 0 && pointer.is_a?(Global)' \
+    '  return pointer if false' -- struct_class_var_check || status=1
 else
   echo "FAIL: struct class-variable receiver does not match the hosted module"
   awk 'NR<=8' "$WORK/struct-cvar.err" "$WORK/struct-cvar.out" "$WORK/struct-cvar.build.log"
