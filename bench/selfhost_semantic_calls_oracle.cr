@@ -418,9 +418,9 @@ def tuple_text(path : String, fixture : String, expr : String) : String
   index = body.index
   if index.is_a?(Range)
     last = index.end - (index.excludes_end? ? 1 : 0)
-    "index=#{index.begin},#{last}"
+    "index=#{index.begin},#{last},range=true"
   else
-    "index=#{index},#{index}"
+    "index=#{index},#{index},range=false"
   end
 rescue ex : Exception
   "error: #{ex.message.to_s.lines.first? || ""}"

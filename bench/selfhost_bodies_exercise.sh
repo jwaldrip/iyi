@@ -363,9 +363,9 @@ prove_mutation "a call body is not typed in the scope of its owner" "$MAIN_VISIT
 prove_mutation "a block whose declared output is _ is checked against a type" "$MAIN_VISITOR" \
   "unless out_node.is_a?(Underscore)" \
   "unless false" -- bodies_at_floor || status=1
-prove_mutation "__LINE__ is typed as a String" "$MAIN_VISITOR" \
-  "if node.name == TokenKind::MAGIC_LINE || node.name == TokenKind::MAGIC_END_LINE" \
-  "if false" -- bodies_at_floor || status=1
+prove_mutation "a call-site __LINE__ expands as a string" "$MAIN_VISITOR" \
+  'literal = magic.expand_node(node.location, node.end_location).at(node)' \
+  'literal = StringLiteral.new("?").at(node)' -- bodies_at_floor || status=1
 prove_mutation "if x narrows a truthy variable in its then branch" "$MAIN_VISITOR" \
   "    filter_vars(cond_type_filters)" \
   "    nil" -- bodies_at_floor || status=1
@@ -453,9 +453,9 @@ prove_mutation "a proc literal inherits its enclosing scope" "$MAIN_VISITOR" \
 prove_mutation "unit definitions resolve in their lexical scope" "$MAIN_VISITOR" \
   "      if mod.iyi_unit" \
   "      if false" -- bodies_at_floor || status=1
-prove_mutation "splat arguments bind a tuple" "$MAIN_VISITOR" \
-  "        param_type = tuple_type_of(@program, elements)" \
-  "        param_type = @program.nil_type" -- bodies_at_floor || status=1
+prove_mutation "splat arguments bind a tuple" "$REPO/src/compiler/semantic/default_arguments.iyi" \
+  "body << Assign.new(Var.new(splat.name), TupleLiteral.new(elements))" \
+  "body << Assign.new(Var.new(splat.name), TupleLiteral.new([] of ASTNode))" -- bodies_at_floor || status=1
 prove_mutation "imported restrictions use the defining unit" "$MAIN_VISITOR" \
   "        @current_type = owner if owner.iyi_unit" \
   "        nil" -- bodies_at_floor || status=1
@@ -575,8 +575,8 @@ macro_bindings_at_floor() {
 prove_mutation "a macro site in a def body does not see the receiver's type parameters" "$MAIN_VISITOR" \
   "    MacroBindings.of(@scope, free)" \
   "    MacroBindings.of(nil, free)" -- macro_bindings_at_floor || status=1
-prove_mutation "a macro site in a def body does not see the def's free variables" "$MAIN_VISITOR" \
-  "        @def_free_types[target_def] = free_types unless free_types.empty?" \
+prove_mutation_all "a macro site in a def body does not see the def's free variables" "$MAIN_VISITOR" \
+  "@def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- macro_bindings_at_floor || status=1
 echo
 echo "== 4d. A macro site in an enum method sees its constants"
@@ -589,8 +589,8 @@ macro_enum_facts_at_floor() {
   [ "$matched" -ge 6 ]
 }
 prove_mutation_all "enum macro facts are not passed to the body splice" "$MAIN_VISITOR" \
-  "def_inline_bindings, MacroBindings.facts(@scope))" \
-  "def_inline_bindings, nil)" -- macro_enum_facts_at_floor || status=1
+  "MacroBindings.facts(@scope)" \
+  "nil" -- macro_enum_facts_at_floor || status=1
 macro_ivars_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   fixture="$REPO/bench/fixtures/sem_bodies_macro_ivars.iyi"
@@ -626,6 +626,21 @@ prove_mutation "a value-position macro expansion is not typed" "$MAIN_VISITOR" \
     if et = child_type(expanded)" \
   "    nil
     if et = child_type(expanded)" -- macro_value_at_floor || status=1
+macro_empty_at_floor() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1; then
+    echo "INVALID MUTANT: typed dump did not build"
+    cat "$WORK/mut_build.log"
+    return 0
+  fi
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_empty.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  [ "$matched" -ge 18 ]
+}
+prove_mutation "an empty def-body macro is dropped, so the preceding expression types the def" "$REPO/src/compiler/semantic/inline_macros.iyi" \
+  "        out << n if keep_empty" \
+  "        nil" -- macro_empty_at_floor || status=1
 macro_uninitialized_at_floor() {
   "$IYI" build -o "$WORK/macro_uninitialized" "$REPO/bench/selfhost_macro_uninitialized_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   "$WORK/macro_uninitialized" "$REPO/bench/fixtures/sem_bodies_macro_uninitialized.iyi"
@@ -685,8 +700,8 @@ generic_rebuild_at_floor() {
 }
 rm -f "$WORK/imported_generic_mutant_built"
 prove_mutation "a generic with typed arguments is rebuilt" "$REPO/src/compiler/semantic/type_nodes.iyi" \
-  "    rebuilt = generic_of_typed_args(visitor, node)" \
-  "    rebuilt = nil" -- generic_rebuild_at_floor || status=1
+  "  resolved = generic_of_typed_args(visitor, node)" \
+  "  resolved = nil" -- generic_rebuild_at_floor || status=1
 if [ "${MUTATION_SKIP:-0}" != 1 ] && [ ! -f "$WORK/imported_generic_mutant_built" ]; then
   echo "  FAIL: generic rebuild mutation did not build"
   status=1
@@ -735,8 +750,8 @@ if ! atomic_free_at_floor; then
   status=1
 fi
 prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
-  "    if count_matches.any? { |d| !d.free_vars.nil? }" \
-  "    if false" -- atomic_free_at_floor || status=1
+  "@def_free_types[target_def] = free_types unless free_types.empty?" \
+  "        nil" -- atomic_free_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"

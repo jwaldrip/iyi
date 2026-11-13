@@ -72,6 +72,17 @@ end
 # `Pointer(Int32)`: in an expression the node is the metaclass of the instantiated
 # type, so a call on it (`Pointer(Int32).malloc(1)`) resolves against that
 # metaclass. In a type argument it is the instance type itself.
+#
+# Hosted `visit(node : Generic)` (src/compiler/iyi/semantic/main_visitor.cr
+# 259-335) visits the name, visits the type arguments, then `Generic#update`
+# (bindings.cr 649-765) instantiates from those already-typed children. It does
+# not look the whole Generic node up again. A second lookup against
+# `current_type` is the wrong form: when `current_type` is the unbound generic
+# class, `T` is that class's type parameter and the instance is `Pointer(T)` or
+# `Array(T)`, which the hosted compiler never has. The name's visit (hosted
+# Path, main_visitor.cr 187-203, `lookup_scope = @path_lookup || @scope ||
+# @current_type`) is what binds an owner type variable and what sees a name the
+# file imported.
 pub def visit_generic(visitor : TypeNodeHost, node : Generic) : Bool
   if node.named_args
     return visitor.refuse(node, "named type arguments are not typed yet")
@@ -102,10 +113,11 @@ pub def visit_generic(visitor : TypeNodeHost, node : Generic) : Bool
 end
 
 # Instantiates a generic node from its base name and the arguments the visitor
-# has already typed (`T` bound in a generic instance's method or metaclass).
-# Using the visited children rather than re-looking up the AST node ensures
-# owner type variables resolve to the instance's concrete arguments even when
-# `current_type` is the generic class itself.
+# has already typed, as hosted `Generic#update` (bindings.cr 649-765) does after
+# `visit(node : Generic)` (main_visitor.cr 259-335). `T` bound in a generic
+# instance's method or metaclass is the visited argument, not a fresh lookup of
+# the AST node against `current_type` (that lookup yields the unbound parameter
+# when `current_type` is the generic class itself).
 pub def generic_of_typed_args(visitor : TypeNodeHost, node : Generic) : Type?
   ts = type_node_system(visitor.program)
   lookup = TypeLookup.new(ts.instances)
@@ -217,7 +229,8 @@ end
 
 # `Int32 | String`: typed as the merged union of its visited members (hosted
 # `visit(node : Union)` 365-374 and `Union#update`), so owner type parameters
-# resolve to the instance's arguments.
+# resolve to the instance's arguments. Kept: hosted does not look the Union
+# node up again.
 pub def visit_union(visitor : TypeNodeHost, node : Union) : Bool
   visitor.bracket_type_args(1)
   i = 0
@@ -251,7 +264,8 @@ end
 
 # `Int32 -> String`: the proc type of its visited inputs and output (hosted
 # `visit(node : ProcNotation)` 337-363). A missing output is Nil, matching
-# `TypeInstances#proc_of` for Void.
+# `TypeInstances#proc_of` for Void. Kept: hosted `proc_of` is those visited
+# types, not a second lookup of the node.
 pub def visit_proc_notation(visitor : TypeNodeHost, node : ProcNotation) : Bool
   visitor.bracket_type_args(1)
   if ins = node.inputs
