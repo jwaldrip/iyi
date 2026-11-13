@@ -528,10 +528,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         refusals_sidecar = Path(out_bin + ".refusals")
         if not names_sidecar.exists() or not refusals_sidecar.exists():
             print(
-                f"WARNING: chunk {idx + 1}/{len(chunks)} did not write sidecars (missing .names/.refusals)",
+                f"ERROR: chunk {idx + 1}/{len(chunks)} did not write both sidecars; census is incomplete",
                 file=sys.stderr,
                 flush=True,
             )
+            return 1
         if names_sidecar.exists():
             for line in names_sidecar.read_text(encoding="utf-8", errors="replace").splitlines():
                 s = line.strip()
