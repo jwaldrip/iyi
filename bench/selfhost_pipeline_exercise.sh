@@ -295,7 +295,7 @@ echo "== 5. Mutation proofs: the gate must catch each patch"
 pipeline_check() {
   if ! build_tool "$TOOL_SRC" "$WORK/mut_tool"; then return 1; fi
   local a="$REPO/bench/fixtures/lower_exit.iyi"
-  local b="$REPO/bench/fixtures/lower_tuple.iyi"
+  local b="$REPO/bench/fixtures/lower_instance_sizeof.iyi"
   rm -f "$WORK/mut_a" "$WORK/mut_b"
   "$WORK/mut_tool" "$a" -o "$WORK/mut_a" --pipeline typed > /dev/null 2>&1; local sa=$?
   [ "$sa" -eq 0 ] || return 1
