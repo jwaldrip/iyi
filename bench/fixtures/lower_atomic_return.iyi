@@ -8,6 +8,7 @@ def compare(p : Pointer(UInt64), expected : UInt64, desired : UInt64) : Tuple(UI
   IyiAtomic.cmpxchg(p, expected, desired, :sequentially_consistent, :sequentially_consistent)
 end
 
+:cmpxchg
 x = 0_u64
 compare(pointerof(x), 0_u64, 7_u64)
 nil
