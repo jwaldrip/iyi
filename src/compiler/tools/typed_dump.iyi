@@ -24,7 +24,7 @@
 
 module compiler/tools/typed_dump
 
-import compiler/syntax/ast::{ASTNode}
+import compiler/syntax/ast::{ASTNode, Expressions}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{NamedType, SemanticProgram, TopLevelVisitor, Type}
@@ -56,7 +56,17 @@ pub class TypedNodeWalk < Visitor
 
   def visit_any(node : ASTNode) : Bool
     return true if node.node_id == @root.node_id
-    if loc = node.location
+    # Hosted Expressions#location (ast.cr 236-238) is the node's own location,
+    # or the first child's when the list itself was not located. A class body
+    # is that list: typed Nil, printed at the first def.
+    loc = node.location
+    if loc.nil? && node.is_a?(Expressions)
+      exps = node.as(Expressions).expressions
+      if !exps.empty?
+        loc = exps[0].location
+      end
+    end
+    if loc
       if loc.filename == @file
         if t = @visitor.type_of?(node)
           @lines << "#{loc.line_number}:#{loc.column_number} #{node_class_name(node)} #{typed_label(node, t)}"

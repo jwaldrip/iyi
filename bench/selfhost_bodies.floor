@@ -45,6 +45,7 @@ bench/fixtures/sem_bodies_proc_splat.iyi 15
 bench/fixtures/sem_bodies_receiver_order.iyi 14
 bench/fixtures/sem_bodies_recursive.iyi 3
 bench/fixtures/sem_bodies_self_return.iyi 9
+bench/fixtures/sem_bodies_setter_value.iyi 27
 bench/fixtures/sem_bodies_splat_restriction.iyi 10
 bench/fixtures/sem_bodies_trait_def.iyi 6
 bench/fixtures/sem_bodies_union.iyi 15
