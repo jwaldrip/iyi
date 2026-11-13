@@ -155,7 +155,7 @@ src/compiler/semantic/recursive_struct_checker.iyi 11
 src/compiler/semantic/restrictions.iyi 24
 src/compiler/semantic/top_level.iyi 270
 src/compiler/semantic/type_node_host.iyi 20
-src/compiler/semantic/type_nodes.iyi 41
+src/compiler/semantic/type_nodes.iyi 43
 src/compiler/semantic/typed.iyi 2
 src/compiler/stage1.iyi 6
 src/compiler/syntax/ast.iyi 860

@@ -29,6 +29,32 @@ pub abstract class Type
   property abstract : Bool
   property struct : Bool
   property locations : Array(Location)? = nil
+  # Hosted Type includes Annotatable (types.cr:5-6, annotatable.cr:3-25).
+  property annotations : Hash(AnnotationType, Array(Annotation))? = nil
+
+  def add_annotation(annotation_type : AnnotationType, value : Annotation) : Nil
+    annotations = @annotations
+    if annotations.nil?
+      annotations = Hash(AnnotationType, Array(Annotation)).new
+      @annotations = annotations
+    end
+    values = annotations[annotation_type]?
+    if values.nil?
+      values = [] of Annotation
+      annotations[annotation_type] = values
+    end
+    values << value
+    nil
+  end
+
+  def annotation(annotation_type : AnnotationType) : Annotation?
+    if annotations = @annotations
+      if values = annotations[annotation_type]?
+        return values.last?
+      end
+    end
+    nil
+  end
 
   def initialize(@program : SemanticProgram, @namespace : ModuleType?, @name : String)
     @visibility = Visibility::Public
@@ -418,7 +444,7 @@ pub abstract class ModuleType < NamedType
     return false unless a.args.size == b.args.size
     i = 0
     while i < a.args.size
-      return false unless restrictions_match?(a.args[i].restriction, b.args[i].restriction)
+      return false unless restrictions_match?(a.args[i].restriction, b.args[i].restriction, a.free_vars, b.free_vars)
       i = i + 1
     end
     # A block parameter is part of the signature: `fetch(key)` and `fetch(key, &block)` are two overloads.
@@ -427,20 +453,20 @@ pub abstract class ModuleType < NamedType
     if ab.nil? || bb.nil?
       return ab.nil? && bb.nil?
     end
-    restrictions_match?(ab.restriction, bb.restriction)
+    restrictions_match?(ab.restriction, bb.restriction, a.free_vars, b.free_vars)
   end
 
-  # Hosted compare_strictness (restrictions.cr old_restriction_of?) keeps two defs
-  # unless restriction_of? holds both ways. A single-name path that is a type
-  # variable of this generic does not resolve (path_lookup.cr GenericType
-  # #lookup_path_item returns nil), so `T` does not replace another `T`. A
-  # concrete path still matches by text.
-  def restrictions_match?(ra : ASTNode?, rb : ASTNode?) : Bool
+  # Hosted Path#restriction_of? first compares whether each path is a free
+  # variable, including the distinction between no free-variable list and a
+  # present list. Equal paths with equal free-variable status replace each other.
+  def restrictions_match?(ra : ASTNode?, rb : ASTNode?, a_vars : Array(String)?, b_vars : Array(String)?) : Bool
     if ra.nil? || rb.nil?
       return ra.nil? && rb.nil?
     end
     if unbound_owner_type_var?(ra) || unbound_owner_type_var?(rb)
-      return false
+      a_free = a_vars ? a_vars.includes?(ra.to_s) : nil
+      b_free = b_vars ? b_vars.includes?(rb.to_s) : nil
+      return false unless a_free == b_free
     end
     ra.to_s == rb.to_s
   end
@@ -751,6 +777,7 @@ pub class LibFun
   property external_var : Bool = false
   property thread_local : Bool = false
   property primitive : String? = nil
+  property previous : LibFun? = nil
 
   def varargs? : Bool
     @varargs
@@ -1021,12 +1048,13 @@ pub class AliasType < NamedType
       at
     else
       scope = @namespace || @program
-      if @value.is_a?(Generic)
+      if @value.is_a?(Generic) && @program.merge_hook.nil?
+        # Before the type system is installed this is only a display name, not
+        # a resolved alias: caching the generic base loses its arguments.
         g = @value.as(Generic)
         base = @program.lookup_type_node(g.name, scope)
         args_strs = g.type_vars.map { |tv| @program.lookup_type_node(tv, scope).full_name }
         @aliased_type_display = "#{base.full_name}(#{args_strs.join(", ")})"
-        @aliased_type = base
         base
       else
         t = @program.lookup_type_node(@value, scope)
@@ -1150,6 +1178,7 @@ pub class SemanticProgram < NonGenericModuleType
   property merge_hook : TypeHook?
   # The explicit instance variables the top-level passes declared, for `resolve_declared_types`.
   getter declared_ivars : Array(DeclaredIvar)
+  getter pending_ivars : Array(PendingIvar) = [] of PendingIvar
   getter declared_cvars : Array(DeclaredIvar)
   # iyi: the typed dump's mode. Strict (the default) refuses a name the program
   # cannot resolve, as it always has; total mode records it and goes on.
@@ -2072,6 +2101,10 @@ pub class TopLevelVisitor < Visitor
   # keeps declaration order: TypeDeclarationVisitor).
   def finish : Nil
     saved = @program.current_imports
+    @pending_ivars.each do |pi|
+      pi.imports = saved if pi.imports.nil?
+      @program.pending_ivars << pi
+    end
     # An explicit `@x : T` decides the type of `@x`. An inferred record for the same name (an
     # initialize argument's restriction) does not replace it, as the hosted pass skips a guess for a
     # variable that exists.
@@ -2651,6 +2684,8 @@ pub class TopLevelVisitor < Visitor
   end
 
   def visit(node : EnumDef) : Bool
+    annotations = @pending_annotations
+    @pending_annotations = [] of Annotation
     scope, name, existing = lookup_type_def(node, node.name)
 
     enum_type : EnumType
@@ -2680,6 +2715,13 @@ pub class TopLevelVisitor < Visitor
     end
     if iyi_unexported?(scope, node.visibility)
       enum_type.visibility = Visibility::Private
+    end
+    annotations.each do |ann|
+      annotation_type = @program.lookup_type_path(ann.path, @current_type)
+      unless annotation_type.is_a?(AnnotationType)
+        raise("#{ann.path} is not an annotation")
+      end
+      enum_type.add_annotation(annotation_type.as(AnnotationType), ann)
     end
 
     @enum_flags = @pending_flags
@@ -2913,7 +2955,20 @@ pub class TopLevelVisitor < Visitor
       end
       @program.record_lib_fun(node, record)
       if @current_type.is_a?(LibType)
-        @current_type.as(LibType).funs << record
+        funs = @current_type.as(LibType).funs
+        replaced = false
+        i = 0
+        while i < funs.size
+          old = funs[i]
+          if old.name == record.name && old.args.size == record.args.size && old.varargs == record.varargs
+            record.previous = old
+            funs[i] = record
+            replaced = true
+            break
+          end
+          i = i + 1
+        end
+        funs << record unless replaced
       else
         @program.global_funs << record
       end
@@ -3439,6 +3494,9 @@ pub def dump_lib_fun(f : LibFun, io : String::Builder, indent : String) : Nil
               "nil"
             end
   io << indent << "  return_type: " << ret_str << "\n"
+  if previous = f.previous
+    io << indent << "  previous: " << previous.name << "\n"
+  end
 end
 
 pub def dump_type(t : Type, io : String::Builder, indent : String, entry : String? = nil) : Nil
