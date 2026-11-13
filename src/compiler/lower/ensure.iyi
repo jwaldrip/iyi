@@ -6,6 +6,7 @@ module compiler/lower/ensure
 
 import compiler/syntax/ast::{ASTNode, ExceptionHandler}
 import compiler/ir/values::{Value}
+import compiler/lower/cast::{to_rhs}
 import compiler/lower/context::{LowerContext, Lowerer}
 import compiler/lower/fun::{visit_node}
 import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_aligned}
@@ -88,6 +89,12 @@ pub def lower_exception_handler(low : Lowerer, node : ExceptionHandler) : Nil
   low.ensure_nodes << node
   low.ensure_contexts << low.current_context
   visit_node(low, node.body)
+  value = low.last
+  if phi.needs_value && !at_terminator?(low) && !value.nil? && value.as(Value).type.pointer?
+    body_type = low.analysed.type_of?(node.body)
+    raise "BUG: the ensured body has no type" if body_type.nil?
+    low.last = to_rhs(low, value.as(Value), body_type.as(Type))
+  end
   phi.add(low, low.last, false)
   low.ensure_nodes.pop
   low.ensure_contexts.pop

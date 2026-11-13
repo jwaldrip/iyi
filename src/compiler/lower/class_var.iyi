@@ -581,7 +581,7 @@ pub def store_class_var(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar, v
   cvar = class_var_of(low, node)
   ptr = class_var_pointer(low, cvar)
   if cvar.type.full_name == value_type.full_name
-    store_aligned(low, value, ptr)
+    assign(low, ptr, cvar.type, value_type, value)
     return
   end
   if !nilable_reference_type?(cvar.type)

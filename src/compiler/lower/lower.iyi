@@ -849,10 +849,8 @@ pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
   raise "BUG: the declared value left no value (hosted codegen.cr: codegen_assign)" if v.nil?
   vt = low.analysed.type_of?(value.as(ASTNode))
   raise "BUG: the analysed program has no type for the declared value (hosted codegen.cr: codegen_assign)" if vt.nil?
-  if vt.as(Type).full_name != dt.full_name
+  unless dt.is_a?(NilType) && vt.as(Type).is_a?(NilType)
     assign(low, pointer, dt, vt.as(Type), v.as(Value))
-  elsif !dt.is_a?(NilType)
-    store_aligned(low, v.as(Value), pointer)
   end
   low.last = v
 end
@@ -1155,12 +1153,8 @@ pub def codegen_branch(low : Lowerer, node : ASTNode, cond_node : ASTNode, then_
   codegen_node(low, else_node)
   branch_value(low, phi, else_node, merged_t, union_join, true)
 
+  # By-value joins stay address-valued until a consumer needs the aggregate.
   phi.close(low)
-  if union_join && !phi.values.empty?
-    # The join is the pointer phi; the union value is loaded from the pointer it picked (hosted codegen_if).
-    union_ir = low.typer.llvm_type(merged_t.as(Type))
-    low.last = load_aligned(low, union_ir, low.last.as(Value), "")
-  end
 end
 
 # Whether a value of this type joins by pointer in the `if` phi: the hosted Phi takes a pointer to a
@@ -1379,7 +1373,9 @@ pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
   end
   value = low.last
   raise "BUG: the program returns a value but its last expression left none (hosted codegen.cr: codegen_return)" if value.nil?
-  low.builder.ret(value.as(Value))
+  v = value.as(Value)
+  v = to_rhs(low, v, low.main_ret_type.as(Type)) if v.type.pointer?
+  low.builder.ret(v)
 end
 
 # The hosted `visit(Return)` (codegen.cr:1170-1209) evaluates the control expression
@@ -1607,9 +1603,6 @@ pub def codegen_nilable_cast(low : Lowerer, node : NilableCast) : Nil
     end
 
     phi.close(low)
-    if union_join && !phi.values.empty?
-      low.last = load_aligned(low, low.typer.llvm_type(resulting_type), low.last.as(Value), "")
-    end
     return
   end
   low.last = upcast(low, last_value, obj_type, resulting_type)

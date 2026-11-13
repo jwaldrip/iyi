@@ -26,10 +26,10 @@ import compiler/syntax/ast::{ASTNode, Assign, ClassDef, Def, ModuleDef, Splat, T
 import compiler/syntax/visitor::{Visitor}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
-import compiler/lower/cast::{assign}
+import compiler/lower/cast::{assign, to_rhs}
 import compiler/lower/context::{BranchPhi, Lowerer, LowerContext, LowerVar}
 import compiler/lower/fun::{block_ended?, visit_node}
-import compiler/lower/helpers::{llvm_nil, store_aligned}
+import compiler/lower/helpers::{llvm_nil}
 import compiler/lower/pending::{pending_visit_node, refuse_port}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/ensure::{execute_ensures_until, set_ensure_exception_handler}
@@ -112,10 +112,8 @@ end
 # The hosted `assign` of a value into a variable (codegen.cr codegen_assign): stored as it is when the
 # variable has the value's type, through the casts slice when it does not. A nil value writes nothing.
 pub def store_local(low : Lowerer, var : LowerVar, value_type : Type, value : Value) : Nil
-  if var.type.full_name != value_type.full_name
+  unless var.type.is_a?(NilType) && value_type.is_a?(NilType)
     assign(low, var.pointer, var.type, value_type, value)
-  elsif !value_type.is_a?(NilType)
-    store_aligned(low, value, var.pointer)
   end
 end
 
@@ -222,6 +220,12 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
       low.builder.unreachable
     end
   else
+    value = low.last
+    if phi.needs_value && !block_ended?(low) && !value.nil? && value.as(Value).type.pointer?
+      body_type = low.analysed.type_of?(block.body)
+      raise "BUG: the yielded block body has no type" if body_type.nil?
+      low.last = to_rhs(low, value.as(Value), body_type.as(Type))
+    end
     phi.add(low, low.last, true)
   end
   low.context = frame
@@ -269,6 +273,9 @@ pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?, target : A
   merged = phi.merge_type
   if !merged.nil? && merged.as(IrType).to_s != got_ir.to_s
     refuse_port("a break, next or return of a block call with a value of another type than the call (hosted upcast, not ported)")
+  end
+  if !merged.nil? && !value.nil? && value.as(Value).type.pointer?
+    value = to_rhs(low, value.as(Value), value_type.as(Type))
   end
   phi.add_branch(low, value, false)
   low.last = llvm_nil(low)

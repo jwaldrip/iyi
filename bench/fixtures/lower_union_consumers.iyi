@@ -1,0 +1,59 @@
+# Address-valued union joins reach each aggregate consumer: ABCDEFGHI, status 0.
+lib LibC
+  fun putchar(value : Int32) : Int32
+end
+
+class UnionSlot
+  @@value : (Int32 | Bool) = false
+
+  def self.put(flag : Bool) : Nil
+    @@value = flag ? 66 : false
+    nil
+  end
+
+  def self.get : (Int32 | Bool)
+    @@value
+  end
+end
+
+def send_union(flag : Bool)
+  yield(flag ? 67 : false)
+end
+
+def yield_union
+  yield
+end
+
+def break_union
+  yield
+end
+
+def finish_union(flag : Bool)
+  yield
+  flag ? 70 : false
+end
+
+def ensured_union(flag : Bool)
+  defer LibC.putchar(71)
+  flag ? 72 : false
+end
+
+flag = true
+typed : (Int32 | Bool) = flag ? 65 : false
+LibC.putchar(typed.as(Int32))
+
+UnionSlot.put(flag)
+LibC.putchar(UnionSlot.get.as(Int32))
+send_union(flag) { |value| LibC.putchar(value.as(Int32)) }
+
+from_block = yield_union { flag ? 68 : false }
+LibC.putchar(from_block.as(Int32))
+from_break = break_union { break(flag ? 69 : false) }
+LibC.putchar(from_break.as(Int32))
+from_def = finish_union(flag) { nil }
+LibC.putchar(from_def.as(Int32))
+LibC.putchar(ensured_union(flag).as(Int32))
+
+narrowed = typed.as?(Int32)
+LibC.putchar(narrowed.as(Int32) &+ 8)
+flag ? 73 : false

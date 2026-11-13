@@ -585,6 +585,10 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
     end
   else
     unless body_no_return
+      value = low.last
+      if !block_ended?(low) && !value.nil? && value.as(Value).type.pointer?
+        low.last = to_rhs(low, value.as(Value), body_t.as(Type))
+      end
       phi.add(low, low.last, true)
     end
   end
