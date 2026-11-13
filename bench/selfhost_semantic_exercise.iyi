@@ -9,7 +9,8 @@ module BenchSelfhostSemanticExercise
     parser = Parser.new(src, filename)
     node = parser.parse
     prog = SemanticProgram.new
-    visitor = TopLevelVisitor.new(prog)
+    prog.entry_dir = File.dirname(filename)
+    visitor = TopLevelVisitor.new(prog, filename)
     node.accept(visitor)
     visitor.finish
     dump_program_declarations(prog)
