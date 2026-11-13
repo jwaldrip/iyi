@@ -168,6 +168,14 @@ module BenchSelfhostSemanticCallsExercise
     if matches.error
       return "error: #{matches.error.to_s}"
     end
+    if expr.starts_with?("virtual(")
+      targets = CallRecalculation.targets_for_matches(matches, ts, false)
+      return "error: target count differs from matches" if targets.size != matches.matches.size
+      targets.each_with_index do |target, index|
+        match = matches.matches[index]
+        return "error: dispatch target differs from match" if target.error || target.definition != match.definition || target.owner != match.owner || target.defining != match.defining || target.arg_types != match.arg_types
+      end
+    end
     if matches.empty?
       return "none"
     end

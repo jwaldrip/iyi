@@ -364,6 +364,11 @@ prove_mutation "a named splat is counted as a required positional argument" "$ER
   '      minimum = d.args.size' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a virtual dispatch target loses its defining owner" "$CALL_FILE" \
+  'targets << CallTarget.new(match.definition, match.owner, found.as(Type), false, nil, match.defining, match.arg_types, nil)' \
+  'targets << CallTarget.new(match.definition, match.owner, found.as(Type), false, nil, nil, match.arg_types, nil)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 
