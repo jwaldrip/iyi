@@ -510,6 +510,21 @@ else
   awk 'NR<=8' "$WORK/vis-macro.err" "$WORK/vis-macro.out" "$WORK/vis-macro.build.log"
   status=1
 fi
+atomic_return_check() {
+  "$IYI" build -o "$WORK/port-atomic-return" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/atomic-return.build.log" 2>&1 || return 1
+  "$WORK/port-atomic-return" lower "$REPO/bench/fixtures/lower_atomic_return.iyi" "$WORK/lower_atomic_return.oracle.ll" > "$WORK/atomic-return.out" 2> "$WORK/atomic-return.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/atomic-return.out"
+}
+if atomic_return_check; then
+  prove_mutation "a by-value return skips loading the aggregate" "$REPO/src/compiler/lower/fun.iyi" \
+    '  low.builder.ret(to_rhs(low, converted, return_type.as(Type)))' \
+    '  low.builder.ret(converted)' -- atomic_return_check || status=1
+else
+  echo "FAIL: atomic aggregate return does not match the hosted module"
+  awk 'NR<=8' "$WORK/atomic-return.err" "$WORK/atomic-return.out" "$WORK/atomic-return.build.log"
+  status=1
+fi
+
 
 
 
