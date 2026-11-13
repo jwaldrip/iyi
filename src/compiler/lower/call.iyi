@@ -149,10 +149,23 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
   end
   if node.obj.nil? && !low.current_context.type.nil?
-    owner = implicit_owner(low, node)
-    self_type = owner
-    unless owner.nil?
-      self_value = implicit_self_value(low)
+    ct = low.current_context.type.as(Type)
+    if low.current_context.vars["self"]?.nil?
+      # A non-generic class method has no self argument. An unqualified call to
+      # another method on its own metaclass uses the same class owner.
+      if ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)
+        if ct.as(ModuleType).metaclass.defs[node.name]?
+          class_owner = ct
+        elsif !low.analysed.program.defs[node.name]?
+          pending_visit_node("a class method #{node.name} inherited from a superclass of #{ct.full_name} (hosted call.cr: target_def.owner is the defining type)")
+        end
+      else
+        pending_visit_node("a call to #{node.name} with no receiver inside a generic class method (hosted call.cr: prepare_call_args, the metaclass owner)")
+      end
+    else
+      owner = implicit_owner(low, node)
+      self_type = owner
+      self_value = implicit_self_value(low) unless owner.nil?
     end
   end
 

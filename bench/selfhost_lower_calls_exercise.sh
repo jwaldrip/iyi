@@ -240,6 +240,8 @@ prove_mutation "a class's allocate result is discarded for nil instead of return
   '        low.last = ptr' '        low.last = llvm_nil(low)' -- lower_calls_check || status=1
 prove_mutation "a reference union argument is replaced with null before the call" "$REPO/src/compiler/lower/call.iyi" \
   'values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))' 'values << (at.is_a?(UnionType) ? low.builder.const_null(low.module.types.ptr).as(Value) : (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)))' -- lower_calls_check || status=1
+prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
+  '          class_owner = ct' '          class_owner = nil' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
