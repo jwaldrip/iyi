@@ -677,14 +677,20 @@ prove_mutation "a file's own directory is never searched for an import" "$MUT_SE
   "      roots << \"/nonexistent-root\"" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_SEM" \
-  "@pending_ivars.each do |pi|" \
-  "@pending_ivars.reversed.each do |pi|" \
+prove_mutation "explicit instance variables are recorded in reverse declaration order" "$MUT_IVARS" \
+  "        program.pending_ivars.each do |pi|" \
+  "        program.pending_ivars.reversed.each do |pi|" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "guessed variables are recorded before explicit variables" "$MUT_SEM" \
-  '    [true, false].each do |explicit_pass|' \
-  '    [false, true].each do |explicit_pass|' \
+prove_mutation "guessed variables are recorded before explicit variables" "$MUT_IVARS" \
+  '      [true, false].each do |explicit_pass|' \
+  '      declare_guessed(program, owners, og)
+      [true, false].each do |explicit_pass|' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "subclass declarations are processed before superclass guesses" "$MUT_IVARS" \
+  '      next unless class_depth(og.owner) == depth' \
+  '      next unless class_depth(og.owner) == max_depth - depth' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an initialize argument instance variable is recorded ahead of the class body's" "$MUT_SEM" \
@@ -696,9 +702,9 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 # record (finish) and the guessed-ivar fallback (instance_vars.iyi, skipped when the ivar already exists)
 # each declare that ivar, and the pending one wins. Dropping either alone is not observable (probes: same
 # output), so the drop is not expressible on one file. This mutation is the pending path's type claim.
-prove_mutation "a typed argument's instance variable takes its restriction type" "$MUT_SEM" \
+prove_mutation "a typed argument's instance variable takes its restriction type" "$MUT_IVARS" \
   "mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)" \
-  "mv = MetaTypeVar.new(pi.name, @program.nil_type, pi.initializer)" \
+  "mv = MetaTypeVar.new(pi.name, program.nil_type, pi.initializer)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable keeps its bare type: the virtual type is not taken" "$MUT_SEM" \
