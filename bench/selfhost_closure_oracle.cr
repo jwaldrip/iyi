@@ -58,6 +58,8 @@ class ClosureOracleWalk < Iyi::Visitor
         next unless @visited.add?(target.object_id)
         prior = @instance
         owner = target.owner
+        # External lib funs have no body or lexical frame.
+        next if owner.is_a?(Iyi::LibType)
         owner_name = owner.is_a?(Iyi::Program) ? "top" : label(owner)
         args = target.args.map { |arg| arg.type?.try { |type| label(type) } || "?" }.join(",")
         @instance = "#{owner_name}##{target.name}(#{args})"

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Compare lexical closure facts with the hosted compiler on the same fixture prelude.
+# Floors only rise once proven on a green head. The semclos_local WIP-only 4
+# counted an external lib fun, which has no body or lexical frame; corrected to 3.
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
@@ -57,9 +59,17 @@ status=0
 prove_mutation 'captured variable is omitted' "$REPO/src/compiler/semantic/closures.iyi" \
   'binding.captured = true' 'binding.captured = false' -- mutation_check || status=1
 prove_mutation 'literal parameter does not shadow its outer variable' "$REPO/src/compiler/semantic/closures.iyi" \
-  'frame.bindings << ClosureBinding.new(ClosureVar.new(arg.name, type))' 'nil' -- mutation_check || status=1
+  'proc_def.args.each do |arg|' '([] of Compiler::Syntax::Ast::Arg).each do |arg|' -- mutation_check || status=1
 prove_mutation 'assignment does not declare a local' "$REPO/src/compiler/semantic/closures.iyi" \
   '@frame.bindings << ClosureBinding.new(ClosureVar.new(variable.name, type))' 'nil' -- mutation_check || status=1
+prove_mutation 'blocks are independent closure contexts' "$REPO/src/compiler/semantic/closures.iyi" \
+  'while current.kind == FrameKind::Block' 'while false && current.kind == FrameKind::Block' -- mutation_check || status=1
+prove_mutation 'instance variable does not capture self' "$REPO/src/compiler/semantic/closures.iyi" \
+  'def visit(node : InstanceVar) : Bool
+    capture_self' 'def visit(node : InstanceVar) : Bool
+    nil' -- mutation_check || status=1
+prove_mutation 'reassignment after capture is not mutable' "$REPO/src/compiler/semantic/closures.iyi" \
+  'elsif assignment && binding.captured' 'elsif false && assignment && binding.captured' -- mutation_check || status=1
 if [ "$status" -ne 0 ]; then
   printf '%s\n' '== SOME CLOSURE CHECKS FAILED'
   exit 1

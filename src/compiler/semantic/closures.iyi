@@ -1,8 +1,8 @@
 module compiler/semantic/closures
 
-import compiler/syntax/ast::{ASTNode, Assign, Block, Def, NodeMap, ProcLiteral, Var}
+import compiler/syntax/ast::{ASTNode, Assign, Block, Def, InstanceVar, NodeMap, ProcLiteral, Self, Var}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{Type}
+import compiler/semantic/top_level::{MetaclassType, SemanticProgram, Type}
 import compiler/semantic/main_visitor::{MainVisitor}
 
 pub enum FrameKind
@@ -39,6 +39,7 @@ pub class ClosureFrame
   property self_closured : Bool = false
   getter bindings : Array(ClosureBinding)
   getter errors : Array(String)
+  property self_type : Type? = nil
 
   def initialize(@kind : FrameKind, @node : ASTNode, @parent : ClosureFrame?)
     @closured = [] of ClosureVar
@@ -102,8 +103,47 @@ pub class ClosureWalk < Visitor
   end
 
   def visit(node : Var) : Bool
-    capture(node.name, false)
+    if node.name == "self"
+      capture_self
+    else
+      capture(node.name, false)
+    end
     false
+  end
+
+  def visit(node : Self) : Bool
+    capture_self
+    false
+  end
+
+  def visit(node : InstanceVar) : Bool
+    capture_self
+    false
+  end
+
+  def capture_self : Nil
+    current : ClosureFrame? = @frame
+    seen_proc = false
+    while frame = current
+      seen_proc = true if frame.kind == FrameKind::Proc
+      if frame.kind == FrameKind::Def
+        if seen_proc && (self_type = frame.self_type)
+          unless self_type.is_a?(MetaclassType)
+            frame.self_closured = true
+            frame.closure = true
+            frame.errors << "self of a struct type captured" if self_type.struct?
+            inside : ClosureFrame? = @frame
+            while part = inside
+              break if part.node.node_id == frame.node.node_id
+              part.closure = true if part.kind == FrameKind::Proc
+              inside = part.parent
+            end
+          end
+        end
+        return
+      end
+      current = frame.parent
+    end
   end
 
   def capture(name : String, assignment : Bool) : Nil
@@ -113,6 +153,7 @@ pub class ClosureWalk < Visitor
       if binding = current.local?(name)
         reader_context = closure_context(@frame)
         owner_context = closure_context(current)
+        binding.variable.mutably = true if assignment && @frame.kind == FrameKind::Block && @frame.node.node_id != current.node.node_id
         if reader_context.node.node_id != owner_context.node.node_id
           binding.captured = true
           binding.variable.mutably = true if assignment
@@ -139,6 +180,23 @@ pub class ClosureWalk < Visitor
       current = parent
     end
     current
+  end
+
+  def visit(node : Block) : Bool
+    if literal = node.fun_literal
+      literal.accept(self)
+      return false
+    end
+    return false unless @visitor.type_of?(node) || @visitor.type_of?(node.body)
+    frame = @facts.add_frame(FrameKind::Block, node, @frame)
+    node.args.each do |arg|
+      if type = @visitor.type_of?(arg)
+        frame.bindings << ClosureBinding.new(ClosureVar.new(arg.name, type))
+      end
+    end
+    node.body.accept(ClosureWalk.new(@facts, @visitor, frame))
+    frame.finish
+    false
   end
 
   def visit(node : ProcLiteral) : Bool
@@ -176,6 +234,9 @@ pub class ClosureFacts
       return frame
     end
     frame = add_frame(FrameKind::Def, def_node, nil)
+    unless @visitor.program.def_owner(def_node).is_a?(SemanticProgram)
+      frame.self_type = self_type
+    end
     def_node.args.each do |arg|
       if type = @visitor.type_of?(arg)
         frame.bindings << ClosureBinding.new(ClosureVar.new(arg.name, type))
@@ -221,7 +282,9 @@ pub class ClosureFacts
     lines = [] of String
     @visitor.typed_instances.each do |instance|
       root = analyse_def(instance.definition, instance.self_type)
-      owner = if type = instance.self_type
+      owner = if @visitor.program.def_owner(instance.definition).is_a?(SemanticProgram)
+                "top"
+              elsif type = instance.self_type
                 type.full_name
               else
                 "top"
