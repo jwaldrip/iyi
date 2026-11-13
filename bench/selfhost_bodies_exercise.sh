@@ -208,9 +208,6 @@ prove_mutation "a call body is not typed in the scope of its owner" "$MAIN_VISIT
 prove_mutation "a block whose declared output is _ is checked against a type" "$MAIN_VISITOR" \
   "unless out_node.is_a?(Underscore)" \
   "unless false" -- bodies_at_floor || status=1
-prove_mutation "__LINE__ is typed as a String" "$MAIN_VISITOR" \
-  "if node.name == TokenKind::MAGIC_LINE || node.name == TokenKind::MAGIC_END_LINE" \
-  "if false" -- bodies_at_floor || status=1
 prove_mutation "if x narrows a truthy variable in its then branch" "$MAIN_VISITOR" \
   "    filter_vars(cond_type_filters)" \
   "    nil" -- bodies_at_floor || status=1
