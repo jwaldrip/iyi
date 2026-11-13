@@ -21,7 +21,7 @@ module compiler/lower/fun
 # The body is lowered through the dispatch the lowering installed (`BodyVisit`,
 # context.iyi), because iyi refuses an import cycle and the dispatch imports this file.
 
-import compiler/syntax/ast::{ASTNode, Assign, ClassDef, Def, ModuleDef, ProcLiteral, Var}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, ClassDef, Def, ModuleDef, ProcLiteral, Var}
 import compiler/syntax/visitor::{Visitor}
 import compiler/ir/function::{Function, Linkage}
 import compiler/ir/inst::{Attribute, Block, CallConv}
@@ -307,6 +307,16 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
     fn.name_param(param, arg.name)
     create_local_copy_of_arg(low, arg.name, arg_type, param, assigned.includes?(arg.name))
     i += 1
+  end
+  # A captured block is the last parameter (hosted fun.cr:626-629, 912-928).
+  if target.uses_block_arg?
+    block_arg = target.block_arg
+    raise "BUG: captured block parameter is missing" if block_arg.nil?
+    block_type = low.analysed.type_of?(block_arg.as(ASTNode))
+    raise "BUG: captured block parameter has no type" if block_type.nil?
+    param = fn.param(first + target.args.size)
+    fn.name_param(param, block_arg.as(Arg).name)
+    create_local_copy_of_arg(low, block_arg.as(Arg).name, block_type.as(Type), param, assigned.includes?(block_arg.as(Arg).name))
   end
 
   low.needs_value = true
