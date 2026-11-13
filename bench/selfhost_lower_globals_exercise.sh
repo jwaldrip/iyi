@@ -237,6 +237,8 @@ prove_mutation "indirect calls are left without a function type" "$REPO/bench/li
   "  if (at == 0) return line" "  if (indirect || at == 0) return line" -- lowglob_check || status=1
 prove_mutation "lazy initializer ignores the once flag" "$REPO/bench/fixtures/lowglob_cvar_lazy.iyi" \
   "  if !flag.value" "  if true" -- hosted_once_check || status=1
+prove_mutation "a nilable proc global has no zero initializer" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  global.initializer = low.builder.const_zero(ir)" "  global.initializer = nil" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1
