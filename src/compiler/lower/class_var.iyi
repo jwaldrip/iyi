@@ -19,14 +19,20 @@ module compiler/lower/class_var
 #   - a class variable whose owner is in a namespace, is generic, or is not a class (its hosted `llvm_name`);
 #   - a string, symbol, nil or float initialiser, whose global is initialised by `initialize_simple_constants`;
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
-# Thread-local class variables: the analysis has no thread-local flag on `MetaTypeVar` yet, so a thread-local
-# variable is lowered as an ordinary global; this gap is recorded in NEEDS.md and must close before the
-# lowering is used for a program with `@[ThreadLocal]` variables.
+# Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
+# class_var.cr:27-34), the model every non-Windows target uses, and `declare_cvar_global` sets it from the variable's
+# `thread_local` flag. The analysis sets that flag on a typed declaration only (main_visitor.iyi replace_class_var). The
+# annotation is lowered just before its declaration and leaves a mark that the declaration takes
+# (`take_thread_local_annotation`), so an untyped `@[ThreadLocal] @@v = value` is refused by name. A read or an assignment
+# of a thread-local variable reaches it through the accessor `*Owner::name` (hosted `get_thread_local`, codegen.cr:1752),
+# which the main module defines on first use: the caller keeps a pointer in an alloca, the accessor stores the global's
+# address through it, and the caller loads that address. Refused by name: the thread-pointer form the hosted code uses
+# under the iyi prelude on Linux, and the Windows general-dynamic model.
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, CharLiteral, ClassDef, NumberLiteral, TypeDeclaration}
 import compiler/ir/values::{Value}
-import compiler/ir/inst::{Inst, Op, CallConv}
-import compiler/ir/function::{Function, Global, Linkage}
+import compiler/ir/inst::{Attribute, Inst, Op, CallConv}
+import compiler/ir/function::{Function, Global, Linkage, TlsModel}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{BodyVisit, Lowerer}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
@@ -75,6 +81,19 @@ end
 pub def class_body_leave(low : Lowerer, entered : Bool) : Nil
   if entered
     low.globals.leave_class_body
+    low.globals.thread_local_pending = false
+  end
+end
+
+# The `@[ThreadLocal]` mark the annotation before a declaration left (lower.iyi). The declaration takes it: a mark on a
+# variable the analysis did not flag as thread-local would give a plain global, so it is refused by name.
+pub def take_thread_local_annotation(low : Lowerer, cvar : MetaTypeVar) : Nil
+  if !low.globals.thread_local_pending
+    return
+  end
+  low.globals.thread_local_pending = false
+  if !cvar.thread_local
+    refuse_port("lower: @[ThreadLocal] on class variable #{cvar.name}: the body pass does not flag an untyped declaration (main_visitor.iyi replace_class_var), so its global would not be thread-local (hosted class_var.cr declare_thread_local)")
   end
 end
 
@@ -178,12 +197,18 @@ pub def check_cvar_initializer(cvar : MetaTypeVar, node : ASTNode) : Nil
 end
 
 # The global of a class variable, declared once (hosted `declare_class_var`, internal linkage).
-pub def declare_cvar_global(low : Lowerer, name : String, ir : IrType, st : ClassVarState) : Global
+pub def declare_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir : IrType, st : ClassVarState) : Global
   if g = st.global
     return g.as(Global)
   end
   g = low.module.add_global(name, ir)
   g.linkage = Linkage::Internal
+  if cvar.thread_local
+    if low.module.target.windows?
+      refuse_port("lower: thread-local class variable #{cvar.name} on Windows: the general-dynamic model is not ported yet (hosted declare_thread_local, class_var.cr:27-34)")
+    end
+    g.tls = TlsModel::LocalExec
+  end
   st.global = g
   g
 end
@@ -198,7 +223,7 @@ pub def simple_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir 
   if value.nil?
     refuse_port("lower: class variable #{cvar.name} has a literal initialiser that is not an integer, Bool or Char (hosted class_var.cr: initialize_class_var)")
   end
-  g = declare_cvar_global(low, name, ir, st)
+  g = declare_cvar_global(low, cvar, name, ir, st)
   g.initializer = value.as(Value)
   g
 end
@@ -237,6 +262,7 @@ end
 # literal initialiser is stored at the declaration; any other is initialised here by a direct call to its
 # initialiser. A class variable read before this point needs the lazy path, which is refused by name.
 pub def initialize_class_var(low : Lowerer, cvar : MetaTypeVar) : Nil
+  take_thread_local_annotation(low, cvar)
   init = cvar.initializer
   if init.nil?
     return
@@ -253,7 +279,7 @@ pub def initialize_class_var(low : Lowerer, cvar : MetaTypeVar) : Nil
     return
   end
   check_cvar_initializer(cvar, node)
-  global = declare_cvar_global(low, name, ir, st)
+  global = declare_cvar_global(low, cvar, name, ir, st)
   fn = st.init_fn
   if fn.nil?
     fn = make_cvar_init_function(low, cvar, "~" + name + ":init", global, st)
@@ -271,11 +297,12 @@ end
 # read or stored straight off, with no initialiser function and no flag. The hosted `declare_class_var` makes the global of
 # a nilable reference start as null; a variable of any other type has no initial value in this port, which is not ported yet.
 pub def uninitialised_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, st : ClassVarState) : Global
+  take_thread_local_annotation(low, cvar)
   if !nilable_reference_type?(cvar.type)
     refuse_port("lower: class variable #{cvar.name} is declared without an initialiser and is not a nilable reference: its hosted global has no initial value, not ported yet (hosted class_var.cr: declare_class_var)")
   end
   ir = cvar_ir_type(low, cvar)
-  g = declare_cvar_global(low, name, ir, st)
+  g = declare_cvar_global(low, cvar, name, ir, st)
   # The hosted global of a nilable reference is not made internal (it prints as the default, external, linkage).
   g.linkage = Linkage::External
   if g.initializer.nil?
@@ -285,11 +312,10 @@ pub def uninitialised_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : Stri
   g
 end
 
-# The hosted `read_class_var_ptr` for a class variable of a plain class (class_var.cr:210-245): the global the value of
-# the variable lives in, which a read loads and an assignment stores to. It marks the variable read. A literal is stored
-# in the global at its declaration; any other is set by its declaration's call, so a pointer taken before that needs the
-# lazy path, which is refused by name.
-pub def class_var_pointer(low : Lowerer, cvar : MetaTypeVar) : Global
+# The hosted `get_class_var_global` and `read_class_var_ptr` for a plain class (class_var.cr:205-245, 305-318): the global
+# the value of the variable lives in. It marks the variable read. A literal is stored in the global at its declaration;
+# any other is set by its declaration's call, so a pointer taken before that needs the lazy path, which is refused by name.
+pub def class_var_global(low : Lowerer, cvar : MetaTypeVar) : Global
   owner = cvar_owner(low, cvar.name)
   name = cvar_global_name(owner, cvar.name)
   st = low.globals.class_var_state(cvar_key(owner, cvar.name))
@@ -309,6 +335,53 @@ pub def class_var_pointer(low : Lowerer, cvar : MetaTypeVar) : Global
     refuse_port("lower: class variable #{cvar.name} is used before its initialisation: the hosted lazy path (create_read_class_var_function, class_var.cr:236) is not ported yet")
   end
   g.as(Global)
+end
+
+# The pointer a read loads from and an assignment stores to: the global itself, or for a thread-local variable the address
+# the accessor gives on this thread (hosted `read_class_var_ptr` returns what `get_global` gives).
+pub def class_var_pointer(low : Lowerer, cvar : MetaTypeVar) : Value
+  g = class_var_global(low, cvar)
+  if !cvar.thread_local
+    return g
+  end
+  owner = cvar_owner(low, cvar.name)
+  thread_local_address(low, cvar, cvar_global_name(owner, cvar.name), g)
+end
+
+# The hosted `get_global` for a thread-local (codegen.cr:1647-1656) on the path without the iyi prelude's thread pointer:
+# the address of the global on this thread, which the accessor hands back. The caller keeps the pointer in an alloca
+# (hosted `get_thread_local`), the accessor stores the global's address through it, and the caller loads the address.
+pub def thread_local_address(low : Lowerer, cvar : MetaTypeVar, name : String, global : Global) : Value
+  if low.module.target.linux?
+    refuse_port("lower: thread-local class variable #{cvar.name} on Linux reads the thread pointer (hosted get_global, codegen.cr:1648), not ported yet")
+  end
+  accessor = thread_local_accessor(low, name, global)
+  ptr = low.module.types.ptr
+  indirection = low.alloca(ptr, "")
+  ft = low.module.types.func([ptr] of IrType, low.module.types.void)
+  low.builder.call(ft, accessor, [indirection] of Value, "")
+  load_aligned(low, ptr, indirection)
+end
+
+# The hosted `declare_thread_local_fun` (codegen.cr:1784-1798): the main module's accessor `*Owner::name`, void, taking the
+# pointer to the pointer to store the global's address in. Internal and noinline, as the hosted function is. Defined the
+# first time the variable is read, and reused after that.
+pub def thread_local_accessor(low : Lowerer, name : String, global : Global) : Function
+  fun_name = "*" + name
+  if existing = low.module.get_function?(fun_name)
+    return existing.as(Function)
+  end
+  saved = low.enter_main
+  ptr = low.module.types.ptr
+  fun_type = low.module.types.func([ptr] of IrType, low.module.types.void)
+  fn = low.begin_main_function(fun_name, fun_type, false)
+  fn.linkage = Linkage::Internal
+  fn.attrs << Attribute.new("noinline", 0_u64, nil, nil)
+  store_aligned(low, global, fn.param(0))
+  low.builder.ret_void
+  low.finish_main_function
+  low.leave_main(saved)
+  fn
 end
 
 # The hosted `read_class_var` (class_var.cr:200-203): a load of the variable's global.

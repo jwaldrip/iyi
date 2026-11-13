@@ -320,13 +320,13 @@ prove_mutation "an empty expansion is kept and a non-empty one dropped" "$MUT_IN
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "the expansion is parsed with no file, so its declarations are not the file's" "$MUT_INL" \
-  "parser = Parser.new(text, filename)" \
-  "parser = Parser.new(text, \"\")" \
+  "parser = Parser.new(text, filename, nil, scopes)" \
+  "parser = Parser.new(text, \"\", nil, scopes)" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation_all "no spliced inline macro expansion is ever declared (top-level and type-body sites)" "$MUT_INL" \
-  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals))" \
   "out.concat([] of ASTNode)" \
   -- check_inline_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -347,6 +347,13 @@ echo
 echo "== 8. Pipeline reach: each root through the pipeline tool with the prelude, against bench/selfhost_inline_reach.floor"
 REACH_FLOOR="$REPO/bench/selfhost_inline_reach.floor"
 MUT_PROG="$REPO/src/compiler/lower/program.iyi"
+PLATFORM="$(uname -s -m)"
+COMPARE_REACH=0
+if [ "$PLATFORM" = "Darwin arm64" ]; then
+  COMPARE_REACH=1
+else
+  echo "  reach floors are measured on Darwin arm64: not compared on $PLATFORM"
+fi
 
 # Prints "<defs-reached> <no-record rows>" for the root $1 (repo-relative), run by the pipeline tool $2, output tagged $3.
 reach_of() {
@@ -370,6 +377,7 @@ check_reach() {
     reach=$1
     missing=$2
     echo "  $root: defs-reached $reach (floor $floor), no-record rows $missing"
+    if [ "$COMPARE_REACH" -eq 0 ]; then continue; fi
     if [ "$missing" -ne 0 ] || [ "$reach" -lt "$floor" ]; then
       echo "  BELOW FLOOR: $root. A regression: restore the declaration or lower nothing."
       fail=1
@@ -400,6 +408,7 @@ else
   status=1
 fi
 
+if [ "$COMPARE_REACH" -eq 1 ]; then
 prove_mutation "the fixture's required file is parsed again instead of read from the pipeline's own tree" "$MUT_SEM" \
   "nodes = @program.unit_tree_or_parse(file)" \
   "nodes = Parser.new(File.read(file), file).parse" \
@@ -417,6 +426,7 @@ prove_mutation "a require looks up the pipeline's tree under a key that is never
   "if tree = @unit_trees[file + \"~\"]?" \
   -- check_reach_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+fi
 
 # 9. Single-macro-node bodies: a class, module or lib body that is one macro node is spliced, so the typer never refuses its
 # macro node. Each fixture's top-level refusal count (root-refusals) stays at or below its ceiling in
@@ -424,6 +434,8 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 REFUSAL_FLOOR="$REPO/bench/selfhost_inline_refusals.floor"
 MUT_INL="$REPO/src/compiler/semantic/inline_macros.iyi"
 MUT_TOP="$REPO/src/compiler/semantic/top_level.iyi"
+MUT_MAIN="$REPO/src/compiler/semantic/main_visitor.iyi"
+MUT_TYPE="$REPO/src/compiler/semantic/type_nodes.iyi"
 
 check_refusals() {
   local tool="$1" fail=0 root ceiling tag log refusals
@@ -434,6 +446,7 @@ check_refusals() {
     (cd "$REPO" && IYI_PATH="$REPO/src" "$tool" "$root" -o "$WORK/refusals_exe_$tag" --pipeline typed --prelude --probe-phase --keep-going > "$log" 2>&1)
     refusals=$(awk '/^table: .* root-refusals=/ { sub(/.*root-refusals=/, ""); print $1 }' "$log")
     echo "  $root: root-refusals ${refusals:-none} (ceiling $ceiling)"
+    if [ "$COMPARE_REACH" -eq 0 ]; then continue; fi
     if [ -z "$refusals" ] || [ "$refusals" -gt "$ceiling" ]; then
       echo "  ABOVE CEILING: $root. A single macro node body is refused again: restore its splice."
       fail=1
@@ -462,6 +475,7 @@ else
   status=1
 fi
 
+if [ "$COMPARE_REACH" -eq 1 ]; then
 prove_mutation "a single macro node body is returned unchanged, so the typer refuses its macro node" "$MUT_INL" \
   "return body unless body.is_a?(MacroIf) || body.is_a?(MacroFor) || body.is_a?(MacroExpression)" \
   "return body" -- check_body_fixture || status=1
@@ -469,7 +483,7 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 # Not "wrapped but not spliced": visit(Expressions) splices the wrapper again, so that mutant is equivalent.
 prove_mutation "a single macro node body loses its expansion: the wrapper is empty" "$MUT_INL" \
-  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib))" \
+  "Expressions.new(splice_inline_sites([body] of ASTNode, scope_name, filename, in_lib, locals))" \
   "Expressions.new([] of ASTNode)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -477,6 +491,34 @@ prove_mutation "a class, module or lib body that is one macro node is not passed
   "splice_body_node(body, @current_type.full_name, @file || \"\", @current_type.is_a?(LibType))" \
   "body" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# A constant whose value is one macro node is expanded where the typer reads it (main_visitor.iyi splice_const_value).
+prove_mutation "a constant whose value is one macro node is typed unexpanded, so the typer refuses its macro node" "$MUT_MAIN" \
+  "spliced = splice_body_node(value, scope_name, file, c.namespace.is_a?(LibType))" \
+  "spliced = Expressions.new([value] of ASTNode)" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# A fun body's macro sites are spliced by the body visitor before type-node visitation.
+prove_mutation "a fun body's macro sites are not spliced, so the typer refuses them" "$MUT_MAIN" \
+  "splice_fun_body(node, @program.full_name)" \
+  "nil" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# A site's expansion is parsed knowing the names the body declared before it (inline_macros.iyi, the parser's var scope).
+prove_mutation "a site's expansion is parsed with no names declared before it, so a later local reads as a call" "$MUT_INL" \
+  "parser = Parser.new(text, filename, nil, scopes)" \
+  "parser = Parser.new(text, filename)" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# The recursive splice receives the same locals array, so a name an earlier expansion
+# declares is visible to a later site (inline_macros.iyi splice_inline_sites). A copy
+# keeps the expansion and drops that write-back, so later_block_local.iyi pointerof
+# refuses the name and root-refusals rise above 5.
+prove_mutation "a recursive splice drops names an earlier expansion declared, so a later block's pointerof refuses them" "$MUT_INL" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals.dup))" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+fi
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

@@ -43,7 +43,7 @@ import compiler/lower/fun::{visit_node}
 import compiler/lower/helpers::{int1}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
-import compiler/semantic/top_level::{ClassType, MetaTypeVar, Type}
+import compiler/semantic/top_level::{ClassType, MetaTypeVar, MetaclassType, Type}
 import compiler/types/types::{PointerInstanceType, VirtualType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
@@ -124,14 +124,14 @@ end
 # The hosted `codegen_primitive` for the `pointer_*` primitives (primitives.cr 905-965). The receiver
 # of an instance primitive (`add`, `address`, `value`, `value=`) is a value, lowered first as the hosted
 # prepare_call_args does. `pointer_new` is a class method: its call's receiver (the metaclass) is not
-# lowered, and its argument is the address. Ported: `pointer_address` (ptr2int to Int64), `pointer_add` (a
+# lowered, and its argument is the address. `pointer_malloc` is a class method too: its argument is the count. Ported: `pointer_address` (ptr2int to Int64), `pointer_add` (a
 # gep of the element type, the hosted non-inbounds gep), `pointer_new` (int2ptr to the node's pointer type),
 # and `pointer_get` and `pointer_set` of an integer, Char or Float element (a load and a store aligned to
-# the element). Refused by name: `pointer_malloc`, `pointer_realloc` and `pointer_diff` (the array_malloc,
-# realloc and diff helpers of codegen.cr), and `pointer_get`/`pointer_set` of a Bool, a pointer or a struct
+# the element). `pointer_malloc` is ported for a program without its own malloc (pointer_malloc_value). Refused by name: `pointer_realloc` and `pointer_diff` (the realloc and
+# diff helpers of codegen.cr), `pointer_malloc` of a program with its own malloc (refuse_program_malloc), and `pointer_get`/`pointer_set` of a Bool, a pointer or a struct
 # element (the hosted to_lhs and assign of those).
 pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
-  if name == "pointer_malloc" || name == "pointer_realloc" || name == "pointer_diff"
+  if name == "pointer_realloc" || name == "pointer_diff"
     pending_visit_node("primitive #{name} (hosted codegen_primitive_#{name}, primitives.cr 905-965: its helper is not ported)")
     return
   end
@@ -139,7 +139,7 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   low.needs_value = true
   values = [] of Value
   pt : Type? = nil
-  if name == "pointer_new"
+  if name == "pointer_new" || name == "pointer_malloc"
     pt = low.analysed.type_of?(node)
   else
     obj = node.obj
@@ -161,6 +161,10 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   ptr_type = pt.as(Type)
   if name == "pointer_new"
     low.last = low.builder.int_to_ptr(values[0], low.typer.llvm_type(ptr_type))
+    return
+  end
+  if name == "pointer_malloc"
+    low.last = pointer_malloc_value(low, pointer_element_of(ptr_type), values[0])
     return
   end
   elem = pointer_element_of(ptr_type)
@@ -199,6 +203,24 @@ pub def pointer_element_of(t : Type) : Type
     return t.as(PointerInstanceType).element_type
   end
   raise "BUG: a pointer primitive on #{t.full_name}, which is not a Pointer (hosted codegen_primitive_pointer_*)"
+end
+
+# The hosted `codegen_primitive_pointer_malloc` (primitives.cr 905-925) with the C allocator a program without its
+# own malloc gets: `generic_array_malloc` (codegen.cr 2884-2906) takes the element's size times the count, calls the
+# C `malloc` (`c_malloc_fun`), and zeroes the block, since no program malloc clears it. The atomic and the pointerful
+# entries are the same here. The count is the UInt64 argument, which is the size type; any other width is refused.
+pub def pointer_malloc_value(low : Lowerer, elem : Type, count : Value) : Value
+  refuse_program_malloc(low, elem)
+  if count.type != low.typer.size_t
+    pending_visit_node("Pointer#malloc with a count that is not the size type (hosted generic_array_malloc: builder.mul of the size and the count)")
+    return low.builder.const_null_pointer
+  end
+  elem_ir = low.typer.llvm_embedded_type(elem)
+  size = low.builder.mul(sizeof_expr(low, elem_ir), count)
+  c_malloc = c_malloc_function(low)
+  ptr = low.builder.call(c_malloc.fn_type, c_malloc, [size] of Value, "")
+  memset_size(low, ptr, size)
+  ptr
 end
 
 # The analysed type of a receiver. A primitive's owner is the type its receiver has (the
@@ -604,14 +626,20 @@ end
 # type (the hosted upcast of the instance). The header store is decided from codegen.cr 2790-2806,
 # not from the core's pointer function, which covers fields only.
 pub def primitive_allocate(low : Lowerer, t : Type) : Value
-  if t.is_a?(VirtualType)
+  # The hosted allocate_aggregate takes the instance type. A metaclass (the class-method context of `new`) is
+  # unwrapped to its instance type here, so the class's pointerful check reads a class, not a metaclass.
+  inst = t
+  if t.is_a?(MetaclassType)
+    inst = t.as(MetaclassType).instance_type
+  end
+  if inst.is_a?(VirtualType)
     pending_visit_node("allocate of a virtual type (hosted codegen_primitive_allocate, upcast of the instance)")
-    return low.builder.const_undef(low.typer.llvm_type(t))
+    return low.builder.const_undef(low.typer.llvm_type(inst))
   end
-  unless passed_by_value?(t)
-    return allocate_class(low, t)
+  unless passed_by_value?(inst)
+    return allocate_class(low, inst)
   end
-  struct_ir = low.typer.llvm_type(t)
+  struct_ir = low.typer.llvm_type(inst)
   ptr = low.alloca(struct_ir, "")
   zero_memory(low, ptr, struct_ir)
   ptr
@@ -746,8 +774,13 @@ end
 # pointer's alignment 4 (LibLLVM.set_instr_param_alignment(res, 1, 4)), a zero byte, the size as the
 # target's size type, and a false volatile flag.
 pub def zero_memory(low : Lowerer, ptr : Value, struct_ir : IrType) : Nil
+  memset_size(low, ptr, sizeof_expr(low, struct_ir))
+end
+
+# The same `llvm.memset` over a size value that is already computed (the hosted `memset pointer, int8(0), size_t(size)`
+# of generic_array_malloc, codegen.cr 2904): the byte zero, alignment 4 on the pointer, and a false volatile flag.
+pub def memset_size(low : Lowerer, ptr : Value, count : Value) : Nil
   byte = low.builder.const_int(low.module.types.int8, 0_i64)
-  count = sizeof_expr(low, struct_ir)
   volatile = int1(low, 0_i64)
   align_ptr = Attribute.new("align", 4_u64, nil, nil)
   param_attrs = [[align_ptr] of Attribute, [] of Attribute, [] of Attribute, [] of Attribute] of Array(Attribute)

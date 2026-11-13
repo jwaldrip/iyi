@@ -2608,6 +2608,11 @@ pub class Cast < ASTNode
   property obj : ASTNode
   property to : ASTNode
 
+  # Set by semantic analysis (hosted bindings.cr, `Cast#update`): the object's type is already within the
+  # target, so the cast widens and can never fail. Not part of the syntax: `==`, `hash` and `clone` leave it out,
+  # as the hosted node does.
+  property upcast : Bool = false
+
   def initialize(@obj : ASTNode, @to : ASTNode)
   end
 
@@ -2650,6 +2655,11 @@ end
 pub class NilableCast < ASTNode
   property obj : ASTNode
   property to : ASTNode
+
+  # Set by semantic analysis (hosted bindings.cr, `NilableCast#update`): the object's type is already within the
+  # target, so the cast widens and can never fail. Not part of the syntax: `==`, `hash` and `clone` leave it out,
+  # as the hosted node does.
+  property upcast : Bool = false
 
   def initialize(@obj : ASTNode, @to : ASTNode)
   end
