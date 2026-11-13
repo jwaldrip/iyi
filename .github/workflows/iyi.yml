@@ -240,6 +240,15 @@ jobs:
       - name: Every gate is reached by something that runs it
         run: python3 bench/gates_reachable.py
 
+      # The runner of the self-host gates decides which of them a host runs,
+      # and a gate it skips is a gate nothing checks on that host. So the
+      # choice is exercised: the typed-lowering gates run on Darwin arm64
+      # and are named as skipped elsewhere, a gate outside that list fails
+      # a run on any host, and two shards cover every gate once. Stand-in
+      # gates and a stand-in `uname`; no compiler.
+      - name: The self-host gate runner names what a host skips
+        run: bash bench/gates_runner_exercise.sh
+
       # Which language a source is in is the one thing the lexer cannot read
       # out of its text, and a parse built without a name reads by the other
       # language's rules. That was a defect four separate times in one
