@@ -313,9 +313,9 @@ prove_mutation "while cond narrows its variable in the loop body" "$MAIN_VISITOR
 prove_mutation "early exit in then branch narrows the rest of the body" "$MAIN_VISITOR" \
   "        elsif then_unreachable" \
   "        elsif false" -- bodies_at_floor || status=1
-prove_mutation "a refused body with declared return is cached" "$MAIN_VISITOR" \
-  "        remember_def_instance(cache_key, target_def, declared_ret)" \
-  "        nil" -- bodies_at_floor || status=1
+prove_mutation_all "a refused body with declared return is cached" "$MAIN_VISITOR" \
+  "remember_def_instance(cache_key, target_def," \
+  "nil # " -- bodies_at_floor || status=1
 prove_mutation "a generic pointer restriction is not bound from the receiver" "$MAIN_VISITOR" \
   "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
   "found = LookupError.new(\"unbound\")" -- bodies_at_floor || status=1
