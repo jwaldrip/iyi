@@ -274,7 +274,7 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   fn.linkage = Linkage::Internal
   add_body_attributes(fn, low.module.triple)
 
-  saved = LowerSavedState.new(low.context, low.alloca_block, low.entry_block, low.builder.insert_block, low.needs_value, low.in_main)
+  saved = low.save_function_state
   # A class method's context names its instance type (hosted: the metaclass's instance, which `allocate` reads),
   # since it has no self. The implicit-self refusal then covers the calls inside it that are not primitives.
   ctx_type = self_type
