@@ -2651,7 +2651,7 @@ pub class TopLevelVisitor < Visitor
         if st == type
           raise("#{type.full_name} can't require itself")
         end
-        supertraits = trait_supertraits(type).not_nil!
+        supertraits = trait_supertraits(type) || raise("BUG: trait has no supertraits")
         if supertraits.includes?(st)
           raise("#{type.full_name} already requires #{st.full_name}")
         end
