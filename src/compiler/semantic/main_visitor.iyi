@@ -3428,8 +3428,13 @@ pub class MainVisitor < TypeNodeHost
       return false
     end
 
-    if node.obj.nil? && node.args.empty? && node.block.nil?
+    if !node.global && !node.has_parentheses && node.obj.nil? && node.args.empty? && node.named_args.nil? && node.block.nil? && node.block_arg.nil?
       if vt = @vars[node.name]?
+        # A macro can leave a bare local name as Call syntax. Keep the resolved
+        # variable read for lowering; it has no method target.
+        local_read = Var.new(node.name).at(node)
+        set_type(local_read, vt)
+        @expansions[node] = local_read
         set_type(node, vt)
         if needs_type_filters?
           @type_filters = TypeFilters.truthy(node.name)

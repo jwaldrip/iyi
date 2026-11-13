@@ -24,6 +24,7 @@ import compiler/types/types::{NamedTupleInstanceType}
 import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
 import compiler/syntax/ast::{ExceptionHandler, Case}
 import compiler/syntax/ast::{MacroIf, MacroFor, MacroExpression, MacroVerbatim}
+import compiler/syntax/ast::{Include, Extend}
 import compiler/types/types::{TupleInstanceType}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
@@ -613,13 +614,15 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   end
   if node.is_a?(Call)
     # The hosted cleanup replaces expanded calls before codegen (call.cr:4-7).
-    # Declaration macros remain on their Call nodes in the port.
+    # Body typing also records bare local reads that arrived as Call syntax.
     call = node.as(Call)
     if pool_start_call?(low, call)
       refuse_reached_pool(low)
       return
     end
-    if expanded = call.expanded
+    if expanded = low.analysed.expansions[call]?
+      codegen_node(low, expanded)
+    elsif expanded = call.expanded
       codegen_node(low, expanded)
     else
       codegen_call_node(low, call)
@@ -691,6 +694,12 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     # `visit(Annotation)` (codegen.cr:838) emits nothing and returns without setting `@last`; the value is
     # nil here, which matters only where an annotation is the last node of a body, and a class or module body's
     # value is discarded.
+    low.last = llvm_nil(low)
+    return
+  end
+  if node.is_a?(Include) || node.is_a?(Extend)
+    # Hosted visits hook expansions, then returns nil. The declarations pass
+    # refuses hooked modules, so these accepted directives have no expansions.
     low.last = llvm_nil(low)
     return
   end

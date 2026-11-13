@@ -4,6 +4,10 @@
 
 ### Added
 
+- The typed pipeline resolves omitted `fun` returns to `Nil`, lowers recorded inline macro expansions, and
+  resolves nested class and module declarations in their enclosing body. Native regression executables match
+  hosted results. Real-prelude hello reaches lowering; parser compilation and a self-host fixed point remain
+  unproven. `src/compiler/PIPELINE.md` records the strict bootstrap checks separately from the census.
 - **`iyi-compile-native` builds a signed executable from IR with no host tool.** `iyi-compile-native <program.ir> -o <exe>
   [--target aarch64-apple-darwin]` parses and verifies an IR program, compiles it with the native backend, links it with
   the runtime helpers and writes a signed arm64 Mach-O executable. Nothing else takes part: no `ld`, `cc`, `clang`,
