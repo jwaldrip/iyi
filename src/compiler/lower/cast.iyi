@@ -38,12 +38,13 @@ import compiler/lower/unions::{mixed_union_value_area}
 import compiler/semantic/top_level::{MetaclassType, NilType, Type, UnionType, VoidType}
 import compiler/syntax/ast::{ASTNode, Var}
 import compiler/types/indirection::{TypeIndirection}
+import compiler/types/rendering::{TypeRenderer}
 import compiler/types/types::{MixedUnionType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, TypeQueries, VirtualMetaclassType, VirtualType}
 
-# The type id of a type as a loaded value: the hosted `type_id(type)` loads it from the
-# global `@"<full name>:type_id"`, an internal constant, created on first use.
+# Hosted type_id.cr 168-169 names the global using the codegen spelling of
+# the type, including virtual and generic arguments.
 pub def type_id_value(low : Lowerer, t : Type) : Value
-  name = "#{t.full_name}:type_id"
+  name = "#{TypeRenderer.render(t, codegen: true)}:type_id"
   global = low.module.get_global?(name)
   if global.nil?
     made = low.module.add_global(name, low.module.types.int32)
@@ -104,8 +105,11 @@ end
 pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
   # Hosted cast.cr 73-85: an ended block or NoReturn value produces no store.
   return if at_terminator?(low) || TypeQueries.no_return?(value_type)
+  target = TypeIndirection.remove_indirection(target)
+  value_type = TypeIndirection.remove_indirection(value_type)
   if target.full_name == value_type.full_name
-    store_aligned(low, value, pointer)
+    stored = value.type.pointer? ? to_rhs(low, value, target) : value
+    store_aligned(low, stored, pointer)
     return
   end
   if value_type.is_a?(VoidType)
@@ -137,6 +141,11 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
   end
   if target.is_a?(MixedUnionType)
     assign_mixed_union(low, pointer, target, value_type, value)
+    return
+  end
+  # Hosted assign_distinct(ProcInstanceType, ProcInstanceType) (cast.cr:279-283): a non-void proc stored as a void proc.
+  if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)
+    store_aligned(low, to_rhs(low, value, target), pointer)
     return
   end
   pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (hosted assign_distinct, not ported)")
@@ -224,6 +233,18 @@ pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, 
   end
   if value_type.is_a?(PointerInstanceType) || TypeQueries.reference_like?(value_type)
     store_aligned(low, value, field)
+    return
+  end
+  if value_type.struct? && passed_by_value?(value_type)
+    if low.typer.passed_indirectly?(value_type)
+      pending_visit_node("store of indirectly passed #{value_type.full_name} in #{union_type.full_name} (hosted store_value, copy_value)")
+      return
+    end
+    stored = value
+    if value.type == low.module.types.ptr(0)
+      stored = load_aligned(low, low.typer.llvm_embedded_type(value_type), value)
+    end
+    store_aligned(low, stored, field)
     return
   end
   pending_visit_node("store of #{value_type.full_name} in #{union_type.full_name} (hosted store_value, not ported)")

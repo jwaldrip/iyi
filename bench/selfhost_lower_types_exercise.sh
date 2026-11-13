@@ -380,6 +380,20 @@ prove_mutation "type ids step by two" "$TYPE_ID_FILE" \
   -- check_ids_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "unnumbered types do not get a lazy id" "$TYPE_ID_FILE" \
+  '    id = next_id
+    put(type, id, id)
+    id
+  end
+
+  # The hosted `id_to_metaclass' \
+  '    raise "BUG: no lazy id"
+  end
+
+  # The hosted `id_to_metaclass' \
+  -- check_ids_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "a range's min is its last subtype, not the first" "$TYPE_ID_FILE" \
   "      if first && sub_id != 0" \
   "      if sub_id != 0" \

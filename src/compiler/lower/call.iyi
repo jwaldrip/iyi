@@ -47,7 +47,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/block::{LocalCollector, NoReturnPhi, alloca_local, copy_vars}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
-import compiler/lower/cast::{type_id_value}
+import compiler/lower/cast::{to_rhs, type_id_value, upcast}
 import compiler/lower/ensure::{set_ensure_exception_handler}
 import compiler/lower/fun::{block_ended?, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
@@ -55,7 +55,7 @@ import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/helpers::{int1}
-import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, Type, UnionType, VoidType}
+import compiler/semantic/top_level::{ClassType, GenericClassType, LibType, LibFun, MetaclassType, ModuleType, NilType, NoReturnType, NonGenericClassType, NonGenericModuleType, TraitType, Type, UnionType, VoidType}
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
@@ -104,6 +104,9 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
         pending_visit_node("allocate outside a class method (hosted codegen_primitive_allocate, the instance type)")
       end
       inst = owner.as(Type)
+      # Hosted prepare_call_args reads the generic metaclass self before dispatching
+      # the allocate primitive, even though allocation itself does not use it.
+      type_id_value(low, inst) if inst.is_a?(GenericClassInstanceMetaclassType)
       ptr = primitive_allocate(low, inst)
       # A class's `_` holds the pointer itself (hosted allocate of a reference type); a struct's holds the value
       # loaded from the zeroed instance.
@@ -132,7 +135,12 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     recv_type = receiver_owner(low, node)
     if recv_type.is_a?(GenericClassInstanceMetaclassType)
       self_type = recv_type
-      self_value = type_id_value(low, recv_type)
+      if node.obj.as(ASTNode).is_a?(Generic)
+        self_value = type_id_value(low, recv_type)
+      else
+        self_value = lower_receiver(low, node)
+        return if block_ended?(low)
+      end
     elsif recv_type.is_a?(MetaclassType)
       class_owner = recv_type.as(MetaclassType).instance_type
       # A computed metaclass receiver is evaluated even when its value is not
@@ -166,7 +174,12 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)
         if ct.as(ModuleType).metaclass.defs[node.name]?
           class_owner = ct
-        elsif !low.analysed.program.defs[node.name]?
+        elsif target = low.analysed.target_def?(node)
+          if class_defining = low.analysed.program.def_owner(target)
+            class_owner = ct if class_defining
+          end
+        end
+        if class_owner.nil? && !low.analysed.program.defs[node.name]?
           pending_visit_node("a class method #{node.name} inherited from a superclass of #{ct.full_name} (hosted call.cr: target_def.owner is the defining type)")
         end
       else
@@ -222,8 +235,10 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
     return
   end
-  # Hosted `try_inline_call`: a body that is `self` is the receiver, when its type is the call's.
-  if body.is_a?(Var) && body.as(Var).name == "self" && !self_type.nil?
+  # Hosted try_inline_call (call.cr:608): a body that is `self` is the receiver when
+  # the owner is passed as self, and the metaclass type id when it is not. No function
+  # is emitted.
+  if body.is_a?(Var) && body.as(Var).name == "self" && (!self_type.nil? || !class_owner.nil?)
     lower_args(low, node, def_node)
     if block_ended?(low)
       low.last = llvm_nil(low)
@@ -233,10 +248,21 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       if ret.full_name != st.full_name
         pending_visit_node("a call to #{node.name} whose body is self and whose type is #{ret.full_name} (hosted upcast of self)")
       end
-    end
-    if low.needs_value
-      if sv = self_value
-        low.last = self_as_value(low, sv.as(Value), self_type.as(Type))
+      if low.needs_value
+        if sv = self_value
+          low.last = self_as_value(low, sv.as(Value), st)
+        end
+      end
+    elsif co = class_owner
+      unless co.is_a?(ModuleType)
+        pending_visit_node("a class method #{node.name} whose body is self on #{co.full_name} (hosted type_id of the metaclass)")
+      end
+      meta = co.as(ModuleType).metaclass
+      if ret.full_name != meta.full_name
+        pending_visit_node("a call to #{node.name} whose body is self and whose type is #{ret.full_name} (hosted type_id of the metaclass)")
+      end
+      if low.needs_value
+        low.last = type_id_value(low, meta)
       end
     end
     return
@@ -287,22 +313,17 @@ pub def emit_def_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, func : 
   elsif ret.is_a?(NilType)
     low.last = llvm_nil(low)
   elsif passed_by_value?(ret)
-    # Hosted codegen_call (call.cr:707-713): a struct result of a call is spilled to a fresh alloca and read back
-    # when it is wanted, and is nil when it is not.
+    # Hosted codegen_call (call.cr:707-713): a wanted by-value result is the address of its spill.
     if low.needs_value
       ir = low.typer.llvm_type(ret)
       temp = low.alloca(ir, "")
       store_aligned(low, inst, temp)
       low.spill_node = node.object_id
       low.spill_slot = temp
-      # A receiver that is this call takes the slot as its self (receiver_self), so no value is loaded from it. A
-      # receiver whose value an inlined literal body never reads is spilled and not loaded (hosted call.cr:707-713).
-      if low.receiver_node == node.object_id && self_by_pointer?(ret)
-        low.last = temp
-      elsif low.receiver_unused == node.object_id
+      if low.receiver_unused == node.object_id
         low.last = llvm_nil(low)
       else
-        low.last = load_aligned(low, ir, temp, "")
+        low.last = temp
       end
     else
       low.last = llvm_nil(low)
@@ -312,14 +333,19 @@ pub def emit_def_call(low : Lowerer, node : Compiler::Syntax::Ast::Call, func : 
   end
 end
 
-# The owner of an implicit-self call: a call with no receiver inside an instance method (hosted call.cr:
-# prepare_call_args, `owner` is the target def's owner). The current type when it defines the method, whose self
-# the call passes; nil for a top-level def, which takes no self. An inherited method is refused
-# because the hosted owner is the superclass, which the port does not record.
+# An implicit method uses the caller's self even when the def was inherited.
+# A program-level def takes no self. The analysed target's defining scope
+# distinguishes them without guessing from methods sharing the same name.
 pub def implicit_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type?
   ct = low.current_context.type.as(Type)
   if low.current_context.vars["self"]?.nil?
     pending_visit_node("a call to #{node.name} with no receiver inside a class method (hosted call.cr: prepare_call_args, the metaclass owner)")
+  end
+  if target = low.analysed.target_def?(node)
+    if defining = low.analysed.program.def_owner(target)
+      return ct unless defining.object_id == low.analysed.program.object_id
+      return nil
+    end
   end
   if defines_method?(ct, node.name)
     return ct
@@ -359,7 +385,7 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
   raise "BUG: the analysed program has no type for the receiver of #{node.name} (hosted call.cr: prepare_call_args)" if t.nil?
   owner = t.as(Type)
   if owner.is_a?(MetaclassType)
-    if owner.is_a?(GenericClassInstanceMetaclassType) && obj.as(ASTNode).is_a?(Generic)
+    if owner.is_a?(GenericClassInstanceMetaclassType)
       return owner
     end
     # A class method of a non-generic class or module, called on the constant path that names it (`Sched.go`).
@@ -373,15 +399,26 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
       pending_visit_node("a class method call on #{owner.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
     end
     if owner.as(MetaclassType).defs[node.name]?.nil?
+      if target = low.analysed.target_def?(node)
+        if class_defining = low.analysed.program.def_owner(target)
+          return owner if class_defining
+        end
+      end
       pending_visit_node("a class method #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")
     end
     return owner
+  end
+  if owner.is_a?(TraitType)
+    pending_visit_node("a call on trait #{owner.full_name} (hosted call.cr: trait dispatch)")
   end
   if owner.is_a?(UnionType) || owner.is_a?(MixedUnionType) || owner.is_a?(VirtualType) || owner.is_a?(NilableType) || owner.is_a?(NilableReferenceUnionType) || owner.is_a?(NilableProcType) || owner.is_a?(NilType)
     pending_visit_node("a call on a receiver of type #{owner.full_name} (hosted call.cr: prepare_call_args, owner is not a class or struct)")
   end
   if owner.is_a?(ModuleType)
     if owner.as(ModuleType).defs[node.name]?.nil?
+      if target = low.analysed.target_def?(node)
+        return owner if low.analysed.program.def_owner(target)
+      end
       pending_visit_node("a call to #{node.name} inherited from a superclass of #{owner.full_name} (hosted call.cr: target_def.owner is the defining type)")
     end
   end
@@ -600,7 +637,9 @@ pub def copy_args(low : Lowerer, def_node : Def, arg_types : Array(Type), values
     ir = low.typer.llvm_type(t)
     if passed_by_value?(t)
       temp = low.alloca(ir, "")
-      store_aligned(low, values[i], temp)
+      value = values[i]
+      stored = value.type.pointer? ? to_rhs(low, value, t) : value
+      store_aligned(low, stored, temp)
       loaded = load_aligned(low, ir, temp, "")
       store_aligned(low, loaded, v.pointer)
     else
@@ -769,11 +808,8 @@ pub def lib_number_value(low : Lowerer, node : NumberLiteral, t : Type) : Value
   low.builder.const_int(ir, node.value.to_i64).as(Value)
 end
 
-# The argument types and values of a call, in order (hosted `prepare_call_args_non_external`
-# for scalars). Each argument's value is requested, so a value-less argument is a bug.
-# A restriction that converts an argument is refused, NoReturn included: the analysis types a
-# block call that breaks with a value as NoReturn (the hosted call is Int32), so a NoReturn
-# argument cannot be told from a converted one yet (NEEDS.md, lowering calls row 44).
+# The instantiated def's parameter types, not its written restrictions, are the
+# types the hosted prepare_call_args converts to and uses in the callee name.
 pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node : Def) : {Array(Type), Array(Value)}
   arg_types = [] of Type
   values = [] of Value
@@ -784,23 +820,24 @@ pub def lower_args(low : Lowerer, node : Compiler::Syntax::Ast::Call, def_node :
     at_type = low.analysed.type_of?(arg_node)
     raise "BUG: the analysed program has no type for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)" if at_type.nil?
     at = at_type.as(Type)
-    if restriction = def_node.args[i].restriction
-      # Hosted restrict: a restriction the argument implements leaves the argument's own type as the parameter's
-      # (a Nil argument into `Fiber | Nil` is a Nil parameter, and the callee is named by it). Only an argument
-      # that does not implement the restriction would convert, and that is refused by name.
-      restricted = low.analysed.program.lookup_type_node(restriction.as(ASTNode), low.analysed.program)
-      unless at.implements?(restricted.as(Type))
-        pending_visit_node("a restriction that does not hold for argument #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
-      end
+    param_type = low.analysed.type_of?(def_node.args[i])
+    if param_type.nil?
+      pending_visit_node("an untyped instantiated parameter #{i} of #{node.name} (hosted call.cr: prepare_call_args)")
     end
+    target_type = param_type.as(Type)
     low.needs_value = true
     visit_node(low, arg_node)
     value = low.last
     raise "BUG: argument #{i} of #{node.name} left no value (hosted call.cr: prepare_call_args)" if value.nil?
     # Hosted prepare_call_args_non_external: a nil argument is the nil value, the zero constant of the nil type
     # (zeroinitializer); the helper `llvm_nil` is an undef constant in this port, so it is not used here.
-    values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))
-    arg_types << at
+    passed = at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value)
+    converted = upcast(low, passed, at, target_type)
+    if passed_by_value?(target_type) && converted.type.pointer?
+      converted = to_rhs(low, converted, target_type)
+    end
+    values << converted
+    arg_types << target_type
     i += 1
   end
   low.needs_value = wants

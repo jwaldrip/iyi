@@ -899,6 +899,7 @@ pub class Parser < Lexer
         end
 
         name = @token.value.empty? ? @token.type.to_s : @token.value
+        name_end = token_end_location
         next_token
 
         space_consumed = false
@@ -916,6 +917,7 @@ pub class Parser < Lexer
         block = parse_block(block, @stop_on_do)
         has_parens = call_args ? call_args.has_parentheses : false
         res = Call.new(res, name, args, block, block_arg, named_args).at(location)
+        res.end_location = (block ? block.end_location : nil) || (call_args ? call_args.end_location : nil) || name_end
         res.has_parentheses = has_parens
       when TokenKind::OP_BANG
         res = Propagate.new(res).at(location)
@@ -925,6 +927,7 @@ pub class Parser < Lexer
         call_args = preserve_stop_on_do { parse_call_args_space_consumed(true, true, true) }
         skip_space_or_newline
         check(TokenKind::OP_RSQUARE)
+        end_location = token_end_location
         next_token
 
         args = call_args ? (call_args.args || [] of ASTNode) : [] of ASTNode
@@ -932,6 +935,7 @@ pub class Parser < Lexer
 
         if @token.type == TokenKind::OP_QUESTION
           method_name = "[]?"
+          end_location = token_end_location
           next_token_skip_space
         else
           method_name = "[]"
@@ -939,16 +943,21 @@ pub class Parser < Lexer
         end
 
         res = Call.new(res, method_name, args, nil, nil, named_args).at(location)
+        res.end_location = end_location
       when TokenKind::OP_LCURLY
         if res.is_a?(Call) && res.block.nil?
-          res.block = parse_curly_block(nil)
+          block = parse_curly_block(nil)
+          res.block = block
+          res.end_location = block.end_location if block
         else
           break
         end
       else
         if @token.keyword == Keyword::DEF
           if res.is_a?(Call) && res.block.nil? && !@stop_on_do
-            res.block = parse_block(nil, @stop_on_do)
+            block = parse_block(nil, @stop_on_do)
+            res.block = block
+            res.end_location = block.end_location if block
           else
             break
           end
@@ -1311,6 +1320,7 @@ pub class Parser < Lexer
 
   def parse_var_or_call(location : Location, global : Bool = false, call_only : Bool = false) : ASTNode
     name = @token.value
+    name_end = token_end_location
     is_var = !global && var?(name)
 
     next_token
@@ -1334,12 +1344,13 @@ pub class Parser < Lexer
 
       if is_var && !force_call
         note_block_arg_read(name)
-        var = Var.new(name).at(location)
+        var = Var.new(name).at(location).at_end(name_end)
         return var
       end
 
       block = parse_block(block, @stop_on_do)
       c = Call.new(nil, name, args, block, block_arg, named_args).at(location)
+      c.end_location = (block ? block.end_location : nil) || call_args.end_location || name_end
       c.global = global
       c.has_parentheses = has_parens
       c.name_location = location
@@ -1348,9 +1359,10 @@ pub class Parser < Lexer
     else
       if is_var && !call_only
         note_block_arg_read(name)
-        Var.new(name).at(location)
+        Var.new(name).at(location).at_end(name_end)
       else
         c = Call.new(nil, name).at(location)
+        c.end_location = name_end
         c.global = global
         c
       end
@@ -1433,12 +1445,14 @@ pub class Parser < Lexer
           break
         end
       end
+      end_location = token_end_location
       next_token_skip_space
-      CallArgs.new(args, block, block_arg, named_args, false, token_end_location, true)
+      CallArgs.new(args, block, block_arg, named_args, false, end_location, true)
     when TokenKind::SPACE
+      end_location = token_end_location
       next_token
       if @token.keyword == Keyword::DO
-        return CallArgs.new(nil, nil, nil, nil, stop_on_do_after_space, token_end_location, false)
+        return CallArgs.new(nil, nil, nil, nil, stop_on_do_after_space, end_location, false)
       end
       parse_call_args_space_consumed(allow_curly, false, control)
     else
@@ -1487,6 +1501,7 @@ pub class Parser < Lexer
     named_args : Array(NamedArgument)? = nil
     block_arg : ASTNode? = nil
     block : Block? = nil
+    end_location : Location? = nil
 
     while true
       if @token.type == TokenKind::OP_AMP
@@ -1499,20 +1514,24 @@ pub class Parser < Lexer
             call.obj = temp_arg
           end
           block = Block.new([temp_arg], call)
+          end_location = call.end_location
           break
         else
           block_arg = parse_op_assign_no_control
+          end_location = block_arg.end_location
           break
         end
       end
 
       if named_tuple_start?
         named_args = parse_named_args(allow_newline: false)
+        end_location = named_args.last.value.end_location || token_end_location
         break
       end
 
       arg = parse_call_arg
       args << arg
+      end_location = arg.end_location
 
       skip_space
       if @token.type == TokenKind::OP_COMMA
@@ -1526,7 +1545,7 @@ pub class Parser < Lexer
       end
     end
 
-    CallArgs.new(args, block, block_arg, named_args, false, token_end_location, false)
+    CallArgs.new(args, block, block_arg, named_args, false, end_location, false)
   end
 
   def parse_call_arg : ASTNode
@@ -1645,6 +1664,8 @@ pub class Parser < Lexer
     location = @token.location
     block_params = [] of Var
     splat_index : Int32? = nil
+    unpacks : Hash(Int32, Expressions)? = nil
+    all_names = [] of String
     param_index = 0
 
     set_slash_is_regex(true)
@@ -1652,31 +1673,33 @@ pub class Parser < Lexer
 
     if @token.type == TokenKind::OP_BAR
       next_token_skip_space_or_newline
-      while @token.type != TokenKind::OP_BAR
-        if @token.type == TokenKind::OP_STAR
-          splat_index = param_index
-          next_token_skip_space
+      while true
+        param, found_splat, unpack = parse_block_param(!splat_index.nil?, all_names)
+        splat_index = param_index if found_splat && splat_index.nil?
+        block_params << param
+        if unpack
+          unpacks ||= Hash(Int32, Expressions).new
+          unpacks[param_index] = Expressions.new(unpack)
         end
 
-        name = @token.type == TokenKind::UNDERSCORE ? "_" : @token.value
-        block_params << Var.new(name).at(@token.location)
-        param_index = param_index + 1
-        next_token_skip_space
-
+        next_token_skip_space_or_newline
         if @token.type == TokenKind::OP_COMMA
           next_token_skip_space_or_newline
-        else
+          break if @token.type == TokenKind::OP_BAR
+        elsif @token.type == TokenKind::OP_BAR
           break
+        else
+          syntax_error("expecting ',' or '|' in block parameters", @token.location)
         end
+        param_index = param_index + 1
       end
-      check(TokenKind::OP_BAR)
       next_token_skip_statement_end
     else
       skip_statement_end
     end
 
     new_scope = Set(String).new
-    block_params.each { |p| new_scope.add(p.name) }
+    all_names.each { |name| new_scope.add(name) }
     @var_scopes << new_scope
 
     body = parse_expressions
@@ -1684,6 +1707,7 @@ pub class Parser < Lexer
 
     @var_scopes.pop
 
+    end_location = token_end_location
     if curly
       check(TokenKind::OP_RCURLY)
       next_token_skip_space
@@ -1692,7 +1716,65 @@ pub class Parser < Lexer
       next_token_skip_space
     end
 
-    Block.new(block_params, body, splat_index).at(location)
+    Block.new(block_params, body, splat_index, unpacks).at(location).at_end(end_location)
+  end
+
+  def parse_block_param(found_splat : Bool, all_names : Array(String)) : {Var, Bool, Array(ASTNode)?}
+    if @token.type == TokenKind::OP_STAR
+      syntax_error("splat block parameter already specified", @token.location) if found_splat
+      found_splat = true
+      next_token
+    end
+
+    location = @token.location
+    name = ""
+    unpack : Array(ASTNode)? = nil
+    case @token.type
+    when TokenKind::IDENT
+      name = @token.value
+      if @token.keyword && invalid_internal_name?(name)
+        syntax_error("cannot use '#{name}' as a block parameter name", location)
+      end
+      if all_names.includes?(name)
+        syntax_error("duplicated block parameter name: #{name}", location)
+      end
+      all_names << name
+    when TokenKind::UNDERSCORE
+      name = "_"
+    when TokenKind::OP_LPAREN
+      next_token_skip_space_or_newline
+      expressions = [] of ASTNode
+      nested_splat = false
+      while true
+        sub_location = @token.location
+        sub_var, found_nested_splat, sub_unpack = parse_block_param(nested_splat, all_names)
+        sub_expression : ASTNode = if sub_unpack
+                                     Expressions.new(sub_unpack).at(sub_location)
+                                   elsif sub_var.name == "_"
+                                     Underscore.new.at(sub_location)
+                                   else
+                                     sub_var
+                                   end
+        if found_nested_splat && !nested_splat
+          sub_expression = Splat.new(sub_expression).at(sub_location)
+        end
+        nested_splat = found_nested_splat
+        expressions << sub_expression
+        next_token_skip_space_or_newline
+        if @token.type == TokenKind::OP_COMMA
+          next_token_skip_space_or_newline
+          break if @token.type == TokenKind::OP_RPAREN
+        elsif @token.type == TokenKind::OP_RPAREN
+          break
+        else
+          syntax_error("expecting ',' or ')' in block parameters", @token.location)
+        end
+      end
+      unpack = expressions
+    else
+      syntax_error("expecting block parameter name", location)
+    end
+    {Var.new(name).at(location), found_splat, unpack}
   end
 
   def parse_if(check_end : Bool = true) : ASTNode
