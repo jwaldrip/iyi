@@ -343,3 +343,4 @@ src/compiler/types/instances.iyi 15
 src/compiler/types/intersect.iyi 28
 src/compiler/types/lookup.iyi 40
 src/compiler/native/const_expr.iyi 0
+src/compiler/lower/census.iyi 0

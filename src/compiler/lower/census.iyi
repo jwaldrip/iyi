@@ -1,0 +1,744 @@
+module compiler/lower/census
+
+# Direct per-function census seeding for the typed pipeline (--census <file>, only with --keep-going).
+#
+# Each line of the census file is one hosted IR function name (`*Owner#meth<Args>:Ret`, `*Owner::meth<Args>:Ret`,
+# or `*name<Args>:Ret`). Each name is split into receiver type, method name, and argument types; each type text
+# is parsed with the port's own parser and resolved from the root scope with TypeLookup; a synthetic Call over
+# typed local variables is visited in total mode so the def is instantiated and lowered directly, independent of
+# its callers.
+#
+# Any name that cannot be split, parsed, resolved, or matched to a target def is recorded as a `census` row in
+# `refused` (never mixed with the port's `body` or `lowering` refusals).
+
+import compiler/syntax/ast::{ASTNode, Call, Def, Generic, Metaclass, NumberLiteral, Path, ProcNotation, Union, Var}
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/token::{TokenKind}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, SemanticProgram, Type}
+import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
+import compiler/semantic/type_nodes::{type_node_metaclass, type_node_system}
+import compiler/types/types::{NamedArgumentType, TypeQueries, VirtualType}
+import compiler/types/lookup::{LookupError, TypeLookup}
+import compiler/types/merge::{TypeMerge}
+import compiler/lower/program::{TypedProgram, NodeIds, typed_owner}
+import compiler/lower/lower::{lower_def_probe}
+import compiler/lower/typer::{LowerTyper}
+import compiler/lower/primitives::{primitive_name}
+import compiler/lower/fun::{mangled_name}
+import compiler/lower/type_id::{LowerTypeIds}
+import compiler/ir/verifier::{verify}
+import compiler/ir/module::{Module}
+import compiler/ir/layout::{LayoutError}
+import compiler/platform/target::{Target}
+import compiler/native/driver::{compile_module}
+import std/file
+
+# Parsed form of one hosted function name: `kind` is "instance", "class", or "top".
+class ParsedHostedName
+  getter kind : String
+  getter owner_text : String
+  getter method_name : String
+  getter arg_texts : Array(String)
+  getter named_labels : Array(String)
+
+  def initialize(@kind : String, @owner_text : String, @method_name : String, @arg_texts : Array(String), @named_labels : Array(String))
+  end
+end
+
+# Splits one hosted IR function name into receiver text, method name, and argument type texts,
+# or returns an error string when the name does not match a supported form.
+pub def split_hosted_name(full : String) : ParsedHostedName | String
+  return "empty name" if full.empty?
+  return "not a hosted def name" unless full.starts_with?("*")
+  s = full[1, full.size - 1]
+
+  # 1. The return separator is the last single colon outside `()` and `{}`.
+  # A named-argument label (`#parse_macro_if:is_unless<...>`) also uses a
+  # single colon, so the first one is not the return type. `::` is a path
+  # separator, not either of those.
+  dp = 0
+  db = 0
+  ret_colon = -1
+  i = 0
+  while i < s.size
+    ch = s[i]
+    if ch == '('
+      dp += 1
+    elsif ch == ')'
+      dp -= 1
+    elsif ch == '{'
+      db += 1
+    elsif ch == '}'
+      db -= 1
+    elsif dp == 0 && db == 0
+      if ch == ':' && i + 1 < s.size && s[i + 1] == ':'
+        i += 2
+        next
+      elsif ch == ':'
+        ret_colon = i
+      end
+    end
+    i += 1
+  end
+  return "no return type separator" if ret_colon < 0
+  head = s[0, ret_colon]
+
+  # 2. Strip trailing `<Arg1, Arg2>` if present (types use `()`, never `<>`).
+  args_str = ""
+  if head.ends_with?(">")
+    dp = 0
+    db = 0
+    open_lt = -1
+    j = head.size - 2
+    while j >= 0
+      ch = head[j]
+      if ch == ')'
+        dp += 1
+      elsif ch == '('
+        dp -= 1
+      elsif ch == '}'
+        db += 1
+      elsif ch == '{'
+        db -= 1
+      elsif dp == 0 && db == 0
+        if ch == '<'
+          open_lt = j
+          break
+        elsif ch == '#'
+          break
+        end
+      end
+      j -= 1
+    end
+    if open_lt >= 0
+      tail_from_lt = head[open_lt, head.size - open_lt]
+      if tail_from_lt != "<=>"
+        args_str = head[open_lt + 1, head.size - open_lt - 2]
+        head = head[0, open_lt]
+      end
+    end
+  end
+
+  # 3. Split `head` into owner and method name.
+  dp = 0
+  db = 0
+  hash_idx = -1
+  last_dbl = -1
+  i = 0
+  while i < head.size
+    ch = head[i]
+    if ch == '('
+      dp += 1
+    elsif ch == ')'
+      dp -= 1
+    elsif ch == '{'
+      db += 1
+    elsif ch == '}'
+      db -= 1
+    elsif dp == 0 && db == 0
+      if ch == '#'
+        hash_idx = i
+        break
+      elsif ch == ':' && i + 1 < head.size && head[i + 1] == ':'
+        last_dbl = i
+        i += 2
+        next
+      end
+    end
+    i += 1
+  end
+
+  kind = "top"
+  owner_text = ""
+  method_name = head
+  if hash_idx >= 0
+    kind = "instance"
+    owner_text = head[0, hash_idx]
+    method_name = head[hash_idx + 1, head.size - hash_idx - 1]
+  elsif last_dbl >= 0
+    kind = "class"
+    owner_text = head[0, last_dbl]
+    method_name = head[last_dbl + 2, head.size - last_dbl - 2]
+  end
+
+  named_labels = [] of String
+  if method_name.includes?(":")
+    parts = [] of String
+    start = 0
+    k = 0
+    while k < method_name.size
+      if method_name[k] == ':'
+        parts << method_name[start, k - start]
+        start = k + 1
+      end
+      k += 1
+    end
+    parts << method_name[start, method_name.size - start]
+    return "empty method name" if parts[0].empty?
+    method_name = parts[0]
+    li = 1
+    while li < parts.size
+      label = parts[li]
+      return "empty named-argument label" if label.empty?
+      named_labels << label
+      li += 1
+    end
+  end
+
+  return "empty method name" if method_name.empty?
+
+  # 4. Strip `^DefiningOwner` suffix from generic or inherited owners.
+  if owner_text.includes?("^")
+    dp = 0
+    db = 0
+    i = 0
+    while i < owner_text.size
+      ch = owner_text[i]
+      if ch == '('
+        dp += 1
+      elsif ch == ')'
+        dp -= 1
+      elsif ch == '{'
+        db += 1
+      elsif ch == '}'
+        db -= 1
+      elsif dp == 0 && db == 0 && ch == '^'
+        owner_text = owner_text[0, i]
+        break
+      end
+      i += 1
+    end
+  end
+
+  # 5. Split argument types on top-level commas.
+  arg_texts = [] of String
+  unless args_str.empty?
+    dp = 0
+    db = 0
+    start = 0
+    i = 0
+    while i < args_str.size
+      ch = args_str[i]
+      if ch == '('
+        dp += 1
+      elsif ch == ')'
+        dp -= 1
+      elsif ch == '{'
+        db += 1
+      elsif ch == '}'
+        db -= 1
+      elsif ch == ',' && dp == 0 && db == 0
+        piece = args_str[start, i - start].strip
+        arg_texts << piece unless piece.empty?
+        start = i + 1
+      end
+      i += 1
+    end
+    last_piece = args_str[start, args_str.size - start].strip
+    arg_texts << last_piece unless last_piece.empty?
+  end
+
+  return "more named labels than argument types" if named_labels.size > arg_texts.size
+  ParsedHostedName.new(kind, owner_text, method_name, arg_texts, named_labels)
+end
+
+# Strips `+` virtual-type markers so the port's parser can parse the written type expression.
+def strip_virtual_markers(text : String) : String
+  String.build do |sb|
+    i = 0
+    while i < text.size
+      ch = text[i]
+      sb << ch unless ch == '+'
+      i += 1
+    end
+  end
+end
+
+# Resolves a type AST node including `private` nested constants (which the hosted IR emits by full path).
+def census_lookup_private(prog : SemanticProgram, lookup : TypeLookup, node : ASTNode) : Type | LookupError
+  res = lookup.lookup(prog, node)
+  unless res.is_a?(LookupError)
+    return res
+  end
+  unless res.as(LookupError).message.includes?("private constant")
+    return res
+  end
+
+  if node.is_a?(Path)
+    found = lookup.find_path(prog, node.as(Path), true)
+    return LookupError.new("undefined constant #{node.to_s}") if found.nil?
+    return lookup.expand(found.as(Type))
+  end
+  if node.is_a?(Union)
+    u = node.as(Union)
+    members = [] of Type
+    i = 0
+    while i < u.types.size
+      m = census_lookup_private(prog, lookup, u.types[i])
+      return m if m.is_a?(LookupError)
+      members << TypeQueries.virtual_type(m.as(Type))
+      i += 1
+    end
+    return TypeMerge.merge_all(prog, members)
+  end
+  if node.is_a?(Metaclass)
+    base = census_lookup_private(prog, lookup, node.as(Metaclass).name)
+    return base if base.is_a?(LookupError)
+    meta = type_node_metaclass(TypeQueries.virtual_type(base.as(Type)))
+    return LookupError.new("#{base.as(Type).full_name} doesn't have a metaclass") if meta.nil?
+    return TypeQueries.virtual_type(meta.as(Type))
+  end
+  if node.is_a?(ProcNotation)
+    pn = node.as(ProcNotation)
+    inputs = [] of Type
+    if ins = pn.inputs
+      i = 0
+      while i < ins.size
+        a = census_lookup_private(prog, lookup, ins[i])
+        return a if a.is_a?(LookupError)
+        inputs << TypeQueries.virtual_type(a.as(Type))
+        i += 1
+      end
+    end
+    ret : Type = prog.nil_type
+    if out_n = pn.output
+      r = census_lookup_private(prog, lookup, out_n)
+      return r if r.is_a?(LookupError)
+      ret = TypeQueries.virtual_type(r.as(Type))
+    end
+    return lookup.instances.proc_of(inputs, ret)
+  end
+  if node.is_a?(Generic)
+    g = node.as(Generic)
+    base = census_lookup_private(prog, lookup, g.name)
+    return base if base.is_a?(LookupError)
+    base_t = base.as(Type)
+    if base_t.is_a?(GenericClassType) && base_t.full_name == "NamedTuple"
+      entries = [] of NamedArgumentType
+      if named = g.named_args
+        i = 0
+        while i < named.size
+          na = named[i]
+          v = census_lookup_private(prog, lookup, na.value)
+          return v if v.is_a?(LookupError)
+          entries << NamedArgumentType.new(na.name, TypeQueries.virtual_type(v.as(Type)))
+          i += 1
+        end
+      end
+      return lookup.instances.named_tuple_of(entries)
+    end
+    if base_t.is_a?(GenericClassType) && base_t.full_name == "StaticArray" && g.type_vars.size == 2 && g.type_vars[1].is_a?(NumberLiteral)
+      elem = census_lookup_private(prog, lookup, g.type_vars[0])
+      return elem if elem.is_a?(LookupError)
+      sz = g.type_vars[1].as(NumberLiteral).value.to_i64
+      return lookup.instances.static_array_of(elem.as(Type), sz)
+    end
+    if base_t.is_a?(GenericClassType) || base_t.is_a?(GenericModuleType)
+      args = [] of Type
+      i = 0
+      while i < g.type_vars.size
+        tv = census_lookup_private(prog, lookup, g.type_vars[i])
+        return tv if tv.is_a?(LookupError)
+        args << TypeQueries.virtual_type(tv.as(Type))
+        i += 1
+      end
+      return lookup.instantiate(base_t, args)
+    end
+  end
+  res
+end
+
+# Parses and resolves a hosted type text from the root scope using the port's own parser and TypeLookup.
+def resolve_type_text(raw : String, prog : SemanticProgram, lookup : TypeLookup, cache : Hash(String, Type | String)) : Type | String
+  if cached = cache[raw]?
+    return cached
+  end
+
+  text = raw.strip
+  if text.empty?
+    err = "empty type text"
+    cache[raw] = err
+    return err
+  end
+
+  trailing_plus = text.ends_with?("+")
+  clean_text = strip_virtual_markers(text)
+
+  parsed = group do |g|
+    task = g.spawn do
+      p = Parser.new(clean_text, "<census>")
+      p.next_token_skip_statement_end
+      ast = p.parse_type_spec
+      if p.token.type != TokenKind::EOF
+        raise "unexpected trailing token '#{p.token.value}'"
+      end
+      ast
+    end
+    task.value
+  end
+  if parsed.is_a?(Panicked)
+    err = "parse error for '#{raw}': #{parsed.as(Panicked).message}"
+    cache[raw] = err
+    return err
+  end
+
+  resolved = census_lookup_private(prog, lookup, parsed.as(ASTNode))
+  if resolved.is_a?(LookupError)
+    err = resolved.as(LookupError).message
+    cache[raw] = err
+    return err
+  end
+
+  t = resolved.as(Type)
+  if trailing_plus && !t.is_a?(VirtualType)
+    t = TypeQueries.virtual_type_bang(t)
+  end
+  cache[raw] = t
+  t
+end
+
+# Extracts the first line of a message so one refusal row stays on one line.
+def census_first_line(text : String) : String
+  i = 0
+  while i < text.size
+    return text[0, i] if text[i] == '\n'
+    i += 1
+  end
+  text
+end
+
+# Removes any refusal recorded directly against `call_node` (a lookup/scaffold failure) and returns its reason.
+def pop_call_refusal(visitor : MainVisitor, call_node : Call, start_idx : Int32) : String?
+  found : String? = nil
+  kept = [] of Refusal
+  i = 0
+  while i < visitor.refusals.size
+    r = visitor.refusals[i]
+    if i >= start_idx && r.node.object_id == call_node.object_id && r.def_name.nil?
+      found = r.reason if found.nil?
+    else
+      kept << r
+    end
+    i += 1
+  end
+  unless found.nil?
+    visitor.refusals.clear
+    kept.each { |r| visitor.refusals << r }
+    visitor.untyped_reasons.delete(call_node)
+  end
+  found
+end
+
+# Seeds every hosted function name listed in `census_path` directly into `typed.visitor` in total mode.
+# Scaffold failures are appended to `refused` as `census\t<name>\tcensus\t<reason>`.
+pub def run_census(typed : TypedProgram, census_path : String, refused : Array(String), triple : String) : Nil
+  unless File.exists?(census_path)
+    refused << "census\t#{census_path}\tcensus\tcensus file not found"
+    return nil
+  end
+
+  prog = typed.prog
+  visitor = typed.visitor
+  ts = type_node_system(prog)
+  lookup = TypeLookup.new(ts.instances)
+  type_cache = Hash(String, Type | String).new
+
+  saved_vars = visitor.vars
+  saved_scope = visitor.scope
+  saved_current_type = visitor.current_type
+  saved_current_def = visitor.current_def
+  saved_imports = prog.current_imports
+  saved_import_defs = prog.current_import_defs
+  saved_unreachable = visitor.unreachable
+  saved_filters = visitor.type_filters
+  saved_needs_filters = visitor.needs_type_filters
+  saved_call_block = visitor.current_call_block
+  saved_block_ctx = visitor.current_block_context_vars
+  saved_yield_nodes = visitor.current_yield_nodes
+  saved_var_unions = visitor.var_unions
+  saved_untyped_locals = visitor.untyped_locals
+  saved_return_types = visitor.return_types
+  saved_break_types = visitor.break_types
+  saved_next_types = visitor.next_types
+  saved_in_type_args = visitor.in_type_args
+
+  content = File.read(census_path)
+  lines = content.split('\n')
+  li = 0
+  while li < lines.size
+    line = lines[li].strip
+    li += 1
+    next if line.empty?
+
+    parsed = split_hosted_name(line)
+    if parsed.is_a?(String)
+      refused << "census\t#{line}\tcensus\t#{census_first_line(parsed.as(String))}"
+      next
+    end
+    spec = parsed.as(ParsedHostedName)
+    if spec.named_labels.size > 0
+      # Body typing's lookup_method_matching and def_instance_key see only
+      # positional arguments (main_visitor.iyi). Passing the named labels as
+      # positional arguments would instantiate a different call. Record the
+      # defect as a refusal, not a scaffold miss.
+      n_named = spec.named_labels.size
+      n_pos = spec.arg_texts.size - n_named
+      reason = String.build do |sb|
+        sb << "named argument '"
+        n = 0
+        while n < n_named
+          sb << ", " if n > 0
+          sb << spec.named_labels[n]
+          sb << ": "
+          sb << spec.arg_texts[n_pos + n]
+          n += 1
+        end
+        sb << "' is not passed into matching (body typing visits only positional arguments)"
+      end
+      refused << "instance-body\t#{line}\tbodies\t#{reason}"
+      next
+    end
+
+    synth_vars = Hash(String, Type).new
+    recv_node : ASTNode? = nil
+    failed_reason : String? = nil
+
+    if spec.kind != "top"
+      owner_res = resolve_type_text(spec.owner_text, prog, lookup, type_cache)
+      if owner_res.is_a?(String)
+        failed_reason = owner_res.as(String)
+      else
+        rec_type = owner_res.as(Type)
+        if spec.kind == "class"
+          meta = type_node_metaclass(rec_type)
+          if meta.nil?
+            failed_reason = "#{rec_type.full_name} doesn't have a metaclass"
+          else
+            rec_type = meta.as(Type)
+          end
+        end
+        if failed_reason.nil?
+          synth_vars["__census_r"] = rec_type
+          recv_node = Var.new("__census_r")
+        end
+      end
+    end
+
+    arg_nodes = [] of ASTNode
+    block_arg_node : ASTNode? = nil
+    if failed_reason.nil?
+      ai = 0
+      while ai < spec.arg_texts.size
+        raw_arg = spec.arg_texts[ai]
+        if raw_arg.starts_with?("&")
+          blk_text = raw_arg[1, raw_arg.size - 1].strip
+          blk_res = resolve_type_text(blk_text, prog, lookup, type_cache)
+          if blk_res.is_a?(String)
+            failed_reason = blk_res.as(String)
+            break
+          end
+          synth_vars["__census_blk"] = blk_res.as(Type)
+          block_arg_node = Var.new("__census_blk")
+        else
+          arg_res = resolve_type_text(raw_arg, prog, lookup, type_cache)
+          if arg_res.is_a?(String)
+            failed_reason = arg_res.as(String)
+            break
+          end
+          vname = "__census_a#{ai}"
+          synth_vars[vname] = arg_res.as(Type)
+          arg_nodes << Var.new(vname)
+        end
+        ai += 1
+      end
+    end
+
+    unless failed_reason.nil?
+      refused << "census\t#{line}\tcensus\t#{census_first_line(failed_reason.as(String))}"
+      next
+    end
+
+    call_node = Call.new(recv_node, spec.method_name, arg_nodes, nil, block_arg_node)
+
+    visitor.vars = synth_vars
+    visitor.scope = nil
+    visitor.current_type = prog
+    visitor.current_def = nil
+    visitor.unreachable = false
+    visitor.type_filters = nil
+    visitor.needs_type_filters = 0
+    visitor.current_call_block = nil
+    visitor.current_block_context_vars = nil
+    visitor.current_yield_nodes = nil
+    visitor.var_unions = Hash(String, Type).new
+    visitor.untyped_locals = Hash(String, String).new
+    visitor.return_types = nil
+    visitor.break_types = nil
+    visitor.next_types = nil
+    visitor.in_type_args = 0
+    prog.current_imports = Hash(String, Type).new
+    prog.current_import_defs = Hash(String, Array(Def)).new
+    # Lookup restrictions in the declaration's file and owner scope, rather than
+    # the synthetic caller's empty imports. The resolved target still goes through
+    # the visitor's ordinary overload matching and body typing.
+    lookup_owner : Type = prog
+    if receiver_type = synth_vars["__census_r"]?
+      lookup_owner = receiver_type
+    end
+    candidates = [] of Def
+    visitor.collect_candidate_defs(lookup_owner, spec.method_name, candidates, Set(String).new)
+    unless candidates.empty?
+      visitor.enter_file_scope(candidates[0])
+      visitor.enter_owner_scope(lookup_owner)
+    end
+
+    refusals_before = visitor.refusals.size
+    stack_before = visitor.typing_stack.size
+    outcome = group do |g|
+      task = g.spawn do
+        call_node.accept(visitor)
+        true
+      end
+      task.value
+    end
+    if outcome.is_a?(Panicked)
+      pmsg = outcome.as(Panicked).message
+      pdef = visitor.current_def
+      while visitor.typing_stack.size > stack_before
+        visitor.typing_stack.pop
+      end
+      target = visitor.target_def?(call_node)
+      if pd = pdef
+        if td = target
+          if pd.object_id == td.object_id
+            reason = census_first_line(pmsg)
+            refused << "instance-body\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+          else
+            refused << "instance-silent\t#{line}\t-\tcallee panicked before direct body completed"
+          end
+        else
+          refused << "instance-silent\t#{line}\t-\tbody panicked without resolved target"
+        end
+      else
+        refused << "census\t#{line}\tcensus\tpanic in call lookup: #{census_first_line(pmsg)}"
+      end
+      next
+    end
+
+    if visitor.target_def?(call_node).nil?
+      if call_reason = pop_call_refusal(visitor, call_node, refusals_before)
+        refused << "census\t#{line}\tcensus\t#{census_first_line(call_reason)}"
+      elsif !visitor.lib_call_target?(call_node).nil?
+        refused << "census\t#{line}\tcensus\tglobal fun or lib call (not a Def instance)"
+      elsif !call_node.expanded.nil?
+        refused << "census\t#{line}\tcensus\tmacro call (expanded as macro)"
+      else
+        refused << "census\t#{line}\tcensus\tcall resolved no target def"
+      end
+    else
+      direct_target = visitor.target_def?(call_node).as(Def)
+      direct = typed.visitor.typed_instances.find { |inst| inst.definition.object_id == direct_target.object_id }
+      if direct.nil?
+        refused << "instance-silent\t#{line}\t-\tno typed instance for resolved target"
+        next
+      end
+      inst = direct.as(TypedInstance)
+      ids = NodeIds.new
+      direct_target.accept(ids)
+      visitor.refusals.each do |r|
+        if ids.ids.has_key?(r.node.node_id)
+          reason = census_first_line(r.reason)
+          refused << "instance-body\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+        end
+      end
+      if !primitive_name(direct_target.body).nil?
+        refused << "instance-silent\t#{line}\t-\tprimitive lowered at call site"
+        next
+      end
+      made = Module.for_target("census", Target.new(triple))
+      if made.is_a?(LayoutError)
+        refused << "instance-lowering\t#{line}\tunassigned\t#{made.as(LayoutError).to_s}"
+        next
+      end
+      mod = made.as(Module)
+      typer = LowerTyper.new(mod.types, mod.layout, true)
+      preflight = group do |g|
+        task = g.spawn do
+          type_ids = LowerTypeIds.new
+          type_ids.assign_all(visitor.program.object_type)
+          type_ids.type_id(visitor.program.string_type)
+          true
+        end
+        task.value
+      end
+      if preflight.is_a?(Panicked)
+        reason = census_first_line(preflight.as(Panicked).message)
+        refused << "prerequisite\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+        next
+      end
+      lowered = group do |g|
+        task = g.spawn { lower_def_probe(direct_target, inst.self_type, inst.arg_types, visitor, typer, mod) }
+        task.value
+      end
+      if lowered.is_a?(Panicked)
+        reason = census_first_line(lowered.as(Panicked).message)
+        refused << "instance-lowering\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+      elsif !lowered.nil?
+        reason = census_first_line(lowered.as(String))
+        refused << "instance-lowering\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+      elsif body_t = visitor.type_of?(direct_target.body)
+        actual = mangled_name(direct_target.name, inst.self_type, inst.arg_types, visitor.type_of?(direct_target) || body_t)
+        if fn = mod.get_function?(actual)
+          if fn.declaration?
+            refused << "instance-silent\t#{line}\t-\tlowering emitted declaration only"
+          else
+            errors = verify(mod)
+            if errors.empty?
+              refused << "instance-clean\t#{line}\t-\t#{actual}"
+              native = group do |g|
+                task = g.spawn { compile_module(mod, true) }
+                task.value
+              end
+              if native.is_a?(Panicked)
+                reason = census_first_line(native.as(Panicked).message)
+                refused << "instance-native\t#{line}\tMain\t#{reason}"
+              elsif native.is_a?(String)
+                reason = census_first_line(native.as(String))
+                refused << "instance-native\t#{line}\tMain\t#{reason}"
+              else
+                refused << "instance-native-ok\t#{line}\tMain\t#{actual}"
+              end
+            else
+              reason = "IR verifier: #{errors[0].to_s}"
+              refused << "instance-lowering\t#{line}\t#{typed_owner(reason)}\t#{reason}"
+            end
+          end
+        else
+          refused << "instance-silent\t#{line}\t-\tlowered name absent from module"
+        end
+      else
+        refused << "instance-silent\t#{line}\t-\tlowered body has no type"
+      end
+    end
+  end
+
+  visitor.vars = saved_vars
+  visitor.scope = saved_scope
+  visitor.current_type = saved_current_type
+  visitor.current_def = saved_current_def
+  prog.current_imports = saved_imports
+  prog.current_import_defs = saved_import_defs
+  visitor.unreachable = saved_unreachable
+  visitor.type_filters = saved_filters
+  visitor.needs_type_filters = saved_needs_filters
+  visitor.current_call_block = saved_call_block
+  visitor.current_block_context_vars = saved_block_ctx
+  visitor.current_yield_nodes = saved_yield_nodes
+  visitor.var_unions = saved_var_unions
+  visitor.untyped_locals = saved_untyped_locals
+  visitor.return_types = saved_return_types
+  visitor.break_types = saved_break_types
+  visitor.next_types = saved_next_types
+  visitor.in_type_args = saved_in_type_args
+  nil
+end
