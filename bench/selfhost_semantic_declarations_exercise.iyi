@@ -111,11 +111,17 @@ module BenchSelfhostSemanticDeclarationsExercise
     dump_program_declarations(prog, entry) + dump_instances(prog, entry)
   end
 
-  # The post-declaration re-resolution path: load bare without the type system, then install it
-  # so `resolve_declared_types` re-resolves explicit instance variables.
+  # Prove re-resolution after the ordering pass by discarding the resolved
+  # types in this fixture, then asking the program to resolve its records again.
   def self.dump_file_reresolved(path : String) : String
     prog, entry = load_program(path)
-    type_node_system(prog)
+    prog.types.each do |name, type|
+      next if prog.initial_type_names.includes?(name)
+      if type.is_a?(ModuleType)
+        type.as(ModuleType).instance_vars.each_value { |iv| iv.var_type = prog.nil_type }
+      end
+    end
+    prog.resolve_declared_types
     dump_program_declarations(prog, entry) + dump_instances(prog, entry)
   end
 
