@@ -456,10 +456,9 @@ fi
 # is the four-field struct. Forcing iyi layout (the old hard-coded true) fails this check.
 layout_check() {
   if ! build_tool "$TOOL_SRC" "$WORK/layout_tool"; then return 1; fi
-  "$WORK/layout_tool" "$REPO/bench/fixtures/lowprim_alloc_class.iyi" -o "$WORK/layout_box.ll" --pipeline typed --emit ir > /dev/null 2>&1 || return 1
+  "$WORK/layout_tool" "$REPO/bench/fixtures/lower_class_new.iyi" -o "$WORK/layout_box.ll" --pipeline typed --emit ir > /dev/null 2>&1 || return 1
   "$WORK/layout_tool" "$REPO/bench/fixtures/lower_string_fields.iyi" -o "$WORK/layout_str.ll" --pipeline typed --emit ir > /dev/null 2>&1 || return 1
-  awk '/i64 -4/ { bad = 1 } END { exit bad }' "$WORK/layout_box.ll" || return 1
-  awk '/Box = type/ { if ($0 !~ /i32/) bad = 1 } END { exit bad }' "$WORK/layout_box.ll" || return 1
+  awk '/i64 -4/ { bad = 1 } /^%Tool = type \{ i32, i32 \}/ { shape = 1 } /getelementptr inbounds %Tool, ptr .*i32 0, i32 0/ { field = 1 } /load i32, ptr @"Tool:type_id"/ { id = 1 } /store i32 .*ptr/ { stored = 1 } END { exit !(shape && field && id && stored && !bad) }' "$WORK/layout_box.ll" || return 1
   awk '/private constant \{ i32,/ { crystal = 1 } /private constant \{ i64,/ { iyi = 1 } END { exit !(crystal && !iyi) }' "$WORK/layout_str.ll"
 }
 echo "  the layout check passes on the unmutated code:"
