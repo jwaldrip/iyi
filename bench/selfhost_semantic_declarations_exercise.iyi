@@ -1,5 +1,5 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path}
+import compiler/syntax/ast::{ASTNode, Expressions, ModuleHeader, Path, Primitive}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, Type, ModuleType, ClassType, LibFun, LibType, GenericClassType, EnumType, dump_program_declarations, dump_type, dir_of, normalize_path, declared_in?}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/type_nodes::{type_node_system}
@@ -282,6 +282,17 @@ elsif Program.args[0] == "--lib-types"
       t.as(LibType).funs.each do |f|
         print "lib #{name}.#{f.name}: #{f.arg_types.map(&.full_name).join(", ")} -> #{BenchSelfhostSemanticDeclarationsExercise.return_name(f)}\n"
       end
+    end
+  end
+elsif Program.args[0] == "--primitive-annotations"
+  prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
+  arithmetic = prog.types["Arithmetic"].as(ModuleType)
+  ["first", "second", "third"].each do |name|
+    body = arithmetic.defs[name][0].body
+    if body.is_a?(Primitive)
+      print "#{name} #{body.as(Primitive).name}\n"
+    else
+      print "#{name} not-primitive\n"
     end
   end
 elsif Program.args[0] == "--enum-member-type"

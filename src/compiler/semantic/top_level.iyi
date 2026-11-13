@@ -2087,12 +2087,6 @@ pub class TopLevelVisitor < Visitor
     i = 0
     while i < node.expressions.size
       exp = node.expressions[i]
-      if exp.is_a?(Def) && i > 0 && node.expressions[i - 1].is_a?(Annotation)
-        ann = node.expressions[i - 1].as(Annotation)
-        if ann.path.names.last == "Primitive"
-          primitive_body(exp.as(Def), ann)
-        end
-      end
       exp.accept(self)
       i = i + 1
     end
@@ -3008,6 +3002,9 @@ pub class TopLevelVisitor < Visitor
 
   def visit(node : Def) : Bool
     # iyi: an annotation before a def belongs to the def, not to a later class variable.
+    @pending_annotations.each do |ann|
+      primitive_body(node, ann) if ann.path.names.last == "Primitive"
+    end
     @pending_annotations = [] of Annotation
     target_type : ModuleType
 
