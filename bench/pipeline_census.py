@@ -866,6 +866,8 @@ def cmd_report(args: argparse.Namespace) -> int:
     instance_silent: dict[str, str] = {}
     refusals_by_instance: dict[str, list[tuple[str, str, str]]] = collections.defaultdict(list)
     prerequisites: dict[str, tuple[str, str]] = {}
+    native_ok: set[str] = set()
+    native_fail: dict[str, str] = {}
 
     for line in (outdir / "merged.refusals").read_text(encoding="utf-8", errors="replace").splitlines():
         parts = line.split("\t")
@@ -883,7 +885,12 @@ def cmd_report(args: argparse.Namespace) -> int:
             instance_silent[label] = reason
         elif phase in ("instance-body", "instance-lowering"):
             refusals_by_instance[label].append((phase, owner, reason))
-    accounted = set(census_failures) | set(instance_clean) | set(instance_silent) | set(refusals_by_instance) | set(prerequisites)
+        elif phase == "instance-native-ok":
+            native_ok.add(label)
+        elif phase == "instance-native":
+            if label not in native_fail:
+                native_fail[label] = reason
+    accounted = set(census_failures) | set(instance_clean) | set(instance_silent) | set(refusals_by_instance) | set(prerequisites) | native_ok | set(native_fail)
     missing_records = asked_set - accounted
     if missing_records:
         print(f"ERROR: {len(missing_records)} asked names lack direct instance records; report is incomplete", file=sys.stderr)
@@ -1001,7 +1008,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     lines: list[str] = []
     summary = (
         f"census: {root} hosted={hosted_total} asked={len(asked)} "
-        f"scaffold-failed={len(scaffold_failed)} clean={len(clean_asked)}"
+        f"scaffold-failed={len(scaffold_failed)} clean={len(clean_asked)} native-ok={len(native_ok & clean_asked)}"
     )
     lines.append(summary)
     lines.append(
@@ -1068,6 +1075,18 @@ def cmd_report(args: argparse.Namespace) -> int:
             lines.append(f"         e.g. {ex}")
         lines.append(f"         verbatim: {verb}")
     append_pair_sections(lines, undef_funcs, undef_ex, expect_funcs, expect_ex)
+    lines.append("")
+    lines.append("== Native refusals by shape ==")
+    lines.append("Owner is Main for every row. clean is unchanged. native-ok is the further object gate.")
+    native_groups: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
+    for hosted_name, raw in native_fail.items():
+        native_groups[normalize_reason(raw)].append((hosted_name, raw))
+    for shape, items in sorted(native_groups.items(), key=lambda kv: -len(kv[1])):
+        lines.append(f"  stopped={len(items):5d} owner=Main shape={shape}")
+        lines.append(f"         e.g. {items[0][0]}")
+        lines.append(f"         verbatim: {items[0][1]}")
+    if not native_fail:
+        lines.append("  (none)")
     lines.append("")
     lines.append("== cumulative ==")
     lines.append("Upper bound per row set: fixing a row can uncover another refusal in the same function.")
