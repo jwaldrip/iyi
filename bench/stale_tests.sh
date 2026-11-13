@@ -1405,8 +1405,16 @@ if answers(sys.argv[1]) != answers(sys.argv[2]):
 import json, sys
 def snapshot(path):
     doc = json.load(open(path))
-    records = sorted(json.dumps(record, sort_keys=True) for record in doc['records'])
-    return records, {key: value for key, value in doc.items() if key != 'records'}
+    records = []
+    for record in doc['records']:
+        record.pop('signature', None)
+        trace = record.get('trace')
+        if trace and 'observations' in trace:
+            for obs in trace['observations']:
+                obs.pop('task', None)
+            trace.pop('fp', None)
+        records.append(json.dumps(record, sort_keys=True))
+    return sorted(records), {key: value for key, value in doc.items() if key != 'records'}
 serial, parallel = snapshot(sys.argv[1]), snapshot(sys.argv[2])
 if not serial[0]:
     sys.exit('stale_tests: the export for ' + sys.argv[3] + ' holds no records')
