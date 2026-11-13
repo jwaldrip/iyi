@@ -3437,7 +3437,6 @@ pub class Def < ASTNode
   def iyi_defer? : Bool
     @iyi_defer
   end
-
   def initialize(
     @name : String = "",
     @args : Array(Arg) = [] of Arg,

@@ -141,6 +141,7 @@ src/compiler/semantic/call.iyi 20
 src/compiler/semantic/call_error.iyi 15
 src/compiler/semantic/call_nodes.iyi 4
 src/compiler/semantic/cleanup.iyi 7
+src/compiler/semantic/closures.iyi 46
 src/compiler/semantic/default_arguments.iyi 14
 src/compiler/semantic/inline_macros.iyi 36
 src/compiler/semantic/instance_vars.iyi 49
