@@ -215,6 +215,16 @@ end
 # function already in the module when there is one, otherwise a new one, emitted now. A method's
 # self is the first parameter, of the owner's type (hosted `codegen_fun_signature_non_external`).
 pub def target_def_fun(low : Lowerer, target : Def, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : Function
+  # Hosted fun.cr:635-681 passes these values through memory. Refuse rather
+  # than emit a direct signature until that ABI is lowered here.
+  if low.typer.passed_indirectly?(ret)
+    raise "lower: indirect result above 128 bytes is not ported (hosted fun.cr:679)"
+  end
+  arg_types.each do |arg_type|
+    if low.typer.passed_indirectly?(arg_type)
+      raise "lower: indirect argument above 128 bytes is not ported (hosted fun.cr:644)"
+    end
+  end
   block_type : Type? = nil
   if target.uses_block_arg?
     block_arg = target.block_arg
