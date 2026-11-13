@@ -1,7 +1,7 @@
 module compiler/semantic/restrictions
 
 import compiler/syntax/ast::{ASTNode, Arg, Def, Generic, Path, Self, Splat, Union}
-import compiler/semantic/top_level::{GenericClassType, ModuleType, Type, TypeParameterType}
+import compiler/semantic/top_level::{AliasType, GenericClassType, ModuleType, Type, TypeParameterType}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/type_system::{TypeSystem}
@@ -92,7 +92,8 @@ pub class ArgRestriction
 
   # A union restriction is each member, bound the way a single name is (`T` in
   # `T | Nil` is the receiver's type argument), then merged. A union node is not
-  # a type the scope's own lookup instantiates.
+  # a type the scope's own lookup instantiates. This is the one implementation:
+  # body typing calls lookup_bound, which dispatches here.
   def self.lookup_union(ts : TypeSystem, scope : ModuleType, node : Union, owner : Type?) : Type | LookupError
     members = [] of Type
     i = 0
@@ -126,16 +127,7 @@ pub class ArgRestriction
   def self.lookup_free(ts : TypeSystem, scope : ModuleType, node : ASTNode, owner : Type?, bound : Hash(String, Type)) : Type | LookupError
     return ArgRestriction.lookup_bound(ts, scope, node, owner) if bound.size == 0
     if node.is_a?(Union)
-      members = [] of Type
-      union_node = node.as(Union)
-      i = 0
-      while i < union_node.types.size
-        member = ArgRestriction.lookup_free(ts, scope, union_node.types[i], owner, bound)
-        return member if member.is_a?(LookupError)
-        members << member.as(Type)
-        i = i + 1
-      end
-      return TypeMerge.merge_all(ts.program, members)
+      return ArgRestriction.lookup_union_free(ts, scope, node.as(Union), owner, bound)
     end
     if node.is_a?(Path)
       names = node.as(Path).names
@@ -161,6 +153,130 @@ pub class ArgRestriction
     end
     ArgRestriction.lookup_bound(ts, scope, node, owner)
   end
+
+  # The one union merge, with free-variable bindings in force (`T | Nil` forall T).
+  def self.lookup_union_free(ts : TypeSystem, scope : ModuleType, node : Union, owner : Type?, bound : Hash(String, Type)) : Type | LookupError
+    members = [] of Type
+    i = 0
+    while i < node.types.size
+      member = ArgRestriction.lookup_free(ts, scope, node.types[i], owner, bound)
+      return member if member.is_a?(LookupError)
+      members << member.as(Type)
+      i = i + 1
+    end
+    TypeMerge.merge_all(ts.program, members)
+  end
+
+  # The type an alias stands for, through a chain. Resolved from the alias value,
+  # not AliasType#process_value, which drops a generic instance's arguments.
+  def self.unwrap_alias(ts : TypeSystem, type : Type) : Type | LookupError
+    current = type
+    seen = 0
+    while current.is_a?(AliasType) && seen < 8
+      alias_type = current.as(AliasType)
+      scope : ModuleType = ts.program
+      if ns = alias_type.namespace
+        scope = ns
+      end
+      found = TypeLookup.new(ts.instances).lookup(scope, alias_type.value)
+      return found if found.is_a?(LookupError)
+      current = found.as(Type)
+      seen += 1
+    end
+    current
+  end
+
+  # Whether *arg_type* matches the written restriction *node*, binding free variables
+  # as the hosted Type#restrict(other : Generic) does (restrictions.cr 1185-1277 and
+  # Path#restrict 917-921). Nil type and nil error means the argument does not match.
+  # An error is a restriction that names a type and that type does not resolve.
+  # A generic written with free variables against a value that is not that generic
+  # is no match, not an unresolved-type error: the hosted restrict returns nil.
+  def self.restrict_argument(ts : TypeSystem, scope : ModuleType, node : ASTNode, arg_type : Type, owner : Type?, free : Array(String), bound : Hash(String, Type)) : RestrictResult
+    if node.is_a?(Splat)
+      return ArgRestriction.restrict_argument(ts, scope, node.as(Splat).exp, arg_type, owner, free, bound)
+    end
+    if node.is_a?(Path)
+      names = node.as(Path).names
+      if names.size == 1 && FreeBindings.free?(names[0], free)
+        return ArgRestriction.bind_free_name(names[0], arg_type, bound)
+      end
+    end
+    if node.is_a?(Generic) && arg_type.is_a?(GenericInstanceType)
+      return ArgRestriction.restrict_generic(ts, scope, node.as(Generic), arg_type.as(GenericInstanceType), owner, free, bound)
+    end
+    if FreeBindings.mentions?(node, free)
+      return RestrictResult.no_match
+    end
+    found = ArgRestriction.lookup_free(ts, scope, node, owner, bound)
+    if found.is_a?(LookupError)
+      return RestrictResult.failed(found.as(LookupError).message)
+    end
+    allowed = ArgRestriction.unwrap_alias(ts, found.as(Type))
+    return RestrictResult.failed(allowed.as(LookupError).message) if allowed.is_a?(LookupError)
+    concrete_arg = ArgRestriction.unwrap_alias(ts, arg_type)
+    return RestrictResult.failed(concrete_arg.as(LookupError).message) if concrete_arg.is_a?(LookupError)
+    restricted = ts.restrict(concrete_arg.as(Type), allowed.as(Type))
+    return RestrictResult.no_match if restricted.nil?
+    RestrictResult.matched(restricted.as(Type))
+  end
+
+  # Binds *name* to *arg_type*, or refuses a second binding to a different type.
+  def self.bind_free_name(name : String, arg_type : Type, bound : Hash(String, Type)) : RestrictResult
+    existing = bound[name]?
+    if existing
+      return RestrictResult.no_match if existing.as(Type).full_name != arg_type.full_name
+      return RestrictResult.matched(existing.as(Type))
+    end
+    bound[name] = arg_type
+    RestrictResult.matched(arg_type)
+  end
+
+  # Hosted GenericInstanceType#restrict(other : Generic): the instance matches the
+  # written generic when the generic types are the same and each type argument
+  # restricts, including a nested generic and a free variable. A different generic,
+  # or a different arity, is no match. Splatted type arguments are not this path.
+  def self.restrict_generic(ts : TypeSystem, scope : ModuleType, node : Generic, inst : GenericInstanceType, owner : Type?, free : Array(String), bound : Hash(String, Type)) : RestrictResult
+    base = TypeLookup.new(ts.instances).lookup(scope, node.name)
+    return RestrictResult.failed(base.as(LookupError).message) if base.is_a?(LookupError)
+    base_type = base.as(Type)
+    return RestrictResult.no_match if base_type.full_name != inst.generic_type.full_name
+    # A splatted type argument (`Tuple(*T)`) is the hosted splat_index path
+    # (restrictions.cr 1201-1261). Not this increment: the free-var case that
+    # stops the census is Range(B, E), which has no splat.
+    return RestrictResult.no_match if node.type_vars.size != inst.type_args.size
+    i = 0
+    while i < node.type_vars.size
+      inner = ArgRestriction.restrict_argument(ts, scope, node.type_vars[i], inst.type_args[i], owner, free, bound)
+      return inner if inner.error
+      return RestrictResult.no_match if inner.type.nil?
+      i += 1
+    end
+    RestrictResult.matched(inst)
+  end
+end
+
+# The answer to restricting one argument against a written restriction: a type when
+# it matches, an error when the written type does not resolve, or neither when the
+# argument simply does not match.
+pub class RestrictResult
+  getter type : Type?
+  getter error : String?
+
+  def initialize(@type : Type?, @error : String?)
+  end
+
+  def self.no_match : RestrictResult
+    RestrictResult.new(nil, nil)
+  end
+
+  def self.failed(message : String) : RestrictResult
+    RestrictResult.new(nil, message)
+  end
+
+  def self.matched(type : Type) : RestrictResult
+    RestrictResult.new(type, nil)
+  end
 end
 
 # The types a def's free variables (`forall T`) are bound to by the arguments that name
@@ -168,6 +284,36 @@ end
 # argument's type together. A name written alone takes the argument's type; a generic
 # written with names (Pointer(T)) takes the argument's type arguments in turn.
 pub class FreeBindings
+  # True when *node* writes a name in *free*, including inside a generic or a union.
+  def self.mentions?(node : ASTNode, free : Array(String)) : Bool
+    if node.is_a?(Path)
+      names = node.as(Path).names
+      return names.size == 1 && FreeBindings.free?(names[0], free)
+    end
+    if node.is_a?(Generic)
+      generic_node = node.as(Generic)
+      i = 0
+      while i < generic_node.type_vars.size
+        return true if FreeBindings.mentions?(generic_node.type_vars[i], free)
+        i += 1
+      end
+      return false
+    end
+    if node.is_a?(Union)
+      union_node = node.as(Union)
+      i = 0
+      while i < union_node.types.size
+        return true if FreeBindings.mentions?(union_node.types[i], free)
+        i += 1
+      end
+      return false
+    end
+    if node.is_a?(Splat)
+      return FreeBindings.mentions?(node.as(Splat).exp, free)
+    end
+    false
+  end
+
   # Binds the free names *free* that *node* writes against *arg_type*. False when a name
   # is already bound to a different type, so the argument does not match.
   def self.bind(node : ASTNode, arg_type : Type, free : Array(String), bound : Hash(String, Type)) : Bool

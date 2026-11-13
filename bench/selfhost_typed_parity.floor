@@ -311,7 +311,7 @@ src/compiler/types/intersect.iyi 28
 src/compiler/types/lookup.iyi 40
 src/compiler/types/to_restriction.iyi 24
 src/compiler/semantic/type_node_host.iyi 20
-src/compiler/semantic/type_nodes.iyi 38
+src/compiler/semantic/type_nodes.iyi 43
 src/compiler/semantic/call_nodes.iyi 6
 src/compiler/semantic/instance_vars.iyi 45
 src/compiler/native/const_expr.iyi 0

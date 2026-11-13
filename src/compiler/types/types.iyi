@@ -31,6 +31,10 @@ pub class VirtualType < Type
     @base_type.full_name
   end
 
+  def devirtualize : Type
+    return @base_type
+  end
+
   def type_desc : String
     "virtual"
   end
@@ -106,6 +110,21 @@ pub class VirtualMetaclassType < Type
     "#{@instance_type.base_type.full_name}.class"
   end
 
+  # Hosted types.cr:410-415, 3958-3959: the metaclass of the virtual root.
+  def devirtualize : Type
+    base = @instance_type.base_type
+    if base.is_a?(ModuleType)
+      return base.as(ModuleType).metaclass
+    elsif base.is_a?(GenericClassInstanceType)
+      return base.as(GenericClassInstanceType).metaclass
+    end
+    self
+  end
+
+  def subtype_of?(other : Type) : Bool
+    devirtualize.subtype_of?(other)
+  end
+
   def type_desc : String
     "virtual_metaclass"
   end
@@ -129,7 +148,7 @@ pub abstract class GenericInstanceType < Type
   end
 
   def full_name : String
-    args_strs = @type_args.map(&.arg_full_name)
+    args_strs = @type_args.map { |a| a.devirtualize.arg_full_name }
     "#{@generic_type.base_full_name}(#{args_strs.join(", ")})"
   end
 
@@ -195,6 +214,8 @@ pub class GenericClassInstanceType < GenericInstanceType
 
   def subtype_of?(other : Type) : Bool
     return true if self == other
+    target = other.devirtualize
+    return subtype_of?(target) unless target == other
     if other.is_a?(GenericClassInstanceType)
       other_gi = other.as(GenericClassInstanceType)
       if @generic_type == other_gi.generic_type
@@ -377,7 +398,7 @@ pub class TupleInstanceType < GenericClassInstanceType
   end
 
   def full_name : String
-    types_s = @tuple_types.map(&.arg_full_name)
+    types_s = @tuple_types.map { |t| t.devirtualize.arg_full_name }
     "Tuple(#{types_s.join(", ")})"
   end
 
@@ -439,7 +460,7 @@ pub class NamedTupleInstanceType < GenericClassInstanceType
   end
 
   def full_name : String
-    entries_s = @entries.map { |e| "#{e.name}: #{e.type.arg_full_name}" }
+    entries_s = @entries.map { |e| "#{e.name}: #{e.type.devirtualize.arg_full_name}" }
     "NamedTuple(#{entries_s.join(", ")})"
   end
 
@@ -507,8 +528,8 @@ pub class ProcInstanceType < GenericClassInstanceType
 
   def full_name : String
     all_parts = [] of String
-    @arg_types.each { |a| all_parts << a.full_name }
-    all_parts << @return_type.full_name
+    @arg_types.each { |a| all_parts << a.devirtualize.full_name }
+    all_parts << @return_type.devirtualize.full_name
     "Proc(#{all_parts.join(", ")})"
   end
 

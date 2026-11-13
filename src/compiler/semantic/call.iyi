@@ -127,17 +127,19 @@ end
 # The target of a call on a receiver type: the hosted Call#recalculate's result.
 # *definition* is the one def the call resolves to, *declared_return* its declared
 # return type, and *untyped* says the def declares none, so its type waits on the
-# body (the bodies slice). *owner* is the receiver it was found on. *error* is the
-# first line of the message the hosted call pass raises, or a marked refusal for a
-# shape this port does not answer.
+# body (the bodies slice). *owner* is the receiver it was found on. *defining* is
+# the type the def was found on, which is not the receiver when the method is
+# inherited. *error* is the first line of the message the hosted call pass raises,
+# or a marked refusal for a shape this port does not answer.
 pub class CallTarget
   getter definition : Def?
   getter owner : Type?
+  getter defining : ModuleType?
   getter declared_return : Type?
   getter untyped : Bool
   getter error : String?
 
-  def initialize(@definition : Def?, @owner : Type?, @declared_return : Type?, @untyped : Bool, @error : String?)
+  def initialize(@definition : Def?, @owner : Type?, @declared_return : Type?, @untyped : Bool, @error : String?, @defining : ModuleType? = nil)
   end
 
   def self.failed(message : String) : CallTarget
@@ -190,11 +192,11 @@ pub class CallRecalculation
       end
       ret = single.definition.return_type
       if ret.nil?
-        return CallTarget.new(single.definition, rec_type, nil, true, nil)
+        return CallTarget.new(single.definition, rec_type, nil, true, nil, single.defining)
       end
       found = ArgRestriction.lookup_free(ts, single.defining, ret.as(ASTNode), rec_type, single.bound)
       return CallTarget.failed(found.as(LookupError).message) if found.is_a?(LookupError)
-      return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil)
+      return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, single.defining)
     end
     named = signature.named_args
     if named

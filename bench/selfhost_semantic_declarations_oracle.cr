@@ -64,6 +64,9 @@ def dump_def(d : Iyi::Def, io : IO, indent : String)
   ret_str = d.return_type ? d.return_type.to_s : "nil"
   ret_str = ret_str.sub(/^::/, "")
   io << indent << "  return_type: " << ret_str << "\n"
+  if prev = d.previous
+    io << indent << "  previous: " << prev.def.name << "\n"
+  end
 end
 
 def dump_type(t : Iyi::Type, io : IO, indent : String, entry : String?)
@@ -192,19 +195,22 @@ def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entr
     dump_type(user_types[name], io, "", entry)
   end
   if typed
-    dump_instances(program, io, initial_types)
+    dump_instances(program, io, initial_types, entry)
   end
 end
 
 # The instances of the program's own generic classes, with their instance variables, in the
 # typed mode only: the hosted pass always makes them, the port's untyped pass does not, so the
 # gate asks for them with `--typed` on the typed fixtures alone. Each instance is a record of its
-# own, sorted by its name, as the port's driver prints them.
-def dump_instances(program : Iyi::Program, io : IO, initial_types : Set(String))
+# own, sorted by its name, as the port's driver prints them. A generic is the entry's only when
+# declared_in? says so, the same test dump_type uses, so a prelude or imported generic's
+# instances are not records of this file.
+def dump_instances(program : Iyi::Program, io : IO, initial_types : Set(String), entry : String?)
   program.types.keys.sort.each do |name|
     next if initial_types.includes?(name)
     generic = program.types[name]
     next unless generic.is_a?(Iyi::GenericClassType)
+    next unless declared_in?(generic.locations, entry)
     generic.instantiated_types.sort_by(&.to_s).each do |inst|
       next unless inst.is_a?(Iyi::GenericClassInstanceType)
       full = inst.to_s
@@ -282,6 +288,55 @@ if ARGV[0]? == "--link-annotations"
       print "link lib=#{rec.lib || "-"} ldflags=#{rec.ldflags || "-"} static=#{rec.static?} framework=#{rec.framework || "-"} pkg_config=#{rec.pkg_config || "-"} dll=#{rec.dll || "-"}\n"
     end
   end
+  exit 0
+end
+
+if ARGV[0]? == "--enum-primitives"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  ["SmallEnum", "WideEnum"].each do |name|
+    enum_type = program.types[name].as(Iyi::EnumType)
+    [enum_type.defs.not_nil!["value"].first.def, enum_type.metaclass.as(Iyi::ModuleType).defs.not_nil!["new"].first.def].each do |definition|
+      primitive = definition.body.as(Iyi::Primitive)
+      restriction = definition.args.empty? ? "-" : definition.args[0].restriction.to_s
+      puts "#{name} #{definition.name} #{primitive.name} #{primitive.type} #{restriction}"
+    end
+  end
+  exit 0
+end
+
+if ARGV[0]? == "--def-owner"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  base = program.types["OwnerBase"].as(Iyi::ModuleType)
+  instance_def = base.defs.not_nil!["inherited"].first.def
+  class_def = base.metaclass.as(Iyi::ModuleType).defs.not_nil!["class_method"].first.def
+  puts "instance #{instance_def.owner}"
+  puts "class #{class_def.owner}"
+  exit 0
+end
+
+if ARGV[0]? == "--virtual-subtype"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  base = program.types["SubtypeNode"].as(Iyi::ClassType)
+  leaf = program.types["SubtypeLeaf"].as(Iyi::ClassType)
+  other = program.types["SubtypeOther"].as(Iyi::ClassType)
+  virtual = base.virtual_type
+  virtual_meta = virtual.metaclass
+  puts "leaf virtual #{leaf.implements?(virtual)}"
+  puts "base virtual #{base.implements?(virtual)}"
+  puts "other virtual #{other.implements?(virtual)}"
+  puts "virtual leaf #{virtual.implements?(leaf)}"
+  puts "leaf meta virtual #{leaf.metaclass.implements?(virtual_meta)}"
+  puts "other meta virtual #{other.metaclass.implements?(virtual_meta)}"
+  puts "virtual meta leaf #{virtual_meta.implements?(leaf.metaclass)}"
   exit 0
 end
 
