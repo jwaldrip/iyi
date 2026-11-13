@@ -105,6 +105,12 @@ if [ "${cache_count:-}" != 3 ]; then
   echo "  CACHE: expected 3 typed instances, got ${cache_count:-none}"
   status=1
 fi
+refused_cache_count=$("$TYPED" --instances "$REPO/bench/fixtures/bodies_refused_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  bodies_refused_cache.iyi typed instances: ${refused_cache_count:-none} (expected 1)"
+if [ "${refused_cache_count:-}" != 1 ]; then
+  echo "  CACHE: refused declared-return body was instantiated more than once"
+  status=1
+fi
 
 echo
 echo "== 2c. A call in a fun body's macro branch is typed only when the fun body is spliced"
@@ -136,6 +142,8 @@ bodies_at_floor() {
   [ "${count:-}" = 3 ] || return 1
   fsc=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${fsc:-}" = 1 ] || return 1
+  refused_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/bodies_refused_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
+  [ "${refused_count:-}" = 1 ] || return 1
   return 0
 }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
@@ -196,6 +204,9 @@ prove_mutation "while cond narrows its variable in the loop body" "$MAIN_VISITOR
 prove_mutation "early exit in then branch narrows the rest of the body" "$MAIN_VISITOR" \
   "        elsif then_unreachable" \
   "        elsif false" -- bodies_at_floor || status=1
+prove_mutation "a refused body with declared return is cached" "$MAIN_VISITOR" \
+  "        remember_def_instance(cache_key, target_def, declared_ret)" \
+  "        nil" -- bodies_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"

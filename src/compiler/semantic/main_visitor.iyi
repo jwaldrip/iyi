@@ -2255,8 +2255,8 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
-  # Caches a finished instance under its key. Called only where the body was typed, never for a
-  # recursive call (its body is still being typed) or a refused body.
+  # Caches a finished instance, including one with a refused body and a declared
+  # return type. Its recorded refusals remain attached to the cached definition.
   def remember_def_instance(key : String?, definition : Def, return_type : Type) : Nil
     if k = key
       @def_instances[k] = DefInstance.new(definition, return_type)
@@ -2485,8 +2485,10 @@ pub class MainVisitor < TypeNodeHost
     # (bench/fixtures/sem_bodies_primitive_add.iyi).
     if bt.nil?
       if rt = target_def.return_type
-        set_type(target_def, lookup_under(rt, rec_type))
-        return lookup_under(rt, rec_type)
+        declared_ret = lookup_under(rt, rec_type)
+        set_type(target_def, declared_ret)
+        remember_def_instance(cache_key, target_def, declared_ret)
+        return declared_ret
       end
       return nil
     end
