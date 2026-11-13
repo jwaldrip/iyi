@@ -590,9 +590,9 @@ named_tuple_check() {
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/named-tuple.out"
 }
 if named_tuple_check; then
-  prove_mutation "named tuple literal drops its entries" "$REPO/src/compiler/lower/lower.iyi" \
+  prove_mutation "named tuple literal reverses entry evaluation" "$REPO/src/compiler/lower/lower.iyi" \
     '  node.entries.each do |entry|' \
-    '  ([] of NamedTupleLiteral::Entry).each do |entry|' -- named_tuple_check || status=1
+    '  node.entries.reverse_each do |entry|' -- named_tuple_check || status=1
 else
   echo "FAIL: named tuple fixture does not match the hosted module"
   awk 'NR<=8' "$WORK/named-tuple.err" "$WORK/named-tuple.out" "$WORK/named-tuple.build.log"
