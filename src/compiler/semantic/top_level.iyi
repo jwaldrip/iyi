@@ -2572,6 +2572,7 @@ pub class TopLevelVisitor < Visitor
 
     old_type = @current_type
     @current_type = type
+    @program.type_bodies << TypeBody.new(type, node.body, @program.current_imports)
     node.body.accept(self)
     @current_type = old_type
 

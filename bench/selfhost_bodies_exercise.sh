@@ -229,6 +229,13 @@ bodies_at_floor() {
     floor=$(awk -v r="$rel" '$1 == r { print $2 }' "$FLOOR_FILE" 2>/dev/null)
     [ "$matched" -ge "${floor:-0}" ] || return 1
   done
+  fixture="$REPO/bench/fixtures/sem_bodies_class_var_initializer.iyi"
+  rel="bench/fixtures/sem_bodies_class_var_initializer.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
+  floor=$(awk -v r="$rel" '$1 == r { print $2 }' "$FLOOR_FILE" 2>/dev/null)
+  [ "$matched" -ge "${floor:-0}" ] || return 1
   count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_instance_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${count:-}" = 3 ] || return 1
   fsc=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
@@ -272,6 +279,12 @@ owner_mutant_at_expected() {
 prove_mutation_all "program defs use their declared owner" "$MAIN_VISITOR" \
   "instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
   "instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1
+prove_mutation "class variable initializer uses its owner's metaclass" "$MAIN_VISITOR" \
+  "      @scope = @current_type.metaclass" \
+  "      @scope = @current_type" -- bodies_at_floor || status=1
+prove_mutation "class variable literal is guessed before body typing" "$REPO/src/compiler/semantic/instance_vars.iyi" \
+  "      assign_class_var(target.as(ClassVar), node.value)" \
+  "      nil" -- bodies_at_floor || status=1
 prove_mutation "lib call result type" "$MAIN_VISITOR" \
   "set_type(node, target.result_type.as(Type))" \
   "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
