@@ -3197,6 +3197,7 @@ pub class MainVisitor < TypeNodeHost
 
     target_def = lookup_method_matching(rec_type, node.name, node.args, node)
     return false if target_def.nil?
+    original_def = target_def
     # Hosted call.cr:1679-1695 instantiates the default expansion, not the
     # default expression in the caller's scope. Cache against the original
     # definition and the arguments supplied by the caller.
@@ -3227,6 +3228,19 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     instantiated_def = target_def.clone
+    if original_def.splat_index && original_def.free_vars
+      arg_types = [] of Type
+      node.args.each do |arg|
+        if arg_type = child_type(arg)
+          arg_types << arg_type
+        end
+      end
+      if arg_types.size == node.args.size
+        if free_types = FreeBindings.of_def(original_def, arg_types, type_node_system(@program))
+          @def_free_types[instantiated_def] = free_types unless free_types.empty?
+        end
+      end
+    end
     @program.copy_def_owner(target_def, instantiated_def)
 
     body_ret : Type? = nil

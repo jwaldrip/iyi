@@ -294,9 +294,6 @@ prove_mutation "a proc literal inherits its enclosing scope" "$MAIN_VISITOR" \
 prove_mutation "unit definitions resolve in their lexical scope" "$MAIN_VISITOR" \
   "      if mod.iyi_unit" \
   "      if false" -- bodies_at_floor || status=1
-prove_mutation "splat arguments bind a tuple" "$MAIN_VISITOR" \
-  "        param_type = tuple_type_of(@program, elements)" \
-  "        param_type = @program.nil_type" -- bodies_at_floor || status=1
 prove_mutation "imported restrictions use the defining unit" "$MAIN_VISITOR" \
   "        @current_type = owner if owner.iyi_unit" \
   "        nil" -- bodies_at_floor || status=1
@@ -315,8 +312,11 @@ defaults_at_floor() {
   floor=$(awk -v fixture="bench/fixtures/$1.iyi" '$1 == fixture { print $2 }' "$FLOOR_FILE")
   [ "$matched" -ge "${floor:-0}" ]
 }
+prove_mutation "splat arguments bind a tuple" "$REPO/src/compiler/semantic/default_arguments.iyi" \
+  "      body << Assign.new(Var.new(splat.name), TupleLiteral.new(elements))" \
+  "      body << Assign.new(Var.new(splat.name), TupleLiteral.new([] of ASTNode))" -- defaults_at_floor sem_bodies_pack_splat || status=1
 prove_mutation "default is cloned into the caller's arguments" "$MAIN_VISITOR" \
-  "      expanded = DefaultArguments.expand_for_call(target_def, node.args.size, nil)" \
+  "      expanded = DefaultArguments.expand_for_call(target_def, node.args.size, nil, splat_names)" \
   "      node.args = DefaultArguments.expand(target_def, node.args, nil)
       node.args.each { |arg| arg.accept(self) }
       expanded = target_def" -- defaults_at_floor sem_bodies_default_scope || status=1
