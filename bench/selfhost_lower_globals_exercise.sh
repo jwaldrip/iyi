@@ -316,9 +316,9 @@ prove_mutation "pointerof of a class variable is refused" "$REPO/src/compiler/lo
 prove_mutation "a float class-variable literal is not stored" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_float(low.typer.llvm_type(typ), text.to_f)" \
   "    return nil" -- lowglob_check || status=1
-prove_mutation "a string class variable is refused as a struct" "$REPO/src/compiler/lower/class_var.iyi" \
-  'if cvar.type.full_name == "String"' \
-  "if false" -- lowglob_check || status=1
+prove_mutation "a class variable initializer stores null instead of its value" "$REPO/src/compiler/lower/class_var.iyi" \
+  "    store_aligned(low, val, global)" \
+  "    store_aligned(low, low.builder.const_null(ir), global)" -- lowglob_check || status=1
 prove_mutation "the initialiser function is not passed to once" "$REPO/src/compiler/lower/const.iyi" \
   '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), fn.as(Value)] of Value, "")' \
   '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), flag.as(Value)] of Value, "")' -- lowglob_check || status=1

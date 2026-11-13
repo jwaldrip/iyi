@@ -168,16 +168,13 @@ pub def cvar_key(owner : ModuleType, name : String) : String
   owner.full_name + "::" + name
 end
 
-# The IR type of the variable (hosted `llvm_type(class_var.type)`). A nilable reference and a String are one
-# pointer; calling `llvm_type` on them would also declare the class struct, which the hosted global does not print.
+# The IR type of the variable (hosted `llvm_type(class_var.type)`).
+# A nilable reference is one pointer.
 pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
   if cvar.type.is_a?(GenericClassType)
     refuse_port("lower: class variable #{cvar.name} has an uninstantiated generic type #{cvar.type.full_name}: its declaration must be resolved before lowering (hosted class_var.cr: declare_class_var)")
   end
   if nilable_reference_type?(cvar.type)
-    return low.module.types.ptr
-  end
-  if cvar.type.full_name == "String"
     return low.module.types.ptr
   end
   if cvar.type.is_a?(NilableProcType)
