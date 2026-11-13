@@ -2,6 +2,10 @@ def use_proc(p : Proc(Int32)) : Int32
   p.call
 end
 
+def global_value : Int32
+  4
+end
+
 class Parent
   def value : Int32
     7
@@ -12,6 +16,12 @@ class Child < Parent
   def capture : Int32
     use_proc(-> { value })
   end
+
+  def no_capture : Int32
+    use_proc(-> { global_value })
+  end
 end
 
-Child.new.capture
+child = Child.new
+child.capture
+child.no_capture
