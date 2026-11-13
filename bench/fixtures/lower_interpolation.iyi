@@ -1,8 +1,9 @@
 class String
-  def self.interpolation(first : String, value : Int32, last : String) : Int32
-    value
+  def self.interpolation(first : String, value : Int32, last : String) : String
+    first
   end
 end
 
 value = 42
 "a#{value}b"
+nil
