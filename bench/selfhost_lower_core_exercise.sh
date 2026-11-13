@@ -84,7 +84,7 @@ passed=0
 # Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed. The port numbers
 # String 31 and the hosted module 1 for lower_string and lower_string_nonascii (the typer slice's LowerTypeIds
 # numbering, NEEDS.md row 16). They wait by name; the gate fails if one starts to match, so this list is kept honest.
-KNOWN_DIVERGED="lower_string lower_string_nonascii"
+KNOWN_DIVERGED="lower_string lower_string_nonascii lower_pointer_malloc"
 e2e=""
 module_same=0
 module_differ=0
@@ -254,6 +254,19 @@ else
   echo "    NO: a string constant name differs from the hosted name"
   status=1
 fi
+
+pointer_malloc_check() {
+  "$IYI" build -o "$WORK/port-n" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/n.build.log" 2>&1 || return 1
+  "$WORK/port-n" emit "$REPO/bench/fixtures/lower_pointer_malloc.iyi" "$WORK/lower_pointer_malloc.oracle.ll" > "$WORK/ptr_malloc.ir" 2>/dev/null || return 1
+  awk '/call ptr @malloc\(i64/ { m = 1 } /call void @llvm\.memset\.p0\.i64/ { s = 1 } END { exit !(m && s) }' "$WORK/ptr_malloc.ir"
+}
+echo "  Pointer(UInt8).malloc emits C malloc and memset:"
+if pointer_malloc_check; then
+  echo "    yes"
+else
+  echo "    no"
+  status=1
+fi
 echo "  the mutation check passes on the unmutated code:"
 if lower_core_check; then
   echo "    yes"
@@ -315,6 +328,8 @@ prove_mutation "a proc literal's name uses the file as given, not relative to th
   'symbol_text(relative_filename(loc.filename))' 'symbol_text(loc.filename)' -- lower_core_check || status=1
 prove_mutation "an uninitialized variable's value is the slot itself, not a load of it" "$REPO/src/compiler/lower/lower.iyi" \
   "low.last = to_lhs(low, slot.pointer, nt)" "low.last = slot.pointer" -- lower_core_check || status=1
+prove_mutation "Pointer#malloc refuses a UInt64 count by inverting the size_t check" "$REPO/src/compiler/lower/primitives.iyi" \
+  "  if count.type != low.typer.size_t" "  if count.type == low.typer.size_t" -- pointer_malloc_check || status=1
 
 # The module-level count: how many CORE_CHECK_FIXTURES match the hosted module in every item, module-level included.
 # A patch that changes only module-level text lowers the count, and this check catches it.

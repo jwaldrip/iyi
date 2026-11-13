@@ -32,6 +32,8 @@ import compiler/lower/typer::{LowerTyper}
 import compiler/lower/lower::{codegen_program}
 import compiler/lower/context::{Lowerer}
 import bench/lib/lower_gate::{attach_attrs, oracle_attr_map, printed_attr_map}
+import bench/lib/primitive_stand_in::{stand_in_primitive_types}
+import compiler/types/type_system::{TypeSystem}
 
 # The parsed and analysed fixture: the tree and the semantic pass that typed it.
 pub class Analysis
@@ -51,10 +53,12 @@ def analyse(source : String, filename : String) : Analysis
   normalizer.iyi_prelude = false
   root = normalizer.normalize(root)
   prog = SemanticProgram.new
+  ts = TypeSystem.new(prog)
   tl = TopLevelVisitor.new(prog)
   root.accept(tl)
   tl.finish
   mv = MainVisitor.new(prog)
+  stand_in_primitive_types(root, prog, mv)
   root.accept(mv)
   RecursiveStructChecker.new(prog).run
   Analysis.new(root, mv)
