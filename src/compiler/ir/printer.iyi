@@ -8,9 +8,9 @@ import compiler/ir/module::{Module}
 import compiler/ir/intrinsics::{intrinsic_name}
 
 # The text form of a module. It is deterministic: globals and functions are written in emission order,
-# the named types the module mentions in creation order, flags sorted by name, and unnamed values numbered
-# in definition order. The parser reads exactly this form, so print(parse(text)) == text for every text the
-# printer wrote.
+# the named types the module mentions in LLVM TypeFinder discovery order, flags sorted by name, and
+# unnamed values numbered in definition order. The parser reads exactly this form, so print(parse(text)) == text
+# for every text the printer wrote.
 pub def print(m : Module) : String
   IrPrinter.new(m).module_text
 end
@@ -27,9 +27,7 @@ class IrPrinter
       io << "target datalayout = " << ir_quote(@module.layout.llvm_string) << "\n"
       @module.files.each { |f| io << "file " << ir_quote(f) << "\n" }
       @module.flags.keys.sorted.each { |k| io << "flag " << ir_quote(k) << " = " << @module.flags[k].to_s << "\n" }
-      used = used_named_types
-      @module.types.named.each do |t|
-        next unless used.includes?(t.name || "")
+      named_types_in_order.each do |t|
         body = t.opaque? ? "opaque" : t.struct_body_text
         io << "%" << ir_name_text(t.name || "") << " = type " << body << "\n"
       end
@@ -40,96 +38,122 @@ class IrPrinter
 
   # ---- which named types the text defines ------------------------------------------------
   #
-  # A named struct is written only when the module mentions it: in a global's type or initializer, in a
-  # function's signature or attributes, or in an instruction's type, operands, source type or attributes,
-  # directly or inside another type. LLVM writes a module that way (its type finder walks exactly those),
-  # the hosted compiler's text is LLVM's, and the lowering is compared with it: a type the lowering created
-  # and nothing mentions (`%String` in a program that never holds one) is in the table and not in the text.
-  def used_named_types : Set(String)
-    used = Set(String).new
+  # A named struct is written only when the module mentions it, in the order LLVM's TypeFinder
+  # (22.1.8) discovers it: globals (value type then initializer), then functions in module order
+  # (signature, function/return/parameter attributes, personality, and each instruction's type,
+  # constant operands, GEP/alloca source type, and call/intrinsic attributes).
+  def named_types_in_order : Array(IrType)
+    found = [] of IrType
+    visited = Set(String).new
     seen = Hash(Value, Bool).new
+    worklist = [] of IrType
     @module.globals.each do |g|
-      note_type(g.value_type, used)
+      incorporate_type(g.value_type, found, visited, worklist)
       if init = g.initializer
-        note_operand(init, used, seen)
+        incorporate_value(init, found, visited, seen, worklist)
       end
     end
     @module.functions.each do |f|
-      note_type(f.fn_type, used)
-      note_attrs(f.attrs, used)
-      note_attrs(f.ret_attrs, used)
-      f.param_attrs.each { |list| note_attrs(list, used) }
+      incorporate_type(f.fn_type, found, visited, worklist)
+      incorporate_attrs(f.attrs, found, visited, worklist)
+      incorporate_attrs(f.ret_attrs, found, visited, worklist)
+      f.param_attrs.each { |list| incorporate_attrs(list, found, visited, worklist) }
       if p = f.personality
-        note_operand(p, used, seen)
+        incorporate_value(p, found, visited, seen, worklist)
       end
       f.blocks.each do |b|
-        b.insts.each { |i| note_inst(i, used, seen) }
+        b.insts.each do |i|
+          incorporate_type(i.type, found, visited, worklist)
+          i.args.each { |a| incorporate_value(a, found, visited, seen, worklist) }
+          aux = i.aux
+          if aux.is_a?(GepAux)
+            incorporate_type(aux.as(GepAux).source_type, found, visited, worklist)
+          elsif aux.is_a?(CallAux)
+            call = aux.as(CallAux)
+            incorporate_attrs(call.fn_attrs, found, visited, worklist)
+            incorporate_attrs(call.ret_attrs, found, visited, worklist)
+            call.param_attrs.each { |list| incorporate_attrs(list, found, visited, worklist) }
+          elsif aux.is_a?(IntrinsicAux)
+            intrinsic = aux.as(IntrinsicAux)
+            intrinsic.param_attrs.each { |list| incorporate_attrs(list, found, visited, worklist) }
+          end
+        end
       end
     end
-    used
+    found
   end
 
-  # An instruction of a block, or a constant: its own type, what its aux carries, and its operands. An
-  # operand that is another block's instruction is noted when that block is walked, so only constants are
-  # followed (they sit in no block), each once.
-  def note_inst(i : Inst, used : Set(String), seen : Hash(Value, Bool)) : Nil
-    note_type(i.type, used)
-    aux = i.aux
-    if aux.is_a?(GepAux)
-      note_type(aux.as(GepAux).source_type, used)
-    elsif aux.is_a?(CallAux)
-      call = aux.as(CallAux)
-      note_type(call.fn_type, used)
-      note_attrs(call.fn_attrs, used)
-      note_attrs(call.ret_attrs, used)
-      call.param_attrs.each { |list| note_attrs(list, used) }
-    elsif aux.is_a?(IntrinsicAux)
-      intrinsic = aux.as(IntrinsicAux)
-      intrinsic.overload.each { |t| note_type(t, used) }
-      intrinsic.param_attrs.each { |list| note_attrs(list, used) }
-    end
-    i.args.each { |a| note_operand(a, used, seen) }
-    nil
-  end
-
-  def note_operand(v : Value, used : Set(String), seen : Hash(Value, Bool)) : Nil
-    note_type(v.type, used)
+  # Only constant Insts are walked, each once: its type, then a GEP constant's source type,
+  # then its operands. Call fn_type, non-constant operand types, and intrinsic overload types
+  # are intentionally not walked, matching LLVM TypeFinder.
+  def incorporate_value(v : Value, found : Array(IrType), visited : Set(String), seen : Hash(Value, Bool), worklist : Array(IrType)) : Nil
     return nil unless v.is_a?(Inst)
     constant = v.as(Inst)
     return nil unless constant_op?(constant.op)
     return nil if seen.has_key?(v)
     seen[v] = true
-    note_inst(constant, used, seen)
+    incorporate_type(constant.type, found, visited, worklist)
+    if constant.op == Op::ConstExpr
+      aux = constant.aux
+      if aux.is_a?(GepAux)
+        incorporate_type(aux.as(GepAux).source_type, found, visited, worklist)
+      end
+    end
+    constant.args.each { |a| incorporate_value(a, found, visited, seen, worklist) }
+    nil
   end
 
   def constant_op?(op : Op) : Bool
     op == Op::ConstInt || op == Op::ConstFloat || op == Op::ConstNull || op == Op::ConstUndef || op == Op::ConstPoison || op == Op::ConstZero || op == Op::ConstAggregate || op == Op::ConstBytes || op == Op::ConstExpr
   end
 
-  def note_attrs(attrs : Array(Attribute), used : Set(String)) : Nil
+  def incorporate_attrs(attrs : Array(Attribute), found : Array(IrType), visited : Set(String), worklist : Array(IrType)) : Nil
     attrs.each do |a|
       if t = a.type_value
-        note_type(t, used)
+        incorporate_type(t, found, visited, worklist)
       end
     end
     nil
   end
 
-  # A named struct is noted once and its fields followed once, so a struct that holds a pointer to itself
-  # ends; an unnamed type cannot hold itself.
-  def note_type(t : IrType, used : Set(String)) : Nil
-    if t.struct?
-      if name = t.name
-        return nil if used.includes?(name)
-        used.add(name)
+  # LIFO worklist matching LLVM TypeFinder::incorporateType: marks by IrType#key when pushed,
+  # pushes subtypes in reverse (function subtypes are return type then parameters), and records
+  # named structs when popped.
+  def incorporate_type(root : IrType, found : Array(IrType), visited : Set(String), worklist : Array(IrType)) : Nil
+    return nil if visited.includes?(root.key)
+    visited.add(root.key)
+    worklist << root
+    while !worklist.empty?
+      t = worklist.pop
+      if t.struct? && t.name
+        found << t
       end
-      t.fields.each { |field| note_type(field, used) }
-    elsif t.array? || t.vector?
-      note_type(t.element_type, used)
-    elsif t.function?
-      note_type(t.return_type, used)
-      t.param_types.each { |param| note_type(param, used) }
+      if t.struct?
+        fields = t.fields
+        k = fields.size - 1
+        while k >= 0
+          push_type(fields[k], visited, worklist)
+          k = k - 1
+        end
+      elsif t.array? || t.vector?
+        push_type(t.element_type, visited, worklist)
+      elsif t.function?
+        params = t.param_types
+        k = params.size - 1
+        while k >= 0
+          push_type(params[k], visited, worklist)
+          k = k - 1
+        end
+        push_type(t.return_type, visited, worklist)
+      end
     end
+    nil
+  end
+
+  def push_type(t : IrType, visited : Set(String), worklist : Array(IrType)) : Nil
+    return nil if visited.includes?(t.key)
+    visited.add(t.key)
+    worklist << t
     nil
   end
 

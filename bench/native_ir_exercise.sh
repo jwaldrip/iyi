@@ -177,6 +177,20 @@ named_types_check() {
   return 0
 }
 
+# Named types must be written in LLVM TypeFinder discovery order, not type-table creation order.
+named_type_order_check() {
+  local bin="$1" out expected
+  out=$("$bin" print bench/fixtures/ir/accept/named_types.ir 2>&1 | grep ' = type ') || return 1
+  expected='%ByGlobal = type { i32, %Nested }
+%Nested = type { i64 }
+%ByInitializer = type { i32 }
+%ByAttribute = type { i64, i64, i64 }
+%ByParameter = type { i64, i64, i64 }
+%ByAlloca = type { i16 }
+%ByGep = type { i8, i64 }'
+  [ "$out" = "$expected" ]
+}
+
 # The tls-fresh fixture must be refused under its rule. Non-zero when it is accepted or refused another way.
 tls_check() {
   local bin="$1" out
@@ -313,6 +327,7 @@ echo "$out" | grep -q '^source_filename = "moduleid.iyi"$' || fail "moduleid.ir 
 decimal_check "$DRV" || fail "decimal_float.ir: a decimal floating-point constant is not read as its bit pattern: $("$DRV" print bench/fixtures/ir/accept/decimal_float.ir 2>&1)"
 llvm_float_check "$DRV" || fail "llvm_float.ir: a float constant in LLVM's double form is not read as the float's bits: $("$DRV" print bench/fixtures/ir/accept/llvm_float.ir 2>&1)"
 named_types_check "$DRV" || fail "named_types.ir: a named type nothing mentions is written, or a mentioned one is not: $("$DRV" print bench/fixtures/ir/accept/named_types.ir 2>&1 | grep ' = type ')"
+named_type_order_check "$DRV" || fail "named_types.ir: named types are not written in TypeFinder discovery order: $("$DRV" print bench/fixtures/ir/accept/named_types.ir 2>&1 | grep ' = type ')"
 count=0
 for f in bench/fixtures/ir/reject/*.ir; do
   count=$((count + 1))
@@ -432,14 +447,19 @@ prove_mutation "printer: a wide integer constant is written as its low word alon
   roundtrip_check
 prove_mutation "printer: every named type in the table is written, mentioned or not" \
   src/compiler/ir/printer.iyi \
-  '        next unless used.includes?(t.name || "")' \
-  '        next if false' \
+  '      named_types_in_order.each do |t|' \
+  '      @module.types.named.each do |t|' \
   named_types_check
 prove_mutation "printer: a type an attribute names is not followed" \
   src/compiler/ir/printer.iyi \
-  $'      if t = a.type_value\n        note_type(t, used)' \
+  $'      if t = a.type_value\n        incorporate_type(t, found, visited, worklist)' \
   $'      if t = a.type_value\n        nil' \
   named_types_check
+prove_mutation "printer: mentioned named types are written in table creation order instead of discovery order" \
+  src/compiler/ir/printer.iyi \
+  $'    found\n  end' \
+  $'    @module.types.named.select { |t| visited.includes?(t.key) }\n  end' \
+  named_type_order_check
 prove_mutation "verifier: a call no longer kills thread-local values" \
   src/compiler/ir/verifier.iyi \
   '    if i.op == Op::Call || i.op == Op::Invoke' \
