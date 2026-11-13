@@ -66,7 +66,7 @@ def has_return_colon(s: str) -> bool:
 def is_in_scope_hosted_name(name: str) -> bool:
     if not name.startswith("*"):
         return False
-    if "~" in name:
+    if name.startswith("*~"):
         return False
     if not has_return_colon(name[1:]):
         return False
@@ -677,6 +677,11 @@ def cmd_report(args: argparse.Namespace) -> int:
             instance_silent[label] = reason
         elif phase in ("instance-body", "instance-lowering"):
             refusals_by_instance[label].append((phase, owner, reason))
+    accounted = set(census_failures) | set(instance_clean) | set(instance_silent) | set(refusals_by_instance)
+    missing_records = asked_set - accounted
+    if missing_records:
+        print(f"ERROR: {len(missing_records)} asked names lack direct instance records; report is incomplete", file=sys.stderr)
+        return 1
     clean_asked = {h for h, actual in instance_clean.items()
                    if actual == h and h not in refusals_by_instance and h not in census_failures}
     extra_clean = sorted(port_clean_all - hosted_set)
