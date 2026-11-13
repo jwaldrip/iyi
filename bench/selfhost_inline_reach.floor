@@ -20,12 +20,12 @@
 #     actual argument types.
 # No instance the hosted program has was lost. The label lists are kept with the PR that lands this file.
 # The existing reach mutations remain.
-samples/iyi/hello.iyi 890
-bench/fixtures/seminl_reach/root.iyi 854
-bench/fixtures/seminl_reach/def_body_if.iyi 857
-bench/fixtures/seminl_reach/def_body_seq.iyi 857
-bench/fixtures/seminl_reach/def_if_branch.iyi 857
-bench/fixtures/seminl_reach/def_while_body.iyi 857
-bench/fixtures/seminl_reach/top_if_class.iyi 853
-bench/fixtures/seminl_reach/const_value_if.iyi 853
-bench/fixtures/seminl_reach/fun_body_local_across.iyi 852
+samples/iyi/hello.iyi 893
+bench/fixtures/seminl_reach/root.iyi 857
+bench/fixtures/seminl_reach/def_body_if.iyi 860
+bench/fixtures/seminl_reach/def_body_seq.iyi 860
+bench/fixtures/seminl_reach/def_if_branch.iyi 860
+bench/fixtures/seminl_reach/def_while_body.iyi 860
+bench/fixtures/seminl_reach/top_if_class.iyi 856
+bench/fixtures/seminl_reach/const_value_if.iyi 856
+bench/fixtures/seminl_reach/fun_body_local_across.iyi 855
