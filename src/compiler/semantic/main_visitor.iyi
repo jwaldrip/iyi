@@ -18,6 +18,7 @@ import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
+import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/new::{define_new_methods}
@@ -80,6 +81,120 @@ pub class BlockOwner
   end
 end
 
+# Port of src/compiler/iyi/semantic/filters.cr: TypeFilters maps each variable
+# name to its positive (then) and negative (else) TypeFilterSpec.
+pub class TypeFilters
+  getter pos : Hash(String, TypeFilterSpec)
+  getter neg : Hash(String, TypeFilterSpec)
+
+  def initialize(@pos : Hash(String, TypeFilterSpec) = Hash(String, TypeFilterSpec).new, @neg : Hash(String, TypeFilterSpec) = Hash(String, TypeFilterSpec).new)
+  end
+
+  def self.single(name : String, spec : TypeFilterSpec) : TypeFilters
+    f = TypeFilters.new
+    f.pos[name] = spec
+    f.neg[name] = TypeFilter.negate(spec)
+    f
+  end
+
+  def self.truthy(name : String) : TypeFilters
+    single(name, TypeFilterSpec.new("truthy"))
+  end
+
+  def self.and_spec(s1 : TypeFilterSpec?, s2 : TypeFilterSpec?) : TypeFilterSpec?
+    if a = s1
+      if b = s2
+        return a if a == b
+        return TypeFilterSpec.new("and", nil, "", a, b)
+      end
+      return a
+    end
+    s2
+  end
+
+  def self.or_spec(s1 : TypeFilterSpec?, s2 : TypeFilterSpec?) : TypeFilterSpec?
+    if a = s1
+      if b = s2
+        return a if a == b
+        return TypeFilterSpec.new("or", nil, "", a, b)
+      end
+    end
+    nil
+  end
+
+  def self.and_filters(f1 : TypeFilters?, f2 : TypeFilters?) : TypeFilters?
+    return nil if f1.nil? && f2.nil?
+    nf = TypeFilters.new
+    common_keys(f1, f2).each do |name|
+      p1 = f1 ? f1.as(TypeFilters).pos[name]? : nil
+      p2 = f2 ? f2.as(TypeFilters).pos[name]? : nil
+      if pf = and_spec(p1, p2)
+        nf.pos[name] = pf
+      end
+      n1 = f1 ? f1.as(TypeFilters).neg[name]? : nil
+      n2 = f2 ? f2.as(TypeFilters).neg[name]? : nil
+      if negf = or_spec(n1, n2)
+        nf.neg[name] = negf
+      end
+    end
+    nf
+  end
+
+  def self.or_filters(f1 : TypeFilters?, f2 : TypeFilters?) : TypeFilters?
+    return nil if f1.nil? && f2.nil?
+    nf = TypeFilters.new
+    common_keys(f1, f2).each do |name|
+      p1 = f1 ? f1.as(TypeFilters).pos[name]? : nil
+      p2 = f2 ? f2.as(TypeFilters).pos[name]? : nil
+      if pf = or_spec(p1, p2)
+        nf.pos[name] = pf
+      end
+      n1 = f1 ? f1.as(TypeFilters).neg[name]? : nil
+      n2 = f2 ? f2.as(TypeFilters).neg[name]? : nil
+      if negf = and_spec(n1, n2)
+        nf.neg[name] = negf
+      end
+    end
+    nf
+  end
+
+  def self.invert(f : TypeFilters?) : TypeFilters?
+    return nil if f.nil?
+    filters = f.as(TypeFilters)
+    TypeFilters.new(filters.neg.dup, filters.pos.dup)
+  end
+
+  def self.assign_var(filters : TypeFilters?, name : String) : TypeFilters
+    return truthy(name) if filters.nil?
+    spec = TypeFilterSpec.new("truthy")
+    nf = filters.as(TypeFilters).dup
+    if pf = and_spec(nf.pos[name]?, spec)
+      nf.pos[name] = pf
+    end
+    if negf = and_spec(nf.neg[name]?, TypeFilter.negate(spec))
+      nf.neg[name] = negf
+    end
+    nf
+  end
+
+  def dup : TypeFilters
+    TypeFilters.new(@pos.dup, @neg.dup)
+  end
+
+  def self.common_keys(f1 : TypeFilters?, f2 : TypeFilters?) : Array(String)
+    keys = [] of String
+    if a = f1
+      a.pos.each_key { |k| keys << k unless keys.includes?(k) }
+      a.neg.each_key { |k| keys << k unless keys.includes?(k) }
+    end
+    if b = f2
+      b.pos.each_key { |k| keys << k unless keys.includes?(k) }
+      b.neg.each_key { |k| keys << k unless keys.includes?(k) }
+    end
+    keys
+  end
+end
+
 # iyi: two modes. Strict (the default) raises on the first construct it cannot
 # type, as the port always did, and every existing gate relies on that. Total
 # (`total = true`, the typed dump's mode) records the reason on the node that
@@ -124,6 +239,18 @@ pub class MainVisitor < TypeNodeHost
   # The record of each call on a lib (see visit_lib_call): the fun, the result type and the
   # arguments the lowering passes.
   property lib_call_targets : NodeMap(LibCallTarget) = NodeMap(LibCallTarget).new
+  property type_filters : TypeFilters? = nil
+  property needs_type_filters : Int32 = 0
+  property unreachable : Bool = false
+
+  def needs_type_filters? : Bool
+    @needs_type_filters > 0
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    @unreachable = false
+    true
+  end
 
   def type_args_depth : Int32
     @in_type_args
@@ -706,6 +833,9 @@ pub class MainVisitor < TypeNodeHost
   def visit(node : Var) : Bool
     if t = @vars[node.name]?
       set_type(node, t)
+      if needs_type_filters?
+        @type_filters = TypeFilters.truthy(node.name)
+      end
       return false
     end
     if reason = @untyped_locals[node.name]?
@@ -1083,8 +1213,15 @@ pub class MainVisitor < TypeNodeHost
         # iyi: an annotation sits beside the def it annotates and is neither typed
         # nor walked (the hosted pass does not), so it does not end the list's type.
         unless exp.is_a?(Annotation)
-          exp.accept(self)
-          last_type = child_type(exp)
+          if i == node.expressions.size - 1
+            exp.accept(self)
+            last_type = child_type(exp)
+          else
+            saved_ntf = @needs_type_filters
+            @needs_type_filters = 0
+            exp.accept(self)
+            @needs_type_filters = saved_ntf
+          end
         end
         i = i + 1
       end
@@ -1103,19 +1240,157 @@ pub class MainVisitor < TypeNodeHost
     @program.type_merge(a, b)
   end
 
+  # Applies a TypeFilters map to @vars for the current branch.
+  def filter_vars(filters : TypeFilters?) : Nil
+    return nil if filters.nil?
+    filters.as(TypeFilters).pos.each do |name, spec|
+      if existing = @vars[name]?
+        if narrowed = TypeFilter.apply(@program, spec, existing)
+          @vars[name] = narrowed
+        else
+          @vars.delete(name)
+          @untyped_locals[name] = "variable '#{name}' cannot be typed"
+        end
+      end
+    end
+    nil
+  end
+
+  # Merges @vars after an `if`'s two branches (hosted MainVisitor#merge_if_vars).
+  def merge_if_vars(cond_vars : Hash(String, Type), then_vars : Hash(String, Type), else_vars : Hash(String, Type), then_untyped : Hash(String, String), else_untyped : Hash(String, String), then_unreachable : Bool, else_unreachable : Bool) : Nil
+    merged_vars = Hash(String, Type).new
+    merged_untyped = Hash(String, String).new
+    keys = [] of String
+    then_vars.each_key { |k| keys << k unless keys.includes?(k) }
+    else_vars.each_key { |k| keys << k unless keys.includes?(k) }
+    cond_vars.each_key { |k| keys << k unless keys.includes?(k) }
+    keys.each do |name|
+      then_var = then_vars[name]?
+      else_var = else_vars[name]?
+      cond_var = cond_vars[name]?
+      if then_var && else_var
+        if then_unreachable && else_unreachable
+          merged_vars[name] = merge_flow(then_var, else_var)
+        elsif then_unreachable
+          merged_vars[name] = else_var
+        elsif else_unreachable
+          merged_vars[name] = then_var
+        elsif then_var == else_var
+          merged_vars[name] = then_var
+        else
+          merged_vars[name] = @program.type_merge(then_var, else_var)
+        end
+      elsif then_var
+        if then_unreachable
+          if cond_var && !else_unreachable
+            # Narrowed to empty in else; keep nothing here
+          elsif cond_var
+            merged_vars[name] = cond_var
+          end
+        else
+          if cond_var
+            merged_vars[name] = then_var
+          elsif else_unreachable
+            merged_vars[name] = then_var
+          else
+            merged_vars[name] = @program.type_merge(then_var, @program.nil_type)
+            if old_u = @var_unions[name]?
+              @var_unions[name] = @program.type_merge(old_u, @program.nil_type)
+            end
+          end
+        end
+      elsif else_var
+        if else_unreachable
+          if cond_var && !then_unreachable
+            # Narrowed to empty in then
+          elsif cond_var
+            merged_vars[name] = cond_var
+          end
+        else
+          if cond_var
+            merged_vars[name] = else_var
+          elsif then_unreachable
+            merged_vars[name] = else_var
+          else
+            merged_vars[name] = @program.type_merge(else_var, @program.nil_type)
+            if old_u = @var_unions[name]?
+              @var_unions[name] = @program.type_merge(old_u, @program.nil_type)
+            end
+          end
+        end
+      end
+      unless merged_vars.has_key?(name)
+        if reason = (else_unreachable ? then_untyped[name]? : (then_unreachable ? else_untyped[name]? : (then_untyped[name]? || else_untyped[name]?)))
+          merged_untyped[name] = reason
+        end
+      end
+    end
+    @vars = merged_vars
+    @untyped_locals = merged_untyped
+    nil
+  end
+
   def visit(node : If) : Bool
+    @type_filters = nil
+    @needs_type_filters = @needs_type_filters + 1
     node.cond.accept(self)
+    @needs_type_filters = @needs_type_filters - 1
+
+    cond_vars = @vars
+    cond_untyped = @untyped_locals
+    cond_type_filters = @type_filters
+
+    @vars = cond_vars.dup
+    @untyped_locals = cond_untyped.dup
+    @type_filters = nil
+    @unreachable = false
+    filter_vars(cond_type_filters)
     node.then = splice_def_body(node.then)
     node.then.accept(self)
+    then_vars = @vars
+    then_untyped = @untyped_locals
+    then_type_filters = @type_filters
+    then_unreachable = @unreachable
+
+    @vars = cond_vars.dup
+    @untyped_locals = cond_untyped.dup
+    @type_filters = nil
+    @unreachable = false
+    filter_vars(TypeFilters.invert(cond_type_filters))
     node.else = splice_def_body(node.else)
     node.else.accept(self)
+    else_vars = @vars
+    else_untyped = @untyped_locals
+    else_type_filters = @type_filters
+    else_unreachable = @unreachable
+
+    merge_if_vars(cond_vars, then_vars, else_vars, then_untyped, else_untyped, then_unreachable, else_unreachable)
+
+    @type_filters = nil
+    if needs_type_filters?
+      if node.from_and
+        and_filters = TypeFilters.and_filters(cond_type_filters, then_type_filters)
+        then_vars.each_key do |name|
+          next if cond_vars.has_key?(name)
+          and_filters = TypeFilters.and_filters(and_filters, TypeFilters.truthy(name))
+        end
+        @type_filters = and_filters
+      elsif node.from_or
+        @type_filters = TypeFilters.or_filters(cond_type_filters, else_type_filters)
+      end
+    end
+
+    @unreachable = then_unreachable && else_unreachable
+
     then_type = child_type(node.then)
     else_type = child_type(node.else)
-    if then_type
-      if else_type
-        merged = merge_flow(then_type, else_type)
-        set_type(node, merged)
-      end
+    if then_type && else_type
+      merged = merge_flow(then_type, else_type)
+      set_type(node, merged)
+    elsif then_type && else_unreachable
+      set_type(node, then_type)
+    elsif else_type && then_unreachable
+      set_type(node, else_type)
     end
     false
   end
@@ -1298,8 +1573,17 @@ pub class MainVisitor < TypeNodeHost
 
       callee_imports = @program.current_imports
       callee_import_defs = @program.current_import_defs
+      old_yield_type_filters = @type_filters
+      old_yield_needs_filters = @needs_type_filters
+      old_yield_unreachable = @unreachable
+      @type_filters = nil
+      @needs_type_filters = 0
+      @unreachable = false
       enter_file_scope(blk)
       blk.body.accept(self)
+      @type_filters = old_yield_type_filters
+      @needs_type_filters = old_yield_needs_filters
+      @unreachable = old_yield_unreachable
       @program.current_imports = callee_imports
       @program.current_import_defs = callee_import_defs
       @current_call_block = callee_block
@@ -1810,10 +2094,31 @@ pub class MainVisitor < TypeNodeHost
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(target_def)
+    old_current_type = @current_type
+    enter_owner_scope(rec_type)
     result = type_method_body_in_file(target_def, rec_type, args, block, site, cache_key)
+    @current_type = old_current_type
     @program.current_imports = old_imports
     @program.current_import_defs = old_import_defs
     result
+  end
+
+  # iyi: a body's constants are looked up from the type the def is called on, not from the type the
+  # call is written in (hosted: the def's self type). A generic instance's constants are its generic
+  # type's, and a metaclass names its instance type: `SIZE` in a class method of Hdr is Hdr's whatever
+  # class calls it.
+  def enter_owner_scope(rec_type : Type) : Nil
+    owner : Type = rec_type
+    if owner.is_a?(MetaclassType)
+      owner = owner.as(MetaclassType).instance_type
+    end
+    if owner.is_a?(GenericInstanceType)
+      owner = owner.as(GenericInstanceType).generic_type
+    end
+    if owner.is_a?(ModuleType) && !owner.is_a?(SemanticProgram)
+      @current_type = owner.as(ModuleType)
+    end
+    nil
   end
 
   # iyi: the names a node's file imported become the names in scope (SPEC.md R-2b). A node with
@@ -1867,6 +2172,12 @@ pub class MainVisitor < TypeNodeHost
     old_break_types = @break_types
     old_next_types = @next_types
     old_return_types = @return_types
+    old_type_filters = @type_filters
+    old_needs_type_filters = @needs_type_filters
+    old_unreachable = @unreachable
+    @type_filters = nil
+    @needs_type_filters = 0
+    @unreachable = false
     @break_types = nil
     @next_types = nil
     @return_types = [] of Type?
@@ -1970,6 +2281,9 @@ pub class MainVisitor < TypeNodeHost
     @def_var_unions[target_def] = @var_unions
     @var_unions = old_var_unions
     @untyped_locals = old_untyped_locals
+    @type_filters = old_type_filters
+    @needs_type_filters = old_needs_type_filters
+    @unreachable = old_unreachable
     @typing_stack.pop
 
     return nil unless params_typed
@@ -2157,10 +2471,15 @@ pub class MainVisitor < TypeNodeHost
     if node.obj.nil? && node.args.empty? && node.block.nil?
       if vt = @vars[node.name]?
         set_type(node, vt)
+        if needs_type_filters?
+          @type_filters = TypeFilters.truthy(node.name)
+        end
         return false
       end
     end
 
+    saved_call_ntf = @needs_type_filters
+    @needs_type_filters = 0
     node.args.each do |arg|
       arg.accept(self)
     end
@@ -2171,11 +2490,14 @@ pub class MainVisitor < TypeNodeHost
       if ot = child_type(obj)
         rec_type = ot
       else
+        @needs_type_filters = saved_call_ntf
+        @type_filters = nil
         return false
       end
     else
       rec_type = @scope || @current_type
     end
+    @needs_type_filters = saved_call_ntf
     if rec_type.is_a?(LibType)
       return visit_lib_call(node, rec_type.as(LibType))
     end
@@ -2266,6 +2588,7 @@ pub class MainVisitor < TypeNodeHost
     if ret_type
       set_type(node, ret_type)
     end
+    @type_filters = nil
     false
   end
 
