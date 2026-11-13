@@ -146,7 +146,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
           self_value = storage.as(Value)
         else
           recv = lower_receiver(low, node)
-          self_value = receiver_self(low, node, recv, self_type.as(Type))
+          self_value = self_argument(low, node.obj.as(ASTNode), recv, self_type.as(Type))
         end
       end
     end
@@ -358,20 +358,6 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
     end
   end
   owner
-end
-
-# The self of a call on a struct receiver. A receiver that is itself a call with a struct result (`Point.new(1, 2).sum`)
-# was just spilled to an alloca by that call (codegen_call_node, hosted call.cr:707-713), and the hosted self is that
-# spill pointer: the port passes the spill slot as self and makes no second alloca. Any other receiver goes through
-# `self_argument`. `lower_receiver` cleared `spill_node` before it visited the receiver, so a match is this receiver's own spill.
-pub def receiver_self(low : Lowerer, node : Compiler::Syntax::Ast::Call, recv : Value, st : Type) : Value
-  obj = node.obj.as(ASTNode)
-  if self_by_pointer?(st) && low.spill_node != 0_u64 && low.spill_node == obj.object_id
-    if slot = low.spill_slot
-      return slot.as(Value)
-    end
-  end
-  self_argument(low, obj, recv, st)
 end
 
 # The receiver's value, evaluated as the hosted `request_value(obj)` does: the value the receiver
