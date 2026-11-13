@@ -133,6 +133,23 @@ if ! lower_calls_check; then
   echo "  baseline: the unmutated port does not match the hosted module, so no mutation below is counted"
   exit 1
 fi
+# The import of a lib fun (contract 6b): the port's own text declares SecRandomCopyBytes with its framework. The
+# comparison above drops the `import` text on both sides (lower_gate.iyi strip_import), so this check is the one
+# that proves it. It rebuilds the driver from the current source, so a mutation of the import is what it tests.
+link_import_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  "$WORK/mut" emit "$REPO/bench/fixtures/lowcall_link_framework.iyi" "$WORK/lowcall_link_framework.oracle.ll" > "$WORK/mut.import.ir" 2>/dev/null || return 1
+  awk '/^declare / && /@SecRandomCopyBytes\(/ && / import "Security"/ { ok = 1 } END { exit !ok }' "$WORK/mut.import.ir"
+}
+echo "  the lib fun is imported from its framework (contract 6b):"
+if link_import_check; then
+  echo "    yes: SecRandomCopyBytes is declared import \"Security\""
+else
+  echo "    no: the port's module does not declare SecRandomCopyBytes import \"Security\""
+  status=1
+fi
+prove_mutation "a lib fun is imported from no library" "$REPO/src/compiler/lower/call.iyi" \
+  "    made.import_library = import_from" "    made.import_library = nil" -- link_import_check || status=1
 prove_mutation "a function's linkage is external" "$REPO/src/compiler/lower/fun.iyi" \
   "fn.linkage = Linkage::Internal" "fn.linkage = Linkage::External" -- lower_calls_check || status=1
 prove_mutation "a mangled argument list has no separator" "$REPO/src/compiler/lower/fun.iyi" \
@@ -184,7 +201,7 @@ prove_mutation "a method's self is not the first parameter" "$REPO/src/compiler/
 prove_mutation "a lib call passes no arguments" "$REPO/src/compiler/lower/call.iyi" \
   'inst = low.builder.call(fn_type, func.as(Function), values, "")' 'inst = low.builder.call(fn_type, func.as(Function), [] of Value, "")' -- lower_calls_check || status=1
 prove_mutation "a lib fun is declared with the iyi calling convention" "$REPO/src/compiler/lower/call.iyi" \
-  'func = low.module.add_function(real, fn_type, CallConv::C)' 'func = low.module.add_function(real, fn_type, CallConv::Iyi)' -- lower_calls_check || status=1
+  'made = low.module.add_function(real, fn_type, CallConv::C)' 'made = low.module.add_function(real, fn_type, CallConv::Iyi)' -- lower_calls_check || status=1
 prove_mutation "a lib call's function type returns nil" "$REPO/src/compiler/lower/call.iyi" \
   'fn_type = low.module.types.func(params, low.typer.llvm_return_type(ret), lib_fun.varargs?)' 'fn_type = low.module.types.func(params, low.typer.llvm_return_type(low.analysed.program.nil_type), lib_fun.varargs?)' -- lower_calls_check || status=1
 prove_mutation "a lib call's result is declared as an integer (a pointer result is caught)" "$REPO/src/compiler/lower/call.iyi" \
@@ -213,6 +230,10 @@ prove_mutation "a top-level fun with a body is emitted with the iyi calling conv
   "  CallConv::C
 end" "  CallConv::Iyi
 end" -- lower_calls_check || status=1
+prove_mutation "a restriction the argument implements is refused (the nil argument into Fiber | Nil)" "$REPO/src/compiler/lower/call.iyi" \
+  'unless at.implements?(restricted.as(Type))' 'if at.implements?(restricted.as(Type))' -- lower_calls_check || status=1
+prove_mutation "a nil argument is passed as the visit left it, not as the nil value (hosted zeroinitializer)" "$REPO/src/compiler/lower/call.iyi" \
+  'values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))' 'values << value.as(Value)' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

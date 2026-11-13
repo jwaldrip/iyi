@@ -1,0 +1,7 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def mark : Int32
+  1
+end

@@ -1,10 +1,11 @@
 module compiler/semantic/match
 
-import compiler/syntax/ast::{ASTNode, Def, Yield}
+import compiler/syntax/ast::{ASTNode, Call, Def, NumberLiteral, Splat, Yield}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ModuleType, NoReturnType, Type}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/types/type_system::{TypeSystem}
+import compiler/types/lookup::{LookupError}
 import compiler/types/types::{NamedArgumentType}
 
 # The name, argument types, named arguments and block of a call: the hosted
@@ -20,7 +21,12 @@ pub class CallSignature
   getter block : Bool
 
   def initialize(@name : String, @arg_types : Array(Type), @named_args : Array(NamedArgumentType)? = nil, @block : Bool = false)
+    @autocast_nodes = nil
   end
+
+  # Set for the hosted second matching pass: the call's argument nodes, so a
+  # number literal can be told from a typed integer of the same type.
+  property autocast_nodes : Array(ASTNode)?
 end
 
 # One def that accepts a call: the hosted Match. *arg_types* are the positional
@@ -90,9 +96,10 @@ end
 # Matches one def against a call's signature: the port of CallSignature#match.
 # Positional arguments, a splat parameter (`*args`, which takes the arguments after
 # its prefix), named arguments, a double splat (`**opts`, which takes the names no
-# parameter has), and the block rule are ported. Refused by name: a splat with a
-# restriction, a parameter after the splat, a double splat with a restriction, and
-# free variables.
+# parameter has), free variables, and the block rule are ported. Refused by name: a
+# restricted splat parameter (the hosted pass leaves a free variable that only a
+# splat names undefined: `undefined constant T`), a parameter after the splat, and a
+# double splat with a restriction.
 pub class CallMatch
   def self.yields?(definition : Def) : Bool
     return true if definition.block_arg
@@ -112,7 +119,10 @@ pub class CallMatch
     if splat
       k = splat.as(Int32)
       return MatchAttempt.failed("parameters after a splat are not ported") if count > k + 1
-      return MatchAttempt.failed("a restricted splat parameter is not ported") if definition.args[k].restriction
+    end
+    splat_restriction = CallMatch.splat_restriction_of(definition, splat)
+    if splat_restriction && !splat_restriction.is_a?(Splat)
+      return MatchAttempt.failed("a restricted splat parameter is not ported")
     end
     dsplat = definition.double_splat
     if dsplat
@@ -125,20 +135,18 @@ pub class CallMatch
     given = signature.arg_types.size
     prefix = splat ? splat.as(Int32) : count
     return MatchAttempt.none if !splat && given > count
+    splat_types = [] of Type
+    if splat
+      si = prefix
+      while si < given
+        splat_types << signature.arg_types[si]
+        si += 1
+      end
+    end
     if free_names.size > 0
-      i = 0
-      while i < given && i < prefix
-        bind_node = definition.args[i].restriction
-        if !bind_node.nil?
-          return MatchAttempt.none if !FreeBindings.bind(bind_node.as(ASTNode), signature.arg_types[i], free_names, bound)
-        end
-        i += 1
-      end
-      j = 0
-      while j < free_names.size
-        return MatchAttempt.failed("free variable '#{free_names[j]}' is not bound by an argument") if bound[free_names[j]]?.nil?
-        j += 1
-      end
+      maybe_bound = FreeBindings.of_def(definition, signature.arg_types, ts)
+      return MatchAttempt.none if maybe_bound.nil?
+      bound = maybe_bound.as(Hash(String, Type))
     end
 
     mandatory = [] of Bool
@@ -157,6 +165,20 @@ pub class CallMatch
     while i < given && i < prefix
       arg = definition.args[i]
       arg_type = signature.arg_types[i]
+      written = arg.restriction
+      if written && FreeBindings.mentions?(written.as(ASTNode), free_names)
+        answer = ArgRestriction.restrict_argument(ts, defining, written.as(ASTNode), arg_type, owner, free_names, bound)
+        if answer.error
+          return MatchAttempt.failed(answer.error.to_s)
+        end
+        return MatchAttempt.none if answer.type.nil?
+        matched << answer.type.as(Type)
+        exact = false if answer.type.as(Type) != arg_type
+        mandatory[i] = true
+        declared << answer.type.as(Type)
+        i += 1
+        next
+      end
       restriction = ArgRestriction.of_bound(ts, defining, arg, owner, bound)
       if restriction.error
         return MatchAttempt.failed(restriction.error.to_s)
@@ -167,6 +189,12 @@ pub class CallMatch
       else
         restricted = ts.restrict(arg_type, allowed.as(Type))
         restricted = allowed.as(Type) if arg_type.is_a?(NoReturnType)
+        if restricted.nil?
+          nodes = signature.autocast_nodes
+          if nodes && i < nodes.size && NumericAutocast.accepts?(nodes[i], arg_type, allowed.as(Type))
+            restricted = allowed.as(Type)
+          end
+        end
         return MatchAttempt.none if restricted.nil?
         matched << restricted.as(Type)
         exact = false if restricted.as(Type) != arg_type
@@ -180,7 +208,17 @@ pub class CallMatch
       i += 1
     end
 
-    # The arguments past the prefix are the splat's elements, each unrestricted.
+    if splat && splat_restriction
+      splat_tuple = ts.tuple_of(splat_types)
+      found = ArgRestriction.lookup_free(ts, defining, splat_restriction.as(Splat).exp, owner, bound)
+      if found.is_a?(LookupError)
+        return MatchAttempt.failed(found.as(LookupError).message)
+      end
+      allowed = found.as(Type)
+      restricted = ts.restrict(splat_tuple, allowed)
+      return MatchAttempt.none if restricted.nil?
+      exact = false if restricted.as(Type) != splat_tuple
+    end
     if splat
       while i < given
         matched << signature.arg_types[i]
@@ -227,7 +265,27 @@ pub class CallMatch
       k += 1
     end
 
+    # A free variable the arguments never bound is the hosted "undefined constant",
+    # and only after every written restriction matched. A generic that does not
+    # match the argument is no match, not that error (restrict returns nil).
+    if free_names.size > 0
+      j = 0
+      while j < free_names.size
+        return MatchAttempt.failed("undefined constant #{free_names[j]}") if bound[free_names[j]]?.nil?
+        j += 1
+      end
+    end
+
+    # A successful numeric autocast is a covering match: the hosted second pass
+    # treats a partial number match as compatible, which sets cover_all.
+    exact = true if signature.autocast_nodes
     MatchAttempt.matched(Match.new(definition, matched, owner, defining, exact, named_matched, declared, bound))
+  end
+
+  # The restriction of a splat parameter, nil when it has none.
+  def self.splat_restriction_of(definition : Def, splat : Int32?) : ASTNode?
+    return nil if splat.nil?
+    definition.args[splat.as(Int32)].restriction
   end
 
   # The position of the def parameter a named argument refers to, or -1.
@@ -238,5 +296,189 @@ pub class CallMatch
       i += 1
     end
     -1
+  end
+end
+
+# The hosted numeric autocast rules (semantic/ast.cr:19-35, restrictions.cr:1831-1844,
+# types.cr:1684-1687). A number literal matches a parameter when its value fits.
+# A typed integer matches when its whole range fits. Symbol autocast is not this
+# increment.
+pub class NumericAutocast
+  def self.any?(nodes : Array(ASTNode), types : Array(Type)) : Bool
+    i = 0
+    while i < nodes.size && i < types.size
+      return true if NumericAutocast.supports?(nodes[i], types[i])
+      i += 1
+    end
+    false
+  end
+
+  # A number literal always may. A typed integer may when its kind is at most
+  # 64 bits. A typed Float32 may. The harness writes a typed value as instance(T).
+  def self.supports?(node : ASTNode, type : Type) : Bool
+    return true if node.is_a?(NumberLiteral)
+    return false unless NumericAutocast.instance_call?(node)
+    bits = NumericAutocast.integer_bits(type)
+    return bits > 0 && bits <= 64 if bits > 0
+    type.full_name == "Float32"
+  end
+
+  # True when *node* typed as *type* may be passed where *target* is required.
+  # The two lines the mutations patch are the literal value check and the
+  # typed-integer range check.
+  def self.accepts?(node : ASTNode, type : Type, target : Type) : Bool
+    if node.is_a?(NumberLiteral)
+      return NumericAutocast.value_fits?(node.as(NumberLiteral), target)
+    end
+    if NumericAutocast.instance_call?(node)
+      return NumericAutocast.range_subset?(type, target)
+    end
+    false
+  end
+
+  def self.instance_call?(node : ASTNode) : Bool
+    return false unless node.is_a?(Call)
+    call = node.as(Call)
+    call.obj.nil? && call.name == "instance"
+  end
+
+  def self.integer_bits(type : Type) : Int32
+    case type.full_name
+    when "Int8", "UInt8"
+      8
+    when "Int16", "UInt16"
+      16
+    when "Int32", "UInt32"
+      32
+    when "Int64", "UInt64"
+      64
+    when "Int128", "UInt128"
+      128
+    else
+      0
+    end
+  end
+
+  def self.signed?(type : Type) : Bool
+    name = type.full_name
+    name.starts_with?("Int") && !name.starts_with?("UInt")
+  end
+
+  # IntegerType#subset_of? for a typed number: every value of *from* fits in *target*.
+  # A signed type is never a subset of an unsigned type. An unsigned type fits in a
+  # signed type only when the signed type is strictly wider.
+  def self.range_subset?(from : Type, target : Type) : Bool
+    if from.full_name == "Float32" && target.full_name == "Float64"
+      return true
+    end
+    fb = NumericAutocast.integer_bits(from)
+    tb = NumericAutocast.integer_bits(target)
+    return false if fb == 0 || tb == 0
+    from_signed = NumericAutocast.signed?(from)
+    to_signed = NumericAutocast.signed?(target)
+    return false if from_signed && !to_signed
+    if !from_signed && to_signed
+      return fb < tb
+    end
+    fb <= tb
+  end
+
+  # NumberLiteral#representable_in? for an integer or float parameter. A float
+  # literal does not match an integer parameter. An integer literal matches a
+  # float parameter. An integer literal matches an integer parameter when the
+  # written value is inside that parameter's range.
+  def self.value_fits?(literal : NumberLiteral, target : Type) : Bool
+    kind = literal.kind.to_s
+    float_literal = kind == "f32" || kind == "f64"
+    tname = target.full_name
+    if tname == "Float32" || tname == "Float64"
+      return true
+    end
+    return false if float_literal
+    return false if NumericAutocast.integer_bits(target) == 0
+    value = NumericAutocast.parse_i64(literal.value)
+    return false if value.nil?
+    return false if value < NumericAutocast.range_min(tname)
+    if tname == "UInt64" || tname == "UInt128"
+      return value >= 0_i64
+    end
+    if tname == "Int128"
+      return true
+    end
+    value <= NumericAutocast.range_max(tname)
+  end
+
+  def self.range_min(name : String) : Int64
+    case name
+    when "Int8"
+      -128_i64
+    when "Int16"
+      -32768_i64
+    when "Int32"
+      -2147483648_i64
+    when "Int64"
+      -9223372036854775808_i64
+    else
+      0_i64
+    end
+  end
+
+  def self.range_max(name : String) : Int64
+    case name
+    when "Int8"
+      127_i64
+    when "UInt8"
+      255_i64
+    when "Int16"
+      32767_i64
+    when "UInt16"
+      65535_i64
+    when "Int32"
+      2147483647_i64
+    when "UInt32"
+      4294967295_i64
+    else
+      9223372036854775807_i64
+    end
+  end
+
+  # The written integer, or nil when it does not fit in Int64. Underscores are
+  # skipped. Enough for the literals the call fixtures write.
+  def self.parse_i64(text : String) : Int64?
+    negative = false
+    i = 0
+    if text.bytesize > 0 && text.byte_at(0) == 45_u8
+      negative = true
+      i = 1
+    end
+    n = 0_i64
+    saw = false
+    while i < text.bytesize
+      b = text.byte_at(i)
+      i += 1
+      next if b == 95_u8
+      digit = NumericAutocast.digit(b)
+      return nil if digit < 0_i64
+      saw = true
+      return nil if n > 922337203685477580_i64
+      n = n * 10_i64 + digit
+    end
+    return nil if !saw
+    negative ? -n : n
+  end
+
+  def self.digit(b : UInt8) : Int64
+    return -1_i64 if b < 48_u8 || b > 57_u8
+    n = 0_i64
+    v = b
+    while v > 48_u8
+      n += 1_i64
+      v -= 1_u8
+    end
+    n
+  end
+
+  def self.ambiguity(value : String, names : Array(String)) : String
+    "ambiguous call, implicit cast of #{value} matches all of #{names.join(", ")}"
   end
 end

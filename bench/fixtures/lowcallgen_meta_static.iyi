@@ -1,0 +1,11 @@
+class Box(T)
+  def self.twice(v : T) : T
+    v
+  end
+end
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(Box(Int32).twice(7))
