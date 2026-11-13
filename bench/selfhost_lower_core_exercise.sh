@@ -731,7 +731,7 @@ aggregate_store_check() {
   [ "$ns" = "$hs" ] && cmp -s "$WORK/aggregate-store.native.out" "$WORK/aggregate-store.hosted.out"
 }
 if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/aggregate-store.hosted" "$REPO/bench/fixtures/lowcast_struct_union.iyi" > "$WORK/aggregate-store.hosted.log" 2>&1 &&
-   cp "$WORK/aggregate-store.hosted.ll" "$WORK/aggregate-store.ll" && aggregate_store_check; then
+   [ -s "$WORK/aggregate-store.ll" ] && aggregate_store_check; then
   prove_mutation "aggregate store preserves the loaded value" "$REPO/src/compiler/lower/lower.iyi" \
     '      stored = load_aligned(low, low.typer.llvm_type(vt), v)' \
     '      stored = low.builder.const_zero(low.typer.llvm_type(vt))' -- aggregate_store_check || status=1
@@ -741,6 +741,7 @@ if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/aggregate-st
   fi
 else
   echo "FAIL: aggregate store baseline differs from hosted"
+  awk 'NR<=12' "$WORK/aggregate-store.hosted.log" "$WORK/aggregate-store.err"
   status=1
 fi
 tuple_literal_check() {
