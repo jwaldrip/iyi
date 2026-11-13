@@ -21,6 +21,8 @@ import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericCla
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction}
+import compiler/semantic/match::{CallSignature}
+import compiler/semantic/call::{CallRecalculation}
 import compiler/semantic/new::{define_new_methods}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument, LibCallTarget}
 
@@ -2007,6 +2009,29 @@ pub class MainVisitor < TypeNodeHost
     end
   end
 
+  # A splat restriction (`*T`) is not a type node, so the candidate check refuses
+  # it. The calls lane binds that splat from the argument types. One match is the
+  # def; several matches are not collapsed to the first (the calls lane answers
+  # that as not ported). Nil leaves the refusal in place.
+  def match_splat_with_calls(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
+    arg_types = [] of Type
+    i = 0
+    while i < args.size
+      t = child_type(args[i])
+      return nil if t.nil?
+      arg_types << t.as(Type)
+      i = i + 1
+    end
+    block_present = false
+    if call_node.block
+      block_present = true
+    end
+    signature = CallSignature.new(name, arg_types, nil, block_present)
+    target = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args)
+    return nil if target.error
+    target.definition
+  end
+
   # The overload a call resolves to, or nil when it cannot: strict mode raises
   # the error, total mode records it on the call and returns nil.
   def lookup_method_matching(rec_type : Type, name : String, args : Array(ASTNode), call_node : Call) : Def?
@@ -2050,6 +2075,9 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if count_matches.empty?
+      if rescued = match_splat_with_calls(rec_type, name, args, call_node)
+        return rescued
+      end
       overload_lines = candidates.map { |d| " - #{format_overload_signature(rec_type, d)}" }
       overloads_str = "Overloads are:\n#{overload_lines.join("\n")}"
       method_disp = format_method_display_name(rec_type, name)
@@ -2101,6 +2129,9 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if ur = unresolved_restriction
+      if rescued = match_splat_with_calls(rec_type, name, args, call_node)
+        return rescued
+      end
       return refuse_call(call_node, ur)
     end
 

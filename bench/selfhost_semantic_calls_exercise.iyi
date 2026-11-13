@@ -76,7 +76,7 @@ module BenchSelfhostSemanticCallsExercise
       return "argument is not a literal"
     end
     signature = CallSignature.new(call.name, arg_types, named_types, call.block != nil)
-    MethodLookup.lookup_receiver(scope.as(Type), ts, signature)
+    MethodLookup.lookup_with_autocast(scope.as(Type), ts, signature, call.args)
   end
 
   # `# expand` line: the argument list of the one def the call matches, with its
@@ -255,7 +255,7 @@ module BenchSelfhostSemanticCallsExercise
     end
     named = CallReceiver.named_argument_types(prog, call.named_args)
     signature = CallSignature.new(call.name, arg_types, named, call.block != nil)
-    by_signature = CallRecalculation.recalculate_signature(scope.as(Type), ts, signature, call.obj != nil)
+    by_signature = CallRecalculation.recalculate_signature(scope.as(Type), ts, signature, call.obj != nil, call.args)
     if by_signature.error.to_s != target.error.to_s
       return "error: signature entry diverges from recalculate"
     end
