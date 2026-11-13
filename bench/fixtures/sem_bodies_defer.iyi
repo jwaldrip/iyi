@@ -1,0 +1,29 @@
+class DeferResource
+  def close
+    nil
+  end
+
+  def write
+    nil
+  end
+end
+
+class DeferGroup
+  def join(early : Bool)
+    nil
+  end
+end
+
+io = DeferResource.new
+defer io.close
+io.write
+
+g = DeferGroup.new
+early = true
+defer g.join(early)
+early = false
+
+[1].each do |item|
+  defer io.close
+  item
+end
