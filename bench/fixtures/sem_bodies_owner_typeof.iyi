@@ -12,3 +12,4 @@ bag = Bag(String).build
 numbers = [1, 2]
 bags = [bag]
 defaulted = values
+explicit = Array(typeof(1)).new

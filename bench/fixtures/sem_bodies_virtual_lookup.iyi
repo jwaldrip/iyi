@@ -25,3 +25,4 @@ end
 walker = Walker.new
 a = walker.check
 b = walker.single
+c = walker.base
