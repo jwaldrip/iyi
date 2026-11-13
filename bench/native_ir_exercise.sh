@@ -15,7 +15,7 @@ RESTORE=()
 restore_all() {
   local pair
   for pair in ${RESTORE[@]+"${RESTORE[@]}"}; do
-    cp "${pair#*|}" "${pair%%|*}"
+    cat "${pair#*|}" > "${pair%%|*}"
   done
   rm -rf "$WORK"
 }
@@ -138,6 +138,45 @@ decimal_check() {
   return 0
 }
 
+# LLVM's form of a float constant, the double of the same value, must be read as the float's own bits, and a
+# double must keep its sixteen digits. Non-zero when any is not.
+llvm_float_check() {
+  local bin="$1" out want
+  out=$("$bin" print bench/fixtures/ir/accept/llvm_float.ir 2>&1) || return 1
+  for want in \
+    '@lowest = internal global float 0xff7fffff' \
+    '@one_and_a_half = internal global float 0x3fc00000' \
+    '@infinite = internal global float 0x7f800000' \
+    '@not_a_number = internal global float 0x7fc00000' \
+    '@smallest = internal global float 0x00000001' \
+    '@own_form = internal global float 0x3fc00000' \
+    '@double_kept = internal global double 0xc7efffffe0000000' \
+    '  %sum = fadd float 0x3fc00000, 0x40200000'; do
+    echo "$out" | grep -qxF -- "$want" || return 1
+  done
+  return 0
+}
+
+# A named type is written only when the module mentions it: in a global's type or initializer, in an attribute
+# of a signature, in an alloca or as a getelementptr's source type, directly or inside another type. Non-zero
+# when a type nothing mentions is written, or a mentioned one is not.
+named_types_check() {
+  local bin="$1" out want
+  out=$("$bin" print bench/fixtures/ir/accept/named_types.ir 2>&1) || return 1
+  if echo "$out" | grep -q '^%Unused'; then return 1; fi
+  for want in \
+    '%Nested = type { i64 }' \
+    '%ByGlobal = type { i32, %Nested }' \
+    '%ByInitializer = type { i32 }' \
+    '%ByAttribute = type { i64, i64, i64 }' \
+    '%ByParameter = type { i64, i64, i64 }' \
+    '%ByGep = type { i8, i64 }' \
+    '%ByAlloca = type { i16 }'; do
+    echo "$out" | grep -qxF -- "$want" || return 1
+  done
+  return 0
+}
+
 # The tls-fresh fixture must be refused under its rule. Non-zero when it is accepted or refused another way.
 tls_check() {
   local bin="$1" out
@@ -158,6 +197,16 @@ asm_unwind_check() {
   local bin="$1" out
   out=$("$bin" verify bench/fixtures/ir/bad/asm_unwind_nounwind.ir 2>&1) && return 1
   echo "$out" | grep -q 'error\[asm-unwind\]'
+}
+
+# The unwind fixture with its unwind edges dropped must be its expected text, byte for byte, and a pad that a normal
+# edge reaches must be refused by name. Non-zero when either is not so.
+unwind_check() {
+  local bin="$1" out
+  "$bin" drop-unwind bench/fixtures/ir/unwind/ensure.ir >"$WORK/unwind.out" 2>&1 || return 1
+  cmp -s "$WORK/unwind.out" bench/fixtures/ir/unwind/ensure.expected || return 1
+  out=$("$bin" drop-unwind bench/fixtures/ir/unwind/pad_reachable.ir 2>&1) && return 1
+  [ "$out" = "refused: function f: block pad still holds a landingpad after its unwind edges were dropped" ]
 }
 
 # Rebuilds the driver from a mutated source and runs one check on it.
@@ -181,14 +230,18 @@ prove_mutation() {
     return
   fi
   backup="$WORK/$(basename "$file").orig"
-  cp "$file" "$backup"
+  # Contents only: on an overlay checkout darwin's cp exits 1 after copying every byte, for the
+  # extended attributes it cannot read, and says so beside the proof (see bench/lib/mutation.sh).
+  cat "$file" > "$backup"
+  cmp -s "$file" "$backup" || { fail "$label: the backup of $file is not the file; nothing was patched"; return; }
   RESTORE+=("$file|$backup")
   python3 -c 'import sys
 path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
 open(path, "w").write(open(path).read().replace(old, new))' "$file" "$old" "$new"
   mutant_check "$check" >/dev/null 2>&1
   local caught=$?
-  cp "$backup" "$file"
+  cat "$backup" > "$file"
+  cmp -s "$backup" "$file" || { echo "FAIL: $file WAS NOT RESTORED: what it held is in $backup"; trap - EXIT INT TERM; exit 2; }
   RESTORE=()
   if [ "$caught" -eq 0 ]; then
     fail "NOT CAUGHT: $label: the check still passes"
@@ -258,6 +311,8 @@ echo "== 5b. the ModuleID header is ignored and the module is named by source_fi
 out=$("$DRV" print bench/fixtures/ir/accept/moduleid.ir 2>&1) || fail "moduleid.ir: $out"
 echo "$out" | grep -q '^source_filename = "moduleid.iyi"$' || fail "moduleid.ir does not keep source_filename as its module identifier: $out"
 decimal_check "$DRV" || fail "decimal_float.ir: a decimal floating-point constant is not read as its bit pattern: $("$DRV" print bench/fixtures/ir/accept/decimal_float.ir 2>&1)"
+llvm_float_check "$DRV" || fail "llvm_float.ir: a float constant in LLVM's double form is not read as the float's bits: $("$DRV" print bench/fixtures/ir/accept/llvm_float.ir 2>&1)"
+named_types_check "$DRV" || fail "named_types.ir: a named type nothing mentions is written, or a mentioned one is not: $("$DRV" print bench/fixtures/ir/accept/named_types.ir 2>&1 | grep ' = type ')"
 count=0
 for f in bench/fixtures/ir/reject/*.ir; do
   count=$((count + 1))
@@ -276,6 +331,15 @@ if diff bench/fixtures/ir/intrinsic-names.txt "$WORK/intrinsic-names.txt" >"$WOR
   echo "accepts $(wc -l <"$WORK/intrinsic-names.txt" | tr -d ' ') intrinsic names"
 else
   fail "the accepted intrinsic names changed: $(cat "$WORK/diff.txt")"
+fi
+
+# ---- 5d. unwind edges --------------------------------------------------------------------------
+echo "== 5d. a module with its unwind edges dropped is its normal path, a call where each invoke stood"
+out=$("$DRV" roundtrip bench/fixtures/ir/unwind/ensure.ir 2>&1) || fail "unwind/ensure.ir does not round-trip: $out"
+if unwind_check "$DRV"; then
+  echo "unwind edges dropped: an invoke is the call it makes and the block opened after it is the rest of its own, the pads and what only they named are gone, a phi keeps its live pairs"
+else
+  fail "unwind/ensure.ir without its unwind edges is not unwind/ensure.expected, or a reachable pad was accepted: $("$DRV" drop-unwind bench/fixtures/ir/unwind/ensure.ir 2>&1 | diff - bench/fixtures/ir/unwind/ensure.expected | head -n 12)"
 fi
 
 # ---- 6. DataLayout against the oracle ----------------------------------------------------------
@@ -366,6 +430,16 @@ prove_mutation "printer: a wide integer constant is written as its low word alon
   'return int_words_text(i.int_words(i.type.bits), i.type.bits) if i.type.bits > 64' \
   'return i.aux_int.to_s if i.type.bits > 64' \
   roundtrip_check
+prove_mutation "printer: every named type in the table is written, mentioned or not" \
+  src/compiler/ir/printer.iyi \
+  '        next unless used.includes?(t.name || "")' \
+  '        next if false' \
+  named_types_check
+prove_mutation "printer: a type an attribute names is not followed" \
+  src/compiler/ir/printer.iyi \
+  $'      if t = a.type_value\n        note_type(t, used)' \
+  $'      if t = a.type_value\n        nil' \
+  named_types_check
 prove_mutation "verifier: a call no longer kills thread-local values" \
   src/compiler/ir/verifier.iyi \
   '    if i.op == Op::Call || i.op == Op::Invoke' \
@@ -391,6 +465,71 @@ prove_mutation "parser: a decimal constant of type float keeps the double's bit 
   'type.float32? ? single_bits(value) : double_bits(value)' \
   'type.float32? ? double_bits(value) : double_bits(value)' \
   decimal_check
+prove_mutation "parser: a float constant in LLVM's double form keeps the double's low bits" \
+  src/compiler/ir/parser.iyi \
+  'if type.float32? && t.text.bytesize > 8' \
+  'if type.float32? && t.text.bytesize > 16' \
+  llvm_float_check
+prove_mutation "values: the float read from a double loses its sign" \
+  src/compiler/ir/values.iyi \
+  'return (sign << 31) | ((power + 127_i64) << 23) | top' \
+  'return ((power + 127_i64) << 23) | top' \
+  llvm_float_check
+prove_mutation "unwind: an invoke is left an invoke" \
+  src/compiler/ir/inst.iyi \
+  '    @op = Op::Call' \
+  '    @op = Op::Invoke' \
+  unwind_check
+prove_mutation "unwind: the call continues into the unwind successor" \
+  src/compiler/ir/function.iyi \
+  '        normal = t.targets[0]' \
+  '        normal = t.targets[1]' \
+  unwind_check
+prove_mutation "unwind: the block opened after an invoke stays a block" \
+  src/compiler/ir/function.iyi \
+  'normal.preds.size == 1 && normal.terminated?' \
+  'normal.preds.size == 0 && normal.terminated?' \
+  unwind_check
+prove_mutation "unwind: a successor another block reaches is merged" \
+  src/compiler/ir/function.iyi \
+  'normal.preds.size == 1 && normal.terminated?' \
+  'normal.preds.size >= 1 && normal.terminated?' \
+  unwind_check
+prove_mutation "unwind: a successor that starts with a phi is merged" \
+  src/compiler/ir/function.iyi \
+  'normal.insts[0].op != Op::Phi' \
+  'normal.insts[0].op != Op::LandingPad' \
+  unwind_check
+prove_mutation "unwind: a phi still names the merged block" \
+  src/compiler/ir/function.iyi \
+  'inst.move_incoming(normal, b) if inst.op == Op::Phi' \
+  'inst.move_incoming(normal, normal) if inst.op == Op::Phi' \
+  unwind_check
+prove_mutation "unwind: a block only an unwind edge reached is kept" \
+  src/compiler/ir/function.iyi \
+  '      kept << @blocks[k] if seen[k]' \
+  '      kept << @blocks[k]' \
+  unwind_check
+prove_mutation "unwind: a phi keeps the pair of a removed block" \
+  src/compiler/ir/function.iyi \
+  'inst.keep_incoming(block.preds) if inst.op == Op::Phi' \
+  'inst.keep_incoming(block.preds) if inst.op == Op::Phi && false' \
+  unwind_check
+prove_mutation "unwind: the personality stays on the function" \
+  src/compiler/ir/function.iyi \
+  $'    relink\n    @personality = nil' \
+  $'    relink\n    relink' \
+  unwind_check
+prove_mutation "unwind: a declaration only the unwind path named stays" \
+  src/compiler/ir/module.iyi \
+  'next if f.declaration? && before.has_key?(f) && !after.has_key?(f)' \
+  'next if f.declaration? && before.has_key?(f) && after.has_key?(f)' \
+  unwind_check
+prove_mutation "unwind: an unwinding instruction that is still reachable is accepted" \
+  src/compiler/ir/function.iyi \
+  'if word = unwind_only_op(inst.op)' \
+  'if word = unwind_only_op(Op::Br)' \
+  unwind_check
 
 echo
 if [ "$failed" -eq 0 ]; then
