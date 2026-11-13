@@ -47,7 +47,7 @@ fi
 waiting_on() {
   case "$1" in
     lowcast_proc_result) echo "typing expected type Proc(Nil), got Proc(Int32) (S1d24Bodies)" ;;
-    lowcast_struct_union) echo "call result still loaded before union store (S2c20Calls 715837683)" ;;
+    lowcast_struct_union) echo "Pointer((Robot | User)).class:type_id vs hosted Pointer(Robot | User).class:type_id (S1b29Declarations renderer 063610ce)" ;;
   esac
 }
 
@@ -171,13 +171,22 @@ struct_union_check() {
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_struct_union.iyi" "$WORK/lowcast_struct_union.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
 }
-struct_union_check || { echo "  baseline: struct union fixture differs"; status=1; }
-rm -f "$WORK/struct_mutant_built"
-prove_mutation "a struct is refused from a mixed union" "$REPO/src/compiler/lower/cast.iyi" \
-  '  if value_type.struct? && passed_by_value?(value_type)' '  if false' -- struct_union_check || status=1
-if [ ! -f "$WORK/struct_mutant_built" ]; then
-  echo "  NOT PROVEN: struct union mutant failed to build"
-  status=1
+if [ -n "$(waiting_on lowcast_struct_union)" ]; then
+  if ! grep -Fq 'Pointer((Robot | User)).class:type_id' "$WORK/lowcast_struct_union.port.out"; then
+    echo "  NOT PROVEN: struct union stopped showing the named renderer difference"
+    status=1
+  else
+    echo "  struct union remains the named renderer difference"
+  fi
+else
+  struct_union_check || { echo "  baseline: struct union fixture differs"; status=1; }
+  rm -f "$WORK/struct_mutant_built"
+  prove_mutation "a struct is refused from a mixed union" "$REPO/src/compiler/lower/cast.iyi" \
+    '  if value_type.struct? && passed_by_value?(value_type)' '  if false' -- struct_union_check || status=1
+  if [ ! -f "$WORK/struct_mutant_built" ]; then
+    echo "  NOT PROVEN: struct union mutant failed to build"
+    status=1
+  fi
 fi
 aggregate_behavior_check() {
   "$IYI" build -o "$WORK/aggregate_mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/aggregate_mut.build.log" 2>&1 || return 1
