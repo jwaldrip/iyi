@@ -685,8 +685,8 @@ generic_rebuild_at_floor() {
 }
 rm -f "$WORK/imported_generic_mutant_built"
 prove_mutation "a generic with typed arguments is rebuilt" "$REPO/src/compiler/semantic/type_nodes.iyi" \
-  "    rebuilt = generic_of_typed_args(visitor, node)" \
-  "    rebuilt = nil" -- generic_rebuild_at_floor || status=1
+  "  resolved = generic_of_typed_args(visitor, node)" \
+  "  resolved = nil" -- generic_rebuild_at_floor || status=1
 if [ "${MUTATION_SKIP:-0}" != 1 ] && [ ! -f "$WORK/imported_generic_mutant_built" ]; then
   echo "  FAIL: generic rebuild mutation did not build"
   status=1
