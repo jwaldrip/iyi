@@ -25,7 +25,7 @@ import compiler/ir/values::{Value}
 import compiler/ir/types::{IrType}
 import compiler/semantic/top_level::{ClassType, NilType, Type, MetaTypeVar}
 import compiler/types/types::{GenericClassInstanceType}
-import compiler/syntax/ast::{ASTNode, Var}
+import compiler/syntax/ast::{ASTNode, InstanceVar, Var}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/typer::{passed_by_value?, primitive_kind}
 import compiler/lower/cast::{assign, downcast}
@@ -164,6 +164,21 @@ pub def codegen_instance_var_read(low : Lowerer, node : Compiler::Syntax::Ast::I
     raise "BUG: the analysed program has no type for instance variable #{node.name} (hosted visit(InstanceVar))"
   end
   low.last = read_instance_var(low, node_t.as(Type), owner.as(Type), node.name, self_var.as(LowerVar).pointer)
+end
+
+# The hosted `visit(PointerOf)` for an instance variable (codegen.cr:1005-1006): the field's
+# address, the same pointer a read would load from. A union or virtual owner is refused by
+# `instance_var_type` (hosted instance_var_ptr, that owner is a later increment).
+pub def codegen_pointerof_instance_var(low : Lowerer, node : InstanceVar) : Nil
+  owner = low.current_context.type
+  if owner.nil?
+    pending_visit_node("pointerof of an instance variable outside a class or struct (hosted visit(PointerOf), context.type)")
+  end
+  self_var = low.current_context.vars["self"]?
+  if self_var.nil?
+    raise "BUG: pointerof(#{node.name}) with no self (hosted llvm_self_ptr)"
+  end
+  low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)
 end
 
 # The store to an instance variable of the self being lowered (the hosted `codegen_assign` for an
