@@ -600,7 +600,13 @@ pub def pointer_malloc_value(low : Lowerer, elem : Type, count : Value) : Value
     return low.builder.const_null_pointer
   end
   elem_ir = low.typer.llvm_embedded_type(elem)
-  size = low.builder.mul(sizeof_expr(low, elem_ir), count)
+  bytes = sizeof_expr(low, elem_ir)
+  size = bytes
+  if count.is_a?(Inst) && count.as(Inst).op == Op::ConstInt && count.as(Inst).aux_int == 0_i64
+    size = low.builder.const_int(low.typer.size_t, 0_i64)
+  elsif !(count.is_a?(Inst) && count.as(Inst).op == Op::ConstInt && count.as(Inst).aux_int == 1_i64)
+    size = low.builder.mul(bytes, count)
+  end
   c_malloc = c_malloc_function(low)
   ptr = low.builder.call(c_malloc.fn_type, c_malloc, [size] of Value, "")
   memset_size(low, ptr, size)
