@@ -91,13 +91,14 @@ src/compiler/lower/type_id.iyi 15
 src/compiler/lower/typer.iyi 39
 src/compiler/lower/unions.iyi 4
 src/compiler/macros/answers.iyi 9
-src/compiler/macros/ast.iyi 26
+src/compiler/macros/ast.iyi 35
 src/compiler/macros/engine.iyi 33
-src/compiler/macros/interpreter.iyi 68
+src/compiler/macros/interpreter.iyi 70
 src/compiler/macros/macro_parser.iyi 26
 src/compiler/macros/methods.iyi 23
 src/compiler/macros/site_scan.iyi 47
 src/compiler/macros/target_flags.iyi 10
+src/compiler/macros/type_facts.iyi 19
 src/compiler/native/aarch64/abi.iyi 2
 src/compiler/native/aarch64/asm.iyi 67
 src/compiler/native/aarch64/encode.iyi 48
@@ -147,7 +148,7 @@ src/compiler/semantic/inline_macros.iyi 36
 src/compiler/semantic/instance_vars.iyi 49
 src/compiler/semantic/lib_call.iyi 35
 src/compiler/semantic/literal_expander.iyi 64
-src/compiler/semantic/macro_bindings.iyi 5
+src/compiler/semantic/macro_bindings.iyi 6
 src/compiler/semantic/main_visitor.iyi 292
 src/compiler/semantic/match.iyi 52
 src/compiler/semantic/math_interpreter.iyi 57

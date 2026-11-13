@@ -127,7 +127,7 @@ if [ "${refused_cache_count:-}" != 1 ]; then
 fi
 
 echo
-echo "== 2c. A call in a fun body's macro branch is typed only when the fun body is spliced"
+echo "== 2c. A call in a fun body's macro branch is typed after expansion"
 splice_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
 echo "  sem_bodies_fun_splice.iyi typed instances: ${splice_count:-none} (expected 1)"
 if [ "${splice_count:-}" != 1 ]; then
@@ -200,9 +200,6 @@ prove_mutation "a block body is typed in the scope of the call that owns it" "$M
 prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR" \
   "return visit_global_fun_call(node, global_fun) if own.empty?" \
   "return false if own.empty?" -- bodies_at_floor || status=1
-prove_mutation "a fun body is not spliced at its top level" "$MAIN_VISITOR" \
-  "splice_fun_body(node, @program.full_name)" \
-  "nil" -- bodies_at_floor || status=1
 prove_mutation "a trait definition is typed in its own type" "$MAIN_VISITOR" \
   "def visit(node : TraitDef) : Bool" \
   "def visit_trait_def_off(node : TraitDef) : Bool" -- bodies_at_floor || status=1
@@ -250,6 +247,7 @@ prove_mutation "pointer_set types the assigned value" "$MAIN_VISITOR" \
 prove_mutation "a Nil return annotation discards the body value" "$MAIN_VISITOR" \
   "unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)" \
   "unless bt.subtype_of?(declared_ret)" -- bodies_at_floor || status=1
+
 prove_mutation "metaclass owner binds its instance parameters" "$MAIN_VISITOR" \
   "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)" \
   "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)" -- bodies_at_floor || status=1
@@ -459,6 +457,29 @@ macro_annotations_at_floor() {
 prove_mutation "enum annotations are not supplied to macro sites" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
   "facts.annotations_known = true" \
   "facts.annotations_known = false" -- macro_annotations_at_floor || status=1
+macro_value_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_value.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  [ "$matched" -ge 9 ]
+}
+prove_mutation "a value-position macro expansion is not typed" "$MAIN_VISITOR" \
+  "    expanded.accept(self)
+    if et = child_type(expanded)" \
+  "    nil
+    if et = child_type(expanded)" -- macro_value_at_floor || status=1
+macro_uninitialized_at_floor() {
+  "$IYI" build -o "$WORK/macro_uninitialized" "$REPO/bench/selfhost_macro_uninitialized_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$WORK/macro_uninitialized" "$REPO/bench/fixtures/sem_bodies_macro_uninitialized.iyi"
+}
+macro_uninitialized_at_floor || status=1
+prove_mutation "uninitialized locals are unavailable to later macro sites" "$REPO/src/compiler/semantic/inline_macros.iyi" \
+  "  def visit(node : UninitializedVar) : Bool
+    add_name(node.var)" \
+  "  def visit(node : UninitializedVar) : Bool
+    nil" -- macro_uninitialized_at_floor || status=1
 free_types_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   fixture="$REPO/bench/fixtures/sem_bodies_free_types.iyi"
