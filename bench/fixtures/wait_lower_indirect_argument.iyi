@@ -17,37 +17,19 @@ struct Large
   @p : Int64
   @q : Int64
 
-  def initialize(value : Int64)
-    @a = value
-    @b = value
-    @c = value
-    @d = value
-    @e = value
-    @f = value
-    @g = value
-    @h = value
-    @i = value
-    @j = value
-    @k = value
-    @l = value
-    @m = value
-    @n = value
-    @o = value
-    @p = value
-    @q = value
-  end
-
   def value : Int64
     @q
   end
 end
 
 lib LibC
+  fun calloc(count : UInt64, size : UInt64) : Void*
   fun exit(status : Int32) : NoReturn
 end
 
 def consume(value : Large) : Int32
-  value.value == 7_i64 ? 7 : 1
+  value.value == 0_i64 ? 7 : 1
 end
 
-LibC.exit(consume(Large.new(7_i64)))
+storage = LibC.calloc(1_u64, sizeof(Large).to_u64).as(Pointer(Large))
+LibC.exit(consume(storage.value))
