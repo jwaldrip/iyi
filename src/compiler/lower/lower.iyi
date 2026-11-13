@@ -35,6 +35,7 @@ import compiler/lower/pending::{refuse_port, pending_visit_node}
 import compiler/lower/call::{codegen_call_node, codegen_responds_to, responds_to_value}
 import compiler/lower/block::{branch_to_phi, lower_yield}
 import compiler/lower/fun::{block_ended?, function_attributes, target_def_fun}
+import compiler/lower/primitives::{define_headed_bytes}
 import compiler/lower/proc::{lower_proc_literal}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
@@ -147,6 +148,9 @@ pub def codegen_program(root : ASTNode, analysed : MainVisitor, typer : LowerTyp
     low.builder.call(entry_type, fn, [main_fn.param(0), main_fn.param(1)] of Value, "")
     low.builder.ret(low.builder.const_int(i32, 0))
   end
+  # The hosted `iyi_define_headed_bytes` (gc_layouts.cr 187), after every def: the census reads
+  # virtual types codegen made late, and every allocation loaded the global this fills.
+  define_headed_bytes(low)
   function_attributes(m)
 end
 
@@ -179,7 +183,10 @@ pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
   low.fun_defs_done[name] = true
   ret = rt.as(Type)
   if !well_known && !rec.used
-    low.module.define_function(name, fun_def_type(low, rec, ret))
+    # A fun is C (def_convention). The declaration is what a later generated call copies, and the
+    # body pass has not run yet, so the convention has to be C here: `__iyi_new` is called from
+    # `new` before `emit_unused_fun_defs` fills the body.
+    low.module.define_function(name, fun_def_type(low, rec, ret), CallConv::C)
     low.unused_fun_defs << node
     return
   end

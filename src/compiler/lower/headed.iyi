@@ -8,9 +8,9 @@ module compiler/lower/headed
 #   2. A type whose id does not fit the arena's sixteen-bit slot is headed (`UInt16::MAX`).
 #   3. A candidate (a non-generic class or a generic instance) is headed when a virtual type over it
 #      was made (`virtual_type_made?`), or a reference union holds it, or it is a subclass of one.
-# Rule 3 is the whole-program census. The port has neither of its inputs (NEEDS.md rows 26 and 27,
-# owner: the declarations trunk), so `census_answer` is the one seam: it answers nil until they exist.
-# `headed?` then answers nil for a candidate, and the caller refuses by name.
+# Rule 3 is the whole-program census (`census_answer`). The allocation does not read it: it loads
+# the `:headed` global, and `define_headed_bytes` fills that global once every def is lowered, so a
+# virtual type made after the allocation is the byte the load reads (type_id.cr 138-144).
 #
 # The ids are the port's (`LowerTypeIds`), 30 above the hosted ids until row 16 closes, so the
 # sixteen-bit test moves by that shift at the boundary; no fixture reaches it.

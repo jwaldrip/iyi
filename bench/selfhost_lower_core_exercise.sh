@@ -361,6 +361,77 @@ echo "  module-level baseline over the checked fixtures: $module_baseline"
 prove_mutation "the argc global is external, not internal (module-level text only)" "$REPO/src/compiler/lower/lower.iyi" \
   "argc_global.linkage = Linkage::Internal" "argc_global.linkage = Linkage::External" -- module_count_check || status=1
 
+# A class allocated before the use that makes its virtual type. The oracle is built against the
+# minimal arena prelude (IYI_PATH ends so the hosted compiler's iyi_prelude? is true and the
+# allocation loads @"Base:headed"). The port analyses the prelude and the fixture as one source.
+# Compared: the new function's body and the headed globals. The rest of the module is the
+# compiler's own identity and the injected builtins, which this check does not claim.
+headed_late_ir() {
+  local portbin="$1"
+  local pre="$REPO/bench/fixtures/lower_headed_prelude"
+  local fix="$REPO/bench/fixtures/lower_headed_late.iyi"
+  IYI_PATH="$pre" "$IYI" build --emit llvm-ir --no-debug -o "$WORK/headed" "$fix" > "$WORK/headed.hosted.log" 2>&1 || return 1
+  [ -s "$WORK/headed.ll" ] || return 1
+  awk "$CALL_TYPES" "$WORK/headed.ll" > "$WORK/headed.rewritten.ll" || return 1
+  "$portbin" oracle "$WORK/headed.rewritten.ll" > "$WORK/headed.hostnorm" 2> "$WORK/headed.oracle.err" || return 1
+  awk '1' "$pre/iyi/prelude.iyi" "$fix" > "$WORK/headed.combined.iyi"
+  "$portbin" emit "$WORK/headed.combined.iyi" "$WORK/headed.ll" > "$WORK/headed.port.ll" 2> "$WORK/headed.port.err" || return 1
+  python3 - "$WORK/headed.hostnorm" "$WORK/headed.port.ll" << 'PY' || return 1
+import sys
+def grab(text):
+    out = []
+    on = False
+    for line in text.splitlines():
+        if not on and "Base::new:Base" in line and line.startswith("define"):
+            on = True
+            continue
+        if on:
+            out.append(line)
+            if line == "}":
+                break
+    return out
+def headed(text):
+    return [line for line in text.splitlines() if line.startswith('@"Base:headed"') or line.startswith('@"Child:headed"')]
+host = open(sys.argv[1]).read()
+port = open(sys.argv[2]).read()
+hb, pb = grab(host), grab(port)
+hh, ph = headed(host), headed(port)
+if hb != pb or hh != ph or not hb or not hh:
+    sys.stderr.write("headed body or global differs\n")
+    sys.exit(1)
+PY
+}
+headed_late_check() {
+  "$IYI" build -o "$WORK/port-h" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/headed.build.log" 2>&1 || return 1
+  headed_late_ir "$WORK/port-h"
+}
+echo
+echo "== 2c. Headed byte is a global filled after every def"
+if headed_late_check; then
+  echo "  lower_headed_late: *Base::new:Base body and headed globals identical to the hosted module"
+  if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/headed.tool.log" 2>&1 && "$WORK/compile_native" "$WORK/headed.port.ll" -o "$WORK/headed.native" > "$WORK/headed.native.log" 2>&1; then
+    timeout 30 "$WORK/headed.native" > "$WORK/headed.native.out" 2>&1; ns=$?
+    timeout 30 "$WORK/headed" > "$WORK/headed.hosted.out" 2>&1; hs=$?
+    if [ "$ns" = "$hs" ] && cmp -s "$WORK/headed.native.out" "$WORK/headed.hosted.out"; then
+      echo "  lower_headed_late: native executable runs to the hosted result (status $hs)"
+    else
+      echo "  lower_headed_late: native status $ns, hosted $hs"
+      status=1
+    fi
+  else
+    echo "  lower_headed_late: the native tool refused the port module: $(awk 'NR==1' "$WORK/headed.native.log" "$WORK/headed.tool.log")"
+    status=1
+  fi
+else
+  echo "  lower_headed_late: DIVERGED"
+  awk 'NR<=8' "$WORK/headed.port.err" "$WORK/headed.hosted.log" "$WORK/headed.oracle.err"
+  status=1
+fi
+prove_mutation "the headed byte is a constant chosen at the allocation" "$REPO/src/compiler/lower/primitives.iyi" \
+  'load_aligned(low, low.module.types.int8, headed_global(low, t))' \
+  'low.builder.const_int(low.module.types.int8, 0_i64)' -- headed_late_check || status=1
+
+echo
 echo
 if [ "$status" -eq 0 ]; then
   echo "== ALL LOWER CORE CHECKS PASSED ($passed fixture(s) identical to the hosted module, $waiting waiting)"
