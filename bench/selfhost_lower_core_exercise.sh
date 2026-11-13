@@ -469,6 +469,19 @@ pointerof_ivar_check() {
 prove_mutation "pointerof of an instance variable returns self" "$REPO/src/compiler/lower/instance_var.iyi" \
   "  low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)" \
   "  low.last = self_var.as(LowerVar).pointer" -- pointerof_ivar_check || status=1
+bare_return_check() {
+  "$IYI" build -o "$WORK/port-return" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/return.build.log" 2>&1 || return 1
+  "$WORK/port-return" lower "$REPO/bench/fixtures/lower_return_bare.iyi" "$WORK/lower_return_bare.oracle.ll" > "$WORK/return.out" 2> "$WORK/return.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/return.out"
+}
+if bare_return_check; then
+  prove_mutation "a bare return skips the Nil upcast" "$REPO/src/compiler/lower/lower.iyi" \
+    "    returned = upcast(low, llvm_nil(low), nil_type, ret_type.as(Type))" \
+    "    returned = llvm_nil(low)" -- bare_return_check || status=1
+else
+  echo "FAIL: unmutated bare return does not match the hosted module"
+  status=1
+fi
 
 # naming lane (mangled_name)
 # The program-level lower of lower_name_owner waits: call.iyi refuses a call inherited
