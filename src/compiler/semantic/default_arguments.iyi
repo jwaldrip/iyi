@@ -27,6 +27,16 @@ import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, Magic
 # changes where the defaults are evaluated, not which values reach the parameters,
 # so the list is the same and the port does not distinguish the two.
 pub class DefaultArguments
+  # Hosted default_arguments.cr:4-35, 146-197, 258-297. Instantiate the
+  # expansion in the original def's scope, rather than visiting defaults at
+  # the call site. The caller must copy the original def's owner and file scope.
+  def self.expand_for_call(rec_def : Def, given : Int32, named_args : Array(NamedArgument)?) : Def | String
+    return "not ported: splat or unmatched default arguments" unless supported_count?(rec_def, given, named_args)
+    return "not ported: default expansion with block parameter or macro def" if rec_def.block_arg || rec_def.macro_def
+    expansion = wrapper_def(rec_def, given, named_args)
+    expansion.nil? ? rec_def : expansion.as(Def)
+  end
+
   # True when *rec_def* can be expanded for a call with positional *args* and named
   # *named_args*: no splat and no double splat, the positional arguments fit the
   # parameters, every named argument names a parameter after them, and every

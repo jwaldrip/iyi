@@ -13,7 +13,7 @@ samples/iyi/format.iyi 64
 samples/iyi/formatting.iyi 33
 samples/iyi/generics.iyi 52
 samples/iyi/grid.iyi 19
-samples/iyi/hello.iyi 25
+samples/iyi/hello.iyi 27
 samples/iyi/immutable.iyi 45
 samples/iyi/init_order.iyi 5
 samples/iyi/inventory.iyi 9
@@ -298,12 +298,12 @@ src/std/xz.iyi 134
 src/std/yaml.iyi 228
 src/std/zip.iyi 101
 src/std/zstd.iyi 148
-src/compiler/semantic/call.iyi 34
+src/compiler/semantic/call.iyi 38
 src/compiler/semantic/match.iyi 31
-src/compiler/semantic/method_lookup.iyi 34
+src/compiler/semantic/method_lookup.iyi 35
 src/compiler/semantic/restrictions.iyi 24
 src/compiler/semantic/call_error.iyi 24
-src/compiler/semantic/default_arguments.iyi 9
+src/compiler/semantic/default_arguments.iyi 17
 src/compiler/semantic/lib_call.iyi 34
 src/compiler/types/filters.iyi 22
 src/compiler/types/instances.iyi 15
@@ -337,6 +337,6 @@ src/compiler/lower/symbols.iyi 22
 src/compiler/lower/type_id.iyi 22
 src/compiler/lower/typer.iyi 49
 src/compiler/lower/unions.iyi 0
-src/compiler/semantic/new.iyi 18
+src/compiler/semantic/new.iyi 19
 src/compiler/lower/class_var.iyi 49
 src/compiler/lower/proc.iyi 32

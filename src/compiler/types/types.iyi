@@ -391,6 +391,7 @@ end
 
 pub class TupleInstanceType < GenericClassInstanceType
   getter tuple_types : Array(Type)
+  getter tuple_indexers : Hash(String, Def) = Hash(String, Def).new
 
   def initialize(program : SemanticProgram, @tuple_types : Array(Type))
     super(program, program.types["Tuple"], Hash(String, Type).new, @tuple_types, program.struct_type)
@@ -452,6 +453,7 @@ end
 
 pub class NamedTupleInstanceType < GenericClassInstanceType
   getter entries : Array(NamedArgumentType)
+  getter tuple_indexers : Hash(String, Def) = Hash(String, Def).new
 
   def initialize(program : SemanticProgram, @entries : Array(NamedArgumentType))
     args = @entries.map(&.type)
@@ -522,7 +524,12 @@ pub class ProcInstanceType < GenericClassInstanceType
     all_args = [] of Type
     @arg_types.each { |a| all_args << a }
     all_args << @return_type
-    super(program, program.types["Proc"], Hash(String, Type).new, all_args, program.struct_type)
+    # Hosted ProcInstanceType#initialize (types.cr:2758-2765) binds the
+    # splatted arguments as T and the result as R.
+    vars = Hash(String, Type).new
+    vars["T"] = TupleInstanceType.new(program, @arg_types)
+    vars["R"] = @return_type
+    super(program, program.types["Proc"], vars, all_args, program.struct_type)
     @struct = true
   end
 

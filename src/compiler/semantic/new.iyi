@@ -138,11 +138,56 @@ pub def define_default_new_single(program : SemanticProgram, type : NonGenericCl
   nil
 end
 
+# Hosted define_default_new_single gives a generic class its own new, even
+# when an ancestor already has one, by copying inherited initializers.
+pub def define_default_generic_new(program : SemanticProgram, type : GenericClassType) : Nil
+  return if builtin_for_new?(program, type)
+  own_inits = type.defs["initialize"]?
+  return if own_inits && !own_inits.empty?
+  inits = MethodLookup.all_defs(type, "initialize", [] of Def)
+  if !inits.empty?
+    inits.each do |init|
+      existing = type.metaclass.defs["new"]?
+      skip = false
+      if existing
+        existing.each do |definition|
+          skip = true if type.metaclass.same_def_signature?(definition, init)
+        end
+      end
+      next if skip
+      made = Def.new("new", init.args.map { |arg| arg.clone.as(Arg) }, Nop.new)
+      made.location = init.location
+      made.splat_index = init.splat_index
+      made.double_splat = init.double_splat
+      made.block_arg = init.block_arg
+      made.visibility = Visibility::Public
+      fill_body_from_initialize(made, type.name, type.type_vars, type.splat_index)
+      type.metaclass.add_def(made)
+    end
+    return
+  end
+  own_news = type.metaclass.defs["new"]?
+  if own_news
+    own_news.each do |definition|
+      return if definition.args.empty?
+    end
+  end
+  loc : Location? = nil
+  if locs = type.locations
+    loc = locs[0] if locs.size > 0
+  end
+  type.metaclass.add_def(argless_new(loc))
+  type.add_def(argless_initialize(loc))
+  nil
+end
+
 # The default `new` for every class in a namespace and in its nested namespaces.
 pub def define_default_new(program : SemanticProgram, namespace : NamedType) : Nil
   namespace.types.each_value do |sub|
     if sub.is_a?(NonGenericClassType)
       define_default_new_single(program, sub.as(NonGenericClassType))
+    elsif sub.is_a?(GenericClassType)
+      define_default_generic_new(program, sub.as(GenericClassType))
     end
     if sub.is_a?(NamedType)
       define_default_new(program, sub.as(NamedType))
