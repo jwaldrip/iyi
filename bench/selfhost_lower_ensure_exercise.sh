@@ -96,7 +96,7 @@ fi
 echo '== 2. Hosted and port function bodies and native executions'
 passed=0
 failed_names=""
-for name in fallthrough value return break next block_break block_next boundary nested_loops around_yield nested nested_return invoke; do
+for name in fallthrough value return break next block_break block_next boundary nested_loops around_yield nested nested_return invoke union; do
   if ! IYI_PATH="$WORK/prelude" "$IYI" build --prelude prelude --emit llvm-ir --no-debug -o "$WORK/${name}.host" "$REPO/bench/fixtures/lowens_${name}.iyi" > "$WORK/${name}.host.log" 2>&1; then
     echo "  FAIL: $name hosted compilation"
     awk 'NR <= 8 { print }' "$WORK/${name}.host.log"
@@ -133,11 +133,14 @@ else
 fi
 
 echo '== 4. Mutation proofs'
-if [ "$passed" -eq 13 ] || { [ "$passed" -eq 12 ] && [ "$failed_names" = " invoke" ]; }; then
+if [ "$passed" -eq 14 ] || { [ "$passed" -eq 13 ] && [ "$failed_names" = " invoke" ]; }; then
   file="$REPO/src/compiler/lower/ensure.iyi"
   prove_mutation 'fallthrough cleanup' "$file" 'visit_node(low, cleanup.as(ASTNode))' 'low.last = value' -- mutation_check fallthrough || status=1
   prove_mutation 'fallthrough cleanup runs twice' "$file" '    visit_node(low, cleanup.as(ASTNode))' '    visit_node(low, cleanup.as(ASTNode)); visit_node(low, cleanup.as(ASTNode))' -- mutation_check fallthrough || status=1
   prove_mutation 'exit phi preserves body value' "$file" '  phi.add(low, low.last, false)' '  phi.add(low, llvm_nil(low), false)' -- mutation_check value || status=1
+  prove_mutation 'by-value ensure joins use pointer phis' "$file" \
+    'merge = by_value ? low.module.types.ptr : low.typer.llvm_type(t.as(Type))' \
+    'merge = low.typer.llvm_type(t.as(Type))' -- mutation_check union || status=1
   prove_mutation 'body value survives cleanup' "$file" '    low.last = value' '    low.last = low.last' -- mutation_check value || status=1
   prove_mutation 'return cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check return || status=1
   prove_mutation 'break cleanup' "$file" 'while low.ensure_nodes.size > stop' 'while low.ensure_nodes.size > low.ensure_nodes.size' -- mutation_check break || status=1

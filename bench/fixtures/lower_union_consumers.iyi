@@ -1,4 +1,4 @@
-# Address-valued union joins reach each aggregate consumer: ABCDEFGHI, status 0.
+# Address-valued union joins reach each aggregate consumer: ABCDEFG, status 0.
 lib LibC
   fun putchar(value : Int32) : Int32
 end
@@ -45,11 +45,6 @@ def finish_union(flag : Bool)
   flag ? 70 : false
 end
 
-def ensured_union(flag : Bool)
-  defer LibC.putchar(71)
-  flag ? 72 : false
-end
-
 flag = true
 typed : (Int32 | Bool) = flag ? 65 : false
 show(typed)
@@ -64,8 +59,7 @@ from_break = break_union { break(flag ? 69 : false) }
 show(from_break)
 from_def = finish_union(flag) { nil }
 show(from_def)
-show(ensured_union(flag))
 
 narrowed = typed.as?(Int32)
-show_slot(narrowed, 8)
+show_slot(narrowed, 6)
 flag ? 73 : false

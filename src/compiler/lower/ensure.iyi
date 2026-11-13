@@ -6,7 +6,7 @@ module compiler/lower/ensure
 
 import compiler/syntax/ast::{ASTNode, ExceptionHandler}
 import compiler/ir/values::{Value}
-import compiler/lower/cast::{to_rhs}
+import compiler/lower/cast::{union_temp}
 import compiler/lower/context::{LowerContext, Lowerer}
 import compiler/lower/fun::{visit_node}
 import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_aligned}
@@ -82,18 +82,26 @@ pub def lower_exception_handler(low : Lowerer, node : ExceptionHandler) : Nil
   t = low.analysed.type_of?(node.as(ASTNode))
   wants = low.needs_value
   merge = nil
+  by_value = false
   if wants && !t.nil? && !t.as(Type).is_a?(NilType) && !t.as(Type).is_a?(VoidType) && !t.as(Type).is_a?(NoReturnType)
-    merge = low.typer.llvm_type(t.as(Type))
+    by_value = passed_by_value?(t.as(Type))
+    merge = by_value ? low.module.types.ptr : low.typer.llvm_type(t.as(Type))
   end
   phi = LowerPhi.new(!merge.nil?, merge)
   low.ensure_nodes << node
   low.ensure_contexts << low.current_context
   visit_node(low, node.body)
   value = low.last
-  if phi.needs_value && !at_terminator?(low) && !value.nil? && value.as(Value).type.pointer?
+  if by_value && !at_terminator?(low) && !value.nil?
     body_type = low.analysed.type_of?(node.body)
     raise "BUG: the ensured body has no type" if body_type.nil?
-    low.last = to_rhs(low, value.as(Value), body_type.as(Type))
+    if body_type.as(Type).full_name != t.as(Type).full_name
+      low.last = union_temp(low, t.as(Type), body_type.as(Type), value.as(Value))
+    elsif !value.as(Value).type.pointer?
+      pointer = low.alloca(low.typer.llvm_type(t.as(Type)), "")
+      store_aligned(low, value.as(Value), pointer)
+      low.last = pointer
+    end
   end
   phi.add(low, low.last, false)
   low.ensure_nodes.pop
