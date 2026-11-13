@@ -136,7 +136,7 @@ MUT_TD="$WORK/mut_typed_dump"
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return; do
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     if [ "$name" = "sem_bodies_pointer_set" ]; then
@@ -235,6 +235,21 @@ prove_mutation "pointer_set types the assigned value" "$MAIN_VISITOR" \
 prove_mutation "a Nil return annotation discards the body value" "$MAIN_VISITOR" \
   "unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)" \
   "unless bt.subtype_of?(declared_ret)" -- bodies_at_floor || status=1
+prove_mutation "metaclass owner binds its instance parameters" "$MAIN_VISITOR" \
+  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)" \
+  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)" -- bodies_at_floor || status=1
+prove_mutation "typeof inside type arguments yields the instance type" "$REPO/src/compiler/semantic/type_nodes.iyi" \
+  "  if depth > 0" \
+  "  if false" -- bodies_at_floor || status=1
+prove_mutation "enum members have the enum type" "$MAIN_VISITOR" \
+  "if enum_type = c.enum_value_type" \
+  "if enum_type = nil" -- bodies_at_floor || status=1
+prove_mutation "a generic union member retains its arguments" "$MAIN_VISITOR" \
+  "    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
+  "    found = @program.lookup_type_node?(restriction, @current_type) || LookupError.new(\"not found\")" -- bodies_at_floor || status=1
+prove_mutation "written class types are virtualized" "$MAIN_VISITOR" \
+  "      return TypeQueries.virtual_type(quiet)" \
+  "      return quiet" -- bodies_at_floor || status=1
 
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"

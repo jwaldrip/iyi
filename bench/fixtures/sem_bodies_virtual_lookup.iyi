@@ -1,0 +1,27 @@
+abstract class Node
+end
+
+class Leaf < Node
+end
+
+class Single
+end
+
+class Walker
+  def base : Node
+    Leaf.new
+  end
+
+  def single : Single
+    Single.new
+  end
+
+  def check : Bool
+    item = base
+    item.is_a?(Leaf)
+  end
+end
+
+walker = Walker.new
+a = walker.check
+b = walker.single
