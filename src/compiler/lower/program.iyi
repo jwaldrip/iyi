@@ -23,9 +23,9 @@ module compiler/lower/program
 #   - the funs of each `lib`, registered in the lib as bodiless defs, so a call through a lib types the way
 #     the hosted analysis does (NEEDS.md, lowering calls row 31). Same as bench/lib/lower_gate.iyi.
 
-import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral, InstanceVar}
+import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral, InstanceVar, Assign, Call, ClassVar, If, Var}
 import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
-import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
+import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance, node_class_name}
 import compiler/semantic/match::{YieldFinder}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
@@ -234,6 +234,79 @@ pub class NodeIds < Visitor
   end
 end
 
+# The expressions under a def body that the body typer left without a type, of the kinds a lowering asks a type
+# for first: a call, a variable read, an assignment, a conditional.
+pub class UntypedNodes < Visitor
+  getter nodes : Array(ASTNode)
+
+  def initialize(@types : MainVisitor)
+    @nodes = [] of ASTNode
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    if node.is_a?(Call) || node.is_a?(ClassVar) || node.is_a?(InstanceVar) || node.is_a?(Var) || node.is_a?(Assign) || node.is_a?(If)
+      @nodes << node if @types.type_of?(node).nil?
+    end
+    true
+  end
+end
+
+# The name a silent row carries for its node: what was called, read or assigned.
+def silent_name(node : ASTNode) : String
+  return node.as(Call).name if node.is_a?(Call)
+  return node.as(ClassVar).name if node.is_a?(ClassVar)
+  return node.as(InstanceVar).name if node.is_a?(InstanceVar)
+  return node.as(Var).name if node.is_a?(Var)
+  return "=" if node.is_a?(Assign)
+  "if"
+end
+
+# The silent gaps of the body typer, for the sidecar only (`silent<TAB>def<TAB>node kind<TAB>name<TAB>file:line`): an
+# expression it left without a type and without a refusal, the innermost of each such chain. The lowering meets
+# these as "the analysed program has no type for ...", which names no place; this row names the node. Some are
+# right (code after a NoReturn, a branch a type filter rules out), so this is a list to read, never a count to gate.
+def silent_rows(typed : TypedProgram, refused : Array(String)) : Nil
+  visitor = typed.visitor
+  refusals = visitor.refusals
+  seen = Hash(String, Bool).new
+  visitor.typed_instances.each do |inst|
+    d = inst.definition
+    next unless primitive_name(d.body).nil?
+    finder = UntypedNodes.new(visitor)
+    d.body.accept(finder)
+    next if finder.nodes.empty?
+    all = NodeIds.new
+    d.body.accept(all)
+    # Every node under a refused node of this def: the refusal already names that gap.
+    covered = NodeIds.new
+    refusals.each do |r|
+      r.node.accept(covered) if all.ids.has_key?(r.node.node_id)
+    end
+    finder.nodes.each do |node|
+      next if covered.ids.has_key?(node.node_id)
+      under = NodeIds.new
+      node.accept(under)
+      innermost = true
+      finder.nodes.each do |other|
+        innermost = false if other.node_id != node.node_id && under.ids.has_key?(other.node_id)
+      end
+      refusals.each do |r|
+        innermost = false if under.ids.has_key?(r.node.node_id)
+      end
+      next unless innermost
+      where = "no location"
+      if loc = node.location
+        where = "#{loc.filename}:#{loc.line_number}"
+      end
+      row = "silent\t#{lowering_example(d, inst.self_type)}\t#{node_class_name(node)}\t#{silent_name(node)}\t#{where}"
+      unless seen.has_key?(row)
+        seen[row] = true
+        refused << row
+      end
+    end
+  end
+end
+
 # The first line of a refusal's reason, so one table row stays on one line.
 def first_line(text : String) : String
   i = 0
@@ -360,6 +433,7 @@ pub def refusal_table(typed : TypedProgram, root : String, refused : Array(Strin
   end
   lines << "table: #{root} defs-reached=#{labels.size} defs-typed-clean=#{clean} root-refusals=#{root_refusals} refusal-sites=#{sites.size}"
   ranked_rows(root, "refusal", reasons, counts, examples).each { |line| lines << line }
+  silent_rows(typed, refused)
   lines
 end
 
