@@ -1106,6 +1106,13 @@ jobs:
       - name: Every failure proof still patches the code it names
         run: python3 bench/mutation_anchors.py
 
+      # And the runner those proofs go through (bench/lib/mutation.sh) is
+      # proved on a scratch file: a failing check is caught and a passing one
+      # is not, the file comes back either way and on TERM, a patch that
+      # changes nothing is refused, and job control is on for the check alone.
+      - name: The mutation runner catches, restores and refuses
+        run: bash bench/mutation_runner_exercise.sh
+
       # And the numbers the docs quote from an instrument rather than from the
       # tree. A shared runner cannot re-measure a second or a megabyte — the
       # scripts that produce them refuse an unoptimised compiler, and the same

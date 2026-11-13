@@ -112,9 +112,17 @@ pub class MacroEngine
     rep.output
   end
 
+  # The expansion's nodes are in the file of the call that expands them: the names that file imports
+  # are in scope for what the macro writes there (a `getter table : TypeTable` in a file that imports
+  # TypeTable). Parsed with no file name, they were in no file, and a def among them was typed with no
+  # imports at all.
   def expand(a_macro : Macro, call : Call) : ASTNode
     expanded_source = expand_to_s(a_macro, call)
-    parser = Parser.new(expanded_source)
+    file = ""
+    if loc = call.location
+      file = loc.filename
+    end
+    parser = Parser.new(expanded_source, file)
     node = parser.parse
     Normalizer.new.normalize(node)
   end
