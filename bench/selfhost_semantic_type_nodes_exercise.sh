@@ -150,9 +150,9 @@ prove_mutation "type arguments are not bracketed as type arguments" "$TYPE_NODES
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "union type arguments print with their outer parentheses" "$REPO/src/compiler/types/rendering.iyi" \
-  "parts << render(shown(arg, codegen), skip_union_parens: true, generic_args: true, codegen: codegen)" \
-  "parts << render(shown(arg, codegen), skip_union_parens: false, generic_args: true, codegen: codegen)" \
+prove_mutation "union type arguments print with their outer parentheses" "$TYPES_FILE" \
+  "@type_args.map { |a| a.devirtualize.arg_full_name }" \
+  "@type_args.map { |a| a.devirtualize.full_name }" \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -210,10 +210,9 @@ prove_mutation "enum members are not walked before the enum is typed" "$TYPE_NOD
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a fun's declared types are read before the type system resolves them" "$TYPE_NODES" \
-  "  type_node_system(visitor.program)
-  fun_record = visitor.program.lib_fun_of(node)" \
-  "  fun_record = visitor.program.lib_fun_of(node)" \
+prove_mutation "a fun's declared types are read before the type system resolves them" "$REPO/src/compiler/types/type_system.iyi" \
+  "    @program.resolve_declared_types" \
+  "    nil" \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
