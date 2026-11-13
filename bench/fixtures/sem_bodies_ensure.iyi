@@ -1,0 +1,19 @@
+before = 1
+result = begin
+  introduced = 2
+  before = "body"
+  begin
+    nested = 3
+    4
+  ensure
+    nested_cleanup = 5
+  end
+ensure
+  cleanup = 6
+  before = true
+end
+before
+introduced
+cleanup
+nested_cleanup
+result
