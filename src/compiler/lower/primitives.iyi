@@ -753,7 +753,7 @@ end
 # inputs (virtual types made, reference unions, NEEDS.md rows 26-27), so its nil refuses by name here rather
 # than guessing a byte.
 pub def headed_byte(low : Lowerer, t : Type) : Value
-  answer = headed?(t, low.type_ids)
+  answer = headed?(t, low.analysed.program, low.type_ids)
   if answer.nil?
     pending_visit_node("allocate of class #{t.full_name}: the :headed byte is the program-wide census (lower/headed.iyi, NEEDS.md rows 26-27), not decided")
     return low.builder.const_int(low.module.types.int8, 0_i64)
