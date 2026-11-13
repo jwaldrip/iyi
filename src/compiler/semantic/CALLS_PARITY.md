@@ -14,9 +14,11 @@ hosted oracle. 28 guarded mutation proofs, each caught.
 
 `# expand` lines: `DefaultArguments.expand` (positional and named arguments; a
 parameter no argument reaches takes a copy of its default). The hosted oracle reads
-the values from the hosted `expand_default_arguments` assignments. Not covered by the
-gate: a default that is a magic constant, and a def with a splat or double splat
-(`DefaultArguments.supported?` answers false; the port refuses the call).
+the values from the hosted `expand_default_arguments` assignments. This fixture gate
+still does not cover a magic-constant default or a splat: `supported?` answers false
+for a splat or double splat, and `expand` refuses those calls. Positional splat
+expansion and call-site magic defaults are proved by
+`bench/selfhost_default_values_exercise.sh`, not by this oracle.
 
 ## Census over whole programs (measured)
 
@@ -68,8 +70,22 @@ bodies slice, which uses this lookup; the lookup is measured by the calls gate i
 7. **Known text differences:** the hosted pass prints a file's module as `Name:Module`
    and the port prints `Name` (a renderer gap in `ModuleType#to_s`, owned by the types
    slice).
-8. **Default arguments not yet covered:** magic-constant defaults and defs with
-   splats (see fixture parity).
+8. **Default arguments:** this calls fixture gate still does not cover magic-constant
+   defaults or splats. The default-values gate proves call-site `__LINE__`,
+   `__END_LINE__`, `__FILE__` and `__DIR__` for positional omission, two calls of the
+   same signature, a wrapper forced by a normal default, named in-order omission,
+   supported out-of-order omission, explicit overrides, and a nested call whose
+   coordinates stay in its own file. File and directory values are the emitted string
+   constants; line and end-line values are the executable bytes. `pointerof(@c)` plus
+   `puts` is not that proof: the native string object has a type-id header, so that
+   pointer lands on the length field. Macro-generated calls are not original-source
+   parity: `Location` is a flat filename and line, with no VirtualFile line-origin
+   map, and this pass does not invent one. `Proc#call(*args : *T)` is still refused
+   at lookup (`expected type, got *T`) before this expansion, so `lowglob_cvar_lazy`
+   is not a consumer this base can prove. A primitive splat with no `*T` restriction
+   does become an arity-specific target; lowering then refuses the missing receiver,
+   not the splat.
+
 
 ## Entry points
 

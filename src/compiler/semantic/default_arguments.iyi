@@ -1,6 +1,6 @@
 module compiler/semantic/default_arguments
 
-import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, MagicConstant, NamedArgument, Var}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, MagicConstant, NamedArgument, Primitive, TupleLiteral, Var}
 
 # The port of the argument side of the hosted Def#expand_default_arguments
 # (src/compiler/iyi/semantic/default_arguments.cr). The hosted expansion is a new
@@ -15,9 +15,9 @@ import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, Magic
 # node, unevaluated. The hosted expansion makes it a parameter filled from the
 # call site, so the call site's expansion of the constant is what runs.
 #
-# Not ported, and refused by `supported?`: a def with a splat or a double splat.
-# The hosted expansion packs the extra arguments into a tuple or a named tuple
-# and forwards them differently, and a list of nodes cannot say that. Also refused:
+# `supported?` and `expand` still refuse a splat or a double splat. A positional
+# splat with no named arguments is expanded by `expand_for_call` into ordinary
+# parameters; a double splat stays refused. Also refused:
 # a named argument that names a parameter the positional arguments already fill,
 # or names no parameter, and a parameter with no default that no argument fills
 # (the call does not match, so there is no list to build).
@@ -30,11 +30,72 @@ pub class DefaultArguments
   # Hosted default_arguments.cr:4-35, 146-197, 258-297. Instantiate the
   # expansion in the original def's scope, rather than visiting defaults at
   # the call site. The caller must copy the original def's owner and file scope.
-  def self.expand_for_call(rec_def : Def, given : Int32, named_args : Array(NamedArgument)?) : Def | String
+  def self.expand_for_call(rec_def : Def, given : Int32, named_args : Array(NamedArgument)?, splat_names : Array(String) = [] of String) : Def | String
+    if rec_def.splat_index && named_args.nil?
+      return expand_splat(rec_def, given, splat_names)
+    end
     return "not ported: splat or unmatched default arguments" unless supported_count?(rec_def, given, named_args)
     return "not ported: default expansion with block parameter or macro def" if rec_def.block_arg || rec_def.macro_def
     expansion = wrapper_def(rec_def, given, named_args)
     expansion.nil? ? rec_def : expansion.as(Def)
+  end
+
+  # A positional splat becomes ordinary parameters. The retained body rebuilds
+  # the splat local as a tuple. A primitive body stays bare for the lowerer.
+  def self.expand_splat(rec_def : Def, given : Int32, names : Array(String)) : Def | String
+    index = rec_def.splat_index
+    return "not ported: no splat parameter" if index.nil?
+    return "not ported: double splat arguments" if rec_def.double_splat
+    index = index.as(Int32)
+    before = given < index ? given : index
+    k = before
+    while k < rec_def.args.size
+      if k != index && rec_def.args[k].default_value.nil?
+        return "not ported: unmatched splat arguments"
+      end
+      k += 1
+    end
+    new_args = [] of Arg
+    k = 0
+    while k < before
+      arg = rec_def.args[k].clone
+      arg.default_value = nil
+      new_args << arg
+      k += 1
+    end
+    names.each { |name| new_args << Arg.new(name) }
+    body = [] of ASTNode
+    k = before
+    while k < rec_def.args.size
+      if k != index
+        arg = rec_def.args[k]
+        default = arg.default_value
+        if default.is_a?(MagicConstant)
+          new_args << arg.clone
+        elsif default
+          body << Assign.new(Var.new(arg.name), default.clone)
+        end
+      end
+      k += 1
+    end
+    splat = rec_def.args[index]
+    unless splat.external_name.empty?
+      elements = [] of ASTNode
+      names.each { |name| elements << Var.new(name) }
+      body << Assign.new(Var.new(splat.name), TupleLiteral.new(elements))
+    end
+    original = rec_def.body
+    expanded_body : ASTNode = if original.is_a?(Primitive)
+                                original.clone
+                              else
+                                body << original.clone
+                                Expressions.new(body)
+                              end
+    wrapper = Def.new(rec_def.name, new_args, expanded_body, copy_node(rec_def.receiver), nil, copy_node(rec_def.return_type), rec_def.macro_def, rec_def.abstract, nil, nil, copy_free_vars(rec_def.free_vars), rec_def.uses_block_arg)
+    wrapper.calls_super = rec_def.calls_super
+    wrapper.calls_initialize = rec_def.calls_initialize
+    wrapper.calls_previous_def = rec_def.calls_previous_def
+    wrapper
   end
 
   # True when *rec_def* can be expanded for a call with positional *args* and named

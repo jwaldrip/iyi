@@ -3317,6 +3317,97 @@ pub class MainVisitor < TypeNodeHost
     refuse(node, "undefined instance variable '#{node.name}' for #{owner.full_name}")
   end
 
+  # Hosted codegen expands an omitted magic default at the call, not at the def.
+  # The literal keeps the type visit(MagicConstant) assigned, so a mutation of
+  # that visit still changes the argument the typed dump records.
+  def materialized_magic(node : Call, magic : MagicConstant) : ASTNode
+    magic.accept(self)
+    literal = magic.expand_node(node.location, node.end_location).at(node)
+    if mt = child_type(magic)
+      set_type(literal, mt)
+    else
+      literal.accept(self)
+    end
+    literal
+  end
+
+  # Fill a trailing run of magic defaults from this call's coordinates.
+  def defaults_magic_arguments(node : Call, target_def : Def) : Bool
+    i = node.args.size
+    while i < target_def.args.size
+      value = target_def.args[i].default_value
+      return false unless value.is_a?(MagicConstant)
+      node.args << materialized_magic(node, value.as(MagicConstant))
+      i += 1
+    end
+    true
+  end
+
+  # After wrapper selection, every omitted magic default is a literal of this call.
+  # A named expansion clones the raw default; materialize that clone before visiting it.
+  def defaults_expand_call(node : Call, definition : Def) : Def?
+    target = definition
+    if named = node.named_args
+      if DefaultArguments.supported?(definition, node.args, named)
+        original = node.args.size
+        node.args = DefaultArguments.expand(definition, node.args, named)
+        i = original
+        while i < node.args.size
+          arg = node.args[i]
+          if arg.is_a?(MagicConstant)
+            arg = materialized_magic(node, arg.as(MagicConstant))
+            node.args[i] = arg
+          else
+            arg.accept(self)
+          end
+          i += 1
+        end
+        return definition
+      end
+    end
+    if node.named_args.nil? && (target.splat_index || (node.args.size < target.args.size && DefaultArguments.supported?(target, node.args, nil)))
+      splat_names = [] of String
+      if splat_index = target.splat_index
+        count = node.args.size - splat_index
+        names = NormalizerProgram.new
+        while count > 0
+          splat_names << names.new_temp_var_name("$splat_")
+          count -= 1
+        end
+      end
+      expanded = DefaultArguments.expand_for_call(target, node.args.size, nil, splat_names)
+      if expanded.is_a?(String)
+        refuse_call(node, expanded)
+        return nil
+      end
+      expanded.at(target)
+      @program.copy_def_owner(target, expanded)
+      target = expanded
+    end
+    if node.args.size < target.args.size && !defaults_magic_arguments(node, target)
+      refuse_call(node, "not ported: omitted non-magic argument")
+      return nil
+    end
+    target
+  end
+
+  def defaults_bind_splat(definition : Def, instantiated : Def, args : Array(ASTNode)) : Nil
+    if definition.splat_index && definition.free_vars
+      arg_types = [] of Type
+      args.each do |arg|
+        if arg_type = child_type(arg)
+          arg_types << arg_type
+        end
+      end
+      if arg_types.size == args.size
+        if free_types = FreeBindings.of_def(definition, arg_types, type_node_system(@program))
+          target_def = instantiated
+          @def_free_types[target_def] = free_types unless free_types.empty?
+        end
+      end
+    end
+  end
+
   def visit(node : Call) : Bool
     if block = node.block
       @jump_block_calls[block] = node
@@ -3363,17 +3454,19 @@ pub class MainVisitor < TypeNodeHost
       union_t = rec_type.as(UnionType)
       ret_types = [] of Type
       first_target_def : Def? = nil
+      supplied_args = node.args.dup
+      expanded_args : Array(ASTNode)? = nil
 
       if blk = node.block
         @block_breaks[blk] = [] of Type?
       end
       i = 0
       while i < union_t.union_types.size
+        node.args = supplied_args.dup
         ut = union_t.union_types[i]
         target_def = lookup_method_matching(ut, node.name, node.args, node)
         return false if target_def.nil?
-        instantiated_def = target_def.clone
-        @program.copy_def_owner(target_def, instantiated_def)
+        original_def = target_def
         union_instance_owner : Type = ut
         if node.obj.nil?
           if declared_owner = @program.def_owner(target_def)
@@ -3381,6 +3474,20 @@ pub class MainVisitor < TypeNodeHost
           end
         end
         dkey = def_instance_key(target_def, union_instance_owner, node)
+        expanded = defaults_expand_call(node, target_def)
+        return false if expanded.nil?
+        target_def = expanded
+        if previous_args = expanded_args
+          if previous_args.map(&.to_s) != node.args.map(&.to_s)
+            refuse_call(node, "not ported: differing union call-site defaults")
+            return false
+          end
+        else
+          expanded_args = node.args
+        end
+        instantiated_def = target_def.clone
+        defaults_bind_splat(original_def, instantiated_def, supplied_args)
+        @program.copy_def_owner(target_def, instantiated_def)
         ret_t : Type? = nil
         if hit = cached_instance(dkey)
           instantiated_def = hit.definition
@@ -3395,6 +3502,7 @@ pub class MainVisitor < TypeNodeHost
         ret_types << ret_t
         i = i + 1
       end
+      node.args = expanded_args || supplied_args
 
       if td = first_target_def
         @call_target_defs[node] = td
@@ -3421,30 +3529,23 @@ pub class MainVisitor < TypeNodeHost
 
     target_def = lookup_method_matching(rec_type, node.name, node.args, node)
     return false if target_def.nil?
-    # A positional call that leaves parameters to their defaults gets them as
-    # cloned argument nodes, one per parameter (hosted expansion; the calls slice's
-    # DefaultArguments). The new nodes are visited here; the rest were visited above.
-    if node.named_args.nil? && DefaultArguments.supported?(target_def, node.args, nil)
-      original_count = node.args.size
-      node.args = DefaultArguments.expand(target_def, node.args, nil)
-      i = original_count
-      while i < node.args.size
-        node.args[i].accept(self)
-        i = i + 1
-      end
-    end
-    instantiated_def = target_def.clone
-    @program.copy_def_owner(target_def, instantiated_def)
+    original_def = target_def
     # A receiverless fallback to a program def is instantiated by the program,
     # not by the type that happened to call it. Methods retain the actual
     # receiver, including generic instances and inherited methods.
     instance_owner : Type = rec_type
     if node.obj.nil?
-      if declared_owner = @program.def_owner(target_def)
+      if declared_owner = @program.def_owner(original_def)
         instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
       end
     end
-    dkey = def_instance_key(target_def, instance_owner, node)
+    dkey = def_instance_key(original_def, instance_owner, node)
+    expanded = defaults_expand_call(node, original_def)
+    return false if expanded.nil?
+    target_def = expanded
+    instantiated_def = target_def.clone
+    defaults_bind_splat(original_def, instantiated_def, node.args)
+    @program.copy_def_owner(target_def, instantiated_def)
     body_ret : Type? = nil
     if hit = cached_instance(dkey)
       # A cached instance: the call records its clone and takes its return type. Its block breaks
