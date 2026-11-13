@@ -402,6 +402,12 @@ prove_mutation "a union restriction drops its generic member" "$RESTRICT_FILE" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a nilable restriction drops Nil" "$RESTRICT_FILE" \
+  '      members << member.as(Type)' \
+  '      members << member.as(Type) unless member.as(Type).full_name == "Nil"' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
