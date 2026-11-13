@@ -3294,6 +3294,7 @@ pub class TopLevelVisitor < Visitor
     end
 
     @current_type.include(type)
+    refuse_unported_hook(node.name, type, "included")
     false
   end
 
@@ -3308,7 +3309,24 @@ pub class TopLevelVisitor < Visitor
     end
 
     @current_type.metaclass.include(type)
+    refuse_unported_hook(node.name, type, "extended")
     false
+  end
+
+  # Hosted run_hooks uses only the module's own hooks, or the generic holder's.
+  # The port cannot retain their expansions yet. Refuse them here so accepted
+  # include/extend nodes have no runtime payload (hosted codegen.cr:1311-1327).
+  def refuse_unported_hook(written : ASTNode, type : Type, kind : String) : Nil
+    holder = type
+    if written.is_a?(Generic)
+      holder = @program.lookup_type_node(written.as(Generic).name, @current_type)
+    end
+    unless holder.is_a?(ModuleType)
+      refuse_port("the '#{kind}' hooks of #{type.full_name} (hosted top_level_visitor.cr hook_type) are not ported yet")
+    end
+    if holder.as(ModuleType).macros[kind]?
+      refuse_port("the '#{kind}' hook of #{holder.full_name} (hosted top_level_visitor.cr run_hooks) is not ported yet")
+    end
   end
 
   def visit(node : Macro) : Bool
