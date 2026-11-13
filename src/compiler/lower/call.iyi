@@ -148,10 +148,14 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     end
   end
   if node.obj.nil? && !low.current_context.type.nil?
-    owner = implicit_owner(low, node)
-    self_type = owner
-    unless owner.nil?
-      self_value = implicit_self_value(low)
+    if low.current_context.vars["self"]?.nil?
+      class_owner = implicit_class_owner(low, node)
+    else
+      owner = implicit_owner(low, node)
+      self_type = owner
+      unless owner.nil?
+        self_value = implicit_self_value(low)
+      end
     end
   end
 
@@ -272,11 +276,27 @@ end
 # the call passes; nil for a top-level def, which takes no self; a refusal otherwise. A class method's implicit
 # call is refused (its self is the class, a metaclass owner), and so is an inherited method (the hosted owner is
 # the superclass, which the port does not record).
+# The owner of a call with no receiver inside a class method (hosted call.cr: prepare_call_args): the target def's
+# owner is the metaclass, whose `passed_as_self?` is false, so no self is passed and the function is named after
+# the class (`class_owner`, as a `Sched.go` path call is). The frame's type is the class (fun.iyi codegen_fun).
+# Nil for a top-level def; a refusal for a generic or builtin class and for an inherited class method.
+pub def implicit_class_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type?
+  ct = low.current_context.type.as(Type)
+  unless (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""
+    pending_visit_node("a call to #{node.name} with no receiver inside a class method of #{ct.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
+  end
+  unless ct.as(ModuleType).metaclass.defs[node.name]?.nil?
+    return ct
+  end
+  if low.analysed.program.defs[node.name]?
+    return nil
+  end
+  pending_visit_node("a class method #{node.name} called with no receiver and inherited from a superclass of #{ct.full_name} (hosted call.cr: target_def.owner is the defining type)")
+  nil
+end
+
 pub def implicit_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type?
   ct = low.current_context.type.as(Type)
-  if low.current_context.vars["self"]?.nil?
-    pending_visit_node("a call to #{node.name} with no receiver inside a class method (hosted call.cr: prepare_call_args, the metaclass owner)")
-  end
   if defines_method?(ct, node.name)
     return ct
   end
