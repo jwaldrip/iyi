@@ -16,7 +16,7 @@ module compiler/lower/lower
 # folds it; `!` as an `xor`; `while` with `break` and `next`. Dead code after a `break` or
 # `next` in the same sequence is refused by name.
 
-import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Cast, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, ModuleDef, Next, Nop, Not, NilLiteral, NilableCast, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
+import compiler/syntax/ast::{ASTNode, Alias, And, Assign, BoolLiteral, Break, Cast, CharLiteral, Call, ClassDef, ClassVar, Def, Expressions, If, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, ModuleDef, Next, Nop, Not, NilLiteral, NilableCast, NumberLiteral, Or, Path, PointerOf, Primitive, ProcLiteral, RespondsTo, Return, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, UninitializedVar, Var, While, IsA, Yield}
 import compiler/lower/helpers::{build_string_constant}
 import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symbol}
 import compiler/lower/type_id::{LowerTypeIds}
@@ -275,6 +275,17 @@ end
 # The hosted `codegen` visitor's dispatch over one node. A sequence visits each of its
 # expressions in order; the value of the last one is `low.last`.
 pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
+  # The hosted visitor lowers the expansion recorded during semantic analysis.
+  # And and Or retain their own lowering, which controls short circuiting.
+  unless node.is_a?(And) || node.is_a?(Or)
+    if expanded = low.analysed.expansions[node]?
+      codegen_node(low, expanded)
+      return
+    end
+  end
+  if node.is_a?(MacroIf) || node.is_a?(MacroFor) || node.is_a?(MacroExpression) || node.is_a?(MacroLiteral)
+    refuse_port("lower: visit(#{node_class_name(node)}) with no recorded expansion (hosted: expanded before codegen)")
+  end
   if node.is_a?(Expressions)
     exprs = node.as(Expressions).expressions
     wants = low.needs_value

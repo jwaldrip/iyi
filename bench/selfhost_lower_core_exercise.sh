@@ -469,6 +469,19 @@ pointerof_ivar_check() {
 prove_mutation "pointerof of an instance variable returns self" "$REPO/src/compiler/lower/instance_var.iyi" \
   "  low.last = instance_var_pointer(low, owner.as(Type), node.name, self_var.as(LowerVar).pointer)" \
   "  low.last = self_var.as(LowerVar).pointer" -- pointerof_ivar_check || status=1
+expansion_case_check() {
+  "$IYI" build -o "$WORK/port-expansion" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/expansion.build.log" 2>&1 || return 1
+  "$WORK/port-expansion" lower "$REPO/bench/fixtures/lower_expanded_case.iyi" "$WORK/lower_expanded_case.oracle.ll" > "$WORK/expansion.out" 2> "$WORK/expansion.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/expansion.out"
+}
+if expansion_case_check; then
+  prove_mutation "recorded literal expansion is ignored" "$REPO/src/compiler/lower/lower.iyi" \
+    "    if expanded = low.analysed.expansions[node]?" \
+    "    if expanded = nil.as(Compiler::Syntax::Ast::ASTNode?)" -- expansion_case_check || status=1
+else
+  echo "FAIL: unmutated case expansion does not match the hosted module"
+  status=1
+fi
 
 echo
 echo
