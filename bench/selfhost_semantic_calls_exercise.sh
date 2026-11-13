@@ -329,9 +329,9 @@ prove_mutation "restore the early return" "$LOOKUP_FILE" \
   '        return Matches.new(matches_array, false, err)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-prove_mutation "a splat free variable is not bound to the splat tuple" "$MATCH_FILE" \
-  '        return MatchAttempt.none if !FreeBindings.bind(splat_restriction.as(Splat).exp, splat_tuple, free_names, bound)' \
-  '        return MatchAttempt.none if false' \
+prove_mutation "a splat free variable is not bound to the splat tuple" "$RESTRICT_FILE" \
+  '        return nil if !FreeBindings.bind(splat_restriction.as(Splat).exp, splat_tuple, free, bound)' \
+  '        return nil if false' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

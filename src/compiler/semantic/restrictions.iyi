@@ -1,6 +1,6 @@
 module compiler/semantic/restrictions
 
-import compiler/syntax/ast::{ASTNode, Arg, Generic, Path, Self, Splat}
+import compiler/syntax/ast::{ASTNode, Arg, Def, Generic, Path, Self, Splat}
 import compiler/semantic/top_level::{GenericClassType, ModuleType, Type, TypeParameterType}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/type_system::{TypeSystem}
@@ -162,6 +162,43 @@ pub class FreeBindings
       end
     end
     true
+  end
+
+  # The free variables bound by *definition*'s parameter restrictions against
+  # *arg_types*, or nil when two restrictions bind the same free variable to
+  # different types. When *ts* is given and *definition* has a splat restriction
+  # (`*values : *T`), the splat elements are packed as a tuple and bound too.
+  def self.of_def(definition : Def, arg_types : Array(Type), ts : TypeSystem? = nil) : Hash(String, Type)?
+    bound = Hash(String, Type).new
+    free_names = definition.free_vars
+    return bound if free_names.nil?
+    free = free_names.as(Array(String))
+    return bound if free.empty?
+    splat = definition.splat_index
+    prefix = splat ? splat.as(Int32) : definition.args.size
+    i = 0
+    while i < arg_types.size && i < prefix
+      bind_node = definition.args[i].restriction
+      if !bind_node.nil?
+        return nil if !FreeBindings.bind(bind_node.as(ASTNode), arg_types[i], free, bound)
+      end
+      i += 1
+    end
+    if !ts.nil? && splat
+      splat_idx = splat.as(Int32)
+      splat_restriction = definition.args[splat_idx].restriction
+      if splat_restriction && splat_restriction.is_a?(Splat)
+        splat_types = [] of Type
+        si = prefix
+        while si < arg_types.size
+          splat_types << arg_types[si]
+          si += 1
+        end
+        splat_tuple = ts.as(TypeSystem).tuple_of(splat_types)
+        return nil if !FreeBindings.bind(splat_restriction.as(Splat).exp, splat_tuple, free, bound)
+      end
+    end
+    bound
   end
 
   def self.free?(name : String, free : Array(String)) : Bool
