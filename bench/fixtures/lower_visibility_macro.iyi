@@ -9,6 +9,10 @@ class Box
 
   private getter a : Int32
 
+  def initialize
+    @a = 7
+  end
+
   def read : Int32
     @a
   end
