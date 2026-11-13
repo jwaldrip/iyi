@@ -48,6 +48,8 @@ waiting=0
 waiting_on() {
   case "$1" in
     lowprim_enum) echo "enum members type as Int32 until the bodies lane's enum Path fix lands" ;;
+    lowprim_alloc_class) echo "an untyped instantiated parameter 0 of initialize (hosted call.cr: prepare_call_args) (S2c20Calls; look-hello-typing, not the clean lane)" ;;
+    lowprim_alloc_struct) echo "an untyped instantiated parameter 0 of initialize (hosted call.cr: prepare_call_args) (S2c20Calls; look-hello-typing, not the clean lane)" ;;
   esac
 }
 
