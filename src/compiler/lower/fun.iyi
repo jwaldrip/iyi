@@ -49,6 +49,11 @@ pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), 
   text = "*"
   named_self = self_type
   named_class = class_owner
+  if co = named_class
+    if co.is_a?(MetaclassType)
+      named_class = co.as(MetaclassType).instance_type
+    end
+  end
   if named_class.nil?
     if st = self_type
       if st.is_a?(MetaclassType)
