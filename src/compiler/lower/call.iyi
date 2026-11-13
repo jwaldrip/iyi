@@ -87,10 +87,13 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   raise "BUG: the call to #{node.name} has no target def (hosted call.cr: visit(Call))" if target.nil?
   def_node = target.as(Def)
 
-  # A primitive is lowered at the call site (hosted codegen_call). Proc#call is a
-  # primitive whose def is a splat; that splat is the primitive's form, not an
-  # unexpanded user call. A non-primitive splat or default still refuses by name.
-  unless primitive_name_of(def_node).nil?
+  # Proc#call's splat is the primitive's argument list, validated against the
+  # Proc type by codegen_primitive_proc_call. Other unexpanded calls still refuse.
+  primitive = primitive_name_of(def_node)
+  if (node.args.size != def_node.args.size || def_node.splat_index != nil) && primitive != "proc_call"
+    pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
+  end
+  unless primitive.nil?
     unless node.block.nil?
       pending_visit_node("a block passed to a primitive (hosted call.cr: codegen_call, Primitive body)")
     end
@@ -113,9 +116,6 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     return
   end
 
-  if node.args.size != def_node.args.size || def_node.splat_index != nil
-    pending_visit_node("a call with default arguments or a splat (hosted call.cr)")
-  end
 
   if node.super? || node.previous_def?
     pending_visit_node("super or previous_def (hosted call.cr: is_super, owner is the scope, match.cr codegen_dispatch)")
