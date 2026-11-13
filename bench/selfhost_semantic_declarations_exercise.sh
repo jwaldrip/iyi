@@ -665,6 +665,11 @@ prove_mutation "lib fun drops its varargs flag" "$MUT_SEM" \
   "record = LibFun.new(node.name, real, arg_names, false, node.return_type)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "two argument pointer malloc does not infer its element type" "$MUT_IVARS" \
+  '    if obj.is_a?(Path) && obj.as(Path).names == ["Pointer"] && node.name == "malloc" && node.args.size == 2' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "lib struct takes Reference as its superclass" "$MUT_SEM" \
   "NonGenericClassType.new(@program, @current_type, node.name, @program.struct_type)" \
@@ -738,9 +743,19 @@ prove_mutation "pointer malloc and null calls do not infer instance variable typ
   '    if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "constructor guesses omit classes with subclasses" "$MUT_IVARS" \
+  '      if found && found.is_a?(NonGenericClassType)' \
+  '      if found && found.is_a?(NonGenericClassType) && found.as(NonGenericClassType).subclasses.empty?' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "typed array literals do not infer instance variable types" "$MUT_IVARS" \
   '    if node.is_a?(ArrayLiteral)' \
   '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "array literal elements do not infer instance variable types" "$MUT_IVARS" \
+  '      if literal.name.nil? && literal.of.nil?' \
+  '      if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "generic new calls do not infer instance variable types" "$MUT_IVARS" \
