@@ -151,8 +151,8 @@ prove_mutation "type arguments are not bracketed as type arguments" "$TYPE_NODES
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "union type arguments print with their outer parentheses" "$TYPES_FILE" \
-  "a.devirtualize.arg_full_name" \
-  "a.devirtualize.full_name" \
+  "@type_args.map { |a| a.devirtualize.arg_full_name }" \
+  "@type_args.map { |a| a.devirtualize.full_name }" \
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

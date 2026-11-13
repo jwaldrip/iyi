@@ -148,7 +148,32 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
     store_aligned(low, to_rhs(low, value, target), pointer)
     return
   end
+  # Hosted assign_distinct(NilableProcType, NilType) (cast.cr:237-240): nil is a null function and a null context.
+  if target.is_a?(NilableProcType) && value_type.nil_type?
+    store_aligned(low, make_nilable_fun(low, target.as(NilableProcType).proc_type), pointer)
+    return
+  end
+  # Hosted assign_distinct(NilableProcType, ProcInstanceType) (cast.cr:242-244).
+  if target.is_a?(NilableProcType) && value_type.is_a?(ProcInstanceType)
+    store_aligned(low, value, pointer)
+    return
+  end
   pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (hosted assign_distinct, not ported)")
+end
+
+# Hosted make_nilable_fun (codegen.cr:2386-2388): a proc struct of two null pointers.
+# Inlined so cast does not import proc (proc imports fun, and fun imports cast).
+def make_nilable_fun(low : Lowerer, proc_type : Type) : Value
+  struct_type = low.typer.llvm_type(proc_type)
+  closure_ptr = low.alloca(struct_type)
+  i32 = low.module.types.int32
+  zero = low.builder.const_int(i32, 0).as(Value)
+  null_ptr = low.builder.const_null(low.module.types.ptr(0)).as(Value)
+  fun_field = low.builder.inbounds_gep(struct_type, closure_ptr, [zero, low.builder.const_int(i32, 0).as(Value)] of Value)
+  store_aligned(low, null_ptr, fun_field)
+  ctx_field = low.builder.inbounds_gep(struct_type, closure_ptr, [zero, low.builder.const_int(i32, 1).as(Value)] of Value)
+  store_aligned(low, null_ptr, ctx_field)
+  load_aligned(low, struct_type, closure_ptr).as(Value)
 end
 
 # The hosted `assign_distinct(MixedUnionType, MixedUnionType)` when every member of the value
@@ -262,6 +287,8 @@ end
 # temporary. Structurally this is not the hosted `if` join (which keeps the temporary's
 # pointer); the core's join uses `union_temp` for identity with the hosted module.
 pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
+  # Hosted upcast (cast.cr:540): an ended block has no value to convert.
+  return llvm_nil(low) if at_terminator?(low)
   f = TypeIndirection.remove_indirection(from)
   t = TypeIndirection.remove_indirection(to)
   return value if f.full_name == t.full_name
