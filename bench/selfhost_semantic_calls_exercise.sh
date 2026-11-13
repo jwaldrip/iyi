@@ -408,6 +408,12 @@ prove_mutation "a nilable restriction drops Nil" "$RESTRICT_FILE" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "an alias in a generic restriction is not unwrapped" "$RESTRICT_FILE" \
+  '    while current.is_a?(AliasType) && seen < 8' \
+  '    while false && current.is_a?(AliasType) && seen < 8' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
