@@ -263,6 +263,9 @@ prove_mutation "a symbol constant global has the wrong index" "$REPO/src/compile
 prove_mutation "a symbol class variable does not retain its literal index" "$REPO/src/compiler/lower/class_var.iyi" \
   "    value = low.builder.const_int(ir, symbol_index(low, node.as(SymbolLiteral).value).to_i64)" \
   "    value = low.builder.const_int(ir, symbol_index(low, node.as(SymbolLiteral).value).to_i64 + 1_i64)" -- lowglob_check || status=1
+prove_mutation "a nil reference initializer is not discarded" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  node.is_a?(NilLiteral) && nilable_reference_type?(cvar.type)" \
+  "  false" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1
