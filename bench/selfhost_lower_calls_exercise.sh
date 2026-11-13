@@ -245,6 +245,8 @@ prove_mutation "an implicit generic metaclass call loses its self" "$REPO/src/co
     return ct' -- lower_calls_check || status=1
 prove_mutation "a builtin metaclass receiver is refused" "$REPO/src/compiler/lower/call.iyi" \
   '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)' '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""' -- lower_calls_check || status=1
+prove_mutation "an implicit builtin class call is refused" "$REPO/src/compiler/lower/call.iyi" \
+  '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)' '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
