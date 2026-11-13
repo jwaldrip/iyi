@@ -1,0 +1,10 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def invoke_nil(f : Proc(Nil)) : Nil
+  f.call
+end
+
+invoke_nil(-> { nil })
+LibC.exit(7)
