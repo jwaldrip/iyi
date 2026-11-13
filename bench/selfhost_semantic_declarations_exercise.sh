@@ -637,6 +637,11 @@ prove_mutation "a generic class's guessed instance variables are not declared on
   "if owner.owner.is_a?(NonGenericClassType)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an explicit generic instance variable keeps the unbound generic" "$MUT_IVARS" \
+  "  type_node_system(program)" \
+  "  nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
   "di.owner.instance_vars[di.name] = mv" \
   "nil" \
