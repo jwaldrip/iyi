@@ -22,7 +22,7 @@ class Iyi::Compiler
   def declarations_program(source : Iyi::Compiler::Source) : {Program, ASTNode}
     self.prelude = "iyi/prelude"
     program = new_program([source])
-    {program, parse(program, source)}
+    {program, parse(program, [source])}
   end
 end
 
@@ -205,10 +205,7 @@ end
 
 def dump_declarations(node : Iyi::ASTNode, io : IO, program : Iyi::Program, entry : String?)
   initial_types = Iyi::Program.new.types.keys.to_set
-  visitor = Iyi::TopLevelVisitor.new(program)
-  node.accept(visitor)
-  # The hosted type declaration pass: explicit and guessed instance variables.
-  Iyi::TypeDeclarationProcessor.new(program).process(node)
+  program.top_level_semantic(node)
 
   if pdefs = program.defs
     top_defs = [] of Iyi::Def
