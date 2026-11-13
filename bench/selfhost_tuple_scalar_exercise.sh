@@ -7,10 +7,9 @@ cd "$REPO"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export IYI_CACHE_DIR="$WORK/cache"
-export IYI_PATH="$REPO/src"
+IYI="${IYI_COMPILER:-$REPO/bin/iyi}"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 export LIBRARY_PATH="${LIBRARY_PATH:-/opt/homebrew/opt/bdw-gc/lib}"
-IYI="${IYI_COMPILER:-/Users/jwaldrip/checkouts/iyi-s1t/.build/iyi}"
 CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src" "${CRYSTAL:-crystal}" build -Di_know_what_im_doing -o "$WORK/oracle" bench/selfhost_typed_oracle.cr > "$WORK/oracle.build" 2>&1 || { cat "$WORK/oracle.build"; exit 1; }
 "$IYI" build -o "$WORK/typed" src/compiler/tools/typed_dump.iyi > "$WORK/typed.build" 2>&1 || { cat "$WORK/typed.build"; exit 1; }
 fixture="$REPO/bench/fixtures/sem_bodies_tuple_scalar.iyi"
