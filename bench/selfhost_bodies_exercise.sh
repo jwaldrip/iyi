@@ -15,16 +15,8 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
-probe="$(mktemp)"
-printf 'import compiler/syntax/ast::{ASTNode}\n' > "$probe.iyi"
-if [ -n "${IYI_COMPILER:-}" ] && [ -x "$IYI_COMPILER" ]; then
-  IYI="$IYI_COMPILER"
-elif [ -x "$REPO/.build/iyi" ] && "$REPO/.build/iyi" build -o "$probe" "$probe.iyi" >/dev/null 2>&1; then
-  IYI="$REPO/.build/iyi"
-else
-  IYI="/Users/jwaldrip/checkouts/iyi-s1t/.build/iyi"
-fi
-rm -f "$probe" "$probe.iyi"
+# The hosted compiler that builds the port's tools: this checkout's, or the one IYI_COMPILER names.
+IYI="${IYI_COMPILER:-$REPO/bin/iyi}"
 export IYI_PATH="$REPO/src"
 CRYSTAL="${CRYSTAL:-crystal}"
 FLOOR_FILE="$REPO/bench/selfhost_bodies.floor"

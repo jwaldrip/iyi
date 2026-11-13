@@ -8,7 +8,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 export IYI_CACHE_DIR="$WORK/cache"
 export IYI_PATH="$REPO/src"
-IYI="${IYI_COMPILER:-/Users/jwaldrip/.local/state/ovnfs/uppers/s2a25-closure-int/.build/iyi}"
+IYI="${IYI_COMPILER:-$REPO/bin/iyi}"
 CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src" "${CRYSTAL:-crystal}" build -Di_know_what_im_doing -o "$WORK/oracle" bench/selfhost_typed_oracle.cr > "$WORK/oracle.build" 2>&1 || { cat "$WORK/oracle.build"; exit 1; }
 "$IYI" build -o "$WORK/typed" src/compiler/tools/typed_dump.iyi > "$WORK/typed.build" 2>&1 || { cat "$WORK/typed.build"; exit 1; }
 fixture="$REPO/bench/fixtures/bodies_enum_primitive.iyi"
