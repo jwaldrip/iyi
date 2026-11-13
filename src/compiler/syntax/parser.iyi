@@ -97,6 +97,14 @@ pub class Parser < Lexer
   property inside_c_struct : Bool
   property no_type_declaration : Int32
   property in_macro_expression : Bool
+  # What the def being parsed does, kept on the Def when it ends (hosted parser.cr 4684-4716). The
+  # semantic passes read them from the Def: default_arguments.cr 148-150, type_declaration_processor.cr
+  # 554-608, the block-to-proc conversion of call.cr.
+  property calls_super : Bool
+  property calls_initialize : Bool
+  property calls_previous_def : Bool
+  property uses_block_arg : Bool
+  property block_arg_name : String?
   property unclosed_stack : Array(Unclosed)
 
   # iyi: true when the caller wants the tree of the source as written and
@@ -128,6 +136,11 @@ pub class Parser < Lexer
     @inside_c_struct = false
     @no_type_declaration = 0
     @in_macro_expression = false
+    @calls_super = false
+    @calls_initialize = false
+    @calls_previous_def = false
+    @uses_block_arg = false
+    @block_arg_name = nil
     @unclosed_stack = [] of Unclosed
     @iyi_module_headers = [] of ModuleHeader
   end
@@ -1301,6 +1314,14 @@ pub class Parser < Lexer
     is_var = !global && var?(name)
 
     next_token
+    # hosted parser.cr 6275-6284
+    if name == "super"
+      @calls_super = true
+    elsif name == "initialize"
+      @calls_initialize = true
+    elsif name == "previous_def"
+      @calls_previous_def = true
+    end
 
     call_args = preserve_stop_on_do(@stop_on_do) { parse_call_args(@stop_on_do) }
     if call_args
@@ -1312,6 +1333,7 @@ pub class Parser < Lexer
       force_call = call_only || has_parens || !args.empty? || (named_args ? !named_args.empty? : false) || !block.nil? || !block_arg.nil?
 
       if is_var && !force_call
+        note_block_arg_read(name)
         var = Var.new(name).at(location)
         return var
       end
@@ -1325,6 +1347,7 @@ pub class Parser < Lexer
       c
     else
       if is_var && !call_only
+        note_block_arg_read(name)
         Var.new(name).at(location)
       else
         c = Call.new(nil, name).at(location)
@@ -4155,10 +4178,34 @@ pub class Parser < Lexer
   end
 
   def parse_def(is_abstract : Bool = false) : ASTNode
+    prepare_parse_def
     a_def = with_isolated_var_scope do
       parse_def_helper(is_abstract)
     end
+    a_def.calls_super = @calls_super
+    a_def.calls_initialize = @calls_initialize
+    a_def.calls_previous_def = @calls_previous_def
+    a_def.uses_block_arg = @uses_block_arg
+    prepare_parse_def
     a_def
+  end
+
+  # hosted parser.cr 4708-4716. The flags are the def's own: a def nested in another starts clean and
+  # leaves the outer one clean, as hosted does.
+  def prepare_parse_def : Nil
+    @calls_super = false
+    @calls_initialize = false
+    @calls_previous_def = false
+    @uses_block_arg = false
+    @block_arg_name = nil
+  end
+
+  # A read of the def's block parameter by its name: the def keeps the parameter and a block passed to it
+  # becomes a proc (hosted parser.cr 6441-6444). A def that only yields never reads it.
+  def note_block_arg_read(name : String) : Nil
+    if block_name = @block_arg_name
+      @uses_block_arg = true if name == block_name
+    end
   end
 
   def parse_def_helper(is_abstract : Bool = false) : Def
@@ -4589,8 +4636,9 @@ pub class Parser < Lexer
     if @token.type == TokenKind::OP_RPAREN || @token.type == TokenKind::NEWLINE || @token.type == TokenKind::OP_COLON
       param_name = ""
     else
-      p_name, _, _, _ = parse_param_name(name_location, extra_assigns, false)
+      p_name, _, _, uses_param = parse_param_name(name_location, extra_assigns, false)
       param_name = p_name
+      @uses_block_arg = true if uses_param
     end
 
     type_spec : ASTNode? = nil
@@ -4601,6 +4649,7 @@ pub class Parser < Lexer
 
     block_param = Arg.new(param_name, nil, type_spec, param_name).at(name_location)
     push_var(block_param)
+    @block_arg_name = block_param.name
     block_param
   end
 
