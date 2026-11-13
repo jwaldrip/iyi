@@ -1,0 +1,11 @@
+# A nonreturning proc can be stored as a proc returning Nil.
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def assign_proc : Nil
+  p : Proc(Nil) = -> { LibC.exit(7) }
+  LibC.exit(7)
+end
+
+assign_proc
