@@ -2661,7 +2661,12 @@ pub class MainVisitor < TypeNodeHost
                         free_output = names.size == 1 && free_names.includes?(names[0])
                       end
                     end
-                    unless free_output
+                    if free_output
+                      # Hosted call.cr 1442-1446 leaves this Block unbound;
+                      # fix_missing_types.cr 66-75 later makes it NoReturn.
+                      # The result is the literal's Proc return type, not the Block type.
+                      set_type(blk, @program.no_return_type)
+                    else
                       resolved_output = lookup_def_return(output, rec_type, target_def)
                       set_type(blk, resolved_output.as(Type))
                     end
