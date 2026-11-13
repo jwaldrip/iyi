@@ -156,7 +156,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     if low.current_context.vars["self"]?.nil?
       # A non-generic class method has no self argument. An unqualified call to
       # another method on its own metaclass uses the same class owner.
-      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""
+      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)
         if ct.as(ModuleType).metaclass.defs[node.name]?
           class_owner = ct
         elsif !low.analysed.program.defs[node.name]?
