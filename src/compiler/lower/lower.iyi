@@ -844,7 +844,10 @@ pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
     low.last = llvm_nil(low)
     return
   end
+  wants = low.needs_value
+  low.needs_value = true
   codegen_node(low, value.as(ASTNode))
+  low.needs_value = wants
   v = low.last
   raise "BUG: the declared value left no value (hosted codegen.cr: codegen_assign)" if v.nil?
   vt = low.analysed.type_of?(value.as(ASTNode))
