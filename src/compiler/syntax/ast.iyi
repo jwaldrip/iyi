@@ -2877,6 +2877,10 @@ pub class Block < ASTNode
   property body : ASTNode
   property splat_index : Int32?
   property unpacks : Hash(Int32, Expressions)? = nil
+  # The proc a captured block became: a ProcLiteral for a block passed to a def that uses its `&block`
+  # parameter as a value, or the call's block argument for a forwarded block (hosted semantic/ast.cr 674).
+  # The call's typing sets it; a clone does not carry it.
+  property fun_literal : ASTNode? = nil
 
   def initialize(@args : Array(Var) = [] of Var, body : ASTNode? = nil, @splat_index : Int32? = nil, @unpacks : Hash(Int32, Expressions)? = nil)
     @body = body || Nop.new
@@ -3371,14 +3375,37 @@ pub class Def < ASTNode
   property splat_index : Int32?
   property double_splat : Arg?
   property free_vars : Array(String)?
+  # What the def's body does, set by the parser when the def ends (hosted syntax/ast.cr 1666-1669,
+  # parser.cr 4692-4695): it calls `super`, `initialize` or `previous_def`, or reads its block parameter.
+  property calls_super : Bool = false
+  property calls_initialize : Bool = false
+  property calls_previous_def : Bool = false
   property uses_block_arg : Bool = false
   # The def this one replaced, and the def that replaced this one.
   # Hosted `Def#previous` is a DefWithMetadata; the port keeps the def itself.
   property previous : Def? = nil
   property next : Def? = nil
+  # Set on the `->` def of a captured block's literal (hosted semantic/ast.cr 151). A clone does not carry it.
+  property captured_block : Bool = false
+
+  def calls_super? : Bool
+    @calls_super
+  end
+
+  def calls_initialize? : Bool
+    @calls_initialize
+  end
+
+  def calls_previous_def? : Bool
+    @calls_previous_def
+  end
 
   def uses_block_arg? : Bool
     @uses_block_arg
+  end
+
+  def captured_block? : Bool
+    @captured_block
   end
 
   def initialize(
@@ -3421,6 +3448,9 @@ pub class Def < ASTNode
       end),
       clone_opt_strings(@free_vars),
     )
+    d.calls_super = @calls_super
+    d.calls_initialize = @calls_initialize
+    d.calls_previous_def = @calls_previous_def
     d.uses_block_arg = @uses_block_arg
     # Hosted syntax Def#clone_without_location does not copy previous or next.
     # The semantic reopening copies previous only; iyi cannot reopen that class.
