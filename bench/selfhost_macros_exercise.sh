@@ -676,6 +676,23 @@ prove_mutation "a free type parameter is not bound" "$INTERP" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# ArrayLiteral#find returns the element whose block is truthy (macro_array_find.iyi).
+# Always-false makes the expansion nil instead of 2.
+prove_mutation "ArrayLiteral#find never matches" "$INTERP" \
+  "if MacroMethods.truthy?(val)" \
+  "if false && MacroMethods.truthy?(val)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# HashLiteral#[] returns the value of the matching key (macro_hash_index.iyi).
+# Always nil makes the expansion nil instead of the limit string.
+prove_mutation "HashLiteral#[] ignores the key" "$METHODS" \
+  "return hash.entries[i].value" \
+  "return NilLiteral.new" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+
 
 
 prove_mutation "sites expanded in the program scope, not their class" "$REPO/bench/selfhost_macros_exercise.iyi" \

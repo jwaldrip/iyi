@@ -112,6 +112,48 @@ pub class MacroInterpreter
     TypeNode.new(binding.printed, binding.members, sized)
   end
 
+  # ArrayLiteral#find, hosted methods.cr:3357-3369. The block runs here because
+  # the method table cannot call back into the interpreter.
+  def find_in_array(arr : ArrayLiteral, block : Block) : ASTNode
+    arg_name = ""
+    if block.args.size > 0
+      arg_name = block.args[0].name
+    end
+    i = 0
+    while i < arr.elements.size
+      elem = arr.elements[i]
+      if arg_name != ""
+        @vars[arg_name] = elem
+      end
+      val = eval_block_body(block.body)
+      if MacroMethods.truthy?(val)
+        if arg_name != ""
+          @vars.delete(arg_name)
+        end
+        return elem
+      end
+      i = i + 1
+    end
+    if arg_name != ""
+      @vars.delete(arg_name)
+    end
+    NilLiteral.new
+  end
+
+  def eval_block_body(body : ASTNode) : ASTNode
+    if body.is_a?(Expressions)
+      exps = body.as(Expressions).expressions
+      last = Nop.new.as(ASTNode)
+      i = 0
+      while i < exps.size
+        last = evaluate(exps[i])
+        i = i + 1
+      end
+      return last
+    end
+    evaluate(body)
+  end
+
   def to_s : String
     @str.to_s
   end
@@ -525,6 +567,9 @@ pub class MacroInterpreter
       unless MacroAnswers.receiver?(class_name, cl.name)
         fail_at(cl, "undefined macro method '#{class_name}##{cl.name}'")
         return Nop.new
+      end
+      if cl.name == "find" && receiver.is_a?(ArrayLiteral) && cl.block
+        return find_in_array(receiver.as(ArrayLiteral), cl.block.as(Block))
       end
       eval_args = cl.args.map { |a| evaluate(a) }
       if value = MacroMethods.interpret_method(@flags, receiver, cl.name, eval_args, nil, cl.block)

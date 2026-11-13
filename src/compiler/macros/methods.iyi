@@ -478,6 +478,17 @@ pub class MacroMethods
           keys << entry.key
         end
         return ArrayLiteral.new(keys)
+      when "[]"
+        if args.size == 1
+          i = 0
+          while i < hash.entries.size
+            if ast_equal?(hash.entries[i].key, args[0])
+              return hash.entries[i].value
+            end
+            i = i + 1
+          end
+          return NilLiteral.new
+        end
       end
       return nil
     end
