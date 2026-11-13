@@ -1,10 +1,10 @@
-# Closure facts from the hosted semantic pass, without a prelude.
+# Closure facts from the hosted semantic pass with the fixture prelude.
 require "compiler/requires"
 
 class Iyi::Compiler
   def closure_oracle_program(source : Iyi::Compiler::Source) : {Program, ASTNode}
     program = new_program([source])
-    node = program.normalize(parse(program, source))
+    node = parse(program, [source])
     node, processor = program.top_level_semantic(node)
     node = program.semantic_after_top_level(node, processor, cleanup: false)
     {program, node}
@@ -89,10 +89,10 @@ class ClosureOracleWalk < Iyi::Visitor
   end
 end
 
-path = ARGV.find { |arg| !arg.starts_with?("--") } || abort("usage: selfhost_closure_oracle --bare <file.iyi>")
-abort("expected --bare") unless ARGV.includes?("--bare")
+path = ARGV[0]? || abort("usage: selfhost_closure_oracle <file.iyi>")
 begin
   compiler = Iyi::Compiler.new
+  compiler.prelude = "iyi/prelude"
   compiler.no_codegen = true
   compiler.stdout = IO::Memory.new
   compiler.stderr = IO::Memory.new

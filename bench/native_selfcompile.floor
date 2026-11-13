@@ -84,6 +84,7 @@ src/compiler/platform/flags.iyi semantic
 src/compiler/platform/linker.iyi semantic
 src/compiler/platform/target.iyi semantic
 src/compiler/semantic/cleanup.iyi parse
+src/compiler/semantic/closures.iyi parse
 src/compiler/semantic/literal_expander.iyi parse
 src/compiler/semantic/main_visitor.iyi parse
 src/compiler/semantic/math_interpreter.iyi parse
