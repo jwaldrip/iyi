@@ -2232,7 +2232,16 @@ pub class MainVisitor < TypeNodeHost
     if call_node.block
       block_present = true
     end
-    signature = CallSignature.new(name, arg_types, nil, block_present)
+    named_types : Array(NamedArgumentType)? = nil
+    if named = call_node.named_args
+      named_types = [] of NamedArgumentType
+      named.each do |argument|
+        arg_type = child_type(argument.value)
+        return nil if arg_type.nil?
+        named_types << NamedArgumentType.new(argument.name, arg_type.as(Type))
+      end
+    end
+    signature = CallSignature.new(name, arg_types, named_types, block_present)
     target = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args)
     return nil if target.error
     target.definition
@@ -2271,10 +2280,11 @@ pub class MainVisitor < TypeNodeHost
     end
     # The calls matcher binds splat restrictions as tuples, including an empty
     # argument list; the ordinary positional overload loop cannot resolve *T.
-    if candidates.any? { |d| !d.splat_index.nil? }
+    if call_node.named_args || candidates.any? { |d| !d.splat_index.nil? }
       if splat_match = match_splat_with_calls(rec_type, name, args, call_node)
         return splat_match
       end
+      return refuse_call(call_node, "no overload of '#{name}' matches named arguments") if call_node.named_args
     end
 
     # 1. Filter by argument count
@@ -3147,6 +3157,9 @@ pub class MainVisitor < TypeNodeHost
     if rec_type.is_a?(LibType)
       return visit_lib_call(node, rec_type.as(LibType))
     end
+    if named = node.named_args
+      named.each { |arg| arg.value.accept(self) }
+    end
 
     # Multiple dispatch over a union receiver
     if rec_type.is_a?(UnionType)
@@ -3210,7 +3223,7 @@ pub class MainVisitor < TypeNodeHost
     # default expression in the caller's scope. Cache against the original
     # definition and the arguments supplied by the caller.
     dkey = def_instance_key(target_def, rec_type, node)
-    if node.named_args.nil? && (target_def.splat_index || (node.args.size < target_def.args.size && DefaultArguments.supported?(target_def, node.args, nil)))
+    if node.named_args || target_def.splat_index || target_def.double_splat || (node.args.size < target_def.args.size && DefaultArguments.supported?(target_def, node.args, nil))
       splat_names = [] of String
       if splat_index = target_def.splat_index
         count = node.args.size - splat_index
@@ -3220,7 +3233,7 @@ pub class MainVisitor < TypeNodeHost
           count -= 1
         end
       end
-      expanded = DefaultArguments.expand_for_call(target_def, node.args.size, nil, splat_names)
+      expanded = DefaultArguments.expand_for_call(target_def, node.args.size, node.named_args, splat_names)
       if expanded.is_a?(String)
         refuse_call(node, expanded)
         return false
@@ -3228,6 +3241,10 @@ pub class MainVisitor < TypeNodeHost
       expanded.at(target_def)
       @program.copy_def_owner(target_def, expanded)
       target_def = expanded
+    end
+    if named = node.named_args
+      named.each { |arg| node.args << arg.value }
+      node.named_args = nil
     end
     if node.args.size < target_def.args.size
       unless defaults_magic_arguments(node, target_def)

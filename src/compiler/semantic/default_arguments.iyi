@@ -1,38 +1,18 @@
 module compiler/semantic/default_arguments
 
-import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, MagicConstant, NamedArgument, Primitive, TupleLiteral, Var}
+import compiler/syntax/ast::{ASTNode, Arg, Assign, Call, Def, Expressions, MagicConstant, NamedArgument, NamedTupleLiteral, Primitive, TupleLiteral, Var}
 
-# The port of the argument side of the hosted Def#expand_default_arguments
-# (src/compiler/iyi/semantic/default_arguments.cr). The hosted expansion is a new
-# def whose body assigns each missing parameter's default and then forwards the
-# whole list to the original def. What the forwarding call passes is the argument
-# list this module returns: one node per parameter, in declaration order. A
-# positional argument fills its parameter, a named argument fills the parameter
-# whose external name it writes, and a parameter that neither reaches takes a copy
-# of its default value.
-#
-# A default that is a magic constant (`__FILE__`, `__LINE__`) comes back as its
-# node, unevaluated. The hosted expansion makes it a parameter filled from the
-# call site, so the call site's expansion of the constant is what runs.
-#
-# Not ported, and refused by `supported?`: a def with a splat or a double splat.
-# The hosted expansion packs the extra arguments into a tuple or a named tuple
-# and forwards them differently, and a list of nodes cannot say that. Also refused:
-# a named argument that names a parameter the positional arguments already fill,
-# or names no parameter, and a parameter with no default that no argument fills
-# (the call does not match, so there is no list to build).
-#
-# The hosted expansion keeps the def's body (rather than forwarding) when a
-# default has a restriction, or the def takes a block or a special variable. That
-# changes where the defaults are evaluated, not which values reach the parameters,
-# so the list is the same and the port does not distinguish the two.
+# The hosted call expansion builds a definition in the original definition's
+# scope. Missing ordinary defaults are evaluated there; magic defaults remain
+# parameters supplied as literals from the call site. Splat parameters become
+# positional parameters and the retained body reconstructs the tuple local.
 pub class DefaultArguments
   # Hosted default_arguments.cr:4-35, 146-197, 258-297. Instantiate the
   # expansion in the original def's scope, rather than visiting defaults at
   # the call site. The caller must copy the original def's owner and file scope.
   def self.expand_for_call(rec_def : Def, given : Int32, named_args : Array(NamedArgument)?, splat_names : Array(String) = [] of String) : Def | String
-    if rec_def.splat_index && named_args.nil?
-      return expand_splat(rec_def, given, splat_names)
+    if rec_def.splat_index || rec_def.double_splat
+      return expand_splat(rec_def, given, splat_names, named_args)
     end
     return "not ported: splat or unmatched default arguments" unless supported_count?(rec_def, given, named_args)
     return "not ported: default expansion with block parameter or macro def" if rec_def.block_arg || rec_def.macro_def
@@ -43,15 +23,15 @@ pub class DefaultArguments
   # A splat is represented by ordinary positional parameters in the expanded
   # definition. The retained body reconstructs its local tuple from those
   # parameters. Primitive bodies must remain bare for the primitive lowerer.
-  def self.expand_splat(rec_def : Def, given : Int32, names : Array(String)) : Def | String
-    index = rec_def.splat_index
-    return "not ported: no splat parameter" if index.nil?
-    return "not ported: double splat arguments" if rec_def.double_splat
-    index = index.as(Int32)
+  def self.expand_splat(rec_def : Def, given : Int32, names : Array(String), named_args : Array(NamedArgument)?) : Def | String
+    splat_index = rec_def.splat_index
+    index = splat_index || rec_def.args.size
+    return "not ported: too many positional arguments" if splat_index.nil? && given > index
     before = given < index ? given : index
     k = before
     while k < rec_def.args.size
-      if k != index && rec_def.args[k].default_value.nil?
+      arg = rec_def.args[k]
+      if k != index && !named_given?(named_args, arg.external_name) && arg.default_value.nil?
         return "not ported: unmatched splat arguments"
       end
       k += 1
@@ -65,10 +45,28 @@ pub class DefaultArguments
       k += 1
     end
     names.each { |name| new_args << Arg.new(name) }
+    named_temps = [] of String
+    new_name = rec_def.name
+    seen_names = [] of String
+    if named_args
+      i = 0
+      named_args.each do |named|
+        return "duplicate named argument" if seen_names.includes?(named.name)
+        seen_names << named.name
+        new_name = "#{new_name}:#{named.name}"
+        param = param_index(rec_def, named.name)
+        return "duplicate or unknown named argument" if param >= 0 && (param < before || param == index)
+        return "duplicate or unknown named argument" if param < 0 && rec_def.double_splat.nil?
+        name = param >= 0 ? rec_def.args[param].name : "$named_#{i}"
+        named_temps << name
+        new_args << Arg.new(name, nil, nil, named.name)
+        i += 1
+      end
+    end
     body = [] of ASTNode
     k = before
     while k < rec_def.args.size
-      if k != index
+      if k != index && !named_given?(named_args, rec_def.args[k].external_name)
         arg = rec_def.args[k]
         default = arg.default_value
         if default.is_a?(MagicConstant)
@@ -79,11 +77,24 @@ pub class DefaultArguments
       end
       k += 1
     end
-    splat = rec_def.args[index]
-    unless splat.external_name.empty?
-      elements = [] of ASTNode
-      names.each { |name| elements << Var.new(name) }
-      body << Assign.new(Var.new(splat.name), TupleLiteral.new(elements))
+    if splat_index
+      splat = rec_def.args[index]
+      unless splat.external_name.empty?
+        elements = [] of ASTNode
+        names.each { |name| elements << Var.new(name) }
+        body << Assign.new(Var.new(splat.name), TupleLiteral.new(elements))
+      end
+    end
+    if double_splat = rec_def.double_splat
+      entries = [] of NamedTupleLiteral::Entry
+      if named_args
+        i = 0
+        named_args.each do |named|
+          entries << NamedTupleLiteral::Entry.new(named.name, Var.new(named_temps[i])) if param_index(rec_def, named.name) < 0
+          i += 1
+        end
+      end
+      body << Assign.new(Var.new(double_splat.name), NamedTupleLiteral.new(entries))
     end
     original = rec_def.body
     expanded_body : ASTNode = if original.is_a?(Primitive)
@@ -92,7 +103,8 @@ pub class DefaultArguments
                                 body << original.clone
                                 Expressions.new(body)
                               end
-    wrapper = Def.new(rec_def.name, new_args, expanded_body, copy_node(rec_def.receiver), nil, copy_node(rec_def.return_type), rec_def.macro_def, rec_def.abstract, nil, nil, copy_free_vars(rec_def.free_vars), rec_def.uses_block_arg)
+    block_arg = rec_def.block_arg
+    wrapper = Def.new(new_name, new_args, expanded_body, copy_node(rec_def.receiver), block_arg ? block_arg.clone : nil, copy_node(rec_def.return_type), rec_def.macro_def, rec_def.abstract, nil, nil, copy_free_vars(rec_def.free_vars), rec_def.uses_block_arg)
     wrapper.calls_super = rec_def.calls_super
     wrapper.calls_initialize = rec_def.calls_initialize
     wrapper.calls_previous_def = rec_def.calls_previous_def

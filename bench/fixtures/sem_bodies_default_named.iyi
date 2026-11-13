@@ -1,0 +1,10 @@
+def named_defaults(first : Int32, second : Int32 = first, third : String = "fallback")
+  second
+end
+
+def named_splat(first : Int32, *values, **options)
+  values
+end
+
+named = named_defaults(7, third: "chosen")
+rest = named_splat(1, 2, 3, flag: true)
