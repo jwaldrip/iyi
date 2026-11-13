@@ -13,7 +13,7 @@ module compiler/lower/proc
 # Refused by name, at the literal that reaches them: a literal that reads a local the body does not declare
 # (a closure: hosted closured_vars and malloc_closure), a literal that reads `self` or an instance variable, a
 # literal with a block or a nested literal or def inside it, a literal that returns NoReturn, and a literal whose
-# body type is not its return type (hosted upcast of the return, not ported).
+# non-Nil body type differs from its return type (hosted upcast of the return, not ported).
 
 import compiler/foundation/location::{Location}
 import compiler/ir/types::{IrType}
@@ -176,7 +176,7 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
 
   body_t = low.analysed.type_of?(node.def.body)
   raise "BUG: the analysed program has no type for a proc literal's body (hosted codegen.cr: visit(ProcLiteral))" if body_t.nil?
-  if body_t.as(Type).full_name != proc.return_type.full_name
+  if body_t.as(Type).full_name != proc.return_type.full_name && !proc.return_type.nil_type?
     refuse_port("a proc literal whose body is #{body_t.as(Type).full_name} and returns #{proc.return_type.full_name} (hosted upcast of the return, not ported)")
   end
 
