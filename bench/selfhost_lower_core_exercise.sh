@@ -453,9 +453,14 @@ fi
 prove_mutation "the completed-emission check dropped" "$REPO/src/compiler/lower/fun.iyi" \
   'return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?' \
   'return existing.as(Function)' -- probe_reuse_check || status=1
+generic_ivar_check() {
+  "$IYI" build -o "$WORK/port-g" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/g.build.log" 2>&1 || return 1
+  "$WORK/port-g" lower "$REPO/bench/fixtures/lower_generic_ivar.iyi" "$WORK/lower_generic_ivar.oracle.ll" > "$WORK/g.out" 2> "$WORK/g.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/g.out"
+}
 prove_mutation "a generic class instance has no instance variables" "$REPO/src/compiler/lower/instance_var.iyi" \
   "  if owner.is_a?(GenericClassInstanceType)" \
-  "  if false" -- lower_core_check || status=1
+  "  if false" -- generic_ivar_check || status=1
 
 echo
 echo
