@@ -22,6 +22,7 @@ import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_n
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/intersect::{TypeIntersect}
+import compiler/types/restrictions::{TypeRestrictions}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature}
@@ -1112,6 +1113,18 @@ pub class MainVisitor < TypeNodeHost
     refuse(node, "undefined class variable '#{node.name}' for #{target_type.full_name}")
   end
 
+  # Class-body initializers run with self set to the owner's metaclass.
+  # Assignments inside methods retain the method's existing scope.
+  def type_class_var_initializer(value : ASTNode) : Nil
+    old_scope = @scope
+    if old_scope.nil? && @current_def.nil? && !@current_type.is_a?(SemanticProgram)
+      @scope = @current_type.metaclass
+    end
+    value.accept(self)
+    @scope = old_scope
+    nil
+  end
+
   def visit(node : Assign) : Bool
     # iyi: a constant whose value is one macro node is typed where a read of it types the value (visit(Path) expands
     # the site, see splice_const_value). The declaration is not walked as an expression: the macro refusal would
@@ -1119,8 +1132,12 @@ pub class MainVisitor < TypeNodeHost
     if node.target.is_a?(Path) && (node.value.is_a?(MacroIf) || node.value.is_a?(MacroFor) || node.value.is_a?(MacroExpression))
       return false
     end
-    node.value.accept(self)
-    value_type_filters = @type_filters
+    if node.target.is_a?(ClassVar)
+      type_class_var_initializer(node.value)
+    else
+      node.value.accept(self)
+      value_type_filters = @type_filters
+    end
     @type_filters = nil
     vt = child_type(node.value)
     if vt.nil?
@@ -1207,7 +1224,7 @@ pub class MainVisitor < TypeNodeHost
       if target_type.is_a?(ModuleType)
         mod_type = target_type.as(ModuleType)
         if cvar = mod_type.lookup_class_var?(cvar_node.name)
-          unless val_type.subtype_of?(cvar.type)
+          unless val_type.subtype_of?(cvar.type) || (cvar.type.is_a?(UnionType) && TypeRestrictions.matches_restriction?(@program, val_type, cvar.type))
             return refuse(node, "type mismatch for class variable '#{cvar_node.name}': expected #{cvar.type.full_name}, got #{val_type.full_name}")
           end
           set_type(cvar_node, cvar.type)
@@ -1240,13 +1257,18 @@ pub class MainVisitor < TypeNodeHost
     end
     decl_type = decl_found.as(Type)
     if val = node.value
-      val.accept(self)
+      if node.var.is_a?(ClassVar)
+        type_class_var_initializer(val)
+      else
+        val.accept(self)
+      end
       vt = child_type(val)
       return false if vt.nil?
       val_type = vt.as(Type)
       proc_compatible = val_type.is_a?(ProcInstanceType) && decl_type.is_a?(ProcInstanceType) &&
                         TypeIntersect.compatible_proc?(val_type.as(ProcInstanceType), decl_type.as(ProcInstanceType))
-      unless val_type.subtype_of?(decl_type) || proc_compatible
+      class_var_union = node.var.is_a?(ClassVar) && decl_type.is_a?(UnionType) && TypeRestrictions.matches_restriction?(@program, val_type, decl_type)
+      unless val_type.subtype_of?(decl_type) || proc_compatible || class_var_union
         if node.var.is_a?(InstanceVar)
           target_scope = @scope || @current_type
           target_type = if target_scope.is_a?(MetaclassType)

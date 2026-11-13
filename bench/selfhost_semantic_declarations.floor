@@ -44,17 +44,17 @@ src/compiler/foundation/enums.iyi 12
 src/compiler/foundation/errors.iyi 13
 src/compiler/foundation/location.iyi 19
 src/compiler/foundation/string_pool.iyi 10
-src/compiler/ir/builder.iyi 121
+src/compiler/ir/builder.iyi 123
 src/compiler/ir/function.iyi 0
 src/compiler/ir/inst.iyi 0
 src/compiler/ir/intrinsics.iyi 74
 src/compiler/ir/layout.iyi 24
 src/compiler/ir/module.iyi 0
 src/compiler/ir/parser.iyi 0
-src/compiler/ir/printer.iyi 42
+src/compiler/ir/printer.iyi 48
 src/compiler/ir/types.iyi 88
-src/compiler/ir/values.iyi 38
-src/compiler/ir/verifier.iyi 45
+src/compiler/ir/values.iyi 39
+src/compiler/ir/verifier.iyi 47
 src/compiler/llvm.iyi 0
 src/compiler/llvm/builder.iyi 0
 src/compiler/llvm/context.iyi 0
@@ -160,7 +160,7 @@ src/compiler/semantic/type_node_host.iyi 0
 src/compiler/semantic/type_nodes.iyi 0
 src/compiler/semantic/typed.iyi 197
 src/compiler/stage1.iyi 4
-src/compiler/syntax/ast.iyi 1280
+src/compiler/syntax/ast.iyi 1287
 src/compiler/syntax/lexer.iyi 104
 src/compiler/syntax/parser.iyi 0
 src/compiler/syntax/token.iyi 231
@@ -270,7 +270,7 @@ src/std/ini.iyi 0
 src/std/int.iyi 10
 src/std/io.iyi 0
 src/std/iterator.iyi 205
-src/std/json.iyi 308
+src/std/json.iyi 310
 src/std/kernel.iyi 10
 src/std/levenshtein.iyi 0
 src/std/list.iyi 0
@@ -340,6 +340,6 @@ src/std/webtransport.iyi 0
 src/std/x509.iyi 0
 src/std/xml.iyi 355
 src/std/xz.iyi 0
-src/std/yaml.iyi 202
+src/std/yaml.iyi 204
 src/std/zip.iyi 0
 src/std/zstd.iyi 0

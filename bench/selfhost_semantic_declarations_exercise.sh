@@ -797,8 +797,8 @@ prove_mutation "generic new calls do not infer instance variable types" "$MUT_IV
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \
-  "if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)" \
-  "if owner.owner.is_a?(NonGenericClassType)" \
+  "if og.owner.is_a?(NonGenericClassType) || og.owner.is_a?(GenericClassType)" \
+  "if og.owner.is_a?(NonGenericClassType)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an explicit generic instance variable keeps the unbound generic" "$MUT_IVARS" \
