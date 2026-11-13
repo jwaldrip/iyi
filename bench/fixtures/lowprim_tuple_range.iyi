@@ -1,0 +1,14 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+  fun getpid : Int32
+end
+
+def pick_tuple_range(tuple : Tuple(Int32, Int32, Int32)) : Tuple(Int32, Int32)
+  tuple[0..1]
+end
+
+if LibC.getpid == -1
+  tuple = uninitialized Tuple(Int32, Int32, Int32)
+  pick_tuple_range(tuple)
+end
+LibC.exit(0)

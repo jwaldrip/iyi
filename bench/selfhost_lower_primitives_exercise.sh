@@ -231,6 +231,8 @@ prove_mutation "checked conversion omits its upper bound" "$REPO/src/compiler/lo
   '  low.builder.build_or(below, above)' '  below' -- lower_primitives_check || status=1
 prove_mutation "a tuple index selects the first member" "$REPO/src/compiler/lower/primitives.iyi" \
   '  first = primitive.tuple_index' '  first = 0' -- lower_primitives_check || status=1
+prove_mutation "a tuple range omits its last member" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    while index <= primitive.tuple_last' '    while index < primitive.tuple_last' -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \
