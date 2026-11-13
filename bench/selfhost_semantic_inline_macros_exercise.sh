@@ -498,6 +498,15 @@ prove_mutation "a site's expansion is parsed with no names declared before it, s
   "parser = Parser.new(text, filename)" -- check_body_fixture || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# The recursive splice receives the same locals array, so a name an earlier expansion
+# declares is visible to a later site (inline_macros.iyi splice_inline_sites). A copy
+# keeps the expansion and drops that write-back, so later_block_local.iyi pointerof
+# refuses the name and root-refusals rise above 5.
+prove_mutation "a recursive splice drops names an earlier expansion declared, so a later block's pointerof refuses them" "$MUT_INL" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals))" \
+  "out.concat(splice_inline_sites(inner, scope_name, filename, in_lib, locals.dup))" -- check_body_fixture || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
