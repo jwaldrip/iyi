@@ -357,6 +357,12 @@ prove_mutation "a generic restriction does not bind free vars from the instance 
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a generic owner's superclass restriction rejects subclasses" "$MATCH_FILE" \
+  '        restricted = ts.restrict(arg_type, allowed.as(Type))' \
+  '        restricted = arg_type == allowed.as(Type) ? arg_type : nil' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
