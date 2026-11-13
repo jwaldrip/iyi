@@ -21,6 +21,7 @@ import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_not
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
+import compiler/types/intersect::{TypeIntersect}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature}
@@ -1226,6 +1227,9 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : TypeDeclaration) : Bool
+    # Declarations must resolve generic arguments even before any expression
+    # has caused the lazy type system to be installed.
+    type_node_system(@program)
     decl_found = lookup_declared?(node.declared_type, @scope)
     if decl_found.nil?
       return refuse(node, "undefined constant #{declared_base_name(node.declared_type)}")
@@ -1236,7 +1240,9 @@ pub class MainVisitor < TypeNodeHost
       vt = child_type(val)
       return false if vt.nil?
       val_type = vt.as(Type)
-      unless val_type.subtype_of?(decl_type)
+      proc_compatible = val_type.is_a?(ProcInstanceType) && decl_type.is_a?(ProcInstanceType) &&
+                        TypeIntersect.compatible_proc?(val_type.as(ProcInstanceType), decl_type.as(ProcInstanceType))
+      unless val_type.subtype_of?(decl_type) || proc_compatible
         if node.var.is_a?(InstanceVar)
           target_scope = @scope || @current_type
           target_type = if target_scope.is_a?(MetaclassType)
@@ -1285,7 +1291,7 @@ pub class MainVisitor < TypeNodeHost
           set_type(cvar_node, decl_type)
         end
       end
-      set_type(node, decl_type)
+      set_type(node, val_type)
     else
       if node.var.is_a?(Var)
         v = node.var.as(Var)

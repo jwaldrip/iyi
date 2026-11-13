@@ -15,7 +15,15 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
-IYI="$REPO/bin/iyi"
+probe="$(mktemp)"
+printf 'import compiler/syntax/ast::{ASTNode}\n' > "$probe.iyi"
+if [ -x "$REPO/.build/iyi" ] && "$REPO/.build/iyi" build -o "$probe" "$probe.iyi" >/dev/null 2>&1; then
+  IYI="$REPO/.build/iyi"
+else
+  IYI="${IYI_COMPILER:-/Users/jwaldrip/.local/state/ovnfs/uppers/s2a25-closure-int/.build/iyi}"
+fi
+rm -f "$probe" "$probe.iyi"
+export IYI_PATH="$REPO/src"
 CRYSTAL="${CRYSTAL:-crystal}"
 FLOOR_FILE="$REPO/bench/selfhost_bodies.floor"
 RAISE="${BODIES_RAISE:-0}"
@@ -145,10 +153,25 @@ echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
 . "$REPO/bench/lib/mutation.sh"
 MUT_TD="$WORK/mut_typed_dump"
+# The mutation runner captures check output and only displays its tail. Keep the
+# compiler's complete diagnostics in the gate log when a mutant cannot build.
+exec 9>&1
+body_build_failed() {
+  cat "$1" >&9
+  if [ "${_PM_ARMED:-0}" -eq 1 ]; then
+    echo "INVALID MUTANT: compiler build failed; this is not a behavioral catch"
+    return 0
+  fi
+  echo "BASELINE FAILURE: compiler build failed"
+  return 1
+}
 # Rebuilds the typed dump from the patched source and checks the lib-call and jump fixtures
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1; then
+    body_build_failed "$WORK/mut_build.log"
+    return $?
+  fi
   for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_proc_scope sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup sem_bodies_receiver_order sem_bodies_unit_scope sem_bodies_unit_scope_inferred sem_bodies_proc_splat sem_bodies_pack_splat sem_bodies_imported_restriction; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
@@ -406,7 +429,7 @@ echo
 echo "== 4c. A macro site in a def body sees the receiver's type parameters and the def's free variables"
 # Rebuilds the typed dump from the patched source and checks the macro-bindings fixture alone.
 macro_bindings_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_macro_bindings.iyi"
   rel="bench/fixtures/sem_bodies_macro_bindings.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -481,7 +504,7 @@ prove_mutation "uninitialized locals are unavailable to later macro sites" "$REP
   "  def visit(node : UninitializedVar) : Bool
     nil" -- macro_uninitialized_at_floor || status=1
 free_types_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_free_types.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -493,7 +516,7 @@ prove_mutation "a callee's free types are unavailable to body and return lookup"
   "found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)" \
   "found = LookupError.new(\"unbound\")" -- free_types_at_floor || status=1
 block_free_output_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_block_free_output.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -505,7 +528,7 @@ prove_mutation "block output binds its callee's free variable" "$MAIN_VISITOR" \
   "                        @def_free_types[cd] = bound" \
   "                        nil" -- block_free_output_at_floor || status=1
 captured_free_output_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_capture_free_output.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -517,7 +540,7 @@ prove_mutation "captured block output binds its callee's free variable" "$MAIN_V
   "                        @def_free_types[target_def] = bound unless bound.empty?" \
   "                        nil" -- captured_free_output_at_floor || status=1
 generic_rebuild_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   touch "$WORK/imported_generic_mutant_built"
   fixture="$REPO/bench/fixtures/sem_bodies_owner_typeof.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -539,7 +562,7 @@ if [ -f "$WORK/imported_generic_mutant_count" ]; then
   echo "  generic rebuild mutant matched $(<"$WORK/imported_generic_mutant_count")"
 fi
 writer_type_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_block_writer_type.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -551,7 +574,7 @@ prove_mutation "block body uses the writer's current type" "$MAIN_VISITOR" \
   "          @current_type = writer_type" \
   "          nil" -- writer_type_at_floor || status=1
 captured_input_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_capture_none.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -563,7 +586,7 @@ prove_mutation "captured block parameters use restriction inputs" "$MAIN_VISITOR
   "                    @vars[arg.name] = input_types[index]" \
   "                    @vars[arg.name] = @program.nil_type" -- captured_input_at_floor || status=1
 atomic_free_at_floor() {
-  "$IYI" build -o "$WORK/atomic_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/atomic_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   rm -f "$WORK/atomic.refusals"
   "$WORK/atomic_tool" "$REPO/bench/fixtures/sem_bodies_match_atomics.iyi" \
     -o "$WORK/atomic" --pipeline typed --probe-phase --keep-going > "$WORK/atomic.log" 2>&1 || true
