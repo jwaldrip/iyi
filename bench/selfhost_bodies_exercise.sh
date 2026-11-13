@@ -130,7 +130,9 @@ printf '%s\n' '*owner_probe<Int32>:Int32' '*owner_probe<String>:String' '*OwnerS
   echo "  OWNER: failed to build probe"
   exit 1
 }
-if ! "$owner_probe" "$owner_fixture" "$REPO/src" | sort > "$WORK/owner.actual" || ! diff -u "$owner_expected" "$WORK/owner.actual"; then
+if ! "$owner_probe" "$owner_fixture" "$REPO/src" > "$WORK/owner.unsorted" ||
+   ! sort "$WORK/owner.unsorted" > "$WORK/owner.actual" ||
+   ! diff -u "$owner_expected" "$WORK/owner.actual"; then
   echo "  OWNER: incorrect instance names or cache sharing"
   status=1
 fi
@@ -198,20 +200,23 @@ bodies_at_floor() {
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
 owner_mutant_at_expected() {
   if ! "$IYI" build -o "$WORK/owner_mutant" "$REPO/bench/selfhost_program_owner_probe.iyi" > "$WORK/owner_mutant_build.log" 2>&1; then
-    touch "$WORK/owner_mutant_build_failed"
+    echo "INVALID MUTANT: owner probe failed to build" >&2
+    cat "$WORK/owner_mutant_build.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
     return 1
   fi
-  "$WORK/owner_mutant" "$owner_fixture" "$REPO/src" | sort > "$WORK/owner_mutant.actual" || return 1
+  if ! "$WORK/owner_mutant" "$owner_fixture" "$REPO/src" > "$WORK/owner_mutant.unsorted" 2> "$WORK/owner_mutant_run.log"; then
+    echo "INVALID MUTANT: owner probe failed to run" >&2
+    cat "$WORK/owner_mutant_run.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  sort "$WORK/owner_mutant.unsorted" > "$WORK/owner_mutant.actual" || return 0
   diff -u "$owner_expected" "$WORK/owner_mutant.actual"
 }
 prove_mutation_all "program defs use their declared owner" "$MAIN_VISITOR" \
   "instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
   "instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1
-if [ -f "$WORK/owner_mutant_build_failed" ]; then
-  echo "  OWNER: mutant failed to build, not a valid mutation proof"
-  cat "$WORK/owner_mutant_build.log"
-  status=1
-fi
 prove_mutation "lib call result type" "$MAIN_VISITOR" \
   "set_type(node, target.result_type.as(Type))" \
   "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1

@@ -1,10 +1,14 @@
 # Floor for bench/selfhost_semantic_inline_macros_exercise.sh, section 8: the defs each root reaches through the
 # pipeline tool (--prelude). The row also requires no "no record from the declarations pass" refusal.
 # Only raise these (SEMINL_RAISE=1); never lower one.
-# Program-owned receiverless defs now share instances across callers. These rows
-# were remeasured after removing caller-owned duplicates; source, declared owner,
-# argument types, and block-site/writer identities were compared before and after.
-# No canonical specialization disappeared. The existing reach mutations remain.
+# Program-owned receiverless defs now share instances across callers. On hello,
+# 990 instances became 902; all 898 canonical source/declared-owner/argument/
+# block-site-and-writer identities remained, with no losses or additions.
+# Each other root lost 77 caller-owned duplicates and no canonical identity.
+# Every reduction was program-owned and block-free; no other multiplicity fell.
+# Hello's raise and __iyi_say each went from 19 caller-owned instances to one.
+# Before/after census: /tmp/iyi-selfhost-keep/s1h-owner-census/{before,after}.
+# The existing reach mutations remain.
 samples/iyi/hello.iyi 902
 bench/fixtures/seminl_reach/root.iyi 870
 bench/fixtures/seminl_reach/def_body_if.iyi 873
