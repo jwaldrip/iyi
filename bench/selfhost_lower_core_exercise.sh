@@ -524,6 +524,20 @@ else
   awk 'NR<=8' "$WORK/atomic-return.err" "$WORK/atomic-return.out" "$WORK/atomic-return.build.log"
   status=1
 fi
+array_expansion_check() {
+  "$IYI" build -o "$WORK/port-array" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/array.build.log" 2>&1 || return 1
+  "$WORK/port-array" lower "$REPO/bench/fixtures/lower_expanded_array.iyi" "$WORK/lower_expanded_array.oracle.ll" > "$WORK/array.out" 2> "$WORK/array.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/array.out"
+}
+if array_expansion_check; then
+  prove_mutation "an array literal ignores its typed expansion" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(ArrayLiteral)' \
+    '  if false' -- array_expansion_check || status=1
+else
+  echo "FAIL: array expansion fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/array.err" "$WORK/array.out" "$WORK/array.build.log"
+  status=1
+fi
 
 
 
