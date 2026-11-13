@@ -49,7 +49,7 @@ import compiler/lower/block::{LocalCollector, NoReturnPhi, alloca_local, copy_va
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
 import compiler/lower/cast::{to_rhs, type_id_value, upcast}
 import compiler/lower/ensure::{set_ensure_exception_handler}
-import compiler/lower/fun::{block_ended?, target_def_fun, visit_node}
+import compiler/lower/fun::{block_ended?, def_context_type, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
@@ -224,7 +224,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
       func = target_def_fun(low, def_node, self_type, arg_types, ret, class_owner)
       emit_def_call(low, node, func, self_value, values, ret)
     else
-      codegen_call_with_block(low, node, block.as(Block), def_node, ret, self_type, self_value, arg_types, values)
+      codegen_call_with_block(low, node, block.as(Block), def_node, ret, self_type, self_value, arg_types, values, class_owner)
     end
     return
   end
@@ -517,7 +517,7 @@ end
 # locals are bound there, and each `yield` in the body runs the block (block.iyi). The value of the
 # body is the call's value, merged by a phi (hosted `Phi.open(self, node)`, which always wants a value).
 # A call whose type is NoReturn merges nothing: its body ends in `unreachable` (`NoReturnPhi`).
-pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Call, block : Block, def_node : Def, ret : Type, self_type : Type?, self_value : Value?, arg_types : Array(Type), values : Array(Value)) : Nil
+pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Call, block : Block, def_node : Def, ret : Type, self_type : Type?, self_value : Value?, arg_types : Array(Type), values : Array(Value), class_owner : Type?) : Nil
   set_ensure_exception_handler(low, node)
   if def_node.uses_block_arg?
     pending_visit_node("a call to a def with a &block parameter (hosted call.cr: codegen_call_with_block_as_fun_literal, closures)")
@@ -555,7 +555,7 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
     merge = low.typer.llvm_type(ret)
   end
   phi = LowerPhi.new(true, merge)
-  frame = LowerContext.new(caller.fun, caller.fun_type, self_type, Hash(String, LowerVar).new)
+  frame = LowerContext.new(caller.fun, caller.fun_type, def_context_type(self_type, class_owner), Hash(String, LowerVar).new)
   frame.block_node = block
   frame.block_context = block_ctx
   frame.return_target = node

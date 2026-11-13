@@ -1,16 +1,17 @@
 lib LibC
+  fun putchar(value : Int32) : Int32
   fun exit(status : Int32) : NoReturn
 end
 
 module Base
   def base : Int32
-    3
+    65
   end
 end
 
 module Bonus
   def bonus : Int32
-    4
+    66
   end
 end
 
@@ -23,4 +24,6 @@ struct Counter
   extend Bonus
 end
 
-LibC.exit(Counter.new.base &+ Counter.bonus)
+LibC.putchar(Counter.new.base)
+LibC.putchar(Counter.bonus)
+LibC.exit(7)
