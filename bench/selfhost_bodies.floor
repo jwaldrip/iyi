@@ -11,6 +11,7 @@ bench/fixtures/sem_bodies_capture_none.iyi 22
 bench/fixtures/sem_bodies_class_method_constant.iyi 12
 bench/fixtures/sem_bodies_defaults.iyi 3
 bench/fixtures/sem_bodies_enum_member.iyi 6
+bench/fixtures/sem_bodies_ensure.iyi 38
 bench/fixtures/sem_bodies_flow.iyi 36
 bench/fixtures/sem_bodies_flow_assign.iyi 92
 bench/fixtures/sem_bodies_flow_early_exit.iyi 53

@@ -110,6 +110,7 @@ end
 pub def generic_of_typed_args(visitor : TypeNodeHost, node : Generic) : Type?
   ts = type_node_system(visitor.program)
   lookup = TypeLookup.new(ts.instances)
+  # Prefer the name resolved in its file's lexical scope, including imports.
   base_type : Type
   if typed_base = visitor.child_type(node.name)
     base_type = visitor.program.remove_alias(TypeQueries.instance_type(typed_base))

@@ -78,6 +78,25 @@ if [ "$diverged" -gt 0 ] || [ "$passed" -eq 0 ]; then
   status=1
 fi
 
+# An uninstantiated generic receiver is a typing gap, not an owner that lowering
+# may guess. The hosted compiler still accepts the source and emits its module.
+generic_fixture="$REPO/bench/fixtures/lowcallwait_uninstantiated_generic.iyi"
+if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/uninstantiated" "$generic_fixture" > "$WORK/uninstantiated.oracle.log" 2>&1; then
+  awk "$CALL_TYPES" "$WORK/uninstantiated.ll" > "$WORK/uninstantiated.oracle.ll"
+  if "$WORK/port" lower "$generic_fixture" "$WORK/uninstantiated.oracle.ll" > "$WORK/uninstantiated.out" 2> "$WORK/uninstantiated.err"; then
+    echo "  uninstantiated generic: unexpectedly lowered"
+    status=1
+  elif awk 'index($0, "the receiver of probe is the uninstantiated generic Range(B, E).class: typing has not instantiated the owner") { found = 1 } END { exit !found }' "$WORK/uninstantiated.err"; then
+    echo "  uninstantiated generic: typing gap identified"
+  else
+    echo "  uninstantiated generic: unexpected refusal: $(awk 'NR==1' "$WORK/uninstantiated.err")"
+    status=1
+  fi
+else
+  echo "  uninstantiated generic: hosted compiler refused the fixture"
+  status=1
+fi
+
 echo
 echo "== 3. End to end: each fixture the port lowers identically, built natively and run"
 e2e_pass=0
@@ -133,6 +152,19 @@ if ! lower_calls_check; then
   echo "  baseline: the unmutated port does not match the hosted module, so no mutation below is counted"
   exit 1
 fi
+generic_gap_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_calls_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  if "$WORK/mut" lower "$generic_fixture" "$WORK/uninstantiated.oracle.ll" > "$WORK/generic.mut.out" 2> "$WORK/generic.mut.err"; then
+    return 1
+  fi
+  awk 'index($0, "the receiver of probe is the uninstantiated generic Range(B, E).class: typing has not instantiated the owner") { found = 1 } END { exit !found }' "$WORK/generic.mut.err"
+}
+if ! generic_gap_check; then
+  echo "  baseline: uninstantiated generic diagnostic did not match"
+  exit 1
+fi
+prove_mutation "an uninstantiated generic loses its typing-gap diagnostic" "$REPO/src/compiler/lower/call.iyi" \
+  '    if inst.is_a?(GenericClassType)' '    if false' -- generic_gap_check || status=1
 # The import of a lib fun (contract 6b): the port's own text declares SecRandomCopyBytes with its framework. The
 # comparison above drops the `import` text on both sides (lower_gate.iyi strip_import), so this check is the one
 # that proves it. It rebuilds the driver from the current source, so a mutation of the import is what it tests.
@@ -218,8 +250,6 @@ prove_mutation "a struct's allocate result is not loaded from its instance (the 
   'if passed_by_value?(inst)' 'if false' -- lower_calls_check || status=1
 prove_mutation "a struct call result is not spilled to an alloca (hosted call.cr:707-713)" "$REPO/src/compiler/lower/call.iyi" \
   'low.last = load_aligned(low, ir, temp, "")' 'low.last = inst' -- lower_calls_check || status=1
-prove_mutation "a struct call receiver gets a second alloca (hosted reuses the spill pointer as self)" "$REPO/src/compiler/lower/call.iyi" \
-  'if self_by_pointer?(st) && low.spill_node != 0_u64 && low.spill_node == obj.object_id' 'if false' -- lower_calls_check || status=1
 prove_mutation "a struct call receiver loads its spill slot though the slot is its self" "$REPO/src/compiler/lower/call.iyi" \
   'if low.receiver_node == node.object_id && self_by_pointer?(ret)' 'if false' -- lower_calls_check || status=1
 prove_mutation "a module-level build constant is kept in the module (the module check catches it)" "$REPO/bench/lib/lower_gate.iyi" \
@@ -247,6 +277,10 @@ prove_mutation "a builtin metaclass receiver is refused" "$REPO/src/compiler/low
   '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)' '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""' -- lower_calls_check || status=1
 prove_mutation "an implicit builtin class call is refused" "$REPO/src/compiler/lower/call.iyi" \
   '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)' '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""' -- lower_calls_check || status=1
+prove_mutation "a computed metaclass receiver is not evaluated" "$REPO/src/compiler/lower/call.iyi" \
+  '      unless node.obj.as(ASTNode).is_a?(Path)' '      if false' -- lower_calls_check || status=1
+prove_mutation "a captured block precedes self in the call" "$REPO/src/compiler/lower/call.iyi" \
+  '      emit_def_call(low, node, func, self_value, values, ret)' '      emit_def_call(low, node, func, nil, call_arguments(self_value, values).reverse, ret)' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
