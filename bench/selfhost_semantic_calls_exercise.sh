@@ -359,6 +359,11 @@ prove_mutation "declared return is mistaken for the inferred body return" "$CALL
   'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, instantiated)' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a named splat is counted as a required positional argument" "$ERROR_FILE" \
+  '      minimum = splat if splat < minimum' \
+  '      minimum = d.args.size' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 
