@@ -339,6 +339,24 @@ fi
 prove_mutation "the table probes a noncapturing yielding def" "$PROGRAM_SRC" \
   'next if noncapturing_yield?(d)' 'next if false' -- yield_table_check || status=1
 
+# The recorded origin is the function being emitted, not necessarily an inlined
+# callee. A nested refusal must identify the emitted inner function, not the probe.
+origin_table_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/origin_tool"; then return 1; fi
+  "$WORK/origin_tool" "$REPO/bench/fixtures/pipeline_refusal_origin.iyi" -o "$WORK/origin_probe" --pipeline typed --probe-phase --keep-going > "$WORK/origin_probe.log" 2>&1
+  [ -f "$WORK/origin_probe.refusals" ] || return 1
+  awk -F '\t' '$1 == "lowering" && $2 ~ /pipeline_outer$/ && $5 ~ /pipeline_inner/ { found = 1 } END { exit !found }' "$WORK/origin_probe.refusals"
+}
+echo "  the refusal-origin check passes on the unmutated code:"
+if origin_table_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "a refusal is attributed to the probe instead of the emitted function" "$PROGRAM_SRC" \
+  'origin = ctx.fun.name' 'origin = lowering_example(d, inst.self_type)' -- origin_table_check || status=1
+
 # The entry: a prelude-free program's top-level code is `__crystal_main` (lower.iyi main_function_name), and the C `main` is
 # emitted once, by the pipeline only when the program has no `fun main` of its own. Checked on IR text from --emit ir, on two
 # prelude-free fixtures (no main, and one with its own main). The check returns 0 only on the unmutated behaviour.
