@@ -319,6 +319,20 @@ elsif Program.args[0] == "--primitive-annotations"
       print "#{name} not-primitive\n"
     end
   end
+elsif Program.args[0] == "--enum-primitives"
+  prog, _ = BenchSelfhostSemanticDeclarationsExercise.load_program(Program.args[1])
+  ["SmallEnum", "WideEnum"].each do |name|
+    enum_type = prog.types[name].as(EnumType)
+    [enum_type.defs["value"][0], enum_type.metaclass.defs["new"][0]].each do |definition|
+      primitive = definition.body.as(Primitive)
+      result = prog.primitive_return_type(definition).as(Type)
+      copy = definition.clone.as(Def)
+      prog.copy_def_owner(definition, copy)
+      raise "primitive result lost on clone" unless prog.primitive_return_type(copy) == result
+      restriction = definition.args.empty? ? "-" : definition.args[0].restriction.to_s
+      print "#{name} #{definition.name} #{primitive.name} #{result.full_name} #{restriction}\n"
+    end
+  end
 elsif Program.args[0] == "--enum-member-type"
   prog = BenchSelfhostSemanticDeclarationsExercise.load_whole(Program.args[1])
   member = prog.types["E"].as(EnumType).members["B"]

@@ -967,6 +967,13 @@ pub class EnumType < ModuleType
     super(program, namespace, name)
     @members = Hash(String, Const).new
     @parents << program.enum_type
+    value_def = Def.new("value", body: Primitive.new("enum_value"))
+    add_def(value_def)
+    program.record_primitive_return_type(value_def, @base_type)
+    value_arg = Arg.new("value", restriction: Path.new([@base_type.full_name], true))
+    new_def = Def.new("new", [value_arg] of Arg, body: Primitive.new("enum_new"))
+    metaclass.add_def(new_def)
+    program.record_primitive_return_type(new_def, self)
   end
 
   def enum? : Bool
@@ -1160,6 +1167,7 @@ pub class SemanticProgram < NonGenericModuleType
   @lib_funs_by_node : Hash(UInt64, LibFun)
   # Defining scope, kept outside syntax nodes to avoid a semantic dependency in the AST.
   @def_owners : Hash(UInt64, ModuleType)
+  @primitive_return_types : Hash(UInt64, Type)
   # All unions the program made, keyed by the sorted object ids of their members (hosted program.unions).
   getter unions : Hash(Array(UInt64), Type)
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
@@ -1382,10 +1390,23 @@ pub class SemanticProgram < NonGenericModuleType
     nil
   end
 
+  # Result types carried by generated primitive definitions, independent of written annotations.
+  def primitive_return_type(definition : Def) : Type?
+    @primitive_return_types[definition.node_id]?
+  end
+
+  def record_primitive_return_type(definition : Def, result : Type) : Nil
+    @primitive_return_types[definition.node_id] = result
+    nil
+  end
+
   # A typed clone gets a new node id; copy the original's defining scope explicitly.
   def copy_def_owner(original : Def, clone : Def) : Nil
     if owner = def_owner(original)
       record_def_owner(clone, owner)
+    end
+    if result = primitive_return_type(original)
+      record_primitive_return_type(clone, result)
     end
     nil
   end
@@ -1465,6 +1486,7 @@ pub class SemanticProgram < NonGenericModuleType
     @const_initializers = [] of Const
     @lib_funs_by_node = Hash(UInt64, LibFun).new
     @def_owners = Hash(UInt64, ModuleType).new
+    @primitive_return_types = Hash(UInt64, Type).new
     @unions = Hash(Array(UInt64), Type).new
     @declared_ivars = [] of DeclaredIvar
     @current_imports = Hash(String, Type).new
@@ -2699,7 +2721,6 @@ pub class TopLevelVisitor < Visitor
         enum_type.add_member("All", NumberLiteral.new(all_value.to_s))
       end
     end
-    enum_type.add_def(Def.new("value"))
     direct_names.each do |mname|
       pname = "#{underscore(mname)}?"
       if enum_type.defs[pname]?.nil?

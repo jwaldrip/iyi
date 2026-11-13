@@ -150,6 +150,12 @@ if ! "$ORACLE" --def-owner "$REPO/bench/fixtures/semdecl_def_owner.iyi" > "$WORK
    ! cmp -s "$WORK/owner_oracle" "$WORK/owner_port"; then
   echo "  definition owner DIFFERS"; diff "$WORK/owner_oracle" "$WORK/owner_port"; status=1
 fi
+echo "== Enum primitive definitions and result types"
+if ! "$ORACLE" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.iyi" > "$WORK/enum_primitive_oracle" 2>&1 ||
+   ! "$PORT" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.iyi" > "$WORK/enum_primitive_port" 2>&1 ||
+   ! cmp -s "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port"; then
+  echo "  enum primitives DIFFER"; diff "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port"; status=1
+fi
 echo "== Enum member semantic type: E::B has type E"
 enum_type_expected="$WORK/enum_type_expected"
 printf '%s\n' 'E::B E' > "$enum_type_expected"
@@ -488,6 +494,12 @@ check_lib_types_diverge() {
   cmp -s "$WORK/mut_lt.txt" "$lib_types_expected" || return 1
   return 0
 }
+check_enum_primitives_diverge() {
+  local probe="$WORK/mut_enum_primitives_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.iyi" > "$WORK/mut_enum_primitives" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_enum_primitives" "$WORK/enum_primitive_oracle"
+}
 check_enum_member_type_diverge() {
   local probe="$WORK/mut_enum_port"
   "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
@@ -563,7 +575,7 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/owner_oracle" "$WORK/owner_port" || ! cmp -s "$WORK/virtual_oracle" "$WORK/virtual_port" || ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected" || ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected" || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
+if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port" || ! cmp -s "$WORK/owner_oracle" "$WORK/owner_port" || ! cmp -s "$WORK/virtual_oracle" "$WORK/virtual_port" || ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected" || ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected" || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
@@ -850,6 +862,11 @@ prove_mutation "enum host flags select the wrong platform branch" "$MUT_SEM" \
   '    MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)' \
   '    !MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)' \
   -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "enum value loses its base integer result" "$MUT_SEM" \
+  '    program.record_primitive_return_type(value_def, @base_type)' \
+  '    program.record_primitive_return_type(value_def, self)' \
+  -- check_enum_primitives_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
