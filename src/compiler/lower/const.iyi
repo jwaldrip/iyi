@@ -3,7 +3,7 @@ module compiler/lower/const
 # The port of `src/compiler/iyi/codegen/const.cr` (the hosted `CodeGenVisitor`'s constants), in file
 # order. Ported: a literal constant (Bool, Char, an integer of at most 64 bits) is inlined at every read,
 # and its assignment emits nothing (hosted `read_const`, `codegen_assign(Path)`); a non-literal constant
-# of an integer, float or reference type gets a value global, its initialised flag, an initialiser function
+# of an integer, float, reference or small by-value aggregate type gets a value global, its initialised flag, an initialiser function
 # `~NAME:const_init` that stores the value, and either a call to it at the assignment (a constant nothing read
 # before it, hosted `initialize_const` on the no-init-flag path) or `run_once` through the prelude's `__iyi_once`
 # (a constant read first). A read after the assignment is a load of its global; a read before it calls
@@ -15,7 +15,7 @@ module compiler/lower/const
 #   - a value that may be a compile-time value: a path to another constant, or an operator call (hosted
 #     `compile_time_value` runs the MathInterpreter, which inlines it at each read instead of storing it);
 #   - a nil literal (hosted `initialize_simple_constants`): its global is not ported yet;
-#   - a constant of an IR type that is not an integer, a float or a reference (a struct, nil, an enum).
+#   - an indirectly passed aggregate, which needs the hosted copy_value path.
 # String, symbol and float constants get constant globals at program start; assignments emit nothing and reads load.
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
@@ -435,13 +435,21 @@ pub def codegen_path(low : Lowerer, node : Path) : Nil
     if g.nil?
       refuse_port("lower: read of constant #{name} with no value global (hosted read_const_pointer): not ported")
     end
-    low.last = ir.int? || ir.float? || ir.pointer? ? load_aligned(low, ir, g.as(Global)) : to_lhs(low, g.as(Global), low.analysed.type_of?(c.value).as(Type))
+    if ir.int? || ir.float? || ir.pointer?
+      low.last = load_aligned(low, ir, g.as(Global))
+    else
+      low.last = to_lhs(low, g.as(Global), low.analysed.type_of?(c.value).as(Type))
+    end
     return
   end
   fn = const_read_function(low, c, name, st)
   ft = low.module.types.func([] of IrType, low.module.types.ptr(0))
   addr = low.builder.call(ft, fn.as(Function), [] of Value, "")
-  low.last = ir.int? || ir.float? || ir.pointer? ? load_aligned(low, ir, addr) : to_lhs(low, addr, low.analysed.type_of?(c.value).as(Type))
+  if ir.int? || ir.float? || ir.pointer?
+    low.last = load_aligned(low, ir, addr)
+  else
+    low.last = to_lhs(low, addr, low.analysed.type_of?(c.value).as(Type))
+  end
 end
 
 # The hosted `codegen_assign(Path)` (codegen.cr:1516): a literal constant is initialised where it is read, so
