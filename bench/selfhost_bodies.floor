@@ -37,7 +37,7 @@ bench/fixtures/sem_bodies_macro_annotations.iyi 12
 bench/fixtures/sem_bodies_macro_bindings.iyi 44
 bench/fixtures/sem_bodies_macro_empty.iyi 18
 bench/fixtures/sem_bodies_macro_enum_facts.iyi 6
-bench/fixtures/sem_bodies_macro_ivars.iyi 10
+bench/fixtures/sem_bodies_macro_ivars.iyi 11
 bench/fixtures/sem_bodies_magic_constant.iyi 4
 bench/fixtures/sem_bodies_match_atomics.iyi 81
 bench/fixtures/sem_bodies_match_import.iyi 6
