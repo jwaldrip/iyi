@@ -252,6 +252,22 @@ pub class MainVisitor < TypeNodeHost
   property needs_type_filters : Int32 = 0
   property unreachable : Bool = false
   property while_break_vars : Array(Array(Hash(String, Type))) = [] of Array(Hash(String, Type))
+  # Assignment types visible from each enclosing handler's ensure.
+  property handler_vars : Array(Hash(String, Type)) = [] of Hash(String, Type)
+  property handler_writes : Array(Set(String)) = [] of Set(String)
+
+  def handler_assign(name : String, type : Type) : Nil
+    @handler_writes.each { |writes| writes.add(name) }
+    unless @handler_vars.empty?
+      vars = @handler_vars.last
+      if old = vars[name]?
+        vars[name] = @program.type_merge(old, type)
+      else
+        vars[name] = type
+      end
+    end
+    nil
+  end
 
   def needs_type_filters? : Bool
     @needs_type_filters > 0
@@ -1022,6 +1038,8 @@ pub class MainVisitor < TypeNodeHost
       return false
     end
     node.value.accept(self)
+    value_type_filters = @type_filters
+    @type_filters = nil
     vt = child_type(node.value)
     if vt.nil?
       # The local is declared; its reads report why its value has no type.
@@ -1043,8 +1061,12 @@ pub class MainVisitor < TypeNodeHost
       # variable's storage type is the union over the body's assignments, kept
       # apart in `def_var_unions` for the lowering.
       @vars[v.name] = val_type
+      handler_assign(v.name, val_type)
       set_type(v, val_type)
       set_type(node, val_type)
+      if needs_type_filters?
+        @type_filters = TypeFilters.assign_var(value_type_filters, v.name)
+      end
       if old_u = @var_unions[v.name]?
         @var_unions[v.name] = @program.type_merge(old_u, val_type)
       else
@@ -1431,6 +1453,59 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     nil
+  end
+
+  # The hosted pass refuses rescue and else in iyi; only the ensure path is
+  # needed here. The handler's value is its body, never the ensure's value.
+  def visit(node : ExceptionHandler) : Bool
+    if node.rescues || node.else
+      return refuse(node, "iyi has no exceptions to rescue: an error is a value the caller handles (SPEC.md III.1), and a panic is caught at a task boundary (III.1.4), never here - this `rescue` would not run. Return the error, or read the task's `value`")
+    end
+
+    before_body = @vars.dup
+    handler_vars = @vars.dup
+    @handler_vars << handler_vars
+    node.body.accept(self)
+    after_body = @vars.dup
+    body_unreachable = @unreachable
+    @handler_vars.pop
+    unless @handler_vars.empty?
+      outer = @handler_vars.last
+      handler_vars.each do |name, type|
+        if old = outer[name]?
+          outer[name] = @program.type_merge(old, type)
+        else
+          outer[name] = type
+        end
+      end
+    end
+
+    if cleanup = node.ensure
+      handler_vars.each do |name, type|
+        unless before_body.has_key?(name)
+          handler_vars[name] = @program.type_merge(type, @program.nil_type)
+        end
+      end
+      @vars = handler_vars
+      writes = Set(String).new
+      @handler_writes << writes
+      @unreachable = false
+      cleanup.accept(self)
+      cleanup_unreachable = @unreachable
+      @handler_writes.pop
+      after_cleanup = @vars
+      @vars = after_body
+      writes.each do |name|
+        if type = after_cleanup[name]?
+          @vars[name] = type
+        end
+      end
+      @unreachable = body_unreachable || cleanup_unreachable
+    end
+    if type = child_type(node.body)
+      set_type(node, type)
+    end
+    false
   end
 
   # Merges @vars after an `if`'s two branches (hosted MainVisitor#merge_if_vars).
@@ -2730,6 +2805,10 @@ pub class MainVisitor < TypeNodeHost
     end
 
     old_vars = @vars
+    old_handler_vars = @handler_vars
+    old_handler_writes = @handler_writes
+    @handler_vars = [] of Hash(String, Type)
+    @handler_writes = [] of Set(String)
     old_scope = @scope
     old_def = @current_def
     old_block_call = @current_call_block
@@ -2870,6 +2949,8 @@ pub class MainVisitor < TypeNodeHost
     @next_types = old_next_types
     @return_types = old_return_types
     @vars = old_vars
+    @handler_vars = old_handler_vars
+    @handler_writes = old_handler_writes
     @scope = old_scope
     @current_def = old_def
     @current_call_block = old_block_call

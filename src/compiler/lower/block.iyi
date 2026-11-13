@@ -32,6 +32,7 @@ import compiler/lower/fun::{block_ended?, visit_node}
 import compiler/lower/helpers::{llvm_nil, store_aligned}
 import compiler/lower/pending::{pending_visit_node, refuse_port}
 import compiler/lower/phi::{LowerPhi}
+import compiler/lower/ensure::{execute_ensures_until, set_ensure_exception_handler}
 import compiler/semantic/main_visitor::{MainVisitor}
 import compiler/semantic/top_level::{NilType, NoReturnType, Type, VoidType}
 import compiler/types/types::{TupleInstanceType}
@@ -193,6 +194,9 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   body.return_type = caller.return_type
   body.return_phi = caller.return_phi
   body.break_phi = frame.return_phi
+  body.return_target = caller.return_target
+  body.break_target = frame.return_target
+  body.next_target = block
   if noreturn
     body.next_phi = NoReturnPhi.new
   else
@@ -204,11 +208,14 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   # A `while` around the call is not the target of a `break` or `next` written in the block.
   saved_next = low.loop_next
   saved_break = low.loop_break
+  saved_target = low.loop_target
   low.loop_next = nil
   low.loop_break = nil
+  low.loop_target = nil
 
   low.context = body
   low.needs_value = wants
+  set_ensure_exception_handler(low, block)
   visit_node(low, block.body)
   if noreturn
     unless block_ended?(low)
@@ -220,6 +227,7 @@ pub def lower_yield(low : Lowerer, node : Yield) : Nil
   low.context = frame
   low.loop_next = saved_next
   low.loop_break = saved_break
+  low.loop_target = saved_target
   low.needs_value = wants
   if noreturn
     low.last = llvm_nil(low)
@@ -232,9 +240,10 @@ end
 # visit(Next), codegen_return_node): the value of the expression goes to the phi, which branches to its
 # exit. A nil or void value adds no value to the phi; a value of another type than the phi's merges is
 # refused by name (the hosted upcast). A NoReturn phi takes the value as `unreachable` (`NoReturnPhi`).
-pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?) : Nil
+pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?, target : ASTNode?) : Nil
   nil_ir = low.typer.llvm_type(low.analysed.program.nil_type)
   value : Value? = nil
+  value_type : Type? = nil
   got_ir = nil_ir
   if e = exp
     wants = low.needs_value
@@ -246,6 +255,7 @@ pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?) : Nil
     et = low.analysed.type_of?(e)
     raise "BUG: the analysed program has no type for a branch's expression (hosted codegen.cr: accept_control_expression)" if et.nil?
     et_t = et.as(Type)
+    value_type = et_t
     unless et_t.is_a?(NilType) || et_t.is_a?(VoidType)
       value = v.as(Value)
       got_ir = low.typer.llvm_type(et_t)
@@ -253,6 +263,9 @@ pub def branch_to_phi(low : Lowerer, phi : BranchPhi, exp : ASTNode?) : Nil
   else
     low.last = llvm_nil(low)
   end
+  execute_ensures_until(low, target, value_type)
+  return if block_ended?(low)
+  value = low.last if !value.nil?
   merged = phi.merge_type
   if !merged.nil? && merged.as(IrType).to_s != got_ir.to_s
     refuse_port("a break, next or return of a block call with a value of another type than the call (hosted upcast, not ported)")

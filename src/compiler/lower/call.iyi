@@ -48,6 +48,7 @@ import compiler/ir/values::{Value}
 import compiler/lower/block::{LocalCollector, NoReturnPhi, alloca_local, copy_vars}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
 import compiler/lower/cast::{type_id_value}
+import compiler/lower/ensure::{set_ensure_exception_handler}
 import compiler/lower/fun::{block_ended?, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
@@ -450,6 +451,7 @@ end
 # body is the call's value, merged by a phi (hosted `Phi.open(self, node)`, which always wants a value).
 # A call whose type is NoReturn merges nothing: its body ends in `unreachable` (`NoReturnPhi`).
 pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Call, block : Block, def_node : Def, ret : Type, self_type : Type?, self_value : Value?, arg_types : Array(Type), values : Array(Value)) : Nil
+  set_ensure_exception_handler(low, node)
   unless def_node.block_arg.nil?
     pending_visit_node("a call to a def with a &block parameter (hosted call.cr: codegen_call_with_block_as_fun_literal, closures)")
   end
@@ -474,6 +476,7 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   block_ctx.top_level = caller.top_level
   block_ctx.return_type = caller.return_type
   block_ctx.return_phi = caller.return_phi
+  block_ctx.return_target = caller.return_target
   block_ctx.block_node = caller.block_node
   block_ctx.block_context = caller.block_context
   allocate_block_vars(low, block, block_ctx.vars)
@@ -488,6 +491,7 @@ pub def codegen_call_with_block(low : Lowerer, node : Compiler::Syntax::Ast::Cal
   frame = LowerContext.new(caller.fun, caller.fun_type, self_type, Hash(String, LowerVar).new)
   frame.block_node = block
   frame.block_context = block_ctx
+  frame.return_target = node
   if noreturn
     frame.return_phi = NoReturnPhi.new
   else
