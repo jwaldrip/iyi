@@ -245,13 +245,13 @@ table: hello lowering 12 owner=lowering core reason=lower: visit(Cast) (hosted c
 table: hello lowering 11 owner=lowering core reason=lower: visit(UninitializedVar) (hosted codegen.cr) is not ported yet example=UInt64#raise
 table: hello lowering 10 owner=bodies reason=lower: visit(pointerof of a ClassVar (hosted codegen.cr: visit(PointerOf), only a local variable is ported)) (hosted codegen.cr) is not ported yet example=IyiSchedLock.class#word
 table: hello lowering 9 owner=bodies reason=BUG: the analysed program has no type for the body of state_id (hosted codegen_fun: return type) example=IyiScheduler.class#state_id
-table: hello lowering 8 owner=unassigned reason=lower: is_a? of (IyiFiber | Nil) reads the union's or virtual type's id word (hosted match_type_id), not ported yet (slice S2c3) example=IyiChaos.class#outranked?
-table: hello lowering 6 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiSchedulerState#free_lists
+table: hello lowering 9 owner=unassigned reason=lower: is_a? of (IyiFiber | Nil) reads the union's or virtual type's id word (hosted match_type_id), not ported yet (slice S2c3) example=IyiChaos.class#outranked?
+table: hello lowering 6 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiSchedulerState#free_lists
 table: hello lowering 6 owner=bodies reason=BUG: the analysed program has no type for the body of start (hosted codegen_fun: return type) example=IyiThread.class#start
 table: hello lowering 5 owner=lowering core reason=lower: visit(pointer_get of Atomic(UInt64) (hosted to_lhs, primitives.cr 938)) (hosted codegen.cr) is not ported yet example=IyiChanLock.class#acquire
 table: hello lowering 5 owner=lowering core reason=BUG: create_llvm_type for T is not ported yet (hosted llvm_typer.cr) example=Array#[]
 table: hello lowering 4 owner=lowering core reason=lower: visit(MagicConstant) (hosted codegen.cr) is not ported yet example=UInt64#%
-table: hello lowering 4 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of compare_and_set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim
+table: hello lowering 4 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of compare_and_set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim
 table: hello lowering 4 owner=bodies reason=BUG: the analysed program has no type for the body of slot (hosted codegen_fun: return type) example=IyiSchedulerState#slot
 table: hello lowering 4 owner=unassigned reason=a function or global named ~STDOUT:const_read already exists example=IyiScheduler.class#__iyi_flush_std
 table: hello lowering 3 owner=unassigned reason=a function or global named IyiScheduler::shared already exists example=IyiScheduler.class#shared?
@@ -291,7 +291,7 @@ table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no typ
 table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no type for a branch (hosted codegen.cr: visit(If)) example=IyiScheduler.class#reschedule
 table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to at_atomic (hosted call.cr: visit(Call)) example=IyiSchedulerState#take_lists
 table: hello lowering 1 owner=lowering core reason=BUG: create_llvm_type for <unresolved T> is not ported yet (hosted llvm_typer.cr) example=Tuple(<unresolved T>, Bool)#[]
-table: hello lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of add (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim_any
+table: hello lowering 1 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of add (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim_any
 table: hello lowering 1 owner=lowering core reason=lower: visit(binary > on Int64 and Int32 (mixed operands, hosted codegen_binary_extend_int)) (hosted codegen.cr) is not ported yet example=IyiScheduler.class#pollfd
 table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to malloc (hosted call.cr: visit(Call)) example=IyiScheduler.class#events_buffer
 table: hello lowering 1 owner=calls reason=BUG: the call to entry has no target def (hosted call.cr: visit(Call)) example=IyiScheduler.class#event_ready
@@ -319,7 +319,6 @@ table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no typ
 table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to memory (hosted call.cr: visit(Call)) example=String.class#new
 table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of fold (hosted codegen_fun: return type) example=IyiChaos.class#fold
 table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to state= (hosted call.cr: visit(Call)) example=IyiScheduler.class#enqueue
-table: hello lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of next_run= (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiWorkers.class#link_shared
 table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of thread_point (hosted codegen_fun: return type) example=IyiChaos.class#thread_point
 table: hello lowering 1 owner=calls reason=BUG: the call to fiber has no target def (hosted call.cr: visit(Call)) example=IyiWorkers.class#chaos_give_up
 table: hello lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of give_up (hosted codegen_fun: return type) example=IyiWorkers.class#give_up
@@ -519,18 +518,18 @@ table: parse lowering 27 owner=bodies reason=BUG: the analysed program has no ty
 table: parse lowering 18 owner=bodies reason=BUG: the analysed program has no type for the body of start (hosted codegen_fun: return type) example=IyiThread.class#start
 table: parse lowering 15 owner=lowering core reason=lower: visit(Cast) (hosted codegen.cr) is not ported yet example=UInt64#__iyi_say
 table: parse lowering 14 owner=lowering core reason=lower: visit(UninitializedVar) (hosted codegen.cr) is not ported yet example=UInt64#raise
+table: parse lowering 13 owner=unassigned reason=lower: is_a? of (IyiFiber | Nil) reads the union's or virtual type's id word (hosted match_type_id), not ported yet (slice S2c3) example=IyiChaos.class#outranked?
 table: parse lowering 11 owner=bodies reason=lower: visit(pointerof of a ClassVar (hosted codegen.cr: visit(PointerOf), only a local variable is ported)) (hosted codegen.cr) is not ported yet example=IyiSchedLock.class#word
-table: parse lowering 11 owner=unassigned reason=lower: is_a? of (IyiFiber | Nil) reads the union's or virtual type's id word (hosted match_type_id), not ported yet (slice S2c3) example=IyiChaos.class#outranked?
 table: parse lowering 11 owner=lowering core reason=BUG: create_llvm_type for T is not ported yet (hosted llvm_typer.cr) example=Array#[]
 table: parse lowering 9 owner=bodies reason=BUG: the analysed program has no type for the body of wake_one (hosted codegen_fun: return type) example=IyiWorkers.class#wake_one
 table: parse lowering 6 owner=lowering core reason=lower: visit(MagicConstant) (hosted codegen.cr) is not ported yet example=UInt64#%
 table: parse lowering 6 owner=lowering core reason=lower: visit(Assign to a parameter (hosted fun.cr, create_local_copy_of_arg)) (hosted codegen.cr) is not ported yet example=String#includes?
-table: parse lowering 6 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiSchedulerState#free_lists
+table: parse lowering 6 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiSchedulerState#free_lists
 table: parse lowering 5 owner=lowering core reason=lower: visit(pointer_get of Atomic(UInt64) (hosted to_lhs, primitives.cr 938)) (hosted codegen.cr) is not ported yet example=IyiChanLock.class#acquire
 table: parse lowering 5 owner=bodies reason=BUG: the analysed program has no type for the body of set_slot (hosted codegen_fun: return type) example=IyiSchedulerState#set_slot
 table: parse lowering 4 owner=unassigned reason=a function or global named IyiScheduler::shared already exists example=IyiScheduler.class#shared?
 table: parse lowering 4 owner=calls reason=BUG: the call to st has no target def (hosted call.cr: visit(Call)) example=IyiScheduler.class#poll_now
-table: parse lowering 4 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of compare_and_set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim
+table: parse lowering 4 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of compare_and_set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim
 table: parse lowering 4 owner=bodies reason=BUG: the analysed program has no type for the body of slot (hosted codegen_fun: return type) example=IyiSchedulerState#slot
 table: parse lowering 3 owner=unassigned reason=lower: a bare return from a function that returns a value (hosted codegen_return, the nil upcast) example=IyiSchedLock.class#lock
 table: parse lowering 3 owner=bodies reason=BUG: the analysed program has no type for the body of io_slot (hosted codegen_fun: return type) example=IyiScheduler.class#io_slot
@@ -577,7 +576,7 @@ table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no typ
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for a branch (hosted codegen.cr: visit(If)) example=IyiScheduler.class#reschedule
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to at_atomic (hosted call.cr: visit(Call)) example=IyiSchedulerState#take_lists
 table: parse lowering 1 owner=lowering core reason=BUG: create_llvm_type for <unresolved T> is not ported yet (hosted llvm_typer.cr) example=Tuple(<unresolved T>, Bool)#[]
-table: parse lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of add (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim_any
+table: parse lowering 1 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of add (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim_any
 table: parse lowering 1 owner=lowering core reason=lower: visit(binary > on Int64 and Int32 (mixed operands, hosted codegen_binary_extend_int)) (hosted codegen.cr) is not ported yet example=IyiScheduler.class#pollfd
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to malloc (hosted call.cr: visit(Call)) example=IyiScheduler.class#events_buffer
 table: parse lowering 1 owner=calls reason=BUG: the call to entry has no target def (hosted call.cr: visit(Call)) example=IyiScheduler.class#event_ready
@@ -601,7 +600,6 @@ table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no typ
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to memory (hosted call.cr: visit(Call)) example=String.class#new
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of fold (hosted codegen_fun: return type) example=IyiChaos.class#fold
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to state= (hosted call.cr: visit(Call)) example=IyiScheduler.class#enqueue
-table: parse lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of next_run= (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiWorkers.class#link_shared
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of thread_point (hosted codegen_fun: return type) example=IyiChaos.class#thread_point
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of give_up (hosted codegen_fun: return type) example=IyiWorkers.class#give_up
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of hand_to_yielded (hosted codegen_fun: return type) example=IyiUnit#hand_to_yielded
@@ -624,11 +622,10 @@ table: parse lowering 1 owner=lowering core reason=lower: visit(ArrayLiteral) (h
 table: parse lowering 1 owner=lowering core reason=lower: visit(pointer_get of String (hosted to_lhs, primitives.cr 938)) (hosted codegen.cr) is not ported yet example=Pointer(String)#[]
 table: parse lowering 1 owner=unassigned reason=a function or global named ~STDIN:const_read already exists example=Compiler::Tools::Parse::ParseTool.class#stdin
 table: parse lowering 1 owner=unassigned reason=lower: return of Cancelled from a function returning another type (hosted upcast, the casts slice) example=IyiScheduler.class#wait_readable_posix
-table: parse lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of prev_io= (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiScheduler.class#io_link
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of io_owner (hosted codegen_fun: return type) example=IyiScheduler.class#io_owner
-table: parse lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of sleep_child= (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiScheduler.class#arm_deadline
+table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to sleep_head= (hosted call.cr: visit(Call)) example=IyiScheduler.class#arm_deadline
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of heap_insert (hosted codegen_fun: return type) example=IyiScheduler.class#heap_insert
-table: parse lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of swap (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#list_on
+table: parse lowering 1 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of swap (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#list_on
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of cancel_wait (hosted codegen_fun: return type) example=IyiScheduler.class#cancel_wait
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of io_owner_clear (hosted codegen_fun: return type) example=IyiScheduler.class#io_owner_clear
 table: parse lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to low_level_read (hosted call.cr: visit(Call)) example=IyiIO#fill_buffer
@@ -873,7 +870,7 @@ table: compile_native refusal 1 owner=calls reason=expected argument #1 to 'Stri
 table: compile_native refusal 1 owner=bodies reason=undefined local variable or method 'buffer' for Char example=src/iyi/./string.iyi:592 in Char#to_s
 table: compile_native refusal 1 owner=bodies reason=the value of 'objects' cannot be typed example=src/compiler/native/driver.iyi:244 in Compiler::Tools::CompileNative::CompileNative.class#link_native_program
 table: compile_native refusal 1 owner=bodies reason=undefined local variable or method 'libraries_of' for Compiler::Tools::CompileNative::CompileNative.class example=src/compiler/native/driver.iyi:244 in Compiler::Tools::CompileNative::CompileNative.class#link_native_program
-table: compile_native defs-lowered-clean=1491 lowering-refusal-sites=1266
+table: compile_native defs-lowered-clean=1492 lowering-refusal-sites=1265
 table: compile_native lowering 598 owner=bodies reason=BUG: the analysed program has no type for the body of grow (hosted codegen_fun: return type) example=Array(String)#grow
 table: compile_native lowering 57 owner=bodies reason=BUG: the analysed program has no type for the body of add (hosted codegen_fun: return type) example=Atomic(UInt64)#add
 table: compile_native lowering 45 owner=bodies reason=BUG: the analysed program has no type for the body of get (hosted codegen_fun: return type) example=Atomic(UInt64)#get
@@ -885,8 +882,8 @@ table: compile_native lowering 27 owner=bodies reason=BUG: the analysed program 
 table: compile_native lowering 18 owner=bodies reason=BUG: the analysed program has no type for the body of start (hosted codegen_fun: return type) example=IyiThread.class#start
 table: compile_native lowering 17 owner=lowering core reason=lower: visit(Cast) (hosted codegen.cr) is not ported yet example=UInt64#__iyi_say
 table: compile_native lowering 16 owner=lowering core reason=lower: visit(UninitializedVar) (hosted codegen.cr) is not ported yet example=UInt64#raise
+table: compile_native lowering 13 owner=unassigned reason=lower: is_a? of (IyiFiber | Nil) reads the union's or virtual type's id word (hosted match_type_id), not ported yet (slice S2c3) example=IyiChaos.class#outranked?
 table: compile_native lowering 11 owner=bodies reason=lower: visit(pointerof of a ClassVar (hosted codegen.cr: visit(PointerOf), only a local variable is ported)) (hosted codegen.cr) is not ported yet example=IyiSchedLock.class#word
-table: compile_native lowering 11 owner=unassigned reason=lower: is_a? of (IyiFiber | Nil) reads the union's or virtual type's id word (hosted match_type_id), not ported yet (slice S2c3) example=IyiChaos.class#outranked?
 table: compile_native lowering 11 owner=lowering core reason=BUG: create_llvm_type for T is not ported yet (hosted llvm_typer.cr) example=Array#[]
 table: compile_native lowering 11 owner=bodies reason=BUG: the analysed program has no type for the body of uleb_i (hosted codegen_fun: return type) example=Compiler::Native::Wasm::Module::WasmModule#uleb_i
 table: compile_native lowering 9 owner=lowering core reason=lower: visit(MagicConstant) (hosted codegen.cr) is not ported yet example=UInt64#%
@@ -894,7 +891,7 @@ table: compile_native lowering 9 owner=bodies reason=BUG: the analysed program h
 table: compile_native lowering 9 owner=lowering core reason=lower: visit(a call to a def with a &block parameter (hosted call.cr: codegen_call_with_block_as_fun_literal, closures)) (hosted codegen.cr) is not ported yet example=IyiTestCases.class#verdict
 table: compile_native lowering 7 owner=lowering core reason=lower: visit(Assign to a parameter (hosted fun.cr, create_local_copy_of_arg)) (hosted codegen.cr) is not ported yet example=String#includes?
 table: compile_native lowering 7 owner=unassigned reason=Cast from Compiler::Types::Types::GenericClassInstanceType to Compiler::Semantic::TopLevel::ClassType+ failed, at src/compiler/lower/primitives.iyi:718:11:718 example=Array(String).class#new
-table: compile_native lowering 6 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiSchedulerState#free_lists
+table: compile_native lowering 6 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiSchedulerState#free_lists
 table: compile_native lowering 6 owner=lowering core reason=lower: visit(ArrayLiteral) (hosted codegen.cr) is not ported yet example=Compiler::Tools::CompileNative::CompileNative.class#start_wasm32_ir
 table: compile_native lowering 5 owner=unassigned reason=lower: a bare return from a function that returns a value (hosted codegen_return, the nil upcast) example=IyiSchedLock.class#lock
 table: compile_native lowering 5 owner=lowering core reason=lower: visit(pointer_get of Atomic(UInt64) (hosted to_lhs, primitives.cr 938)) (hosted codegen.cr) is not ported yet example=IyiChanLock.class#acquire
@@ -905,7 +902,7 @@ table: compile_native lowering 5 owner=bodies reason=BUG: the analysed program h
 table: compile_native lowering 4 owner=bodies reason=BUG: the analysed program has no type for the body of initialize (hosted codegen_fun: return type) example=Atomic(UInt64)#initialize
 table: compile_native lowering 4 owner=unassigned reason=a function or global named IyiScheduler::shared already exists example=IyiScheduler.class#shared?
 table: compile_native lowering 4 owner=calls reason=BUG: the call to st has no target def (hosted call.cr: visit(Call)) example=IyiScheduler.class#poll_now
-table: compile_native lowering 4 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of compare_and_set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim
+table: compile_native lowering 4 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of compare_and_set (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim
 table: compile_native lowering 4 owner=bodies reason=BUG: the analysed program has no type for the body of slot (hosted codegen_fun: return type) example=IyiSchedulerState#slot
 table: compile_native lowering 4 owner=unassigned reason=lower: instance variable @size of Array(String): not a class or struct (hosted instance_var_ptr, union or virtual owner) (slice S2a) example=Array(String)#initialize
 table: compile_native lowering 4 owner=bodies reason=BUG: the analysed program has no type for the body of __iyi_write (hosted codegen_fun: return type) example=File.class#__iyi_write
@@ -960,7 +957,7 @@ table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program h
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of join (hosted codegen_fun: return type) example=IyiGroup#join
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to at_atomic (hosted call.cr: visit(Call)) example=IyiSchedulerState#take_lists
 table: compile_native lowering 1 owner=lowering core reason=BUG: create_llvm_type for <unresolved T> is not ported yet (hosted llvm_typer.cr) example=Tuple(<unresolved T>, Bool)#[]
-table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of add (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim_any
+table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of add (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#claim_any
 table: compile_native lowering 1 owner=lowering core reason=lower: visit(binary > on Int64 and Int32 (mixed operands, hosted codegen_binary_extend_int)) (hosted codegen.cr) is not ported yet example=IyiScheduler.class#pollfd
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to malloc (hosted call.cr: visit(Call)) example=IyiScheduler.class#events_buffer
 table: compile_native lowering 1 owner=calls reason=BUG: the call to entry has no target def (hosted call.cr: visit(Call)) example=IyiScheduler.class#event_ready
@@ -982,7 +979,6 @@ table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program h
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to memory (hosted call.cr: visit(Call)) example=String.class#new
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of fold (hosted codegen_fun: return type) example=IyiChaos.class#fold
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to state= (hosted call.cr: visit(Call)) example=IyiScheduler.class#enqueue
-table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of next_run= (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiWorkers.class#link_shared
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of thread_point (hosted codegen_fun: return type) example=IyiChaos.class#thread_point
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of give_up (hosted codegen_fun: return type) example=IyiWorkers.class#give_up
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of hand_to_yielded (hosted codegen_fun: return type) example=IyiUnit#hand_to_yielded
@@ -1006,7 +1002,6 @@ table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program h
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to includes? (hosted call.cr: visit(Call)) example=Compiler::Backend::Backend::Backend.class#backend_for
 table: compile_native lowering 1 owner=calls reason=BUG: the call to path has no target def (hosted call.cr: visit(Call)) example=File.class#exists?
 table: compile_native lowering 1 owner=lowering core reason=lower: codegen_cond of (Int32 | Nil) is not ported yet (hosted cond.cr: nilable and union tests, slice S2c) example=File.class#c_path
-table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 2 of initialize (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=Compiler::Compiler::CompilerConfig.class#new
 table: compile_native lowering 1 owner=lowering core reason=lower: visit(allocate of class Compiler::Backend::Native::NativeBackend: the :headed byte is the program-wide census (lower/headed.iyi, NEEDS.md rows 26-27), not decided) (hosted codegen.cr) is not ported yet example=Compiler::Backend::Native::NativeBackend.class#new
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to puts (hosted call.cr: visit(Call)) example=Compiler::Tools::CompileNative::CompileNative.class#fail
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to close (hosted call.cr: visit(Call)) example=IyiIO#low_level_close
@@ -1014,11 +1009,10 @@ table: compile_native lowering 1 owner=lowering core reason=lower: visit(allocat
 table: compile_native lowering 1 owner=lowering core reason=lower: visit(assign Proc(Nil) to Proc (hosted assign_distinct, not ported)) (hosted codegen.cr) is not ported yet example=IyiDeferNode#initialize
 table: compile_native lowering 1 owner=unassigned reason=lower: is_a? of (IyiDeferNode | Nil) reads the union's or virtual type's id word (hosted match_type_id), not ported yet (slice S2c3) example=File.class#__iyi_defer_push_node
 table: compile_native lowering 1 owner=unassigned reason=lower: return of Cancelled from a function returning another type (hosted upcast, the casts slice) example=IyiScheduler.class#wait_readable_posix
-table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of prev_io= (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiScheduler.class#io_link
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of io_owner (hosted codegen_fun: return type) example=IyiScheduler.class#io_owner
-table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of sleep_child= (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiScheduler.class#arm_deadline
+table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to sleep_head= (hosted call.cr: visit(Call)) example=IyiScheduler.class#arm_deadline
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of heap_insert (hosted codegen_fun: return type) example=IyiScheduler.class#heap_insert
-table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of swap (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#list_on
+table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of swap (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=IyiFiber#list_on
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of cancel_wait (hosted codegen_fun: return type) example=IyiScheduler.class#cancel_wait
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of io_owner_clear (hosted codegen_fun: return type) example=IyiScheduler.class#io_owner_clear
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the call to low_level_read (hosted call.cr: visit(Call)) example=IyiIO#fill_buffer
@@ -1054,7 +1048,7 @@ table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program h
 table: compile_native lowering 1 owner=unassigned reason=lower: instance variable @capacity of Array(Array(UInt8)): not a class or struct (hosted instance_var_ptr, union or virtual owner) (slice S2a) example=Array(Array(UInt8))#reserve
 table: compile_native lowering 1 owner=lowering core reason=lower: visit(pointer_set of Array(UInt8) (hosted assign, primitives.cr 927)) (hosted codegen.cr) is not ported yet example=Pointer(Array(UInt8))#[]=
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of add_export (hosted codegen_fun: return type) example=Compiler::Native::Wasm::Module::WasmModule#add_export
-table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that converts argument 0 of entry_of (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=Hash(Int32, Array(UInt8))#[]
+table: compile_native lowering 1 owner=lowering core reason=lower: visit(a restriction that does not hold for argument 0 of entry_of (hosted call.cr: prepare_call_args)) (hosted codegen.cr) is not ported yet example=Hash(Int32, Array(UInt8))#[]
 table: compile_native lowering 1 owner=unassigned reason=lower: instance variable @capacity of Hash(Int32, Array(UInt8)): not a class or struct (hosted instance_var_ptr, union or virtual owner) (slice S2a) example=Hash(Int32, Array(UInt8))#entry_of
 table: compile_native lowering 1 owner=bodies reason=BUG: the analysed program has no type for the body of slot_for (hosted codegen_fun: return type) example=Hash(Int32, Array(UInt8))#slot_for
 table: compile_native lowering 1 owner=lowering core reason=lower: visit(pointer_get of Array(UInt8) (hosted to_lhs, primitives.cr 938)) (hosted codegen.cr) is not ported yet example=Pointer(Array(UInt8))#[]
