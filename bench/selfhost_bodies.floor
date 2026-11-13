@@ -25,7 +25,7 @@ bench/fixtures/sem_bodies_jumps.iyi 20
 bench/fixtures/sem_bodies_libcall.iyi 15
 bench/fixtures/sem_bodies_magic_constant.iyi 4
 bench/fixtures/sem_bodies_nil_return.iyi 14
-bench/fixtures/sem_bodies_owner_typeof.iyi 9
+bench/fixtures/sem_bodies_owner_typeof.iyi 16
 bench/fixtures/sem_bodies_pointer_set.iyi 25
 bench/fixtures/sem_bodies_primitive_add.iyi 4
 bench/fixtures/sem_bodies_proc_literal.iyi 8
@@ -36,4 +36,4 @@ bench/fixtures/sem_bodies_trait_def.iyi 6
 bench/fixtures/sem_bodies_union.iyi 15
 bench/fixtures/sem_bodies_union_generic.iyi 12
 bench/fixtures/sem_bodies_union_restriction.iyi 8
-bench/fixtures/sem_bodies_virtual_lookup.iyi 18
+bench/fixtures/sem_bodies_virtual_lookup.iyi 19
