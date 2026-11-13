@@ -352,6 +352,24 @@ fi
 prove_mutation "the loader reads the first branch of every {% if %}" "$LOADER_SRC" \
   'if report.failure.nil? && !report.skipped' 'if false' -- loader_if_check || status=1
 
+# The same entry must run the selected branch through declarations, lowering and the linker.
+pipeline_loader_if_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/loader_pipeline_tool"; then return 1; fi
+  "$WORK/loader_pipeline_tool" "$REPO/bench/fixtures/loader_if_entry.iyi" -o "$WORK/loader_entry" --pipeline typed > "$WORK/loader_entry.build" 2>&1 || return 1
+  "$WORK/loader_entry" > "$WORK/loader_entry.out" 2>&1
+  [ "$?" -eq 2 ] || return 1
+  [ "$(awk '1' "$WORK/loader_entry.out")" = "b" ]
+}
+echo "  the selected loader branch runs through the typed pipeline:"
+if pipeline_loader_if_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "post-splice runtime code is dropped" "$COMPILER_SRC" \
+  'runtime.each { |node| top_level << node }' 'runtime.each { |node| }' -- pipeline_loader_if_check || status=1
+
 echo
 if [ "$status" -eq 0 ]; then
   echo "== ALL CHECKS PASSED"
