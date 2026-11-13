@@ -18,7 +18,7 @@ module compiler/lower/context
 
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Function, Global}
-import compiler/syntax/ast::{ASTNode, FunDef}
+import compiler/syntax/ast::{ASTNode, ExceptionHandler, FunDef}
 import compiler/ir/inst::{Block, Inst}
 import compiler/ir/values::{Value}
 import compiler/ir/types::{TypeKind}
@@ -96,6 +96,9 @@ pub class LowerSavedState
   getter insert_block : Block?
   getter needs_value : Bool
   getter in_main : Bool
+  property ensure_nodes : Array(ExceptionHandler) = [] of ExceptionHandler
+  property ensure_contexts : Array(LowerContext) = [] of LowerContext
+  property ensure_boundaries : Hash(UInt64, Int32) = Hash(UInt64, Int32).new
 
   def initialize(@context : LowerContext?, @alloca_block : Block?, @entry_block : Block?, @insert_block : Block?, @needs_value : Bool, @in_main : Bool)
   end
@@ -157,6 +160,10 @@ pub class Lowerer
   # The hosted `@proc_counts`: the literals of each name the module has lowered, so a second literal of one name is
   # `~proc2...` (proc.iyi, proc_literal_name).
   property proc_counts : Hash(String, Int32)
+  # Per-function ensure state. Keys use node identity, not structural AST equality.
+  property ensure_nodes : Array(ExceptionHandler)
+  property ensure_contexts : Array(LowerContext)
+  property ensure_boundaries : Hash(UInt64, Int32)
 
   def initialize(@module : Module, @typer : LowerTyper, @analysed : MainVisitor)
     @builder = Builder.new(@module)
@@ -184,6 +191,9 @@ pub class Lowerer
     @emitting = Hash(String, Bool).new
     @unused_fun_defs = [] of FunDef
     @proc_counts = Hash(String, Int32).new
+    @ensure_nodes = [] of ExceptionHandler
+    @ensure_contexts = [] of LowerContext
+    @ensure_boundaries = Hash(UInt64, Int32).new
   end
 
   # The function being lowered (the hosted `context`). Raises when none is.
@@ -300,11 +310,23 @@ pub class Lowerer
     br_from_alloca_to_entry
   end
 
+  # Save and clear the handler stack when code generation enters another function.
+  def save_function_state : LowerSavedState
+    saved = LowerSavedState.new(@context, @alloca_block, @entry_block, @builder.insert_block, @needs_value, @in_main)
+    saved.ensure_nodes = @ensure_nodes
+    saved.ensure_contexts = @ensure_contexts
+    saved.ensure_boundaries = @ensure_boundaries
+    @ensure_nodes = [] of ExceptionHandler
+    @ensure_contexts = [] of LowerContext
+    @ensure_boundaries = Hash(UInt64, Int32).new
+    saved
+  end
+
   # The hosted `in_main`, the save half: the function being lowered, its blocks, the
   # value flags and the builder's place, to put back by `leave_main`. Code emitted
   # between the two belongs to the main module.
   def enter_main : LowerSavedState
-    saved = LowerSavedState.new(@context, @alloca_block, @entry_block, @builder.insert_block, @needs_value, @in_main)
+    saved = save_function_state
     @in_main = true
     saved
   end
@@ -317,6 +339,9 @@ pub class Lowerer
     @entry_block = saved.entry_block
     @needs_value = saved.needs_value
     @in_main = saved.in_main
+    @ensure_nodes = saved.ensure_nodes
+    @ensure_contexts = saved.ensure_contexts
+    @ensure_boundaries = saved.ensure_boundaries
     if b = saved.insert_block
       @builder.position_at_end(b.as(Block))
     end
