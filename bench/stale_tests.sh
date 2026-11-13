@@ -1308,10 +1308,13 @@ expect_contains "$row53_drop" "fast path served" "the audit names the served env
 
 # Row 54: a copy of the same compiler at another path has another compiler
 # stamp, so its first run is a compiler check that names the compiler, and its
-# second run is served. IYI_STALE_FAST_DROP=compiler ignores the stamps under
-# the audit, so the copy's verdict is served and the audit compiles it anyway.
-# The copy's bytes are equal, so its Build is equal and the audit agrees. This
-# row does not cover a compiler that builds differently.
+# second run is served. The first run is measured with the audit off: under the
+# audit every served test is compiled too, and `check` would read `compiler`
+# whether or not the stamps were compared. A runner that did not compare them
+# serves the copy's first run from the original's record, and this row fails.
+# IYI_STALE_FAST_DROP=compiler then ignores the stamps under the audit: the
+# copy's bytes are equal, so its Build is equal and the audit agrees. This row
+# does not cover a compiler that builds differently.
 step 54 "a copy of the compiler starts a check that names it, and its second run is served"
 mkdir -p "$WORK/r54"
 cat > "$WORK/r54/t_test.iyi" <<'IYI'
@@ -1323,7 +1326,7 @@ rm -rf "$CACHE/tests-v1"
 run_json "$WORK/r54" t_test.iyi >/dev/null
 row54_hit="$( (unset IYI_STALE_FAST_AUDIT; run_json "$WORK/r54" t_test.iyi) )"
 expect_eq "$(printf '%s' "$row54_hit" | json_test t_test.iyi check)" inputs "the original compiler's unchanged run is served"
-row54_copy="$(r54_copy --cached --json t_test.iyi)"
+row54_copy="$( (unset IYI_STALE_FAST_AUDIT; r54_copy --cached --json t_test.iyi) )"
 expect_eq "$(printf '%s' "$row54_copy" | json_test t_test.iyi check)" compiler "the copy's first run is checked by the compiler"
 expect_contains "$(printf '%s' "$row54_copy" | json_test t_test.iyi check_reason)" "compiler" "the check names the compiler"
 row54_copy_again="$( (unset IYI_STALE_FAST_AUDIT; r54_copy --cached --json t_test.iyi) )"
