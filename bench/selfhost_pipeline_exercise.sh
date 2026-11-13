@@ -25,7 +25,11 @@ status=0
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 IYI="$REPO/bin/iyi"
 . "$REPO/bench/lib/mutation.sh"
+. "$REPO/bench/lib/pipeline_report.sh"
 WORK="$(mktemp -d /tmp/iyi-pipeline.XXXXXX)"
+ARTIFACT_DIR="${PIPELINE_ARTIFACT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/iyi-pipeline-artifacts.XXXXXX")}"
+mkdir -p "$ARTIFACT_DIR"
+echo "  table sidecars: $ARTIFACT_DIR"
 trap 'rm -rf "$WORK"' EXIT
 FLOOR="$REPO/bench/selfhost_pipeline.floor"
 TOOL_SRC="$REPO/src/compiler/tools/compile_native.iyi"
@@ -74,6 +78,7 @@ total=0
 fixtures=""
 for g in lower_ lowcall_ lowprim_ lowglob_; do
   for f in "$REPO"/bench/fixtures/${g}*.iyi; do
+    [ "$(basename "$f")" = "lowglob_cvar_lazy_ir.iyi" ] && continue # Structural IR fixture, not a standalone program.
     [ -f "$f" ] && fixtures="$fixtures $f"
   done
 done
@@ -117,10 +122,31 @@ for root in $ROOTS; do
   rel="$root"
   name="$(basename "$root" .iyi)"
   IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/$root" -o "$WORK/$name.root" --pipeline typed --prelude --probe-phase > "$WORK/$name.root.probe" 2> "$WORK/$name.root.err"
+  root_status=$?
   rphase="$(probe_phase "$WORK/$name.root.probe")"
-  [ -e "$WORK/$name.root" ] && rphase="$rphase (output written: unexpected)"
-  echo "  $root: reached ${rphase:-none}"
-  measured[$rel]="${rphase%% *}"
+  refusal="$(pipeline_first_refusal "$WORK/$name.root.probe")"
+  [ -n "$refusal" ] || refusal="$(awk 'NR==1 { print; exit }' "$WORK/$name.root.err")"
+  echo "  $name strict: reached ${rphase:-none}: ${refusal:-no refusal}"
+  if [ "$root_status" -eq 0 ] && [ "$rphase" = "link" ] && [ -e "$WORK/$name.root" ]; then
+    if ! IYI_PATH="$REPO/src" "$IYI" build -o "$WORK/$name.root.hosted" "$REPO/$root" > "$WORK/$name.root.hosted.log" 2>&1; then
+      echo "  $root: FAILED, the hosted compiler does not build the root"
+      failed=$((failed + 1))
+    else
+      timeout 30 "$WORK/$name.root" > "$WORK/$name.root.typed.out" 2>&1; tstat=$?
+      timeout 30 "$WORK/$name.root.hosted" > "$WORK/$name.root.hosted.out" 2>&1; hstat=$?
+      if pipeline_outputs_equal "$tstat" "$hstat" "$WORK/$name.root.typed.out" "$WORK/$name.root.hosted.out"; then
+        rphase="run-equal"
+        echo "  $root: run-equal (status $hstat, stdout identical)"
+      else
+        echo "  $root: FAILED, typed status $tstat, hosted status $hstat, or stdout differs"
+        failed=$((failed + 1))
+      fi
+    fi
+  elif [ "$root_status" -eq 0 ] || [ "$rphase" = "link" ] || [ -e "$WORK/$name.root" ]; then
+    echo "  $root: FAILED, exit $root_status, reached ${rphase:-none}, or unexpected output"
+    failed=$((failed + 1))
+  fi
+  measured[$rel]="${rphase:-none}"
 done
 
 echo
@@ -178,6 +204,19 @@ table_ok=1
 for root in $ROOTS; do
   name="$(basename "$root" .iyi)"
   IYI_PATH="$REPO/src" "$WORK/tool" "$REPO/$root" -o "$WORK/$name.table" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/$name.table.probe" 2> /dev/null
+  for sidecar in names refusals; do [ ! -f "$WORK/$name.table.$sidecar" ] || cp "$WORK/$name.table.$sidecar" "$ARTIFACT_DIR/"; done
+  if [ -f "$WORK/$name.table.refusals" ]; then
+    awk -F '\t' -v name="$name" '
+      ($1 == "body" || $1 == "lowering") {
+        rows++
+        if ($2 == "top level") { root++; owners[$3]++ } else { defs[$2] = 1 }
+      }
+      END {
+        for (d in defs) ndefs++
+        printf "  %s keep-going: %d rows in %d defs, %d root sites\n", name, rows, ndefs, root
+        for (owner in owners) printf "    root owner=%s sites=%d\n", owner, owners[owner]
+      }' "$WORK/$name.table.refusals"
+  fi
   awk '/^table:/' "$WORK/$name.table.probe" | sed "s#$REPO/##g" >> "$WORK/table.lines"
   if [ -z "$(table_value "$name" defs-reached)" ]; then
     echo "  $root: no table summary line (see $WORK/$name.table.probe)"
@@ -257,7 +296,7 @@ echo "== 5. Mutation proofs: the gate must catch each patch"
 pipeline_check() {
   if ! build_tool "$TOOL_SRC" "$WORK/mut_tool"; then return 1; fi
   local a="$REPO/bench/fixtures/lower_exit.iyi"
-  local b="$REPO/bench/fixtures/lower_tuple.iyi"
+  local b="$REPO/bench/fixtures/lower_instance_sizeof.iyi"
   rm -f "$WORK/mut_a" "$WORK/mut_b"
   "$WORK/mut_tool" "$a" -o "$WORK/mut_a" --pipeline typed > /dev/null 2>&1; local sa=$?
   [ "$sa" -eq 0 ] || return 1
@@ -278,6 +317,87 @@ primitive_table_check() {
   awk '/^table: hello defs-lowered-clean=/ { ok = 1 } END { exit !ok }' "$WORK/prim_hello.probe" || return 1
   awk '/^table: hello lowering .*visit\(Primitive/ { bad = 1 } END { exit bad }' "$WORK/prim_hello.probe"
 }
+
+# A yielding def without a captured block is inlined by the hosted compiler, not
+# emitted as a standalone function. Its caller and ordinary defs remain probeable.
+yield_table_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/yield_tool"; then return 1; fi
+  "$WORK/yield_tool" "$REPO/bench/fixtures/pipeline_yield_probe.iyi" -o "$WORK/yield_probe" --pipeline typed --probe-phase --keep-going > "$WORK/yield_probe.log" 2>&1
+  [ -f "$WORK/yield_probe.refusals" ] || return 1
+  awk -F '\t' '
+    $1 == "reached" && $2 ~ /identity$/ { ordinary = 1 }
+    $1 == "reached" && $2 ~ /emit_once$/ { yielding = 1 }
+    END { exit !(ordinary && !yielding) }
+  ' "$WORK/yield_probe.refusals"
+}
+echo "  the yielding-def table check passes on the unmutated code:"
+if yield_table_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "the table probes a noncapturing yielding def" "$PROGRAM_SRC" \
+  'next if noncapturing_yield?(d)' 'next if false' -- yield_table_check || status=1
+
+# The recorded origin is the function being emitted, not necessarily an inlined
+# callee. A nested refusal must identify the emitted inner function, not the probe.
+origin_table_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/origin_tool"; then return 1; fi
+  "$WORK/origin_tool" "$REPO/bench/fixtures/pipeline_refusal_origin.iyi" -o "$WORK/origin_probe" --pipeline typed --probe-phase --keep-going > "$WORK/origin_probe.log" 2>&1
+  [ -f "$WORK/origin_probe.refusals" ] || return 1
+  awk -F '\t' '$1 == "lowering" && $2 ~ /pipeline_outer$/ && $5 ~ /pipeline_inner/ { found = 1 } END { exit !found }' "$WORK/origin_probe.refusals"
+}
+echo "  the refusal-origin check passes on the unmutated code:"
+if origin_table_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "a refusal is attributed to the probe instead of the emitted function" "$PROGRAM_SRC" \
+  'origin = ctx.fun.name' 'origin = lowering_example(d, inst.self_type)' -- origin_table_check || status=1
+
+# Promote the prelude-free exit fixture to a root and compare the two actual
+# executables through the same helper the root loop uses.
+root_comparison_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/root_tool"; then return 1; fi
+  local fixture="$REPO/bench/fixtures/lower_exit.iyi"
+  "$WORK/root_tool" "$fixture" -o "$WORK/root_test" --pipeline typed --probe-phase > "$WORK/root_test.log" 2>&1 || return 1
+  [ "$(probe_phase "$WORK/root_test.log")" = "link" ] || return 1
+  "$IYI" build --prelude empty -o "$WORK/root_hosted" "$fixture" > "$WORK/root_hosted.log" 2>&1 || return 1
+  "$WORK/root_test" > "$WORK/root_test.out" 2>&1; local ts=$?
+  "$WORK/root_hosted" > "$WORK/root_hosted.out" 2>&1; local hs=$?
+  bash -c '. "$1"; pipeline_outputs_equal "$2" "$3" "$4" "$5"' _ "$REPO/bench/lib/pipeline_report.sh" "$ts" "$hs" "$WORK/root_test.out" "$WORK/root_hosted.out" || return 1
+  ! bash -c '. "$1"; pipeline_outputs_equal "$2" 43 "$3" "$4"' _ "$REPO/bench/lib/pipeline_report.sh" "$ts" "$WORK/root_test.out" "$WORK/root_hosted.out"
+}
+echo "  the linked-root comparison passes on the unmutated code:"
+if root_comparison_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "the linked-root comparison rejects equal statuses" "$REPO/bench/lib/pipeline_report.sh" \
+  '[ "$typed_status" = "$hosted_status" ]' '[ "$typed_status" != "$hosted_status" ]' -- root_comparison_check || status=1
+
+# The headline must carry the first real refusal, not a phase pass or a later line.
+headline_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/headline_tool"; then return 1; fi
+  "$WORK/headline_tool" "$REPO/bench/fixtures/lower_instance_sizeof.iyi" -o "$WORK/headline_test" --pipeline typed --probe-phase > "$WORK/headline_test.log" 2>&1
+  local line
+  line="$(bash -c '. "$1"; pipeline_first_refusal "$2"' _ "$REPO/bench/lib/pipeline_report.sh" "$WORK/headline_test.log")"
+  case "$line" in *"lower: fail:"*"InstanceSizeOf"*) return 0 ;; *) return 1 ;; esac
+}
+echo "  the refusal headline check passes on the unmutated code:"
+if headline_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "the headline reports a pass instead of a refusal" "$REPO/bench/lib/pipeline_report.sh" \
+  '/: fail: /' '/: pass: /' -- headline_check || status=1
 
 # The entry: a prelude-free program's top-level code is `__crystal_main` (lower.iyi main_function_name), and the C `main` is
 # emitted once, by the pipeline only when the program has no `fun main` of its own. Checked on IR text from --emit ir, on two
@@ -351,6 +471,24 @@ else
 fi
 prove_mutation "the loader reads the first branch of every {% if %}" "$LOADER_SRC" \
   'if report.failure.nil? && !report.skipped' 'if false' -- loader_if_check || status=1
+
+# The same entry must run the selected branch through declarations, lowering and the linker.
+pipeline_loader_if_check() {
+  if ! build_tool "$TOOL_SRC" "$WORK/loader_pipeline_tool"; then return 1; fi
+  "$WORK/loader_pipeline_tool" "$REPO/bench/fixtures/loader_if_entry.iyi" -o "$WORK/loader_entry" --pipeline typed > "$WORK/loader_entry.build" 2>&1 || return 1
+  "$WORK/loader_entry" > "$WORK/loader_entry.out" 2>&1
+  [ "$?" -eq 2 ] || return 1
+  [ "$(awk '1' "$WORK/loader_entry.out")" = "b" ]
+}
+echo "  the selected loader branch runs through the typed pipeline:"
+if pipeline_loader_if_check; then
+  echo "    unmutated: pass"
+else
+  echo "    unmutated: FAIL"
+  status=1
+fi
+prove_mutation "post-splice runtime code is dropped" "$COMPILER_SRC" \
+  'runtime.each { |node| top_level << node }' 'runtime.each { |node| }' -- pipeline_loader_if_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then

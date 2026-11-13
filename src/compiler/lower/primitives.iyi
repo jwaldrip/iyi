@@ -36,24 +36,25 @@ module compiler/lower/primitives
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
-import compiler/syntax/ast::{ASTNode, Call, Def, MacroLiteral, Primitive}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
-import compiler/ir/inst::{IntPredicate, Attribute, Op, CallConv}
-import compiler/lower/cast::{type_id_value}
+import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering}
+import compiler/lower/cast::{type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/fun::{visit_node}
-import compiler/lower/helpers::{int1}
+import compiler/lower/helpers::{int1, llvm_nil, raise_overflow_name}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
-import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, PointerInstanceType, TypeQueries, VirtualType}
+import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, PointerInstanceType, ProcInstanceType, TupleInstanceType, TypeQueries, VirtualType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/lower/headed::{headed?, headed_candidate?}
 import compiler/lower/layouts::{has_inner_pointers?}
+import compiler/lower/phi::{LowerPhi}
 
 # An integer operand as the hosted codegen reads it: its width in bytes, its signedness and
 # its IR type. A mixed-signedness operation biases one operand to the other signedness at the
@@ -86,6 +87,36 @@ end
 pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
   name = primitive_name_of(target)
   raise "BUG: lower_primitive_call on a def that is not a primitive (hosted call.cr)" if name.nil?
+  if name == "load_atomic"
+    lower_atomic_load(low, node)
+    return
+  end
+  if name == "store_atomic"
+    lower_atomic_store(low, node)
+    return
+  end
+  if name == "atomicrmw"
+    lower_atomic_rmw(low, node)
+    return
+  end
+  if name == "cmpxchg"
+    lower_atomic_cmpxchg(low, node)
+    return
+  end
+  if name == "tuple_indexer_known_index"
+    lower_tuple_indexer(low, node, target)
+    return
+  end
+  if name == "enum_new"
+    # Hosted primitives.cr 68-69 returns call_args[0]; the metaclass is not an operand.
+    raise "BUG: enum_new needs one argument" unless node.args.size == 1
+    wants = low.needs_value
+    low.needs_value = true
+    visit_node(low, node.args[0])
+    low.needs_value = wants
+    raise "BUG: enum_new argument left no value" if low.last.nil?
+    return
+  end
   if name == "pointer_malloc" || name == "pointer_new" || name == "pointer_realloc" || name == "pointer_diff" || name == "pointer_get" || name == "pointer_set" || name == "pointer_add" || name == "pointer_address"
     lower_pointer_primitive(low, node, name.as(String))
     return
@@ -120,6 +151,29 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     values << value.as(Value)
   end
   low.needs_value = wants
+  if name == "proc_call"
+    codegen_primitive_proc_call(low, node, t1, values, arg_types, wants)
+    return
+  end
+  if name == "enum_value"
+    # Hosted primitives.cr 68-69 returns call_args[0], the enum's underlying value.
+    low.last = values[0]
+    return
+  end
+  if name == "object_id"
+    # Hosted codegen_primitive_object_id (primitives.cr 1055-1057).
+    low.last = low.builder.ptr_to_int(values[0], low.module.types.int64)
+    return
+  end
+  if name == "object_crystal_type_id"
+    # The hosted type-id primitive returns the static metaclass id or the value's runtime id.
+    if t1.is_a?(MetaclassType)
+      low.last = type_id_value(low, t1)
+    else
+      low.last = type_id_of_value(low, obj || node, values[0], t1)
+    end
+    return
+  end
   if name == "binary"
     if values.size != 2
       pending_visit_node("binary primitive with #{values.size - 1} arguments (hosted codegen_primitive_binary)")
@@ -136,15 +190,258 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
   pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
 end
 
+# Hosted primitives.cr 1142-1212: a proc contains its function and optional
+# closure context. The context is prepended only on the non-null branch.
+pub def codegen_primitive_proc_call(low : Lowerer, node : Call, receiver_type : Type, values : Array(Value), arg_types : Array(Type), wants : Bool) : Nil
+  unless receiver_type.is_a?(ProcInstanceType)
+    pending_visit_node("proc_call on #{receiver_type.full_name}, not a Proc")
+  end
+  proc_type = receiver_type.as(ProcInstanceType)
+  raise "BUG: proc_call argument count mismatch" unless arg_types.size == proc_type.arg_types.size
+  args = [] of Value
+  params = [] of IrType
+  arg_types.each_with_index do |arg_type, index|
+    expected = proc_type.arg_types[index]
+    arg = upcast(low, values[index + 1], arg_type, expected)
+    args << to_rhs(low, arg, expected)
+    params << low.typer.llvm_type(expected)
+  end
+  fun_ptr = low.builder.extract_value(values[0], 0)
+  ctx = low.builder.extract_value(values[0], 1)
+  null_block = low.new_block("ctx_is_null")
+  context_block = low.new_block("ctx_is_not_null")
+  is_null = low.builder.icmp(IntPredicate::EQ, ctx, low.builder.const_null_pointer)
+  low.builder.cond_br(is_null, null_block, context_block)
+  ret_type = low.typer.llvm_return_type(proc_type.return_type)
+  phi = LowerPhi.new(wants, ret_type)
+  low.builder.position_at_end(null_block)
+  plain_type = low.module.types.func(params, ret_type)
+  plain = low.builder.call_aux(CallAux.new(plain_type, CallConv::Iyi), fun_ptr, args)
+  phi.add(low, plain, false)
+  low.builder.position_at_end(context_block)
+  closure_params = [low.module.types.ptr] of IrType
+  params.each { |param| closure_params << param }
+  closure_args = [ctx.as(Value)] of Value
+  args.each { |arg| closure_args << arg }
+  closure_type = low.module.types.func(closure_params, ret_type)
+  closure = low.builder.call_aux(CallAux.new(closure_type, CallConv::Iyi), fun_ptr, closure_args)
+  phi.add(low, closure, true)
+  phi.close(low)
+end
+
+# Hosted primitives.cr 1272-1317: a literal tuple index names a field; a
+# range constructs another tuple from its selected fields.
+pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
+  body = target.body
+  raise "BUG: tuple indexer has no Primitive body" unless body.is_a?(Primitive)
+  primitive = body.as(Primitive)
+  obj = node.obj
+  raise "BUG: tuple indexer has no receiver" if obj.nil?
+  receiver = obj.as(ASTNode)
+  typ = receiver_type(low, receiver)
+  if typ.is_a?(MetaclassType)
+    result = low.analysed.type_of?(node)
+    raise "BUG: tuple metaclass index has no result type" if result.nil?
+    low.last = type_id_value(low, result.as(Type))
+    return
+  end
+  elements = [] of Type
+  if typ.is_a?(TupleInstanceType)
+    elements = typ.as(TupleInstanceType).tuple_types
+  elsif typ.is_a?(NamedTupleInstanceType)
+    typ.as(NamedTupleInstanceType).entries.each { |entry| elements << entry.type }
+  else
+    raise "BUG: unsupported tuple indexer on #{typ.full_name}"
+  end
+  value = nil.as(Value?)
+  if receiver.is_a?(Var)
+    variable = low.current_context.vars[receiver.as(Var).name]?
+    if variable && !variable.already_loaded
+      value = variable.pointer
+    end
+  end
+  if value.nil?
+    wants = low.needs_value
+    low.needs_value = true
+    visit_node(low, receiver)
+    value = low.last
+    low.needs_value = wants
+  end
+  raise "BUG: tuple indexer receiver left no value" if value.nil?
+  tuple_ir = low.typer.llvm_type(typ)
+  zero = low.builder.const_int(low.module.types.int32, 0_i64)
+  first = primitive.tuple_index
+  if node.args.size == 1 && node.args[0].is_a?(RangeLiteral)
+    result_type = low.analysed.type_of?(node)
+    raise "BUG: tuple range has no result type" if result_type.nil?
+    result_ir = low.typer.llvm_type(result_type.as(Type))
+    result = low.alloca(result_ir, "")
+    index = first
+    while index <= primitive.tuple_last
+      field = low.builder.const_int(low.module.types.int32, index.to_i64)
+      dst_index = low.builder.const_int(low.module.types.int32, (index - first).to_i64)
+      ptr = low.builder.inbounds_gep(tuple_ir, value.as(Value), [zero, field] of Value)
+      destination = low.builder.inbounds_gep(result_ir, result, [zero, dst_index] of Value)
+      store_pointer_value(low, destination, to_lhs(low, ptr, elements[index]), elements[index])
+      index = index + 1
+    end
+    low.last = result
+    return
+  end
+  field = low.builder.const_int(low.module.types.int32, first.to_i64)
+  ptr = low.builder.inbounds_gep(tuple_ir, value.as(Value), [zero, field] of Value)
+  low.last = to_lhs(low, ptr, elements[first])
+end
+
+# Hosted codegen_primitive_load_atomic: the class receiver is not an operand.
+pub def lower_atomic_load(low : Lowerer, node : Call) : Nil
+  raise "BUG: load_atomic needs three arguments" unless node.args.size == 3
+  ordering = atomic_ordering(node.args[1])
+  flag = node.args[2]
+  raise "BUG: atomic volatile must be a Bool literal" unless flag.is_a?(BoolLiteral)
+  pointer_type = low.analysed.type_of?(node.args[0])
+  raise "BUG: atomic pointer has no analysed type" if pointer_type.nil?
+  elem = pointer_element_of(pointer_type.as(Type))
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, node.args[0])
+  ptr = low.last
+  raise "BUG: atomic pointer has no value" if ptr.nil?
+  low.needs_value = wants
+  is_bool = primitive_kind(elem) == "bool"
+  ir = is_bool ? low.module.types.int8 : low.typer.llvm_type(elem)
+  value = low.builder.atomic_load(ir, ptr.as(Value), ordering, flag.as(BoolLiteral).value)
+  value.alignment = is_bool ? 1 : low.typer.align_of(ir)
+  low.last = is_bool ? low.builder.trunc(value, low.module.types.int1) : value
+end
+
+# Hosted codegen_primitive_store_atomic: store the word with the given ordering.
+pub def lower_atomic_store(low : Lowerer, node : Call) : Nil
+  raise "BUG: store_atomic needs four arguments" unless node.args.size == 4
+  ordering = atomic_ordering(node.args[2])
+  flag = node.args[3]
+  raise "BUG: atomic volatile must be a Bool literal" unless flag.is_a?(BoolLiteral)
+  pointer_type = low.analysed.type_of?(node.args[0])
+  raise "BUG: atomic pointer has no analysed type" if pointer_type.nil?
+  elem = pointer_element_of(pointer_type.as(Type))
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, node.args[0])
+  ptr = low.last
+  raise "BUG: atomic pointer has no value" if ptr.nil?
+  visit_node(low, node.args[1])
+  raw = low.last
+  raise "BUG: atomic store has no value" if raw.nil?
+  low.needs_value = wants
+  is_bool = primitive_kind(elem) == "bool"
+  value = is_bool ? low.builder.zext(raw.as(Value), low.module.types.int8) : raw.as(Value)
+  inst = low.builder.atomic_store(value, ptr.as(Value), ordering, flag.as(BoolLiteral).value)
+  inst.alignment = is_bool ? 1 : low.typer.align_of(value.type)
+  low.last = llvm_nil(low)
+end
+
+# Hosted codegen_primitive_atomicrmw: the operation and ordering are literal symbols.
+pub def lower_atomic_rmw(low : Lowerer, node : Call) : Nil
+  raise "BUG: atomicrmw needs five arguments" unless node.args.size == 5
+  op_node = node.args[0]
+  raise "BUG: atomicrmw operation must be a symbol literal" unless op_node.is_a?(SymbolLiteral)
+  op = op_node.as(SymbolLiteral).value
+  case op
+  when "xchg", "add", "sub", "and", "nand", "or", "xor", "max", "min", "umax", "umin", "fadd", "fsub"
+    nil
+  else
+    raise "BUG: unknown atomicrmw operation #{op}"
+  end
+  ordering = atomic_ordering(node.args[3])
+  flag = node.args[4]
+  raise "BUG: atomic singlethread must be a Bool literal" unless flag.is_a?(BoolLiteral)
+  pointer_type = low.analysed.type_of?(node.args[1])
+  raise "BUG: atomic pointer has no analysed type" if pointer_type.nil?
+  elem = pointer_element_of(pointer_type.as(Type))
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, node.args[1])
+  ptr = low.last
+  raise "BUG: atomic pointer has no value" if ptr.nil?
+  visit_node(low, node.args[2])
+  raw = low.last
+  raise "BUG: atomicrmw has no value" if raw.nil?
+  low.needs_value = wants
+  is_bool = primitive_kind(elem) == "bool"
+  value = is_bool ? low.builder.zext(raw.as(Value), low.module.types.int8) : raw.as(Value)
+  inst = low.builder.atomicrmw(op, ptr.as(Value), value, ordering, flag.as(BoolLiteral).value)
+  inst.alignment = is_bool ? 1 : low.typer.align_of(value.type)
+  low.last = is_bool ? low.builder.trunc(inst, low.module.types.int1) : inst
+end
+
+# Hosted codegen_primitive_cmpxchg: spill the old value and success bit to the tuple.
+pub def lower_atomic_cmpxchg(low : Lowerer, node : Call) : Nil
+  raise "BUG: cmpxchg needs five arguments" unless node.args.size == 5
+  success = atomic_ordering(node.args[3])
+  failure = atomic_ordering(node.args[4])
+  if success == Ordering::NotAtomic || success == Ordering::Unordered || failure == Ordering::NotAtomic || failure == Ordering::Unordered || failure == Ordering::Release || failure == Ordering::AcqRel
+    raise "BUG: invalid cmpxchg ordering"
+  end
+  pointer_type = low.analysed.type_of?(node.args[0])
+  raise "BUG: atomic pointer has no analysed type" if pointer_type.nil?
+  elem = pointer_element_of(pointer_type.as(Type))
+  tuple = low.analysed.type_of?(node)
+  raise "BUG: cmpxchg has no analysed result type" if tuple.nil?
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, node.args[0])
+  ptr = low.last
+  raise "BUG: cmpxchg pointer has no value" if ptr.nil?
+  visit_node(low, node.args[1])
+  expected = low.last
+  raise "BUG: cmpxchg expected value is missing" if expected.nil?
+  visit_node(low, node.args[2])
+  desired = low.last
+  raise "BUG: cmpxchg desired value is missing" if desired.nil?
+  low.needs_value = wants
+  is_bool = primitive_kind(elem) == "bool"
+  compare = expected.as(Value)
+  replacement = desired.as(Value)
+  if is_bool
+    compare = low.builder.zext(compare, low.module.types.int8)
+    replacement = low.builder.zext(replacement, low.module.types.int8)
+  end
+  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, failure)
+  result.alignment = is_bool ? 1 : low.typer.align_of(compare.type)
+  tuple_ir = low.typer.llvm_type(tuple.as(Type))
+  slot = low.alloca(tuple_ir, "")
+  zero = low.builder.const_int(low.module.types.int32, 0_i64)
+  one = low.builder.const_int(low.module.types.int32, 1_i64)
+  first = low.builder.extract_value(result, 0)
+  first_value = is_bool ? low.builder.trunc(first, low.module.types.int1) : first
+  first_ptr = low.builder.inbounds_gep(tuple_ir, slot, [zero, zero] of Value)
+  store_aligned(low, first_value, first_ptr)
+  second = low.builder.extract_value(result, 1)
+  second_ptr = low.builder.inbounds_gep(tuple_ir, slot, [zero, one] of Value)
+  store_aligned(low, second, second_ptr)
+  low.last = slot
+end
+
+pub def atomic_ordering(node : ASTNode) : Ordering
+  raise "BUG: atomic ordering must be a symbol literal" unless node.is_a?(SymbolLiteral)
+  case node.as(SymbolLiteral).value
+  when "unordered"               then Ordering::Unordered
+  when "monotonic"               then Ordering::Monotonic
+  when "acquire"                 then Ordering::Acquire
+  when "release"                 then Ordering::Release
+  when "acquire_release"         then Ordering::AcqRel
+  when "sequentially_consistent" then Ordering::SeqCst
+  else
+    raise "BUG: unknown atomic ordering"
+  end
+end
+
 # The hosted `codegen_primitive` for the `pointer_*` primitives (primitives.cr 905-965). The receiver
 # of an instance primitive (`add`, `address`, `value`, `value=`) is a value, lowered first as the hosted
 # prepare_call_args does. `pointer_new` is a class method: its call's receiver (the metaclass) is not
 # lowered, and its argument is the address. `pointer_malloc` is a class method too: its argument is the count. Ported: `pointer_address` (ptr2int to Int64), `pointer_add` (a
-# gep of the element type, the hosted non-inbounds gep), `pointer_new` (int2ptr to the node's pointer type),
-# and `pointer_get` of any element (hosted to_lhs: a by-value aggregate is the pointer, anything else is loaded) and `pointer_set` of an integer, Char, Float or Bool element (a store aligned to
-# the element). `pointer_malloc` is ported for a program without its own malloc (pointer_malloc_value). Refused by name: `pointer_realloc` and `pointer_diff` (the realloc and
-# diff helpers of codegen.cr), `pointer_malloc` of a program with its own malloc (refuse_program_malloc), and `pointer_set` of a pointer or a struct
-# element (the hosted assign of those, copy_value).
+# gep of the element type, `pointer_new`, `pointer_get`, and `pointer_set`.
+# `pointer_realloc`, `pointer_diff`, and a program's own malloc remain refused.
 pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   if name == "pointer_realloc" || name == "pointer_diff"
     pending_visit_node("primitive #{name} (hosted codegen_primitive_#{name}, primitives.cr 905-965: its helper is not ported)")
@@ -218,18 +515,42 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
       return
     end
     # Hosted to_rhs for a type that is not passed by value is the value itself
-    # (a class, a nilable reference, a pointer). A by-value struct is copied
-    # (codegen.cr store_value / copy_value), not ported here.
+    # (a class, a nilable reference, a pointer).
     if !passed_by_value?(elem)
       ref_stored = values[1]
       store_aligned(low, ref_stored, values[0])
       low.last = ref_stored
       return
     end
-    pending_visit_node("pointer_set of #{elem.full_name} (hosted assign, primitives.cr 927)")
+    store_pointer_value(low, values[0], values[1], elem)
+    low.last = values[1]
     return
   end
   pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
+end
+
+# Hosted store_value / copy_value (codegen.cr 3323-3349). An indirect aggregate
+# is copied without assuming the source and destination do not overlap.
+pub def store_pointer_value(low : Lowerer, dest : Value, value : Value, type : Type) : Nil
+  ir = low.typer.llvm_type(type)
+  if low.typer.passed_indirectly?(type)
+    copy_pointer_value(low, dest, value, ir, false)
+  else
+    stored = value
+    if value.type == low.module.types.ptr(0)
+      stored = load_aligned(low, low.typer.llvm_embedded_type(type), value)
+    end
+    store_aligned(low, stored, dest)
+  end
+end
+
+pub def copy_pointer_value(low : Lowerer, dest : Value, src : Value, ir : IrType, fresh : Bool) : Nil
+  size = low.builder.const_int(low.typer.size_t, low.typer.size_of(ir))
+  align = Attribute.new("align", low.typer.align_of(ir).to_u64, nil, nil)
+  attrs = [[align] of Attribute, [align] of Attribute, [] of Attribute, [] of Attribute] of Array(Attribute)
+  id = fresh ? IntrinsicId::Memcpy : IntrinsicId::Memmove
+  ptr = low.module.types.ptr(0)
+  low.builder.intrinsic_with(id, [ptr, ptr, low.typer.size_t] of IrType, [dest, src, size, int1(low, 0_i64)] of Value, attrs)
 end
 
 # The element type of a pointer's analysed type (`Pointer(T)` gives `T`).
@@ -470,6 +791,20 @@ end
 pub def extend_int(low : Lowerer, from : IntShape, to : IntShape, value : Value) : Value
   if from.bytes == to.bytes
     return value
+  end
+  # LLVM folds extensions of constants before emitting IR.
+  if value.is_a?(Inst) && value.as(Inst).op == Op::ConstInt && from.bytes < 8
+    bits = from.bytes * 8
+    mask = unsigned_max_value(from.bytes)
+    n = value.as(Inst).aux_int & mask
+    if from.signed && (n & 1_i64.unsafe_shl((bits - 1).to_i64)) != 0_i64
+      n = n | (mask ^ -1_i64)
+    end
+    return low.builder.const_int(to.ir, n)
+  end
+  if value.is_a?(Inst) && value.as(Inst).op == Op::ConstInt && from.bytes == 8 && to.bytes == 16
+    n = value.as(Inst).aux_int
+    return low.builder.const_wide(to.ir, from.signed && n < 0_i64 ? -1_i64 : 0_i64, n)
   end
   if from.signed
     return low.builder.sext(value, to.ir)
@@ -722,14 +1057,22 @@ pub def raise_overflow_cond(low : Lowerer, overflow : Value) : Nil
   low.builder.position_at_end(op_normal)
 end
 
-# The hosted `codegen_raise_overflow`: a call to `__crystal_raise_overflow`, then unreachable.
-# The function is the program's own (a `fun` with a body, in the prelude or the program); it
-# must already be in the module, as the hosted `crystal_raise_overflow_fun` requires.
+# The hosted `codegen_raise_overflow`: look up the ABI's overflow function in the main module.
+# A def probe has its own module, so declare the program's function there when it exists.
 pub def raise_overflow(low : Lowerer) : Nil
-  fn = low.module.get_function?("__crystal_raise_overflow")
+  name = raise_overflow_name(low)
+  fn = low.module.get_function?(name)
   if fn.nil?
-    pending_visit_node("a checked operation with no __crystal_raise_overflow in the module (hosted crystal_raise_overflow_fun)")
-    return
+    found = false
+    low.analysed.program.global_funs.each do |record|
+      found = true if record.real_name == name
+    end
+    unless found
+      pending_visit_node("a checked operation with no #{name} in the program (hosted crystal_raise_overflow_fun)")
+      return
+    end
+    fn_type = low.module.types.func([] of IrType, low.module.types.void)
+    fn = low.module.add_function(name, fn_type, CallConv::C)
   end
   raise_fn = fn.as(Function)
   low.builder.call(raise_fn.fn_type, raise_fn, [] of Value, "")
@@ -832,24 +1175,21 @@ pub def codegen_primitive_convert(low : Lowerer, from : Type, to : Type, value :
   value
 end
 
-# The hosted integer-to-integer `codegen_convert`. The same width is the value (a checked
-# change of signedness at that width needs a range check, refused); a wider target extends,
-# with the source's signedness (hosted `extend_int`), and a checked widening from a signed
-# source to an unsigned target needs a range check, refused; a narrower target truncates,
-# and a checked truncation needs a range check, refused.
+# The hosted integer-to-integer `codegen_convert` checks the target's range before
+# an equal-width signedness change, a signed-to-unsigned widening, or truncation.
 pub def codegen_convert_int(low : Lowerer, from : Type, to : Type, value : Value, checked : Bool) : Value
   from_bytes = primitive_bytes(from)
   to_bytes = primitive_bytes(to)
   to_ir = low.typer.llvm_type(to)
   if from_bytes == to_bytes
     if checked && from.full_name != to.full_name
-      pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} at one width (hosted codegen_convert, range check)")
+      raise_overflow_cond(low, codegen_int_out_of_range(low, from, to, value))
     end
     return value
   end
   if from_bytes < to_bytes
     if checked && is_signed?(from) && !is_signed?(to)
-      pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} (hosted codegen_convert, range check)")
+      raise_overflow_cond(low, codegen_int_out_of_range(low, from, to, value))
     end
     if is_signed?(from)
       return low.builder.sext(value, to_ir)
@@ -857,9 +1197,37 @@ pub def codegen_convert_int(low : Lowerer, from : Type, to : Type, value : Value
     return low.builder.zext(value, to_ir)
   end
   if checked
-    pending_visit_node("checked conversion #{from.full_name} to #{to.full_name} (hosted codegen_convert, range check)")
+    raise_overflow_cond(low, codegen_int_out_of_range(low, from, to, value))
   end
   low.builder.trunc(value, to_ir)
+end
+
+# Hosted codegen_out_of_range (primitives.cr 320-326): compare against both
+# bounds using the same mixed-sign comparison as ordinary integer operators.
+pub def codegen_int_out_of_range(low : Lowerer, from : Type, to : Type, value : Value) : Value
+  source = int_shape(low, from)
+  target = int_shape(low, to)
+  minimum = integer_bound(low, target, false)
+  maximum = integer_bound(low, target, true)
+  below = codegen_binary_op_lt(low, source, target, value, minimum)
+  above = codegen_binary_op_gt(low, source, target, value, maximum)
+  low.builder.build_or(below, above)
+end
+
+pub def integer_bound(low : Lowerer, shape : IntShape, maximum : Bool) : Value
+  if shape.bytes == 16
+    if shape.signed
+      hi = maximum ? 9223372036854775807_i64 : (-9223372036854775807_i64 - 1_i64)
+      lo = maximum ? -1_i64 : 0_i64
+      return low.builder.const_wide(shape.ir, hi, lo)
+    end
+    return low.builder.const_wide(shape.ir, maximum ? -1_i64 : 0_i64, maximum ? -1_i64 : 0_i64)
+  end
+  if shape.signed
+    minimum = sign_bit_value(shape.bytes)
+    return int_const(low, maximum ? (minimum ^ -1_i64) : minimum, shape)
+  end
+  int_const(low, maximum ? -1_i64 : 0_i64, shape)
 end
 
 # The primitive name of a def: from its body when the semantic pass gives it a primitive body

@@ -3,6 +3,7 @@ module compiler/macros/interpreter
 import compiler/syntax/ast::{ASTNode, And, Arg, ArrayLiteral, Assign, Block, BoolLiteral, Call, CharLiteral, ClassDef, ClassVar, Def, DoubleSplat, Expressions, Generic, Global, HashLiteral, If, ImplicitObj, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, Nop, Not, NumberLiteral, OpAssign, Or, Path, RangeLiteral, Return, Self, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TupleLiteral, Underscore, Unless, Until, Var, While, Yield, StringBuilder}
 import compiler/syntax/token::{NumberKind}
 import compiler/macros/ast::{MacroId, TypeNode}
+import compiler/macros/type_facts::{MacroTypeFacts}
 import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/macros/methods::{MacroMethods}
 import compiler/macros/answers::{MacroAnswers}
@@ -50,6 +51,7 @@ pub class MacroInterpreter
   property failure : MacroFailure?
   property skipped : Bool
   property free_bindings : Hash(String, MacroFreeBinding)
+  property type_facts : MacroTypeFacts? = nil
 
   # `flags` is the flag set `flag?` answers from. Left out, it is the host's,
   # as the hosted interpreter's default is. `scope_name` is what `@type` and
@@ -459,6 +461,11 @@ pub class MacroInterpreter
           return resolve_free_binding(bound)
         end
       end
+      if facts = @type_facts
+        if annotation_name = facts.annotation_types[path.names.join("::")]?
+          return TypeNode.new(annotation_name)
+        end
+      end
       if path.names.size == 1 && MacroAnswers.builtin_type?(path.names[0])
         return TypeNode.new(path.names[0])
       end
@@ -491,7 +498,9 @@ pub class MacroInterpreter
         if @scope_name == "<Program>"
           return MacroId.new("<Program>")
         end
-        return TypeNode.new(@scope_name)
+        type_node = TypeNode.new(@scope_name)
+        type_node.facts = @type_facts
+        return type_node
       end
       if iv.name == "@top_level"
         return MacroId.new("<Program>")

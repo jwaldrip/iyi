@@ -40,13 +40,14 @@ module compiler/lower/call
 # The AST node is named `Compiler::Syntax::Ast::Call` because this module is itself
 # `compiler/lower/call`, and inside it the name `Call` means this module.
 
-import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, Var}
+import compiler/syntax/ast::{ASTNode, Block, BoolLiteral, CharLiteral, Def, Generic, InstanceVar, Nop, NilLiteral, NumberLiteral, Out, Path, RespondsTo, Var}
 import compiler/ir/function::{Function}
 import compiler/ir/inst::{CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/block::{LocalCollector, NoReturnPhi, alloca_local, copy_vars}
 import compiler/lower/context::{Lowerer, LowerContext, LowerVar}
+import compiler/lower/cast::{type_id_value}
 import compiler/lower/fun::{block_ended?, target_def_fun, visit_node}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
@@ -57,7 +58,7 @@ import compiler/semantic/top_level::{ClassType, LibType, LibFun, MetaclassType, 
 import compiler/lower/instance_var::{self_argument, self_as_value, self_by_pointer?, read_instance_var}
 import compiler/lower/primitives::{primitive_name_of, lower_primitive_call, primitive_allocate}
 import compiler/lower/abi/aarch64::{check_lib_aggregate}
-import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType}
+import compiler/types/types::{MixedUnionType, NilableType, NilableReferenceUnionType, NilableProcType, ProcInstanceType, VirtualType, GenericClassInstanceType, GenericClassInstanceMetaclassType}
 import compiler/semantic/lib_call::{LibCallTarget}
 
 # A body that is a literal or nothing (`Nop`, an empty def), which the hosted call inlines (`try_inline_call`:
@@ -128,7 +129,10 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
   class_owner : Type? = nil
   unless node.obj.nil?
     recv_type = receiver_owner(low, node)
-    if recv_type.is_a?(MetaclassType)
+    if recv_type.is_a?(GenericClassInstanceMetaclassType)
+      self_type = recv_type
+      self_value = type_id_value(low, recv_type)
+    elsif recv_type.is_a?(MetaclassType)
       class_owner = recv_type.as(MetaclassType).instance_type
     else
       self_type = recv_type
@@ -152,7 +156,7 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     if low.current_context.vars["self"]?.nil?
       # A non-generic class method has no self argument. An unqualified call to
       # another method on its own metaclass uses the same class owner.
-      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""
+      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)
         if ct.as(ModuleType).metaclass.defs[node.name]?
           class_owner = ct
         elsif !low.analysed.program.defs[node.name]?
@@ -327,11 +331,14 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
   raise "BUG: the analysed program has no type for the receiver of #{node.name} (hosted call.cr: prepare_call_args)" if t.nil?
   owner = t.as(Type)
   if owner.is_a?(MetaclassType)
+    if owner.is_a?(GenericClassInstanceMetaclassType) && obj.as(ASTNode).is_a?(Generic)
+      return owner
+    end
     # A class method of a non-generic class or module, called on the constant path that names it (`Sched.go`).
     # The hosted code does not evaluate the path, and the method is the metaclass's own def (an inherited one is
     # refused: the hosted target owner is the superclass).
     inst = owner.as(MetaclassType).instance_type
-    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""
+    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)
       pending_visit_node("a class method call on #{owner.full_name} (hosted call.cr: prepare_call_args, a generic or builtin metaclass)")
     end
     unless obj.as(ASTNode).is_a?(Path)

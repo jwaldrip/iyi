@@ -55,6 +55,7 @@ for phrase in \
   "testing macro fresh variable generation... ok" \
   "testing macro code and definition generation... ok" \
   "testing @type as the enclosing class's TypeNode... ok" \
+  "testing that an expansion's nodes are in the calling file... ok" \
   "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!"; do
   if ! grep -qF "$phrase" "$WORK/plain.out"; then
     echo "  MISSING REPORTED CHECK: '$phrase'"
@@ -383,6 +384,27 @@ src.each_line do |line|
     path_lookup = typ.as(Iyi::Type)
   end
 end
+# Facts name a real enum in the hosted interpreter, not a fabricated answer.
+if src.each_line.any? { |line| line.starts_with?("# fact: ") }
+  fact_scope = Iyi::EnumType.new(program, program, "MacroFactScope", program.int32)
+  src.each_line do |line|
+    next unless line.starts_with?("# fact: ")
+    parts = line[8..].split(' ')
+    fact_scope.add_constant(parts[0], parts[1].to_i64)
+  end
+  path_lookup = fact_scope
+end
+if src.each_line.any? { |line| line.starts_with?("# ivar: ") }
+  fact_scope = Iyi::NonGenericClassType.new(program, program, "MacroFactScope", nil)
+  src.each_line do |line|
+    next unless line.starts_with?("# ivar: ")
+    parts = line[8..].split(' ')
+    fact_scope.declare_instance_var("@#{parts[0]}", free_type(program, parts[1]))
+  end
+  program.top_level_semantic_complete = true
+  path_lookup = fact_scope
+end
+
 
 # The same interpreter `Program#expand_macro` builds, driven one top-level
 # site at a time so each site's text can be read back. Free vars are the
@@ -630,8 +652,8 @@ prove_mutation "raise message altered" "$INTERP" \
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "@type names the wrong class" "$INTERP" \
-  "return TypeNode.new(@scope_name)" \
-  "return TypeNode.new(\"Wrong\")" \
+  "type_node = TypeNode.new(@scope_name)" \
+  "type_node = TypeNode.new(\"Wrong\")" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -704,6 +726,19 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 
 
+# The enum scope fixture checks both declaration order and member values.
+prove_mutation "type constants lose their declared names" "$METHODS" \
+  "facts.constants.each_key { |name| names << MacroId.new(name) }" \
+  "facts.constants.each_key { |name| names << MacroId.new(\"wrong\") }" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "instance variables lose their names" "$METHODS" \
+  "MetaMacroVar.new(variable.name, variable.type_name)" \
+  "MetaMacroVar.new(\"wrong\", variable.type_name)" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+
 prove_mutation "sites expanded in the program scope, not their class" "$REPO/bench/selfhost_macros_exercise.iyi" \
   "scope = ref.type_name.empty? ? \"<Program>\" : ref.type_name" \
   "scope = \"<Program>\"" \
@@ -744,6 +779,20 @@ prove_mutation "symbols print bare whatever their text" "$METHODS" \
   "plain = false" \
   "plain = plain" \
   -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+# The plain exercise rebuilt on the patched engine: zero only when every unit check still passes.
+check_plain_exercise_passes() {
+  "$IYI" build -o "$WORK/mut-plain" "$REPO/bench/selfhost_macros_exercise.iyi" >/dev/null 2>&1 || return 1
+  "$WORK/mut-plain" > "$WORK/mut-plain.out" 2>&1 || return 1
+  grep -qF "ALL SELFHOST MACRO CHECKS PASSED SUCCESSFULLY!" "$WORK/mut-plain.out"
+}
+
+prove_mutation "a macro call's expansion is parsed with no file name" "$ENGINE" \
+  "parser = Parser.new(expanded_source, file)" \
+  "parser = Parser.new(expanded_source)" \
+  -- check_plain_exercise_passes || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
 

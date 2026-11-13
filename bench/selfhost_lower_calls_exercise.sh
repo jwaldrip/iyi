@@ -236,6 +236,17 @@ prove_mutation "a nil argument is passed as the visit left it, not as the nil va
   'values << (at.is_a?(NilType) ? low.builder.const_zero(low.typer.nil_type).as(Value) : value.as(Value))' 'values << value.as(Value)' -- lower_calls_check || status=1
 prove_mutation "an unqualified class-method call loses its class owner" "$REPO/src/compiler/lower/call.iyi" \
   '          class_owner = ct' '          class_owner = nil' -- lower_calls_check || status=1
+prove_mutation "a generic metaclass call passes no self type id" "$REPO/src/compiler/lower/call.iyi" \
+  '      self_value = type_id_value(low, recv_type)' '      self_value = nil' -- lower_calls_check || status=1
+prove_mutation "an implicit generic metaclass call loses its self" "$REPO/src/compiler/lower/call.iyi" \
+  '  if defines_method?(ct, node.name)
+    return ct' '  if defines_method?(ct, node.name)
+    return nil if ct.is_a?(GenericClassInstanceMetaclassType)
+    return ct' -- lower_calls_check || status=1
+prove_mutation "a builtin metaclass receiver is refused" "$REPO/src/compiler/lower/call.iyi" \
+  '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType)' '    unless (inst.is_a?(NonGenericClassType) || inst.is_a?(NonGenericModuleType)) && !inst.is_a?(NilType) && primitive_kind(inst) == ""' -- lower_calls_check || status=1
+prove_mutation "an implicit builtin class call is refused" "$REPO/src/compiler/lower/call.iyi" \
+  '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType)' '      if (ct.is_a?(NonGenericClassType) || ct.is_a?(NonGenericModuleType)) && !ct.is_a?(NilType) && primitive_kind(ct) == ""' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
