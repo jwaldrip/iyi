@@ -29,8 +29,10 @@ whole program still stops at its first refusal; the lowering column lowers each 
 
 Lowering per def ("defs lowered with no refusal") runs `lower_def_probe` (lower/lower.iyi) on each reached instance,
 alone, into one module. Its refusals are ranked as the body rows are, with the lowering's owner. A def is lowered clean
-when each of its instances lowers with no refusal. A lowering refusal names its def, not a node, since the
-lowering carries no location yet.
+when each of its instances lowers with no refusal. `defs-lowered-clean` counts those defs, one per def, not one per
+instance and not the number of lines that used to be written to `.names`. A lowering refusal names its def, not a node, since the
+lowering carries no location yet. `.names` lists each clean function name once (`names.uniq` at the write). It used to
+repeat a name once per clean instance; the coverage comparison is on the set of names either way.
 
 ## Gate
 
@@ -43,8 +45,8 @@ All three may only rise, and the gate fails when one falls below its floor. The 
 
 The number that says how far stage 1 is: which functions the hosted compiler emits for a root, and how many of them the
 port lowers clean under the same name. The hosted list is the `define` names of `./bin/iyi build --no-debug --emit llvm-ir
--o <dir>/hosted <root>`. The port's list is `<output>.names`, written by the tool under `--keep-going` (one name per clean
-instance). `bench/pipeline_coverage.py <hosted.ll> <output>.names <root>` prints the line and the first missing names.
+-o <dir>/hosted <root>`. The port's list is `<output>.names`, written by the tool under `--keep-going` (one line per
+distinct clean function name). `bench/pipeline_coverage.py <hosted.ll> <output>.names <root>` prints the line and the first missing names.
 
 As measured on 2026-11-13 on `selfhost/s3-pipeline-wip` at 225a3f07d (the declarations trunk `d7ff41054` merged onto 61ffc5278; Class is a ClassType metaclass, builtin type ids in hosted order). The hosted IR is built by this checkout's `bin/iyi` from the same source. The port's names are as the call lowering names them: a class method by its class, `*Point::new`, as `call.iyi` passes `class_owner`. An instance-variable getter is not listed, since a call reads it in place (call.iyi 207).
 
