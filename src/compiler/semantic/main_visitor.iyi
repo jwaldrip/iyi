@@ -3064,7 +3064,7 @@ pub class MainVisitor < TypeNodeHost
   # `->(x : T) { body }` is typed `Proc(T, R)`, as the hosted pass types a ProcLiteral (main_visitor.cr
   # 1373-1433 and ProcLiteral#update, bindings.cr 604-619). Its parameters are locals of its body; R is the
   # declared return type, or else the body's type. Not ported: the closure analysis, the Proc argument
-  # check, force_nil, and the body's scope (the body is typed in the program's scope, not the literal's).
+  # check, and force_nil.
   def visit(node : ProcLiteral) : Bool
     return false if type_of?(node)
     def_node = node.def
@@ -3086,7 +3086,10 @@ pub class MainVisitor < TypeNodeHost
     end
     declared = proc_literal_return(def_node)
     body = def_node.body
-    inner = sub_visitor(fun_vars)
+    inner = sub_visitor(fun_vars).as(MainVisitor)
+    # Unlike a fun body, the literal's body inherits its enclosing scope
+    # (hosted main_visitor.cr 1416-1423).
+    inner.scope = @scope
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(node)
