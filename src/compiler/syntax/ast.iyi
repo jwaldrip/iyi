@@ -406,16 +406,33 @@ end
 pub class Primitive < ASTNode
   getter name : String
   property extra : ASTNode?
+  # `tuple_indexer_known_index` only (hosted TupleIndexer < Primitive, semantic/ast.cr 61-74, the "fictitious
+  # node to represent a tuple indexer"): the member a literal index names, and the last member when the
+  # literal is a range (the same member otherwise). The port keeps them here rather than in a subclass:
+  # the visitor and the transformer dispatch by node class.
+  property tuple_index : Int32 = 0
+  property tuple_last : Int32 = 0
 
   def initialize(@name : String)
   end
 
+  # The body of the def a tuple's literal index resolves to (hosted types.cr 2855-2860).
+  def self.tuple_indexer(first : Int32, last : Int32) : Primitive
+    node = Primitive.new("tuple_indexer_known_index")
+    node.tuple_index = first
+    node.tuple_last = last
+    node
+  end
+
   def clone_without_location : self
-    Primitive.new(@name)
+    node = Primitive.new(@name)
+    node.tuple_index = @tuple_index
+    node.tuple_last = @tuple_last
+    node
   end
 
   def ==(other : self) : Bool
-    (@name == other.name)
+    (@name == other.name) && (@tuple_index == other.tuple_index) && (@tuple_last == other.tuple_last)
   end
 
   def ==(other : ASTNode) : Bool
@@ -429,6 +446,8 @@ pub class Primitive < ASTNode
   def hash : Int32
     h = 17
     h = 31 &* h &+ hash_val(@name)
+    h = 31 &* h &+ @tuple_index
+    h = 31 &* h &+ @tuple_last
     h
   end
 
