@@ -94,7 +94,7 @@ passed=0
 # wait by name; the gate fails if one starts to match.
 # The pointer-union fixture's allocator also differs in its metaclass type-id load;
 # its hosted symbol and the naming mutation are checked independently below.
-KNOWN_DIVERGED="lower_string_nonascii lower_pointer_malloc lower_name_pointer_union"
+KNOWN_DIVERGED="lower_string_nonascii lower_name_pointer_union"
 e2e=""
 module_same=0
 module_differ=0

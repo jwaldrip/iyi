@@ -254,6 +254,9 @@ prove_mutation "an aggregate class variable is loaded instead of read by address
 prove_mutation "a by-value constant is loaded instead of read by address" "$REPO/src/compiler/lower/const.iyi" \
   "      low.last = to_lhs(low, g.as(Global), low.analysed.type_of?(c.value).as(Type))" \
   "      low.last = load_aligned(low, ir, g.as(Global))" -- lowglob_check || status=1
+prove_mutation "a module class variable is refused as non-class" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if o.full_name.includes?(\"(\")" \
+  "  if !o.is_a?(ClassType) || o.full_name.includes?(\"(\")" -- lowglob_check || status=1
 prove_mutation "a type path returns zero instead of its type id" "$REPO/src/compiler/lower/const.iyi" \
   "    low.last = type_id_value(low, typ.as(Type))" \
   "    low.last = low.builder.const_int(low.module.types.int32, 0_i64)" -- lowglob_check || status=1
@@ -327,8 +330,8 @@ prove_mutation "a float class-variable literal is not stored" "$REPO/src/compile
   "    return low.builder.const_float(low.typer.llvm_type(typ), text.to_f)" \
   "    return nil" -- lowglob_check || status=1
 prove_mutation "a class variable initializer stores null instead of its value" "$REPO/src/compiler/lower/class_var.iyi" \
-  "    store_aligned(low, val, global)" \
-  "    store_aligned(low, low.builder.const_null(ir), global)" -- lowglob_check || status=1
+  "      global.initializer = low.builder.const_null(ir)"$'\n'"      store_aligned(low, val, global)" \
+  "      global.initializer = low.builder.const_null(ir)"$'\n'"      store_aligned(low, low.builder.const_null(ir), global)" -- lowglob_check || status=1
 prove_mutation "the initialiser function is not passed to once" "$REPO/src/compiler/lower/const.iyi" \
   '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), fn.as(Value)] of Value, "")' \
   '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), flag.as(Value)] of Value, "")' -- lowglob_check || status=1
