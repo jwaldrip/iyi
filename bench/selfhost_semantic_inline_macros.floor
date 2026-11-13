@@ -141,6 +141,7 @@ src/compiler/semantic/call.iyi 14
 src/compiler/semantic/call_error.iyi 15
 src/compiler/semantic/call_nodes.iyi 4
 src/compiler/semantic/cleanup.iyi 7
+src/compiler/semantic/closures.iyi 46
 src/compiler/semantic/default_arguments.iyi 14
 src/compiler/semantic/inline_macros.iyi 26
 src/compiler/semantic/instance_vars.iyi 35
@@ -159,9 +160,9 @@ src/compiler/semantic/type_node_host.iyi 13
 src/compiler/semantic/type_nodes.iyi 26
 src/compiler/semantic/typed.iyi 197
 src/compiler/stage1.iyi 4
-src/compiler/syntax/ast.iyi 913
+src/compiler/syntax/ast.iyi 917
 src/compiler/syntax/lexer.iyi 103
-src/compiler/syntax/parser.iyi 254
+src/compiler/syntax/parser.iyi 256
 src/compiler/syntax/token.iyi 230
 src/compiler/syntax/transformer.iyi 111
 src/compiler/syntax/visitor.iyi 330
