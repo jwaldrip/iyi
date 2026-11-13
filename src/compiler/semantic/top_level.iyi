@@ -775,6 +775,7 @@ pub class LibFun
   # The primitive name is external_var_get or external_var_set. The dump does not
   # print these; body typing and primitives lowering read them.
   property external_var : Bool = false
+  property external_type_spec : ASTNode? = nil
   property thread_local : Bool = false
   property primitive : String? = nil
   property previous : LibFun? = nil
@@ -1195,6 +1196,9 @@ pub class SemanticProgram < NonGenericModuleType
   @const_initializers : Array(Const)
   # The records of the funs the pass declared, by the node's id (`lib_fun_of`).
   @lib_funs_by_node : Hash(UInt64, LibFun)
+  # External variables have no FunDef node, but their written type also needs
+  # resolution after the type system is installed.
+  getter external_var_funs : Array(LibFun) = [] of LibFun
   # Defining scope, kept outside syntax nodes to avoid a semantic dependency in the AST.
   @def_owners : Hash(UInt64, ModuleType)
   @primitive_return_types : Hash(UInt64, Type)
@@ -1472,6 +1476,22 @@ pub class SemanticProgram < NonGenericModuleType
                 if found = lookup_type_node?(rt, owner)
                   f.resolved_return = found
                 end
+              end
+            end
+          end
+        end
+      end
+    end
+    @external_var_funs.each do |f|
+      if owner = f.owner
+        if imports = f.imports
+          @current_imports = imports
+          if spec = f.external_type_spec
+            if found = lookup_type_node?(spec, owner)
+              f.resolved_return = found
+              if f.primitive == "external_var_set"
+                f.arg_types.clear
+                f.arg_types << found
               end
             end
           end
@@ -3071,6 +3091,7 @@ pub class TopLevelVisitor < Visitor
     getter_fun.owner = lib_type
     getter_fun.imports = @program.current_imports
     getter_fun.external_var = true
+    getter_fun.external_type_spec = node.type_spec
     getter_fun.thread_local = thread_local
     getter_fun.primitive = "external_var_get"
     getter_fun.resolved_return = var_type
@@ -3080,6 +3101,7 @@ pub class TopLevelVisitor < Visitor
     setter_fun.owner = lib_type
     setter_fun.imports = @program.current_imports
     setter_fun.external_var = true
+    setter_fun.external_type_spec = node.type_spec
     setter_fun.thread_local = thread_local
     setter_fun.primitive = "external_var_set"
     setter_fun.resolved_return = var_type
@@ -3087,6 +3109,8 @@ pub class TopLevelVisitor < Visitor
 
     lib_type.funs << getter_fun
     lib_type.funs << setter_fun
+    @program.external_var_funs << getter_fun
+    @program.external_var_funs << setter_fun
     false
   end
 
