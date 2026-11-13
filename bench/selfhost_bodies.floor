@@ -32,6 +32,7 @@ bench/fixtures/sem_bodies_jumps.iyi 20
 bench/fixtures/sem_bodies_libcall.iyi 15
 bench/fixtures/sem_bodies_macro_bindings.iyi 43
 bench/fixtures/sem_bodies_magic_constant.iyi 4
+bench/fixtures/sem_bodies_match_import.iyi 4
 bench/fixtures/sem_bodies_nil_return.iyi 14
 bench/fixtures/sem_bodies_owner_typeof.iyi 16
 bench/fixtures/sem_bodies_pack_splat.iyi 4

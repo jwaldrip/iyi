@@ -80,6 +80,9 @@ check_calls_diverge() {
   "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" >/dev/null 2>&1 || return 1
   local fixture
   for fixture in "$REPO"/bench/fixtures/semcall_*.iyi; do
+    if [ "$#" -gt 0 ] && [ "$fixture" != "$REPO/$1" ]; then
+      continue
+    fi
     "$WORK/port_m" "$fixture" > "$WORK/pm.out" 2>/dev/null || return 1
     "$WORK/oracle" "$fixture" > "$WORK/om.out" 2>/dev/null || return 1
     diff -q "$WORK/pm.out" "$WORK/om.out" >/dev/null || return 1
@@ -196,7 +199,7 @@ prove_mutation "a virtual receiver answers covered when it has matches" "$METHOD
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a splat parameter takes none of the arguments past its prefix" "$MATCH_FILE" \
-  "        matched << signature.arg_types[i]" \
+  "        matched << element" \
   "        i = i" \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
@@ -345,8 +348,23 @@ prove_mutation "a number literal is not matched when its value fits" "$MATCH_FIL
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "an inherited method's target forgets the type it was found on" "$CALL_FILE" \
-  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, single.defining)' \
-  'return CallTarget.new(single.definition, rec_type, found.as(Type), false, nil, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, nil, single.arg_types, nil)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "instantiated argument types are the written restrictions" "$CALL_FILE" \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.declared, nil)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "declared return is mistaken for the inferred body return" "$CALL_FILE" \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, nil)' \
+  'return CallTarget.new(single.definition, rec_type, instantiated, false, nil, single.defining, single.arg_types, instantiated)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a named splat is counted as a required positional argument" "$ERROR_FILE" \
+  '      minimum = splat if splat < minimum' \
+  '      minimum = d.args.size' \
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
@@ -375,6 +393,29 @@ prove_mutation "a generic owner's superclass restriction rejects subclasses" "$M
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a typed integer expression is not eligible for autocast" "$MATCH_FILE" \
+  '    bits = NumericAutocast.integer_bits(type)' \
+  '    return false if node.is_a?(Call) && node.as(Call).obj'$'\n''    bits = NumericAutocast.integer_bits(type)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a union restriction drops its generic member" "$RESTRICT_FILE" \
+  '      members << member.as(Type)' \
+  '      members << member.as(Type) unless member.as(Type).is_a?(GenericInstanceType)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a nilable restriction drops Nil" "$RESTRICT_FILE" \
+  '      members << member.as(Type)' \
+  '      members << member.as(Type) unless member.as(Type).full_name == "Nil"' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "an imported type is not found during restriction lookup" "$REPO/src/compiler/types/lookup.iyi" \
+  '        curr = program.current_imports[name]?' \
+  '        curr = nil' \
+  -- check_calls_diverge bench/fixtures/semcall_match_import.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
