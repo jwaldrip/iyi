@@ -135,7 +135,12 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
     recv_type = receiver_owner(low, node)
     if recv_type.is_a?(GenericClassInstanceMetaclassType)
       self_type = recv_type
-      self_value = type_id_value(low, recv_type)
+      if node.obj.as(ASTNode).is_a?(Generic)
+        self_value = type_id_value(low, recv_type)
+      else
+        self_value = lower_receiver(low, node)
+        return if block_ended?(low)
+      end
     elsif recv_type.is_a?(MetaclassType)
       class_owner = recv_type.as(MetaclassType).instance_type
       # A computed metaclass receiver is evaluated even when its value is not
@@ -367,7 +372,7 @@ pub def receiver_owner(low : Lowerer, node : Compiler::Syntax::Ast::Call) : Type
   raise "BUG: the analysed program has no type for the receiver of #{node.name} (hosted call.cr: prepare_call_args)" if t.nil?
   owner = t.as(Type)
   if owner.is_a?(MetaclassType)
-    if owner.is_a?(GenericClassInstanceMetaclassType) && obj.as(ASTNode).is_a?(Generic)
+    if owner.is_a?(GenericClassInstanceMetaclassType)
       return owner
     end
     # A class method of a non-generic class or module, called on the constant path that names it (`Sched.go`).
