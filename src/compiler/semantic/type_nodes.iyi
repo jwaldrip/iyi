@@ -21,7 +21,6 @@ module compiler/semantic/type_nodes
 
 import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, NumberLiteral, PointerOf, ProcNotation, Self, SizeOf, Splat, TypeOf, Union, UninitializedVar, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
-import compiler/semantic/inline_macros::{splice_fun_body}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, SemanticProgram, Type, TypeHook, TypeParameterType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TupleInstanceType, TypeQueries, TypeSplat}
