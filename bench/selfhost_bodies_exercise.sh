@@ -44,7 +44,10 @@ for fixture in "$REPO"/bench/fixtures/sem_bodies_*.iyi; do
   rel="bench/fixtures/$(basename "$fixture")"
   # pointer_set defines Pointer#value= in the file. The prelude already has that
   # method, so this fixture is analysed alone.
-  if [ "$(basename "$fixture")" = "sem_bodies_pointer_set.iyi" ] || [ "$(basename "$fixture")" = "sem_bodies_ensure.iyi" ]; then
+  if [ "$(basename "$fixture")" = "sem_bodies_ensure.iyi" ]; then
+    cp "$fixture" "$WORK/ensure.cr"
+    "$ORACLE" --bare "$WORK/ensure.cr" > "$WORK/o.txt" 2> "$WORK/o.err"
+  elif [ "$(basename "$fixture")" = "sem_bodies_pointer_set.iyi" ]; then
     "$ORACLE" --bare "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
   else
     "$ORACLE" "$fixture" > "$WORK/o.txt" 2> "$WORK/o.err"
@@ -258,7 +261,8 @@ prove_mutation "assignment condition narrows its target" "$MAIN_VISITOR" \
 ensure_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   local fixture="$REPO/bench/fixtures/sem_bodies_ensure.iyi"
-  "$ORACLE" --bare "$fixture" > "$WORK/ensure_o.txt" 2>/dev/null || return 1
+  cp "$fixture" "$WORK/ensure.cr"
+  "$ORACLE" --bare "$WORK/ensure.cr" > "$WORK/ensure_o.txt" 2>/dev/null || return 1
   "$MUT_TD" "$fixture" "$REPO/src" > "$WORK/ensure_p.txt" 2>/dev/null || return 1
   sort "$WORK/ensure_o.txt" > "$WORK/ensure_o.sorted"
   sort "$WORK/ensure_p.txt" > "$WORK/ensure_p.sorted"

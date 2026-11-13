@@ -1,3 +1,6 @@
+# Only syntax shared by both parsers: the hosted compiler refuses written
+# ensure in .iyi files (main_visitor.cr 3371-3380), so the oracle reads a
+# temporary .cr copy to exercise handler typing instead of that refusal.
 before = 1
 result = begin
   introduced = 2
