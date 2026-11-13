@@ -3327,6 +3327,18 @@ pub class MainVisitor < TypeNodeHost
   # Instantiate the same arity-specific expansion for ordinary and union calls.
   def defaults_expand_call(node : Call, definition : Def) : Def?
     target = definition
+    if named = node.named_args
+      if DefaultArguments.supported?(definition, node.args, named)
+        original = node.args.size
+        node.args = DefaultArguments.expand(definition, node.args, named)
+        i = original
+        while i < node.args.size
+          node.args[i].accept(self)
+          i += 1
+        end
+        return definition
+      end
+    end
     if node.named_args.nil? && (target.splat_index || (node.args.size < target.args.size && DefaultArguments.supported?(target, node.args, nil)))
       splat_names = [] of String
       if splat_index = target.splat_index
