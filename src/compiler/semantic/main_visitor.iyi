@@ -2570,7 +2570,26 @@ pub class MainVisitor < TypeNodeHost
     while i < target_def.args.size
       param = target_def.args[i]
       param_type : Type? = nil
-      if i < args.size
+      splat_index = target_def.splat_index
+      if splat_index && i == splat_index.as(Int32)
+        # Hosted call.cr binds the splat local to a tuple, including the empty tuple.
+        elements = [] of Type
+        suffix = target_def.args.size - i - 1
+        end_index = args.size - suffix
+        j = i
+        while j < end_index
+          if element_type = child_type(args[j])
+            elements << element_type
+          else
+            params_typed = false
+          end
+          j = j + 1
+        end
+        param_type = tuple_type_of(@program, elements)
+      elsif splat_index && i > splat_index.as(Int32)
+        arg_index = args.size - (target_def.args.size - i)
+        param_type = child_type(args[arg_index]) if arg_index >= 0 && arg_index < args.size
+      elsif i < args.size
         param_type = child_type(args[i])
       elsif dv = param.default_value
         dv.accept(self)
