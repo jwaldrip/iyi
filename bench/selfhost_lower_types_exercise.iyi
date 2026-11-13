@@ -201,6 +201,7 @@ module BenchSelfhostLowerTypesExercise
 
   # The `ids` mode's block: the type id and the id range the hosted LLVMId gives the type, or `-`.
   def self.ids_block(expr : String, ids : LowerTypeIds, t : Type) : String
+    ids.type_id(t)
     mm = ids.min_max(t)
     out = "== #{expr}\n"
     if mm.nil?

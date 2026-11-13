@@ -23,9 +23,10 @@ module compiler/lower/program
 #   - the funs of each `lib`, registered in the lib as bodiless defs, so a call through a lib types the way
 #     the hosted analysis does (NEEDS.md, lowering calls row 31). Same as bench/lib/lower_gate.iyi.
 
-import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral, InstanceVar}
+import compiler/syntax/ast::{ASTNode, ClassDef, Def, Expressions, FunDef, LibDef, Nop, Arg, Path, Annotation, StringLiteral, InstanceVar, And, Assign, Call, Case, ClassVar, If, Not, Or, Unless, Var, While}
 import compiler/semantic/top_level::{LibType, MetaclassType, NonGenericClassType, SemanticProgram, TopLevelVisitor, Type, normalize_path}
-import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance}
+import compiler/semantic/main_visitor::{MainVisitor, Refusal, TypedInstance, node_class_name}
+import compiler/semantic/match::{YieldFinder}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
@@ -34,6 +35,7 @@ import compiler/ir/module::{Module}
 import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
+import compiler/lower/context::{Lowerer}
 import compiler/lower/lower::{codegen_program, lower_def_probe}
 import compiler/lower/primitives::{primitive_name}
 import compiler/lower/fun::{mangled_name, discard_probe_functions}
@@ -232,6 +234,110 @@ pub class NodeIds < Visitor
   end
 end
 
+# The same, following each node into the tree the body typer expanded it to (`a && b`, a case, a literal:
+# MainVisitor#expand_literal): the typer types that tree, and the node takes its type.
+pub class DeepNodeIds < Visitor
+  getter ids : Hash(UInt64, Bool)
+
+  def initialize(@types : MainVisitor)
+    @ids = Hash(UInt64, Bool).new
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    return false if @ids.has_key?(node.node_id)
+    @ids[node.node_id] = true
+    if expanded = @types.expansions[node]?
+      expanded.accept(self)
+    end
+    true
+  end
+end
+
+# The expressions under a def body, expansions included, that the body typer left without a type, of the kinds a
+# lowering asks a type for first: a call, a variable read, an assignment, a conditional.
+pub class UntypedNodes < Visitor
+  getter nodes : Array(ASTNode)
+
+  def initialize(@types : MainVisitor)
+    @nodes = [] of ASTNode
+    @seen = Hash(UInt64, Bool).new
+  end
+
+  def visit_any(node : ASTNode) : Bool
+    return false if @seen.has_key?(node.node_id)
+    @seen[node.node_id] = true
+    if node.is_a?(Call) || node.is_a?(ClassVar) || node.is_a?(InstanceVar) || node.is_a?(Var) || node.is_a?(Assign) || node.is_a?(If) || node.is_a?(Unless) || node.is_a?(And) || node.is_a?(Or) || node.is_a?(Not) || node.is_a?(While) || node.is_a?(Case)
+      @nodes << node if @types.type_of?(node).nil?
+    end
+    if expanded = @types.expansions[node]?
+      expanded.accept(self)
+    end
+    true
+  end
+end
+
+# The name a silent row carries for its node: what was called, read or assigned.
+def silent_name(node : ASTNode) : String
+  return node.as(Call).name if node.is_a?(Call)
+  return node.as(ClassVar).name if node.is_a?(ClassVar)
+  return node.as(InstanceVar).name if node.is_a?(InstanceVar)
+  return node.as(Var).name if node.is_a?(Var)
+  return "=" if node.is_a?(Assign)
+  return "&&" if node.is_a?(And)
+  return "||" if node.is_a?(Or)
+  return "!" if node.is_a?(Not)
+  return "unless" if node.is_a?(Unless)
+  return "while" if node.is_a?(While)
+  return "case" if node.is_a?(Case)
+  "if"
+end
+
+# The silent gaps of the body typer, for the sidecar only (`silent<TAB>def<TAB>node kind<TAB>name<TAB>file:line`): an
+# expression it left without a type and without a refusal, the innermost of each such chain. The lowering meets
+# these as "the analysed program has no type for ...", which names no place; this row names the node. Some are
+# right (code after a NoReturn, a branch a type filter rules out), so this is a list to read, never a count to gate.
+def silent_rows(typed : TypedProgram, refused : Array(String)) : Nil
+  visitor = typed.visitor
+  refusals = visitor.refusals
+  seen = Hash(String, Bool).new
+  visitor.typed_instances.each do |inst|
+    d = inst.definition
+    next unless primitive_name(d.body).nil?
+    finder = UntypedNodes.new(visitor)
+    d.body.accept(finder)
+    next if finder.nodes.empty?
+    all = DeepNodeIds.new(visitor)
+    d.body.accept(all)
+    # Every node under a refused node of this def: the refusal already names that gap.
+    covered = DeepNodeIds.new(visitor)
+    refusals.each do |r|
+      r.node.accept(covered) if all.ids.has_key?(r.node.node_id)
+    end
+    finder.nodes.each do |node|
+      next if covered.ids.has_key?(node.node_id)
+      under = DeepNodeIds.new(visitor)
+      node.accept(under)
+      innermost = true
+      finder.nodes.each do |other|
+        innermost = false if other.node_id != node.node_id && under.ids.has_key?(other.node_id)
+      end
+      refusals.each do |r|
+        innermost = false if under.ids.has_key?(r.node.node_id)
+      end
+      next unless innermost
+      where = "no location"
+      if loc = node.location
+        where = "#{loc.filename}:#{loc.line_number}"
+      end
+      row = "silent\t#{lowering_example(d, inst.self_type)}\t#{node_class_name(node)}\t#{silent_name(node)}\t#{where}"
+      unless seen.has_key?(row)
+        seen[row] = true
+        refused << row
+      end
+    end
+  end
+end
+
 # The first line of a refusal's reason, so one table row stays on one line.
 def first_line(text : String) : String
   i = 0
@@ -355,10 +461,22 @@ pub def refusal_table(typed : TypedProgram, root : String, refused : Array(Strin
   clean = 0
   labels.each do |label|
     clean += 1 unless dirty.has_key?(label)
+    # The instances defs-reached counts, by name, so two trees' reach can be compared as sets (sidecar only).
+    refused << "instance\t#{label}"
   end
   lines << "table: #{root} defs-reached=#{labels.size} defs-typed-clean=#{clean} root-refusals=#{root_refusals} refusal-sites=#{sites.size}"
   ranked_rows(root, "refusal", reasons, counts, examples).each { |line| lines << line }
+  silent_rows(typed, refused)
   lines
+end
+
+# Hosted inlines a yielding def at its call site instead of emitting a standalone
+# function. Captured block functions are real functions and remain probeable.
+def noncapturing_yield?(definition : Def) : Bool
+  return false if definition.captured_block?
+  finder = YieldFinder.new
+  definition.body.accept(finder)
+  finder.found
 end
 
 # The lowering column of the table (PIPELINE.md): every reached def's instance lowered alone into one module, the way the
@@ -376,16 +494,22 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   reasons = [] of String
   counts = [] of Int32
   examples = [] of String
+  origin_reasons = [] of String
+  origin_counts = [] of Int32
+  origin_examples = [] of String
+  origin_probes = Hash(String, Bool).new
   typed.visitor.typed_instances.each do |inst|
     d = inst.definition
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(d.body).nil?
+    next if noncapturing_yield?(d)
     refused << "reached\t#{lowering_example(d, inst.self_type)}\t-\t-"
     before = [] of String
     m.functions.each { |fn| before << fn.name }
+    probe_lowerer = Lowerer.new(m, typer, typed.visitor)
     outcome = group do |g|
-      task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m) }
+      task = g.spawn { lower_def_probe(d, inst.self_type, inst.arg_types, typed.visitor, typer, m, probe_lowerer) }
       task.value
     end
     failed = false
@@ -423,10 +547,27 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
       discard_probe_functions(m, before)
       bad[d.node_id] = true
       reason = first_line(message)
+      origin = lowering_example(d, inst.self_type)
+      if ctx = probe_lowerer.context
+        origin = ctx.fun.name
+      end
+      pair = "#{origin} | #{reason}"
+      probe_key = "#{pair}|#{instance_label(d, inst.self_type, inst.arg_types)}"
+      unless origin_probes.has_key?(probe_key)
+        origin_probes[probe_key] = true
+        index = reason_index(origin_reasons, pair)
+        if index < 0
+          origin_reasons << pair
+          origin_counts << 1
+          origin_examples << lowering_example(d, inst.self_type)
+        else
+          origin_counts[index] = origin_counts[index] + 1
+        end
+      end
       key = "#{d.node_id}|#{reason}"
       unless sites.has_key?(key)
         sites[key] = true
-        refused << "lowering\t#{lowering_example(d, inst.self_type)}\t#{typed_owner(reason)}\t#{reason}"
+        refused << "lowering\t#{lowering_example(d, inst.self_type)}\t#{typed_owner(reason)}\t#{reason}\t#{origin}"
         i = reason_index(reasons, reason)
         if i < 0
           reasons << reason
@@ -445,6 +586,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
     # A Primitive-annotated def is lowered at the call site (hosted codegen_call), never as a def of its own: the table
     # neither probes it nor counts it, so it is no refusal row and no clean def.
     next unless primitive_name(inst.definition.body).nil?
+    next if noncapturing_yield?(inst.definition)
     label = instance_label(inst.definition, inst.self_type, inst.arg_types)
     unless seen_label.has_key?(label)
       seen_label[label] = true
@@ -459,6 +601,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   lines = [] of String
   lines << "table: #{root} defs-lowered-clean=#{clean} lowering-refusal-sites=#{sites.size}"
   ranked_rows(root, "lowering", reasons, counts, examples).each { |line| lines << line }
+  ranked_rows(root, "origin", origin_reasons, origin_counts, origin_examples).each { |line| lines << line }
   lines
 end
 

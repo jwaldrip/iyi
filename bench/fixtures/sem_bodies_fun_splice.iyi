@@ -4,8 +4,7 @@ def inner_def(x : Int32) : Int32
   x
 end
 
-# The body is one macro node: only the fun-body splice reaches the calls in its branches,
-# so the typed instance of inner_def exists only when the splice runs.
+# A fun's macro body is visited and expanded before its branch's call is typed.
 fun splice_entry(x : Int32) : Int32
   {% if flag?(:darwin) %}
     inner_def(x)

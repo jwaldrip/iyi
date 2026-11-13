@@ -324,11 +324,10 @@ pub class NumericAutocast
     false
   end
 
-  # A number literal always may. A typed integer may when its kind is at most
-  # 64 bits. A typed Float32 may. The harness writes a typed value as instance(T).
+  # A number literal always may. Other typed numeric expressions may when their
+  # integer range is supported, or when their type is Float32.
   def self.supports?(node : ASTNode, type : Type) : Bool
     return true if node.is_a?(NumberLiteral)
-    return false unless NumericAutocast.instance_call?(node)
     bits = NumericAutocast.integer_bits(type)
     return bits > 0 && bits <= 64 if bits > 0
     type.full_name == "Float32"
@@ -341,16 +340,10 @@ pub class NumericAutocast
     if node.is_a?(NumberLiteral)
       return NumericAutocast.value_fits?(node.as(NumberLiteral), target)
     end
-    if NumericAutocast.instance_call?(node)
+    if NumericAutocast.supports?(node, type)
       return NumericAutocast.range_subset?(type, target)
     end
     false
-  end
-
-  def self.instance_call?(node : ASTNode) : Bool
-    return false unless node.is_a?(Call)
-    call = node.as(Call)
-    call.obj.nil? && call.name == "instance"
   end
 
   def self.integer_bits(type : Type) : Int32

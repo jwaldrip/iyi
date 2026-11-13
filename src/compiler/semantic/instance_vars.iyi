@@ -1,10 +1,10 @@
 module compiler/semantic/instance_vars
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
+import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, ClassVar, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
-import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
+import compiler/semantic/top_level::{ClassType, DeclaredIvar, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
 import compiler/semantic/type_nodes::{type_node_system}
 
 # Instance variables typed only by assignment, as the hosted front end declares
@@ -19,8 +19,8 @@ import compiler/semantic/type_nodes::{type_node_system}
 # root of the class hierarchy down, so a superclass's variables are known first.
 #
 # Skipped, and so not declared here: guesses whose value needs a type this pass
-# cannot compute (a call with arguments, an untyped or named array literal, a
-# hash literal, a block), module variables and the `macro def` and `.iyimod`
+# cannot compute (a call with arguments, a named array literal, a hash literal,
+# a block), module variables and the `macro def` and `.iyimod`
 # exemptions.
 
 pub class GuessedIvar
@@ -45,6 +45,7 @@ end
 pub class OwnerGuesses
   getter owner : ModuleType
   getter guesses : Hash(String, GuessedIvar)
+  getter class_guesses : Hash(String, MetaTypeVar)
   getter order : Array(String)
   getter init_infos : Array(InitializeInfo)
   getter outside : Array(String)
@@ -52,6 +53,7 @@ pub class OwnerGuesses
 
   def initialize(@owner : ModuleType)
     @guesses = Hash(String, GuessedIvar).new
+    @class_guesses = Hash(String, MetaTypeVar).new
     @order = [] of String
     @init_infos = [] of InitializeInfo
     @outside = [] of String
@@ -65,10 +67,12 @@ class GuessVisitor < Visitor
   @outside_def : Bool
   @initialize_info : InitializeInfo?
   @args : Hash(String, ASTNode?)
+  @class_method : Bool
 
   def initialize(@program : SemanticProgram, @og : OwnerGuesses)
     @outside_def = true
     @initialize_info = nil
+    @class_method = false
     @args = Hash(String, ASTNode?).new
   end
 
@@ -112,9 +116,9 @@ class GuessVisitor < Visitor
   end
 
   def visit(node : Def) : Bool
-    # `def self.x` assigns the class's own state, not instance variables.
-    return false if node.receiver
-
+    saved_class_method = @class_method
+    @class_method = !node.receiver.nil?
+    saved_outside = @outside_def
     saved_info = @initialize_info
     saved_args = @args
     @outside_def = false
@@ -124,7 +128,7 @@ class GuessVisitor < Visitor
     end
 
     @initialize_info = nil
-    if node.name == "initialize"
+    if node.name == "initialize" && !@class_method
       info = InitializeInfo.new
       @og.init_infos << info
       @initialize_info = info
@@ -134,7 +138,8 @@ class GuessVisitor < Visitor
 
     @initialize_info = saved_info
     @args = saved_args
-    @outside_def = true
+    @outside_def = saved_outside
+    @class_method = saved_class_method
     false
   end
 
@@ -143,8 +148,10 @@ class GuessVisitor < Visitor
     if target.is_a?(Var)
       @args.delete(target.as(Var).name)
     end
-    if target.is_a?(InstanceVar)
+    if target.is_a?(InstanceVar) && !@class_method
       assign_instance_var(target.as(InstanceVar), node.value)
+    elsif target.is_a?(ClassVar)
+      assign_class_var(target.as(ClassVar), node.value)
     end
     # The value may assign too: `@x = @y = 1`.
     true
@@ -153,12 +160,30 @@ class GuessVisitor < Visitor
   # `@x : Int32 = 1` in a body is an assignment as well as a declaration.
   def visit(node : TypeDeclaration) : Bool
     var = node.var
-    if var.is_a?(InstanceVar)
+    if var.is_a?(InstanceVar) && !@class_method
       if value = node.value
         assign_instance_var(var.as(InstanceVar), value)
       end
     end
     false
+  end
+
+  # Hosted type_guess_visitor.cr:296-307 records only guesses for class
+  # variables that have no written declaration. Multiple guesses are merged.
+  def assign_class_var(target : ClassVar, value : ASTNode) : Nil
+    return nil if @og.owner.class_vars[target.name]?
+    if type = guess_type(value)
+      if existing = @og.class_guesses[target.name]?
+        existing.var_type = @program.type_merge(existing.type, type)
+        existing.initializer = value if @outside_def
+      else
+        initializer = @outside_def ? value : nil
+        var = MetaTypeVar.new(target.name, type, initializer, target.location)
+        var.owner = @og.owner
+        @og.class_guesses[target.name] = var
+      end
+    end
+    nil
   end
 
   def assign_instance_var(target : InstanceVar, value : ASTNode) : Nil
@@ -220,6 +245,25 @@ class GuessVisitor < Visitor
           end
         end
       end
+      if literal.name.nil? && literal.of.nil?
+        if hook = @program.merge_hook
+          merged_element : Type? = nil
+          literal.elements.each do |item|
+            return nil if item.is_a?(Splat)
+            if guessed = guess_type(item)
+              if previous = merged_element
+                merged_element = @program.type_merge(previous, guessed)
+              else
+                merged_element = guessed
+              end
+            end
+          end
+          if found = merged_element
+            array = hook.instantiate_type(@program.types["Array"], [found] of Type)
+            return hook.virtual_of(array)
+          end
+        end
+      end
       return nil
     end
     if node.is_a?(Not) || node.is_a?(IsA)
@@ -252,8 +296,24 @@ class GuessVisitor < Visitor
       return nil
     end
     if node.is_a?(InstanceVar)
-      if declared = @og.owner.instance_vars[node.as(InstanceVar).name]?
+      name = node.as(InstanceVar).name
+      if declared = @og.owner.instance_vars[name]?
         return declared.var_type
+      end
+      [true, false].each do |declaration_pass|
+        @program.pending_ivars.each do |pi|
+          next unless pi.owner == @og.owner && pi.name == name && pi.explicit == declaration_pass
+          saved = @program.current_imports
+          if imports = pi.imports
+            @program.current_imports = imports
+          end
+          found = @program.declared_ivar_type?(pi.restriction, pi.owner, pi.virtual)
+          @program.current_imports = saved
+          return found if found
+        end
+      end
+      if guessed = @og.guesses[name]?
+        return guessed.type
       end
       return nil
     end
@@ -276,8 +336,8 @@ class GuessVisitor < Visitor
     nil
   end
 
-  # `Foo.new` is Foo. A class with subclasses has a virtual type, which this pass
-  # does not compute, so its guess is left out.
+  # A constructor's class is the default guess (hosted type_guess_visitor.cr:640-651).
+  # The constructor's explicit return annotation is not yet resolved here.
   def guess_call(node : Call) : Type?
     if expanded = node.expanded
       return guess_type(expanded)
@@ -285,7 +345,11 @@ class GuessVisitor < Visitor
     obj = node.obj
     if node.name == "new" && obj && obj.is_a?(Path)
       found = @program.lookup_type_node?(obj, @og.owner)
-      if found && found.is_a?(NonGenericClassType) && found.as(NonGenericClassType).subclasses.empty?
+      if found && found.is_a?(NonGenericClassType)
+        if hook = @program.merge_hook
+          return hook.virtual_of(found)
+        end
+        return nil unless found.as(NonGenericClassType).subclasses.empty?
         return found
       end
     end
@@ -304,6 +368,14 @@ class GuessVisitor < Visitor
       if name.is_a?(Path) && name.as(Path).names == ["Pointer"] && generic.type_vars.size == 1
         if @program.merge_hook
           return @program.lookup_type_node?(generic, @og.owner)
+        end
+      end
+    end
+    # Pointer.malloc(size, value) takes the inferred type of its second argument.
+    if obj.is_a?(Path) && obj.as(Path).names == ["Pointer"] && node.name == "malloc" && node.args.size == 2
+      if element_type = guess_type(node.args[1])
+        if hook = @program.merge_hook
+          return hook.instantiate_type(@program.types["Pointer"], [element_type] of Type)
         end
       end
     end
@@ -473,11 +545,31 @@ def re_resolve_explicit_ivars(program : SemanticProgram) : Nil
   type_node_system(program)
 end
 
-# Guesses and declares the instance variables of every class body the program's
-# top-level pass recorded, in hierarchy order. Explicit declarations must already
-# be in place: the pass runs after the top-level visit and its pending
-# declarations are resolved.
+# Process each owner from the root of the hierarchy: written declarations
+# precede inferred ones for that owner, before moving to a subclass (hosted
+# type_declaration_processor.cr:245-264).
 pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
+  # A bare declarations-only load has not installed the type system yet. Its
+  # generic declarations previously recorded the base type first, then kept
+  # the written restriction for resolution when its arguments became visible.
+  # Preserve that record before installing the hook; strict lookup after the
+  # hook would otherwise reject a bare file's unavailable generic arguments.
+  previous = {} of String => MetaTypeVar
+  saved_imports = program.current_imports
+  if program.merge_hook.nil?
+    program.pending_ivars.each do |pi|
+      if pi.restriction.is_a?(Generic) && !pi.owner.instance_vars[pi.name]?
+        if imports = pi.imports
+          program.current_imports = imports
+        else
+          program.current_imports = saved_imports
+        end
+        bare = program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
+        previous["#{pi.owner.full_name} #{pi.name}"] = MetaTypeVar.new(pi.name, bare, pi.initializer)
+      end
+    end
+    program.current_imports = saved_imports
+  end
   # The hosted pass declares instance variables with a type system already
   # installed, so `@resolved_modules : Array(ModuleInfo)` is `Array(ModuleInfo)`.
   # This pass records the unbound generic until one is installed
@@ -485,12 +577,34 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   # the lowered-types own-source load, get that re-resolution here. Installing
   # the type system before the visit takes hook paths that are not ported.
   re_resolve_explicit_ivars(program)
+  # During the transition finish may already have installed these records.
+  # Remove only those records, then install them in hierarchy order below.
+  # Existing records take precedence over the pre-hook bare records above.
+  program.pending_ivars.each do |pi|
+    if existing = pi.owner.instance_vars[pi.name]?
+      previous["#{pi.owner.full_name} #{pi.name}"] = existing
+    end
+    pi.owner.instance_vars.delete(pi.name)
+  end
+  retained = program.declared_ivars.reject do |di|
+    program.pending_ivars.any? { |pi| pi.owner == di.owner && pi.name == di.name }
+  end
+  program.declared_ivars.clear
+  retained.each { |di| program.declared_ivars << di }
   owners = [] of OwnerGuesses
+  program.pending_ivars.each do |pi|
+    owner_guesses_for(owners, pi.owner)
+  end
   program.type_bodies.each do |body|
+    program.current_imports = body.imports
     owner = owner_guesses_for(owners, body.type)
-    if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)
-      visitor = GuessVisitor.new(program, owner)
-      body.body.accept(visitor)
+    visitor = GuessVisitor.new(program, owner)
+    body.body.accept(visitor)
+  end
+  program.current_imports = saved_imports
+  owners.each do |og|
+    og.class_guesses.each do |name, var|
+      og.owner.class_vars[name] = var unless og.owner.class_vars[name]?
     end
   end
 
@@ -503,12 +617,40 @@ pub def declare_guessed_instance_vars(program : SemanticProgram) : Nil
   depth = 0
   while depth <= max_depth
     owners.each do |og|
-      next unless og.owner.is_a?(NonGenericClassType) || og.owner.is_a?(GenericClassType)
       next unless class_depth(og.owner) == depth
+      [true, false].each do |explicit_pass|
+        program.pending_ivars.each do |pi|
+          next unless pi.owner == og.owner && pi.explicit == explicit_pass
+          next if og.owner.lookup_instance_var?(pi.name)
+          if imports = pi.imports
+            program.current_imports = imports
+          else
+            program.current_imports = saved_imports
+          end
+          arg_type = program.declared_ivar_type?(pi.restriction, pi.owner, pi.virtual)
+          # Quiet lookup can retain an unbound splat generic where strict lookup
+          # instantiated it. Keep the already resolved type in that case.
+          if !arg_type || (arg_type.is_a?(GenericClassType) && pi.restriction.is_a?(Generic))
+            if old = previous["#{pi.owner.full_name} #{pi.name}"]?
+              arg_type = old.type
+            else
+              arg_type = program.declared_ivar_type(pi.restriction, pi.owner, pi.virtual)
+            end
+          end
+          mv = MetaTypeVar.new(pi.name, arg_type, pi.initializer)
+          mv.owner = pi.owner
+          pi.owner.instance_vars[pi.name] = mv
+          program.declared_ivars << DeclaredIvar.new(pi.owner, pi.name, pi.restriction, pi.initializer, pi.virtual, program.current_imports)
+        end
+      end
       compute_nonnil(owners, og)
-      declare_guessed(program, owners, og)
+      if og.owner.is_a?(NonGenericClassType) || og.owner.is_a?(GenericClassType)
+        declare_guessed(program, owners, og)
+      end
     end
     depth = depth + 1
   end
+  program.current_imports = saved_imports
+  program.pending_ivars.clear
   nil
 end

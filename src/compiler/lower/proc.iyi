@@ -13,10 +13,11 @@ module compiler/lower/proc
 # Refused by name, at the literal that reaches them: a literal that reads a local the body does not declare
 # (a closure: hosted closured_vars and malloc_closure), a literal that reads `self` or an instance variable, a
 # literal with a block or a nested literal or def inside it, a literal that returns NoReturn, and a literal whose
-# body type is not its return type (hosted upcast of the return, not ported).
+# non-Nil body type differs from its return type (hosted upcast of the return, not ported).
 
 import compiler/foundation/location::{Location}
 import compiler/ir/types::{IrType}
+import compiler/ir/inst::{Attribute}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer}
 import compiler/lower/fun::{codegen_fun}
@@ -149,9 +150,6 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
     refuse_port("a proc literal typed #{proc_type.full_name} (hosted visit(ProcLiteral), not a Proc)")
   end
   proc = proc_type.as(ProcInstanceType)
-  if proc.return_type.is_a?(NoReturnType)
-    refuse_port("a proc literal that returns NoReturn (hosted codegen_fun, the noreturn attribute on a literal)")
-  end
 
   # The hosted closured check (codegen.cr: def.closure?): every read is of a local the body declares, and the
   # body reads no block, nested literal, self or instance variable.
@@ -176,7 +174,7 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
 
   body_t = low.analysed.type_of?(node.def.body)
   raise "BUG: the analysed program has no type for a proc literal's body (hosted codegen.cr: visit(ProcLiteral))" if body_t.nil?
-  if body_t.as(Type).full_name != proc.return_type.full_name
+  if body_t.as(Type).full_name != proc.return_type.full_name && !proc.return_type.nil_type?
     refuse_port("a proc literal whose body is #{body_t.as(Type).full_name} and returns #{proc.return_type.full_name} (hosted upcast of the return, not ported)")
   end
 
@@ -188,6 +186,9 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
   ret_ir = low.typer.llvm_return_type(proc.return_type)
   fn_type = low.module.types.func(params, ret_ir)
   fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type)
+  if proc.return_type.is_a?(NoReturnType)
+    fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
+  end
   null_ctx = low.builder.const_null(low.module.types.ptr(0)).as(Value)
   low.last = make_fun(low, proc_type, fn.as(Value), null_ctx)
 end

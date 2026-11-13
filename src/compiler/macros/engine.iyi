@@ -6,7 +6,8 @@ import compiler/semantic/normalizer::{Normalizer}
 import compiler/macros/ast
 import compiler/macros/methods::{MacroMethods}
 import compiler/macros/target_flags::{MacroTargetFlags}
-import compiler/macros/interpreter::{MacroInterpreter, MacroFailure}
+import compiler/macros/interpreter::{MacroInterpreter, MacroFailure, MacroFreeBinding}
+import compiler/macros/type_facts::{MacroTypeFacts}
 import compiler/macros/macro_parser::{MacroParser}
 
 # One `{% %}` or `{{ }}` site at the top of a macro body that ran to its end,
@@ -88,9 +89,17 @@ pub class MacroEngine
 
   # Expands one top-level site as the hosted compiler expands an inline macro:
   # with a fresh interpreter, so no variable carries from one site to the next.
-  # `scope_name` is what `@type` and `@top_level` name.
-  def site_report(site : ASTNode, scope_name : String = "<Program>") : MacroReport
+  # `scope_name` is what `@type` and `@top_level` name. `bindings` are the type
+  # parameters in scope at the site: the instantiated owner's and the free
+  # variables of the def the site is written in (hosted macros.cr 143-147:
+  # expand_macro(node, scope, path_lookup, free_vars, a_def)). None at the top
+  # level and in a type body.
+  def site_report(site : ASTNode, scope_name : String = "<Program>", bindings : Array(MacroFreeBinding)? = nil, facts : MacroTypeFacts? = nil) : MacroReport
     interp = MacroInterpreter.new(nil, @flags, scope_name)
+    interp.type_facts = facts
+    if bound = bindings
+      interp.bind_free_vars(bound)
+    end
     interp.interpret(site)
 
     line = 0
@@ -112,9 +121,17 @@ pub class MacroEngine
     rep.output
   end
 
+  # The expansion's nodes are in the file of the call that expands them: the names that file imports
+  # are in scope for what the macro writes there (a `getter table : TypeTable` in a file that imports
+  # TypeTable). Parsed with no file name, they were in no file, and a def among them was typed with no
+  # imports at all.
   def expand(a_macro : Macro, call : Call) : ASTNode
     expanded_source = expand_to_s(a_macro, call)
-    parser = Parser.new(expanded_source)
+    file = ""
+    if loc = call.location
+      file = loc.filename
+    end
+    parser = Parser.new(expanded_source, file)
     node = parser.parse
     Normalizer.new.normalize(node)
   end

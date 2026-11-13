@@ -47,6 +47,7 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
+    lowprim_enum) echo "enum members type as Int32 until the bodies lane's enum Path fix lands" ;;
   esac
 }
 
@@ -54,7 +55,6 @@ waiting_on() {
 # so the list stays honest.
 known_divergence() {
   case "$1" in
-    lowprim_ptr) echo "generic instance metaclass type_id (@\"Pointer(Int32).class:type_id\", NEEDS.md row 17)" ;;
   esac
 }
 # Fixtures identical to the hosted module whose native executable waits by name. None now: defs are emitted Iyi
@@ -163,6 +163,21 @@ if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
 fi
 
 echo
+binary_union_check() {
+  for side in left right; do
+    if "$1" binary_union "$REPO/bench/fixtures/prim_refuse_union.iyi" "$side" > "$WORK/union.out" 2> "$WORK/union.err"; then
+      return 1
+    fi
+    awk '/lower: visit\(binary <= with operand IR types .* inconsistent with Int64 and Int64 \(hosted codegen_binary_op\)\)/ { found = 1 } END { exit !found }' "$WORK/union.err" || return 1
+  done
+}
+if binary_union_check "$WORK/port"; then
+  echo "  union comparison: both operand positions refused by name"
+else
+  echo "  union comparison: missing named refusal"
+  status=1
+fi
+
 echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires every primitive fixture
 # to match the hosted module exactly. It returns 0 only on the unmutated behaviour.
@@ -178,10 +193,28 @@ lower_primitives_check() {
   done
   "$WORK/mut" generic_pointerful > "$WORK/mut.pointerful" 2>"$WORK/mut.pointerful.err" || return 1
   awk '/^generic_pointerful=1$/ { found = 1 } END { exit !found }' "$WORK/mut.pointerful" || return 1
+  binary_union_check "$WORK/mut" || return 1
   return 0
 }
+pointer_check() {
+  "$IYI" build -o "$WORK/pointer_mut" "$REPO/bench/selfhost_lower_primitives_exercise.iyi" > "$WORK/pointer_mut.build.log" 2>&1 || return 1
+  : > "$WORK/pointer_mut_built"
+  "$WORK/pointer_mut" lower "$REPO/bench/fixtures/lowprim_ptr.iyi" "$WORK/lowprim_ptr.oracle.ll" > "$WORK/pointer_mut.out" 2> "$WORK/pointer_mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/pointer_mut.out"
+}
+pointer_check || { echo "  baseline: pointer fixture differs"; status=1; }
+rm -f "$WORK/pointer_mut_built"
+prove_mutation "a generic pointer metaclass receiver is not evaluated" "$REPO/src/compiler/lower/primitives.iyi" \
+  '        type_id_value(low, receiver_type(low, receiver))' '        llvm_nil(low)' -- pointer_check || status=1
+if [ ! -f "$WORK/pointer_mut_built" ]; then echo "  NOT PROVEN: pointer metaclass mutant failed to build"; status=1; fi
+rm -f "$WORK/pointer_mut_built"
+prove_mutation "pointer addition loses inbounds" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = low.builder.inbounds_gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' '    low.last = low.builder.gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' -- pointer_check || status=1
+if [ ! -f "$WORK/pointer_mut_built" ]; then echo "  NOT PROVEN: pointer addition mutant failed to build"; status=1; fi
 # The baseline: the unmutated port must pass the check, or every mutation below is caught for the wrong reason.
 lower_primitives_check || { echo "  baseline: the unmutated primitives do not pass the check"; status=1; }
+prove_mutation "binary union operand is not refused" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    if p1.type.key != low.typer.llvm_type(t1).key || p2.type.key != low.typer.llvm_type(t2).key' '    if false' -- lower_primitives_check || status=1
 prove_mutation "the wrapping add is a subtraction" "$REPO/src/compiler/lower/primitives.iyi" \
   "    return low.builder.add(p1, p2)" "    return low.builder.sub(p1, p2)" -- lower_primitives_check || status=1
 prove_mutation "the signed less-than is unsigned" "$REPO/src/compiler/lower/primitives.iyi" \
@@ -218,6 +251,26 @@ prove_mutation "an atomic read-modify-write ignores its ordering" "$REPO/src/com
   '  ordering = atomic_ordering(node.args[3])' '  ordering = Ordering::Monotonic' -- lower_primitives_check || status=1
 prove_mutation "compare-exchange ignores its failure ordering" "$REPO/src/compiler/lower/primitives.iyi" \
   '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, failure)' '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, success)' -- lower_primitives_check || status=1
+if [ -n "$(waiting_on lowprim_enum)" ]; then
+  echo "  NOT RUN: enum mutation waits for enum member typing"
+else
+  prove_mutation "an enum value is not lowered" "$REPO/src/compiler/lower/primitives.iyi" \
+    '  if name == "enum_value"' '  if name == "wrong_enum_value"' -- lower_primitives_check || status=1
+fi
+prove_mutation "checked conversion omits its lower bound" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  low.builder.build_or(below, above)' '  above' -- lower_primitives_check || status=1
+prove_mutation "checked conversion omits its upper bound" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  low.builder.build_or(below, above)' '  below' -- lower_primitives_check || status=1
+prove_mutation "a tuple index selects the first member" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  first = primitive.tuple_index' '  first = 0' -- lower_primitives_check || status=1
+prove_mutation "object_id returns zero instead of the receiver address" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = low.builder.ptr_to_int(values[0], low.module.types.int64)' '    low.last = low.builder.const_int(low.module.types.int64, 0_i64)' -- lower_primitives_check || status=1
+prove_mutation "runtime type id returns Nil's id" "$REPO/src/compiler/lower/primitives.iyi" \
+  '      low.last = type_id_of_value(low, obj || node, values[0], t1)' '      low.last = type_id_value(low, low.analysed.program.nil_type)' -- lower_primitives_check || status=1
+prove_mutation "proc call omits the closure context" "$REPO/src/compiler/lower/primitives.iyi" \
+  '  closure_args = [ctx.as(Value)] of Value' '  closure_args = [] of Value' -- lower_primitives_check || status=1
+prove_mutation "tuple metaclass indexing returns Nil's type id" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = type_id_value(low, result.as(Type))' '    low.last = type_id_value(low, low.analysed.program.nil_type)' -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
   "    if op == \"<\"" "    if op == \"<=\"" -- lower_primitives_check || status=1
 prove_mutation "the Bool equality tests inequality" "$REPO/src/compiler/lower/primitives.iyi" \

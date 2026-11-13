@@ -2,8 +2,8 @@ module compiler/ir/module
 
 import compiler/ir/types::{IrType, TypeTable}
 import compiler/ir/function::{Function, Global}
-import compiler/ir/values::{Param}
-import compiler/ir/inst::{CallConv}
+import compiler/ir/values::{Value, Param}
+import compiler/ir/inst::{CallConv, Inst}
 import compiler/ir/layout::{DataLayout, LayoutError}
 import compiler/platform/target::{Target}
 
@@ -103,6 +103,67 @@ pub class Module
     @globals << g
     @global_index[name] = g
     g
+  end
+
+  # Drops every unwind edge of every function (Function#drop_unwind_edges), then removes the declarations only
+  # the unwind path named: a function with no body that something referenced before and nothing references
+  # after (the personality, the re-raise). A declaration nothing referenced to begin with stays as written.
+  # Returns the reason of the first function in which an unwinding instruction stays reachable.
+  def drop_unwind_edges : String?
+    before = referenced_functions
+    k = 0
+    while k < @functions.size
+      if reason = @functions[k].drop_unwind_edges(@types.void)
+        return reason
+      end
+      k = k + 1
+    end
+    after = referenced_functions
+    kept = [] of Function
+    index = Hash(String, Function).new
+    @functions.each do |f|
+      next if f.declaration? && before.has_key?(f) && !after.has_key?(f)
+      kept << f
+      index[f.name] = f
+    end
+    @functions = kept
+    @function_index = index
+    nil
+  end
+
+  # Every function that an operand, a global's initializer or a personality names.
+  def referenced_functions : Hash(Value, Bool)
+    found = Hash(Value, Bool).new
+    seen = Hash(Value, Bool).new
+    @globals.each do |g|
+      if init = g.initializer
+        note_functions(init, found, seen)
+      end
+    end
+    @functions.each do |f|
+      if p = f.personality
+        note_functions(p, found, seen)
+      end
+      f.blocks.each do |b|
+        b.insts.each do |i|
+          i.args.each { |a| note_functions(a, found, seen) }
+        end
+      end
+    end
+    found
+  end
+
+  # A function is noted; an instruction or a constant has its operands followed, each once.
+  private def note_functions(v : Value, found : Hash(Value, Bool), seen : Hash(Value, Bool)) : Nil
+    if v.is_a?(Function)
+      found[v] = true
+      return nil
+    end
+    return nil unless v.is_a?(Inst)
+    return nil if seen.has_key?(v)
+    seen[v] = true
+    v.as(Inst).args.each { |a| note_functions(a, found, seen) }
+    nil
   end
 
   # The index of `path` in the file table, adding it on first use.

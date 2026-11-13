@@ -77,6 +77,15 @@ else
   awk 'NR<=6' "$WORK/context.out"
   status=1
 fi
+if "$WORK/port" jump-mismatch > "$WORK/jump-mismatch.out" 2>&1; then
+  echo "  FAIL: mismatched typed jump target was accepted"
+  status=1
+elif ! awk '/typed jump target disagrees with lexical target/ { found = 1 } END { exit !found }' "$WORK/jump-mismatch.out"; then
+  echo "  FAIL: mismatched target did not produce its named refusal"
+  status=1
+else
+  echo "  mismatched typed jump target refused"
+fi
 
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
@@ -193,6 +202,38 @@ if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
   status=1
 fi
 
+# An external variable's address is a global pointer, not a getter call. Keep
+# an ordinary lib function call as a negative case.
+echo "== 2b. External library variable address"
+pointer_fixture="$REPO/bench/fixtures/wait_lower_pointerof_lib_var.iyi"
+if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/pointer-lib-host" "$pointer_fixture" > "$WORK/pointer-lib-host.log" 2>&1 &&
+   awk "$CALL_TYPES" "$WORK/pointer-lib-host.ll" > "$WORK/pointer-lib-oracle.ll" &&
+   "$WORK/port" lower "$pointer_fixture" "$WORK/pointer-lib-oracle.ll" > "$WORK/pointer-lib.compare" 2> "$WORK/pointer-lib.err" &&
+   awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/pointer-lib.compare" &&
+   "$WORK/port" emit "$pointer_fixture" "$WORK/pointer-lib-oracle.ll" > "$WORK/pointer-lib.ir" 2> "$WORK/pointer-lib-emit.err" &&
+   "$WORK/compile_native" "$WORK/pointer-lib.ir" -o "$WORK/pointer-lib-native" > "$WORK/pointer-lib-native.log" 2>&1; then
+  timeout 30 "$WORK/pointer-lib-host" > "$WORK/pointer-lib-host.out" 2>&1; hs=$?
+  timeout 30 "$WORK/pointer-lib-native" > "$WORK/pointer-lib-native.out" 2>&1; ns=$?
+  if [ "$hs" -eq 7 ] && [ "$ns" -eq 7 ] && cmp -s "$WORK/pointer-lib-host.out" "$WORK/pointer-lib-native.out"; then
+    echo "  external variable address: IR identical, native and hosted status 7"
+  else
+    echo "  FAIL: external variable address native status $ns, hosted status $hs"
+    status=1
+  fi
+else
+  echo "  FAIL: external variable address did not match hosted IR or build natively"
+  status=1
+fi
+if "$WORK/port" emit "$REPO/bench/fixtures/wait_lower_pointerof_lib_fun.iyi" "$WORK/pointer-lib-oracle.ll" > "$WORK/pointer-lib-fun.out" 2> "$WORK/pointer-lib-fun.err"; then
+  echo "  FAIL: pointerof ordinary library function call was accepted"
+  status=1
+elif grep -Fq 'pointerof of LibC.getpid is not ported yet' "$WORK/pointer-lib-fun.err"; then
+  echo "  ordinary library function call: refused by name"
+else
+  echo "  FAIL: ordinary library function call did not reach its named refusal"
+  status=1
+fi
+
 module_floor_file="$REPO/bench/selfhost_lower_core_module.floor"
 module_floor="$(awk 'NR==1 { print $1 }' "$module_floor_file" 2>/dev/null)"
 module_floor="${module_floor:-0}"
@@ -211,19 +252,57 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_while_true lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_bare lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union lower_trait"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
   "$IYI" build -o "$WORK/port-m" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/m.build.log" 2>&1 || return 1
   "$WORK/port-m" context > "$WORK/m.ctx" 2>&1 || return 1
   awk '/^CONTEXT OK$/ { ok = 1 } END { exit !ok }' "$WORK/m.ctx" || return 1
+  if "$WORK/port-m" jump-mismatch > "$WORK/m.jump" 2>&1; then return 1; fi
+  awk '/typed jump target disagrees with lexical target/ { found = 1 } END { exit !found }' "$WORK/m.jump" || return 1
   for n in $CORE_CHECK_FIXTURES; do
     "$WORK/port-m" lower "$REPO/bench/fixtures/$n.iyi" "$WORK/$n.oracle.ll" > "$WORK/m.out" 2> "$WORK/m.err" || return 1
     awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/m.out" || return 1
   done
   return 0
 }
+if "$WORK/port" lower "$REPO/bench/fixtures/lower_trait.iyi" "$WORK/lower_trait.oracle.ll" > "$WORK/trait.out" 2>&1 &&
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/trait.out"; then
+  prove_mutation "trait declaration is not visited" "$REPO/src/compiler/lower/lower.iyi" \
+    'if node.is_a?(TraitDef)' 'if false && node.is_a?(TraitDef)' -- lower_core_check || status=1
+  prove_mutation "impl declaration is not visited" "$REPO/src/compiler/lower/lower.iyi" \
+    'if node.is_a?(ImplDef)' 'if false && node.is_a?(ImplDef)' -- lower_core_check || status=1
+else
+  echo "FAIL: trait fixture does not match the hosted module"
+  status=1
+fi
+indirect_refusal_check() {
+  local driver="$1" kind="$2"
+  if "$driver" emit "$REPO/bench/fixtures/wait_lower_indirect_${kind}.iyi" "$WORK/lower_nil.oracle.ll" > "$WORK/indirect.out" 2>&1; then
+    return 1
+  fi
+  awk -v expected="indirect ${kind} above 128 bytes is not ported" 'index($0, expected) { found = 1 } END { exit !found }' "$WORK/indirect.out"
+}
+indirect_mutant_check() {
+  "$IYI" build -o "$WORK/port-indirect" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/indirect.build.log" 2>&1 || return 1
+  indirect_refusal_check "$WORK/port-indirect" "$1"
+}
+for kind in argument result; do
+  if indirect_refusal_check "$WORK/port" "$kind"; then
+    echo "  indirect $kind above 128 bytes refused"
+    if [ "$kind" = argument ]; then
+      prove_mutation "indirect argument is not refused" "$REPO/src/compiler/lower/fun.iyi" \
+        'if low.typer.passed_indirectly?(arg_type)' 'if false && low.typer.passed_indirectly?(arg_type)' -- indirect_mutant_check argument || status=1
+    else
+      prove_mutation "indirect result is not refused" "$REPO/src/compiler/lower/fun.iyi" \
+        'if low.typer.passed_indirectly?(ret)' 'if false && low.typer.passed_indirectly?(ret)' -- indirect_mutant_check result || status=1
+    fi
+  else
+    echo "  FAIL: indirect $kind was not refused by name"
+    status=1
+  fi
+done
 # The long-string name: a string constant longer than 18 bytes is named by its first 19 bytes and `...` (hosted
 # codegen.cr:3463). The fixture's module differs only in the String type id (NEEDS.md row 16), so the gate
 # compares the name in the port's own module text rather than the whole module.
@@ -312,6 +391,10 @@ prove_mutation "the then and else branches are swapped" "$REPO/src/compiler/lowe
   "low.builder.cond_br(cond_value, then_block, else_block)" "low.builder.cond_br(cond_value, else_block, then_block)" -- lower_core_check || status=1
 prove_mutation "the while body is the condition" "$REPO/src/compiler/lower/lower.iyi" \
   "codegen_node(low, node.body)" "codegen_node(low, node.cond)" -- lower_core_check || status=1
+prove_mutation "a typed break target is ignored" "$REPO/src/compiler/lower/lower.iyi" \
+  "when Break  then node.target" "when Break  then nil" -- lower_core_check || status=1
+prove_mutation "mismatched jump targets are accepted" "$REPO/src/compiler/lower/lower.iyi" \
+  'typed.object_id != lexical.object_id' 'typed.object_id == lexical.object_id' -- lower_core_check || status=1
 prove_mutation "a char is its code point plus one" "$REPO/src/compiler/lower/lower.iyi" \
   "node.value.ord.to_i64)" "node.value.ord.to_i64 + 1_i64)" -- lower_core_check || status=1
 prove_mutation "an empty alloca block is kept" "$REPO/src/compiler/lower/context.iyi" \
@@ -598,6 +681,77 @@ else
   awk 'NR<=8' "$WORK/named-tuple.err" "$WORK/named-tuple.out" "$WORK/named-tuple.build.log"
   status=1
 fi
+while_true_check() {
+  "$IYI" build -o "$WORK/port-while-true" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/while-true.build.log" 2>&1 || return 1
+  "$WORK/port-while-true" lower "$REPO/bench/fixtures/lower_while_true.iyi" "$WORK/lower_while_true.oracle.ll" > "$WORK/while-true.out" 2> "$WORK/while-true.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/while-true.out"
+}
+if while_true_check; then
+  prove_mutation "an endless loop emits a conditional" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if cond.is_a?(BoolLiteral) && cond.as(BoolLiteral).value' \
+    '  if false && cond.is_a?(BoolLiteral) && cond.as(BoolLiteral).value' -- while_true_check || status=1
+else
+  echo "FAIL: endless loop fixture differs from hosted"
+  awk 'NR<=8' "$WORK/while-true.err" "$WORK/while-true.out" "$WORK/while-true.build.log"
+  status=1
+fi
+case_expansion_check() {
+  "$IYI" build -o "$WORK/port-case" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/case.build.log" 2>&1 || return 1
+  "$WORK/port-case" lower "$REPO/bench/fixtures/lower_case.iyi" "$WORK/lower_case.oracle.ll" > "$WORK/case.out" 2> "$WORK/case.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/case.out"
+}
+if case_expansion_check; then
+  prove_mutation "case expansion is not visited" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if node.is_a?(Case)' '  if false && node.is_a?(Case)' -- case_expansion_check || status=1
+else
+  echo "FAIL: case fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/case.err" "$WORK/case.out" "$WORK/case.build.log"
+  status=1
+fi
+union_read_check() {
+  "$IYI" build -o "$WORK/port-union-read" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/union-read.build.log" 2>&1 || return 1
+  "$WORK/port-union-read" lower "$REPO/bench/fixtures/lower_union_read.iyi" "$WORK/lower_union_read.oracle.ll" > "$WORK/union-read.out" 2> "$WORK/union-read.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/union-read.out"
+}
+if union_read_check; then
+  prove_mutation "narrowed union read is not downcast" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if read_type && v.type.is_a?(MixedUnionType)' \
+    '  if false && read_type && v.type.is_a?(MixedUnionType)' -- union_read_check || status=1
+else
+  echo "FAIL: union read fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/union-read.err" "$WORK/union-read.out" "$WORK/union-read.build.log"
+  status=1
+fi
+# This is a native behavioral check: a broken driver or invalid mutant must not
+# be counted as a caught mutation.
+aggregate_store_check() {
+  if ! "$IYI" build -o "$WORK/port-aggregate-store" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/aggregate-store.build.log" 2>&1; then
+    touch "$WORK/aggregate-store.invalid"
+    return 1
+  fi
+  "$WORK/port-aggregate-store" emit "$REPO/bench/fixtures/lowcast_struct_union.iyi" "$WORK/aggregate-store.ll" > "$WORK/aggregate-store.ir" 2> "$WORK/aggregate-store.err" || { touch "$WORK/aggregate-store.invalid"; return 1; }
+  "$WORK/compile_native" "$WORK/aggregate-store.ir" -o "$WORK/aggregate-store.native" > "$WORK/aggregate-store.native.log" 2>&1 || { touch "$WORK/aggregate-store.invalid"; return 1; }
+  timeout 30 "$WORK/aggregate-store.native" > "$WORK/aggregate-store.native.out" 2>&1; local ns=$?
+  timeout 30 "$WORK/aggregate-store.hosted" > "$WORK/aggregate-store.hosted.out" 2>&1; local hs=$?
+  if [ "$hs" -ne 7 ] || { [ "$ns" -ne 7 ] && [ "$ns" -ne 200 ]; }; then
+    touch "$WORK/aggregate-store.invalid"
+    return 1
+  fi
+  [ "$ns" = "$hs" ] && cmp -s "$WORK/aggregate-store.native.out" "$WORK/aggregate-store.hosted.out"
+}
+if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/aggregate-store.hosted" "$REPO/bench/fixtures/lowcast_struct_union.iyi" > "$WORK/aggregate-store.hosted.log" 2>&1 &&
+   cp "$WORK/aggregate-store.hosted.ll" "$WORK/aggregate-store.ll" && aggregate_store_check; then
+  prove_mutation "aggregate store preserves the loaded value" "$REPO/src/compiler/lower/lower.iyi" \
+    '      stored = load_aligned(low, low.typer.llvm_type(vt), v)' \
+    '      stored = low.builder.const_zero(low.typer.llvm_type(vt))' -- aggregate_store_check || status=1
+  if [ -e "$WORK/aggregate-store.invalid" ]; then
+    echo "FAIL: aggregate store mutant did not compile or exit meaningfully"
+    status=1
+  fi
+else
+  echo "FAIL: aggregate store baseline differs from hosted"
+  status=1
+fi
 tuple_literal_check() {
   "$IYI" build -o "$WORK/port-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple.build.log" 2>&1 || return 1
   "$WORK/port-tuple" lower "$REPO/bench/fixtures/lower_tuple_literal.iyi" "$WORK/lower_tuple_literal.oracle.ll" > "$WORK/tuple.out" 2> "$WORK/tuple.err" || return 1
@@ -740,6 +894,25 @@ fi
 prove_mutation "a pointer union gains extra parentheses" "$REPO/src/compiler/lower/fun.iyi" \
   'skip_union_parens: true, codegen: true' \
   'skip_union_parens: false, codegen: true' -- name_pointer_check || status=1
+
+name_block_check() {
+  "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/name-block-oracle" "$REPO/bench/fixtures/nameblock_capture.iyi" > "$WORK/name-block.oracle.log" 2>&1 || return 1
+  "$IYI" build -o "$WORK/name-block-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-block.build.log" 2>&1 || return 1
+  "$WORK/name-block-port" "$REPO/bench/fixtures/nameblock_capture.iyi" "$WORK/name-block-oracle.ll" block > "$WORK/name-block.out" 2> "$WORK/name-block.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-block.out"
+}
+if name_block_check; then
+  echo "  nameblock_capture: captured block names match the hosted symbols"
+else
+  echo "  nameblock_capture: captured block names differ from the hosted symbols"
+  for log in "$WORK/name-block.err" "$WORK/name-block.out" "$WORK/name-block.build.log" "$WORK/name-block.oracle.log"; do
+    [ ! -f "$log" ] || awk 'NR<=8' "$log"
+  done
+  status=1
+fi
+prove_mutation "a captured block loses its ampersand" "$REPO/src/compiler/lower/fun.iyi" \
+  '      names << "&" + symbol_type(bt)' \
+  '      names << symbol_type(bt)' -- name_block_check || status=1
 
 echo
 echo

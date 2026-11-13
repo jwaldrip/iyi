@@ -30,7 +30,7 @@ import compiler/ir/inst::{CallConv, Inst, IntPredicate, Op}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
-import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
+import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{primitive_kind, passed_by_value?}
@@ -38,12 +38,13 @@ import compiler/lower/unions::{mixed_union_value_area}
 import compiler/semantic/top_level::{MetaclassType, NilType, Type, UnionType, VoidType}
 import compiler/syntax/ast::{ASTNode, Var}
 import compiler/types/indirection::{TypeIndirection}
+import compiler/types/rendering::{TypeRenderer}
 import compiler/types/types::{MixedUnionType, NilableProcType, NilableReferenceUnionType, NilableType, PointerInstanceType, ProcInstanceType, ReferenceUnionType, TypeQueries, VirtualMetaclassType, VirtualType}
 
-# The type id of a type as a loaded value: the hosted `type_id(type)` loads it from the
-# global `@"<full name>:type_id"`, an internal constant, created on first use.
+# Hosted type_id.cr 168-169 names the global using the codegen spelling of
+# the type, including virtual and generic arguments.
 pub def type_id_value(low : Lowerer, t : Type) : Value
-  name = "#{t.full_name}:type_id"
+  name = "#{TypeRenderer.render(t, codegen: true)}:type_id"
   global = low.module.get_global?(name)
   if global.nil?
     made = low.module.add_global(name, low.module.types.int32)
@@ -102,8 +103,13 @@ end
 # A nil value into a union only writes the type id and the zeroed area (the caller must not
 # store the nil itself).
 pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
+  # Hosted cast.cr 73-85: an ended block or NoReturn value produces no store.
+  return if at_terminator?(low) || TypeQueries.no_return?(value_type)
+  target = TypeIndirection.remove_indirection(target)
+  value_type = TypeIndirection.remove_indirection(value_type)
   if target.full_name == value_type.full_name
-    store_aligned(low, value, pointer)
+    stored = value.type.pointer? ? to_rhs(low, value, target) : value
+    store_aligned(low, stored, pointer)
     return
   end
   if value_type.is_a?(VoidType)
@@ -137,7 +143,37 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
     assign_mixed_union(low, pointer, target, value_type, value)
     return
   end
+  # Hosted assign_distinct(ProcInstanceType, ProcInstanceType) (cast.cr:279-283): a non-void proc stored as a void proc.
+  if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)
+    store_aligned(low, to_rhs(low, value, target), pointer)
+    return
+  end
+  # Hosted assign_distinct(NilableProcType, NilType) (cast.cr:237-240): nil is a null function and a null context.
+  if target.is_a?(NilableProcType) && value_type.nil_type?
+    store_aligned(low, make_nilable_fun(low, target.as(NilableProcType).proc_type), pointer)
+    return
+  end
+  # Hosted assign_distinct(NilableProcType, ProcInstanceType) (cast.cr:242-244).
+  if target.is_a?(NilableProcType) && value_type.is_a?(ProcInstanceType)
+    store_aligned(low, value, pointer)
+    return
+  end
   pending_visit_node("assign #{value_type.full_name} to #{target.full_name} (hosted assign_distinct, not ported)")
+end
+
+# Hosted make_nilable_fun (codegen.cr:2386-2388): a proc struct of two null pointers.
+# Inlined so cast does not import proc (proc imports fun, and fun imports cast).
+def make_nilable_fun(low : Lowerer, proc_type : Type) : Value
+  struct_type = low.typer.llvm_type(proc_type)
+  closure_ptr = low.alloca(struct_type)
+  i32 = low.module.types.int32
+  zero = low.builder.const_int(i32, 0).as(Value)
+  null_ptr = low.builder.const_null(low.module.types.ptr(0)).as(Value)
+  fun_field = low.builder.inbounds_gep(struct_type, closure_ptr, [zero, low.builder.const_int(i32, 0).as(Value)] of Value)
+  store_aligned(low, null_ptr, fun_field)
+  ctx_field = low.builder.inbounds_gep(struct_type, closure_ptr, [zero, low.builder.const_int(i32, 1).as(Value)] of Value)
+  store_aligned(low, null_ptr, ctx_field)
+  load_aligned(low, struct_type, closure_ptr).as(Value)
 end
 
 # The hosted `assign_distinct(MixedUnionType, MixedUnionType)` when every member of the value
@@ -224,6 +260,18 @@ pub def store_in_union(low : Lowerer, union_type : Type, union_pointer : Value, 
     store_aligned(low, value, field)
     return
   end
+  if value_type.struct? && passed_by_value?(value_type)
+    if low.typer.passed_indirectly?(value_type)
+      pending_visit_node("store of indirectly passed #{value_type.full_name} in #{union_type.full_name} (hosted store_value, copy_value)")
+      return
+    end
+    stored = value
+    if value.type == low.module.types.ptr(0)
+      stored = load_aligned(low, low.typer.llvm_embedded_type(value_type), value)
+    end
+    store_aligned(low, stored, field)
+    return
+  end
   pending_visit_node("store of #{value_type.full_name} in #{union_type.full_name} (hosted store_value, not ported)")
 end
 
@@ -239,6 +287,8 @@ end
 # temporary. Structurally this is not the hosted `if` join (which keeps the temporary's
 # pointer); the core's join uses `union_temp` for identity with the hosted module.
 pub def upcast(low : Lowerer, value : Value, from : Type, to : Type) : Value
+  # Hosted upcast (cast.cr:540): an ended block has no value to convert.
+  return llvm_nil(low) if at_terminator?(low)
   f = TypeIndirection.remove_indirection(from)
   t = TypeIndirection.remove_indirection(to)
   return value if f.full_name == t.full_name
