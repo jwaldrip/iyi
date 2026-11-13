@@ -1,0 +1,9 @@
+def consume(p : Proc(Int32)) : Int32
+  0
+end
+
+def outer : Int32
+  consume(-> { consume(-> { 3 }); 2 })
+end
+
+outer

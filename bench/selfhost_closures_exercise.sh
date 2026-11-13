@@ -52,7 +52,9 @@ printf '%s\n' '== 2. Comparing closure facts'
 compare_fixtures || exit 1
 refusal_check() {
   "$PORT" --refusals bench/fixtures/semclos_literal_changing.iyi > "$WORK/refusals.out" 2>&1 || return 1
-  awk '/^refusal: closured variable value assigned values of more than one type$/ { found=1 } END { exit !found }' "$WORK/refusals.out"
+  awk '/^refusal: closured variable value assigned values of more than one type$/ { found=1 } END { exit !found }' "$WORK/refusals.out" || return 1
+  "$PORT" --refusals bench/fixtures/semclos_refusals/nested.iyi > "$WORK/refusals.out" 2>&1 || return 1
+  awk '/^refusal: nested proc literal$/ { found=1 } END { exit !found }' "$WORK/refusals.out"
 }
 if ! refusal_check; then
   printf '%s\n' 'MISSING REFUSAL: changing captured variable type'
@@ -90,6 +92,8 @@ prove_mutation 'out arguments do not introduce bindings' "$REPO/src/compiler/sem
           nil' -- mutation_check || status=1
 prove_mutation 'possibly unassigned captured locals lose Nil' "$REPO/src/compiler/semantic/closures.iyi" \
   'if type.nilable? && !binding.variable.type.nilable?' 'if false && type.nilable? && !binding.variable.type.nilable?' -- mutation_check || status=1
+prove_mutation 'nested proc refusal is suppressed' "$REPO/src/compiler/semantic/closures.iyi" \
+  'refuse_inside_proc("nested proc literal", false)' 'nil' -- mutation_check || status=1
 prove_mutation 'blocks are independent closure contexts' "$REPO/src/compiler/semantic/closures.iyi" \
   'while current.kind == FrameKind::Block' 'while false && current.kind == FrameKind::Block' -- mutation_check || status=1
 prove_mutation 'instance variable does not capture self' "$REPO/src/compiler/semantic/closures.iyi" \

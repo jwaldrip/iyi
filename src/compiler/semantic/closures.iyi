@@ -430,11 +430,18 @@ pub class ClosureFacts
   end
 
   def refusals(node : ASTNode) : Array(String)
-    if frame = @frames[node]?
-      frame.errors
-    else
-      [] of String
+    errors = [] of String
+    @ordered.each do |frame|
+      current : ClosureFrame? = frame
+      while part = current
+        if part.node.node_id == node.node_id
+          frame.errors.each { |error| errors << error unless errors.includes?(error) }
+          break
+        end
+        current = part.parent
+      end
     end
+    errors
   end
 
   def dump_lines(file : String) : Array(String)
