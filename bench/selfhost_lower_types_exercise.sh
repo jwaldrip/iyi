@@ -636,8 +636,14 @@ prove_mutation "untyped union in passed_by_value? answered false instead of chec
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "generic type arguments retain virtual marker outside codegen" "$REPO/src/compiler/types/rendering.iyi" \
-  '    if !codegen && value.is_a?(VirtualType)' \
-  '    if false && value.is_a?(VirtualType)' \
+  '    if codegen
+      return type
+    end
+    type.devirtualize' \
+  '    if codegen
+      return type
+    end
+    type' \
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
