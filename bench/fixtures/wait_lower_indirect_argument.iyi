@@ -47,6 +47,10 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
+fun __crystal_raise_overflow : NoReturn
+  LibC.exit(99)
+end
+
 def consume(value : Large) : Int32
   value.value == 0_i64 ? 7 : 1
 end
