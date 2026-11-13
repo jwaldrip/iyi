@@ -201,6 +201,13 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     s
   when Iyi::Call
     s = "#{p}Call name=#{escape_s(node.name)}\n"
+    if ARGV[0]?.try(&.ends_with?("syntax_call_spans.iyi"))
+      if loc = node.end_location
+        s += "#{p}  end=#{loc.line_number}:#{loc.column_number}\n"
+      else
+        s += "#{p}  end=nil\n"
+      end
+    end
     if obj = node.obj
       s += "#{p}  obj:\n" + dump_ast(obj, indent + 2)
     end
@@ -227,6 +234,11 @@ def dump_ast(node : Iyi::ASTNode?, indent : Int32 = 0) : String
     arg_names = node.args.map(&.name).join(", ")
     splat = node.splat_index ? node.splat_index.to_s : "none"
     s = "#{p}Block args=[#{arg_names}] splat=#{splat}:\n"
+    if unpacks = node.unpacks
+      unpacks.each do |index, expressions|
+        s += "#{p}  unpack[#{index}]:\n" + dump_ast(expressions, indent + 2)
+      end
+    end
     s += dump_ast(node.body, indent + 1)
     s
   when Iyi::Assign
@@ -754,6 +766,8 @@ for fixture in \
   "$REPO"/bench/fixtures/syntax_control_keyword_names.iyi \
   "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi \
   "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi \
+  "$REPO"/bench/fixtures/syntax_block_unpacks.iyi \
+  "$REPO"/bench/fixtures/syntax_call_spans.iyi \
   "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi; do
   fixture_name="${fixture#"$REPO/"}"
   "$WORK/exercise-plain" "$fixture" > "$WORK/iyi.ast"
@@ -792,6 +806,27 @@ for bad in \
     status=1
   else
     echo "  properly rejected: $bad"
+  fi
+done
+
+echo "== Block parameter rejection parity"
+for bad in \
+  'f { |(x, x)| x }' \
+  'f { |x, (y, x)| x }' \
+  'f { |*x, *y| x }' \
+  'f { |(x, *y, *z)| x }' \
+  'f { |(x, (y, *z, *w))| x }' \
+  'f { |(x, 1)| x }' \
+  'f { |(x, if)| x }'; do
+  printf '%s\n' "$bad" > "$WORK/invalid-block.iyi"
+  if "$WORK/exercise-plain" "$WORK/invalid-block.iyi" >/dev/null 2>&1; then
+    echo "  native accepted invalid: $bad"
+    status=1
+  elif "$WORK/dump_crystal" "$WORK/invalid-block.iyi" >/dev/null 2>&1; then
+    echo "  hosted accepted invalid: $bad"
+    status=1
+  else
+    echo "  both rejected: $bad"
   fi
 done
 
@@ -885,6 +920,7 @@ new_fixtures_match() {
     "$REPO"/bench/fixtures/syntax_type_list_then_call.iyi \
     "$REPO"/bench/fixtures/syntax_control_keyword_names.iyi \
     "$REPO"/bench/fixtures/syntax_heredoc_command_and_folds.iyi \
+    "$REPO"/bench/fixtures/syntax_call_spans.iyi \
     "$REPO"/bench/fixtures/syntax_begin_shorthand_and_comma_lines.iyi; do
     "$WORK/mut-exercise" "$fixture" > "$WORK/mut.ast" 2>/dev/null || return 1
     "$WORK/dump_crystal" "$fixture" > "$WORK/mut_cr.ast" 2>/dev/null || return 1
@@ -932,6 +968,9 @@ run_proof_in "mutation 27: a comma does not continue a call across the line brea
 run_proof_in "mutation 28: a control keyword before a colon is refused as a void value" "$PARSER" \
   'syntax_error("void value expression", @token.location) unless next_comes_colon_space?' \
   'syntax_error("void value expression", @token.location)'
+run_proof_in "mutation 29: discard the closing call delimiter location" "$PARSER" \
+  'CallArgs.new(args, block, block_arg, named_args, false, end_location, true)' \
+  'CallArgs.new(args, block, block_arg, named_args, false, nil, true)'
 
 echo
 echo "== Verification clean state confirmed"

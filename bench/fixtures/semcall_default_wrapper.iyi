@@ -17,3 +17,4 @@ end
 # wrapper wrap_second(a: 1)
 # wrapper wrap_magic(1)
 # wrapper wrap_magic(1, line: 2)
+# wrapper wrap_first(a: 7)
