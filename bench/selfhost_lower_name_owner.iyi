@@ -45,11 +45,9 @@ def triple_of(text : String) : String
   raise "the oracle module names no target triple"
 end
 
-def hosted_flag(text : String) : String?
+def hosted_flag(text : String, expected : String) : String?
   text.split("\n").each do |line|
-    if line.includes?("*Child^Base#flag<Int32>:Int32")
-      return "*Child^Base#flag<Int32>:Int32"
-    end
+    return expected if line.includes?(expected)
   end
   nil
 end
@@ -62,15 +60,19 @@ def run : Nil
   end
   fixture = args[0]
   oracle_text = File.read(args[1])
-  hosted = hosted_flag(oracle_text)
-  raise "the hosted module has no *Child^Base#flag<Int32>:Int32" if hosted.nil?
+  metaclass = args.size > 2 && args[2] == "metaclass"
+  expected = metaclass ? "*NameOwner::class_flag<Int32>:Int32" : "*Child^Base#flag<Int32>:Int32"
+  method_name = metaclass ? "class_flag" : "flag"
+  owner_name = metaclass ? "NameOwner.class" : "Child"
+  hosted = hosted_flag(oracle_text, expected)
+  raise "the hosted module has no #{expected}" if hosted.nil?
   visitor = analyse(File.read(fixture), fixture)
   found : TypedInstance? = nil
   visitor.typed_instances.each do |item|
-    if item.definition.name == "flag"
+    if item.definition.name == method_name
       st = item.self_type
       if st
-        if st.as(Type).full_name == "Child"
+        if st.as(Type).full_name == owner_name
           found = item
         end
       end
