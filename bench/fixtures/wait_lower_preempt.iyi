@@ -1,4 +1,14 @@
+class IyiRuntimeLock
+end
+
+class IyiWorkers
+  @@preempt : Int32
+
+  def self.start : Nil
+  end
+end
+
 fun __iyi_preempt : Nil
 end
 
-__iyi_preempt
+IyiWorkers.start

@@ -48,7 +48,7 @@ import compiler/lower/proc::{lower_proc_literal}
 import compiler/lower/closure::{malloc_closure, closure_var_barrier_begin, closure_var_barrier_end}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, to_rhs, type_id_of_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
-import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
+import compiler/semantic/top_level::{Type, NilType, MetaclassType, ModuleType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants, path_const}
 import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
 import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
@@ -279,6 +279,8 @@ end
 
 # Hosted codegen_well_known_functions visits these top-level definitions in
 # source order, applying the ordinary used/deferred rule to each.
+# `__iyi_preempt` is skipped unless the program has a pool; a pool still
+# refuses because the loop checks that call it are not ported.
 pub def emit_well_known_funs(low : Lowerer) : Nil
   names = [] of String
   ["malloc64", "malloc_atomic64", "realloc64", "raise", "personality", "get_exception", "raise_overflow", "raise_cast_failed", "once_init", "once"].each do |suffix|
@@ -286,13 +288,41 @@ pub def emit_well_known_funs(low : Lowerer) : Nil
   end
   names << "__iyi_write_barrier_begin"
   names << "__iyi_write_barrier"
+  wanted = preempt_wanted?(low)
   low.analysed.program.global_funs.each do |record|
     if record.name == "__iyi_preempt"
-      refuse_port("__iyi_preempt requires the hosted iyi_preempt_on? predicate")
+      if wanted
+        refuse_port("loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)")
+      end
+      next
     end
     if names.includes?(record.name)
       if node = record.node
         codegen_fun_def(low, node)
+      end
+    end
+  end
+end
+
+# Hosted iyi_preempt_wanted?: prelude present, no exported owners in this
+# single-module port, a reached IyiWorkers.class#start, and @@preempt exists.
+# The chaos flag is not represented on the port program, so it stays false.
+def preempt_wanted?(low : Lowerer) : Bool
+  program = low.analysed.program
+  return false if program.lookup_type("IyiRuntimeLock").nil?
+  workers = program.lookup_type("IyiWorkers")
+  return false if workers.nil?
+  return false unless workers.as(ModuleType).class_vars["@@preempt"]?
+  low.analysed.typed_instances.each do |inst|
+    next unless inst.definition.name == "start"
+    if st = inst.self_type
+      if st.is_a?(MetaclassType) && st.as(MetaclassType).instance_type.full_name == "IyiWorkers"
+        return true
+      end
+    end
+  end
+  false
+end
       end
     end
   end
