@@ -1,0 +1,11 @@
+def macro_uninitialized_local : Int32
+  {% if true %}
+    callstack = uninitialized Int32[2]
+  {% end %}
+  {% if true %}
+    pointerof(callstack).address
+  {% end %}
+  1
+end
+
+macro_uninitialized_local

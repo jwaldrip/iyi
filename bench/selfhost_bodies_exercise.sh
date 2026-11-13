@@ -379,6 +379,20 @@ prove_mutation "a value-position macro expansion is not typed" "$MAIN_VISITOR" \
     if et = child_type(expanded)" \
   "    nil
     if et = child_type(expanded)" -- macro_value_at_floor || status=1
+macro_uninitialized_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_uninitialized.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_macro_uninitialized.iyi" { print $2 }' "$FLOOR_FILE")
+  [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
+}
+prove_mutation "uninitialized locals are unavailable to later macro sites" "$REPO/src/compiler/semantic/inline_macros.iyi" \
+  "  def visit(node : UninitializedVar) : Bool
+    add_name(node.var)" \
+  "  def visit(node : UninitializedVar) : Bool
+    nil" -- macro_uninitialized_at_floor || status=1
 free_types_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   fixture="$REPO/bench/fixtures/sem_bodies_free_types.iyi"
