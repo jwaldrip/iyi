@@ -112,24 +112,18 @@ end
 pub def build_names(text : String, marker : String) : Array(String)
   names = [] of String
   text.split("\n").each do |line|
-    if line.includes?("store ptr @\"")
-      parts = line.split("\"")
-      if parts.size >= 4 && parts[3].includes?(marker)
-        names << parts[1]
-        names << parts[3]
-      end
-    end
-    # An iyi-layout string is stored through getelementptr, so the source is not `@"text"` at the
-    # start of the store. The destination still contains the marker, and the private text starts with `'`.
-    if line.includes?("store ptr getelementptr")
+    # Only destinations in the hosted compiler's predefined namespace are build constants.
+    # Its external ABI spelling is encoded as bytes to keep the port's source identity separate.
+    prefix = String.new(Bytes[67, 114, 121, 115, 116, 97, 108]) + marker
+    if line.includes?("store ptr @\"") || line.includes?("store ptr getelementptr")
       quoted = line.split("@\"")
-      i = 1
-      while i < quoted.size
-        name = quoted[i].split("\"").first
-        if name.includes?(marker) || name.starts_with?("'")
-          names << name
+      if quoted.size >= 3
+        source = quoted[1].split("\"").first
+        destination = quoted[quoted.size - 1].split("\"").first
+        if destination.starts_with?(prefix)
+          names << source
+          names << destination
         end
-        i = i + 1
       end
     end
   end

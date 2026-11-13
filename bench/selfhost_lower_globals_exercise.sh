@@ -170,6 +170,7 @@ echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # hosted module exactly. It returns 0 only on the unmutated behaviour.
 lowglob_check() {
   "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port_m.build.log" 2>&1 || return 1
+  "$WORK/port_m" normalizer-check > /dev/null 2>&1 || return 1
   for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     name="$(basename "$fixture" .iyi)"
     case " $WAITING_FIXTURES " in *" $name "*) "$WORK/port_m" lower "$fixture" "$WORK/$name.oracle.ll" > /dev/null 2>&1 && return 1; continue ;; esac
@@ -188,6 +189,8 @@ else
   echo "    FAIL: the unmutated code does not pass the check"
   status=1
 fi
+prove_mutation "a program global is incorrectly stripped as a build constant" "$REPO/bench/lib/lower_gate.iyi" \
+  "        if destination.starts_with?(prefix)" "        if destination.includes?(marker)" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1
