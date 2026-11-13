@@ -3,6 +3,7 @@ import compiler/syntax/ast::{ASTNode, Assign, Call, Def, DoubleSplat, Expression
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, TopLevelVisitor, Type}
 import compiler/semantic/main_visitor::{MainVisitor}
+import compiler/types/types::{GenericClassInstanceType}
 
 # Collects the `new` calls of the file, in tree order.
 class NewCallWalk < Visitor
@@ -156,6 +157,15 @@ module BenchSelfhostSemanticNewExercise
         column = loc.column_number
       end
       out << "call #{line}:#{column} #{recv_text}.new(#{arg_types}) -> #{result} #{target_text}\n"
+      if result_type = mv.type_of?(c)
+        if result_type.is_a?(GenericClassInstanceType)
+          inst = result_type.as(GenericClassInstanceType)
+          if inst.type_vars["T"]?
+            resolved = mv.lookup_under(Path.new(["T"]), inst)
+            out << "lookup T on #{type_text(inst)} -> #{type_text(resolved)}\n"
+          end
+        end
+      end
     end
     out.to_s
   end

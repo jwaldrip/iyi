@@ -1,14 +1,16 @@
 import compiler/syntax/parser::{Parser}
-import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, NamedArgument, Out, Path, Underscore, Var}
+import compiler/syntax/ast::{ASTNode, Call, Def, Expressions, NamedArgument, NamedTupleLiteral, NilLiteral, Out, Path, Primitive, TupleLiteral, Underscore, Var}
 import compiler/semantic/top_level::{LibType, ModuleType, SemanticProgram, TopLevelVisitor, Type, dir_of}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/semantic/method_lookup::{MethodLookup, Matches}
 import compiler/semantic/match::{CallSignature, Match}
+import compiler/types/types::{NamedArgumentType, NamedTupleInstanceType, TupleInstanceType}
 import compiler/semantic/restrictions::{ArgRestriction}
 import compiler/semantic/call::{CallReceiver, CallRecalculation, CallTarget}
 import compiler/semantic/lib_call::{LibCall, LibCallArgument}
 import compiler/semantic/default_arguments::{DefaultArguments}
+import compiler/semantic/new::{define_new_methods}
 
 # Call-lookup driver for bench/selfhost_semantic_calls_exercise.sh.
 #
@@ -172,10 +174,9 @@ module BenchSelfhostSemanticCallsExercise
     if !DefaultArguments.supported?(definition, call.args, call.named_args)
       return "error: default arguments not supported"
     end
-    wrapper = DefaultArguments.wrapper_def(definition, call.args.size, call.named_args)
-    if wrapper.nil?
-      return "self"
-    end
+    wrapper = DefaultArguments.expand_for_call(definition, call.args.size, call.named_args)
+    return "error: #{wrapper}" if wrapper.is_a?(String)
+    return "self" if wrapper.as(Def) == definition
     names = [] of String
     wrapper.as(Def).args.each do |arg|
       names << arg.name
@@ -184,7 +185,7 @@ module BenchSelfhostSemanticCallsExercise
     body = wrapper.as(Def).body
     if body.is_a?(Expressions)
       body.as(Expressions).expressions.each do |item|
-        statements << item.to_s
+        statements << (item.is_a?(Expressions) ? "generated body" : item.to_s)
       end
     else
       statements << body.to_s
@@ -204,6 +205,14 @@ module BenchSelfhostSemanticCallsExercise
     matches = found.as(Matches)
     if matches.error
       return "error: #{matches.error.to_s}"
+    end
+    if expr.starts_with?("virtual(")
+      targets = CallRecalculation.targets_for_matches(matches, ts, false)
+      return "error: target count differs from matches" if targets.size != matches.matches.size
+      targets.each_with_index do |target, index|
+        match = matches.matches[index]
+        return "error: dispatch target differs from match" if target.error || target.definition != match.definition || target.owner != match.owner || target.defining != match.defining || target.arg_types != match.arg_types
+      end
     end
     if matches.empty?
       return "none"
@@ -360,6 +369,24 @@ module BenchSelfhostSemanticCallsExercise
     parts.join(",")
   end
 
+  def self.evaluate_tuple(prog : SemanticProgram, ts : TypeSystem, expr : String) : String
+    node = Parser.new(expr, "call").parse
+    return "error: not a call" unless node.is_a?(Call)
+    call = node.as(Call)
+    owner : Type = if call.obj.is_a?(NamedTupleLiteral)
+      NamedTupleInstanceType.new(prog, [NamedArgumentType.new("a", prog.types["Int32"]), NamedArgumentType.new("b", prog.types["String"])])
+    else
+      TupleInstanceType.new(prog, [prog.types["Int32"], prog.types["String"]])
+    end
+    indexed = CallRecalculation.check_tuple_indexer(owner, call.name, call.args, ts, prog)
+    return "normal" if indexed.nil?
+    return "error: #{indexed}" if indexed.is_a?(String)
+    body = indexed.as(Def).body
+    return "nil" if body.is_a?(NilLiteral)
+    primitive = body.as(Primitive)
+    "index=#{primitive.tuple_index},#{primitive.tuple_last}"
+  end
+
   def self.run(src : String, filename : String) : String
     prog = SemanticProgram.new
     prog.search_path = search_path
@@ -370,6 +397,7 @@ module BenchSelfhostSemanticCallsExercise
     visitor = TopLevelVisitor.new(prog, filename)
     node.accept(visitor)
     visitor.finish
+    define_new_methods(prog)
     # The type system is installed after the declarations, as the declarations gate does.
     ts = TypeSystem.new(prog)
     out = [] of String
@@ -389,6 +417,9 @@ module BenchSelfhostSemanticCallsExercise
       elsif line.starts_with?("# instance ")
         expr = line[11, line.bytesize - 11].strip
         out << "#{expr} => #{evaluate_instance(prog, ts, expr)}"
+      elsif line.starts_with?("# tuple ")
+        expr = line[8, line.bytesize - 8].strip
+        out << "#{expr} => #{evaluate_tuple(prog, ts, expr)}"
       elsif line.starts_with?("# expand ")
         expr = line[9, line.bytesize - 9].strip
         out << "#{expr} => #{evaluate_expand(prog, ts, expr)}"
