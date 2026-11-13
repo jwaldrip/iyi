@@ -18,8 +18,8 @@ import compiler/semantic/literal_expander::{LiteralExpander}
 import compiler/semantic/default_arguments::{DefaultArguments}
 import compiler/semantic/type_node_host::{TypeNodeHost}
 import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_notation, visit_metaclass, visit_fun_def, visit_self, visit_cast, visit_nilable_cast, visit_type_of, visit_size_of, visit_align_of, visit_instance_size_of, visit_instance_align_of, visit_pointer_of, visit_enum_def, visit_uninitialized_var}
-import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
-import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
+import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system, type_node_metaclass}
+import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries, NamedTupleInstanceType, TupleInstanceType}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
 import compiler/types/intersect::{TypeIntersect}
 import compiler/types/restrictions::{TypeRestrictions}
@@ -865,6 +865,32 @@ pub class MainVisitor < TypeNodeHost
   # by-name cases are not ported here; a primitive with no return type is
   # recorded untyped with its name.
   def visit(node : Primitive) : Bool
+    if node.name == "tuple_indexer_known_index" && !node.tuple_range
+      if sc = @scope
+        instance : Type = sc
+        meta = false
+        if sc.is_a?(MetaclassType)
+          instance = sc.as(MetaclassType).instance_type
+          meta = true
+        end
+        if instance.is_a?(TupleInstanceType)
+          members = instance.as(TupleInstanceType).tuple_types
+          if node.tuple_index >= 0 && node.tuple_index < members.size
+            result = members[node.tuple_index]
+            set_type(node, meta ? type_node_metaclass(result).as(Type) : result)
+            return false
+          end
+        elsif instance.is_a?(NamedTupleInstanceType)
+          entries = instance.as(NamedTupleInstanceType).entries
+          if node.tuple_index >= 0 && node.tuple_index < entries.size
+            result = entries[node.tuple_index].type
+            set_type(node, meta ? type_node_metaclass(result).as(Type) : result)
+            return false
+          end
+        end
+      end
+      return refuse(node, "unsupported TupleIndexer scope")
+    end
     if cd = @current_def
       if primitive_type = @program.primitive_return_type(cd)
         set_type(node, primitive_type)
@@ -2468,6 +2494,9 @@ pub class MainVisitor < TypeNodeHost
       i = i + 1
     end
 
+    indexer = CallRecalculation.check_tuple_indexer(rec_type, name, args, type_node_system(@program), @current_type)
+    return indexer.as(Def) if indexer.is_a?(Def)
+    return refuse_call(call_node, indexer) if indexer.is_a?(String)
     candidates = [] of Def
     visited = Set(String).new
     collect_candidate_defs(rec_type, name, candidates, visited)
