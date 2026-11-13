@@ -110,12 +110,17 @@ end
 pub def generic_of_typed_args(visitor : TypeNodeHost, node : Generic) : Type?
   ts = type_node_system(visitor.program)
   lookup = TypeLookup.new(ts.instances)
-  base = lookup.lookup(visitor.current_type, node.name)
-  if base.is_a?(LookupError)
-    visitor.refuse(node, base.as(LookupError).message)
-    return nil
+  base_type : Type
+  if typed_base = visitor.child_type(node.name)
+    base_type = visitor.program.remove_alias(TypeQueries.instance_type(typed_base))
+  else
+    base = lookup.lookup(visitor.current_type, node.name)
+    if base.is_a?(LookupError)
+      visitor.refuse(node, base.as(LookupError).message)
+      return nil
+    end
+    base_type = base.as(Type)
   end
-  base_type = base.as(Type)
   unless base_type.is_a?(GenericClassType) || base_type.is_a?(GenericModuleType)
     visitor.refuse(node, "#{base_type.full_name} is not a generic type, it's a #{base_type.type_desc}")
     return nil

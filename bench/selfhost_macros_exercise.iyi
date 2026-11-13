@@ -3,6 +3,7 @@ import compiler/syntax/visitor::{Visitor, NodeCounterVisitor}
 import compiler/macros/ast::{MacroId}
 import compiler/macros/methods::{MacroMethods}
 import compiler/macros/interpreter::{MacroInterpreter, MacroFreeBinding}
+import compiler/macros/type_facts::{MacroInstanceVarFact, MacroTypeFacts}
 import compiler/macros/macro_parser::{MacroParser}
 import compiler/macros/engine::{MacroEngine, MacroReport, MacroSite}
 import compiler/macros/target_flags::{MacroTargetFlags}
@@ -160,6 +161,25 @@ module BenchSelfhostMacrosExercise
     out
   end
 
+  # A fixture can give the scope enum's constants in declaration order.
+  def self.parse_type_facts(source : String) : MacroTypeFacts?
+    facts : MacroTypeFacts? = nil
+    source.split("\n").each do |line|
+      if line.starts_with?("# fact: ")
+        parts = line[8, line.bytesize - 8].split(" ")
+        facts ||= MacroTypeFacts.new
+        facts.as(MacroTypeFacts).constants_known = true
+        facts.as(MacroTypeFacts).constants[parts[0]] = parts[1]
+      elsif line.starts_with?("# ivar: ")
+        parts = line[8, line.bytesize - 8].split(" ")
+        facts ||= MacroTypeFacts.new
+        facts.as(MacroTypeFacts).instance_vars_known = true
+        facts.as(MacroTypeFacts).instance_vars << MacroInstanceVarFact.new(parts[0], parts[1])
+      end
+    end
+    facts
+  end
+
   def self.printed_free(kind : String, members : Array(String)) : String
     if kind == "type"
       return members[0]
@@ -205,8 +225,9 @@ module BenchSelfhostMacrosExercise
 
   # The engine's report, with the instantiated owner's type parameters bound
   # before the body runs.
-  def self.report_bound(a_macro : Macro, call : Call, flags : Array(String), bindings : Array(MacroFreeBinding)) : MacroReport
-    interp = MacroInterpreter.new(call.block, flags)
+  def self.report_bound(a_macro : Macro, call : Call, flags : Array(String), bindings : Array(MacroFreeBinding), facts : MacroTypeFacts?) : MacroReport
+    interp = MacroInterpreter.new(call.block, flags, facts.nil? ? "<Program>" : "MacroFactScope")
+    interp.type_facts = facts
     interp.bind_args(a_macro, call)
     interp.bind_free_vars(bindings)
     body = a_macro.body
@@ -501,8 +522,9 @@ elsif Program.args.size > 0
   else
     the_macro, the_call = MacroParser.parse_fixture(source)
     bindings = BenchSelfhostMacrosExercise.parse_free_bindings(source)
-    if bindings.size > 0
-      rep = BenchSelfhostMacrosExercise.report_bound(the_macro, the_call, flags, bindings)
+    facts = BenchSelfhostMacrosExercise.parse_type_facts(source)
+    if bindings.size > 0 || !facts.nil?
+      rep = BenchSelfhostMacrosExercise.report_bound(the_macro, the_call, flags, bindings, facts)
     else
       engine = MacroEngine.new(flags)
       rep = engine.report(the_macro, the_call)
