@@ -69,6 +69,11 @@ def run : Nil
     method_name = "write"
     owner_name = "NameReturn.class"
   end
+  if args.size > 2 && args[2] == "generic"
+    expected = "*Box(Int32)^Box(T)#get<Int32>:Int32"
+    method_name = "get"
+    owner_name = "Box(Int32)"
+  end
   hosted = hosted_flag(oracle_text, expected)
   raise "the hosted module has no #{expected}" if hosted.nil?
   visitor = analyse(File.read(fixture), fixture)

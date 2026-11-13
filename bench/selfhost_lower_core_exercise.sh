@@ -515,6 +515,22 @@ prove_mutation "the probe names the body type instead of the def type" "$REPO/sr
   '  result_t = analysed.type_of?(target) || body_t' \
   '  result_t = body_t' -- name_return_check || status=1
 
+name_generic_check() {
+  "$IYI" build -o "$WORK/name-generic-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-generic.build.log" 2>&1 || return 1
+  "$WORK/name-generic-port" "$REPO/bench/fixtures/lower_name_generic.iyi" "$WORK/lower_name_generic.oracle.ll" generic > "$WORK/name-generic.out" 2> "$WORK/name-generic.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-generic.out"
+}
+if name_generic_check; then
+  echo "  lower_name_generic: *Box(Int32)^Box(T)#get<Int32>:Int32"
+else
+  echo "  lower_name_generic: generic defining owner differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-generic.err" "$WORK/name-generic.out" "$WORK/name-generic.build.log"
+  status=1
+fi
+prove_mutation "a generic instance drops its defining generic owner" "$REPO/src/compiler/lower/fun.iyi" \
+  '  if receiver.is_a?(GenericInstanceType)' \
+  '  if false' -- name_generic_check || status=1
+
 echo
 echo
 if [ "$status" -eq 0 ]; then
