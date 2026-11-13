@@ -34,8 +34,9 @@ import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/instance_var::{self_by_pointer?}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/types/merge::{TypeMerge}
+import compiler/types/rendering::{TypeRenderer}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, MetaclassType, ModuleType, NilType, NoReturnType, Type, VoidType}
-import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceType}
+import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceType, PointerInstanceType}
 
 # The hosted `Def#mangled_name` (codegen/ast.cr:13-31): `*`, then for a method the receiver's
 # name, `^` and the defining owner when that owner is not the receiver, then `#` (or `::` for a
@@ -66,11 +67,11 @@ pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), 
   if arg_types.size > 0
     names = [] of String
     arg_types.each do |t|
-      names << t.full_name
+      names << symbol_type(t)
     end
     text = text + "<" + names.join(", ") + ">"
   end
-  text + ":" + ret.full_name
+  text + ":" + symbol_type(ret)
 end
 
 # The receiver's name in a symbol, then `^` and the defining owner when the hosted compiler writes
@@ -93,10 +94,17 @@ end
 # The name the hosted compiler writes for an owner (llvm_name). An unbound generic is `Box(T)`,
 # which is `to_s`; `full_name` drops the type variables.
 def owner_spell(t : Type) : String
-  if t.is_a?(GenericClassType) || t.is_a?(GenericModuleType)
-    return t.to_s
+  symbol_type(t)
+end
+
+# Hosted llvm_name omits the union's own parentheses inside Pointer(...), but keeps
+# virtual types in generic arguments, unlike the user-facing full_name.
+def symbol_type(t : Type) : String
+  if t.is_a?(PointerInstanceType)
+    element = t.as(PointerInstanceType).element_type
+    return "Pointer(#{TypeRenderer.render(element, skip_union_parens: true, codegen: true)})"
   end
-  t.full_name
+  TypeRenderer.render(t, codegen: true)
 end
 
 # Where the walk for the defining owner starts. A generic instance's methods live on the generic

@@ -539,6 +539,22 @@ prove_mutation "a generic instance drops its defining generic owner" "$REPO/src/
   '  if receiver.is_a?(GenericInstanceType)' \
   '  if false' -- name_generic_check || status=1
 
+name_pointer_check() {
+  "$IYI" build -o "$WORK/name-pointer-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-pointer.build.log" 2>&1 || return 1
+  "$WORK/name-pointer-port" "$REPO/bench/fixtures/lower_name_pointer_union.iyi" "$WORK/lower_name_pointer_union.oracle.ll" pointer > "$WORK/name-pointer.out" 2> "$WORK/name-pointer.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-pointer.out"
+}
+if name_pointer_check; then
+  echo "  lower_name_pointer_union: *pass_pointer<Pointer(Int32 | Nil)>:Pointer(Int32 | Nil)"
+else
+  echo "  lower_name_pointer_union: pointer union name differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-pointer.err" "$WORK/name-pointer.out" "$WORK/name-pointer.build.log"
+  status=1
+fi
+prove_mutation "a pointer union gains extra parentheses" "$REPO/src/compiler/lower/fun.iyi" \
+  'skip_union_parens: true, codegen: true' \
+  'skip_union_parens: false, codegen: true' -- name_pointer_check || status=1
+
 echo
 echo
 if [ "$status" -eq 0 ]; then
