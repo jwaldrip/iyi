@@ -36,9 +36,9 @@ module compiler/lower/primitives
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
-import compiler/syntax/ast::{ASTNode, Call, Def, MacroLiteral, Primitive}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, SymbolLiteral}
 import compiler/ir/function::{Function, Global, Linkage}
-import compiler/ir/inst::{IntPredicate, Attribute, Op, CallConv}
+import compiler/ir/inst::{IntPredicate, Attribute, Op, CallConv, Ordering}
 import compiler/lower/cast::{type_id_value}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
@@ -86,6 +86,10 @@ end
 pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
   name = primitive_name_of(target)
   raise "BUG: lower_primitive_call on a def that is not a primitive (hosted call.cr)" if name.nil?
+  if name == "load_atomic"
+    lower_atomic_load(low, node)
+    return
+  end
   if name == "pointer_malloc" || name == "pointer_new" || name == "pointer_realloc" || name == "pointer_diff" || name == "pointer_get" || name == "pointer_set" || name == "pointer_add" || name == "pointer_address"
     lower_pointer_primitive(low, node, name.as(String))
     return
@@ -134,6 +138,42 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     return
   end
   pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
+end
+
+# Hosted codegen_primitive_load_atomic: the class receiver is not an operand.
+pub def lower_atomic_load(low : Lowerer, node : Call) : Nil
+  raise "BUG: load_atomic needs three arguments" unless node.args.size == 3
+  ordering = atomic_ordering(node.args[1])
+  flag = node.args[2]
+  raise "BUG: atomic volatile must be a Bool literal" unless flag.is_a?(BoolLiteral)
+  pointer_type = low.analysed.type_of?(node.args[0])
+  raise "BUG: atomic pointer has no analysed type" if pointer_type.nil?
+  elem = pointer_element_of(pointer_type.as(Type))
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, node.args[0])
+  ptr = low.last
+  raise "BUG: atomic pointer has no value" if ptr.nil?
+  low.needs_value = wants
+  is_bool = primitive_kind(elem) == "bool"
+  ir = is_bool ? low.module.types.int8 : low.typer.llvm_type(elem)
+  value = low.builder.atomic_load(ir, ptr.as(Value), ordering, flag.as(BoolLiteral).value)
+  value.alignment = is_bool ? 1 : low.typer.align_of(ir)
+  low.last = is_bool ? low.builder.trunc(value, low.module.types.int1) : value
+end
+
+pub def atomic_ordering(node : ASTNode) : Ordering
+  raise "BUG: atomic ordering must be a symbol literal" unless node.is_a?(SymbolLiteral)
+  case node.as(SymbolLiteral).value
+  when "unordered"               then Ordering::Unordered
+  when "monotonic"               then Ordering::Monotonic
+  when "acquire"                 then Ordering::Acquire
+  when "release"                 then Ordering::Release
+  when "acquire_release"         then Ordering::AcqRel
+  when "sequentially_consistent" then Ordering::SeqCst
+  else
+    raise "BUG: unknown atomic ordering"
+  end
 end
 
 # The hosted `codegen_primitive` for the `pointer_*` primitives (primitives.cr 905-965). The receiver
