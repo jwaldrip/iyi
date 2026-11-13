@@ -30,11 +30,13 @@ import compiler/ir/values::{Value}
 import compiler/ir/module::{Module}
 import compiler/lower/cast::{assign, to_rhs, upcast}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
+import compiler/lower/closure::{malloc_closure, setup_closure_vars}
 import compiler/lower/helpers::{load_aligned, store_aligned}
 import compiler/lower/instance_var::{self_by_pointer?}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/rendering::{TypeRenderer}
+import compiler/semantic/closures::{ClosureFrame, ClosureVar}
 import compiler/semantic/top_level::{GenericClassType, GenericModuleType, MetaclassType, ModuleType, NilType, NoReturnType, Type, VoidType}
 import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, GenericModuleInstanceType, PointerInstanceType}
 
@@ -280,7 +282,7 @@ end
 # `new_entry_block` makes them, `self` (when the owner is passed as self) and each parameter a value
 # read where it arrives (hosted `already_loaded`), the body, and the return. The caller's state is put
 # back afterwards (hosted `old_position`, `old_alloca_block`, `old_needs_value`).
-pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, ret : Type, class_owner : Type? = nil) : Function
+pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type?, arg_types : Array(Type), fn_type : IrType, ret_ir : IrType, ret : Type, class_owner : Type? = nil, closure_context : LowerContext? = nil) : Function
   fn = declared_or_defined_fun(low, name, fn_type)
   low.emitting[name] = true
   fn.call_convention = def_convention(name)
@@ -301,13 +303,42 @@ pub def codegen_fun(low : Lowerer, name : String, target : Def, self_type : Type
   low.entry_block = nil
   low.new_entry_block
 
-  first = 0
+  facts = low.closure_facts
+  frame = facts.frame?(target)
+  if frame.nil?
+    frame = facts.analyse_def(target, self_type)
+  end
+  errors = facts.refusals(target)
+  raise "lower: #{errors[0]}" unless errors.empty?
+  if outer = closure_context
+    outer_vars = outer.closure_vars
+    outer_type = outer.closure_type
+    raise "BUG: closure has no enclosing frame" if outer_vars.nil? || outer_type.nil?
+    setup_closure_vars(low, target, outer_vars.as(Array(ClosureVar)), outer, outer_type.as(IrType), fn.param(0))
+  end
+  first = closure_context.nil? ? 0 : 1
   if st = self_type
     self_param = fn.param(0)
     fn.name_param(self_param, "self")
     low.current_context.vars["self"] = LowerVar.new(self_param, st, !self_by_pointer?(st))
     first = 1
   end
+  # Hosted alloca_non_closured_vars reserves def locals before any body temporaries.
+  # Arguments and captured variables are installed by the following two steps.
+  target_frame = frame.as(ClosureFrame)
+  target_frame.bindings.each do |binding|
+    var = binding.variable
+    next if var.name == "self" || target_frame.closured?(var.name)
+    next if target.args.any? { |arg| arg.name == var.name }
+    if block_arg = target.block_arg
+      next if block_arg.name == var.name
+    end
+    next if low.current_context.vars.has_key?(var.name)
+    next if var.type.is_a?(VoidType) || var.type.is_a?(NoReturnType)
+    slot = low.alloca(low.typer.llvm_type(var.type), var.name)
+    low.current_context.vars[var.name] = LowerVar.new(slot, var.type)
+  end
+  malloc_closure(low, low.current_context, frame.as(ClosureFrame).closured, nil, frame.as(ClosureFrame).self_closured)
   assigned = collect_assigned_vars(target.body)
   i = 0
   while i < target.args.size
@@ -459,6 +490,16 @@ pub def create_local_copy_of_arg(low : Lowerer, name : String, arg_type : Type, 
     end
   end
   return if var_type.is_a?(VoidType)
+  if existing = low.current_context.vars[name]?
+    unless existing.already_loaded
+      if var_type.full_name == arg_type.full_name
+        store_aligned(low, param, existing.pointer) unless arg_type.is_a?(NilType)
+      else
+        assign(low, existing.pointer, var_type, arg_type, param)
+      end
+      return
+    end
+  end
   needs_copy = assigned_to || var_type.full_name != arg_type.full_name
   if needs_copy
     pointer = low.alloca(low.typer.llvm_type(var_type), name)

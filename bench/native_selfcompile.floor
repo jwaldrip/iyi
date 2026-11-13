@@ -156,6 +156,7 @@ src/compiler/lower/typer.iyi parse
 src/compiler/lower/unions.iyi semantic
 src/compiler/lower/asm.iyi parse
 src/compiler/lower/block.iyi parse
+src/compiler/lower/closure.iyi parse
 src/compiler/lower/call.iyi parse
 src/compiler/lower/cond.iyi parse
 src/compiler/lower/context.iyi parse

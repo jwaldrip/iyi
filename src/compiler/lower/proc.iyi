@@ -26,6 +26,8 @@ import compiler/syntax/ast::{ASTNode, Assign, ClassDef, Def, InstanceVar, Module
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{NoReturnType, Type}
 import compiler/types/types::{ProcInstanceType}
+import compiler/semantic/closures::{ClosureFrame}
+import compiler/lower/context::{LowerContext}
 
 # The hosted `Iyi.symbol_text` (util.cr:59): a text someone else chose, written into a symbol with `%`, `@` and
 # `^` escaped, so that the join `^` is never the text's.
@@ -153,24 +155,21 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
     refuse_port("a proc literal that returns NoReturn (hosted codegen_fun, the noreturn attribute on a literal)")
   end
 
-  # The hosted closured check (codegen.cr: def.closure?): every read is of a local the body declares, and the
-  # body reads no block, nested literal, self or instance variable.
-  scan = ProcScan.new
-  node.def.body.accept(scan)
-  refused = scan.refused
-  if refused
-    refuse_port("proc literal: #{refused}")
-  end
-  declared = [] of String
-  node.def.args.each do |arg|
-    declared << arg.name
-  end
-  scan.assigned.each do |name|
-    declared << name
-  end
-  scan.referenced.each do |name|
-    unless declared.includes?(name)
-      refuse_port("proc literal reads #{name}, a local of the enclosing code: a closure (hosted closured_vars, not ported)")
+  frame = low.closure_facts.frame?(node.def)
+  if frame.nil?
+    # Program-scope closures are outside the current contract. Keep the existing
+    # refusal until the program root has been analysed as a closure frame.
+    scan = ProcScan.new
+    node.def.body.accept(scan)
+    if refused = scan.refused
+      refuse_port("proc literal: #{refused}")
+    end
+    declared = node.def.args.map { |arg| arg.name }
+    scan.assigned.each { |name| declared << name }
+    scan.referenced.each do |name|
+      unless declared.includes?(name)
+        refuse_port("proc literal reads #{name}, a local of the enclosing code: a closure (hosted closured_vars, not ported)")
+      end
     end
   end
 
@@ -182,12 +181,21 @@ pub def lower_proc_literal(low : Lowerer, node : ProcLiteral) : Nil
 
   name = proc_literal_name(low, node, proc_type)
   params = [] of IrType
+  is_closure = !frame.nil? && frame.as(ClosureFrame).closure
+  params << low.module.types.ptr(0) if is_closure
   proc.arg_types.each do |at|
     params << low.typer.llvm_type(at)
   end
   ret_ir = low.typer.llvm_return_type(proc.return_type)
   fn_type = low.module.types.func(params, ret_ir)
-  fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type)
-  null_ctx = low.builder.const_null(low.module.types.ptr(0)).as(Value)
-  low.last = make_fun(low, proc_type, fn.as(Value), null_ctx)
+  outer : LowerContext? = is_closure ? low.current_context : nil
+  fn = codegen_fun(low, name, node.def, nil, proc.arg_types, fn_type, ret_ir, proc.return_type, nil, outer)
+  ctx = if outer
+          ptr = outer.closure_ptr
+          raise "BUG: closure frame has no pointer" if ptr.nil?
+          ptr.as(Value)
+        else
+          low.builder.const_null(low.module.types.ptr(0)).as(Value)
+        end
+  low.last = make_fun(low, proc_type, fn.as(Value), ctx)
 end
