@@ -1,0 +1,7 @@
+VALUE = {7, 3}
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(VALUE[0])
