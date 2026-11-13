@@ -14,6 +14,7 @@ module Iyi::Stale
     getter markers_dir : String
     getter imported_dir : String
     getter fast_dir : String
+    getter effort_dir : String
     getter lock_path : String
     getter seq_path : String
     getter key_path : String
@@ -37,6 +38,7 @@ module Iyi::Stale
       @markers_dir = File.join(@root_dir, "markers")
       @imported_dir = File.join(@root_dir, "imported")
       @fast_dir = File.join(@root_dir, "fast")
+      @effort_dir = File.join(@root_dir, "effort")
       @lock_path = File.join(@root_dir, "lock")
       @seq_path = File.join(@root_dir, "seq")
       @key_path = File.join(@root_dir, "key")
@@ -48,6 +50,7 @@ module Iyi::Stale
       Dir.mkdir_p(@markers_dir) unless Dir.exists?(@markers_dir)
       Dir.mkdir_p(@imported_dir) unless Dir.exists?(@imported_dir)
       Dir.mkdir_p(@fast_dir) unless Dir.exists?(@fast_dir)
+      Dir.mkdir_p(@effort_dir) unless Dir.exists?(@effort_dir)
     end
 
     # Atomic write: temp file, fsync, rename. On win32, MoveFileExW with
@@ -174,6 +177,20 @@ module Iyi::Stale
     def write_fast(test : TestId, content : String) : Nil
       lock do
         Store.atomic_write(fast_path(test), content)
+      end
+    end
+
+    # The effort record of a test. Machine-local, and never part of a snapshot:
+    # export reads receipts only. Its contents belong to the effort record.
+    def effort_path(test : TestId) : String
+      File.join(@effort_dir, "#{Stale.hex(Store.d_test_id(test))}.json")
+    end
+
+    # Writes the effort record of a test, atomically. The runner calls this
+    # under the test's scratch lock; a reader sees the old record or the new one.
+    def write_effort(test : TestId, json : String) : Nil
+      lock do
+        Store.atomic_write(effort_path(test), json)
       end
     end
 

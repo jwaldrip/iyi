@@ -728,6 +728,25 @@ describe "Iyi::Stale S6a: Store and Receipts" do
     end
   end
 
+  it "keeps an effort record at tests-v1/effort/<hex D(test)>.json" do
+    with_tempfile("store_effort") do |cache_root|
+      store = Iyi::Stale::Store.new(cache_root)
+      store.ensure_directories!
+      Dir.exists?(store.effort_dir).should be_true
+      store.effort_dir.should eq(File.join(cache_root, "tests-v1", "effort"))
+
+      test = make_test_id("effort_test.iyi")
+      store.effort_path(test).should eq(File.join(store.effort_dir, File.basename(store.fast_path(test))))
+
+      store.write_effort(test, "{\"format\":\"iyi-stale-effort\"}\n")
+      File.read(store.effort_path(test)).should eq("{\"format\":\"iyi-stale-effort\"}\n")
+
+      store.write_effort(test, "{\"format\":\"iyi-stale-effort\",\"version\":1}\n")
+      File.read(store.effort_path(test)).should eq("{\"format\":\"iyi-stale-effort\",\"version\":1}\n")
+      Dir.children(store.effort_dir).should eq([File.basename(store.effort_path(test))])
+    end
+  end
+
   # Builds and runs a helper through `./bin/crystal`, a shell script that
   # Windows does not execute; the file lock it exercises is the same code the
   # other store examples reach there.

@@ -132,6 +132,25 @@ module Iyi::Stale
         {} of String => Array(String)?, [] of FastPkgConfig, reason)
     end
 
+    # The same recorded inputs, stamped as they are now. Taken before a build
+    # that skips the check, so an edit during that build reads as a change.
+    # A refused record has no inputs to restamp, and stays itself.
+    def restamped(facts : FastFacts) : FastRecord
+      return self if refused
+
+      observed = {} of String => String?
+      observed_env.each_key { |name| observed[name] = facts.env[name]? }
+
+      listings_now = {} of String => Array(String)?
+      listings.each_key { |dir| listings_now[dir] = BuildInputs.children(dir) }
+
+      FastRecord.new(test, file, facts.cwd, local_build, portable_build,
+        facts.target, facts.workers, facts.compiler, observed, env_enumerated?,
+        files.map { |entry| FastEntry.new(entry.path, FileStamp.of(entry.path)) },
+        listings_now,
+        pkg_config.map { |entry| FastPkgConfig.new(entry.mod, entry.static, facts.pkg_config(entry.mod, entry.static)) })
+    end
+
     # The record of *test*, or nil. Takes no lock and writes nothing.
     def self.read(store : Store, test : TestId) : FastRecord?
       found = parse(File.read(store.fast_path(test)))

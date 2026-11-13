@@ -212,6 +212,43 @@ describe Iyi::Stale::FastRecord do
     File.write(store.fast_path(test), "{")
     Iyi::Stale::FastRecord.read(store, test).should be_nil
   end
+
+  it "restamps an edited file so the edit is the new baseline, and a later edit is named" do
+    dir = fast_dir
+    file = File.join(dir, "a.iyi")
+    File.write(file, "before")
+    listed = File.join(dir, "lib")
+    Dir.mkdir_p(listed)
+    File.write(File.join(listed, "old.iyi"), "old")
+    compiler_file = File.join(dir, "iyi")
+    File.write(compiler_file, "v1")
+    old_facts = fast_facts(dir, {"FAST_X" => "old"}, [Iyi::Stale::FastEntry.new(compiler_file, Iyi::Stale::FileStamp.of(compiler_file))])
+    record = fast_record(old_facts, "src/x.iyi", [file], {"FAST_X" => "old"} of String => String?, false, {listed => ["old.iyi"]})
+
+    File.write(file, "after")
+    File.write(File.join(listed, "new.iyi"), "new")
+    File.write(compiler_file, "v2")
+    facts = fast_facts(dir, {"FAST_X" => "new"}, [Iyi::Stale::FastEntry.new(compiler_file, Iyi::Stale::FileStamp.of(compiler_file))])
+    restamped = record.restamped(facts)
+
+    restamped.unchanged_reason("src/x.iyi", facts, NO_DROP).should be_nil
+    restamped.test.should eq record.test
+    restamped.file.should eq record.file
+    restamped.local_build.should eq record.local_build
+    restamped.portable_build.should eq record.portable_build
+    restamped.cwd.should eq facts.cwd
+
+    File.write(file, "later")
+    restamped.unchanged_reason("src/x.iyi", facts, NO_DROP).not_nil!.should contain("a.iyi changed")
+  end
+
+  it "restamps a refused record to itself" do
+    dir = fast_dir
+    record = Iyi::Stale::FastRecord.refused(fast_test, "src/x.iyi", fast_facts(dir), "local-build",
+      "portable-build", "a macro ran a program")
+
+    record.restamped(fast_facts(dir)).should be record
+  end
 end
 
 describe Iyi::Stale::Runner do
