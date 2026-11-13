@@ -13,3 +13,13 @@ end
 # error String.interpolation("a", 1)
 # error String.interpolation("a", 1, "b", true, 2)
 # call ProbeErr.pick("a")
+
+def later(x : Int32) : T forall T
+  x
+end
+
+def later(x : Int32) : Int32
+  x
+end
+
+# call later(1)
