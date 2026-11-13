@@ -14,6 +14,12 @@ class DefaultScope
   end
 end
 
+class DefaultBox
+  def initialize(@value : Int32 = 3)
+  end
+end
+
 # wrapper DefaultScope.read()
 # wrapper DefaultScope.earlier(1)
 # wrapper DefaultScope.loc()
+# wrapper DefaultBox.new()
