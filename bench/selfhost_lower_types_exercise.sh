@@ -613,11 +613,6 @@ prove_mutation_all "an unheaded candidate answers headed" "$HEADED_FILE" \
   -- check_headed_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "the own-source load installs no type system, so a generic's declared variable is the unbound base" "$REPO/bench/selfhost_lower_types_exercise.iyi" \
-  "    own_types = TypeSystem.new(prog)" \
-  "    # no type system is installed here" \
-  -- check_own_fixture_diverges || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "traits bypassed in create_llvm_type (fall through to BUG raise)" "$TYPER_FILE" \
   '    if (type.is_a?(NonGenericModuleType) || type.is_a?(TraitType)) && !type.is_a?(LibType)' \

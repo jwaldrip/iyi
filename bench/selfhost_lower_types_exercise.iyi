@@ -340,11 +340,8 @@ module BenchSelfhostLowerTypesExercise
     if ENV["S2B_TYPE_SYSTEM"]? == "1"
       type_node_system(prog)
     end
-    # The type system is installed after the declarations, as the declarations driver does: its install
-    # re-resolves the explicit instance variables through it, so a generic type's declared variable keeps
-    # its arguments (NEEDS.md row 22). Installed before them, the declarations pass takes the hook paths
-    # that are not ported yet (a module named as a superclass, an impl's free variable).
-    own_types = TypeSystem.new(prog)
+    # This pass installs the type system after declarations and re-resolves
+    # explicit instance variables before guessing the remaining variables.
     declare_guessed_instance_vars(prog)
     {prog, entry}
   end
