@@ -105,7 +105,8 @@ pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type,
   # Hosted cast.cr 73-85: an ended block or NoReturn value produces no store.
   return if at_terminator?(low) || TypeQueries.no_return?(value_type)
   if target.full_name == value_type.full_name
-    store_aligned(low, value, pointer)
+    stored = value.type.pointer? ? to_rhs(low, value, target) : value
+    store_aligned(low, stored, pointer)
     return
   end
   if value_type.is_a?(VoidType)
