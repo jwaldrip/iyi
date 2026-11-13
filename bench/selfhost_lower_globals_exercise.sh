@@ -273,6 +273,9 @@ prove_mutation "a symbol class variable does not retain its literal index" "$REP
 prove_mutation "a nil reference initializer is not discarded" "$REPO/src/compiler/lower/class_var.iyi" \
   "  node.is_a?(NilLiteral) && nilable_reference_type?(cvar.type)" \
   "  false" -- lowglob_check || status=1
+prove_mutation "a namespaced class variable loses its qualified owner" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  owner.full_name + cvar_suffix(name)" \
+  "  owner.name + cvar_suffix(name)" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1

@@ -1,7 +1,7 @@
 module compiler/lower/class_var
 
 # The port of `src/compiler/iyi/codegen/class_var.cr` (the hosted `CodeGenVisitor`'s class variables), for a
-# class variable declared in a plain top-level class. Ported:
+# class variable declared in a class. Ported:
 #   - a literal initialiser (Bool, Char, integer, float or Symbol), which the hosted code stores in the global at its
 #     declaration with no function and no flag (`simple_initializer`): the global's initializer is the literal,
 #     and every read is a load of the global;
@@ -17,7 +17,7 @@ module compiler/lower/class_var
 # Refused by name, with the hosted function each stands for, until ported:
 #   - a read before the declaration when `__iyi_once` is not declared (hosted `run_once`, once.cr:22);
 #   - a class variable declared without an initialiser, unless it is a nilable reference (its global starts as null);
-#   - a class variable whose owner is in a namespace, is generic, or is not a class (its hosted `llvm_name`);
+#   - a class variable whose owner is generic or is not a class (its hosted `llvm_name`);
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
 # Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
 # class_var.cr:27-34), the model every non-Windows target uses, and `declare_cvar_global` sets it from the variable's
@@ -133,9 +133,8 @@ pub def class_var_declarer(scope : ModuleType, name : String) : ModuleType?
   nil
 end
 
-# The owner of a class variable named `name` from the scope it is looked up in: a plain class of the program. A class
-# in a namespace, a generic instance and a non-class owner have a hosted `llvm_name` this port does not spell yet
-# (hosted class_var_global_name).
+# The owner of a class variable named `name` from the scope it is looked up in. Namespaced
+# classes use their full name; generic instances and non-class owners still refuse by name.
 pub def cvar_owner(low : Lowerer, name : String) : ModuleType
   declarer = class_var_declarer(class_var_scope(low), name)
   if declarer.nil?
@@ -145,8 +144,8 @@ pub def cvar_owner(low : Lowerer, name : String) : ModuleType
   if !o.is_a?(ClassType)
     refuse_port("lower: class variable #{name} is declared in #{o.full_name}, which is not a class: its owner is not ported yet (hosted class_var.cr: class_var_global_name)")
   end
-  if o.as(ClassType).namespace.is_a?(SemanticProgram) == false || o.full_name.includes?("(")
-    refuse_port("lower: class variable #{name} is declared in #{o.full_name}, which is in a namespace or generic: its hosted llvm_name is not ported yet (hosted class_var.cr: class_var_global_name)")
+  if o.full_name.includes?("(")
+    refuse_port("lower: class variable #{name} is declared in #{o.full_name}, which is generic: its hosted llvm_name is not ported yet (hosted class_var.cr: class_var_global_name)")
   end
   o
 end
