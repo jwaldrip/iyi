@@ -69,7 +69,15 @@ prove_mutation 'captured variable is omitted' "$REPO/src/compiler/semantic/closu
 prove_mutation 'literal parameter does not shadow its outer variable' "$REPO/src/compiler/semantic/closures.iyi" \
   'proc_def.args.each do |arg|' '([] of Compiler::Syntax::Ast::Arg).each do |arg|' -- mutation_check || status=1
 prove_mutation 'assignment does not declare a local' "$REPO/src/compiler/semantic/closures.iyi" \
-  '@frame.bindings << ClosureBinding.new(ClosureVar.new(variable.name, type))' 'nil' -- mutation_check || status=1
+  'elsif type = @visitor.type_of?(variable) || @visitor.type_of?(node.value)
+        @frame.bindings << ClosureBinding.new(ClosureVar.new(variable.name, type))' \
+  'elsif type = @visitor.type_of?(variable) || @visitor.type_of?(node.value)
+        nil' -- mutation_check || status=1
+prove_mutation 'typed declarations do not introduce bindings' "$REPO/src/compiler/semantic/closures.iyi" \
+  'elsif type = @visitor.type_of?(variable)
+        @frame.bindings << ClosureBinding.new(ClosureVar.new(variable.name, type))' \
+  'elsif type = @visitor.type_of?(variable)
+        nil' -- mutation_check || status=1
 prove_mutation 'blocks are independent closure contexts' "$REPO/src/compiler/semantic/closures.iyi" \
   'while current.kind == FrameKind::Block' 'while false && current.kind == FrameKind::Block' -- mutation_check || status=1
 prove_mutation 'instance variable does not capture self' "$REPO/src/compiler/semantic/closures.iyi" \

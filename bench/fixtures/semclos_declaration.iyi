@@ -1,0 +1,10 @@
+def consume(p : Proc(Int32)) : Int32
+  p.call
+end
+
+def outer : Int32
+  value : Int32 = 7
+  consume(-> { value })
+end
+
+outer
