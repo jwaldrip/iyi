@@ -55,7 +55,6 @@ waiting_on() {
 # so the list stays honest.
 known_divergence() {
   case "$1" in
-    lowprim_ptr) echo "generic instance metaclass type_id (@\"Pointer(Int32).class:type_id\", NEEDS.md row 17)" ;;
   esac
 }
 # Fixtures identical to the hosted module whose native executable waits by name. None now: defs are emitted Iyi
@@ -213,6 +212,10 @@ prove_mutation "a mixed-sign less-than uses the unsigned predicate" "$REPO/src/c
   "      widened = low.builder.icmp(IntPredicate::SLT, p1, extend_int(low, t2, t1, p2))" "      widened = low.builder.icmp(IntPredicate::ULT, p1, extend_int(low, t2, t1, p2))" -- lower_primitives_check || status=1
 prove_mutation "a by-value pointer_get loads" "$REPO/src/compiler/lower/primitives.iyi" \
   "      low.last = values[0]" "      low.last = load_aligned(low, low.typer.llvm_embedded_type(elem), values[0])" -- lower_primitives_check || status=1
+prove_mutation "a generic pointer metaclass receiver is not evaluated" "$REPO/src/compiler/lower/primitives.iyi" \
+  '        type_id_value(low, receiver_type(low, receiver))' '        llvm_nil(low)' -- lower_primitives_check || status=1
+prove_mutation "pointer addition loses inbounds" "$REPO/src/compiler/lower/primitives.iyi" \
+  '    low.last = low.builder.inbounds_gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' '    low.last = low.builder.gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)' -- lower_primitives_check || status=1
 prove_mutation "a Bool pointer_set stores zero" "$REPO/src/compiler/lower/primitives.iyi" \
   "      bool_stored = values[1]" "      bool_stored = int1(low, 0_i64)" -- lower_primitives_check || status=1
 prove_mutation "a generic instance ignores its class variables" "$REPO/src/compiler/lower/primitives.iyi" \
