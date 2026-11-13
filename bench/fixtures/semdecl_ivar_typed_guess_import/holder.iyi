@@ -1,0 +1,9 @@
+module holder
+
+import item::{Item}
+
+pub class Holder
+  def initialize
+    @items = [] of Item
+  end
+end

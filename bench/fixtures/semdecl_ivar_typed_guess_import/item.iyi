@@ -1,0 +1,4 @@
+module item
+
+pub class Item
+end

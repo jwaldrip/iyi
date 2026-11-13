@@ -627,6 +627,12 @@ prove_mutation "lib fun drops its varargs flag" "$MUT_SEM" \
   "record = LibFun.new(node.name, real, arg_names, false, node.return_type)" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "guessed instance variables lose their defining file's imports" "$MUT_IVARS" \
+  '    program.current_imports = body.imports' \
+  '    program.current_imports = saved_imports' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 prove_mutation "two argument pointer malloc does not infer its element type" "$MUT_IVARS" \
   '    if obj.is_a?(Path) && obj.as(Path).names == ["Pointer"] && node.name == "malloc" && node.args.size == 2' \
   '    if false' \
