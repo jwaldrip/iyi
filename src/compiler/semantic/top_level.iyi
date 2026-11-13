@@ -7,6 +7,7 @@ import compiler/syntax/token::{NumberKind}
 import compiler/syntax/ast::{ASTNode, Alias, And, Annotation, Arg, Assign, BoolLiteral, Call, CStructOrUnionDef, ClassDef, ClassVar, Def, EnumDef, Expressions, Extend, ExternalVar, FunDef, Generic, ImplDef, Include, ImportDecl, InstanceVar, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, Metaclass, ModuleDef, ModuleHeader, Nop, Not, NumberLiteral, Or, Path, Primitive, ProcNotation, Require, Self, StringLiteral, SymbolLiteral, TraitDef, TypeDeclaration, TypeDef, Union, Var, Visibility, VisibilityModifier}
 import compiler/syntax/visitor::{Visitor}
 import compiler/macros/engine::{MacroEngine}
+import compiler/macros/target_flags::{MacroTargetFlags}
 import compiler/semantic/inline_macros::{expand_inline_macro, splice_body_node, splice_inline_sites}
 
 pub class TypeException
@@ -170,6 +171,9 @@ pub abstract class Type
 
   def subtype_of?(other : Type) : Bool
     return true if self == other
+    # Hosted types.cr:421-433 unwraps virtual restriction types before checking parents.
+    target = other.devirtualize
+    return subtype_of?(target) unless target == other
     if other.is_a?(UnionType)
       ut = other.as(UnionType)
       i = 0
@@ -380,6 +384,7 @@ pub abstract class ModuleType < NamedType
   # the hosted pass does (a user's `def begin_array?` replaces the enum's generated one).
   # Overloads that differ in a restriction are kept side by side.
   def add_def(a_def : Def) : Nil
+    @program.record_def_owner(a_def, self)
     list = @defs[a_def.name]?
     if list.nil?
       list = [] of Def
@@ -962,6 +967,13 @@ pub class EnumType < ModuleType
     super(program, namespace, name)
     @members = Hash(String, Const).new
     @parents << program.enum_type
+    value_def = Def.new("value", body: Primitive.new("enum_value"))
+    add_def(value_def)
+    program.record_primitive_return_type(value_def, @base_type)
+    value_arg = Arg.new("value", restriction: Path.new([@base_type.full_name], true))
+    new_def = Def.new("new", [value_arg] of Arg, body: Primitive.new("enum_new"))
+    metaclass.add_def(new_def)
+    program.record_primitive_return_type(new_def, self)
   end
 
   def enum? : Bool
@@ -1153,6 +1165,9 @@ pub class SemanticProgram < NonGenericModuleType
   @const_initializers : Array(Const)
   # The records of the funs the pass declared, by the node's id (`lib_fun_of`).
   @lib_funs_by_node : Hash(UInt64, LibFun)
+  # Defining scope, kept outside syntax nodes to avoid a semantic dependency in the AST.
+  @def_owners : Hash(UInt64, ModuleType)
+  @primitive_return_types : Hash(UInt64, Type)
   # All unions the program made, keyed by the sorted object ids of their members (hosted program.unions).
   getter unions : Hash(Array(UInt64), Type)
   # The names this file imports, name to type: `import a/b::{Name}` adds one. The
@@ -1365,6 +1380,37 @@ pub class SemanticProgram < NonGenericModuleType
     @lib_funs_by_node[node.node_id] = record
   end
 
+  # The scope which registered a definition (hosted Def#owner).
+  def def_owner(definition : Def) : ModuleType?
+    @def_owners[definition.node_id]?
+  end
+
+  def record_def_owner(definition : Def, owner : ModuleType) : Nil
+    @def_owners[definition.node_id] = owner
+    nil
+  end
+
+  # Result types carried by generated primitive definitions, independent of written annotations.
+  def primitive_return_type(definition : Def) : Type?
+    @primitive_return_types[definition.node_id]?
+  end
+
+  def record_primitive_return_type(definition : Def, result : Type) : Nil
+    @primitive_return_types[definition.node_id] = result
+    nil
+  end
+
+  # A typed clone gets a new node id; copy the original's defining scope explicitly.
+  def copy_def_owner(original : Def, clone : Def) : Nil
+    if owner = def_owner(original)
+      record_def_owner(clone, owner)
+    end
+    if result = primitive_return_type(original)
+      record_primitive_return_type(clone, result)
+    end
+    nil
+  end
+
   # iyi: the declaration pass resolves a generic type node to its base only, since no type system is
   # installed while the program is declared. Installing one (TypeSystem.new) calls this to resolve the
   # lib funs again through it, in the scope and imports of the file that declared each one, so
@@ -1439,6 +1485,8 @@ pub class SemanticProgram < NonGenericModuleType
     @global_funs = [] of LibFun
     @const_initializers = [] of Const
     @lib_funs_by_node = Hash(UInt64, LibFun).new
+    @def_owners = Hash(UInt64, ModuleType).new
+    @primitive_return_types = Hash(UInt64, Type).new
     @unions = Hash(Array(UInt64), Type).new
     @declared_ivars = [] of DeclaredIvar
     @current_imports = Hash(String, Type).new
@@ -1659,7 +1707,15 @@ pub class SemanticProgram < NonGenericModuleType
       base_type
     elsif node.is_a?(Union)
       u = node.as(Union)
-      types = u.types.map { |t| lookup_type_node(t, current_type) }
+      # Hosted type_lookup.cr:217-229 virtualizes each member before merging.
+      types = u.types.map do |t|
+        member = lookup_type_node(t, current_type)
+        if hook = @merge_hook
+          hook.virtual_of(member)
+        else
+          member
+        end
+      end
       type_merge(types)
     elsif node.is_a?(Metaclass)
       m = node.as(Metaclass)
@@ -1736,7 +1792,11 @@ pub class SemanticProgram < NonGenericModuleType
       u.types.each do |subnode|
         t = lookup_type_node?(subnode, current_type)
         return nil if t.nil?
-        resolved << t
+        if hook = @merge_hook
+          resolved << hook.virtual_of(t)
+        else
+          resolved << t
+        end
       end
       type_merge(resolved)
     elsif node.is_a?(Metaclass)
@@ -2661,7 +2721,6 @@ pub class TopLevelVisitor < Visitor
         enum_type.add_member("All", NumberLiteral.new(all_value.to_s))
       end
     end
-    enum_type.add_def(Def.new("value"))
     direct_names.each do |mname|
       pname = "#{underscore(mname)}?"
       if enum_type.defs[pname]?.nil?
@@ -2754,10 +2813,9 @@ pub class TopLevelVisitor < Visitor
     wrapped_def.members
   end
 
-  # The flags of the host this compiler builds on: macOS on arm64. A flag it does not
-  # name is off, as `flag?` answers for an unknown flag.
+  # Use the same target flags as the macro engine for the compiler's host.
   def iyi_host_flag?(name : String) : Bool
-    name == "darwin" || name == "aarch64" || name == "unix"
+    MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)
   end
 
   # `flag?(:name)` joined by `!`, `&&` and `||`: every condition an enum body in the
