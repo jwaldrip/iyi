@@ -59,8 +59,8 @@ import compiler/types/intersect::{TypeIntersect}
 
 # The per-def probe the typed pipeline table reads (S3Pipeline): lowers one def's function into `m` the way a call
 # that reaches it does (fun.iyi target_def_fun), for the self type and argument types the caller gives. A refusal
-# raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The return type
-# is the analysed type of the def's body, the value the body leaves; a def whose body has no analysed type raises.
+# raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The
+# instantiated def's type is its result, which can differ from the body's type.
 pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module) : String?
   low = Lowerer.new(m, typer, analysed)
   low.body_visitor = CoreBody.new
@@ -71,11 +71,12 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
   low.string_type_id = ids.type_id(program.string_type)
   body_t = analysed.type_of?(target.body)
   raise "BUG: the analysed program has no type for the body of #{target.name} (hosted codegen_fun: return type)" if body_t.nil?
+  result_t = analysed.type_of?(target) || body_t
   built : Function? = nil
   if self_type.is_a?(MetaclassType)
-    built = target_def_fun(low, target, nil, arg_types, body_t.as(Type), self_type.as(MetaclassType).instance_type)
+    built = target_def_fun(low, target, nil, arg_types, result_t.as(Type), self_type.as(MetaclassType).instance_type)
   else
-    built = target_def_fun(low, target, self_type, arg_types, body_t.as(Type))
+    built = target_def_fun(low, target, self_type, arg_types, result_t.as(Type))
   end
   fn = built.as(Function)
   errs = verify_function(m, fn)

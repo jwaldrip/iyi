@@ -17,12 +17,14 @@ bench/fixtures/sem_bodies_generic_pointer_restriction.iyi 9
 bench/fixtures/sem_bodies_global_fun.iyi 4
 bench/fixtures/sem_bodies_import_later.iyi 10
 bench/fixtures/sem_bodies_import_scope.iyi 13
-bench/fixtures/sem_bodies_interpolation.iyi 10
 bench/fixtures/sem_bodies_instance_cache.iyi 21
+bench/fixtures/sem_bodies_interpolation.iyi 10
 bench/fixtures/sem_bodies_ivar_read.iyi 11
 bench/fixtures/sem_bodies_jumps.iyi 20
 bench/fixtures/sem_bodies_libcall.iyi 15
 bench/fixtures/sem_bodies_magic_constant.iyi 4
+bench/fixtures/sem_bodies_nil_return.iyi 14
+bench/fixtures/sem_bodies_pointer_set.iyi 25
 bench/fixtures/sem_bodies_primitive_add.iyi 4
 bench/fixtures/sem_bodies_proc_literal.iyi 8
 bench/fixtures/sem_bodies_recursive.iyi 3

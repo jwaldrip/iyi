@@ -84,7 +84,9 @@ passed=0
 # Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed. The port numbers
 # String 31 and the hosted module 1 for lower_string and lower_string_nonascii (the typer slice's LowerTypeIds
 # numbering, NEEDS.md row 16). They wait by name; the gate fails if one starts to match, so this list is kept honest.
-KNOWN_DIVERGED="lower_string lower_string_nonascii lower_pointer_malloc"
+# The pointer-union fixture's allocator also differs in its metaclass type-id load;
+# its hosted symbol and the naming mutation are checked independently below.
+KNOWN_DIVERGED="lower_string lower_string_nonascii lower_pointer_malloc lower_name_pointer_union"
 e2e=""
 module_same=0
 module_differ=0
@@ -562,6 +564,70 @@ fi
 prove_mutation "an inherited method drops its defining owner" "$REPO/src/compiler/lower/fun.iyi" \
   'shown + "^" + defined_spell' \
   'shown' -- name_owner_check || status=1
+
+name_metaclass_check() {
+  "$IYI" build -o "$WORK/name-meta-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-meta.build.log" 2>&1 || return 1
+  "$WORK/name-meta-port" "$REPO/bench/fixtures/lower_name_metaclass.iyi" "$WORK/lower_name_metaclass.oracle.ll" metaclass > "$WORK/name-meta.out" 2> "$WORK/name-meta.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-meta.out"
+}
+if name_metaclass_check; then
+  echo "  lower_name_metaclass: *NameOwner::class_flag<Int32>:Int32"
+else
+  echo "  lower_name_metaclass: metaclass name differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-meta.err" "$WORK/name-meta.out" "$WORK/name-meta.build.log"
+  status=1
+fi
+prove_mutation "a metaclass is named as an instance" "$REPO/src/compiler/lower/fun.iyi" \
+  '      if st.is_a?(MetaclassType)' \
+  '      if false' -- name_metaclass_check || status=1
+
+name_return_check() {
+  "$IYI" build -o "$WORK/name-return-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-return.build.log" 2>&1 || return 1
+  "$WORK/name-return-port" "$REPO/bench/fixtures/lower_name_return.iyi" "$WORK/lower_name_return.oracle.ll" return > "$WORK/name-return.out" 2> "$WORK/name-return.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-return.out"
+}
+if name_return_check; then
+  echo "  lower_name_return: *NameReturn::write<UInt64>:Nil"
+else
+  echo "  lower_name_return: declared return differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-return.err" "$WORK/name-return.out" "$WORK/name-return.build.log"
+  status=1
+fi
+prove_mutation "the probe names the body type instead of the def type" "$REPO/src/compiler/lower/lower.iyi" \
+  '  result_t = analysed.type_of?(target) || body_t' \
+  '  result_t = body_t' -- name_return_check || status=1
+
+name_generic_check() {
+  "$IYI" build -o "$WORK/name-generic-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-generic.build.log" 2>&1 || return 1
+  "$WORK/name-generic-port" "$REPO/bench/fixtures/lower_name_generic.iyi" "$WORK/lower_name_generic.oracle.ll" generic > "$WORK/name-generic.out" 2> "$WORK/name-generic.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-generic.out"
+}
+if name_generic_check; then
+  echo "  lower_name_generic: *Box(Int32)^Box(T)#get<Int32>:Int32"
+else
+  echo "  lower_name_generic: generic defining owner differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-generic.err" "$WORK/name-generic.out" "$WORK/name-generic.build.log"
+  status=1
+fi
+prove_mutation "a generic instance drops its defining generic owner" "$REPO/src/compiler/lower/fun.iyi" \
+  '  if receiver.is_a?(GenericInstanceType)' \
+  '  if false' -- name_generic_check || status=1
+
+name_pointer_check() {
+  "$IYI" build -o "$WORK/name-pointer-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name-pointer.build.log" 2>&1 || return 1
+  "$WORK/name-pointer-port" "$REPO/bench/fixtures/lower_name_pointer_union.iyi" "$WORK/lower_name_pointer_union.oracle.ll" pointer > "$WORK/name-pointer.out" 2> "$WORK/name-pointer.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name-pointer.out"
+}
+if name_pointer_check; then
+  echo "  lower_name_pointer_union: *pass_pointer<Pointer(Int32 | Nil)>:Pointer(Int32 | Nil)"
+else
+  echo "  lower_name_pointer_union: pointer union name differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name-pointer.err" "$WORK/name-pointer.out" "$WORK/name-pointer.build.log"
+  status=1
+fi
+prove_mutation "a pointer union gains extra parentheses" "$REPO/src/compiler/lower/fun.iyi" \
+  'skip_union_parens: true, codegen: true' \
+  'skip_union_parens: false, codegen: true' -- name_pointer_check || status=1
 
 echo
 echo
