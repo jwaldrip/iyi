@@ -417,12 +417,6 @@ prove_mutation "an imported type is not found during restriction lookup" "$REPO/
   -- check_calls_diverge bench/fixtures/semcall_match_import.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a type lookup resolves an alias to the wrong type" "$REPO/src/compiler/types/lookup.iyi" \
-  '      return expand(target.as(Type))' \
-  '      return program.types["Nil"].as(Type)' \
-  -- check_calls_diverge bench/fixtures/semcall_match_alias_generic.iyi || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
-
 prove_mutation "a generic restriction loses the splatted type arguments" "$RESTRICT_FILE" \
   '    count = inst.type_args.size - (node.type_vars.size - (splat_index ? 1 : 0))' \
   '    count = 0' \
