@@ -7,7 +7,7 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
 import compiler/semantic/inline_macros::{splice_body_node, splice_fun_body, splice_inline_sites}
-import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
+import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
 import compiler/semantic/top_level::{LibFun, LibType}
 import compiler/semantic/top_level::{VoidType}
@@ -1763,9 +1763,9 @@ pub class MainVisitor < TypeNodeHost
   # A trait's body is typed in the trait's own type (hosted semantic_visitor.cr 1849-1856).
   def visit(node : TraitDef) : Bool
     t = @program.lookup_type_path?(node.name, @current_type)
-    if t && t.is_a?(TraitType)
+    if t && t.is_a?(ModuleType) && t.trait?
       old_type = @current_type
-      @current_type = t.as(TraitType)
+      @current_type = t.as(ModuleType)
       node.body.accept(self)
       @current_type = old_type
     end

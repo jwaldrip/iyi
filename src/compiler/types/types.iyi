@@ -304,6 +304,10 @@ pub class GenericModuleInstanceType < GenericInstanceType
     true
   end
 
+  def trait? : Bool
+    @generic_type.trait?
+  end
+
   def type_desc : String
     "module"
   end
@@ -316,20 +320,6 @@ pub class GenericModuleInstanceType < GenericInstanceType
       @metaclass = m
       m
     end
-  end
-end
-
-pub class GenericTraitInstanceType < GenericInstanceType
-  def initialize(program : SemanticProgram, generic_type : Type, type_vars : Hash(String, Type), type_args : Array(Type))
-    super(program, generic_type, type_vars, type_args)
-  end
-
-  def trait? : Bool
-    true
-  end
-
-  def type_desc : String
-    "trait"
   end
 end
 

@@ -924,14 +924,12 @@ pub class GenericModuleType < ModuleType
   end
 end
 
-pub class TraitType < ModuleType
+pub class TraitType < NonGenericModuleType
   getter supertraits : Array(Type)
-  getter assoc_types : Array(String)
 
   def initialize(program : SemanticProgram, namespace : ModuleType?, name : String)
     super(program, namespace, name)
     @supertraits = [] of Type
-    @assoc_types = [] of String
   end
 
   def trait? : Bool
@@ -943,16 +941,34 @@ pub class TraitType < ModuleType
   end
 end
 
-pub class GenericTraitType < TraitType
-  getter type_vars : Array(String)
+pub class GenericTraitType < GenericModuleType
+  getter supertraits : Array(Type)
+  getter assoc_types : Array(String)
 
-  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, @type_vars : Array(String))
-    super(program, namespace, name)
+  def initialize(program : SemanticProgram, namespace : ModuleType?, name : String, type_vars : Array(String))
+    super(program, namespace, name, type_vars)
+    @supertraits = [] of Type
+    @assoc_types = [] of String
   end
 
-  def generic_type_vars : Array(String)?
-    @type_vars
+  def trait? : Bool
+    true
   end
+
+  def type_desc : String
+    "trait"
+  end
+
+  def to_s : String
+    return base_full_name if @type_vars.empty?
+    "#{base_full_name}(#{@type_vars.join(", ")})"
+  end
+end
+
+pub def trait_supertraits(type : Type) : Array(Type)?
+  return type.as(TraitType).supertraits if type.is_a?(TraitType)
+  return type.as(GenericTraitType).supertraits if type.is_a?(GenericTraitType)
+  nil
 end
 
 pub class Const < NamedType
@@ -2579,13 +2595,13 @@ pub class TopLevelVisitor < Visitor
   def visit(node : TraitDef) : Bool
     scope, name, existing = lookup_type_def(node, node.name)
 
-    type : TraitType
+    type : ModuleType
 
     if ex = existing
       unless ex.trait?
         raise("#{name} is not a trait, it's a #{ex.type_desc}")
       end
-      type = ex.as(TraitType)
+      type = ex.as(ModuleType)
     else
       tv = node.type_vars
       at = node.assoc_types
@@ -2635,10 +2651,11 @@ pub class TopLevelVisitor < Visitor
         if st == type
           raise("#{type.full_name} can't require itself")
         end
-        if type.supertraits.includes?(st)
+        supertraits = trait_supertraits(type).not_nil!
+        if supertraits.includes?(st)
           raise("#{type.full_name} already requires #{st.full_name}")
         end
-        type.supertraits << st
+        supertraits << st
       end
     end
 
@@ -3529,8 +3546,6 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
     io << indent << "  type_vars: [" << t.as(GenericClassType).type_vars.join(", ") << "]\n"
   elsif t.is_a?(GenericModuleType)
     io << indent << "  type_vars: [" << t.as(GenericModuleType).type_vars.join(", ") << "]\n"
-  elsif t.is_a?(GenericTraitType)
-    io << indent << "  type_vars: [" << t.as(GenericTraitType).type_vars.join(", ") << "]\n"
   end
 
   if t.is_a?(ClassType)
@@ -3568,14 +3583,16 @@ pub def dump_type(t : Type, io : String::Builder, indent : String, entry : Strin
     end
   end
 
-  if t.is_a?(TraitType)
-    tr = t.as(TraitType)
-    unless tr.supertraits.empty?
-      st_strs = tr.supertraits.map(&.full_name).sorted
+  if supertraits = trait_supertraits(t)
+    unless supertraits.empty?
+      st_strs = supertraits.map(&.full_name).sorted
       io << indent << "  supertraits: [" << st_strs.join(", ") << "]\n"
     end
-    unless tr.assoc_types.empty?
-      at_strs = tr.assoc_types.dup.sorted
+  end
+  if t.is_a?(GenericTraitType)
+    assoc_types = t.as(GenericTraitType).assoc_types
+    unless assoc_types.empty?
+      at_strs = assoc_types.dup.sorted
       io << indent << "  assoc_types: [" << at_strs.join(", ") << "]\n"
     end
   end

@@ -448,7 +448,8 @@ pub class LowerTyper
     max_alignment = pointer_size.to_i32
     type.as(UnionType).union_types.each do |member|
       next if member.is_a?(VoidType) || member.is_a?(NoReturnType)
-      raise "BUG: a module member of a union is not ported (hosted types.cr expand_union_types, NEEDS.md row 7)" if member.is_a?(NonGenericModuleType)
+      # Hosted codegen/types.cr:141-179 keeps a module with no includers as itself.
+      raise "BUG: a module member of a union is not ported (hosted types.cr expand_union_types, NEEDS.md row 7)" if member.is_a?(NonGenericModuleType) && !member.as(ModuleType).including_types.empty?
       member_type = llvm_type(member, true)
       size = size_of(member_type)
       align = align_of(member_type)

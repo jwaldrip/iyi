@@ -21,6 +21,7 @@ export IYI_PATH="$REPO/src"
 IYI="$REPO/bin/iyi"
 CRYSTAL="${CRYSTAL:-crystal}"
 TYPER_FILE="$REPO/src/compiler/lower/typer.iyi"
+TOP_LEVEL_FILE="$REPO/src/compiler/semantic/top_level.iyi"
 TYPE_ID_FILE="$REPO/src/compiler/lower/type_id.iyi"
 LAYOUTS_FILE="$REPO/src/compiler/lower/layouts.iyi"
 UNIONS_FILE="$REPO/src/compiler/lower/unions.iyi"
@@ -487,6 +488,12 @@ prove_mutation "a namespace module's branch bypassed (namespaces fall through to
   "    if false" \
   -- check_own_diverges || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a trait outside NonGenericModuleType falls through to the BUG raise" "$TOP_LEVEL_FILE" \
+  'pub class TraitType < NonGenericModuleType' \
+  'pub class TraitType < ModuleType' \
+  -- check_lowering_diverges || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 
 prove_mutation "a struct's by-value answer removed (passed_by_value? of a class)" "$TYPER_FILE" \
   "  if type.is_a?(ClassType)" \

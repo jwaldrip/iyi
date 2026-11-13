@@ -1,0 +1,35 @@
+# Each class is upcast to the trait implemented by both classes.
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+trait Coded
+end
+
+class Alpha
+  def initialize
+  end
+end
+
+class Beta
+  def initialize
+  end
+end
+
+impl Coded for Alpha
+end
+
+impl Coded for Beta
+end
+
+def first : Coded
+  Alpha.new
+end
+
+def second : Coded
+  Beta.new
+end
+
+first
+second
+LibC.exit(7)

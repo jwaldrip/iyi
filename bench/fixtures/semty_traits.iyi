@@ -1,0 +1,38 @@
+# Ordinary traits stand for their implementers; generic traits stand for themselves.
+trait Coded
+end
+
+trait Pick
+  type Elem
+end
+
+trait Conv(T)
+end
+
+class Alpha
+end
+
+class Beta
+end
+
+class Bag
+end
+
+impl Coded for Alpha
+end
+
+impl Coded for Beta
+end
+
+impl Pick for Bag
+  type Elem = Int32
+end
+
+impl Conv(Int32) for Bag
+end
+
+# op Coded.remove_indirection
+# op intersect(Coded, Alpha)
+# op merge(Coded, Alpha)
+# op Pick.remove_indirection
+# op Conv.remove_indirection

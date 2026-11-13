@@ -1,0 +1,6 @@
+# A trait without implementers, including as a union member, lowers as itself.
+trait EmptyTrait
+end
+
+# type: EmptyTrait
+# type: EmptyTrait?
