@@ -21,7 +21,7 @@ module compiler/lower/const
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
 import compiler/ir/values::{Value}
-import compiler/ir/inst::{Inst, Op, CallConv}
+import compiler/ir/inst::{Inst, Op, CallConv, CallAux}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{BodyVisit, Lowerer}
@@ -286,16 +286,22 @@ pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopL
 end
 
 # The hosted `run_once` (once.cr:21-47) for the two-parameter `__iyi_once` of the prelude: the flag and the initialiser
-# are passed, and the prelude's function calls the initialiser once. The function is in the module when the program's own
-# visit declared it (lower.iyi emit_fun_def); a missing one is refused by name.
+# are passed, and the prelude's function calls the initialiser once. The three-parameter legacy form is refused by name.
+# The function is in the module when the program's own visit declared it (lower.iyi emit_fun_def); a missing one is refused by name.
 pub def run_once(low : Lowerer, flag : Global, fn : Function) : Nil
   once = low.module.get_function?("__iyi_once")
   if once.nil?
     refuse_port("lower: __iyi_once is not declared in the module: the prelude's once entry (hosted run_once, once.cr:22) was not visited")
   end
+  once_fn = once.as(Function)
+  if once_fn.fn_type.param_types.size != 2
+    refuse_port("lower: __iyi_once does not take the flag and the initialiser: the legacy three-parameter form is refused (hosted once.cr:29-44)")
+  end
   ptr = low.module.types.ptr(0)
   ft = low.module.types.func([ptr, ptr] of IrType, low.module.types.void)
-  low.builder.call(ft, once.as(Function), [flag.as(Value), fn.as(Value)] of Value, "")
+  # The declaration may still carry the default convention when this call is emitted (an unused fun's body waits
+  # until the end). The hosted call is the C convention, which is what a `fun` is, so the call says so itself.
+  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), fn.as(Value)] of Value, "")
 end
 
 # The hosted `initialize_const` (const.cr:158-179). A constant nothing read before its assignment is initialised

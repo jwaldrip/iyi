@@ -54,6 +54,23 @@ else
   exit 1
 fi
 
+
+# A lazily initialised class variable needs the hosted compiler to look up __iyi_once. A prelude
+# named empty leaves iyi_prelude? false, so that fixture is built against a prelude whose require
+# name ends in iyi/prelude (bench/fixtures/lowglob_abi). The fixture declares IyiRuntimeLock.
+hosted_module() {
+  name="$1"
+  fixture="$2"
+  out="$3"
+  log="$4"
+  if [ "$name" = "lowglob_cvar_lazy" ]; then
+    built_in=$("$IYI" env | awk -F= '/^IYI_PATH=/ { print substr($0, index($0, "=") + 1); exit }')
+    IYI_PATH="$REPO/bench/fixtures/lowglob_abi:${built_in}" "$IYI" build --prelude iyi/prelude --emit llvm-ir --no-debug -o "$out" "$fixture" > "$log" 2>&1
+  else
+    "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$out" "$fixture" > "$log" 2>&1
+  fi
+}
+
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
@@ -62,7 +79,7 @@ diverged=0
 e2e=""
 for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
   name="$(basename "$fixture" .iyi)"
-  if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
+  if ! hosted_module "$name" "$fixture" "$WORK/$name" "$WORK/$name.oracle.log" || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
     diverged=$((diverged + 1))
     continue
@@ -228,6 +245,9 @@ prove_mutation "a float class-variable literal is not stored" "$REPO/src/compile
 prove_mutation "a string class variable is refused as a struct" "$REPO/src/compiler/lower/class_var.iyi" \
   'if cvar.type.full_name == "String"' \
   "if false" -- lowglob_check || status=1
+prove_mutation "the initialiser function is not passed to once" "$REPO/src/compiler/lower/const.iyi" \
+  '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), fn.as(Value)] of Value, "")' \
+  '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), flag.as(Value)] of Value, "")' -- lowglob_check || status=1
 
 
 echo

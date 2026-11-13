@@ -112,11 +112,26 @@ end
 pub def build_names(text : String, marker : String) : Array(String)
   names = [] of String
   text.split("\n").each do |line|
-    next unless line.includes?("store ptr @\"")
-    parts = line.split("\"")
-    next unless parts.size >= 4 && parts[3].includes?(marker)
-    names << parts[1]
-    names << parts[3]
+    if line.includes?("store ptr @\"")
+      parts = line.split("\"")
+      if parts.size >= 4 && parts[3].includes?(marker)
+        names << parts[1]
+        names << parts[3]
+      end
+    end
+    # An iyi-layout string is stored through getelementptr, so the source is not `@"text"` at the
+    # start of the store. The destination still contains the marker, and the private text starts with `'`.
+    if line.includes?("store ptr getelementptr")
+      quoted = line.split("@\"")
+      i = 1
+      while i < quoted.size
+        name = quoted[i].split("\"").first
+        if name.includes?(marker) || name.starts_with?("'")
+          names << name
+        end
+        i = i + 1
+      end
+    end
   end
   names
 end
