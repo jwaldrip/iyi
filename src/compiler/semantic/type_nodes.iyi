@@ -369,6 +369,12 @@ pub def visit_type_of(visitor : TypeNodeHost, node : TypeOf) : Bool
   end
   return false unless complete
   merged = visitor.program.type_merge(types)
+  # Inside type arguments typeof denotes the merged type, not its metaclass
+  # (hosted TypeOf#map_type in semantic/bindings.cr).
+  if depth > 0
+    visitor.set_type(node, merged)
+    return false
+  end
   meta = type_node_metaclass(merged)
   if meta.nil?
     return visitor.refuse(node, "#{merged.full_name} doesn't have a metaclass")
