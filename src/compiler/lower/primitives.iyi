@@ -140,11 +140,8 @@ end
 # of an instance primitive (`add`, `address`, `value`, `value=`) is a value, lowered first as the hosted
 # prepare_call_args does. `pointer_new` is a class method: its call's receiver (the metaclass) is not
 # lowered, and its argument is the address. `pointer_malloc` is a class method too: its argument is the count. Ported: `pointer_address` (ptr2int to Int64), `pointer_add` (a
-# gep of the element type, the hosted non-inbounds gep), `pointer_new` (int2ptr to the node's pointer type),
-# and `pointer_get` of any element (hosted to_lhs: a by-value aggregate is the pointer, anything else is loaded) and `pointer_set` of an integer, Char, Float or Bool element (a store aligned to
-# the element). `pointer_malloc` is ported for a program without its own malloc (pointer_malloc_value). Refused by name: `pointer_realloc` and `pointer_diff` (the realloc and
-# diff helpers of codegen.cr), `pointer_malloc` of a program with its own malloc (refuse_program_malloc), and `pointer_set` of a pointer or a struct
-# element (the hosted assign of those, copy_value).
+# gep of the element type, `pointer_new`, `pointer_get`, and `pointer_set`.
+# `pointer_realloc`, `pointer_diff`, and a program's own malloc remain refused.
 pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   if name == "pointer_realloc" || name == "pointer_diff"
     pending_visit_node("primitive #{name} (hosted codegen_primitive_#{name}, primitives.cr 905-965: its helper is not ported)")
@@ -218,18 +215,38 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
       return
     end
     # Hosted to_rhs for a type that is not passed by value is the value itself
-    # (a class, a nilable reference, a pointer). A by-value struct is copied
-    # (codegen.cr store_value / copy_value), not ported here.
+    # (a class, a nilable reference, a pointer).
     if !passed_by_value?(elem)
       ref_stored = values[1]
       store_aligned(low, ref_stored, values[0])
       low.last = ref_stored
       return
     end
-    pending_visit_node("pointer_set of #{elem.full_name} (hosted assign, primitives.cr 927)")
+    store_pointer_value(low, values[0], values[1], elem)
+    low.last = values[1]
     return
   end
   pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
+end
+
+# Hosted store_value / copy_value (codegen.cr 3323-3349). An indirect aggregate
+# is copied without assuming the source and destination do not overlap.
+pub def store_pointer_value(low : Lowerer, dest : Value, value : Value, type : Type) : Nil
+  ir = low.typer.llvm_type(type)
+  if low.typer.passed_indirectly?(type)
+    copy_pointer_value(low, dest, value, ir, false)
+  else
+    store_aligned(low, load_aligned(low, low.typer.llvm_embedded_type(type), value), dest)
+  end
+end
+
+pub def copy_pointer_value(low : Lowerer, dest : Value, src : Value, ir : IrType, fresh : Bool) : Nil
+  size = low.builder.const_int(low.typer.size_t, low.typer.size_of(ir))
+  align = Attribute.new("align", low.typer.align_of(ir).to_u64, nil, nil)
+  attrs = [[align] of Attribute, [align] of Attribute, [] of Attribute, [] of Attribute] of Array(Attribute)
+  id = fresh ? IntrinsicId::Memcpy : IntrinsicId::Memmove
+  ptr = low.module.types.ptr(0)
+  low.builder.intrinsic_with(id, [ptr, ptr, low.typer.size_t] of IrType, [dest, src, size, int1(low, 0_i64)] of Value, attrs)
 end
 
 # The element type of a pointer's analysed type (`Pointer(T)` gives `T`).
