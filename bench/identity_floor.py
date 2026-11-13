@@ -114,6 +114,20 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     # over-limit refusal, candidate search order, and error text against the
     # frontend iyi is still bootstrapped from.
     (r"^bench/selfhost_daemon_exercise\.sh$", "the frontend the selfhost build daemon is checked against"),
+    # The self-hosting lexer's oracle. It proves the iyi-written lexer agrees
+    # token for token with the frontend iyi is still bootstrapped from, so the
+    # other language is the thing being compared against, by name.
+    (r"^bench/selfhost_lexer_exercise\.sh$", "the frontend the selfhost lexer is checked against"),
+    # The self-hosting parser's oracle, for the same reason as the lexer's: it
+    # parses each fixture with the iyi parser and with the frontend iyi is
+    # still bootstrapped from, and requires the normalised trees identical.
+    # The other language is what is being compared against, so it is named.
+    (r"^bench/selfhost_parser_exercise\.sh$", "the frontend the selfhost parser is checked against"),
+    # The self-hosting bind tool's oracle, for the same reason as the
+    # normalizer's: it analyzes each fixture with the iyi bind tool and with
+    # the frontend iyi is still bootstrapped from, and requires the bound
+    # methods identical. The other language is the thing being compared against.
+    (r"^bench/selfhost_bind_exercise\.sh$", "the frontend the selfhost bind tool is checked against"),
 ]
 
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.
