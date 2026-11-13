@@ -438,6 +438,12 @@ prove_mutation "a generic restriction loses the splatted type arguments" "$RESTR
   -- check_calls_diverge bench/fixtures/semcall_match_proc_splat.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "an imported type is not found during restriction lookup" "$REPO/src/compiler/types/lookup.iyi" \
+  '        curr = program.current_imports[name]?' \
+  '        curr = nil' \
+  -- check_calls_diverge bench/fixtures/semcall_match_import.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo
