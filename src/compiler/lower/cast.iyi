@@ -30,7 +30,7 @@ import compiler/ir/inst::{CallConv, Inst, IntPredicate, Op}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
-import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
+import compiler/lower/helpers::{at_terminator?, llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/typer::{primitive_kind, passed_by_value?}
@@ -102,6 +102,8 @@ end
 # A nil value into a union only writes the type id and the zeroed area (the caller must not
 # store the nil itself).
 pub def assign(low : Lowerer, pointer : Value, target : Type, value_type : Type, value : Value) : Nil
+  # Hosted cast.cr 73-85: an ended block or NoReturn value produces no store.
+  return if at_terminator?(low) || TypeQueries.no_return?(value_type)
   if target.full_name == value_type.full_name
     store_aligned(low, value, pointer)
     return

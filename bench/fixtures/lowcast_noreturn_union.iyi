@@ -6,13 +6,14 @@ def fail_now : NoReturn
   LibC.exit(9)
 end
 
-def choose(flag : Bool) : Int32?
+def choose(flag : Bool) : Int32
+  x = nil
   if flag
-    7
+    x = 1
   else
-    fail_now
+    x = fail_now
   end
+  7
 end
 
-choose(true)
-LibC.exit(7)
+LibC.exit(choose(true))
