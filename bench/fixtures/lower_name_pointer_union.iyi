@@ -4,4 +4,4 @@ def pass_pointer(value : Pointer(Int32 | Nil)) : Pointer(Int32 | Nil)
   copy
 end
 
-pass_pointer(Pointer(Int32 | Nil).null)
+pass_pointer(Pointer(Int32 | Nil).malloc(1_u64))
