@@ -1,6 +1,7 @@
 import compiler/syntax/ast::{ASTNode, Expressions}
 import compiler/syntax/parser::{Parser}
 import compiler/semantic/top_level::{SemanticProgram, TopLevelVisitor, TypeException, dump_program_declarations}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor, dump_program_expressions}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 
@@ -12,6 +13,7 @@ module BenchSelfhostSemanticExercise
     visitor = TopLevelVisitor.new(prog)
     node.accept(visitor)
     visitor.finish
+    declare_guessed_instance_vars(prog)
     dump_program_declarations(prog)
   end
 
@@ -22,6 +24,7 @@ module BenchSelfhostSemanticExercise
     tl = TopLevelVisitor.new(prog)
     node.accept(tl)
     tl.finish
+    declare_guessed_instance_vars(prog)
     mv = MainVisitor.new(prog)
     node.accept(mv)
     RecursiveStructChecker.new(prog).run

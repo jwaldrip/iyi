@@ -28,6 +28,7 @@ import compiler/syntax/ast::{ASTNode}
 import compiler/syntax/parser::{Parser}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{NamedType, SemanticProgram, TopLevelVisitor, Type}
+import compiler/semantic/instance_vars::{declare_guessed_instance_vars}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/recursive_struct_checker::{RecursiveStructChecker}
 import compiler/semantic/normalizer::{Normalizer, NormalizerProgram}
@@ -102,6 +103,7 @@ module TypedDump
     tl = TopLevelVisitor.new(prog, filename)
     node.accept(tl)
     tl.finish
+    declare_guessed_instance_vars(prog)
     mv = MainVisitor.new(prog)
     mv.total = true
     node.accept(mv)
