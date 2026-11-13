@@ -273,6 +273,14 @@ class GuessVisitor < Visitor
         return found
       end
     end
+    # A constructed generic with resolved arguments, such as Hash(String, Bool).new.
+    if node.name == "new" && obj.is_a?(Generic)
+      if hook = @program.merge_hook
+        if found = @program.lookup_type_node?(obj, @og.owner)
+          return hook.virtual_of(found)
+        end
+      end
+    end
     # Pointer(T).malloc and Pointer(T).null have the pointer instance type.
     if obj.is_a?(Generic) && (node.name == "malloc" || node.name == "null")
       generic = obj.as(Generic)
