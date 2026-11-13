@@ -1,0 +1,8 @@
+def macro_loop : Int32
+  {% for value in [42] %}
+    {{ value }}
+  {% end %}
+end
+
+macro_loop
+nil
