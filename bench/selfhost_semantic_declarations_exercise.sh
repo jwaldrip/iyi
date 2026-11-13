@@ -755,6 +755,11 @@ prove_mutation "a type-variable restriction replaces a prelude def of the same t
   "      return false" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an external variable's setter is not added" "$MUT_SEM" \
+  "    lib_type.funs << setter_fun" \
+  "    setter_fun.external_var = false" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi
 
