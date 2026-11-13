@@ -80,6 +80,9 @@ check_calls_diverge() {
   "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_semantic_calls_exercise.iyi" >/dev/null 2>&1 || return 1
   local fixture
   for fixture in "$REPO"/bench/fixtures/semcall_*.iyi; do
+    if [ "$#" -gt 0 ] && [ "$fixture" != "$REPO/$1" ]; then
+      continue
+    fi
     "$WORK/port_m" "$fixture" > "$WORK/pm.out" 2>/dev/null || return 1
     "$WORK/oracle" "$fixture" > "$WORK/om.out" 2>/dev/null || return 1
     diff -q "$WORK/pm.out" "$WORK/om.out" >/dev/null || return 1
@@ -426,7 +429,13 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a type lookup resolves an alias to the wrong type" "$REPO/src/compiler/types/lookup.iyi" \
   '      return expand(target.as(Type))' \
   '      return program.types["Nil"].as(Type)' \
-  -- check_calls_diverge || status=1
+  -- check_calls_diverge bench/fixtures/semcall_match_alias_generic.iyi || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic restriction loses the splatted type arguments" "$RESTRICT_FILE" \
+  '    count = inst.type_args.size - (node.type_vars.size - (splat_index ? 1 : 0))' \
+  '    count = 0' \
+  -- check_calls_diverge bench/fixtures/semcall_match_proc_splat.iyi || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 echo "  $MUTATIONS_RUN mutation proofs run"
