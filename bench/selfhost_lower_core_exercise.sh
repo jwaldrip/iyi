@@ -104,9 +104,7 @@ for fixture in "$REPO"/bench/fixtures/lower_*.iyi; do
   name="$(basename "$fixture" .iyi)"
   # lower_headed_late is proved in section 2c against the arena prelude. The empty-prelude
   # loop names its proc Proc(Base, Base); the port, having made the virtual type, names Base+.
-  # lower_string_fields reads @bytesize. That load is the instance-var fold, proved in 2c4
-  # against the arena prelude, not in this empty-prelude identity loop.
-  if [ "$name" = "lower_headed_late" ] || [ "$name" = "lower_probe_reuse" ] || [ "$name" = "lower_string_fields" ]; then
+  if [ "$name" = "lower_headed_late" ] || [ "$name" = "lower_probe_reuse" ]; then
     continue
   fi
   if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
