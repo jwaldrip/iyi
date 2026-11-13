@@ -84,7 +84,7 @@ pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type)
   result_t = analysed.type_of?(target) || body_t
   built : Function? = nil
   if self_type.is_a?(MetaclassType)
-    built = target_def_fun(low, target, nil, arg_types, result_t.as(Type), self_type.as(MetaclassType).instance_type)
+    built = target_def_fun(low, target, nil, arg_types, result_t.as(Type), self_type)
   else
     built = target_def_fun(low, target, self_type, arg_types, result_t.as(Type))
   end
