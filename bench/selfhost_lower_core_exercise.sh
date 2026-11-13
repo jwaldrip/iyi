@@ -584,6 +584,74 @@ else
   awk 'NR<=8' "$WORK/interpolation-constant.err" "$WORK/interpolation-constant.out" "$WORK/interpolation-constant.build.log"
   status=1
 fi
+named_tuple_check() {
+  "$IYI" build -o "$WORK/port-named-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/named-tuple.build.log" 2>&1 || return 1
+  "$WORK/port-named-tuple" lower "$REPO/bench/fixtures/lower_named_tuple.iyi" "$WORK/lower_named_tuple.oracle.ll" > "$WORK/named-tuple.out" 2> "$WORK/named-tuple.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/named-tuple.out"
+}
+if named_tuple_check; then
+  prove_mutation "named tuple literal reverses entry evaluation" "$REPO/src/compiler/lower/lower.iyi" \
+    '  node.entries.each do |entry|' \
+    '  node.entries.reverse_each do |entry|' -- named_tuple_check || status=1
+else
+  echo "FAIL: named tuple fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/named-tuple.err" "$WORK/named-tuple.out" "$WORK/named-tuple.build.log"
+  status=1
+fi
+tuple_literal_check() {
+  "$IYI" build -o "$WORK/port-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple.build.log" 2>&1 || return 1
+  "$WORK/port-tuple" lower "$REPO/bench/fixtures/lower_tuple_literal.iyi" "$WORK/lower_tuple_literal.oracle.ll" > "$WORK/tuple.out" 2> "$WORK/tuple.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/tuple.out"
+}
+if tuple_literal_check; then
+  prove_mutation "tuple literal reverses entry evaluation" "$REPO/src/compiler/lower/lower.iyi" \
+    '  node.elements.each_with_index do |element, index|' \
+    '  node.elements.reverse.each_with_index do |element, index|' -- tuple_literal_check || status=1
+else
+  echo "FAIL: tuple literal fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/tuple.err" "$WORK/tuple.out" "$WORK/tuple.build.log"
+  status=1
+fi
+tuple_entry_check() {
+  "$IYI" build -o "$WORK/port-tuple-entry" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple-entry.build.log" 2>&1 || return 1
+  "$WORK/port-tuple-entry" emit "$REPO/bench/fixtures/lower_tuple.iyi" "$WORK/lower_tuple.oracle.ll" > "$WORK/tuple-entry.ir" 2> "$WORK/tuple-entry.err" || return 1
+  "$WORK/compile_native" "$WORK/tuple-entry.ir" -o "$WORK/tuple-entry.native" > "$WORK/tuple-entry.native.log" 2>&1 || return 1
+  timeout 30 "$WORK/tuple-entry.native" > "$WORK/tuple-entry.native.out" 2>&1; local ns=$?
+  timeout 30 "$WORK/lower_tuple" > "$WORK/tuple-entry.hosted.out" 2>&1; local hs=$?
+  [ "$ns" = "$hs" ] && cmp -s "$WORK/tuple-entry.native.out" "$WORK/tuple-entry.hosted.out"
+}
+if tuple_entry_check; then
+  prove_mutation "a bare aggregate entry uses the C convention" "$REPO/src/compiler/lower/lower.iyi" \
+    '  fn.call_convention = CallConv::Iyi' \
+    '  fn.call_convention = CallConv::C' -- tuple_entry_check || status=1
+else
+  echo "FAIL: tuple entry does not run to the hosted result"
+  awk 'NR<=8' "$WORK/tuple-entry.err" "$WORK/tuple-entry.build.log" "$WORK/tuple-entry.native.log"
+  status=1
+fi
+entry_oracle_check() {
+  local lib="$REPO/bench/lib/lower_oracle.sh"
+  local text rewritten
+  text="$(bash -c '. "$1"; awk "$CALL_TYPES" "$2"' _ "$lib" "$WORK/lower_tuple.ll")" || return 1
+  printf '%s\n' "$text" > "$WORK/entry-rewritten.ll"
+  "$WORK/port" lower "$REPO/bench/fixtures/lower_tuple.iyi" "$WORK/entry-rewritten.ll" > "$WORK/entry-rewritten.out" 2>&1 || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/entry-rewritten.out" || return 1
+  rewritten="$(bash -c '. "$1"; awk "$CALL_TYPES" <<'"'"'EOF'"'"'
+define internal void @__iyi_main(i32 %argc, ptr %argv) {
+  call void @__iyi_main(i32 %argc, ptr %argv)
+  invoke void @__crystal_main(i32 %argc, ptr %argv) #1 to label %ok unwind label %rescue
+EOF' _ "$lib")" || return 1
+  [[ "$rewritten" == *'define internal iyicc void @__iyi_main('* ]] &&
+    [[ "$rewritten" == *'call iyicc void (i32, ptr) @__iyi_main('* ]] &&
+    [[ "$rewritten" == *'invoke iyicc void (i32, ptr) @__crystal_main(i32 %argc, ptr %argv) to label %ok unwind label %rescue'* ]]
+}
+if entry_oracle_check; then
+  prove_mutation "the oracle leaves the entry definition in the C convention" "$REPO/bench/lib/lower_oracle.sh" \
+    ' || $0 ~ /^define .* @(__crystal_main|__iyi_main)\(/' '' -- entry_oracle_check || status=1
+else
+  echo "FAIL: entry oracle normalization differs on lower_tuple or its call forms"
+  status=1
+fi
 
 
 
