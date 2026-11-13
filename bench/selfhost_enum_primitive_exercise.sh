@@ -14,7 +14,7 @@ CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src" "${CRYSTAL:-crystal}" build
 fixture="$REPO/bench/fixtures/bodies_enum_primitive.iyi"
 "$WORK/oracle" "$fixture" > "$WORK/hosted"
 "$WORK/typed" "$fixture" "$REPO/src" > "$WORK/port"
-for expected in '6:9 Call UInt8' '6:9 Var FiberState'; do
+for expected in '7:9 Call UInt8' '7:9 Var FiberState'; do
   grep -Fx "$expected" "$WORK/hosted" || { echo HOSTED; cat "$WORK/hosted"; exit 1; }
   grep -Fx "$expected" "$WORK/port" || { echo PORT; cat "$WORK/port"; exit 1; }
 done
