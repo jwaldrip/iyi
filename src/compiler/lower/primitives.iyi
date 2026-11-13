@@ -803,13 +803,9 @@ def collect_headed_types(type : Type, found : Array(Type)) : Nil
 end
 
 def set_headed_initializer(low : Lowerer, t : Type) : Nil
-  answer = headed?(t, low.type_ids)
-  if answer.nil?
-    pending_visit_node("allocate of class #{t.full_name}: the :headed byte is the program-wide census (lower/headed.iyi), not decided")
-    return
-  end
+  answer = headed?(t, low.analysed.program, low.type_ids)
   global = headed_global(low, t)
-  global.initializer = low.builder.const_int(low.module.types.int8, answer.as(Bool) ? 1_i64 : 0_i64)
+  global.initializer = low.builder.const_int(low.module.types.int8, answer ? 1_i64 : 0_i64)
 end
 
 # The `__iyi_new` runtime function, declared in the module with the C convention when the program
