@@ -173,10 +173,9 @@ module BenchSelfhostSemanticCallsExercise
     if !DefaultArguments.supported?(definition, call.args, call.named_args)
       return "error: default arguments not supported"
     end
-    wrapper = DefaultArguments.wrapper_def(definition, call.args.size, call.named_args)
-    if wrapper.nil?
-      return "self"
-    end
+    wrapper = DefaultArguments.expand_for_call(definition, call.args.size, call.named_args)
+    return "error: #{wrapper}" if wrapper.is_a?(String)
+    return "self" if wrapper.as(Def) == definition
     names = [] of String
     wrapper.as(Def).args.each do |arg|
       names << arg.name
