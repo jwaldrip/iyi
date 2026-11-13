@@ -29,6 +29,7 @@ import compiler/lower/symbols::{SymbolCollector, emit_symbol_table, codegen_symb
 import compiler/lower/type_id::{LowerTypeIds}
 import compiler/ir/module::{Module}
 import compiler/ir/function::{Function, Linkage}
+import compiler/ir/function::{Global, TlsModel}
 import compiler/ir/inst::{Block, CallConv}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -49,6 +50,7 @@ import compiler/lower/proc::{lower_proc_literal}
 import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
+import compiler/semantic/top_level::{LibType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants, path_const}
 import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
 import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
@@ -650,6 +652,27 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     if exp.is_a?(ClassVar)
       codegen_pointerof_class_var(low, exp.as(ClassVar))
       return
+    end
+    if exp.is_a?(Call)
+      call = exp.as(Call)
+      obj = call.obj
+      if obj && call.args.empty? && call.named_args.nil? && call.block.nil? && call.block_arg.nil?
+        owner = low.analysed.type_of?(obj.as(ASTNode))
+        if owner.is_a?(LibType)
+          external = owner.as(LibType).lookup_fun(call.name)
+          if external && external.external_var && external.primitive == "external_var_get"
+            var_type = external.resolved_return
+            raise "BUG: external variable #{external.real_name} has no resolved type" if var_type.nil?
+            global = low.module.get_global?(external.real_name)
+            if global.nil?
+              global = low.module.add_global(external.real_name, low.typer.llvm_return_type(var_type.as(Type)))
+              global.as(Global).tls = TlsModel::GeneralDynamic if external.thread_local
+            end
+            low.last = global.as(Value)
+            return
+          end
+        end
+      end
     end
     pending_visit_node("pointerof of a #{node_class_name(exp)} (hosted codegen.cr: visit(PointerOf), only a local variable is ported)")
   end
