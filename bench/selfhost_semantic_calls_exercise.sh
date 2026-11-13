@@ -372,6 +372,18 @@ prove_mutation "a generic restriction does not bind free vars from the instance 
   -- check_calls_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+prove_mutation "a generic owner's type parameter is not bound in a pointer restriction" "$RESTRICT_FILE" \
+  '          bound = instance.type_vars[names[0]]?' \
+  '          bound = nil' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a Proc does not bind its argument tuple as T" "$REPO/src/compiler/types/types.iyi" \
+  '    vars["T"] = TupleInstanceType.new(program, @arg_types)' \
+  '    vars["T"] = TupleInstanceType.new(program, [] of Type)' \
+  -- check_calls_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
 echo "  $MUTATIONS_RUN mutation proofs run"
 
 echo

@@ -37,9 +37,11 @@ module_same() { awk '/module-level: identical/ { found = 1 } END { exit !found }
 trap 'rm -rf "$WORK"' EXIT
 
 # The class-variable reads on a class receiver (K.v) pass now that the calls lane lowers class-receiver calls (S2c8Calls).
-WAITING_FIXTURES="lowglob_cvar_tls"
-# lowglob_cvar_tls: an untyped `@[ThreadLocal] @@v = value` is refused by name (lower.iyi, visit(Annotation)): the body
-# pass does not flag it. While it waits, the mutation check requires the port to REFUSE it, so a lifted refusal is caught.
+WAITING_FIXTURES="lowglob_cvar_tls lowglob_cvar_lazy"
+# The body pass does not flag an untyped @[ThreadLocal] declaration.
+# The lazy fixture's indirect Proc call waits on body typing's splat binding.
+#
+# The hosted lazy fixture is nevertheless run and its flag-check mutation tested below.
 
 echo "== 1. Building the port driver"
 if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port.build.log" 2>&1; then
@@ -54,6 +56,49 @@ else
   exit 1
 fi
 
+# The shared oracle normalizer must add the function type for an indirect call,
+# but must not guess the type of an aggregate argument.
+oracle_call_checks() {
+  awk "$CALL_TYPES" "$REPO/bench/fixtures/lowglob_indirect.ll" > "$WORK/indirect.ir"
+  "$1" oracle "$WORK/indirect.ir" > "$WORK/indirect.out" 2>&1 || return 1
+  awk "$CALL_TYPES" "$REPO/bench/fixtures/lowglob_indirect_aggregate.ll" > "$WORK/aggregate.ir"
+  cmp -s "$REPO/bench/fixtures/lowglob_indirect_aggregate.ll" "$WORK/aggregate.ir" || return 1
+  "$1" oracle "$WORK/aggregate.ir" > "$WORK/aggregate.out" 2>&1 && return 1
+  awk '/expected `\(` but found/ { found = 1 } END { exit !found }' "$WORK/aggregate.out"
+}
+if oracle_call_checks "$WORK/port"; then
+  echo "  indirect oracle call parses; multiword argument is unchanged and refused"
+else
+  echo "  FAIL: indirect oracle normalization"
+  status=1
+fi
+
+
+# A lazily initialised class variable needs the hosted compiler to look up __iyi_once. A prelude
+# named empty leaves iyi_prelude? false, so that fixture is built against a prelude whose require
+# name ends in iyi/prelude (bench/fixtures/lowglob_abi). The fixture declares IyiRuntimeLock.
+hosted_module() {
+  name="$1"
+  fixture="$2"
+  out="$3"
+  log="$4"
+  case "$name" in
+    lowglob_cvar_lazy*)
+      built_in=$("$IYI" env | awk -F= '/^IYI_PATH=/ { print substr($0, index($0, "=") + 1); exit }')
+      IYI_PATH="$REPO/bench/fixtures/lowglob_abi:${built_in}" "$IYI" build --prelude iyi/prelude --emit llvm-ir --no-debug -o "$out" "$fixture" > "$log" 2>&1
+      ;;
+    *) "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$out" "$fixture" > "$log" 2>&1 ;;
+  esac
+}
+
+# Exit 1 means the initializer's side effect happened exactly once. A dropped flag
+# check makes the counter 2, even if the value global itself happens to look right.
+hosted_once_check() {
+  hosted_module lowglob_cvar_lazy "$REPO/bench/fixtures/lowglob_cvar_lazy.iyi" "$WORK/once_check" "$WORK/once_check.log" || return 1
+  timeout 30 "$WORK/once_check" > "$WORK/once_check.out" 2>&1
+  [ "$?" -eq 1 ]
+}
+
 echo
 echo "== 2. Each fixture: the hosted module against the port's lowering"
 passed=0
@@ -62,7 +107,7 @@ diverged=0
 e2e=""
 for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
   name="$(basename "$fixture" .iyi)"
-  if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
+  if ! hosted_module "$name" "$fixture" "$WORK/$name" "$WORK/$name.oracle.log" || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
     diverged=$((diverged + 1))
     continue
@@ -79,6 +124,12 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
   esac
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     reason="$(awk 'NR==1' "$WORK/$name.port.err")"
+    if [ "$name" = lowglob_cvar_lazy ]; then
+      case "$reason" in
+        *"expected type, got *T"*) ;;
+        *) echo "  $name: unexpected refusal: $reason"; diverged=$((diverged + 1)); continue ;;
+      esac
+    fi
     if [ "$named" = 1 ]; then
       echo "  $name: WAITING, named: $reason"
       waiting=$((waiting + 1))
@@ -106,6 +157,14 @@ for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     diverged=$((diverged + 1))
   fi
 done
+timeout 30 "$WORK/lowglob_cvar_lazy" > "$WORK/lazy-hosted.out" 2>&1
+lazy_status=$?
+if [ "$lazy_status" -eq 1 ]; then
+  echo "  hosted lazy initialization: side effect occurred exactly once (status 1)"
+else
+  echo "  hosted lazy initialization: expected status 1, got $lazy_status"
+  diverged=$((diverged + 1))
+fi
 echo "  fixtures: $passed passed, $waiting waiting (named), $diverged failed"
 if [ "$diverged" -gt 0 ] || [ "$passed" -eq 0 ]; then
   status=1
@@ -153,6 +212,8 @@ echo "== 4. Mutation proofs: the gate must catch each patch to the ported code"
 # hosted module exactly. It returns 0 only on the unmutated behaviour.
 lowglob_check() {
   "$IYI" build -o "$WORK/port_m" "$REPO/bench/selfhost_lower_globals_exercise.iyi" > "$WORK/port_m.build.log" 2>&1 || return 1
+  "$WORK/port_m" normalizer-check > /dev/null 2>&1 || return 1
+  ( . "$REPO/bench/lib/lower_oracle.sh"; oracle_call_checks "$WORK/port_m" ) || return 1
   for fixture in "$REPO"/bench/fixtures/lowglob_*.iyi; do
     name="$(basename "$fixture" .iyi)"
     case " $WAITING_FIXTURES " in *" $name "*) "$WORK/port_m" lower "$fixture" "$WORK/$name.oracle.ll" > /dev/null 2>&1 && return 1; continue ;; esac
@@ -171,6 +232,36 @@ else
   echo "    FAIL: the unmutated code does not pass the check"
   status=1
 fi
+prove_mutation "a program global is incorrectly stripped as a build constant" "$REPO/bench/lib/lower_gate.iyi" \
+  "        if destination.starts_with?(prefix) && identity_names.includes?(destination[prefix.size..-1])" "        if destination.includes?(marker)" -- lowglob_check || status=1
+prove_mutation "indirect calls are left without a function type" "$REPO/bench/lib/lower_oracle.sh" \
+  "  if (at == 0) return line" "  if (indirect || at == 0) return line" -- lowglob_check || status=1
+prove_mutation "lazy initializer ignores the once flag" "$REPO/bench/fixtures/lowglob_cvar_lazy.iyi" \
+  "  if !flag.value" "  if true" -- hosted_once_check || status=1
+prove_mutation "a nilable Proc initializer is not discarded" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  node.is_a?(NilLiteral) && cvar.type.is_a?(NilableProcType)" "  false" -- lowglob_check || status=1
+prove_mutation "a pointer class variable is refused" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if !(ir.int? || ir.float? || ir.pointer?)" "  if !(ir.int? || ir.float?)" -- lowglob_check || status=1
+prove_mutation "a nil aggregate initializer is refused" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  if nilable_aggregate_initializer?(cvar)" "  if false" -- lowglob_check || status=1
+prove_mutation "an aggregate class variable is loaded instead of read by address" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  low.last = to_lhs(low, class_var_pointer(low, cvar), cvar.type)" \
+  "  low.last = load_aligned(low, cvar_ir_type(low, cvar), class_var_pointer(low, cvar))" -- lowglob_check || status=1
+prove_mutation "a floating constant global is initialized to zero" "$REPO/src/compiler/lower/const.iyi" \
+  "    global.initializer = low.builder.const_float(ir, const.value.as(NumberLiteral).value.to_f)" \
+  "    global.initializer = low.builder.const_float(ir, 0.0)" -- lowglob_check || status=1
+prove_mutation "a symbol constant global has the wrong index" "$REPO/src/compiler/lower/const.iyi" \
+  "    global.initializer = low.builder.const_int(ir, symbol_index(low, const.value.as(SymbolLiteral).value).to_i64)" \
+  "    global.initializer = low.builder.const_int(ir, 1_i64)" -- lowglob_check || status=1
+prove_mutation "a symbol class variable does not retain its literal index" "$REPO/src/compiler/lower/class_var.iyi" \
+  "    value = low.builder.const_int(ir, symbol_index(low, node.as(SymbolLiteral).value).to_i64)" \
+  "    value = low.builder.const_int(ir, symbol_index(low, node.as(SymbolLiteral).value).to_i64 + 1_i64)" -- lowglob_check || status=1
+prove_mutation "a nil reference initializer is not discarded" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  node.is_a?(NilLiteral) && nilable_reference_type?(cvar.type)" \
+  "  false" -- lowglob_check || status=1
+prove_mutation "a namespaced class variable loses its qualified owner" "$REPO/src/compiler/lower/class_var.iyi" \
+  "  owner.full_name + cvar_suffix(name)" \
+  "  owner.name + cvar_suffix(name)" -- lowglob_check || status=1
 prove_mutation "a literal integer constant is one more than its value" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64)" \
   "    return low.builder.const_int(low.typer.llvm_type(typ), text.to_i64 + 1_i64)" -- lowglob_check || status=1
@@ -189,7 +280,7 @@ prove_mutation "a read of an initialised constant is not a load" "$REPO/src/comp
 prove_mutation "the constant initialiser has the C convention, not iyi" "$REPO/src/compiler/lower/const.iyi" \
   "  fn.call_convention = CallConv::Iyi" "  fn.call_convention = CallConv::C" -- lowglob_check || status=1
 prove_mutation "a class variable read is not a load of its global" "$REPO/src/compiler/lower/class_var.iyi" \
-  "  low.last = load_aligned(low, ir, class_var_pointer(low, cvar))" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
+  "  low.last = to_lhs(low, class_var_pointer(low, cvar), cvar.type)" "  low.last = llvm_nil(low)" -- lowglob_check || status=1
 prove_mutation "a literal class variable is initialised by a function, not stored at its declaration" "$REPO/src/compiler/lower/class_var.iyi" \
   "  if simple_literal?(node)" "  if false" -- lowglob_check || status=1
 prove_mutation "a string constant's global is not emitted at the program's start" "$REPO/src/compiler/lower/const.iyi" \
@@ -211,7 +302,7 @@ prove_mutation "a @[ThreadLocal] class variable is lowered as a plain global (it
 prove_mutation "a typed @[ThreadLocal] class variable is lowered as a plain global (its flag is ignored)" "$REPO/src/compiler/lower/class_var.iyi" \
   "  if cvar.thread_local" "  if false" -- lowglob_check || status=1
 prove_mutation "a thread-local class variable is read through its global, not its accessor" "$REPO/src/compiler/lower/class_var.iyi" \
-  "  thread_local_address(low, cvar, cvar_global_name(owner, cvar.name), g)" "  g" -- lowglob_check || status=1
+  "  thread_local_address(low, cvar, name, g)" "  g" -- lowglob_check || status=1
 prove_mutation "a UInt64 literal above Int64 max loses its sign bit" "$REPO/src/compiler/lower/const.iyi" \
   ".to_i64 &- 9223372036854775807_i64 &- 1_i64" ".to_i64" -- lowglob_check || status=1
 prove_mutation "a namespaced constant is named by its bare name, not its full name" "$REPO/src/compiler/lower/const.iyi" \
@@ -225,9 +316,12 @@ prove_mutation "pointerof of a class variable is refused" "$REPO/src/compiler/lo
 prove_mutation "a float class-variable literal is not stored" "$REPO/src/compiler/lower/const.iyi" \
   "    return low.builder.const_float(low.typer.llvm_type(typ), text.to_f)" \
   "    return nil" -- lowglob_check || status=1
-prove_mutation "a string class variable is refused as a struct" "$REPO/src/compiler/lower/class_var.iyi" \
-  'if cvar.type.full_name == "String"' \
-  "if false" -- lowglob_check || status=1
+prove_mutation "a class variable initializer stores null instead of its value" "$REPO/src/compiler/lower/class_var.iyi" \
+  "    store_aligned(low, val, global)" \
+  "    store_aligned(low, low.builder.const_null(ir), global)" -- lowglob_check || status=1
+prove_mutation "the initialiser function is not passed to once" "$REPO/src/compiler/lower/const.iyi" \
+  '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), fn.as(Value)] of Value, "")' \
+  '  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), flag.as(Value)] of Value, "")' -- lowglob_check || status=1
 
 
 echo

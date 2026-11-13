@@ -14,20 +14,21 @@ module compiler/lower/const
 #   - a constant of a generic class or module (its hosted `llvm_name` spelling is not ported yet);
 #   - a value that may be a compile-time value: a path to another constant, or an operator call (hosted
 #     `compile_time_value` runs the MathInterpreter, which inlines it at each read instead of storing it);
-#   - a symbol, nil or float literal (hosted `initialize_simple_constants`): its global is not ported yet;
+#   - a nil literal (hosted `initialize_simple_constants`): its global is not ported yet;
 #   - a constant of an IR type that is not an integer, a float or a reference (a struct, nil, an enum).
-# A string constant (a simple literal) gets its global at the program's start, as the hosted program does, whether or
-# not it is read; its assignment emits nothing and its reads are loads of that global.
+# String, symbol and float constants get constant globals at program start; assignments emit nothing and reads load.
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
+import compiler/syntax/token::{NumberKind}
 import compiler/ir/values::{Value}
-import compiler/ir/inst::{Inst, Op, CallConv}
+import compiler/ir/inst::{Inst, Op, CallConv, CallAux}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/types::{IrType}
 import compiler/lower/context::{BodyVisit, Lowerer}
 import compiler/lower/helpers::{build_string_constant, int1, llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ConstState}
+import compiler/lower/symbols::{symbol_index}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 
 # The module a path is resolved in: the type of `self` in the function being lowered, or the program at
@@ -72,6 +73,9 @@ end
 # gave the constant's value; nil when the value is not a literal of a kind the port inlines (the hosted
 # `compile_time_value` is nil there, and the constant is initialised at run time).
 pub def literal_value(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : Value?
+  if float_const?(const)
+    return nil
+  end
   literal_node_value(low, const.value)
 end
 
@@ -180,11 +184,8 @@ end
 # Refuses a simple literal the port does not inline: its hosted global comes from `initialize_simple_constants`.
 pub def check_not_simple_literal(const : Compiler::Semantic::TopLevel::Const) : Nil
   value = const.value
-  if value.is_a?(SymbolLiteral) || value.is_a?(NilLiteral)
+  if value.is_a?(NilLiteral)
     refuse_port("lower: constant #{const.full_name} is a simple literal that is not an integer: its global comes from initialize_simple_constants, not ported yet (hosted const.cr: initialize_simple_const)")
-  end
-  if value.is_a?(NumberLiteral) && value.as(NumberLiteral).value.includes?(".")
-    refuse_port("lower: constant #{const.full_name} is a float literal: its global comes from initialize_simple_constants, not ported yet (hosted const.cr: initialize_simple_const)")
   end
 end
 
@@ -194,11 +195,34 @@ pub def string_const?(const : Compiler::Semantic::TopLevel::Const) : Bool
   const.value.is_a?(StringLiteral)
 end
 
+# A floating-point literal is not a compile-time value in the hosted
+# `read_const` dispatch: it lives in a constant global instead.
+pub def float_const?(const : Compiler::Semantic::TopLevel::Const) : Bool
+  value = const.value
+  if !value.is_a?(NumberLiteral)
+    return false
+  end
+  kind = value.as(NumberLiteral).kind
+  kind == NumberKind::F32 || kind == NumberKind::F64
+end
+
+# Symbol literals are also initialized at program start rather than inlined.
+pub def symbol_const?(const : Compiler::Semantic::TopLevel::Const) : Bool
+  const.value.is_a?(SymbolLiteral)
+end
+
 # The IR type of a constant's value. A string constant is a pointer to its literal (the hosted type of String is `ptr`);
 # the typer's `llvm_type(String)` would also declare the `%String` struct, which the hosted module does not print.
 pub def const_value_ir(low : Lowerer, const : Compiler::Semantic::TopLevel::Const) : IrType
   if string_const?(const)
     return low.module.types.ptr
+  end
+  if float_const?(const)
+    kind = const.value.as(NumberLiteral).kind
+    return low.module.types.float(kind == NumberKind::F32 ? 32 : 64)
+  end
+  if symbol_const?(const)
+    return low.module.types.int32
   end
   const_ir_type(low, const)
 end
@@ -212,8 +236,14 @@ pub def initialize_simple_const(low : Lowerer, const : Compiler::Semantic::TopLe
   ir = const_value_ir(low, const)
   global = declare_const_global(low, name, ir, st)
   st.no_init_flag = true
-  str = build_string_constant(low, const.value.as(StringLiteral).value)
-  global.initializer = str.as(Value)
+  if float_const?(const)
+    global.initializer = low.builder.const_float(ir, const.value.as(NumberLiteral).value.to_f)
+  elsif symbol_const?(const)
+    global.initializer = low.builder.const_int(ir, symbol_index(low, const.value.as(SymbolLiteral).value).to_i64)
+  else
+    str = build_string_constant(low, const.value.as(StringLiteral).value)
+    global.initializer = str.as(Value)
+  end
   global.global_constant = true
 end
 
@@ -286,16 +316,22 @@ pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopL
 end
 
 # The hosted `run_once` (once.cr:21-47) for the two-parameter `__iyi_once` of the prelude: the flag and the initialiser
-# are passed, and the prelude's function calls the initialiser once. The function is in the module when the program's own
-# visit declared it (lower.iyi emit_fun_def); a missing one is refused by name.
+# are passed, and the prelude's function calls the initialiser once. The three-parameter legacy form is refused by name.
+# The function is in the module when the program's own visit declared it (lower.iyi emit_fun_def); a missing one is refused by name.
 pub def run_once(low : Lowerer, flag : Global, fn : Function) : Nil
   once = low.module.get_function?("__iyi_once")
   if once.nil?
     refuse_port("lower: __iyi_once is not declared in the module: the prelude's once entry (hosted run_once, once.cr:22) was not visited")
   end
+  once_fn = once.as(Function)
+  if once_fn.fn_type.param_types.size != 2
+    refuse_port("lower: __iyi_once does not take the flag and the initialiser: the legacy three-parameter form is refused (hosted once.cr:29-44)")
+  end
   ptr = low.module.types.ptr(0)
   ft = low.module.types.func([ptr, ptr] of IrType, low.module.types.void)
-  low.builder.call(ft, once.as(Function), [flag.as(Value), fn.as(Value)] of Value, "")
+  # The declaration may still carry the default convention when this call is emitted (an unused fun's body waits
+  # until the end). The hosted call is the C convention, which is what a `fun` is, so the call says so itself.
+  low.builder.call_aux(CallAux.new(ft, CallConv::C), once_fn, [flag.as(Value), fn.as(Value)] of Value, "")
 end
 
 # The hosted `initialize_const` (const.cr:158-179). A constant nothing read before its assignment is initialised
@@ -405,6 +441,14 @@ pub def codegen_path_assign(low : Lowerer, node : Assign) : Nil
     low.last = llvm_nil(low)
     return
   end
+  if float_const?(c)
+    low.last = llvm_nil(low)
+    return
+  end
+  if symbol_const?(c)
+    low.last = llvm_nil(low)
+    return
+  end
   check_not_simple_literal(c)
   if c.used?
     initialize_const(low, c)
@@ -416,11 +460,11 @@ end
 # `__crystal_main`, before the program's own code. The predefined constants (ARGC_UNSAFE, ARGV_UNSAFE) are stored by
 # the core (lower.iyi codegen_program). The simple constants are walked in declaration order (hosted
 # `const_initializers`): an integer, Bool or Char literal is inlined and needs no global; a string constant gets its
-# global here; a symbol, nil or float constant is refused by name until its global is ported.
+# global here; a nil constant is refused by name until its global is ported.
 pub def initialize_program_constants(low : Lowerer) : Nil
   low.analysed.program.const_initializers.each do |const|
     if literal_value(low, const).nil?
-      if string_const?(const)
+      if string_const?(const) || float_const?(const) || symbol_const?(const)
         initialize_simple_const(low, const)
       else
         check_not_simple_literal(const)

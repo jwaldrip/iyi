@@ -1,0 +1,16 @@
+class K
+  @@resolver : Proc(Pointer(Void*), Int32, Nil)? = nil
+
+  def self.touch : Nil
+    @@resolver
+    nil
+  end
+end
+
+K.touch
+
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+LibC.exit(0)

@@ -138,6 +138,41 @@ else
     status=1
   fi
 fi
+echo "== Virtual subtype and metaclass compatibility"
+if ! "$ORACLE" --virtual-subtype "$REPO/bench/fixtures/semdecl_virtual_subtype.iyi" > "$WORK/virtual_oracle" 2>&1 ||
+   ! "$PORT" --virtual-subtype "$REPO/bench/fixtures/semdecl_virtual_subtype.iyi" > "$WORK/virtual_port" 2>&1 ||
+   ! cmp -s "$WORK/virtual_oracle" "$WORK/virtual_port"; then
+  echo "  virtual subtype DIFFERS"; diff "$WORK/virtual_oracle" "$WORK/virtual_port"; status=1
+fi
+echo "== Definition owner and cloned owner"
+if ! "$ORACLE" --def-owner "$REPO/bench/fixtures/semdecl_def_owner.iyi" > "$WORK/owner_oracle" 2>&1 ||
+   ! "$PORT" --def-owner "$REPO/bench/fixtures/semdecl_def_owner.iyi" > "$WORK/owner_port" 2>&1 ||
+   ! cmp -s "$WORK/owner_oracle" "$WORK/owner_port"; then
+  echo "  definition owner DIFFERS"; diff "$WORK/owner_oracle" "$WORK/owner_port"; status=1
+fi
+echo "== Enum primitive definitions and result types"
+if ! "$ORACLE" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.iyi" > "$WORK/enum_primitive_oracle" 2>&1 ||
+   ! "$PORT" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.iyi" > "$WORK/enum_primitive_port" 2>&1 ||
+   ! cmp -s "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port"; then
+  echo "  enum primitives DIFFER"; diff "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port"; status=1
+fi
+echo "== Class variable generic types after type system installation"
+if ! "$PORT" --classvar-generic "$REPO/bench/fixtures/semdecl_classvar_generic.iyi" > "$WORK/classvar_result" 2>&1; then
+  cat "$WORK/classvar_result"; status=1
+fi
+echo "== Enum member semantic type: E::B has type E"
+enum_type_expected="$WORK/enum_type_expected"
+printf '%s\n' 'E::B E' > "$enum_type_expected"
+if ! "$PORT" --enum-member-type "$REPO/bench/fixtures/semdecl_enum_member_type.iyi" > "$WORK/enum_type_actual" 2>&1 ||
+   ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected"; then
+  echo "  enum member type DIFFERS"; status=1
+fi
+printf 'first binary\nsecond binary\nthird binary\n' > "$WORK/primitive_expected"
+if ! "$PORT" --primitive-annotations "$REPO/bench/fixtures/semdecl_primitive_annotations.iyi" > "$WORK/primitive_actual" 2>&1 ||
+   ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected"; then
+  echo "  primitive annotations DIFFER"; status=1
+fi
+
 
 echo "== 2b'. Constant facts once the program is declared: constants in declaration order, the predefined constants, a class variable's owner"
 echo "  (a port-side pin: the oracle has no dump of these, so the expected lines are written by hand)"
@@ -385,6 +420,17 @@ awk -F'\t' '
   $1 == "RAISE THE FLOOR" { printf "  RAISE THE FLOOR: %s matched %s, floor %s. Raise the floor in bench/selfhost_semantic_declarations.floor (SEMDECL_RAISE=1).\n", $3, $5, $7 }
   $1 == "NO FLOOR"        { printf "  NO FLOOR: %s has no floor entry. Add it (SEMDECL_RAISE=1).\n", $3 }
 ' "$VERDICTS"
+while IFS= read -r rel; do
+  echo "  Declaration differences for $rel (first 20 lines; < oracle, > port):"
+  if [ "$rel" = "<initial>" ]; then
+    "$ORACLE" --initial > "$WORK/below_o.txt" 2>&1
+    "$PORT" --initial > "$WORK/below_p.txt" 2>&1
+  else
+    "$ORACLE" "$REPO/$rel" > "$WORK/below_o.txt" 2>&1
+    "$PORT" "$REPO/$rel" > "$WORK/below_p.txt" 2>&1
+  fi
+  diff "$WORK/below_o.txt" "$WORK/below_p.txt" | head -n 20
+done < <(awk -F'\t' '$1 == "BELOW FLOOR" { print $3 }' "$VERDICTS")
 echo "  $fails file(s) below or missing their floor"
 if [ "$fails" -gt 0 ]; then
   status=1
@@ -452,6 +498,42 @@ check_lib_types_diverge() {
   cmp -s "$WORK/mut_lt.txt" "$lib_types_expected" || return 1
   return 0
 }
+check_enum_primitives_diverge() {
+  local probe="$WORK/mut_enum_primitives_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --enum-primitives "$REPO/bench/fixtures/semdecl_enum_primitives.iyi" > "$WORK/mut_enum_primitives" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_enum_primitives" "$WORK/enum_primitive_oracle"
+}
+check_classvar_generic_diverge() {
+  local probe="$WORK/mut_classvar_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --classvar-generic "$REPO/bench/fixtures/semdecl_classvar_generic.iyi" > "$WORK/mut_classvar" 2>/dev/null
+}
+check_enum_member_type_diverge() {
+  local probe="$WORK/mut_enum_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --enum-member-type "$REPO/bench/fixtures/semdecl_enum_member_type.iyi" > "$WORK/mut_enum_type" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_enum_type" "$enum_type_expected"
+}
+check_primitive_annotations_diverge() {
+  local probe="$WORK/mut_primitive_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --primitive-annotations "$REPO/bench/fixtures/semdecl_primitive_annotations.iyi" > "$WORK/mut_primitive" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_primitive" "$WORK/primitive_expected"
+}
+check_virtual_subtype_diverge() {
+  local probe="$WORK/mut_virtual_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --virtual-subtype "$REPO/bench/fixtures/semdecl_virtual_subtype.iyi" > "$WORK/mut_virtual" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_virtual" "$WORK/virtual_oracle"
+}
+check_def_owner_diverge() {
+  local probe="$WORK/mut_owner_port"
+  "$IYI" build -o "$probe" "$REPO/bench/selfhost_semantic_declarations_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$probe" --def-owner "$REPO/bench/fixtures/semdecl_def_owner.iyi" > "$WORK/mut_owner" 2>/dev/null || return 1
+  cmp -s "$WORK/mut_owner" "$WORK/owner_oracle"
+}
+
 
 check_const_facts_diverge() {
   # Builds the driver as it now stands and compares the constant-facts pin. Returns non-zero (caught)
@@ -502,7 +584,7 @@ MUTATIONS_RUN=0
 # A mutation proof means something only against a baseline the fixtures and the prelude
 # chains already agree on: a fixture the oracle rejects fails every patched run and would
 # count as a catch.
-if [ "$fixture_bad" -ne 0 ] || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
+if [ "$fixture_bad" -ne 0 ] || ! grep -qx 'class variable generic arguments retained' "$WORK/classvar_result" || ! cmp -s "$WORK/enum_primitive_oracle" "$WORK/enum_primitive_port" || ! cmp -s "$WORK/owner_oracle" "$WORK/owner_port" || ! cmp -s "$WORK/virtual_oracle" "$WORK/virtual_port" || ! cmp -s "$WORK/primitive_actual" "$WORK/primitive_expected" || ! cmp -s "$WORK/enum_type_actual" "$enum_type_expected" || ! cmp -s "$WORK/chain_o.txt" "$WORK/chain_p.txt" || [ ! -s "$WORK/chain_o.txt" ] || ! cmp -s "$WORK/lt_pin.txt" "$lib_types_expected" || ! cmp -s "$WORK/cf_pin.txt" "$const_facts_expected" || ! cmp -s "$WORK/la_pin.txt" "$link_annotations_expected" || ! cmp -s "$WORK/tt_p.txt" "$total_typed_expected" || ! cmp -s "$WORK/sl_p.txt" "$scope_expected" || ! cmp -s "$WORK/rr_o.txt" "$WORK/rr_p.txt"; then
   echo "  mutation proofs not run: the fixtures or the prelude chains do not agree with the oracle"
   status=1
 else
@@ -627,6 +709,11 @@ prove_mutation "pointer malloc and null calls do not infer instance variable typ
   '    if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "typed array literals do not infer instance variable types" "$MUT_IVARS" \
+  '    if node.is_a?(ArrayLiteral)' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "generic new calls do not infer instance variable types" "$MUT_IVARS" \
   '    if node.name == "new" && obj.is_a?(Generic)' \
   '    if false' \
@@ -635,6 +722,21 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic class's guessed instance variables are not declared on the generic" "$MUT_IVARS" \
   "if owner.owner.is_a?(NonGenericClassType) || owner.owner.is_a?(GenericClassType)" \
   "if owner.owner.is_a?(NonGenericClassType)" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an explicit generic instance variable keeps the unbound generic" "$MUT_IVARS" \
+  "  type_node_system(program)" \
+  "  nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "optional type lookup skips enclosing namespaces" "$MUT_SEM" \
+  "        match = ns.lookup_type(first_name)" \
+  "        match = nil" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "optional proc notation lookup loses its arguments" "$MUT_SEM" \
+  "        return hook.instantiate_type(proc_type, args)" \
+  "        return proc_type" \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a declared instance variable is not re-resolved once the type system is installed" "$MUT_SEM" \
@@ -648,7 +750,7 @@ prove_mutation "an explicit instance variable is not recorded for re-resolution"
   -- check_reresolve_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TS="$REPO/src/compiler/types/type_system.iyi"
-prove_mutation "a generic type node resolves to its base once the type system is installed" "$MUT_SEM" \
+prove_mutation_all "a generic type node resolves to its base once the type system is installed" "$MUT_SEM" \
   "          return hook.instantiate_type(base_type, type_args)" \
   "          return base_type" \
   -- check_lib_types_diverge || status=1
@@ -659,8 +761,8 @@ prove_mutation "installing the type system leaves the lib fun records unresolved
   -- check_lib_types_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a lib fun's return type is dropped once the type system is installed" "$MUT_SEM" \
-  "              f.resolved_return = lookup_type_node(rt, owner)" \
-  "              f.resolved_return = nil" \
+  "                  f.resolved_return = found" \
+  "                  f.resolved_return = nil" \
   -- check_lib_types_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a constant is never added to the program's constant list" "$MUT_SEM" \
@@ -704,14 +806,29 @@ prove_mutation "total mode raises on an unresolved superclass instead of carryin
   -- check_pins_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a metaclass scope does not look names up in its instance type" "$MUT_SEM" \
-  "        return lookup_type_path(path, instance.as(ModuleType))" \
-  "        return refuse_constant(path)" \
+  "        return lookup_type_path?(path, instance.as(ModuleType))" \
+  "        return nil" \
   -- check_pins_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 MUT_TYPES="$REPO/src/compiler/types/types.iyi"
 prove_mutation "a printed type argument keeps its virtual wrapper" "$MUT_TYPES" \
   "    return @base_type" \
   "    return self" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a virtual restriction does not accept its base or subclasses" "$MUT_SEM" \
+  '    return subtype_of?(target) unless target == other' \
+  '    return false unless target == other' \
+  -- check_virtual_subtype_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a registered definition loses its defining owner" "$MUT_SEM" \
+  '    @program.record_def_owner(a_def, self)' \
+  '    nil' \
+  -- check_def_owner_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic instance displays a virtual argument without devirtualizing it" "$MUT_TYPES" \
+  '    args_strs = @type_args.map { |a| a.devirtualize.arg_full_name }' \
+  '    args_strs = @type_args.map { |a| a.arg_full_name }' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic instance's instance variable keeps its type parameter" "$MUT_TYPES" \
@@ -754,6 +871,36 @@ prove_mutation "a type-variable restriction replaces a prelude def of the same t
   "      return vars.includes?(path.names[0])" \
   "      return false" \
   -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an external variable's setter is not added" "$MUT_SEM" \
+  "    lib_type.funs << setter_fun" \
+  "    setter_fun.external_var = false" \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "an enum member loses its enum type" "$MUT_SEM" \
+  "    c.enum_value_type = self" \
+  "    c.enum_value_type = nil" \
+  -- check_enum_member_type_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "only the last annotation is read for a primitive" "$MUT_SEM" \
+  "    @pending_annotations.each do |ann|" \
+  "    if ann = @pending_annotations.last?" \
+  -- check_primitive_annotations_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "enum host flags select the wrong platform branch" "$MUT_SEM" \
+  '    MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)' \
+  '    !MacroTargetFlags.for_triple(MacroTargetFlags.compile_time_triple, [] of String).includes?(name)' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "enum value loses its base integer result" "$MUT_SEM" \
+  '    program.record_primitive_return_type(value_def, @base_type)' \
+  '    program.record_primitive_return_type(value_def, self)' \
+  -- check_enum_primitives_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "class variable generic arguments are not re-resolved" "$MUT_SEM" \
+  '    @declared_cvars.each do |dc|' \
+  '    ([] of DeclaredIvar).each do |dc|' \
+  -- check_classvar_generic_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 echo "  $MUTATIONS_RUN mutation proofs run"
 fi

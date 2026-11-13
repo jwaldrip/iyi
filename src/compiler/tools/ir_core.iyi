@@ -273,6 +273,9 @@ module IrCore
     old = b.atomicrmw("add", counter, b.const_int(i64, 1_i64), Ordering::SeqCst, false, "old")
     pair = b.cmpxchg(counter, old, bumped, Ordering::AcqRel, Ordering::Acquire, "pair")
     won = b.extract_value(pair, 1, "won")
+    seen = b.atomic_load(i64, counter, Ordering::Acquire, false, "seen")
+    seen.alignment = 8
+    b.atomic_store(seen, counter, Ordering::Release, true).alignment = 8
     b.fence(Ordering::SeqCst, false)
     b.fence(Ordering::Acquire, true)
     b.ret(b.add(bumped, b.const_int(i64, 0_i64), "result"))

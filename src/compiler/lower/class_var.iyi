@@ -1,23 +1,23 @@
 module compiler/lower/class_var
 
-# The port of `src/compiler/iyi/codegen/class_var.cr` (the hosted `CodeGenVisitor`'s class variables), for the
-# part a program without the `once` runtime reaches: a class variable declared in a plain top-level class,
-# with an integer or float value. Ported:
-#   - a literal initialiser (Bool, Char, integer or float), which the hosted code stores in the global at its
+# The port of `src/compiler/iyi/codegen/class_var.cr` (the hosted `CodeGenVisitor`'s class variables), for a
+# class variable declared in a class. Ported:
+#   - a literal initialiser (Bool, Char, integer, float or Symbol), which the hosted code stores in the global at its
 #     declaration with no function and no flag (`simple_initializer`): the global's initializer is the literal,
 #     and every read is a load of the global;
 #   - a non-literal initialiser that the class body declares before any read (`initialize_class_var` on the
 #     no-init-flag path): the global, its initialiser function `~Owner::name:init` (iyi convention, as the oracle prints
-#     it), the call at the declaration, and every read after it a load.
+#     it), the call at the declaration, and every read after it a load;
+#   - a non-literal initialiser read before that declaration (hosted `create_read_class_var_function`,
+#     `lazy_initialize_class_var`, class_var.cr:227-244 and 413-430): the flag `Owner::name:init`, the read function
+#     `~Owner::name:read` which calls `run_once` (`__iyi_once`, the two-parameter form), and the declaration's own
+#     call to `run_once` when the block has not already ended.
 # The global is named `Owner::name` with the variable's `@` signs turned into `:` (hosted `class_var_global_name`).
 #
 # Refused by name, with the hosted function each stands for, until ported:
-#   - a read before the declaration's initialisation: the lazy path through `run_once` and `__iyi_once`
-#     (hosted `create_read_class_var_function`, `lazy_initialize_class_var`), which the prelude-empty oracle does
-#     not define;
+#   - a read before the declaration when `__iyi_once` is not declared (hosted `run_once`, once.cr:22);
 #   - a class variable declared without an initialiser, unless it is a nilable reference (its global starts as null);
-#   - a class variable whose owner is in a namespace, is generic, or is not a class (its hosted `llvm_name`);
-#   - a symbol or nil initialiser, whose global is initialised by an init function or by `initialize_simple_constants`;
+#   - a class variable whose owner is generic or is not a class (its hosted `llvm_name`);
 #   - a read through a virtual owner (the hosted `read_virtual_class_var_ptr` function).
 # Thread-local class variables: a `@[ThreadLocal]` variable's global is local-exec (hosted `declare_thread_local`,
 # class_var.cr:27-34), the model every non-Windows target uses, and `declare_cvar_global` sets it from the variable's
@@ -29,7 +29,7 @@ module compiler/lower/class_var
 # address through it, and the caller loads that address. Refused by name: the thread-pointer form the hosted code uses
 # under the iyi prelude on Linux, and the Windows general-dynamic model.
 
-import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, CharLiteral, ClassDef, NumberLiteral, TypeDeclaration}
+import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, CharLiteral, ClassDef, NilLiteral, NumberLiteral, SymbolLiteral, TypeDeclaration}
 import compiler/ir/values::{Value}
 import compiler/ir/inst::{Attribute, Inst, Op, CallConv}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel}
@@ -38,9 +38,13 @@ import compiler/lower/context::{BodyVisit, Lowerer}
 import compiler/lower/helpers::{llvm_nil, load_aligned, store_aligned}
 import compiler/lower/pending::{refuse_port}
 import compiler/lower/globals::{ClassVarState}
-import compiler/lower/const::{const_scope, literal_node_value, literal_of_type}
-import compiler/lower/cast::{assign, nilable_reference_type?}
-import compiler/semantic/top_level::{ClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type}
+import compiler/lower/const::{const_scope, literal_node_value, literal_of_type, run_once}
+import compiler/lower/fun::{block_ended?}
+import compiler/lower/cast::{assign, nilable_reference_type?, to_lhs}
+import compiler/lower/symbols::{symbol_index}
+import compiler/lower/typer::{passed_by_value?}
+import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, ModuleType, SemanticProgram, Type, UnionType}
+import compiler/types/types::{MixedUnionType, NilableProcType}
 
 # The scope a class variable name is looked up in: the type of the function being lowered, or else the class
 # whose body is being lowered (a declaration is visited in its class body, where the context is the program),
@@ -130,9 +134,8 @@ pub def class_var_declarer(scope : ModuleType, name : String) : ModuleType?
   nil
 end
 
-# The owner of a class variable named `name` from the scope it is looked up in: a plain class of the program. A class
-# in a namespace, a generic instance and a non-class owner have a hosted `llvm_name` this port does not spell yet
-# (hosted class_var_global_name).
+# The owner of a class variable named `name` from the scope it is looked up in. Namespaced
+# classes use their full name; generic instances and non-class owners still refuse by name.
 pub def cvar_owner(low : Lowerer, name : String) : ModuleType
   declarer = class_var_declarer(class_var_scope(low), name)
   if declarer.nil?
@@ -142,8 +145,8 @@ pub def cvar_owner(low : Lowerer, name : String) : ModuleType
   if !o.is_a?(ClassType)
     refuse_port("lower: class variable #{name} is declared in #{o.full_name}, which is not a class: its owner is not ported yet (hosted class_var.cr: class_var_global_name)")
   end
-  if o.as(ClassType).namespace.is_a?(SemanticProgram) == false || o.full_name.includes?("(")
-    refuse_port("lower: class variable #{name} is declared in #{o.full_name}, which is in a namespace or generic: its hosted llvm_name is not ported yet (hosted class_var.cr: class_var_global_name)")
+  if o.full_name.includes?("(")
+    refuse_port("lower: class variable #{name} is declared in #{o.full_name}, which is generic: its hosted llvm_name is not ported yet (hosted class_var.cr: class_var_global_name)")
   end
   o
 end
@@ -166,34 +169,78 @@ pub def cvar_key(owner : ModuleType, name : String) : String
   owner.full_name + "::" + name
 end
 
-# The IR type of the variable (hosted `llvm_type(class_var.type)`). A nilable reference and a String are one
-# pointer; calling `llvm_type` on them would also declare the class struct, which the hosted global does not print.
+# The IR type of the variable (hosted `llvm_type(class_var.type)`).
+# A nilable reference is one pointer.
 pub def cvar_ir_type(low : Lowerer, cvar : MetaTypeVar) : IrType
+  if cvar.type.is_a?(GenericClassType)
+    refuse_port("lower: class variable #{cvar.name} has an uninstantiated generic type #{cvar.type.full_name}: its declaration must be resolved before lowering (hosted class_var.cr: declare_class_var)")
+  end
   if nilable_reference_type?(cvar.type)
     return low.module.types.ptr
   end
-  if cvar.type.full_name == "String"
-    return low.module.types.ptr
+  if cvar.type.is_a?(NilableProcType)
+    return low.typer.llvm_type(cvar.type)
+  end
+  if nilable_aggregate_initializer?(cvar)
+    return low.typer.llvm_type(cvar.type)
+  end
+  if cvar.type.is_a?(ClassType) && cvar.type.struct?
+    if low.typer.passed_indirectly?(cvar.type)
+      refuse_port("lower: class variable #{cvar.name} has an indirectly passed struct initializer: hosted copy_value is not ported yet")
+    end
+    return low.typer.llvm_type(cvar.type)
   end
   ir = low.typer.llvm_type(cvar.type)
-  if !(ir.int? || ir.float?)
-    refuse_port("lower: class variable #{cvar.name} is not an integer, a float or a nilable reference: the struct and the non-nilable pointer initialisers are not ported yet (hosted class_var.cr: initialize_class_var)")
+  if !(ir.int? || ir.float? || ir.pointer?)
+    refuse_port("lower: class variable #{cvar.name} is not an integer, a float or a pointer: aggregate initialisers are not ported yet (hosted class_var.cr: initialize_class_var)")
   end
   ir
 end
 
 # A literal initialiser the hosted code stores at the declaration with no function (`simple_literal?` with a
-# primitive value): a Bool, Char, integer or float literal. A float is a number whose text has a point
-# (hosted `initialize_class_var`, the discard branch: the global's initializer is the constant, no function).
+# primitive value): a Bool, Char, number or symbol literal. The hosted initializer discards the function
+# when the value is constant and the node is a simple literal (class_var.cr:169-188).
 pub def simple_literal?(node : ASTNode) : Bool
-  if node.is_a?(BoolLiteral) || node.is_a?(CharLiteral)
+  if node.is_a?(BoolLiteral) || node.is_a?(CharLiteral) || node.is_a?(SymbolLiteral)
     return true
   end
   node.is_a?(NumberLiteral)
 end
 
-# A non-literal initialiser is stored by its init function. A float literal is simple (above), so it does not
-# reach here. A string, symbol or nil is not stored at the declaration.
+# A nil initializer of a nilable proc needs no initialization function. Its
+# zeroed proc pair is the hosted null value (class_var.cr:169-171).
+pub def nilable_proc_initializer?(cvar : MetaTypeVar, node : ASTNode) : Bool
+  node.is_a?(NilLiteral) && cvar.type.is_a?(NilableProcType)
+end
+
+# A mixed union initialized to nil is its zero aggregate, discarded by the
+# hosted initializer in the same branch as a nilable Proc (class_var.cr:169-171).
+pub def nilable_aggregate_initializer?(cvar : MetaTypeVar) : Bool
+  if !cvar.initializer.is_a?(NilLiteral) || !cvar.type.is_a?(MixedUnionType)
+    return false
+  end
+  cvar.type.as(UnionType).union_types.each do |member|
+    return true if member.nil_type?
+  end
+  false
+end
+
+# A nil reference initializer is likewise the type's null value; the hosted
+# initializer discards its function (class_var.cr:169-171, 185-188).
+pub def nilable_reference_initializer?(cvar : MetaTypeVar, node : ASTNode) : Bool
+  node.is_a?(NilLiteral) && nilable_reference_type?(cvar.type)
+end
+
+pub def nilable_proc_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir : IrType, st : ClassVarState) : Global
+  global = declare_cvar_global(low, cvar, name, ir, st)
+  global.linkage = Linkage::External
+  global.initializer = low.builder.const_zero(ir)
+  st.no_init_flag = true
+  global
+end
+
+# A non-literal initialiser is stored by its init function. Simple literals and
+# nilable reference or proc nulls are handled before this path.
 pub def check_cvar_initializer(cvar : MetaTypeVar, node : ASTNode) : Nil
 end
 
@@ -218,6 +265,58 @@ pub def declare_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir
   g
 end
 
+# The initialised flag of a class variable, declared once, false (hosted `declare_class_var_initialized_flag`).
+pub def declare_cvar_flag(low : Lowerer, name : String, st : ClassVarState) : Global
+  if f = st.flag
+    return f.as(Global)
+  end
+  flag_name = name + ":init"
+  if existing = low.module.get_global?(flag_name)
+    st.flag = existing
+    return existing.as(Global)
+  end
+  i1 = low.module.types.int(1)
+  f = low.module.add_global(flag_name, i1)
+  f.initializer = low.builder.const_int(i1, 0_i64)
+  f.linkage = Linkage::Internal
+  st.flag = f
+  f
+end
+
+# The hosted `create_read_class_var_function` (class_var.cr:413-430): `~Owner::name:read`, made once, which calls
+# `run_once` on the flag and the initialiser and returns the global. The initialiser function is made first, as the
+# hosted code does, so a constant result is already the global's initializer when the read function is built.
+pub def create_cvar_read_function(low : Lowerer, cvar : MetaTypeVar, name : String, st : ClassVarState) : Function
+  if f = st.read_fn
+    return f.as(Function)
+  end
+  read_name = "~" + name + ":read"
+  if existing = low.module.get_function?(read_name)
+    st.read_fn = existing
+    return existing.as(Function)
+  end
+  ir = cvar_ir_type(low, cvar)
+  global = declare_cvar_global(low, cvar, name, ir, st)
+  init = st.init_fn
+  if init.nil?
+    init = make_cvar_init_function(low, cvar, "~" + name + ":init", global, st)
+    st.init_fn = init
+  end
+  flag = declare_cvar_flag(low, name, st)
+  saved = low.enter_main
+  ptr = low.module.types.ptr(0)
+  fun_type = low.module.types.func([] of IrType, ptr)
+  fn = low.begin_main_function(read_name, fun_type, false)
+  fn.call_convention = CallConv::Iyi
+  fn.linkage = Linkage::Internal
+  st.read_fn = fn
+  run_once(low, flag, init.as(Function))
+  low.builder.ret(global.as(Value))
+  low.finish_main_function
+  low.leave_main(saved)
+  fn
+end
+
 # The global of a class variable with a literal initialiser: its value is the literal, stored at the declaration
 # (hosted `create_initialize_class_var_function` with `simple_initializer`, the `discard` branch). The constant is
 # built from the variable's declared type, not the initialiser node's analysed type: a required file is declaration-
@@ -227,7 +326,9 @@ pub def simple_cvar_global(low : Lowerer, cvar : MetaTypeVar, name : String, ir 
     return g.as(Global)
   end
   value = nil
-  if declared = cvar.type?
+  if node.is_a?(SymbolLiteral)
+    value = low.builder.const_int(ir, symbol_index(low, node.as(SymbolLiteral).value).to_i64)
+  elsif declared = cvar.type?
     value = literal_of_type(low, node, declared)
   end
   if value.nil?
@@ -262,8 +363,17 @@ pub def make_cvar_init_function(low : Lowerer, cvar : MetaTypeVar, init_name : S
   if val.is_a?(Inst) && (val.as(Inst).op == Op::ConstInt || val.as(Inst).op == Op::ConstFloat)
     global.initializer = val
   else
-    global.initializer = low.builder.const_null(ir)
-    store_aligned(low, val, global)
+    if passed_by_value?(cvar.type)
+      global.initializer = low.builder.const_zero(ir)
+      if val.type.pointer?
+        store_aligned(low, load_aligned(low, ir, val), global)
+      else
+        store_aligned(low, val, global)
+      end
+    else
+      global.initializer = low.builder.const_null(ir)
+      store_aligned(low, val, global)
+    end
   end
   low.builder.ret_void
   low.finish_main_function
@@ -285,6 +395,14 @@ pub def initialize_class_var(low : Lowerer, cvar : MetaTypeVar) : Nil
   name = cvar_global_name(owner, cvar.name)
   st = low.globals.class_var_state(cvar_key(owner, cvar.name))
   ir = cvar_ir_type(low, cvar)
+  if nilable_proc_initializer?(cvar, node) || nilable_aggregate_initializer?(cvar)
+    nilable_proc_global(low, cvar, name, ir, st)
+    return
+  end
+  if nilable_reference_initializer?(cvar, node)
+    uninitialised_cvar_global(low, cvar, name, st)
+    return
+  end
   if simple_literal?(node)
     st.simple = true
     st.no_init_flag = true
@@ -299,7 +417,13 @@ pub def initialize_class_var(low : Lowerer, cvar : MetaTypeVar) : Nil
     st.init_fn = fn
   end
   if st.read
-    refuse_port("lower: class variable #{cvar.name} is read before its initialisation: the hosted lazy path (create_read_class_var_function, run_once through __iyi_once, class_var.cr:135) is not ported yet")
+    # Hosted initialize_class_var when the variable was already read (class_var.cr:118-132): the flag stays, and
+    # this site calls once. A block that already ended (a NoReturn call before this declaration) gets no call.
+    flag = declare_cvar_flag(low, name, st)
+    if !block_ended?(low)
+      run_once(low, flag, fn.as(Function))
+    end
+    return
   end
   st.no_init_flag = true
   ft = low.module.types.func([] of IrType, low.module.types.void)
@@ -339,6 +463,12 @@ pub def class_var_global(low : Lowerer, cvar : MetaTypeVar) : Global
   end
   ir = cvar_ir_type(low, cvar)
   node_init = init.as(ASTNode)
+  if nilable_proc_initializer?(cvar, node_init) || nilable_aggregate_initializer?(cvar)
+    return nilable_proc_global(low, cvar, name, ir, st)
+  end
+  if nilable_reference_initializer?(cvar, node_init)
+    return uninitialised_cvar_global(low, cvar, name, st)
+  end
   if simple_literal?(node_init)
     return simple_cvar_global(low, cvar, name, ir, node_init, st)
   end
@@ -353,12 +483,22 @@ end
 # The pointer a read loads from and an assignment stores to: the global itself, or for a thread-local variable the address
 # the accessor gives on this thread (hosted `read_class_var_ptr` returns what `get_global` gives).
 pub def class_var_pointer(low : Lowerer, cvar : MetaTypeVar) : Value
+  owner = cvar_owner(low, cvar.name)
+  name = cvar_global_name(owner, cvar.name)
+  st = low.globals.class_var_state(cvar_key(owner, cvar.name))
+  init = cvar.initializer
+  if !init.nil? && !simple_literal?(init.as(ASTNode)) && !nilable_proc_initializer?(cvar, init.as(ASTNode)) && !nilable_aggregate_initializer?(cvar) && !nilable_reference_initializer?(cvar, init.as(ASTNode)) && !st.no_init_flag
+    st.read = true
+    fn = create_cvar_read_function(low, cvar, name, st)
+    ptr = low.module.types.ptr(0)
+    ft = low.module.types.func([] of IrType, ptr)
+    return low.builder.call(ft, fn, [] of Value, "")
+  end
   g = class_var_global(low, cvar)
   if !cvar.thread_local
     return g
   end
-  owner = cvar_owner(low, cvar.name)
-  thread_local_address(low, cvar, cvar_global_name(owner, cvar.name), g)
+  thread_local_address(low, cvar, name, g)
 end
 
 # The hosted `get_global` for a thread-local (codegen.cr:1647-1656) on the path without the iyi prelude's thread pointer:
@@ -397,11 +537,11 @@ pub def thread_local_accessor(low : Lowerer, name : String, global : Global) : F
   fn
 end
 
-# The hosted `read_class_var` (class_var.cr:200-203): a load of the variable's global.
+# The hosted `read_class_var` (class_var.cr:200-203) keeps aggregate values as
+# pointers and loads scalar values through `to_lhs`.
 pub def codegen_class_var_read(low : Lowerer, node : Compiler::Syntax::Ast::ClassVar) : Nil
   cvar = class_var_of(low, node)
-  ir = cvar_ir_type(low, cvar)
-  low.last = load_aligned(low, ir, class_var_pointer(low, cvar))
+  low.last = to_lhs(low, class_var_pointer(low, cvar), cvar.type)
 end
 
 # The hosted `visit(PointerOf)` of a class variable (codegen.cr:1007-1021): initialise it if it has an
