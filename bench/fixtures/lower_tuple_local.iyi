@@ -4,7 +4,9 @@ end
 
 def pick : Int32
   values = {3, 7}
-  values[1]
+  {% for ignored in [0] %}
+    values[1]
+  {% end %}
 end
 
 LibC.exit(pick)
