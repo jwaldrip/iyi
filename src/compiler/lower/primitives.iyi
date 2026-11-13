@@ -462,6 +462,13 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   values = [] of Value
   pt : Type? = nil
   if name == "pointer_new" || name == "pointer_malloc"
+    if receiver = node.obj
+      if receiver.is_a?(Generic)
+        # Hosted prepare_call_args evaluates a generic metaclass receiver even
+        # when the pointer primitive uses only its statically known type.
+        type_id_value(low, receiver_type(low, receiver))
+      end
+    end
     pt = low.analysed.type_of?(node)
   else
     obj = node.obj
@@ -496,7 +503,7 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   end
   elem_kind = primitive_kind(elem)
   if name == "pointer_add"
-    low.last = low.builder.gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)
+    low.last = low.builder.inbounds_gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)
     return
   end
   if name == "pointer_get"
