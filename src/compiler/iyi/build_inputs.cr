@@ -742,4 +742,5 @@ module ENV
     end
   end
 end
+
 require "./stale/inputs_file"

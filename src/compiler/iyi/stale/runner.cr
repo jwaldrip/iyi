@@ -241,7 +241,6 @@ module Iyi::Stale
         scratch_locks[scratch_path(file_test_ids[file])] ||= Sync::Mutex.new
       end
 
-
       outcomes = Command::TestPool.run(files.size, @parallel) do |index|
         file = files[index]
         test_id = file_test_ids[file]
