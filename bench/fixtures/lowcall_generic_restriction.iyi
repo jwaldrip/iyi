@@ -3,13 +3,9 @@ lib LibC
 end
 
 class Box(T)
-  def initialize
-  end
-
-  def take(value : T) : T
+  def self.take(value : T) : T
     value
   end
 end
 
-box = Box(Int32).new
-LibC.exit(box.take(7))
+LibC.exit(Box(Int32).take(7))
