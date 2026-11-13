@@ -692,6 +692,15 @@ prove_mutation "HashLiteral#[] ignores the key" "$METHODS" \
   -- check_macros_still_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# TypeNode#[] returns the type argument at that index (macro_typenode_index.iyi).
+# Always nil makes U[0] nil instead of Int32.
+prove_mutation "TypeNode#[] ignores the index" "$METHODS" \
+  "return TypeNode.new(tn.type_args[idx])" \
+  "return NilLiteral.new" \
+  -- check_macros_still_match || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+
 
 
 
