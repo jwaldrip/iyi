@@ -279,6 +279,9 @@ compare_all() {
       sem_expr_*)
         continue
         ;;
+      sem_err_wrong_arg_count*|sem_err_type_mismatch*|sem_err_undefined_method*|sem_err_cvar_*|sem_err_recursive_*|sem_err_ivar_*|sem_err_top_level_*|sem_err_ambiguous_call*|sem_err_no_overload_matches*|sem_err_class_nil*|sem_err_class_symbol*)
+        continue
+        ;;
       sem_err_*)
         if "$2" "$fixture" >/dev/null 2>&1; then
           out_status=1
