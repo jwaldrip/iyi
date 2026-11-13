@@ -454,6 +454,12 @@ pub class MainVisitor < TypeNodeHost
   # generic written with those names (`Pointer(T)`) is instantiated, as the hosted
   # MatchContext does. Anything else is the lexical lookup from the current type.
   def lookup_under(node : ASTNode, owner : Type?) : Type
+    if cd = @current_def
+      if bound = @def_free_types[cd]?
+        found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)
+        return found.as(Type) unless found.is_a?(LookupError)
+      end
+    end
     if receiver_instance(owner)
       found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
       return found.as(Type) unless found.is_a?(LookupError)
@@ -1224,6 +1230,20 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Path) : Bool
+    if !node.global && node.names.size == 1
+      if cd = @current_def
+        if free = @def_free_types[cd]?
+          if bound = free[node.names.first]?
+            if @in_type_args == 0 && bound.is_a?(ModuleType)
+              set_type(node, bound.as(ModuleType).metaclass)
+            else
+              set_type(node, bound)
+            end
+            return false
+          end
+        end
+      end
+    end
     if inst = receiver_instance(@scope)
       path = node
       if !path.global && path.names.size == 1
@@ -2555,11 +2575,33 @@ pub class MainVisitor < TypeNodeHost
     nil
   end
 
+  # Return annotations belong to the callee's match context, not the caller's.
+  def lookup_def_return(node : ASTNode, owner : Type, definition : Def) : Type
+    saved_def = @current_def
+    @current_def = definition
+    result = lookup_under(node, owner)
+    @current_def = saved_def
+    result
+  end
+
   def type_method_body_in_file(target_def : Def, rec_type : Type, args : Array(ASTNode), block : Block?, site : ASTNode?, cache_key : String?) : Type?
+    # Hosted call.cr binds the match's free variables from the call arguments,
+    # including for primitive and recursive definitions with no body to visit.
+    call_arg_types = [] of Type
+    args.each do |call_arg|
+      if call_arg_type = child_type(call_arg)
+        call_arg_types << call_arg_type
+      end
+    end
+    if call_arg_types.size == args.size
+      if free_types = FreeBindings.of_def(target_def, call_arg_types, type_node_system(@program))
+        @def_free_types[target_def] = free_types unless free_types.empty?
+      end
+    end
     body = target_def.body
     if body.nil? || body.is_a?(Nop) || body.is_a?(MacroLiteral)
       if rt = target_def.return_type
-        return lookup_under(rt, rec_type)
+        return lookup_def_return(rt, rec_type, target_def)
       else
         return @program.nil_type
       end
@@ -2571,7 +2613,7 @@ pub class MainVisitor < TypeNodeHost
     key = instance_key(rec_type, target_def, args, block)
     if @typing_stack.includes?(key)
       if rt = target_def.return_type
-        return lookup_under(rt, rec_type)
+        return lookup_def_return(rt, rec_type, target_def)
       end
       # No declared return type: until the body's own type is known the recursive
       # call contributes nothing to a merge, so it is NoReturn (the bottom of the
@@ -2676,18 +2718,6 @@ pub class MainVisitor < TypeNodeHost
       end
       i = i + 1
     end
-    # The def's free variables as this call's arguments bind them, for the macro sites of its body.
-    call_arg_types = [] of Type
-    args.each do |call_arg|
-      if call_arg_type = child_type(call_arg)
-        call_arg_types << call_arg_type
-      end
-    end
-    if call_arg_types.size == args.size
-      if free_types = FreeBindings.of_def(target_def, call_arg_types, type_node_system(@program))
-        @def_free_types[target_def] = free_types unless free_types.empty?
-      end
-    end
     @vars = new_vars
     @scope = rec_type
     @current_def = target_def
@@ -2751,7 +2781,7 @@ pub class MainVisitor < TypeNodeHost
     # (bench/fixtures/sem_bodies_primitive_add.iyi).
     if bt.nil?
       if rt = target_def.return_type
-        declared_ret = lookup_under(rt, rec_type)
+        declared_ret = lookup_def_return(rt, rec_type, target_def)
         set_type(target_def, declared_ret)
         remember_def_instance(cache_key, target_def, declared_ret)
         return declared_ret
@@ -2760,7 +2790,7 @@ pub class MainVisitor < TypeNodeHost
     end
 
     if rt = target_def.return_type
-      declared_ret = lookup_under(rt, rec_type)
+      declared_ret = lookup_def_return(rt, rec_type, target_def)
       # A Nil annotation discards the body's value; a body that never returns
       # still gives the def NoReturn (hosted bindings.cr Def#map_type).
       if declared_ret.nil_type? && bt.is_a?(NoReturnType)
