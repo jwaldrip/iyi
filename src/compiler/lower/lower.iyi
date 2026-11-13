@@ -36,7 +36,7 @@ import compiler/ir/values::{Value}
 import compiler/lower/typer::{LowerTyper, passed_by_value?}
 import compiler/types/types::{MixedUnionType, ReferenceUnionType, NilableType, NilableReferenceUnionType, NilableProcType, PointerInstanceType, TypeQueries, VirtualType}
 import compiler/lower/context::{BodyVisit, BranchPhi, Lowerer, LowerVar}
-import compiler/lower/helpers::{int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
+import compiler/lower/helpers::{abi_name, int1, llvm_nil, load_aligned, store_aligned, at_terminator?, raise_overflow_name}
 import compiler/lower/cond::{cond_bool, nil_condition?}
 import compiler/lower/phi::{LowerPhi}
 import compiler/lower/pending::{refuse_port, pending_visit_node}
@@ -185,6 +185,10 @@ end
 # as the hosted visit does (codegen.cr:864), and its body waits for emit_unused_fun_defs (the hosted @unused_fun_defs pass,
 # codegen.cr:747). A `well_known` fun is emitted on entry (see emit_well_known_funs).
 pub def codegen_fun_def(low : Lowerer, node : FunDef, well_known : Bool) : Nil
+  # Hosted visit(FunDef) (codegen.cr:849): a program with no pool neither calls __iyi_preempt nor carries it.
+  if node.name == "__iyi_preempt" && !pool_reached?(low)
+    return
+  end
   rec_opt = low.analysed.program.lib_fun_of(node)
   if rec_opt.nil?
     pending_visit_node("visit(FunDef) #{node.name} with no record from the analysis (lib_fun_of)")
@@ -270,14 +274,40 @@ end
 # The hosted codegen emits the runtime overflow function before lowering checked arithmetic.
 # The declaration may come from any unit, not just the entry root.
 pub def emit_well_known_funs(low : Lowerer) : Nil
-  name = raise_overflow_name(low)
+  if pool_reached?(low)
+    pending_visit_node("loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)")
+    return
+  end
   low.analysed.program.global_funs.each do |record|
-    if record.name == name
-      if node = record.node
-        codegen_fun_def(low, node, true)
-      end
+    next unless well_known_fun?(low, record.name)
+    next if record.name == "__iyi_preempt"
+    if node = record.node
+      codegen_fun_def(low, node, false)
     end
   end
+end
+
+# The probe module runs the same pre-visit once, before its per-def loop (program.iyi lowering_table).
+pub def emit_probe_well_known(m : Module, typer : LowerTyper, analysed : MainVisitor) : Nil
+  low = Lowerer.new(m, typer, analysed)
+  low.body_visitor = CoreBody.new
+  emit_well_known_funs(low)
+end
+
+def well_known_fun?(low : Lowerer, name : String) : Bool
+  name == abi_name(low, "malloc64") || name == abi_name(low, "malloc_atomic64") || name == abi_name(low, "realloc64") || name == abi_name(low, "raise") || name == abi_name(low, "personality") || name == abi_name(low, "get_exception") || name == abi_name(low, "raise_overflow") || name == abi_name(low, "raise_cast_failed") || name == abi_name(low, "once_init") || name == abi_name(low, "once") || name == "__iyi_write_barrier_begin" || name == "__iyi_write_barrier" || name == "__iyi_preempt"
+end
+
+def pool_reached?(low : Lowerer) : Bool
+  low.analysed.typed_instances.each do |inst|
+    next unless inst.definition.name == "start"
+    st = inst.self_type
+    next unless st
+    if st.is_a?(MetaclassType)
+      return true if st.as(MetaclassType).instance_type.to_s == "IyiWorkers"
+    end
+  end
+  false
 end
 
 # The hosted cleanup follows expansions and constant values before folding an interpolation

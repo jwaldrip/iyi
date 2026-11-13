@@ -268,6 +268,25 @@ else
   status=1
 fi
 
+echo "== 2c3. Well-known funs are pre-visited; a reached pool is refused"
+pool_check() {
+  "$IYI" build -o "$WORK/port-pool" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/pool.build.log" 2>&1 || return 1
+  if "$WORK/port-pool" lower "$REPO/bench/fixtures/preempt_pool.iyi" "$WORK/lower_exit.oracle.ll" > "$WORK/pool.out" 2> "$WORK/pool.err"; then
+    return 1
+  fi
+  grep -Fq "loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)" "$WORK/pool.err"
+}
+if pool_check; then
+  echo "  reached pool: refused by name"
+  prove_mutation "a reached pool is not refused" "$REPO/src/compiler/lower/lower.iyi" \
+    'pending_visit_node("loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)")' \
+    'nil' -- pool_check || status=1
+else
+  echo "FAIL: a reached pool did not refuse by name"
+  awk 'NR<=12' "$WORK/pool.err" "$WORK/pool.build.log"
+  status=1
+fi
+
 module_floor_file="$REPO/bench/selfhost_lower_core_module.floor"
 module_floor="$(awk 'NR==1 { print $1 }' "$module_floor_file" 2>/dev/null)"
 module_floor="${module_floor:-0}"
