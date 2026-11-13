@@ -1,10 +1,11 @@
 module compiler/semantic/restrictions
 
-import compiler/syntax/ast::{ASTNode, Arg, Generic, Path, Self}
-import compiler/semantic/top_level::{GenericClassType, ModuleType, Type}
+import compiler/syntax/ast::{ASTNode, Arg, Def, Generic, Path, Self, Splat, Union}
+import compiler/semantic/top_level::{GenericClassType, ModuleType, Type, TypeParameterType}
 import compiler/types/lookup::{LookupError, TypeLookup}
+import compiler/types/merge::{TypeMerge}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericInstanceType, PointerInstanceType}
+import compiler/types/types::{GenericInstanceType, TypeSplat}
 
 # The answer to "what does this argument's restriction name": a type, nil when
 # the argument has no restriction, or an error message when the written type does
@@ -48,18 +49,24 @@ pub class ArgRestriction
   # MatchContext of a generic instance resolves them. Anything else is the scope's
   # own lookup.
   def self.lookup_bound(ts : TypeSystem, scope : ModuleType, node : ASTNode, owner : Type?) : Type | LookupError
+    if node.is_a?(Splat)
+      inner = ArgRestriction.lookup_bound(ts, scope, node.as(Splat).exp, owner)
+      return inner if inner.is_a?(LookupError)
+      inner_type = inner.as(Type)
+      if inner_type.is_a?(TypeParameterType)
+        return TypeSplat.new(ts.program, inner_type.as(TypeParameterType))
+      end
+      return LookupError.new("can only splat tuple type, not #{inner_type.full_name}")
+    end
+    if node.is_a?(Union)
+      return ArgRestriction.lookup_union(ts, scope, node.as(Union), owner)
+    end
     if owner.is_a?(GenericInstanceType)
       instance = owner.as(GenericInstanceType)
       return instance if node.is_a?(Self)
       if node.is_a?(Path)
         names = node.as(Path).names
         if names.size == 1
-          # A pointer instance's type variable is its element type; its type table is
-          # empty (PointerInstanceType is built without type_vars), so `def value : T` on
-          # Pointer(Int32) would stay unbound. Hosted, its `T` is the element type.
-          if names[0] == "T" && owner.is_a?(PointerInstanceType)
-            return owner.as(PointerInstanceType).element_type
-          end
           bound = instance.type_vars[names[0]]?
           return bound.as(Type) if bound
         end
@@ -76,11 +83,26 @@ pub class ArgRestriction
             return arg if arg.is_a?(LookupError)
             args << arg.as(Type)
           end
-          return ts.instantiate_generic(base_type.as(GenericClassType), args)
+          return TypeLookup.new(ts.instances).instantiate(base_type, args)
         end
       end
     end
     TypeLookup.new(ts.instances).lookup(scope, node)
+  end
+
+  # A union restriction is each member, bound the way a single name is (`T` in
+  # `T | Nil` is the receiver's type argument), then merged. A union node is not
+  # a type the scope's own lookup instantiates.
+  def self.lookup_union(ts : TypeSystem, scope : ModuleType, node : Union, owner : Type?) : Type | LookupError
+    members = [] of Type
+    i = 0
+    while i < node.types.size
+      member = ArgRestriction.lookup_bound(ts, scope, node.types[i], owner)
+      return member if member.is_a?(LookupError)
+      members << member.as(Type)
+      i = i + 1
+    end
+    TypeMerge.merge_all(ts.program, members)
   end
 
   # The restriction of *arg* in *scope* when the def has free variables (`forall T`):
@@ -103,6 +125,18 @@ pub class ArgRestriction
   # else is lookup_bound's answer.
   def self.lookup_free(ts : TypeSystem, scope : ModuleType, node : ASTNode, owner : Type?, bound : Hash(String, Type)) : Type | LookupError
     return ArgRestriction.lookup_bound(ts, scope, node, owner) if bound.size == 0
+    if node.is_a?(Union)
+      members = [] of Type
+      union_node = node.as(Union)
+      i = 0
+      while i < union_node.types.size
+        member = ArgRestriction.lookup_free(ts, scope, union_node.types[i], owner, bound)
+        return member if member.is_a?(LookupError)
+        members << member.as(Type)
+        i = i + 1
+      end
+      return TypeMerge.merge_all(ts.program, members)
+    end
     if node.is_a?(Path)
       names = node.as(Path).names
       if names.size == 1
@@ -122,8 +156,7 @@ pub class ArgRestriction
           return arg if arg.is_a?(LookupError)
           args << arg.as(Type)
         end
-        return ts.pointer_of(args[0]) if base_type.name == "Pointer" && args.size == 1
-        return ts.instantiate_generic(base_type.as(GenericClassType), args)
+        return TypeLookup.new(ts.instances).instantiate(base_type, args)
       end
     end
     ArgRestriction.lookup_bound(ts, scope, node, owner)
@@ -160,6 +193,43 @@ pub class FreeBindings
       end
     end
     true
+  end
+
+  # The free variables bound by *definition*'s parameter restrictions against
+  # *arg_types*, or nil when two restrictions bind the same free variable to
+  # different types. When *ts* is given and *definition* has a splat restriction
+  # (`*values : *T`), the splat elements are packed as a tuple and bound too.
+  def self.of_def(definition : Def, arg_types : Array(Type), ts : TypeSystem? = nil) : Hash(String, Type)?
+    bound = Hash(String, Type).new
+    free_names = definition.free_vars
+    return bound if free_names.nil?
+    free = free_names.as(Array(String))
+    return bound if free.empty?
+    splat = definition.splat_index
+    prefix = splat ? splat.as(Int32) : definition.args.size
+    i = 0
+    while i < arg_types.size && i < prefix
+      bind_node = definition.args[i].restriction
+      if !bind_node.nil?
+        return nil if !FreeBindings.bind(bind_node.as(ASTNode), arg_types[i], free, bound)
+      end
+      i += 1
+    end
+    if !ts.nil? && splat
+      splat_idx = splat.as(Int32)
+      splat_restriction = definition.args[splat_idx].restriction
+      if splat_restriction && splat_restriction.is_a?(Splat)
+        splat_types = [] of Type
+        si = prefix
+        while si < arg_types.size
+          splat_types << arg_types[si]
+          si += 1
+        end
+        splat_tuple = ts.as(TypeSystem).tuple_of(splat_types)
+        return nil if !FreeBindings.bind(splat_restriction.as(Splat).exp, splat_tuple, free, bound)
+      end
+    end
+    bound
   end
 
   def self.free?(name : String, free : Array(String)) : Bool
