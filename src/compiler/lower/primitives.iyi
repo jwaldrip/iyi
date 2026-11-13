@@ -45,7 +45,7 @@ import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
 import compiler/lower/context::{Lowerer, LowerVar}
 import compiler/lower/fun::{visit_node}
-import compiler/lower/helpers::{int1, raise_overflow_name}
+import compiler/lower/helpers::{int1, llvm_nil, raise_overflow_name}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
@@ -88,6 +88,10 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
   raise "BUG: lower_primitive_call on a def that is not a primitive (hosted call.cr)" if name.nil?
   if name == "load_atomic"
     lower_atomic_load(low, node)
+    return
+  end
+  if name == "store_atomic"
+    lower_atomic_store(low, node)
     return
   end
   if name == "pointer_malloc" || name == "pointer_new" || name == "pointer_realloc" || name == "pointer_diff" || name == "pointer_get" || name == "pointer_set" || name == "pointer_add" || name == "pointer_address"
@@ -160,6 +164,31 @@ pub def lower_atomic_load(low : Lowerer, node : Call) : Nil
   value = low.builder.atomic_load(ir, ptr.as(Value), ordering, flag.as(BoolLiteral).value)
   value.alignment = is_bool ? 1 : low.typer.align_of(ir)
   low.last = is_bool ? low.builder.trunc(value, low.module.types.int1) : value
+end
+
+# Hosted codegen_primitive_store_atomic: store the word with the given ordering.
+pub def lower_atomic_store(low : Lowerer, node : Call) : Nil
+  raise "BUG: store_atomic needs four arguments" unless node.args.size == 4
+  ordering = atomic_ordering(node.args[2])
+  flag = node.args[3]
+  raise "BUG: atomic volatile must be a Bool literal" unless flag.is_a?(BoolLiteral)
+  pointer_type = low.analysed.type_of?(node.args[0])
+  raise "BUG: atomic pointer has no analysed type" if pointer_type.nil?
+  elem = pointer_element_of(pointer_type.as(Type))
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, node.args[0])
+  ptr = low.last
+  raise "BUG: atomic pointer has no value" if ptr.nil?
+  visit_node(low, node.args[1])
+  raw = low.last
+  raise "BUG: atomic store has no value" if raw.nil?
+  low.needs_value = wants
+  is_bool = primitive_kind(elem) == "bool"
+  value = is_bool ? low.builder.zext(raw.as(Value), low.module.types.int8) : raw.as(Value)
+  inst = low.builder.atomic_store(value, ptr.as(Value), ordering, flag.as(BoolLiteral).value)
+  inst.alignment = is_bool ? 1 : low.typer.align_of(value.type)
+  low.last = llvm_nil(low)
 end
 
 pub def atomic_ordering(node : ASTNode) : Ordering
