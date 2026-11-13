@@ -32,7 +32,7 @@ bench/fixtures/sem_bodies_macro_annotations.iyi 12
 bench/fixtures/sem_bodies_macro_bindings.iyi 43
 bench/fixtures/sem_bodies_macro_enum_facts.iyi 6
 bench/fixtures/sem_bodies_macro_ivars.iyi 10
-bench/fixtures/sem_bodies_macro_uninitialized.iyi 2
+bench/fixtures/sem_bodies_macro_uninitialized.iyi 5
 bench/fixtures/sem_bodies_macro_value.iyi 9
 bench/fixtures/sem_bodies_magic_constant.iyi 4
 bench/fixtures/sem_bodies_nil_return.iyi 14
