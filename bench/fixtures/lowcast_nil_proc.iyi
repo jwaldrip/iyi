@@ -2,10 +2,13 @@ lib LibC
   fun exit(status : Int32) : NoReturn
 end
 
-def store_nil_proc : Nil
-  p : Proc(Nil)? = nil
-  nil
+class Box
+  @proc : Proc(Nil)?
+
+  def initialize
+    @proc = nil
+  end
 end
 
-store_nil_proc
+Box.new
 LibC.exit(7)
