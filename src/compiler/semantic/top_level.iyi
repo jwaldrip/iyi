@@ -926,6 +926,8 @@ pub class Const < NamedType
   property value : ASTNode
   property declared_type : ASTNode?
   property value_source : String?
+  # Enum member constants have the enum's type, not their integer storage type.
+  property enum_value_type : Type? = nil
   # iyi: whether a read of this constant was typed, and whether a pointerof of it was lowered (hosted
   # Const#used and pointer_read). The analysis and the lowering set them.
   property used : Bool = false
@@ -972,6 +974,7 @@ pub class EnumType < ModuleType
 
   def add_member(name : String, val_node : ASTNode) : Const
     c = Const.new(@program, self, name, val_node)
+    c.enum_value_type = self
     @types[name] = c
     @members[name] = c
     c
