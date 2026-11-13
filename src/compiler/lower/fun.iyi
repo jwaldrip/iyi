@@ -26,7 +26,7 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/ir/function::{Function, Linkage}
 import compiler/ir/inst::{Attribute, Block, CallConv}
 import compiler/ir/types::{IrType}
-import compiler/ir/values::{Value}
+import compiler/ir/values::{Value, Param}
 import compiler/ir/module::{Module}
 import compiler/lower/cast::{assign, to_rhs, upcast}
 import compiler/lower/context::{BodyVisit, Lowerer, LowerContext, LowerSavedState, LowerVar}
@@ -273,6 +273,13 @@ pub def declared_or_defined_fun(low : Lowerer, name : String, fn_type : IrType) 
   fn = declared.as(Function)
   if !fn.blocks.empty?
     raise "BUG: #{name} already has a body (hosted External#dead)"
+  end
+  # A forward declaration has a signature but no parameter values yet.
+  # Deferred definitions created by define_function already have theirs.
+  if fn.param_count == 0
+    fn_type.param_types.each_with_index do |type, index|
+      fn.add_param(Param.new(type, "", index))
+    end
   end
   fn
 end
