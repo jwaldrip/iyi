@@ -453,9 +453,9 @@ prove_mutation "a proc literal inherits its enclosing scope" "$MAIN_VISITOR" \
 prove_mutation "unit definitions resolve in their lexical scope" "$MAIN_VISITOR" \
   "      if mod.iyi_unit" \
   "      if false" -- bodies_at_floor || status=1
-prove_mutation "splat arguments bind a tuple" "$MAIN_VISITOR" \
-  "        param_type = tuple_type_of(@program, elements)" \
-  "        param_type = @program.nil_type" -- bodies_at_floor || status=1
+prove_mutation "splat arguments bind a tuple" "$REPO/src/compiler/semantic/default_arguments.iyi" \
+  "body << Assign.new(Var.new(splat.name), TupleLiteral.new(elements))" \
+  "body << Assign.new(Var.new(splat.name), TupleLiteral.new([] of ASTNode))" -- bodies_at_floor || status=1
 prove_mutation "imported restrictions use the defining unit" "$MAIN_VISITOR" \
   "        @current_type = owner if owner.iyi_unit" \
   "        nil" -- bodies_at_floor || status=1
@@ -575,8 +575,8 @@ macro_bindings_at_floor() {
 prove_mutation "a macro site in a def body does not see the receiver's type parameters" "$MAIN_VISITOR" \
   "    MacroBindings.of(@scope, free)" \
   "    MacroBindings.of(nil, free)" -- macro_bindings_at_floor || status=1
-prove_mutation "a macro site in a def body does not see the def's free variables" "$MAIN_VISITOR" \
-  "        @def_free_types[target_def] = free_types unless free_types.empty?" \
+prove_mutation_all "a macro site in a def body does not see the def's free variables" "$MAIN_VISITOR" \
+  "@def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- macro_bindings_at_floor || status=1
 echo
 echo "== 4d. A macro site in an enum method sees its constants"
@@ -750,8 +750,8 @@ if ! atomic_free_at_floor; then
   status=1
 fi
 prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
-  "    if count_matches.any? { |d| !d.free_vars.nil? }" \
-  "    if false" -- atomic_free_at_floor || status=1
+  "@def_free_types[target_def] = free_types unless free_types.empty?" \
+  "        nil" -- atomic_free_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"

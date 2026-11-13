@@ -42,7 +42,7 @@ if [ "${#gates[@]}" -eq 0 ]; then
   exit 1
 fi
 
-DARWIN_ARM64_GATES="selfhost_lower_asm_exercise selfhost_lower_calls_exercise selfhost_lower_cast_exercise selfhost_lower_core_exercise selfhost_lower_ensure_exercise selfhost_lower_gc_table_exercise selfhost_lower_globals_exercise selfhost_lower_primitives_exercise selfhost_pipeline_exercise"
+DARWIN_ARM64_GATES="selfhost_lower_asm_exercise selfhost_lower_calls_exercise selfhost_lower_cast_exercise selfhost_lower_core_exercise selfhost_lower_ensure_exercise selfhost_lower_gc_table_exercise selfhost_lower_globals_exercise selfhost_lower_primitives_exercise selfhost_pipeline_exercise selfhost_default_values_exercise"
 for listed in $DARWIN_ARM64_GATES; do
   if [ ! -f "$REPO/bench/$listed.sh" ]; then
     echo "== 0. DARWIN_ARM64_GATES names $listed, and bench/$listed.sh is not a gate"
