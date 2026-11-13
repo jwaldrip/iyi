@@ -1,0 +1,13 @@
+lib LibC
+  fun exit(status : Int32) : NoReturn
+end
+
+def run(&block : -> Int32) : Int32
+  block.call
+end
+
+def apply(n : Int32, &block : Int32 -> Int32) : Int32
+  block.call(n)
+end
+
+LibC.exit(run { 3 } + apply(4) { |n| n })

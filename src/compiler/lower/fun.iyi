@@ -45,7 +45,7 @@ import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, Gen
 # not a plain identifier is not ported: the caller refuses such a name. `self_type` is nil for a
 # top-level def. A caller that still passes a metaclass as `self_type` and no `class_owner` is
 # the hosted metaclass owner: the instance type and `::`, not `Owner.class#`.
-pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil) : String
+pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), ret : Type, class_owner : Type? = nil, block_type : Type? = nil) : String
   text = "*"
   named_self = self_type
   named_class = class_owner
@@ -64,10 +64,13 @@ pub def mangled_name(name : String, self_type : Type?, arg_types : Array(Type), 
     text = text + owner_segment(st, name, false) + "#"
   end
   text = text + name
-  if arg_types.size > 0
+  if arg_types.size > 0 || block_type
     names = [] of String
     arg_types.each do |t|
       names << symbol_type(t)
+    end
+    if bt = block_type
+      names << "&" + symbol_type(bt)
     end
     text = text + "<" + names.join(", ") + ">"
   end

@@ -60,6 +60,24 @@ def run : Nil
   end
   fixture = args[0]
   oracle_text = File.read(args[1])
+  if args.size > 2 && args[2] == "block"
+    prog = SemanticProgram.new
+    ts = TypeSystem.new(prog)
+    int = prog.int32_type
+    no_args = [] of Type
+    proc0 = ts.proc_of(no_args, int)
+    proc1 = ts.proc_of([int] of Type, int)
+    names = [
+      mangled_name("run", nil, no_args, int, nil, proc0),
+      mangled_name("apply", nil, [int] of Type, int, nil, proc1),
+    ]
+    names.each do |name|
+      raise "the hosted module has no #{name}" if hosted_flag(oracle_text, name).nil?
+      puts "port #{name}"
+    end
+    puts "NAME-OWNER MATCH"
+    return
+  end
   metaclass = args.size > 2 && args[2] == "metaclass"
   expected = metaclass ? "*NameOwner::class_flag<Int32>:Int32" : "*Child^Base#flag<Int32>:Int32"
   method_name = metaclass ? "class_flag" : "flag"
