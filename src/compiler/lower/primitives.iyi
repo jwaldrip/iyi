@@ -36,10 +36,10 @@ module compiler/lower/primitives
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, SymbolLiteral}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallConv, Ordering}
-import compiler/lower/cast::{type_id_value}
+import compiler/lower/cast::{type_id_value, to_lhs}
 import compiler/ir/intrinsics::{IntrinsicId}
 import compiler/ir/types::{IrType}
 import compiler/ir/values::{Value}
@@ -49,7 +49,7 @@ import compiler/lower/helpers::{int1, llvm_nil, raise_overflow_name}
 import compiler/lower/pending::{pending_visit_node}
 import compiler/lower/typer::{primitive_kind, primitive_bytes}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, MetaclassType, Type}
-import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, PointerInstanceType, TypeQueries, VirtualType}
+import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, PointerInstanceType, TupleInstanceType, TypeQueries, VirtualType}
 import compiler/lower/helpers::{store_aligned, load_aligned}
 import compiler/lower/typer::{passed_by_value?}
 import compiler/lower/headed::{headed?, headed_candidate?}
@@ -100,6 +100,10 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
   end
   if name == "cmpxchg"
     lower_atomic_cmpxchg(low, node)
+    return
+  end
+  if name == "tuple_indexer_known_index"
+    lower_tuple_indexer(low, node, target)
     return
   end
   if name == "enum_new"
@@ -165,6 +169,61 @@ pub def lower_primitive_call(low : Lowerer, node : Call, target : Def) : Nil
     return
   end
   pending_visit_node("primitive #{name} (hosted codegen_primitive, primitives.cr)")
+end
+
+# Hosted primitives.cr 1272-1317: a literal tuple index names a field; a
+# range constructs another tuple from its selected fields.
+pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
+  body = target.body
+  raise "BUG: tuple indexer has no Primitive body" unless body.is_a?(Primitive)
+  primitive = body.as(Primitive)
+  obj = node.obj
+  raise "BUG: tuple indexer has no receiver" if obj.nil?
+  receiver = obj.as(ASTNode)
+  typ = receiver_type(low, receiver)
+  if typ.is_a?(MetaclassType)
+    result = low.analysed.type_of?(node)
+    raise "BUG: tuple metaclass index has no result type" if result.nil?
+    low.last = type_id_value(low, result.as(Type))
+    return
+  end
+  elements = [] of Type
+  if typ.is_a?(TupleInstanceType)
+    elements = typ.as(TupleInstanceType).tuple_types
+  elsif typ.is_a?(NamedTupleInstanceType)
+    typ.as(NamedTupleInstanceType).entries.each { |entry| elements << entry.type }
+  else
+    raise "BUG: unsupported tuple indexer on #{typ.full_name}"
+  end
+  wants = low.needs_value
+  low.needs_value = true
+  visit_node(low, receiver)
+  value = low.last
+  raise "BUG: tuple indexer receiver left no value" if value.nil?
+  low.needs_value = wants
+  tuple_ir = low.typer.llvm_type(typ)
+  zero = low.builder.const_int(low.module.types.int32, 0_i64)
+  first = primitive.tuple_index
+  if node.args.size == 1 && node.args[0].is_a?(RangeLiteral)
+    result_type = low.analysed.type_of?(node)
+    raise "BUG: tuple range has no result type" if result_type.nil?
+    result_ir = low.typer.llvm_type(result_type.as(Type))
+    result = low.alloca(result_ir, "")
+    index = first
+    while index <= primitive.tuple_last
+      field = low.builder.const_int(low.module.types.int32, index.to_i64)
+      dst_index = low.builder.const_int(low.module.types.int32, (index - first).to_i64)
+      ptr = low.builder.inbounds_gep(tuple_ir, value.as(Value), [zero, field] of Value)
+      destination = low.builder.inbounds_gep(result_ir, result, [zero, dst_index] of Value)
+      store_pointer_value(low, destination, to_lhs(low, ptr, elements[index]), elements[index])
+      index = index + 1
+    end
+    low.last = result
+    return
+  end
+  field = low.builder.const_int(low.module.types.int32, first.to_i64)
+  ptr = low.builder.inbounds_gep(tuple_ir, value.as(Value), [zero, field] of Value)
+  low.last = to_lhs(low, ptr, elements[first])
 end
 
 # Hosted codegen_primitive_load_atomic: the class receiver is not an operand.

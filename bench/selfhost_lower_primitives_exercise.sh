@@ -47,6 +47,7 @@ waiting=0
 # taken off this list, so a wait cannot outlive its cause unnoticed.
 waiting_on() {
   case "$1" in
+    lowprim_enum) echo "enum members type as Int32 until the bodies lane's enum Path fix lands" ;;
   esac
 }
 
@@ -218,8 +219,12 @@ prove_mutation "an atomic read-modify-write ignores its ordering" "$REPO/src/com
   '  ordering = atomic_ordering(node.args[3])' '  ordering = Ordering::Monotonic' -- lower_primitives_check || status=1
 prove_mutation "compare-exchange ignores its failure ordering" "$REPO/src/compiler/lower/primitives.iyi" \
   '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, failure)' '  result = low.builder.cmpxchg(ptr.as(Value), compare, replacement, success, success)' -- lower_primitives_check || status=1
-prove_mutation "an enum value is not lowered" "$REPO/src/compiler/lower/primitives.iyi" \
-  '  if name == "enum_value"' '  if name == "wrong_enum_value"' -- lower_primitives_check || status=1
+if [ -n "$(waiting_on lowprim_enum)" ]; then
+  echo "  NOT RUN: enum mutation waits for enum member typing"
+else
+  prove_mutation "an enum value is not lowered" "$REPO/src/compiler/lower/primitives.iyi" \
+    '  if name == "enum_value"' '  if name == "wrong_enum_value"' -- lower_primitives_check || status=1
+fi
 prove_mutation "checked conversion omits its lower bound" "$REPO/src/compiler/lower/primitives.iyi" \
   '  low.builder.build_or(below, above)' '  above' -- lower_primitives_check || status=1
 prove_mutation "the Char less-than is less-or-equal" "$REPO/src/compiler/lower/primitives.iyi" \
