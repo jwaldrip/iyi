@@ -598,6 +598,20 @@ else
   awk 'NR<=8' "$WORK/named-tuple.err" "$WORK/named-tuple.out" "$WORK/named-tuple.build.log"
   status=1
 fi
+while_true_check() {
+  "$IYI" build -o "$WORK/port-while-true" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/while-true.build.log" 2>&1 || return 1
+  "$WORK/port-while-true" lower "$REPO/bench/fixtures/lower_while_true.iyi" "$WORK/lower_while_true.oracle.ll" > "$WORK/while-true.out" 2> "$WORK/while-true.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/while-true.out"
+}
+if while_true_check; then
+  prove_mutation "an endless loop emits a conditional" "$REPO/src/compiler/lower/lower.iyi" \
+    '  if cond.is_a?(BoolLiteral) && cond.as(BoolLiteral).value' \
+    '  if false && cond.is_a?(BoolLiteral) && cond.as(BoolLiteral).value' -- while_true_check || status=1
+else
+  echo "FAIL: endless loop fixture differs from hosted"
+  awk 'NR<=8' "$WORK/while-true.err" "$WORK/while-true.out" "$WORK/while-true.build.log"
+  status=1
+fi
 tuple_literal_check() {
   "$IYI" build -o "$WORK/port-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/tuple.build.log" 2>&1 || return 1
   "$WORK/port-tuple" lower "$REPO/bench/fixtures/lower_tuple_literal.iyi" "$WORK/lower_tuple_literal.oracle.ll" > "$WORK/tuple.out" 2> "$WORK/tuple.err" || return 1
