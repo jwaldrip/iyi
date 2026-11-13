@@ -2613,7 +2613,7 @@ pub class MainVisitor < TypeNodeHost
     # binds the match context used by the callee's body and return annotation
     # (hosted call.cr 1259-1293, 1336-1432).
     captured_block_type : Type? = nil
-    if target_def.uses_block_arg?
+    if target_def.block_arg && !target_def.block_arg.as(Arg).name.empty?
       if blk = block
         if ba = target_def.block_arg
           if restriction = ba.restriction
