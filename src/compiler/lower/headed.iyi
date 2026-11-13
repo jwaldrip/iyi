@@ -15,8 +15,8 @@ module compiler/lower/headed
 # The ids are the port's (`LowerTypeIds`), 30 above the hosted ids until row 16 closes, so the
 # sixteen-bit test moves by that shift at the boundary; no fixture reaches it.
 
-import compiler/semantic/top_level::{Type, NonGenericClassType}
-import compiler/types/types::{GenericClassInstanceType}
+import compiler/semantic/top_level::{GenericClassType, NonGenericClassType, SemanticProgram, Type, UnionType}
+import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NilableReferenceUnionType, ReferenceUnionType, TypeQueries}
 import compiler/lower/type_id::{LowerTypeIds}
 import compiler/lower/typer::{primitive_kind}
 
@@ -32,18 +32,57 @@ pub def headed_candidate?(type : Type) : Bool
   type.is_a?(NonGenericClassType) || type.is_a?(GenericClassInstanceType)
 end
 
-# The seam for rule 3. The hosted answer is `headed.includes?(type)`, built from
-# `type.virtual_type_made?` (types.cr 364, 1598, 2546) and `program.unions.each_value`
-# (gc_layouts.cr 213-221). When the declarations trunk provides both, only this function changes.
+private def add_headed_with_subclasses(headed : Set(String), type : Type) : Nil
+  headed.add(type.full_name)
+  TypeQueries.all_subclasses(type).each do |sub|
+    headed.add(sub.full_name)
+  end
+end
+
+private def collect_virtual_headed(headed : Set(String), type : Type) : Nil
+  if headed_candidate?(type) && TypeQueries.virtual_type_made?(type)
+    add_headed_with_subclasses(headed, type)
+  end
+  if type.is_a?(GenericClassType)
+    type.as(GenericClassType).instantiated_types.each do |inst|
+      collect_virtual_headed(headed, inst)
+    end
+  end
+  TypeQueries.subclasses(type).each do |sub|
+    next if sub.is_a?(GenericInstanceType)
+    collect_virtual_headed(headed, sub)
+  end
+end
+
+# The hosted `iyi_headed_types` (gc_layouts.cr 204-223): classes that carry a header word
+# because a virtual type over them or an ancestor was made, or because they or an ancestor
+# appear in a reference union in `program.unions`.
+private def headed_census_types(program : SemanticProgram) : Set(String)
+  headed = Set(String).new
+  if root = program.object_type
+    collect_virtual_headed(headed, root.as(Type))
+  end
+  program.unions.each_value do |union|
+    next unless union.is_a?(ReferenceUnionType) || union.is_a?(NilableReferenceUnionType)
+    union.as(UnionType).union_types.each do |member|
+      resolved = program.remove_alias(member)
+      next unless headed_candidate?(resolved)
+      add_headed_with_subclasses(headed, resolved)
+    end
+  end
+  headed
+end
+
+# The hosted `iyi_headed?` census check (gc_layouts.cr 173-177, 204-223).
 private def census_answer(type : Type) : Bool?
-  nil
+  headed_census_types(type.program).includes?(type.full_name)
 end
 
 # The `:headed` answer for *type*: true or false when the rules decide it, nil when the census
 # (not in the port) would decide it. The caller refuses nil by name rather than guess a byte.
 pub def headed?(type : Type, ids : LowerTypeIds) : Bool?
   return true if type.full_name == "String"
-  return true if ids.type_id(type) > headed_id_limit
   return false unless headed_candidate?(type)
+  return true if ids.type_id(type) > headed_id_limit
   census_answer(type)
 end

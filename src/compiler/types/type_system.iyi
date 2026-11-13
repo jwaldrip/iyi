@@ -103,6 +103,11 @@ pub class TypeSystem < TypeHook
         pt.struct = true
       end
     end
+    # iyi: the hosted program makes ARGV_UNSAFE's type, Pointer(Pointer(UInt8)), and with it Pointer(UInt8),
+    # when the program is made, before any file is read (program.cr 1462). They are made through the type
+    # system's own instances, so a later lookup of either finds the same instance and the id walk numbers them.
+    uint8 : Type = @program.types["UInt8"]
+    @instances.pointer_of(@instances.pointer_of(uint8))
   end
 
   def instantiate_generic(generic_type : GenericClassType, type_args : Array(Type)) : GenericClassInstanceType
