@@ -15,7 +15,6 @@ module compiler/lower/const
 #   - a value that may be a compile-time value: a path to another constant, or an operator call (hosted
 #     `compile_time_value` runs the MathInterpreter, which inlines it at each read instead of storing it);
 #   - a nil literal (hosted `initialize_simple_constants`): its global is not ported yet;
-#   - an indirectly passed aggregate, which needs the hosted copy_value path.
 # String, symbol and float constants get constant globals at program start; assignments emit nothing and reads load.
 
 import compiler/syntax/ast::{ASTNode, Assign, BoolLiteral, Call, CharLiteral, NilLiteral, NumberLiteral, Path, StringLiteral, SymbolLiteral}
@@ -31,6 +30,7 @@ import compiler/lower/globals::{ConstState}
 import compiler/lower/symbols::{symbol_index}
 import compiler/lower/cast::{to_lhs, type_id_value}
 import compiler/lower/typer::{passed_by_value?}
+import compiler/lower/primitives::{copy_pointer_value}
 import compiler/types/types::{TupleInstanceType}
 import compiler/semantic/top_level::{ModuleType, SemanticProgram, Type}
 
@@ -151,14 +151,14 @@ pub def const_ir_type(low : Lowerer, const : Compiler::Semantic::TopLevel::Const
   low.typer.llvm_type(t.as(Type))
 end
 
-# Small by-value aggregates are stored by loading their value from the address
-# produced by the expression. Larger aggregates require the hosted copy_value.
+# By-value aggregates are loaded from their address, or copied when passed
+# indirectly (hosted const.cr:199-206).
 pub def check_const_type(low : Lowerer, const : Compiler::Semantic::TopLevel::Const, ir : IrType) : Nil
   if ir.int? || ir.float? || ir.pointer?
     return
   end
   t = low.analysed.type_of?(const.value).as(Type)
-  if !passed_by_value?(t) || low.typer.passed_indirectly?(t)
+  if !passed_by_value?(t)
     refuse_port("lower: constant #{const.full_name} requires an unsupported aggregate initializer (hosted const.cr: create_initialize_const_function)")
   end
 end
@@ -316,7 +316,11 @@ pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopL
     t = low.analysed.type_of?(const.value).as(Type)
     if passed_by_value?(t)
       global.initializer = low.builder.const_zero(ir)
-      store_aligned(low, val.type.pointer? ? load_aligned(low, ir, val) : val, global)
+      if low.typer.passed_indirectly?(t)
+        copy_pointer_value(low, global, val, ir, false)
+      else
+        store_aligned(low, val.type.pointer? ? load_aligned(low, ir, val) : val, global)
+      end
     else
       global.initializer = low.builder.const_null(ir)
       store_aligned(low, val, global)

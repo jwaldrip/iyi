@@ -250,6 +250,9 @@ prove_mutation "an aggregate class variable is loaded instead of read by address
 prove_mutation "a by-value constant is loaded instead of read by address" "$REPO/src/compiler/lower/const.iyi" \
   "      low.last = to_lhs(low, g.as(Global), low.analysed.type_of?(c.value).as(Type))" \
   "      low.last = load_aligned(low, ir, g.as(Global))" -- lowglob_check || status=1
+prove_mutation "an indirectly passed constant is copied as a fresh slot" "$REPO/src/compiler/lower/const.iyi" \
+  "        copy_pointer_value(low, global, val, ir, false)" \
+  "        copy_pointer_value(low, global, val, ir, true)" -- lowglob_check || status=1
 prove_mutation "a type path returns zero instead of its type id" "$REPO/src/compiler/lower/const.iyi" \
   "    low.last = type_id_value(low, typ.as(Type))" \
   "    low.last = low.builder.const_int(low.module.types.int32, 0_i64)" -- lowglob_check || status=1
