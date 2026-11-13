@@ -103,6 +103,9 @@ pub def codegen_call_node(low : Lowerer, node : Compiler::Syntax::Ast::Call) : N
         pending_visit_node("allocate outside a class method (hosted codegen_primitive_allocate, the instance type)")
       end
       inst = owner.as(Type)
+      # Hosted prepare_call_args reads the generic metaclass self before dispatching
+      # the allocate primitive, even though allocation itself does not use it.
+      type_id_value(low, inst) if inst.is_a?(GenericClassInstanceMetaclassType)
       ptr = primitive_allocate(low, inst)
       # A class's `_` holds the pointer itself (hosted allocate of a reference type); a struct's holds the value
       # loaded from the zeroed instance.

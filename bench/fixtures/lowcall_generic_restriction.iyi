@@ -8,4 +8,5 @@ class Box(T)
   end
 end
 
+Box(Int32).new
 LibC.exit(Box(Int32).take(7))
