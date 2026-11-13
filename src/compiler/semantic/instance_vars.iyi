@@ -1,7 +1,7 @@
 module compiler/semantic/instance_vars
 
 import compiler/foundation/location::{Location}
-import compiler/syntax/ast::{ASTNode, Arg, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
+import compiler/syntax/ast::{ASTNode, Arg, ArrayLiteral, Assign, BoolLiteral, CharLiteral, Call, Cast, ClassDef, Def, Expressions, FunDef, Generic, If, InstanceVar, IsA, Macro, MacroExpression, MacroFor, MacroIf, ModuleDef, NilLiteral, Nop, Not, NumberLiteral, Path, StringInterpolation, StringLiteral, SymbolLiteral, TypeDeclaration, Unless, Var}
 import compiler/syntax/token::{NumberKind}
 import compiler/syntax/visitor::{Visitor}
 import compiler/semantic/top_level::{ClassType, GenericClassType, MetaTypeVar, ModuleType, NonGenericClassType, SemanticProgram, Type, TypeBody}
@@ -19,10 +19,9 @@ import compiler/semantic/type_nodes::{type_node_system}
 # root of the class hierarchy down, so a superclass's variables are known first.
 #
 # Skipped, and so not declared here: guesses whose value needs a type this pass
-# cannot compute (a call with arguments, an array or hash literal, a block), a
-# `Foo.new` where Foo has subclasses (hosted gives its virtual type), variables of
-# generic classes and of modules (hosted also transfers a module's variables to
-# its includers), and the `macro def` and `.iyimod` exemptions.
+# cannot compute (a call with arguments, an untyped or named array literal, a
+# hash literal, a block), module variables and the `macro def` and `.iyimod`
+# exemptions.
 
 pub class GuessedIvar
   property type : Type
@@ -206,6 +205,22 @@ class GuessVisitor < Visitor
     end
     if node.is_a?(SymbolLiteral)
       return @program.symbol_type
+    end
+    # Hosted type_guess_visitor.cr:465-469: a typed array literal has Array of
+    # its written element type, with both types virtualized where needed.
+    if node.is_a?(ArrayLiteral)
+      literal = node.as(ArrayLiteral)
+      if literal.name.nil?
+        if element_node = literal.of
+          if hook = @program.merge_hook
+            if element = @program.lookup_type_node?(element_node, @og.owner)
+              array = hook.instantiate_type(@program.types["Array"], [hook.virtual_of(element)] of Type)
+              return hook.virtual_of(array)
+            end
+          end
+        end
+      end
+      return nil
     end
     if node.is_a?(Not) || node.is_a?(IsA)
       return @program.bool_type

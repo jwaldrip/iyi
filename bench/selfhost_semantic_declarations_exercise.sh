@@ -700,6 +700,11 @@ prove_mutation "pointer malloc and null calls do not infer instance variable typ
   '    if false' \
   -- check_decl_fixtures_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "typed array literals do not infer instance variable types" "$MUT_IVARS" \
+  '    if node.is_a?(ArrayLiteral)' \
+  '    if false' \
+  -- check_decl_fixtures_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "generic new calls do not infer instance variable types" "$MUT_IVARS" \
   '    if node.name == "new" && obj.is_a?(Generic)' \
   '    if false' \

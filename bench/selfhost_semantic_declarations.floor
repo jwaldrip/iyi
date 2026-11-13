@@ -52,9 +52,9 @@ src/compiler/ir/layout.iyi 24
 src/compiler/ir/module.iyi 0
 src/compiler/ir/parser.iyi 0
 src/compiler/ir/printer.iyi 42
-src/compiler/ir/types.iyi 86
+src/compiler/ir/types.iyi 88
 src/compiler/ir/values.iyi 38
-src/compiler/ir/verifier.iyi 43
+src/compiler/ir/verifier.iyi 45
 src/compiler/llvm.iyi 0
 src/compiler/llvm/builder.iyi 0
 src/compiler/llvm/context.iyi 0
@@ -65,7 +65,7 @@ src/compiler/llvm/module.iyi 0
 src/compiler/llvm/pass_manager.iyi 0
 src/compiler/llvm/target.iyi 0
 src/compiler/llvm/values.iyi 0
-src/compiler/loader.iyi 39
+src/compiler/loader.iyi 44
 src/compiler/lower/abi/aarch64.iyi 0
 src/compiler/lower/block.iyi 0
 src/compiler/lower/call.iyi 0
@@ -108,7 +108,7 @@ src/compiler/native/amd64/abi.iyi 0
 src/compiler/native/amd64/encode.iyi 0
 src/compiler/native/amd64/regs.iyi 40
 src/compiler/native/asm/constraints.iyi 31
-src/compiler/native/asm/inventory.iyi 82
+src/compiler/native/asm/inventory.iyi 88
 src/compiler/native/const_expr.iyi 11
 src/compiler/native/driver.iyi 0
 src/compiler/native/emit.iyi 0
@@ -165,7 +165,7 @@ src/compiler/syntax/parser.iyi 0
 src/compiler/syntax/token.iyi 231
 src/compiler/syntax/transformer.iyi 111
 src/compiler/syntax/visitor.iyi 334
-src/compiler/tools/bind.iyi 98
+src/compiler/tools/bind.iyi 102
 src/compiler/tools/compile.iyi 0
 src/compiler/tools/compile_native.iyi 0
 src/compiler/tools/format.iyi 0
@@ -268,7 +268,7 @@ src/std/indexable.iyi 0
 src/std/ini.iyi 0
 src/std/int.iyi 10
 src/std/io.iyi 0
-src/std/iterator.iyi 201
+src/std/iterator.iyi 205
 src/std/json.iyi 308
 src/std/kernel.iyi 10
 src/std/levenshtein.iyi 0
