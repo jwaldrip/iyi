@@ -13,9 +13,11 @@ CRYSTAL_PATH="$REPO/src" IYI_CONFIG_PATH="$REPO/src" "${CRYSTAL:-crystal}" build
 fixture="$REPO/bench/fixtures/bodies_setter_value.iyi"
 "$WORK/oracle" "$fixture" > "$WORK/hosted"
 IYI_PATH="$REPO/src" "$WORK/native" "$fixture" -o "$WORK/out" --pipeline typed --prelude --probe-phase --keep-going > "$WORK/probe" 2>&1 || true
-grep -F 'next_run=<Nil>:Nil' "$WORK/probe" || { echo PORT; cat "$WORK/probe"; exit 1; }
-grep -F 'next_run=<Fiber>:Fiber' "$WORK/probe" || { echo PORT; cat "$WORK/probe"; exit 1; }
-if grep -F 'next_run=<(Fiber | Nil)>' "$WORK/probe"; then
+names="$WORK/out.names"
+[ -f "$names" ] || { echo 'PORT WROTE NO NAMES'; cat "$WORK/probe"; exit 1; }
+grep -Fx '*Fiber#next_run=<Nil>:Nil' "$names" || { echo PORT; cat "$names"; exit 1; }
+grep -Fx '*Fiber#next_run=<Fiber>:Fiber' "$names" || { echo PORT; cat "$names"; exit 1; }
+if grep -F 'next_run=<(Fiber | Nil)>' "$names"; then
   echo 'Setter still named by its declared union' >&2
   exit 1
 fi
