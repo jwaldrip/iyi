@@ -291,6 +291,34 @@ if ARGV[0]? == "--link-annotations"
   exit 0
 end
 
+if ARGV[0]? == "--enum-annotations"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  ["MarkedEnum", "PlainEnum"].each do |name|
+    enum_type = program.types[name].as(Iyi::EnumType)
+    puts "#{name} Flags=#{!enum_type.annotation(program.flags_annotation).nil?}"
+  end
+  exit 0
+end
+
+if ARGV[0]? == "--enum-primitives"
+  path = File.expand_path(ARGV[1])
+  compiler = Iyi::Compiler.new
+  program, node = compiler.declarations_program(Iyi::Compiler::Source.new(path, File.read(path)))
+  node.accept(Iyi::TopLevelVisitor.new(program))
+  ["SmallEnum", "WideEnum"].each do |name|
+    enum_type = program.types[name].as(Iyi::EnumType)
+    [enum_type.defs.not_nil!["value"].first.def, enum_type.metaclass.as(Iyi::ModuleType).defs.not_nil!["new"].first.def].each do |definition|
+      primitive = definition.body.as(Iyi::Primitive)
+      restriction = definition.args.empty? ? "-" : definition.args[0].restriction.to_s
+      puts "#{name} #{definition.name} #{primitive.name} #{primitive.type} #{restriction}"
+    end
+  end
+  exit 0
+end
+
 if ARGV[0]? == "--def-owner"
   path = File.expand_path(ARGV[1])
   compiler = Iyi::Compiler.new
