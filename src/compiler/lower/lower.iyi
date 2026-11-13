@@ -21,7 +21,7 @@ import compiler/syntax/ast::{VisibilityModifier, ArrayLiteral, StringInterpolati
 import compiler/syntax/ast::{NamedTupleLiteral}
 import compiler/syntax/ast::{ImplDef, TraitDef}
 import compiler/types/types::{NamedTupleInstanceType}
-import compiler/syntax/ast::{TupleLiteral, Splat}
+import compiler/syntax/ast::{TupleLiteral, Splat, Generic}
 import compiler/syntax/ast::{ExceptionHandler, Case}
 import compiler/types/types::{TupleInstanceType}
 import compiler/lower/helpers::{build_string_constant}
@@ -48,7 +48,7 @@ import compiler/ir/verifier::{verify_function}
 import compiler/lower/primitives::{iyi_gc_arena?}
 import compiler/lower/gc_table::{define_gc_layouts}
 import compiler/lower/proc::{lower_proc_literal}
-import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, type_id_of_value, type_id_value, union_temp, upcast}
+import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, to_lhs, to_rhs, type_id_of_value, type_id_value, union_temp, upcast}
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/semantic/top_level::{LibType}
@@ -71,8 +71,8 @@ import compiler/types/intersect::{TypeIntersect}
 # that reaches it does (fun.iyi target_def_fun), for the self type and argument types the caller gives. A refusal
 # raises (iyi has no rescue); the caller runs each probe in its own task and reads the message. The
 # instantiated def's type is its result, which can differ from the body's type.
-pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module) : String?
-  low = Lowerer.new(m, typer, analysed)
+pub def lower_def_probe(target : Def, self_type : Type?, arg_types : Array(Type), analysed : MainVisitor, typer : LowerTyper, m : Module, probe_lowerer : Lowerer? = nil) : String?
+  low = probe_lowerer || Lowerer.new(m, typer, analysed)
   low.body_visitor = CoreBody.new
   program = analysed.program
   ids = LowerTypeIds.new
@@ -300,14 +300,33 @@ end
 
 def pool_reached?(low : Lowerer) : Bool
   low.analysed.typed_instances.each do |inst|
-    next unless inst.definition.name == "start"
-    st = inst.self_type
-    next unless st
-    if st.is_a?(MetaclassType)
-      return true if st.as(MetaclassType).instance_type.to_s == "IyiWorkers"
+    return true if pool_start?(low, inst.definition, inst.self_type)
+  end
+  false
+end
+
+def pool_start?(low : Lowerer, definition : Def, self_type : Type?) : Bool
+  return false unless definition.name == "start"
+  if st = self_type
+    if st.is_a?(MetaclassType) && st.as(MetaclassType).instance_type.to_s == "IyiWorkers"
+      return true
+    end
+  end
+  if owner = low.analysed.program.def_owner(definition)
+    if owner.is_a?(MetaclassType) && owner.as(MetaclassType).instance_type.to_s == "IyiWorkers"
+      return true
     end
   end
   false
+end
+
+def pool_start_call?(low : Lowerer, call : Call) : Bool
+  return false unless call.name == "start"
+  obj = call.obj
+  return false unless obj
+  t = low.analysed.type_of?(obj.as(ASTNode))
+  return false unless t
+  t.is_a?(MetaclassType) && t.as(MetaclassType).instance_type.to_s == "IyiWorkers"
 end
 
 # The hosted cleanup follows expansions and constant values before folding an interpolation
@@ -478,6 +497,12 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     codegen_path(low, node.as(Path))
     return
   end
+  if node.is_a?(Generic)
+    typ = low.analysed.type_of?(node)
+    raise "BUG: the analysed program has no type for a generic expression (hosted codegen.cr: visit(Generic))" if typ.nil?
+    low.last = type_id_value(low, typ.as(Type))
+    return
+  end
   if node.is_a?(ClassVar)
     codegen_class_var_read(low, node.as(ClassVar))
     return
@@ -575,10 +600,15 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
   if node.is_a?(Call)
     # The hosted cleanup replaces expanded calls before codegen (call.cr:4-7).
     # Declaration macros remain on their Call nodes in the port.
-    if expanded = node.as(Call).expanded
+    call = node.as(Call)
+    if pool_start_call?(low, call)
+      pending_visit_node("loop back-edge preemption checks are not ported (hosted iyi_preempt_on?)")
+      return
+    end
+    if expanded = call.expanded
       codegen_node(low, expanded)
     else
-      codegen_call_node(low, node.as(Call))
+      codegen_call_node(low, call)
     end
     return
   end
@@ -771,8 +801,8 @@ end
 
 # The hosted `declare_var` and the value of the declaration (codegen.cr:1800, codegen_assign): the variable's alloca is
 # made in the alloca block with the type the declaration gives; a value is then assigned to it, and the declaration's
-# value is the value assigned. Without a value the declaration leaves nil. A variable declared twice, and a value of
-# another type than the declaration (the hosted upcast into a union, not ported yet), are refused by name.
+# value is the value assigned. Without a value the declaration leaves nil. A variable declared twice is refused by
+# name. A value of another type goes through assign (hosted codegen_assign after declare_var, codegen.cr:1808-1809).
 pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
   var_node = node.var.as(Var)
   decl = low.analysed.type_of?(var_node)
@@ -795,9 +825,8 @@ pub def codegen_declare_var(low : Lowerer, node : TypeDeclaration) : Nil
   vt = low.analysed.type_of?(value.as(ASTNode))
   raise "BUG: the analysed program has no type for the declared value (hosted codegen.cr: codegen_assign)" if vt.nil?
   if vt.as(Type).full_name != dt.full_name
-    refuse_port("lower: #{var_node.name} is declared #{dt.full_name} and assigned #{vt.as(Type).full_name}: the hosted upcast is not ported yet")
-  end
-  if !dt.is_a?(NilType)
+    assign(low, pointer, dt, vt.as(Type), v.as(Value))
+  elsif !dt.is_a?(NilType)
     store_aligned(low, v.as(Value), pointer)
   end
   low.last = v
@@ -1168,6 +1197,14 @@ pub def jump_target(node : ASTNode, lexical : ASTNode?) : ASTNode?
   end
   if typed
     if lexical && typed.object_id != lexical.object_id
+      # An inlined yield frame sets its return target to the call (call.iyi). The
+      # typer still points the Return at the def. Those are the same jump: ensures
+      # were registered on the call, so the frame target is the one to stop at.
+      # A break whose typed and lexical targets are unrelated nodes still raises
+      # (the jump-mismatch control).
+      if node.is_a?(Return) && typed.is_a?(Def) && lexical.is_a?(Call)
+        return lexical
+      end
       raise "lower: typed jump target disagrees with lexical target (hosted execute_ensures_until)"
     end
     return typed
@@ -1366,6 +1403,7 @@ pub def codegen_return_node(low : Lowerer, node : Return) : Nil
   ret_type = low.current_context.return_type
   raise "BUG: the function has no analysed return type (hosted codegen_return)" if ret_type.nil?
   returned = upcast(low, value.as(Value), exp_t.as(Type), ret_type.as(Type))
+  returned = to_rhs(low, returned, ret_type.as(Type)) if returned.type.pointer?
   low.builder.ret(returned)
 end
 

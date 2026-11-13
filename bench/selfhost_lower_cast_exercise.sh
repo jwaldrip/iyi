@@ -32,10 +32,21 @@ if ! "$IYI" build -o "$WORK/port" "$REPO/bench/selfhost_lower_cast_exercise.iyi"
   exit 1
 fi
 echo "  driver built"
+if "$WORK/port" wrong_union_member > "$WORK/wrong_union.out" 2> "$WORK/wrong_union.err"; then
+  echo "  FAIL: mixed union accepted a non-member"
+  status=1
+elif grep -Fq 'Char to (Bool | Int32): not a member' "$WORK/wrong_union.err"; then
+  echo "  non-member mixed union store refused"
+else
+  echo "  FAIL: non-member store did not reach the membership refusal"
+  status=1
+fi
 
-# Fixtures waiting on another slice, by name (none now: the three cast fixtures are identical).
+# lowcast_proc_result types after s1d-bodies 5c5075083 and must pass.
+# lowcast_struct_union waits on the union-in-generic type-id spelling.
 waiting_on() {
   case "$1" in
+    lowcast_struct_union) echo "Pointer((Robot | User)).class:type_id vs hosted Pointer(Robot | User).class:type_id (S1b29Declarations renderer 063610ce)" ;;
   esac
 }
 
@@ -56,6 +67,11 @@ for fixture in "$REPO"/bench/fixtures/lowcast_*.iyi; do
 
   if ! "$WORK/port" lower "$fixture" "$WORK/$name.oracle.ll" > "$WORK/$name.port.out" 2> "$WORK/$name.port.err"; then
     if [ -n "$(waiting_on "$name")" ]; then
+      if ! grep -Fq 'expected type Proc(Nil), got Proc(Int32)' "$WORK/$name.port.err"; then
+        echo "  $name: stopped refusing by the named typing error: $(awk 'NR==1' "$WORK/$name.port.err")"
+        diverged=$((diverged + 1))
+        continue
+      fi
       echo "  $name: WAITING, $(waiting_on "$name"): $(awk 'NR==1' "$WORK/$name.port.err")"
       waiting=$((waiting + 1))
       continue
@@ -148,6 +164,84 @@ no_return_check() {
   "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_noreturn_union.iyi" "$WORK/lowcast_noreturn_union.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
   awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
 }
+struct_union_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  : > "$WORK/struct_mutant_built"
+  "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_struct_union.iyi" "$WORK/lowcast_struct_union.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
+}
+if [ -n "$(waiting_on lowcast_struct_union)" ]; then
+  if ! grep -Fq 'Pointer((Robot | User)).class:type_id' "$WORK/lowcast_struct_union.port.out"; then
+    echo "  NOT PROVEN: struct union stopped showing the named renderer difference"
+    status=1
+  else
+    echo "  struct union remains the named renderer difference"
+  fi
+else
+  struct_union_check || { echo "  baseline: struct union fixture differs"; status=1; }
+  rm -f "$WORK/struct_mutant_built"
+  prove_mutation "a struct is refused from a mixed union" "$REPO/src/compiler/lower/cast.iyi" \
+    '  if value_type.struct? && passed_by_value?(value_type)' '  if false' -- struct_union_check || status=1
+  if [ ! -f "$WORK/struct_mutant_built" ]; then
+    echo "  NOT PROVEN: struct union mutant failed to build"
+    status=1
+  fi
+fi
+aggregate_behavior_check() {
+  "$IYI" build -o "$WORK/aggregate_mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/aggregate_mut.build.log" 2>&1 || return 1
+  "$WORK/aggregate_mut" emit "$REPO/bench/fixtures/lowcast_struct_union.iyi" "$WORK/lowcast_struct_union.oracle.ll" > "$WORK/aggregate_mut.ll" 2> "$WORK/aggregate_mut.emit.log" || return 1
+  "$WORK/compile_native" "$WORK/aggregate_mut.ll" -o "$WORK/aggregate_mut.native" > "$WORK/aggregate_mut.native.log" 2>&1 || return 1
+  "$WORK/aggregate_mut.native" > "$WORK/aggregate_mut.out" 2>&1
+  local result=$?
+  echo "$result" > "$WORK/aggregate_mut.exit"
+  [ "$result" -eq 7 ]
+}
+aggregate_behavior_check || { echo "  baseline: struct union native result differs"; status=1; }
+rm -f "$WORK/aggregate_mut.exit"
+prove_mutation "a union local receives a zero aggregate" "$REPO/src/compiler/lower/lower.iyi" \
+  '      stored = load_aligned(low, low.typer.llvm_type(vt), v)' '      stored = low.builder.const_zero(low.typer.llvm_type(vt))' -- aggregate_behavior_check || status=1
+if [ ! -f "$WORK/aggregate_mut.exit" ] || [ "$(cat "$WORK/aggregate_mut.exit")" != 200 ]; then
+  echo "  NOT PROVEN: aggregate mutant did not build, link and exit 200"
+  status=1
+fi
+proc_result_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  : > "$WORK/proc_mutant_built"
+  "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_proc_result.iyi" "$WORK/lowcast_proc_result.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
+}
+if [ -n "$(waiting_on lowcast_proc_result)" ]; then
+  if ! grep -Fq 'expected type Proc(Nil), got Proc(Int32)' "$WORK/lowcast_proc_result.port.err"; then
+    echo "  NOT PROVEN: proc result stopped refusing by the named typing error"
+    status=1
+  else
+    echo "  proc result assignment remains the named typing refusal"
+  fi
+else
+  proc_result_check || { echo "  baseline: proc result assignment fixture differs"; status=1; }
+  rm -f "$WORK/proc_mutant_built"
+  prove_mutation "a proc result assignment is refused" "$REPO/src/compiler/lower/cast.iyi" \
+    '  if target.is_a?(ProcInstanceType) && value_type.is_a?(ProcInstanceType)' '  if false' -- proc_result_check || status=1
+  if [ ! -f "$WORK/proc_mutant_built" ]; then
+    echo "  NOT PROVEN: proc result mutant failed to build"
+    status=1
+  fi
+fi
+nil_proc_check() {
+  "$IYI" build -o "$WORK/mut" "$REPO/bench/selfhost_lower_cast_exercise.iyi" > "$WORK/mut.build.log" 2>&1 || return 1
+  : > "$WORK/nil_proc_mutant_built"
+  "$WORK/mut" lower "$REPO/bench/fixtures/lowcast_nil_proc.iyi" "$WORK/lowcast_nil_proc.oracle.ll" > "$WORK/mut.out" 2> "$WORK/mut.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/mut.out"
+}
+nil_proc_check || { echo "  baseline: nilable proc assignment fixture differs"; status=1; }
+rm -f "$WORK/nil_proc_mutant_built"
+prove_mutation "a nil stored into a nilable proc is a real proc" "$REPO/src/compiler/lower/cast.iyi" \
+  '  if target.is_a?(NilableProcType) && value_type.nil_type?' '  if false' -- nil_proc_check || status=1
+if [ ! -f "$WORK/nil_proc_mutant_built" ]; then
+  echo "  NOT PROVEN: nilable proc mutant failed to build"
+  status=1
+fi
+
 no_return_check || { echo "  baseline: no-return union fixture differs"; status=1; }
 prove_mutation "a no-return union assignment stores a value" "$REPO/src/compiler/lower/cast.iyi" \
   '  return if at_terminator?(low) || TypeQueries.no_return?(value_type)' '  return if false' -- no_return_check || status=1

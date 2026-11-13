@@ -21,8 +21,7 @@ module compiler/semantic/type_nodes
 
 import compiler/syntax/ast::{ASTNode, AlignOf, Cast, EnumDef, FunDef, Generic, InstanceAlignOf, InstanceSizeOf, Metaclass, NilableCast, NumberLiteral, PointerOf, ProcNotation, Self, SizeOf, Splat, TypeOf, Union, UninitializedVar, Var}
 import compiler/semantic/type_node_host::{TypeNodeHost}
-import compiler/semantic/inline_macros::{splice_fun_body}
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, SemanticProgram, Type, TypeHook, TypeParameterType}
+import compiler/semantic/top_level::{GenericClassType, GenericModuleType, LibFun, ModuleType, SemanticProgram, Type, TypeHook, TypeParameterType}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/types::{GenericClassInstanceType, GenericModuleInstanceType, NamedArgumentType, TupleInstanceType, TypeQueries, TypeSplat}
 import compiler/types/unification::{TypeUnification}
@@ -343,14 +342,23 @@ pub def visit_metaclass(visitor : TypeNodeHost, node : Metaclass) : Bool
   false
 end
 
-# `self` written as a type (`Pointer(self)`): the scope's type, resolved as the
-# hosted `the_self(node).instance_type` (main_visitor.cr 382-385).
+# `self` written as a type (`Pointer(self)`): the scope's instance type, as the
+# hosted `the_self(node).instance_type` gives it (main_visitor.cr 382-385, 4088-4092).
 pub def visit_self(visitor : TypeNodeHost, node : Self) : Bool
-  resolved = type_node_lookup(visitor).lookup(visitor.current_type, node)
-  if resolved.is_a?(LookupError)
-    return visitor.refuse(node, resolved.as(LookupError).message)
+  the_self : Type = visitor.scope_type || visitor.current_type
+  if the_self.is_a?(SemanticProgram)
+    return visitor.refuse(node, "there's no self in this scope")
   end
-  visitor.set_type(node, resolved.as(Type))
+  inst = TypeQueries.instance_type(the_self)
+  if inst.is_a?(GenericClassType)
+    resolved = type_node_lookup(visitor).lookup(inst.as(ModuleType), node)
+    if resolved.is_a?(LookupError)
+      return visitor.refuse(node, resolved.as(LookupError).message)
+    end
+    visitor.set_type(node, resolved.as(Type))
+    return false
+  end
+  visitor.set_type(node, inst)
   false
 end
 
@@ -517,6 +525,12 @@ pub def visit_type_of(visitor : TypeNodeHost, node : TypeOf) : Bool
   end
   return false unless complete
   merged = visitor.program.type_merge(types)
+  # Inside type arguments typeof denotes the merged type, not its metaclass
+  # (hosted TypeOf#map_type in semantic/bindings.cr).
+  if depth > 0
+    visitor.set_type(node, merged)
+    return false
+  end
   meta = type_node_metaclass(merged)
   if meta.nil?
     return visitor.refuse(node, "#{merged.full_name} doesn't have a metaclass")

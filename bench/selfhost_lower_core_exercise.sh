@@ -330,6 +330,32 @@ else
   echo "FAIL: trait fixture does not match the hosted module"
   status=1
 fi
+indirect_refusal_check() {
+  local driver="$1" kind="$2"
+  if "$driver" emit "$REPO/bench/fixtures/wait_lower_indirect_${kind}.iyi" "$WORK/lower_nil.oracle.ll" > "$WORK/indirect.out" 2>&1; then
+    return 1
+  fi
+  awk -v expected="indirect ${kind} above 128 bytes is not ported" 'index($0, expected) { found = 1 } END { exit !found }' "$WORK/indirect.out"
+}
+indirect_mutant_check() {
+  "$IYI" build -o "$WORK/port-indirect" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/indirect.build.log" 2>&1 || return 1
+  indirect_refusal_check "$WORK/port-indirect" "$1"
+}
+for kind in argument result; do
+  if indirect_refusal_check "$WORK/port" "$kind"; then
+    echo "  indirect $kind above 128 bytes refused"
+    if [ "$kind" = argument ]; then
+      prove_mutation "indirect argument is not refused" "$REPO/src/compiler/lower/fun.iyi" \
+        'if low.typer.passed_indirectly?(arg_type)' 'if false && low.typer.passed_indirectly?(arg_type)' -- indirect_mutant_check argument || status=1
+    else
+      prove_mutation "indirect result is not refused" "$REPO/src/compiler/lower/fun.iyi" \
+        'if low.typer.passed_indirectly?(ret)' 'if false && low.typer.passed_indirectly?(ret)' -- indirect_mutant_check result || status=1
+    fi
+  else
+    echo "  FAIL: indirect $kind was not refused by name"
+    status=1
+  fi
+done
 # The long-string name: a string constant longer than 18 bytes is named by its first 19 bytes and `...` (hosted
 # codegen.cr:3463). The fixture's module differs only in the String type id (NEEDS.md row 16), so the gate
 # compares the name in the port's own module text rather than the whole module.

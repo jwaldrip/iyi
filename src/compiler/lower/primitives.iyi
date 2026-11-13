@@ -36,7 +36,7 @@ module compiler/lower/primitives
 # The lowering of the receiver and the arguments is the hosted prepare_call_args order:
 # the receiver first, then each argument, each requested as a value.
 
-import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
+import compiler/syntax/ast::{ASTNode, BoolLiteral, Call, Def, Generic, MacroLiteral, Primitive, RangeLiteral, SymbolLiteral, Var}
 import compiler/ir/function::{Function, Global, Linkage}
 import compiler/ir/inst::{IntPredicate, Attribute, Inst, Op, CallAux, CallConv, Ordering}
 import compiler/lower/cast::{assign, type_id_value, type_id_of_value, to_lhs, to_rhs, upcast}
@@ -56,6 +56,7 @@ import compiler/lower/typer::{passed_by_value?}
 import compiler/lower/headed::{headed?, headed_candidate?}
 import compiler/lower/layouts::{has_inner_pointers?}
 import compiler/lower/phi::{LowerPhi}
+import compiler/types/indirection::{TypeIndirection}
 
 # An integer operand as the hosted codegen reads it: its width in bytes, its signedness and
 # its IR type. A mixed-signedness operation biases one operand to the other signedness at the
@@ -204,7 +205,7 @@ pub def codegen_primitive_proc_call(low : Lowerer, node : Call, receiver_type : 
   arg_types.each_with_index do |arg_type, index|
     expected = proc_type.arg_types[index]
     arg = upcast(low, values[index + 1], arg_type, expected)
-    args << to_rhs(low, arg, expected)
+    args << (arg.type.pointer? ? to_rhs(low, arg, expected) : arg)
     params << low.typer.llvm_type(expected)
   end
   fun_ptr = low.builder.extract_value(values[0], 0)
@@ -241,6 +242,16 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   receiver = obj.as(ASTNode)
   typ = receiver_type(low, receiver)
   if typ.is_a?(MetaclassType)
+    # Hosted prepare_call_args evaluates the metaclass receiver even though the
+    # tuple indexer uses only its static type.
+    if receiver.is_a?(Generic)
+      type_id_value(low, typ)
+    else
+      wants = low.needs_value
+      low.needs_value = true
+      visit_node(low, receiver)
+      low.needs_value = wants
+    end
     result = low.analysed.type_of?(node)
     raise "BUG: tuple metaclass index has no result type" if result.nil?
     low.last = type_id_value(low, result.as(Type))
@@ -270,6 +281,11 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
   end
   raise "BUG: tuple indexer receiver left no value" if value.nil?
   tuple_ir = low.typer.llvm_type(typ)
+  tuple_pointer = value.as(Value)
+  unless tuple_pointer.type.pointer?
+    tuple_pointer = low.alloca(tuple_ir, "")
+    store_aligned(low, value.as(Value), tuple_pointer)
+  end
   zero = low.builder.const_int(low.module.types.int32, 0_i64)
   first = primitive.tuple_index
   if node.args.size == 1 && node.args[0].is_a?(RangeLiteral)
@@ -281,7 +297,7 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
     while index <= primitive.tuple_last
       field = low.builder.const_int(low.module.types.int32, index.to_i64)
       dst_index = low.builder.const_int(low.module.types.int32, (index - first).to_i64)
-      ptr = low.builder.inbounds_gep(tuple_ir, value.as(Value), [zero, field] of Value)
+      ptr = low.builder.inbounds_gep(tuple_ir, tuple_pointer, [zero, field] of Value)
       destination = low.builder.inbounds_gep(result_ir, result, [zero, dst_index] of Value)
       store_pointer_value(low, destination, to_lhs(low, ptr, elements[index]), elements[index])
       index = index + 1
@@ -290,7 +306,7 @@ pub def lower_tuple_indexer(low : Lowerer, node : Call, target : Def) : Nil
     return
   end
   field = low.builder.const_int(low.module.types.int32, first.to_i64)
-  ptr = low.builder.inbounds_gep(tuple_ir, value.as(Value), [zero, field] of Value)
+  ptr = low.builder.inbounds_gep(tuple_ir, tuple_pointer, [zero, field] of Value)
   low.last = to_lhs(low, ptr, elements[first])
 end
 
@@ -453,6 +469,13 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   values = [] of Value
   pt : Type? = nil
   if name == "pointer_new" || name == "pointer_malloc"
+    if receiver = node.obj
+      if receiver.is_a?(Generic)
+        # Hosted prepare_call_args evaluates a generic metaclass receiver even
+        # when the pointer primitive uses only its statically known type.
+        type_id_value(low, receiver_type(low, receiver))
+      end
+    end
     pt = low.analysed.type_of?(node)
   else
     obj = node.obj
@@ -487,7 +510,7 @@ pub def lower_pointer_primitive(low : Lowerer, node : Call, name : String) : Nil
   end
   elem_kind = primitive_kind(elem)
   if name == "pointer_add"
-    low.last = low.builder.gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)
+    low.last = low.builder.inbounds_gep(low.typer.llvm_embedded_type(elem), values[0], [values[1]] of Value)
     return
   end
   if name == "pointer_get"
@@ -582,7 +605,13 @@ pub def pointer_malloc_value(low : Lowerer, elem : Type, count : Value) : Value
     return low.builder.const_null_pointer
   end
   elem_ir = low.typer.llvm_embedded_type(elem)
-  size = low.builder.mul(sizeof_expr(low, elem_ir), count)
+  bytes = sizeof_expr(low, elem_ir)
+  size = bytes
+  if count.is_a?(Inst) && count.as(Inst).op == Op::ConstInt && count.as(Inst).aux_int == 0_i64
+    size = low.builder.const_int(low.typer.size_t, 0_i64)
+  elsif !(count.is_a?(Inst) && count.as(Inst).op == Op::ConstInt && count.as(Inst).aux_int == 1_i64)
+    size = low.builder.mul(bytes, count)
+  end
   c_malloc = c_malloc_function(low)
   ptr = low.builder.call(c_malloc.fn_type, c_malloc, [size] of Value, "")
   memset_size(low, ptr, size)
@@ -607,6 +636,11 @@ end
 pub def codegen_binary_op(low : Lowerer, op : String, t1 : Type, t2 : Type, p1 : Value, p2 : Value) : Value
   kind = primitive_kind(t1)
   if kind == "int" && primitive_kind(t2) == "int"
+    # Flow typing can describe an integer while the emitted local still carries a
+    # union. Refuse before emitting an instruction with incompatible operands.
+    if p1.type.key != low.typer.llvm_type(t1).key || p2.type.key != low.typer.llvm_type(t2).key
+      pending_visit_node("binary #{op} with operand IR types #{p1.type} and #{p2.type} inconsistent with #{t1.full_name} and #{t2.full_name} (hosted codegen_binary_op)")
+    end
     return codegen_int_binary_op(low, op, t1, t2, p1, p2)
   end
   if t1.full_name != t2.full_name

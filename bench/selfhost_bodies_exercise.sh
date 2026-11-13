@@ -15,7 +15,9 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO" || exit 1
-IYI="$REPO/bin/iyi"
+# The hosted compiler that builds the port's tools: this checkout's, or the one IYI_COMPILER names.
+IYI="${IYI_COMPILER:-$REPO/bin/iyi}"
+export IYI_PATH="$REPO/src"
 CRYSTAL="${CRYSTAL:-crystal}"
 FLOOR_FILE="$REPO/bench/selfhost_bodies.floor"
 RAISE="${BODIES_RAISE:-0}"
@@ -58,7 +60,11 @@ for fixture in "$REPO"/bench/fixtures/sem_bodies_*.iyi; do
   fi
   sort "$WORK/o.txt" > "$WORK/o.sorted"
   nodes=$(wc -l < "$WORK/o.sorted" | tr -d ' ')
-  if "$TYPED" "$fixture" "$REPO/src" > "$WORK/p.txt" 2> "$WORK/p.err"; then
+  port_args=()
+  if [ "$(basename "$fixture")" = "sem_bodies_defer.iyi" ]; then
+    port_args=(--iyi-defer)
+  fi
+  if "$TYPED" "${port_args[@]}" "$fixture" "$REPO/src" > "$WORK/p.txt" 2> "$WORK/p.err"; then
     sort "$WORK/p.txt" > "$WORK/p.sorted"
     matched=$(comm -12 "$WORK/o.sorted" "$WORK/p.sorted" | wc -l | tr -d ' ')
   else
@@ -123,23 +129,94 @@ if [ "${refused_cache_count:-}" != 1 ]; then
 fi
 
 echo
-echo "== 2c. A call in a fun body's macro branch is typed only when the fun body is spliced"
+echo "== 2d. Program defs share instances across callers without shadowing methods"
+owner_fixture="$REPO/bench/fixtures/bodies_program_owner.iyi"
+owner_probe="$WORK/program_owner_probe"
+owner_expected="$WORK/program_owner.expected"
+printf '%s\n' '*owner_probe<Int32>:Int32' '*owner_probe<String>:String' '*OwnerShadow#owner_probe<Int32>:Bool' | sort > "$owner_expected"
+"$IYI" build -o "$owner_probe" "$REPO/bench/selfhost_program_owner_probe.iyi" > "$WORK/owner_build.log" 2>&1 || {
+  cat "$WORK/owner_build.log"
+  echo "  OWNER: failed to build probe"
+  exit 1
+}
+if ! "$owner_probe" "$owner_fixture" "$REPO/src" > "$WORK/owner.unsorted" ||
+   ! sort "$WORK/owner.unsorted" > "$WORK/owner.actual" ||
+   ! diff -u "$owner_expected" "$WORK/owner.actual"; then
+  echo "  OWNER: incorrect instance names or cache sharing"
+  status=1
+fi
+if ! "$ORACLE" "$owner_fixture" > "$WORK/owner.oracle" 2> "$WORK/owner.oracle.err" ||
+   ! "$TYPED" "$owner_fixture" "$REPO/src" > "$WORK/owner.typed" 2> "$WORK/owner.typed.err"; then
+  echo "  OWNER: typing comparison could not run"
+  status=1
+else
+  for line in 28 29 30; do
+    grep "^${line}:.* Call " "$WORK/owner.oracle" | sort > "$WORK/owner.oracle.calls"
+    grep "^${line}:.* Call " "$WORK/owner.typed" | sort > "$WORK/owner.typed.calls"
+    if [ ! -s "$WORK/owner.oracle.calls" ] || ! diff -u "$WORK/owner.oracle.calls" "$WORK/owner.typed.calls"; then
+      echo "  OWNER: call typing differs at line $line"
+      status=1
+    fi
+  done
+fi
+
+echo
+echo "== 2c. A call in a fun body's macro branch is typed after expansion"
 splice_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
 echo "  sem_bodies_fun_splice.iyi typed instances: ${splice_count:-none} (expected 1)"
 if [ "${splice_count:-}" != 1 ]; then
   echo "  FUN SPLICE: expected 1 typed instance, got ${splice_count:-none}"
   status=1
 fi
+proc_scope_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
+echo "  sem_bodies_proc_scope.iyi typed instances: ${proc_scope_count:-none} (expected 6)"
+if [ "${proc_scope_count:-}" != 6 ]; then
+  echo "  PROC SCOPE: expected both helper calls to be typed"
+  status=1
+fi
+
+echo
+echo "== 2d. A nilable property setter is the type of the value it is given"
+setter_fx="$REPO/bench/fixtures/sem_bodies_setter_value.iyi"
+"$ORACLE" "$setter_fx" > "$WORK/setter.hosted" 2> "$WORK/setter.hosted.err" || {
+  echo "  ORACLE setter: $(head -n 1 "$WORK/setter.hosted.err")"
+  status=1
+}
+if ! "$TYPED" "$setter_fx" "$REPO/src" > "$WORK/setter.port" 2> "$WORK/setter.port.err"; then
+  echo "  PORT setter failed"
+  status=1
+elif ! diff -q "$WORK/setter.hosted" "$WORK/setter.port" >/dev/null; then
+  echo "  setter value dump differs from hosted"
+  diff -u "$WORK/setter.hosted" "$WORK/setter.port" | head -n 40
+  status=1
+else
+  echo "  sem_bodies_setter_value.iyi matches hosted node by node"
+fi
 
 echo
 echo "== 4. Mutation proofs: a patch to the port's body typing must drop a fixture below its floor"
 . "$REPO/bench/lib/mutation.sh"
 MUT_TD="$WORK/mut_typed_dump"
+# The mutation runner captures check output and only displays its tail. Keep the
+# compiler's complete diagnostics in the gate log when a mutant cannot build.
+exec 9>&1
+body_build_failed() {
+  cat "$1" >&9
+  if [ "${_PM_ARMED:-0}" -eq 1 ]; then
+    echo "INVALID MUTANT: compiler build failed; this is not a behavioral catch"
+    return 0
+  fi
+  echo "BASELINE FAILURE: compiler build failed"
+  return 1
+}
 # Rebuilds the typed dump from the patched source and checks the lib-call and jump fixtures
 # still reach their floors. Returns non-zero when a fixture falls below its floor.
 bodies_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_unit_scope sem_bodies_unit_scope_inferred sem_bodies_proc_splat sem_bodies_pack_splat sem_bodies_imported_restriction; do
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1; then
+    body_build_failed "$WORK/mut_build.log"
+    return $?
+  fi
+  for name in sem_bodies_jumps sem_bodies_libcall sem_bodies_self_return sem_bodies_instance_cache sem_bodies_generic_ivar sem_bodies_import_scope sem_bodies_import_later sem_bodies_block_context sem_bodies_block_output sem_bodies_global_fun sem_bodies_magic_constant sem_bodies_fun_splice sem_bodies_block_nil_value sem_bodies_trait_def sem_bodies_proc_literal sem_bodies_proc_scope sem_bodies_class_method_constant sem_bodies_flow_truthy sem_bodies_flow_nil sem_bodies_flow_is_a sem_bodies_flow_early_exit sem_bodies_splat_restriction sem_bodies_generic_pointer_restriction sem_bodies_interpolation sem_bodies_union_restriction sem_bodies_pointer_set sem_bodies_nil_return sem_bodies_owner_typeof sem_bodies_enum_member sem_bodies_union_generic sem_bodies_virtual_lookup sem_bodies_receiver_order sem_bodies_unit_scope sem_bodies_unit_scope_inferred sem_bodies_proc_splat sem_bodies_pack_splat sem_bodies_imported_restriction sem_bodies_setter_value; do
     fixture="$REPO/bench/fixtures/$name.iyi"
     rel="bench/fixtures/$name.iyi"
     if [ "$name" = "sem_bodies_pointer_set" ]; then
@@ -152,15 +229,101 @@ bodies_at_floor() {
     floor=$(awk -v r="$rel" '$1 == r { print $2 }' "$FLOOR_FILE" 2>/dev/null)
     [ "$matched" -ge "${floor:-0}" ] || return 1
   done
+  fixture="$REPO/bench/fixtures/sem_bodies_class_var_initializer.iyi"
+  rel="bench/fixtures/sem_bodies_class_var_initializer.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
+  floor=$(awk -v r="$rel" '$1 == r { print $2 }' "$FLOOR_FILE" 2>/dev/null)
+  [ "$matched" -ge "${floor:-0}" ] || return 1
   count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_instance_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${count:-}" = 3 ] || return 1
   fsc=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${fsc:-}" = 1 ] || return 1
+  proc_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/sem_bodies_proc_scope.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
+  [ "${proc_count:-}" = 6 ] || return 1
   refused_count=$("$MUT_TD" --instances "$REPO/bench/fixtures/bodies_refused_cache.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }') || return 1
   [ "${refused_count:-}" = 1 ] || return 1
   return 0
 }
+# A nilable property setter is typed as the assigned value (hosted type_assign
+# binds the Assign to the value, main_visitor.cr 1037-1038). Returns 0 only
+# when that fixture's typed dump is identical to the hosted oracle.
+setter_typed_as_value() {
+  if ! "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/setter_mut_build.log" 2>&1; then
+    body_build_failed "$WORK/setter_mut_build.log"
+    return $?
+  fi
+  fx="$REPO/bench/fixtures/sem_bodies_setter_value.iyi"
+  "$ORACLE" "$fx" > "$WORK/setter_mut.hosted" 2>/dev/null || return 1
+  "$MUT_TD" "$fx" "$REPO/src" > "$WORK/setter_mut.port" 2>/dev/null || return 1
+  diff -q "$WORK/setter_mut.hosted" "$WORK/setter_mut.port" >/dev/null
+}
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
+owner_mutant_at_expected() {
+  if ! "$IYI" build -o "$WORK/owner_mutant" "$REPO/bench/selfhost_program_owner_probe.iyi" > "$WORK/owner_mutant_build.log" 2>&1; then
+    echo "INVALID MUTANT: owner probe failed to build" >&2
+    cat "$WORK/owner_mutant_build.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if ! "$WORK/owner_mutant" "$owner_fixture" "$REPO/src" > "$WORK/owner_mutant.unsorted" 2> "$WORK/owner_mutant_run.log"; then
+    echo "INVALID MUTANT: owner probe failed to run" >&2
+    cat "$WORK/owner_mutant_run.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  sort "$WORK/owner_mutant.unsorted" > "$WORK/owner_mutant.actual" || return 0
+  diff -u "$owner_expected" "$WORK/owner_mutant.actual"
+}
+echo
+echo "== 2e. A recursive call targets the instance still being typed"
+recursion_probe="$WORK/recursion_target_probe"
+"$IYI" build -o "$recursion_probe" "$REPO/bench/selfhost_recursion_target_probe.iyi" > "$WORK/recursion_probe_build.log" 2>&1 || {
+  cat "$WORK/recursion_probe_build.log"
+  echo "  RECURSION: failed to build the target probe"
+  exit 1
+}
+recursion_targets_ok() {
+  "$recursion_probe" "$REPO/bench/fixtures/lowcall_recursion_top.iyi" "$REPO/src" > "$WORK/recursion_top.txt" 2>"$WORK/recursion_top.err" || return 1
+  grep -q '^cycle_a target=.* typed-params Bool$' "$WORK/recursion_top.txt" || return 1
+  "$recursion_probe" "$REPO/bench/fixtures/sem_bodies_recursion_state.iyi" "$REPO/src" > "$WORK/recursion_state.txt" 2>"$WORK/recursion_state.err" || return 1
+  awk '/^lock target=/ { id = $2; sub("target=", "", id); if (!(id in seen)) { seen[id] = 1; kinds++ } n++ } END { exit !(n == 2 && kinds == 1) }' "$WORK/recursion_state.txt"
+}
+if recursion_targets_ok; then
+  echo "  recursive calls share the in-progress typed instance"
+else
+  echo "  RECURSION: a cycle call does not target the in-progress instance"
+  status=1
+fi
+recursion_fresh_clone() {
+  if ! "$IYI" build -o "$WORK/recursion_mutant" "$REPO/bench/selfhost_recursion_target_probe.iyi" > "$WORK/recursion_mutant_build.log" 2>&1; then
+    echo "INVALID MUTANT: recursion probe failed to build" >&2
+    cat "$WORK/recursion_mutant_build.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if ! "$WORK/recursion_mutant" "$REPO/bench/fixtures/lowcall_recursion_top.iyi" "$REPO/src" > "$WORK/recursion_mutant.txt" 2>"$WORK/recursion_mutant.err"; then
+    echo "INVALID MUTANT: recursion probe failed to run" >&2
+    cat "$WORK/recursion_mutant.err" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if grep -q '^cycle_a target=.* untyped-params' "$WORK/recursion_mutant.txt"; then return 1; fi
+  return 0
+}
+prove_mutation "a recursive call targets a fresh clone" "$MAIN_VISITOR" \
+  "remember_def_instance(cache_key, target_def, provisional)" \
+  "nil" -- recursion_fresh_clone || status=1
+prove_mutation_all "program defs use their declared owner" "$MAIN_VISITOR" \
+  "instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
+  "instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1
+prove_mutation "class variable initializer uses its owner's metaclass" "$MAIN_VISITOR" \
+  "      @scope = @current_type.metaclass" \
+  "      @scope = @current_type" -- bodies_at_floor || status=1
+prove_mutation "class variable literal is guessed before body typing" "$REPO/src/compiler/semantic/instance_vars.iyi" \
+  "      assign_class_var(target.as(ClassVar), node.value)" \
+  "      nil" -- bodies_at_floor || status=1
 prove_mutation "lib call result type" "$MAIN_VISITOR" \
   "set_type(node, target.result_type.as(Type))" \
   "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
@@ -188,9 +351,6 @@ prove_mutation "a block body is typed in the scope of the call that owns it" "$M
 prove_mutation "a call to a top-level fun with a body is refused" "$MAIN_VISITOR" \
   "return visit_global_fun_call(node, global_fun) if own.empty?" \
   "return false if own.empty?" -- bodies_at_floor || status=1
-prove_mutation "a fun body is not spliced at its top level" "$MAIN_VISITOR" \
-  "splice_fun_body(node, @program.full_name)" \
-  "nil" -- bodies_at_floor || status=1
 prove_mutation "a trait definition is typed in its own type" "$MAIN_VISITOR" \
   "def visit(node : TraitDef) : Bool" \
   "def visit_trait_def_off(node : TraitDef) : Bool" -- bodies_at_floor || status=1
@@ -218,9 +378,9 @@ prove_mutation "while cond narrows its variable in the loop body" "$MAIN_VISITOR
 prove_mutation "early exit in then branch narrows the rest of the body" "$MAIN_VISITOR" \
   "        elsif then_unreachable" \
   "        elsif false" -- bodies_at_floor || status=1
-prove_mutation "a refused body with declared return is cached" "$MAIN_VISITOR" \
-  "        remember_def_instance(cache_key, target_def, declared_ret)" \
-  "        nil" -- bodies_at_floor || status=1
+prove_mutation_all "a refused body with declared return is cached" "$MAIN_VISITOR" \
+  "remember_def_instance(cache_key, target_def," \
+  "nil # " -- bodies_at_floor || status=1
 prove_mutation "a generic pointer restriction is not bound from the receiver" "$MAIN_VISITOR" \
   "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
   "found = LookupError.new(\"unbound\")" -- bodies_at_floor || status=1
@@ -238,6 +398,58 @@ prove_mutation "pointer_set types the assigned value" "$MAIN_VISITOR" \
 prove_mutation "a Nil return annotation discards the body value" "$MAIN_VISITOR" \
   "unless declared_ret.nil_type? || bt.subtype_of?(declared_ret)" \
   "unless bt.subtype_of?(declared_ret)" -- bodies_at_floor || status=1
+
+prove_mutation "metaclass owner binds its instance parameters" "$MAIN_VISITOR" \
+  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)" \
+  "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)" -- bodies_at_floor || status=1
+prove_mutation "typeof inside type arguments yields the instance type" "$REPO/src/compiler/semantic/type_nodes.iyi" \
+  "  if depth > 0" \
+  "  if false" -- bodies_at_floor || status=1
+prove_mutation "enum members have the enum type" "$MAIN_VISITOR" \
+  "        set_type(node, enum_type)" \
+  "        set_type(node, @program.int32_type)" -- bodies_at_floor || status=1
+prove_mutation "a generic union member retains its arguments" "$MAIN_VISITOR" \
+  "    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
+  "    found = @program.lookup_type_node?(restriction, @current_type) || LookupError.new(\"not found\")" -- bodies_at_floor || status=1
+prove_mutation "written class types are virtualized" "$MAIN_VISITOR" \
+  "      return TypeQueries.virtual_type(quiet)" \
+  "      return quiet" -- bodies_at_floor || status=1
+prove_mutation "a call types its receiver before its arguments" "$MAIN_VISITOR" \
+  "    rec_type : Type
+    if obj = node.obj
+      obj.accept(self)
+      if ot = child_type(obj)
+        rec_type = ot
+      else
+        @needs_type_filters = saved_call_ntf
+        @type_filters = nil
+        return false
+      end
+    else
+      rec_type = @scope || @current_type
+    end
+    node.args.each do |arg|
+      arg.accept(self)
+    end" \
+  "    node.args.each do |arg|
+      arg.accept(self)
+    end
+    rec_type : Type
+    if obj = node.obj
+      obj.accept(self)
+      if ot = child_type(obj)
+        rec_type = ot
+      else
+        @needs_type_filters = saved_call_ntf
+        @type_filters = nil
+        return false
+      end
+    else
+      rec_type = @scope || @current_type
+    end" -- bodies_at_floor || status=1
+prove_mutation "a proc literal inherits its enclosing scope" "$MAIN_VISITOR" \
+  "    inner.scope = @scope" \
+  "    inner.scope = @program" -- bodies_at_floor || status=1
 prove_mutation "unit definitions resolve in their lexical scope" "$MAIN_VISITOR" \
   "      if mod.iyi_unit" \
   "      if false" -- bodies_at_floor || status=1
@@ -247,6 +459,11 @@ prove_mutation "splat arguments bind a tuple" "$MAIN_VISITOR" \
 prove_mutation "imported restrictions use the defining unit" "$MAIN_VISITOR" \
   "        @current_type = owner if owner.iyi_unit" \
   "        nil" -- bodies_at_floor || status=1
+prove_mutation "Assign typed as its target" "$MAIN_VISITOR" \
+  "        set_type(node, val_type)
+      elsif target_type.is_a?(GenericClassInstanceType)" \
+  "        set_type(node, ivar.type)
+      elsif target_type.is_a?(GenericClassInstanceType)" -- setter_typed_as_value || status=1
 
 # Assignment conditions carry the value's filters onto the assigned local.
 flow_assign_at_floor() {
@@ -284,6 +501,53 @@ prove_mutation "ensure assignments reach following code" "$MAIN_VISITOR" \
   "          @vars[name] = type" \
   "          nil" -- ensure_at_floor || status=1
 
+# The oracle and port both normalize this fixture with the iyi prelude mode.
+defer_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  local fixture="$REPO/bench/fixtures/sem_bodies_defer.iyi"
+  "$ORACLE" "$fixture" > "$WORK/defer_o.txt" 2>/dev/null || return 1
+  "$MUT_TD" --iyi-defer "$fixture" "$REPO/src" > "$WORK/defer_p.txt" 2>/dev/null || return 1
+  sort "$WORK/defer_o.txt" > "$WORK/defer_o.sorted"
+  sort "$WORK/defer_p.txt" > "$WORK/defer_p.sorted"
+  local matched floor
+  matched=$(comm -12 "$WORK/defer_o.sorted" "$WORK/defer_p.sorted" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_defer.iyi" { print $2 }' "$FLOOR_FILE")
+  [ "$matched" -ge "${floor:-0}" ]
+}
+prove_mutation "defer cleanup is typed" "$MAIN_VISITOR" \
+  "      cleanup.accept(self)" \
+  "      nil" -- defer_at_floor || status=1
+
+ensure_refusal_check() {
+  "$IYI" build -o "$WORK/ensure_refusal" "$REPO/bench/selfhost_ensure_refusal.iyi" > "$WORK/ensure_refusal_build.log" 2>&1 || return 1
+  "$WORK/ensure_refusal"
+}
+echo "== 4c. Written ensure refusal and nested-loop exits"
+ensure_refusal_check || status=1
+prove_mutation "written ensure is refused under the prelude" "$MAIN_VISITOR" \
+  "if @program.iyi_prelude? && !node.iyi_defer?" \
+  "if false" -- ensure_refusal_check || status=1
+
+# The return targets its instantiated def (hosted main_visitor.cr 2096).
+ensure_targets_check() {
+  "$IYI" build -o "$WORK/ensure_targets" "$REPO/bench/selfhost_ensure_targets.iyi" > "$WORK/ensure_targets_build.log" 2>&1 || return 1
+  "$WORK/ensure_targets"
+}
+echo "== 4d. Return target identity"
+ensure_targets_check || status=1
+prove_mutation "return identifies its typed def" "$MAIN_VISITOR" \
+  "    node.target = @current_def" \
+  "    node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "break identifies its block call" "$MAIN_VISITOR" \
+  "      node.target = @jump_block_calls[block]?" \
+  "      node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "next identifies its block" "$MAIN_VISITOR" \
+  "      node.target = block" \
+  "      node.target = nil" -- ensure_targets_check || status=1
+prove_mutation "captured next identifies its proc def" "$MAIN_VISITOR" \
+  "    inner.current_def = def_node if def_node.captured_block?" \
+  "    nil" -- ensure_targets_check || status=1
+
 echo
 echo "== 4b. A name no module defines is never typed in another module's def body (port only)"
 leak_typed=$("$TYPED" "$REPO/bench/fixtures/bodies_scope_leak_b.iyi" "$REPO/src" 2>/dev/null | awk '$1 ~ /^5:/' | wc -l | tr -d ' ')
@@ -298,7 +562,7 @@ echo
 echo "== 4c. A macro site in a def body sees the receiver's type parameters and the def's free variables"
 # Rebuilds the typed dump from the patched source and checks the macro-bindings fixture alone.
 macro_bindings_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_macro_bindings.iyi"
   rel="bench/fixtures/sem_bodies_macro_bindings.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
@@ -314,8 +578,66 @@ prove_mutation "a macro site in a def body does not see the receiver's type para
 prove_mutation "a macro site in a def body does not see the def's free variables" "$MAIN_VISITOR" \
   "        @def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- macro_bindings_at_floor || status=1
-free_types_at_floor() {
+echo
+echo "== 4d. A macro site in an enum method sees its constants"
+macro_enum_facts_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_enum_facts.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  [ "$matched" -ge 6 ]
+}
+prove_mutation_all "enum macro facts are not passed to the body splice" "$MAIN_VISITOR" \
+  "def_inline_bindings, MacroBindings.facts(@scope))" \
+  "def_inline_bindings, nil)" -- macro_enum_facts_at_floor || status=1
+macro_ivars_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_ivars.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  [ "$matched" -ge 10 ]
+}
+prove_mutation "instance variable facts are not passed to the body splice" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
+  "facts.instance_vars_known = true" \
+  "facts.instance_vars_known = false" -- macro_ivars_at_floor || status=1
+macro_annotations_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_annotations.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  [ "$matched" -ge 12 ]
+}
+prove_mutation "enum annotations are not supplied to macro sites" "$REPO/src/compiler/semantic/macro_bindings.iyi" \
+  "facts.annotations_known = true" \
+  "facts.annotations_known = false" -- macro_annotations_at_floor || status=1
+macro_value_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_macro_value.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/eo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/ep.txt" || return 1
+  matched=$(comm -12 "$WORK/eo.txt" "$WORK/ep.txt" | wc -l | tr -d ' ')
+  [ "$matched" -ge 9 ]
+}
+prove_mutation "a value-position macro expansion is not typed" "$MAIN_VISITOR" \
+  "    expanded.accept(self)
+    if et = child_type(expanded)" \
+  "    nil
+    if et = child_type(expanded)" -- macro_value_at_floor || status=1
+macro_uninitialized_at_floor() {
+  "$IYI" build -o "$WORK/macro_uninitialized" "$REPO/bench/selfhost_macro_uninitialized_exercise.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$WORK/macro_uninitialized" "$REPO/bench/fixtures/sem_bodies_macro_uninitialized.iyi"
+}
+macro_uninitialized_at_floor || status=1
+prove_mutation "uninitialized locals are unavailable to later macro sites" "$REPO/src/compiler/semantic/inline_macros.iyi" \
+  "  def visit(node : UninitializedVar) : Bool
+    add_name(node.var)" \
+  "  def visit(node : UninitializedVar) : Bool
+    nil" -- macro_uninitialized_at_floor || status=1
+free_types_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_free_types.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -327,7 +649,7 @@ prove_mutation "a callee's free types are unavailable to body and return lookup"
   "found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)" \
   "found = LookupError.new(\"unbound\")" -- free_types_at_floor || status=1
 block_free_output_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_block_free_output.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -339,7 +661,7 @@ prove_mutation "block output binds its callee's free variable" "$MAIN_VISITOR" \
   "                        @def_free_types[cd] = bound" \
   "                        nil" -- block_free_output_at_floor || status=1
 captured_free_output_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_capture_free_output.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -350,20 +672,30 @@ captured_free_output_at_floor() {
 prove_mutation "captured block output binds its callee's free variable" "$MAIN_VISITOR" \
   "                        @def_free_types[target_def] = bound unless bound.empty?" \
   "                        nil" -- captured_free_output_at_floor || status=1
-imported_generic_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
-  fixture="$REPO/bench/fixtures/sem_bodies_imported_generic.iyi"
+generic_rebuild_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
+  touch "$WORK/imported_generic_mutant_built"
+  fixture="$REPO/bench/fixtures/sem_bodies_owner_typeof.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
   matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
-  floor=$(awk '$1 == "bench/fixtures/sem_bodies_imported_generic.iyi" { print $2 }' "$FLOOR_FILE")
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_owner_typeof.iyi" { print $2 }' "$FLOOR_FILE")
+  printf '%s of floor %s\n' "$matched" "$floor" > "$WORK/imported_generic_mutant_count"
   [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
 }
-prove_mutation "imported generic uses its typed lexical base" "$REPO/src/compiler/semantic/type_nodes.iyi" \
-  "  if typed_base = visitor.child_type(node.name)" \
-  "  if typed_base = visitor.child_type(node)" -- imported_generic_at_floor || status=1
+rm -f "$WORK/imported_generic_mutant_built"
+prove_mutation "a generic with typed arguments is rebuilt" "$REPO/src/compiler/semantic/type_nodes.iyi" \
+  "    rebuilt = generic_of_typed_args(visitor, node)" \
+  "    rebuilt = nil" -- generic_rebuild_at_floor || status=1
+if [ "${MUTATION_SKIP:-0}" != 1 ] && [ ! -f "$WORK/imported_generic_mutant_built" ]; then
+  echo "  FAIL: generic rebuild mutation did not build"
+  status=1
+fi
+if [ -f "$WORK/imported_generic_mutant_count" ]; then
+  echo "  generic rebuild mutant matched $(<"$WORK/imported_generic_mutant_count")"
+fi
 writer_type_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_block_writer_type.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -375,7 +707,7 @@ prove_mutation "block body uses the writer's current type" "$MAIN_VISITOR" \
   "          @current_type = writer_type" \
   "          nil" -- writer_type_at_floor || status=1
 captured_input_at_floor() {
-  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
   fixture="$REPO/bench/fixtures/sem_bodies_capture_none.iyi"
   "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
   "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
@@ -386,6 +718,25 @@ captured_input_at_floor() {
 prove_mutation "captured block parameters use restriction inputs" "$MAIN_VISITOR" \
   "                    @vars[arg.name] = input_types[index]" \
   "                    @vars[arg.name] = @program.nil_type" -- captured_input_at_floor || status=1
+atomic_free_at_floor() {
+  "$IYI" build -o "$WORK/atomic_tool" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/mut_build.log" 2>&1 || { body_build_failed "$WORK/mut_build.log"; return $?; }
+  rm -f "$WORK/atomic.refusals"
+  "$WORK/atomic_tool" "$REPO/bench/fixtures/sem_bodies_match_atomics.iyi" \
+    -o "$WORK/atomic" --pipeline typed --probe-phase --keep-going > "$WORK/atomic.log" 2>&1 || true
+  [ -f "$WORK/atomic.refusals" ] || return 1
+  awk -F '\t' '
+    $1 == "body" && $2 ~ /^MatchAtomic\((UInt64|Int64)\)#(get|set|add|compare_and_set)$/ { bad = 1 }
+    $1 == "reached" && $2 ~ /^MatchAtomic\((UInt64|Int64)\)#(get|set|add|compare_and_set)$/ { seen[$2] = 1 }
+    END { for (name in seen) count++; exit bad || count != 8 }
+  ' "$WORK/atomic.refusals"
+}
+if ! atomic_free_at_floor; then
+  echo "  ATOMIC: one of the instantiated atomic bodies was refused or not reached"
+  status=1
+fi
+prove_mutation "a resolved pointer restriction binds its free variable" "$MAIN_VISITOR" \
+  "    if count_matches.any? { |d| !d.free_vars.nil? }" \
+  "    if false" -- atomic_free_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"

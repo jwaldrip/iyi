@@ -92,11 +92,11 @@ src/compiler/lower/type_id.iyi 0
 src/compiler/lower/typer.iyi 0
 src/compiler/lower/unions.iyi 4
 src/compiler/macros/answers.iyi 9
-src/compiler/macros/ast.iyi 21
+src/compiler/macros/ast.iyi 25
 src/compiler/macros/engine.iyi 0
 src/compiler/macros/interpreter.iyi 11
 src/compiler/macros/macro_parser.iyi 23
-src/compiler/macros/methods.iyi 21
+src/compiler/macros/methods.iyi 23
 src/compiler/macros/site_scan.iyi 44
 src/compiler/macros/target_flags.iyi 8
 src/compiler/native/aarch64/abi.iyi 0

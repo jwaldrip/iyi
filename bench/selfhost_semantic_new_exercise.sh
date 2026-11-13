@@ -21,6 +21,7 @@ CRYSTAL="$REPO/bin/crystal"
 NEW_FILE="$REPO/src/compiler/semantic/new.iyi"
 TOP_LEVEL_FILE="$REPO/src/compiler/semantic/top_level.iyi"
 MAIN_VISITOR_FILE="$REPO/src/compiler/semantic/main_visitor.iyi"
+RESTRICTIONS_FILE="$REPO/src/compiler/semantic/restrictions.iyi"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -108,6 +109,18 @@ prove_mutation "explicit initialize is left public" "$NEW_FILE" \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
+# The binding moved out of MainVisitor#restriction_type into ArgRestriction.lookup_bound, which
+# restriction_type now calls: the mutation follows the code that answers the question.
+prove_mutation "a generic receiver does not bind its type parameters in a restriction" "$RESTRICTIONS_FILE" \
+  "    if owner.is_a?(GenericInstanceType)" \
+  "    if false" \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+prove_mutation "a generic class inherits its default new instead of owning one" "$NEW_FILE" \
+  '      define_default_generic_new(program, sub.as(GenericClassType))' \
+  '      nil' \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic receiver does not bind its type parameters in a lookup" "$MAIN_VISITOR_FILE" \
   "if bound = inst.type_vars[path.names.first]?" \
   "if bound = inst.type_vars[\"no-such-param\"]?" \
@@ -117,6 +130,12 @@ MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 prove_mutation "a generic receiver does not bind its type parameters in a restriction" "$MAIN_VISITOR_FILE" \
   "found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)" \
   "found = LookupError.new(\"unbound\")" \
+  -- check_new_diverge || status=1
+MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
+
+prove_mutation "a generic child copies initializers beyond the first ancestor" "$NEW_FILE" \
+  '  inits = first_initializer_defs(type)' \
+  '  inits = MethodLookup.all_defs(type, "initialize", [] of Def)' \
   -- check_new_diverge || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 

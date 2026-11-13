@@ -7,7 +7,7 @@ import compiler/syntax/visitor::{Visitor}
 import compiler/syntax/transformer::{Transformer}
 import compiler/macros/engine::{MacroEngine}
 import compiler/macros/interpreter::{MacroFreeBinding}
-import compiler/semantic/inline_macros::{splice_body_node, splice_fun_body, splice_inline_sites}
+import compiler/semantic/inline_macros::{InlineMacroLedger, expand_inline_macro, splice_body_node, splice_inline_sites}
 import compiler/semantic/macro_bindings::{MacroBindings}
 import compiler/semantic/top_level::{AliasType, ClassType, Const, EnumType, GenericClassType, GenericModuleType, GenericTraitType, MetaTypeVar, MetaclassType, ModuleType, NamedType, NonGenericClassType, NonGenericModuleType, SemanticProgram, TopLevelVisitor, TraitType, Type, UnionType, UnresolvedType}
 import compiler/semantic/top_level::{NoReturnType}
@@ -21,6 +21,8 @@ import compiler/semantic/type_nodes::{visit_generic, visit_union, visit_proc_not
 import compiler/semantic/type_nodes::{tuple_type_of, named_tuple_type_of, type_node_system}
 import compiler/types/types::{NamedArgumentType, GenericInstanceType, GenericClassInstanceType, PointerInstanceType, ProcInstanceType, TypeQueries}
 import compiler/types/filters::{TypeFilter, TypeFilterSpec}
+import compiler/types/intersect::{TypeIntersect}
+import compiler/types/restrictions::{TypeRestrictions}
 import compiler/types/lookup::{LookupError}
 import compiler/semantic/restrictions::{ArgRestriction, FreeBindings}
 import compiler/semantic/match::{CallSignature}
@@ -241,6 +243,10 @@ pub class MainVisitor < TypeNodeHost
   # The break values of each block's call, and the def and return list each block is written in.
   property block_breaks : NodeMap(Array(Type?)) = NodeMap(Array(Type?)).new
   property block_owners : NodeMap(BlockOwner) = NodeMap(BlockOwner).new
+  # Jump boundaries are AST identities, not the value-collection stacks.
+  property jump_block_calls : NodeMap(Call) = NodeMap(Call).new
+  property jump_block : Block? = nil
+  property jump_whiles : Array(While) = [] of While
   # The record of each call on a lib (see visit_lib_call): the fun, the result type and the
   # arguments the lowering passes.
   property lib_call_targets : NodeMap(LibCallTarget) = NodeMap(LibCallTarget).new
@@ -255,6 +261,13 @@ pub class MainVisitor < TypeNodeHost
   # Assignment types visible from each enclosing handler's ensure.
   property handler_vars : Array(Hash(String, Type)) = [] of Hash(String, Type)
   property handler_writes : Array(Set(String)) = [] of Set(String)
+  property handler_inside_ensure : Bool = false
+  property handler_inside_defer : Bool = false
+  property handler_direct_exit : Bool = false
+
+  def handler_defer_exit(node : ASTNode, keyword : String) : Bool
+    refuse(node, "`#{keyword}` can't leave a `defer`\n\nA `defer` runs while its scope is already being left, by a return, by `!`, or by a panic, so its cleanup has no answer of its own to give and nowhere to jump to. Let it run to its end, and answer from the scope. See SPEC.md III.1.4.")
+  end
 
   def handler_assign(name : String, type : Type) : Nil
     @handler_writes.each { |writes| writes.add(name) }
@@ -285,6 +298,7 @@ pub class MainVisitor < TypeNodeHost
   # The analysed signature of each fun, keyed by its FunDef node: argument types
   # in declared order and the declared return type. The lowering reads them.
   property fun_arg_types_by_node : NodeMap(Array(Type)) = NodeMap(Array(Type)).new
+  property matched_call_args : NodeMap(Array(Type)) = NodeMap(Array(Type)).new
   property fun_return_types_by_node : NodeMap(Type) = NodeMap(Type).new
 
   def record_fun_signature(node : FunDef, arg_types : Array(Type), return_type : Type?) : Nil
@@ -477,8 +491,8 @@ pub class MainVisitor < TypeNodeHost
         return found.as(Type) unless found.is_a?(LookupError)
       end
     end
-    if receiver_instance(owner)
-      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, owner)
+    if instance = receiver_instance(owner)
+      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, node, instance)
       return found.as(Type) unless found.is_a?(LookupError)
     end
     if node.is_a?(Self)
@@ -487,9 +501,9 @@ pub class MainVisitor < TypeNodeHost
       end
     end
     if quiet = @program.lookup_type_node?(node, @current_type)
-      return quiet
+      return TypeQueries.virtual_type(quiet)
     end
-    @program.lookup_type_node(node, @current_type)
+    TypeQueries.virtual_type(@program.lookup_type_node(node, @current_type))
   end
 
   # iyi: a class variable that is replaced keeps the @[ThreadLocal] flag of the one it replaces
@@ -599,27 +613,73 @@ pub class MainVisitor < TypeNodeHost
     false
   end
 
-  # iyi: macro control inside a body. The hosted pass hands a MacroIf, MacroFor
-  # or MacroExpression to its macro engine (semantic_visitor.cr 1943-1956) and
-  # does not walk it; MacroLiteral text exists only inside those, and the hosted
-  # pass never reaches it. Expansion waits for the macro engine (macros slice).
+  # Hosted semantic_visitor.cr:1943-1961 and 2202-2226 expand a site wherever
+  # it is visited, retain the expansion and type the site from that tree.
   def visit(node : MacroIf) : Bool
-    untyped(node, "macro control expansion (macros engine)")
+    expanded = @expansions[node]?
+    if expanded.nil?
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      if expanded.nil?
+        return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
+        expanded = Nop.new
+      end
+      @expansions[node] = expanded
+    end
+    expanded.accept(self)
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
     false
   end
 
   def visit(node : MacroFor) : Bool
-    untyped(node, "macro control expansion (macros engine)")
+    expanded = @expansions[node]?
+    if expanded.nil?
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      if expanded.nil?
+        return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
+        expanded = Nop.new
+      end
+      @expansions[node] = expanded
+    end
+    expanded.accept(self)
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
     false
   end
 
   def visit(node : MacroExpression) : Bool
-    untyped(node, "macro control expansion (macros engine)")
+    expanded = @expansions[node]?
+    if expanded.nil?
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      if expanded.nil?
+        return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
+        expanded = Nop.new
+      end
+      @expansions[node] = expanded
+    end
+    expanded.accept(self)
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
     false
   end
 
   def visit(node : MacroVerbatim) : Bool
-    untyped(node, "macro control expansion (macros engine)")
+    expanded = @expansions[node]?
+    if expanded.nil?
+      expanded = expand_inline_macro(node, def_inline_scope_name, def_inline_file, false, @vars.keys, def_inline_bindings, MacroBindings.facts(@scope))
+      if expanded.nil?
+        return untyped(node, "macro control expansion (macros engine)") unless InlineMacroLedger.sites.last.reason.nil?
+        expanded = Nop.new
+      end
+      @expansions[node] = expanded
+    end
+    expanded.accept(self)
+    if et = child_type(expanded)
+      set_type(node, et)
+    end
     false
   end
 
@@ -751,10 +811,19 @@ pub class MainVisitor < TypeNodeHost
   # first (the hosted pass binds it): a `break` to the call whose block is being typed, a `next`
   # to the block (see visit(Yield) and call_result).
   def visit(node : Break) : Bool
+    if @handler_direct_exit
+      return handler_defer_exit(node, "break") if @handler_inside_defer
+      return refuse(node, "can't use break inside ensure")
+    end
     value_t : Type? = @program.nil_type
     if e = node.exp
       e.accept(self)
       value_t = child_type(e)
+    end
+    if target = @jump_whiles.last?
+      node.target = target
+    elsif block = @jump_block
+      node.target = @jump_block_calls[block]?
     end
     if bts = @break_types
       bts << value_t
@@ -767,10 +836,21 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Next) : Bool
+    if @handler_direct_exit
+      return handler_defer_exit(node, "next") if @handler_inside_defer
+      return refuse(node, "can't use next inside ensure")
+    end
     value_t : Type? = @program.nil_type
     if e = node.exp
       e.accept(self)
       value_t = child_type(e)
+    end
+    if target = @jump_whiles.last?
+      node.target = target
+    elsif block = @jump_block
+      node.target = block
+    elsif current = @current_def
+      node.target = current if current.captured_block?
     end
     if nts = @next_types
       nts << value_t
@@ -786,6 +866,10 @@ pub class MainVisitor < TypeNodeHost
   # recorded untyped with its name.
   def visit(node : Primitive) : Bool
     if cd = @current_def
+      if primitive_type = @program.primitive_return_type(cd)
+        set_type(node, primitive_type)
+        return false
+      end
       if rt = cd.return_type
         set_type(node, lookup_under(rt, @scope))
         return false
@@ -1030,6 +1114,18 @@ pub class MainVisitor < TypeNodeHost
     refuse(node, "undefined class variable '#{node.name}' for #{target_type.full_name}")
   end
 
+  # Class-body initializers run with self set to the owner's metaclass.
+  # Assignments inside methods retain the method's existing scope.
+  def type_class_var_initializer(value : ASTNode) : Nil
+    old_scope = @scope
+    if old_scope.nil? && @current_def.nil? && !@current_type.is_a?(SemanticProgram)
+      @scope = @current_type.metaclass
+    end
+    value.accept(self)
+    @scope = old_scope
+    nil
+  end
+
   def visit(node : Assign) : Bool
     # iyi: a constant whose value is one macro node is typed where a read of it types the value (visit(Path) expands
     # the site, see splice_const_value). The declaration is not walked as an expression: the macro refusal would
@@ -1037,7 +1133,11 @@ pub class MainVisitor < TypeNodeHost
     if node.target.is_a?(Path) && (node.value.is_a?(MacroIf) || node.value.is_a?(MacroFor) || node.value.is_a?(MacroExpression))
       return false
     end
-    node.value.accept(self)
+    if node.target.is_a?(ClassVar)
+      type_class_var_initializer(node.value)
+    else
+      node.value.accept(self)
+    end
     value_type_filters = @type_filters
     @type_filters = nil
     vt = child_type(node.value)
@@ -1125,7 +1225,7 @@ pub class MainVisitor < TypeNodeHost
       if target_type.is_a?(ModuleType)
         mod_type = target_type.as(ModuleType)
         if cvar = mod_type.lookup_class_var?(cvar_node.name)
-          unless val_type.subtype_of?(cvar.type)
+          unless val_type.subtype_of?(cvar.type) || (cvar.type.is_a?(UnionType) && TypeRestrictions.matches_restriction?(@program, val_type, cvar.type))
             return refuse(node, "type mismatch for class variable '#{cvar_node.name}': expected #{cvar.type.full_name}, got #{val_type.full_name}")
           end
           set_type(cvar_node, cvar.type)
@@ -1149,17 +1249,28 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : TypeDeclaration) : Bool
+    # Declarations must resolve generic arguments even before any expression
+    # has caused the lazy type system to be installed.
+    type_node_system(@program)
     decl_found = lookup_declared?(node.declared_type, @scope)
     if decl_found.nil?
       return refuse(node, "undefined constant #{declared_base_name(node.declared_type)}")
     end
     decl_type = decl_found.as(Type)
     if val = node.value
-      val.accept(self)
+      if node.var.is_a?(ClassVar)
+        type_class_var_initializer(val)
+      else
+        val.accept(self)
+      end
       vt = child_type(val)
       return false if vt.nil?
       val_type = vt.as(Type)
-      unless val_type.subtype_of?(decl_type)
+      proc_compatible = val_type.is_a?(ProcInstanceType) && decl_type.is_a?(ProcInstanceType) &&
+                        TypeIntersect.compatible_proc?(val_type.as(ProcInstanceType), decl_type.as(ProcInstanceType))
+      class_var_union = node.var.is_a?(ClassVar) && decl_type.is_a?(UnionType) &&
+                        TypeRestrictions.matches_restriction?(@program, val_type, decl_type)
+      unless val_type.subtype_of?(decl_type) || proc_compatible || class_var_union
         if node.var.is_a?(InstanceVar)
           target_scope = @scope || @current_type
           target_type = if target_scope.is_a?(MetaclassType)
@@ -1208,7 +1319,7 @@ pub class MainVisitor < TypeNodeHost
           set_type(cvar_node, decl_type)
         end
       end
-      set_type(node, decl_type)
+      set_type(node, val_type)
     else
       if node.var.is_a?(Var)
         v = node.var.as(Var)
@@ -1286,7 +1397,10 @@ pub class MainVisitor < TypeNodeHost
     if t.const?
       c = t.as(Const)
       c.used = true
-      if c_type = type_of?(c.value)
+      if enum_type = c.enum_value_type
+        set_type(c.value, enum_type)
+        set_type(node, enum_type)
+      elsif c_type = type_of?(c.value)
         set_type(node, c_type)
       else
         splice_const_value(c)
@@ -1363,14 +1477,14 @@ pub class MainVisitor < TypeNodeHost
   def splice_def_inline_sites(node : Expressions) : Nil
     return nil if @current_def.nil?
     return nil unless node.expressions.any? { |exp| inline_site?(exp) }
-    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings)
+    node.expressions = splice_inline_sites(node.expressions, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope))
     nil
   end
 
   def splice_def_body(node : ASTNode) : ASTNode
     return node if @current_def.nil?
     return node unless inline_site?(node)
-    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings)
+    splice_body_node(node, def_inline_scope_name, def_inline_file, false, def_inline_locals, def_inline_bindings, MacroBindings.facts(@scope))
   end
 
   # An inline macro site that is the whole value of a constant (`CHANNEL_WAIT = {% if ... %}512{% else %}2048{% end %}`)
@@ -1461,6 +1575,13 @@ pub class MainVisitor < TypeNodeHost
     if node.rescues || node.else
       return refuse(node, "iyi has no exceptions to rescue: an error is a value the caller handles (SPEC.md III.1), and a panic is caught at a task boundary (III.1.4), never here - this `rescue` would not run. Return the error, or read the task's `value`")
     end
+    if @program.iyi_prelude? && !node.iyi_defer?
+      if loc = node.location
+        if loc.filename.ends_with?(".iyi") && node.ensure
+          return refuse(node, "iyi has no `ensure`: a panic unwinds by registry and skips it (SPEC.md III.1.4). Write `defer`, which runs on return, on `!` and on a panic")
+        end
+      end
+    end
 
     before_body = @vars.dup
     handler_vars = @vars.dup
@@ -1490,7 +1611,16 @@ pub class MainVisitor < TypeNodeHost
       writes = Set(String).new
       @handler_writes << writes
       @unreachable = false
+      old_handler_inside_ensure = @handler_inside_ensure
+      old_handler_inside_defer = @handler_inside_defer
+      old_handler_direct_exit = @handler_direct_exit
+      @handler_inside_ensure = true
+      @handler_inside_defer = @handler_inside_defer || node.iyi_defer?
+      @handler_direct_exit = true
       cleanup.accept(self)
+      @handler_inside_ensure = old_handler_inside_ensure
+      @handler_inside_defer = old_handler_inside_defer
+      @handler_direct_exit = old_handler_direct_exit
       cleanup_unreachable = @unreachable
       @handler_writes.pop
       after_cleanup = @vars
@@ -1753,7 +1883,12 @@ pub class MainVisitor < TypeNodeHost
       @type_filters = nil
       @unreachable = false
       @while_break_vars.push([] of Hash(String, Type))
+      @jump_whiles << node
+      old_handler_direct_exit = @handler_direct_exit
+      @handler_direct_exit = false
       node.body.accept(self)
+      @jump_whiles.pop
+      @handler_direct_exit = old_handler_direct_exit
       body_vars = @vars
       break_vars_list = @while_break_vars.pop
 
@@ -1814,6 +1949,10 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Return) : Bool
+    if @handler_inside_defer || (@current_def && @current_def.as(Def).iyi_defer?)
+      return handler_defer_exit(node, node.from_propagate ? "!" : "return")
+    end
+    return refuse(node, "can't return from ensure") if @handler_inside_ensure
     value_t : Type? = @program.nil_type
     if exp = node.exp
       exp.accept(self)
@@ -1836,6 +1975,7 @@ pub class MainVisitor < TypeNodeHost
         end
       end
     end
+    node.target = @current_def
     if rts = @return_types
       rts << value_t
     end
@@ -1976,8 +2116,17 @@ pub class MainVisitor < TypeNodeHost
       @needs_type_filters = 0
       @unreachable = false
       enter_file_scope(blk)
+      saved_jump_block = @jump_block
+      saved_jump_whiles = @jump_whiles
+      @jump_block = blk
+      @jump_whiles = [] of While
+      old_handler_direct_exit = @handler_direct_exit
+      @handler_direct_exit = false
       blk.body.accept(self)
       @current_type = callee_type
+      @jump_block = saved_jump_block
+      @jump_whiles = saved_jump_whiles
+      @handler_direct_exit = old_handler_direct_exit
       @type_filters = old_yield_type_filters
       @needs_type_filters = old_yield_needs_filters
       @unreachable = old_yield_unreachable
@@ -2074,12 +2223,9 @@ pub class MainVisitor < TypeNodeHost
     if owner.is_a?(MetaclassType)
       owner = owner.as(MetaclassType).instance_type
     end
-    if receiver_instance(owner)
-      found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)
-      return found.as(Type) unless found.is_a?(LookupError)
-      return nil
-    end
-    @program.lookup_type_node?(restriction, @current_type)
+    found = ArgRestriction.lookup_bound(type_node_system(@program), @current_type, restriction, owner)
+    return found.as(Type) unless found.is_a?(LookupError)
+    nil
   end
 
   # Each member of a union restriction, bound under the receiver, merged. A
@@ -2428,63 +2574,23 @@ pub class MainVisitor < TypeNodeHost
       return most_specific.first
     end
 
-    if ur = unresolved_restriction
-      if rescued = match_splat_with_calls(rec_type, name, args, call_node)
-        return rescued
-      end
-      return refuse_call(call_node, ur)
+    # The shared matcher handles splats, free variables and numeric widening
+    # for both number literals and typed integers.
+    arg_types = [] of Type
+    args.each { |arg| arg_types << type_of(arg) }
+    signature = CallSignature.new(name, arg_types, nil, call_node.block != nil)
+    widened = CallRecalculation.recalculate_signature(rec_type, type_node_system(@program), signature, false, args)
+    if widened.error.nil? && widened.definition
+      @matched_call_args[call_node] = widened.arg_types
+      return widened.definition
     end
-
-    # 3. Check autocast matches for literals
-    has_literal_arg = args.any? { |a| a.is_a?(NumberLiteral) }
-    if has_literal_arg
-      autocast_matches = [] of Def
-      autocast_types = [] of String
-      count_matches.each do |d|
-        all_match = true
-        matched_t_name = ""
-        i = 0
-        while i < args.size
-          arg = args[i]
-          arg_t = type_of(arg)
-          param = d.args[i]
-          if r = param.restriction
-            expected_t = lookup_under(r, rec_type)
-            if arg_t.subtype_of?(expected_t)
-              # exact subtype match
-            elsif arg.is_a?(NumberLiteral) && number_literal_matches_type?(arg.as(NumberLiteral), expected_t)
-              matched_t_name = expected_t.full_name
-            else
-              all_match = false
-              break
-            end
-          end
-          i = i + 1
-        end
-        if all_match
-          autocast_matches << d
-          autocast_types << matched_t_name
-        end
+    if message = widened.error
+      if message.starts_with?("ambiguous call")
+        return refuse_call(call_node, message)
       end
-
-      if autocast_matches.size > 1
-        lit_val = ""
-        args.each do |a|
-          if a.is_a?(NumberLiteral)
-            lit_val = a.as(NumberLiteral).value
-            break
-          end
-        end
-        uniq_types = [] of String
-        autocast_types.each do |tn|
-          unless tn.empty? || uniq_types.includes?(tn)
-            uniq_types << tn
-          end
-        end
-        return refuse_call(call_node, "ambiguous call, implicit cast of #{lit_val} matches all of #{uniq_types.join(", ")}")
-      elsif autocast_matches.size == 1
-        return autocast_matches.first
-      end
+    end
+    if ur = unresolved_restriction
+      return refuse_call(call_node, ur)
     end
 
     # 4. Error reporting for no matching overload
@@ -2651,7 +2757,7 @@ pub class MainVisitor < TypeNodeHost
     if owner.is_a?(GenericInstanceType)
       owner = owner.as(GenericInstanceType).generic_type
     end
-    if owner.is_a?(ModuleType) && !owner.is_a?(SemanticProgram)
+    if owner.is_a?(ModuleType)
       @current_type = owner.as(ModuleType)
     end
     nil
@@ -2804,11 +2910,21 @@ pub class MainVisitor < TypeNodeHost
       return refuse_recursion(site, target_def, "instantiation depth exceeded at '#{target_def.name}'")
     end
 
+    saved_jump_block = @jump_block
+    saved_jump_whiles = @jump_whiles
+    @jump_block = nil
+    @jump_whiles = [] of While
     old_vars = @vars
     old_handler_vars = @handler_vars
     old_handler_writes = @handler_writes
     @handler_vars = [] of Hash(String, Type)
     @handler_writes = [] of Set(String)
+    old_handler_inside_ensure = @handler_inside_ensure
+    old_handler_inside_defer = @handler_inside_defer
+    old_handler_direct_exit = @handler_direct_exit
+    @handler_inside_ensure = false
+    @handler_inside_defer = false
+    @handler_direct_exit = false
     old_scope = @scope
     old_def = @current_def
     old_block_call = @current_call_block
@@ -2877,6 +2993,11 @@ pub class MainVisitor < TypeNodeHost
         param_type = child_type(args[arg_index]) if arg_index >= 0 && arg_index < args.size
       elsif i < args.size
         param_type = child_type(args[i])
+        if call_node
+          if matched = @matched_call_args[call_node]?
+            param_type = matched[i] if i < matched.size
+          end
+        end
       elsif dv = param.default_value
         dv.accept(self)
         param_type = child_type(dv)
@@ -2919,6 +3040,15 @@ pub class MainVisitor < TypeNodeHost
         self_t = rec_type
       end
       @typed_instances << TypedInstance.new(target_def, self_t, inst_args)
+      # Hosted Call#instantiate registers the typed def before visiting its body
+      # (semantic/call.cr 628-630, body at 714). A recursive call must target this
+      # object, whose parameters already carry their instantiated types, not a fresh clone.
+      provisional : Type = @program.no_return_type
+      if declared = target_def.return_type
+        provisional = lookup_def_return(declared, rec_type, target_def)
+      end
+      set_type(target_def, provisional)
+      remember_def_instance(cache_key, target_def, provisional)
     end
     body = splice_def_body(body.as(ASTNode))
     target_def.body = body.as(ASTNode)
@@ -2951,6 +3081,9 @@ pub class MainVisitor < TypeNodeHost
     @vars = old_vars
     @handler_vars = old_handler_vars
     @handler_writes = old_handler_writes
+    @handler_inside_ensure = old_handler_inside_ensure
+    @handler_inside_defer = old_handler_inside_defer
+    @handler_direct_exit = old_handler_direct_exit
     @scope = old_scope
     @current_def = old_def
     @current_call_block = old_block_call
@@ -2963,6 +3096,8 @@ pub class MainVisitor < TypeNodeHost
     @needs_type_filters = old_needs_type_filters
     @unreachable = old_unreachable
     @while_break_vars = old_while_break_vars
+    @jump_block = saved_jump_block
+    @jump_whiles = saved_jump_whiles
     @typing_stack.pop
 
     return nil unless params_typed
@@ -3154,6 +3289,9 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : Call) : Bool
+    if block = node.block
+      @jump_block_calls[block] = node
+    end
     if expand_macro(node)
       return false
     end
@@ -3170,10 +3308,6 @@ pub class MainVisitor < TypeNodeHost
 
     saved_call_ntf = @needs_type_filters
     @needs_type_filters = 0
-    node.args.each do |arg|
-      arg.accept(self)
-    end
-
     rec_type : Type
     if obj = node.obj
       obj.accept(self)
@@ -3186,6 +3320,9 @@ pub class MainVisitor < TypeNodeHost
       end
     else
       rec_type = @scope || @current_type
+    end
+    node.args.each do |arg|
+      arg.accept(self)
     end
     @needs_type_filters = saved_call_ntf
     if rec_type.is_a?(LibType)
@@ -3208,13 +3345,19 @@ pub class MainVisitor < TypeNodeHost
         return false if target_def.nil?
         instantiated_def = target_def.clone
         @program.copy_def_owner(target_def, instantiated_def)
-        dkey = def_instance_key(target_def, ut, node)
+        union_instance_owner : Type = ut
+        if node.obj.nil?
+          if declared_owner = @program.def_owner(target_def)
+            union_instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
+          end
+        end
+        dkey = def_instance_key(target_def, union_instance_owner, node)
         ret_t : Type? = nil
         if hit = cached_instance(dkey)
           instantiated_def = hit.definition
           ret_t = hit.return_type
         else
-          ret_t = type_method_body(instantiated_def, ut, node.args, node.block, node, dkey, node)
+          ret_t = type_method_body(instantiated_def, union_instance_owner, node.args, node.block, node, dkey, node)
         end
         return false if ret_t.nil?
         if first_target_def.nil?
@@ -3263,7 +3406,16 @@ pub class MainVisitor < TypeNodeHost
     end
     instantiated_def = target_def.clone
     @program.copy_def_owner(target_def, instantiated_def)
-    dkey = def_instance_key(target_def, rec_type, node)
+    # A receiverless fallback to a program def is instantiated by the program,
+    # not by the type that happened to call it. Methods retain the actual
+    # receiver, including generic instances and inherited methods.
+    instance_owner : Type = rec_type
+    if node.obj.nil?
+      if declared_owner = @program.def_owner(target_def)
+        instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)
+      end
+    end
+    dkey = def_instance_key(target_def, instance_owner, node)
     body_ret : Type? = nil
     if hit = cached_instance(dkey)
       # A cached instance: the call records its clone and takes its return type. Its block breaks
@@ -3276,7 +3428,7 @@ pub class MainVisitor < TypeNodeHost
       if blk = node.block
         @block_breaks[blk] = [] of Type?
       end
-      body_ret = type_method_body(instantiated_def, rec_type, node.args, node.block, nil, dkey, node)
+      body_ret = type_method_body(instantiated_def, instance_owner, node.args, node.block, nil, dkey, node)
     end
     ret_type = call_result(node, body_ret)
     if ret_type
@@ -3382,13 +3534,10 @@ pub class MainVisitor < TypeNodeHost
   end
 
   def visit(node : FunDef) : Bool
-    # hosted: a fun body is spliced like a def body, in the program's scope and the fun's file.
-    # splice_fun_body binds the fun's arguments as the names declared before the first statement.
     file = ""
     if loc = node.location
       file = loc.filename
     end
-    splice_fun_body(node, @program.full_name)
     saved = @fun_inline_file
     @fun_inline_file = file
     typed = visit_fun_def(self, node)
@@ -3399,7 +3548,7 @@ pub class MainVisitor < TypeNodeHost
   # `->(x : T) { body }` is typed `Proc(T, R)`, as the hosted pass types a ProcLiteral (main_visitor.cr
   # 1373-1433 and ProcLiteral#update, bindings.cr 604-619). Its parameters are locals of its body; R is the
   # declared return type, or else the body's type. Not ported: the closure analysis, the Proc argument
-  # check, force_nil, and the body's scope (the body is typed in the program's scope, not the literal's).
+  # check, and force_nil.
   def visit(node : ProcLiteral) : Bool
     return false if type_of?(node)
     def_node = node.def
@@ -3421,7 +3570,11 @@ pub class MainVisitor < TypeNodeHost
     end
     declared = proc_literal_return(def_node)
     body = def_node.body
-    inner = sub_visitor(fun_vars)
+    inner = sub_visitor(fun_vars).as(MainVisitor)
+    # Unlike a fun body, the literal's body inherits its enclosing scope
+    # (hosted main_visitor.cr 1416-1423).
+    inner.scope = @scope
+    inner.current_def = def_node if def_node.captured_block?
     old_imports = @program.current_imports
     old_import_defs = @program.current_import_defs
     enter_file_scope(node)
@@ -3573,6 +3726,10 @@ pub class MainVisitor < TypeNodeHost
   # Whether the node being visited is inside a type argument.
   def in_type_args? : Bool
     @in_type_args > 0
+  end
+
+  def scope_type : Type?
+    @scope
   end
   # --- type nodes: end ---
 end
