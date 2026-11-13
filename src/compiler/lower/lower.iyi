@@ -220,7 +220,7 @@ pub def emit_fun_def(low : Lowerer, node : FunDef, rec : LibFun, ret : Type) : N
   body = node.body
   raise "BUG: fun #{name} has no body (hosted visit(FunDef))" if body.nil?
   target = Def.new(node.name, node.args, body.as(ASTNode))
-  fn = codegen_fun(low, name, target, nil, rec.arg_types, fun_def_type(low, rec, ret), low.typer.llvm_return_type(ret))
+  fn = codegen_fun(low, name, target, nil, rec.arg_types, fun_def_type(low, rec, ret), low.typer.llvm_return_type(ret), ret)
   if ret.is_a?(NoReturnType)
     fn.attrs << Attribute.new("noreturn", 0_u64, nil, nil)
   end
@@ -1010,10 +1010,9 @@ pub def codegen_return(low : Lowerer, ret_ir : IrType) : Nil
   low.builder.ret(value.as(Value))
 end
 
-# The hosted `visit(Return)` (codegen.cr:1170) for a return in a def, with no ensure and no return phi: the value is
-# evaluated and returned by the function being lowered (hosted codegen_return, codegen.cr:1192). A bare return is a
-# `ret void` in a void function. A value of another type than the function returns is refused by name: the hosted code
-# upcasts it, which the casts slice ports. A return at the top level has no def to leave, so it is refused by name.
+# The hosted `visit(Return)` (codegen.cr:1170-1209) evaluates the control expression
+# and upcasts it to the current function's semantic return type before returning.
+# A return at the top level has no def to leave, so it is refused by name.
 pub def codegen_return_node(low : Lowerer, node : Return) : Nil
   if low.current_context.top_level
     pending_visit_node("return at the top level (hosted codegen.cr: visit(Return), node.target is not a Def)")
@@ -1029,7 +1028,12 @@ pub def codegen_return_node(low : Lowerer, node : Return) : Nil
       low.builder.ret_void
       return
     end
-    refuse_port("lower: a bare return from a function that returns a value (hosted codegen_return, the nil upcast)")
+    ret_type = low.current_context.return_type
+    raise "BUG: the function has no analysed return type (hosted codegen_return)" if ret_type.nil?
+    nil_type = low.analysed.program.nil_type
+    returned = upcast(low, llvm_nil(low), nil_type, ret_type.as(Type))
+    low.builder.ret(returned)
+    return
   end
   wants = low.needs_value
   low.needs_value = true
@@ -1044,10 +1048,9 @@ pub def codegen_return_node(low : Lowerer, node : Return) : Nil
   raise "BUG: the return's expression left no value (hosted codegen.cr: visit(Return))" if value.nil?
   exp_t = low.analysed.type_of?(exp.as(ASTNode))
   raise "BUG: the analysed program has no type for a return's value (hosted codegen.cr: visit(Return))" if exp_t.nil?
-  if low.typer.llvm_type(exp_t.as(Type)).to_s != ret_ir.to_s
-    refuse_port("lower: return of #{exp_t.as(Type).full_name} from a function returning another type (hosted upcast, the casts slice)")
-  end
-  returned = value.as(Value)
+  ret_type = low.current_context.return_type
+  raise "BUG: the function has no analysed return type (hosted codegen_return)" if ret_type.nil?
+  returned = upcast(low, value.as(Value), exp_t.as(Type), ret_type.as(Type))
   low.builder.ret(returned)
 end
 
