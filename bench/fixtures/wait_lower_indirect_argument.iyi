@@ -17,6 +17,26 @@ struct Large
   @p : Int64
   @q : Int64
 
+  def initialize(value : Int64)
+    @a = value
+    @b = value
+    @c = value
+    @d = value
+    @e = value
+    @f = value
+    @g = value
+    @h = value
+    @i = value
+    @j = value
+    @k = value
+    @l = value
+    @m = value
+    @n = value
+    @o = value
+    @p = value
+    @q = value
+  end
+
   def value : Int64
     @q
   end
