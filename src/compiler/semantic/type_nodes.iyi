@@ -470,11 +470,13 @@ end
 # visitor, with the arguments as its locals and the program as its scope, and
 # its type must fit the declared return type (hosted `visit(node : FunDef)`
 # 2333-2365). The fun node itself is typed Nil, as the hosted pass types it.
+# The type system is already installed before this visit
+# (`declare_guessed_instance_vars`, typed_dump.iyi 111-112, compiler.iyi 186-187,
+# lower/program.iyi 108). That install runs `resolve_declared_types`, so
+# `UInt8**` is already the oracle's pointer instance when the record is read.
+# Calling `type_node_system` here again changes nothing: the gate's fun fixtures
+# still match the oracle without it.
 pub def visit_fun_def(visitor : TypeNodeHost, node : FunDef) : Bool
-  # The declaration pass resolves a fun's types to their bases until a type system is installed
-  # (top_level.iyi resolve_declared_types). Installing it here, before the record is read, gives the
-  # generic argument types (`UInt8**`) the oracle's instances.
-  type_node_system(visitor.program)
   fun_record = visitor.program.lib_fun_of(node)
   if fun_record.nil?
     return visitor.refuse(node, "fun has no record from the declarations pass")

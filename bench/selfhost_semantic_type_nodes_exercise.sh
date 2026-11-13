@@ -210,12 +210,6 @@ prove_mutation "enum members are not walked before the enum is typed" "$TYPE_NOD
   -- check_outputs_match || status=1
 MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
-prove_mutation "a fun's declared types are read before the type system resolves them" "$TYPE_NODES" \
-  "  type_node_system(visitor.program)
-  fun_record = visitor.program.lib_fun_of(node)" \
-  "  fun_record = visitor.program.lib_fun_of(node)" \
-  -- check_outputs_match || status=1
-MUTATIONS_RUN=$((MUTATIONS_RUN + 1))
 
 prove_mutation "a pointerof of a local is refused, in a fun body or anywhere" "$TYPE_NODES" \
   "  if exp.is_a?(Var)" \
