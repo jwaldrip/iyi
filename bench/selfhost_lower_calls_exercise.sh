@@ -238,6 +238,11 @@ prove_mutation "an unqualified class-method call loses its class owner" "$REPO/s
   '          class_owner = ct' '          class_owner = nil' -- lower_calls_check || status=1
 prove_mutation "a generic metaclass call passes no self type id" "$REPO/src/compiler/lower/call.iyi" \
   '      self_value = type_id_value(low, recv_type)' '      self_value = nil' -- lower_calls_check || status=1
+prove_mutation "an implicit generic metaclass call loses its self" "$REPO/src/compiler/lower/call.iyi" \
+  '  if defines_method?(ct, node.name)
+    return ct' '  if defines_method?(ct, node.name)
+    return nil if ct.is_a?(GenericClassInstanceMetaclassType)
+    return ct' -- lower_calls_check || status=1
 
 echo
 if [ "$status" -eq 0 ]; then
