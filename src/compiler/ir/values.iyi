@@ -66,6 +66,38 @@ pub def single_bits(value : Float64) : Int64
   (pointerof(narrowed).as(Int32*).value.to_i64) & 0xFFFFFFFF_i64
 end
 
+# The 32 bits of the float that holds exactly the value a double's 64 bits hold, or nil when no float does.
+# LLVM writes a float constant as the double of the same value (`float 0xC7EFFFFFE0000000`), so the bits are
+# moved field by field rather than converted: an infinity stays one, a NaN keeps its sign and the top of its
+# payload, and a value a float would have to round is refused.
+pub def single_bits_of_double(bits : Int64) : Int64?
+  sign = (bits >> 63) & 1_i64
+  exponent = (bits >> 52) & 0x7FF_i64
+  mantissa = bits & 0xFFFFFFFFFFFFF_i64
+  # A float keeps the top 23 of the double's 52 mantissa bits; the low 29 must be clear.
+  return nil if (mantissa & 0x1FFFFFFF_i64) != 0_i64
+  top = mantissa >> 29
+  if exponent == 0x7FF_i64
+    return (sign << 31) | (0xFF_i64 << 23) | top
+  end
+  if exponent == 0_i64
+    # Zero. A double below its own normal range is below every float.
+    return mantissa == 0_i64 ? sign << 31 : nil
+  end
+  power = exponent - 1023_i64
+  if power >= -126_i64 && power <= 127_i64
+    return (sign << 31) | ((power + 127_i64) << 23) | top
+  end
+  if power >= -149_i64 && power < -126_i64
+    # Below the float's normal range: the leading one moves into the mantissa, and what is shifted out must be clear.
+    shift = (-126_i64 - power).to_i32
+    full = (1_i64 << 23) | top
+    return nil if (full & ((1_i64 << shift) - 1_i64)) != 0_i64
+    return (sign << 31) | (full >> shift)
+  end
+  nil
+end
+
 # A 64-bit pattern read as a signed Int64: the same bits, not the same value.
 pub def u64_as_i64(u : UInt64) : Int64
   low = (u & 0x7FFFFFFFFFFFFFFF_u64).to_i64

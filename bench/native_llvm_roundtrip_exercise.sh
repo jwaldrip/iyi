@@ -1,8 +1,9 @@
 #!/bin/sh
 # Native LLVM round-trip gate (SPEC 3.3, slice B2). It builds iyi-ir, round-trips every fixture that
-# passes today, and proves the gate can fail with four mutations: dropping nsw in the translator, writing hidden as the
-# default visibility, removing an intrinsic from the importer's accepted set, dropping the align on an intrinsic operand,
-# and a patch that changes nothing.
+# passes today, drops the unwind edges of the oracle's handler module and compares what is left, and proves the gate can
+# fail with six mutations: dropping nsw in the translator, writing hidden as the default visibility, removing an intrinsic
+# from the importer's accepted set, dropping the align on an intrinsic operand, importing either name of the program's
+# entry with the C convention, and a patch that changes nothing.
 # Job: native-linux (the integrator adds it to iyi.yml). The matrix over the corpus is
 # bench/native_llvm_matrix.sh, which is not part of this gate. The linked LLVM's major version is read through
 # `iyi-ir version`. A fixture annotated `; needs-llvm: N` is reported as skipped, never as passed, when the linked major
@@ -129,6 +130,16 @@ case "$verdict" in
 esac
 echo "identical fixtures: $count of $total run; skipped: $skipped"
 
+step 2b "the oracle's handler module with its unwind edges dropped is the normal path, and the program's entry is Iyi"
+UNW=bench/fixtures/ir/unwind
+if "$TOOL" drop-unwind "$UNW/entry.ll" > .build/iyi-ir-unwind.out 2>&1 && cmp -s .build/iyi-ir-unwind.out "$UNW/entry.expected"; then
+  echo "identical: drop-unwind entry"
+else
+  echo "NOT identical: drop-unwind entry"
+  diff .build/iyi-ir-unwind.out "$UNW/entry.expected" | sed -n '1,12p' | sed 's/^/    /'
+  failed=1
+fi
+
 step 3 "mutation: drop nsw in the translator"
 prove_mutation "drop nsw in translate" \
   src/compiler/backend/llvm/translate.iyi \
@@ -156,6 +167,20 @@ prove_mutation "drop align on an intrinsic operand in translate" \
   "LibLLVM.add_callsite_attribute(call, index, create_attribute(a))" \
   "LibLLVM.add_callsite_attribute(call, index, create_attribute(a)) if a.name != \"align\"" \
   "\"$TOOL\" roundtrip \"$FX/memset_param_align.ll\" | grep -qx identical"
+
+step 4d "mutation: the bare entry is imported with the C convention"
+prove_mutation "import __crystal_main as C" \
+  src/compiler/backend/llvm/import.iyi \
+  "return CallConv::Iyi if name == \"__crystal_main\" || name == \"__iyi_main\"" \
+  "return CallConv::Iyi if name == \"__iyi_main\"" \
+  "\"$TOOL\" drop-unwind \"$UNW/entry.ll\" | cmp -s - \"$UNW/entry.expected\""
+
+step 4e "mutation: the prelude's entry is imported with the C convention"
+prove_mutation "import __iyi_main as C" \
+  src/compiler/backend/llvm/import.iyi \
+  "return CallConv::Iyi if name == \"__crystal_main\" || name == \"__iyi_main\"" \
+  "return CallConv::Iyi if name == \"__crystal_main\"" \
+  "\"$TOOL\" drop-unwind \"$UNW/entry.ll\" | cmp -s - \"$UNW/entry.expected\""
 
 step 5 "mutation: a patch that changes nothing is refused"
 noop_out=$(prove_mutation "no-op patch" \

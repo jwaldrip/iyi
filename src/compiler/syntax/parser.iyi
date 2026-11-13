@@ -1645,6 +1645,8 @@ pub class Parser < Lexer
     location = @token.location
     block_params = [] of Var
     splat_index : Int32? = nil
+    unpacks : Hash(Int32, Expressions)? = nil
+    all_names = [] of String
     param_index = 0
 
     set_slash_is_regex(true)
@@ -1652,31 +1654,33 @@ pub class Parser < Lexer
 
     if @token.type == TokenKind::OP_BAR
       next_token_skip_space_or_newline
-      while @token.type != TokenKind::OP_BAR
-        if @token.type == TokenKind::OP_STAR
-          splat_index = param_index
-          next_token_skip_space
+      while true
+        param, found_splat, unpack = parse_block_param(!splat_index.nil?, all_names)
+        splat_index = param_index if found_splat && splat_index.nil?
+        block_params << param
+        if unpack
+          unpacks ||= Hash(Int32, Expressions).new
+          unpacks[param_index] = Expressions.new(unpack)
         end
 
-        name = @token.type == TokenKind::UNDERSCORE ? "_" : @token.value
-        block_params << Var.new(name).at(@token.location)
-        param_index = param_index + 1
-        next_token_skip_space
-
+        next_token_skip_space_or_newline
         if @token.type == TokenKind::OP_COMMA
           next_token_skip_space_or_newline
-        else
+          break if @token.type == TokenKind::OP_BAR
+        elsif @token.type == TokenKind::OP_BAR
           break
+        else
+          syntax_error("expecting ',' or '|' in block parameters", @token.location)
         end
+        param_index = param_index + 1
       end
-      check(TokenKind::OP_BAR)
       next_token_skip_statement_end
     else
       skip_statement_end
     end
 
     new_scope = Set(String).new
-    block_params.each { |p| new_scope.add(p.name) }
+    all_names.each { |name| new_scope.add(name) }
     @var_scopes << new_scope
 
     body = parse_expressions
@@ -1692,7 +1696,65 @@ pub class Parser < Lexer
       next_token_skip_space
     end
 
-    Block.new(block_params, body, splat_index).at(location)
+    Block.new(block_params, body, splat_index, unpacks).at(location)
+  end
+
+  def parse_block_param(found_splat : Bool, all_names : Array(String)) : {Var, Bool, Array(ASTNode)?}
+    if @token.type == TokenKind::OP_STAR
+      syntax_error("splat block parameter already specified", @token.location) if found_splat
+      found_splat = true
+      next_token
+    end
+
+    location = @token.location
+    name = ""
+    unpack : Array(ASTNode)? = nil
+    case @token.type
+    when TokenKind::IDENT
+      name = @token.value
+      if @token.keyword && invalid_internal_name?(name)
+        syntax_error("cannot use '#{name}' as a block parameter name", location)
+      end
+      if all_names.includes?(name)
+        syntax_error("duplicated block parameter name: #{name}", location)
+      end
+      all_names << name
+    when TokenKind::UNDERSCORE
+      name = "_"
+    when TokenKind::OP_LPAREN
+      next_token_skip_space_or_newline
+      expressions = [] of ASTNode
+      nested_splat = false
+      while true
+        sub_location = @token.location
+        sub_var, found_nested_splat, sub_unpack = parse_block_param(nested_splat, all_names)
+        sub_expression : ASTNode = if sub_unpack
+                                     Expressions.new(sub_unpack).at(sub_location)
+                                   elsif sub_var.name == "_"
+                                     Underscore.new.at(sub_location)
+                                   else
+                                     sub_var
+                                   end
+        if found_nested_splat && !nested_splat
+          sub_expression = Splat.new(sub_expression).at(sub_location)
+        end
+        nested_splat = found_nested_splat
+        expressions << sub_expression
+        next_token_skip_space_or_newline
+        if @token.type == TokenKind::OP_COMMA
+          next_token_skip_space_or_newline
+          break if @token.type == TokenKind::OP_RPAREN
+        elsif @token.type == TokenKind::OP_RPAREN
+          break
+        else
+          syntax_error("expecting ',' or ')' in block parameters", @token.location)
+        end
+      end
+      unpack = expressions
+    else
+      syntax_error("expecting block parameter name", location)
+    end
+    {Var.new(name).at(location), found_splat, unpack}
   end
 
   def parse_if(check_end : Bool = true) : ASTNode
