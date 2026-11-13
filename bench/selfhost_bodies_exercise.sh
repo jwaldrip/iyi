@@ -342,8 +342,8 @@ macro_enum_facts_at_floor() {
   [ "$matched" -ge 6 ]
 }
 prove_mutation_all "enum macro facts are not passed to the body splice" "$MAIN_VISITOR" \
-  "def_inline_bindings, MacroBindings.facts(@scope))" \
-  "def_inline_bindings, nil)" -- macro_enum_facts_at_floor || status=1
+  "def_inline_bindings, MacroBindings.facts(@scope), true)" \
+  "def_inline_bindings, nil, true)" -- macro_enum_facts_at_floor || status=1
 macro_ivars_at_floor() {
   "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
   fixture="$REPO/bench/fixtures/sem_bodies_macro_ivars.iyi"
