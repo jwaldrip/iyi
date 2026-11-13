@@ -1,4 +1,8 @@
-# selfhost pipeline table floor: <root> <defs reached by the body typer> <defs typed with no refusal> <defs lowered with no refusal>. A count may only rise. Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh.
-hello 601 375 194
-parse 913 505 272
-compile_native 2905 1839 1492
+# selfhost pipeline table floor: <root> <defs reached> <defs typed with no refusal> <defs lowered with no refusal>.
+# The count is distinct instantiations (receiver, name, argument types), measured on lane head 6fc731844.
+# The previous rows counted one clone per call site (hello 601 375 194, parse 913 505 272, compile_native 2905 1839 1492). Those are not a higher value of this measure.
+# Of 62 labels the bodies merge no longer reaches under the old receiver, 50 moved off a bogus metaclass receiver (Array(Some.class)#meth). That move is a correction, not a loss. 12 name+args are absent entirely and are a bodies regression, not a reason to keep the clone count.
+# A count on this measure may only rise. Raise with SELFHOST_PIPELINE_RAISE=1 bash bench/selfhost_pipeline_exercise.sh.
+hello 440 350 170
+parse 552 440 210
+compile_native 725 573 223
