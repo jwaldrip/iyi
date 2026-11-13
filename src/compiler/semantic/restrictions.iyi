@@ -1,8 +1,9 @@
 module compiler/semantic/restrictions
 
-import compiler/syntax/ast::{ASTNode, Arg, Def, Generic, Path, Self, Splat}
+import compiler/syntax/ast::{ASTNode, Arg, Def, Generic, Path, Self, Splat, Union}
 import compiler/semantic/top_level::{GenericClassType, ModuleType, Type, TypeParameterType}
 import compiler/types/lookup::{LookupError, TypeLookup}
+import compiler/types/merge::{TypeMerge}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/types::{GenericInstanceType, TypeSplat}
 
@@ -57,6 +58,9 @@ pub class ArgRestriction
       end
       return LookupError.new("can only splat tuple type, not #{inner_type.full_name}")
     end
+    if node.is_a?(Union)
+      return ArgRestriction.lookup_union(ts, scope, node.as(Union), owner)
+    end
     if owner.is_a?(GenericInstanceType)
       instance = owner.as(GenericInstanceType)
       return instance if node.is_a?(Self)
@@ -86,6 +90,21 @@ pub class ArgRestriction
     TypeLookup.new(ts.instances).lookup(scope, node)
   end
 
+  # A union restriction is each member, bound the way a single name is (`T` in
+  # `T | Nil` is the receiver's type argument), then merged. A union node is not
+  # a type the scope's own lookup instantiates.
+  def self.lookup_union(ts : TypeSystem, scope : ModuleType, node : Union, owner : Type?) : Type | LookupError
+    members = [] of Type
+    i = 0
+    while i < node.types.size
+      member = ArgRestriction.lookup_bound(ts, scope, node.types[i], owner)
+      return member if member.is_a?(LookupError)
+      members << member.as(Type)
+      i = i + 1
+    end
+    TypeMerge.merge_all(ts.program, members)
+  end
+
   # The restriction of *arg* in *scope* when the def has free variables (`forall T`):
   # the names in *bound* are the types the arguments gave them. With nothing bound it
   # is ArgRestriction.of.
@@ -106,6 +125,18 @@ pub class ArgRestriction
   # else is lookup_bound's answer.
   def self.lookup_free(ts : TypeSystem, scope : ModuleType, node : ASTNode, owner : Type?, bound : Hash(String, Type)) : Type | LookupError
     return ArgRestriction.lookup_bound(ts, scope, node, owner) if bound.size == 0
+    if node.is_a?(Union)
+      members = [] of Type
+      union_node = node.as(Union)
+      i = 0
+      while i < union_node.types.size
+        member = ArgRestriction.lookup_free(ts, scope, union_node.types[i], owner, bound)
+        return member if member.is_a?(LookupError)
+        members << member.as(Type)
+        i = i + 1
+      end
+      return TypeMerge.merge_all(ts.program, members)
+    end
     if node.is_a?(Path)
       names = node.as(Path).names
       if names.size == 1

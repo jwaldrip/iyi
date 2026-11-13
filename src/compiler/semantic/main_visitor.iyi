@@ -1842,6 +1842,13 @@ pub class MainVisitor < TypeNodeHost
     if restriction.is_a?(Splat)
       return nil
     end
+    # A union restriction (`String | Path`, `T | Nil`) is each member, bound
+    # the way a single name is, then merged. lookup_bound did not instantiate a
+    # union node, so a call whose argument is one member was refused
+    # "expected type, got String | Path".
+    if restriction.is_a?(Union)
+      return union_restriction_type(restriction.as(Union), rec_type)
+    end
     owner = rec_type
     if owner.is_a?(MetaclassType)
       owner = owner.as(MetaclassType).instance_type
@@ -1852,6 +1859,24 @@ pub class MainVisitor < TypeNodeHost
       return nil
     end
     @program.lookup_type_node?(restriction, @current_type)
+  end
+
+  # Each member of a union restriction, bound under the receiver, merged. A
+  # member the quiet lookup misses is a total-mode placeholder, so a call still
+  # matches the member it does have. Strict mode leaves the refusal.
+  def union_restriction_type(node : Union, rec_type : Type) : Type?
+    members = [] of Type
+    i = 0
+    while i < node.types.size
+      member = restriction_type(node.types[i], rec_type)
+      if member.nil? && @program.total_mode
+        member = @program.lookup_type_node(node.types[i], @current_type)
+      end
+      return nil if member.nil?
+      members << member.as(Type)
+      i = i + 1
+    end
+    @program.type_merge(members)
   end
 
   def collect_candidate_defs(rec_type : Type, name : String, result : Array(Def), visited : Set(String)) : Nil
@@ -2099,6 +2124,11 @@ pub class MainVisitor < TypeNodeHost
     exact_matches = [] of Def
     unresolved_restriction : String? = nil
     count_matches.each do |d|
+      # The restriction is written in the def's file, not the caller's: `Path`
+      # in `File.chmod(path : String | Path)` is that file's import.
+      old_imports = @program.current_imports
+      old_import_defs = @program.current_import_defs
+      enter_file_scope(d)
       all_args_match = true
       i = 0
       while i < args.size
@@ -2118,6 +2148,8 @@ pub class MainVisitor < TypeNodeHost
         end
         i = i + 1
       end
+      @program.current_imports = old_imports
+      @program.current_import_defs = old_import_defs
       if all_args_match
         exact_matches << d
       end
