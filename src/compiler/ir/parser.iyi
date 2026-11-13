@@ -1,7 +1,7 @@
 module compiler/ir/parser
 
 import compiler/ir/types::{IrType, TypeTable, valid_int_bits?}
-import compiler/ir/values::{Value, Param, int_words_parse, single_bits, double_bits}
+import compiler/ir/values::{Value, Param, int_words_parse, single_bits, double_bits, single_bits_of_double}
 import compiler/ir/inst::{Op, Inst, Block, CallConv, CallAux, AsmAux, AsmDialect, GepAux, MemAux, IntrinsicAux, Ordering, Attribute, ThreadPointerKind, DebugLoc}
 import compiler/ir/function::{Function, Global, Linkage, TlsModel, DebugSubprogram, Visibility}
 import compiler/ir/module::{Module}
@@ -1551,6 +1551,16 @@ class IrParser
       return make_const(Op::ConstInt, type, t.num)
     end
     if t.kind == TokKind::Hex
+      # The IR writes a float as its own 32 bits (eight digits at most). LLVM writes it as the double of the
+      # same value, sixteen digits: that form is read as the float it names, or refused when no float is it.
+      if type.float32? && t.text.bytesize > 8
+        narrowed = single_bits_of_double(t.num)
+        if narrowed.nil?
+          c.fail("0x#{t.text} is not a value a float holds exactly")
+          return dummy(type)
+        end
+        return make_const(Op::ConstFloat, type, narrowed.as(Int64))
+      end
       return make_const(Op::ConstFloat, type, t.num)
     end
     if t.kind == TokKind::Decimal
