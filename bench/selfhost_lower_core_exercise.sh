@@ -584,6 +584,20 @@ else
   awk 'NR<=8' "$WORK/interpolation-constant.err" "$WORK/interpolation-constant.out" "$WORK/interpolation-constant.build.log"
   status=1
 fi
+named_tuple_check() {
+  "$IYI" build -o "$WORK/port-named-tuple" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/named-tuple.build.log" 2>&1 || return 1
+  "$WORK/port-named-tuple" lower "$REPO/bench/fixtures/lower_named_tuple.iyi" "$WORK/lower_named_tuple.oracle.ll" > "$WORK/named-tuple.out" 2> "$WORK/named-tuple.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); split($4, c, "="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/named-tuple.out"
+}
+if named_tuple_check; then
+  prove_mutation "named tuple literal reverses entry evaluation" "$REPO/src/compiler/lower/lower.iyi" \
+    '  node.entries.each do |entry|' \
+    '  node.entries.reverse_each do |entry|' -- named_tuple_check || status=1
+else
+  echo "FAIL: named tuple fixture does not match the hosted module"
+  awk 'NR<=8' "$WORK/named-tuple.err" "$WORK/named-tuple.out" "$WORK/named-tuple.build.log"
+  status=1
+fi
 
 
 
