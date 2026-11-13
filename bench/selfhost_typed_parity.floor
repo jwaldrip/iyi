@@ -146,14 +146,14 @@ src/compiler/semantic/default_arguments.iyi 17
 src/compiler/semantic/instance_vars.iyi 45
 src/compiler/semantic/lib_call.iyi 34
 src/compiler/semantic/literal_expander.iyi 69
-src/compiler/semantic/main_visitor.iyi 237
+src/compiler/semantic/main_visitor.iyi 245
 src/compiler/semantic/math_interpreter.iyi 52
 src/compiler/semantic/method_lookup.iyi 35
 src/compiler/semantic/new.iyi 20
 src/compiler/semantic/normalizer.iyi 62
 src/compiler/semantic/recursive_struct_checker.iyi 11
 src/compiler/semantic/restrictions.iyi 24
-src/compiler/semantic/top_level.iyi 270
+src/compiler/semantic/top_level.iyi 290
 src/compiler/semantic/type_node_host.iyi 20
 src/compiler/semantic/type_nodes.iyi 43
 src/compiler/semantic/typed.iyi 2

@@ -135,6 +135,38 @@ if [ "${refused_cache_count:-}" != 1 ]; then
 fi
 
 echo
+echo "== 2d. Program defs share instances across callers without shadowing methods"
+owner_fixture="$REPO/bench/fixtures/bodies_program_owner.iyi"
+owner_probe="$WORK/program_owner_probe"
+owner_expected="$WORK/program_owner.expected"
+printf '%s\n' '*owner_probe<Int32>:Int32' '*owner_probe<String>:String' '*OwnerShadow#owner_probe<Int32>:Bool' | sort > "$owner_expected"
+"$IYI" build -o "$owner_probe" "$REPO/bench/selfhost_program_owner_probe.iyi" > "$WORK/owner_build.log" 2>&1 || {
+  cat "$WORK/owner_build.log"
+  echo "  OWNER: failed to build probe"
+  exit 1
+}
+if ! "$owner_probe" "$owner_fixture" "$REPO/src" > "$WORK/owner.unsorted" ||
+   ! sort "$WORK/owner.unsorted" > "$WORK/owner.actual" ||
+   ! diff -u "$owner_expected" "$WORK/owner.actual"; then
+  echo "  OWNER: incorrect instance names or cache sharing"
+  status=1
+fi
+if ! "$ORACLE" "$owner_fixture" > "$WORK/owner.oracle" 2> "$WORK/owner.oracle.err" ||
+   ! "$TYPED" "$owner_fixture" "$REPO/src" > "$WORK/owner.typed" 2> "$WORK/owner.typed.err"; then
+  echo "  OWNER: typing comparison could not run"
+  status=1
+else
+  for line in 28 29 30; do
+    grep "^${line}:.* Call " "$WORK/owner.oracle" | sort > "$WORK/owner.oracle.calls"
+    grep "^${line}:.* Call " "$WORK/owner.typed" | sort > "$WORK/owner.typed.calls"
+    if [ ! -s "$WORK/owner.oracle.calls" ] || ! diff -u "$WORK/owner.oracle.calls" "$WORK/owner.typed.calls"; then
+      echo "  OWNER: call typing differs at line $line"
+      status=1
+    fi
+  done
+fi
+
+echo
 echo "== 2c. A call in a fun body's macro branch is typed after expansion"
 splice_count=$("$TYPED" --instances "$REPO/bench/fixtures/sem_bodies_fun_splice.iyi" "$REPO/src" 2>/dev/null | awk '/^typed instances:/ { print $3 }')
 echo "  sem_bodies_fun_splice.iyi typed instances: ${splice_count:-none} (expected 1)"
@@ -196,6 +228,25 @@ bodies_at_floor() {
   return 0
 }
 MAIN_VISITOR="$REPO/src/compiler/semantic/main_visitor.iyi"
+owner_mutant_at_expected() {
+  if ! "$IYI" build -o "$WORK/owner_mutant" "$REPO/bench/selfhost_program_owner_probe.iyi" > "$WORK/owner_mutant_build.log" 2>&1; then
+    echo "INVALID MUTANT: owner probe failed to build" >&2
+    cat "$WORK/owner_mutant_build.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  if ! "$WORK/owner_mutant" "$owner_fixture" "$REPO/src" > "$WORK/owner_mutant.unsorted" 2> "$WORK/owner_mutant_run.log"; then
+    echo "INVALID MUTANT: owner probe failed to run" >&2
+    cat "$WORK/owner_mutant_run.log" >&2
+    if [ "${_PM_ARMED:-0}" = 1 ]; then return 0; fi
+    return 1
+  fi
+  sort "$WORK/owner_mutant.unsorted" > "$WORK/owner_mutant.actual" || return 0
+  diff -u "$owner_expected" "$WORK/owner_mutant.actual"
+}
+prove_mutation_all "program defs use their declared owner" "$MAIN_VISITOR" \
+  "instance_owner = declared_owner if declared_owner.is_a?(SemanticProgram)" \
+  "instance_owner = rec_type if declared_owner.is_a?(SemanticProgram)" -- owner_mutant_at_expected || status=1
 prove_mutation "lib call result type" "$MAIN_VISITOR" \
   "set_type(node, target.result_type.as(Type))" \
   "set_type(node, @program.nil_type)" -- bodies_at_floor || status=1
