@@ -1,0 +1,5 @@
+def match_proc_splat(value : Proc(*T, R)) : Nil forall T, R
+end
+
+# bound match_proc_splat(instance(Proc(Nil)))
+# bound match_proc_splat(instance(Proc(Int32, String, Bool)))

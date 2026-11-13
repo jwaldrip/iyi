@@ -5,7 +5,7 @@ import compiler/semantic/top_level::{AliasType, GenericClassType, ModuleType, Ty
 import compiler/types/lookup::{LookupError, TypeLookup}
 import compiler/types/merge::{TypeMerge}
 import compiler/types/type_system::{TypeSystem}
-import compiler/types/types::{GenericInstanceType, TypeSplat}
+import compiler/types/types::{GenericInstanceType, TupleInstanceType, TypeSplat}
 
 # The answer to "what does this argument's restriction name": a type, nil when
 # the argument has no restriction, or an error message when the written type does
@@ -79,9 +79,21 @@ pub class ArgRestriction
         if base_type.is_a?(GenericClassType)
           args = [] of Type
           generic_node.type_vars.each do |arg_node|
-            arg = ArgRestriction.lookup_bound(ts, scope, arg_node, owner)
-            return arg if arg.is_a?(LookupError)
-            args << arg.as(Type)
+            if arg_node.is_a?(Splat)
+              arg = ArgRestriction.lookup_bound(ts, scope, arg_node.as(Splat).exp, owner)
+              return arg if arg.is_a?(LookupError)
+              if arg.is_a?(TupleInstanceType)
+                args.concat(arg.as(TupleInstanceType).tuple_types)
+              elsif arg.is_a?(TypeParameterType)
+                args << TypeSplat.new(ts.program, arg.as(TypeParameterType))
+              else
+                return LookupError.new("can only splat tuple type, not #{arg.as(Type).full_name}")
+              end
+            else
+              arg = ArgRestriction.lookup_bound(ts, scope, arg_node, owner)
+              return arg if arg.is_a?(LookupError)
+              args << arg.as(Type)
+            end
           end
           return TypeLookup.new(ts.instances).instantiate(base_type, args)
         end
@@ -144,9 +156,21 @@ pub class ArgRestriction
       if base_type.is_a?(GenericClassType)
         args = [] of Type
         generic_node.type_vars.each do |arg_node|
-          arg = ArgRestriction.lookup_free(ts, scope, arg_node, owner, bound)
-          return arg if arg.is_a?(LookupError)
-          args << arg.as(Type)
+          if arg_node.is_a?(Splat)
+            arg = ArgRestriction.lookup_free(ts, scope, arg_node.as(Splat).exp, owner, bound)
+            return arg if arg.is_a?(LookupError)
+            if arg.is_a?(TupleInstanceType)
+              args.concat(arg.as(TupleInstanceType).tuple_types)
+            elsif arg.is_a?(TypeParameterType)
+              args << TypeSplat.new(ts.program, arg.as(TypeParameterType))
+            else
+              return LookupError.new("can only splat tuple type, not #{arg.as(Type).full_name}")
+            end
+          else
+            arg = ArgRestriction.lookup_free(ts, scope, arg_node, owner, bound)
+            return arg if arg.is_a?(LookupError)
+            args << arg.as(Type)
+          end
         end
         return TypeLookup.new(ts.instances).instantiate(base_type, args)
       end
@@ -234,20 +258,45 @@ pub class ArgRestriction
 
   # Hosted GenericInstanceType#restrict(other : Generic): the instance matches the
   # written generic when the generic types are the same and each type argument
-  # restricts, including a nested generic and a free variable. A different generic,
-  # or a different arity, is no match. Splatted type arguments are not this path.
+  # restricts, including nested generics, free variables, and splatted type arguments.
   def self.restrict_generic(ts : TypeSystem, scope : ModuleType, node : Generic, inst : GenericInstanceType, owner : Type?, free : Array(String), bound : Hash(String, Type)) : RestrictResult
     base = TypeLookup.new(ts.instances).lookup(scope, node.name)
     return RestrictResult.failed(base.as(LookupError).message) if base.is_a?(LookupError)
     base_type = base.as(Type)
     return RestrictResult.no_match if base_type.full_name != inst.generic_type.full_name
-    # A splatted type argument (`Tuple(*T)`) is the hosted splat_index path
-    # (restrictions.cr 1201-1261). Not this increment: the free-var case that
-    # stops the census is Range(B, E), which has no splat.
-    return RestrictResult.no_match if node.type_vars.size != inst.type_args.size
+    # Hosted restrictions.cr:1201-1261 packs the arguments covered by a written
+    # splat into a tuple and restricts that tuple against the splat expression.
+    splat_index : Int32? = nil
     i = 0
     while i < node.type_vars.size
-      inner = ArgRestriction.restrict_argument(ts, scope, node.type_vars[i], inst.type_args[i], owner, free, bound)
+      if node.type_vars[i].is_a?(Splat)
+        return RestrictResult.failed("can't specify more than one splat in restriction") if splat_index
+        splat_index = i
+      end
+      i += 1
+    end
+    count = inst.type_args.size - (node.type_vars.size - (splat_index ? 1 : 0))
+    return RestrictResult.no_match if count < 0 || (!splat_index && count != 0)
+    i = 0
+    actual = 0
+    while i < node.type_vars.size
+      written = node.type_vars[i]
+      value : Type
+      if written.is_a?(Splat)
+        elements = [] of Type
+        j = 0
+        while j < count
+          elements << inst.type_args[actual]
+          actual += 1
+          j += 1
+        end
+        value = ts.tuple_of(elements)
+        written = written.as(Splat).exp
+      else
+        value = inst.type_args[actual]
+        actual += 1
+      end
+      inner = ArgRestriction.restrict_argument(ts, scope, written, value, owner, free, bound)
       return inner if inner.error
       return RestrictResult.no_match if inner.type.nil?
       i += 1
