@@ -1,6 +1,7 @@
 import compiler/foundation/location::{Location}
 import compiler/foundation/enums
 import compiler/syntax/token::{Keyword, TokenKind, NumberKind}
+import compiler/syntax/ast::{Primitive}
 import compiler/syntax/ast::{Alias, AlignOf, And, Annotation, AnnotationDef, Arg, ArrayLiteral, Asm, AsmOperand, Assign, AssocTypeDecl, Block, BoolLiteral, Break, CStructOrUnionDef, Call, Case, Cast, CharLiteral, ClassDef, ClassVar, Def, Defer, DoubleSplat, EnumDef, ExceptionHandler, Expressions, Extend, ExternalVar, FunDef, Generic, Global, HashLiteral, If, ImplDef, ImplicitObj, ImportDecl, Include, InstanceAlignOf, InstanceSizeOf, InstanceVar, IsA, LibDef, Macro, MacroExpression, MacroFor, MacroIf, MacroLiteral, MacroVar, MacroVerbatim, MagicConstant, Metaclass, ModuleDef, ModuleHeader, MultiAssign, NamedArgument, NamedTupleLiteral, Next, NilLiteral, NilableCast, Nop, Not, NumberLiteral, OffsetOf, OpAssign, Or, Out, Path, PointerOf, ProcLiteral, ProcNotation, ProcPointer, Propagate, RangeLiteral, ReadInstanceVar, Recover, RegexLiteral, Require, Rescue, RespondsTo, Return, Select, Self, SizeOf, Splat, StringInterpolation, StringLiteral, SymbolLiteral, TraitDef, TupleLiteral, TypeDeclaration, TypeDef, TypeOf, Underscore, UninitializedVar, Unless, Until, UsingDecl, Var, VisibilityModifier, When, While, Yield, ASTNode, BinaryOp, UnaryExpression, ControlExpression, NodeMap, StringBuilder, Visibility, RegexOptions}
 import compiler/syntax/visitor::{Visitor, ToSVisitor, NodeCounterVisitor}
 import compiler/syntax/transformer::{Transformer}
@@ -646,6 +647,34 @@ module BenchSelfhostAstExercise
     assert(clone_Expressions.doc == "documentation for Expressions", "clone doc of Expressions")
     assert(clone_Expressions.visibility == Visibility::Private, "clone visibility of Expressions")
     assert(clone_Expressions.node_id != orig_Expressions.node_id, "clone creates distinct instance for Expressions")
+    empty_sequence = Expressions.new
+    assert(empty_sequence.location.nil? && empty_sequence.end_location.nil?, "empty sequence has no source span")
+    first_expression = Var.new("first").at(loc).at_end(loc)
+    last_expression = Var.new("last").at(end_loc).at_end(end_loc)
+    inferred_sequence = Expressions.new([first_expression, last_expression] of ASTNode)
+    assert(inferred_sequence.location == loc, "sequence starts at its first expression")
+    assert(inferred_sequence.end_location == end_loc, "sequence ends at its last expression")
+    nested_sequence = Expressions.new([inferred_sequence] of ASTNode)
+    assert(nested_sequence.location == loc && nested_sequence.end_location == end_loc, "nested sequence inherits boundary spans")
+    first_expression.at(end_loc)
+    last_expression.at_end(loc)
+    assert(inferred_sequence.location == end_loc && inferred_sequence.end_location == loc, "sequence reads current child locations")
+    inferred_sequence.at(loc).at_end(end_loc)
+    assert(inferred_sequence.location == loc && inferred_sequence.end_location == end_loc, "explicit sequence span overrides child spans")
+    unlocated_edges = Expressions.new([Var.new("unknown"), last_expression] of ASTNode)
+    assert(unlocated_edges.location.nil?, "sequence does not skip an unlocated first expression")
+    unlocated_edges = Expressions.new([first_expression, Var.new("unknown")] of ASTNode)
+    assert(unlocated_edges.end_location.nil?, "sequence does not skip an unlocated last expression")
+    scalar_indexer = Primitive.tuple_indexer(0, 0, false)
+    singleton_indexer = Primitive.tuple_indexer(0, 0, true)
+    empty_indexer = Primitive.tuple_indexer(0, -1, true)
+    assert(!(scalar_indexer == singleton_indexer), "scalar and singleton tuple indices have distinct identity")
+    assert(!(singleton_indexer == empty_indexer), "singleton and empty tuple ranges have distinct identity")
+    assert(scalar_indexer.hash != singleton_indexer.hash, "tuple index form participates in hashing")
+    cloned_indexer = singleton_indexer.clone.as(Primitive)
+    assert(cloned_indexer == singleton_indexer, "cloning preserves tuple range identity")
+    assert(cloned_indexer.tuple_range, "cloning preserves the tuple range discriminator")
+    assert(empty_indexer.clone == empty_indexer, "cloning preserves an empty tuple range")
     orig_Extend = Extend.new(Path.new("ClassMethods"))
     orig_Extend.at(loc).at_end(end_loc)
     orig_Extend.doc = "documentation for Extend"
