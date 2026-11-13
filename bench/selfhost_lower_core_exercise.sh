@@ -202,6 +202,38 @@ if [ "$e2e_fail" -gt 0 ] || [ "$e2e_pass" -eq 0 ]; then
   status=1
 fi
 
+# An external variable's address is a global pointer, not a getter call. Keep
+# an ordinary lib function call as a negative case.
+echo "== 2b. External library variable address"
+pointer_fixture="$REPO/bench/fixtures/wait_lower_pointerof_lib_var.iyi"
+if "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/pointer-lib-host" "$pointer_fixture" > "$WORK/pointer-lib-host.log" 2>&1 &&
+   awk "$CALL_TYPES" "$WORK/pointer-lib-host.ll" > "$WORK/pointer-lib-oracle.ll" &&
+   "$WORK/port" lower "$pointer_fixture" "$WORK/pointer-lib-oracle.ll" > "$WORK/pointer-lib.compare" 2> "$WORK/pointer-lib.err" &&
+   awk '/^SUMMARY/ { split($2,a,"="); split($3,b,"="); split($4,c,"="); exit !(a[2] == b[2] && a[2] > 0 && c[2] == 1) }' "$WORK/pointer-lib.compare" &&
+   "$WORK/port" emit "$pointer_fixture" "$WORK/pointer-lib-oracle.ll" > "$WORK/pointer-lib.ir" 2> "$WORK/pointer-lib-emit.err" &&
+   "$WORK/compile_native" "$WORK/pointer-lib.ir" -o "$WORK/pointer-lib-native" > "$WORK/pointer-lib-native.log" 2>&1; then
+  timeout 30 "$WORK/pointer-lib-host" > "$WORK/pointer-lib-host.out" 2>&1; hs=$?
+  timeout 30 "$WORK/pointer-lib-native" > "$WORK/pointer-lib-native.out" 2>&1; ns=$?
+  if [ "$hs" -eq 7 ] && [ "$ns" -eq 7 ] && cmp -s "$WORK/pointer-lib-host.out" "$WORK/pointer-lib-native.out"; then
+    echo "  external variable address: IR identical, native and hosted status 7"
+  else
+    echo "  FAIL: external variable address native status $ns, hosted status $hs"
+    status=1
+  fi
+else
+  echo "  FAIL: external variable address did not match hosted IR or build natively"
+  status=1
+fi
+if "$WORK/port" emit "$REPO/bench/fixtures/wait_lower_pointerof_lib_fun.iyi" "$WORK/pointer-lib-oracle.ll" > "$WORK/pointer-lib-fun.out" 2> "$WORK/pointer-lib-fun.err"; then
+  echo "  FAIL: pointerof ordinary library function call was accepted"
+  status=1
+elif grep -Fq 'pointerof of LibC.getpid is not ported yet' "$WORK/pointer-lib-fun.err"; then
+  echo "  ordinary library function call: refused by name"
+else
+  echo "  FAIL: ordinary library function call did not reach its named refusal"
+  status=1
+fi
+
 module_floor_file="$REPO/bench/selfhost_lower_core_module.floor"
 module_floor="$(awk 'NR==1 { print $1 }' "$module_floor_file" 2>/dev/null)"
 module_floor="${module_floor:-0}"
