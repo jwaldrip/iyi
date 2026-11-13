@@ -202,6 +202,135 @@ def label_of(full: str) -> str:
         return f"{owner}.class#{meth}"
     return head
 
+def parse_name_parts(full: str) -> tuple[str, str, bool, str, str, str]:
+    """Return (kind, owner, has_caret, meth, args_str, ret) for a mangled function name."""
+    s = full.lstrip("*")
+    dp = 0
+    db = 0
+    ret_colon = -1
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == "(":
+            dp += 1
+        elif c == ")":
+            dp -= 1
+        elif c == "{":
+            db += 1
+        elif c == "}":
+            db -= 1
+        elif dp == 0 and db == 0:
+            if c == ":" and i + 1 < len(s) and s[i + 1] == ":":
+                i += 2
+                continue
+            elif c == ":":
+                ret_colon = i
+                break
+        i += 1
+    head = s[:ret_colon] if ret_colon >= 0 else s
+    ret = s[ret_colon + 1 :] if ret_colon >= 0 else ""
+
+    args_str = ""
+    if head.endswith(">"):
+        dp = 0
+        db = 0
+        open_lt = -1
+        j = len(head) - 2
+        while j >= 0:
+            c = head[j]
+            if c == ")":
+                dp += 1
+            elif c == "(":
+                dp -= 1
+            elif c == "}":
+                db += 1
+            elif c == "{":
+                db -= 1
+            elif dp == 0 and db == 0:
+                if c == "<":
+                    open_lt = j
+                    break
+                elif c == "#":
+                    break
+            j -= 1
+        if open_lt >= 0 and head[open_lt:] != "<=>":
+            args_str = head[open_lt + 1 : -1]
+            head = head[:open_lt]
+
+    dp = 0
+    db = 0
+    hash_idx = -1
+    last_dbl = -1
+    i = 0
+    while i < len(head):
+        c = head[i]
+        if c == "(":
+            dp += 1
+        elif c == ")":
+            dp -= 1
+        elif c == "{":
+            db += 1
+        elif c == "}":
+            db -= 1
+        elif dp == 0 and db == 0:
+            if c == "#":
+                hash_idx = i
+                break
+            elif c == ":" and i + 1 < len(head) and head[i + 1] == ":":
+                last_dbl = i
+                i += 2
+                continue
+        i += 1
+
+    if hash_idx >= 0:
+        raw_owner = head[:hash_idx]
+        owner = strip_caret(raw_owner)
+        return ("instance", owner, "^" in raw_owner, head[hash_idx + 1 :], args_str, ret)
+    if last_dbl >= 0:
+        raw_owner = head[:last_dbl]
+        owner = strip_caret(raw_owner)
+        return ("class", owner, "^" in raw_owner, head[last_dbl + 2 :], args_str, ret)
+    return ("top", "", False, head, args_str, ret)
+
+
+def classify_naming_diff(hosted: str, port: str) -> str:
+    """Classify how `port` differs from `hosted`."""
+    hk, ho, hcaret, hm, ha, hret = parse_name_parts(hosted)
+    pk, po, pcaret, pm, pa, pret = parse_name_parts(port)
+    diffs: list[str] = []
+    if hcaret and not pcaret:
+        diffs.append("^Owner(T) segment")
+    elif pcaret and not hcaret:
+        diffs.append("extra ^Owner(T) segment")
+    if (".class#" in port and "::" in hosted) or (".class#" in hosted and "::" in port) or (hk != pk):
+        diffs.append(".class# vs ::")
+    if ha and not pa:
+        diffs.append("missing <Args>")
+    elif ha != pa:
+        diffs.append("different <Args>")
+    if hret and not pret:
+        diffs.append("missing :Ret")
+    elif hret != pret:
+        diffs.append("different :Ret")
+    if not diffs:
+        diffs.append("other")
+    return " + ".join(diffs)
+
+
+def pick_port_match(hosted: str, candidates: list[str], extra_set: set[str]) -> str:
+    """Pick the best matching port name among candidates sharing `label_of`."""
+    _, _, _, _, ha, hret = parse_name_parts(hosted)
+    def score(pn: str) -> tuple[int, int, int, str]:
+        _, _, _, _, pa, pret = parse_name_parts(pn)
+        return (
+            0 if pn in extra_set else 1,
+            0 if pa == ha else 1,
+            0 if pret == hret else 1,
+            pn,
+        )
+    return min(candidates, key=score)
+
+
 def normalize_reason(reason: str) -> str:
     """Normalize a raw refusal reason into a shape by replacing quoted names, type names, and counts."""
     s = reason.strip()
@@ -481,8 +610,15 @@ def cmd_report(args: argparse.Namespace) -> int:
             if key not in seen_label_reason[label]:
                 seen_label_reason[label].add(key)
                 refusals_by_label[label].append((phase, owner, reason))
+    port_by_lbl: dict[str, list[str]] = collections.defaultdict(list)
+    for pn in sorted(port_clean_all):
+        port_by_lbl[label_of(pn)].append(pn)
+    extra_set = set(extra_clean)
 
     scaffold_failed: list[tuple[str, str]] = []
+    naming_pairs: list[tuple[str, str, str]] = []
+    silent_funcs: list[str] = []
+    refused_count = 0
     by_fn_rows: list[str] = ["hosted_name\tstatus\tfirst_shape"]
 
     shape_funcs: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
@@ -506,6 +642,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         lbl = label_of(h)
         rows = refusals_by_label.get(lbl, [])
         if rows:
+            refused_count += 1
             fshapes: set[tuple[str, str]] = set()
             first_shape = ""
             for _phase, owner, raw_reason in rows:
@@ -521,15 +658,31 @@ def cmd_report(args: argparse.Namespace) -> int:
             func_shapes[h] = fshapes
             by_fn_rows.append(f"{h}\trefused\t{first_shape}")
         elif lbl in reached_labels:
-            shp = "<reached, no refusal, lowered under another name>"
-            sk = (shp, "naming")
-            func_shapes[h] = {sk}
-            shape_funcs[sk].add(h)
-            if len(shape_examples[sk]) < 3:
-                shape_examples[sk].append(h)
-            shape_verbatim.setdefault(sk, f"reached label {lbl}, absent from .names")
-            by_fn_rows.append(f"{h}\trefused\t{shp}")
+            cands = port_by_lbl.get(lbl, [])
+            if cands:
+                pn = pick_port_match(h, cands, extra_set)
+                diff_cls = classify_naming_diff(h, pn)
+                naming_pairs.append((h, pn, diff_cls))
+                shp = f"NAMING: {diff_cls}"
+                sk = (shp, "lowering")
+                func_shapes[h] = {sk}
+                shape_funcs[sk].add(h)
+                if len(shape_examples[sk]) < 3:
+                    shape_examples[sk].append(h)
+                shape_verbatim.setdefault(sk, f"{h} -> {pn}")
+                by_fn_rows.append(f"{h}\tnaming\t{diff_cls}: {pn}")
+            else:
+                silent_funcs.append(h)
+                shp = "SILENT: reached, no refusal row, no clean name of any spelling"
+                sk = (shp, "lowering")
+                func_shapes[h] = {sk}
+                shape_funcs[sk].add(h)
+                if len(shape_examples[sk]) < 3:
+                    shape_examples[sk].append(h)
+                shape_verbatim.setdefault(sk, f"reached label {lbl}, no refusal, no .names entry")
+                by_fn_rows.append(f"{h}\tsilent\t{shp}")
         else:
+            refused_count += 1
             shp = "<no refusal recorded under label>"
             sk = (shp, "unassigned")
             func_shapes[h] = {sk}
@@ -557,8 +710,8 @@ def cmd_report(args: argparse.Namespace) -> int:
     )
     lines.append(summary)
     lines.append(
-        f"refused={len(func_shapes)} extra-port-names={len(extra_clean)} "
-        f"superset-collisions={superset_collisions}"
+        f"refused={refused_count} naming={len(naming_pairs)} silent={len(silent_funcs)} "
+        f"extra-port-names={len(extra_clean)} superset-collisions={superset_collisions}"
     )
 
     if scaffold_failed:
@@ -590,6 +743,27 @@ def cmd_report(args: argparse.Namespace) -> int:
         for ex in exs:
             lines.append(f"         e.g. {ex}")
         lines.append(f"         verbatim: {verb}")
+
+    if naming_pairs:
+        lines.append("")
+        lines.append(f"== (a) NAMING: lowered clean under another name ({len(naming_pairs)}) ==")
+        by_cls: dict[str, list[tuple[str, str]]] = collections.defaultdict(list)
+        for h, pn, diff_cls in naming_pairs:
+            by_cls[diff_cls].append((h, pn))
+        for diff_cls, pairs in sorted(by_cls.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            lines.append(f"  class={diff_cls} count={len(pairs)}")
+            for h, pn in pairs[:20]:
+                lines.append(f"    {h} -> {pn}")
+            if len(pairs) > 20:
+                lines.append(f"    ... ({len(pairs) - 20} more)")
+
+    if silent_funcs:
+        lines.append("")
+        lines.append(f"== (b) SILENT: reached, no refusal row, no clean name ({len(silent_funcs)}) ==")
+        for h in silent_funcs[:20]:
+            lines.append(f"  {h}")
+        if len(silent_funcs) > 20:
+            lines.append(f"  ... ({len(silent_funcs) - 20} more)")
 
     if extra_clean:
         lines.append("")
