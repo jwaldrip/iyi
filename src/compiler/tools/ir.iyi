@@ -5,6 +5,8 @@
 #   iyi-ir print FILE           parse the iyi IR's text form and print it again
 #   iyi-ir verify FILE          parse the iyi IR's text form and report every rule it breaks
 #   iyi-ir translate FILE.ir    parse the iyi IR's text form and print the LLVM module it replays to
+#   iyi-ir drop-unwind FILE.ll  read LLVM IR, drop every unwind edge (Module#drop_unwind_edges) and print it as
+#                               the iyi IR's text form: the oracle's module as iyi lowers it, with no unwinding
 #   iyi-ir roundtrip FILE.ll    import, translate and print both sides; print `identical` or the first
 #                               difference (locations are compared separately, debug info is stripped)
 #   iyi-ir coverage FILES...    count every opcode, intrinsic, attribute, convention, linkage, TLS mode,
@@ -40,7 +42,7 @@ module IrTool
       LibC.exit(0)
     end
     if args.size < 2
-      STDERR.puts "usage: iyi-ir import|print|verify|translate|roundtrip FILE | coverage FILES... | version"
+      STDERR.puts "usage: iyi-ir import|print|verify|translate|drop-unwind|roundtrip FILE | coverage FILES... | version"
       LibC.exit(2)
     end
     command = args[0]
@@ -54,6 +56,8 @@ module IrTool
       verify_file(args[1])
     elsif command == "translate"
       translate_file(args[1])
+    elsif command == "drop-unwind"
+      drop_unwind_file(args[1])
     elsif command == "roundtrip"
       roundtrip_file(args[1])
     else
@@ -105,6 +109,21 @@ module IrTool
       LibC.exit(1)
     end
     STDOUT.print(print(imported.as(Module)))
+  end
+
+  def self.drop_unwind_file(path : String) : Nil
+    llvm = llvm_module(path)
+    imported = import_llvm_module(llvm)
+    if imported.is_a?(ImportError)
+      STDOUT.puts "refused: #{imported.to_s}"
+      LibC.exit(1)
+    end
+    mod = imported.as(Module)
+    if reason = mod.drop_unwind_edges
+      STDOUT.puts "refused: #{reason}"
+      LibC.exit(1)
+    end
+    STDOUT.print(print(mod))
   end
 
   def self.print_file(path : String) : Nil
