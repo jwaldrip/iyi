@@ -138,12 +138,12 @@ src/compiler/native/wasm/module.iyi 58
 src/compiler/platform/flags.iyi 5
 src/compiler/platform/linker.iyi 24
 src/compiler/platform/target.iyi 48
-src/compiler/semantic/call.iyi 20
-src/compiler/semantic/call_error.iyi 15
+src/compiler/semantic/call.iyi 27
+src/compiler/semantic/call_error.iyi 17
 src/compiler/semantic/call_nodes.iyi 4
 src/compiler/semantic/cleanup.iyi 7
 src/compiler/semantic/closures.iyi 68
-src/compiler/semantic/default_arguments.iyi 14
+src/compiler/semantic/default_arguments.iyi 15
 src/compiler/semantic/inline_macros.iyi 36
 src/compiler/semantic/instance_vars.iyi 49
 src/compiler/semantic/lib_call.iyi 35
@@ -153,7 +153,7 @@ src/compiler/semantic/main_visitor.iyi 292
 src/compiler/semantic/match.iyi 52
 src/compiler/semantic/math_interpreter.iyi 57
 src/compiler/semantic/method_lookup.iyi 27
-src/compiler/semantic/new.iyi 9
+src/compiler/semantic/new.iyi 11
 src/compiler/semantic/normalizer.iyi 56
 src/compiler/semantic/recursive_struct_checker.iyi 11
 src/compiler/semantic/restrictions.iyi 32
@@ -162,7 +162,7 @@ src/compiler/semantic/type_node_host.iyi 13
 src/compiler/semantic/type_nodes.iyi 26
 src/compiler/semantic/typed.iyi 197
 src/compiler/stage1.iyi 4
-src/compiler/syntax/ast.iyi 1451
+src/compiler/syntax/ast.iyi 1453
 src/compiler/syntax/lexer.iyi 131
 src/compiler/syntax/parser.iyi 342
 src/compiler/syntax/token.iyi 280
@@ -197,7 +197,7 @@ src/compiler/types/rendering.iyi 7
 src/compiler/types/restrictions.iyi 5
 src/compiler/types/to_restriction.iyi 18
 src/compiler/types/type_system.iyi 30
-src/compiler/types/types.iyi 219
+src/compiler/types/types.iyi 221
 src/compiler/types/unification.iyi 7
 src/iyi/array.iyi 99
 src/iyi/atomic.iyi 9

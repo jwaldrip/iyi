@@ -1,14 +1,14 @@
 module compiler/semantic/call
 
 import compiler/semantic/restrictions::{ArgRestriction}
-import compiler/syntax/ast::{ASTNode, Arg, BoolLiteral, Def, NamedArgument, NilLiteral, Nop, NumberLiteral, Path, Primitive, RangeLiteral, StringLiteral, SymbolLiteral, Visibility}
+import compiler/syntax/ast::{ASTNode, Arg, Block, BoolLiteral, Def, NamedArgument, NilLiteral, Nop, NumberLiteral, Path, Primitive, RangeLiteral, StringLiteral, SymbolLiteral, Var, Visibility}
 import compiler/syntax/token::{NumberKind}
 import compiler/semantic/call_nodes::{CallNodes}
 import compiler/semantic/call_error::{CallFailure}
 import compiler/semantic/top_level::{Const, ModuleType, SemanticProgram, Type}
 import compiler/types/type_system::{TypeSystem}
 import compiler/types/lookup::{LookupError, TypeLookup}
-import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, NamedArgumentType, NamedTupleInstanceType, TupleInstanceType}
+import compiler/types/types::{GenericClassInstanceMetaclassType, GenericClassInstanceType, NamedArgumentType, NamedTupleInstanceType, ProcInstanceType, TupleInstanceType}
 import compiler/semantic/method_lookup::{Matches, MethodLookup}
 import compiler/semantic/match::{CallSignature, Match}
 
@@ -125,6 +125,45 @@ pub class CallReceiver
   end
 end
 
+# Forward an existing Proc through a synthetic block, preserving the original
+# expression for captured-block lowering (hosted call.cr:1055-1071).
+pub class CallBlockArg
+  def self.replace(node : Compiler::Syntax::Ast::Call, block_arg_type : Type?, program : SemanticProgram) : String?
+    arg = node.block_arg
+    return nil if arg.nil?
+    unless block_arg_type.is_a?(ProcInstanceType)
+      return "expected a function type, not #{block_arg_type}"
+    end
+    vars = [] of Var
+    args = [] of ASTNode
+    block_arg_type.as(ProcInstanceType).arg_types.each_with_index do |_, index|
+      var = Var.new("__arg#{index}").at(arg)
+      vars << var
+      args << var
+    end
+    body = Compiler::Syntax::Ast::Call.new(arg.clone, "call", args).at(arg)
+    block = Block.new(vars, body).at(arg)
+    block.fun_literal = arg
+    node.block = block
+    nil
+  end
+
+  # Hosted call.cr:1525-1542 compares arity and each input exactly.
+  def self.matches?(proc_type : ProcInstanceType, inputs : Array(Type)?) : String?
+    actual = proc_type.arg_types
+    expected = inputs || [] of Type
+    if actual.size != expected.size
+      return "wrong number of block argument's parameters (given #{actual.size}, expected #{expected.size})"
+    end
+    expected.each_with_index do |input, index|
+      if input != actual[index]
+        return "expected block argument's parameter ##{index + 1} to be #{input}, not #{actual[index]}"
+      end
+    end
+    nil
+  end
+end
+
 # The target of a call on a receiver type: the hosted Call#recalculate's result.
 # *definition* is the one def the call resolves to, *declared_return* its declared
 # return type, and *untyped* says the def declares none, so its type waits on the
@@ -185,6 +224,7 @@ pub class CallRecalculation
     end
     first = 0
     last = 0
+    is_range = false
     if instance.is_a?(TupleInstanceType)
       size = instance.as(TupleInstanceType).size
       if arg.is_a?(NumberLiteral) && arg.as(NumberLiteral).kind == NumberKind::I32
@@ -199,6 +239,7 @@ pub class CallRecalculation
         end
         last = first
       elsif arg.is_a?(RangeLiteral)
+        is_range = true
         range = arg.as(RangeLiteral)
         from = range.from
         if from.is_a?(NumberLiteral) && from.as(NumberLiteral).kind == NumberKind::I32
@@ -250,7 +291,7 @@ pub class CallRecalculation
       return "missing key '#{key}' for named tuple #{owner}" if first == -1 && name == "[]"
       last = first
     end
-    cache_key = "#{meta}:#{first}:#{last}"
+    cache_key = "#{meta}:#{first}:#{last}:#{is_range}"
     cache = if instance.is_a?(TupleInstanceType)
               instance.as(TupleInstanceType).tuple_indexers
             else
@@ -259,7 +300,7 @@ pub class CallRecalculation
     if existing = cache[cache_key]?
       return existing
     end
-    body : ASTNode = first == -1 ? NilLiteral.new : Primitive.tuple_indexer(first, last)
+    body : ASTNode = first == -1 ? NilLiteral.new : Primitive.tuple_indexer(first, last, is_range)
     definition = Def.new("[]", [Arg.new("index")], body)
     cache[cache_key] = definition
     definition

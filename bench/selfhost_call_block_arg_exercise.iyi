@@ -1,0 +1,29 @@
+import compiler/syntax/parser::{Parser}
+import compiler/syntax/ast::{ASTNode, Block, Call, Var}
+import compiler/semantic/call::{CallBlockArg}
+import compiler/semantic/top_level::{SemanticProgram, Type}
+import compiler/types/types::{ProcInstanceType}
+
+program = SemanticProgram.new
+int = program.types["Int32"]
+string = program.types["String"]
+proc_type = ProcInstanceType.new(program, [int, string] of Type, int)
+node = Parser.new("run(&block)", "forward.iyi").parse.as(Call)
+arg = node.block_arg.as(ASTNode)
+raise "forward rejected" unless CallBlockArg.replace(node, proc_type, program).nil?
+block = node.block.as(Block)
+raise "original expression lost" unless block.fun_literal == arg
+raise "wrong synthetic arity" unless block.args.size == 2
+raise "wrong synthetic parameters" unless block.args[0].name == "__arg0" && block.args[1].name == "__arg1"
+body = block.body.as(Call)
+raise "wrong forwarded call" unless body.name == "call" && body.obj == arg && body.args.size == 2
+raise "wrong forwarded inputs" unless body.args[0].as(Var).name == "__arg0" && body.args[1].as(Var).name == "__arg1"
+raise "location lost" unless block.location == arg.location && body.location == arg.location
+raise "valid input rejected" unless CallBlockArg.matches?(proc_type, [int, string] of Type).nil?
+raise "arity accepted" unless CallBlockArg.matches?(proc_type, [int] of Type) == "wrong number of block argument's parameters (given 2, expected 1)"
+raise "type mismatch accepted" unless CallBlockArg.matches?(proc_type, [string, string] of Type) == "expected block argument's parameter #1 to be String, not Int32"
+raise "nil input accepted" unless CallBlockArg.matches?(proc_type, nil) == "wrong number of block argument's parameters (given 2, expected 0)"
+invalid = Parser.new("run(&block)", "forward.iyi").parse.as(Call)
+raise "non-proc accepted" unless CallBlockArg.replace(invalid, int, program) == "expected a function type, not Int32"
+raise "invalid block mutated" unless invalid.block.nil?
+puts "forwarded block arguments: ok"
