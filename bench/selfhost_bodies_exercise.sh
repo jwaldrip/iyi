@@ -275,6 +275,18 @@ prove_mutation "a macro site in a def body does not see the receiver's type para
 prove_mutation "a macro site in a def body does not see the def's free variables" "$MAIN_VISITOR" \
   "        @def_free_types[target_def] = free_types unless free_types.empty?" \
   "        nil" -- macro_bindings_at_floor || status=1
+free_types_at_floor() {
+  "$IYI" build -o "$MUT_TD" "$REPO/src/compiler/tools/typed_dump.iyi" > "$WORK/mut_build.log" 2>&1 || return 1
+  fixture="$REPO/bench/fixtures/sem_bodies_free_types.iyi"
+  "$ORACLE" "$fixture" 2>/dev/null | sort > "$WORK/mo.txt" || return 1
+  "$MUT_TD" "$fixture" "$REPO/src" 2>/dev/null | sort > "$WORK/mp.txt" || return 1
+  matched=$(comm -12 "$WORK/mo.txt" "$WORK/mp.txt" | wc -l | tr -d ' ')
+  floor=$(awk '$1 == "bench/fixtures/sem_bodies_free_types.iyi" { print $2 }' "$FLOOR_FILE")
+  [ -n "$floor" ] && [ "$matched" -ge "$floor" ]
+}
+prove_mutation "a callee's free types are unavailable to body and return lookup" "$MAIN_VISITOR" \
+  "found = ArgRestriction.lookup_free(type_node_system(@program), @current_type, node, owner, bound)" \
+  "found = LookupError.new(\"unbound\")" -- free_types_at_floor || status=1
 if [ "$status" -eq 0 ]; then
   echo
   echo "== ALL BODY FIXTURES AT THEIR FLOORS"
