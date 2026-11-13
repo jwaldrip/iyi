@@ -433,6 +433,9 @@ class Iyi::Command
   # the source, `IYI_OPTS`, the workspace's `mods` that a build reads without
   # being told.
   private def build
+    # The check cost is this process's time from the build command's start
+    # to the key decision. Taken before options are read, so that work counts.
+    started = Time.instant
     arguments = options.dup
     stale_build = options.includes?("--stale-key") ||
                   options.any?(&.starts_with?("--stale-key=")) ||
@@ -447,6 +450,7 @@ class Iyi::Command
     begin
       config = create_compiler "build", defer_move_aside: true
       compiler = config.compiler
+      compiler.stale_started = started
       if compiler.stale_inputs && !inputs.stale?
         # The flag arrived some other way, so what the build read before this
         # recorder existed is not in it.

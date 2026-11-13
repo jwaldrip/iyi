@@ -265,6 +265,9 @@ module Iyi
     property stale_block : String? = nil
     property stale_dump_elements : String? = nil
     property stale_inputs : String? = nil
+    # The instant the build command started. The key file's seconds are the
+    # time from here to the key decision. This process's clock, not an input.
+    property stale_started : Time::Instant? = nil
 
     def stale_build? : Bool
       !@stale_key.nil?
@@ -610,7 +613,7 @@ module Iyi
       emit_bind emit_targets frame_pointers iyi_direct_link iyi_keep
       iyi_link_driver_only link_flags mattr mcmodel mcpu n_threads no_cleanup
       program progress_tracker single_module stale_drop stderr target_machine verbose
-      stale_accept stale_block stale_dump_elements stale_inputs stale_key
+      stale_accept stale_block stale_dump_elements stale_inputs stale_key stale_started
     )
 
     # Everything that changes what the prelude analyses *to*. Macros branch on
@@ -652,7 +655,7 @@ module Iyi
 
     DISPLAY_ONLY = %w(
       color dependency_printer progress_tracker show_error_trace stale_accept
-      stale_block stale_drop stale_dump_elements stale_inputs stale_key stderr stdout verbose warnings
+      stale_block stale_drop stale_dump_elements stale_inputs stale_key stale_started stderr stdout verbose warnings
     )
 
     def behavior_key : Stale::Digest
@@ -4822,6 +4825,7 @@ module Iyi
       reach.cross_check(recorder)
 
       if (result = program.stale_check_result) && (key_file = @stale_key)
+        # The decision's seconds, not a measurement taken after codegen and the link.
         Stale::KeyFile.write_out(
           path: key_file,
           phase: "linked",
@@ -4834,7 +4838,8 @@ module Iyi
           blocked: result.blocked?,
           reach: reach,
           rg3: result.rg3,
-          inputs_refusal: Stale::Check.inputs_refusal
+          inputs_refusal: Stale::Check.inputs_refusal,
+          seconds: result.seconds
         )
       elsif key_file = @stale_key
         primary_source = source_or_sources.is_a?(Array) ? source_or_sources.first : source_or_sources

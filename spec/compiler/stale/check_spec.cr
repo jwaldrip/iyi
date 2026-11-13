@@ -108,6 +108,119 @@ describe "Iyi::Stale S3g: Check, MachineKey, KeyFile, Accept/Block" do
         parsed.reach.not_nil!["checked"].as_bool.should eq(false)
       end
     end
+
+    it "round trips seconds, and a key file without the field parses as nil" do
+      with_tempfile("seconds.key") do |key_path|
+        local = Iyi::Stale::KeyFile::ModeBuild.new(
+          build: "a" * 64,
+          toolchain: "b" * 64,
+          behavior: "c" * 64,
+          callpath: "d" * 64,
+          link: "e" * 64,
+          cenv: "f" * 64,
+          explain: {"src:a.iyi" => "1" * 64}
+        )
+        portable = Iyi::Stale::KeyFile::ModeBuild.new(
+          build: "1" * 64,
+          toolchain: "b" * 64,
+          behavior: "c" * 64,
+          callpath: "3" * 64,
+          link: "4" * 64,
+          cenv: "5" * 64,
+          explain: {"src:a.iyi" => "6" * 64}
+        )
+        reach = Iyi::Stale::Reach.new
+
+        Iyi::Stale::KeyFile.write_out(
+          path: key_path,
+          phase: "checked",
+          test_root: "src",
+          test_path: "a_test.iyi",
+          local: local,
+          portable: portable,
+          not_reusable: [] of Iyi::Stale::KeyFile::NotReusable,
+          hit: nil,
+          blocked: false,
+          reach: reach,
+          seconds: 1.25
+        )
+
+        written = File.read(key_path)
+        written.should contain(%("seconds": 1.25))
+        parsed = Iyi::Stale::KeyFile.parse(written)
+        parsed.seconds.should eq(1.25)
+        parsed.local.not_nil!.build.should eq("a" * 64)
+
+        # An older key file has no seconds field. It still parses, and the
+        # Build it recorded is the same string: the field is not in that digest.
+        raw = JSON.parse(written).as_h
+        raw.delete("seconds")
+        absent = Iyi::Stale::KeyFile.parse(raw.to_json)
+        absent.seconds.should be_nil
+        absent.local.not_nil!.build.should eq(parsed.local.not_nil!.build)
+      end
+    end
+
+    it "writes the same Build whether or not seconds is passed" do
+      with_tempfile("with_seconds.key") do |with_path|
+        with_tempfile("without_seconds.key") do |without_path|
+          local = Iyi::Stale::KeyFile::ModeBuild.new(
+            build: "ab" * 32,
+            toolchain: "b" * 64,
+            behavior: "c" * 64,
+            callpath: "d" * 64,
+            link: "e" * 64,
+            cenv: "f" * 64,
+            explain: {"*" => "2" * 64}
+          )
+          portable = Iyi::Stale::KeyFile::ModeBuild.new(
+            build: "12" * 32,
+            toolchain: "b" * 64,
+            behavior: "c" * 64,
+            callpath: "3" * 64,
+            link: "4" * 64,
+            cenv: "5" * 64,
+            explain: {"*" => "7" * 64}
+          )
+          reach = Iyi::Stale::Reach.new
+          not_reusable = [] of Iyi::Stale::KeyFile::NotReusable
+
+          Iyi::Stale::KeyFile.write_out(
+            path: with_path,
+            phase: "checked",
+            test_root: "src",
+            test_path: "a_test.iyi",
+            local: local,
+            portable: portable,
+            not_reusable: not_reusable,
+            hit: nil,
+            blocked: false,
+            reach: reach,
+            seconds: 1.25
+          )
+          Iyi::Stale::KeyFile.write_out(
+            path: without_path,
+            phase: "checked",
+            test_root: "src",
+            test_path: "a_test.iyi",
+            local: local,
+            portable: portable,
+            not_reusable: not_reusable,
+            hit: nil,
+            blocked: false,
+            reach: reach
+          )
+
+          with_data = Iyi::Stale::KeyFile.parse(File.read(with_path))
+          without_data = Iyi::Stale::KeyFile.parse(File.read(without_path))
+          with_data.seconds.should eq(1.25)
+          without_data.seconds.should be_nil
+          File.read(without_path).should contain(%("seconds": null))
+          with_data.local.not_nil!.build.should eq(without_data.local.not_nil!.build)
+          with_data.portable.not_nil!.build.should eq(without_data.portable.not_nil!.build)
+        end
+      end
+    end
   end
 
   describe "Iyi::Stale::Check" do
@@ -420,6 +533,65 @@ describe "Iyi::Stale S3g: Check, MachineKey, KeyFile, Accept/Block" do
         data = Iyi::Stale::KeyFile.parse(File.read(key_path))
         data.phase.should eq("checked")
         data.local.not_nil!.build.size.should eq(64)
+      end
+    end
+
+    it "records seconds from the build start without changing Build" do
+      code = "def foo(x); x; end; a = foo(41)"
+      source = Iyi::Compiler::Source.new("test_bare.iyi", code)
+
+      with_tempfile("flow_with.key") do |with_path|
+        with_tempfile("flow_without.key") do |without_path|
+          with_program = Iyi::Program.new
+          with_program.color = false
+          with_node = with_program.semantic(with_program.normalize(with_program.new_parser(code).parse))
+          with_compiler = create_spec_compiler
+          with_compiler.stale_key = with_path
+          with_compiler.stale_started = Time.instant
+          with_result = Iyi::Stale::Check.run(with_compiler, with_program, with_node, source)
+
+          without_program = Iyi::Program.new
+          without_program.color = false
+          without_node = without_program.semantic(without_program.normalize(without_program.new_parser(code).parse))
+          without_compiler = create_spec_compiler
+          without_compiler.stale_key = without_path
+          without_result = Iyi::Stale::Check.run(without_compiler, without_program, without_node, source)
+
+          with_result.seconds.should_not be_nil
+          with_result.seconds.not_nil!.should be > 0
+          without_result.seconds.should be_nil
+          with_result.local_build_hex.should eq(without_result.local_build_hex)
+          with_result.portable_build_hex.should eq(without_result.portable_build_hex)
+
+          with_data = Iyi::Stale::KeyFile.parse(File.read(with_path))
+          without_data = Iyi::Stale::KeyFile.parse(File.read(without_path))
+          with_data.seconds.should be_close(with_result.seconds.not_nil!, 1e-6)
+          without_data.seconds.should be_nil
+          with_data.local.not_nil!.build.should eq(without_data.local.not_nil!.build)
+          with_data.local.not_nil!.build.should eq(with_result.local_build_hex)
+        end
+      end
+    end
+
+    it "keeps the decision's seconds when the key file is rewritten as linked" do
+      with_tempfile("linked_seconds.key") do |key_path|
+        with_tempfile("linked_seconds.bin") do |bin_path|
+          compiler = create_spec_compiler
+          compiler.prelude = "iyi/prelude"
+          compiler.stale_key = key_path
+          compiler.stale_started = Time.instant
+          source = Iyi::Compiler::Source.new("seconds_link.iyi", <<-IYI)
+            module spec/seconds_link
+            puts 1
+            IYI
+          result = compiler.compile(source, bin_path)
+          decision = result.program.stale_check_result.not_nil!.seconds.not_nil!
+          decision.should be > 0
+          data = Iyi::Stale::KeyFile.parse(File.read(key_path))
+          data.phase.should eq("linked")
+          data.seconds.should be_close(decision, 1e-6)
+          data.local.not_nil!.build.should eq(result.program.stale_check_result.not_nil!.local_build_hex)
+        end
       end
     end
   end

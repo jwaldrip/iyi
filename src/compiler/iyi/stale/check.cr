@@ -26,6 +26,9 @@ module Iyi::Stale
     getter hit : KeyFile::Hit?
     getter? blocked : Bool
     getter rg3 : Array(Effects::RG3Site)?
+    # Seconds from the build command's start to this decision. Nil when the
+    # build command did not record a start, so a later rewrite cannot invent one.
+    getter seconds : Float64?
 
     def initialize(
       @test_root : String,
@@ -40,6 +43,7 @@ module Iyi::Stale
       @hit : KeyFile::Hit?,
       @blocked : Bool,
       @rg3 : Array(Effects::RG3Site)? = nil,
+      @seconds : Float64? = nil,
     )
     end
 
@@ -250,6 +254,9 @@ module Iyi::Stale
       compiler.progress_tracker.clear if hit
 
       phase = hit ? "hit" : "checked"
+      # Taken once, at the decision, and stored on the result. The linked
+      # rewrite writes this value again rather than measuring past codegen.
+      seconds = compiler.stale_started.try(&.elapsed.total_seconds)
 
       if key_file = compiler.stale_key
         KeyFile.write_out(
@@ -264,7 +271,8 @@ module Iyi::Stale
           blocked: blocked,
           reach: reach,
           rg3: closure.rg3_sites,
-          inputs_refusal: Check.inputs_refusal
+          inputs_refusal: Check.inputs_refusal,
+          seconds: seconds
         )
       end
 
@@ -280,7 +288,8 @@ module Iyi::Stale
         not_reusable: not_reusable,
         hit: hit,
         blocked: blocked,
-        rg3: closure.rg3_sites
+        rg3: closure.rg3_sites,
+        seconds: seconds
       )
       program.stale_check_result = result
       result

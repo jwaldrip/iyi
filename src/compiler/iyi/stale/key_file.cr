@@ -59,6 +59,10 @@ module Iyi::Stale
       getter format : String
       getter version : Int32
       getter phase : String
+      # Seconds from the build command's start to the key decision. Nil when
+      # the file was written before the field existed. It is a measurement of
+      # this process, not an input, so no digest reads it.
+      getter seconds : Float64?
       getter test : Hash(String, String)
       getter local : ModeBuild?
       getter portable : ModeBuild?
@@ -98,6 +102,7 @@ module Iyi::Stale
       reach : Reach,
       rg3 : Array(Effects::RG3Site)? = nil,
       inputs_refusal : String? = nil,
+      seconds : Float64? = nil,
     ) : Nil
       json = String.build do |io|
         JSON.build(io, indent: 2) do |j|
@@ -105,6 +110,7 @@ module Iyi::Stale
             j.field "format", "iyi-stale-key"
             j.field "version", 1
             j.field "phase", phase
+            j.field "seconds", seconds
             j.field "test" do
               j.object do
                 j.field "root", test_root
@@ -205,7 +211,8 @@ module Iyi::Stale
     # S4a backwards-compatible overload
     def self.write_out(path : String, phase : String, test_root : String, test_path : String, reach : Reach,
                        not_reusable : Array(Effects::NotReusableReason)? = nil,
-                       rg3 : Array(Effects::RG3Site)? = nil) : Nil
+                       rg3 : Array(Effects::RG3Site)? = nil,
+                       seconds : Float64? = nil) : Nil
       empty_build = ModeBuild.new(
         build: "",
         toolchain: "",
@@ -232,7 +239,8 @@ module Iyi::Stale
         hit: nil,
         blocked: false,
         reach: reach,
-        rg3: rg3
+        rg3: rg3,
+        seconds: seconds
       )
     end
   end
