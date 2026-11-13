@@ -1,12 +1,24 @@
 module compiler/macros/type_facts
 
+pub class MacroInstanceVarFact
+  getter name : String
+  getter type_name : String?
+
+  def initialize(@name : String, @type_name : String?)
+  end
+end
+
 # Declaration facts supplied by semantic analysis to an inline macro site.
 pub class MacroTypeFacts
   getter constants : Hash(String, String)
   getter annotations : Array(String)
+  property constants_known : Bool = false
+  property instance_vars_known : Bool = false
+  getter instance_vars : Array(MacroInstanceVarFact)
 
   def initialize
     @constants = Hash(String, String).new
     @annotations = [] of String
+    @instance_vars = [] of MacroInstanceVarFact
   end
 end

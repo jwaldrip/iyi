@@ -1,10 +1,9 @@
 module compiler/semantic/macro_bindings
 
 import compiler/macros/interpreter::{MacroFreeBinding}
-import compiler/macros/type_facts::{MacroTypeFacts}
-import compiler/semantic/top_level::{EnumType}
-import compiler/semantic/top_level::{GenericClassType, GenericModuleType, MetaclassType, Type, UnionType}
-import compiler/types/types::{GenericInstanceType, NamedTupleInstanceType, TupleInstanceType, TypeQueries}
+import compiler/macros/type_facts::{MacroInstanceVarFact, MacroTypeFacts}
+import compiler/semantic/top_level::{EnumType, GenericClassType, GenericModuleType, MetaclassType, ModuleType, Type, UnionType}
+import compiler/types/types::{GenericClassInstanceType, GenericInstanceType, NamedTupleInstanceType, TupleInstanceType, TypeQueries}
 
 # The type parameters an inline macro site sees in the def being typed, as the
 # macro engine names them (interpreter.iyi MacroFreeBinding). Hosted
@@ -15,17 +14,34 @@ import compiler/types/types::{GenericInstanceType, NamedTupleInstanceType, Tuple
 # tuple or a union (hosted produce_tuple, 571-601); every other binding is the
 # type's node.
 pub class MacroBindings
-  # Hosted methods.cr:2618-2640: enum constants keep declaration order and values.
+  # Hosted methods.cr:2508-2526 and 2618-2640: instance variables and
+  # enum constants keep the order in which the owning type records them.
   def self.facts(scope : Type?) : MacroTypeFacts?
     return nil if scope.nil?
     owner = scope.as(Type)
     if owner.is_a?(MetaclassType)
       owner = owner.as(MetaclassType).instance_type
     end
-    return nil unless owner.is_a?(EnumType)
+    owner = owner.devirtualize
     facts = MacroTypeFacts.new
-    owner.as(EnumType).members.each do |name, member|
-      facts.constants[name] = member.value.to_s
+    if owner.is_a?(EnumType)
+      facts.constants_known = true
+      owner.as(EnumType).members.each do |name, member|
+        facts.constants[name] = member.value.to_s
+      end
+    end
+    if owner.is_a?(ModuleType)
+      facts.instance_vars_known = true
+      owner.as(ModuleType).all_instance_vars.each do |name, var|
+        var_type = var.type?
+        facts.instance_vars << MacroInstanceVarFact.new(name[1, name.bytesize - 1], var_type ? var_type.to_s : nil)
+      end
+    elsif owner.is_a?(GenericClassInstanceType)
+      facts.instance_vars_known = true
+      owner.as(GenericClassInstanceType).all_instance_vars.each do |name, var|
+        var_type = var.type?
+        facts.instance_vars << MacroInstanceVarFact.new(name[1, name.bytesize - 1], var_type ? var_type.to_s : nil)
+      end
     end
     facts
   end
