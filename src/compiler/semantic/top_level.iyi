@@ -2942,9 +2942,8 @@ pub class TopLevelVisitor < Visitor
     false
   end
 
-  # A fun inside a lib is a C declaration with no body. A fun at the top level of the
-  # program is not ported yet: the hosted pass adds it to the program's defs, and this
-  # pass records nothing for it.
+  # Lib and global funs share the resolved signature read by call typing and
+  # lowering. A global fun may also carry a body.
   def visit(node : FunDef) : Bool
     if node.body && !@current_type.is_a?(SemanticProgram)
       raise("can only declare fun at lib or global scope")
@@ -2968,6 +2967,9 @@ pub class TopLevelVisitor < Visitor
       end
       if rt = node.return_type
         record.resolved_return = @program.lookup_type_node(rt, @current_type)
+      else
+        # Hosted TypeDeclarationVisitor uses Nil when the return is omitted.
+        record.resolved_return = @program.nil_type
       end
       @program.record_lib_fun(node, record)
       if @current_type.is_a?(LibType)
