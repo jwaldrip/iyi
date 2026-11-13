@@ -36,7 +36,7 @@ import compiler/ir/layout::{LayoutError}
 import compiler/platform/target::{Target}
 import compiler/lower/typer::{LowerTyper}
 import compiler/lower/context::{Lowerer}
-import compiler/lower/lower::{codegen_program, lower_def_probe}
+import compiler/lower/lower::{codegen_program, emit_probe_well_known, lower_def_probe}
 import compiler/lower/primitives::{primitive_name}
 import compiler/lower/fun::{mangled_name, discard_probe_functions}
 import compiler/native/driver::{compile_module}
@@ -494,6 +494,7 @@ pub def lowering_table(typed : TypedProgram, triple : String, root : String, nam
   reasons = [] of String
   counts = [] of Int32
   examples = [] of String
+  emit_probe_well_known(m, typer, typed.visitor)
   origin_reasons = [] of String
   origin_counts = [] of Int32
   origin_examples = [] of String

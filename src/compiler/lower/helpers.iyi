@@ -24,6 +24,13 @@ pub def raise_overflow_name(low : Lowerer) : String
   "__iyi_raise_overflow"
 end
 
+# The hosted Program#abi_name: __iyi_ when the prelude is loaded, __crystal_ otherwise.
+pub def abi_name(low : Lowerer, suffix : String) : String
+  if low.analysed.program.lookup_type("IyiRuntimeLock").nil?
+    return "__crystal_#{suffix}"
+  end
+  "__iyi_#{suffix}"
+
 # The hosted `int1(n)`: an i1 constant of `value` (0 or 1).
 pub def int1(low : Lowerer, value : Int64) : Value
   low.builder.const_int(low.module.types.int(1), value)
