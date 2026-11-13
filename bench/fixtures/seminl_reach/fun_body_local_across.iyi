@@ -11,3 +11,4 @@ fun probe_locals(argc : Int32) : Int32
   {% end %}
   argc + y
 end
+probe_locals(0)
