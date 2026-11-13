@@ -128,6 +128,10 @@ ALLOWED_PATHS: list[tuple[str, str]] = [
     # ASTs against the frontend iyi is still bootstrapped from, requiring
     # identical expanded ASTs for every fixture.
     (r"^bench/selfhost_macros_exercise\.sh$", "the frontend the selfhost macro engine is checked against"),
+    # The self-hosting type system's oracle. It verifies type calculation,
+    # unification, and rendered names against the frontend iyi is still
+    # bootstrapped from, requiring identical types for every fixture.
+    (r"^bench/selfhost_types_exercise\.sh$", "the frontend the selfhost type system is checked against"),
 ]
 
 # Lines that name Crystal legitimately inside a file that is otherwise iyi's.
