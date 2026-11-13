@@ -84,7 +84,7 @@ passed=0
 # Fixtures whose module differs from the hosted one for a reason named in NEEDS.md, not yet fixed. The port numbers
 # String 31 and the hosted module 1 for lower_string and lower_string_nonascii (the typer slice's LowerTypeIds
 # numbering, NEEDS.md row 16). They wait by name; the gate fails if one starts to match, so this list is kept honest.
-KNOWN_DIVERGED="lower_string lower_string_nonascii"
+KNOWN_DIVERGED="lower_string lower_string_nonascii lower_pointer_malloc"
 e2e=""
 module_same=0
 module_differ=0
@@ -92,6 +92,11 @@ diverged=0
 waiting=0
 for fixture in "$REPO"/bench/fixtures/lower_*.iyi; do
   name="$(basename "$fixture" .iyi)"
+  # lower_headed_late is proved in section 2c against the arena prelude. The empty-prelude
+  # loop names its proc Proc(Base, Base); the port, having made the virtual type, names Base+.
+  if [ "$name" = "lower_headed_late" ] || [ "$name" = "lower_probe_reuse" ]; then
+    continue
+  fi
   if ! "$IYI" build --prelude empty --emit llvm-ir --no-debug -o "$WORK/$name" "$fixture" > "$WORK/$name.oracle.log" 2>&1 || [ ! -s "$WORK/$name.ll" ]; then
     echo "  $name: the hosted compiler did not emit its module (see $WORK/$name.oracle.log)"
     awk 'NR<=3' "$WORK/$name.oracle.log"
@@ -205,7 +210,7 @@ echo "== 3. Mutation proofs: the gate must catch each patch to the ported code"
 # The check rebuilds the driver from the patched source and requires the nil fixture
 # to match the hosted module exactly, and the context checks to hold. It returns 0 only
 # on the unmutated behaviour.
-CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal"
+CORE_CHECK_FIXTURES="lower_nil lower_int lower_bool lower_assign lower_if lower_char lower_while lower_break lower_unless lower_fold lower_cond_int lower_return lower_return_last lower_typedecl lower_typedecl_nil lower_fun_nil lower_fun_unused lower_implicit_self lower_fun_iyi lower_uint64_big lower_proc_literal lower_uninitialized lower_uninitialized_value lower_class_new lower_cast lower_assign_param lower_isa_union"
 # The mutation check: the driver rebuilt from the patched source must still lower each identical fixture to the hosted
 # module (known divergences are left out, so the unmutated check passes and a mutation is caught by a real difference).
 lower_core_check() {
@@ -252,6 +257,19 @@ if nonascii_name_check && collide_name_check; then
   echo "    yes"
 else
   echo "    NO: a string constant name differs from the hosted name"
+  status=1
+fi
+
+pointer_malloc_check() {
+  "$IYI" build -o "$WORK/port-n" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/n.build.log" 2>&1 || return 1
+  "$WORK/port-n" emit "$REPO/bench/fixtures/lower_pointer_malloc.iyi" "$WORK/lower_pointer_malloc.oracle.ll" > "$WORK/ptr_malloc.ir" 2>/dev/null || return 1
+  awk '/call ptr.*@malloc\(i64/ { m = 1 } /intrinsic llvm\.memset\.p0\.i64/ { s = 1 } END { exit !(m && s) }' "$WORK/ptr_malloc.ir"
+}
+echo "  Pointer(UInt8).malloc emits C malloc and memset:"
+if pointer_malloc_check; then
+  echo "    yes"
+else
+  echo "    no"
   status=1
 fi
 echo "  the mutation check passes on the unmutated code:"
@@ -313,6 +331,20 @@ prove_mutation "a UInt64 literal past Int64 max is read with to_i64, not its bit
   "const_int(ir, uint64_bits(node.value.to_u64))" "const_int(ir, node.value.to_i64)" -- lower_core_check || status=1
 prove_mutation "a proc literal's name uses the file as given, not relative to the working directory" "$REPO/src/compiler/lower/proc.iyi" \
   'symbol_text(relative_filename(loc.filename))' 'symbol_text(loc.filename)' -- lower_core_check || status=1
+prove_mutation "an uninitialized variable's value is the slot itself, not a load of it" "$REPO/src/compiler/lower/lower.iyi" \
+  "low.last = to_lhs(low, slot.pointer, nt)" "low.last = slot.pointer" -- lower_core_check || status=1
+prove_mutation "Pointer#malloc refuses a UInt64 count by inverting the size_t check" "$REPO/src/compiler/lower/primitives.iyi" \
+  "  if count.type != low.typer.size_t" "  if count.type == low.typer.size_t" -- pointer_malloc_check || status=1
+prove_mutation "Cast nil to Pointer emits llvm_nil instead of null pointer" "$REPO/src/compiler/lower/lower.iyi" \
+  "      low.last = low.builder.const_null(low.typer.llvm_type(to_type))" "      low.last = llvm_nil(low)" -- lower_core_check || status=1
+prove_mutation "NilableCast branches swap matches and doesnt_match" "$REPO/src/compiler/lower/lower.iyi" \
+  "    low.builder.cond_br(cmp, matches_block, doesnt_match_block)" "    low.builder.cond_br(cmp, doesnt_match_block, matches_block)" -- lower_core_check || status=1
+prove_mutation "Assign to a parameter skips the local copy" "$REPO/src/compiler/lower/fun.iyi" \
+  "  needs_copy = assigned_to || var_type.full_name != arg_type.full_name" "  needs_copy = false || var_type.full_name != arg_type.full_name" -- lower_core_check || status=1
+prove_mutation "is_a? on NilableType tests non-null instead of null" "$REPO/src/compiler/lower/cast.iyi" \
+  "    is_null = low.builder.icmp(IntPredicate::EQ, value, low.builder.const_null_pointer)" "    is_null = low.builder.icmp(IntPredicate::NE, value, low.builder.const_null_pointer)" -- lower_core_check || status=1
+prove_mutation "union match function combines members with AND instead of OR" "$REPO/src/compiler/lower/cast.iyi" \
+  "        acc = low.builder.bitwise_or(cur, cond)" "        acc = low.builder.bitwise_and(cur, cond)" -- lower_core_check || status=1
 
 # The module-level count: how many CORE_CHECK_FIXTURES match the hosted module in every item, module-level included.
 # A patch that changes only module-level text lowers the count, and this check catches it.
@@ -334,6 +366,124 @@ echo "  module-level baseline over the checked fixtures: $module_baseline"
 prove_mutation "the argc global is external, not internal (module-level text only)" "$REPO/src/compiler/lower/lower.iyi" \
   "argc_global.linkage = Linkage::Internal" "argc_global.linkage = Linkage::External" -- module_count_check || status=1
 
+# A class allocated before the use that makes its virtual type. The oracle is built against the
+# minimal arena prelude (IYI_PATH ends so the hosted compiler's iyi_prelude? is true and the
+# allocation loads @"Base:headed"). The port analyses the prelude and the fixture as one source.
+# Compared: the new function's body and the headed globals. The rest of the module is the
+# compiler's own identity and the injected builtins, which this check does not claim.
+headed_late_ir() {
+  local portbin="$1"
+  local pre="$REPO/bench/fixtures/lower_headed_prelude"
+  local fix="$REPO/bench/fixtures/lower_headed_late.iyi"
+  IYI_PATH="$pre" "$IYI" build --emit llvm-ir --no-debug -o "$WORK/headed" "$fix" > "$WORK/headed.hosted.log" 2>&1 || return 1
+  [ -s "$WORK/headed.ll" ] || return 1
+  awk "$CALL_TYPES" "$WORK/headed.ll" > "$WORK/headed.rewritten.ll" || return 1
+  "$portbin" oracle "$WORK/headed.rewritten.ll" > "$WORK/headed.hostnorm" 2> "$WORK/headed.oracle.err" || return 1
+  awk '1' "$pre/iyi/prelude.iyi" "$fix" > "$WORK/headed.combined.iyi"
+  "$portbin" emit "$WORK/headed.combined.iyi" "$WORK/headed.ll" > "$WORK/headed.port.ll" 2> "$WORK/headed.port.err" || return 1
+  python3 - "$WORK/headed.hostnorm" "$WORK/headed.port.ll" << 'PY' || return 1
+import sys
+def grab(text):
+    out = []
+    on = False
+    for line in text.splitlines():
+        if not on and "Base::new:Base" in line and line.startswith("define"):
+            on = True
+            continue
+        if on:
+            out.append(line)
+            if line == "}":
+                break
+    return out
+def headed(text):
+    return [line for line in text.splitlines() if line.startswith('@"Base:headed"') or line.startswith('@"Child:headed"')]
+host = open(sys.argv[1]).read()
+port = open(sys.argv[2]).read()
+hb, pb = grab(host), grab(port)
+hh, ph = headed(host), headed(port)
+if hb != pb or hh != ph or not hb or not hh:
+    sys.stderr.write("headed body or global differs\n")
+    sys.exit(1)
+PY
+}
+headed_late_check() {
+  "$IYI" build -o "$WORK/port-h" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/headed.build.log" 2>&1 || return 1
+  headed_late_ir "$WORK/port-h"
+}
+echo
+echo "== 2c. Headed byte is a global filled after every def"
+if headed_late_check; then
+  echo "  lower_headed_late: *Base::new:Base body and headed globals identical to the hosted module"
+  if "$IYI" build -o "$WORK/compile_native" "$REPO/src/compiler/tools/compile_native.iyi" > "$WORK/headed.tool.log" 2>&1 && "$WORK/compile_native" "$WORK/headed.port.ll" -o "$WORK/headed.native" > "$WORK/headed.native.log" 2>&1; then
+    timeout 30 "$WORK/headed.native" > "$WORK/headed.native.out" 2>&1; ns=$?
+    timeout 30 "$WORK/headed" > "$WORK/headed.hosted.out" 2>&1; hs=$?
+    if [ "$ns" = "$hs" ] && cmp -s "$WORK/headed.native.out" "$WORK/headed.hosted.out"; then
+      echo "  lower_headed_late: native executable runs to the hosted result (status $hs)"
+    else
+      echo "  lower_headed_late: native status $ns, hosted $hs"
+      status=1
+    fi
+  else
+    echo "  lower_headed_late: the native tool refused the port module: $(awk 'NR==1' "$WORK/headed.native.log" "$WORK/headed.tool.log")"
+    status=1
+  fi
+else
+  echo "  lower_headed_late: DIVERGED"
+  awk 'NR<=8' "$WORK/headed.port.err" "$WORK/headed.hosted.log" "$WORK/headed.oracle.err"
+  status=1
+fi
+prove_mutation "the headed byte is a constant chosen at the allocation" "$REPO/src/compiler/lower/primitives.iyi" \
+  'load_aligned(low, low.module.types.int8, headed_global(low, t))' \
+  'low.builder.const_int(low.module.types.int8, 0_i64)' -- headed_late_check || status=1
+
+probe_reuse_check() {
+  "$IYI" build -o "$WORK/port-p" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/probe.build.log" 2>&1 || return 1
+  "$WORK/port-p" probe-reuse "$REPO/bench/fixtures/lower_probe_reuse.iyi" > "$WORK/probe.out" 2>"$WORK/probe.err" || return 1
+  awk '/^callee-clean=0$/ { ok = 1 } END { exit !ok }' "$WORK/probe.out"
+}
+echo
+echo "== 2d. A failed probe does not leave a callee a later call records clean"
+if probe_reuse_check; then
+  echo "  lower_probe_reuse: the callee is not clean"
+else
+  echo "  lower_probe_reuse: the callee was recorded clean"
+  awk 'NR<=8' "$WORK/probe.err" "$WORK/probe.out" "$WORK/probe.build.log"
+  status=1
+fi
+prove_mutation "the completed-emission check dropped" "$REPO/src/compiler/lower/fun.iyi" \
+  'return existing.as(Function) if fun_emission_done?(low.module, name) || low.emitting[name]?' \
+  'return existing.as(Function)' -- probe_reuse_check || status=1
+generic_ivar_check() {
+  "$IYI" build -o "$WORK/port-g" "$REPO/bench/selfhost_lower_core_exercise.iyi" > "$WORK/g.build.log" 2>&1 || return 1
+  "$WORK/port-g" lower "$REPO/bench/fixtures/lower_generic_ivar.iyi" "$WORK/lower_generic_ivar.oracle.ll" > "$WORK/g.out" 2> "$WORK/g.err" || return 1
+  awk '/^SUMMARY/ { split($2, a, "="); split($3, b, "="); exit !(a[2] == b[2] && a[2] > 0) }' "$WORK/g.out"
+}
+prove_mutation "a generic class instance has no instance variables" "$REPO/src/compiler/lower/instance_var.iyi" \
+  "  if owner.is_a?(GenericClassInstanceType)" \
+  "  if false" -- generic_ivar_check || status=1
+
+# naming lane (mangled_name)
+# The program-level lower of lower_name_owner waits: call.iyi refuses a call inherited
+# from a superclass. The name itself is the hosted symbol, probed on the def alone.
+name_owner_check() {
+  "$IYI" build -o "$WORK/name-port" "$REPO/bench/selfhost_lower_name_owner.iyi" > "$WORK/name.build.log" 2>&1 || return 1
+  "$WORK/name-port" "$REPO/bench/fixtures/lower_name_owner.iyi" "$WORK/lower_name_owner.oracle.ll" > "$WORK/name.out" 2> "$WORK/name.err" || return 1
+  awk '/^NAME-OWNER MATCH$/ { ok = 1 } END { exit !ok }' "$WORK/name.out"
+}
+echo
+echo "== naming lane (mangled_name)"
+if name_owner_check; then
+  echo "  lower_name_owner: *Child^Base#flag<Int32>:Int32"
+else
+  echo "  lower_name_owner: the defining-owner segment differs from the hosted symbol"
+  awk 'NR<=8' "$WORK/name.err" "$WORK/name.out" "$WORK/name.build.log"
+  status=1
+fi
+prove_mutation "an inherited method drops its defining owner" "$REPO/src/compiler/lower/fun.iyi" \
+  'shown + "^" + defined_spell' \
+  'shown' -- name_owner_check || status=1
+
+echo
 echo
 if [ "$status" -eq 0 ]; then
   echo "== ALL LOWER CORE CHECKS PASSED ($passed fixture(s) identical to the hosted module, $waiting waiting)"
