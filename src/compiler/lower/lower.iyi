@@ -42,7 +42,7 @@ import compiler/lower/cast::{assign, downcast, match_type_id, pointer_of_value, 
 import compiler/semantic/main_visitor::{MainVisitor, node_class_name}
 import compiler/semantic/top_level::{Type, NilType, MetaclassType, UnionType}
 import compiler/lower/const::{codegen_path, codegen_path_assign, initialize_program_constants}
-import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_type_declaration_class_var, in_class_body?, store_class_var}
+import compiler/lower/class_var::{class_body_enter, class_body_leave, codegen_class_var_read, codegen_class_var_assign, codegen_pointerof_class_var, codegen_type_declaration_class_var, in_class_body?, store_class_var}
 import compiler/lower/instance_var::{codegen_instance_var_read, codegen_pointerof_instance_var, store_instance_var}
 import compiler/syntax/ast::{FunDef}
 import compiler/syntax/ast::{Annotation}
@@ -491,9 +491,8 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     return
   end
   if node.is_a?(PointerOf)
-    # The hosted `visit(PointerOf)` (codegen.cr:1001-1038). A local is the variable's own pointer.
-    # An instance variable is the field address (`instance_var_ptr`). A class variable is the globals
-    # lane. A constant, a call's extern variable and a read through another object are not ported.
+    # The hosted `visit(PointerOf)` (codegen.cr:1001-1038): a local's pointer, an instance
+    # field address, or an initialized class variable's global address.
     exp = node.as(PointerOf).exp
     if exp.is_a?(Var)
       var = low.current_context.vars[exp.as(Var).name]?
@@ -503,6 +502,10 @@ pub def codegen_node(low : Lowerer, node : ASTNode) : Nil
     end
     if exp.is_a?(InstanceVar)
       codegen_pointerof_instance_var(low, exp.as(InstanceVar))
+      return
+    end
+    if exp.is_a?(ClassVar)
+      codegen_pointerof_class_var(low, exp.as(ClassVar))
       return
     end
     pending_visit_node("pointerof of a #{node_class_name(exp)} (hosted codegen.cr: visit(PointerOf), only a local variable is ported)")

@@ -82,7 +82,13 @@ pub def literal_node_value(low : Lowerer, value : ASTNode) : Value?
   if t.nil?
     return nil
   end
-  typ = t.as(Type)
+  literal_of_type(low, value, t.as(Type))
+end
+
+# The same value as an IR constant of `typ`, without looking the node up. A class variable declared in a required
+# file is recorded by the declarations pass and its initialiser node is never body-typed, so `type_of?` is nil there;
+# the declaration's type is `typ` (hosted `llvm_type(class_var.type)` of a simple literal).
+pub def literal_of_type(low : Lowerer, value : ASTNode, typ : Type) : Value?
   if value.is_a?(BoolLiteral)
     if value.as(BoolLiteral).value
       return int1(low, 1_i64)
@@ -95,7 +101,9 @@ pub def literal_node_value(low : Lowerer, value : ASTNode) : Value?
   if value.is_a?(NumberLiteral)
     text = value.as(NumberLiteral).value
     if text.includes?(".")
-      return nil
+      # Hosted `visit(NumberLiteral)` reads the text with `to_f64`. The point is the float; the lexer has
+      # already dropped a suffix, so `1.5` and `1.5_f32` both parse. The declared type picks double or float.
+      return low.builder.const_float(low.typer.llvm_type(typ), text.to_f)
     end
     if typ.full_name == "Int128" || typ.full_name == "UInt128"
       refuse_port("lower: a 128-bit integer literal is not ported yet: the literal path that emits int128 (hosted const.cr: read_const)")
@@ -214,6 +222,10 @@ pub def declare_const_global(low : Lowerer, name : String, ir : IrType, st : Con
   if g = st.global
     return g.as(Global)
   end
+  if existing = low.module.get_global?(name)
+    st.global = existing
+    return existing.as(Global)
+  end
   g = low.module.add_global(name, ir)
   g.linkage = Linkage::Internal
   st.global = g
@@ -224,6 +236,10 @@ end
 pub def declare_const_flag(low : Lowerer, name : String, st : ConstState) : Global
   if f = st.flag
     return f.as(Global)
+  end
+  if existing = low.module.get_global?(name + ":const_init")
+    st.flag = existing
+    return existing.as(Global)
   end
   i1 = low.module.types.int(1)
   f = low.module.add_global(name + ":const_init", i1)
@@ -237,6 +253,9 @@ end
 # evaluates the constant's value and stores it in the global. A primitive literal result is kept as the
 # global's initialiser (and the constant's `initializer`), and the global is made constant.
 pub def make_const_init_function(low : Lowerer, const : Compiler::Semantic::TopLevel::Const, init_name : String, global : Global, st : ConstState) : Function
+  if existing = low.module.get_function?(init_name)
+    return existing.as(Function)
+  end
   ir = const_ir_type(low, const)
   saved = low.enter_main
   fun_type = low.module.types.func([] of IrType, low.module.types.void)
@@ -314,6 +333,10 @@ end
 pub def const_read_function(low : Lowerer, const : Compiler::Semantic::TopLevel::Const, name : String, st : ConstState) : Function
   if f = st.read_fn
     return f.as(Function)
+  end
+  if existing = low.module.get_function?("~" + name + ":const_read")
+    st.read_fn = existing
+    return existing.as(Function)
   end
   saved = low.enter_main
   ptr = low.module.types.ptr(0)
